@@ -2271,6 +2271,78 @@ def test_detect_prunes_venv_names_without_markers(tmp_path):
         assert not any(f"{os.sep}{name}{os.sep}" in f for f in all_files), f"{name} must stay pruned"
 
 
+@pytest.mark.parametrize(
+    ("configured_out", "absolute", "symlink_target"),
+    [
+        pytest.param("graphify-out/nlp", False, None, id="default-parent"),
+        pytest.param("artifacts/nlp", False, None, id="custom-parent"),
+        pytest.param("artifacts/nlp", True, None, id="absolute"),
+        pytest.param(
+            "aliases/output-link",
+            False,
+            "artifacts/nlp",
+            id="in-root-symlink",
+        ),
+    ],
+)
+def test_nested_graphify_out_prunes_only_configured_path(
+    tmp_path, configured_out, absolute, symlink_target
+):
+    """#2273: a nested output basename must not prune same-named source dirs."""
+    import json
+    import subprocess
+    import sys
+
+    if absolute:
+        configured_out = str(tmp_path / configured_out)
+
+    source = tmp_path / "src" / "revil" / "nexus" / "nlp" / "core.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("def tokenize(text):\n    return text.split()\n")
+
+    output_dir = (
+        tmp_path / symlink_target
+        if symlink_target is not None
+        else tmp_path / configured_out
+    )
+    if symlink_target is not None:
+        output_dir.mkdir(parents=True)
+        configured_out_link = tmp_path / configured_out
+        configured_out_link.parent.mkdir(parents=True)
+        try:
+            configured_out_link.symlink_to(output_dir, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("filesystem does not support symlinks")
+
+    generated = output_dir / "generated.py"
+    generated.parent.mkdir(parents=True, exist_ok=True)
+    generated.write_text("SHOULD_NOT_BE_INDEXED = True\n")
+
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import json, sys\n"
+                "from pathlib import Path\n"
+                "from graphify.detect import detect\n"
+                "result = detect(Path(sys.argv[1]))\n"
+                "print(json.dumps(result['files']['code']))\n"
+            ),
+            str(tmp_path),
+        ],
+        cwd=Path(__file__).parents[1],
+        env={**os.environ, "GRAPHIFY_OUT": configured_out},
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    detected = {Path(p).resolve() for p in json.loads(probe.stdout)}
+
+    assert source.resolve() in detected
+    assert generated.resolve() not in detected
+
+
 def test_detect_records_unclassified_extensionless_files(tmp_path):
     # #1692: extensionless, non-shebang project files (Dockerfile, Makefile, ...)
     # were considered but left no trace. detect() now lists them under
