@@ -157,6 +157,62 @@ def _fold_edge_aliases(edge: dict) -> None:
         edge["confidence"] = "INFERRED"
 
 
+def _coerce_id(value: object) -> object:
+    """Return a str for a numeric id, else the value unchanged.
+
+    ``bool`` is excluded despite subclassing ``int``: an id of ``True`` is not a
+    number the model meant to name a node, and ``"True"`` would invent a label.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return value
+    return str(value)
+
+
+def _coerce_non_string_ids(extraction: dict) -> None:
+    """Coerce numeric node ids and edge/hyperedge references to str, in place (#2326).
+
+    A backend can emit ``{"id": 10}`` where the schema says ``{"id": "10"}``.
+    Every id consumer downstream assumes ``str``, so one int id aborted the build
+    in three places: ``_pick_winner``'s ``_CHUNK_SUFFIX.search(n["id"])`` raised
+    ``TypeError: expected string or bytes-like object``, and ``build_from_json``'s
+    ``sorted(node_set)`` raised ``'<' not supported between instances of 'str'
+    and 'int'`` — the latter for a lone node with nothing to dedup at all.
+    Coercing keeps the node and its edges rather than dropping either, which is
+    the same tolerate-and-heal treatment loose backend output already gets at the
+    parse chokepoint (#1631) and in the alias folds (#2194).
+
+    Endpoints and hyperedge members are coerced with the nodes, not after: a
+    node-only coercion would renumber ``10`` to ``"10"`` and leave every edge
+    pointing at the vanished ``10``, trading a loud crash for a silently
+    disconnected graph. The legacy ``from``/``to`` endpoint aliases are included
+    because dedup reads them directly (#803).
+
+    Runs in BOTH ``build`` (before dedup, which keys on id) and
+    ``build_from_json`` (the direct entry that reloads a persisted graph), for
+    the same two-site reason as the ``_fold_node_aliases`` fold (#2194). It is
+    idempotent, so the nested call on the ``build`` path is a no-op.
+
+    Non-numeric non-str ids (``None``, lists, dicts) are left alone for
+    ``validate_extraction`` to report: ``str(None) == "None"`` would fabricate a
+    node id that no edge references.
+    """
+    for node in extraction.get("nodes") or ():
+        if isinstance(node, dict) and "id" in node:
+            node["id"] = _coerce_id(node["id"])
+    for edge in extraction.get("edges") or ():
+        if not isinstance(edge, dict):
+            continue
+        for key in ("source", "target", "from", "to"):
+            if key in edge:
+                edge[key] = _coerce_id(edge[key])
+    for he in extraction.get("hyperedges") or ():
+        if not isinstance(he, dict):
+            continue
+        members = he.get("nodes")
+        if isinstance(members, list):
+            he["nodes"] = [_coerce_id(ref) for ref in members]
+
+
 def _norm_source_file(p: str | None, root: str | None = None) -> str | None:
     """Normalize path separators and relativize absolute paths.
 
@@ -548,6 +604,10 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     # NetworkX <= 3.1 serialised edges as "links"; remap to "edges" for compatibility.
     if "edges" not in extraction and "links" in extraction:
         extraction = dict(extraction, edges=extraction["links"])
+
+    # Numeric ids from a loose backend become str before anything keys on them
+    # (#2326) — after the links remap so aliased edges are covered too.
+    _coerce_non_string_ids(extraction)
 
     # Canonicalize legacy node/edge schema before validation.
     for node in extraction.get("nodes", []):
@@ -1048,6 +1108,10 @@ def build(
         combined["input_tokens"] += ext.get("input_tokens", 0)
         combined["output_tokens"] += ext.get("output_tokens", 0)
     if dedup and combined["nodes"]:
+        # Numeric ids must be str before dedup, which keys on them and would
+        # raise TypeError in _pick_winner's regex search (#2326). build_from_json
+        # coerces too, but that runs after dedup — too late for this path.
+        _coerce_non_string_ids(combined)
         # Fold legacy node field aliases before dedup (#2194): dedup runs BEFORE
         # build_from_json and keys on `label`, so a `name`/`path` alias node
         # would be invisible to it and only label-dedup one build later, after
