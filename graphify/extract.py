@@ -240,33 +240,7 @@ def _repoint_python_package_imports(paths, all_nodes, all_edges, root) -> None:
         if len(fs) == 1 and a not in node_ids
     }
 
-    # Index canonical Python file nodes by stem for bare import resolution (#2280).
-    # Maps module stem id -> set of canonical file node IDs.
-    stem_to_file_nodes: dict[str, set[str]] = {}
-    for n in all_nodes:
-        if not isinstance(n, dict) or n.get("file_type") != "code":
-            continue
-        if n.get("_callable") or n.get("_callable_class"):
-            continue
-        sf = str(n.get("source_file", ""))
-        if not sf.lower().endswith((".py", ".pyi")):
-            continue
-        label = n.get("label", "")
-        try:
-            sf_name = Path(sf).name
-        except Exception:
-            continue
-        if label != sf_name:
-            continue
-        nid = n.get("id")
-        if not nid:
-            continue
-        stem = Path(sf).stem
-        if stem and stem != "__init__":
-            stem_id = _make_id(stem)
-            stem_to_file_nodes.setdefault(stem_id, set()).add(nid)
-
-    if not alias_map and not stem_to_file_nodes:
+    if not alias_map:
         return
 
     for e in all_edges:
@@ -284,12 +258,6 @@ def _repoint_python_package_imports(paths, all_nodes, all_edges, root) -> None:
                 continue
             if alias_map and tgt in alias_map:
                 e["target"] = alias_map[tgt]
-            elif stem_to_file_nodes and tgt in stem_to_file_nodes:
-                candidates = stem_to_file_nodes[tgt]
-                if len(candidates) == 1:
-                    cand = next(iter(candidates))
-                    if cand != e.get("source"):
-                        e["target"] = cand
 
 
 SEMANTIC_RELATIONS = frozenset({
@@ -354,7 +322,32 @@ def _import_python(node, source: bytes, file_nid: str, stem: str, edges: list, s
                 raw = _read_text(child, source)
                 raw_module, _, raw_alias = raw.partition(" as ")
                 module_name = raw_module.strip().lstrip(".")
-                tgt_nid = _make_id(module_name)
+                
+                top_level = module_name.split(".")[0]
+                is_stdlib = False
+                if hasattr(sys, "stdlib_module_names") and top_level in sys.stdlib_module_names:
+                    is_stdlib = True
+                
+                tgt_nid = None
+                target_path = None
+                
+                # Only resolve single-segment (bare) imports here. Dotted package imports
+                # (e.g. `pkg.mod`) are deferred to `_repoint_python_package_imports` to
+                # preserve repository-wide ambiguity and collision checks in multi-root workspaces.
+                if not is_stdlib and "." not in module_name and _XAML_ACTIVE_EXTRACT_ROOT is not None:
+                    try:
+                        resolved = _resolve_python_module_path(
+                            module_name, Path(str_path), _XAML_ACTIVE_EXTRACT_ROOT, level=0
+                        )
+                        if resolved is not None:
+                            target_path = resolved
+                            tgt_nid = _make_id(str(target_path))
+                    except Exception:
+                        pass
+                
+                if tgt_nid is None:
+                    tgt_nid = _make_id(module_name)
+                
                 edge = {
                     "source": file_nid,
                     "target": tgt_nid,
@@ -365,6 +358,12 @@ def _import_python(node, source: bytes, file_nid: str, stem: str, edges: list, s
                     "source_location": f"L{node.start_point[0] + 1}",
                     "weight": 1.0,
                 }
+                if target_path is not None:
+                    try:
+                        if target_path.is_file():
+                            edge["target_file"] = str(target_path)
+                    except OSError:
+                        pass
                 if raw_alias:
                     # `import pkg.mod as alias` binds the local name `alias`, not
                     # `mod`'s own stem, to the module -- stash it so the cross-file

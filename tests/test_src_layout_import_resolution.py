@@ -199,7 +199,7 @@ def test_bare_python_import_external_remains_unresolved(tmp_path):
 
 def test_bare_python_import_ambiguous_filename_remains_unresolved(tmp_path):
     """#2280: When multiple files share the same stem (e.g. `src/utils.py` and `tests/utils.py`),
-    a bare `import utils` must remain unresolved to prevent false-positive rewires."""
+    a bare `import utils` resolves to the importable sibling (src/utils.py) but not tests/utils.py."""
     (tmp_path / "src").mkdir()
     (tmp_path / "tests").mkdir()
     (tmp_path / "src" / "utils.py").write_text("def u1(): pass\n")
@@ -210,11 +210,11 @@ def test_bare_python_import_ambiguous_filename_remains_unresolved(tmp_path):
     G = build_from_json(extract(paths, cache_root=tmp_path / "c", root=tmp_path, parallel=False), root=str(tmp_path))
     edges = _import_edges(G)
 
-    # Neither src_utils nor tests_utils should be chosen for `import utils`
+    # Under scoped importability rules, main.py imports its sibling src/utils.py,
+    # but must NOT import tests/utils.py.
     endpoints = {n for _, u, v in edges for n in (u, v)}
-    assert "src_utils" not in endpoints and "tests_utils" not in endpoints, (
-        f"ambiguous bare import was falsely repointed: {edges}"
-    )
+    assert "src_utils" in endpoints, f"sibling utils import was not resolved: {edges}"
+    assert "tests_utils" not in endpoints, f"non-sibling utils import was falsely resolved: {edges}"
 
 
 def test_python_import_mixed_syntaxes(tmp_path):
