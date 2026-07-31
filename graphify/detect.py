@@ -15,7 +15,7 @@ from graphify.google_workspace import (
     convert_google_workspace_file,
     google_workspace_enabled,
 )
-from graphify.paths import GRAPHIFY_OUT, GRAPHIFY_OUT_NAME, out_path
+from graphify.paths import GRAPHIFY_OUT, out_path
 
 
 class FileType(str, Enum):
@@ -793,7 +793,7 @@ _SKIP_DIRS = {
     "site-packages", "lib64",
     ".pytest_cache", ".mypy_cache", ".ruff_cache",
     ".tox", ".nox", ".eggs", "*.egg-info",  # nox is tox's successor, same .nox/ venv shape (#1804)
-    "graphify-out", GRAPHIFY_OUT_NAME,  # never treat own output as source input (#524); honour GRAPHIFY_OUT (#1423)
+    "graphify-out",  # never treat the default output as source input (#524)
     # Coverage/test-artefact dirs — generated, never architecturally meaningful
     "coverage", "lcov-report",              # Vitest/Istanbul/nyc HTML reports (#870)
     "visual-tests", "visual-test",          # Playwright/visual-regression bundles (#869)
@@ -1182,6 +1182,13 @@ def _resolves_under_root(path: Path, root: Path) -> bool:
 
 def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace: bool | None = None, extra_excludes: list[str] | None = None, cache_root: Path | None = None, gitignore: bool = True) -> dict:
     root = root.resolve()
+    configured_out_dir = root / GRAPHIFY_OUT
+    configured_out_names = {configured_out_dir.name}
+    try:
+        configured_out_dir = configured_out_dir.resolve()
+    except (OSError, RuntimeError):
+        configured_out_dir = configured_out_dir.absolute()
+    configured_out_names.add(configured_out_dir.name)
     # .graphifyinclude support was removed (#2112): its loader and matchers had
     # no consumers, so the file has been a silent no-op since dot directories
     # became indexed by default (#873). Surface that once per scan so a
@@ -1295,6 +1302,16 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                 # repos for no correctness gain.
                 kept_dirs: list[str] = []
                 for d in dirnames:
+                    child = dp / d
+                    is_configured_out = False
+                    if d in configured_out_names:
+                        try:
+                            is_configured_out = child.resolve() == configured_out_dir
+                        except (OSError, RuntimeError):
+                            pass
+                    if is_configured_out:
+                        pruned_noise.append(str(child) + os.sep)
+                        continue
                     if _is_noise_dir(d, dp):
                         # Record pruned-as-noise dirs so a wrongly-pruned real
                         # source dir is at least traceable in the output rather
