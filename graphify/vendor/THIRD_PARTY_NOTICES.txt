@@ -1,0 +1,59 @@
+3d-force-graph browser bundle
+================================
+
+Graphify includes the minified UMD browser bundle from 3d-force-graph 1.80.0:
+
+  https://github.com/vasturiano/3d-force-graph/tree/1.80.0
+  dist/3d-force-graph.min.js
+  SHA-384: 63b6c2d8f04abbcba3c6dbe8e7e67ad4e786752551cc5b185812b88b97672ff53a6850d3a1d93ad6a3949137c89dac52
+
+3d-force-graph is Copyright (c) 2017 Vasco Asturiano and is distributed under
+the MIT License. Its license text is included in 3d-force-graph.LICENSE.txt.
+
+The UMD build contains the following runtime packages. Versions were resolved
+from the upstream 1.80.0 yarn.lock used to build the reviewed distribution.
+Their license notices and source are available from the linked upstream
+projects.
+
+MIT:
+
+  @babel/runtime 7.29.2 — https://github.com/babel/babel
+  @tweenjs/tween.js 25.0.0 — https://github.com/tweenjs/tween.js
+  accessor-fn 1.5.3 — https://github.com/vasturiano/accessor-fn
+  d3-binarytree 1.0.2 — https://github.com/vasturiano/d3-binarytree
+  d3-force-3d 3.0.6 — https://github.com/vasturiano/d3-force-3d
+  d3-octree 1.1.0 — https://github.com/vasturiano/d3-octree
+  data-bind-mapper 1.0.3 — https://github.com/vasturiano/data-bind-mapper
+  float-tooltip 1.7.5 — https://github.com/vasturiano/float-tooltip
+  kapsule 1.16.3 — https://github.com/vasturiano/kapsule
+  lodash-es 4.18.1 — https://github.com/lodash/lodash
+  ngraph.merge 1.0.0 — https://github.com/anvaka/ngraph.merge
+  polished 4.3.1 — https://github.com/styled-components/polished
+  preact 10.29.1 — https://github.com/preactjs/preact
+  three 0.183.2 — https://github.com/mrdoob/three.js
+  three-forcegraph 1.43.2 — https://github.com/vasturiano/three-forcegraph
+  three-render-objects 1.41.1 — https://github.com/vasturiano/three-render-objects
+  tinycolor2 1.6.0 — https://github.com/bgrins/TinyColor
+
+ISC:
+
+  d3-array 3.2.4 — https://github.com/d3/d3-array
+  d3-color 3.1.0 — https://github.com/d3/d3-color
+  d3-dispatch 3.0.1 — https://github.com/d3/d3-dispatch
+  d3-format 3.1.2 — https://github.com/d3/d3-format
+  d3-interpolate 3.0.1 — https://github.com/d3/d3-interpolate
+  d3-quadtree 3.0.1 — https://github.com/d3/d3-quadtree
+  d3-scale 4.0.2 — https://github.com/d3/d3-scale
+  d3-scale-chromatic 3.1.0 — https://github.com/d3/d3-scale-chromatic
+  d3-selection 3.0.0 — https://github.com/d3/d3-selection
+  d3-time 3.1.0 — https://github.com/d3/d3-time
+  d3-time-format 4.1.0 — https://github.com/d3/d3-time-format
+  d3-timer 3.0.1 — https://github.com/d3/d3-timer
+  internmap 2.0.3 — https://github.com/mbostock/internmap
+
+BSD-3-Clause:
+
+  ngraph.events 1.4.0 — https://github.com/anvaka/ngraph.events
+  ngraph.forcelayout 3.3.1 — https://github.com/anvaka/ngraph.forcelayout
+  ngraph.graph 20.1.2 — https://github.com/anvaka/ngraph.graph
+  ngraph.random 1.2.0 — https://github.com/anvaka/ngraph.random

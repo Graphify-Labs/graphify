@@ -24,25 +24,40 @@ get one — a label per node is unreadable in 3D long before it is slow.
 """
 from __future__ import annotations
 
+from functools import lru_cache
+from importlib.resources import files
+
 from graphify.exporters.html import _html_styles, js_safe
 
-# Pinned + SRI-hashed exactly like the vis.js tag in the 2D renderer: an
-# unpinned CDN URL would let a compromised registry ship arbitrary JavaScript
-# into every rendered graph. Verified against the upstream file at
-# https://unpkg.com/3d-force-graph@1.80.0/dist/3d-force-graph.min.js
-# Bumping the version MUST recompute the hash:
-#   curl -sL <url> | openssl dgst -sha384 -binary | openssl base64 -A
+# The exact reviewed UMD release is packaged with Graphify and embedded into
+# each 3D export. This keeps the generated page usable without a network and
+# avoids executing mutable CDN content. Bumping the version requires replacing
+# the asset, its license/notices, and this digest together.
 FORCE_GRAPH_VERSION = "1.80.0"
-FORCE_GRAPH_URL = (
-    f"https://unpkg.com/3d-force-graph@{FORCE_GRAPH_VERSION}/dist/3d-force-graph.min.js"
+FORCE_GRAPH_ASSET = (
+    f"vendor/3d-force-graph-{FORCE_GRAPH_VERSION}.min.js"
 )
-FORCE_GRAPH_SRI = "sha384-Y7bC2PBKu8ujxtvo5+Z61OeGdSVRzFsYWBK4i5dnL/U6aFDTodk61qOUkTfInaxS"
+FORCE_GRAPH_ASSET_SHA384 = (
+    "63b6c2d8f04abbcba3c6dbe8e7e67ad4e786752551cc5b185812b88b97672ff5"
+    "3a6850d3a1d93ad6a3949137c89dac52"
+)
+
+
+@lru_cache(maxsize=1)
+def _force_graph_source() -> str:
+    """Read the packaged 3d-force-graph UMD bundle."""
+    return files("graphify").joinpath(FORCE_GRAPH_ASSET).read_text(encoding="utf-8")
 
 
 def _styles_3d() -> str:
     """Styles layered on top of the shared sidebar CSS from the 2D renderer."""
     return """<style>
   #graph { position: relative; overflow: hidden; }
+  #webgl-error { max-width: 560px; margin: 20vh auto 0; padding: 24px;
+                 border: 1px solid #3a3a5e; border-radius: 8px; color: #e0e0e0;
+                 background: #17172a; font: 14px/1.6 -apple-system, BlinkMacSystemFont,
+                 "Segoe UI", sans-serif; }
+  #webgl-error code { color: #a5b4fc; }
   #labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
   .glabel { position: absolute; transform: translate(-50%, -140%); white-space: nowrap;
             font-size: 11px; color: #fff; text-shadow: 0 0 4px #000, 0 0 8px #000;
@@ -78,7 +93,26 @@ def _styles_3d() -> str:
 # template literals and object literals without brace-doubling; the four data
 # placeholders are substituted by render() below.
 _SCRIPT_3D = r"""<script>
+(() => {
 'use strict';
+
+function supportsWebGL() {
+  try {
+    const canvas = document.createElement('canvas');
+    return !!(canvas.getContext('webgl2') || canvas.getContext('webgl'));
+  } catch (_) {
+    return false;
+  }
+}
+
+if (!supportsWebGL()) {
+  document.getElementById('graph').innerHTML =
+    '<div id="webgl-error"><b>WebGL is unavailable.</b><br>' +
+    'Enable hardware acceleration or export the compatible 2D view with ' +
+    '<code>graphify export html --viz 2d</code>.</div>';
+  return;
+}
+
 const RAW_NODES  = /*__NODES__*/null;
 const RAW_EDGES  = /*__EDGES__*/null;
 const LEGEND     = /*__LEGEND__*/null;
@@ -134,7 +168,7 @@ const NODES = RAW_NODES.map(n => {
   return {
     id: n.id,
     label: n.label,
-    tip: String(n.title || n.label).split('\n').map(esc).join('<br>'),
+    tip: String(n.title || n.label).split('\n').join('<br>'),
     baseColor: bg,
     // The 2D view rings annotated nodes; here the status colour replaces the
     // node colour, since a sphere has no border to tint.
@@ -314,6 +348,7 @@ function applyFilters() {
 // the content stays escapable. Only `labelled` gets projected each frame.
 let labelled = [];
 const labelEls = new Map();
+let labelFrame = null;
 
 function pickLabels() {
   const picked = [];
@@ -351,7 +386,7 @@ function pickLabels() {
 }
 
 function drawLabels() {
-  requestAnimationFrame(drawLabels);
+  labelFrame = requestAnimationFrame(drawLabels);
   if (!labelled.length || typeof graph.graph2ScreenCoords !== 'function') return;
   const cam = graph.cameraPosition();
   const ctrls = graph.controls();
@@ -374,7 +409,6 @@ function drawLabels() {
     el.style.top = p.y + 'px';
   });
 }
-requestAnimationFrame(drawLabels);
 
 // ---------------------------------------------------------------- selection
 function flyTo(n) {
@@ -471,6 +505,12 @@ function setLabels(on) {
   showLabels = on;
   labelsCb.checked = on;
   pickLabels();
+  if (showLabels && labelFrame === null) {
+    labelFrame = requestAnimationFrame(drawLabels);
+  } else if (!showLabels && labelFrame !== null) {
+    cancelAnimationFrame(labelFrame);
+    labelFrame = null;
+  }
 }
 labelsCb.checked = showLabels;
 labelsCb.addEventListener('change', () => setLabels(labelsCb.checked));
@@ -654,11 +694,15 @@ document.getElementById('btn-reset').addEventListener('click', () => frameGraph(
 
 graph.onEngineStop(() => { graph.onEngineStop(() => {}); pickLabels(); });
 pickLabels();
+})();
 </script>"""
 
 
 def render(model: dict) -> str:
     """Render the shared view model as the 3d-force-graph WebGL viewer."""
+    # A literal closing script tag in either graph data or a future dependency
+    # release must not be able to terminate this inline block.
+    force_graph_source = _force_graph_source().replace("</script", "<\\/script")
     script = (
         _SCRIPT_3D
         .replace("/*__NODES__*/null", js_safe(model["nodes"]))
@@ -675,9 +719,9 @@ def render(model: dict) -> str:
 <head>
 <meta charset="UTF-8">
 <title>graphify 3D - {model["title"]}</title>
-<script src="{FORCE_GRAPH_URL}"
-        integrity="{FORCE_GRAPH_SRI}"
-        crossorigin="anonymous"></script>
+<script>
+{force_graph_source}
+</script>
 {_html_styles()}
 {_styles_3d()}
 </head>

@@ -1,4 +1,5 @@
 """Tests for the 3D (WebGL) graph renderer behind `--viz 3d`."""
+import hashlib
 import json
 import re
 import tempfile
@@ -11,7 +12,12 @@ from graphify.build import build_from_json
 from graphify.cluster import cluster
 from graphify.export import to_html
 from graphify.exporters.html import VIZ_MODES, _resolve_viz_mode
-from graphify.exporters.html3d import FORCE_GRAPH_SRI, FORCE_GRAPH_VERSION
+from graphify.exporters.html3d import (
+    FORCE_GRAPH_ASSET_SHA384,
+    FORCE_GRAPH_VERSION,
+    _SCRIPT_3D,
+    _force_graph_source,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -29,17 +35,19 @@ def render(mode=None, **kwargs):
         return out.read_text(encoding="utf-8")
 
 
-def test_viz_3d_loads_force_graph_pinned_with_sri():
-    """The 3D bundle must be pinned to a version and carry a sha384 SRI hash
-    plus crossorigin=anonymous, exactly like the vis.js tag in the 2D view.
-    Without it a compromised CDN could ship arbitrary JavaScript into every
-    rendered graph. Bumping FORCE_GRAPH_VERSION MUST recompute the hash."""
+def test_viz_3d_embeds_a_pinned_force_graph_bundle_for_offline_use():
+    """The exported page must not need a CDN or network access."""
     content = render("3d")
-    assert f"3d-force-graph@{FORCE_GRAPH_VERSION}/dist/3d-force-graph.min.js" in content
-    assert "https://unpkg.com/3d-force-graph/dist" not in content
-    assert f'integrity="{FORCE_GRAPH_SRI}"' in content
-    assert FORCE_GRAPH_SRI.startswith("sha384-")
-    assert 'crossorigin="anonymous"' in content
+    assert f"Version {FORCE_GRAPH_VERSION} 3d-force-graph" in content
+    assert "https://unpkg.com/3d-force-graph@" not in content
+    assert "<script src=" not in content
+    assert "ForceGraph3D" in content
+
+
+def test_vendored_force_graph_bundle_matches_the_reviewed_release():
+    source = _force_graph_source()
+    assert len(source) > 1_000_000
+    assert hashlib.sha384(source.encode()).hexdigest() == FORCE_GRAPH_ASSET_SHA384
 
 
 def test_viz_3d_does_not_pull_in_visjs():
@@ -137,6 +145,31 @@ def test_viz_3d_names_are_off_by_default():
     assert ".nodeLabel(n => '<div class=\"gtip\">' + n.tip + '</div>')" in content
 
 
+def test_viz_3d_does_not_double_escape_tooltips():
+    G = nx.Graph()
+    G.add_node("a", label="A & B < C", file_type="py")
+    content = render("3d", G=G, communities={0: ["a"]})
+    assert '"title": "A &amp; B &lt; C"' in content
+    assert "String(n.title || n.label).split('\\n').join('<br>')" in content
+    assert "String(n.title || n.label).split('\\n').map(esc)" not in content
+
+
+def test_viz_3d_does_not_animate_hidden_labels():
+    content = render("3d")
+    assert "let labelFrame = null;" in content
+    assert "labelFrame = requestAnimationFrame(drawLabels);" in content
+    assert "cancelAnimationFrame(labelFrame);" in content
+    assert "\nrequestAnimationFrame(drawLabels);\n" not in content
+
+
+def test_viz_3d_explains_how_to_recover_when_webgl_is_unavailable():
+    content = render("3d")
+    assert "function supportsWebGL()" in content
+    assert 'id="webgl-error"' in content
+    assert "graphify export html --viz 2d" in content
+    assert "if (!supportsWebGL())" in content
+
+
 def test_viz_3d_starts_pre_expanded_and_bounded():
     """The stock d3-force-3d setup erupts from a point over ~10s and lets
     disconnected components coast outward forever. Warmup ticks move the
@@ -154,11 +187,16 @@ def test_viz_3d_layout_constants_stay_in_their_working_range():
     graph into a featureless ball, and a repulsion cap far past the graph radius
     makes the warmup ticks expensive enough to freeze the tab on load."""
     content = render("3d")
-    values = {
-        name: float(re.search(rf"const {name} = (-?[\d.]+);", content).group(1))
-        for name in ("GRAVITY_STRENGTH", "CHARGE_MAX_DISTANCE",
-                     "CHARGE_STRENGTH", "WARMUP_TICKS")
-    }
+    values = {}
+    for name in (
+        "GRAVITY_STRENGTH",
+        "CHARGE_MAX_DISTANCE",
+        "CHARGE_STRENGTH",
+        "WARMUP_TICKS",
+    ):
+        match = re.search(rf"const {name} = (-?[\d.]+);", content)
+        assert match is not None
+        values[name] = float(match.group(1))
     assert 0 < values["GRAVITY_STRENGTH"] <= 0.08
     assert 200 <= values["CHARGE_MAX_DISTANCE"] <= 450
     assert values["CHARGE_STRENGTH"] < 0
@@ -172,7 +210,7 @@ def test_viz_3d_frames_once_at_startup_without_zoom_to_fit():
     off a timer runs before the warmup ticks land, measuring a radius of zero
     and parking the camera inside the graph."""
     content = render("3d")
-    calls = [ln for ln in content.splitlines()
+    calls = [ln for ln in _SCRIPT_3D.splitlines()
              if "zoomToFit" in ln and not ln.strip().startswith("//")]
     assert not calls, calls
     # Framed from the first tick that has real positions, exactly once.

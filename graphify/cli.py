@@ -1783,6 +1783,9 @@ def dispatch_command(cmd: str) -> None:
             # path slot, so `--viz 3d` would try to cluster a directory "3d".
             elif a == "--viz" and i_arg + 1 < len(args):
                 viz_mode = args[i_arg + 1]; i_arg += 2
+            elif a == "--viz":
+                print("error: --viz requires a value (2d or 3d)", file=sys.stderr)
+                sys.exit(1)
             elif a.startswith("--viz="):
                 viz_mode = a.split("=", 1)[1]; i_arg += 1
             elif a in ("--no-viz", "--missing-only") or a.startswith("--min-community-size="):
@@ -2545,6 +2548,9 @@ def dispatch_command(cmd: str) -> None:
                 no_viz = True; i += 1
             elif a == "--viz" and i + 1 < len(args):
                 export_viz_mode = args[i + 1]; i += 2
+            elif a == "--viz":
+                print("error: --viz requires a value (2d or 3d)", file=sys.stderr)
+                sys.exit(1)
             elif a.startswith("--viz="):
                 export_viz_mode = a.split("=", 1)[1]; i += 1
             elif a == "--dir" and i + 1 < len(args):
