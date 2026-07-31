@@ -819,6 +819,56 @@ def _filter_graph_by_context(G: nx.Graph, context_filters: list[str] | None) -> 
     return H
 
 
+def _complete_induced_edges(G: nx.Graph, visited: set[str], edges_seen: list[tuple]) -> None:
+    """Append edges between visited nodes that the traversal never recorded (#2323).
+
+    Both traversals only record an edge that *discovers* an unvisited neighbour,
+    so what they return is a traversal tree, not the induced subgraph over the
+    nodes they return. `_bfs` marks every seed visited up front, so an edge
+    between two seeds can never be recorded — the reported symptom, where both
+    endpoints render and the edge between them does not. It drops ordinary
+    cross-edges for the same reason. `_dfs` appends on push rather than on
+    visit, so it already captured those; its one gap is an edge between two
+    non-seed hubs, since neither endpoint is ever expanded.
+
+    Scans only edges incident to `visited`, so cost tracks the subgraph rather
+    than the whole graph, bounded by O(2E) overall. A visited hub is rescanned
+    in full even though the traversal deliberately did not expand it — that is
+    unavoidable, since a hub-to-hub edge is exactly the case `_dfs` misses.
+    `G` here is the context-filtered `traversal_graph` (see
+    `_query_graph_text`), so a filtered-out relation cannot reappear.
+
+    Self-loops are skipped. A recursive function legitimately carries one, but
+    neither traversal has ever recorded one (`n` is always already visited when
+    its own self-loop is examined), and surfacing them is a separate output
+    change from the missing edges reported here.
+
+    Dedup keys on the ordered pair for directed graphs and the unordered pair
+    otherwise: on a DiGraph `u->v` and `v->u` are genuinely distinct edges
+    (mutual recursion, circular imports), and collapsing them would drop a real
+    one. On a multigraph parallel edges collapse to one entry, matching the
+    renderer, which already shows only the first (`_subgraph_to_text`).
+
+    Traversal edges keep their discovery order; completions are appended after.
+    """
+    directed = G.is_directed()
+
+    def _key(u: str, v: str):
+        return (u, v) if directed else frozenset((u, v))
+
+    seen = {_key(u, v) for u, v in edges_seen}
+    # sorted() so the appended order can't shift run-to-run with CPython's
+    # per-process string-hash seed, the same reason the renderer sorts (#1753).
+    for u, v in G.edges(sorted(visited)):
+        if u == v or v not in visited:
+            continue
+        key = _key(u, v)
+        if key in seen:
+            continue
+        seen.add(key)
+        edges_seen.append((u, v))
+
+
 def _bfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], list[tuple]]:
     # Compute hub threshold: nodes above this degree are not expanded as transit.
     # p99 of degree distribution, floored at 50 to avoid over-blocking small graphs.
@@ -846,6 +896,7 @@ def _bfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], lis
                     edges_seen.append((n, neighbor))
         visited.update(next_frontier)
         frontier = next_frontier
+    _complete_induced_edges(G, visited, edges_seen)
     return visited, edges_seen
 
 
@@ -872,6 +923,7 @@ def _dfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], lis
             if neighbor not in visited:
                 stack.append((neighbor, d + 1))
                 edges_seen.append((node, neighbor))
+    _complete_induced_edges(G, visited, edges_seen)
     return visited, edges_seen
 
 
