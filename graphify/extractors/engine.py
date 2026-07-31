@@ -4608,22 +4608,73 @@ def _extract_generic(
     # Top-level / script-context calls have no enclosing definition, so they
     # never entered function_bodies and got no caller at all (#1972). walk_calls
     # already returns without descending at every config.function_boundary_types
-    # node, so walking from the file's root with file_nid as caller picks up
-    # calls outside every tracked def — it cannot double-emit anything already
-    # walked via the function_bodies loop above. During this walk we emit ONLY
-    # direct `calls` (via _toplevel_calls_only), because module-level indirect
-    # dispatch and references have their own dedicated passes.
+    # node, so walking from the file's root picks up calls outside every tracked
+    # def — it cannot double-emit anything already walked via the function_bodies
+    # loop above. During this walk we emit ONLY direct `calls` (via
+    # _toplevel_calls_only), because module-level indirect dispatch and
+    # references have their own dedicated passes.
+    #
+    # The caller is a synthetic per-file entry node, NOT file_nid. The built
+    # graph is an undirected nx.Graph (build.py:673, watch.py's build_from_json
+    # call), so a node PAIR holds exactly one edge and the last write wins
+    # (build.py:836-838, :968). Edges are inserted sorted by relation, and every
+    # top-level callee is a symbol the file already `contains` (same file) or
+    # `imports` (cross-file) — both of which sort after `calls`. A
+    # file_nid -> callee `calls` edge is therefore overwritten by the structural
+    # edge on the identical pair and never reaches graph.json. The entry node
+    # has no such pre-existing edge to the callees, so the call survives. This
+    # mirrors the bash extractor, which has always attributed top-level calls to
+    # `<file>__entry` for the same reason (bash.py:136-139, :443).
     #
     # Java is skipped: it has no top-level executable statements, its field
     # initializers are already walked via initializer_nodes with the owning
     # class as caller, and a root walk would only defer them as file-attributed
     # raw_calls that resurrect the ambiguous phantom stubs #1744 removed.
     if config.ts_module != "tree_sitter_java":
+        # file_nid is path-derived, so `file_nid + "__entry"` never equals a
+        # symbol id VERBATIM. That is not quite enough: normalize_id collapses
+        # runs of underscores (ids.py), so `<stem>_py__entry` and a real symbol
+        # named `py_entry` land on the same normalized key, and build.py's
+        # norm_to_id fallback table (build.py:776) would then resolve an
+        # inexactly-matched edge to whichever of the two it indexed last. Salt
+        # the suffix until the NORMALIZED id is unique among the nodes minted so
+        # far, so that table can never conflate the two.
+        # Salt with "x", never "_": normalize_id collapses underscore runs AND
+        # strips trailing ones, so appending "_" leaves the normalized form
+        # unchanged and the loop would never terminate.
+        entry_nid = file_nid + "__entry"
+        _taken = {normalize_id(_seen) for _seen in seen_ids}
+        while normalize_id(entry_nid) in _taken:
+            entry_nid += "x"
+        _edges_before = len(edges)
+        _raw_calls_before = len(raw_calls)
         _toplevel_calls_only = True
         try:
-            walk_calls(root, file_nid, java_receiver_types.get(id(root)))
+            walk_calls(root, entry_nid, java_receiver_types.get(id(root)))
         finally:
             _toplevel_calls_only = False
+        # Materialize the entry node only when the walk actually attributed
+        # something to it, so files with no top-level call gain no node. Deferred
+        # cross-file raw_calls count too: extract() resolves them into edges
+        # sourced at entry_nid later, and build.py drops edges whose endpoint is
+        # not in the node set.
+        if len(edges) > _edges_before or len(raw_calls) > _raw_calls_before:
+            # The label deliberately does NOT embed the file name: the name is
+            # already carried by the containing file node, and baking it in here
+            # makes the same source yield a different node set under a different
+            # extension — exactly what tests/test_cjs_module_extension.py locks
+            # down for .cjs vs .js.
+            add_node(entry_nid, "module top-level", 1)
+            edges.append({
+                "source": file_nid,
+                "target": entry_nid,
+                "relation": "contains",
+                "context": "file",
+                "confidence": "EXTRACTED",
+                "source_file": str_path,
+                "source_location": "L1",
+                "weight": 1.0,
+            })
 
     # #1356: walk property/field initializers (collected above). walk_calls
     # self-guards against re-entering function bodies and dedups via
