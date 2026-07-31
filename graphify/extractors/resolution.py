@@ -86,14 +86,44 @@ def _strip_jsonc(text: str) -> str:
     stripped = re.sub(r",(\s*[}\]])", r"\1", stripped)
     return stripped
 
-def _read_tsconfig_aliases(tsconfig: Path, base_dir: Path, seen: set) -> dict[str, list[str]]:
+_CONFIG_DIR_TOKEN = "${configDir}"
+
+def _expand_config_dir_token(value: str, config_dir: Path) -> str:
+    """Substitute TS 5.5's literal `${configDir}` template (#2340).
+
+    Expands ONLY that exact token (no general `${...}`/env-var expansion) to the
+    absolute directory of the originating config. TS gives the token meaning only
+    at the START of the value, so any leading "./" (including "././" and ".//") is
+    dropped first: the substitution yields an absolute path, and a "./" prefix
+    would turn it back into a bogus relative string. A token anywhere else is left
+    literal rather than spliced mid-path — tsc does not accept it there, and
+    substituting would fabricate a nonsense path instead of just failing to
+    resolve, which is the pre-#2340 behavior for such a config.
+    """
+    if _CONFIG_DIR_TOKEN not in value:
+        return value
+    head = value
+    while head.startswith("./"):
+        head = head[2:].lstrip("/")
+    if not head.startswith(_CONFIG_DIR_TOKEN):
+        return value
+    return head.replace(_CONFIG_DIR_TOKEN, str(config_dir), 1)
+
+def _read_tsconfig_aliases(tsconfig: Path, base_dir: Path, seen: set, config_dir: "Path | None" = None) -> dict[str, list[str]]:
     """Recursively read path aliases from a tsconfig, following extends chains.
 
     Child config paths override parent. Circular extends are detected via seen set.
     npm package configs (e.g. @tsconfig/svelte) are skipped since they're not on disk.
     Handles JSONC (comments + trailing commas) which is the default tsconfig format
     for SvelteKit, NestJS, Vite, T3, Astro, etc. (#700).
+
+    `config_dir` is the directory of the originating (top-level) config file, set once
+    at the top of the extends chain and passed through unchanged to extended configs.
+    TS 5.5's `${configDir}` template always expands to that directory, not the
+    directory of whichever file in the chain declares the option (#2340).
     """
+    if config_dir is None:
+        config_dir = base_dir
     if str(tsconfig) in seen:
         return {}
     seen.add(str(tsconfig))
@@ -136,7 +166,7 @@ def _read_tsconfig_aliases(tsconfig: Path, base_dir: Path, seen: set) -> dict[st
         if not extended_path.suffix:
             extended_path = extended_path.with_suffix(".json")
         if extended_path.exists():
-            aliases.update(_read_tsconfig_aliases(extended_path, extended_path.parent, seen))
+            aliases.update(_read_tsconfig_aliases(extended_path, extended_path.parent, seen, config_dir))
 
     # tsconfig `paths` are resolved relative to `baseUrl` (itself relative to
     # the tsconfig's directory), not the tsconfig directory directly. Honoring
@@ -147,7 +177,8 @@ def _read_tsconfig_aliases(tsconfig: Path, base_dir: Path, seen: set) -> dict[st
     # relative to the tsconfig dir, the TS 4.1+ behavior) keep working.
     compiler_options = data.get("compilerOptions", {})
     base_url = compiler_options.get("baseUrl") or "."
-    paths_base = base_dir / base_url
+    base_url = _expand_config_dir_token(base_url, config_dir)
+    paths_base = Path(base_url) if os.path.isabs(base_url) else base_dir / base_url
     paths = compiler_options.get("paths", {})
     for alias, targets in paths.items():
         if not targets:
@@ -157,10 +188,15 @@ def _read_tsconfig_aliases(tsconfig: Path, base_dir: Path, seen: set) -> dict[st
         # whose file lived at a non-first target. Preserve wildcard tokens in
         # both sides until the resolver substitutes the captured segment, then
         # normalizes the concrete path (#927). Empty/non-string entries are skipped.
+        # A target containing `${configDir}` (#2340) expands to an absolute path
+        # already anchored at the originating config's dir, so it's used as-is
+        # instead of being joined under paths_base (a `Path` join with an absolute
+        # right-hand side already discards the left, which is the behavior we want).
         target_patterns = [
-            str(paths_base / t)
+            str(Path(expanded) if os.path.isabs(expanded) else paths_base / expanded)
             for t in targets
             if isinstance(t, str) and t
+            for expanded in [_expand_config_dir_token(t, config_dir)]
         ]
         if target_patterns:
             aliases[alias] = target_patterns
@@ -240,7 +276,14 @@ def _load_tsconfig_base_url(start_dir: Path) -> "Path | None":
         if data is not None:
             raw_base = data.get("compilerOptions", {}).get("baseUrl")
             if isinstance(raw_base, str) and raw_base:
-                base_url = Path(os.path.normpath(candidate / raw_base))
+                # `${configDir}` (#2340) expands to this config's own dir here, since
+                # this function only ever reads a single file (no `extends` chain,
+                # see #2200), so `candidate` and "the originating config's dir" coincide.
+                raw_base = _expand_config_dir_token(raw_base, candidate)
+                if os.path.isabs(raw_base):
+                    base_url = Path(os.path.normpath(raw_base))
+                else:
+                    base_url = Path(os.path.normpath(candidate / raw_base))
         _TSCONFIG_BASEURL_CACHE[key] = base_url
     return _TSCONFIG_BASEURL_CACHE[key]
 
