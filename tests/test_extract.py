@@ -2943,61 +2943,131 @@ def _file_node_ids(result):
     return {n["id"] for n in result["nodes"] if str(n.get("label", "")).endswith((".py", ".js", ".rb", ".rake"))}
 
 
-def test_python_toplevel_call_gets_file_caller(tmp_path):
+def _entry_node_ids(result):
+    # Substring, not endswith: the id carries a salt suffix when a real symbol
+    # would otherwise share its normalized form (see the collision test below).
+    return {n["id"] for n in result["nodes"] if "__entry" in str(n["id"])}
+
+
+def _assert_toplevel_call(result, callee_label, *, lang):
+    """#1972: the top-level call must be sourced from the file's synthetic entry
+    node, and that node must be reachable from the file via `contains`.
+
+    The caller is deliberately NOT the file node. The built graph is an
+    undirected nx.Graph, so one node pair holds one edge and the last write
+    wins; every top-level callee is a symbol the file already `contains` or
+    `imports`, and both sort after `calls`, so a file-sourced calls edge is
+    overwritten before it reaches graph.json. Asserting the entry node here is
+    what keeps this test honest about the shape the pipeline can actually carry
+    — see test_toplevel_call_survives_to_graph_json for the end-to-end proof.
+    """
+    calls = [(e["source"], e["target"]) for e in result["edges"] if e["relation"] == "calls"]
+    callee_id = next(n["id"] for n in result["nodes"] if n.get("label") == callee_label)
+    entry_ids = _entry_node_ids(result)
+    file_ids = _file_node_ids(result)
+
+    assert entry_ids, f"{lang}: no entry node was created for a file with a top-level call"
+    assert any(s in entry_ids and t == callee_id for s, t in calls), \
+        f"{lang}: top-level {callee_label} not sourced from the entry node: {calls}"
+    assert not any(s in file_ids and t == callee_id for s, t in calls), \
+        f"{lang}: call sourced from the file node — it would be overwritten by `contains`"
+
+    contains = {(e["source"], e["target"]) for e in result["edges"] if e["relation"] == "contains"}
+    assert any(s in file_ids and t in entry_ids for s, t in contains), \
+        f"{lang}: entry node is not contained by its file, so it would be an orphan"
+
+
+def test_python_toplevel_call_gets_entry_caller(tmp_path):
     """#1972: a module-level call with no enclosing def must still produce a
-    calls edge, sourced from the file node instead of being dropped."""
+    calls edge instead of being dropped."""
     f = tmp_path / "toplevel.py"
     f.write_text("def tally():\n    return 1\n\ntally()\n")
-    result = extract([f], cache_root=tmp_path)
-    calls = [(e["source"], e["target"]) for e in result["edges"] if e["relation"] == "calls"]
-    file_ids = _file_node_ids(result)
-    tally_id = next(n["id"] for n in result["nodes"] if n.get("label") == "tally()")
-    assert any(s in file_ids and t == tally_id for s, t in calls), \
-        f"top-level tally() not sourced from file node: {calls}"
+    _assert_toplevel_call(extract([f], cache_root=tmp_path), "tally()", lang="python")
 
 
-def test_js_toplevel_call_gets_file_caller(tmp_path):
+def test_js_toplevel_call_gets_entry_caller(tmp_path):
     """#1972: same fix covers JS/TS via the shared engine.py walk."""
     f = tmp_path / "toplevel.js"
     f.write_text("function tally(){ return 1; }\ntally();\n")
-    result = extract([f], cache_root=tmp_path)
-    calls = [(e["source"], e["target"]) for e in result["edges"] if e["relation"] == "calls"]
-    file_ids = _file_node_ids(result)
-    tally_id = next(n["id"] for n in result["nodes"] if n.get("label") == "tally()")
-    assert any(s in file_ids and t == tally_id for s, t in calls), \
-        f"top-level tally() not sourced from file node: {calls}"
+    _assert_toplevel_call(extract([f], cache_root=tmp_path), "tally()", lang="js")
 
 
-def test_ruby_toplevel_call_gets_file_caller(tmp_path):
-    """#1972: a plain top-level Ruby call (no enclosing def) is sourced from the
-    file node. .rake extraction (0.9.13) is the main consumer of this fix."""
+def test_ruby_toplevel_call_gets_entry_caller(tmp_path):
+    """#1972: a plain top-level Ruby call (no enclosing def). .rake extraction
+    (0.9.13) is the main consumer of this fix."""
     f = tmp_path / "toplevel.rb"
     f.write_text("def tally\n  1\nend\n\ntally()\n")
-    result = extract([f], cache_root=tmp_path)
-    calls = [(e["source"], e["target"]) for e in result["edges"] if e["relation"] == "calls"]
-    file_ids = _file_node_ids(result)
-    tally_id = next(n["id"] for n in result["nodes"] if n.get("label") == "tally()")
-    assert any(s in file_ids and t == tally_id for s, t in calls), \
-        f"top-level tally() not sourced from file node: {calls}"
+    _assert_toplevel_call(extract([f], cache_root=tmp_path), "tally()", lang="ruby")
 
 
-def test_ruby_rake_task_block_call_gets_file_caller(tmp_path):
+def test_ruby_rake_task_block_call_gets_entry_caller(tmp_path):
     """#1972: a call inside a ``task :name do ... end`` block. The block is not a
-    definition, so the file-root walk must attribute the inner call to the file
-    node rather than dropping it. This is the rake-task worst case from the issue."""
+    definition, so the root walk must attribute the inner call rather than
+    dropping it. This is the rake-task worst case from the issue."""
     f = tmp_path / "build.rake"
     f.write_text("def compile\n  1\nend\n\ntask :build do\n  compile()\nend\n")
+    _assert_toplevel_call(extract([f], cache_root=tmp_path), "compile()", lang="rake")
+
+
+def test_crossfile_toplevel_call_gets_entry_caller(tmp_path):
+    """#1972: a top-level call into another file resolves through the cross-file
+    pass with the entry node as caller.
+
+    This is the case that stayed broken while the file node was the caller: the
+    file already has an `imports` edge to the callee, so the resolved calls edge
+    collided with it on the same node pair.
+    """
+    (tmp_path / "b.py").write_text("class B:\n    @staticmethod\n    def y():\n        return 2\n")
+    uses = tmp_path / "uses.py"
+    uses.write_text("from b import B\n\nB.y()\n")
+    result = extract([tmp_path / "b.py", uses], cache_root=tmp_path)
+    calls = [(e["source"], e["target"]) for e in result["edges"]
+             if e["relation"] in ("calls", "indirect_call")]
+    entry_ids = _entry_node_ids(result)
+    assert any(s in entry_ids for s, _ in calls), \
+        f"cross-file top-level call not sourced from the entry node: {calls}"
+
+
+def test_no_entry_node_without_a_toplevel_call(tmp_path):
+    """#1972: the entry node is created lazily. A file whose calls all sit inside
+    definitions must not gain one, or every file in a corpus grows a node."""
+    f = tmp_path / "incontext.py"
+    f.write_text("def tally():\n    return 1\n\ndef run():\n    tally()\n")
     result = extract([f], cache_root=tmp_path)
+    assert not _entry_node_ids(result), \
+        f"entry node created for a file with no top-level call: {_entry_node_ids(result)}"
+
+
+def test_entry_node_id_survives_normalization_against_a_colliding_symbol(tmp_path):
+    """#1972: the entry id must stay distinct AFTER normalize_id, not just literally.
+
+    ``normalize_id`` collapses runs of underscores, so ``<stem>_py__entry`` and a
+    real symbol named ``py_entry`` normalize to the same key — and build.py's
+    ``norm_to_id`` fallback table would then resolve an inexactly-matched edge to
+    whichever of the two it indexed last. The salt must also terminate:
+    normalize_id strips trailing underscores, so salting with "_" would spin
+    forever.
+    """
+    from graphify.ids import normalize_id
+
+    f = tmp_path / "toplevel.py"
+    f.write_text("def py_entry():\n    return 1\n\ndef tally():\n    return 2\n\ntally()\n")
+    result = extract([f], cache_root=tmp_path)
+
+    normalized = [normalize_id(n["id"]) for n in result["nodes"]]
+    assert len(set(normalized)) == len(normalized), \
+        f"two nodes share a normalized id: {sorted(normalized)}"
+    entry_ids = _entry_node_ids(result)
+    assert entry_ids, "entry node missing on the collision corpus"
+    tally_id = next(n["id"] for n in result["nodes"] if n.get("label") == "tally()")
     calls = [(e["source"], e["target"]) for e in result["edges"] if e["relation"] == "calls"]
-    file_ids = _file_node_ids(result)
-    compile_id = next(n["id"] for n in result["nodes"] if n.get("label") == "compile()")
-    assert any(s in file_ids and t == compile_id for s, t in calls), \
-        f"call inside rake task block not sourced from file node: {calls}"
+    assert any(s in entry_ids and t == tally_id for s, t in calls), \
+        f"top-level call lost on the collision corpus: {calls}"
 
 
 def test_incontext_call_unaffected_by_toplevel_fix(tmp_path):
     """#1972 regression guard: a call inside a function stays sourced from that
-    function, and the new file-root walk adds no duplicate edge."""
+    function, and the new root walk adds no duplicate edge."""
     f = tmp_path / "incontext.py"
     f.write_text("def tally():\n    return 1\n\ndef run():\n    tally()\n")
     result = extract([f], cache_root=tmp_path)
@@ -3006,5 +3076,5 @@ def test_incontext_call_unaffected_by_toplevel_fix(tmp_path):
     run_id = next(n["id"] for n in result["nodes"] if n.get("label") == "run()")
     tally_id = next(n["id"] for n in result["nodes"] if n.get("label") == "tally()")
     assert (run_id, tally_id) in calls
-    assert calls.count((run_id, tally_id)) == 1  # no duplicate from file-root walk
+    assert calls.count((run_id, tally_id)) == 1  # no duplicate from the root walk
     assert not any(s in file_ids and t == tally_id for s, t in calls)  # file is not the caller
