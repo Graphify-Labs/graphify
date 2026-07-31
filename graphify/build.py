@@ -1124,9 +1124,14 @@ def deduplicate_by_label(nodes: list[dict], edges: list[dict]) -> tuple[list[dic
     return deduped_nodes, deduped_edges
 
 
-def _load_existing_graph(graph_path: Path) -> "tuple[list, list, list] | None":
-    """Load (nodes, edges, hyperedges) from an existing graph.json for an
-    incremental merge, accepting both the ``links`` and ``edges`` spellings.
+def _load_existing_graph(graph_path: Path) -> "tuple[list, list, list, bool] | None":
+    """Load (nodes, edges, hyperedges, directed) from an existing graph.json for
+    an incremental merge, accepting both the ``links`` and ``edges`` spellings.
+
+    ``directed`` is the persisted graph type, so an incremental merge can rebuild
+    the same kind of graph instead of silently downgrading a directed graph to an
+    undirected one (#2342). Missing key reads as False, matching the
+    ``cluster-only`` round-trip in cli.py.
 
     Reads the JSON directly instead of going through node_link_graph().
     The latter rebuilds an undirected nx.Graph and then enumerating
@@ -1156,6 +1161,7 @@ def _load_existing_graph(graph_path: Path) -> "tuple[list, list, list] | None":
         list(data.get("nodes", [])),
         list(data.get(links_key, [])),
         list(data.get("hyperedges", [])),
+        bool(data.get("directed", False)),
     )
 
 
@@ -1193,7 +1199,7 @@ def merge_raw_extraction(
     loaded = _load_existing_graph(graph_path)
     if loaded is None:
         return new
-    existing_nodes, existing_edges, existing_hyperedges = loaded
+    existing_nodes, existing_edges, existing_hyperedges, _existing_directed = loaded
 
     _eff_root = (
         str(Path(root).resolve()) if root is not None
@@ -1260,7 +1266,7 @@ def build_merge(
     graph_path: str | Path | None = None,
     prune_sources: list[str] | None = None,
     *,
-    directed: bool = False,
+    directed: bool | None = None,
     dedup: bool = True,
     dedup_llm_backend: str | None = None,
     root: str | Path | None = None,
@@ -1273,17 +1279,23 @@ def build_merge(
     preserved unchanged; deleted files are removed via prune_sources.
     Safe to call repeatedly.
     root: if given, absolute source_file paths in new_chunks are made relative (#932).
+    directed: None (default) INHERITS the loaded graph's type, so a routine
+    incremental refresh can't silently rebuild a directed graph as undirected and
+    turn betweenness into a ubiquity score (#2342). Pass True/False to force it.
     """
     graph_path = Path(graph_path if graph_path is not None else _default_graph_json())
     _loaded = _load_existing_graph(graph_path)
     if _loaded is not None:
-        existing_nodes, existing_edges, existing_hyperedges = _loaded
+        existing_nodes, existing_edges, existing_hyperedges, existing_directed = _loaded
         had_graph = True
     else:
         existing_nodes = []
         existing_edges = []
         existing_hyperedges = []
+        existing_directed = False
         had_graph = False
+    if directed is None:
+        directed = existing_directed
 
     # Effective root for relativizing absolute source_file / prune paths back to the
     # stored relative source_file keys. When the caller passes root we use it;

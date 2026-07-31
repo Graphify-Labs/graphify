@@ -498,6 +498,81 @@ def test_ghost_merge_non_ast_same_file_still_merges():
     assert G.number_of_nodes() == 1
 
 
+def _directed_graph_json(tmp_path):
+    """Write a small DIRECTED graph.json (caller -> callee -> leaf) and return its path."""
+    from graphify.export import to_json
+
+    extraction = {
+        "nodes": [
+            {"id": "a_caller", "label": "caller()", "file_type": "code", "source_file": "a.py"},
+            {"id": "a_callee", "label": "callee()", "file_type": "code", "source_file": "a.py"},
+            {"id": "a_leaf", "label": "leaf()", "file_type": "code", "source_file": "a.py"},
+        ],
+        "edges": [
+            {"source": "a_caller", "target": "a_callee", "relation": "calls",
+             "confidence": "EXTRACTED", "confidence_score": 1.0, "source_file": "a.py"},
+            {"source": "a_callee", "target": "a_leaf", "relation": "calls",
+             "confidence": "EXTRACTED", "confidence_score": 1.0, "source_file": "a.py"},
+        ],
+        "hyperedges": [],
+    }
+    graph_path = tmp_path / "graph.json"
+    G = build_from_json(extraction, directed=True)
+    assert to_json(G, {}, str(graph_path), force=True)
+    assert json.loads(graph_path.read_text())["directed"] is True
+    return graph_path
+
+
+def test_build_merge_inherits_persisted_directed_flag(tmp_path):
+    """Regression for #2342.
+
+    build_merge defaulted to directed=False, so an incremental refresh rebuilt a
+    graph saved with --directed as an undirected one and wrote it back. Nothing
+    reported the change, but betweenness silently stops meaning anything: an
+    undirected graph turns a pure sink (in_degree=N, out_degree=0) into a fake
+    bridge between every pair of its importers, so god-node rankings report
+    ubiquity instead of architecture.
+
+    The saved flag already round-trips on the cluster-only path
+    (cli.py: build_from_json(_raw, directed=_directed)); the merge path must
+    honour it too.
+    """
+    from graphify.export import to_json
+
+    graph_path = _directed_graph_json(tmp_path)
+
+    # What `graphify update` does: merge an empty chunk set and save back.
+    G2 = build_merge([{"nodes": [], "edges": [], "hyperedges": []}], graph_path, dedup=False)
+    assert G2.is_directed(), (
+        "build_merge downgraded a directed graph to undirected (#2342)"
+    )
+    assert to_json(G2, {}, str(graph_path), force=True)
+    assert json.loads(graph_path.read_text())["directed"] is True
+
+    # A sink must not score as a bridge once direction survives the merge.
+    assert nx.betweenness_centrality(G2)["a_leaf"] == 0.0
+
+
+def test_build_merge_directed_flag_still_forceable(tmp_path):
+    """directed=None inherits, but an explicit value still wins in both
+    directions — callers that deliberately pick a graph type keep doing so."""
+    graph_path = _directed_graph_json(tmp_path)
+
+    assert not build_merge([], graph_path, dedup=False, directed=False).is_directed()
+    assert build_merge([], graph_path, dedup=False, directed=True).is_directed()
+
+
+def test_build_merge_defaults_undirected_without_existing_graph(tmp_path):
+    """No graph on disk means nothing to inherit — keep the historical default."""
+    chunk = {
+        "nodes": [{"id": "n1", "label": "n1()", "file_type": "code", "source_file": "a.py"}],
+        "edges": [],
+        "hyperedges": [],
+    }
+    G = build_merge([chunk], tmp_path / "missing.json", dedup=False)
+    assert not G.is_directed()
+
+
 def test_build_merge_preserves_call_edge_direction(tmp_path):
     """Regression for #760.
 

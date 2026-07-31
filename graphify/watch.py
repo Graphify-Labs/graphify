@@ -1258,7 +1258,11 @@ def _rebuild_code(
             "total_words": detected.get("total_words", 0),
         }
 
-        G = build_from_json(result)
+        # Inherit the persisted graph type. Rebuilding a graph that was written
+        # with --directed as an undirected one silently breaks betweenness — a
+        # pure sink every module imports scores as the top god node — and nothing
+        # in the report says the graph changed type (#2342).
+        G = build_from_json(result, directed=bool(existing_graph_data.get("directed", False)))
         candidate_topology = _topology_from_graph(G)
         if existing_graph_data:
             try:

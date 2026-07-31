@@ -160,6 +160,41 @@ def test_graphify_root_preserves_relative_when_invoked_with_relative_path(tmp_pa
     )
 
 
+def test_rebuild_code_preserves_directed_graph(tmp_path):
+    """#2342: `graphify update` must rebuild a directed graph as directed.
+
+    _rebuild_code called build_from_json(result) with no `directed=`, so every
+    routine refresh rewrote a graph saved with --directed as an undirected one,
+    silently and with nothing in the output saying the graph changed type. The
+    damage is in the report: betweenness is only meaningful on a directed graph,
+    so undirected a pure sink every module imports becomes the top god node."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "a.py").write_text(
+        "def alpha():\n    return beta()\n\ndef beta():\n    return 1\n", encoding="utf-8"
+    )
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    # Stand in for a graph built with --directed: flip the persisted graph type.
+    graph_file = corpus / "graphify-out" / "graph.json"
+    graph = json.loads(graph_file.read_text(encoding="utf-8"))
+    graph["directed"] = True
+    graph_file.write_text(json.dumps(graph), encoding="utf-8")
+
+    # Grow the corpus so the next rebuild has real work and actually writes.
+    (corpus / "b.py").write_text(
+        "import a\n\ndef gamma():\n    return a.alpha()\n", encoding="utf-8"
+    )
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    rebuilt = json.loads(graph_file.read_text(encoding="utf-8"))
+    assert rebuilt["directed"] is True, (
+        "incremental rebuild downgraded a directed graph to undirected (#2342)"
+    )
+
+
 def test_rebuild_code_writes_community_name(tmp_path):
     """#1808: `graphify update` / _rebuild_code must forward community_labels to
     to_json, so graph.json nodes carry a human-readable community_name (hub-derived
