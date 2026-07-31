@@ -327,6 +327,109 @@ def test_unresolved_base_poisons_inherited_member_lookup(tmp_path):
         "unresolved base chain must bail, not mis-bind to Server.Save"
 
 
+# ── Method-scoped receiver typing (#2299) ────────────────────────────────────
+# C# scoping is per-method: a name rebound (even untypably) in ONE method must
+# not poison a same-named, explicitly typed receiver in a DIFFERENT method. The
+# old file-wide table did exactly that, silently deleting true calls edges.
+
+
+def test_cross_method_name_reuse_does_not_poison(tmp_path):
+    """#2299 corpus: `var item = items[i]` (untypable) in RunIndexed must not
+    poison the explicitly typed `Item item` parameter in RunOne."""
+    calls, r = _calls(tmp_path, {
+        "Item.cs": (
+            "namespace Demo {\n"
+            "    public class Item { public void Handle() {} }\n"
+            "}\n"
+        ),
+        "Runner.cs": (
+            "using System.Collections.Generic;\n"
+            "namespace Demo {\n"
+            "    public class Runner {\n"
+            "        public void RunOne(Item item) { item.Handle(); }\n"
+            "        public void RunIndexed(List<Item> items, int i) {\n"
+            "            var item = items[i];\n"
+            "            item.Handle();\n"
+            "        }\n"
+            "    }\n"
+            "}\n"
+        ),
+    })
+    run_one = _find(r, ".RunOne()", "runner")
+    run_indexed = _find(r, ".RunIndexed()", "runner")
+    handle = _find(r, ".Handle()", "item")
+    assert (run_one, handle) in calls, \
+        "typed param receiver must resolve despite a same-named untypable local elsewhere"
+    edge = next(e for e in r["edges"] if e["relation"] == "calls"
+                and e["source"] == run_one and e["target"] == handle)
+    assert edge["confidence"] == "INFERRED"
+    assert (run_indexed, handle) not in calls, \
+        "the untypable local (`var item = items[i]`) stays unresolved — no guessed edge"
+
+
+def test_per_method_locals_resolve_independently(tmp_path):
+    """Same local name bound to DIFFERENT types in different methods: each
+    method resolves to its own binding (the file-wide table poisoned both)."""
+    calls, r = _calls(tmp_path, {
+        "S.cs": (
+            "public class HtmlWriter { public void Render() {} }\n"
+            "public class TextWriter { public void Render() {} }\n"
+            "public class Doc {\n"
+            "    public void AsHtml() { var w = new HtmlWriter(); w.Render(); }\n"
+            "    public void AsText() { var w = new TextWriter(); w.Render(); }\n"
+            "}\n"
+        )
+    })
+    as_html = _find(r, ".AsHtml()", "doc")
+    as_text = _find(r, ".AsText()", "doc")
+    html_render = _find(r, ".Render()", "htmlwriter")
+    text_render = _find(r, ".Render()", "textwriter")
+    assert (as_html, html_render) in calls
+    assert (as_text, text_render) in calls
+    assert (as_html, text_render) not in calls, "no cross-method binding leak"
+    assert (as_text, html_render) not in calls, "no cross-method binding leak"
+
+
+def test_same_method_shadow_still_poisons(tmp_path):
+    """Keep-the-bar: a SAME-method conflict (param `Server x` + local `Other x`)
+    still poisons the name — raw calls carry no lexical position, so neither
+    candidate may win."""
+    calls, r = _calls(tmp_path, {
+        "S.cs": (
+            "public class Server { public bool Run() => true; }\n"
+            "public class Other  { public bool Run() => false; }\n"
+            "public class Holder {\n"
+            "    public bool A(Server x) { Other x = new Other(); return x.Run(); }\n"
+            "}\n"
+        )
+    })
+    holder_a = _find(r, ".A()", "holder")
+    server_run = _find(r, ".Run()", "server")
+    other_run = _find(r, ".Run()", "other")
+    assert (holder_a, server_run) not in calls
+    assert (holder_a, other_run) not in calls
+
+
+def test_file_scoped_namespace_receiver_resolves(tmp_path):
+    """The C# 10 file-scoped namespace form (`namespace Demo;`) types receivers
+    the same as the braced form."""
+    calls, r = _calls(tmp_path, {
+        "Item.cs": (
+            "namespace Demo;\n"
+            "public class Item { public void Handle() {} }\n"
+        ),
+        "Runner.cs": (
+            "namespace Demo;\n"
+            "public class Runner {\n"
+            "    public void RunOne(Item item) { item.Handle(); }\n"
+            "}\n"
+        ),
+    })
+    run_one = _find(r, ".RunOne()", "runner")
+    handle = _find(r, ".Handle()", "item")
+    assert (run_one, handle) in calls
+
+
 def test_method_chained_off_new_expression_resolves(tmp_path):
     """#1770: a method invoked directly on a `new X(...)` object-creation
     expression (no intermediate variable) must still emit a calls edge to the
