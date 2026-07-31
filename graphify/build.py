@@ -1124,9 +1124,9 @@ def deduplicate_by_label(nodes: list[dict], edges: list[dict]) -> tuple[list[dic
     return deduped_nodes, deduped_edges
 
 
-def _load_existing_graph(graph_path: Path) -> "tuple[list, list, list] | None":
-    """Load (nodes, edges, hyperedges) from an existing graph.json for an
-    incremental merge, accepting both the ``links`` and ``edges`` spellings.
+def _load_existing_graph(graph_path: Path) -> "tuple[list, list, list, bool] | None":
+    """Load (nodes, edges, hyperedges, directed) from an existing graph.json for
+    an incremental merge, accepting both the ``links`` and ``edges`` spellings.
 
     Reads the JSON directly instead of going through node_link_graph().
     The latter rebuilds an undirected nx.Graph and then enumerating
@@ -1156,6 +1156,7 @@ def _load_existing_graph(graph_path: Path) -> "tuple[list, list, list] | None":
         list(data.get("nodes", [])),
         list(data.get(links_key, [])),
         list(data.get("hyperedges", [])),
+        bool(data.get("directed", False)),
     )
 
 
@@ -1193,7 +1194,7 @@ def merge_raw_extraction(
     loaded = _load_existing_graph(graph_path)
     if loaded is None:
         return new
-    existing_nodes, existing_edges, existing_hyperedges = loaded
+    existing_nodes, existing_edges, existing_hyperedges, _ = loaded
 
     _eff_root = (
         str(Path(root).resolve()) if root is not None
@@ -1260,7 +1261,7 @@ def build_merge(
     graph_path: str | Path | None = None,
     prune_sources: list[str] | None = None,
     *,
-    directed: bool = False,
+    directed: bool | None = None,
     dedup: bool = True,
     dedup_llm_backend: str | None = None,
     root: str | Path | None = None,
@@ -1273,17 +1274,25 @@ def build_merge(
     preserved unchanged; deleted files are removed via prune_sources.
     Safe to call repeatedly.
     root: if given, absolute source_file paths in new_chunks are made relative (#932).
+    directed: if None (default), honor the on-disk graph's own ``directed`` flag
+    when one exists, so an incremental merge can't silently flip a directed
+    graph undirected (#2342). Falls back to False when there is no existing
+    graph to inherit from. An explicit True/False always overrides the on-disk
+    flag.
     """
     graph_path = Path(graph_path if graph_path is not None else _default_graph_json())
     _loaded = _load_existing_graph(graph_path)
     if _loaded is not None:
-        existing_nodes, existing_edges, existing_hyperedges = _loaded
+        existing_nodes, existing_edges, existing_hyperedges, existing_directed = _loaded
         had_graph = True
     else:
         existing_nodes = []
         existing_edges = []
         existing_hyperedges = []
+        existing_directed = False
         had_graph = False
+    if directed is None:
+        directed = existing_directed if had_graph else False
 
     # Effective root for relativizing absolute source_file / prune paths back to the
     # stored relative source_file keys. When the caller passes root we use it;
