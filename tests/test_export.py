@@ -3,12 +3,23 @@ import math
 import re
 import tempfile
 from pathlib import Path
+import pytest
 from graphify.build import build_from_json
 from graphify.cluster import cluster
 from graphify import export
 from graphify.export import to_json, to_cypher, to_graphml, to_html, to_canvas, to_obsidian
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+# #2282 test infra: the production probe's real answer on THIS machine's temp
+# filesystem, computed once. tempfile.TemporaryDirectory() (used throughout this
+# file) honors $TMPDIR, so this stays consistent with whatever filesystem the
+# tests below actually write to - including a case-sensitive volume mounted via
+# TMPDIR for CI-parity verification. Tests must branch expectations on this
+# value rather than monkeypatching the probe to a result the real filesystem
+# contradicts.
+with tempfile.TemporaryDirectory() as _probe_tmp:
+    CASE_INSENSITIVE_FS = export._detect_case_insensitive_fs(Path(_probe_tmp))
 
 def make_graph():
     return build_from_json(json.loads((FIXTURES / "extraction.json").read_text()))
@@ -670,12 +681,22 @@ def test_to_obsidian_case_collision_across_runs_dedup_is_stable(monkeypatch, cap
 def test_to_obsidian_case_collision_same_node_label_change_keeps_note(monkeypatch, capsys):
     """#2282 fold-path repro: the SAME node id "a" changes label case between
     runs (run 1 "AGORA" -> manifest records AGORA.md, run 2 "agora" -> computes
-    agora.md). On a case-insensitive filesystem `target.exists()` is True for
-    agora.md, so without the `_own_key` fold the raw manifest lookup treats it
-    as someone else's pre-existing file, refuses the write, and the stale-prune
-    then deletes the node's only note. This is the primary #2282 fix, unlike the
-    sorted-dedup test above which never triggers it."""
-    monkeypatch.setattr(export, "_detect_case_insensitive_fs", lambda out: True)
+    agora.md). The probe is forced to the REAL filesystem's own answer (not an
+    opposite value) so the scenario stays coherent on both platforms:
+
+    - Case-insensitive (APFS/NTFS): `agora.md` and `AGORA.md` are the same
+      inode, `target.exists()` is True, and without the `_own_key` fold the raw
+      manifest lookup would treat it as someone else's pre-existing file and
+      the stale-prune would delete the node's only note. With the fold, run 2
+      just overwrites the same file in place: 1 note, no warning.
+    - Case-sensitive (ext4): `agora.md` is a distinct, not-yet-existing file,
+      so it's written fresh; `AGORA.md` is then unreferenced by this run and
+      gets removed by the stale-prune (a `pruned` message, not a
+      "pre-existing" skip). Also ends at 1 note.
+
+    Verified by running both branches (real APFS locally, and a real
+    case-sensitive APFS volume via hdiutil - see PR notes)."""
+    monkeypatch.setattr(export, "_detect_case_insensitive_fs", lambda out: CASE_INSENSITIVE_FS)
     G1 = build_from_json({
         "nodes": [{"id": "a", "label": "AGORA", "file_type": "document", "source_file": "a.md"}],
         "edges": [],
@@ -696,11 +717,14 @@ def test_to_obsidian_case_collision_same_node_label_change_keeps_note(monkeypatc
         assert 'source_file: "a.md"' in notes[0].read_text()
 
 
-def test_to_obsidian_user_file_still_skipped_and_warned(monkeypatch, capsys):
+def test_to_obsidian_user_file_still_skipped_and_warned(capsys):
     """The pre-existing-file protection must survive the case-fold fix: a
-    genuinely user-authored file with a colliding name is still refused and still
-    reported, even on a case-insensitive filesystem."""
-    monkeypatch.setattr(export, "_detect_case_insensitive_fs", lambda out: True)
+    genuinely user-authored file is still refused and still reported.
+
+    The user's file is given the EXACT name graphify computes for the node
+    ("Notes.md", not a case variant like "notes.md") so the collision is real
+    on every filesystem - no probe forcing needed, and no dependence on
+    whether the fs happens to fold case."""
     G = build_from_json({
         "nodes": [{"id": "a", "label": "Notes", "file_type": "document", "source_file": "a.md"}],
         "edges": [],
@@ -708,11 +732,11 @@ def test_to_obsidian_user_file_still_skipped_and_warned(monkeypatch, capsys):
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "obsidian"
         out.mkdir(parents=True)
-        (out / "notes.md").write_text("mine\n", encoding="utf-8")
+        (out / "Notes.md").write_text("mine\n", encoding="utf-8")
         to_obsidian(G, cluster(G), str(out))
         captured = capsys.readouterr()
         assert "skipped 1 pre-existing" in captured.err
-        assert (out / "notes.md").read_text().strip() == "mine"
+        assert (out / "Notes.md").read_text().strip() == "mine"
 
 
 def test_to_obsidian_filename_stability_across_runs():
@@ -727,21 +751,23 @@ def test_to_obsidian_filename_stability_across_runs():
         assert names1 == names2
 
 
-def test_to_obsidian_case_sensitive_fs_keeps_distinct_files(monkeypatch, capsys):
-    """On a case-sensitive filesystem (forced via the injectable probe), a file
-    that only differs by case from an owned entry must be treated as a distinct,
-    pre-existing user file - #2282's fold-only-when-needed requirement.
+@pytest.mark.skipif(CASE_INSENSITIVE_FS, reason="scenario only exists on a case-sensitive filesystem")
+def test_to_obsidian_case_sensitive_fs_keeps_distinct_files(capsys):
+    """On a genuinely case-sensitive filesystem, a user file that only differs
+    by case from the node's computed filename is a DISTINCT file, not a
+    collision - #2282's fold-only-when-needed requirement. graphify writes its
+    own "Notes.md" while the user's "notes.md" is left untouched, both existing
+    side by side, and no warning is emitted (there was never a real conflict).
 
-    This machine's real filesystem (APFS) is case-insensitive, so `out /
-    "Notes.md"` and `out / "notes.md"` are literally the same inode and
-    `.exists()` / content assertions on them can't distinguish "wrote" from
-    "skipped". Assert the observable ownership DECISION instead: with the probe
-    forced False, graphify's "Notes.md" collides with the user's "notes.md" on
-    disk, so the skip path must fire (warning emitted) and the user's content
-    must be untouched. Falsifiable: if the keying folded case unconditionally
-    (ignoring the forced-False probe), the skip/warning would not fire and this
-    would fail."""
-    monkeypatch.setattr(export, "_detect_case_insensitive_fs", lambda out: False)
+    No probe forcing: this uses the real, un-monkeypatched probe, which is why
+    it's gated to run only where that probe genuinely returns False. On APFS
+    (case-insensitive) this skips with a clear reason instead of faking the
+    scenario via an incoherent forced probe value.
+
+    Falsifiable: if the keying folded case unconditionally on a real
+    case-sensitive fs (ignoring what the probe reports), "notes.md" would be
+    treated as owned/colliding and either get skipped-with-warning or
+    overwritten, breaking one of the assertions below."""
     G = build_from_json({
         "nodes": [{"id": "a", "label": "Notes", "file_type": "document", "source_file": "a.md"}],
         "edges": [],
@@ -752,24 +778,28 @@ def test_to_obsidian_case_sensitive_fs_keeps_distinct_files(monkeypatch, capsys)
         (out / "notes.md").write_text("mine\n", encoding="utf-8")
         to_obsidian(G, cluster(G), str(out))
         captured = capsys.readouterr()
-        assert "skipped 1 pre-existing" in captured.err
+        assert "skipped" not in captured.err.lower(), captured.err
         assert (out / "notes.md").read_text().strip() == "mine"
+        assert (out / "Notes.md").exists()
 
 
+@pytest.mark.skipif(not CASE_INSENSITIVE_FS, reason="fold is only meaningful on a case-insensitive filesystem")
 def test_to_obsidian_own_key_folds_case_only_when_probe_says_insensitive(monkeypatch, capsys):
     """Direct(ish) unit test of the keying helper via to_obsidian's observable
     behavior (`_own_key` is a closure with no module-level access, per the task
     constraints - don't restructure production code to expose it).
 
-    Two runs write a node under two case-variant labels for two DIFFERENT node
-    ids sharing one vault. With the probe forced True, the second run's
-    filename collides case-insensitively with the first run's manifest entry
-    and must be folded into the SAME owned key, so both node ids can't
-    peacefully coexist under distinct keys - the second write is treated as an
-    update to a to-be-pruned entry, not as a "pre-existing" file: no warning.
-    With the probe forced False, the same two labels produce DIFFERENT keys, so
-    the collision is treated as a real, un-owned pre-existing file and the
-    write is skipped with a warning."""
+    Same node id "a", label changes case between two runs sharing one vault.
+    Real fs here is genuinely case-insensitive, so `dup.md`/`Dup.md` are one
+    inode and the write always succeeds with no warning regardless of the
+    probe - forcing the probe True is not a meaningful mutation here (it just
+    matches reality). The meaningful, falsifying mutation is forcing the probe
+    FALSE on this genuinely case-insensitive fs: `_own_key` then stops folding,
+    "dup.md" is computed as a different key than the manifest's "Dup.md", but
+    `target.exists()` is still True (same inode on disk) - so the write is
+    wrongly treated as hitting a pre-existing foreign file and gets skipped
+    with a warning. That's the bug #2282 fixed; this proves the fold is what
+    prevents it."""
     G1 = build_from_json({
         "nodes": [{"id": "a", "label": "Dup", "file_type": "document", "source_file": "a.md"}],
         "edges": [],
@@ -779,7 +809,7 @@ def test_to_obsidian_own_key_folds_case_only_when_probe_says_insensitive(monkeyp
         "edges": [],
     })
 
-    monkeypatch.setattr(export, "_detect_case_insensitive_fs", lambda out: True)
+    # Real probe (True on this fs): fold works, no bogus "pre-existing" warning.
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "obsidian"
         to_obsidian(G1, cluster(G1), str(out))
@@ -788,6 +818,9 @@ def test_to_obsidian_own_key_folds_case_only_when_probe_says_insensitive(monkeyp
         captured = capsys.readouterr()
         assert "pre-existing" not in captured.err.lower(), captured.err
 
+    # Falsifying mutation: force the probe to lie (False) about this genuinely
+    # case-insensitive fs. The fold is disabled, and the real fs's case-folding
+    # exposes the mismatch as a bogus skip-with-warning.
     monkeypatch.setattr(export, "_detect_case_insensitive_fs", lambda out: False)
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "obsidian"
@@ -796,6 +829,17 @@ def test_to_obsidian_own_key_folds_case_only_when_probe_says_insensitive(monkeyp
         to_obsidian(G2, cluster(G2), str(out))
         captured = capsys.readouterr()
         assert "skipped 1 pre-existing" in captured.err, captured.err
+
+
+# Mirror-image test on a genuinely case-sensitive filesystem: not meaningful.
+# There, "Dup.md" and "dup.md" are always two distinct real files regardless of
+# what the probe reports, so forcing the probe True (the only "interesting"
+# mutation) doesn't produce a clean skip/warn signal - it produces a second,
+# independently-written file living alongside the first (the same incoherent
+# scenario reasoned through in test_to_obsidian_case_collision_same_node_label_change_keeps_note's
+# docstring for the ext4 branch). There is no coherent forced-probe mutation on
+# a case-sensitive fs that isolates the fold behavior the way the insensitive-fs
+# test above does, so no fake mirror test is written here.
 
 
 def test_to_canvas_case_only_distinct_labels_get_distinct_files():
