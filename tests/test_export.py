@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 from graphify.build import build_from_json
 from graphify.cluster import cluster
+from graphify import export
 from graphify.export import to_json, to_cypher, to_graphml, to_html, to_canvas, to_obsidian
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -630,6 +631,171 @@ def test_to_obsidian_generated_suffix_doesnt_overwrite_literal():
         notes = [p for p in Path(tmp).rglob("*.md") if not p.name.startswith("_COMMUNITY")]
         assert len(notes) == 3, [p.name for p in notes]
         assert len({p.stem.lower() for p in notes}) == 3, [p.name for p in notes]
+
+
+# ── #2282: case-insensitive-filesystem manifest false positives ──
+
+def test_to_obsidian_case_collision_across_runs_dedup_is_stable(monkeypatch, capsys):
+    """#2282 dedup-order repro: run 1 has a single node "AGORA", run 2 adds a
+    case-colliding node "agora" ahead of it. Both nodes keep the same filename
+    run-to-run (dedup iterates by sorted node id), so this only pins the
+    `sorted(...)` dedup-stability fix, NOT the `_own_key` manifest fold - see
+    test_to_obsidian_case_collision_same_node_label_change_keeps_note for the
+    fold path. Must not warn about a pre-existing file, and must not delete the
+    note the first run legitimately owns."""
+    monkeypatch.setattr(export, "_detect_case_insensitive_fs", lambda out: True)
+    G1 = build_from_json({
+        "nodes": [{"id": "a", "label": "AGORA", "file_type": "document", "source_file": "a.md"}],
+        "edges": [],
+    })
+    G2 = build_from_json({
+        "nodes": [
+            {"id": "b", "label": "agora", "file_type": "document", "source_file": "b.md"},
+            {"id": "a", "label": "AGORA", "file_type": "document", "source_file": "a.md"},
+        ],
+        "edges": [],
+    })
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "obsidian"
+        to_obsidian(G1, cluster(G1), str(out))
+        capsys.readouterr()
+        to_obsidian(G2, cluster(G2), str(out))
+        captured = capsys.readouterr()
+        assert "skipped" not in captured.err.lower(), captured.err
+        notes = [p for p in out.glob("*.md") if not p.name.startswith("_COMMUNITY")]
+        stems = sorted(p.stem.lower() for p in notes)
+        assert stems == ["agora", "agora_1"], [p.name for p in notes]
+
+
+def test_to_obsidian_case_collision_same_node_label_change_keeps_note(monkeypatch, capsys):
+    """#2282 fold-path repro: the SAME node id "a" changes label case between
+    runs (run 1 "AGORA" -> manifest records AGORA.md, run 2 "agora" -> computes
+    agora.md). On a case-insensitive filesystem `target.exists()` is True for
+    agora.md, so without the `_own_key` fold the raw manifest lookup treats it
+    as someone else's pre-existing file, refuses the write, and the stale-prune
+    then deletes the node's only note. This is the primary #2282 fix, unlike the
+    sorted-dedup test above which never triggers it."""
+    monkeypatch.setattr(export, "_detect_case_insensitive_fs", lambda out: True)
+    G1 = build_from_json({
+        "nodes": [{"id": "a", "label": "AGORA", "file_type": "document", "source_file": "a.md"}],
+        "edges": [],
+    })
+    G2 = build_from_json({
+        "nodes": [{"id": "a", "label": "agora", "file_type": "document", "source_file": "a.md"}],
+        "edges": [],
+    })
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "obsidian"
+        to_obsidian(G1, cluster(G1), str(out))
+        capsys.readouterr()
+        to_obsidian(G2, cluster(G2), str(out))
+        captured = capsys.readouterr()
+        assert "pre-existing" not in captured.err.lower(), captured.err
+        notes = [p for p in out.glob("*.md") if not p.name.startswith("_COMMUNITY")]
+        assert len(notes) == 1, [p.name for p in notes]
+        assert 'source_file: "a.md"' in notes[0].read_text()
+
+
+def test_to_obsidian_user_file_still_skipped_and_warned(monkeypatch, capsys):
+    """The pre-existing-file protection must survive the case-fold fix: a
+    genuinely user-authored file with a colliding name is still refused and still
+    reported, even on a case-insensitive filesystem."""
+    monkeypatch.setattr(export, "_detect_case_insensitive_fs", lambda out: True)
+    G = build_from_json({
+        "nodes": [{"id": "a", "label": "Notes", "file_type": "document", "source_file": "a.md"}],
+        "edges": [],
+    })
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "obsidian"
+        out.mkdir(parents=True)
+        (out / "notes.md").write_text("mine\n", encoding="utf-8")
+        to_obsidian(G, cluster(G), str(out))
+        captured = capsys.readouterr()
+        assert "skipped 1 pre-existing" in captured.err
+        assert (out / "notes.md").read_text().strip() == "mine"
+
+
+def test_to_obsidian_filename_stability_across_runs():
+    """The same node set exported twice must produce the identical file set - no
+    `_1` suffix drift from run to run (#2282 cause 2)."""
+    G, communities = _two_node_graph()
+    with tempfile.TemporaryDirectory() as tmp1, tempfile.TemporaryDirectory() as tmp2:
+        to_obsidian(G, communities, tmp1, community_labels={0: "Backend"})
+        to_obsidian(G, communities, tmp2, community_labels={0: "Backend"})
+        names1 = sorted(p.name for p in Path(tmp1).glob("*.md"))
+        names2 = sorted(p.name for p in Path(tmp2).glob("*.md"))
+        assert names1 == names2
+
+
+def test_to_obsidian_case_sensitive_fs_keeps_distinct_files(monkeypatch, capsys):
+    """On a case-sensitive filesystem (forced via the injectable probe), a file
+    that only differs by case from an owned entry must be treated as a distinct,
+    pre-existing user file - #2282's fold-only-when-needed requirement.
+
+    This machine's real filesystem (APFS) is case-insensitive, so `out /
+    "Notes.md"` and `out / "notes.md"` are literally the same inode and
+    `.exists()` / content assertions on them can't distinguish "wrote" from
+    "skipped". Assert the observable ownership DECISION instead: with the probe
+    forced False, graphify's "Notes.md" collides with the user's "notes.md" on
+    disk, so the skip path must fire (warning emitted) and the user's content
+    must be untouched. Falsifiable: if the keying folded case unconditionally
+    (ignoring the forced-False probe), the skip/warning would not fire and this
+    would fail."""
+    monkeypatch.setattr(export, "_detect_case_insensitive_fs", lambda out: False)
+    G = build_from_json({
+        "nodes": [{"id": "a", "label": "Notes", "file_type": "document", "source_file": "a.md"}],
+        "edges": [],
+    })
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "obsidian"
+        out.mkdir(parents=True)
+        (out / "notes.md").write_text("mine\n", encoding="utf-8")
+        to_obsidian(G, cluster(G), str(out))
+        captured = capsys.readouterr()
+        assert "skipped 1 pre-existing" in captured.err
+        assert (out / "notes.md").read_text().strip() == "mine"
+
+
+def test_to_obsidian_own_key_folds_case_only_when_probe_says_insensitive(monkeypatch, capsys):
+    """Direct(ish) unit test of the keying helper via to_obsidian's observable
+    behavior (`_own_key` is a closure with no module-level access, per the task
+    constraints - don't restructure production code to expose it).
+
+    Two runs write a node under two case-variant labels for two DIFFERENT node
+    ids sharing one vault. With the probe forced True, the second run's
+    filename collides case-insensitively with the first run's manifest entry
+    and must be folded into the SAME owned key, so both node ids can't
+    peacefully coexist under distinct keys - the second write is treated as an
+    update to a to-be-pruned entry, not as a "pre-existing" file: no warning.
+    With the probe forced False, the same two labels produce DIFFERENT keys, so
+    the collision is treated as a real, un-owned pre-existing file and the
+    write is skipped with a warning."""
+    G1 = build_from_json({
+        "nodes": [{"id": "a", "label": "Dup", "file_type": "document", "source_file": "a.md"}],
+        "edges": [],
+    })
+    G2 = build_from_json({
+        "nodes": [{"id": "a", "label": "dup", "file_type": "document", "source_file": "a.md"}],
+        "edges": [],
+    })
+
+    monkeypatch.setattr(export, "_detect_case_insensitive_fs", lambda out: True)
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "obsidian"
+        to_obsidian(G1, cluster(G1), str(out))
+        capsys.readouterr()
+        to_obsidian(G2, cluster(G2), str(out))
+        captured = capsys.readouterr()
+        assert "pre-existing" not in captured.err.lower(), captured.err
+
+    monkeypatch.setattr(export, "_detect_case_insensitive_fs", lambda out: False)
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "obsidian"
+        to_obsidian(G1, cluster(G1), str(out))
+        capsys.readouterr()
+        to_obsidian(G2, cluster(G2), str(out))
+        captured = capsys.readouterr()
+        assert "skipped 1 pre-existing" in captured.err, captured.err
 
 
 def test_to_canvas_case_only_distinct_labels_get_distinct_files():
