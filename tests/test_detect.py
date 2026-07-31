@@ -2,7 +2,7 @@ import os
 import unicodedata
 import pytest
 from pathlib import Path
-from graphify.detect import classify_file, count_words, detect, detect_incremental, save_manifest, FileType, _looks_like_paper, _is_ignored, _load_graphifyignore, _is_sensitive
+from graphify.detect import classify_file, count_words, detect, detect_incremental, save_manifest, FileType, _looks_like_paper, _is_ignored, _load_graphifyignore, _is_sensitive, _is_noise_dir
 from graphify import detect as detect_mod
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -697,6 +697,78 @@ def test_detect_skips_visual_tests_dir(tmp_path):
     all_files = [f for files in result["files"].values() for f in files]
     assert not any("visual-tests" in f for f in all_files)
     assert any("app.py" in f for f in all_files)
+
+
+def test_detect_keeps_coverage_code_package(tmp_path):
+    """#2339: a real Python package named coverage/ is not a report dir and
+    must not be pruned by name alone."""
+    pkg = tmp_path / "coverage"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "impact.py").write_text("def measure(): pass")
+    (tmp_path / "main.py").write_text("import coverage")
+    result = detect(tmp_path)
+    all_files = [f for files in result["files"].values() for f in files]
+    assert any("impact.py" in f for f in all_files)
+    assert any("main.py" in f for f in all_files)
+
+
+def test_detect_skips_real_lcov_report(tmp_path):
+    """#2339: a genuine Istanbul/nyc report dir is still pruned on real evidence."""
+    cov = tmp_path / "coverage" / "lcov-report"
+    cov.mkdir(parents=True)
+    (cov / "index.html").write_text("<html>coverage report</html>")
+    (cov / "base.css").write_text("body {}")
+    (tmp_path / "main.py").write_text("def hello(): pass")
+    result = detect(tmp_path)
+    all_files = [f for files in result["files"].values() for f in files]
+    cov_prefix = str(tmp_path / "coverage")
+    assert not any(f.startswith(cov_prefix) for f in all_files)
+    assert any("main.py" in f for f in all_files)
+
+
+def test_detect_skips_real_lcov_info(tmp_path):
+    """#2339: a bare coverage/ dir holding lcov.info is still pruned."""
+    cov = tmp_path / "coverage"
+    cov.mkdir()
+    (cov / "lcov.info").write_text("SF:src/foo.js\nend_of_record")
+    (tmp_path / "main.py").write_text("def hello(): pass")
+    result = detect(tmp_path)
+    all_files = [f for files in result["files"].values() for f in files]
+    cov_prefix = str(tmp_path / "coverage")
+    assert not any(f.startswith(cov_prefix) for f in all_files)
+    assert any("main.py" in f for f in all_files)
+
+
+def test_detect_keeps_nested_coverage_code_package(tmp_path):
+    """#2339: name match at any depth — a nested real coverage/ package is kept."""
+    pkg = tmp_path / "src" / "pkg" / "coverage"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("")
+    (pkg / "impact.py").write_text("def measure(): pass")
+    (tmp_path / "main.py").write_text("import src.pkg.coverage")
+    result = detect(tmp_path)
+    all_files = [f for files in result["files"].values() for f in files]
+    assert any("impact.py" in f for f in all_files)
+
+
+def test_detect_skips_nested_real_lcov_report(tmp_path):
+    """#2339: name match at any depth — a nested real report dir is still pruned."""
+    cov = tmp_path / "src" / "pkg" / "coverage" / "lcov-report"
+    cov.mkdir(parents=True)
+    (cov / "index.html").write_text("<html>coverage report</html>")
+    (cov / "base.css").write_text("body {}")
+    (tmp_path / "main.py").write_text("def hello(): pass")
+    result = detect(tmp_path)
+    all_files = [f for files in result["files"].values() for f in files]
+    cov_prefix = str(tmp_path / "src" / "pkg" / "coverage")
+    assert not any(f.startswith(cov_prefix) for f in all_files)
+    assert any("main.py" in f for f in all_files)
+
+
+def test_is_noise_dir_coverage_no_parent_returns_false():
+    """#2339: with no parent to verify, coverage/ is kept, not pruned by name."""
+    assert _is_noise_dir("coverage", None) is False
 
 
 def test_detect_skips_snapshots_dir(tmp_path):

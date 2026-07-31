@@ -795,7 +795,8 @@ _SKIP_DIRS = {
     ".tox", ".nox", ".eggs", "*.egg-info",  # nox is tox's successor, same .nox/ venv shape (#1804)
     "graphify-out", GRAPHIFY_OUT_NAME,  # never treat own output as source input (#524); honour GRAPHIFY_OUT (#1423)
     # Coverage/test-artefact dirs — generated, never architecturally meaningful
-    "coverage", "lcov-report",              # Vitest/Istanbul/nyc HTML reports (#870)
+    # "coverage"/"lcov-report" are gated on real report markers below (#2339) — a
+    # real source package named coverage/ was silently pruned with no trace.
     "visual-tests", "visual-test",          # Playwright/visual-regression bundles (#869)
     "__snapshots__",                        # Jest/Vitest snapshot dir (unambiguous)
     "storybook-static",                     # Storybook production build output
@@ -848,6 +849,34 @@ def _has_venv_markers(d: "Path") -> bool:
     return False
 
 
+def _has_coverage_markers(d: "Path") -> bool:
+    """True only when *d* has actual coverage/test-report structure on disk.
+
+    "coverage"/"lcov-report" is a real source-directory name too (e.g. a
+    package named coverage/), so pruning it by name alone silently drops
+    legitimate source with no trace (#2339). Prune it only on real evidence:
+    known report files (lcov.info, coverage-final.json, clover.xml,
+    coverage.xml, cobertura.xml), an index.html alongside Istanbul/nyc's
+    static assets (base.css/prettify.js/block-navigation.js/sorter.js), any
+    *.gcov file, or a nested lcov-report/ subdir.
+    """
+    try:
+        for name in ("lcov.info", "coverage-final.json", "clover.xml", "coverage.xml", "cobertura.xml"):
+            if (d / name).is_file():
+                return True
+        if (d / "index.html").is_file():
+            for asset in ("base.css", "prettify.js", "block-navigation.js", "sorter.js"):
+                if (d / asset).is_file():
+                    return True
+        if next(d.glob("*.gcov"), None) is not None:
+            return True
+        if (d / "lcov-report").is_dir():
+            return True
+    except OSError:
+        pass
+    return False
+
+
 def _is_noise_dir(part: str, parent: "Path | None" = None) -> bool:
     """Return True if this directory name looks like a venv, cache, or dep dir."""
     if part in _SKIP_DIRS:
@@ -858,6 +887,13 @@ def _is_noise_dir(part: str, parent: "Path | None" = None) -> bool:
         if parent is None:
             return False  # cannot verify; keep a possibly-real code dir
         return _has_venv_markers(parent / part)
+    if part in ("coverage", "lcov-report"):
+        # Ambiguous: a real coverage report OR a real source dir (e.g. a
+        # package named coverage/). Prune only on actual report evidence,
+        # mirroring the "snapshots" gating (#1666/#2058/#2339).
+        if parent is None:
+            return False  # cannot verify; keep a possibly-real code dir
+        return _has_coverage_markers(parent / part)
     if part == "snapshots":
         # Prune only when it looks like an actual JS/Vitest snapshot dir.
         if parent is None:
