@@ -2,9 +2,10 @@
 
 Consumes the same view model as the vis.js renderer in graphify.exporters.html
 (nodes, edges, legend, hyperedges) and draws it with 3d-force-graph, a UMD
-bundle of three.js + d3-force-3d. The canvas renderer tops out around a few
-thousand nodes; WebGL pushes that an order of magnitude further, and the extra
-dimension gives dense communities somewhere to spread out.
+bundle of three.js + d3-force-3d. WebGL keeps drawing and camera interaction
+responsive while the extra dimension gives dense communities more room to
+separate. The existing node limit and community aggregation remain the safety
+boundary for expensive force layouts.
 
 Two deliberate differences from the 2D view, both downstream of one constraint:
 the bundle keeps its three.js instance private, so we cannot build custom

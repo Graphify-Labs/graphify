@@ -4,6 +4,11 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.45 (unreleased)
 
+- Feature: `--viz 3d` renders `graph.html` as a navigable, fully offline WebGL
+  view with search, community filters, hop-focused inspection, bounded labels,
+  and community aggregation above the visualization node limit. The exact
+  3d-force-graph browser bundle is packaged and embedded with its license and
+  integrity digest; the default 2D renderer remains unchanged.
 - Fix: `graphify install <platform>` now advances the `.graphify_version` stamp only for the platform it actually (re)writes, instead of stamping every installed platform as current; a platform whose skill content was left untouched keeps its old stamp so its staleness warning stays truthful (#2694, thanks @ousamabenyounes). This completes #2694 (the CLAUDE_CONFIG_DIR half shipped in 0.9.44).
 - Fix: an incremental rebuild no longer collapses the whole graph when the `.graphify_root` marker records a subfolder while stored `source_file` paths are relative to the repo root; the marker is validated against the stored paths before it is trusted as their anchor, so a mismatched marker can't make every unchanged source look deleted (#2603, thanks @catpotd). A genuinely deleted source is still evicted, and incremental ids stay identical to a cold build.
 - Fix: a Go file that declares both an exported and an unexported symbol differing only by case (e.g. `Run` and `run`, which are distinct in Go's case-sensitive visibility rules) no longer collapses them onto one node id and drops one; the exported symbol keeps its stable id and the unexported one is disambiguated, so an intra-file call to the unexported symbol resolves locally instead of phantoming to another package (#2779, thanks @catpotd). Only the Go extractor's id assignment is affected; the shared id normalization is unchanged, so no other language's ids move.
@@ -82,9 +87,6 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: `graph.html`'s document title no longer embeds the generator's absolute host path (#2598, thanks @michaelxer); it keeps the path from the output-dir marker onward.
 
 ## 0.9.39 (2026-08-10)
-
-- Feature: `--viz 3d` renders `graph.html` as a navigable WebGL view. The default
-  2D renderer remains unchanged.
 
 - Fix: `affected` now traverses a dynamic `import('…')` made inside a function or at module scope (#2584, thanks @phudayyy). The 0.9.38 dedupe keyed only on the target, so an in-function dynamic import (whose symbol-level edge is anchored on the enclosing function) suppressed the file-level edge `affected` follows; the dedupe now keys on the importing file, emitting one file-level `dynamic_import` edge per file/target while keeping the call-site edge.
 - Fix: a Python member call on an untyped receiver (`x.get(...)`) no longer binds by name alone to a same-named module-level function, fabricating a false high-confidence `calls` edge and a god node (#2417, #2586, thanks @EZZEASY). Such a call is now resolved only with receiver-type, import, or `self`/`cls`/`super` evidence, matching the TypeScript fix from 0.9.37; `super().method()` still resolves.
