@@ -145,11 +145,21 @@ const CHARGE_STRENGTH = -75;
 const CHARGE_MAX_DISTANCE = 350;
 const LINK_DISTANCE = 34;
 const GRAVITY_STRENGTH = 0.045;
-// Most of the simulation runs before the first frame so the graph is drawn
-// already spread out, and so the one-shot framing below measures a layout
-// that is essentially final. The remaining cooldown ticks barely move it.
-const WARMUP_TICKS = 150;
+// Most of the simulation runs before the first frame so the graph is already
+// spread out. Large graphs need fewer blocking ticks: the bounded visible
+// cooldown continues settling them without holding the first frame for tens of
+// seconds.
+function warmupTicks(nodeCount) {
+  if (nodeCount > 2500) return 50;
+  if (nodeCount > 1000) return 90;
+  return 150;
+}
+const WARMUP_TICKS = warmupTicks(RAW_NODES.length);
 const COOLDOWN_TICKS = 60;
+// Arrow cones add a geometry object per directed edge. Preserve direction on
+// normal graphs and remove that extra draw/allocation cost at high density;
+// relation and confidence remain available in hover/inspection data.
+const DRAW_EDGE_ARROWS = RAW_EDGES.length <= 4000;
 // How far the camera parks from a node it flies to. Close enough to read the
 // neighbourhood, far enough to keep the surrounding context in frame.
 const FLY_DISTANCE = 260;
@@ -279,7 +289,7 @@ const graph = ForceGraph3D({ controlType: 'orbit' })(container)
   .linkColor(l => l.kind === 'hyper' ? HYPER_COLOR : (l.weak ? '#4a5578' : '#7f8cb0'))
   .linkOpacity(0.32)
   .linkWidth(l => l.weak ? 0.4 : 1)
-  .linkDirectionalArrowLength(l => l.kind === 'hyper' ? 0 : 3.2)
+  .linkDirectionalArrowLength(l => !DRAW_EDGE_ARROWS || l.kind === 'hyper' ? 0 : 3.2)
   .linkDirectionalArrowRelPos(1)
   .onNodeClick(n => selectNode(n.id, true))
   .onBackgroundClick(() => clearSelection())

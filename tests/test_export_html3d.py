@@ -181,6 +181,15 @@ def test_viz_3d_starts_pre_expanded_and_bounded():
     assert "charge.distanceMax(CHARGE_MAX_DISTANCE)" in content
 
 
+def test_viz_3d_reduces_startup_work_for_large_graphs():
+    content = render("3d")
+    assert "function warmupTicks(nodeCount)" in content
+    assert "const WARMUP_TICKS = warmupTicks(RAW_NODES.length);" in content
+    assert "if (nodeCount > 2500) return 50;" in content
+    assert "if (nodeCount > 1000) return 90;" in content
+    assert "const DRAW_EDGE_ARROWS = RAW_EDGES.length <= 4000;" in content
+
+
 def test_viz_3d_layout_constants_stay_in_their_working_range():
     """These four numbers were tuned against a 1.6k-node graph in a browser, and
     each has a failure mode outside its range: gravity above ~0.08 packs the
@@ -192,7 +201,6 @@ def test_viz_3d_layout_constants_stay_in_their_working_range():
         "GRAVITY_STRENGTH",
         "CHARGE_MAX_DISTANCE",
         "CHARGE_STRENGTH",
-        "WARMUP_TICKS",
     ):
         match = re.search(rf"const {name} = (-?[\d.]+);", content)
         assert match is not None
@@ -200,7 +208,6 @@ def test_viz_3d_layout_constants_stay_in_their_working_range():
     assert 0 < values["GRAVITY_STRENGTH"] <= 0.08
     assert 200 <= values["CHARGE_MAX_DISTANCE"] <= 450
     assert values["CHARGE_STRENGTH"] < 0
-    assert 0 < values["WARMUP_TICKS"] <= 200
 
 
 def test_viz_3d_frames_once_at_startup_without_zoom_to_fit():
