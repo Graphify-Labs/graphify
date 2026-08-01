@@ -634,17 +634,24 @@ def test_always_on_roundtrip_is_byte_faithful():
         "When the user types `/graphify`, use the installed graphify skill or instructions "
         "before doing anything else."
     )
-    # The sanctioned-edit registry holds exactly this single old->new substitution.
+    # The sanctioned-edit registry holds exactly these substitutions: the #1530
+    # host-generic rewrite and the temporal session-memory hand-off bullet.
     assert gen.ALWAYS_ON_SANCTIONED_EDITS["_AGENTS_MD_SECTION"] == (
         (old_instruction, new_instruction),
+        (gen._BULLET_TAIL, gen._BULLET_TAIL + gen._TEMPORAL_BULLET),
     )
     baseline_agents = gen._always_on_constants(gen.ALWAYS_ON_BASELINE_REF)["_AGENTS_MD_SECTION"]
-    # The ONLY divergence from the frozen baseline is the sanctioned sentence —
+    # The ONLY divergences from the frozen baseline are the sanctioned edits —
     # any other byte drift would have surfaced as a problem above.
     assert old_instruction in baseline_agents
-    assert baseline_agents.replace(old_instruction, new_instruction) == rendered_agents
+    assert gen._BULLET_TAIL in baseline_agents
+    expected_agents = baseline_agents.replace(old_instruction, new_instruction).replace(
+        gen._BULLET_TAIL, gen._BULLET_TAIL + gen._TEMPORAL_BULLET
+    )
+    assert expected_agents == rendered_agents
     assert "`skill` tool" not in rendered_agents
     assert 'skill: "graphify"' not in rendered_agents
+    assert "memory_recall" in rendered_agents
 
 
 def test_extracted_constants_equal_the_packaged_always_on_files():

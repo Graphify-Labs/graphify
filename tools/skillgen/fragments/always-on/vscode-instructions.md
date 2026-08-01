@@ -14,4 +14,8 @@ only for broad architecture review or when query/path/explain do not surface eno
 source files when (a) modifying/debugging specific code, (b) the graph lacks the needed detail, or
 (c) the graph is missing or stale.
 
+The graph maps what the code is, not what happened. For session-history questions ("why was this
+added", "what did we decide", "what changed recently"), use session memory tools such as
+`memory_recall` from agentmemory if connected; the graph stores no session history.
+
 Type `/graphify` in Copilot Chat to build or update the graph.

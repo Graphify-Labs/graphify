@@ -10,3 +10,4 @@ Rules:
 - If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
 - Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
 - After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
+- The graph maps what the code is, not what happened. For session-history questions (why a change was made, what was decided or tried before, what changed recently), use session memory tools such as `memory_recall` from agentmemory if connected; the graph stores no session history.

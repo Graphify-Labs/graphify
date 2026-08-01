@@ -1030,6 +1030,37 @@ def _cut_lines_to_budget(lines: list[str], token_budget: int, narrow_hint: str) 
     )
 
 
+# Temporal questions ask about session history (why a change was made, what
+# was decided or tried, what changed recently), which the graph does not
+# store: extraction is structural AST analysis with no record of past
+# sessions. Detected with a deterministic regex so the note can never fire on
+# structural questions, and appended as a one-line capability note so the
+# agent (or user) knows this is a hand-off, not a graph gap.
+_TEMPORAL_QUESTION_RE = re.compile(
+    r"\b("
+    r"why (was|were|did|do we|is (this|that|it) (here|there))"
+    r"|what (changed|did (we|i) (do|try|decide|change))"
+    r"|when (was|did|were)"
+    r"|who (added|wrote|changed|decided|introduced|removed)"
+    r"|(last|previous) (week|month|session|time)"
+    r"|history of"
+    r"|decisions? (behind|about|on|for)"
+    r"|what was (tried|decided|discussed)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_TEMPORAL_HANDOFF_NOTE = (
+    "\n\nNote: the graph is structural and stores no session history. "
+    "Why/when/who/what-changed questions are answered by a session memory "
+    "layer such as agentmemory (memory_recall), if one is connected."
+)
+
+
+def _temporal_handoff_note(question: str) -> str:
+    return _TEMPORAL_HANDOFF_NOTE if _TEMPORAL_QUESTION_RE.search(question) else ""
+
+
 def _query_graph_text(
     G: nx.Graph,
     question: str,
@@ -1049,7 +1080,7 @@ def _query_graph_text(
     qs = _score_query(G, terms, collect_per_term_seeds=True)
     start_nodes = _pick_seeds(qs.ranked, G=G, best_seed_by_term=qs.best_seed_by_term)
     if not start_nodes:
-        return "No matching nodes found."
+        return "No matching nodes found." + _temporal_handoff_note(question)
     resolved_filters, filter_source = _resolve_context_filters(question, context_filters)
     traversal_graph = _filter_graph_by_context(G, resolved_filters)
     nodes, edges = _dfs(traversal_graph, start_nodes, depth) if mode == "dfs" else _bfs(traversal_graph, start_nodes, depth)
@@ -1064,7 +1095,11 @@ def _query_graph_text(
     # Pass the seeds so the queried symbol renders first and survives truncation
     # (#BUG2): a branch merge had silently dropped this argument, leaving the
     # seed-first ordering as dead code.
-    return header + _subgraph_to_text(traversal_graph, nodes, edges, token_budget, seeds=start_nodes)
+    return (
+        header
+        + _subgraph_to_text(traversal_graph, nodes, edges, token_budget, seeds=start_nodes)
+        + _temporal_handoff_note(question)
+    )
 
 
 def _find_node_tiers(
