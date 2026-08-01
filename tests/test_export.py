@@ -3,6 +3,9 @@ import math
 import re
 import tempfile
 from pathlib import Path
+
+import pytest
+
 from graphify.build import build_from_json
 from graphify.cluster import cluster
 from graphify.export import to_json, to_cypher, to_graphml, to_html, to_canvas, to_obsidian
@@ -314,6 +317,73 @@ def test_to_html_unannotated_identical_to_pre_feature():
         cb = b.read_text().replace("b.html", "X.html")
     assert ca == cb
     assert "learning_status" not in ca
+
+
+# ── Optional xy renderer (#2361) ─────────────────────────────────────────────
+
+def test_to_html_unknown_renderer_rejected():
+    """An unknown renderer must be rejected up front rather than silently
+    falling back to the vis path."""
+    G = make_graph()
+    communities = cluster(G)
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "graph.html"
+        with pytest.raises(ValueError, match="renderer"):
+            to_html(G, communities, str(out), renderer="bogus")
+
+
+def test_to_html_xy_missing_dep_raises_install_hint(monkeypatch):
+    """renderer='xy' without xy installed must raise ImportError carrying the
+    install hint (mirrors the matplotlib optional-dep pattern), never a bare
+    ModuleNotFoundError or traceback."""
+    import sys
+    monkeypatch.setitem(sys.modules, "xy", None)
+    G = make_graph()
+    communities = cluster(G)
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "graph.html"
+        with pytest.raises(ImportError, match=r"graphifyy\[xy\]"):
+            to_html(G, communities, str(out), renderer="xy")
+
+
+def test_to_html_xy_renderer_writes_standalone_webgl_viewer():
+    """renderer='xy' emits a self-contained WebGL viewer: no CDN script tag,
+    inline engine + render call, graphify sidebar and click/hover wiring."""
+    pytest.importorskip("xy")
+    G = make_graph()
+    communities = cluster(G)
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "graph.html"
+        to_html(G, communities, str(out), renderer="xy")
+        content = out.read_text(encoding="utf-8")
+    assert "renderStandalone" in content
+    assert 'id="chart"' in content
+    assert "RAW_NODES" in content
+    assert "RAW_EDGES" in content
+    assert "xy:click" in content
+    assert "unpkg.com" not in content   # no CDN dependency
+    assert "vis-network" not in content
+    assert "<div id=\"sidebar\">" in content
+    assert "Graph has" not in content   # no cap error on the small fixture
+
+
+def test_to_html_xy_renders_full_graph_past_vis_cap():
+    """#2361: where the vis path raises ValueError past MAX_NODES_FOR_VIZ,
+    the xy renderer must embed and draw the full node-level graph."""
+    pytest.importorskip("xy")
+    import networkx as nx
+    G = nx.Graph()
+    for i in range(6000):
+        G.add_node(f"n{i}", label=f"n{i}", community=0)
+    G.add_edge("n0", "n1")
+    communities = {0: [f"n{i}" for i in range(6000)]}
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "graph.html"
+        to_html(G, communities, str(out), renderer="xy")
+        content = out.read_text(encoding="utf-8")
+    m = re.search(r"const RAW_NODES = (\[.*?\]);", content, re.DOTALL)
+    assert m, "RAW_NODES not found"
+    assert len(json.loads(m.group(1).replace("<\\/", "</"))) == 6000
 
 
 def test_to_canvas_file_paths_relative_to_vault():

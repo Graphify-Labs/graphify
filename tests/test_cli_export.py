@@ -83,6 +83,27 @@ def test_export_html_error_without_graph(tmp_path):
     assert r.returncode != 0
 
 
+def test_export_html_invalid_renderer_rejected(tmp_path):
+    _make_graph(tmp_path)
+    r = _run(["export", "html", "--renderer", "bogus"], tmp_path)
+    assert r.returncode != 0
+    assert "renderer" in r.stderr.lower()
+
+
+def test_export_html_renderer_xy(tmp_path):
+    """--renderer xy either renders the WebGL viewer (when xy is installed) or
+    fails gracefully with the install hint and a clean exit — never a traceback."""
+    _make_graph(tmp_path)
+    r = _run(["export", "html", "--renderer", "xy"], tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert "Traceback" not in (r.stdout + r.stderr)
+    html = tmp_path / "graphify-out" / "graph.html"
+    if html.exists():
+        assert "renderStandalone" in html.read_text(encoding="utf-8")
+    else:
+        assert "xy not installed" in r.stdout
+
+
 # ── graphify export obsidian ─────────────────────────────────────────────────
 
 def test_export_obsidian_creates_vault(tmp_path):

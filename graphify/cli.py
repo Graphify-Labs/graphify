@@ -1585,6 +1585,7 @@ def dispatch_command(cmd: str) -> None:
         no_label = "--no-label" in sys.argv
         missing_only = "--missing-only" in sys.argv
         co_timing = "--timing" in sys.argv
+        renderer = "vis"
         _backend_arg = next((a for a in sys.argv if a.startswith("--backend=")), None)
         label_backend = _backend_arg.split("=", 1)[1] if _backend_arg else None
         _model_arg = next((a for a in sys.argv if a.startswith("--model=")), None)
@@ -1627,6 +1628,10 @@ def dispatch_command(cmd: str) -> None:
                 label_batch_size = int(args[i_arg + 1]); i_arg += 2
             elif a.startswith("--batch-size="):
                 label_batch_size = int(a.split("=", 1)[1]); i_arg += 1
+            elif a == "--renderer" and i_arg + 1 < len(args):
+                renderer = args[i_arg + 1]; i_arg += 2
+            elif a.startswith("--renderer="):
+                renderer = a.split("=", 1)[1]; i_arg += 1
             elif a in ("--no-viz", "--missing-only") or a.startswith("--min-community-size="):
                 i_arg += 1
             elif a.startswith("--"):
@@ -1884,15 +1889,20 @@ def dispatch_command(cmd: str) -> None:
             stages.mark("export"); stages.total()
             print(f"Done - {len(communities)} communities. GRAPH_REPORT.md and graph.json updated (--no-viz; graph.html removed).")
         else:
+            if renderer not in ("vis", "xy"):
+                print(f"error: unknown --renderer {renderer!r} (expected 'vis' or 'xy')", file=sys.stderr)
+                sys.exit(1)
             try:
                 # Over-cap fallback (#1019): force the community-aggregation
                 # path so an oversized graph still renders a usable graph.html.
-                _node_limit = 5000 if _over_cap else None
+                # The xy renderer opts out — it draws full node-level detail
+                # past the cap (issue #2361).
+                _node_limit = None if renderer == "xy" else (5000 if _over_cap else None)
                 to_html(G, communities, str(html_target), community_labels=labels or None,
-                        node_limit=_node_limit)
+                        node_limit=_node_limit, renderer=renderer)
                 stages.mark("export"); stages.total()
                 print(f"Done - {len(communities)} communities. GRAPH_REPORT.md, graph.json and graph.html updated.")
-            except ValueError as viz_err:
+            except (ValueError, ImportError) as viz_err:
                 if html_target.exists():
                     html_target.unlink()
                 print(f"Skipped graph.html: {viz_err}")
@@ -2218,7 +2228,7 @@ def dispatch_command(cmd: str) -> None:
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
         if subcmd not in ("html", "callflow-html", "obsidian", "wiki", "svg", "graphml", "neo4j", "falkordb"):
             print("Usage: graphify export <format>", file=sys.stderr)
-            print("  html      [--graph PATH] [--labels PATH] [--node-limit N] [--no-viz]", file=sys.stderr)
+            print("  html      [--graph PATH] [--labels PATH] [--node-limit N] [--no-viz] [--renderer vis|xy]", file=sys.stderr)
             print("  callflow-html [GRAPH|DIR] [--graph PATH] [--labels PATH] [--report PATH] [--sections PATH] [--output HTML]", file=sys.stderr)
             print("            [--lang auto|zh-CN|en] [--max-sections N] [--diagram-scale N]", file=sys.stderr)
             print("  obsidian  [--graph PATH] [--labels PATH] [--dir PATH]", file=sys.stderr)
@@ -2249,6 +2259,7 @@ def dispatch_command(cmd: str) -> None:
         analysis_path = Path(_GRAPHIFY_OUT) / ".graphify_analysis.json"
         node_limit = 5000
         no_viz = False
+        renderer = "vis"
         obsidian_dir = Path(_GRAPHIFY_OUT) / "obsidian"
         # Shared push-connection settings for the graph-database sinks (neo4j,
         # falkordb), parsed from the generic --push/--user/--password flags below.
@@ -2309,6 +2320,10 @@ def dispatch_command(cmd: str) -> None:
                 node_limit = int(args[i + 1]); i += 2
             elif a == "--no-viz":
                 no_viz = True; i += 1
+            elif a == "--renderer" and i + 1 < len(args):
+                renderer = args[i + 1]; i += 2
+            elif a.startswith("--renderer="):
+                renderer = a.split("=", 1)[1]; i += 1
             elif a == "--dir" and i + 1 < len(args):
                 obsidian_dir = Path(args[i + 1]); i += 2
             elif a == "--push" and i + 1 < len(args):
@@ -2444,15 +2459,27 @@ def dispatch_command(cmd: str) -> None:
                     html_target.unlink()
                 print("--no-viz: skipped graph.html")
             else:
+                if renderer not in ("vis", "xy"):
+                    print(f"error: unknown --renderer {renderer!r} (expected 'vis' or 'xy')", file=sys.stderr)
+                    sys.exit(1)
                 # Over-cap fallback (#1019): force the community-aggregation
                 # path so the oversized graph still renders a usable artifact.
-                _effective_node_limit = 5000 if _over_cap else node_limit
-                _to_html(G, communities, str(out_dir / "graph.html"),
-                         community_labels=labels or None, node_limit=_effective_node_limit)
-                if G.number_of_nodes() <= _effective_node_limit:
-                    print(f"graph.html written - open in any browser, no server needed")
-                if _over_cap:
-                    sys.exit(0)
+                # The xy renderer opts out — it draws full node-level detail
+                # past the cap (issue #2361).
+                _effective_node_limit = (5000 if _over_cap else node_limit) if renderer == "vis" else None
+                try:
+                    _to_html(G, communities, str(out_dir / "graph.html"),
+                             community_labels=labels or None, node_limit=_effective_node_limit,
+                             renderer=renderer)
+                except ImportError as _renderer_err:
+                    print(f"Skipped graph.html: {_renderer_err}")
+                    if _over_cap:
+                        sys.exit(0)
+                else:
+                    if renderer == "xy" or G.number_of_nodes() <= _effective_node_limit:
+                        print(f"graph.html written - open in any browser, no server needed")
+                    if _over_cap:
+                        sys.exit(0)
 
         elif subcmd == "obsidian":
             from graphify.export import to_obsidian as _to_obsidian, to_canvas as _to_canvas

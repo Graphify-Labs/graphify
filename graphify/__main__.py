@@ -541,6 +541,8 @@ def _run_cli() -> None:
         print("    --no-cluster            skip clustering, write raw extraction only")
         print("  cluster-only <path>     rerun clustering on an existing graph.json and regenerate report")
         print("    --no-viz                skip graph.html generation (useful for >5000 node graphs / CI)")
+        print("    --renderer vis|xy       HTML renderer for graph.html; xy = optional WebGL renderer that")
+        print("                            draws full node-level detail past the 5000-node cap (needs Python >= 3.11)")
         print("    --graph <path>          path to graph.json (default <path>/graphify-out/graph.json)")
         print("    --no-label              keep 'Community N' placeholders (skip LLM community naming)")
         print("    --backend=<name>        backend to use for community naming (default: auto-detect)")
