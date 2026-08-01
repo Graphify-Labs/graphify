@@ -3840,10 +3840,12 @@ def _extract_generic(
         for body_id, (method_node, class_nid) in csharp_method_scopes.items()
     }
 
-    # #1972: during the top-level root walk, emit ONLY direct `calls` edges.
-    # Module-level indirect dispatch already has a dedicated pass below with
-    # correct module-scope shadow filtering, so a root-walk emission would be a
-    # duplicate carrying wrong (empty) shadow context.
+    # #1972: during the top-level root walk, suppress module-scope INDIRECT
+    # dispatch. Module-level indirect dispatch already has a dedicated pass below
+    # with correct module-scope shadow filtering, so a root-walk emission would be
+    # a duplicate carrying wrong (empty) shadow context. This is narrower than
+    # "only `calls` edges": relations walk_calls emits by other routes (e.g. a
+    # JS/TS dynamic `import()` producing `imports_from`) are NOT affected.
     _toplevel_calls_only = False
 
     def _emit_indirect_by_name(ident_name: str, loc_node, scope_nid: str,
