@@ -562,6 +562,43 @@ class TestDart(unittest.TestCase):
         )
         self.assertIsNotNone(impl_obj)
 
+    def test_local_function_calls_include_block_and_arrow_callers(self):
+        code_content = textwrap.dedent("""
+        int helper(int value) => value * 2;
+
+        int blockCaller() {
+          final decoy = 'helper(0)';
+          // helper(1) must not create a second edge.
+          return helper(21);
+        }
+
+        int arrowCaller() => helper(22);
+        int externalCaller() => externalHelper(23);
+        """)
+        file_path = self.temp_path / "local_calls.dart"
+        file_path.write_text(code_content, encoding="utf-8")
+
+        result = extract_dart(file_path)
+        stem = _file_stem(file_path)
+        helper_id = _make_id(stem, "helper")
+        call_edges = [
+            edge
+            for edge in result["edges"]
+            if edge["relation"] == "calls" and edge["target"] == helper_id
+        ]
+
+        self.assertEqual(
+            {edge["source"] for edge in call_edges},
+            {_make_id(stem, "blockCaller"), _make_id(stem, "arrowCaller")},
+        )
+        self.assertEqual(len(call_edges), 2)
+        self.assertFalse(
+            any(
+                edge["relation"] == "calls" and edge["target"] == _make_id(stem, "externalHelper")
+                for edge in result["edges"]
+            )
+        )
+
     def test_roadmap_bug_fixes(self):
         """Test all 5 roadmap bug fixes (Bug A, B, C, D, E)."""
         # Create parent and part child files to test Bug D (Part of file redirect)

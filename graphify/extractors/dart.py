@@ -30,6 +30,14 @@ def extract_dart(path: Path) -> dict:
         return token
     src_clean = comment_string_pattern.sub(_comment_replace, src)
 
+    # Keep string lengths/newlines stable so declaration offsets can be reused
+    # while ordinary-call scanning cannot mistake string contents for code.
+    def _mask_string(match: re.Match) -> str:
+        token = match.group(0)
+        return "".join("\n" if char == "\n" else " " for char in token)
+
+    call_scan_src = comment_string_pattern.sub(_mask_string, src_clean)
+
     stem = _file_stem(path)
     file_nid = _make_id(str(path))
 
@@ -430,12 +438,25 @@ def extract_dart(path: Path) -> dict:
     # 5. Top-level and member functions/methods (supports typed/generic/record return types and Riverpod/Bloc references)
     # Restrict indentation to 0-2 spaces to avoid matching nested local functions or methods inside multiline switch statements
     method_pattern = r"^\s{0,2}(?:factory\s+|static\s+|async\s+|external\s+|abstract\s+)?(?:\([^)]+\)|[a-zA-Z0-9_<>,.?]+)(?:\s+[a-zA-Z0-9_<>,.?]+){0,3}\s+(\w+(?:\.\w+)?)\s*\("
-    for m in re.finditer(method_pattern, src_clean, re.MULTILINE):
-        raw_name = m.group(1)
-        name = raw_name.split(".")[-1]
-        if name in {"if", "for", "while", "switch", "catch", "return", "void", "dynamic", "final", "const", "get", "set"}:
-            continue
-        if re.match(r"^[A-Z]", name):
+    method_matches = list(re.finditer(method_pattern, src_clean, re.MULTILINE))
+    excluded_function_names = {
+        "if", "for", "while", "switch", "catch", "return", "void",
+        "dynamic", "final", "const", "get", "set",
+    }
+
+    def _function_name(match: re.Match) -> str | None:
+        name = match.group(1).split(".")[-1]
+        if name in excluded_function_names or re.match(r"^[A-Z]", name):
+            return None
+        return name
+
+    local_function_names = {
+        name for match in method_matches if (name := _function_name(match)) is not None
+    }
+
+    for m in method_matches:
+        name = _function_name(m)
+        if name is None:
             continue
         nid = _make_id(stem, name)
         add_node(nid, name)
@@ -453,9 +474,11 @@ def extract_dart(path: Path) -> dict:
         if has_body and arrow_pos != -1 and arrow_pos < brace_pos:
             has_body = False
 
+        call_body = ""
         if has_body:
             end_pos = _find_matching_brace(src_clean, start_idx)
             func_body = src_clean[brace_pos:end_pos]
+            call_body = call_scan_src[brace_pos:end_pos]
 
             # Extract Riverpod provider references: ref.watch(provider)
             for rm in re.finditer(r"\bref\.(?:watch|read|listen)\s*\(\s*(\w+)\b", func_body):
@@ -498,6 +521,23 @@ def extract_dart(path: Path) -> dict:
                 route_nid = _make_id(route_class)
                 add_node(route_nid, route_class, source_file=None)
                 add_edge(nid, route_nid, "navigates", context="route_object")
+
+        elif arrow_pos != -1 and semi_pos != -1 and arrow_pos < semi_pos:
+            call_body = call_scan_src[arrow_pos + 2:semi_pos]
+
+        # Ordinary calls to functions declared in this file. Restricting targets
+        # to local declarations avoids fabricating edges for builtins, imported
+        # APIs, and methods whose receiver type this regex extractor cannot know.
+        for call_match in re.finditer(
+            r"(?<![.\w])([a-zA-Z_]\w*)\s*(?:<[^(){};]+>)?\s*\(",
+            call_body,
+        ):
+            callee_name = call_match.group(1)
+            if callee_name not in local_function_names:
+                continue
+            callee_nid = _make_id(stem, callee_name)
+            add_node(callee_nid, callee_name)
+            add_edge(nid, callee_nid, "calls", context="local_function_call")
 
     # 6. Imports and Exports
     for m in re.finditer(r"""^\s*import\s+['"]([^'"]+)['"]""", src_clean, re.MULTILINE):
