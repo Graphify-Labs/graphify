@@ -457,9 +457,10 @@ kimi mcp add --transport stdio graphify -- python -m graphify.serve graphify-out
 # or serve over HTTP so a whole team points at one URL (no local graphify needed):
 python -m graphify.serve graphify-out/graph.json --transport http --port 8080
 python -m graphify.serve graphify-out/graph.json --transport http --host 0.0.0.0 --api-key "$SECRET"
+python -m graphify.serve merged/graph.json --transport http --projects-index projects.json
 ```
 
-The MCP server gives your assistant structured access: `query_graph`, `get_node`, `get_neighbors`, `shortest_path`, `list_prs`, `get_pr_impact`, `triage_prs`.
+The MCP server gives your assistant structured access: `query_graph`, `get_node`, `get_neighbors`, `shortest_path`, `list_projects`, `list_prs`, `get_pr_impact`, `triage_prs`.
 
 ### Shared HTTP server
 
@@ -472,6 +473,7 @@ The MCP server gives your assistant structured access: `query_graph`, `get_node`
 | `--port` | `8080` | HTTP bind port |
 | `--api-key` | env `GRAPHIFY_API_KEY` | Require `Authorization: Bearer <key>` (or `X-API-Key`) |
 | `--path` | `/mcp` | HTTP mount path |
+| `--projects-index` | off | JSON registry of named project graphs for `list_projects` and `project` selection |
 | `--json-response` | off | Return plain JSON instead of SSE streams |
 | `--stateless` | off | No per-session state (for load-balanced / CI deployments) |
 | `--session-timeout` | `3600` | Reap idle stateful sessions after N seconds (`0` disables) |
@@ -483,6 +485,31 @@ docker build -t graphify .
 docker run -p 8080:8080 -v "$(pwd)/graphify-out:/data" graphify \
   /data/graph.json --transport http --host 0.0.0.0 --api-key "$SECRET"
 ```
+
+### Named project registry
+
+For one shared server that hosts several graphs, configure a server-side registry:
+
+```json
+{
+  "projects": [
+    {
+      "id": "catalog-service",
+      "path": "/data/projects/catalog-service",
+      "source_repository": "acme/catalog-service",
+      "node_count": 18360,
+      "edge_count": 56560
+    }
+  ]
+}
+```
+
+`path` must be absolute and contain `graphify-out/graph.json`. It is never
+returned to MCP clients. Clients call `list_projects` to discover the available
+IDs, then pass `project: "catalog-service"` to any graph query tool. Omit
+`project` to use the server's default graph. `project_path` remains available
+for backwards compatibility, but `project` is the safer choice for shared
+servers.
 
 > **WSL / Linux note:** Ubuntu ships `python3`, not `python`. Use a venv to avoid conflicts:
 > ```bash

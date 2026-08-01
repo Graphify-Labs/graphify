@@ -93,6 +93,41 @@ def _max_server_contexts() -> int:
         return 8
 
 
+_PROJECT_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+_PROJECT_PUBLIC_FIELDS = ("source_repository", "node_count", "edge_count")
+
+
+def _load_projects_index(index_path: str | None) -> dict[str, dict]:
+    """Load validated server-side project roots from an optional JSON registry."""
+    if not index_path:
+        return {}
+    try:
+        data = json.loads(Path(index_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"could not read projects index {index_path!r}: {exc}") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("projects"), list):
+        raise ValueError("projects index must be an object with a projects array")
+
+    projects: dict[str, dict] = {}
+    for entry in data["projects"]:
+        if not isinstance(entry, dict):
+            raise ValueError("each projects index entry must be an object")
+        project_id = entry.get("id")
+        if not isinstance(project_id, str) or not _PROJECT_ID_RE.fullmatch(project_id):
+            raise ValueError("project id must match [A-Za-z0-9][A-Za-z0-9._-]*")
+        if project_id in projects:
+            raise ValueError(f"duplicate project id: {project_id}")
+        raw_path = entry.get("path")
+        if not isinstance(raw_path, str) or not Path(raw_path).is_absolute():
+            raise ValueError(f"project {project_id!r} path must be absolute")
+        public = {"id": project_id}
+        for field in _PROJECT_PUBLIC_FIELDS:
+            if field in entry:
+                public[field] = entry[field]
+        projects[project_id] = {"path": str(Path(raw_path).resolve()), "public": public}
+    return projects
+
+
 class _GraphContextCache:
     """Thread-safe graph contexts: one pinned default plus an LRU of projects."""
 
@@ -1220,7 +1255,7 @@ def _community_header(cid: int, community_name) -> str:
     return base
 
 
-def _build_server(graph_path: str):
+def _build_server(graph_path: str, *, projects_index: str | None = None):
     """Build the configured low-level MCP Server (shared by every transport).
 
     All graph query tools and resources are registered here over a single
@@ -1247,6 +1282,7 @@ def _build_server(graph_path: str):
     # while preventing a shared server from retaining every project it serves.
     _default_graph_path = str(Path(graph_path).resolve())
     _ctx_cache = _GraphContextCache(_max_server_contexts())
+    projects = _load_projects_index(projects_index)
 
     def _load_ctx(path: str):
         """Return the current default or project graph context as a tool error.
@@ -1258,11 +1294,15 @@ def _build_server(graph_path: str):
         resolved_path = str(Path(path).resolve())
         return _ctx_cache.load(resolved_path, pinned=resolved_path == _default_graph_path)
 
-    def _resolve_graph_path(project_path) -> str:
-        """Map an optional project_path to a concrete graph.json path. ``None``
-        keeps the server's default graph (backward-compatible); a project_path
-        resolves to ``<project_path>/<GRAPHIFY_OUT>/graph.json``, honouring the
-        GRAPHIFY_OUT override so worktree/shared-output setups keep working."""
+    def _resolve_graph_path(project_path, project) -> str:
+        """Map an optional path or registered project ID to graph.json."""
+        if project_path and project:
+            raise ValueError("project and project_path cannot be used together")
+        if project:
+            entry = projects.get(project)
+            if entry is None:
+                raise ValueError(f"unknown project: {project}")
+            project_path = entry["path"]
         if not project_path:
             return _default_graph_path
         return str(Path(project_path) / _paths.GRAPHIFY_OUT / "graph.json")
@@ -1281,10 +1321,15 @@ def _build_server(graph_path: str):
         # than the process refusing to start (which is what _load_graph would do).
         G, communities = None, {}
 
-    def _select_graph(project_path) -> None:
+    def _select_graph(project_path=None, project=None) -> None:
         nonlocal G, communities, active_graph_path
-        path = _resolve_graph_path(project_path)
-        G, communities = _load_ctx(path)
+        path = _resolve_graph_path(project_path, project)
+        try:
+            G, communities = _load_ctx(path)
+        except (FileNotFoundError, RuntimeError) as exc:
+            if project:
+                raise RuntimeError(f"could not load graph for project {project!r}") from exc
+            raise
         active_graph_path = str(Path(path).resolve())
 
     # NOTE: no decorators here — the handlers below are plain coroutines,
@@ -1435,6 +1480,20 @@ def _build_server(graph_path: str):
                     "this server was started with."
                 ),
             }
+            _schema["properties"]["project"] = {
+                "type": "string",
+                "description": (
+                    "Registered project ID from list_projects. Optional — "
+                    "selects that project's graph without exposing server paths."
+                ),
+            }
+        _tools.append(
+            types.Tool(
+                name="list_projects",
+                description="List configured project IDs available for scoped graph queries.",
+                inputSchema={"type": "object", "properties": {}},
+            )
+        )
         return _tools
 
     def _tool_query_graph(arguments: dict) -> str:
@@ -1725,6 +1784,12 @@ def _build_server(graph_path: str):
             )
         return "\n\n".join(lines)
 
+    def _tool_list_projects(arguments: dict) -> str:
+        return json.dumps(
+            {"projects": [projects[project_id]["public"] for project_id in sorted(projects)]},
+            sort_keys=True,
+        )
+
     _handlers = {
         "query_graph": _tool_query_graph,
         "get_node": _tool_get_node,
@@ -1736,6 +1801,7 @@ def _build_server(graph_path: str):
         "list_prs": _tool_list_prs,
         "get_pr_impact": _tool_get_pr_impact,
         "triage_prs": _tool_triage_prs,
+        "list_projects": _tool_list_projects,
     }
 
     def _load_community_labels() -> dict[int, str]:
@@ -1813,11 +1879,16 @@ def _build_server(graph_path: str):
     async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
         arguments = dict(arguments or {})
         project_path = arguments.pop("project_path", None)
+        project = arguments.pop("project", None)
         handler = _handlers.get(name)
         if not handler:
             return [types.TextContent(type="text", text=f"Unknown tool: {name}")]
         try:
-            _select_graph(project_path)  # bind G/communities to the target graph
+            if name == "list_projects":
+                if project_path or project:
+                    raise ValueError("list_projects does not accept project or project_path")
+                return [types.TextContent(type="text", text=handler(arguments))]
+            _select_graph(project_path, project)  # bind G/communities to the target graph
             return [types.TextContent(type="text", text=handler(arguments))]
         except Exception as exc:
             return [types.TextContent(type="text", text=f"Error executing {name}: {exc}")]
@@ -1868,7 +1939,7 @@ def _build_server(graph_path: str):
     return server
 
 
-def serve(graph_path: str | None = None) -> None:
+def serve(graph_path: str | None = None, *, projects_index: str | None = None) -> None:
     """Start the MCP server over stdio (the default, per-developer transport)."""
     graph_path = graph_path or _default_graph_json()
     try:
@@ -1877,7 +1948,7 @@ def serve(graph_path: str | None = None) -> None:
         raise ImportError('mcp not installed. Run: pip install "graphifyy[mcp]"') from e
     import asyncio
 
-    server = _build_server(graph_path)
+    server = _build_server(graph_path, projects_index=projects_index)
 
     async def main() -> None:
         async with stdio_server() as streams:
@@ -1947,6 +2018,7 @@ class _ApiKeyMiddleware:
 def _build_http_app(
     graph_path: str,
     *,
+    projects_index: str | None = None,
     host: str = "127.0.0.1",
     port: int = 8080,
     api_key: str | None = None,
@@ -1984,7 +2056,7 @@ def _build_http_app(
     # mistaken for "auth on" — normalize it to None so the gate is unambiguous.
     api_key = (api_key or "").strip() or None
 
-    server = _build_server(graph_path)
+    server = _build_server(graph_path, projects_index=projects_index)
 
     # DNS-rebinding protection. When the operator binds a wildcard address they
     # are intentionally exposing the server, so accept any Host header; for a
@@ -2029,6 +2101,7 @@ def _build_http_app(
 def serve_http(
     graph_path: str | None = None,
     *,
+    projects_index: str | None = None,
     host: str = "127.0.0.1",
     port: int = 8080,
     api_key: str | None = None,
@@ -2061,6 +2134,7 @@ def serve_http(
 
     app = _build_http_app(
         graph_path,
+        projects_index=projects_index,
         host=host,
         port=port,
         api_key=api_key,
@@ -2120,6 +2194,12 @@ def _main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("--path", default="/mcp", help="HTTP mount path (default: /mcp)")
     parser.add_argument(
+        "--projects-index",
+        default=None,
+        metavar="PATH",
+        help="JSON registry of named project graphs available to MCP clients",
+    )
+    parser.add_argument(
         "--json-response",
         action="store_true",
         help="Return plain JSON responses instead of SSE streams",
@@ -2141,6 +2221,7 @@ def _main(argv: list[str] | None = None) -> None:
     if args.transport == "http":
         serve_http(
             graph_path,
+            projects_index=args.projects_index,
             host=args.host,
             port=args.port,
             api_key=args.api_key,
@@ -2150,7 +2231,10 @@ def _main(argv: list[str] | None = None) -> None:
             session_timeout=args.session_timeout,
         )
     else:
-        serve(graph_path)
+        if args.projects_index:
+            serve(graph_path, projects_index=args.projects_index)
+        else:
+            serve(graph_path)
 
 
 if __name__ == "__main__":
