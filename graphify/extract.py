@@ -4608,7 +4608,7 @@ def extract(
     _empty_sources: list[str] = []
     for i, _p in enumerate(paths):
         _res = per_file[i] or {}
-        if _res.get("nodes") or _res.get("error"):
+        if _res.get("nodes") or _res.get("error") or _res.get("skipped"):
             continue
         if _get_extractor(_p) is not None:
             _empty_sources.append(str(_p))
