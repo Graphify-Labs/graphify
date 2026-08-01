@@ -118,6 +118,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _resolve_export_target,
     _resolve_java_type_references,
     _resolve_php_type_references,
+    _resolve_python_type_references,
     _resolve_js_import_path,
     _resolve_js_import_target,
     _resolve_js_module_path,
@@ -5118,6 +5119,13 @@ def extract(
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("Cross-file import resolution failed, skipping: %s", exc)
+        # Re-point type-reference edges the bare-name rewire left on shadow stubs
+        # because the label was ambiguous, using the file's own imports (#2363).
+        try:
+            _resolve_python_type_references(paths, root, all_nodes, all_edges)
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("Python type-reference resolution failed, skipping: %s", exc)
 
     # Cross-file Java import resolution
     java_paths = [p for p in paths if p.suffix == ".java"]

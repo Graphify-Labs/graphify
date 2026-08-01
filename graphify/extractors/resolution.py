@@ -2252,6 +2252,113 @@ def _resolve_cross_file_java_imports(
 
     return new_edges
 
+def _resolve_python_type_references(
+    paths: list[Path],
+    root: Path,
+    all_nodes: list[dict],
+    all_edges: list[dict],
+) -> None:
+    """Re-point dangling Python type-reference edges at the imported definition.
+
+    Python type annotations resolve by bare name and fall back to a sourceless
+    "shadow" stub (``ensure_named_node``). ``_rewire_unique_stub_nodes`` repairs
+    that only when the label is globally unique; when two modules define the same
+    class name it bails, so the reference stays stuck on the shadow node and both
+    real definitions look unreferenced (#2363). A ``from pkg.a.base import
+    PricePoint`` names the defining module exactly, so it disambiguates where
+    bare-name matching cannot.
+
+    Mirrors ``_resolve_java_type_references`` and the C# resolver: a re-parse
+    pass, here via ``_collect_python_symbol_resolution_facts``, which the JS/TS
+    augment pass also calls earlier in the run. The shadow-stub check below runs
+    first precisely so that second parse is paid only on a corpus that actually
+    has unresolved stubs, which is the abnormal case.
+
+    Mutates ``all_nodes``/``all_edges`` in place. Runs after id-disambiguation so
+    target ids are final, and after ``_rewire_unique_stub_nodes`` so it only has
+    to handle the ambiguous remainder.
+    """
+    py_paths = [path for path in paths if path.suffix == ".py"]
+    if not py_paths:
+        return
+
+    # Sourceless shadow stubs with a type-like label — the only repoint targets.
+    stub_label: dict[str, str] = {
+        node["id"]: node.get("label", "")
+        for node in all_nodes
+        if node.get("id")
+        and not node.get("source_file")
+        and node.get("label", "")[:1].isupper()
+    }
+    if not stub_label:
+        return
+
+    facts = _SymbolResolutionFacts()
+    _collect_python_symbol_resolution_facts(py_paths, root, facts)
+    if not facts.imports:
+        return
+
+    # (defining file, symbol label) -> definition node id.
+    def_by_file_label: dict[tuple[str, str], str] = {}
+    for node in all_nodes:
+        source_file = str(node.get("source_file", ""))
+        label = str(node.get("label", ""))
+        nid = node.get("id")
+        if not (source_file and label and isinstance(nid, str) and nid):
+            continue
+        if not _is_type_like_definition(node):
+            continue
+        def_by_file_label.setdefault((_source_key(source_file, root), label), nid)
+
+    # importing file -> local binding -> definition node id. Keyed on the LOCAL
+    # name so `from pkg.a.base import PricePoint as PP` binds `PP`.
+    alias_by_file: dict[str, dict[str, str]] = {}
+    for imp in facts.imports:
+        if imp.target_path is None or not imp.local_name:
+            continue
+        resolved = def_by_file_label.get(
+            (_source_key(str(imp.target_path), root), imp.imported_name)
+        )
+        if resolved:
+            alias_by_file.setdefault(
+                _source_key(str(imp.file_path), root), {}
+            )[imp.local_name] = resolved
+    if not alias_by_file:
+        return
+
+    # Deliberately NARROWER than the Java/C# repoint sets, which also carry
+    # `imports`: a Python file-level `imports` edge is resolved to the real
+    # definition upstream and never lands on a bare-name stub, so including it
+    # here would be an untested no-op. Verified against ambiguous, aliased, and
+    # unresolvable-module corpora.
+    REPOINT_RELATIONS = {"references", "inherits", "implements"}
+    repointed_from: set[str] = set()
+    for edge in all_edges:
+        if edge.get("relation") not in REPOINT_RELATIONS:
+            continue
+        target = edge.get("target")
+        label = stub_label.get(target)
+        if not label:
+            continue
+        ref_file = _source_key(str(edge.get("source_file", "")), root)
+        resolved = alias_by_file.get(ref_file, {}).get(label)
+        if resolved and resolved != target:
+            edge["target"] = resolved
+            repointed_from.add(str(target))
+
+    if not repointed_from:
+        return
+
+    # Drop shadow stubs no edge references anymore.
+    still_referenced: set[str] = set()
+    for edge in all_edges:
+        still_referenced.add(edge.get("source"))
+        still_referenced.add(edge.get("target"))
+    all_nodes[:] = [
+        node for node in all_nodes
+        if node.get("id") not in repointed_from or node.get("id") in still_referenced
+    ]
+
 def _resolve_java_type_references(
     per_file: list[dict],
     paths: list[Path],
