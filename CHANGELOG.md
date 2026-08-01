@@ -2,6 +2,19 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## 0.9.32 (unreleased)
+
+- Fix: incremental extraction and `_rebuild_code` no longer drop a file's other tier (#2333, #2334, #2336). Node/edge ownership was keyed on `source_file` alone, so a semantic re-extract deleted a doc's AST headings and a full rebuild deleted document AST nodes. Merge is now tier-aware (an AST re-extract replaces only AST nodes and keeps the semantic layer, and vice versa), the `_origin` provenance marker is backfilled on load so old graphs self-heal, and the full-rebuild drop is scoped to sources actually regenerated.
+- Fix: `graphify update` preserves the graph's `directed` flag instead of rebuilding it undirected (#2342, thanks @Rishet11), so God-node / path ranking keeps its direction on both the clustered and `--no-cluster` rebuild paths.
+- Fix: a numeric or otherwise non-string node id from an LLM fragment no longer aborts the build with a TypeError (#2326, thanks @Rishet11); ids are coerced consistently across nodes, edges, and hyperedges.
+- Fix: `graphify query` renders every edge between visited nodes, not just the traversal-tree edges, so the returned subgraph matches the real induced subgraph (#2323, thanks @Rishet11).
+- Fix: `graphify update` writes `manifest.json` to the target's `graphify-out` instead of the current working directory (#2316, thanks @Rishet11), so running it from elsewhere can no longer prune the target's own manifest rows.
+- Fix: a real Python package named `coverage/` is no longer silently dropped; the prune is gated on coverage-report artefacts (#2339, thanks @Manoj21k).
+- Fix: a custom `GRAPHIFY_OUT` name no longer prunes every same-named directory in the tree; only the configured output path is excluded (#2273, thanks @oleksii-tumanov).
+- Fix: C# member calls resolve for receivers declared inline via `out var`, `is`, `case`, and switch-arm patterns (#2346, thanks @JensD-git), and members of a `partial class` split across files now attach to one merged class node so cross-half calls resolve (#2332).
+- Fix: members of a Kotlin anonymous object (`object : Foo { ... }`) are now extracted, with their `implements` and `calls` edges (#2347).
+- Perf: dedup drops an O(nodes x components) scan in remap construction (#2328, thanks @stupidprogrammer4), with identical results.
+
 ## 0.9.31 (2026-07-30)
 
 - Feature: the MCP server is dual-compatible with SDK 1.x AND 2.x (#2308, thanks @NiSHoW), lifting the `mcp<2` cap 0.9.30 introduced to `mcp>=1,<3`. The 2.0 SDK removed the low-level decorator API (`Server.list_tools`/`call_tool`/...); `_build_server` now binds the same handlers via the 1.x decorators or the 2.x `on_*` constructor callbacks, picked at runtime, and adapts `Tool.inputSchema`, `Resource.uri` (plain `str` in 2.x), and the dropped `AnyUrl` re-export. Verified with full stdio handshakes under both mcp 1.29 and 2.0.
