@@ -1547,6 +1547,23 @@ def _csharp_method_receiver_types(
                                 )
                                 break
                     bind(_read_text(name_node, source), type_name)
+        elif node.type in ("declaration_expression", "declaration_pattern"):
+            # #2346: inline-declared receivers. `out Sect s` is a
+            # declaration_expression; `is Leaf lf`, `is not Node nd`,
+            # `case Twig tw:` and a switch-arm `Stem st =>` are
+            # declaration_patterns — all carry `type` + `name` fields and
+            # bind the name for the rest of the method. `out var v`
+            # (implicit_type) yields None from _csharp_receiver_type_name
+            # and poisons the name method-locally, matching the
+            # untypable-local rule above (no guess).
+            name_node = node.child_by_field_name("name")
+            if name_node is not None and name_node.type == "identifier":
+                bind(
+                    _read_text(name_node, source),
+                    _csharp_receiver_type_name(
+                        node.child_by_field_name("type"), source
+                    ),
+                )
         stack.extend(node.children)
 
     table = dict(field_types)
@@ -2470,8 +2487,25 @@ def _extract_generic(
             class_nid = _make_id(stem, ".".join(namespace_stack), class_name)
             line = node.start_point[0] + 1
             metadata = None
-            if config.ts_module == "tree_sitter_c_sharp" and parent_class_nid:
-                metadata = {"is_nested_type": True}
+            if config.ts_module == "tree_sitter_c_sharp":
+                if parent_class_nid:
+                    metadata = {"is_nested_type": True}
+                # #2332: `partial class Foo` split across files mints one node
+                # per file (the id carries the file stem). Stamp the halves so
+                # the corpus-level _merge_csharp_partial_class_nodes pass can
+                # collapse them onto one canonical node. Grammar: `partial` is
+                # a `modifier` direct child of the type declaration.
+                if t in (
+                    "class_declaration",
+                    "struct_declaration",
+                    "interface_declaration",
+                    "record_declaration",
+                ) and any(
+                    c.type == "modifier" and _read_text(c, source) == "partial"
+                    for c in node.children
+                ):
+                    metadata = dict(metadata or {})
+                    metadata["is_partial"] = True
             add_node(class_nid, class_name, line, metadata=metadata)
             callable_def_nids.add(class_nid)  # a class is callable (constructor)
             callable_class_nids.add(class_nid)  # ...but only via its constructor (#2137)
@@ -3688,6 +3722,90 @@ def _extract_generic(
                 if config.ts_module == "tree_sitter_c_sharp" and parent_class_nid:
                     csharp_method_scopes[id(body)] = (node, parent_class_nid)
                 function_bodies.append((func_nid, body))
+                if config.ts_module == "tree_sitter_kotlin":
+                    # #2347: Kotlin anonymous objects (`object : Foo { … }`,
+                    # node type `object_literal`). The function branch never
+                    # recurses into bodies and object_literal is not a
+                    # class_type, so the literal's members (and every call
+                    # inside them) got no nodes at all. Scan this body for
+                    # object_literal descendants — without crossing a nested
+                    # function_declaration boundary (a local fun's literals
+                    # are not this function's) and without descending into a
+                    # found literal — then emit an owner node per literal and
+                    # walk its class_body exactly like the class branch, so
+                    # members and their calls flow through the normal
+                    # machinery (walk_calls' function_boundary_types already
+                    # keep the enclosing function from absorbing them).
+                    _kt_literals = []
+                    _kt_stack = list(body.children)
+                    while _kt_stack:
+                        _kt_node = _kt_stack.pop()
+                        if _kt_node.type == "function_declaration":
+                            continue
+                        if _kt_node.type == "object_literal":
+                            _kt_literals.append(_kt_node)
+                            continue
+                        _kt_stack.extend(_kt_node.children)
+                    _kt_literals.sort(key=lambda n: n.start_byte)
+                    for lit in _kt_literals:
+                        lit_line = lit.start_point[0] + 1
+                        # Supertypes from the literal's delegation_specifiers,
+                        # shaped like the Kotlin class-branch handling:
+                        # constructor_invocation -> inherits, bare user_type
+                        # (or explicit_delegation) -> implements.
+                        lit_bases: list[tuple[str, str]] = []
+                        for dchild in lit.children:
+                            if dchild.type != "delegation_specifiers":
+                                continue
+                            for spec in dchild.children:
+                                if spec.type != "delegation_specifier":
+                                    continue
+                                relation = "implements"
+                                user_type_node = None
+                                for sub in spec.children:
+                                    if sub.type == "constructor_invocation":
+                                        relation = "inherits"
+                                        for inner in sub.children:
+                                            if inner.type == "user_type":
+                                                user_type_node = inner
+                                                break
+                                        break
+                                    if sub.type == "user_type":
+                                        user_type_node = sub
+                                        break
+                                    if sub.type == "explicit_delegation":
+                                        for inner in sub.children:
+                                            if inner.type == "user_type":
+                                                user_type_node = inner
+                                                break
+                                        break
+                                base = _kotlin_user_type_name(
+                                    user_type_node, source
+                                )
+                                if base:
+                                    lit_bases.append((base, relation))
+                        obj_label = (
+                            lit_bases[0][0] if lit_bases
+                            else f"object@L{lit_line}"
+                        )
+                        obj_nid = _make_id(
+                            func_nid, f"object:{obj_label}", f"L{lit_line}"
+                        )
+                        add_node(obj_nid, obj_label, lit_line)
+                        add_edge(func_nid, obj_nid, "contains", lit_line)
+                        callable_def_nids.add(obj_nid)
+                        callable_class_nids.add(obj_nid)
+                        for base, relation in lit_bases:
+                            base_nid = ensure_named_node(base, lit_line)
+                            if base_nid != obj_nid:
+                                add_edge(obj_nid, base_nid, relation, lit_line)
+                        lit_body = next(
+                            (c for c in lit.children if c.type == "class_body"),
+                            None,
+                        )
+                        if lit_body is not None:
+                            for child in lit_body.children:
+                                walk(child, parent_class_nid=obj_nid)
             return
 
         # JS/TS arrow functions and C# namespaces — language-specific extra handling

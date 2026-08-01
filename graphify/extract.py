@@ -2082,6 +2082,93 @@ def _merge_swift_extensions(
     all_edges[:] = rewritten
 
 
+def _merge_csharp_partial_class_nodes(
+    per_file: list[dict],
+    all_nodes: list[dict],
+    all_edges: list[dict],
+) -> None:
+    """Collapse C# `partial class Foo` halves split across files into ONE node
+    (#2332).
+
+    The per-file extractor mints class ids with the file stem, so each file
+    declaring `partial class Foo` produces its own `Foo` node: members split
+    across the halves and cross-half calls don't resolve (two candidate types
+    make every receiver-typed lookup bail as ambiguous). Group partial-stamped
+    type nodes by (namespace, label) — same-named types in different namespaces
+    are distinct types, non-partial same-named types are separate declarations,
+    and nested partials are excluded (their ids omit the enclosing type, so a
+    same-named nested pair under different outers would falsely merge). The
+    canonical node is the sorted-first half by (source_file, source_location,
+    id); every edge endpoint and raw-call caller is remapped onto it. Member
+    node ids are left untouched — only the class-level nodes collapse.
+
+    Must run BEFORE _disambiguate_colliding_node_ids / _rewire_unique_stub_nodes /
+    _resolve_csharp_type_references and the resolver registry, so every later
+    pass sees one definition per partial type.
+    """
+    groups: dict[tuple[str, str], list[dict]] = {}
+    for n in all_nodes:
+        if not str(n.get("source_file", "")).endswith(".cs"):
+            continue
+        if n.get("file_type") != "code":
+            continue
+        md = n.get("metadata") or {}
+        if not md.get("is_partial") or md.get("is_nested_type"):
+            continue
+        label = n.get("label")
+        if not label:
+            continue
+        groups.setdefault((str(md.get("namespace", "")), str(label)), []).append(n)
+
+    remap: dict[str, str] = {}
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        members.sort(key=lambda n: (
+            str(n.get("source_file", "")),
+            str(n.get("source_location", "")),
+            str(n.get("id", "")),
+        ))
+        canonical_nid = members[0]["id"]
+        for other in members[1:]:
+            if other["id"] != canonical_nid:
+                remap[other["id"]] = canonical_nid
+
+    if not remap:
+        return
+
+    all_nodes[:] = [n for n in all_nodes if n.get("id") not in remap]
+
+    # Each half's file keeps a `contains` edge to the canonical type — multiple
+    # files containing one node is the intended shape (same as the Swift
+    # extension merge): the type owns the members, the files own their slice.
+    # Self-loops are dropped, exact duplicates dedup.
+    rewritten: list[dict] = []
+    seen_keys: set[tuple] = set()
+    for e in all_edges:
+        src = remap.get(e.get("source"), e.get("source"))
+        tgt = remap.get(e.get("target"), e.get("target"))
+        if src == tgt:
+            continue
+        e["source"] = src
+        e["target"] = tgt
+        key = (src, tgt, e.get("relation"), e.get("source_file"), e.get("source_location"))
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        rewritten.append(e)
+    all_edges[:] = rewritten
+
+    # raw_calls carry caller_nid, consumed by the member-call resolvers and the
+    # cross-file call pass after this merge — a top-level raw call whose caller
+    # is a merged-away class half must follow it onto the canonical node.
+    for result in per_file:
+        for rc in result.get("raw_calls", []) or []:
+            cn = rc.get("caller_nid")
+            if cn in remap:
+                rc["caller_nid"] = remap[cn]
+
+
 def _resolve_swift_member_calls(
     per_file: list[dict],
     all_nodes: list[dict],
@@ -5088,6 +5175,7 @@ def extract(
     # graph is identical regardless of scan root (#2072).
     _repoint_python_package_imports(paths, all_nodes, all_edges, root)
     _merge_swift_extensions(per_file, all_nodes, all_edges)
+    _merge_csharp_partial_class_nodes(per_file, all_nodes, all_edges)
     _disambiguate_colliding_node_ids(all_nodes, all_edges, all_raw_calls, root)
     _canonicalize_csharp_namespace_nodes(all_nodes, all_edges)
     # PHP namespace/use disambiguation must run BEFORE the unique-stub rewire:
