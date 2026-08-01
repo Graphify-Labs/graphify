@@ -1090,9 +1090,6 @@ wheels = [
 
 [[package]]
 name = "graphifyy"
-version = "0.9.6"
-version = "0.9.29"
-version = "0.9.30"
 version = "0.9.31"
 source = { editable = "." }
 dependencies = [

@@ -235,8 +235,6 @@ def _stat_index_file(root: Path) -> Path:
     return base / "cache" / "stat-index.json"
 
 
-def _ensure_stat_index(root: Path) -> None:
-    global _stat_index, _stat_index_root
 def _ensure_stat_index(root: Path, cache_root: "Path | None" = None) -> None:
     global _stat_index, _stat_index_root, _stat_index_anchor, _stat_index_dirty
     if _stat_index_root is not None:
@@ -272,7 +270,7 @@ def _ensure_stat_index(root: Path, cache_root: "Path | None" = None) -> None:
 
 
 def _flush_stat_index() -> None:
-    global _stat_index_dirty
+    global _stat_index_dirty, _stat_index_root
     if not _stat_index_dirty or _stat_index_root is None:
         return
     p = _stat_index_file(_stat_index_root)
