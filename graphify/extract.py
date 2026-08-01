@@ -43,7 +43,7 @@ from graphify.extractors.dart import extract_dart  # noqa: F401
 from graphify.extractors.dm import extract_dm, extract_dmf, extract_dmi, extract_dmm  # noqa: F401
 from graphify.extractors.elixir import extract_elixir  # noqa: F401
 from graphify.extractors.fortran import _cpp_preprocess, extract_fortran  # noqa: F401
-from graphify.extractors.go import extract_go  # noqa: F401
+from graphify.extractors.go import _GO_PREDECLARED_FUNCS, extract_go  # noqa: F401
 from graphify.extractors.json_config import extract_json  # noqa: F401
 from graphify.extractors.markdown import extract_markdown  # noqa: F401
 from graphify.extractors.pascal_forms import extract_delphi_form, extract_lazarus_form  # noqa: F401
@@ -138,7 +138,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
 
 from graphify.symbol_resolution import resolve_bash_source_edges  # noqa: E402
 
-from graphify.extractors.engine import REFERENCE_CONTEXTS, _CSHARP_TYPE_PARAMETER_SCOPE_DECLARATIONS, _C_PRIMITIVE_TYPE_NODES, _JAVA_BUILTIN_TYPES, _JAVA_TYPE_PARAMETER_SCOPE_DECLARATIONS, _JS_FUNCTION_VALUE_TYPES, _JS_SCOPE_BOUNDARY, _PYTHON_ANNOTATION_NOISE, _PYTHON_TYPE_CONTAINERS, _RUBY_CLASS_FACTORIES, _c_collect_type_refs, _cpp_collect_type_refs, _cpp_declarator_name, _cpp_local_var_types, _csharp_attribute_names, _csharp_classify_base, _csharp_collect_type_refs, _csharp_extra_walk, _csharp_member_type_table, _csharp_namespace_id, _csharp_namespace_name, _csharp_pre_scan_interfaces, _csharp_type_parameters_in_scope, _dynamic_import_js, _extract_generic, _find_body, _find_require_call, _get_cpp_func_name, _java_annotation_names, _java_collect_type_refs, _java_extra_walk, _java_type_parameters_in_scope, _js_collect_pattern_idents, _js_dispatch_value_idents, _js_extra_walk, _js_local_bound_names, _js_member_assignment_target, _js_module_bound_names, _kotlin_collect_type_refs, _kotlin_function_return_type_node, _kotlin_property_type_node, _kotlin_user_type_name, _php_collect_type_refs, _php_method_return_type_node, _php_name_text, _python_collect_assignment_targets, _python_collect_param_refs, _python_collect_type_refs, _python_local_bound_names, _python_module_bound_names, _python_param_names, _read_csharp_type_name, _require_imports_js, _ruby_const_last_name, _ruby_extra_walk, _ruby_local_class_bindings, _ruby_new_class_name, _scala_collect_type_refs, _semantic_reference_edge, _source_location, _swift_classify_base, _swift_collect_type_refs, _swift_constructor_type, _swift_declaration_keyword, _swift_extra_walk, _swift_local_var_types, _swift_pre_scan, _swift_property_name, _swift_property_type_node, _swift_receiver_name, _swift_user_type_name, _ts_decorator_name, _ts_descendant_decorators, _ts_emit_decorator_edges, _ts_extra_walk, _ts_method_name, _ts_receiver_type_table  # noqa: E402,F401
+from graphify.extractors.engine import REFERENCE_CONTEXTS, _CSHARP_TYPE_PARAMETER_SCOPE_DECLARATIONS, _C_PRIMITIVE_TYPE_NODES, _JAVA_BUILTIN_TYPES, _JAVA_TYPE_PARAMETER_SCOPE_DECLARATIONS, _JS_FUNCTION_VALUE_TYPES, _JS_SCOPE_BOUNDARY, _PYTHON_ANNOTATION_NOISE, _PYTHON_TYPE_CONTAINERS, _RUBY_CLASS_FACTORIES, _c_collect_type_refs, _cpp_collect_type_refs, _cpp_declarator_name, _cpp_local_var_types, _csharp_attribute_names, _csharp_classify_base, _csharp_collect_type_refs, _csharp_extra_walk, _csharp_namespace_id, _csharp_namespace_name, _csharp_pre_scan_interfaces, _csharp_type_parameters_in_scope, _dynamic_import_js, _extract_generic, _find_body, _find_require_call, _get_cpp_func_name, _java_annotation_names, _java_collect_type_refs, _java_extra_walk, _java_type_parameters_in_scope, _js_collect_pattern_idents, _js_dispatch_value_idents, _js_extra_walk, _js_local_bound_names, _js_member_assignment_target, _js_module_bound_names, _kotlin_collect_type_refs, _kotlin_function_return_type_node, _kotlin_property_type_node, _kotlin_user_type_name, _php_collect_type_refs, _php_method_return_type_node, _php_name_text, _python_collect_assignment_targets, _python_collect_param_refs, _python_collect_type_refs, _python_local_bound_names, _python_module_bound_names, _python_param_names, _read_csharp_type_name, _require_imports_js, _ruby_const_last_name, _ruby_extra_walk, _ruby_local_class_bindings, _ruby_new_class_name, _scala_collect_type_refs, _semantic_reference_edge, _source_location, _swift_classify_base, _swift_collect_type_refs, _swift_constructor_type, _swift_declaration_keyword, _swift_extra_walk, _swift_local_var_types, _swift_pre_scan, _swift_property_name, _swift_property_type_node, _swift_receiver_name, _swift_user_type_name, _ts_decorator_name, _ts_descendant_decorators, _ts_emit_decorator_edges, _ts_extra_walk, _ts_method_name, _ts_receiver_type_table  # noqa: E402,F401
 
 from graphify.extractors.pascal import _PAS_BEGIN_END_TOKEN_RE, _PAS_CALL_RE, _PAS_END_SEMI_RE, _PAS_IMPL_HEADER_RE, _PAS_KEYWORDS, _PAS_METHOD_DECL_RE, _PAS_MODULE_RE, _PAS_TOKEN_RE, _PAS_TYPE_HEADER_RE, _PAS_USES_RE, _extract_pascal_regex, _pascal_find_body, _pascal_split_bases, _pascal_split_sections, _pascal_split_uses, _pascal_strip_comments, extract_pascal  # noqa: E402,F401
 
@@ -4966,11 +4966,13 @@ def _resolve_csharp_member_calls(
     The shared cross-file pass drops every ``is_member_call`` because a bare method
     name collides across the corpus — and for C# an in-file bare match silently
     mis-bound ``_server.Save()`` to an unrelated ``Cache.Save()``. The C# extractor
-    now records each member call's receiver plus a per-file ``name -> Type`` table
-    (``csharp_type_table``) of fields/properties/params/locals (with conflicting
-    rebindings POISONED out, so a shadowing local of a different type produces no
-    edge rather than a wrong one). This pass types the receiver, then resolves the
-    declared type name with the same namespace/using/alias scoping machinery the
+    records each member call's receiver and stamps ``receiver_type`` on the raw
+    call from a METHOD-scoped ``name -> Type`` table of class fields/properties
+    plus the declaring method's params/locals (#2299 — per-method like Java, so a
+    name rebound in a different method never poisons this one; same-method
+    conflicts and untypable rebindings are still POISONED, so a shadowing local of
+    a different type produces no edge rather than a wrong one). This pass resolves
+    the stamped type name with the same namespace/using/alias scoping machinery the
     type-reference pass uses (``CsharpNameResolver``), so a class name duplicated
     across namespaces still binds to the one in scope; only when scoping knows
     nothing about the name does it fall back to the corpus-wide unique bare-name
@@ -4981,8 +4983,9 @@ def _resolve_csharp_member_calls(
       * ``this.M()`` — receiver is the caller's own enclosing class -> EXTRACTED.
       * ``base.M()`` — the caller's single resolvable base class -> EXTRACTED.
       * ``Type.M()`` (capitalized) — the type is named explicitly in source -> EXTRACTED.
-      * ``recv.M()`` / ``this.recv.M()`` — ``recv`` typed via the file's
-        field/param/local table -> INFERRED.
+      * ``recv.M()`` / ``this.recv.M()`` — ``recv`` typed via the extractor's
+        method-scoped field/property/param/local table (``receiver_type`` on the
+        raw call) -> INFERRED.
 
     A method not declared on the receiver's type is looked up through its
     ``inherits`` chain; a chain containing an unresolvable (out-of-corpus) base
@@ -4990,12 +4993,6 @@ def _resolve_csharp_member_calls(
 
     Must run after id-disambiguation so node ids and caller_nids are final.
     """
-    type_table_by_file: dict[str, dict[str, str]] = {}
-    for result in per_file:
-        tt = result.get("csharp_type_table")
-        if tt and tt.get("path"):
-            type_table_by_file[tt["path"]] = tt.get("table", {})
-
     def _key(label: str) -> str:
         return re.sub(r"[^a-zA-Z0-9]+", "", str(label)).lower()
 
@@ -5134,13 +5131,13 @@ def _resolve_csharp_member_calls(
             # explicit-type lookup misses).
             type_nid = _resolve_type_name_nid(receiver, caller_node, src_file)
             if not type_nid:
-                type_name = type_table_by_file.get(src_file, {}).get(receiver)
+                type_name = rc.get("receiver_type")
                 type_nid = _resolve_type_name_nid(type_name, caller_node, src_file)
                 if not type_nid:
                     continue
             type_qualified = True
         else:
-            type_name = type_table_by_file.get(src_file, {}).get(receiver)
+            type_name = rc.get("receiver_type")
             if not type_name:
                 continue
             type_nid = _resolve_type_name_nid(type_name, caller_node, src_file)
@@ -7716,6 +7713,13 @@ def extract(
         # to external commands that merely share a name with a function elsewhere
         # in the corpus — exactly what #2141 must not do.
         if rc.get("language") == "bash":
+            continue
+        # A Go predeclared function is never a cross-file call: the extractor
+        # already drops bare `append(s, x)` (extractors/go.py), so this is the
+        # backstop for Go raw_calls minted on any other path. Language-gated
+        # rather than folded into _LANGUAGE_BUILTIN_GLOBALS because `new`,
+        # `close` and `delete` are ordinary method names elsewhere (#2296).
+        if rc.get("language") == "go" and callee in _GO_PREDECLARED_FUNCS:
             continue
         # Exact-case match first (case is semantic). Fold only when the CALLING
         # file's language is case-insensitive, and only against the folded index of
