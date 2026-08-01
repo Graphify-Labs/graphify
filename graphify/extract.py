@@ -5534,6 +5534,10 @@ def extract(
             continue
         sf_path = Path(sf)
         if not sf_path.is_absolute():
+            # ``str(Path(...))`` uses the host separator. Keep persisted
+            # source paths portable even when callers pass relative Paths on
+            # Windows; absolute paths are relativized below.
+            item["source_file"] = sf_path.as_posix()
             continue
         new_sf, canonical_id, keys = _sf_entry(str(sf), sf_path)
         if "id" in item:

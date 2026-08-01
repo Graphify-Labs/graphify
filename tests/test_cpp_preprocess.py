@@ -4,6 +4,8 @@ A corpus file is attacker-named; cpp does not accept a "--" end-of-options
 terminator, so _cpp_preprocess passes an absolute path which can never be parsed
 as a cpp option.
 """
+from pathlib import Path
+
 from graphify import extract
 
 
@@ -28,5 +30,5 @@ def test_cpp_preprocess_passes_absolute_path(tmp_path, monkeypatch):
     out = extract._cpp_preprocess(f)
     assert out == b"preprocessed"
     last_arg = captured["argv"][-1]
-    assert last_arg.startswith("/"), f"path arg must be absolute, got {last_arg!r}"
+    assert Path(last_arg).is_absolute(), f"path arg must be absolute, got {last_arg!r}"
     assert not last_arg.startswith("-"), "path arg must never look like an option"

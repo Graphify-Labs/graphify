@@ -41,8 +41,9 @@ def test_write_text_atomic_preserves_existing_mode(tmp_path):
     p = tmp_path / "graph.json"
     p.write_text("{}", encoding="utf-8")
     os.chmod(p, 0o644)
+    existing_mode = os.stat(p).st_mode & 0o777
     write_text_atomic(p, '{"x": 1}')
-    assert (os.stat(p).st_mode & 0o777) == 0o644
+    assert (os.stat(p).st_mode & 0o777) == existing_mode
 
 
 def test_write_text_atomic_new_file_respects_umask(tmp_path):
@@ -61,7 +62,12 @@ def test_write_text_atomic_writes_through_symlink(tmp_path):
     target = tmp_path / "real.json"
     target.write_text("old", encoding="utf-8")
     link = tmp_path / "link.json"
-    link.symlink_to(target)
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        if os.name == "nt" and exc.winerror == 1314:
+            pytest.skip("Windows symlink privilege is unavailable")
+        raise
     write_text_atomic(link, "new")
     assert link.is_symlink()
     assert target.read_text() == "new"
