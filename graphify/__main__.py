@@ -607,6 +607,7 @@ def _run_cli() -> None:
         print("    --token-budget N        per-chunk token cap for semantic extraction (default: 60000)")
         print("    --max-concurrency N     parallel semantic chunks in flight (default: 4; set 1 for local LLMs)")
         print("    --api-timeout S         per-request timeout in seconds for the LLM client (default: 600)")
+        print("    --whisper-model M       local faster-whisper model for video/audio (default: base)")
         print("    --out DIR, --output DIR output dir (default: <path>); writes <DIR>/graphify-out/")
         print("    --google-workspace      export .gdoc/.gsheet/.gslides shortcuts via gws before extraction")
         print("    --no-gitignore         ignore .gitignore and .git/info/exclude (prioritizes .graphifyignore)")

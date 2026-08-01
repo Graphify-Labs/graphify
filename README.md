@@ -341,7 +341,7 @@ To remove graphify from all platforms at once: `graphify uninstall` (add `--purg
 | MCP configs | `.mcp.json` `mcp.json` `mcp_servers.json` `claude_desktop_config.json` — extracts server nodes, package refs, env var requirements |
 | Package manifests | `apm.yml` `pyproject.toml` `go.mod` `pom.xml` — one canonical package node per package (by name) plus `depends_on` edges, so a package referenced from many manifests is a single hub |
 | Docs | `.md .mdx .qmd .html .txt .rst .yaml .yml` (markdown `[text](./other.md)` links and `[[wikilinks]]` become `references` edges between docs) |
-| Office | `.docx .xlsx` (requires `uv tool install graphifyy[office]`) |
+| Office | `.pptx` (built in); `.docx .xlsx` (require `uv tool install graphifyy[office]`) |
 | Google Workspace | `.gdoc .gsheet .gslides` (opt-in; requires `gws` auth and `--google-workspace`; Sheets need `uv tool install graphifyy[google]`) |
 | PDFs | `.pdf` |
 | Images | `.png .jpg .webp .gif` |
@@ -349,6 +349,14 @@ To remove graphify from all platforms at once: `graphify uninstall` (add `--purg
 | YouTube / URLs | any video URL (requires `uv tool install graphifyy[video]`) |
 
 Code is extracted **locally with no API calls** (AST via tree-sitter). Everything else goes through your AI assistant's model API.
+
+PowerPoint extraction preserves slide order, sections, hidden-slide state, text
+and bullets, speaker notes, comments, tables, chart data, SmartArt/native diagram
+relationships, hyperlinks, alt text, layout/master evidence, custom XML, and
+embedded package objects. Embedded images are sent through the normal vision
+path. Embedded audio and video are extracted with slide provenance and transcribed
+locally when `graphifyy[video]` is installed; external media links are recorded but
+never fetched automatically.
 
 Google Drive for desktop `.gdoc`, `.gsheet`, and `.gslides` files are shortcut
 pointers, not document content. To include native Google Docs, Sheets, and Slides
