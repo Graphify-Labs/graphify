@@ -1961,6 +1961,67 @@ def _resolve_cross_file_imports(
         except Exception:
             continue
 
+        # Build line-to-class-ID map from local class nodes
+        line_to_class_id: dict[int, str] = {}
+        for n in file_result.get("nodes", []):
+            if n.get("source_file") == str_path and not n["label"].endswith((")", ".py")) and n["id"] != _make_id(stem) and n.get("file_type") != "rationale":
+                loc = n.get("source_location", "")
+                if loc.startswith("L"):
+                    try:
+                        line_num = int(loc[1:])
+                        line_to_class_id[line_num] = n["id"]
+                    except ValueError:
+                        pass
+
+        class_to_identifiers: dict[str, set[str]] = {}
+
+        def walk_collect(node, class_stack: list[str]) -> None:
+            next_class_stack = list(class_stack)
+            class_nid = None
+            if node.type == "decorated_definition":
+                class_child = next((c for c in node.children if c.type == "class_definition"), None)
+                if class_child:
+                    line = class_child.start_point[0] + 1
+                    class_nid = line_to_class_id.get(line)
+                    if class_nid:
+                        next_class_stack.append(class_nid)
+            elif node.type == "class_definition":
+                line = node.start_point[0] + 1
+                class_nid = line_to_class_id.get(line)
+                if class_nid:
+                    if not class_stack or class_stack[-1] != class_nid:
+                        next_class_stack.append(class_nid)
+
+            is_binding = False
+            if node.type == "identifier":
+                parent = node.parent
+                if parent:
+                    if parent.type in ("class_definition", "function_definition", "except_clause") and parent.child_by_field_name("name") == node:
+                        is_binding = True
+                    elif parent.type in ("assignment", "for_statement", "for_in_clause") and parent.child_by_field_name("left") == node:
+                        is_binding = True
+                    elif parent.type in ("with_item", "aliased_import") and parent.child_by_field_name("alias") == node:
+                        is_binding = True
+                    elif parent.type == "attribute" and parent.child_by_field_name("attribute") == node:
+                        is_binding = True
+                    elif parent.type == "parameters":
+                        is_binding = True
+                    elif parent.type == "keyword_argument" and parent.child_by_field_name("name") == node:
+                        is_binding = True
+                    elif parent.type in ("typed_parameter", "default_parameter") and parent.child_by_field_name("name") == node:
+                        is_binding = True
+                    elif parent.type in ("as_pattern", "pattern"):
+                        is_binding = True
+
+                if not is_binding and next_class_stack:
+                    ident = source[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
+                    class_to_identifiers.setdefault(next_class_stack[-1], set()).add(ident)
+
+            for child in node.children:
+                walk_collect(child, next_class_stack)
+
+        walk_collect(tree.root_node, [])
+
         def walk_imports(node) -> None:
             if node.type == "import_from_statement":
                 # Find the module name - handles both absolute and relative imports.
@@ -2017,15 +2078,16 @@ def _resolve_cross_file_imports(
                     tgt_nid = stem_to_entities[target_fq].get(name)
                     if tgt_nid:
                         for src_class_nid in local_classes:
-                            new_edges.append({
-                                "source": src_class_nid,
-                                "target": tgt_nid,
-                                "relation": "uses",
-                                "confidence": "INFERRED",
-                                "source_file": str_path,
-                                "source_location": f"L{line}",
-                                "weight": 0.8,
-                            })
+                            if name in class_to_identifiers.get(src_class_nid, set()):
+                                new_edges.append({
+                                    "source": src_class_nid,
+                                    "target": tgt_nid,
+                                    "relation": "uses",
+                                    "confidence": "INFERRED",
+                                    "source_file": str_path,
+                                    "source_location": f"L{line}",
+                                    "weight": 0.8,
+                                })
             for child in node.children:
                 walk_imports(child)
 
