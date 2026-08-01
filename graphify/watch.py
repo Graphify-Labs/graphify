@@ -685,6 +685,13 @@ def _node_community_map(graph_data: dict) -> dict[str, int]:
 def _canonical_graph_for_compare(graph_data: dict) -> dict:
     canonical = dict(graph_data)
     canonical.pop("built_at_commit", None)
+    # A missing "directed" key means the same thing as "directed": false
+    # everywhere else in the codebase (#2342's --no-cluster path only started
+    # writing the key once it began inheriting it from the existing graph).
+    # Normalise so an old graph.json without the key doesn't register as
+    # "changed" against a freshly-written candidate that now carries
+    # "directed": false explicitly.
+    canonical["directed"] = bool(canonical.get("directed", False))
     for key in ("nodes", "links", "edges", "hyperedges"):
         if key in canonical and isinstance(canonical[key], list):
             canonical[key] = sorted(
@@ -1192,6 +1199,10 @@ def _rebuild_code(
                 **{k: v for k, v in result.items() if k not in ("edges", "nodes")},
                 "nodes": _dedupe_nodes(result.get("nodes", [])),
                 "links": _dedupe_edges(result.get("edges", [])),
+                # Inherit the existing graph's directed flag (#2342) so
+                # `graphify update --no-cluster` can't silently drop it -
+                # `result` (the raw merged extraction) never carries one.
+                "directed": bool((existing_graph_data or {}).get("directed", False)),
             }
             candidate_graph_text = _json_text(candidate_graph_data)
             same_graph = False
@@ -1273,7 +1284,10 @@ def _rebuild_code(
             "total_words": detected.get("total_words", 0),
         }
 
-        G = build_from_json(result)
+        # Inherit the existing graph's directed flag (#2342) so `graphify
+        # update` can't silently downgrade a directed graph to undirected -
+        # build_from_json defaults to directed=False otherwise.
+        G = build_from_json(result, directed=bool((existing_graph_data or {}).get("directed", False)))
         candidate_topology = _topology_from_graph(G)
         if existing_graph_data:
             try:

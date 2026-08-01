@@ -2402,3 +2402,125 @@ def test_rebuild_readable_graph_still_preserves_semantic_nodes(tmp_path):
         e.get("source") == "notes_concept" and e.get("target") == "notes_doc"
         for e in after["links"]
     ), "semantic link must survive an incremental rebuild"
+
+
+# --- #2342: `graphify update` rebuild must inherit the on-disk directed flag ---
+
+def test_rebuild_code_inherits_directed_flag_clustered(tmp_path):
+    """#2342: the clustered `graphify update` rebuild path built the graph via
+    build_from_json(result) with no directed= argument, so it always took the
+    directed=False default and silently downgraded an existing directed graph.
+    """
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "a.py").write_text(
+        "def alpha():\n    return beta()\n\ndef beta():\n    return 1\n", encoding="utf-8"
+    )
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    graph_path = corpus / "graphify-out" / "graph.json"
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    data["directed"] = True
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+
+    # Add a NEW function and a call to it, so the rebuild genuinely changes
+    # topology. Editing only a function BODY leaves the node/edge set identical,
+    # so the same_topology check short-circuits before graph.json is rewritten
+    # and the seeded flag survives untouched — the assertion below would then
+    # pass without the fix ever running.
+    n_before = len(json.loads(graph_path.read_text(encoding="utf-8"))["nodes"])
+    (corpus / "a.py").write_text(
+        "def alpha():\n    return beta() + gamma()\n\n"
+        "def beta():\n    return 1\n\ndef gamma():\n    return 2\n",
+        encoding="utf-8",
+    )
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    after = json.loads(graph_path.read_text(encoding="utf-8"))
+    assert len(after["nodes"]) > n_before, (
+        "guard: graph.json must actually have been rewritten, otherwise the "
+        "directed assertion below is vacuous"
+    )
+    assert after.get("directed") is True, (
+        "graphify update (clustered) must preserve an existing directed=True graph"
+    )
+    edge = next(
+        e for e in after["links"]
+        if e.get("relation") == "calls"
+    )
+    assert edge["source"] == "a_alpha" and edge["target"] == "a_beta", (
+        "directed calls edge must still read alpha -> beta, not reversed"
+    )
+
+
+def test_rebuild_code_inherits_directed_flag_no_cluster(tmp_path):
+    """#2342, --no-cluster path: candidate_graph_data was built straight from the
+    raw merged extraction (`result`), which never carries a directed key, so the
+    written graph.json silently lost the flag on every no-cluster update."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "a.py").write_text("def f(): pass\n", encoding="utf-8")
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+
+    graph_path = corpus / "graphify-out" / "graph.json"
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    data["directed"] = True
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+
+    # A new top-level function, not just a body edit, so the candidate graph
+    # really differs and the same_graph check cannot short-circuit the write
+    # (which would leave the seeded flag in place and make this vacuous).
+    n_before = len(json.loads(graph_path.read_text(encoding="utf-8"))["nodes"])
+    (corpus / "a.py").write_text("def f(): pass\n\ndef g(): pass\n", encoding="utf-8")
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+
+    after = json.loads(graph_path.read_text(encoding="utf-8"))
+    assert len(after["nodes"]) > n_before, (
+        "guard: graph.json must actually have been rewritten, otherwise the "
+        "directed assertion below is vacuous"
+    )
+    assert after.get("directed") is True, (
+        "graphify update --no-cluster must preserve an existing directed=True graph"
+    )
+
+
+def test_rebuild_code_keeps_undirected_graph_undirected(tmp_path):
+    """An existing undirected graph (no directed key, the on-disk default) must
+    not be spuriously flipped to directed=True by an update rebuild."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "a.py").write_text("def f(): pass\n", encoding="utf-8")
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    graph_path = corpus / "graphify-out" / "graph.json"
+    before = json.loads(graph_path.read_text(encoding="utf-8"))
+    assert before.get("directed", False) is False
+
+    (corpus / "a.py").write_text("def f(): return 1\n", encoding="utf-8")
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    after = json.loads(graph_path.read_text(encoding="utf-8"))
+    assert after.get("directed", False) is False, (
+        "an undirected graph must not be spuriously flipped to directed by update"
+    )
+
+
+def test_rebuild_code_fresh_build_defaults_undirected(tmp_path):
+    """No existing graph at all (first build via _rebuild_code) must still
+    default to directed=False - #2342's fix only inherits, never invents True."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "a.py").write_text("def f(): pass\n", encoding="utf-8")
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    graph_path = corpus / "graphify-out" / "graph.json"
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    assert data.get("directed", False) is False
