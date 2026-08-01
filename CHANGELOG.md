@@ -13,6 +13,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: a custom `GRAPHIFY_OUT` name no longer prunes every same-named directory in the tree; only the configured output path is excluded (#2273, thanks @oleksii-tumanov).
 - Fix: C# member calls resolve for receivers declared inline via `out var`, `is`, `case`, and switch-arm patterns (#2346, thanks @JensD-git), and members of a `partial class` split across files now attach to one merged class node so cross-half calls resolve (#2332).
 - Fix: members of a Kotlin anonymous object (`object : Foo { ... }`) are now extracted, with their `implements` and `calls` edges (#2347).
+- Fix: Ruby mixins declared with compact/nested syntax now resolve, and a qualified external mixin can no longer fabricate a phantom hub (#2302, thanks @FolatheDuckofDuckingburg). `module Foo::Bar` and `module Foo; module Bar` are canonicalized to the same fully-qualified label, and `include`/`extend`/`prepend` keep the full constant path, so `include Foo::Bar` resolves. Mixin resolution is now scoped and lexical: a qualified external name like `extend ActiveSupport::Concern` no longer binds to any local module named `Concern`, while a genuine in-corpus `include Foo::Concern` still resolves. Nested-declared classes keep their last-segment index so typed-receiver calls (`Processor.new`) continue to resolve.
 - Perf: dedup drops an O(nodes x components) scan in remap construction (#2328, thanks @stupidprogrammer4), with identical results.
 
 ## 0.9.31 (2026-07-30)
