@@ -686,6 +686,85 @@ def test_detect_skips_coverage_dir(tmp_path):
     assert any("main.py" in f for f in all_files)
 
 
+def test_detect_skips_coverage_dir_by_lcov_info(tmp_path):
+    """A coverage/ dir is still pruned on any single artefact file — an lcov.info
+    with no lcov-report/ subtree is enough evidence (#870, #2339)."""
+    cov = tmp_path / "coverage"
+    cov.mkdir()
+    (cov / "lcov.info").write_text("TN:\nSF:src/app.ts\nend_of_record\n")
+    (cov / "prettify.js").write_text("var PR_SHOULD_USE_CONTINUATION=true;")
+    (tmp_path / "main.py").write_text("def hello(): pass")
+    result = detect(tmp_path)
+    all_files = [f for files in result["files"].values() for f in files]
+    assert not any(f.startswith(str(cov)) for f in all_files)
+    assert any("main.py" in f for f in all_files)
+
+
+def test_detect_keeps_coverage_code_namespace(tmp_path):
+    """#2339: a coverage/ dir holding real modules and no coverage artefacts is a
+    legitimate package name, not a generated report, and must NOT be pruned.
+
+    Pruning it by name dropped an entire production package while leaving its
+    dependents in the graph, so queries kept returning plausible neighbours and
+    nothing in the report or skipped lists showed the loss."""
+    pkg = tmp_path / "auditor_toolkit" / "assurance" / "coverage"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("from .impact import Impact\n")
+    (pkg / "impact.py").write_text("class Impact:\n    def score(self): return 1\n")
+    (pkg / "inventory.py").write_text("def inventory():\n    return []\n")
+    (tmp_path / "app.py").write_text("from auditor_toolkit.assurance import coverage\n")
+    result = detect(tmp_path)
+    all_files = [f for files in result["files"].values() for f in files]
+    assert any("impact.py" in f for f in all_files)
+    assert any("inventory.py" in f for f in all_files)
+    assert any(f.endswith("coverage" + os.sep + "__init__.py") for f in all_files)
+
+
+def test_collect_files_keeps_coverage_code_namespace(tmp_path):
+    """#2339 as reported: collect_files returned [] for a real coverage package,
+    both when it is the walk target and when it is reached through the repo root.
+    A genuine report dir alongside it must still be skipped."""
+    from graphify.extract import collect_files
+
+    pkg = tmp_path / "auditor_toolkit" / "assurance" / "coverage"
+    pkg.mkdir(parents=True)
+    for name in ("__init__.py", "impact.py", "mapping.py"):
+        (pkg / name).write_text("def f(): pass\n")
+
+    report = tmp_path / "webapp" / "coverage"
+    report.mkdir(parents=True)
+    (report / "index.html").write_text("<html>coverage</html>")
+    (report / "base.css").write_text("body{}")
+    (report / "prettify.js").write_text("var PR=1;")
+
+    assert sorted(p.name for p in collect_files(pkg)) == [
+        "__init__.py", "impact.py", "mapping.py",
+    ]
+    walked = {str(p.relative_to(tmp_path)) for p in collect_files(tmp_path)}
+    assert any(p.endswith("impact.py") for p in walked)
+    assert not any("webapp" in p for p in walked), (
+        "a generated Istanbul report dir must still be pruned (#870)"
+    )
+
+
+def test_is_noise_dir_coverage_is_evidence_gated(tmp_path):
+    """The gate itself: name alone is not enough, and an unverifiable call
+    (no parent) keeps a possibly-real code dir — same contract as env/snapshots."""
+    src = tmp_path / "coverage"
+    src.mkdir()
+    (src / "__init__.py").write_text("")
+    assert detect_mod._is_noise_dir("coverage", tmp_path) is False
+
+    generated = tmp_path / "report" / "coverage"
+    generated.mkdir(parents=True)
+    (generated / "coverage-final.json").write_text("{}")
+    assert detect_mod._is_noise_dir("coverage", tmp_path / "report") is True
+
+    assert detect_mod._is_noise_dir("coverage") is False
+    # lcov-report stays unconditional — no package is ever named that.
+    assert detect_mod._is_noise_dir("lcov-report") is True
+
+
 def test_detect_skips_visual_tests_dir(tmp_path):
     """visual-tests/ bundles and snapshots are noise — must be excluded (#869)."""
     vt = tmp_path / "visual-tests"
@@ -2190,6 +2269,78 @@ def test_detect_prunes_venv_names_without_markers(tmp_path):
     assert any("app.py" in f for f in all_files)
     for name in ("venv", ".venv", "my_venv"):
         assert not any(f"{os.sep}{name}{os.sep}" in f for f in all_files), f"{name} must stay pruned"
+
+
+@pytest.mark.parametrize(
+    ("configured_out", "absolute", "symlink_target"),
+    [
+        pytest.param("graphify-out/nlp", False, None, id="default-parent"),
+        pytest.param("artifacts/nlp", False, None, id="custom-parent"),
+        pytest.param("artifacts/nlp", True, None, id="absolute"),
+        pytest.param(
+            "aliases/output-link",
+            False,
+            "artifacts/nlp",
+            id="in-root-symlink",
+        ),
+    ],
+)
+def test_nested_graphify_out_prunes_only_configured_path(
+    tmp_path, configured_out, absolute, symlink_target
+):
+    """#2273: a nested output basename must not prune same-named source dirs."""
+    import json
+    import subprocess
+    import sys
+
+    if absolute:
+        configured_out = str(tmp_path / configured_out)
+
+    source = tmp_path / "src" / "revil" / "nexus" / "nlp" / "core.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("def tokenize(text):\n    return text.split()\n")
+
+    output_dir = (
+        tmp_path / symlink_target
+        if symlink_target is not None
+        else tmp_path / configured_out
+    )
+    if symlink_target is not None:
+        output_dir.mkdir(parents=True)
+        configured_out_link = tmp_path / configured_out
+        configured_out_link.parent.mkdir(parents=True)
+        try:
+            configured_out_link.symlink_to(output_dir, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("filesystem does not support symlinks")
+
+    generated = output_dir / "generated.py"
+    generated.parent.mkdir(parents=True, exist_ok=True)
+    generated.write_text("SHOULD_NOT_BE_INDEXED = True\n")
+
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import json, sys\n"
+                "from pathlib import Path\n"
+                "from graphify.detect import detect\n"
+                "result = detect(Path(sys.argv[1]))\n"
+                "print(json.dumps(result['files']['code']))\n"
+            ),
+            str(tmp_path),
+        ],
+        cwd=Path(__file__).parents[1],
+        env={**os.environ, "GRAPHIFY_OUT": configured_out},
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    detected = {Path(p).resolve() for p in json.loads(probe.stdout)}
+
+    assert source.resolve() in detected
+    assert generated.resolve() not in detected
 
 
 def test_detect_records_unclassified_extensionless_files(tmp_path):

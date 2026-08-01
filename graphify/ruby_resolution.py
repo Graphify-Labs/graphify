@@ -28,11 +28,12 @@ def _key(label: str) -> str:
     return re.sub(r"[^a-zA-Z0-9]+", "", str(label)).lower()
 
 
-# A Ruby class/module container node is labelled with a bare constant
-# (``Processor``, ``TaxCalculator``); methods end in ``()`` and files in ``.rb``.
-# Lets us register method-less containers (a ``Class.new(StandardError)`` error
-# class, an empty module) that have no `method` edge to be found by.
-_BARE_CONST_RE = re.compile(r"^[A-Z][A-Za-z0-9_]*$")
+# A Ruby class/module container node is labelled with a constant path, bare or
+# ``::``-qualified (``Processor``, ``Billing::Rounding``); methods end in ``()``
+# and files in ``.rb``. Lets us register method-less containers (a
+# ``Class.new(StandardError)`` error class, an empty module) that have no
+# `method` edge to be found by.
+_BARE_CONST_RE = re.compile(r"^[A-Z][A-Za-z0-9_]*(?:::[A-Z][A-Za-z0-9_]*)*$")
 
 
 def _ruby_raw_calls(per_file: list[dict]) -> list[dict]:
@@ -72,7 +73,14 @@ def resolve_ruby_member_calls(
         src, tgt = e.get("source"), e.get("target")
         cnode = node_by_id.get(src)
         if cnode is not None:
-            class_def_nids.setdefault(_key(cnode.get("label", "")), []).append(str(src))
+            clabel = str(cnode.get("label", ""))
+            class_def_nids.setdefault(_key(clabel), []).append(str(src))
+            # A nested/compact declaration labels the node fully qualified
+            # (`Billing::Processor`), but its receivers reference the bare last
+            # segment (`Processor.new`), so index that too — the unique-match
+            # guard below still bails on genuine collisions (#2302).
+            if "::" in clabel:
+                class_def_nids.setdefault(_key(clabel.split("::")[-1]), []).append(str(src))
         tnode = node_by_id.get(tgt)
         if tnode is not None:
             method_index[(str(src), _key(tnode.get("label", "")))] = str(tgt)
@@ -83,10 +91,27 @@ def resolve_ruby_member_calls(
     for n in all_nodes:
         nid = n.get("id")
         sf = str(n.get("source_file", ""))
-        if nid and sf.endswith((".rb", ".rake")) and _BARE_CONST_RE.match(str(n.get("label", ""))):
-            class_def_nids.setdefault(_key(n.get("label", "")), []).append(str(nid))
+        label = str(n.get("label", ""))
+        if nid and sf.endswith((".rb", ".rake")) and _BARE_CONST_RE.match(label):
+            class_def_nids.setdefault(_key(label), []).append(str(nid))
+            if "::" in label:
+                class_def_nids.setdefault(_key(label.split("::")[-1]), []).append(str(nid))
     for k in list(class_def_nids):
         class_def_nids[k] = sorted(set(class_def_nids[k]))
+
+    def _segment_path(label: str) -> list[str]:
+        return [s.strip().lower() for s in str(label).split("::") if s.strip()]
+
+    # Fully-qualified and last-segment views of the same definitions, for the
+    # scoped mixin lookup: `include Foo::Bar` must match a `Foo::Bar` label as a
+    # whole path, never just its tail.
+    fq_label_map: dict[tuple[str, ...], list[str]] = {}
+    last_segment_map: dict[str, list[str]] = {}
+    for nid in sorted({nid for nids in class_def_nids.values() for nid in nids}):
+        segs = _segment_path(str(node_by_id.get(nid, {}).get("label", "")))
+        if segs:
+            fq_label_map.setdefault(tuple(segs), []).append(nid)
+            last_segment_map.setdefault(segs[-1], []).append(nid)
 
     existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
 
@@ -113,10 +138,14 @@ def resolve_ruby_member_calls(
             "weight": 1.0,
         })
 
-    # `include`/`extend`/`prepend <Const>` mixins (#1668): resolve the module by
-    # its constant name to the single owning module/class node and emit a
-    # `mixes_in` edge, under the same single-definition god-node guard. An
-    # ambiguous or unresolved constant produces no edge.
+    # `include`/`extend`/`prepend <Const>` mixins (#1668): resolve the module
+    # reference lexically, the way Ruby constant lookup works (#2302) — try the
+    # reference under each enclosing scope of the including class, innermost
+    # first, then top level (a leading `::` pins it to top level). A qualified
+    # external like `ActiveSupport::Concern` matches no in-corpus path and
+    # produces no edge; an unqualified reference with no lexical match falls
+    # back to a globally unique last segment, under the same single-definition
+    # god-node guard. Ambiguous at any step -> bail, no wrong edge.
     for rc in _ruby_raw_calls(per_file):
         if not rc.get("is_mixin"):
             continue
@@ -124,7 +153,24 @@ def resolve_ruby_member_calls(
         module_name = rc.get("callee")
         if not caller or not module_name:
             continue
-        target = _unique_class(str(module_name))
+        raw_ref = str(module_name)
+        absolute = raw_ref.startswith("::")
+        ref_segs = _segment_path(raw_ref)
+        caller_node = node_by_id.get(caller)
+        caller_segs = [] if absolute else _segment_path(
+            str(caller_node.get("label", "")) if caller_node else "")
+        target: str | None = None
+        for i in range(len(caller_segs), -1, -1):
+            nids = fq_label_map.get(tuple(caller_segs[:i] + ref_segs), [])
+            if len(nids) == 1:
+                target = nids[0]
+                break
+            if len(nids) > 1:
+                break  # reopened/ambiguous definition: bail
+        if target is None and len(ref_segs) == 1 and not absolute:
+            nids = last_segment_map.get(ref_segs[0], [])
+            if len(nids) == 1:
+                target = nids[0]
         if target is not None:
             _emit(caller, target, rc, relation="mixes_in", context="mixin")
 
