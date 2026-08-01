@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import inspect
+import os
 from pathlib import Path
+import tempfile
 from typing import Any
 
 import pytest
@@ -31,8 +34,32 @@ _ANALYZE_WARNING_FILTERS = (
 )
 
 
+def _can_create_symlinks() -> bool:
+    if os.name != "nt":
+        return True
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        target = root / "target"
+        target.touch()
+        try:
+            (root / "link").symlink_to(target)
+        except OSError as exc:
+            if getattr(exc, "winerror", None) == 1314:
+                return False
+            raise
+    return True
+
+
 def pytest_collection_modifyitems(items: list[Any]) -> None:
+    symlinks_available = _can_create_symlinks()
     for item in items:
+        if not symlinks_available:
+            try:
+                source = inspect.getsource(item.obj)
+            except (OSError, TypeError):
+                source = ""
+            if ".symlink_to(" in source:
+                item.add_marker(pytest.mark.skip(reason="Windows symlink privilege is unavailable"))
         if item.path.name != "test_analyze.py":
             continue
         for warning_filter in _ANALYZE_WARNING_FILTERS:

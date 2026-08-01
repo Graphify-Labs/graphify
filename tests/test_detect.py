@@ -373,7 +373,7 @@ def test_gitignore_nested_negation_overrides_broader_root_rule(tmp_path):
     result = detect(tmp_path)
     code = result["files"]["code"]
     # nested `!important.py` re-includes it despite the root `*.py` exclude...
-    assert any("vendor/sub/important.py" in f for f in code)
+    assert sub / "important.py" in map(Path, code)
     # ...while the root-excluded and non-re-included files stay out
     assert not any(f.endswith("root.py") for f in code)
     assert not any(f.endswith("other.py") for f in code)
@@ -394,7 +394,7 @@ def test_nested_ignore_overrides_git_info_exclude_and_root(tmp_path):
 
     result = detect(tmp_path)
     code = result["files"]["code"]
-    assert any("a/b/keep.py" in f for f in code), "nested ! must beat root + info/exclude"
+    assert sub / "keep.py" in map(Path, code), "nested ! must beat root + info/exclude"
     assert not any(f.endswith("drop.py") for f in code)
 
 
@@ -942,9 +942,9 @@ def test_path_pattern_single_star_does_not_cross_segment(tmp_path):
     for pattern in ("/src/*.py", "src/*.py"):
         (tmp_path / ".graphifyignore").write_text(f"{pattern}\n")
         result = detect(tmp_path)
-        files = [path for paths in result["files"].values() for path in paths]
-        assert not any(path.endswith("src/main.py") for path in files)
-        assert any(path.endswith("src/app/main.py") for path in files)
+        files = {Path(path) for paths in result["files"].values() for path in paths}
+        assert direct not in files
+        assert nested in files
 
 
 def test_directory_only_negation_does_not_reinclude_file(tmp_path):
@@ -2406,9 +2406,9 @@ def test_detect_surfaces_unreadable_dir_instead_of_silent_skip(tmp_path, capsys)
     dir deleted mid-walk); that under-enumeration used to be invisible and could
     yield a silently partial graph. detect() now records it in walk_errors and
     warns, while still enumerating the rest of the tree."""
-    import os
+    if not hasattr(os, "geteuid"):
+        pytest.skip("POSIX directory permission semantics required")
     if os.geteuid() == 0:
-        import pytest
         pytest.skip("running as root: chmod 000 does not block scandir")
     (tmp_path / "a.py").write_text("def f(): pass\n")
     locked = tmp_path / "locked"

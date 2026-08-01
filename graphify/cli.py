@@ -12,7 +12,7 @@ import re
 import sys
 import time
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 
 _SEARCH_NUDGE = json.dumps({
@@ -572,9 +572,18 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
                 in_project = False
                 for v in explicit:
                     p = Path(v)
-                    if not p.is_absolute():
+                    is_absolute = (
+                        p.is_absolute()
+                        or PurePosixPath(v).is_absolute()
+                        or PureWindowsPath(v).is_absolute()
+                    )
+                    if not is_absolute:
                         in_project = True  # relative -> anchored at cwd == in project
                         break
+                    if not p.is_absolute():
+                        # Absolute under another platform's path grammar cannot
+                        # resolve inside this host's project root.
+                        continue
                     try:
                         p.resolve().relative_to(root)
                         in_project = True

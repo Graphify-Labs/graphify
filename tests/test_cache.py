@@ -624,7 +624,11 @@ def test_semantic_prune_removes_orphan_entries(tmp_path):
     h_a = file_hash(f, tmp_path)
     save_cached(f, {"nodes": [{"id": "a"}], "edges": []}, root=tmp_path, kind="semantic")
 
-    f.write_text("# B\n\nContent B.\n")
+    # The rewrite must change the byte length, not just the bytes. file_hash
+    # has a stat fastpath keyed on (size, mtime_ns), so a same-size edit landing
+    # in the same mtime tick returns the stale digest: h_a == h_b, both saves
+    # collapse onto one entry, and the orphan this test prunes is never created.
+    f.write_text("# B\n\nContent B, rewritten.\n")
     h_b = file_hash(f, tmp_path)
     save_cached(f, {"nodes": [{"id": "b"}], "edges": []}, root=tmp_path, kind="semantic")
 
@@ -885,7 +889,10 @@ def test_semantic_prune_sweeps_both_namespaces_against_same_live_set(tmp_path):
     save_semantic_cache([{"id": "da", "source_file": "doc.md"}], [],
                         root=tmp_path, mode="deep")
 
-    f.write_text("# B\n\nContent B.\n")
+    # Byte length must change too -- see the note in
+    # test_semantic_prune_removes_orphan_entries: a same-size rewrite in the
+    # same mtime tick hits file_hash's stat fastpath and yields no orphan.
+    f.write_text("# B\n\nContent B, rewritten.\n")
     h_live = file_hash(f, tmp_path)
     save_semantic_cache([{"id": "pb", "source_file": "doc.md"}], [], root=tmp_path)
     save_semantic_cache([{"id": "db", "source_file": "doc.md"}], [],

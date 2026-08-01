@@ -321,6 +321,18 @@ def _normalize_path(path: Path) -> Path:
     return Path(os.path.normcase(s))
 
 
+def _io_path(path: "str | Path") -> str:
+    """Return a Windows extended-length path for filesystem operations."""
+    import sys
+    s = str(path)
+    if sys.platform != "win32" or s.startswith("\\\\?\\"):
+        return s
+    s = os.path.abspath(s)
+    if s.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + s[2:]
+    return "\\\\?\\" + s
+
+
 def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = None) -> str:
     """SHA256 of file contents + path relative to root.
 
@@ -905,18 +917,21 @@ def save_cached(path: Path, result: dict, root: Path = Path("."), kind: str = "a
     location = cache_root if cache_root is not None else root
     target_dir = cache_dir(location, kind, _resolve_prompt_fp(prompt, prompt_file))
     entry = target_dir / f"{h}.json"
-    fd, tmp_path = tempfile.mkstemp(dir=target_dir, prefix=f"{h}.", suffix=".tmp")
+    # Keep the transient name short: the final content-addressed entry already
+    # carries the full SHA-256, while repeating it here can exceed Windows'
+    # legacy MAX_PATH limit in deeply nested checkouts.
+    fd, tmp_path = tempfile.mkstemp(dir=target_dir, prefix=".tmp-", suffix=".tmp")
     try:
         os.write(fd, json.dumps(on_disk).encode())
         os.close(fd)
         try:
-            os.replace(tmp_path, entry)
+            os.replace(_io_path(tmp_path), _io_path(entry))
         except PermissionError:
             # Windows: os.replace can fail with WinError 5 if the target is
             # briefly locked. Fall back to copy-then-delete.
             import shutil
-            shutil.copy2(tmp_path, entry)
-            os.unlink(tmp_path)
+            shutil.copy2(_io_path(tmp_path), _io_path(entry))
+            os.unlink(_io_path(tmp_path))
     except Exception:
         try:
             os.close(fd)

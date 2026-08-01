@@ -27,7 +27,7 @@ import os
 import re
 import sys
 import unicodedata
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import networkx as nx
 from .ids import make_id, normalize_id as _normalize_id
 from .paths import default_graph_json as _default_graph_json
@@ -479,7 +479,7 @@ def _semantic_id_remap(nodes: list, root: str | None) -> dict:
             continue
         sf_norm = _norm_source_file(str(sf), root) or str(sf)
         rel = Path(sf_norm)
-        if rel.is_absolute():
+        if rel.is_absolute() or PurePosixPath(sf_norm).is_absolute():
             continue  # can't relativize (no/failed root) — leave id untouched
         if not rel.name:
             # source_file equals the scan root, so _norm_source_file relativized it
