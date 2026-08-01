@@ -58,3 +58,15 @@ def test_matching_version_is_silent(tmp_path, monkeypatch, capsys):
     skill_dst = _make_skill(tmp_path, "0.9.3")
     mainmod._check_skill_version(skill_dst)
     assert capsys.readouterr().err == ""
+
+
+def test_externally_managed_skill_is_silent_even_when_stale(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(mainmod, "__version__", "0.9.31")
+    skill_dst = _make_skill(tmp_path, "0.9.20")
+    (skill_dst.parent / ".graphify_externally_managed").write_text(
+        "managed by host configuration\n", encoding="utf-8"
+    )
+
+    mainmod._check_skill_version(skill_dst)
+
+    assert capsys.readouterr().err == ""

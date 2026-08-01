@@ -30,6 +30,63 @@ except Exception:
 
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
 
+_EXTERNALLY_MANAGED_MARKER = ".graphify_externally_managed"
+
+
+def _is_externally_managed(skill_dst: Path) -> bool:
+    """Return whether another tool owns this skill destination.
+
+    The marker follows the same ownership boundary as Python's
+    ``EXTERNALLY-MANAGED`` convention: Graphify may use the installed package,
+    but must not overwrite or remove the assistant instructions maintained by
+    another system.
+    """
+    try:
+        return (skill_dst.parent / _EXTERNALLY_MANAGED_MARKER).exists()
+    except OSError:
+        return False
+
+
+def _refuse_externally_managed_cli_action(platform_name: str, action: str) -> None:
+    """Stop a platform installer before it mutates assistant configuration."""
+    platform_name = _canonical_platform(platform_name)
+    if platform_name not in _PLATFORM_CONFIG:
+        return
+    skill_dst = _platform_skill_destination(platform_name)
+    if not _is_externally_managed(skill_dst):
+        return
+    print(
+        f"error: {platform_name} integration is externally managed; Graphify will not "
+        f"{action} its skill, hooks, or instruction files. Remove "
+        f"{skill_dst.parent / _EXTERNALLY_MANAGED_MARKER} only if Graphify should "
+        "take ownership.",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+
+def _refuse_bulk_uninstall_when_externally_managed() -> None:
+    """Prevent a bulk uninstall from partially deleting managed integrations."""
+    managed = sorted(
+        {
+            skill_dst.parent / _EXTERNALLY_MANAGED_MARKER
+            for skill_dst in {
+                _platform_skill_destination(name) for name in _PLATFORM_CONFIG
+            }
+            if _is_externally_managed(skill_dst)
+        },
+        key=str,
+    )
+    if not managed:
+        return
+    markers = ", ".join(str(path) for path in managed)
+    print(
+        "error: bulk uninstall refused because externally managed Graphify "
+        f"integrations are present: {markers}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
 
 @functools.lru_cache(maxsize=None)
 def _always_on(basename: str) -> str:
@@ -63,7 +120,7 @@ def _refresh_all_version_stamps() -> None:
     for name in _PLATFORM_CONFIG:
         skill_dst = _platform_skill_destination(name)
         vf = skill_dst.parent / ".graphify_version"
-        if skill_dst.exists():
+        if skill_dst.exists() and not _is_externally_managed(skill_dst):
             vf.write_text(__version__, encoding="utf-8")
 def _platform_skill_destination(platform_name: str, *, project: bool = False, project_dir: Path | None = None) -> Path:
     """Return the skill destination for a platform and scope."""
@@ -181,6 +238,18 @@ def _copy_skill_file(platform_name: str, *, project: bool = False, project_dir: 
     ``skill_refs``), any orphan ``references/`` left by a prior progressive
     install is removed so the on-disk layout matches the package.
     """
+    skill_dst = _platform_skill_destination(
+        platform_name, project=project, project_dir=project_dir
+    )
+    if _is_externally_managed(skill_dst):
+        print(
+            f"error: {skill_dst} is externally managed; Graphify will not overwrite it. "
+            f"Remove {skill_dst.parent / _EXTERNALLY_MANAGED_MARKER} only if Graphify "
+            "should take ownership.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
     skill_file = "skill.md" if platform_name == "gemini" else _PLATFORM_CONFIG[platform_name]["skill_file"]
     skill_src = Path(__file__).parent / skill_file
     if not skill_src.exists():
@@ -198,7 +267,6 @@ def _copy_skill_file(platform_name: str, *, project: bool = False, project_dir: 
         )
         sys.exit(1)
 
-    skill_dst = _platform_skill_destination(platform_name, project=project, project_dir=project_dir)
     skill_dst.parent.mkdir(parents=True, exist_ok=True)
 
     # Install the references/ sidecar (or clear an orphan one) BEFORE writing
@@ -232,6 +300,9 @@ def _copy_skill_file(platform_name: str, *, project: bool = False, project_dir: 
 def _remove_skill_file(platform_name: str, *, project: bool = False, project_dir: Path | None = None) -> bool:
     """Remove a platform skill file and its version stamp without touching other scopes."""
     skill_dst = _platform_skill_destination(platform_name, project=project, project_dir=project_dir)
+    if _is_externally_managed(skill_dst):
+        print(f"  skill externally managed; left untouched -> {skill_dst}")
+        return False
     removed = False
     if skill_dst.exists():
         skill_dst.unlink()
@@ -2018,6 +2089,10 @@ def dispatch_install_cli(cmd: str) -> bool:
     """
     if cmd not in _CLI_INSTALL_COMMANDS:
         return False
+    if cmd not in ("install", "uninstall"):
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd in ("install", "uninstall"):
+            _refuse_externally_managed_cli_action(cmd, subcmd)
     if cmd == "install":
         # Default to windows platform on Windows, claude elsewhere
         default_platform = "windows" if platform.system() == "Windows" else "claude"
@@ -2105,6 +2180,8 @@ def dispatch_install_cli(cmd: str) -> bool:
             else:
                 _project_uninstall_all(Path("."))
         else:
+            if selected_platform is None:
+                _refuse_bulk_uninstall_when_externally_managed()
             uninstall_all(purge=purge)
     elif cmd == "claude":
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""

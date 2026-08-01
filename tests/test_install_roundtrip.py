@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -190,6 +191,55 @@ def test_install_entrypoint_roundtrip_for_progressive_and_monolith(tmp_path):
         with patch("graphify.__main__.Path.home", return_value=tmp_path):
             mainmod._remove_skill_file(platform)
         assert not (skill_dir / "SKILL.md").exists()
+
+
+def test_externally_managed_skill_is_not_overwritten_or_removed(tmp_path):
+    skill_dir = tmp_path / ".claude" / "skills" / "graphify"
+    skill_dir.mkdir(parents=True)
+    skill = skill_dir / "SKILL.md"
+    skill.write_text("host-managed instructions\n", encoding="utf-8")
+    marker = skill_dir / ".graphify_externally_managed"
+    marker.write_text("managed by external configuration manager\n", encoding="utf-8")
+
+    with patch("graphify.__main__.Path.home", return_value=tmp_path):
+        with pytest.raises(SystemExit) as exc_info:
+            mainmod._copy_skill_file("claude")
+        assert exc_info.value.code == 1
+        assert mainmod._remove_skill_file("claude") is False
+
+    assert skill.read_text(encoding="utf-8") == "host-managed instructions\n"
+    assert marker.exists()
+
+
+@pytest.mark.parametrize(
+    ("platform", "mutated_paths"),
+    [
+        ("claude", ("CLAUDE.md", ".claude/settings.json")),
+        ("codex", ("AGENTS.md", ".codex/hooks.json")),
+    ],
+)
+def test_named_platform_installer_cannot_mutate_externally_managed_runtime(
+    platform, mutated_paths, tmp_path, monkeypatch
+):
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    home.mkdir()
+    project.mkdir()
+    monkeypatch.chdir(project)
+
+    with patch("graphify.__main__.Path.home", return_value=home):
+        skill_dst = mainmod._platform_skill_destination(platform)
+        skill_dst.parent.mkdir(parents=True)
+        (skill_dst.parent / ".graphify_externally_managed").write_text(
+            "managed by external configuration manager\n", encoding="utf-8"
+        )
+        monkeypatch.setattr(sys, "argv", ["graphify", platform, "install"])
+        with pytest.raises(SystemExit) as exc_info:
+            mainmod.dispatch_install_cli(platform)
+
+    assert exc_info.value.code == 1
+    for relative in mutated_paths:
+        assert not (project / relative).exists()
 
 
 # --- monolith -> progressive upgrade path --------------------------------------

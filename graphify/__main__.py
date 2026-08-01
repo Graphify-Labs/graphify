@@ -54,6 +54,7 @@ from graphify.install import (  # noqa: E402,F401
     _install_kilo_plugin,
     _install_opencode_plugin,
     _install_skill_references,
+    _is_externally_managed,
     _kilo_config_path,
     _kilo_config_write_path,
     _kilo_install,
@@ -163,6 +164,8 @@ def __getattr__(name: str) -> str:
 
 def _check_skill_version(skill_dst: Path) -> None:
     """Warn if the installed skill is from an older graphify version."""
+    if _is_externally_managed(skill_dst):
+        return
     version_file = skill_dst.parent / ".graphify_version"
     try:
         if not version_file.exists():
