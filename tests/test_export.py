@@ -2,6 +2,7 @@ import json
 import math
 import re
 import tempfile
+import unicodedata
 from pathlib import Path
 import pytest
 from graphify.build import build_from_json
@@ -20,6 +21,7 @@ FIXTURES = Path(__file__).parent / "fixtures"
 # contradicts.
 with tempfile.TemporaryDirectory() as _probe_tmp:
     CASE_INSENSITIVE_FS = export._detect_case_insensitive_fs(Path(_probe_tmp))
+    UNICODE_NORMALIZING_FS = export._detect_unicode_normalizing_fs(Path(_probe_tmp))
 
 def make_graph():
     return build_from_json(json.loads((FIXTURES / "extraction.json").read_text()))
@@ -676,6 +678,36 @@ def test_to_obsidian_case_collision_across_runs_dedup_is_stable(monkeypatch, cap
         notes = [p for p in out.glob("*.md") if not p.name.startswith("_COMMUNITY")]
         stems = sorted(p.stem.lower() for p in notes)
         assert stems == ["agora", "agora_1"], [p.name for p in notes]
+
+
+
+@pytest.mark.skipif(not UNICODE_NORMALIZING_FS, reason="scenario only exists on a Unicode-normalizing filesystem")
+def test_to_obsidian_unicode_equivalent_labels_get_distinct_notes(capsys):
+    """On APFS/macOS, NFC and NFD spellings of the same visible name resolve to
+    the same path. The export must suffix the second note instead of treating it
+    as a foreign pre-existing file and dropping that node's note (#2282)."""
+    nfc = unicodedata.normalize("NFC", "Café")
+    nfd = unicodedata.normalize("NFD", "Café")
+    assert nfc != nfd
+    G = build_from_json({
+        "nodes": [
+            {"id": "a", "label": nfc, "file_type": "document", "source_file": "a.md"},
+            {"id": "b", "label": nfd, "file_type": "document", "source_file": "b.md"},
+        ],
+        "edges": [],
+    })
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "obsidian"
+        to_obsidian(G, cluster(G), str(out), community_labels={0: "Unicode"})
+        captured = capsys.readouterr()
+        assert "pre-existing" not in captured.err.lower(), captured.err
+        notes = [p for p in out.glob("*.md") if not p.name.startswith("_COMMUNITY")]
+        assert len(notes) == 2, [p.name for p in notes]
+        assert sorted(unicodedata.normalize("NFC", p.stem).casefold() for p in notes) == [
+            "café",
+            "café_1",
+        ]
+
 
 
 def test_to_obsidian_case_collision_same_node_label_change_keeps_note(monkeypatch, capsys):

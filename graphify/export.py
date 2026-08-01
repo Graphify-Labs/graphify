@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import sys
+import unicodedata
 from collections import Counter
 from datetime import date
 from pathlib import Path
@@ -460,7 +461,18 @@ def _obsidian_safe_stem(label: str) -> str:
     return _cap_filename(cleaned)
 
 
-def _dedup_node_filenames(G: nx.Graph, safe_name) -> dict[str, str]:
+def _filesystem_name_key(
+    rel_name: str,
+    *,
+    case_insensitive: bool = True,
+    unicode_normalizing: bool = True,
+) -> str:
+    """Return the filename equivalence key for the current filesystem behavior."""
+    key = unicodedata.normalize("NFC", rel_name) if unicode_normalizing else rel_name
+    return key.casefold() if case_insensitive else key
+
+
+def _dedup_node_filenames(G: nx.Graph, safe_name, name_key=_filesystem_name_key) -> dict[str, str]:
     """Map each node_id to a unique note filename, appending a numeric suffix on
     collision. The collision set is keyed on the lowercased name so two labels
     differing only by case (e.g. "References" vs "references") still get distinct
@@ -481,10 +493,10 @@ def _dedup_node_filenames(G: nx.Graph, safe_name) -> dict[str, str]:
         base = safe_name(data.get("label", node_id))
         candidate = base
         n = 1
-        while candidate.lower() in used:
+        while name_key(candidate) in used:
             candidate = f"{base}_{n}"
             n += 1
-        used.add(candidate.lower())
+        used.add(name_key(candidate))
         node_filenames[node_id] = candidate
     return node_filenames
 
@@ -503,6 +515,23 @@ def _detect_case_insensitive_fs(out: Path) -> bool:
         probe.write_text("", encoding="utf-8")
         try:
             return flipped.exists()
+        finally:
+            probe.unlink(missing_ok=True)
+    except OSError:
+        return False
+
+
+def _detect_unicode_normalizing_fs(out: Path) -> bool:
+    """Probe whether `out` treats NFC and NFD filenames as the same path."""
+    probe_name = unicodedata.normalize("NFC", ".graphify_unicode_Café.tmp")
+    equiv_name = unicodedata.normalize("NFD", ".graphify_unicode_Café.tmp")
+    probe = out / probe_name
+    equivalent = out / equiv_name
+    try:
+        out.mkdir(parents=True, exist_ok=True)
+        probe.write_text("", encoding="utf-8")
+        try:
+            return equivalent.exists()
         finally:
             probe.unlink(missing_ok=True)
     except OSError:
@@ -549,9 +578,14 @@ def to_obsidian(
     # filesystem is actually case-insensitive, so ext4/Linux keeps its existing
     # case-sensitive behavior of treating "Agora.md" and "agora.md" as distinct.
     _case_insensitive = _detect_case_insensitive_fs(out)
+    _unicode_normalizing = _detect_unicode_normalizing_fs(out)
 
     def _own_key(rel_name: str) -> str:
-        return rel_name.lower() if _case_insensitive else rel_name
+        return _filesystem_name_key(
+            rel_name,
+            case_insensitive=_case_insensitive,
+            unicode_normalizing=_unicode_normalizing,
+        )
 
     _owned_keys = {_own_key(f) for f in _owned}
 
@@ -571,7 +605,7 @@ def to_obsidian(
 
     # Map node_id → safe filename so wikilinks stay consistent.
     # Deduplicate: if two nodes produce the same filename, append a numeric suffix.
-    node_filename = _dedup_node_filenames(G, _obsidian_safe_stem)
+    node_filename = _dedup_node_filenames(G, _obsidian_safe_stem, _own_key)
 
     # Helper: compute dominant confidence for a node across all its edges
     def _dominant_confidence(node_id: str) -> str:
@@ -689,10 +723,10 @@ def to_obsidian(
         base = f"_COMMUNITY_{_obsidian_safe_stem(_community_name(cid))}"
         candidate = base
         n = 1
-        while candidate.lower() in used_community:
+        while _own_key(candidate) in used_community:
             candidate = f"{base}_{n}"
             n += 1
-        used_community.add(candidate.lower())
+        used_community.add(_own_key(candidate))
         community_filename[cid] = candidate
 
     community_notes_written = 0
