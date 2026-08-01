@@ -41,7 +41,7 @@ if [ -z "$GRAPHIFY_PYTHON" ]; then
     if [ -f "$_GFY_PYTHON_FILE" ]; then
         _FROM_FILE=$(cat "$_GFY_PYTHON_FILE" 2>/dev/null | tr -d '[:space:]')
         case "$_FROM_FILE" in
-            *[!a-zA-Z0-9/_.@:\\-]*) _FROM_FILE="" ;;  # allowlist (covers Windows paths)
+            *[!a-zA-Z0-9/_.@:\\\\-]*) _FROM_FILE="" ;;  # allowlist (covers Windows paths)
         esac
         if [ -n "$_FROM_FILE" ] && [ -x "$_FROM_FILE" ] && "$_FROM_FILE" -c "$_GFY_PROBE" 2>/dev/null; then
             GRAPHIFY_PYTHON="$_FROM_FILE"
@@ -79,7 +79,7 @@ if [ -z "$GRAPHIFY_PYTHON" ]; then
         # Allowlist: only keep characters valid in a filesystem path to prevent
         # injection if the shebang contains shell metacharacters.
         case "$GRAPHIFY_PYTHON" in
-            *[!a-zA-Z0-9/_.@-]*) GRAPHIFY_PYTHON="" ;;
+            *[!a-zA-Z0-9/_.@:\\\\-]*) GRAPHIFY_PYTHON="" ;;
         esac
         if [ -n "$GRAPHIFY_PYTHON" ] && ! "$GRAPHIFY_PYTHON" -c "$_GFY_PROBE" 2>/dev/null; then
             GRAPHIFY_PYTHON=""
@@ -104,7 +104,7 @@ fi
 # double-quote, $, backtick or backslash characters: it is carried inside a
 # shell double-quoted `-c "..."` argument (see _detached_launch).
 _REBUILD_BODY_COMMIT = """\
-import os, signal, sys
+import os, signal, sys, threading
 from pathlib import Path
 
 changed_raw = os.environ.get('GRAPHIFY_CHANGED', '')
@@ -119,9 +119,17 @@ try:
     from graphify.watch import _rebuild_code, _apply_resource_limits
     _apply_resource_limits()
     _timeout = int(os.environ.get('GRAPHIFY_REBUILD_TIMEOUT', '600'))
-    if _timeout > 0 and hasattr(signal, 'SIGALRM'):
-        signal.signal(signal.SIGALRM, lambda *_: (_ for _ in ()).throw(TimeoutError(f'graphify rebuild exceeded {_timeout}s')))
-        signal.alarm(_timeout)
+    if _timeout > 0:
+        if hasattr(signal, 'SIGALRM'):
+            signal.signal(signal.SIGALRM, lambda *_: (_ for _ in ()).throw(TimeoutError(f'graphify rebuild exceeded {_timeout}s')))
+            signal.alarm(_timeout)
+        else:
+            def _bail():
+                print(f'[graphify hook] graphify rebuild exceeded {_timeout}s', flush=True)
+                os._exit(1)
+            _watchdog = threading.Timer(_timeout, _bail)
+            _watchdog.daemon = True
+            _watchdog.start()
     _force = os.environ.get('GRAPHIFY_FORCE', '').lower() in ('1', 'true', 'yes')
     _root = Path('.')
     _out = os.environ.get('GRAPHIFY_OUT', 'graphify-out')
@@ -153,13 +161,21 @@ except Exception as exc:
 _REBUILD_BODY_CHECKOUT = """\
 from graphify.watch import _rebuild_code, _apply_resource_limits
 from pathlib import Path
-import os, signal, sys
+import os, signal, sys, threading
 try:
     _apply_resource_limits()
     _timeout = int(os.environ.get('GRAPHIFY_REBUILD_TIMEOUT', '600'))
-    if _timeout > 0 and hasattr(signal, 'SIGALRM'):
-        signal.signal(signal.SIGALRM, lambda *_: (_ for _ in ()).throw(TimeoutError(f'graphify rebuild exceeded {_timeout}s')))
-        signal.alarm(_timeout)
+    if _timeout > 0:
+        if hasattr(signal, 'SIGALRM'):
+            signal.signal(signal.SIGALRM, lambda *_: (_ for _ in ()).throw(TimeoutError(f'graphify rebuild exceeded {_timeout}s')))
+            signal.alarm(_timeout)
+        else:
+            def _bail():
+                print(f'[graphify] graphify rebuild exceeded {_timeout}s', flush=True)
+                os._exit(1)
+            _watchdog = threading.Timer(_timeout, _bail)
+            _watchdog.daemon = True
+            _watchdog.start()
     _force = os.environ.get('GRAPHIFY_FORCE', '').lower() in ('1', 'true', 'yes')
     # post-checkout: branch switch can touch arbitrary files; full rebuild path
     # (no changed_paths) is correct here. The flock inside _rebuild_code still
@@ -199,7 +215,7 @@ except Exception as exc:
 # requires Python, so we let Python do the detaching: a tiny outer process spawns
 # the real rebuild fully detached and returns immediately, so the hook never
 # blocks. POSIX uses start_new_session (the setsid equivalent); Windows uses
-# DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP, breaking away from any job object
+# CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP, breaking away from any job object
 # when allowed. This payload is carried inside a shell double-quoted -c argument,
 # so it deliberately uses only single-quoted Python strings (no ", $, ` or \\).
 _LAUNCHER_TEMPLATE = """\
@@ -216,7 +232,7 @@ except OSError:
 _kw = dict(stdout=_out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, cwd=os.getcwd(), close_fds=True)
 _cmd = [sys.executable, '-c', _src]
 if os.name == 'nt':
-    _flags = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    _flags = 0x08000000 | 0x00000200  # CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
     try:
         subprocess.Popen(_cmd, creationflags=_flags | 0x01000000, **_kw)  # + CREATE_BREAKAWAY_FROM_JOB
     except OSError:
@@ -487,10 +503,17 @@ def _pinned_python() -> str:
     that is not a valid plain filesystem path character, preventing $(...),
     backtick, double-quote, semicolon, etc. from being injected into generated
     shell scripts or the merge-driver command line. The allowlist includes ':'
-    and '\\' so Windows paths (C:\\...) are accepted. An empty return means
-    callers must fall back to the `graphify` launcher on PATH — safe degradation.
+    and '\\' so Windows paths (C:\\...) are accepted, and a plain space so
+    Windows profile paths (C:\\Users\\First Last\\...) are too — a space cannot
+    start a substitution or a new command, and every consumer quotes the value:
+    the hook scripts embed it as '$_PINNED' (single-quoted, then referenced as
+    "$_PINNED") and _register_merge_driver double-quotes it (#2166). Before that
+    a space rejected the whole path, so hooks installed under any Windows user
+    whose profile name contains a space silently pinned nothing. An empty return
+    means callers must fall back to the `graphify` launcher on PATH — safe
+    degradation.
     """
-    if re.search(r"[^a-zA-Z0-9/_.@:\\-]", sys.executable):
+    if re.search(r"[^a-zA-Z0-9/_.@: \\-]", sys.executable):
         return ""
     return sys.executable
 
@@ -535,7 +558,12 @@ def _register_merge_driver(root: Path) -> str:
     import subprocess as _sp
     pinned = _pinned_python()
     if pinned:
-        driver = f"{pinned} -m graphify merge-driver %O %A %B"
+        # Double-quoted: the allowlist in _pinned_python() permits a space (Windows
+        # profile paths), and git runs this driver string through a shell, so an
+        # unquoted "C:\\Users\\First Last\\...\\python.exe" would split into two
+        # words and the driver would never run (#2166). The same allowlist keeps
+        # '$' and backticks out, so double quotes cannot introduce expansion.
+        driver = f'"{pinned}" -m graphify merge-driver %O %A %B'
     else:
         driver = "graphify merge-driver %O %A %B"
     try:

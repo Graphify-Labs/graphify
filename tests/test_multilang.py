@@ -487,6 +487,64 @@ def test_sql_no_dangling_edges():
     for e in r["edges"]:
         assert e["source"] in node_ids, f"dangling source: {e['source']}"
 
+def test_sql_cross_file_fk_resolves_and_never_leaks_scan_path(tmp_path):
+    """#2324: a REFERENCES target defined in ANOTHER file must collapse onto the
+    real table node (via the sourceless-stub rewire), and no node id or edge
+    endpoint may embed the absolute scan path. Before the fix, the fallback
+    minted a node-less id under the referencing file's own stem, which with
+    absolute inputs leaked the machine path AND could never match the m1
+    definition, so prisma-style cross-migration FKs dangled."""
+    pytest.importorskip("tree_sitter_sql")
+    from graphify.ids import make_id
+
+    m1 = tmp_path / "prisma" / "migrations" / "m1"
+    m2 = tmp_path / "prisma" / "migrations" / "m2"
+    m1.mkdir(parents=True)
+    m2.mkdir(parents=True)
+    (m1 / "migration.sql").write_text(
+        'CREATE TABLE "Tenant" (\n'
+        '    "id" TEXT NOT NULL,\n'
+        '    CONSTRAINT "Tenant_pkey" PRIMARY KEY ("id")\n'
+        ');\n'
+    )
+    (m2 / "migration.sql").write_text(
+        'CREATE TABLE "StockGapEvent" (\n'
+        '    "id" TEXT NOT NULL,\n'
+        '    "tenantId" TEXT NOT NULL,\n'
+        '    CONSTRAINT "StockGapEvent_pkey" PRIMARY KEY ("id")\n'
+        ');\n'
+        'ALTER TABLE "StockGapEvent" ADD CONSTRAINT "StockGapEvent_tenantId_fkey"'
+        ' FOREIGN KEY ("tenantId") REFERENCES "Tenant"("id");\n'
+    )
+
+    r = extract(
+        [(m1 / "migration.sql").resolve(), (m2 / "migration.sql").resolve()],
+        root=tmp_path,
+    )
+    node_ids = {n["id"] for n in r["nodes"]}
+
+    # (a) the FK resolved cross-file onto the REAL Tenant definition node
+    tenant_ids = [i for i in node_ids if i.endswith("m1_migration_tenant")]
+    assert len(tenant_ids) == 1, f"expected one real Tenant node, got {tenant_ids}"
+    ref_targets = {e["target"] for e in r["edges"] if e["relation"] == "references"}
+    assert tenant_ids[0] in ref_targets, (
+        f"cross-file FK did not rewire onto {tenant_ids[0]}; "
+        f"references targets: {ref_targets}"
+    )
+
+    # (b) no dangling endpoints anywhere
+    for e in r["edges"]:
+        assert e["source"] in node_ids, f"dangling source: {e['source']}"
+        assert e["target"] in node_ids, f"dangling target: {e['target']}"
+
+    # (c) the absolute scan path never leaks into any id or endpoint
+    abs_slug = make_id(str(tmp_path.resolve()))
+    for i in node_ids:
+        assert abs_slug not in i, f"absolute path leaked into node id: {i}"
+    for e in r["edges"]:
+        assert abs_slug not in e["source"], f"absolute path leaked: {e['source']}"
+        assert abs_slug not in e["target"], f"absolute path leaked: {e['target']}"
+
 def test_sql_alter_table_fk_edge():
     """ALTER TABLE ... FOREIGN KEY ... REFERENCES produces a references edge."""
     r = _extract_sql_or_skip("sample_alter_fk.sql")
@@ -542,3 +600,47 @@ def test_sql_plpgsql_clean_function_not_double_emitted():
     # And nothing else is duplicated either
     ids = [n["id"] for n in r["nodes"]]
     assert len(ids) == len(set(ids))
+
+def test_sql_quoted_plpgsql_routines_are_recovered():
+    """#2180: quoted identifiers must not defeat the ERROR-node name recovery.
+
+    Generated PostgreSQL DDL (Supabase-style dumps, for example) quotes every
+    identifier: CREATE OR REPLACE FUNCTION "public"."fn"(...). The recovery
+    pattern matched a bare [\\w$.]+, which stops at the leading quote, so every
+    routine whose body also failed to parse -- RAISE, PERFORM, :=, IF..THEN,
+    bare NULL; -- was dropped with no warning and exit code 0. The same body
+    with an *unquoted* name recovered fine, which is why the drop looked like it
+    depended only on the body statement.
+    """
+    r = _extract_sql_or_skip("sample_plpgsql_quoted.sql")
+    labels = [n["label"] for n in r["nodes"]]
+    for name in (
+        "raise_exception_fn",
+        "raise_notice_fn",
+        "perform_fn",
+        "assign_fn",
+        "if_then_fn",
+        "null_body_fn",
+        "quoted_proc",
+    ):
+        assert f'"public"."{name}"()' in labels, f"{name} dropped from a quoted-DDL file (#2180)"
+
+def test_sql_quoted_plpgsql_file_stays_clean():
+    """The #2180 recovery must not add junk, duplicates, or drop the tables."""
+    r = _extract_sql_or_skip("sample_plpgsql_quoted.sql")
+    labels = [n["label"] for n in r["nodes"]]
+    # Tables before and after the unparseable routines still extract.
+    assert any("accounts" in l for l in labels)
+    assert any("audit_log" in l for l in labels)
+    # No empty or ERROR labels leaked out of the recovery.
+    for l in labels:
+        assert l, "empty node label"
+        assert l != "ERROR"
+    # Nothing emitted twice (a routine must not come from both paths).
+    ids = [n["id"] for n in r["nodes"]]
+    assert len(ids) == len(set(ids)), "duplicate node ids"
+    assert len(labels) == len(set(labels)), f"duplicate labels: {labels}"
+    # Every recovered routine is reachable from the file node.
+    contains_targets = {e["target"] for e in r["edges"] if e["relation"] == "contains"}
+    fn_ids = {n["id"] for n in r["nodes"] if n["label"].endswith("()")}
+    assert fn_ids <= contains_targets

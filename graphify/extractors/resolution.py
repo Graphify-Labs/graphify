@@ -19,6 +19,9 @@ import sys
 
 _TSCONFIG_ALIAS_CACHE: dict[str, dict[str, list[str]]] = {}
 
+# compilerOptions.baseUrl per config path, as an absolute dir (#2153).
+_TSCONFIG_BASEURL_CACHE: "dict[str, Path | None]" = {}
+
 _WORKSPACE_MANIFEST_NAMES = ("pnpm-workspace.yaml", "package.json")
 
 _JS_RESOLVE_EXTS = (".ts", ".tsx", ".mts", ".cts", ".svelte", ".js", ".jsx", ".mjs", ".cjs")
@@ -164,23 +167,82 @@ def _read_tsconfig_aliases(tsconfig: Path, base_dir: Path, seen: set) -> dict[st
 
     return aliases
 
+def _read_json_config(path: Path) -> "dict | None":
+    """Parse a tsconfig/jsconfig as JSON, falling back to JSONC (#2153).
+
+    Mirrors the read/parse handling in `_read_tsconfig_aliases`; returns None on
+    any unreadable or unparseable file so a malformed config degrades to "no
+    baseUrl" instead of raising.
+    """
+    try:
+        raw = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    for candidate in (raw, _strip_jsonc(raw)):
+        try:
+            data = json.loads(candidate)
+        except Exception:
+            continue
+        return data if isinstance(data, dict) else None
+    return None
+
+def _find_js_config(start_dir: Path) -> "tuple[Path, Path] | None":
+    """Nearest tsconfig.json/jsconfig.json walking up from start_dir.
+
+    `jsconfig.json` is the plain-JS spelling of the same file (already indexed by
+    json_config.py) and was never probed here, so a Rails/webpacker project that
+    configures resolution in jsconfig.json got no aliases at all (#2153).
+    tsconfig.json wins when both sit in one directory, matching tsc and editors,
+    which consult jsconfig.json only when there is no tsconfig.json.
+    """
+    current = start_dir.resolve()
+    for candidate in [current, *current.parents]:
+        for name in ("tsconfig.json", "jsconfig.json"):
+            config = candidate / name
+            if config.exists():
+                return config, candidate
+    return None
+
 def _load_tsconfig_aliases(start_dir: Path) -> dict[str, list[str]]:
-    """Walk up from start_dir to find tsconfig.json and return compilerOptions.paths aliases.
+    """Walk up from start_dir to find tsconfig/jsconfig.json and return compilerOptions.paths aliases.
 
     Follows extends chains so SvelteKit/Nuxt/NestJS inherited aliases are included.
     Returns a dict mapping alias patterns to ordered resolved target patterns;
     wildcard tokens remain intact for substitution during resolution (#927).
-    Result is cached by tsconfig path string.
+    Result is cached by config path string.
     """
-    current = start_dir.resolve()
-    for candidate in [current, *current.parents]:
-        tsconfig = candidate / "tsconfig.json"
-        if tsconfig.exists():
-            key = str(tsconfig)
-            if key not in _TSCONFIG_ALIAS_CACHE:
-                _TSCONFIG_ALIAS_CACHE[key] = _read_tsconfig_aliases(tsconfig, candidate, seen=set())
-            return _TSCONFIG_ALIAS_CACHE[key]
-    return {}
+    found = _find_js_config(start_dir)
+    if found is None:
+        return {}
+    config, candidate = found
+    key = str(config)
+    if key not in _TSCONFIG_ALIAS_CACHE:
+        _TSCONFIG_ALIAS_CACHE[key] = _read_tsconfig_aliases(config, candidate, seen=set())
+    return _TSCONFIG_ALIAS_CACHE[key]
+
+def _load_tsconfig_base_url(start_dir: Path) -> "Path | None":
+    """`compilerOptions.baseUrl` of the nearest config, as an absolute directory.
+
+    baseUrl was only ever used as the base that `paths` targets resolve against,
+    so a config declaring baseUrl and NO paths yielded an empty alias map and
+    every non-relative import went unresolved (#2153). Exposed separately so it
+    can act as a resolution root of last resort, after all declared aliases miss.
+    Returns None when no config declares baseUrl.
+    """
+    found = _find_js_config(start_dir)
+    if found is None:
+        return None
+    config, candidate = found
+    key = str(config)
+    if key not in _TSCONFIG_BASEURL_CACHE:
+        base_url = None
+        data = _read_json_config(config)
+        if data is not None:
+            raw_base = data.get("compilerOptions", {}).get("baseUrl")
+            if isinstance(raw_base, str) and raw_base:
+                base_url = Path(os.path.normpath(candidate / raw_base))
+        _TSCONFIG_BASEURL_CACHE[key] = base_url
+    return _TSCONFIG_BASEURL_CACHE[key]
 
 def _match_tsconfig_alias(raw: str, pattern: str) -> "tuple[tuple[int, int], str, bool] | None":
     """Return (specificity, captured text, is_wildcard) when pattern matches raw.
@@ -208,12 +270,21 @@ def _match_tsconfig_alias(raw: str, pattern: str) -> "tuple[tuple[int, int], str
         return (2, -len(prefix)), raw[len(prefix):].lstrip("/"), False
     return None
 
-def _resolve_tsconfig_alias(raw: str, aliases: dict[str, list[str]]) -> "Path | None":
+def _resolve_tsconfig_alias(raw: str, aliases: dict[str, list[str]],
+                            base_url: "Path | None" = None) -> "Path | None":
     """Resolve `raw` against the most specific matching tsconfig alias pattern.
 
     Within that pattern, try targets in declared order and return the first whose
     candidate resolves to a real file. If none exist, return the first candidate
     so existing phantom/external-edge behavior stays unchanged.
+
+    `base_url` is a resolution root of last resort, tried only when NO declared
+    alias matches (#2153). It must not participate in the specificity contest:
+    a bare `*` alias would score (1, 0) and so beat a declared non-wildcard
+    directory-prefix alias at (2, -len), silently shadowing it and regressing
+    #1269. Unlike the alias path this returns a candidate only when it is a real
+    file on disk, so a genuine external package (`import React from 'react'`)
+    still resolves to nothing instead of a fabricated <baseUrl>/react edge.
     """
     best: "tuple[tuple[int, int], str, bool, list[str]] | None" = None
     for pattern, targets in aliases.items():
@@ -225,6 +296,11 @@ def _resolve_tsconfig_alias(raw: str, aliases: dict[str, list[str]]) -> "Path | 
             best = specificity, captured, is_wildcard, targets
 
     if best is None:
+        if base_url is not None:
+            candidate = Path(os.path.normpath(base_url / raw))
+            resolved = _resolve_js_import_path(candidate)
+            if resolved.is_file():
+                return resolved
         return None
 
     _, captured, is_wildcard, targets = best
@@ -442,7 +518,8 @@ def _resolve_js_module_path(raw: str | Path, start_dir: Path | None = None) -> P
         return _resolve_js_import_path(start_dir / raw)
 
     aliases = _load_tsconfig_aliases(start_dir)
-    hit = _resolve_tsconfig_alias(raw, aliases)
+    hit = _resolve_tsconfig_alias(raw, aliases,
+                                  base_url=_load_tsconfig_base_url(start_dir))
     if hit is not None:
         return _resolve_js_import_path(hit)
 
@@ -980,6 +1057,16 @@ def _apply_symbol_resolution_facts(
             local_alias=local_name if local_name != to_path.stem else None,
         )
 
+    # #2262 producer guard: never emit a `calls` use-edge from a source id
+    # that owns no node. All node appends (ensure_symbol_node, declarations,
+    # namespace exports) happened above, so the owned set is complete here.
+    # A node-less caller id can never be canonicalized by the extract()
+    # remaps (they learn only from nodes), so an absolute-derived one would
+    # leak the machine/scan-path slug into the edge source. Reattribute the
+    # edge to the caller's FILE node — the true file-level dependency
+    # survives, and the file id is exactly what the #2231 remap
+    # canonicalizes — or drop it when no file node id is available.
+    owned = {str(n.get("id")) for n in nodes}
     for use_fact in facts.uses:
         file_path = use_fact.file_path.resolve()
         target_id = None
@@ -997,8 +1084,13 @@ def _apply_symbol_resolution_facts(
             target_id = symbol_nodes.get((file_path, use_fact.local_name))
         if target_id is None:
             continue
+        source_id = use_fact.source_id
+        if use_fact.relation == "calls" and source_id not in owned:
+            source_id = source_file_id.get(file_path)
+            if source_id is None:
+                continue
         add_edge(
-            use_fact.source_id,
+            source_id,
             target_id,
             use_fact.relation,
             use_fact.context,
@@ -1019,10 +1111,20 @@ def _parse_js_tree(path: Path):
             source = masked.encode("utf-8")
         else:
             source = path.read_bytes()
-        use_ts = path.suffix in (".ts", ".tsx", ".mts", ".cts") or (
+        use_ts = path.suffix in (".ts", ".mts", ".cts") or (
             path.suffix == ".vue" and vue_lang not in ("js", "jsx")
         )
-        if use_ts:
+        if path.suffix == ".tsx":
+            # .tsx must use the JSX-aware TSX grammar, mirroring the engine's
+            # _TSX_CONFIG (ts_language_fn="language_tsx"). Parsing .tsx with
+            # language_typescript misparses JSX, and tree-sitter's error
+            # recovery floats nested arrow components up to top level —
+            # _js_top_level_function_bodies then mints caller ids for callers
+            # that own no node, leaking absolute-path slugs into calls-edge
+            # sources (#2262).
+            import tree_sitter_typescript as tstypescript
+            language = Language(tstypescript.language_tsx())
+        elif use_ts:
             import tree_sitter_typescript as tstypescript
             language = Language(tstypescript.language_typescript())
         else:

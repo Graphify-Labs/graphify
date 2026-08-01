@@ -94,10 +94,14 @@ def extract_markdown(path: Path) -> dict:
                           "source_file": str_path, "source_location": f"L{line}"})
 
     def add_edge(src: str, tgt: str, relation: str, line: int,
-                 confidence: str = "EXTRACTED", weight: float = 1.0) -> None:
-        edges.append({"source": src, "target": tgt, "relation": relation,
-                      "confidence": confidence, "source_file": str_path,
-                      "source_location": f"L{line}", "weight": weight})
+                 confidence: str = "EXTRACTED", weight: float = 1.0,
+                 target_file: "str | None" = None) -> None:
+        edge = {"source": src, "target": tgt, "relation": relation,
+                "confidence": confidence, "source_file": str_path,
+                "source_location": f"L{line}", "weight": weight}
+        if target_file is not None:
+            edge["target_file"] = target_file
+        edges.append(edge)
 
     file_nid = _make_id(str(path))
     add_node(file_nid, path.name, 1)
@@ -120,7 +124,21 @@ def extract_markdown(path: Path) -> dict:
         if tgt_nid == file_nid or tgt_nid in linked_targets:
             return
         linked_targets.add(tgt_nid)
-        add_edge(file_nid, tgt_nid, "references", line)
+        # Stamp the resolved target file (mirroring the JS/Python import
+        # stamps, #1814/#2213) so the #2169 remap pass can canonicalize this
+        # edge's target on an incremental run where the linked doc is not in
+        # the batch — without it the target keeps an absolute-path-derived id
+        # that matches no node in the merged graph and the md->md reference
+        # silently drops (#2211). Existence-gated: a link to a nonexistent
+        # doc must stay dangling, exactly as before. The stamp is transient
+        # and popped before graph.json ships.
+        target_file = None
+        try:
+            if resolved.is_file():
+                target_file = str(resolved)
+        except OSError:
+            pass
+        add_edge(file_nid, tgt_nid, "references", line, target_file=target_file)
 
     # Track heading stack for nesting: [(level, nid), ...]
     heading_stack: list[tuple[int, str]] = []

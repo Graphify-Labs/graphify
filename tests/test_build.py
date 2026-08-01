@@ -135,6 +135,145 @@ def test_legacy_edge_from_to_canonicalized():
     assert G.number_of_edges() == 1
 
 
+def test_legacy_node_name_path_aliases_folded():
+    """#2194: nodes carrying `name`/`path` instead of `label`/`source_file` must
+    be canonicalized before validation, not enter the graph as label-less
+    ghosts. After build the canonicalized dict also passes validation."""
+    from graphify.validate import validate_extraction
+    ext = {"nodes": [{"id": "n1", "name": "Foo", "path": "a/b.md", "file_type": "concept"}],
+           "edges": [], "input_tokens": 0, "output_tokens": 0}
+    G = build_from_json(ext)
+    attrs = G.nodes["n1"]
+    assert attrs["label"] == "Foo"
+    assert attrs["source_file"] == "a/b.md"
+    assert "name" not in attrs
+    assert "path" not in attrs
+    # build_from_json canonicalizes in place; the extraction dict must now be
+    # schema-valid (no missing-field errors for the alias node).
+    assert not [e for e in validate_extraction(ext) if "missing required field" in e]
+
+
+def test_legacy_edge_type_confidence_score_aliases_folded():
+    """#2194: edges carrying `type`/`confidence_score` instead of
+    `relation`/`confidence` fold to canonical fields. Recovery confidence is
+    INFERRED (never EXTRACTED — alias recovery is not provenance) and the
+    companion confidence_score float is retained, not popped."""
+    ext = {"nodes": [{"id": "n1", "label": "A", "file_type": "code", "source_file": "a.py"},
+                     {"id": "n2", "label": "B", "file_type": "code", "source_file": "b.py"}],
+           "edges": [{"source": "n1", "target": "n2", "type": "references",
+                      "confidence_score": 0.9, "source_file": "a.py"}],
+           "input_tokens": 0, "output_tokens": 0}
+    G = build_from_json(ext)
+    data = edge_data(G, "n1", "n2")
+    assert data["relation"] == "references"
+    assert data["confidence"] == "INFERRED"
+    assert data["confidence_score"] == 0.9
+    assert "type" not in data
+
+
+def test_node_alias_canonical_field_wins():
+    """#2194: when both the canonical field and its alias are present, the
+    canonical value wins and the alias key is left untouched."""
+    ext = {"nodes": [{"id": "n1", "label": "Real", "name": "Alias",
+                      "file_type": "code", "source_file": "a.py"}],
+           "edges": [], "input_tokens": 0, "output_tokens": 0}
+    G = build_from_json(ext)
+    assert G.nodes["n1"]["label"] == "Real"
+    assert G.nodes["n1"]["name"] == "Alias"  # preserved, not consumed
+
+
+def test_alias_node_ghost_merges_into_ast_twin():
+    """#2194: an alias-only semantic node (name/path) must participate in the
+    AST/LLM ghost merge once folded — same label and file as an AST node with a
+    different id collapses into the AST node instead of surviving as a ghost."""
+    ext = {"nodes": [
+        {"id": "src_foo_helper", "label": "helper", "file_type": "code",
+         "source_file": "src/foo.py", "_origin": "ast", "source_location": "L10"},
+        {"id": "helper_ghost", "name": "helper", "path": "src/foo.py",
+         "file_type": "code"},
+    ], "edges": [], "input_tokens": 0, "output_tokens": 0}
+    G = build_from_json(ext)
+    assert "src_foo_helper" in G.nodes
+    assert "helper_ghost" not in G.nodes
+    assert G.number_of_nodes() == 1
+
+
+def test_alias_node_gets_nonempty_norm_label(tmp_path):
+    """#2194: a recovered alias node must serialize with a non-empty norm_label
+    so query/explain can find it."""
+    from graphify.export import to_json
+    ext = {"nodes": [{"id": "n1", "name": "Foo", "path": "a/b.md", "file_type": "concept"}],
+           "edges": [], "input_tokens": 0, "output_tokens": 0}
+    G = build_from_json(ext)
+    out = tmp_path / "graph.json"
+    assert to_json(G, {}, str(out))
+    data = json.loads(out.read_text())
+    node = next(n for n in data["nodes"] if n["id"] == "n1")
+    assert node["norm_label"] == "foo"
+
+
+def test_extraction_warning_breakdown_by_cause(capsys):
+    """#2194: a mixed batch of schema errors must report per-cause counts, not
+    just the first error."""
+    ext = {"nodes": [
+        {"id": "n1", "label": "A", "file_type": "code", "source_file": "a.py"},
+        {"id": "n2", "label": "B", "file_type": "code", "source_file": "b.py"},
+        # two nodes missing label (and carrying no name alias)
+        {"id": "x1", "file_type": "code", "source_file": "x.py"},
+        {"id": "x2", "file_type": "code", "source_file": "x.py"},
+    ], "edges": [
+        # three edges missing relation (and carrying no type alias)
+        {"source": "n1", "target": "n2", "confidence": "EXTRACTED", "source_file": "a.py"},
+        {"source": "n2", "target": "n1", "confidence": "EXTRACTED", "source_file": "a.py"},
+        {"source": "n1", "target": "x1", "confidence": "EXTRACTED", "source_file": "a.py"},
+    ], "input_tokens": 0, "output_tokens": 0}
+    build_from_json(ext)
+    err = capsys.readouterr().err
+    assert "2x missing required field 'label'" in err
+    assert "3x missing required field 'relation'" in err
+
+
+def test_absolute_derived_semantic_ids_rekeyed(tmp_path):
+    """#2197: a semantic fragment whose ids were derived from an ABSOLUTE
+    source_file (Windows detect() emits them) must re-key to the canonical
+    repo-relative stem instead of ghosting against the existing graph."""
+    from graphify.ids import make_id
+    (tmp_path / "docs").mkdir()
+    abs_sf = str(tmp_path / "docs" / "DATAFLOW.md")
+    abs_stem = make_id(str(tmp_path / "docs" / "DATAFLOW"))
+    ext = {"nodes": [
+        {"id": abs_stem, "label": "DATAFLOW.md", "file_type": "document",
+         "source_file": abs_sf},
+        {"id": f"{abs_stem}_pipeline", "label": "Pipeline", "file_type": "concept",
+         "source_file": abs_sf},
+    ], "edges": [
+        {"source": abs_stem, "target": f"{abs_stem}_pipeline", "relation": "describes",
+         "confidence": "INFERRED", "source_file": abs_sf, "weight": 1.0},
+    ], "input_tokens": 0, "output_tokens": 0}
+    G = build_from_json(ext, root=tmp_path)
+    assert "docs_dataflow" in G.nodes
+    assert "docs_dataflow_pipeline" in G.nodes
+    assert abs_stem not in G.nodes
+    assert G.nodes["docs_dataflow"]["source_file"] == "docs/DATAFLOW.md"
+    assert G.has_edge("docs_dataflow", "docs_dataflow_pipeline")
+
+
+def test_absolute_derived_semantic_ids_rekeyed_backslash(tmp_path):
+    """#2197 (separator variant): the same absolute-derived-id fragment with
+    backslash separators in source_file re-keys identically."""
+    from graphify.ids import make_id
+    (tmp_path / "docs").mkdir()
+    abs_sf = str(tmp_path / "docs" / "DATAFLOW.md").replace("/", "\\")
+    abs_stem = make_id(str(tmp_path / "docs" / "DATAFLOW"))
+    ext = {"nodes": [
+        {"id": f"{abs_stem}_pipeline", "label": "Pipeline", "file_type": "concept",
+         "source_file": abs_sf},
+    ], "edges": [], "input_tokens": 0, "output_tokens": 0}
+    G = build_from_json(ext, root=tmp_path)
+    assert "docs_dataflow_pipeline" in G.nodes
+    assert G.nodes["docs_dataflow_pipeline"]["source_file"] == "docs/DATAFLOW.md"
+
+
 def test_source_file_backslash_normalized():
     """Windows backslash paths and POSIX paths for the same file must produce one node."""
     extraction = {

@@ -170,9 +170,9 @@ def test_tools_list_over_http(tmp_path):
         assert {"query_graph", "get_node", "graph_stats"} <= names
 
 
-def _project_with_graph(tmp_path, node_count: int) -> str:
+def _project_with_graph(tmp_path, node_count: int, name: str = "proj") -> str:
     """Create ``<proj>/graphify-out/graph.json`` and return the project dir."""
-    proj = tmp_path / "proj"
+    proj = tmp_path / name
     (proj / "graphify-out").mkdir(parents=True)
     graph = {
         "directed": True,
@@ -227,6 +227,56 @@ def test_project_path_routes_to_that_projects_graph(tmp_path):
         assert "Nodes: 2" in _call_tool(client, headers, "graph_stats", {}, rid=4)
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(None, 8), ("", 8), ("bad", 8), ("0", 1), ("-4", 1), ("3", 3)],
+)
+def test_max_server_contexts_parsing(monkeypatch, value, expected):
+    if value is None:
+        monkeypatch.delenv("GRAPHIFY_MAX_CONTEXTS", raising=False)
+    else:
+        monkeypatch.setenv("GRAPHIFY_MAX_CONTEXTS", value)
+    assert serve_mod._max_server_contexts() == expected
+
+
+def test_project_context_cache_is_lru_and_pins_default_graph(tmp_path, monkeypatch):
+    """Project contexts hit, promote, and evict without evicting the default."""
+    monkeypatch.setenv("GRAPHIFY_MAX_CONTEXTS", "2")
+    original_load = serve_mod._load_graph
+    loads: dict[str, int] = {}
+
+    def counting_load(path: str):
+        resolved = str(Path(path).resolve())
+        loads[resolved] = loads.get(resolved, 0) + 1
+        return original_load(path)
+
+    monkeypatch.setattr(serve_mod, "_load_graph", counting_load)
+    projects = [
+        _project_with_graph(tmp_path, node_count=i + 3, name=f"project-{i}")
+        for i in range(3)
+    ]
+    default_graph = _graph_file(tmp_path)
+    app = serve_mod._build_http_app(default_graph, json_response=True)
+    with _client(app) as client:
+        headers = _init_session(client)
+        assert "Nodes: 3" in _call_tool(client, headers, "graph_stats", {"project_path": projects[0]}, rid=2)
+        assert "Nodes: 4" in _call_tool(client, headers, "graph_stats", {"project_path": projects[1]}, rid=3)
+        # A cache hit promotes project-0 above project-1 in LRU recency.
+        assert "Nodes: 3" in _call_tool(client, headers, "graph_stats", {"project_path": projects[0]}, rid=4)
+        assert "Nodes: 5" in _call_tool(client, headers, "graph_stats", {"project_path": projects[2]}, rid=5)
+        # project-1, not the re-touched project-0, was evicted.
+        assert "Nodes: 4" in _call_tool(client, headers, "graph_stats", {"project_path": projects[1]}, rid=6)
+        # The configured default graph stays warm even when project capacity is full.
+        assert "Nodes: 2" in _call_tool(client, headers, "graph_stats", {}, rid=7)
+
+    first_graph = str((Path(projects[0]) / "graphify-out" / "graph.json").resolve())
+    second_graph = str((Path(projects[1]) / "graphify-out" / "graph.json").resolve())
+    default_graph = str(Path(default_graph).resolve())
+    assert loads[first_graph] == 1
+    assert loads[second_graph] == 2
+    assert loads[default_graph] == 1
+
+
 def test_bad_project_path_errors_without_killing_server(tmp_path):
     """A missing project graph is a tool error, not a process exit — the server
     keeps serving the default graph."""
@@ -236,6 +286,18 @@ def test_bad_project_path_errors_without_killing_server(tmp_path):
         bad = _call_tool(client, headers, "graph_stats",
                          {"project_path": str(tmp_path / "does-not-exist")}, rid=2)
         assert "not found" in bad.lower()
+        assert "Nodes: 2" in _call_tool(client, headers, "graph_stats", {}, rid=3)
+
+
+def test_corrupt_project_graph_is_a_tool_error_without_killing_server(tmp_path):
+    """A CLI-style SystemExit from a client graph cannot stop the MCP server."""
+    project = Path(_project_with_graph(tmp_path, node_count=3))
+    (project / "graphify-out" / "graph.json").write_text("{not json", encoding="utf-8")
+    app = serve_mod._build_http_app(_graph_file(tmp_path), json_response=True)
+    with _client(app) as client:
+        headers = _init_session(client)
+        bad = _call_tool(client, headers, "graph_stats", {"project_path": str(project)}, rid=2)
+        assert "could not load graph.json" in bad
         assert "Nodes: 2" in _call_tool(client, headers, "graph_stats", {}, rid=3)
 
 
