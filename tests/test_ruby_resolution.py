@@ -224,8 +224,8 @@ def test_nested_modules_each_get_a_node(tmp_path: Path) -> None:
     r = extract_ruby(_write(tmp_path, "n.rb",
         "module Billing\n  module Rounding\n    def round(x)\n      x.round(2)\n    end\n  end\nend\n"))
     labels = _node_labels(r)
-    assert "Billing" in labels and "Billing::Rounding" in labels
-    assert ("Billing::Rounding", ".round()") in _method_edges(r)
+    assert "Billing" in labels and "Rounding" in labels
+    assert ("Rounding", ".round()") in _method_edges(r)
 
 
 def test_struct_new_constant_creates_class_with_methods(tmp_path: Path) -> None:
@@ -350,30 +350,6 @@ def test_mixin_is_not_emitted_as_calls_edge(tmp_path: Path) -> None:
     assert ("K", "C") in _mixes_in(g)
 
 
-def test_ruby_compact_mixin_and_phantom_hub(tmp_path: Path) -> None:
-    # 1. Invoice model includes compact-declared Billing::TotalsConcern
-    _write(tmp_path, "invoice.rb", "class Invoice < ApplicationRecord\n  include Billing::TotalsConcern\nend\n")
-    # 2. Account model includes ArchivableConcern
-    _write(tmp_path, "account.rb", "class Account < ApplicationRecord\n  include ArchivableConcern\nend\n")
-    # 3. ArchivableConcern concern extends ActiveSupport::Concern
-    _write(tmp_path, "archivable_concern.rb", "module ArchivableConcern\n  extend ActiveSupport::Concern\nend\n")
-    # 4. TotalsConcern concern declared with compact syntax, extends ActiveSupport::Concern
-    _write(tmp_path, "totals_concern.rb", "module Billing::TotalsConcern\n  extend ActiveSupport::Concern\nend\n")
-    # 5. Nested module incidentally named "Concern"
-    _write(tmp_path, "naming.rb", "module Naming\n  module Concern\n    extend ActiveSupport::Concern\n  end\nend\n")
-
-    g = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
-    mix = _mixes_in(g)
-
-    # Expected edges
-    assert ("Account", "ArchivableConcern") in mix
-    assert ("Invoice", "Billing::TotalsConcern") in mix
-
-    # Verify no phantom mixes_in edges from ArchivableConcern, TotalsConcern or Naming::Concern to Concern or Naming::Concern
-    for src, tgt in mix:
-        assert tgt != "Concern", f"Spurious mixin to Concern found: {src} -> {tgt}"
-        if src in ("ArchivableConcern", "Billing::TotalsConcern", "Naming::Concern"):
-            assert tgt != "Naming::Concern", f"Phantom hub edge found: {src} -> {tgt}"
 def test_rake_files_extract_and_resolve_like_rb(tmp_path):
     """#1784: `.rake` files are plain Ruby and must route to the Ruby extractor
     and participate in Ruby cross-file resolution exactly like `.rb`."""

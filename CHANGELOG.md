@@ -2,6 +2,17 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## 0.9.31 (2026-07-30)
+
+- Feature: the MCP server is dual-compatible with SDK 1.x AND 2.x (#2308, thanks @NiSHoW), lifting the `mcp<2` cap 0.9.30 introduced to `mcp>=1,<3`. The 2.0 SDK removed the low-level decorator API (`Server.list_tools`/`call_tool`/...); `_build_server` now binds the same handlers via the 1.x decorators or the 2.x `on_*` constructor callbacks, picked at runtime, and adapts `Tool.inputSchema`, `Resource.uri` (plain `str` in 2.x), and the dropped `AnyUrl` re-export. Verified with full stdio handshakes under both mcp 1.29 and 2.0.
+- Fix: C# member calls on a typed receiver no longer drop true `calls` edges when the same local name is reused across methods (#2299, thanks @JensD-git). Receiver typing was per-file and poisoned a name on any conflicting/untypable rebind anywhere in the file; it is now per-method (mirroring the Java resolver), so an untypable `var x = ...` in one method can't delete a typed-parameter call edge in another.
+- Fix: SQL cross-file table references (e.g. a prisma migration referencing a table created in an earlier one) resolve to the real table node instead of leaking an absolute-path id and losing the foreign key (#2324). References now mint a sourceless stub that collapses onto the real definition, and identifiers are normalized so a quoted definition (`"public"."users"`) matches an unquoted reference (`public.users`).
+- Fix: `graphify path` and `explain` no longer print reversed hops (#2309). They now recover edge direction from the stored `_src`/`_tgt` markers instead of the persisted endpoint order, so a graph.json written with flipped storage order (older graphs, raw dumps, merge-driver output) renders the true direction.
+- Fix: `export const X = <scalar>` now emits a graph node, so a named import of a scalar export is no longer left dangling (#2266, thanks @oleksii-tumanov).
+- Fix: Go predeclared functions (`make`, `len`, `append`, `new`, ...) no longer fabricate call edges to same-named user symbols (#2313, thanks @PathGao); the filter is scoped to Go bare-identifier callees so it can't affect other languages or same-file method calls.
+- Fix: `graphify explain` refuses and lists candidates when a name matches symbols in more than one file, instead of silently resolving to an arbitrary one (#2233, thanks @0bLoM).
+- Fix: the Antigravity install workflow no longer hardcodes the global skill path for a project-scoped install (#2319, thanks @MalikHaroonKhokhar).
+
 ## 0.9.30 (2026-07-29)
 
 - Fix: pin `mcp` below 2.0 so a fresh `graphifyy[mcp]` / `graphifyy[all]` install works again (#2277, #2279, #2291). The `mcp` 2.0.0 major dropped the `mcp.types.AnyUrl` re-export and the `Server` decorator-registration API that `graphify/serve.py` uses, so an unpinned resolve broke `graphify-mcp` on every new install with an `ImportError`. The `mcp` and `all` extras now require `mcp>=1,<2` (resolving to 1.29.0) and `starlette>=1.3.1,<2`. Adapting to the mcp 2.x API is tracked as a follow-up.
