@@ -4769,6 +4769,47 @@ def extract(
         all_nodes.extend(result.get("nodes", []))
         all_edges.extend(result.get("edges", []))
         all_raw_calls.extend(result.get("raw_calls", []))
+
+    # #2230: load one-hop in-root import targets for resolution facts only
+    # (no raw_calls), then strip their ownership before return.
+    _batch_resolved: set[Path] = set()
+    for _p in paths:
+        try:
+            _batch_resolved.add(_p.resolve())
+        except (OSError, RuntimeError):
+            pass
+    _context_files: set[Path] = set()
+    for _e in all_edges:
+        _tf = _e.get("target_file")
+        if not _tf:
+            continue
+        try:
+            _tp = Path(_tf).resolve()
+        except (OSError, RuntimeError):
+            continue
+        if _tp in _batch_resolved or _tp in _context_files:
+            continue
+        try:
+            _tp.relative_to(root)
+            if not _tp.is_file() or _get_extractor(_tp) is None:
+                continue
+        except (ValueError, OSError):
+            continue
+        _context_files.add(_tp)
+
+    for _i, _ctx in enumerate(_context_files):
+        # Reuse the batch extract/cache path; omit raw_calls below.
+        _, _ctx_result = _extract_single_file(
+            (_i, str(_ctx), str(root), str(cache_location))
+        )
+        # Skip sourceless stubs so they can't bypass the filter below.
+        all_nodes.extend(
+            n for n in _ctx_result.get("nodes", []) if n.get("source_file")
+        )
+        all_edges.extend(
+            e for e in _ctx_result.get("edges", []) if e.get("source_file")
+        )
+
     # Function / method / class def ids for the cross-file indirect_call callable
     # guard. Built from the `_callable` node marker AFTER the id-remap / disambiguation
     # passes below (which rewrite node ids), so it can never go stale — see the
@@ -5721,6 +5762,12 @@ def extract(
         n["_origin"] = "ast"
     for e in all_edges:
         e["_origin"] = "ast"
+
+    # #2230: drop context ownership; merge keeps the neighbor's chunk.
+    if _context_files:
+        _context_sfs = {p.relative_to(root).as_posix() for p in _context_files}
+        all_nodes = [n for n in all_nodes if (n.get("source_file") or "") not in _context_sfs]
+        all_edges = [e for e in all_edges if (e.get("source_file") or "") not in _context_sfs]
 
     return {
         "nodes": all_nodes,
