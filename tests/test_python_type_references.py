@@ -169,6 +169,35 @@ def test_ambiguous_field_annotation_resolves_through_the_import(tmp_path: Path):
     assert (wanted, "field") in _refs(result, quote_nid)
 
 
+def test_ambiguous_superclass_resolves_through_the_import(tmp_path: Path):
+    """`inherits` is in the resolver's repoint set, so it needs its own case.
+
+    Superclasses reach `ensure_named_node` from a different call site than type
+    annotations do, so the annotation tests do not cover this path.
+    """
+    base = _write(tmp_path / "pkg/a/base.py", _DEF)
+    other = _write(tmp_path / "pkg/z/other.py", "class PricePoint:\n    pass\n")
+    sub = _write(
+        tmp_path / "pkg/b/sub.py",
+        "from pkg.a.base import PricePoint\n"
+        "\n"
+        "class Sub(PricePoint):\n"
+        "    pass\n",
+    )
+
+    result = extract([base, other, sub], cache_root=tmp_path)
+
+    assert not [n for n in result["nodes"] if not n.get("source_file")]
+    wanted = _sole_node_id(result, "PricePoint", "pkg/a/base.py")
+    sub_nid = _sole_node_id(result, "Sub", "pkg/b/sub.py")
+    assert any(
+        edge["source"] == sub_nid
+        and edge["target"] == wanted
+        and edge["relation"] == "inherits"
+        for edge in result["edges"]
+    )
+
+
 def test_ambiguous_aliased_import_resolves_through_the_local_name(tmp_path: Path):
     """`import X as Y` binds Y — the resolver keys on the local name, not the
     exported one, so the annotation `p: PP` still finds `pkg.a.base.PricePoint`."""

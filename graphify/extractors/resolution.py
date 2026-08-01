@@ -2268,11 +2268,16 @@ def _resolve_python_type_references(
     PricePoint`` names the defining module exactly, so it disambiguates where
     bare-name matching cannot.
 
-    Mirrors ``_resolve_java_type_references`` and the C# resolver: a re-parse
-    pass, here via ``_collect_python_symbol_resolution_facts``, which the JS/TS
-    augment pass also calls earlier in the run. The shadow-stub check below runs
-    first precisely so that second parse is paid only on a corpus that actually
-    has unresolved stubs, which is the abnormal case.
+    Mirrors ``_resolve_java_type_references`` and the C# resolver, including
+    their cost: ``_collect_python_symbol_resolution_facts`` re-parses every
+    Python file, and it already ran once earlier in the pipeline. The shadow-stub
+    check below skips that when there is nothing to repoint, but a sourceless
+    stub is NOT rare — every stdlib or third-party annotation
+    (``sqlite3.Connection``, ``pathlib.Path``) leaves one — so on most real
+    corpora this pass does run, at roughly 15ms per file. Narrowing the gate to
+    "a stub label names a known definition" was tried and rejected: it breaks
+    ``from X import Y as Z``, where the stub carries the local alias ``Z`` and no
+    definition is labeled ``Z``.
 
     Mutates ``all_nodes``/``all_edges`` in place. Runs after id-disambiguation so
     target ids are final, and after ``_rewire_unique_stub_nodes`` so it only has
@@ -2293,11 +2298,6 @@ def _resolve_python_type_references(
     if not stub_label:
         return
 
-    facts = _SymbolResolutionFacts()
-    _collect_python_symbol_resolution_facts(py_paths, root, facts)
-    if not facts.imports:
-        return
-
     # (defining file, symbol label) -> definition node id.
     def_by_file_label: dict[tuple[str, str], str] = {}
     for node in all_nodes:
@@ -2309,6 +2309,11 @@ def _resolve_python_type_references(
         if not _is_type_like_definition(node):
             continue
         def_by_file_label.setdefault((_source_key(source_file, root), label), nid)
+
+    facts = _SymbolResolutionFacts()
+    _collect_python_symbol_resolution_facts(py_paths, root, facts)
+    if not facts.imports:
+        return
 
     # importing file -> local binding -> definition node id. Keyed on the LOCAL
     # name so `from pkg.a.base import PricePoint as PP` binds `PP`.
