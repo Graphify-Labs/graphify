@@ -199,8 +199,8 @@ def test_ambiguous_superclass_resolves_through_the_import(tmp_path: Path):
 
 
 def test_ambiguous_aliased_import_resolves_through_the_local_name(tmp_path: Path):
-    """`import X as Y` binds Y — the resolver keys on the local name, not the
-    exported one, so the annotation `p: PP` still finds `pkg.a.base.PricePoint`."""
+    """`from X import Y as Z` binds Z — the resolver keys on the local name, not
+    the exported one, so `p: PP` still finds `pkg.a.base.PricePoint`."""
     base = _write(tmp_path / "pkg/a/base.py", _DEF)
     other = _write(tmp_path / "pkg/z/other.py", "class PricePoint:\n    pass\n")
     consumer = _write(
@@ -216,6 +216,50 @@ def test_ambiguous_aliased_import_resolves_through_the_local_name(tmp_path: Path
     wanted = _sole_node_id(result, "PricePoint", "pkg/a/base.py")
     handle_nid = _sole_node_id(result, "handle()", "pkg/b/consumer.py")
     assert (wanted, "parameter_type") in _refs(result, handle_nid)
+
+
+def test_ambiguous_name_across_many_referrers_leaves_no_path_qualified_ghosts(
+    tmp_path: Path,
+):
+    """The issue's second ghost shape: `<full_relative_path>_py_pricepoint`.
+
+    One referring file leaves the bare `pricepoint` stub. With several, those
+    per-file stubs share that id but carry different `origin_file`s, so
+    `_disambiguate_colliding_node_ids` salts each into a path-qualified id before
+    the rewire runs — which is why one defect reports as two id shapes. At base
+    this corpus produced exactly the four ids the issue lists.
+    """
+    base = _write(tmp_path / "agri/baseline.py", _DEF)
+    legacy = _write(tmp_path / "vendor/legacy.py", "class PricePoint:\n    pass\n")
+    rels = (
+        "connections/prices",
+        "fronts/agri_deviation",
+        "fronts/upstream_watch/signals",
+        "signal_resolution",
+    )
+    referrers = [
+        _write(
+            tmp_path / f"signal_intelligence/{rel}.py",
+            "from agri.baseline import PricePoint\n"
+            "\n"
+            "def latest(p: PricePoint) -> PricePoint:\n"
+            "    return p\n",
+        )
+        for rel in rels
+    ]
+
+    result = extract([base, legacy, *referrers], cache_root=tmp_path)
+
+    labeled = _nodes_labeled(result, "PricePoint")
+    assert len(labeled) == 2, labeled
+    assert all(node.get("source_file") for node in labeled), labeled
+
+    wanted = _sole_node_id(result, "PricePoint", "agri/baseline.py")
+    for rel in rels:
+        latest_nid = _sole_node_id(
+            result, "latest()", f"signal_intelligence/{rel}.py"
+        )
+        assert (wanted, "parameter_type") in _refs(result, latest_nid)
 
 
 def test_ambiguous_name_with_no_import_is_left_alone(tmp_path: Path):
