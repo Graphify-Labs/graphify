@@ -309,7 +309,13 @@ def test_incremental_md_reference_target_canonicalizes(tmp_path):
 
 
 def test_incremental_extract_regenerates_neighbor_symbol_edges(tmp_path):
-    """#2230: extract([A]) regenerates A→B imports/calls; B ownership stays out."""
+    """#2230: extract([A]) alone must still emit A→B imports/calls.
+
+    Without context-file facts, symbol resolution only sees A's nodes and
+    those edges are missing from the incremental chunk (then dropped by
+    merge). Also assert B's owned nodes/edges are not returned — ownership
+    must stay with the unchanged file for the merge to carry them forward.
+    """
     from graphify.extract import extract
 
     tmp = Path(os.path.realpath(tmp_path))
@@ -343,7 +349,11 @@ def test_incremental_extract_regenerates_neighbor_symbol_edges(tmp_path):
 
 @pytest.mark.parametrize("no_cluster", [True, False], ids=["no-cluster", "clustered"])
 def test_incremental_cli_neighbor_edge_parity(tmp_path, no_cluster):
-    """#2230: after touch A, incremental edge set matches the full extract."""
+    """#2230: full extract → touch A → incremental must keep the same edges.
+
+    Covers both merge paths (clustered and --no-cluster); the bug is in
+    extract() itself and hits both identically.
+    """
     tmp = Path(os.path.realpath(tmp_path))
     proj = tmp / "proj"
     pkg = proj / "pkg"

@@ -4770,14 +4770,23 @@ def extract(
         all_edges.extend(result.get("edges", []))
         all_raw_calls.extend(result.get("raw_calls", []))
 
-    # #2230: load one-hop in-root import targets for resolution facts only
-    # (no raw_calls), then strip their ownership before return.
+    # #2230: Incremental runs pass only the CHANGED files in `paths`. Symbol
+    # resolution (augment + raw_calls) indexes nodes from this run alone, so
+    # edges like `A imports/calls B.helper` vanish when B is unchanged — the
+    # merge then correctly drops A's old edges and nothing regenerates them.
+    # Fix: discover one hop of in-root import targets via `target_file` (same
+    # set #2169 remaps), load them for resolution FACTS only, let them flow
+    # through augment / id-remap / callable_nids, then strip their ownership
+    # before return so the merge keeps B's existing graph chunk. Omit context
+    # raw_calls — one hop is enough and would otherwise pull a second hop.
     _batch_resolved: set[Path] = set()
     for _p in paths:
         try:
             _batch_resolved.add(_p.resolve())
         except (OSError, RuntimeError):
             pass
+    # Collect neighbor files stamped on this batch's edges (not already in
+    # the batch, in-root, on disk, and extractable).
     _context_files: set[Path] = set()
     for _e in all_edges:
         _tf = _e.get("target_file")
@@ -4798,11 +4807,13 @@ def extract(
         _context_files.add(_tp)
 
     for _i, _ctx in enumerate(_context_files):
-        # Reuse the batch extract/cache path; omit raw_calls below.
+        # Same cache/bypass path as a normal batch file; we deliberately do
+        # not extend all_raw_calls from these results.
         _, _ctx_result = _extract_single_file(
             (_i, str(_ctx), str(root), str(cache_location))
         )
-        # Skip sourceless stubs so they can't bypass the filter below.
+        # Keep only items with a source_file — sourceless stubs (e.g. an
+        # Exception base) would slip past the ownership filter at return.
         all_nodes.extend(
             n for n in _ctx_result.get("nodes", []) if n.get("source_file")
         )
@@ -5763,7 +5774,11 @@ def extract(
     for e in all_edges:
         e["_origin"] = "ast"
 
-    # #2230: drop context ownership; merge keeps the neighbor's chunk.
+    # #2230: Context nodes/edges were only borrowed for resolution. Drop them
+    # now (by relativized source_file) so this result owns only the batch
+    # files; regenerated cross-file edges may still TARGET neighbor ids, and
+    # the incremental merge supplies the neighbor's own nodes from the
+    # existing graph.
     if _context_files:
         _context_sfs = {p.relative_to(root).as_posix() for p in _context_files}
         all_nodes = [n for n in all_nodes if (n.get("source_file") or "") not in _context_sfs]
