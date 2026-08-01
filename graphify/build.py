@@ -1450,15 +1450,20 @@ def prefix_graph_for_global(G: nx.Graph, repo_tag: str) -> nx.Graph:
     """Return a copy of G with all node IDs prefixed with repo_tag::.
 
     Labels are preserved unchanged (for display). A 'local_id' attribute
-    is added to each node so the original ID can be recovered. Edges are
-    rewritten to match the new prefixed IDs. The 'repo' attribute is set
-    on every node.
+    is added to each node so the original ID can be recovered. Edges and
+    their directional attributes (_src/_tgt) are rewritten to match the new
+    prefixed IDs. The 'repo' attribute is set on every node.
     """
     relabel = {n: f"{repo_tag}::{n}" for n in G.nodes}
     H = nx.relabel_nodes(G, relabel, copy=True)
     for node, data in H.nodes(data=True):
         data["repo"] = repo_tag
         data.setdefault("local_id", node.split("::", 1)[1])
+    for u, v, data in H.edges(data=True):
+        if "_src" in data and data["_src"] in relabel:
+            data["_src"] = relabel[data["_src"]]
+        if "_tgt" in data and data["_tgt"] in relabel:
+            data["_tgt"] = relabel[data["_tgt"]]
     return H
 
 
