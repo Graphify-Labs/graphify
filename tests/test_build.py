@@ -1046,6 +1046,142 @@ def test_build_merge_replaces_changed_file_stale_edges(tmp_path):
     assert ("K", "A") in edges, "unchanged file's edge must survive"
 
 
+def _write_two_tier_graph(graph_path):
+    """A graph where docs/readme.md carries BOTH tiers (#2333 COEXIST): an
+    AST layer (document/heading nodes + a contains edge, _origin=ast) and a
+    semantic layer (an unstamped concept node, source_location=None)."""
+    data = {
+        "directed": False,
+        "nodes": [
+            {"id": "docs_readme", "label": "Readme", "file_type": "document",
+             "source_file": "docs/readme.md", "source_location": "L1",
+             "_origin": "ast"},
+            {"id": "docs_readme_intro", "label": "Intro", "file_type": "document",
+             "source_file": "docs/readme.md", "source_location": "L3",
+             "_origin": "ast"},
+            {"id": "auth_flow", "label": "Auth Flow", "file_type": "concept",
+             "source_file": "docs/readme.md", "source_location": None},
+        ],
+        "links": [
+            {"source": "docs_readme", "target": "docs_readme_intro",
+             "relation": "contains", "confidence": "EXTRACTED",
+             "source_file": "docs/readme.md", "source_location": "L3",
+             "weight": 1.0, "_origin": "ast"},
+        ],
+        "hyperedges": [
+            {"id": "auth_group", "label": "Auth Group",
+             "nodes": ["docs_readme", "auth_flow"], "relation": "form",
+             "confidence": "INFERRED", "source_file": "docs/readme.md"},
+        ],
+    }
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_build_merge_semantic_reextract_preserves_ast_layer(tmp_path):
+    """#2333/#2336 (COEXIST): a semantic-only re-extract of a file replaces
+    only that file's SEMANTIC tier — its AST document/heading nodes and AST
+    edges must survive. Before the fix, replace-by-source was tier-blind and
+    the semantic chunk deleted the doc's AST layer."""
+    graph_path = tmp_path / "graph.json"
+    _write_two_tier_graph(graph_path)
+
+    # Semantic-only chunk for the same file: no _origin, null source_location
+    # (the extraction-spec shape — the semantic path never stamps _origin).
+    chunk = {"nodes": [
+        {"id": "session_model", "label": "Session Model", "file_type": "concept",
+         "source_file": "docs/readme.md", "source_location": None},
+    ], "edges": []}
+    G = build_merge([chunk], graph_path, dedup=False)
+
+    assert "docs_readme" in G and "docs_readme_intro" in G, (
+        "AST layer deleted by a semantic-only re-extract of the same file"
+    )
+    assert G.has_edge("docs_readme", "docs_readme_intro"), (
+        "AST contains edge deleted by a semantic-only re-extract"
+    )
+    assert "auth_flow" not in G, "old semantic node must be replaced"
+    assert "session_model" in G, "new semantic node must be present"
+
+
+def test_build_merge_ast_reextract_preserves_semantic_layer(tmp_path):
+    """#2333/#2336 inverse: an AST-only re-extract of a file replaces only
+    that file's AST tier — its semantic concept nodes (and semantic-tier
+    hyperedges, which an AST pass cannot regenerate) must survive."""
+    graph_path = tmp_path / "graph.json"
+    _write_two_tier_graph(graph_path)
+
+    # AST-only re-extract: the doc changed — Intro heading replaced by
+    # Quickstart. extract() always stamps _origin=ast.
+    chunk = {"nodes": [
+        {"id": "docs_readme", "label": "Readme", "file_type": "document",
+         "source_file": "docs/readme.md", "source_location": "L1",
+         "_origin": "ast"},
+        {"id": "docs_readme_quickstart", "label": "Quickstart",
+         "file_type": "document", "source_file": "docs/readme.md",
+         "source_location": "L5", "_origin": "ast"},
+    ], "edges": [
+        {"source": "docs_readme", "target": "docs_readme_quickstart",
+         "relation": "contains", "confidence": "EXTRACTED",
+         "source_file": "docs/readme.md", "source_location": "L5",
+         "weight": 1.0, "_origin": "ast"},
+    ]}
+    G = build_merge([chunk], graph_path, dedup=False)
+
+    assert "auth_flow" in G, (
+        "semantic layer deleted by an AST-only re-extract of the same file"
+    )
+    assert "docs_readme_intro" not in G, "stale AST node must be replaced"
+    assert "docs_readme_quickstart" in G, "fresh AST node must be present"
+    assert G.has_edge("docs_readme", "docs_readme_quickstart")
+    carried_he_ids = {he.get("id") for he in G.graph.get("hyperedges", [])}
+    assert "auth_group" in carried_he_ids, (
+        "semantic-tier hyperedge dropped by an AST-only re-extract (#2336)"
+    )
+
+
+def test_merge_raw_extraction_tier_scoped(tmp_path):
+    """#2333 raw-path mirror: merge_raw_extraction (extract --no-cluster
+    incremental) applies the same tier-scoped replace as build_merge — a
+    semantic-only re-extract keeps the file's AST nodes/edges."""
+    from graphify.build import merge_raw_extraction
+
+    graph_path = tmp_path / "graph.json"
+    _write_two_tier_graph(graph_path)
+
+    new = {"nodes": [
+        {"id": "session_model", "label": "Session Model", "file_type": "concept",
+         "source_file": "docs/readme.md", "source_location": None},
+    ], "edges": [], "input_tokens": 0, "output_tokens": 0}
+    out = merge_raw_extraction(new, graph_path)
+
+    node_ids = {n["id"] for n in out["nodes"]}
+    assert {"docs_readme", "docs_readme_intro", "session_model"} <= node_ids, (
+        "AST layer dropped by a semantic-only raw re-extract"
+    )
+    assert "auth_flow" not in node_ids, "old semantic node must be replaced"
+    edge_keys = {(e.get("source"), e.get("target")) for e in out["edges"]}
+    assert ("docs_readme", "docs_readme_intro") in edge_keys, (
+        "AST edge dropped by a semantic-only raw re-extract"
+    )
+    he_ids = {he.get("id") for he in out.get("hyperedges", [])}
+    assert "auth_group" not in he_ids, (
+        "semantic-tier hyperedge must be replaced by a semantic re-extract"
+    )
+
+
+def test_is_ast_tier_legacy_fallback():
+    """#2334: _origin wins when present; unstamped legacy items fall back to
+    the source_location shape (AST emits 'L<line>', semantic emits null)."""
+    from graphify.build import _is_ast_tier
+
+    assert _is_ast_tier({"_origin": "ast"}) is True
+    assert _is_ast_tier({"_origin": "ast", "source_location": None}) is True
+    assert _is_ast_tier({"source_location": "L10"}) is True
+    assert _is_ast_tier({"source_location": None}) is False
+    assert _is_ast_tier({}) is False
+    assert _is_ast_tier({"_origin": "semantic", "source_location": "L10"}) is False
+
+
 def test_build_merge_root_collapses_convention_drift(tmp_path):
     """Skill contract: the extraction subagent must emit source_file as the
     verbatim path from FILE_LIST AND the caller must pass root= (the build root).

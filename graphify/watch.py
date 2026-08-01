@@ -491,6 +491,16 @@ def _reconcile_existing_graph(
     existing = json.loads(existing_graph.read_text(encoding="utf-8"))
     existing_graph_data = existing
 
+    # Backfill tier provenance on legacy items (#2334), mirroring
+    # build._load_existing_graph (this reconcile path loads the raw dict
+    # separately, so the backfill there does not reach it). Stamping preserved
+    # items means the graph self-heals on this write.
+    from graphify.build import _is_ast_tier
+    for _bucket in ("nodes", "links", "edges"):
+        for _item in existing.get(_bucket, []):
+            if isinstance(_item, dict):
+                _item.setdefault("_origin", "ast" if _is_ast_tier(_item) else "semantic")
+
     try:
         from graphify.build import _norm_source_file as _nsf
         from graphify.extract import _get_extractor
@@ -584,15 +594,20 @@ def _reconcile_existing_graph(
                 "Run a full re-extraction to purge them if the exclusion is intentional."
             )
 
-        # A full re-extraction owns every AST node under watch_root. Incremental
-        # extraction owns only nodes from rebuilt or deleted sources. Semantic
-        # nodes lack the AST origin marker and remain preserved.
+        # A full re-extraction owns the AST nodes of every source it actually
+        # re-extracted (extract_targets, via rebuilt_source_identities) — NOT
+        # every AST node under watch_root: a semantic-backed doc is excluded
+        # from extract_targets (#1915), so its existing AST layer is not
+        # regenerated this run and dropping it would be data loss (#2333,
+        # COEXIST — the AST and semantic layers of a file coexist).
+        # Incremental extraction owns only nodes from rebuilt or deleted
+        # sources. Semantic-tier nodes (per _is_ast_tier) remain preserved.
         preserved_nodes = [
             node
             for node in existing.get("nodes", [])
             if node["id"] not in new_ast_ids
             and not (
-                node.get("_origin") == "ast"
+                _is_ast_tier(node)
                 and (
                     (
                         not node.get("source_file")
@@ -600,7 +615,7 @@ def _reconcile_existing_graph(
                     )
                     or (
                         full_rebuild
-                        and source_paths.in_watch_root(node.get("source_file"))
+                        and source_paths.is_evicted(node, rebuilt_source_identities)
                     )
                 )
             )
@@ -621,7 +636,7 @@ def _reconcile_existing_graph(
             and edge.get("target") in all_ids
             and not source_paths.is_evicted(edge, edge_evicted_source_identities)
             and not (
-                edge.get("_origin") == "ast"
+                _is_ast_tier(edge)
                 and source_paths.is_evicted(edge, rebuilt_source_identities)
             )
         ]
@@ -973,7 +988,7 @@ def _rebuild_code(
     try:
         from graphify.extract import extract, _get_extractor
         from graphify.detect import detect
-        from graphify.build import build_from_json, _norm_source_file as _nsf
+        from graphify.build import build_from_json, _is_ast_tier, _norm_source_file as _nsf
         from graphify.cluster import cluster, remap_communities_to_previous, score_all
         from graphify.analyze import god_nodes, surprising_connections, suggest_questions
         from graphify.report import generate
@@ -1008,10 +1023,12 @@ def _rebuild_code(
         # existing graph must not ALSO be AST-quick-scanned — otherwise every
         # rebuild mints heading nodes on top of the preserved semantic nodes
         # and the doc is represented twice (~4x graph bloat vs the CLI update
-        # path, which AST-extracts only code). Semantic supersedes AST per doc
-        # source: the quick-scan stays as a fallback for docs with no semantic
-        # layer (the no-LLM doc-structure feature, #09b33b7) and for brand-new
-        # docs the graph has never seen. These docs stay in ``code_files`` so
+        # path, which AST-extracts only code). A semantic-backed doc is never
+        # re-quick-scanned, and any AST layer it already carries coexists and
+        # is preserved rather than regenerated (#2333, COEXIST); the
+        # quick-scan stays as a fallback for docs with no semantic layer (the
+        # no-LLM doc-structure feature, #09b33b7) and for brand-new docs the
+        # graph has never seen. These docs stay in ``code_files`` so
         # corpus membership (#1795 fail-closed deletion evidence) and the
         # shrink accounting below still cover them — a previously-bloated
         # graph must be allowed to self-heal on a full rebuild without the
@@ -1044,7 +1061,11 @@ def _rebuild_code(
                 # "document" nodes (extractors/markdown.py). "image" stays out.
                 semantic_doc_identities: set[str] = set()
                 for node in prior.get("nodes", []):
-                    if node.get("_origin") == "ast":
+                    # _is_ast_tier, not a raw _origin check (#2334): a legacy
+                    # unstamped AST heading node (source_location "L<n>") must
+                    # not fake a semantic layer, or the doc would be excluded
+                    # from the AST quick-scan forever.
+                    if _is_ast_tier(node):
                         continue
                     if node.get("file_type") not in (
                         "document", "concept", "rationale", "paper", "code"
@@ -1129,10 +1150,11 @@ def _rebuild_code(
             extract_targets = wanted
         else:
             # Full rebuild: skip the AST quick-scan for semantic-backed docs
-            # (#1915). They remain in code_files, so stale _origin=="ast"
-            # heading nodes from a previously-bloated graph are dropped by the
-            # full-rebuild AST ownership rule while the shrink accounting
-            # below still counts the doc as a rebuilt source.
+            # (#1915). They remain in code_files for corpus membership and
+            # shrink accounting, but because they are not extract targets the
+            # full-rebuild AST ownership rule (scoped to
+            # rebuilt_source_identities, #2333 COEXIST) leaves their existing
+            # AST heading layer intact alongside the semantic layer.
             extract_targets = [p for p in code_files if p not in semantic_doc_files]
 
         commit = _git_head(cwd=watch_root)

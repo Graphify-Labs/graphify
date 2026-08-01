@@ -2050,11 +2050,13 @@ def test_rebuild_code_quick_scans_doc_without_semantic_nodes(tmp_path):
     assert {"notes", "notes_alpha", "notes_beta"} <= ids
 
 
-def test_rebuild_code_polluted_graph_self_heals_on_full_rebuild(tmp_path):
-    """#1915: a graph already bloated by the bug (semantic doc nodes PLUS stale
-    _origin=="ast" heading nodes for the same doc) sheds the heading nodes on
-    the next full rebuild via the AST ownership rule — and the shrink guard
-    accepts the smaller write without --force."""
+def test_full_rebuild_preserves_semantic_backed_doc_ast_layer(tmp_path):
+    """#2333 (COEXIST): a doc that carries BOTH an AST heading layer and a
+    semantic layer keeps both across a full rebuild. The doc is excluded from
+    extract_targets (#1915, no re-quick-scan), so its AST nodes are NOT
+    regenerated this run — the full-rebuild ownership rule must therefore not
+    drop them (it owns only rebuilt sources, not everything in watch_root).
+    Supersedes the pre-COEXIST #1915 self-heal, which deleted the AST layer."""
     from graphify.watch import _rebuild_code
 
     corpus = tmp_path / "corpus"
@@ -2070,31 +2072,107 @@ def test_rebuild_code_polluted_graph_self_heals_on_full_rebuild(tmp_path):
     graph_path = corpus / "graphify-out" / "graph.json"
     data = json.loads(graph_path.read_text(encoding="utf-8"))
     assert _AST_GUIDE_IDS <= {n["id"] for n in data["nodes"]}
+    doc_nodes_before = sum(
+        1 for n in data["nodes"] if n.get("source_file") == "guide.md"
+    )
 
-    # Layer the semantic representation on top -> the double-represented state.
-    data["nodes"].extend([
-        {"id": "guide_doc", "label": "Guide", "file_type": "document",
-         "source_file": "guide.md"},
+    # Layer the semantic representation on top — both tiers now coexist.
+    data["nodes"].append(
         {"id": "auth_flow", "label": "Auth Flow", "file_type": "concept",
          "source_file": "guide.md"},
-    ])
-    data["links"].append({
-        "source": "guide_doc", "target": "auth_flow", "relation": "explains",
-        "confidence": "INFERRED", "source_file": "guide.md",
-    })
+    )
     graph_path.write_text(json.dumps(data), encoding="utf-8")
-    nodes_before = len(data["nodes"])
 
-    # No force=True: the self-heal shrink must be accepted by the guard.
+    # Full rebuild WITHOUT force: guide.md is now semantic-backed, so it is
+    # excluded from extract_targets — its existing AST layer must survive.
     assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
 
     after = json.loads(graph_path.read_text(encoding="utf-8"))
     after_ids = {n["id"] for n in after["nodes"]}
-    assert {"guide_doc", "auth_flow"} <= after_ids
-    assert not (_AST_GUIDE_IDS & after_ids), (
-        "stale AST heading nodes for a semantic-backed doc must self-heal away"
+    assert "auth_flow" in after_ids, "semantic layer lost on full rebuild"
+    assert _AST_GUIDE_IDS <= after_ids, (
+        "AST heading layer of a semantic-backed doc dropped by a full "
+        "rebuild (#2333 COEXIST)"
     )
-    assert len(after["nodes"]) < nodes_before, "polluted graph should shrink"
+    doc_nodes_after = sum(
+        1 for n in after["nodes"]
+        if n.get("source_file") == "guide.md" and n["id"] != "auth_flow"
+    )
+    assert doc_nodes_after == doc_nodes_before, (
+        "document-node count changed across a full rebuild of a "
+        f"semantic-backed doc: {doc_nodes_before} -> {doc_nodes_after}"
+    )
+
+
+def test_full_rebuild_regenerates_docs_with_legacy_unstamped_nodes(tmp_path):
+    """#2334: a legacy heading node without the _origin stamp (pre-0.9.16
+    graph) must not fake a semantic layer — _is_ast_tier's shape fallback
+    (source_location "L<n>") classifies it as AST, so the doc stays in
+    extract_targets, is re-quick-scanned, and comes back fully re-stamped."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "app.py").write_text(
+        "def handle_login():\n    return 1\n", encoding="utf-8"
+    )
+    (corpus / "guide.md").write_text(
+        "# Overview\n\n## Setup\n\n## Usage\n", encoding="utf-8"
+    )
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    assert _AST_GUIDE_IDS <= {n["id"] for n in data["nodes"]}
+
+    # Simulate a legacy graph: strip the _origin stamp from one heading node.
+    stripped = next(
+        n for n in data["nodes"] if n["id"] == "guide_overview"
+    )
+    stripped.pop("_origin", None)
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+
+    after = json.loads(graph_path.read_text(encoding="utf-8"))
+    after_by_id = {n["id"]: n for n in after["nodes"]}
+    assert _AST_GUIDE_IDS <= set(after_by_id), (
+        "legacy unstamped heading node made the doc look semantic-backed "
+        "and its AST structure was dropped (#2334)"
+    )
+    for nid in _AST_GUIDE_IDS:
+        assert after_by_id[nid].get("_origin") == "ast", (
+            f"{nid} not re-stamped with _origin=ast after the full rebuild"
+        )
+
+
+def test_full_rebuild_drops_stale_ast_for_reextracted_code(tmp_path):
+    """#1116 guard: tier-scoping the full-rebuild ownership rule (#2333) must
+    not stop a genuinely re-extracted code file from shedding its stale AST
+    nodes — a renamed function's old symbol node still disappears."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "app.py").write_text(
+        "def old_name():\n    return 1\n", encoding="utf-8"
+    )
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    ids = {n["id"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+    assert "app_old_name" in ids
+
+    (corpus / "app.py").write_text(
+        "def new_name():\n    return 1\n", encoding="utf-8"
+    )
+    # Full rebuild (no changed_paths): app.py is re-extracted, so its stale
+    # AST symbol node is owned by this run and must be dropped.
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+
+    ids = {n["id"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+    assert "app_new_name" in ids
+    assert "app_old_name" not in ids, (
+        "stale AST node for a re-extracted code file survived (#1116)"
+    )
 
 
 # ── #2014: code-typed semantic nodes count as a doc's semantic layer ───────────
