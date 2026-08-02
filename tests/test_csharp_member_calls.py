@@ -452,3 +452,141 @@ def test_method_chained_off_new_expression_resolves(tmp_path):
         "run" in s and label.get(t) == ".Combine()"
         for s, t in calls
     ), f"chained call off new Merger(...) not captured: {[(s, label.get(t)) for s, t in calls]}"
+
+
+# ── Inline-declared receivers (#2346) ─────────────────────────────────────────
+# `out T x`, `is T x`, `is not T x`, `case T x:` and switch-arm `T x =>` all
+# introduce a binding the receiver table never saw — `x.Method()` on any of
+# them silently dropped the edge. `out var x` stays untypable (poison, never a
+# guess), and the existing bind/poison conflict rules apply unchanged.
+
+
+_TWO_GO = (
+    "public class Sect { public bool Go() => true; }\n"
+    "public class Twig { public bool Go() => false; }\n"
+)
+
+
+def test_out_declared_receiver_resolves(tmp_path):
+    """`b.TryGet(out Sect s)` binds s: Sect — `s.Go()` resolves to Sect.Go."""
+    calls, r = _calls(tmp_path, {
+        "S.cs": (
+            _TWO_GO +
+            "public class Box { public bool TryGet(out Sect s) { s = new Sect(); return true; } }\n"
+            "public class R {\n"
+            "    public bool A(Box b) { if (b.TryGet(out Sect s)) { return s.Go(); } return false; }\n"
+            "}\n"
+        )
+    })
+    r_a = _find(r, ".A()", "_r_a")
+    sect_go = _find(r, ".Go()", "sect")
+    twig_go = _find(r, ".Go()", "twig")
+    assert (r_a, sect_go) in calls, "out-declared receiver must resolve to its declared type"
+    assert (r_a, twig_go) not in calls
+
+
+def test_out_var_receiver_stays_unbound(tmp_path):
+    """`out var v` carries no type name — `v.Go()` must emit NO edge (poison,
+    not a guess)."""
+    calls, r = _calls(tmp_path, {
+        "S.cs": (
+            _TWO_GO +
+            "public class Box { public bool TryGet(out Sect s) { s = new Sect(); return true; } }\n"
+            "public class R {\n"
+            "    public bool B(Box b) { b.TryGet(out var v); return v.Go(); }\n"
+            "}\n"
+        )
+    })
+    assert not any("_r_b" in s and "go" in t.lower() for s, t in calls), \
+        "`out var` receiver is untypable — no edge to either Go()"
+
+
+def test_is_pattern_receiver_resolves(tmp_path):
+    calls, r = _calls(tmp_path, {
+        "S.cs": (
+            _TWO_GO +
+            "public class R {\n"
+            "    public bool A(object o) { if (o is Sect s) { return s.Go(); } return false; }\n"
+            "}\n"
+        )
+    })
+    r_a = _find(r, ".A()", "_r_a")
+    sect_go = _find(r, ".Go()", "sect")
+    twig_go = _find(r, ".Go()", "twig")
+    assert (r_a, sect_go) in calls, "is-pattern receiver must resolve"
+    assert (r_a, twig_go) not in calls
+
+
+def test_is_not_pattern_receiver_resolves(tmp_path):
+    calls, r = _calls(tmp_path, {
+        "S.cs": (
+            _TWO_GO +
+            "public class R {\n"
+            "    public bool A(object o) { if (o is not Sect s) { return false; } return s.Go(); }\n"
+            "}\n"
+        )
+    })
+    r_a = _find(r, ".A()", "_r_a")
+    sect_go = _find(r, ".Go()", "sect")
+    twig_go = _find(r, ".Go()", "twig")
+    assert (r_a, sect_go) in calls, "is-not-pattern receiver must resolve"
+    assert (r_a, twig_go) not in calls
+
+
+def test_case_pattern_receiver_resolves(tmp_path):
+    calls, r = _calls(tmp_path, {
+        "S.cs": (
+            _TWO_GO +
+            "public class R {\n"
+            "    public bool A(object o) {\n"
+            "        switch (o) { case Sect s: return s.Go(); }\n"
+            "        return false;\n"
+            "    }\n"
+            "}\n"
+        )
+    })
+    r_a = _find(r, ".A()", "_r_a")
+    sect_go = _find(r, ".Go()", "sect")
+    twig_go = _find(r, ".Go()", "twig")
+    assert (r_a, sect_go) in calls, "case-pattern receiver must resolve"
+    assert (r_a, twig_go) not in calls
+
+
+def test_switch_arm_pattern_receiver_resolves(tmp_path):
+    calls, r = _calls(tmp_path, {
+        "S.cs": (
+            _TWO_GO +
+            "public class R {\n"
+            "    public bool A(object o) {\n"
+            "        return o switch { Sect s => s.Go(), _ => false };\n"
+            "    }\n"
+            "}\n"
+        )
+    })
+    r_a = _find(r, ".A()", "_r_a")
+    sect_go = _find(r, ".Go()", "sect")
+    twig_go = _find(r, ".Go()", "twig")
+    assert (r_a, sect_go) in calls, "switch-expression-arm receiver must resolve"
+    assert (r_a, twig_go) not in calls
+
+
+def test_sibling_pattern_rebind_conflict_poisons(tmp_path):
+    """The same name pattern-bound to two DIFFERENT types in one method: raw
+    calls carry no lexical position, so neither candidate may win — no edge."""
+    calls, r = _calls(tmp_path, {
+        "S.cs": (
+            _TWO_GO +
+            "public class R {\n"
+            "    public bool A(object o) {\n"
+            "        if (o is Sect x) { return x.Go(); }\n"
+            "        if (o is Twig x) { return x.Go(); }\n"
+            "        return false;\n"
+            "    }\n"
+            "}\n"
+        )
+    })
+    r_a = _find(r, ".A()", "_r_a")
+    sect_go = _find(r, ".Go()", "sect")
+    twig_go = _find(r, ".Go()", "twig")
+    assert (r_a, sect_go) not in calls, "conflicting pattern bindings must poison the name"
+    assert (r_a, twig_go) not in calls, "conflicting pattern bindings must poison the name"

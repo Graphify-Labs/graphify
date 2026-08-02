@@ -242,11 +242,21 @@ def _apply_resource_limits() -> None:
         pass
 
 
-def _git_head() -> str | None:
-    """Return current git HEAD commit hash, or None outside a repo."""
+def _git_head(cwd: Path | str | None = None) -> str | None:
+    """Return current git HEAD commit hash, or None outside a repo.
+
+    ``cwd`` selects the repository to ask (#2316). Without it the command
+    inherits the caller's working directory, so `graphify update <target>`
+    stamped the *invoking* repo's commit into the target's graph.json — the
+    same CWD-anchoring mistake as the manifest path, but writing wrong
+    provenance rather than a misplaced file.
+    """
     import subprocess as _sp
     try:
-        r = _sp.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=3)
+        r = _sp.run(
+            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=3,
+            cwd=str(cwd) if cwd is not None else None,
+        )
         return r.stdout.strip() if r.returncode == 0 else None
     except Exception:
         return None
@@ -481,6 +491,16 @@ def _reconcile_existing_graph(
     existing = json.loads(existing_graph.read_text(encoding="utf-8"))
     existing_graph_data = existing
 
+    # Backfill tier provenance on legacy items (#2334), mirroring
+    # build._load_existing_graph (this reconcile path loads the raw dict
+    # separately, so the backfill there does not reach it). Stamping preserved
+    # items means the graph self-heals on this write.
+    from graphify.build import _is_ast_tier
+    for _bucket in ("nodes", "links", "edges"):
+        for _item in existing.get(_bucket, []):
+            if isinstance(_item, dict):
+                _item.setdefault("_origin", "ast" if _is_ast_tier(_item) else "semantic")
+
     try:
         from graphify.build import _norm_source_file as _nsf
         from graphify.extract import _get_extractor
@@ -574,15 +594,20 @@ def _reconcile_existing_graph(
                 "Run a full re-extraction to purge them if the exclusion is intentional."
             )
 
-        # A full re-extraction owns every AST node under watch_root. Incremental
-        # extraction owns only nodes from rebuilt or deleted sources. Semantic
-        # nodes lack the AST origin marker and remain preserved.
+        # A full re-extraction owns the AST nodes of every source it actually
+        # re-extracted (extract_targets, via rebuilt_source_identities) — NOT
+        # every AST node under watch_root: a semantic-backed doc is excluded
+        # from extract_targets (#1915), so its existing AST layer is not
+        # regenerated this run and dropping it would be data loss (#2333,
+        # COEXIST — the AST and semantic layers of a file coexist).
+        # Incremental extraction owns only nodes from rebuilt or deleted
+        # sources. Semantic-tier nodes (per _is_ast_tier) remain preserved.
         preserved_nodes = [
             node
             for node in existing.get("nodes", [])
             if node["id"] not in new_ast_ids
             and not (
-                node.get("_origin") == "ast"
+                _is_ast_tier(node)
                 and (
                     (
                         not node.get("source_file")
@@ -590,7 +615,7 @@ def _reconcile_existing_graph(
                     )
                     or (
                         full_rebuild
-                        and source_paths.in_watch_root(node.get("source_file"))
+                        and source_paths.is_evicted(node, rebuilt_source_identities)
                     )
                 )
             )
@@ -611,7 +636,7 @@ def _reconcile_existing_graph(
             and edge.get("target") in all_ids
             and not source_paths.is_evicted(edge, edge_evicted_source_identities)
             and not (
-                edge.get("_origin") == "ast"
+                _is_ast_tier(edge)
                 and source_paths.is_evicted(edge, rebuilt_source_identities)
             )
         ]
@@ -675,6 +700,13 @@ def _node_community_map(graph_data: dict) -> dict[str, int]:
 def _canonical_graph_for_compare(graph_data: dict) -> dict:
     canonical = dict(graph_data)
     canonical.pop("built_at_commit", None)
+    # A missing "directed" key means the same thing as "directed": false
+    # everywhere else in the codebase (#2342's --no-cluster path only started
+    # writing the key once it began inheriting it from the existing graph).
+    # Normalise so an old graph.json without the key doesn't register as
+    # "changed" against a freshly-written candidate that now carries
+    # "directed": false explicitly.
+    canonical["directed"] = bool(canonical.get("directed", False))
     for key in ("nodes", "links", "edges", "hyperedges"):
         if key in canonical and isinstance(canonical[key], list):
             canonical[key] = sorted(
@@ -947,12 +979,16 @@ def _rebuild_code(
             return ok
 
     watch_root = watch_path.resolve()
+    # project_root stays CWD-anchored for a relative invocation on purpose: the
+    # persisted graph rehomes source_file across invocation styles against it
+    # (tests/test_watch.py:1389, :1428). The manifest is a different artifact
+    # with a different anchor — see the save_manifest calls below.
     project_root = Path.cwd().resolve() if not watch_path.is_absolute() else watch_root
     report_root = _report_root_label(watch_path)
     try:
         from graphify.extract import extract, _get_extractor
         from graphify.detect import detect
-        from graphify.build import build_from_json, _norm_source_file as _nsf
+        from graphify.build import build_from_json, _is_ast_tier, _norm_source_file as _nsf
         from graphify.cluster import cluster, remap_communities_to_previous, score_all
         from graphify.analyze import god_nodes, surprising_connections, suggest_questions
         from graphify.report import generate
@@ -987,10 +1023,12 @@ def _rebuild_code(
         # existing graph must not ALSO be AST-quick-scanned — otherwise every
         # rebuild mints heading nodes on top of the preserved semantic nodes
         # and the doc is represented twice (~4x graph bloat vs the CLI update
-        # path, which AST-extracts only code). Semantic supersedes AST per doc
-        # source: the quick-scan stays as a fallback for docs with no semantic
-        # layer (the no-LLM doc-structure feature, #09b33b7) and for brand-new
-        # docs the graph has never seen. These docs stay in ``code_files`` so
+        # path, which AST-extracts only code). A semantic-backed doc is never
+        # re-quick-scanned, and any AST layer it already carries coexists and
+        # is preserved rather than regenerated (#2333, COEXIST); the
+        # quick-scan stays as a fallback for docs with no semantic layer (the
+        # no-LLM doc-structure feature, #09b33b7) and for brand-new docs the
+        # graph has never seen. These docs stay in ``code_files`` so
         # corpus membership (#1795 fail-closed deletion evidence) and the
         # shrink accounting below still cover them — a previously-bloated
         # graph must be allowed to self-heal on a full rebuild without the
@@ -1023,7 +1061,11 @@ def _rebuild_code(
                 # "document" nodes (extractors/markdown.py). "image" stays out.
                 semantic_doc_identities: set[str] = set()
                 for node in prior.get("nodes", []):
-                    if node.get("_origin") == "ast":
+                    # _is_ast_tier, not a raw _origin check (#2334): a legacy
+                    # unstamped AST heading node (source_location "L<n>") must
+                    # not fake a semantic layer, or the doc would be excluded
+                    # from the AST quick-scan forever.
+                    if _is_ast_tier(node):
                         continue
                     if node.get("file_type") not in (
                         "document", "concept", "rationale", "paper", "code"
@@ -1108,13 +1150,14 @@ def _rebuild_code(
             extract_targets = wanted
         else:
             # Full rebuild: skip the AST quick-scan for semantic-backed docs
-            # (#1915). They remain in code_files, so stale _origin=="ast"
-            # heading nodes from a previously-bloated graph are dropped by the
-            # full-rebuild AST ownership rule while the shrink accounting
-            # below still counts the doc as a rebuilt source.
+            # (#1915). They remain in code_files for corpus membership and
+            # shrink accounting, but because they are not extract targets the
+            # full-rebuild AST ownership rule (scoped to
+            # rebuilt_source_identities, #2333 COEXIST) leaves their existing
+            # AST heading layer intact alongside the semantic layer.
             extract_targets = [p for p in code_files if p not in semantic_doc_files]
 
-        commit = _git_head()
+        commit = _git_head(cwd=watch_root)
         result = extract(extract_targets, cache_root=watch_root) if extract_targets else {
             "nodes": [], "edges": [], "hyperedges": [],
             "input_tokens": 0, "output_tokens": 0,
@@ -1178,6 +1221,10 @@ def _rebuild_code(
                 **{k: v for k, v in result.items() if k not in ("edges", "nodes")},
                 "nodes": _dedupe_nodes(result.get("nodes", [])),
                 "links": _dedupe_edges(result.get("edges", [])),
+                # Inherit the existing graph's directed flag (#2342) so
+                # `graphify update --no-cluster` can't silently drop it -
+                # `result` (the raw merged extraction) never carries one.
+                "directed": bool((existing_graph_data or {}).get("directed", False)),
             }
             candidate_graph_text = _json_text(candidate_graph_data)
             same_graph = False
@@ -1230,7 +1277,8 @@ def _rebuild_code(
                 # scan but still exist on disk (newly excluded) are pruned
                 # instead of surviving as phantom "deleted" entries (#1908).
                 save_manifest(
-                    detected["files"], kind="ast", root=project_root,
+                    detected["files"], manifest_path=str(out / "manifest.json"),
+                    kind="ast", root=watch_root,
                     scan_corpus={f for _fl in detected["files"].values() for f in _fl},
                 )
             except Exception:
@@ -1258,7 +1306,10 @@ def _rebuild_code(
             "total_words": detected.get("total_words", 0),
         }
 
-        G = build_from_json(result)
+        # Inherit the existing graph's directed flag (#2342) so `graphify
+        # update` can't silently downgrade a directed graph to undirected -
+        # build_from_json defaults to directed=False otherwise.
+        G = build_from_json(result, directed=bool((existing_graph_data or {}).get("directed", False)))
         candidate_topology = _topology_from_graph(G)
         if existing_graph_data:
             try:
@@ -1273,7 +1324,8 @@ def _rebuild_code(
                     from graphify.detect import save_manifest
                     # Full-scan save: prune excluded-but-alive rows (#1908).
                     save_manifest(
-                        detected["files"], kind="ast", root=project_root,
+                        detected["files"], manifest_path=str(out / "manifest.json"),
+                        kind="ast", root=watch_root,
                         scan_corpus={f for _fl in detected["files"].values() for f in _fl},
                     )
                 except Exception:
@@ -1419,7 +1471,8 @@ def _rebuild_code(
             from graphify.detect import save_manifest
             # Full-scan save: prune excluded-but-alive rows (#1908).
             save_manifest(
-                detected["files"], kind="ast", root=project_root,
+                detected["files"], manifest_path=str(out / "manifest.json"),
+                kind="ast", root=watch_root,
                 scan_corpus={f for _fl in detected["files"].values() for f in _fl},
             )
         except Exception:

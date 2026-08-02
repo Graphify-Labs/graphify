@@ -279,9 +279,8 @@ def disambiguate_ambiguous_candidates(
         {c: candidate_files.get(c, "") for c in survivors},
     )
 
-# Bare directory name even when GRAPHIFY_OUT is an absolute path. Used by the
-# path guards that walk parents looking for the output dir by name, and by the
-# detect scan-exclude so a custom output dir is never re-ingested as source.
+# Bare directory name even when GRAPHIFY_OUT is an absolute path. Used by path
+# guards that walk parents looking for the output directory by name.
 GRAPHIFY_OUT_NAME = os.path.basename(os.path.normpath(GRAPHIFY_OUT))
 
 

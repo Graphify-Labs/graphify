@@ -1547,6 +1547,23 @@ def _csharp_method_receiver_types(
                                 )
                                 break
                     bind(_read_text(name_node, source), type_name)
+        elif node.type in ("declaration_expression", "declaration_pattern"):
+            # #2346: inline-declared receivers. `out Sect s` is a
+            # declaration_expression; `is Leaf lf`, `is not Node nd`,
+            # `case Twig tw:` and a switch-arm `Stem st =>` are
+            # declaration_patterns — all carry `type` + `name` fields and
+            # bind the name for the rest of the method. `out var v`
+            # (implicit_type) yields None from _csharp_receiver_type_name
+            # and poisons the name method-locally, matching the
+            # untypable-local rule above (no guess).
+            name_node = node.child_by_field_name("name")
+            if name_node is not None and name_node.type == "identifier":
+                bind(
+                    _read_text(name_node, source),
+                    _csharp_receiver_type_name(
+                        node.child_by_field_name("type"), source
+                    ),
+                )
         stack.extend(node.children)
 
     table = dict(field_types)
@@ -2171,12 +2188,19 @@ def _ruby_const_last_name(node, source: bytes) -> str:
             return _read_text(consts[-1], source)
     return ""
 
+def _ruby_const_full_name(node, source: bytes) -> str:
+    """Full constant path of a ``constant`` or ``scope_resolution`` (``A::B::C`` kept whole)."""
+    if node is None or node.type not in ("constant", "scope_resolution"):
+        return ""
+    return _read_text(node, source).strip()
+
 _RUBY_CLASS_FACTORIES = frozenset({("Struct", "new"), ("Class", "new"), ("Data", "define")})
 
 def _ruby_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                      nodes: list, edges: list, seen_ids: set, function_bodies: list,
                      parent_class_nid: str | None, add_node, add_edge, walk,
-                     callable_def_nids: set, callable_class_nids: set) -> bool:
+                     callable_def_nids: set, callable_class_nids: set,
+                     ruby_namespace: list) -> bool:
     """Ruby: a constant assignment whose RHS is ``Struct.new(...)``,
     ``Class.new(Super)`` or ``Data.define(...)`` defines a class named after the
     constant (#1640). Synthesize the class node, attach block-defined methods via
@@ -2199,6 +2223,11 @@ def _ruby_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: st
     const_name = _read_text(left, source)
     if not const_name:
         return False
+    # Qualify the factory-defined const against the enclosing scope, mirroring
+    # the generic class branch (#2302): `module Billing; Invoice = Struct.new`
+    # labels `Billing::Invoice`.
+    const_segments = const_name.split("::")
+    const_name = "::".join(ruby_namespace + const_segments)
     line = node.start_point[0] + 1
     class_nid = _make_id(stem, const_name)
     add_node(class_nid, const_name, line)
@@ -2242,8 +2271,12 @@ def _ruby_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: st
     block = next((c for c in right.children if c.type in ("do_block", "block")), None)
     if block is not None:
         body = next((c for c in block.children if c.type == "body_statement"), block)
-        for child in body.children:
-            walk(child, parent_class_nid=class_nid)
+        ruby_namespace.extend(const_segments)
+        try:
+            for child in body.children:
+                walk(child, parent_class_nid=class_nid)
+        finally:
+            del ruby_namespace[-len(const_segments):]
     return True
 
 def _extract_generic(
@@ -2293,6 +2326,11 @@ def _extract_generic(
     edges: list[dict] = []
     seen_ids: set[str] = set()
     namespace_stack: list[str] = []
+    # Ruby only: enclosing module/class segments, so `module Foo::Bar` (compact)
+    # and `module Foo; module Bar` (nested) label the same node `Foo::Bar` and
+    # `include Foo::Bar` resolves for both spellings (#2302). Kept separate from
+    # namespace_stack so Ruby method ids/labels are unchanged.
+    ruby_namespace: list[str] = []
     scope_stack: list[str] = []
     function_bodies: list[tuple[str, object]] = []
     # nids of function / method / class definitions in this file. The indirect-
@@ -2467,11 +2505,35 @@ def _extract_generic(
             if not name_node:
                 return
             class_name = _read_text(name_node, source)
+            # Ruby: fully qualify the module/class label with its enclosing
+            # scope, splitting compact `Foo::Bar` names into segments so both
+            # declaration styles converge on one `Foo::Bar` label (#2302).
+            ruby_segments: list[str] = []
+            if config.ts_module == "tree_sitter_ruby":
+                ruby_segments = class_name.split("::")
+                class_name = "::".join(ruby_namespace + ruby_segments)
             class_nid = _make_id(stem, ".".join(namespace_stack), class_name)
             line = node.start_point[0] + 1
             metadata = None
-            if config.ts_module == "tree_sitter_c_sharp" and parent_class_nid:
-                metadata = {"is_nested_type": True}
+            if config.ts_module == "tree_sitter_c_sharp":
+                if parent_class_nid:
+                    metadata = {"is_nested_type": True}
+                # #2332: `partial class Foo` split across files mints one node
+                # per file (the id carries the file stem). Stamp the halves so
+                # the corpus-level _merge_csharp_partial_class_nodes pass can
+                # collapse them onto one canonical node. Grammar: `partial` is
+                # a `modifier` direct child of the type declaration.
+                if t in (
+                    "class_declaration",
+                    "struct_declaration",
+                    "interface_declaration",
+                    "record_declaration",
+                ) and any(
+                    c.type == "modifier" and _read_text(c, source) == "partial"
+                    for c in node.children
+                ):
+                    metadata = dict(metadata or {})
+                    metadata["is_partial"] = True
             add_node(class_nid, class_name, line, metadata=metadata)
             callable_def_nids.add(class_nid)  # a class is callable (constructor)
             callable_class_nids.add(class_nid)  # ...but only via its constructor (#2137)
@@ -2703,7 +2765,11 @@ def _extract_generic(
                         for _arg in _args.children:
                             if _arg.type not in ("constant", "scope_resolution"):
                                 continue
-                            _mod = _ruby_const_last_name(_arg, source)
+                            # Full path, not last segment: `include Foo::Bar`
+                            # must reference `Foo::Bar`, and truncating
+                            # `ActiveSupport::Concern` to `Concern` fabricated
+                            # edges to any local `Concern` module (#2302).
+                            _mod = _ruby_const_full_name(_arg, source)
                             if _mod:
                                 _ruby_mixin_calls.append({
                                     "caller_nid": class_nid,
@@ -2962,11 +3028,18 @@ def _extract_generic(
                                     add_edge(class_nid, target_nid, "references",
                                              line, context="generic_arg")
 
-            # Find body and recurse
+            # Find body and recurse. Ruby pushes its scope segments so nested
+            # declarations qualify against the enclosing module/class (#2302);
+            # ruby_segments is empty for every other language.
             body = _find_body(node, config)
             if body:
-                for child in body.children:
-                    walk(child, parent_class_nid=class_nid)
+                ruby_namespace.extend(ruby_segments)
+                try:
+                    for child in body.children:
+                        walk(child, parent_class_nid=class_nid)
+                finally:
+                    if ruby_segments:
+                        del ruby_namespace[-len(ruby_segments):]
             return
 
         # Event listener property arrays: $listen = [Event::class => [Listener::class]]
@@ -3688,6 +3761,90 @@ def _extract_generic(
                 if config.ts_module == "tree_sitter_c_sharp" and parent_class_nid:
                     csharp_method_scopes[id(body)] = (node, parent_class_nid)
                 function_bodies.append((func_nid, body))
+                if config.ts_module == "tree_sitter_kotlin":
+                    # #2347: Kotlin anonymous objects (`object : Foo { … }`,
+                    # node type `object_literal`). The function branch never
+                    # recurses into bodies and object_literal is not a
+                    # class_type, so the literal's members (and every call
+                    # inside them) got no nodes at all. Scan this body for
+                    # object_literal descendants — without crossing a nested
+                    # function_declaration boundary (a local fun's literals
+                    # are not this function's) and without descending into a
+                    # found literal — then emit an owner node per literal and
+                    # walk its class_body exactly like the class branch, so
+                    # members and their calls flow through the normal
+                    # machinery (walk_calls' function_boundary_types already
+                    # keep the enclosing function from absorbing them).
+                    _kt_literals = []
+                    _kt_stack = list(body.children)
+                    while _kt_stack:
+                        _kt_node = _kt_stack.pop()
+                        if _kt_node.type == "function_declaration":
+                            continue
+                        if _kt_node.type == "object_literal":
+                            _kt_literals.append(_kt_node)
+                            continue
+                        _kt_stack.extend(_kt_node.children)
+                    _kt_literals.sort(key=lambda n: n.start_byte)
+                    for lit in _kt_literals:
+                        lit_line = lit.start_point[0] + 1
+                        # Supertypes from the literal's delegation_specifiers,
+                        # shaped like the Kotlin class-branch handling:
+                        # constructor_invocation -> inherits, bare user_type
+                        # (or explicit_delegation) -> implements.
+                        lit_bases: list[tuple[str, str]] = []
+                        for dchild in lit.children:
+                            if dchild.type != "delegation_specifiers":
+                                continue
+                            for spec in dchild.children:
+                                if spec.type != "delegation_specifier":
+                                    continue
+                                relation = "implements"
+                                user_type_node = None
+                                for sub in spec.children:
+                                    if sub.type == "constructor_invocation":
+                                        relation = "inherits"
+                                        for inner in sub.children:
+                                            if inner.type == "user_type":
+                                                user_type_node = inner
+                                                break
+                                        break
+                                    if sub.type == "user_type":
+                                        user_type_node = sub
+                                        break
+                                    if sub.type == "explicit_delegation":
+                                        for inner in sub.children:
+                                            if inner.type == "user_type":
+                                                user_type_node = inner
+                                                break
+                                        break
+                                base = _kotlin_user_type_name(
+                                    user_type_node, source
+                                )
+                                if base:
+                                    lit_bases.append((base, relation))
+                        obj_label = (
+                            lit_bases[0][0] if lit_bases
+                            else f"object@L{lit_line}"
+                        )
+                        obj_nid = _make_id(
+                            func_nid, f"object:{obj_label}", f"L{lit_line}"
+                        )
+                        add_node(obj_nid, obj_label, lit_line)
+                        add_edge(func_nid, obj_nid, "contains", lit_line)
+                        callable_def_nids.add(obj_nid)
+                        callable_class_nids.add(obj_nid)
+                        for base, relation in lit_bases:
+                            base_nid = ensure_named_node(base, lit_line)
+                            if base_nid != obj_nid:
+                                add_edge(obj_nid, base_nid, relation, lit_line)
+                        lit_body = next(
+                            (c for c in lit.children if c.type == "class_body"),
+                            None,
+                        )
+                        if lit_body is not None:
+                            for child in lit_body.children:
+                                walk(child, parent_class_nid=obj_nid)
             return
 
         # JS/TS arrow functions and C# namespaces — language-specific extra handling
@@ -3735,7 +3892,8 @@ def _extract_generic(
             if _ruby_extra_walk(node, source, file_nid, stem, str_path,
                                 nodes, edges, seen_ids, function_bodies,
                                 parent_class_nid, add_node, add_edge, walk,
-                                callable_def_nids, callable_class_nids):
+                                callable_def_nids, callable_class_nids,
+                                ruby_namespace):
                 return
 
         # Python's `@property` / `@staticmethod` / `@classmethod` wrap the

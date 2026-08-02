@@ -34,6 +34,23 @@ from .paths import default_graph_json as _default_graph_json
 from .validate import validate_extraction
 
 
+# Deterministic (AST) extractors emit source_location "L<line>"; the semantic
+# extraction spec emits null. Used by _is_ast_tier as a shape fallback for
+# legacy items that predate the _origin marker (#2334).
+_AST_LOC_RE = re.compile(r"^L\d")
+
+
+def _is_ast_tier(item: dict) -> bool:
+    """AST vs semantic tier. _origin wins when present; unstamped legacy items
+    (pre-0.9.16) fall back to shape: deterministic extractors emit
+    source_location 'L<line>', the semantic spec emits null (#2334)."""
+    o = item.get("_origin")
+    if o is not None:
+        return o == "ast"
+    loc = item.get("source_location")
+    return isinstance(loc, str) and bool(_AST_LOC_RE.match(loc))
+
+
 # Language interop families, keyed by extension, for the cross-language phantom-edge
 # guard in the edge loop below. Families group by REAL interop (JS/TS share a module
 # graph; C/C++/ObjC share a compilation unit via headers; JVM langs share bytecode),
@@ -155,6 +172,62 @@ def _fold_edge_aliases(edge: dict) -> None:
         edge["relation"] = edge.pop("type")
     if not edge.get("confidence") and edge.get("confidence_score") is not None:
         edge["confidence"] = "INFERRED"
+
+
+def _coerce_id(value: object) -> object:
+    """Return a str for a numeric id, else the value unchanged.
+
+    ``bool`` is excluded despite subclassing ``int``: an id of ``True`` is not a
+    number the model meant to name a node, and ``"True"`` would invent a label.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return value
+    return str(value)
+
+
+def _coerce_non_string_ids(extraction: dict) -> None:
+    """Coerce numeric node ids and edge/hyperedge references to str, in place (#2326).
+
+    A backend can emit ``{"id": 10}`` where the schema says ``{"id": "10"}``.
+    Every id consumer downstream assumes ``str``, so one int id aborted the build
+    in three places: ``_pick_winner``'s ``_CHUNK_SUFFIX.search(n["id"])`` raised
+    ``TypeError: expected string or bytes-like object``, and ``build_from_json``'s
+    ``sorted(node_set)`` raised ``'<' not supported between instances of 'str'
+    and 'int'`` — the latter for a lone node with nothing to dedup at all.
+    Coercing keeps the node and its edges rather than dropping either, which is
+    the same tolerate-and-heal treatment loose backend output already gets at the
+    parse chokepoint (#1631) and in the alias folds (#2194).
+
+    Endpoints and hyperedge members are coerced with the nodes, not after: a
+    node-only coercion would renumber ``10`` to ``"10"`` and leave every edge
+    pointing at the vanished ``10``, trading a loud crash for a silently
+    disconnected graph. The legacy ``from``/``to`` endpoint aliases are included
+    because dedup reads them directly (#803).
+
+    Runs in BOTH ``build`` (before dedup, which keys on id) and
+    ``build_from_json`` (the direct entry that reloads a persisted graph), for
+    the same two-site reason as the ``_fold_node_aliases`` fold (#2194). It is
+    idempotent, so the nested call on the ``build`` path is a no-op.
+
+    Non-numeric non-str ids (``None``, lists, dicts) are left alone for
+    ``validate_extraction`` to report: ``str(None) == "None"`` would fabricate a
+    node id that no edge references.
+    """
+    for node in extraction.get("nodes") or ():
+        if isinstance(node, dict) and "id" in node:
+            node["id"] = _coerce_id(node["id"])
+    for edge in extraction.get("edges") or ():
+        if not isinstance(edge, dict):
+            continue
+        for key in ("source", "target", "from", "to"):
+            if key in edge:
+                edge[key] = _coerce_id(edge[key])
+    for he in extraction.get("hyperedges") or ():
+        if not isinstance(he, dict):
+            continue
+        members = he.get("nodes")
+        if isinstance(members, list):
+            he["nodes"] = [_coerce_id(ref) for ref in members]
 
 
 def _norm_source_file(p: str | None, root: str | None = None) -> str | None:
@@ -398,7 +471,7 @@ def _semantic_id_remap(nodes: list, root: str | None) -> dict:
     for node in nodes:
         if not isinstance(node, dict):
             continue
-        if node.get("_origin") == "ast":
+        if _is_ast_tier(node):
             continue
         nid = node.get("id")
         sf = node.get("source_file")
@@ -548,6 +621,10 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     # NetworkX <= 3.1 serialised edges as "links"; remap to "edges" for compatibility.
     if "edges" not in extraction and "links" in extraction:
         extraction = dict(extraction, edges=extraction["links"])
+
+    # Numeric ids from a loose backend become str before anything keys on them
+    # (#2326) — after the links remap so aliased edges are covered too.
+    _coerce_non_string_ids(extraction)
 
     # Canonicalize legacy node/edge schema before validation.
     for node in extraction.get("nodes", []):
@@ -721,6 +798,13 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         sf = str(attrs.get("source_file", ""))
         if not label or not sf:
             continue
+        # Strict _origin check on purpose — NOT _is_ast_tier (#2334): existing
+        # graph items are backfilled with _origin at load time, so inside a
+        # build the only unstamped items are fresh SEMANTIC chunks (extract()
+        # always stamps AST output). Those may carry drifted 'L<line>'
+        # source_locations (the very ghosts #1145-extended collapses), and the
+        # shape fallback would misread them as AST — turning two same-file LLM
+        # duplicates into a fake AST/AST collision that blocks their merge.
         is_ast = attrs.get("_origin") == "ast"
         if attrs.get("source_location") or is_ast:
             # Key on the FULL normalized source_file, not the bare basename
@@ -749,7 +833,7 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     for nid in sorted(node_set):
         attrs = G.nodes[nid]
         if attrs.get("_origin") == "ast":
-            continue  # AST nodes are never ghosts
+            continue  # AST nodes are never ghosts (strict check — see Pass 1)
         label = str(attrs.get("label", "")).strip()
         sf = str(attrs.get("source_file", ""))
         if not label or not sf:
@@ -1048,6 +1132,10 @@ def build(
         combined["input_tokens"] += ext.get("input_tokens", 0)
         combined["output_tokens"] += ext.get("output_tokens", 0)
     if dedup and combined["nodes"]:
+        # Numeric ids must be str before dedup, which keys on them and would
+        # raise TypeError in _pick_winner's regex search (#2326). build_from_json
+        # coerces too, but that runs after dedup — too late for this path.
+        _coerce_non_string_ids(combined)
         # Fold legacy node field aliases before dedup (#2194): dedup runs BEFORE
         # build_from_json and keys on `label`, so a `name`/`path` alias node
         # would be invisible to it and only label-dedup one build later, after
@@ -1124,9 +1212,9 @@ def deduplicate_by_label(nodes: list[dict], edges: list[dict]) -> tuple[list[dic
     return deduped_nodes, deduped_edges
 
 
-def _load_existing_graph(graph_path: Path) -> "tuple[list, list, list] | None":
-    """Load (nodes, edges, hyperedges) from an existing graph.json for an
-    incremental merge, accepting both the ``links`` and ``edges`` spellings.
+def _load_existing_graph(graph_path: Path) -> "tuple[list, list, list, bool] | None":
+    """Load (nodes, edges, hyperedges, directed) from an existing graph.json for
+    an incremental merge, accepting both the ``links`` and ``edges`` spellings.
 
     Reads the JSON directly instead of going through node_link_graph().
     The latter rebuilds an undirected nx.Graph and then enumerating
@@ -1152,10 +1240,25 @@ def _load_existing_graph(graph_path: Path) -> "tuple[list, list, list] | None":
             "Delete the file and run a full rebuild."
         ) from exc
     links_key = "links" if "links" in data else "edges"
+    nodes = list(data.get("nodes", []))
+    edges = list(data.get(links_key, []))
+    # Backfill tier provenance on legacy items (#2334): _origin is stamped at
+    # extraction time only (extract.py for AST, and the semantic path never
+    # stamps), so pre-0.9.16 graphs and externally-merged fragments carry
+    # unstamped items. Stamp them via the _is_ast_tier shape fallback so the
+    # graph self-heals on the next write and every downstream tier decision
+    # (build_merge replace, watch reconcile) reads an explicit marker.
+    for item in nodes:
+        if isinstance(item, dict):
+            item.setdefault("_origin", "ast" if _is_ast_tier(item) else "semantic")
+    for item in edges:
+        if isinstance(item, dict):
+            item.setdefault("_origin", "ast" if _is_ast_tier(item) else "semantic")
     return (
-        list(data.get("nodes", [])),
-        list(data.get(links_key, [])),
+        nodes,
+        edges,
         list(data.get("hyperedges", [])),
+        bool(data.get("directed", False)),
     )
 
 
@@ -1171,8 +1274,10 @@ def merge_raw_extraction(
     Replace/prune semantics mirror :func:`build_merge` exactly, so the raw and
     clustered incremental paths can't drift:
 
-    - sources re-extracted this run REPLACE their prior contribution — existing
-      nodes/edges/hyperedges owned by them are dropped, matched in both raw and
+    - sources re-extracted this run REPLACE their prior contribution PER TIER
+      (#2333/#2336): existing nodes/edges/hyperedges owned by them are dropped
+      only when the new extraction contains the same tier (AST vs semantic,
+      per :func:`_is_ast_tier`) for that source, matched in both raw and
       :func:`_norm_source_file` form (#1007);
     - ``prune_sources`` (deleted / excluded / graph-stale files) are dropped,
       with the ``_abs_identity`` third-form fallback (#2012), and "replace" wins
@@ -1193,24 +1298,31 @@ def merge_raw_extraction(
     loaded = _load_existing_graph(graph_path)
     if loaded is None:
         return new
-    existing_nodes, existing_edges, existing_hyperedges = loaded
+    existing_nodes, existing_edges, existing_hyperedges, _ = loaded
 
     _eff_root = (
         str(Path(root).resolve()) if root is not None
         else _infer_merge_root(graph_path)
     )
 
-    new_sources: set[str] = set()
+    # Tier-scoped replace, mirroring build_merge (#2333/#2336, COEXIST): a
+    # source re-extracted this run replaces only the tier(s) actually present
+    # in the new extraction, so an AST-only re-extract keeps the file's
+    # semantic layer and vice versa.
+    new_ast_sources: set[str] = set()
+    new_sem_sources: set[str] = set()
     for n in new.get("nodes", []):
         if not isinstance(n, dict):
             continue
         sf = n.get("source_file")
         if not sf:
             continue
-        new_sources.add(sf)
+        tier_sources = new_ast_sources if _is_ast_tier(n) else new_sem_sources
+        tier_sources.add(sf)
         norm = _norm_source_file(sf, _eff_root)
         if norm:
-            new_sources.add(norm)
+            tier_sources.add(norm)
+    new_sources: set[str] = new_ast_sources | new_sem_sources
 
     prune_set: set[str] = set()
     prune_abs: set[str] = set()
@@ -1235,7 +1347,12 @@ def merge_raw_extraction(
         if not isinstance(item, dict):
             return True
         sf = item.get("source_file")
-        if sf in new_sources or _norm_source_file(sf, _eff_root) in new_sources:
+        # Tier-scoped replace: an item is superseded only when ITS OWN tier
+        # re-extracted its source. Hyperedges are semantic-tier (no _origin,
+        # null source_location), so an AST-only re-extract carries them.
+        # Deletion pruning below stays tier-blind.
+        own = new_ast_sources if _is_ast_tier(item) else new_sem_sources
+        if sf in own or _norm_source_file(sf, _eff_root) in own:
             return True  # re-extracted this run — replaced by the new chunk
         if not sf:
             return False  # unowned — carry forward
@@ -1260,30 +1377,40 @@ def build_merge(
     graph_path: str | Path | None = None,
     prune_sources: list[str] | None = None,
     *,
-    directed: bool = False,
+    directed: bool | None = None,
     dedup: bool = True,
     dedup_llm_backend: str | None = None,
     root: str | Path | None = None,
 ) -> nx.Graph:
     """Load existing graph.json, merge new chunks into it, and save back.
 
-    Re-extracted files REPLACE their prior contribution: any source_file present
-    in new_chunks is dropped from the loaded graph before merging, so a changed
-    file's stale nodes/edges don't accumulate. Files absent from new_chunks are
-    preserved unchanged; deleted files are removed via prune_sources.
-    Safe to call repeatedly.
+    Re-extracted files REPLACE their prior contribution per tier (#2333/#2336):
+    a source_file present in new_chunks has its existing nodes/edges dropped
+    for each tier (AST vs semantic, per :func:`_is_ast_tier`) the new chunks
+    actually contain, so a changed file's stale nodes/edges don't accumulate
+    while a one-tier re-extract keeps the other tier's layer intact. Files
+    absent from new_chunks are preserved unchanged; deleted files are removed
+    via prune_sources (tier-blind). Safe to call repeatedly.
     root: if given, absolute source_file paths in new_chunks are made relative (#932).
+    directed: if None (default), honor the on-disk graph's own ``directed`` flag
+    when one exists, so an incremental merge can't silently flip a directed
+    graph undirected (#2342). Falls back to False when there is no existing
+    graph to inherit from. An explicit True/False always overrides the on-disk
+    flag.
     """
     graph_path = Path(graph_path if graph_path is not None else _default_graph_json())
     _loaded = _load_existing_graph(graph_path)
     if _loaded is not None:
-        existing_nodes, existing_edges, existing_hyperedges = _loaded
+        existing_nodes, existing_edges, existing_hyperedges, existing_directed = _loaded
         had_graph = True
     else:
         existing_nodes = []
         existing_edges = []
         existing_hyperedges = []
+        existing_directed = False
         had_graph = False
+    if directed is None:
+        directed = existing_directed if had_graph else False
 
     # Effective root for relativizing absolute source_file / prune paths back to the
     # stored relative source_file keys. When the caller passes root we use it;
@@ -1306,21 +1433,32 @@ def build_merge(
     # for them; genuinely deleted files are still handled via prune_sources.
     # Matched in both raw and _norm_source_file form because new_chunks may carry
     # absolute win32 paths while the stored graph keeps relative posix (#1007).
+    # Replacement is tier-scoped (#2333/#2336, COEXIST): each file has two
+    # producers — the deterministic AST pass and the semantic/LLM pass — whose
+    # node sets coexist in the graph. A re-extract of one tier must replace
+    # only that tier's prior contribution, never the other's (a semantic-only
+    # chunk used to delete the file's AST headings). Which tier a NEW chunk
+    # item belongs to is read via _is_ast_tier (existing items were stamped by
+    # _load_existing_graph above).
     _replace_root = _eff_root
-    new_sources: set[str] = set()
+    new_ast_sources: set[str] = set()
+    new_sem_sources: set[str] = set()
     for ch in new_chunks:
         for n in ch.get("nodes", []):
             sf = n.get("source_file")
             if not sf:
                 continue
-            new_sources.add(sf)
+            tier_sources = new_ast_sources if _is_ast_tier(n) else new_sem_sources
+            tier_sources.add(sf)
             norm = _norm_source_file(sf, _replace_root)
             if norm:
-                new_sources.add(norm)
+                tier_sources.add(norm)
+    new_sources: set[str] = new_ast_sources | new_sem_sources
     if new_sources:
         def _kept(item: dict) -> bool:
             sf = item.get("source_file")
-            return sf not in new_sources and _norm_source_file(sf, _replace_root) not in new_sources
+            own = new_ast_sources if _is_ast_tier(item) else new_sem_sources
+            return sf not in own and _norm_source_file(sf, _replace_root) not in own
         existing_nodes = [n for n in existing_nodes if _kept(n)]
         existing_edges = [e for e in existing_edges if _kept(e)]
 
@@ -1388,8 +1526,11 @@ def build_merge(
                 continue
             sf = he.get("source_file")
             norm = _norm_source_file(sf, _eff_root)
-            if sf in new_sources or norm in new_sources:
-                continue  # re-extracted — replaced by the new chunk's version
+            # Hyperedges are semantic-tier: only a SEMANTIC re-extract of the
+            # source replaces them. An AST-only re-extract cannot regenerate
+            # hyperedges, so dropping them there would be data loss (#2336).
+            if sf in new_sem_sources or norm in new_sem_sources:
+                continue  # semantically re-extracted — replaced by the new chunk's version
             if _prune_match(sf):
                 continue  # deleted — pruned
             carried.append(he)
