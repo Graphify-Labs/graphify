@@ -715,6 +715,98 @@ def test_build_from_json_preserves_first_direction_on_bidirectional_pair(tmp_pat
     )
 
 
+# ---------------------------------------------------------------------------
+# #2391 — relation priority on same-pair edge collapse
+# ---------------------------------------------------------------------------
+# Simple Graph/DiGraph keeps one edge per node pair. build_from_json sorts by
+# (source, target, relation) then last-write-wins via add_edge, so alphabetical
+# order made `references` always overwrite `calls`. Prefer higher-information
+# relations instead.
+
+
+def _pair_extraction(edges):
+    return {
+        "nodes": [
+            {"id": "fn_a", "label": "a", "file_type": "code", "source_file": "a.py"},
+            {"id": "fn_b", "label": "b", "file_type": "code", "source_file": "b.py"},
+        ],
+        "edges": edges,
+        "input_tokens": 0,
+        "output_tokens": 0,
+    }
+
+
+def test_relation_priority_calls_beats_references_regardless_of_input_order():
+    """#2391: a return-type `references` edge must not delete a real `calls`."""
+    calls = {
+        "source": "fn_a", "target": "fn_b", "relation": "calls",
+        "source_location": "L271", "confidence": "EXTRACTED", "source_file": "a.py",
+    }
+    refs = {
+        "source": "fn_a", "target": "fn_b", "relation": "references",
+        "source_location": "L260", "confidence": "EXTRACTED", "source_file": "a.py",
+    }
+    for edges in ([calls, refs], [refs, calls]):
+        G = build_from_json(_pair_extraction(edges))
+        assert G.number_of_edges() == 1
+        data = edge_data(G, "fn_a", "fn_b")
+        assert data["relation"] == "calls", (
+            f"expected calls to survive collapse, got {data.get('relation')!r}"
+        )
+        assert data.get("source_location") == "L271"
+        assert data.get("_src") == "fn_a"
+        assert data.get("_tgt") == "fn_b"
+
+
+def test_relation_priority_indirect_call_beats_contains():
+    """#2391: indirect_call is higher-information than a structural contains."""
+    edges = [
+        {
+            "source": "fn_a", "target": "fn_b", "relation": "contains",
+            "source_location": "L1", "confidence": "EXTRACTED", "source_file": "a.py",
+        },
+        {
+            "source": "fn_a", "target": "fn_b", "relation": "indirect_call",
+            "source_location": "L9", "confidence": "INFERRED", "source_file": "a.py",
+        },
+    ]
+    G = build_from_json(_pair_extraction(edges))
+    data = edge_data(G, "fn_a", "fn_b")
+    assert data["relation"] == "indirect_call"
+    assert data.get("source_location") == "L9"
+
+
+def test_relation_priority_sole_references_still_kept():
+    """#2391: without a competing higher relation, references still survives."""
+    edges = [
+        {
+            "source": "fn_a", "target": "fn_b", "relation": "references",
+            "source_location": "L260", "confidence": "EXTRACTED", "source_file": "a.py",
+        },
+    ]
+    G = build_from_json(_pair_extraction(edges))
+    assert edge_data(G, "fn_a", "fn_b")["relation"] == "references"
+
+
+def test_relation_priority_calls_beats_references_directed():
+    """#2391 also applies on DiGraph (same-direction parallel relations)."""
+    edges = [
+        {
+            "source": "fn_a", "target": "fn_b", "relation": "references",
+            "source_location": "L260", "confidence": "EXTRACTED", "source_file": "a.py",
+        },
+        {
+            "source": "fn_a", "target": "fn_b", "relation": "calls",
+            "source_location": "L271", "confidence": "EXTRACTED", "source_file": "a.py",
+        },
+    ]
+    G = build_from_json(_pair_extraction(edges), directed=True)
+    assert G.is_directed()
+    data = edge_data(G, "fn_a", "fn_b")
+    assert data["relation"] == "calls"
+    assert data.get("source_location") == "L271"
+
+
 # Regression tests for #796 — edge_data / edge_datas helpers must tolerate
 # MultiGraph and MultiDiGraph, which networkx's node_link_graph() produces
 # whenever the loaded JSON has multigraph: true. Plain G.edges[u, v] crashes

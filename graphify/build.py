@@ -71,6 +71,32 @@ _EDGE_LANG_FAMILY: dict[str, str] = {
 }
 
 
+# When a simple Graph/DiGraph collapses parallel edges on the same node pair,
+# alphabetical last-write-wins (via the deterministic sort below) made
+# ``references`` always beat ``calls`` (``"calls" < "references"``), silently
+# deleting the higher-information call edge (#2391). Higher score wins the
+# collapse; relations absent from this table score 0 so unlisted types keep
+# first-wins behavior rather than inventing a new alphabetical bias.
+_RELATION_PRIORITY: dict[str, int] = {
+    "calls": 100,
+    "indirect_call": 90,
+    "imports": 80,
+    "imports_from": 80,
+    "inherits": 70,
+    "mixes_in": 70,
+    "implements": 70,
+    "contains": 40,
+    "method": 40,
+    "references": 20,
+}
+
+
+def _relation_priority(relation: object) -> int:
+    if not isinstance(relation, str):
+        return 0
+    return _RELATION_PRIORITY.get(relation, 0)
+
+
 # Synonym mapper for known invalid file_type values that LLM subagents commonly
 # emit. Keeps semantic intent close (markdown→document, tool→code) and falls
 # back to "concept" for any other invalid value (see #840).
@@ -1049,6 +1075,23 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 existing.get("_src") == tgt and existing.get("_tgt") == src
             ):
                 continue
+            # Different relations on the same pair: prefer the higher-information
+            # relation instead of alphabetical last-write-wins (#2391). Equal
+            # priority keeps the first-seen edge (same spirit as #1061).
+            if existing.get("relation") != attrs.get("relation"):
+                if _relation_priority(attrs.get("relation")) <= _relation_priority(
+                    existing.get("relation")
+                ):
+                    continue
+        elif G.is_directed() and G.has_edge(src, tgt):
+            # DiGraph still collapses same-direction parallel relations; apply
+            # the same priority rule so directed builds don't reintroduce #2391.
+            existing = edge_data(G, src, tgt)
+            if existing.get("relation") != attrs.get("relation"):
+                if _relation_priority(attrs.get("relation")) <= _relation_priority(
+                    existing.get("relation")
+                ):
+                    continue
         G.add_edge(src, tgt, **attrs)
     hyperedges = extraction.get("hyperedges", [])
     if hyperedges:
