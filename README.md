@@ -22,13 +22,17 @@
   <a href="https://www.ycombinator.com/companies/graphify-labs"><img src="https://img.shields.io/badge/Y%20Combinator-S26-F0652F?style=flat&logo=ycombinator&logoColor=white" alt="YC S26"/></a>
 </p>
 
+<p align="center">
+  <b>Early access to the graphify platform is open before the public v1 launch: <a href="https://app.graphify.com/login">app.graphify.com</a></b>
+</p>
+
 Type `/graphify` in your AI coding assistant and it maps your entire project (code, docs, PDFs, images, videos) into a **knowledge graph** you can **query instead of grepping** through files.
 
 - **Code maps for free, fully local.** Code is parsed with tree-sitter AST: deterministic, no LLM, nothing leaves your machine. (Docs, PDFs, images and video use your assistant's model, or a configured API key, for a semantic pass.)
 - **Every edge is explained.** Each connection is tagged `EXTRACTED` (explicit in the source) or `INFERRED` (resolved by graphify), so you can tell what was read directly from what was inferred.
 - **Not a vector index.** No embeddings, no vector store: a real graph you traverse. Ask a question, trace the path between two things, or explain one concept.
 
-> Want this always-on, updating in the background across your code, docs, and meetings rather than only on demand? That is what we are building at **[graphify.com](https://graphify.com)**. You can join the waitlist there.
+> Want this always-on, updating in the background across your code, docs, and meetings rather than only on demand? That is what we are building at **[graphify.com](https://graphify.com)**, and early access is open now at **[app.graphify.com](https://app.graphify.com/login)**.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
@@ -256,6 +260,7 @@ Codex users also need `multi_agent = true` under `[features]` in `~/.codex/confi
 | `gemini` | Google Gemini API | `uv tool install "graphifyy[gemini]"` |
 | `anthropic` | Anthropic Claude API (`--backend claude`, uses `ANTHROPIC_API_KEY`) | `uv tool install "graphifyy[anthropic]"` |
 | `bedrock` | AWS Bedrock (uses IAM, no API key) | `uv tool install "graphifyy[bedrock]"` |
+| `copilot` | GitHub Copilot SDK backend (Python 3.11+; automatic CLI fallback) | `uv tool install --python 3.12 "graphifyy[copilot]"` |
 | `azure` | Azure OpenAI Service (`--backend azure`, uses `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT`) | `uv tool install "graphifyy[openai]"` |
 | `sql` | SQL schema extraction | `uv tool install "graphifyy[sql]"` |
 | `postgres` | Live PostgreSQL introspection (`--postgres DSN`) | `uv tool install "graphifyy[postgres]"` |
@@ -511,9 +516,17 @@ These are only needed for **headless / CI extraction** (`graphify extract`). Whe
 | `AZURE_OPENAI_API_VERSION` | Azure API version override | optional — default `2024-12-01-preview` |
 | `AZURE_OPENAI_DEPLOYMENT` or `GRAPHIFY_AZURE_MODEL` | Azure deployment name | optional — default `gpt-4o` |
 | `AWS_*` / `~/.aws/credentials` | AWS Bedrock — standard credential chain | `--backend bedrock` (no API key, uses IAM) |
+| `COPILOT_GH_HOST` | GitHub host inherited by the official Copilot SDK/CLI runtime, including GHE.com data-residency hosts such as `example.ghe.com` | `--backend copilot-sdk` or `copilot-cli` (recommended when multiple accounts/hosts are configured) |
+| `GRAPHIFY_COPILOT_SDK_MODEL`, `GRAPHIFY_COPILOT_MODEL`, or `COPILOT_MODEL` | Model requested from the Copilot SDK; `--model` takes precedence | optional — default `auto`, subject to enterprise policy and plan availability |
+| `GRAPHIFY_COPILOT_CLI_MODEL` or `COPILOT_MODEL` | Model requested from the standalone Copilot CLI backend; `--model` takes precedence | optional — default `auto` |
+| `GRAPHIFY_COPILOT_SDK_CLI_PATH` or `COPILOT_CLI_PATH` | Managed system Copilot CLI executable used by the SDK's stdio transport | optional — defaults to `copilot` / `copilot.cmd` |
+| `GRAPHIFY_COPILOT_SDK_USE_BUNDLED_CLI` | Use the SDK-downloaded version-pinned runtime instead of the system CLI | optional — set `1`; system CLI is the default for managed enterprise workstations |
+| `GRAPHIFY_COPILOT_SDK_FALLBACK` | Permit automatic fallback from `copilot-sdk` to `copilot-cli` | optional — enabled by default; set `0` to require SDK success |
+| `GRAPHIFY_COPILOT_SDK_PARALLEL` | Allow concurrent SDK sessions | optional — set `1` to opt in; serial by default |
+| `GRAPHIFY_COPILOT_CLI_PARALLEL` | Allow concurrent standalone Copilot CLI subprocesses | optional — set `1` to opt in; serial by default |
 | `GRAPHIFY_MAX_WORKERS` | AST parallelism thread count | optional — also `--max-workers` flag |
 | `GRAPHIFY_MAX_OUTPUT_TOKENS` | Raise output cap for dense corpora | optional — e.g. `32768` for large files |
-| `GRAPHIFY_API_TIMEOUT` | Per-call timeout in seconds for HTTP, claude-cli, Anthropic SDK, and Bedrock backends (default: 600) | optional — also `--api-timeout` flag |
+| `GRAPHIFY_API_TIMEOUT` | Per-call timeout in seconds for HTTP, claude-cli, copilot-sdk, copilot-cli, Anthropic SDK, and Bedrock backends (default: 600) | optional — also `--api-timeout` flag |
 | `GRAPHIFY_MAX_RETRIES` | How many times to retry a rate-limited (429) request before giving up (default: 6; honors `Retry-After`) | optional — raise for strict per-org limits (e.g. kimi); `0` disables |
 | `GRAPHIFY_FORCE` | Force graph rebuild even with fewer nodes | optional — also `--force` flag |
 | `GRAPHIFY_GOOGLE_WORKSPACE` | Auto-enable Google Workspace export | optional — set to `1` |
@@ -529,13 +542,46 @@ These are only needed for **headless / CI extraction** (`graphify extract`). Whe
 
 ---
 
+## GitHub Copilot SDK and CLI backends
+
+`--backend copilot-sdk` is the preferred structured integration. It uses the official Python SDK to control a persistent headless Copilot runtime over JSON-RPC, creates a fresh isolated session for each Graphify request, disconnects and permanently deletes that session after use, supports image file attachments, and automatically falls back to the existing one-shot `copilot-cli` transport when the SDK is unavailable or fails. `--backend copilot-cli` remains available as a standalone diagnostic and compatibility backend.
+
+Install the optional SDK under Python 3.11 or newer, then authenticate the official CLI to the enterprise host:
+
+```bash
+uv tool install --python 3.12 "graphifyy[copilot]"
+copilot login --host https://example.ghe.com
+
+export COPILOT_GH_HOST=example.ghe.com
+graphify extract ./docs --backend copilot-sdk --model auto
+```
+
+```powershell
+$env:COPILOT_GH_HOST = "example.ghe.com"
+graphify extract ./docs `
+  --backend copilot-sdk `
+  --model auto
+```
+
+Graphify defaults the SDK to the managed system `copilot` executable so it uses the same enterprise login and software-management path. Set `GRAPHIFY_COPILOT_SDK_USE_BUNDLED_CLI=1` to opt into the SDK-downloaded matching runtime. On Python 3.10, the SDK package cannot load and the explicit `copilot-sdk` backend uses `copilot-cli`; set `GRAPHIFY_COPILOT_SDK_FALLBACK=0` to require SDK success.
+
+The SDK client runs in `mode="empty"` with a temporary working directory and temporary `COPILOT_HOME`, exposes no tools or MCP servers, rejects every permission request, disables persistent memory/infinite sessions and remote sessions, and does not configure SDK telemetry. Each request uses a unique session ID; Graphify disconnects and permanently deletes the session before returning, and discards the runtime if cleanup cannot be verified. It is never auto-selected. These controls limit local agent capabilities, but the selected Copilot model still receives the source chunks and remains governed by enterprise policy and approved-use boundaries.
+
+SDK model precedence is `--model`, `GRAPHIFY_COPILOT_SDK_MODEL`, `GRAPHIFY_COPILOT_MODEL`, `COPILOT_MODEL`, then `auto`. Requests are serial by default; `GRAPHIFY_COPILOT_SDK_PARALLEL=1` opts into concurrency. The CLI fallback has separate `GRAPHIFY_COPILOT_CLI_MODEL` and `GRAPHIFY_COPILOT_CLI_PARALLEL` controls.
+
+Copilot responses do not expose provider-style billing data to Graphify, so token counts are estimates and Graphify's provider-cost field is `$0`; GitHub AI credits or plan allowances can still be consumed.
+
+See [`docs/copilot-sdk-backend.md`](docs/copilot-sdk-backend.md) for architecture, GitHub Enterprise setup, fallback behavior, image handling, security controls, and troubleshooting. See [`docs/copilot-cli-backend.md`](docs/copilot-cli-backend.md) for the standalone fallback transport.
+
+---
+
 ## Privacy
 
 - **Code files** — processed locally via tree-sitter. Nothing leaves your machine. A code-only corpus requires no API key — `graphify extract` runs fully offline. On a mixed repo, add `--code-only` to index just the code and skip the docs/PDFs/images that would otherwise need an LLM.
 - **Video / audio** — transcribed locally with faster-whisper. Nothing leaves your machine.
-- **Docs, PDFs, images** — sent to your AI assistant for semantic extraction (via the `/graphify` skill, using whatever model your IDE session runs). Headless `graphify extract` requires `GEMINI_API_KEY` / `GOOGLE_API_KEY` (Gemini), `MOONSHOT_API_KEY` (Kimi), `ANTHROPIC_API_KEY` (Claude), `OPENAI_API_KEY` (OpenAI), `DEEPSEEK_API_KEY` (DeepSeek), a running Ollama instance (`OLLAMA_BASE_URL`), AWS credentials via the standard provider chain (Bedrock - no API key needed, uses IAM), or the `claude` CLI binary (Claude Code - no API key needed, uses your Claude subscription). The `--dedup-llm` flag uses the same key.
+- **Docs, PDFs, images** — sent to your AI assistant for semantic extraction (via the `/graphify` skill, using whatever model your IDE session runs). Headless `graphify extract` requires `GEMINI_API_KEY` / `GOOGLE_API_KEY` (Gemini), `MOONSHOT_API_KEY` (Kimi), `ANTHROPIC_API_KEY` (Claude), `OPENAI_API_KEY` (OpenAI), `DEEPSEEK_API_KEY` (DeepSeek), a running Ollama instance (`OLLAMA_BASE_URL`), AWS credentials via the standard provider chain (Bedrock - no API key needed, uses IAM), the `claude` CLI binary (Claude Code - no API key needed, uses your Claude subscription), or the official Copilot SDK/CLI (`--backend copilot-sdk` or `copilot-cli`, using its signed-in GitHub/Copilot account). The `--dedup-llm` flag uses the same backend.
 - **Data residency** — `graphify extract` auto-detects which provider to use based on which API key is set (priority: Gemini → Kimi → Claude → OpenAI → DeepSeek → Azure → Bedrock → Ollama). For code with data-residency requirements, use `--backend ollama` (fully local) or pass an explicit `--backend` flag. Kimi (`MOONSHOT_API_KEY`) routes to Moonshot AI servers in China.
-- **No telemetry**, no usage tracking, no analytics.
+- **Graphify telemetry** — Graphify itself adds no telemetry, usage tracking, or analytics. External LLM providers and their CLIs retain their own service and enterprise-monitoring behavior; Graphify does not opt the Copilot SDK into telemetry, while enterprise-managed runtime settings still apply.
 - **Query logging** — every `graphify query`, `graphify path`, `graphify explain`, and MCP `query_graph` call is logged to `~/.cache/graphify-queries.log` in JSON Lines format (timestamp, question, corpus, nodes returned, duration). Full subgraph responses are **not** stored by default. Set `GRAPHIFY_QUERY_LOG_DISABLE=1` to opt out, or `GRAPHIFY_QUERY_LOG=/dev/null` to silence without disabling the code path.
 
 ---
@@ -716,7 +762,7 @@ graphify antigravity install       # .agents/rules + .agents/workflows (Google A
 graphify antigravity uninstall
 
 graphify extract ./docs                        # headless LLM extraction for CI (no IDE needed)
-graphify extract ./docs --backend gemini       # explicit backend: gemini, kimi, claude, openai, deepseek, ollama, bedrock, or claude-cli
+graphify extract ./docs --backend gemini       # explicit backend: gemini, kimi, claude, openai, deepseek, ollama, bedrock, azure, claude-cli, copilot-sdk, or copilot-cli
 graphify extract ./docs --backend gemini --model gemini-3.1-pro-preview
 graphify extract ./docs --backend ollama       # local Ollama (set OLLAMA_BASE_URL / OLLAMA_MODEL) - no API key needed for loopback
 OPENAI_BASE_URL=http://localhost:8080/v1 OPENAI_MODEL=my-model graphify extract ./docs --backend openai   # any OpenAI-compatible server (llama.cpp, vLLM, LM Studio)
@@ -725,6 +771,7 @@ GRAPHIFY_OLLAMA_NUM_CTX=32768 graphify extract ./docs --backend ollama   # overr
 GRAPHIFY_OLLAMA_KEEP_ALIVE=0 graphify extract ./docs --backend ollama    # unload model after each chunk (saves VRAM on small GPUs)
 graphify extract ./docs --backend bedrock      # AWS Bedrock via IAM - no API key, uses AWS credential chain
 graphify extract ./docs --backend claude-cli   # route through Claude Code CLI - no API key, uses your Claude subscription
+COPILOT_GH_HOST=example.ghe.com graphify extract ./docs --backend copilot-sdk --model auto   # preferred SDK transport with automatic CLI fallback
 graphify extract ./docs --backend azure        # Azure OpenAI (set AZURE_OPENAI_API_KEY + AZURE_OPENAI_ENDPOINT)
 graphify extract ./docs --max-workers 16       # AST parallelism (also GRAPHIFY_MAX_WORKERS)
 graphify extract --postgres "postgresql://user:pass@host/db"   # introspect live PostgreSQL schema directly

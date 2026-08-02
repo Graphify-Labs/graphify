@@ -1,5 +1,7 @@
 """Tests for graphify/dedup.py entity deduplication pipeline."""
 from __future__ import annotations
+from unittest.mock import patch
+
 import pytest
 from graphify.dedup import deduplicate_entities, _defines_id, _entropy, _shingles
 
@@ -118,6 +120,46 @@ def test_dedup_llm_flag_accepted():
     edges = []
     result_nodes, _ = deduplicate_entities(nodes, edges, communities={}, dedup_llm_backend=None)
     assert len(result_nodes) == 2
+
+
+def test_dedup_llm_copilot_cli_does_not_require_api_key(monkeypatch):
+    """Keyless CLI auth must reach the shared LLM dispatcher."""
+    nodes = _make_nodes("Authentication Manager", "Authorization Manager")
+    monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+    with patch("graphify.llm._call_llm", return_value="1. yes") as call:
+        result_nodes, _ = deduplicate_entities(
+            nodes,
+            [],
+            communities={},
+            dedup_llm_backend="copilot-cli",
+        )
+
+    call.assert_called_once()
+    assert call.call_args.kwargs["backend"] == "copilot-cli"
+    assert len(result_nodes) == 1
+
+
+def test_dedup_llm_copilot_sdk_does_not_require_api_key(monkeypatch):
+    """SDK auth and its CLI fallback must reach the shared dispatcher."""
+    nodes = _make_nodes("Authentication Manager", "Authorization Manager")
+    monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+    with patch("graphify.llm._call_llm", return_value="1. yes") as call:
+        result_nodes, _ = deduplicate_entities(
+            nodes,
+            [],
+            communities={},
+            dedup_llm_backend="copilot-sdk",
+        )
+
+    call.assert_called_once()
+    assert call.call_args.kwargs["backend"] == "copilot-sdk"
+    assert len(result_nodes) == 1
 
 
 # ── build integration ─────────────────────────────────────────────────────────
