@@ -917,6 +917,20 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     for alias_key, candidates in _alias_candidates.items():
         if len(candidates) == 1:
             norm_to_id.setdefault(alias_key, next(iter(candidates)))
+    # Relation collapse priority (#2391). The undirected graph stores one edge per
+    # node pair, so when two edges land on the same (src, tgt) with different
+    # relations the higher-information relation must win the collapse. Higher =
+    # more information (calls/instantiates outrank uses, which outrank
+    # references/imports). The deterministic (source, target, relation) sort alone
+    # would always let the alphabetically-last "references" overwrite "calls".
+    _RELATION_PRIORITY = {
+        "calls": 3, "indirect_call": 3, "instantiates": 3,
+        "uses": 2, "uses_component": 2, "uses_static_prop": 2,
+        "binds_method": 2, "bound_to": 2, "defines": 2,
+        "imports": 1, "imports_from": 1, "re_exports": 1, "includes": 1,
+        "references": 1, "references_constant": 1,
+        "depends_on": 1, "crate_depends_on": 1,
+    }
     # Iterate edges in a deterministic order. The graph is undirected and stores
     # direction in _src/_tgt; when two edges collapse onto the same node pair the
     # last write wins, so an unstable iteration order flips _src/_tgt run-to-run
@@ -1043,12 +1057,23 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         # earlier one's _src/_tgt, silently flipping the surviving edge's caller
         # and callee. First-seen direction wins instead — drop the redundant
         # reverse-direction duplicate so the original direction is preserved (#1061).
+        # When the two edges carry DIFFERENT relations, the higher-information
+        # relation wins the collapse (#2391): without the priority table, the
+        # deterministic (source, target, relation) sort writes "references"
+        # (alphabetically last) second and it clobbers a real "calls" edge (e.g.
+        # a return-type annotation landing on the same pair).
         if not G.is_directed() and G.has_edge(src, tgt):
             existing = edge_data(G, src, tgt)
-            if existing.get("relation") == attrs.get("relation") and (
+            existing_rel = existing.get("relation")
+            new_rel = attrs.get("relation")
+            if existing_rel == new_rel and (
                 existing.get("_src") == tgt and existing.get("_tgt") == src
             ):
-                continue
+                continue  # reverse-direction duplicate of the same relation (#1061)
+            if existing_rel != new_rel and _RELATION_PRIORITY.get(
+                new_rel, 0
+            ) < _RELATION_PRIORITY.get(existing_rel, 0):
+                continue  # lower-information relation loses the collapse (#2391)
         G.add_edge(src, tgt, **attrs)
     hyperedges = extraction.get("hyperedges", [])
     if hyperedges:
