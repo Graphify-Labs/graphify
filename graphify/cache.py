@@ -7,6 +7,7 @@ import json
 import os
 import re
 import tempfile
+import time
 import warnings
 from collections.abc import Iterable
 from pathlib import Path
@@ -16,6 +17,14 @@ from pathlib import Path
 # absolute path ("/shared/graphify-out"). Single source of truth in graphify.paths
 # (#1423); re-exported here as _GRAPHIFY_OUT for the existing call sites.
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
+
+# Files whose latest content/metadata timestamp is within this window are not
+# eligible for the stat-only fastpath.  Some filesystems return identical size,
+# mtime_ns and ctime_ns for two rapid same-size writes; trusting that signature
+# can replay a stale content hash.  Once the timestamp is older than the
+# coarsest common local-filesystem tick (FAT: 2 seconds), normal writes advance
+# at least one signature field and the fastpath is safe again.
+_STAT_STABILITY_WINDOW_NS = 2_000_000_000
 
 # AST cache entries are the output of graphify's own extractor code, so they
 # are only valid for the version that wrote them: keying purely on file
@@ -178,11 +187,11 @@ def _body_content(content: bytes) -> bytes:
     return text[closer.start() + 3:].encode()
 
 
-# Stat-based index: maps absolute path → {size, mtime_ns, hash}.
-# Loaded once per process, flushed via atexit. Skips full file reads when
-# size+mtime_ns are unchanged — same trade-off as make(1).
-# Correctness risks: `touch` causes a harmless extra re-hash; same-size edits
-# within NFS second-resolution mtime have a 1-second window (same as make).
+# Stat-based index: maps absolute path to size/mtime plus cached hashes and/or
+# word count. Loaded once per process and flushed via atexit. Recent values are
+# marked volatile independently and re-read until the timestamp safety window
+# closes; this prevents a refreshed hash from promoting a stale sibling count.
+# `touch` still causes a harmless extra read.
 # `graphify extract --force` / `graphify update --force` (or GRAPHIFY_FORCE=1)
 # skip the cache reads and re-dispatch everything when needed (#1894).
 _stat_index: dict[str, dict] = {}
@@ -321,12 +330,65 @@ def _normalize_path(path: Path) -> Path:
     return Path(os.path.normcase(s))
 
 
+def _stat_signature(st: os.stat_result) -> tuple[int, int]:
+    """Portable fields used to validate an index entry and a file read."""
+    return st.st_size, st.st_mtime_ns
+
+
+def _entry_matches_stat(entry: object, st: os.stat_result) -> bool:
+    """Whether an index entry describes the portable stat signature."""
+    return (
+        isinstance(entry, dict)
+        and entry.get("size") == st.st_size
+        and entry.get("mtime_ns") == st.st_mtime_ns
+    )
+
+
+def _stat_is_stable(st: os.stat_result) -> bool:
+    """Whether a stat-only cache hit is safe from coarse timestamp collisions."""
+    now_ns = time.time_ns()
+    if now_ns - st.st_mtime_ns >= _STAT_STABILITY_WINDOW_NS:
+        return True
+    # A restored artifact can carry an mtime far in the future. Its local ctime
+    # still ages after copy/metadata creation, avoiding permanent re-reads while
+    # preserving the recent-write guard for ordinary files.
+    return (st.st_mtime_ns > now_ns
+            and now_ns - st.st_ctime_ns >= _STAT_STABILITY_WINDOW_NS)
+
+
+def _drop_stat_entry(abs_key: str) -> None:
+    """Discard sibling hash/word-count data that may describe stale contents."""
+    global _stat_index_dirty
+    if _stat_index.pop(abs_key, None) is not None:
+        _stat_index_dirty = True
+
+
+def _read_consistent_bytes(path: Path) -> tuple[bytes, os.stat_result | None]:
+    """Return bytes confirmed by two consecutive equal snapshots."""
+    raw = path.read_bytes()
+    try:
+        st = path.stat()
+    except OSError:
+        return raw, None
+    for _ in range(2):
+        confirm = path.read_bytes()
+        try:
+            confirm_st = path.stat()
+        except OSError:
+            return confirm, None
+        if (confirm == raw
+                and _stat_signature(st) == _stat_signature(confirm_st)):
+            return confirm, confirm_st
+        raw, st = confirm, confirm_st
+    return raw, None
+
 def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = None) -> str:
     """SHA256 of file contents + path relative to root.
 
-    Uses a stat-based fastpath (size + mtime_ns) to skip full reads when the
-    file hasn't changed. Falls through to full SHA256 on first encounter or
-    when stat changes. Index is flushed atomically at process exit.
+    Uses a stat-based fastpath to skip full reads when the file hasn't changed.
+    Recently modified files bypass it until their timestamps are stable, which
+    prevents rapid same-size rewrites on coarse-timestamp filesystems from
+    replaying a stale digest. Index is flushed atomically at process exit.
 
     Using a relative path (not absolute) makes cache entries portable across
     machines and checkout directories, so shared caches and CI work correctly.
@@ -360,24 +422,35 @@ def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = No
     except ValueError:
         salt = resolved.as_posix().lower()
 
-    st: "os.stat_result | None" = None
+    st_before: "os.stat_result | None" = None
     try:
-        st = p.stat()
+        st_before = p.stat()
         entry = _stat_index.get(abs_key)
-        if (isinstance(entry, dict)
-                and entry.get("size") == st.st_size
-                and entry.get("mtime_ns") == st.st_mtime_ns):
-            hashes = entry.get("hashes")
-            if isinstance(hashes, dict):
-                cached = hashes.get(salt)
-                if isinstance(cached, str):
-                    return cached
-            # Legacy single-digest entries ("hash") don't record which salt
-            # produced them, so they are never trusted (#1989) — recompute once.
+        if _stat_is_stable(st_before) and _entry_matches_stat(entry, st_before):
+            assert isinstance(entry, dict)
+            if (not entry.get("volatile", False)
+                    and entry.get("hashes_volatile") is False):
+                hashes = entry.get("hashes")
+                if isinstance(hashes, dict):
+                    cached = hashes.get(salt)
+                    if isinstance(cached, str):
+                        try:
+                            st_confirm = p.stat()
+                        except OSError:
+                            st_before = None
+                        else:
+                            if (_stat_signature(st_before) == _stat_signature(st_confirm)
+                                    and _stat_is_stable(st_confirm)):
+                                return cached
+                            # A writer raced the hit-path stat. Read against the
+                            # confirmed signature so the refreshed value can be cached.
+                            st_before = st_confirm
+            # Legacy single-digest entries ("hash") and volatile entries are
+            # never trusted; recompute once before promoting a stable digest.
     except OSError:
         pass
 
-    raw = p.read_bytes()
+    raw, st_after = _read_consistent_bytes(p)
     content = _body_content(raw) if p.suffix.lower() == ".md" else raw
     h = hashlib.sha256()
     h.update(content)
@@ -385,21 +458,34 @@ def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = No
     h.update(salt.encode())
     digest = h.hexdigest()
 
-    if st is not None:
+    # Record only a self-consistent read. Recent entries remain volatile:
+    # callers rehash them until the timestamp window closes, then one stable
+    # read promotes the entry and restores the stat-only fastpath.
+    if st_after is not None:
         entry = _stat_index.get(abs_key)
-        if (isinstance(entry, dict)
-                and entry.get("size") == st.st_size
-                and entry.get("mtime_ns") == st.st_mtime_ns):
+        if _entry_matches_stat(entry, st_after):
+            assert isinstance(entry, dict)
             hashes = entry.get("hashes")
             if not isinstance(hashes, dict):
                 hashes = {}
                 entry["hashes"] = hashes
             hashes[salt] = digest       # preserve a co-located word_count / other salts
             entry.pop("hash", None)     # retire the un-salted legacy digest
+            recent = not _stat_is_stable(st_after)
+            entry["hashes_volatile"] = recent
+            if recent and "word_count" in entry:
+                entry["word_count_volatile"] = True
+            entry.pop("volatile", None)
         else:
-            _stat_index[abs_key] = {"size": st.st_size, "mtime_ns": st.st_mtime_ns,
-                                    "hashes": {salt: digest}}
+            _stat_index[abs_key] = {
+                "size": st_after.st_size,
+                "mtime_ns": st_after.st_mtime_ns,
+                "hashes": {salt: digest},
+                "hashes_volatile": not _stat_is_stable(st_after),
+            }
         _stat_index_dirty = True
+    elif st_before is not None:
+        _drop_stat_entry(abs_key)
 
     return digest
 
@@ -422,31 +508,57 @@ def cached_word_count(path: Path, root: Path, compute, cache_root: "Path | None"
     root = _normalize_path(Path(root))
     _ensure_stat_index(root, cache_root=cache_root)
     abs_key = str(p.resolve())
-    st: "os.stat_result | None" = None
+    st_before: "os.stat_result | None" = None
     try:
-        st = p.stat()
+        st_before = p.stat()
         entry = _stat_index.get(abs_key)
-        if (entry
-                and entry.get("size") == st.st_size
-                and entry.get("mtime_ns") == st.st_mtime_ns
-                and "word_count" in entry):
-            return entry["word_count"]
+        if _stat_is_stable(st_before) and _entry_matches_stat(entry, st_before):
+            assert isinstance(entry, dict)
+            if (not entry.get("volatile", False)
+                    and entry.get("word_count_volatile") is False
+                    and "word_count" in entry):
+                try:
+                    st_confirm = p.stat()
+                except OSError:
+                    st_before = None
+                else:
+                    if (_stat_signature(st_before) == _stat_signature(st_confirm)
+                            and _stat_is_stable(st_confirm)):
+                        return entry["word_count"]
+                    st_before = st_confirm
     except OSError:
         pass
 
     wc = compute(Path(path))
 
-    if st is not None:
+    st_after: "os.stat_result | None" = None
+    try:
+        st_after = p.stat()
+    except OSError:
+        pass
+
+    if (st_before is not None
+            and st_after is not None
+            and _stat_signature(st_before) == _stat_signature(st_after)):
         entry = _stat_index.get(abs_key)
-        if (entry
-                and entry.get("size") == st.st_size
-                and entry.get("mtime_ns") == st.st_mtime_ns):
+        if _entry_matches_stat(entry, st_after):
+            assert isinstance(entry, dict)
             entry["word_count"] = wc  # augment the existing hash entry in place
+            recent = not _stat_is_stable(st_after)
+            entry["word_count_volatile"] = recent
+            if recent and "hashes" in entry:
+                entry["hashes_volatile"] = True
+            entry.pop("volatile", None)
         else:
             _stat_index[abs_key] = {
-                "size": st.st_size, "mtime_ns": st.st_mtime_ns, "word_count": wc,
+                "size": st_after.st_size,
+                "mtime_ns": st_after.st_mtime_ns,
+                "word_count": wc,
+                "word_count_volatile": not _stat_is_stable(st_after),
             }
         _stat_index_dirty = True
+    elif st_before is not None:
+        _drop_stat_entry(abs_key)
 
     return wc
 

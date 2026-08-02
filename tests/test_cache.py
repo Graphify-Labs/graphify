@@ -1,4 +1,7 @@
 """Tests for graphify/cache.py."""
+import os
+from typing import cast
+
 import pytest
 from pathlib import Path
 from graphify.cache import file_hash, cache_dir, load_cached, save_cached, cached_files, clear_cache, _body_content
@@ -32,6 +35,151 @@ def test_file_hash_changes(tmp_path):
     f1.write_text("content one")
     f2.write_text("content two")
     assert file_hash(f1) != file_hash(f2)
+
+
+def test_file_hash_rehashes_recent_same_size_same_mtime_rewrite(tmp_path, monkeypatch):
+    """A same-tick rewrite must not reuse the first content digest."""
+    from graphify import cache as _cache
+
+    _reset_stat_index()
+    mtime_ns = 1_700_000_000_000_000_000
+    monkeypatch.setattr(
+        _cache.time,
+        "time_ns",
+        lambda: mtime_ns + _cache._STAT_STABILITY_WINDOW_NS // 2,
+    )
+    f = tmp_path / "same-stat.txt"
+    stamp = mtime_ns
+    f.write_text("content A")
+    os.utime(f, ns=(stamp, stamp))
+    before = f.stat()
+    h1 = file_hash(f, root=tmp_path)
+
+    f.write_text("content B")
+    os.utime(f, ns=(stamp, stamp))
+    after = f.stat()
+    assert (before.st_size, before.st_mtime_ns) == (after.st_size, after.st_mtime_ns)
+
+    h2 = file_hash(f, root=tmp_path)
+    assert h1 != h2
+
+
+def test_file_hash_stable_file_uses_stat_fastpath(tmp_path, monkeypatch):
+    """The volatile-file guard must not disable warm reads for stable files."""
+    from graphify import cache as _cache
+
+    _reset_stat_index()
+    f = tmp_path / "stable.txt"
+    f.write_text("stable content")
+    st = f.stat()
+    monkeypatch.setattr(
+        _cache.time,
+        "time_ns",
+        lambda: max(st.st_mtime_ns, st.st_ctime_ns) + _cache._STAT_STABILITY_WINDOW_NS + 1,
+    )
+    h1 = file_hash(f, root=tmp_path)
+
+    def fail_read(_self):
+        raise AssertionError("stable stat-index hit unexpectedly read file contents")
+
+    monkeypatch.setattr(Path, "read_bytes", fail_read)
+    assert file_hash(f, root=tmp_path) == h1
+
+
+def test_file_hash_future_mtime_uses_aged_ctime_fastpath(tmp_path, monkeypatch):
+    """A future-dated restored file stops rehashing after its ctime ages."""
+    from graphify import cache as _cache
+
+    _reset_stat_index()
+    f = tmp_path / "future.txt"
+    f.write_text("future artifact")
+    initial = f.stat()
+    future_ns = initial.st_ctime_ns + 10 * _cache._STAT_STABILITY_WINDOW_NS
+    os.utime(f, ns=(future_ns, future_ns))
+    st = f.stat()
+    now_ns = st.st_ctime_ns + _cache._STAT_STABILITY_WINDOW_NS + 1
+    assert st.st_mtime_ns > now_ns
+    monkeypatch.setattr(_cache.time, "time_ns", lambda: now_ns)
+    h1 = file_hash(f, root=tmp_path)
+
+    def fail_read(_self):
+        raise AssertionError("aged future-mtime entry unexpectedly read contents")
+
+    monkeypatch.setattr(Path, "read_bytes", fail_read)
+    assert file_hash(f, root=tmp_path) == h1
+
+
+def test_future_mtime_ctime_fallback_matches_windows_creation_time(monkeypatch):
+    from graphify import cache as _cache
+
+    now_ns = 2_000_000_000_000_000_000
+    monkeypatch.setattr(_cache.time, "time_ns", lambda: now_ns)
+
+    class FakeWindowsStat:
+        st_mtime_ns = now_ns + 10 * _cache._STAT_STABILITY_WINDOW_NS
+        st_ctime_ns = now_ns - _cache._STAT_STABILITY_WINDOW_NS - 1
+
+    assert _cache._stat_is_stable(cast(os.stat_result, FakeWindowsStat()))
+    FakeWindowsStat.st_ctime_ns = now_ns
+    assert not _cache._stat_is_stable(cast(os.stat_result, FakeWindowsStat()))
+
+
+def test_file_hash_rechecks_stat_before_warm_return(tmp_path, monkeypatch):
+    """A writer between hit-path stats must force a content refresh."""
+    from graphify import cache as _cache
+
+    _reset_stat_index()
+    f = tmp_path / "hit-race.txt"
+    f.write_text("content A")
+    monkeypatch.setattr(_cache.time, "time_ns", lambda: 10**30)
+    h1 = file_hash(f, root=tmp_path)
+    new_mtime_ns = f.stat().st_mtime_ns + 1
+    real_stat = Path.stat
+    calls = 0
+
+    def rewrite_after_hit_stat(path, *args, **kwargs):
+        nonlocal calls
+        result = real_stat(path, *args, **kwargs)
+        if path == f:
+            calls += 1
+            if calls == 2:  # is_file(), then the hit-path stat
+                path.write_text("content B")
+                os.utime(path, ns=(new_mtime_ns, new_mtime_ns))
+        return result
+
+    monkeypatch.setattr(Path, "stat", rewrite_after_hit_stat)
+    h2 = file_hash(f, root=tmp_path)
+    assert h2 != h1
+
+
+def test_file_hash_confirms_same_stat_write_during_read(tmp_path, monkeypatch):
+    """A same-stat write during the first read must return current content."""
+    from graphify import cache as _cache
+
+    _reset_stat_index()
+    f = tmp_path / "raced.txt"
+    f.write_text("before")
+    fixed_mtime_ns = f.stat().st_mtime_ns
+    real_read_bytes = Path.read_bytes
+    changed = False
+
+    def read_then_change(path):
+        nonlocal changed
+        raw = real_read_bytes(path)
+        if path == f and not changed:
+            changed = True
+            path.write_text("after!")
+            os.utime(path, ns=(fixed_mtime_ns, fixed_mtime_ns))
+        return raw
+
+    monkeypatch.setattr(_cache.time, "time_ns", lambda: 10**30)
+    monkeypatch.setattr(Path, "read_bytes", read_then_change)
+    raced_hash = file_hash(f, root=tmp_path)
+    expected = _cache.hashlib.sha256(b"after!\x00raced.txt").hexdigest()
+    assert raced_hash == expected
+
+    monkeypatch.setattr(Path, "read_bytes", real_read_bytes)
+    assert file_hash(f, root=tmp_path) == raced_hash
 
 
 def test_cache_roundtrip(tmp_file, cache_root):
