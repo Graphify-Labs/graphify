@@ -186,7 +186,10 @@ BACKENDS: dict[str, dict] = {
     "azure": {
         # Azure OpenAI Service — uses AzureOpenAI SDK client, not the standard
         # OpenAI client, so it has its own call path (_call_azure).
-        # Required env vars: AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT.
+        # Required env vars: AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT — or
+        #           AZURE_OPENAI_AUTH_MODE=entra with AZURE_OPENAI_ENDPOINT, which
+        #           authenticates via DefaultAzureCredential and needs no key (the
+        #           only option for resources with disableLocalAuth: true).
         # Optional: AZURE_OPENAI_API_VERSION (defaults to 2024-12-01-preview),
         #           AZURE_OPENAI_DEPLOYMENT or GRAPHIFY_AZURE_MODEL (deployment name).
         # base_url is intentionally absent — prevents accidental routing through
@@ -1782,13 +1785,45 @@ def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bo
     return result
 
 
+_AZURE_ENTRA_SCOPE = "https://cognitiveservices.azure.com/.default"
+
+
+def _azure_uses_entra() -> bool:
+    """True when AZURE_OPENAI_AUTH_MODE selects Entra ID (AAD) auth over an API key.
+
+    Azure OpenAI resources provisioned with ``disableLocalAuth: true`` cannot
+    issue an API key at all, so key-based auth is not merely discouraged there —
+    it is unavailable. Accepts "entra" and the older "aad" spelling.
+    """
+    return os.environ.get("AZURE_OPENAI_AUTH_MODE", "").strip().lower() in ("entra", "aad")
+
+
+def _azure_token_provider():
+    """Return a bearer-token provider backed by the standard Azure credential chain.
+
+    DefaultAzureCredential resolves, in order: environment variables, workload
+    identity, managed identity, Azure CLI, Azure PowerShell, and Azure Developer
+    CLI — so the same code path covers a developer laptop signed in with `az
+    login` and a container running under a managed identity. Token refresh is
+    handled by the provider.
+    """
+    try:
+        from azure.identity import DefaultAzureCredential, get_bearer_token_provider
+    except ImportError as exc:
+        raise ImportError(
+            "Azure OpenAI Entra ID auth requires azure-identity. "
+            "Run: pip install graphifyy[azure]"
+        ) from exc
+    return get_bearer_token_provider(DefaultAzureCredential(), _AZURE_ENTRA_SCOPE)
+
+
 def _azure_client(api_key: str, endpoint: str):
     """Construct an AzureOpenAI client with env-driven api_version and timeout."""
     try:
         from openai import AzureOpenAI
     except ImportError as exc:
         raise ImportError(
-            "Azure OpenAI requires the openai package. Run: pip install openai"
+            "Azure OpenAI requires the openai package. Run: pip install graphifyy[azure]"
         ) from exc
     api_version = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-12-01-preview").strip()
     timeout_raw = os.environ.get("GRAPHIFY_API_TIMEOUT", "").strip()
@@ -1800,8 +1835,15 @@ def _azure_client(api_key: str, endpoint: str):
                 timeout_s = v
         except ValueError:
             pass
-    return AzureOpenAI(api_key=api_key, azure_endpoint=endpoint, api_version=api_version, timeout=timeout_s,
-                       max_retries=_resolve_max_retries())
+    common = {
+        "azure_endpoint": endpoint,
+        "api_version": api_version,
+        "timeout": timeout_s,
+        "max_retries": _resolve_max_retries(),
+    }
+    if _azure_uses_entra():
+        return AzureOpenAI(azure_ad_token_provider=_azure_token_provider(), **common)
+    return AzureOpenAI(api_key=api_key, **common)
 
 
 def _call_azure(
@@ -1939,7 +1981,9 @@ def extract_files_direct(
             file=sys.stderr,
         )
         key = "ollama"
-    if not key and backend not in ("bedrock", "claude-cli"):
+    # bedrock and claude-cli authenticate ambiently (AWS credential chain, Claude
+    # Code session); azure does too when AZURE_OPENAI_AUTH_MODE selects Entra ID.
+    if not key and backend not in ("bedrock", "claude-cli") and not (backend == "azure" and _azure_uses_entra()):
         raise ValueError(
             f"No API key for backend '{backend}'. "
             f"Set {_format_backend_env_keys(backend)} or pass api_key=."
@@ -3122,7 +3166,9 @@ def detect_backend() -> str | None:
     for backend in ("gemini", "kimi", "claude", "openai", "deepseek"):
         if _get_backend_api_key(backend):
             return backend
-    if _get_backend_api_key("azure") and os.environ.get("AZURE_OPENAI_ENDPOINT"):
+    # Entra ID auth issues no API key (and disableLocalAuth resources cannot have
+    # one), so the endpoint plus an explicit auth mode is the whole credential.
+    if (_get_backend_api_key("azure") or _azure_uses_entra()) and os.environ.get("AZURE_OPENAI_ENDPOINT"):
         return "azure"
     if os.environ.get("AWS_PROFILE") or os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION"):
         return "bedrock"
