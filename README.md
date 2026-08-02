@@ -540,6 +540,7 @@ These are only needed for **headless / CI extraction** (`graphify extract`). Whe
 | `AZURE_OPENAI_API_VERSION` | Azure API version override | optional — default `2024-12-01-preview` |
 | `AZURE_OPENAI_DEPLOYMENT` or `GRAPHIFY_AZURE_MODEL` | Azure deployment name | optional — default `gpt-4o` |
 | `AWS_*` / `~/.aws/credentials` | AWS Bedrock — standard credential chain | `--backend bedrock` (no API key, uses IAM) |
+| `PG*` (`PGPASSWORD`, `PGSSLMODE`, …) | Standard libpq connection env vars, read by psycopg | optional — `--postgres` fills unset DSN fields from these |
 | `GRAPHIFY_MAX_WORKERS` | AST parallelism thread count | optional — also `--max-workers` flag |
 | `GRAPHIFY_MAX_OUTPUT_TOKENS` | Raise output cap for dense corpora | optional — e.g. `32768` for large files |
 | `GRAPHIFY_API_TIMEOUT` | Per-call timeout in seconds for HTTP, claude-cli, Anthropic SDK, and Bedrock backends (default: 600) | optional — also `--api-timeout` flag |
@@ -765,6 +766,7 @@ graphify extract ./docs --backend claude-cli   # route through Claude Code CLI -
 graphify extract ./docs --backend azure        # Azure OpenAI (set AZURE_OPENAI_API_KEY + AZURE_OPENAI_ENDPOINT)
 graphify extract ./docs --max-workers 16       # AST parallelism (also GRAPHIFY_MAX_WORKERS)
 graphify extract --postgres "postgresql://user:pass@host/db"   # introspect live PostgreSQL schema directly
+graphify extract --postgres "postgresql://user@host/db?sslmode=require"   # password-free: libpq env vars (PGPASSWORD, PGSSLROOTCERT, ~/.pgpass) still apply
 graphify extract ./my-workspace --cargo        # introspect Rust Cargo workspace dependencies directly
 graphify extract ./docs --token-budget 30000   # smaller semantic chunks for local/small models
 graphify extract ./docs --max-concurrency 2    # fewer parallel LLM calls (useful for local inference)
