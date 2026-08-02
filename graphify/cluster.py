@@ -300,7 +300,7 @@ def cluster(
     final_communities: list[list[str]] = []
     for nodes in raw.values():
         if len(nodes) > max_size:
-            final_communities.extend(_split_community(G, nodes))
+            final_communities.extend(_split_community(G, nodes, resolution))
         else:
             final_communities.append(nodes)
 
@@ -309,7 +309,7 @@ def cluster(
     second_pass: list[list[str]] = []
     for nodes in final_communities:
         if len(nodes) >= _COHESION_SPLIT_MIN_SIZE and cohesion_score(G, nodes) < _COHESION_SPLIT_THRESHOLD:
-            splits = _split_community(G, nodes)
+            splits = _split_community(G, nodes, resolution)
             second_pass.extend(splits if len(splits) > 1 else [nodes])
         else:
             second_pass.append(nodes)
@@ -325,14 +325,19 @@ def cluster(
     return {i: sorted(nodes) for i, nodes in enumerate(final_communities)}
 
 
-def _split_community(G: nx.Graph, nodes: list[str]) -> list[list[str]]:
-    """Run a second Leiden pass on a community subgraph to split it further."""
+def _split_community(G: nx.Graph, nodes: list[str], resolution: float = 1.0) -> list[list[str]]:
+    """Run a second Leiden pass on a community subgraph to split it further.
+
+    ``resolution`` mirrors the value cluster() partitioned the whole graph with,
+    so --resolution keeps its meaning on the split passes instead of silently
+    reverting to 1.0 here.
+    """
     subgraph = G.subgraph(nodes)
     if subgraph.number_of_edges() == 0:
         # No edges - split into individual nodes
         return [[n] for n in sorted(nodes)]
     try:
-        sub_partition = _partition(subgraph)
+        sub_partition = _partition(subgraph, resolution=resolution)
         sub_communities: dict[int, list[str]] = {}
         for node, cid in sub_partition.items():
             sub_communities.setdefault(cid, []).append(node)
