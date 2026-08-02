@@ -177,3 +177,87 @@ def test_r_uppercase_and_lowercase_suffix_both_dispatch() -> None:
     from graphify.extract import _get_extractor
     assert _get_extractor(Path("x.R")) is extract_r
     assert _get_extractor(Path("x.r")) is extract_r
+
+
+# --- roxygen documentation and S3 dispatch -----------------------------------
+
+
+def test_r_roxygen_marks_exported_functions() -> None:
+    r = extract_r(FIXTURES / "sample_roxygen.R")
+    exported = {n["label"] for n in r["nodes"] if n.get("exported")}
+    assert {"new_moments()", "print.moments()", "describe()"} <= exported
+    assert "summarise_moments()" not in exported, "undocumented helper is not public API"
+
+
+def test_r_roxygen_records_family() -> None:
+    r = extract_r(FIXTURES / "sample_roxygen.R")
+    fams = {n["label"]: n.get("doc_family") for n in r["nodes"] if n.get("doc_family")}
+    assert fams.get("new_moments()") == "moments"
+
+
+def test_r_roxygen_emits_seealso_and_template_refs() -> None:
+    r = extract_r(FIXTURES / "sample_roxygen.R")
+    kinds = {(rc["kind"], rc["ref_name"]) for rc in r["raw_calls"] if "ref_name" in rc}
+    assert ("doc_ref", "summarise_moments") in kinds
+    assert ("template_ref", "param-shared") in kinds
+
+
+def test_r_non_call_records_carry_no_callee() -> None:
+    """The shared cross-file pass turns any `callee` into a calls edge (#1668)."""
+    r = extract_r(FIXTURES / "sample_roxygen.R")
+    non_calls = [rc for rc in r["raw_calls"]
+                 if rc.get("kind") in ("doc_ref", "template_ref",
+                                       "s3_method", "s3_generic", "s3_class_site")]
+    assert non_calls
+    assert all("callee" not in rc for rc in non_calls)
+
+
+def test_r_seealso_resolves_to_a_references_edge(tmp_path: Path) -> None:
+    """@seealso names a function the documenting one never calls."""
+    a = _write(tmp_path / "a.R", "#' @seealso \\code{\\link{helper}}\ncaller <- function() 1\n")
+    b = _write(tmp_path / "b.R", "helper <- function(x) x\n")
+    result = extract([a, b], cache_root=tmp_path)
+    by_id = {n["id"]: n["label"] for n in result["nodes"]}
+    refs = {(by_id.get(e["source"]), by_id.get(e["target"]))
+            for e in result["edges"] if e.get("context") == "doc"}
+    assert ("caller()", "helper()") in refs
+
+
+def test_r_template_resolves_to_the_man_roxygen_file(tmp_path: Path) -> None:
+    a = _write(tmp_path / "a.R", "#' @template param-step\ncaller <- function() 1\n")
+    tpl = _write(tmp_path / "man-roxygen" / "param-step.R", "#' @param step months per period\n")
+    result = extract([a, tpl], cache_root=tmp_path)
+    by_id = {n["id"]: n["label"] for n in result["nodes"]}
+    refs = {(by_id.get(e["source"]), by_id.get(e["target"]))
+            for e in result["edges"] if e.get("context") == "doc"}
+    assert ("caller()", "param-step.R") in refs
+
+
+def test_r_s3_method_links_to_the_class_constructor(tmp_path: Path) -> None:
+    src = (FIXTURES / "sample_roxygen.R").read_text(encoding="utf-8")
+    a = _write(tmp_path / "a.R", src)
+    result = extract([a], cache_root=tmp_path)
+    by_id = {n["id"]: n["label"] for n in result["nodes"]}
+    s3 = {(by_id.get(e["source"]), by_id.get(e["target"]))
+          for e in result["edges"] if e.get("context") == "s3"}
+    assert ("print.moments()", "new_moments()") in s3
+
+
+def test_r_s3_prefers_a_usemethod_generic_over_the_class_site(tmp_path: Path) -> None:
+    src = (FIXTURES / "sample_roxygen.R").read_text(encoding="utf-8")
+    a = _write(tmp_path / "a.R", src)
+    result = extract([a], cache_root=tmp_path)
+    by_id = {n["id"]: n["label"] for n in result["nodes"]}
+    s3 = {(by_id.get(e["source"]), by_id.get(e["target"]))
+          for e in result["edges"] if e.get("context") == "s3"}
+    assert ("describe.moments()", "describe()") in s3
+
+
+def test_r_ordinary_dotted_name_is_not_an_s3_method(tmp_path: Path) -> None:
+    """`my.helper` splits into a generic and class the corpus never evidences."""
+    src = (FIXTURES / "sample_roxygen.R").read_text(encoding="utf-8")
+    a = _write(tmp_path / "a.R", src)
+    result = extract([a], cache_root=tmp_path)
+    by_id = {n["id"]: n["label"] for n in result["nodes"]}
+    s3_sources = {by_id.get(e["source"]) for e in result["edges"] if e.get("context") == "s3"}
+    assert "my.helper()" not in s3_sources

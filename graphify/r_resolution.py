@@ -59,6 +59,7 @@ def resolve_r_calls(
         return
 
     node_ids = {n.get("id") for n in all_nodes if isinstance(n, dict)}
+    label_of = {n.get("id"): str(n.get("label", "")) for n in all_nodes if isinstance(n, dict)}
 
     # name -> defining node ids. A function node is labelled `name()`; the file
     # node it lives in is labelled `name.R`, so the suffix keeps them apart.
@@ -98,16 +99,73 @@ def resolve_r_calls(
             "weight": 1.0,
         })
 
+    # S3 evidence has to be gathered corpus-wide before any method resolves: the
+    # file defining `print.hetid_moments` contains neither the `print` generic nor
+    # the `hetid_moments` class.
+    generics: dict[str, set[str]] = {}
+    class_sites: dict[str, set[str]] = {}
     for rc in raw_calls:
         caller = rc.get("caller_nid")
         if not caller or caller not in node_ids:
             continue
+        if rc.get("kind") == "s3_generic":
+            generics.setdefault(str(rc.get("ref_name") or ""), set()).add(caller)
+        elif rc.get("kind") == "s3_class_site":
+            class_sites.setdefault(str(rc.get("ref_name") or ""), set()).add(caller)
 
-        if rc.get("kind") == "file_ref":
+    for rc in raw_calls:
+        caller = rc.get("caller_nid")
+        if not caller or caller not in node_ids:
+            continue
+        kind = rc.get("kind")
+
+        if kind in ("s3_generic", "s3_class_site"):
+            continue
+
+        if kind == "file_ref":
             targets = files_by_segments.get(_path_segments(rc.get("file_path")), set())
             if len(targets) == 1:
                 emit(caller, next(iter(targets)), str(rc.get("relation") or "references"),
                      rc, "import" if rc.get("relation") == "imports" else "reference")
+            continue
+
+        if kind == "template_ref":
+            # `@template param-step` splices man-roxygen/param-step.R, which nothing
+            # sources — without this the template files are corpus orphans.
+            name = str(rc.get("ref_name") or "")
+            targets = (files_by_segments.get(("man-roxygen", f"{name}.R"))
+                       or files_by_segments.get((f"{name}.R",)) or set())
+            if len(targets) == 1:
+                emit(caller, next(iter(targets)), "references", rc, "doc")
+            continue
+
+        if kind == "doc_ref":
+            targets = definitions.get(str(rc.get("ref_name") or ""), set())
+            if len(targets) == 1:
+                emit(caller, next(iter(targets)), "references", rc, "doc")
+            continue
+
+        if kind == "s3_method":
+            # A dotted name is a method only where the corpus evidences the split:
+            # a `UseMethod` generic of that name, or a site assigning that class.
+            # Prefer the generic — it is the stronger claim.
+            generic = generics.get(str(rc.get("ref_name") or ""), set())
+            if len(generic) == 1:
+                emit(caller, next(iter(generic)), "implements", rc, "s3")
+                continue
+            cls = str(rc.get("s3_class") or "")
+            sites = class_sites.get(cls, set())
+            if len(sites) > 1:
+                # A class is often re-attached after a transformation, so several
+                # sites assign it. R's constructor convention breaks the tie:
+                # `new_<class>` (or a function named for the class) is the one that
+                # creates the object; the rest only restore it.
+                preferred = {s for s in sites
+                             if label_of.get(s) in (f"new_{cls}()", f"{cls}()")}
+                if len(preferred) == 1:
+                    sites = preferred
+            if len(sites) == 1:
+                emit(caller, next(iter(sites)), "implements", rc, "s3")
             continue
 
         targets = definitions.get(str(rc.get("callee") or ""), set())

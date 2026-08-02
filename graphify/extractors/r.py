@@ -22,6 +22,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from graphify.extractors.base import _file_stem, _make_id, _read_text
+from graphify.extractors.r_roxygen import parse_blocks
 
 # `name <- function()`, `name = function()`, `name <<- function()`. The
 # right-assign forms (`function() -> name`) are handled separately: they invert
@@ -39,6 +40,15 @@ _R_SOURCE_FNS = frozenset({"source", "sys.source"})
 # `loadNamespace("x")` take a string. Both shapes are read below.
 _R_LIBRARY_FNS = frozenset({"library", "require", "requireNamespace", "loadNamespace"})
 
+# S3 dispatch leaves no syntax behind: `print.hetid_moments` is a method only
+# because `print` is a generic and `hetid_moments` is a class, and neither fact is
+# in the file that defines the method. Every dot in a name is therefore treated as
+# a candidate generic/class split, and graphify.r_resolution keeps only the splits
+# the corpus actually evidences — a `UseMethod` generic or a site that assigns the
+# class. Without that filter every ordinary dotted name (`is.null`, `as.matrix`,
+# `compute.stuff`) would fabricate a method edge.
+_R_CLASS_ASSIGN_FNS = frozenset({"class", "oldClass"})
+
 
 def _r_string_value(node, source: bytes) -> str | None:
     """Text of a `string` node with its quotes stripped, else None."""
@@ -55,6 +65,39 @@ def _r_arg_values(call_node) -> list:
         return []
     return [v for c in args.children if c.type == "argument"
             for v in (c.child_by_field_name("value"),) if v is not None]
+
+
+def _r_string_values(node, source: bytes) -> list[str]:
+    """String literals in a value: a bare `"a"` or a `c("a", "b")` of them."""
+    literal = _r_string_value(node, source)
+    if literal is not None:
+        return [literal] if literal else []
+    if node is None or node.type != "call":
+        return []
+    fn = node.child_by_field_name("function")
+    if fn is None or _read_text(fn, source) != "c":
+        return []
+    out = []
+    for value in _r_arg_values(node):
+        text = _r_string_value(value, source)
+        if text:
+            out.append(text)
+    return out
+
+
+def _r_named_arg_strings(call_node, arg_name: str, source: bytes) -> list[str]:
+    """String literals passed to a named argument, e.g. `class = c("a", "b")`."""
+    args = call_node.child_by_field_name("arguments")
+    if args is None:
+        return []
+    out = []
+    for child in args.children:
+        if child.type != "argument":
+            continue
+        name = child.child_by_field_name("name")
+        if name is not None and _read_text(name, source) == arg_name:
+            out.extend(_r_string_values(child.child_by_field_name("value"), source))
+    return out
 
 
 def _r_path_literal(node, source: bytes) -> str | None:
@@ -107,17 +150,21 @@ def extract_r(path: Path) -> dict:
     # defined further down the file.
     function_bodies: list[tuple[str, object]] = []
     named_fn_nodes: set[int] = set()
+    roxygen = parse_blocks(source.decode("utf-8", errors="replace"))
+    node_by_line: dict[int, str] = {}
 
-    def add_node(nid: str, label: str, line: int) -> None:
+    def add_node(nid: str, label: str, line: int, **extra) -> None:
         if nid not in seen_ids:
             seen_ids.add(nid)
-            nodes.append({
+            node = {
                 "id": nid,
                 "label": label,
                 "file_type": "code",
                 "source_file": str_path,
                 "source_location": f"L{line}",
-            })
+            }
+            node.update(extra)
+            nodes.append(node)
 
     def add_edge(src: str, tgt: str, relation: str, line: int,
                  confidence: str = "EXTRACTED", weight: float = 1.0,
@@ -147,6 +194,45 @@ def extract_r(path: Path) -> dict:
             "source_location": f"L{line}",
             **extra,
         })
+
+    def add_raw_ref(caller_nid: str, name: str, line: int, kind: str, **extra) -> None:
+        """A raw_call record that is deliberately NOT a call.
+
+        The shared cross-file pass turns any raw_call carrying a `callee` into a
+        `calls` edge by name, so a roxygen `@seealso` or an S3 method candidate
+        would ship as a phantom call and then block the real relation as a
+        duplicate — the same trap Ruby's mixin markers hit (#1668). Naming the
+        field `ref_name` keeps these records invisible to that pass; only
+        graphify.r_resolution reads them.
+        """
+        raw_calls.append({
+            "lang": "r",
+            "caller_nid": caller_nid,
+            "ref_name": name,
+            "kind": kind,
+            "source_file": str_path,
+            "source_location": f"L{line}",
+            **extra,
+        })
+
+    def emit_doc_refs(func_nid: str, doc: dict, line: int) -> None:
+        """Roxygen cross-references, as raw_calls for the corpus pass to resolve.
+
+        `@seealso` and `@inheritParams` name functions the documented one never
+        calls; `@template` names a `man-roxygen/` file nothing sources.
+        """
+        for name in doc.get("seealso", []) + doc.get("inherit_params", []):
+            add_raw_ref(func_nid, name, line, "doc_ref")
+        for template in doc.get("templates", []):
+            add_raw_ref(func_nid, template, line, "template_ref")
+
+    def emit_s3_candidates(func_nid: str, name: str, line: int) -> None:
+        """Every dot is a candidate generic/class split; resolution picks the real one."""
+        positions = [i for i, ch in enumerate(name) if ch == "."]
+        for pos in positions:
+            generic, cls = name[:pos], name[pos + 1:]
+            if generic and cls:
+                add_raw_ref(func_nid, generic, line, "s3_method", s3_class=cls)
 
     def _unwrap(node):
         """Strip redundant parens: `(function(x) x) -> f` binds a function too."""
@@ -180,9 +266,16 @@ def extract_r(path: Path) -> dict:
                 if name:
                     line = node.start_point[0] + 1
                     func_nid = _make_id(stem, name)
-                    add_node(func_nid, f"{name}()", line)
+                    doc = roxygen.get(line, {})
+                    extra = {"exported": True} if doc.get("exported") else {}
+                    if doc.get("families"):
+                        extra["doc_family"] = doc["families"][0]
+                    add_node(func_nid, f"{name}()", line, **extra)
                     add_edge(scope_nid, func_nid, "defines", line)
                     defined_here.add(name)
+                    node_by_line[line] = func_nid
+                    emit_doc_refs(func_nid, doc, line)
+                    emit_s3_candidates(func_nid, name, line)
                     named_fn_nodes.add(fn_node.id)
                     function_bodies.append((func_nid, fn_node))
                     body = fn_node.child_by_field_name("body")
@@ -204,6 +297,19 @@ def extract_r(path: Path) -> dict:
         if node.type == "function_definition" and node.id in named_fn_nodes:
             return
 
+        # `class(x) <- "cls"` / `class(x) <- c("a", "b")`: the replacement form of
+        # the same class assignment the `class =` argument makes.
+        if node.type == "binary_operator":
+            lhs = node.child_by_field_name("lhs")
+            op = node.child_by_field_name("operator")
+            if (op is not None and op.type in _R_ASSIGN_OPS and lhs is not None
+                    and lhs.type == "call"):
+                target = lhs.child_by_field_name("function")
+                if target is not None and _read_text(target, source) in _R_CLASS_ASSIGN_FNS:
+                    for cls in _r_string_values(node.child_by_field_name("rhs"), source):
+                        add_raw_ref(caller_nid, cls, node.start_point[0] + 1,
+                                    "s3_class_site")
+
         if node.type == "call":
             fn = node.child_by_field_name("function")
             line = node.start_point[0] + 1
@@ -223,6 +329,17 @@ def extract_r(path: Path) -> dict:
                 method = fn.child_by_field_name("rhs")
                 if method is not None and method.type == "identifier":
                     callee = _read_text(method, source)
+
+            if callee == "UseMethod":
+                # The definitive marker of an S3 generic — nothing else in R
+                # declares one, and a method is only a method if its generic exists.
+                for value in _r_arg_values(node):
+                    generic = _r_string_value(value, source)
+                    if generic:
+                        add_raw_ref(caller_nid, generic, line, "s3_generic")
+            # `structure(x, class = "cls")` — any call taking a literal class=.
+            for cls in _r_named_arg_strings(node, "class", source):
+                add_raw_ref(caller_nid, cls, line, "s3_class_site")
 
             if callee:
                 if callee in _R_LIBRARY_FNS:
