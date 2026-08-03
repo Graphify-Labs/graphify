@@ -12,6 +12,35 @@ _GO_PREDECLARED_TYPES = frozenset({
     "uint", "uint8", "uint16", "uint32", "uint64", "uintptr", "any", "comparable",
 })
 
+# Go predeclared functions, filtered only when the callee is a BARE identifier.
+# The Go resolver looks a callee up by name, so an unexported method that happens
+# to share a builtin's name (`func (h *history) append(...)`) absorbs every
+# builtin call in the corpus: on an 8.9k-node Go codebase one such method
+# collected 330 phantom inbound `calls` edges, inventing twelve database-layer ->
+# service-layer edges — a layering violation absent from the source.
+#
+# Deliberately language-local (mirroring _RUST_TRAIT_METHOD_BLOCKLIST) rather
+# than added to the shared _LANGUAGE_BUILTIN_GLOBALS: `new`, `close` and friends
+# are ordinary method names in the ~11 other languages that consult the shared
+# set — listing them there kills every in-file Rust `Type::new()` edge.
+#
+# Bare-identifier-only for the same reason within Go: `h.append(v)` and
+# `pkg.Delete(x)` are selector_expression callees and are genuine calls, so the
+# filter must not reach them. Builtin *types* stay out (see
+# _GO_PREDECLARED_TYPES): Go conversions are call-shaped too, but they produced
+# no phantom edges on that corpus and filtering them would suppress genuine
+# constructor-like calls.
+#
+# The set is the Go spec's predeclared function list in full. Being Go-local and
+# bare-identifier-only makes completeness safe here: `len`, `max`, `min` and
+# `print` carry the same shadowing hazard as `append`, and a principled boundary
+# (the spec list) beats a hand-picked subset.
+_GO_PREDECLARED_FUNCS = frozenset({
+    "append", "cap", "clear", "close", "complex", "copy", "delete", "imag",
+    "len", "make", "max", "min", "new", "panic", "print", "println", "real",
+    "recover",
+})
+
 def _go_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[str, str]]) -> None:
     """Walk a Go type expression; append (name, role) tuples."""
     if node is None:
@@ -343,8 +372,10 @@ def extract_go(path: Path) -> dict:
             func_node = node.child_by_field_name("function")
             callee_name: str | None = None
             is_member_call: bool = False
+            is_bare_identifier: bool = False
             if func_node:
                 if func_node.type == "identifier":
+                    is_bare_identifier = True
                     callee_name = _read_text(func_node, source)
                 elif func_node.type == "selector_expression":
                     field = func_node.child_by_field_name("field")
@@ -355,6 +386,12 @@ def extract_go(path: Path) -> dict:
                     is_member_call = receiver_name not in go_imported_pkgs
                     if field:
                         callee_name = _read_text(field, source)
+            if is_bare_identifier and callee_name in _GO_PREDECLARED_FUNCS:
+                # A bare `append(s, x)` is the builtin, never the same-named
+                # method a sibling file happens to declare. Skipping before both
+                # branches drops the in-file phantom edge and keeps the name out
+                # of raw_calls, so the cross-file pass cannot bind it either.
+                callee_name = None
             if callee_name and callee_name not in _LANGUAGE_BUILTIN_GLOBALS:
                 tgt_nid = label_to_nid.get(callee_name)
                 if tgt_nid and tgt_nid != caller_nid:
@@ -377,6 +414,7 @@ def extract_go(path: Path) -> dict:
                         "caller_nid": caller_nid,
                         "callee": callee_name,
                         "is_member_call": is_member_call,
+                        "language": "go",
                         "source_file": str_path,
                         "source_location": f"L{node.start_point[0] + 1}",
                     })
