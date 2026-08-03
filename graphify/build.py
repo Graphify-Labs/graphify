@@ -609,6 +609,52 @@ def _doc_twin_remap(nodes: list) -> dict[str, str]:
     return remap
 
 
+def _provenance_key(G: nx.Graph, src: str, tgt: str) -> tuple[str, str]:
+    """Endpoint key matching the graph's own collapse rule.
+
+    An undirected Graph collapses (a,b) and (b,a) onto one edge, so provenance
+    must key on the unordered pair; a DiGraph keeps them apart.
+    """
+    if G.is_directed() or src <= tgt:
+        return (src, tgt)
+    return (tgt, src)
+
+
+def _edge_observation(attrs: dict, src: str, tgt: str) -> tuple[str, str, str, str]:
+    """One edge observation, as the deterministic tuple provenance is built from."""
+    return (
+        str(attrs.get("relation") or ""),
+        str(attrs.get("source_file") or ""),
+        str(attrs.get("source_location") or ""),
+        f"{attrs.get('_src', src)}->{attrs.get('_tgt', tgt)}",
+    )
+
+
+def _apply_edge_provenance(G: nx.Graph, observations: dict) -> None:
+    """Attach collapsed-edge provenance to each surviving edge.
+
+    The simple-graph design is deliberate — parallel edges are not needed for
+    traversal — but the observations that collapsed into each surviving edge are
+    real evidence and must not vanish silently. Every field is a sorted set or a
+    count, so the result is byte-identical across rebuilds of the same corpus.
+
+    ``directions`` is recorded only when the same endpoint pair was genuinely
+    observed both ways; a single direction adds no information and would bloat
+    every edge in the graph.
+    """
+    for (src, tgt), records in observations.items():
+        if not G.has_edge(src, tgt):
+            continue
+        data = G.edges[src, tgt]
+        data["evidence_count"] = len(records)
+        data["relations"] = sorted({r for r, _, _, _ in records if r})
+        data["source_files"] = sorted({f for _, f, _, _ in records if f})
+        data["source_locations"] = sorted({loc for _, _, loc, _ in records if loc})
+        directions = sorted({d for _, _, _, d in records})
+        if len(directions) > 1:
+            data["directions"] = directions
+
+
 def build_from_json(extraction: dict, *, directed: bool = False, root: str | Path | None = None) -> nx.Graph:
     """Build a NetworkX graph from an extraction dict.
 
@@ -917,6 +963,12 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     for alias_key, candidates in _alias_candidates.items():
         if len(candidates) == 1:
             norm_to_id.setdefault(alias_key, next(iter(candidates)))
+    # Observations per surviving endpoint pair, for collapsed-edge provenance
+    # (#2311). Populated inside the loop below and applied once after it.
+    from collections import defaultdict as _defaultdict
+    _edge_observations: dict[tuple[str, str], list[tuple[str, str, str, str]]] = (
+        _defaultdict(list)
+    )
     # Iterate edges in a deterministic order. The graph is undirected and stores
     # direction in _src/_tgt; when two edges collapse onto the same node pair the
     # last write wins, so an unstable iteration order flips _src/_tgt run-to-run
@@ -1036,6 +1088,17 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         # causing display functions to show edges backwards.
         attrs["_src"] = src
         attrs["_tgt"] = tgt
+        # Record this observation BEFORE any collapse. The graph is a simple
+        # Graph/DiGraph by design, so repeated observations of the same node pair
+        # collapse onto one edge and every attribute but the last is lost. That
+        # is fine for traversal but destroys provenance: 1,112 edges in a real
+        # corpus collapsed with no trace of what produced them. Accumulating here
+        # — after every drop-`continue` above, so dropped edges are not counted,
+        # but before the reciprocal-drop and add_edge below — keeps the evidence
+        # deterministically without adding parallel edges (#2311).
+        _edge_observations[_provenance_key(G, src, tgt)].append(
+            _edge_observation(attrs, src, tgt)
+        )
         # When the graph is undirected and the same node pair appears twice with
         # the same relation but opposite directions (e.g. a `calls` b and b `calls` a),
         # nx.Graph collapses them into one edge. The deterministic sort above means
@@ -1050,6 +1113,7 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             ):
                 continue
         G.add_edge(src, tgt, **attrs)
+    _apply_edge_provenance(G, _edge_observations)
     hyperedges = extraction.get("hyperedges", [])
     if hyperedges:
         # Relativize hyperedge source_file the same way nodes and edges are
