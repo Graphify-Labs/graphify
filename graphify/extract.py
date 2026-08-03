@@ -5544,7 +5544,16 @@ def extract(
             # Promote to EXTRACTED when there's a direct import edge from the
             # caller's file pointing at either the callee symbol itself or the
             # file the callee lives in.
-            if has_import_evidence:
+            # A Swift `TypeName(...)` constructor names its type explicitly in
+            # source. Swift types in the same module need no per-file import, so a
+            # uniquely resolved type definition is source-backed evidence equal to
+            # an imported symbol call. Ambiguous candidates were already rejected
+            # above; the class-node guard prevents capitalized free functions from
+            # being promoted accidentally.
+            explicit_swift_constructor = (
+                rc.get("explicit_type_constructor") is True and tgt in class_nids
+            )
+            if has_import_evidence or explicit_swift_constructor:
                 confidence = "EXTRACTED"
                 confidence_score = 1.0
             else:

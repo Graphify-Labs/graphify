@@ -83,7 +83,9 @@ def test_swift_cross_file_member_calls_have_correct_confidence_and_resolve(tmp_p
     src_by_id = {n["id"]: n.get("source_file") for n in result["nodes"]}
 
     inferred_targets = {".update()", ".fetch()"}
-    extracted_targets = {".staticMethod()", ".method()"}
+    # A uniquely-resolved `TypeName(...)` constructor is explicit in source, even
+    # when Swift needs no import because the type is in the same module.
+    extracted_targets = {"SessionViewModel", ".staticMethod()", ".method()"}
     seen_inferred: set[str] = set()
     seen_extracted: set[str] = set()
     for e in result["edges"]:
