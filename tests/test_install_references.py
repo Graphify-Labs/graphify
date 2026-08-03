@@ -23,9 +23,35 @@ import pytest
 
 import graphify
 import graphify.__main__ as mainmod
+from graphify.paths import rmtree as robust_rmtree
 
 
 PKG_DIR = Path(graphify.__file__).parent
+
+
+def _restore_bundle(bundle_dir, backup_dir, skills_root, created_root):
+    """Put the real committed bundle back after a test staged a fake in its slot.
+
+    Uses graphify.paths.rmtree, which clears the read-only bit before deleting: a
+    OneDrive-synced checkout marks these directories read-only, and the plain
+    ``shutil.rmtree(..., ignore_errors=True)`` this used to call failed silently
+    there. That mattered because ``shutil.move`` onto an EXISTING directory nests
+    the source inside it rather than replacing it, so a silent clear-failure
+    deleted the committed bundle from the working tree instead of restoring it.
+    The assert makes that case loud and, crucially, leaves the real bundle safe in
+    its temp dir rather than moving it somewhere destructive.
+    """
+    if bundle_dir.exists():
+        robust_rmtree(bundle_dir, ignore_errors=True)
+    if backup_dir is not None:
+        assert not bundle_dir.exists(), (
+            f"could not clear the staged bundle at {bundle_dir}; refusing to move "
+            f"the real one back from {backup_dir} (it would nest, not replace)"
+        )
+        shutil.move(str(backup_dir), str(bundle_dir))
+        robust_rmtree(backup_dir.parent, ignore_errors=True)
+    elif created_root:
+        robust_rmtree(skills_root, ignore_errors=True)
 
 
 @pytest.fixture()
@@ -55,13 +81,7 @@ def fake_bundle():
     try:
         yield platform
     finally:
-        if bundle_dir.exists():
-            shutil.rmtree(bundle_dir, ignore_errors=True)
-        if backup_dir is not None:
-            shutil.move(str(backup_dir), str(bundle_dir))
-            shutil.rmtree(backup_dir.parent, ignore_errors=True)
-        elif created_root:
-            shutil.rmtree(skills_root, ignore_errors=True)
+        _restore_bundle(bundle_dir, backup_dir, skills_root, created_root)
 
 
 def _install(tmp_path, platform):
@@ -205,13 +225,7 @@ def test_hard_fail_when_bundle_dir_present_but_references_missing(tmp_path, monk
                 mainmod._copy_skill_file("claude")
         assert exc.value.code == 1
     finally:
-        if bundle_dir.exists():
-            shutil.rmtree(bundle_dir, ignore_errors=True)
-        if backup_dir is not None:
-            shutil.move(str(backup_dir), str(bundle_dir))
-            shutil.rmtree(backup_dir.parent, ignore_errors=True)
-        elif created_root:
-            shutil.rmtree(skills_root, ignore_errors=True)
+        _restore_bundle(bundle_dir, backup_dir, skills_root, created_root)
 
 
 def _first_unbuilt_progressive_host():

@@ -16,6 +16,7 @@ from pathlib import Path
 # absolute path ("/shared/graphify-out"). Single source of truth in graphify.paths
 # (#1423); re-exported here as _GRAPHIFY_OUT for the existing call sites.
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
+from graphify.paths import clear_readonly, rmtree
 
 # AST cache entries are the output of graphify's own extractor code, so they
 # are only valid for the version that wrote them: keying purely on file
@@ -49,16 +50,22 @@ def _cleanup_stale_ast_entries(ast_base: Path, current_dir: Path) -> None:
     _cleaned_ast_dirs.add(key)
     if not ast_base.is_dir():
         return
-    import shutil
 
     for child in ast_base.iterdir():
         if child == current_dir:
             continue
         try:
             if child.is_dir() and child.name.startswith("v"):
-                shutil.rmtree(child, ignore_errors=True)
+                rmtree(child, ignore_errors=True)
             elif child.suffix == ".json":
-                child.unlink()
+                try:
+                    child.unlink()
+                except OSError:
+                    # Windows refuses unlink on a read-only entry, and an output
+                    # dir under OneDrive carries that attribute. Clear it and
+                    # retry rather than leaving the stale entry forever.
+                    clear_readonly(child)
+                    child.unlink()
         except OSError:
             pass
 

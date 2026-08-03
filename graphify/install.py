@@ -29,6 +29,8 @@ except Exception:
     __version__ = "unknown"
 
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
+from graphify.paths import clear_readonly as _clear_readonly
+from graphify.paths import rmtree as _rmtree
 
 
 @functools.lru_cache(maxsize=None)
@@ -162,15 +164,22 @@ def _install_skill_references(skill_dst: Path, refs_src: Path) -> None:
     refs_dst = skill_dst.parent / "references"
     refs_staged = skill_dst.parent / "references.tmp"
     if refs_staged.exists():
-        shutil.rmtree(refs_staged)
+        _rmtree(refs_staged)
     try:
         shutil.copytree(refs_src, refs_staged)
+        # copytree's copystat hands the source tree's mode to the copy. When the
+        # package lives under OneDrive (or any read-only checkout) that means a
+        # read-only sidecar the user cannot update or uninstall, so strip the bit
+        # from the staged copy before it is published.
+        _clear_readonly(refs_staged)
+        for entry in refs_staged.rglob("*"):
+            _clear_readonly(entry)
         if refs_dst.exists():
-            shutil.rmtree(refs_dst)
+            _rmtree(refs_dst)
         os.replace(refs_staged, refs_dst)
     except Exception:
         if refs_staged.exists():
-            shutil.rmtree(refs_staged, ignore_errors=True)
+            _rmtree(refs_staged, ignore_errors=True)
         raise
 def _copy_skill_file(platform_name: str, *, project: bool = False, project_dir: Path | None = None) -> Path:
     """Copy a packaged skill file and write its version stamp.
@@ -212,7 +221,7 @@ def _copy_skill_file(platform_name: str, *, project: bool = False, project_dir: 
         # Monolith (or progressive-with-no-refs): clear any orphan references/.
         orphan_refs = skill_dst.parent / "references"
         if orphan_refs.exists():
-            shutil.rmtree(orphan_refs)
+            _rmtree(orphan_refs)
 
     # SKILL.md last (crash-safety), via an atomic temp + rename.
     tmp_dst = skill_dst.with_suffix(skill_dst.suffix + ".tmp")
@@ -243,7 +252,7 @@ def _remove_skill_file(platform_name: str, *, project: bool = False, project_dir
         removed = True
     refs_dir = skill_dst.parent / "references"
     if refs_dir.exists():
-        shutil.rmtree(refs_dir)
+        _rmtree(refs_dir)
         removed = True
     for d in (skill_dst.parent, skill_dst.parent.parent, skill_dst.parent.parent.parent):
         try:
@@ -853,7 +862,7 @@ def vscode_install(project_dir: Path | None = None) -> None:
     else:
         orphan_refs = skill_dst.parent / "references"
         if orphan_refs.exists():
-            shutil.rmtree(orphan_refs)
+            _rmtree(orphan_refs)
     (skill_dst.parent / ".graphify_version").write_text(__version__, encoding="utf-8")
     print(f"  skill installed  ->  {skill_dst}")
 
@@ -889,7 +898,7 @@ def vscode_uninstall(project_dir: Path | None = None) -> None:
         version_file.unlink()
     refs_dir = skill_dst.parent / "references"
     if refs_dir.exists():
-        shutil.rmtree(refs_dir)
+        _rmtree(refs_dir)
     for d in (
         skill_dst.parent,
         skill_dst.parent.parent,
@@ -1061,7 +1070,7 @@ def _antigravity_uninstall(project_dir: Path, *, project: bool = False) -> None:
         version_file.unlink()
     refs_dir = skill_dst.parent / "references"
     if refs_dir.exists():
-        shutil.rmtree(refs_dir)
+        _rmtree(refs_dir)
     for d in (
         skill_dst.parent,
         skill_dst.parent.parent,
@@ -1509,7 +1518,7 @@ def _amp_legacy_cleanup() -> None:
     """
     legacy = Path.home() / ".amp" / "skills" / "graphify"
     if legacy.exists():
-        shutil.rmtree(legacy, ignore_errors=True)
+        _rmtree(legacy, ignore_errors=True)
         if not legacy.exists():
             print(f"  legacy removed   ->  {legacy}")
 def _amp_install(project_dir: Path | None = None) -> None:
@@ -1808,10 +1817,9 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
         pass
 
     if purge:
-        import shutil as _shutil
         out = pd / _GRAPHIFY_OUT
         if out.exists():
-            _shutil.rmtree(out)
+            _rmtree(out)
             print(f"\n  {_GRAPHIFY_OUT}/  ->  deleted (--purge)")
         else:
             print(f"\n  {_GRAPHIFY_OUT}/  ->  not found (nothing to purge)")
