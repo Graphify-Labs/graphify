@@ -883,6 +883,39 @@ def test_opencode_agents_install_registers_plugin_in_config(tmp_path):
     assert any("graphify.js" in p for p in config.get("plugin", []))
 
 
+def test_opencode_agents_install_preflights_before_agents_or_plugin(tmp_path):
+    config_file = tmp_path / ".opencode" / "opencode.json"
+    config_file.parent.mkdir(parents=True)
+    config_file.write_bytes(b"{ broken")
+    agents_file = tmp_path / "AGENTS.md"
+    original_agents = b"# User rules\n"
+    agents_file.write_bytes(original_agents)
+
+    with pytest.raises(SystemExit):
+        _agents_install(tmp_path, "opencode")
+
+    assert agents_file.read_bytes() == original_agents
+    assert not (tmp_path / ".opencode" / "plugins" / "graphify.js").exists()
+    assert config_file.read_bytes() == b"{ broken"
+
+
+def test_opencode_project_install_preflights_before_skill_or_agents(tmp_path):
+    from graphify.install import _project_install
+
+    config_file = tmp_path / ".opencode" / "opencode.json"
+    config_file.parent.mkdir(parents=True)
+    config_file.write_text('{"plugin": null}', encoding="utf-8")
+    agents_file = tmp_path / "AGENTS.md"
+    agents_file.write_text("# User rules\n", encoding="utf-8")
+
+    with pytest.raises(SystemExit):
+        _project_install("opencode", tmp_path)
+
+    assert agents_file.read_text(encoding="utf-8") == "# User rules\n"
+    assert not (tmp_path / ".opencode" / "skills").exists()
+    assert not (tmp_path / ".opencode" / "plugins").exists()
+
+
 def test_opencode_preflight_rejects_invalid_config_without_side_effects(tmp_path, capsys):
     from graphify.install import _preflight_opencode_config
 
@@ -1039,6 +1072,41 @@ def test_kilo_agents_install_merges_existing_config(tmp_path):
     assert (
         tmp_path / ".kilo" / "plugins" / "graphify.js"
     ).resolve().as_uri() in config["plugin"]
+
+
+def test_kilo_agents_install_preflights_before_agents_or_plugin(tmp_path):
+    config_file = tmp_path / ".kilo" / "kilo.json"
+    config_file.parent.mkdir(parents=True)
+    config_file.write_bytes(b"{ broken")
+    agents_file = tmp_path / "AGENTS.md"
+    original_agents = b"# User rules\n"
+    agents_file.write_bytes(original_agents)
+
+    with pytest.raises(SystemExit):
+        _agents_install(tmp_path, "kilo")
+
+    assert agents_file.read_bytes() == original_agents
+    assert not (tmp_path / ".kilo" / "plugins" / "graphify.js").exists()
+    assert config_file.read_bytes() == b"{ broken"
+
+
+def test_kilo_install_preflights_before_global_or_project_mutation(tmp_path):
+    home_dir = tmp_path / "home"
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    home_dir.mkdir()
+    config_file = project_dir / ".kilo" / "kilo.jsonc"
+    config_file.parent.mkdir(parents=True)
+    original = b"// malformed JSONC\n{"
+    config_file.write_bytes(original)
+
+    with pytest.raises(SystemExit):
+        _kilo_install(project_dir, home_dir)
+
+    assert config_file.read_bytes() == original
+    assert not (project_dir / "AGENTS.md").exists()
+    assert not (project_dir / ".kilo" / "plugins").exists()
+    assert not (home_dir / ".config" / "kilo").exists()
 
 
 def test_kilo_agents_install_preserves_existing_jsonc_config(tmp_path):

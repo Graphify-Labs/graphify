@@ -608,17 +608,19 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
 
     cfg = _PLATFORM_CONFIG[platform]
     project_dir = project_dir or Path(".")
+    if platform == "opencode":
+        # The plugin writer mutates both the plugin file and opencode.json. Read
+        # and validate the existing config before any skill or project writes.
+        _preflight_opencode_config(
+            (project_dir if project else Path(".")) / _OPENCODE_CONFIG_PATH
+        )
+    if platform == "kilo":
+        # Kilo Code also supports a native /graphify command file. Check the
+        # packaged source before installing the skill or global command.
+        command_src = _kilo_command_source()
     skill_dst = _copy_skill_file(platform, project=project, project_dir=project_dir)
 
     if platform == "kilo":
-        # Kilo Code also supports a native /graphify command file.
-        command_src = Path(__file__).parent / "command-kilo.md"
-        if not command_src.exists():
-            print(
-                f"error: command-kilo.md not found in package - reinstall graphify",
-                file=sys.stderr,
-            )
-            sys.exit(1)
         command_dst = Path.home() / ".config" / "kilo" / "command" / "graphify.md"
         command_dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(command_src, command_dst)
@@ -1216,6 +1218,20 @@ export const GraphifyPlugin = async ({ directory }) => {
 _KILO_PLUGIN_PATH = Path(".kilo") / "plugins" / "graphify.js"
 _KILO_CONFIG_JSON_PATH = Path(".kilo") / "kilo.json"
 _KILO_CONFIG_JSONC_PATH = Path(".kilo") / "kilo.jsonc"
+
+
+def _kilo_command_source() -> Path:
+    """Return the packaged native command, refusing incomplete installations."""
+    command_src = Path(__file__).parent / "command-kilo.md"
+    if not command_src.exists():
+        print(
+            "error: command-kilo.md not found in package - reinstall graphify",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return command_src
+
+
 def _strip_json_comments(raw: str) -> str:
     """Remove JSONC-style comments while leaving string content intact."""
     result: list[str] = []
@@ -1306,8 +1322,10 @@ def _kilo_config_write_path(project_dir: Path) -> Path:
     """Write automated Kilo edits to kilo.json so existing JSONC stays untouched."""
     kilo_dir = (project_dir or Path(".")) / ".kilo"
     return kilo_dir / _KILO_CONFIG_JSON_PATH.name
-def _install_kilo_plugin(project_dir: Path) -> None:
+def _install_kilo_plugin(project_dir: Path, config: dict | None = None) -> None:
     """Write graphify.js plugin and register it without rewriting user JSONC."""
+    if config is None:
+        config = _preflight_kilo_config(project_dir)
     plugin_file = project_dir / _KILO_PLUGIN_PATH
     plugin_file.parent.mkdir(parents=True, exist_ok=True)
     plugin_file.write_text(_KILO_PLUGIN_JS, encoding="utf-8")
@@ -1316,9 +1334,10 @@ def _install_kilo_plugin(project_dir: Path) -> None:
     config_file = _kilo_config_path(project_dir)
     write_config_file = _kilo_config_write_path(project_dir)
     write_config_file.parent.mkdir(parents=True, exist_ok=True)
-    config = _load_json_like(config_file)
     plugins = config.get("plugin")
     if not isinstance(plugins, list):
+        # The preflight above rejects this for existing files. This default is
+        # only for a missing first-install config.
         plugins = []
         config["plugin"] = plugins
     entry = plugin_file.resolve().as_uri()
@@ -1398,22 +1417,16 @@ def _preflight_opencode_config(config_file: Path) -> dict:
     return _read_json_for_install(config_file, managed_collection="plugin")
 
 
-def _install_opencode_plugin(project_dir: Path) -> None:
+def _install_opencode_plugin(project_dir: Path, config: dict | None = None) -> None:
     """Write graphify.js plugin and register it in opencode.json."""
+    if config is None:
+        config = _preflight_opencode_config(project_dir / _OPENCODE_CONFIG_PATH)
     plugin_file = project_dir / _OPENCODE_PLUGIN_PATH
     plugin_file.parent.mkdir(parents=True, exist_ok=True)
     plugin_file.write_text(_OPENCODE_PLUGIN_JS, encoding="utf-8")
     print(f"  {_OPENCODE_PLUGIN_PATH}  ->  tool.execute.before hook written")
 
     config_file = project_dir / _OPENCODE_CONFIG_PATH
-    if config_file.exists():
-        try:
-            config = json.loads(config_file.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            config = {}
-    else:
-        config = {}
-
     plugins = config.setdefault("plugin", [])
     entry = _OPENCODE_PLUGIN_PATH.as_posix()
     if entry not in plugins:
@@ -1524,6 +1537,17 @@ def _agents_install(
 ) -> None:
     """Write the graphify section to the local AGENTS.md for always-on platforms."""
     project_dir = project_dir or Path(".")
+    opencode_config = None
+    kilo_config = None
+    # These helpers are also called directly by platform-specific commands.
+    # Validate before touching AGENTS.md, not only inside the final plugin write.
+    if platform == "opencode":
+        opencode_config = _preflight_opencode_config(
+            project_dir / _OPENCODE_CONFIG_PATH
+        )
+    elif platform == "kilo":
+        _kilo_command_source()
+        kilo_config = _preflight_kilo_config(project_dir)
     if platform == "codex" and codex_settings is None:
         codex_settings = _read_settings_for_merge(
             project_dir / ".codex" / "hooks.json", managed_collection="PreToolUse"
@@ -1547,9 +1571,9 @@ def _agents_install(
     if platform == "codex":
         _install_codex_hook(project_dir or Path("."), existing=codex_settings)
     elif platform == "opencode":
-        _install_opencode_plugin(project_dir or Path("."))
+        _install_opencode_plugin(project_dir or Path("."), config=opencode_config)
     elif platform == "kilo":
-        _install_kilo_plugin(project_dir or Path("."))
+        _install_kilo_plugin(project_dir or Path("."), config=kilo_config)
 
     print()
     print(
@@ -1629,6 +1653,9 @@ def _project_install(platform_name: str, project_dir: Path | None = None, strict
             codex_settings = _read_settings_for_merge(
                 project_dir / ".codex" / "hooks.json", managed_collection="PreToolUse"
             )
+        elif platform_name == "opencode":
+            # This must precede the skill and AGENTS.md writes below.
+            _preflight_opencode_config(project_dir / _OPENCODE_CONFIG_PATH)
         skill_dst = _copy_skill_file(platform_name, project=True, project_dir=project_dir)
         _agents_install(project_dir, platform_name, codex_settings=codex_settings)
         hint_paths = [_project_scope_root(skill_dst, project_dir), project_dir / "AGENTS.md"]
@@ -1764,8 +1791,13 @@ def _kilo_uninstall_global() -> list[str]:
     return removed
 def _kilo_install(project_dir: Path) -> None:
     """Install native Kilo skill + command globally and always-on project wiring locally."""
+    project_dir = project_dir or Path(".")
+    # This command combines global and project writes. Validate every input,
+    # including the packaged native command, before either scope is mutated.
+    _preflight_kilo_config(project_dir)
+    _kilo_command_source()
     install(platform="kilo")
-    _agents_install(project_dir or Path("."), "kilo")
+    _agents_install(project_dir, "kilo")
 def _kilo_uninstall(project_dir: Path) -> None:
     """Remove Kilo always-on project wiring and global skill/command files."""
     _agents_uninstall(project_dir or Path("."), platform="kilo")
