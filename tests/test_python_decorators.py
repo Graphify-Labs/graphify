@@ -106,6 +106,29 @@ def test_attribute_decorator_targets_the_symbol_not_the_module(tmp_path):
     assert _make_id("app") not in targets
 
 
+def test_qualified_decorator_does_not_rewire_onto_the_decorated_function(tmp_path):
+    """#2374: @app.list_tools() must not become a self-reference."""
+    f = _write(tmp_path / "pkg" / "decorated.py",
+               "class App:\n"
+               "    pass\n"
+               "\n"
+               "app = App()\n"
+               "\n"
+               "@app.list_tools()\n"
+               "async def list_tools():\n"
+               "    return []\n")
+    r = extract([f], cache_root=tmp_path)
+    owner = _func_nid("pkg/decorated.py", "list_tools")
+    stub = next(
+        node["id"]
+        for node in r["nodes"]
+        if node["label"] == "list_tools" and not node.get("source_file")
+    )
+
+    assert stub in _deco_edges(r, owner)
+    assert all(edge["source"] != edge["target"] for edge in r["edges"])
+
+
 def test_stacked_decorators_all_emit(tmp_path):
     f = _write(tmp_path / "pkg" / "stack.py",
                "from deco import a, b, c\n"
