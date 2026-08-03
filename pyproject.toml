@@ -150,3 +150,10 @@ select = ["E9", "F63", "F7", "F82"]
 include = ["graphify", "tests"]
 pythonVersion = "3.10"
 typeCheckingMode = "basic"
+
+[tool.codespell]
+# Ref: https://github.com/codespell-project/codespell#using-a-config-file
+skip = '.git,.gitignore,.gitattributes,*.svg,*.lock'
+check-hidden = true
+# ignore-regex = ''
+# ignore-words-list = ''
