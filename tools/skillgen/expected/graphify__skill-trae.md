@@ -214,12 +214,16 @@ Before dispatching subagents, print a timing estimate:
 
 Before dispatching any subagents, check which files already have cached extraction results:
 
-SPEC_PATH below is the **absolute** path of the `references/extraction-spec.md` that ships beside this SKILL.md — the same file Step B2 loads and hands to every subagent. It is the extraction prompt, so cache entries are attributed to it: when a graphify upgrade changes the prompt, entries produced by the old one are re-extracted instead of replayed, and unchanged prompts keep their entries (#1939). Substitute the real path in both Step B0 and Step B3 — pass the same one to each, and do not drop the argument.
+SPEC_PATH below is the **absolute** path of the `references/extraction-spec.md` that ships beside this SKILL.md — the same file Step B2 loads and hands to every subagent. It is the extraction prompt for the subagent path, so cache entries are attributed to it: when a graphify upgrade changes the prompt, entries produced by the old one are re-extracted instead of replayed, and unchanged prompts keep their entries (#1939).
+
+If you are taking the Gemini direct path from the key check above (`GEMINI_API_KEY`/`GOOGLE_API_KEY` is set and you use `graphify.llm.extract_corpus_parallel(...)` instead of subagents), do **not** use SPEC_PATH for cache reads. The native Gemini extractor writes checkpoints with `graphify.llm._extraction_system(deep=DEEP_MODE)`, so Step B0 must read with that same prompt text or it will look in the wrong fingerprint directory and miss every cached file (#2303). Substitute the real SPEC_PATH for the subagent path and the real DEEP_MODE boolean for the Gemini path; pass the same `prompt_kwargs` again in Step B3.
 
 ```bash
 $(cat graphify-out/.graphify_python) -c "
 import json
+import os
 from graphify.cache import check_semantic_cache
+from graphify.llm import _extraction_system
 from pathlib import Path
 
 detect = json.loads(Path('graphify-out/.graphify_detect.json').read_text(encoding=\"utf-8\"))
@@ -228,7 +232,14 @@ detect = json.loads(Path('graphify-out/.graphify_detect.json').read_text(encodin
 # every source file (#1392). Video is transcribed to a document in Step 2.5 first.
 all_files = [f for cat in ('document', 'paper', 'image') for f in detect['files'].get(cat, [])]
 
-cached_nodes, cached_edges, cached_hyperedges, uncached = check_semantic_cache(all_files, root='INPUT_PATH', prompt_file='SPEC_PATH')
+using_gemini_direct = bool(os.environ.get('GEMINI_API_KEY') or os.environ.get('GOOGLE_API_KEY'))
+prompt_kwargs = (
+    {'prompt': _extraction_system(deep=DEEP_MODE)}
+    if using_gemini_direct
+    else {'prompt_file': 'SPEC_PATH'}
+)
+
+cached_nodes, cached_edges, cached_hyperedges, uncached = check_semantic_cache(all_files, root='INPUT_PATH', **prompt_kwargs)
 
 # Always (re)write the cache file: write hits, else DELETE any leftover from a prior
 # run so Part C never merges a stale .graphify_cached.json (#1392).
@@ -305,16 +316,24 @@ print(f'Merged {len(chunks)} chunks: {total_in:,} in / {total_out:,} out tokens'
 "
 ```
 
-Save new results to cache. Pass the same SPEC_PATH as Step B0 — it stamps each entry with the prompt that produced it, and a write under a different prompt than the read lands where the next run won't look (#1939):
+Save new results to cache. Pass the same prompt identity as Step B0 — `prompt_file=SPEC_PATH` on the subagent path, or `prompt=_extraction_system(deep=DEEP_MODE)` on the Gemini direct path. It stamps each entry with the prompt that produced it, and a write under a different prompt than the read lands where the next run won't look (#1939, #2303):
 ```bash
 $(cat graphify-out/.graphify_python) -c "
 import json
+import os
 from graphify.cache import save_semantic_cache
+from graphify.llm import _extraction_system
 from pathlib import Path
 
 new = json.loads(Path('graphify-out/.graphify_semantic_new.json').read_text(encoding=\"utf-8\")) if Path('graphify-out/.graphify_semantic_new.json').exists() else {'nodes':[],'edges':[],'hyperedges':[]}
 uncached = [line for line in Path('graphify-out/.graphify_uncached.txt').read_text(encoding=\"utf-8\").splitlines() if line]
-saved = save_semantic_cache(new.get('nodes', []), new.get('edges', []), new.get('hyperedges', []), root='INPUT_PATH', allowed_source_files=uncached, prompt_file='SPEC_PATH')
+using_gemini_direct = bool(os.environ.get('GEMINI_API_KEY') or os.environ.get('GOOGLE_API_KEY'))
+prompt_kwargs = (
+    {'prompt': _extraction_system(deep=DEEP_MODE)}
+    if using_gemini_direct
+    else {'prompt_file': 'SPEC_PATH'}
+)
+saved = save_semantic_cache(new.get('nodes', []), new.get('edges', []), new.get('hyperedges', []), root='INPUT_PATH', allowed_source_files=uncached, **prompt_kwargs)
 print(f'Cached {saved} files')
 "
 ```
