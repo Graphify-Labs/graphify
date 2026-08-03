@@ -480,7 +480,7 @@ def extract_dart(path: Path) -> dict:
                     add_node(bloc_nid, bloc_name, source_file=None)
                     add_edge(nid, bloc_nid, "references", context="bloc_lookup")
 
-            # Universal Navigation Patters (GoRouter, AutoRoute, Navigator)
+            # Universal Navigation Patterns (GoRouter, AutoRoute, Navigator)
             for nm in re.finditer(r"\b(?:go|push|goNamed|pushNamed|replace|replaceNamed)\s*\(\s*(?:context\s*,\s*)?['\"]([a-zA-Z0-9_/?=&%-]+)['\"]", func_body):
                 route_path = nm.group(1)
                 route_nid = _make_id("route", route_path.replace("/", "_").replace("?", "_").replace("=", "_").replace("&", "_"))
