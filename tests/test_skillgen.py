@@ -574,6 +574,8 @@ def test_generated_runbooks_pass_root_to_save_manifest():
 
 def test_generated_update_runbooks_use_detect_code_extensions():
     """#2227: no shipped update runbook carries a stale extension literal."""
+    from graphify.detect import CODE_EXTENSIONS
+
     targets = [
         REPO_ROOT / "graphify" / "skill-aider.md",
         REPO_ROOT / "graphify" / "skill-devin.md",
@@ -584,6 +586,9 @@ def test_generated_update_runbooks_use_detect_code_extensions():
         assert "from graphify.detect import CODE_EXTENSIONS" in body, path
         assert "Path(f).suffix.lower() in CODE_EXTENSIONS" in body, path
         assert "code_exts = {" not in body, path
+
+    assert all(Path(file).suffix.lower() in CODE_EXTENSIONS for file in ("change.sql", "script.ps1", "analysis.R"))
+    assert not all(Path(file).suffix.lower() in CODE_EXTENSIONS for file in ("change.sql", "notes.md"))
 
 
 def test_devin_keeps_its_multi_field_frontmatter():
