@@ -738,6 +738,97 @@ def test_opencode_agents_install_registers_plugin_in_config(tmp_path):
     assert any("graphify.js" in p for p in config.get("plugin", []))
 
 
+def test_opencode_preflight_rejects_invalid_config_without_side_effects(tmp_path, capsys):
+    from graphify.install import _preflight_opencode_config
+
+    config_file = tmp_path / ".opencode" / "opencode.json"
+    config_file.parent.mkdir(parents=True)
+    original = b"{ not json"
+    config_file.write_bytes(original)
+
+    with pytest.raises(SystemExit) as excinfo:
+        _preflight_opencode_config(config_file)
+
+    assert excinfo.value.code == 1
+    assert str(config_file) in capsys.readouterr().err
+    assert config_file.read_bytes() == original
+    assert list(tmp_path.rglob("*")) == [config_file.parent, config_file]
+
+
+def test_opencode_preflight_rejects_non_list_plugins(tmp_path, capsys):
+    from graphify.install import _preflight_opencode_config
+
+    config_file = tmp_path / ".opencode" / "opencode.json"
+    config_file.parent.mkdir(parents=True)
+    config_file.write_text('{"plugin": "oops"}', encoding="utf-8")
+
+    with pytest.raises(SystemExit) as excinfo:
+        _preflight_opencode_config(config_file)
+
+    assert excinfo.value.code == 1
+    assert str(config_file) in capsys.readouterr().err
+
+
+def test_opencode_preflight_allows_missing_or_omitted_plugins(tmp_path):
+    from graphify.install import _preflight_opencode_config
+
+    config_file = tmp_path / ".opencode" / "opencode.json"
+    assert _preflight_opencode_config(config_file) == {}
+    assert not config_file.parent.exists()
+
+    config_file.parent.mkdir(parents=True)
+    config_file.write_text('{"model": "keep"}', encoding="utf-8")
+    assert _preflight_opencode_config(config_file) == {"model": "keep"}
+
+
+def test_kilo_preflight_rejects_invalid_jsonc_without_sibling(tmp_path, capsys):
+    from graphify.install import _preflight_kilo_config
+
+    config_file = tmp_path / ".kilo" / "kilo.jsonc"
+    config_file.parent.mkdir(parents=True)
+    original = b"// broken\n{"
+    config_file.write_bytes(original)
+
+    with pytest.raises(SystemExit) as excinfo:
+        _preflight_kilo_config(tmp_path)
+
+    assert excinfo.value.code == 1
+    assert str(config_file) in capsys.readouterr().err
+    assert config_file.read_bytes() == original
+    assert not (tmp_path / ".kilo" / "kilo.json").exists()
+    assert not (tmp_path / ".kilo" / "plugins").exists()
+
+
+def test_kilo_preflight_accepts_jsonc_without_mutating_source(tmp_path):
+    from graphify.install import _preflight_kilo_config
+
+    config_file = tmp_path / ".kilo" / "kilo.jsonc"
+    config_file.parent.mkdir(parents=True)
+    original = '// user comment\n{"model": "keep", "plugin": [],}\n'
+    config_file.write_text(original, encoding="utf-8")
+
+    result = _preflight_kilo_config(tmp_path)
+
+    assert result == {"model": "keep", "plugin": []}
+    assert config_file.read_text(encoding="utf-8") == original
+    assert not (tmp_path / ".kilo" / "kilo.json").exists()
+
+
+def test_kilo_preflight_rejects_non_list_plugins(tmp_path, capsys):
+    from graphify.install import _preflight_kilo_config
+
+    config_file = tmp_path / ".kilo" / "kilo.json"
+    config_file.parent.mkdir(parents=True)
+    config_file.write_text('{"plugin": null}', encoding="utf-8")
+
+    with pytest.raises(SystemExit) as excinfo:
+        _preflight_kilo_config(tmp_path)
+
+    assert excinfo.value.code == 1
+    assert str(config_file) in capsys.readouterr().err
+    assert config_file.read_text(encoding="utf-8") == '{"plugin": null}'
+
+
 def test_opencode_agents_install_merges_existing_config(tmp_path):
     """opencode install preserves existing .opencode/opencode.json keys."""
     import json as _json

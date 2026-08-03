@@ -720,31 +720,60 @@ def gemini_install(project_dir: Path | None = None, *, project: bool = False) ->
     print("Gemini CLI will now check the knowledge graph before answering")
     print("codebase questions and rebuild it after code changes.")
 def _refuse_to_modify(settings_path: Path) -> "NoReturn":
-    """Abort a hook install rather than clobber a config file we can't parse (#2167)."""
+    """Abort an install rather than clobber an invalid configuration (#2167)."""
     print(
-        f"[graphify] refusing to modify {settings_path}: not valid JSON "
-        "(fix or move it and re-run)",
+        f"[graphify] refusing to modify {settings_path}: not valid JSON or "
+        "expected structure (fix or move it and re-run)",
         file=sys.stderr,
     )
     sys.exit(1)
-def _read_settings_for_merge(settings_path: Path) -> dict:
+
+
+def _read_json_for_install(
+    config_file: Path, *, managed_collection: str | None = None, jsonc: bool = False
+) -> dict:
+    """Read and validate an install configuration without filesystem mutation.
+
+    Missing files are the valid empty first-install state. Existing files must be
+    objects, and an explicitly present managed collection must be a list. The
+    caller can therefore perform this read before creating any install artifact.
+    """
+    if not config_file.exists():
+        return {}
+    try:
+        raw = config_file.read_text(encoding="utf-8-sig")
+        if jsonc:
+            raw = _strip_json_comments(raw)
+        loaded = json.loads(raw)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        _refuse_to_modify(config_file)
+    if not isinstance(loaded, dict):
+        _refuse_to_modify(config_file)
+    if managed_collection is not None:
+        if managed_collection in loaded and not isinstance(loaded[managed_collection], list):
+            _refuse_to_modify(config_file)
+    return loaded
+
+
+def _read_settings_for_merge(
+    settings_path: Path, *, managed_collection: str | None = None
+) -> dict:
     """Load an existing settings/hooks JSON file for a read-modify-write merge.
 
     A missing file yields a fresh ``{}`` (first install). An existing file that
-    cannot be parsed as a JSON object aborts via ``_refuse_to_modify`` instead of
-    silently falling back to ``{}`` — the old fallback rewrote the whole file and
-    destroyed every setting the user had (#2167). Reads with ``utf-8-sig`` so a
-    UTF-8 BOM (the most likely parse-error trigger, same class as #2163) is
-    tolerated rather than fatal.
+    cannot be parsed as a JSON object, or has invalid hook structure, aborts via
+    ``_refuse_to_modify`` instead of silently falling back to ``{}`` — the old
+    fallback rewrote the whole file and destroyed every setting the user had
+    (#2167). Reads with ``utf-8-sig`` so a UTF-8 BOM (the most likely parse-error
+    trigger, same class as #2163) is tolerated rather than fatal.
     """
-    if not settings_path.exists():
-        return {}
-    try:
-        settings = json.loads(settings_path.read_text(encoding="utf-8-sig"))
-    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
-        settings = None
-    if not isinstance(settings, dict):
+    settings = _read_json_for_install(settings_path)
+    hooks = settings.get("hooks")
+    if "hooks" in settings and not isinstance(hooks, dict):
         _refuse_to_modify(settings_path)
+    if managed_collection is not None and isinstance(hooks, dict):
+        if managed_collection in hooks and not isinstance(hooks[managed_collection], list):
+            _refuse_to_modify(settings_path)
     return settings
 def _write_settings_with_backup(settings_path: Path, settings: dict) -> None:
     """Serialize ``settings`` to ``settings_path``, backing up the previous file.
@@ -763,8 +792,8 @@ def _write_settings_with_backup(settings_path: Path, settings: dict) -> None:
     settings_path.write_text(output, encoding="utf-8")
 def _install_gemini_hook(project_dir: Path) -> None:
     settings_path = project_dir / ".gemini" / "settings.json"
+    settings = _read_settings_for_merge(settings_path, managed_collection="BeforeTool")
     settings_path.parent.mkdir(parents=True, exist_ok=True)
-    settings = _read_settings_for_merge(settings_path)
     hooks = settings.setdefault("hooks", {})
     if not isinstance(hooks, dict):
         _refuse_to_modify(settings_path)
@@ -1254,6 +1283,18 @@ def _kilo_config_path(project_dir: Path) -> Path:
     if jsonc_path.exists():
         return jsonc_path
     return json_path
+
+
+def _preflight_kilo_config(project_dir: Path) -> dict:
+    """Read Kilo JSON/JSONC and validate its managed plugin collection."""
+    config_file = _kilo_config_path(project_dir)
+    return _read_json_for_install(
+        config_file,
+        managed_collection="plugin",
+        jsonc=config_file.suffix == ".jsonc",
+    )
+
+
 def _kilo_config_write_path(project_dir: Path) -> Path:
     """Write automated Kilo edits to kilo.json so existing JSONC stays untouched."""
     kilo_dir = (project_dir or Path(".")) / ".kilo"
@@ -1343,6 +1384,13 @@ export const GraphifyPlugin = async ({ directory }) => {
 """
 _OPENCODE_PLUGIN_PATH = Path(".opencode") / "plugins" / "graphify.js"
 _OPENCODE_CONFIG_PATH = Path(".opencode") / "opencode.json"
+
+
+def _preflight_opencode_config(config_file: Path) -> dict:
+    """Read OpenCode JSON and validate its managed plugin collection."""
+    return _read_json_for_install(config_file, managed_collection="plugin")
+
+
 def _install_opencode_plugin(project_dir: Path) -> None:
     """Write graphify.js plugin and register it in opencode.json."""
     plugin_file = project_dir / _OPENCODE_PLUGIN_PATH
@@ -1418,9 +1466,8 @@ def _resolve_graphify_exe() -> str:
 def _install_codex_hook(project_dir: Path) -> None:
     """Add graphify PreToolUse hook to .codex/hooks.json."""
     hooks_path = project_dir / ".codex" / "hooks.json"
+    existing = _read_settings_for_merge(hooks_path, managed_collection="PreToolUse")
     hooks_path.parent.mkdir(parents=True, exist_ok=True)
-
-    existing = _read_settings_for_merge(hooks_path)
 
     graphify_exe = _resolve_graphify_exe()
     hook_entry = {
@@ -1731,9 +1778,8 @@ def claude_install(project_dir: Path | None = None, strict: bool = False) -> Non
 def _install_claude_hook(project_dir: Path, strict: bool = False) -> None:
     """Add graphify PreToolUse hook to .claude/settings.json."""
     settings_path = project_dir / ".claude" / "settings.json"
+    settings = _read_settings_for_merge(settings_path, managed_collection="PreToolUse")
     settings_path.parent.mkdir(parents=True, exist_ok=True)
-
-    settings = _read_settings_for_merge(settings_path)
 
     hooks = settings.setdefault("hooks", {})
     if not isinstance(hooks, dict):
@@ -1913,9 +1959,8 @@ def codebuddy_install(project_dir: Path | None = None) -> None:
 def _install_codebuddy_hook(project_dir: Path) -> None:
     """Add graphify PreToolUse hook to .codebuddy/settings.json."""
     settings_path = project_dir / ".codebuddy" / "settings.json"
+    settings = _read_settings_for_merge(settings_path, managed_collection="PreToolUse")
     settings_path.parent.mkdir(parents=True, exist_ok=True)
-
-    settings = _read_settings_for_merge(settings_path)
 
     hooks = settings.setdefault("hooks", {})
     if not isinstance(hooks, dict):
