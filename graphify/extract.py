@@ -4232,12 +4232,10 @@ _EXTRA_FOR_EXTENSION = {
     ".dme": "dm",
 }
 
-# `.sql` is dispatched to two different extractors depending on content
-# (extract_sql needs tree-sitter-sql; extract_dbt_sql needs jinja2), so the
-# flat _EXTRA_FOR_EXTENSION lookup above would name the wrong extra when a
-# dbt model is missing jinja2. Matched against the missing-package name in
-# the extractor's own error string, checked before falling back to the flat
-# per-extension map.
+# `.sql` can hard-fail on two different missing deps (tree-sitter-sql or
+# jinja2) depending on content, so _EXTRA_FOR_EXTENSION's flat per-extension
+# lookup would name the wrong extra for a dbt model missing jinja2. Checked
+# against the error string before falling back to the extension map.
 _EXTRA_FOR_MISSING_PACKAGE = {
     "jinja2": "dbt",
 }
@@ -4375,12 +4373,9 @@ def _get_extractor(path: Path) -> Any | None:
     # mis-parsed. `.mm` is unambiguously Objective-C++ and stays on extract_objc.
     if suffix == ".m" and not _is_objc_source(path):
         return None
-    # `.sql` is plain-SQL/dbt-model-ambiguous; dbt wraps SQL in Jinja
-    # ({{ config(...) }}, {{ ref(...) }}, {{ source(...) }}), which
-    # tree-sitter-sql cannot parse (either 1 bare node or an ERROR-node blob).
-    # Sniffing for a dbt Jinja marker reroutes genuine dbt models to
-    # extract_dbt_sql while leaving plain .sql files (and pure-Jinja macro
-    # definition files, which contain none of these markers) on extract_sql.
+    # dbt models wrap SQL in Jinja, which tree-sitter-sql cannot parse (either
+    # 1 bare node or an ERROR-node blob). Reroute those to extract_dbt_sql;
+    # plain .sql files stay on extract_sql.
     if suffix == ".sql" and _is_dbt_model_sql(path):
         return extract_dbt_sql
     # Extensionless files: resolve by shebang, mirroring detect.classify_file.

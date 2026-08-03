@@ -10,7 +10,7 @@ _SNIFF_BYTES = 4096
 
 
 def _is_dbt_model_sql(path: Path) -> bool:
-    """Whether a `.sql` file is Jinja-templated (dbt model or macro) rather than plain SQL."""
+    """Whether a `.sql` file is Jinja-templated rather than plain SQL."""
     try:
         head = path.read_bytes()[:_SNIFF_BYTES]
     except OSError:
