@@ -99,6 +99,60 @@ def test_install_project_codex_writes_skill_and_agents(tmp_path, monkeypatch):
     assert not (home / ".codex" / "skills" / "graphify" / "SKILL.md").exists()
 
 
+@pytest.mark.parametrize(
+    "argv,hooks",
+    [
+        (["graphify", "install", "--project", "--platform", "codex"], b"{ not json"),
+        (
+            ["graphify", "codex", "install", "--project"],
+            b'{"hooks": {"PreToolUse": "not-a-list"}}',
+        ),
+    ],
+    ids=["invalid-json", "invalid-managed-collection"],
+)
+def test_codex_project_install_preflight_leaves_project_unchanged(
+    tmp_path, monkeypatch, capsys, argv, hooks
+):
+    """Both public Codex project forms must validate before any project write."""
+    from graphify.__main__ import main
+
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    project.mkdir()
+    hooks_path = project / ".codex" / "hooks.json"
+    hooks_path.parent.mkdir()
+    hooks_path.write_bytes(hooks)
+    agents = project / "AGENTS.md"
+    agents.write_bytes(b"# User instructions\\n")
+    (project / ".codex" / "user-settings.json").write_bytes(b'{"keep": true}\\n')
+
+    def snapshot(root):
+        return {
+            path.relative_to(root): (path.is_dir(), path.read_bytes() if path.is_file() else None)
+            for path in root.rglob("*")
+        }
+
+    before = snapshot(project)
+    global_skill = home / ".codex" / "skills" / "graphify" / "SKILL.md"
+    global_skill.parent.mkdir(parents=True)
+    global_skill.write_bytes(b"user global skill")
+    global_before = global_skill.read_bytes()
+
+    monkeypatch.chdir(project)
+    monkeypatch.setattr(sys, "argv", argv)
+    with patch("graphify.__main__.Path.home", return_value=home):
+        with pytest.raises(SystemExit) as excinfo:
+            main()
+
+    assert excinfo.value.code == 1
+    assert snapshot(project) == before
+    assert global_skill.read_bytes() == global_before
+    assert not hooks_path.with_name(hooks_path.name + ".graphify-bak").exists()
+    captured = capsys.readouterr()
+    assert str(hooks_path.relative_to(project)) in captured.err
+    assert "git add" not in captured.out
+
+
 def test_claude_subcommand_project_install_and_uninstall_are_project_scoped(tmp_path, monkeypatch):
     from graphify.__main__ import main
     home = tmp_path / "home"

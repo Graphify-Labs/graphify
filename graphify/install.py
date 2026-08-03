@@ -1463,10 +1463,11 @@ def _resolve_graphify_exe() -> str:
                 found = str(candidate)
                 break
     return (found or "graphify").replace("\\", "/")
-def _install_codex_hook(project_dir: Path) -> None:
+def _install_codex_hook(project_dir: Path, existing: dict | None = None) -> None:
     """Add graphify PreToolUse hook to .codex/hooks.json."""
     hooks_path = project_dir / ".codex" / "hooks.json"
-    existing = _read_settings_for_merge(hooks_path, managed_collection="PreToolUse")
+    if existing is None:
+        existing = _read_settings_for_merge(hooks_path, managed_collection="PreToolUse")
     hooks_path.parent.mkdir(parents=True, exist_ok=True)
 
     graphify_exe = _resolve_graphify_exe()
@@ -1511,9 +1512,16 @@ def _uninstall_codex_hook(project_dir: Path) -> None:
     existing["hooks"]["PreToolUse"] = filtered
     hooks_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
     print(f"  .codex/hooks.json  ->  PreToolUse hook removed")
-def _agents_install(project_dir: Path, platform: str) -> None:
+def _agents_install(
+    project_dir: Path, platform: str, *, codex_settings: dict | None = None
+) -> None:
     """Write the graphify section to the local AGENTS.md for always-on platforms."""
-    target = (project_dir or Path(".")) / "AGENTS.md"
+    project_dir = project_dir or Path(".")
+    if platform == "codex" and codex_settings is None:
+        codex_settings = _read_settings_for_merge(
+            project_dir / ".codex" / "hooks.json", managed_collection="PreToolUse"
+        )
+    target = project_dir / "AGENTS.md"
 
     if target.exists():
         content = target.read_text(encoding="utf-8")
@@ -1530,7 +1538,7 @@ def _agents_install(project_dir: Path, platform: str) -> None:
         print(f"graphify section written to {target.resolve()}")
 
     if platform == "codex":
-        _install_codex_hook(project_dir or Path("."))
+        _install_codex_hook(project_dir or Path("."), existing=codex_settings)
     elif platform == "opencode":
         _install_opencode_plugin(project_dir or Path("."))
     elif platform == "kilo":
@@ -1605,8 +1613,13 @@ def _project_install(platform_name: str, project_dir: Path | None = None, strict
         _kiro_install(project_dir)
         _print_project_git_add_hint([project_dir / ".kiro"])
     elif platform_name in ("aider", "amp", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes"):
+        codex_settings = None
+        if platform_name == "codex":
+            codex_settings = _read_settings_for_merge(
+                project_dir / ".codex" / "hooks.json", managed_collection="PreToolUse"
+            )
         skill_dst = _copy_skill_file(platform_name, project=True, project_dir=project_dir)
-        _agents_install(project_dir, platform_name)
+        _agents_install(project_dir, platform_name, codex_settings=codex_settings)
         hint_paths = [_project_scope_root(skill_dst, project_dir), project_dir / "AGENTS.md"]
         if platform_name == "opencode":
             hint_paths.append(project_dir / ".opencode")
