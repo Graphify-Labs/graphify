@@ -3,7 +3,7 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 import pytest
-from graphify.extract import extract_js, extract_go, extract_rust, extract, extract_sql
+from graphify.extract import extract_js, extract_go, extract_rust, extract, extract_sql, extract_dbt_sql
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -644,3 +644,77 @@ def test_sql_quoted_plpgsql_file_stays_clean():
     contains_targets = {e["target"] for e in r["edges"] if e["relation"] == "contains"}
     fn_ids = {n["id"] for n in r["nodes"] if n["label"].endswith("()")}
     assert fn_ids <= contains_targets
+
+
+# ── dbt SQL ───────────────────────────────────────────────────────────────────
+
+def _extract_dbt_sql_or_skip(fixture: str = "sample_dbt_model.sql"):
+    pytest.importorskip("jinja2")
+    return extract_dbt_sql(FIXTURES / fixture)
+
+
+def test_dbt_sql_finds_ref_dependency():
+    r = _extract_dbt_sql_or_skip()
+    depends_on = [e for e in r["edges"] if e["relation"] == "depends_on"]
+    assert len(depends_on) == 1
+    node_by_id = {n["id"]: n["label"] for n in r["nodes"]}
+    assert node_by_id[depends_on[0]["target"]] == "sample_dbt_model_upstream"
+
+def test_dbt_sql_finds_source_dependency():
+    r = _extract_dbt_sql_or_skip()
+    reads_from = [e for e in r["edges"] if e["relation"] == "reads_from"]
+    assert len(reads_from) == 1
+    node_by_id = {n["id"]: n["label"] for n in r["nodes"]}
+    assert node_by_id[reads_from[0]["target"]] == "raw_data.customers"
+
+def test_dbt_sql_cross_file_ref_resolves():
+    """A ref() to another dbt model in the same corpus resolves onto the real model node."""
+    pytest.importorskip("jinja2")
+    r = extract([
+        FIXTURES / "sample_dbt_model.sql",
+        FIXTURES / "sample_dbt_model_upstream.sql",
+    ])
+    node_ids = {n["id"] for n in r["nodes"]}
+    upstream_ids = [i for i in node_ids if i.endswith("sample_dbt_model_upstream")]
+    assert len(upstream_ids) == 1, f"expected one upstream model node, got {upstream_ids}"
+    depends_on_targets = {e["target"] for e in r["edges"] if e["relation"] == "depends_on"}
+    assert upstream_ids[0] in depends_on_targets
+
+def test_dbt_sql_ref_resolves_across_subdirectories_and_multiple_callers(tmp_path):
+    """A model one directory deep, ref()'d by 3 different callers, collapses onto one real node."""
+    pytest.importorskip("jinja2")
+
+    upstream_dir = tmp_path / "models" / "staging"
+    upstream_dir.mkdir(parents=True)
+    (upstream_dir / "stg_orders.sql").write_text(
+        "{{ config(materialized='table') }}\nselect * from {{ source('raw', 'orders') }}\n"
+    )
+    callers = []
+    for i in range(3):
+        caller = tmp_path / f"caller_{i}.sql"
+        caller.write_text(
+            "{{ config(materialized='table') }}\nselect * from {{ ref('stg_orders') }}\n"
+        )
+        callers.append(caller)
+
+    r = extract([upstream_dir / "stg_orders.sql", *callers], root=tmp_path)
+    node_ids = {n["id"] for n in r["nodes"]}
+
+    upstream_ids = [i for i in node_ids if i.endswith("staging_stg_orders")]
+    assert len(upstream_ids) == 1, f"expected one real stg_orders node, got {upstream_ids}"
+
+    depends_on_targets = {e["target"] for e in r["edges"] if e["relation"] == "depends_on"}
+    assert depends_on_targets == set(upstream_ids), (
+        f"expected all 3 callers' depends_on edges on {upstream_ids[0]}, "
+        f"got targets: {depends_on_targets}"
+    )
+    for e in r["edges"]:
+        assert e["source"] in node_ids, f"dangling source: {e['source']}"
+        assert e["target"] in node_ids, f"dangling target: {e['target']}"
+
+def test_dbt_sql_no_dangling_edges():
+    r = _extract_dbt_sql_or_skip()
+    node_ids = {n["id"] for n in r["nodes"]}
+    for e in r["edges"]:
+        assert e["source"] in node_ids, f"dangling source: {e['source']}"
+        assert e["target"] in node_ids, f"dangling target: {e['target']}"

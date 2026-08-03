@@ -40,6 +40,7 @@ from graphify.extractors.csharp import (
     _resolve_csharp_type_references,
 )
 from graphify.extractors.dart import extract_dart  # noqa: F401
+from graphify.extractors.dbt_sql import extract_dbt_sql, _is_dbt_model_sql  # noqa: F401
 from graphify.extractors.dm import extract_dm, extract_dmf, extract_dmi, extract_dmm  # noqa: F401
 from graphify.extractors.elixir import extract_elixir  # noqa: F401
 from graphify.extractors.fortran import _cpp_preprocess, extract_fortran  # noqa: F401
@@ -4231,6 +4232,16 @@ _EXTRA_FOR_EXTENSION = {
     ".dme": "dm",
 }
 
+# `.sql` is dispatched to two different extractors depending on content
+# (extract_sql needs tree-sitter-sql; extract_dbt_sql needs jinja2), so the
+# flat _EXTRA_FOR_EXTENSION lookup above would name the wrong extra when a
+# dbt model is missing jinja2. Matched against the missing-package name in
+# the extractor's own error string, checked before falling back to the flat
+# per-extension map.
+_EXTRA_FOR_MISSING_PACKAGE = {
+    "jinja2": "dbt",
+}
+
 
 # Extensionless executables (CLI entry points like `devctl` or `manage`) carry
 # their language in the shebang, not the suffix. detect.classify_file already
@@ -4364,6 +4375,14 @@ def _get_extractor(path: Path) -> Any | None:
     # mis-parsed. `.mm` is unambiguously Objective-C++ and stays on extract_objc.
     if suffix == ".m" and not _is_objc_source(path):
         return None
+    # `.sql` is plain-SQL/dbt-model-ambiguous; dbt wraps SQL in Jinja
+    # ({{ config(...) }}, {{ ref(...) }}, {{ source(...) }}), which
+    # tree-sitter-sql cannot parse (either 1 bare node or an ERROR-node blob).
+    # Sniffing for a dbt Jinja marker reroutes genuine dbt models to
+    # extract_dbt_sql while leaving plain .sql files (and pure-Jinja macro
+    # definition files, which contain none of these markers) on extract_sql.
+    if suffix == ".sql" and _is_dbt_model_sql(path):
+        return extract_dbt_sql
     # Extensionless files: resolve by shebang, mirroring detect.classify_file.
     # Without this, detect labels e.g. `#!/usr/bin/env bash` CLIs as code but
     # extraction returns no extractor and the file silently contributes nothing.
@@ -4749,7 +4768,11 @@ def extract(
             _missing_dep_count[_ext] = _missing_dep_count.get(_ext, 0) + 1
             _missing_dep_error.setdefault(_ext, _err)
     for _ext, _n in sorted(_missing_dep_count.items(), key=lambda kv: (-kv[1], kv[0])):
-        _extra = _EXTRA_FOR_EXTENSION.get(_ext)
+        _err_text = _missing_dep_error[_ext]
+        _extra = next(
+            (v for k, v in _EXTRA_FOR_MISSING_PACKAGE.items() if k in _err_text),
+            None,
+        ) or _EXTRA_FOR_EXTENSION.get(_ext)
         if _extra:
             _reason = _missing_dep_error[_ext].split(". ")[0]
             _hint = f' Install it with: pip install "graphifyy[{_extra}]"'

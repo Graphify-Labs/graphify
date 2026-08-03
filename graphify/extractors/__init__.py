@@ -14,6 +14,7 @@ from graphify.extractors.apex import extract_apex
 from graphify.extractors.bash import extract_bash
 from graphify.extractors.blade import extract_blade
 from graphify.extractors.dart import extract_dart
+from graphify.extractors.dbt_sql import extract_dbt_sql
 from graphify.extractors.dm import extract_dm, extract_dmf, extract_dmi, extract_dmm
 from graphify.extractors.elixir import extract_elixir
 from graphify.extractors.fortran import extract_fortran
@@ -38,6 +39,7 @@ LANGUAGE_EXTRACTORS: dict[str, Callable[[Path], dict]] = {
     "bash": extract_bash,
     "blade": extract_blade,
     "dart": extract_dart,
+    "dbt_sql": extract_dbt_sql,
     "delphi_form": extract_delphi_form,
     "dm": extract_dm,
     "dmf": extract_dmf,
