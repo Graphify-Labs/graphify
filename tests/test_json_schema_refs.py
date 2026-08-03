@@ -128,6 +128,34 @@ def test_forward_and_backward_refs_both_resolve(tmp_path):
     assert len([e for e in result["edges"] if e.get("context") == "schema_ref"]) == 2
 
 
+def test_array_index_pointer_resolves_via_the_array_key(tmp_path):
+    """"#/anyOf/0/x": array elements share the array key's path, so numeric
+    components are dropped to match the id scheme exactly."""
+    schema = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "anyOf": [{"branch": {"type": "string"}}],
+        "properties": {"a": {"$ref": "#/anyOf/0/branch"}},
+    }
+    result = extract_json(_write(tmp_path, "arrayptr.schema.json", schema))
+    assert _endpoints_resolve(result)
+    assert "unresolved_internal_refs" not in result
+    refs = [e for e in result["edges"] if e.get("context") == "schema_ref"]
+    assert len(refs) == 1
+    branch_nid = next(n["id"] for n in result["nodes"] if n["label"] == "branch")
+    assert refs[0]["target"] == branch_nid
+
+
+def test_array_index_pointer_at_nothing_is_dropped_not_dangled(tmp_path):
+    schema = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "anyOf": [{"branch": {"type": "string"}}],
+        "properties": {"a": {"$ref": "#/anyOf/0/absent"}},
+    }
+    result = extract_json(_write(tmp_path, "arrayptr2.schema.json", schema))
+    assert _endpoints_resolve(result)
+    assert result["unresolved_internal_refs"] == ["#/anyOf/0/absent"]
+
+
 def test_ref_resolution_is_deterministic_across_runs(tmp_path):
     schema = {
         "$schema": "https://json-schema.org/draft/2020-12/schema",

@@ -57,6 +57,12 @@ def _is_config_json(path: Path, obj_node, source: bytes) -> bool:
     name = path.name.casefold()
     if name in _CONFIG_JSON_NAMES:
         return True
+    # Xcode Icon Composer descriptor: `<AppIcon>.icon/icon.json`. It is a real
+    # manifest — it names the image assets each icon layer draws — but its
+    # top-level keys (fill/groups/supported-platforms) match no generic probe, so
+    # it was skipped as data JSON and the icon->asset edges were lost (#2311).
+    if name == "icon.json" and path.parent.name.casefold().endswith(".icon"):
+        return True
     # Common compound config names: *.eslintrc.json, *.prettierrc.json, etc.
     if name.endswith((".eslintrc.json", ".prettierrc.json", ".babelrc.json",
                       "tsconfig.json", "jsconfig.json")):
@@ -206,7 +212,15 @@ def extract_json(path: Path) -> dict:
                 # Prefix with "ref_" so external refs don't collide with real
                 # code/file node IDs that share the same collapsed _make_id (J-4).
                 for item in val.children:
-                    if item.type == "string":
+                    if item.type == "object":
+                        # Objects nested in arrays were never walked, so any
+                        # structure below an array was invisible — e.g. an Icon
+                        # Composer's groups[].layers[].image-name (#2311). The
+                        # element shares its array key's path: array indices are
+                        # positional noise, not names worth minting ids from.
+                        walk_object(item, key_nid, key, depth + 1, pair_count,
+                                    cur_path)
+                    elif item.type == "string":
                         content = item.child_by_field_name("string_content")
                         ref = _read_text(content, source) if content else _read_text(item, source).strip('"\'')
                         if ref:
@@ -253,6 +267,14 @@ def extract_json(path: Path) -> dict:
                                      context="import")
                             external_refs.append(val_text)
 
+                elif key == "image-name" and val_text:
+                    # Icon Composer layer -> the asset file it draws. A real
+                    # dependency: renaming the asset breaks the icon.
+                    asset_nid = _make_id("asset", val_text)
+                    if asset_nid:
+                        add_node(asset_nid, val_text, line, file_type="concept")
+                        add_edge(parent_nid, asset_nid, "references", line,
+                                 context="asset")
 
                 elif parent_key in _DEP_KEYS and val_text:
                     dep_nid = _make_id(key)
@@ -285,6 +307,14 @@ def extract_json(path: Path) -> dict:
         pending_internal_refs, key=lambda r: (r[1], r[0], r[2])
     ):
         target_nid = file_nid if not pointer else path_to_nid.get(pointer)
+        if target_nid is None and any(part.isdigit() for part in pointer):
+            # Array-index pointer ("#/anyOf/0/x"). The walk deliberately gives
+            # array elements their array key's path — indices are positional
+            # noise — so resolve by dropping the numeric components to match the
+            # id scheme exactly. Only tried when the exact path missed.
+            target_nid = path_to_nid.get(
+                tuple(part for part in pointer if not part.isdigit())
+            )
         if target_nid:
             add_edge(parent_nid, target_nid, "references", line,
                      context="schema_ref")
