@@ -1723,6 +1723,39 @@ def _require_imports_js(node, source: bytes, file_nid: str, stem: str, edges: li
 
 _JS_FUNCTION_VALUE_TYPES = frozenset({"arrow_function", "function_expression", "function", "generator_function"})
 
+# Nodes the object-literal scan must not descend through. Function values are
+# execution boundaries (their bodies are separate scopes, walked via
+# function_bodies); class nodes are stopped so methods inside a class expression
+# are never claimed as object-literal members — `const C = class { m() {} }` must
+# not look like an object literal. Class-expression extraction is out of #2419 scope.
+_JS_OBJECT_SCAN_STOP_TYPES = _JS_FUNCTION_VALUE_TYPES | frozenset({
+    "class", "class_declaration", "class_body",
+})
+
+def _js_object_literal_methods(value) -> list:
+    """Shorthand `method_definition` nodes beneath one module-level binding initializer.
+
+    Descends only through structural containers (object literals, pairs, call
+    arguments, wrapper expressions) and stops at `_JS_OBJECT_SCAN_STOP_TYPES`
+    plus each collected `method_definition` (its body is a separate scope).
+
+    Methods are flattened onto the binding, so two nested objects under the same
+    const with a same-named method collapse to one node — nested property-path
+    ownership is not modelled.
+    """
+    found = []
+    stack = [value]
+    while stack:
+        cur = stack.pop()
+        for child in cur.named_children:
+            if child.type in _JS_OBJECT_SCAN_STOP_TYPES:
+                continue
+            if child.type == "method_definition":
+                found.append(child)
+                continue  # do not traverse the body
+            stack.append(child)
+    return found
+
 def _js_member_assignment_target(left, source: bytes):
     """Classify the symbol an `assignment_expression` LHS defines when its RHS
     is a function. Returns (kind, owner_name, member_name) or None.
@@ -1907,6 +1940,31 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                             add_node_fn(const_nid, const_name, line)
                             add_edge_fn(file_nid, const_nid, "contains", line)
                             const_found = True
+                            # This branch returns True, so the main walker never
+                            # descends into the initializer — shorthand methods
+                            # inside it would otherwise be lost (#2419).
+                            emitted: set[str] = set()
+                            for meth in _js_object_literal_methods(value):
+                                meth_name_node = meth.child_by_field_name("name")
+                                if meth_name_node is None:
+                                    continue
+                                meth_name = _read_text(meth_name_node, source)
+                                if not normalize_id(meth_name):
+                                    continue
+                                meth_nid = _make_id(const_nid, meth_name)
+                                if meth_nid in emitted:
+                                    continue
+                                emitted.add(meth_nid)
+                                meth_line = meth.start_point[0] + 1
+                                add_node_fn(meth_nid, f".{meth_name}()", meth_line)
+                                add_edge_fn(const_nid, meth_nid, "method", meth_line)
+                                if callable_def_nids is not None:
+                                    callable_def_nids.add(meth_nid)
+                                if local_bound_names is not None:
+                                    local_bound_names[meth_nid] = _js_local_bound_names(meth, source)
+                                meth_body = meth.child_by_field_name("body")
+                                if meth_body:
+                                    function_bodies.append((meth_nid, meth_body))
         if arrow_found:
             return True
         if const_found:
