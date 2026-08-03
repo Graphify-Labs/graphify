@@ -109,6 +109,34 @@ def _variant_group_count(
     return groups
 
 
+# Relations whose target is legitimately outside the corpus: a Python stdlib or
+# third-party module, a Swift system framework, an npm package. The corpus never
+# contains a node for them, so the edge cannot resolve and never will. This is an
+# expected unresolved EXTERNAL reference, not a broken internal one, and conflating
+# the two hid 31 real semantic danglers behind 43 harmless import edges (#2311).
+_EXTERNAL_IMPORT_RELATIONS = frozenset({"imports", "imports_from"})
+
+
+def _classify_dangling(edge: dict[str, str], node_ids: set[str]) -> str:
+    """Classify a dangling edge as an expected external ref or an unexpected one.
+
+    Only a MISSING TARGET counts as external: an import edge whose *source* is
+    absent is a broken producer, not an outside module. An external module id is
+    a bare name — a dangling target carrying path separators is a corpus file the
+    extractor failed to emit, which is a real defect.
+    """
+    source_present = edge["source"] in node_ids
+    target = edge["target"]
+    if (
+        source_present
+        and edge["relation"] in _EXTERNAL_IMPORT_RELATIONS
+        and "/" not in target
+        and "\\" not in target
+    ):
+        return "external_import"
+    return "unexpected"
+
+
 def _tuple_arity_from_annotation(line: str) -> int:
     match = _TYPE_TUPLE_RE.search(line)
     if not match:
@@ -184,6 +212,10 @@ def diagnose_extraction(
     non_object_edges = 0
     missing_endpoint_edges = 0
     dangling_endpoint_edges = 0
+    external_import_edges = 0
+    unexpected_dangling_edges = 0
+    external_import_targets: set[str] = set()
+    unexpected_dangling_examples: list[dict[str, str]] = []
     self_loop_edges = 0
     valid_candidate_edges = 0
 
@@ -198,6 +230,25 @@ def diagnose_extraction(
             continue
         if source not in node_ids or target not in node_ids:
             dangling_endpoint_edges += 1
+            if _classify_dangling(edge, node_ids) == "external_import":
+                external_import_edges += 1
+                external_import_targets.add(target)
+            else:
+                unexpected_dangling_edges += 1
+                if len(unexpected_dangling_examples) < 40:
+                    unexpected_dangling_examples.append(
+                        {
+                            "source": source,
+                            "target": target,
+                            "missing": (
+                                "target" if source in node_ids else
+                                "source" if target in node_ids else "both"
+                            ),
+                            "relation": edge["relation"],
+                            "source_file": edge["source_file"],
+                            "source_location": edge["source_location"],
+                        }
+                    )
             continue
         if source == target:
             self_loop_edges += 1
@@ -232,12 +283,20 @@ def diagnose_extraction(
     graph_type = ""
     post_build_edge_count: int | None = None
     post_build_node_count: int | None = None
+    provenance_edge_count: int | None = None
     try:
         graph_input = deepcopy(extraction)
         graph: nx.Graph = build_from_json(graph_input, directed=directed, root=root)
         graph_type = type(graph).__name__
         post_build_edge_count = graph.number_of_edges()
         post_build_node_count = graph.number_of_nodes()
+        # Edges that absorbed more than one observation and therefore carry
+        # collapse provenance. Pinning this count is how a caller detects
+        # provenance silently disappearing between rebuilds (#2311).
+        provenance_edge_count = sum(
+            1 for _, _, data in graph.edges(data=True)
+            if int(data.get("evidence_count", 1) or 1) > 1
+        )
     except Exception as exc:
         build_error = f"{type(exc).__name__}: {exc}"
 
@@ -252,6 +311,10 @@ def diagnose_extraction(
         "non_object_edges": non_object_edges,
         "missing_endpoint_edges": missing_endpoint_edges,
         "dangling_endpoint_edges": dangling_endpoint_edges,
+        "external_import_edges": external_import_edges,
+        "external_import_targets": sorted(external_import_targets),
+        "unexpected_dangling_edges": unexpected_dangling_edges,
+        "unexpected_dangling_examples": unexpected_dangling_examples,
         "self_loop_edges": self_loop_edges,
         "valid_candidate_edges": valid_candidate_edges,
         "exact_duplicate_edges": _count_extra(exact_counts),
@@ -271,10 +334,102 @@ def diagnose_extraction(
         "post_build_graph_type": graph_type,
         "post_build_node_count": post_build_node_count,
         "post_build_edge_count": post_build_edge_count,
+        "provenance_edge_count": provenance_edge_count,
         "post_build_error": build_error,
         "producer_suppression": scan_producer_suppression_sites(suppression_path),
         "examples": examples,
     }
+
+
+def evaluate_acceptance(
+    summary: dict[str, Any],
+    *,
+    allow_self_loops: bool = False,
+    expected_provenance_edges: int | None = None,
+) -> dict[str, Any]:
+    """Turn a diagnostic summary into a pass/fail acceptance decision.
+
+    The split is the whole point. Some findings mean the graph is WRONG and the
+    build should be rejected; others are permanent properties of an honest graph
+    over a real corpus and must be reported without failing, or the gate becomes
+    noise that everyone learns to skip.
+
+    FAILS on:
+      * malformed or missing endpoint fields
+      * self-loops (unless ``allow_self_loops``, for corpora where recursion is
+        legitimately modelled)
+      * unexpected dangling semantic endpoints — every one is a real defect once
+        extraction has run under the current prompt
+      * unverified code nodes (symbols an extractor could not confirm in source)
+      * build errors
+      * nondeterministic loss of semantic provenance, when the caller pins the
+        expected count via ``expected_provenance_edges``
+
+    REPORTS without failing:
+      * verified external imports (stdlib/third-party targets the corpus cannot
+        contain)
+      * deterministic simple-graph edge consolidation
+    """
+    failures: list[str] = []
+    informational: list[str] = []
+
+    if summary.get("non_object_edges"):
+        failures.append(f"{summary['non_object_edges']} malformed (non-object) edges")
+    if summary.get("missing_endpoint_edges"):
+        failures.append(
+            f"{summary['missing_endpoint_edges']} edges with missing endpoint fields"
+        )
+    if summary.get("unexpected_dangling_edges"):
+        failures.append(
+            f"{summary['unexpected_dangling_edges']} unexpected dangling semantic endpoints"
+        )
+    if summary.get("unverified_node_count"):
+        failures.append(f"{summary['unverified_node_count']} unverified code nodes")
+    if summary.get("post_build_error"):
+        failures.append(f"graph build error: {summary['post_build_error']}")
+    self_loops = summary.get("self_loop_edges", 0)
+    if self_loops and not allow_self_loops:
+        failures.append(f"{self_loops} self-loop edges not explicitly allowed")
+
+    provenance_edges = summary.get("provenance_edge_count")
+    if expected_provenance_edges is not None and provenance_edges is not None:
+        if provenance_edges != expected_provenance_edges:
+            failures.append(
+                "semantic provenance changed nondeterministically: expected "
+                f"{expected_provenance_edges} edges carrying collapse provenance, "
+                f"found {provenance_edges}"
+            )
+
+    external = summary.get("external_import_edges", 0)
+    if external:
+        informational.append(
+            f"{external} verified external imports "
+            f"({len(summary.get('external_import_targets', []))} distinct modules)"
+        )
+    collapsed = summary.get("undirected_same_endpoint_collapsed_edges", 0)
+    if collapsed:
+        informational.append(
+            f"{collapsed} deterministic simple-graph edge consolidations across "
+            f"{summary.get('same_endpoint_group_count', 0)} endpoint groups"
+        )
+    if self_loops and allow_self_loops:
+        informational.append(f"{self_loops} self-loop edges (explicitly allowed)")
+
+    return {
+        "passed": not failures,
+        "failures": failures,
+        "informational": informational,
+    }
+
+
+def format_acceptance_report(verdict: dict[str, Any]) -> str:
+    lines = ["[graphify] acceptance policy"]
+    for failure in verdict["failures"]:
+        lines.append(f"  FAIL  {failure}")
+    for note in verdict["informational"]:
+        lines.append(f"  info  {note}")
+    lines.append("PASS" if verdict["passed"] else "FAIL")
+    return "\n".join(lines)
 
 
 def _read_json_file(path: str | Path) -> dict[str, Any]:
@@ -333,9 +488,14 @@ def format_diagnostic_json(summary: dict[str, Any]) -> dict[str, Any]:
         "summary": {
             key: value
             for key, value in summary.items()
-            if key not in {"examples", "producer_suppression"}
+            if key not in {
+                "examples",
+                "producer_suppression",
+                "unexpected_dangling_examples",
+            }
         },
         "examples": summary.get("examples", []),
+        "unexpected_dangling_examples": summary.get("unexpected_dangling_examples", []),
         "producer_suppression": summary.get("producer_suppression", {}),
         "notes": [
             "Diagnostics are read-only.",
@@ -358,6 +518,14 @@ def format_diagnostic_report(summary: dict[str, Any]) -> str:
         f"valid_candidate_edges: {summary['valid_candidate_edges']}",
         f"missing_endpoint_edges: {summary['missing_endpoint_edges']}",
         f"dangling_endpoint_edges: {summary['dangling_endpoint_edges']}",
+        (
+            "  expected_external_imports: "
+            f"{summary.get('external_import_edges', 0)}"
+        ),
+        (
+            "  unexpected_dangling_edges: "
+            f"{summary.get('unexpected_dangling_edges', 0)}"
+        ),
         f"self_loop_edges: {summary['self_loop_edges']}",
         f"exact_duplicate_edges: {summary['exact_duplicate_edges']}",
         f"directed_unique_endpoint_pairs: {summary['directed_unique_endpoint_pairs']}",
