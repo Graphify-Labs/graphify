@@ -2188,6 +2188,10 @@ def dispatch_command(cmd: str) -> None:
             if len(connections) > len(shown):
                 remainder = connections[len(shown):]
                 print(f"  ... and {len(remainder)} more (--all lists all {len(connections)})")
+                # #2420: agents often treat the visible slice as the full answer.
+                # `affected` returns the uncapped reverse blast-radius
+                # (imports_from / calls / ...), which `--all` does not group.
+                print(f"  For the full reverse blast-radius, run: graphify affected \"{label}\" --depth 1")
                 # #2009: a bare count silently hides the answer on high-degree
                 # nodes ("who calls this, what's the impact?"). Group the cut
                 # connections by direction + file so their shape is visible
