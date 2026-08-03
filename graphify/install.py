@@ -1285,6 +1285,8 @@ def _strip_json_comments(raw: str) -> str:
             in_string = True
         i += 1
 
+    if block_comment:
+        raise json.JSONDecodeError("Unterminated block comment", raw, len(raw))
     return re.sub(r",(\s*[}\]])", r"\1", "".join(result))
 def _load_json_like(config_file: Path) -> dict:
     if not config_file.exists():
@@ -1533,15 +1535,18 @@ def _uninstall_codex_hook(project_dir: Path) -> None:
     hooks_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
     print(f"  .codex/hooks.json  ->  PreToolUse hook removed")
 def _agents_install(
-    project_dir: Path, platform: str, *, codex_settings: dict | None = None
+    project_dir: Path,
+    platform: str,
+    *,
+    codex_settings: dict | None = None,
+    opencode_config: dict | None = None,
 ) -> None:
     """Write the graphify section to the local AGENTS.md for always-on platforms."""
     project_dir = project_dir or Path(".")
-    opencode_config = None
     kilo_config = None
     # These helpers are also called directly by platform-specific commands.
     # Validate before touching AGENTS.md, not only inside the final plugin write.
-    if platform == "opencode":
+    if platform == "opencode" and opencode_config is None:
         opencode_config = _preflight_opencode_config(
             project_dir / _OPENCODE_CONFIG_PATH
         )
@@ -1649,15 +1654,23 @@ def _project_install(platform_name: str, project_dir: Path | None = None, strict
         _print_project_git_add_hint([project_dir / ".kiro"])
     elif platform_name in ("aider", "amp", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes"):
         codex_settings = None
+        opencode_config = None
         if platform_name == "codex":
             codex_settings = _read_settings_for_merge(
                 project_dir / ".codex" / "hooks.json", managed_collection="PreToolUse"
             )
         elif platform_name == "opencode":
             # This must precede the skill and AGENTS.md writes below.
-            _preflight_opencode_config(project_dir / _OPENCODE_CONFIG_PATH)
+            opencode_config = _preflight_opencode_config(
+                project_dir / _OPENCODE_CONFIG_PATH
+            )
         skill_dst = _copy_skill_file(platform_name, project=True, project_dir=project_dir)
-        _agents_install(project_dir, platform_name, codex_settings=codex_settings)
+        _agents_install(
+            project_dir,
+            platform_name,
+            codex_settings=codex_settings,
+            opencode_config=opencode_config,
+        )
         hint_paths = [_project_scope_root(skill_dst, project_dir), project_dir / "AGENTS.md"]
         if platform_name == "opencode":
             hint_paths.append(project_dir / ".opencode")

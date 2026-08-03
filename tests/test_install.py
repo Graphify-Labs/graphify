@@ -1007,6 +1007,24 @@ def test_kilo_preflight_rejects_non_list_plugins(tmp_path, capsys):
     assert config_file.read_text(encoding="utf-8") == '{"plugin": null}'
 
 
+def test_kilo_preflight_rejects_unterminated_block_comment(tmp_path, capsys):
+    from graphify.install import _preflight_kilo_config
+
+    config_file = tmp_path / ".kilo" / "kilo.jsonc"
+    config_file.parent.mkdir(parents=True)
+    original = b'{"plugin": []} /* unterminated'
+    config_file.write_bytes(original)
+
+    with pytest.raises(SystemExit) as excinfo:
+        _preflight_kilo_config(tmp_path)
+
+    assert excinfo.value.code == 1
+    assert str(config_file) in capsys.readouterr().err
+    assert config_file.read_bytes() == original
+    assert not (tmp_path / ".kilo" / "kilo.json").exists()
+    assert not (tmp_path / ".kilo" / "plugins").exists()
+
+
 def test_opencode_agents_install_merges_existing_config(tmp_path):
     """opencode install preserves existing .opencode/opencode.json keys."""
     import json as _json
