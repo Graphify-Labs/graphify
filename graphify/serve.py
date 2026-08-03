@@ -15,6 +15,7 @@ from networkx.readwrite import json_graph
 from graphify.security import sanitize_label, check_graph_file_size_cap
 from graphify.build import edge_data, edge_datas
 from graphify.paths import default_graph_json as _default_graph_json
+from graphify.detect import _match_anchored_ignore_pattern
 
 try:
     import jieba as _jieba  # type: ignore[import-untyped]
@@ -430,8 +431,66 @@ def _score_nodes(G: nx.Graph, terms: list[str]) -> list[tuple[float, str]]:
     return _score_query(G, terms, collect_per_term_seeds=False).ranked
 
 
+_DEFAULT_SEED_IGNORE_PATTERNS = ("tests/", "**/tests/**")
+
+
+def _normalize_seed_ignore_patterns(patterns: list[str] | None) -> list[str]:
+    """Normalize query seed exclusion globs without changing their order."""
+    normalized: list[str] = []
+    for raw in patterns or []:
+        pattern = str(raw).strip().replace("\\", "/")
+        negated = pattern.startswith("!")
+        if negated:
+            pattern = pattern[1:].lstrip("/")
+        else:
+            pattern = pattern.lstrip("/")
+        if pattern:
+            normalized.append(("!" if negated else "") + pattern)
+    return normalized
+
+
+def _resolve_seed_ignore_patterns(explicit_patterns: list[str] | None = None) -> list[str]:
+    """Resolve query-only seed exclusions: CLI/MCP, then env, then defaults."""
+    if explicit_patterns is not None:
+        return _normalize_seed_ignore_patterns(explicit_patterns)
+    env_patterns = os.environ.get("GRAPHIFY_QUERY_IGNORE_PATTERNS")
+    if env_patterns is not None:
+        return _normalize_seed_ignore_patterns(env_patterns.split(","))
+    return list(_DEFAULT_SEED_IGNORE_PATTERNS)
+
+
+def _source_is_seed_ignored(source_file: object, patterns: list[str]) -> bool:
+    """Match root-relative node paths with the discovery ignore glob matcher."""
+    if not patterns or not isinstance(source_file, str) or not source_file:
+        return False
+    source = source_file.replace("\\", "/").strip("/")
+    if not source:
+        return False
+
+    ignored = False
+    for raw_pattern in patterns:
+        negated = raw_pattern.startswith("!")
+        pattern = raw_pattern[1:] if negated else raw_pattern
+        # A directory pattern applies to everything beneath it. Bare patterns
+        # keep gitignore's any-directory behavior while patterns with a slash
+        # are evaluated root-relative.
+        directory_only = pattern.endswith("/")
+        pattern = pattern.rstrip("/")
+        if "/" not in pattern:
+            pattern = f"**/{pattern}"
+        if directory_only:
+            pattern = f"{pattern}/**"
+        if _match_anchored_ignore_pattern(source, pattern):
+            ignored = not negated
+    return ignored
+
+
 def _score_query(
-    G: nx.Graph, terms: list[str], *, collect_per_term_seeds: bool
+    G: nx.Graph,
+    terms: list[str],
+    *,
+    collect_per_term_seeds: bool,
+    seed_ignore_patterns: list[str] | None = None,
 ) -> _QueryScores:
     """Single-pass combined scorer that optionally also records the best seed
     for each normalized query token.
@@ -491,6 +550,8 @@ def _score_query(
         {} if collect_per_term_seeds else None
     )
     for nid, data in node_iter:
+        if _source_is_seed_ignored(data.get("source_file"), seed_ignore_patterns or []):
+            continue
         norm_label = data.get("norm_label") or _strip_diacritics(data.get("label") or "").lower()
         bare_label = norm_label.rstrip("()")
         # Tokenized form of the label (punctuation stripped, same transform as the
@@ -1090,6 +1151,7 @@ def _query_graph_text(
     depth: int = 3,
     token_budget: int = 2000,
     context_filters: list[str] | None = None,
+    seed_ignore_patterns: list[str] | None = None,
 ) -> str:
     terms = _query_terms(question)
     # One graph scoring pass produces both the combined ranking (used to drive
@@ -1098,8 +1160,19 @@ def _query_graph_text(
     # — one combined + one per query token — re-walking the whole graph each
     # time; on a 100k-node, three-term benchmark ~71% of scoring time was
     # spent in those redundant per-term passes.
-    qs = _score_query(G, terms, collect_per_term_seeds=True)
+    resolved_seed_ignore = _resolve_seed_ignore_patterns(seed_ignore_patterns)
+    qs = _score_query(
+        G,
+        terms,
+        collect_per_term_seeds=True,
+        seed_ignore_patterns=resolved_seed_ignore,
+    )
     start_nodes = _pick_seeds(qs.ranked, G=G, best_seed_by_term=qs.best_seed_by_term)
+    # A test-focused query can legitimately match only test nodes. Fall back to
+    # the unfiltered scorer in that case while keeping exclusions seed-only.
+    if not start_nodes and resolved_seed_ignore:
+        qs = _score_query(G, terms, collect_per_term_seeds=True)
+        start_nodes = _pick_seeds(qs.ranked, G=G, best_seed_by_term=qs.best_seed_by_term)
     if not start_nodes:
         return "No matching nodes found."
     resolved_filters, filter_source = _resolve_context_filters(question, context_filters)
@@ -1361,6 +1434,11 @@ def _build_server(graph_path: str):
                             "items": {"type": "string"},
                             "description": "Optional explicit edge-context filter, e.g. ['call', 'field']",
                         },
+                        "seed_ignore_patterns": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional root-relative globs excluded from initial query seeds",
+                        },
                     },
                     "required": ["question"],
                 },
@@ -1497,6 +1575,7 @@ def _build_server(graph_path: str):
         depth = min(int(arguments.get("depth", 3)), 6)
         budget = int(arguments.get("token_budget", 2000))
         context_filter = arguments.get("context_filter")
+        seed_ignore_patterns = arguments.get("seed_ignore_patterns")
         _t0 = _time.perf_counter()
         result = _query_graph_text(
             G,
@@ -1505,6 +1584,7 @@ def _build_server(graph_path: str):
             depth=depth,
             token_budget=budget,
             context_filters=context_filter,
+            seed_ignore_patterns=seed_ignore_patterns,
         )
         querylog.log_query(
             kind="mcp_query",

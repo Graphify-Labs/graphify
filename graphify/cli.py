@@ -851,7 +851,7 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(1)
     elif cmd == "query":
         if len(sys.argv) < 3:
-            print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--budget N] [--graph path]", file=sys.stderr)
+            print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--seed-ignore P] [--budget N] [--graph path]", file=sys.stderr)
             sys.exit(1)
         from graphify.serve import _query_graph_text
         from graphify.security import sanitize_label
@@ -863,6 +863,7 @@ def dispatch_command(cmd: str) -> None:
         budget = 2000
         graph_path = _default_graph_path()
         context_filters: list[str] = []
+        seed_ignore_patterns: list[str] | None = None
         args = sys.argv[3:]
         i = 0
         while i < len(args):
@@ -885,6 +886,16 @@ def dispatch_command(cmd: str) -> None:
                 i += 2
             elif args[i].startswith("--context="):
                 context_filters.append(args[i].split("=", 1)[1])
+                i += 1
+            elif args[i] == "--seed-ignore" and i + 1 < len(args):
+                if seed_ignore_patterns is None:
+                    seed_ignore_patterns = []
+                seed_ignore_patterns.append(args[i + 1])
+                i += 2
+            elif args[i].startswith("--seed-ignore="):
+                if seed_ignore_patterns is None:
+                    seed_ignore_patterns = []
+                seed_ignore_patterns.append(args[i].split("=", 1)[1])
                 i += 1
             elif args[i] == "--graph" and i + 1 < len(args):
                 graph_path = args[i + 1]
@@ -956,6 +967,7 @@ def dispatch_command(cmd: str) -> None:
             depth=2,
             token_budget=budget,
             context_filters=context_filters,
+            seed_ignore_patterns=seed_ignore_patterns,
         )
         querylog.log_query(
             kind="query",

@@ -51,6 +51,55 @@ def test_query_cli_heuristic_context_filter(monkeypatch, tmp_path, capsys):
     assert "build" not in out
 
 
+def test_query_cli_seed_ignore_pattern(monkeypatch, tmp_path, capsys):
+    G = nx.Graph()
+    G.add_node("production", label="CrawlEngine", source_file="src/crawler.py", source_location="L1")
+    G.add_node("generated", label="Engine", source_file="generated/noise.py", source_location="L1")
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(json.dumps(json_graph.node_link_data(G, edges="links")))
+
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        [
+            "graphify",
+            "query",
+            "engine",
+            "--seed-ignore",
+            "generated/**",
+            "--graph",
+            str(graph_path),
+        ],
+    )
+    mainmod.main()
+    out = capsys.readouterr().out
+
+    assert "Start: ['CrawlEngine']" in out
+    assert "NODE CrawlEngine" in out
+    assert "NODE Engine" not in out
+
+
+def test_query_cli_empty_seed_ignore_disables_default(monkeypatch, tmp_path, capsys):
+    G = nx.Graph()
+    G.add_node("production", label="CrawlEngine", source_file="src/crawler.py", source_location="L1")
+    G.add_node("test_noise", label="Engine", source_file="tests/test_crawler.py", source_location="L1")
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(json.dumps(json_graph.node_link_data(G, edges="links")))
+
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "query", "engine", "--seed-ignore=", "--graph", str(graph_path)],
+    )
+    mainmod.main()
+    out = capsys.readouterr().out
+
+    assert "Start: ['Engine']" in out
+    assert "NODE Engine" in out
+
+
 def _write_calls_graph(tmp_path):
     """A single directed `calls` edge on an (on-disk) undirected graph.json,
 
