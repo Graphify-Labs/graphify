@@ -496,7 +496,16 @@ def _run_cli() -> None:
         # Resolve each platform's real user-scope destination so per-platform
         # overrides (gemini, opencode, devin, antigravity, amp) check the dir
         # they actually install into, not the bare cfg['skill_dst'].
-        for skill_dst in {_platform_skill_destination(name) for name in _PLATFORM_CONFIG}:
+        # Resolving one needs a home directory, and an environment without
+        # HOME/USERPROFILE (`env -i`, a bare CI container, a service account)
+        # makes Path.home() raise RuntimeError. The stamp check is advisory, so
+        # skip it there instead of taking the whole CLI down — this used to kill
+        # even `graphify --version`, which needs no filesystem at all.
+        try:
+            skill_dsts = {_platform_skill_destination(name) for name in _PLATFORM_CONFIG}
+        except (RuntimeError, OSError):
+            skill_dsts = set()
+        for skill_dst in skill_dsts:
             _check_skill_version(skill_dst)
 
     if len(sys.argv) >= 2 and sys.argv[1] in ("-v", "--version", "version"):
