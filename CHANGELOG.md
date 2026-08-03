@@ -4,6 +4,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.50 (2026-08-25)
 
+- Fix: `graphify hook install` now rejects malformed or duplicated managed-section markers without writing, and scopes Graphify's generated shell body so an early exit cannot suppress unrelated hook content that follows it.
 - Fix: Ruby methods whose names end in `!`, `?`, or `=` now keep distinct node ids, so `save` and `save!` (or `foo` and `foo=`) no longer collide into one node; the label keeps the raw spelling and member-call resolution still matches (#3077, thanks @hopstreax).
 - Fix: a Ruby call on a qualified constant receiver (`ActiveRecord::Base.transaction`) now matches the receiver's full constant path, so it no longer binds to an unrelated lone class named `Base`; an edge is emitted only on a single unambiguous match (#3078, thanks @rohit-jsfreaky).
 - Fix: a CommonJS member export wrapped in a higher-order function (`exports.x = wrap(fn)`, `module.exports.y = onCall({...}, handler)`) is now captured, reaching through the wrapper to the function it wraps without fabricating the wrapper as the export's identity (#3035, thanks @hopstreax).
