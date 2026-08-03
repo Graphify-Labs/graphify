@@ -24,6 +24,7 @@ from graphify.serve import (
     _query_terms,
     _query_graph_text,
     _resolve_context_filters,
+    _normalize_seed_ignore_patterns,
     _resolve_seed_ignore_patterns,
     _source_is_seed_ignored,
     _subgraph_to_text,
@@ -461,6 +462,11 @@ def test_seed_ignore_env_replaces_defaults_and_supports_negation(monkeypatch):
     assert not _source_is_seed_ignored("generated/keep/example.py", patterns)
     assert not _source_is_seed_ignored("tests/test_crawler.py", patterns)
     assert _resolve_seed_ignore_patterns([]) == []
+
+
+def test_seed_ignore_normalization_handles_untrusted_mcp_values():
+    assert _normalize_seed_ignore_patterns("generated/**") == ["generated/**"]
+    assert _normalize_seed_ignore_patterns({"generated": "**"}) == []
 
 
 def test_query_default_seed_ignore_keeps_production_symbol_ahead_of_test_noise(monkeypatch):

@@ -434,10 +434,19 @@ def _score_nodes(G: nx.Graph, terms: list[str]) -> list[tuple[float, str]]:
 _DEFAULT_SEED_IGNORE_PATTERNS = ("tests/", "**/tests/**")
 
 
-def _normalize_seed_ignore_patterns(patterns: list[str] | None) -> list[str]:
+def _normalize_seed_ignore_patterns(patterns: object) -> list[str]:
     """Normalize query seed exclusion globs without changing their order."""
+    if patterns is None:
+        return []
+    if isinstance(patterns, str):
+        raw_patterns = [patterns]
+    elif isinstance(patterns, list):
+        raw_patterns = patterns
+    else:
+        return []
+
     normalized: list[str] = []
-    for raw in patterns or []:
+    for raw in raw_patterns:
         pattern = str(raw).strip().replace("\\", "/")
         negated = pattern.startswith("!")
         if negated:
