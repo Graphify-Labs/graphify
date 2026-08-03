@@ -530,6 +530,15 @@ def test_hooks_honor_skip_env(name, script):
     )
 
 
+def test_checkout_hook_skips_same_head_noop():
+    """`git checkout -b` with no start point passes identical PREV/NEW heads.
+    Rebuild must short-circuit ΓÇö PREV_HEAD/NEW_HEAD were previously assigned
+    and never read (#2421 / leftover from #1809)."""
+    assert "PREV_HEAD=$1" in _CHECKOUT_SCRIPT
+    assert "NEW_HEAD=$2" in _CHECKOUT_SCRIPT
+    assert '[ "$PREV_HEAD" = "$NEW_HEAD" ] && exit 0' in _CHECKOUT_SCRIPT
+
+
 @pytest.mark.parametrize("name,script", _HOOK_SCRIPTS)
 def test_hooks_skip_linked_worktrees(name, script):
     """Both hooks must short-circuit in a linked worktree (git-dir != common-dir),
