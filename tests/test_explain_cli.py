@@ -185,6 +185,15 @@ def test_explain_truncation_notice_present_for_high_degree_node(monkeypatch, tmp
     assert "... and 10 more" in out
 
 
+def test_explain_truncation_points_to_affected(monkeypatch, tmp_path, capsys):
+    """#2420: truncation must name `affected` so agents don't treat the
+    visible 20 as the complete dependant set."""
+    p = _write_high_degree_graph(tmp_path, n_callers=30)
+    out = _run(monkeypatch, p, "hub", capsys)
+    assert 'graphify affected "hub" --depth 1' in out
+    assert "full reverse blast-radius" in out
+
+
 def test_explain_groups_cut_callers_by_file_instead_of_dropping_them(monkeypatch, tmp_path, capsys):
     """#2009: past the top-20 cutoff, the remaining callers must still be
     accounted for — grouped by file with counts — instead of vanishing
