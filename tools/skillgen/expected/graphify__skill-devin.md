@@ -807,6 +807,21 @@ _cleared = _dispatched - _stamped
 _scan = {f for fl in _corpus.values() for f in fl}
 save_manifest(_manifest_files, root='INPUT_PATH', scan_corpus=_scan, clear_semantic=_cleared or None)
 
+# Prune orphaned semantic cache entries against the full live semantic corpus.
+from contextlib import suppress
+from graphify.cache import file_hash, prune_semantic_cache
+_live_hashes = set()
+for _kind in _sem_types:
+    for _file in _corpus.get(_kind, []):
+        _path = Path('INPUT_PATH') / _file
+        if _path.is_file():
+            with suppress(OSError):
+                _live_hashes.add(file_hash(_path, root=Path('INPUT_PATH')))
+with suppress(OSError):
+    _pruned = prune_semantic_cache(Path('INPUT_PATH'), _live_hashes)
+    if _pruned:
+        print(f'Pruned {_pruned} orphaned semantic cache entries.')
+
 # Update cumulative cost tracker
 input_tok = extract.get('input_tokens', 0)
 output_tok = extract.get('output_tokens', 0)

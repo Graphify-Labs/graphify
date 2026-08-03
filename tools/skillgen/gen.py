@@ -954,6 +954,26 @@ def _is_semantic_cache_scope_fix_line(line: str) -> bool:
     ) or stripped.startswith("saved = save_semantic_cache(")
 
 
+def _is_semantic_cache_prune_fix_line(line: str) -> bool:
+    """Whether a line prunes orphaned semantic cache entries (#2307)."""
+    stripped = line.strip()
+    return (
+        "from contextlib import suppress" in line
+        or "from graphify.cache import file_hash, prune_semantic_cache" in line
+        or "Prune orphaned semantic cache entries" in line
+        or stripped == "_live_hashes = set()"
+        or stripped == "for _kind in _sem_types:"
+        or stripped == "for _file in _corpus.get(_kind, []):"
+        or stripped == "_path = Path('INPUT_PATH') / _file"
+        or stripped == "if _path.is_file():"
+        or stripped == "with suppress(OSError):"
+        or "_live_hashes.add(file_hash(_path, root=Path('INPUT_PATH')))" in line
+        or "_pruned = prune_semantic_cache(Path('INPUT_PATH'), _live_hashes)" in line
+        or stripped == "if _pruned:"
+        or "Pruned {_pruned} orphaned semantic cache entries." in line
+    )
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -974,6 +994,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_obsidian_usage_comment_line,
     _is_uv_from_interpreter_fix_line,
     _is_semantic_cache_scope_fix_line,
+    _is_semantic_cache_prune_fix_line,
 )
 
 
@@ -992,7 +1013,8 @@ def monolith_roundtrip(platform: Platform) -> list[str]:
     unification, the unified frontmatter description, the chunk-cleanup rewrite
     (#1172), the four #1392 runbook fixes (directed propagation, content-only
     semantic scope, stale-cache unlink, and the zero-node/shrink-guard ordering),
-    and semantic-cache source scoping (#1757).
+    semantic-cache source scoping (#1757), and semantic cache pruning in the
+    skill runbooks (#2307).
 
     The comparison is a multiset diff, not a positional zip: a line whose text is
     unchanged but merely *moved* (the report-write line shifted below ``to_json``
