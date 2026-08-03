@@ -608,10 +608,11 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
 
     cfg = _PLATFORM_CONFIG[platform]
     project_dir = project_dir or Path(".")
+    opencode_config = None
     if platform == "opencode":
         # The plugin writer mutates both the plugin file and opencode.json. Read
         # and validate the existing config before any skill or project writes.
-        _preflight_opencode_config(
+        opencode_config = _preflight_opencode_config(
             (project_dir if project else Path(".")) / _OPENCODE_CONFIG_PATH
         )
     if platform == "kilo":
@@ -659,7 +660,9 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
             print(f"  CODEBUDDY.md     ->  created at {codebuddy_md}")
 
     if platform == "opencode":
-        _install_opencode_plugin(project_dir if project else Path("."))
+        _install_opencode_plugin(
+            project_dir if project else Path("."), config=opencode_config
+        )
 
     # Refresh version stamps in all other previously-installed skill dirs so
     # stale-version warnings don't fire for platforms not explicitly re-installed.
