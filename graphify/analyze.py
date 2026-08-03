@@ -106,12 +106,45 @@ def _is_json_key_node(G: nx.Graph, node_id: str) -> bool:
     return label in _JSON_NOISE_LABELS
 
 
+def _is_query_memory_path(path: str) -> bool:
+    """Return whether *path* belongs to Graphify's saved-query memory."""
+    normalised = str(path or "").replace("\\", "/").casefold().lstrip("/")
+    return normalised.startswith("graphify-out/memory/") or "/graphify-out/memory/" in f"/{normalised}"
+
+
+def _source_backed_analysis_graph(G: nx.Graph) -> nx.Graph:
+    """Remove saved-query memory from architecture ranking without mutating *G*.
+
+    Query memories intentionally remain in the persistent graph for retrieval and
+    semantic continuity.  They are prior assistant output, though, not independent
+    evidence about the system, so including them in degree, centrality, surprise,
+    or cohesion calculations creates a feedback loop where remembered answers can
+    outrank source-backed structure.
+    """
+    memory_nodes = {
+        node_id for node_id, data in G.nodes(data=True)
+        if _is_query_memory_path(data.get("source_file", ""))
+    }
+    memory_edges = [
+        (u, v) for u, v, data in G.edges(data=True)
+        if _is_query_memory_path(data.get("source_file", ""))
+    ]
+    if not memory_nodes and not memory_edges:
+        return G
+    analysis_graph = G.subgraph([n for n in G.nodes if n not in memory_nodes]).copy()
+    analysis_graph.remove_edges_from(
+        (u, v) for u, v in memory_edges if u in analysis_graph and v in analysis_graph
+    )
+    return analysis_graph
+
+
 def god_nodes(G: nx.Graph, top_n: int = 10) -> list[dict]:
     """Return the top_n most-connected real entities - the core abstractions.
 
     File-level hub nodes are excluded: they accumulate import/contains edges
     mechanically and don't represent meaningful architectural abstractions.
     """
+    G = _source_backed_analysis_graph(G)
     degree = dict(G.degree())
     sorted_nodes = sorted(degree.items(), key=lambda x: x[1], reverse=True)
     result = []
@@ -148,6 +181,12 @@ def surprising_connections(
     Concept nodes (empty source_file, or injected semantic annotations) are excluded
     from surprising connections because they are intentional, not discovered.
     """
+    G = _source_backed_analysis_graph(G)
+    communities = {
+        cid: [node_id for node_id in nodes if node_id in G]
+        for cid, nodes in (communities or {}).items()
+    }
+
     # Identify unique source files (ignore empty/null source_file)
     source_files = {
         data.get("source_file", "")
@@ -157,9 +196,9 @@ def surprising_connections(
     is_multi_source = len(source_files) > 1
 
     if is_multi_source:
-        return _cross_file_surprises(G, communities or {}, top_n)
+        return _cross_file_surprises(G, communities, top_n)
     else:
-        return _cross_community_surprises(G, communities or {}, top_n)
+        return _cross_community_surprises(G, communities, top_n)
 
 
 def _is_concept_node(G: nx.Graph, node_id: str) -> bool:
@@ -436,6 +475,11 @@ def suggest_questions(
     Based on: AMBIGUOUS edges, bridge nodes, underexplored god nodes, isolated nodes.
     Each question has a 'type', 'question', and 'why' field.
     """
+    G = _source_backed_analysis_graph(G)
+    communities = {
+        cid: [node_id for node_id in nodes if node_id in G]
+        for cid, nodes in communities.items()
+    }
     if community_labels:
         community_labels = {int(k) if isinstance(k, str) else k: v for k, v in community_labels.items()}
 
