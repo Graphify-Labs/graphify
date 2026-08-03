@@ -4591,6 +4591,7 @@ def extract(
     root: Path | None = None,
     parallel: bool = True,
     max_workers: int | None = None,
+    direct_call_resolution_context_nodes: list[dict] | None = None,
 ) -> dict:
     """Extract AST nodes and edges from a list of code files.
 
@@ -4613,6 +4614,27 @@ def extract(
             use ProcessPoolExecutor for multi-core extraction.
         max_workers: max subprocess count. Defaults to cpu_count (or the
             value of GRAPHIFY_MAX_WORKERS if set), bounded by len(uncached_work).
+        direct_call_resolution_context_nodes: read-only AST nodes from files
+            that are NOT being extracted this run (an incremental rebuild's
+            unchanged corpus, #2406). They extend the label/file indexes of the
+            SHARED DIRECT cross-file call pass only, so a changed caller can
+            still bind a plain `foo()` to an unchanged callee. They are never
+            parsed, mutated, or returned — only edges sourced by `paths` are
+            emitted.
+
+            Deliberately NOT covered (each needs data this list cannot carry,
+            so an incremental rebuild still drops these edge families until the
+            next full rebuild):
+              * member calls (`obj.method()`, #2437) — `run_language_resolvers` below
+                resolves them from `per_file` type tables and the `contains`/
+                `method` edges of the callee's file. Neither survives in
+                graph.json, so the context would have to be reparsed.
+              * `indirect_call` (#2438) — its target guard reads the `_callable` /
+                `_callable_class` markers, which are stripped before the graph
+                is persisted (see the `n.pop` calls near the end of this
+                function). Inferring callability from a persisted label would
+                reintroduce the same-named-data-symbol false positives #1566
+                and #2137 removed.
     """
     paths = [Path(p) for p in paths]
     anchor_root = Path(root) if root is not None else None
@@ -5296,7 +5318,28 @@ def extract(
     # identifiers, and they were polluting matches for short names — #563).
     global_label_to_nids: dict[str, list[str]] = {}      # exact-case (all languages)
     global_label_to_nids_ci: dict[str, list[str]] = {}   # case-INSENSITIVE-language nodes
-    for n in all_nodes:
+    # #2406: on an incremental rebuild only the CHANGED files are parsed, so
+    # `all_nodes` alone cannot see a callee that lives in an unchanged file and
+    # every changed->unchanged DIRECT call silently vanished (while the file-level
+    # `imports` edge survived, because the JS/Python symbol-resolution pass
+    # reads the import TARGET off disk instead of off the node list). Extend the
+    # resolution indexes — and ONLY the indexes — with the caller-supplied
+    # unchanged-corpus nodes. Fresh nodes win on id collision, nothing is
+    # appended to `all_nodes`, and raw_calls still come solely from `paths`, so
+    # the emitted edges remain sourced by the re-extracted files.
+    #
+    # Scope: this list feeds ONLY the shared direct-call loop below. The member-call
+    # resolvers (run_language_resolvers) and the indirect_call guard keep reading
+    # `all_nodes`, because the data each needs is not persisted — see the
+    # `direct_call_resolution_context_nodes` docstring entry.
+    resolution_nodes = all_nodes
+    if direct_call_resolution_context_nodes:
+        _fresh_ids = {n["id"] for n in all_nodes}
+        resolution_nodes = all_nodes + [
+            n for n in direct_call_resolution_context_nodes
+            if n.get("id") and n["id"] not in _fresh_ids
+        ]
+    for n in resolution_nodes:
         if n.get("file_type") == "rationale" or n.get("type") == "namespace":
             continue
         raw = n.get("label", "")
@@ -5344,7 +5387,7 @@ def extract(
     # absolute-derived id — which would spuriously fail import evidence and (with
     # the #1659 JS/TS gate below) drop a legitimately-imported call.
     sf_to_file_nid: dict[str, str] = {}
-    for n in all_nodes:
+    for n in resolution_nodes:
         sf = n.get("source_file")
         if sf and n.get("label") == Path(str(sf)).name:
             sf_to_file_nid.setdefault(str(sf), n["id"])
@@ -5353,7 +5396,7 @@ def extract(
     # (test/non-test classification + path proximity). Kept separate from the
     # file-node-id map because tie-breaking compares the actual file paths.
     nid_to_source_file: dict[str, str] = {}
-    for n in all_nodes:
+    for n in resolution_nodes:
         sf = n.get("source_file")
         if not sf:
             continue

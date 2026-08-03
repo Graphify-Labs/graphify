@@ -1157,8 +1157,71 @@ def _rebuild_code(
             # AST heading layer intact alongside the semantic layer.
             extract_targets = [p for p in code_files if p not in semantic_doc_files]
 
+        # #2406: an incremental rebuild parses only the changed files, so the
+        # shared cross-file DIRECT call resolver could not see a callee living in
+        # an unchanged file and every changed->unchanged `calls` edge disappeared
+        # (reconcile evicts the old one as AST-tier output of a re-extracted
+        # source, and nothing regenerates it). Hand extract() read-only resolution
+        # context: the persisted AST nodes of files this run is NOT re-extracting.
+        #
+        # Scoping rules, in order of importance:
+        #   * AST-tier only — semantic/LLM nodes are not symbol definitions.
+        #   * never a file in extract_targets (its fresh nodes are authoritative)
+        #     nor a deleted one (its persisted symbols are gone).
+        #   * only sources still in the scanned corpus, so a renamed/removed file
+        #     cannot stay a resolver target.
+        # extract() uses these purely to widen the shared direct-call pass's
+        # label/file indexes; nothing is parsed, mutated, or emitted from them.
+        # Member calls (#2437) and indirect_call (#2438) are NOT covered — they
+        # need per-file type tables / `_callable` markers that graph.json does not
+        # carry, so those edge families still wait for a full rebuild (see
+        # extract()'s docstring).
+        direct_call_resolution_context_nodes: list[dict] = []
+        if changed_paths is not None and existing_graph.exists():
+            try:
+                check_graph_file_size_cap(existing_graph)
+                ctx_graph = json.loads(existing_graph.read_text(encoding="utf-8"))
+                ctx_paths = _StoredSourcePaths(
+                    ctx_graph,
+                    out=out,
+                    project_root=project_root,
+                    watch_root=watch_root,
+                    normalize_source=_nsf,
+                )
+                ctx_live = {
+                    ctx_paths.absolute_identity(str(p), project_root) for p in code_files
+                }
+                ctx_live -= {
+                    ctx_paths.absolute_identity(str(p), project_root) for p in extract_targets
+                }
+                ctx_live -= deleted_source_identities
+                ctx_live.discard(None)
+                for node in ctx_graph.get("nodes", []):
+                    if not node.get("id") or not _is_ast_tier(node):
+                        continue
+                    source_file = node.get("source_file")
+                    if not source_file or ctx_paths.identity(source_file) not in ctx_live:
+                        continue
+                    direct_call_resolution_context_nodes.append({
+                        "id": node["id"],
+                        "label": node.get("label"),
+                        "source_file": source_file,
+                        "file_type": node.get("file_type"),
+                        "type": node.get("type"),
+                    })
+            except Exception:
+                # Unreadable/oversized graph: resolve with the changed batch only
+                # (pre-#2406 behavior). Reconcile below still fails closed on it.
+                direct_call_resolution_context_nodes = []
+
         commit = _git_head(cwd=watch_root)
-        result = extract(extract_targets, cache_root=watch_root) if extract_targets else {
+        result = extract(
+            extract_targets,
+            cache_root=watch_root,
+            direct_call_resolution_context_nodes=(
+                direct_call_resolution_context_nodes or None
+            ),
+        ) if extract_targets else {
             "nodes": [], "edges": [], "hyperedges": [],
             "input_tokens": 0, "output_tokens": 0,
         }
