@@ -95,12 +95,15 @@ def extract_markdown(path: Path) -> dict:
 
     def add_edge(src: str, tgt: str, relation: str, line: int,
                  confidence: str = "EXTRACTED", weight: float = 1.0,
-                 target_file: "str | None" = None) -> None:
+                 target_file: "str | None" = None,
+                 wikilink_name: "str | None" = None) -> None:
         edge = {"source": src, "target": tgt, "relation": relation,
                 "confidence": confidence, "source_file": str_path,
                 "source_location": f"L{line}", "weight": weight}
         if target_file is not None:
             edge["target_file"] = target_file
+        if wikilink_name is not None:
+            edge["wikilink_name"] = wikilink_name
         edges.append(edge)
 
     file_nid = _make_id(str(path))
@@ -111,7 +114,7 @@ def extract_markdown(path: Path) -> dict:
     # same sibling many times yields one edge, not N (keeps weights meaningful).
     linked_targets: set[str] = set()
 
-    def add_link(raw: str, line: int) -> None:
+    def add_link(raw: str, line: int, *, wikilink: bool = False) -> None:
         resolved = _resolve_markdown_link(raw, source_dir)
         if resolved is None:
             return
@@ -138,7 +141,19 @@ def extract_markdown(path: Path) -> dict:
                 target_file = str(resolved)
         except OSError:
             pass
-        add_edge(file_nid, tgt_nid, "references", line, target_file=target_file)
+        # Obsidian resolves ``[[name]]`` against the WHOLE vault by filename, not
+        # against the linking note's directory. A note-type vault (Concepts/,
+        # Entities/, Guides/, Maps/ ...) therefore links across folders with bare
+        # names, and sibling-only resolution leaves every one of those dangling.
+        # When the sibling guess missed, stamp the bare name so extract()'s
+        # post-pass can repoint the edge against the corpus index. Path-qualified
+        # markdown links (``[t](./other.md)``) are unaffected: they are relative
+        # by spec, so sibling resolution is already correct for them.
+        wl_name = None
+        if target_file is None and wikilink:
+            wl_name = resolved.stem
+        add_edge(file_nid, tgt_nid, "references", line,
+                 target_file=target_file, wikilink_name=wl_name)
 
     # Track heading stack for nesting: [(level, nid), ...]
     heading_stack: list[tuple[int, str]] = []
@@ -164,7 +179,7 @@ def extract_markdown(path: Path) -> dict:
         for m in _MD_INLINE_LINK_RE.finditer(line_text):
             add_link(m.group(1), line_num)
         for m in _MD_WIKILINK_RE.finditer(line_text):
-            add_link(m.group(1), line_num)
+            add_link(m.group(1), line_num, wikilink=True)
         ref_def = _MD_REF_DEF_RE.match(line_text)
         if ref_def:
             add_link(ref_def.group(1), line_num)
