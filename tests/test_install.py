@@ -153,6 +153,97 @@ def test_codex_project_install_preflight_leaves_project_unchanged(
     assert "git add" not in captured.out
 
 
+@pytest.mark.parametrize(
+    "platform,config_rel,config_bytes,skill_rel,instruction_rel",
+    [
+        (
+            "claude",
+            Path(".claude") / "settings.json",
+            b'{"hooks": {"PreToolUse": "not-a-list"}}',
+            Path(".claude") / "skills" / "graphify" / "SKILL.md",
+            Path("CLAUDE.md"),
+        ),
+        (
+            "gemini",
+            Path(".gemini") / "settings.json",
+            b'{"hooks": {"BeforeTool": "not-a-list"}}',
+            Path(".gemini") / "skills" / "graphify" / "SKILL.md",
+            Path("GEMINI.md"),
+        ),
+    ],
+    ids=["claude-invalid-settings", "gemini-invalid-settings"],
+)
+def test_strict_project_install_preflight_leaves_project_unchanged(
+    tmp_path, monkeypatch, capsys, platform, config_rel, config_bytes, skill_rel, instruction_rel
+):
+    """Claude and Gemini must validate settings before project artifacts."""
+    from graphify.__main__ import main
+
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    project.mkdir()
+    config_path = project / config_rel
+    config_path.parent.mkdir()
+    config_path.write_bytes(config_bytes)
+    instruction = project / instruction_rel
+    instruction.write_bytes(b"# User instructions\\n")
+    before = {
+        path.relative_to(project): (path.is_dir(), path.read_bytes() if path.is_file() else None)
+        for path in project.rglob("*")
+    }
+    global_skill = home / skill_rel
+    global_skill.parent.mkdir(parents=True)
+    global_skill.write_bytes(b"user global skill")
+
+    monkeypatch.chdir(project)
+    monkeypatch.setattr(sys, "argv", ["graphify", "install", "--project", "--platform", platform])
+    with patch("graphify.__main__.Path.home", return_value=home):
+        with pytest.raises(SystemExit) as excinfo:
+            main()
+
+    assert excinfo.value.code == 1
+    after = {
+        path.relative_to(project): (path.is_dir(), path.read_bytes() if path.is_file() else None)
+        for path in project.rglob("*")
+    }
+    assert after == before
+    assert global_skill.read_bytes() == b"user global skill"
+    assert not config_path.with_name(config_path.name + ".graphify-bak").exists()
+    captured = capsys.readouterr()
+    assert str(config_path.relative_to(project)) in captured.err
+    assert "git add" not in captured.out
+    assert not (project / skill_rel).exists()
+
+
+def test_codebuddy_project_helper_preflight_leaves_project_unchanged(tmp_path, capsys):
+    """The explicit project-directory CodeBuddy helper must fail closed."""
+    from graphify.install import codebuddy_install
+
+    project = tmp_path / "project"
+    project.mkdir()
+    settings = project / ".codebuddy" / "settings.json"
+    settings.parent.mkdir()
+    settings.write_bytes(b'{"hooks": {"PreToolUse": "not-a-list"}}')
+    instruction = project / "CODEBUDDY.md"
+    instruction.write_bytes(b"# User instructions\\n")
+    before = {
+        path.relative_to(project): (path.is_dir(), path.read_bytes() if path.is_file() else None)
+        for path in project.rglob("*")
+    }
+
+    with pytest.raises(SystemExit) as excinfo:
+        codebuddy_install(project)
+
+    assert excinfo.value.code == 1
+    after = {
+        path.relative_to(project): (path.is_dir(), path.read_bytes() if path.is_file() else None)
+        for path in project.rglob("*")
+    }
+    assert after == before
+    assert not settings.with_name(settings.name + ".graphify-bak").exists()
+    assert str(settings) in capsys.readouterr().err
+
+
 def test_claude_subcommand_project_install_and_uninstall_are_project_scoped(tmp_path, monkeypatch):
     from graphify.__main__ import main
     home = tmp_path / "home"

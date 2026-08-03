@@ -692,7 +692,14 @@ def _gemini_hook() -> dict:
     }
 def gemini_install(project_dir: Path | None = None, *, project: bool = False) -> None:
     """Copy skill file, write GEMINI.md section, and install BeforeTool hook."""
+    explicit_dir = project_dir is not None
     project_dir = project_dir or Path(".")
+    # Project installs must validate before copying the skill or editing GEMINI.md.
+    # Keep the global path's historical ordering and scope behavior unchanged.
+    if project or explicit_dir:
+        _read_settings_for_merge(
+            project_dir / ".gemini" / "settings.json", managed_collection="BeforeTool"
+        )
     skill_dst = _copy_skill_file("gemini", project=project, project_dir=project_dir)
 
     target = project_dir / "GEMINI.md"
@@ -1601,6 +1608,10 @@ def _project_install(platform_name: str, project_dir: Path | None = None, strict
     project_dir = project_dir or Path(".")
     platform_name = _canonical_platform(platform_name)
     if platform_name in ("claude", "windows"):
+        # Validate before install() copies the skill or writes .claude/CLAUDE.md.
+        _read_settings_for_merge(
+            project_dir / ".claude" / "settings.json", managed_collection="PreToolUse"
+        )
         install(platform=platform_name, project=True, project_dir=project_dir)
         claude_install(project_dir, strict=strict)
         _print_project_git_add_hint([project_dir / ".claude", project_dir / "CLAUDE.md"])
@@ -1762,6 +1773,10 @@ def _kilo_uninstall(project_dir: Path) -> None:
     print("; ".join(removed) if removed else "nothing to remove")
 def claude_install(project_dir: Path | None = None, strict: bool = False) -> None:
     """Write the graphify section to the local CLAUDE.md."""
+    if project_dir is not None:
+        _read_settings_for_merge(
+            project_dir / ".claude" / "settings.json", managed_collection="PreToolUse"
+        )
     target = (project_dir or Path(".")) / "CLAUDE.md"
 
     if target.exists():
@@ -1946,6 +1961,13 @@ def _strip_graphify_md_section(target: Path) -> bool:
     return True
 def codebuddy_install(project_dir: Path | None = None) -> None:
     """Install the graphify skill and CODEBUDDY.md section for CodeBuddy."""
+    # The CLI has no project-scoped CodeBuddy command, but callers may use this
+    # helper directly with a project directory. Validate before any project write.
+    existing_settings = None
+    if project_dir is not None:
+        existing_settings = _read_settings_for_merge(
+            project_dir / ".codebuddy" / "settings.json", managed_collection="PreToolUse"
+        )
     _copy_skill_file("codebuddy", project=bool(project_dir), project_dir=project_dir)
     target = (project_dir or Path(".")) / "CODEBUDDY.md"
 
@@ -1964,15 +1986,17 @@ def codebuddy_install(project_dir: Path | None = None) -> None:
         print(f"graphify section written to {target.resolve()}")
 
     # Also write CodeBuddy PreToolUse hook to .codebuddy/settings.json
-    _install_codebuddy_hook(project_dir or Path("."))
+    _install_codebuddy_hook(project_dir or Path("."), existing=existing_settings)
 
     print()
     print("CodeBuddy will now check the knowledge graph before answering")
     print("codebase questions and rebuild it after code changes.")
-def _install_codebuddy_hook(project_dir: Path) -> None:
+def _install_codebuddy_hook(project_dir: Path, existing: dict | None = None) -> None:
     """Add graphify PreToolUse hook to .codebuddy/settings.json."""
     settings_path = project_dir / ".codebuddy" / "settings.json"
-    settings = _read_settings_for_merge(settings_path, managed_collection="PreToolUse")
+    if existing is None:
+        existing = _read_settings_for_merge(settings_path, managed_collection="PreToolUse")
+    settings = existing
     settings_path.parent.mkdir(parents=True, exist_ok=True)
 
     hooks = settings.setdefault("hooks", {})
