@@ -1593,6 +1593,56 @@ def test_extract_parallel_returns_false_on_broken_pool(tmp_path, monkeypatch, ca
     assert "__main__" in out, "warning must hint at the Windows __main__ guard idiom"
 
 
+def test_extract_falls_back_when_worker_future_breaks_pool(
+    tmp_path, monkeypatch, capsys
+):
+    """A BrokenProcessPool from future.result() must trigger sequential fallback."""
+    from concurrent.futures.process import BrokenProcessPool
+    import concurrent.futures
+    from graphify import extract as extract_mod
+
+    class BrokenFuture:
+        def result(self):
+            raise BrokenProcessPool("simulated worker termination")
+
+    class FakePool:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def submit(self, *args, **kwargs):
+            return BrokenFuture()
+
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", FakePool)
+    monkeypatch.setattr(
+        concurrent.futures,
+        "as_completed",
+        lambda futures: iter(futures),
+    )
+
+    sequential_calls = 0
+    real_sequential = extract_mod._extract_sequential
+
+    def wrapped_sequential(*args, **kwargs):
+        nonlocal sequential_calls
+        sequential_calls += 1
+        return real_sequential(*args, **kwargs)
+
+    monkeypatch.setattr(extract_mod, "_extract_sequential", wrapped_sequential)
+
+    files = [FIXTURES / "sample.py"] * 25
+    result = extract_mod.extract(files, cache_root=tmp_path / "cache")
+
+    assert sequential_calls == 1
+    assert result["nodes"], "sequential fallback must recover AST nodes"
+    assert "BrokenProcessPool" in capsys.readouterr().out
+
+
 def test_extract_parallel_skips_pool_when_max_workers_is_one(tmp_path, monkeypatch):
     """#2173: a resolved worker count of 1 must not spawn a ProcessPoolExecutor.
 

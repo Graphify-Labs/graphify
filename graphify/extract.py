@@ -4502,6 +4502,10 @@ def _extract_parallel(
                 try:
                     idx, result = future.result()
                     per_file[idx] = result
+                except concurrent.futures.process.BrokenProcessPool:
+                    # Let the pool-level handler below signal the caller to
+                    # retry the entire uncached batch sequentially.
+                    raise
                 except Exception as exc:
                     pos = futures[future]
                     print(
