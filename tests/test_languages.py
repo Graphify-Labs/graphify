@@ -523,6 +523,211 @@ def test_java_type_annotations_have_attribute_context(tmp_path):
     assert ("CheckoutService", "Entity") in refs
 
 
+def test_java_annotation_class_literal_arguments(tmp_path):
+    source = tmp_path / "AnnotationArguments.java"
+    source.write_text(
+        "class PrimaryRule {}\n"
+        "class BackupRule {}\n"
+        "@interface UsesRules { Class<?>[] value(); }\n"
+        "@UsesRules({PrimaryRule.class, BackupRule.class, java.lang.String.class})\n"
+        "class RuleHandler {\n"
+        "    @UsesRules(PrimaryRule.class)\n"
+        "    void apply() {}\n"
+        "}\n"
+    )
+
+    result = extract_java(source)
+
+    refs = _edge_labels(result, "references", "attribute")
+    assert ("RuleHandler", "PrimaryRule") in refs
+    assert ("RuleHandler", "BackupRule") in refs
+    assert ("apply", "PrimaryRule") in refs
+    assert ("RuleHandler", "java.lang.String") not in refs
+
+
+def test_java_annotation_references_are_not_duplicated(tmp_path):
+    from graphify.extract import extract
+
+    annotation = tmp_path / "pkg" / "Uses.java"
+    annotation.parent.mkdir()
+    annotation.write_text(
+        "package pkg;\n"
+        "public @interface Uses { Class<?>[] value(); }\n"
+    )
+    consumer = tmp_path / "app" / "Consumer.java"
+    consumer.parent.mkdir()
+    consumer.write_text(
+        "package app;\n"
+        "import pkg.Uses;\n"
+        "@Uses({pkg.Uses.class, pkg.Uses.class})\n"
+        "class Consumer {\n"
+        "    @Uses({pkg.Uses.class, pkg.Uses.class})\n"
+        "    void apply() {}\n"
+        "}\n"
+    )
+
+    result = extract([annotation, consumer], cache_root=tmp_path / "cache")
+
+    refs = [
+        pair
+        for pair in _edge_labels(result, "references", "attribute")
+        if pair in {("Consumer", "Uses"), ("apply", "Uses")}
+    ]
+    assert refs.count(("Consumer", "Uses")) == 1
+    assert refs.count(("apply", "Uses")) == 1
+
+
+def test_java_annotation_class_literal_keeps_qualified_type_identity(tmp_path):
+    from graphify.extract import extract
+
+    internal = tmp_path / "internal" / "Rule.java"
+    internal.parent.mkdir()
+    internal.write_text("package internal;\npublic class Rule {}\n")
+    outer = tmp_path / "internal" / "Outer.java"
+    outer.write_text(
+        "package internal;\n"
+        "public class Outer { public static class Nested {} }\n"
+    )
+    consumer = tmp_path / "app" / "Consumer.java"
+    consumer.parent.mkdir()
+    consumer.write_text(
+        "package app;\n"
+        "@interface Uses { Class<?>[] value(); }\n"
+        "@Uses({internal.Rule.class, internal.Outer.Nested.class, "
+        "external.Rule.class})\n"
+        "public class Consumer {}\n"
+    )
+
+    result = extract([internal, outer, consumer], cache_root=tmp_path / "cache")
+
+    by_id = {node["id"]: node for node in result["nodes"]}
+    targets = [
+        by_id[edge["target"]]
+        for edge in result["edges"]
+        if edge.get("relation") == "references"
+        and edge.get("context") == "attribute"
+        and edge.get("source_file", "").endswith("Consumer.java")
+        and by_id[edge["target"]].get("label")
+        in {"Rule", "Nested", "external.Rule"}
+    ]
+    assert any(
+        target.get("label") == "Rule"
+        and target.get("source_file", "").endswith("internal/Rule.java")
+        for target in targets
+    )
+    assert any(
+        target.get("label") == "external.Rule" and not target.get("source_file")
+        for target in targets
+    )
+    assert any(
+        target.get("label") == "Nested"
+        and target.get("source_file", "").endswith("Outer.java")
+        for target in targets
+    )
+
+
+def test_java_repeatable_annotation_references_container_and_element_type(tmp_path):
+    from graphify.extract import extract
+
+    annotation = tmp_path / "RubricFor.java"
+    annotation.write_text(
+        "package com.example;\n"
+        "import java.lang.annotation.Repeatable;\n"
+        "@Repeatable(RubricsFor.class)\n"
+        "public @interface RubricFor {}\n"
+    )
+    container = tmp_path / "RubricsFor.java"
+    container.write_text(
+        "package com.example;\n"
+        "public @interface RubricsFor {\n"
+        "    RubricFor[] value();\n"
+        "}\n"
+    )
+
+    result = extract([annotation, container], cache_root=tmp_path / "cache")
+
+    assert ("RubricFor", "RubricsFor") in _edge_labels(
+        result, "references", "attribute"
+    )
+    assert ("RubricsFor", "RubricFor") in _edge_labels(
+        result, "references", "return_type"
+    )
+    assert not [
+        node
+        for node in result["nodes"]
+        if node.get("label") in {"RubricFor", "RubricsFor"}
+        and not node.get("source_file")
+    ]
+
+
+def test_java_annotation_member_keeps_qualified_type_identity(tmp_path):
+    from graphify.extract import extract
+
+    internal = tmp_path / "internal" / "Rule.java"
+    internal.parent.mkdir()
+    internal.write_text("package internal;\npublic class Rule {}\n")
+    outer = tmp_path / "internal" / "Outer.java"
+    outer.write_text(
+        "package internal;\n"
+        "public class Outer { public static class Nested {} }\n"
+    )
+    local = tmp_path / "app" / "Rule.java"
+    local.parent.mkdir()
+    local.write_text("package app;\npublic class Rule {}\n")
+    annotation = tmp_path / "app" / "Uses.java"
+    annotation.write_text(
+        "package app;\n"
+        "public @interface Uses {\n"
+        "    internal.Rule[] direct();\n"
+        "    Class<internal.Rule> generic();\n"
+        "    internal.Outer.Nested[] nestedDirect();\n"
+        "    Class<internal.Outer.Nested> nestedGeneric();\n"
+        "    java.lang.String label();\n"
+        "}\n"
+    )
+
+    result = extract(
+        [internal, outer, local, annotation], cache_root=tmp_path / "cache"
+    )
+
+    by_id = {node["id"]: node for node in result["nodes"]}
+    targets = [
+        (by_id[edge["target"]], edge.get("context"))
+        for edge in result["edges"]
+        if edge.get("relation") == "references"
+        and edge.get("source_file", "").endswith("Uses.java")
+        and by_id[edge["source"]].get("label") == "Uses"
+        and by_id[edge["target"]].get("label") == "Rule"
+    ]
+    assert {
+        context
+        for target, context in targets
+        if target.get("source_file", "").endswith("internal/Rule.java")
+    } == {"return_type", "generic_arg"}
+    assert not [
+        target
+        for target, _context in targets
+        if target.get("source_file", "").endswith("app/Rule.java")
+    ]
+    assert not [
+        node
+        for node in result["nodes"]
+        if node.get("label") == "java.lang.String"
+    ]
+    assert {
+        context
+        for target, context in [
+            (by_id[edge["target"]], edge.get("context"))
+            for edge in result["edges"]
+            if edge.get("relation") == "references"
+            and edge.get("source_file", "").endswith("Uses.java")
+            and by_id[edge["source"]].get("label") == "Uses"
+            and by_id[edge["target"]].get("label") == "Nested"
+        ]
+        if target.get("source_file", "").endswith("Outer.java")
+    } == {"return_type", "generic_arg"}
+
+
 def test_java_enum_and_annotation_declarations_are_type_nodes(tmp_path):
     source = tmp_path / "TypeDeclarations.java"
     source.write_text(
