@@ -1,6 +1,7 @@
 """Tests for `graphify extract` CLI dispatch path in graphify.__main__."""
 from __future__ import annotations
 
+import importlib
 import os
 
 import pytest
@@ -17,6 +18,45 @@ def _make_corpus(tmp_path):
     (tmp_path / "main.go").write_text("package main\nfunc main() {}\n")
     (tmp_path / "README.md").write_text("# Notes\nThe main function entry point.\n")
     return tmp_path
+
+
+def test_extract_exits_nonzero_when_ast_extraction_raises(
+    monkeypatch, tmp_path, capsys
+):
+    """An AST failure must not be presented as a successful empty corpus."""
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "main.go").write_text("package main\nfunc main() {}\n")
+    out_dir = tmp_path / "out"
+
+    def _ast_failed(paths, **kwargs):
+        raise RuntimeError("worker pool failed")
+
+    extractmod = importlib.import_module("graphify.extract")
+    monkeypatch.setattr(extractmod, "extract", _ast_failed)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        [
+            "graphify",
+            "extract",
+            str(corpus),
+            "--code-only",
+            "--out",
+            str(out_dir),
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        mainmod.main()
+
+    assert exc_info.value.code == 1
+    assert (
+        "[graphify extract] AST extraction failed: worker pool failed"
+        in capsys.readouterr().err
+    )
+    assert not (out_dir / "graphify-out" / "graph.json").exists()
 
 
 def test_extract_exits_nonzero_when_all_semantic_chunks_fail(

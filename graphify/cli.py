@@ -3096,8 +3096,7 @@ def dispatch_command(cmd: str) -> None:
                 ast_result = _ast_extract(code_files, **ast_kwargs)
             except Exception as exc:
                 print(f"[graphify extract] AST extraction failed: {exc}", file=sys.stderr)
-                ast_result = {"nodes": [], "edges": [], "input_tokens": 0, "output_tokens": 0}
-                _extraction_incomplete = True  # the whole AST pass was lost
+                sys.exit(1)
         stages.mark("AST extract")
 
         # Semantic extraction on docs/papers/images. Check cache first.
