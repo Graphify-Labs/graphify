@@ -7,6 +7,7 @@ import json
 import os
 import re
 import tempfile
+import time
 import warnings
 from collections.abc import Iterable
 from pathlib import Path
@@ -74,6 +75,14 @@ def _cleanup_stale_ast_entries(ast_base: Path, current_dir: Path) -> None:
 # actually changed. Entries live under cache/semantic/p{fingerprint}/ when the
 # caller supplies its prompt; callers that don't keep the historical flat layout.
 _PROMPT_FP_LEN = 12
+
+#: How close a memo's own timestamp may sit to the file's mtime before the
+#: (size, mtime_ns) fastpath stops proving content identity. The coarse value
+#: covers filesystems that round mtime to whole seconds (HFS+, some network
+#: mounts); the sub-second value applies when real nanosecond precision is
+#: reported, where only writes a few milliseconds apart can share a tick.
+_MTIME_GRANULARITY_NS = 2_000_000_000
+_MTIME_SUBSECOND_NS = 50_000_000
 
 # Count of pre-fingerprint (flat-layout) entries served this process, so
 # check_semantic_cache can report N to the user (#1939).
@@ -257,6 +266,13 @@ def _ensure_stat_index(root: Path, cache_root: "Path | None" = None) -> None:
                 for k, v in raw.items():
                     if not isinstance(k, str):
                         continue
+                    # Entries read back from disk were written by a COMPLETED
+                    # run, so the same-tick ambiguity that makes an in-process
+                    # memo untrustworthy cannot apply: any later write would
+                    # have to move size or mtime. Clearing seen_ns marks them
+                    # safe and keeps a moved/cloned corpus 100% warm.
+                    if isinstance(v, dict):
+                        v.pop("seen_ns", None)
                     if Path(k).is_absolute():
                         # Legacy/out-of-anchor key: pass through, but never
                         # clobber a re-anchored relative (new-format) entry
@@ -321,6 +337,41 @@ def _normalize_path(path: Path) -> Path:
     return Path(os.path.normcase(s))
 
 
+def _mtime_collision_risk(entry: dict, mtime_ns: int) -> bool:
+    """Could a same-size rewrite be hiding behind this unchanged mtime?
+
+    The stat fastpath assumes a content change moves size or mtime. Filesystem
+    timestamp granularity breaks that: an edit that keeps the file the same
+    length and lands inside one timestamp tick is invisible to stat, so a stale
+    digest is served and the graph keeps the old content. It is easy to hit
+    under ``watch``, in a fast edit loop, and in tests.
+
+    The risky window is the one the memo itself was taken in. ``seen_ns``
+    records that moment; when the file's mtime sits inside the same tick, a
+    later same-size write could have landed in that tick without moving mtime,
+    so the memo cannot prove content identity and the file is re-read.
+
+    Granularity is derived from the timestamp rather than assumed: a whole-second
+    mtime means the filesystem cannot distinguish writes inside that second and
+    the window is widened; genuine nanosecond precision keeps it at a few
+    milliseconds, so ordinary work still takes the fastpath.
+
+    Memos restored from disk have ``seen_ns`` cleared at load time — they come
+    from a completed run, so this ambiguity cannot apply to them.
+    """
+    seen = entry.get("seen_ns")
+    if not isinstance(seen, int):
+        return False
+    try:
+        delta = int(seen) - int(mtime_ns)
+    except (TypeError, ValueError):
+        return True  # unparseable: never trust the memo
+    if delta < 0:
+        return False  # file is newer than the memo; size/mtime already differ
+    coarse = int(mtime_ns) % 1_000_000_000 == 0
+    return delta < (_MTIME_GRANULARITY_NS if coarse else _MTIME_SUBSECOND_NS)
+
+
 def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = None) -> str:
     """SHA256 of file contents + path relative to root.
 
@@ -366,7 +417,8 @@ def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = No
         entry = _stat_index.get(abs_key)
         if (isinstance(entry, dict)
                 and entry.get("size") == st.st_size
-                and entry.get("mtime_ns") == st.st_mtime_ns):
+                and entry.get("mtime_ns") == st.st_mtime_ns
+                and not _mtime_collision_risk(entry, st.st_mtime_ns)):
             hashes = entry.get("hashes")
             if isinstance(hashes, dict):
                 cached = hashes.get(salt)
@@ -396,9 +448,15 @@ def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = No
                 entry["hashes"] = hashes
             hashes[salt] = digest       # preserve a co-located word_count / other salts
             entry.pop("hash", None)     # retire the un-salted legacy digest
+            entry["seen_ns"] = time.time_ns()
         else:
+            # seen_ns records WHEN this digest was observed, so a later read can
+            # tell "written by an earlier, completed run" from "taken in this
+            # process moments after the file was written", where a same-size
+            # rewrite can hide behind an unchanged mtime.
             _stat_index[abs_key] = {"size": st.st_size, "mtime_ns": st.st_mtime_ns,
-                                    "hashes": {salt: digest}}
+                                    "hashes": {salt: digest},
+                                    "seen_ns": time.time_ns()}
         _stat_index_dirty = True
 
     return digest
