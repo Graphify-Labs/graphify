@@ -42,3 +42,10 @@ def test_terraform_migrated():
 
     assert facade.extract_terraform is extract_terraform
     assert LANGUAGE_EXTRACTORS["terraform"] is extract_terraform
+
+
+def test_gleam_registered():
+    from graphify.extractors.gleam import extract_gleam
+
+    assert facade.extract_gleam is extract_gleam
+    assert LANGUAGE_EXTRACTORS["gleam"] is extract_gleam
