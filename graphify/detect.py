@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shlex
+import time
 from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
 from functools import lru_cache
@@ -27,6 +28,13 @@ class FileType(str, Enum):
 
 
 _MANIFEST_PATH = str(out_path("manifest.json"))
+
+#: Window in which a manifest row's own timestamp is too close to the file's
+#: mtime for "mtime unchanged" to prove the content is unchanged. Coarse for
+#: filesystems that round mtime to whole seconds; tight when real sub-second
+#: precision is reported.
+_MTIME_COARSE_S = 2.0
+_MTIME_SUBSECOND_S = 0.05
 
 CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.ejs', '.ets', '.go', '.rs', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.cu', '.cuh', '.metal', '.rb', '.rake', '.swift', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.psm1', '.psd1', '.ex', '.exs', '.m', '.mm', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.tf', '.tfvars', '.hcl', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.slnx', '.csproj', '.fsproj', '.vbproj', '.xaml', '.razor', '.cshtml', '.cls', '.trigger'}
 DOC_EXTENSIONS = {'.md', '.mdx', '.qmd', '.skill', '.txt', '.rst', '.html', '.yaml', '.yml'}
@@ -1772,7 +1780,11 @@ def save_manifest(
         mtime, h = hashed[f]
         key = _nfc(f)
         prev = _normalise_entry(existing.get(key, {})) or {}
-        entry: dict = {"mtime": mtime}
+        # seen: when this row was written. If the file's mtime sits inside the
+        # same filesystem tick, a later same-length edit can land in that tick
+        # without moving mtime, so the mtime-unchanged fastpath cannot prove
+        # the content is still current and detect_incremental re-hashes.
+        entry: dict = {"mtime": mtime, "seen": time.time()}
         if kind in ("ast", "both"):
             entry["ast_hash"] = h
         else:
@@ -1797,6 +1809,35 @@ def save_manifest(
     # Atomic write: a crash mid-write must not leave a truncated manifest that
     # detect_incremental then fails to parse.
     write_json_atomic(manifest_path, manifest, indent=2)
+
+
+def _mtime_may_hide_a_rewrite(current_mtime: float, stored: dict) -> bool:
+    """Was this manifest row written in the same tick as the file it describes?
+
+    The incremental gate treats "mtime unchanged" as proof the content is
+    unchanged. That is only true while the filesystem can distinguish the two
+    writes: an edit keeping the file the same length and landing in the same
+    timestamp tick moves neither size nor mtime, so the file silently skips
+    re-extraction and the graph keeps serving the old content.
+
+    ``seen`` records when the row was stamped. If the file's mtime falls inside
+    the same tick, this row cannot prove currency and the caller pays for one
+    MD5. Every other row — the whole settled corpus, and any manifest written
+    by an earlier run — keeps the free stat-only fastpath.
+
+    Rows predating ``seen`` are treated as safe: they necessarily come from an
+    earlier process, where a later write would have had to move mtime.
+    """
+    seen = stored.get("seen")
+    if not isinstance(seen, (int, float)):
+        return False
+    delta = float(seen) - float(current_mtime)
+    if delta < 0:
+        return False  # file is newer than the row; the mtime check already fired
+    # Derive granularity from the timestamp: a whole-second mtime means the
+    # filesystem cannot separate writes inside that second.
+    coarse = float(current_mtime).is_integer()
+    return delta < (_MTIME_COARSE_S if coarse else _MTIME_SUBSECOND_S)
 
 
 def detect_incremental(
@@ -1893,6 +1934,14 @@ def detect_incremental(
                         stored_mtime = None
                     if stored_mtime is None or current_mtime != stored_mtime:
                         # mtime bumped — verify with content hash before re-extracting
+                        changed = _md5_file(Path(f)) != stored_hash
+                    elif _mtime_may_hide_a_rewrite(current_mtime, stored):
+                        # mtime is unchanged, but it was recorded in the same
+                        # filesystem tick the file was written in — a later
+                        # same-length edit lands in that tick without moving
+                        # mtime, and the file silently skips re-extraction
+                        # while the graph keeps serving the old content.
+                        # Only this narrow window pays for a content hash.
                         changed = _md5_file(Path(f)) != stored_hash
                     else:
                         changed = False
