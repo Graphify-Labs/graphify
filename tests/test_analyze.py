@@ -107,6 +107,19 @@ def test_architecture_analysis_excludes_saved_query_memory():
     assert "SourceA" in rendered and "SourceB" in rendered
 
 
+def test_suggest_questions_tolerates_none_communities():
+    """communities=None must not crash (matches surprising_connections' contract).
+
+    No internal caller currently passes None here, but suggest_questions is a
+    public analyze.py function and its sibling surprising_connections already
+    accepts None with a default; the query-memory filter added to both must
+    not introduce an inconsistency between them.
+    """
+    G = make_graph()
+    questions = suggest_questions(G, None, {}, top_n=5)
+    assert isinstance(questions, list)
+
+
 def test_surprising_connections_single_file_uses_community_bridges():
     """Single-file graph: should return cross-community edges, not empty list."""
     G = nx.Graph()

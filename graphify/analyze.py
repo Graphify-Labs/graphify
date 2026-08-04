@@ -478,7 +478,7 @@ def suggest_questions(
     G = _source_backed_analysis_graph(G)
     communities = {
         cid: [node_id for node_id in nodes if node_id in G]
-        for cid, nodes in communities.items()
+        for cid, nodes in (communities or {}).items()
     }
     if community_labels:
         community_labels = {int(k) if isinstance(k, str) else k: v for k, v in community_labels.items()}
