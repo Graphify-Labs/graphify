@@ -1876,3 +1876,187 @@ def test_legacy_php_interfaces_marker_spelling_is_still_read(tmp_path: Path):
     go = _find(inc, ".go()", "dispatcher")
     assert (go, _find(full, ".notify()", "support_notifier")) not in inc_calls
     assert not _notified(inc_calls, go)
+
+
+# ── Same-file union / intersection receivers (user story 11, #9) ──────────────
+#
+# The separate-file negatives above pass for the wrong reason: with the decoys in
+# other files, the extractor's LEGACY in-file bare-name arm never runs, so only
+# the cross-file resolver is exercised.  When the candidate classes live in the
+# SAME file as the call, that arm fires and binds the receiver to whichever
+# same-named method the label index saw last — pure file order, stamped
+# EXTRACTED.  A union or intersection annotation proves the receiver has MORE
+# THAN ONE possible class, so the extractor must defer to the resolver (which
+# refuses an unstamped receiver) instead.
+#
+# Deletion scope is deliberately limited to `A|B` / `A&B`.  The concrete-type
+# policy also refuses `self`/`static`/`parent`, primitives and
+# `mixed`/`object`/`iterable`/`callable`, but none of those declares MULTIPLE
+# candidate classes — `self` in particular makes the in-file match likely
+# correct — so they keep today's edge, exactly like a genuinely untyped receiver.
+
+def _same_file(receiver_decl: str, *, second_class: str = "", call: str = "$this->svc") -> str:
+    """One PHP file: candidate class(es) plus a Ctrl whose property is `$svc`."""
+    return (
+        "<?php\n"
+        "namespace App;\n"
+        "class Alpha { public function run(): int { return 1; } }\n"
+        f"{second_class}"
+        "class Ctrl {\n"
+        f"    {receiver_decl}\n"
+        "    public function go(): int {\n"
+        f"        return {call}->run();\n"
+        "    }\n"
+        "}\n"
+    )
+
+
+_BETA = "class Beta { public function run(): int { return 2; } }\n"
+
+
+def _ran(calls, go: str) -> list[str]:
+    """Every ``calls`` target of ``go``. Each fixture below makes exactly one call
+    (``->run()``), so the whole target list doubles as the assertion."""
+    return sorted(tgt for src, tgt in calls if src == go)
+
+
+def test_same_file_union_typed_property_emits_no_edge(tmp_path: Path):
+    """`Alpha|Beta $svc` with BOTH candidates in the call's own file."""
+    calls, r = _calls(tmp_path, {
+        "app/U.php": _same_file("private Alpha|Beta $svc;", second_class=_BETA),
+    })
+
+    go = _find(r, ".go()", "ctrl")
+    assert _ran(calls, go) == [], \
+        "a union-typed receiver has no single class — the in-file bare-name " \
+        "match would bind it to one of them by file order"
+
+
+def test_same_file_intersection_typed_property_emits_no_edge(tmp_path: Path):
+    """`Alpha&Beta $svc`: an intersection is named by user story 11 too, and had
+    no test at all before this ticket."""
+    calls, r = _calls(tmp_path, {
+        "app/I.php": _same_file("private Alpha&Beta $svc;", second_class=_BETA),
+    })
+
+    go = _find(r, ".go()", "ctrl")
+    assert _ran(calls, go) == []
+
+
+def test_same_file_union_typed_param_emits_no_edge(tmp_path: Path):
+    calls, r = _calls(tmp_path, {
+        "app/UP.php": (
+            "<?php\n"
+            "namespace App;\n"
+            "class Alpha { public function run(): int { return 1; } }\n"
+            + _BETA +
+            "class Ctrl {\n"
+            "    public function go(Alpha|Beta $svc): int {\n"
+            "        return $svc->run();\n"
+            "    }\n"
+            "}\n"
+        ),
+    })
+
+    go = _find(r, ".go()", "ctrl")
+    assert _ran(calls, go) == []
+
+
+def test_same_file_intersection_typed_param_emits_no_edge(tmp_path: Path):
+    calls, r = _calls(tmp_path, {
+        "app/IP.php": (
+            "<?php\n"
+            "namespace App;\n"
+            "class Alpha { public function run(): int { return 1; } }\n"
+            + _BETA +
+            "class Ctrl {\n"
+            "    public function go(Alpha&Beta $svc): int {\n"
+            "        return $svc->run();\n"
+            "    }\n"
+            "}\n"
+        ),
+    })
+
+    go = _find(r, ".go()", "ctrl")
+    assert _ran(calls, go) == []
+
+
+def test_same_file_union_typed_promoted_param_emits_no_edge(tmp_path: Path):
+    """A promoted constructor param is a typed property, reached by the same
+    `this.<prop>` key — the refusal must travel that channel too."""
+    calls, r = _calls(tmp_path, {
+        "app/UPP.php": (
+            "<?php\n"
+            "namespace App;\n"
+            "class Alpha { public function run(): int { return 1; } }\n"
+            + _BETA +
+            "class Ctrl {\n"
+            "    public function __construct(private Alpha|Beta $svc) {}\n"
+            "    public function go(): int {\n"
+            "        return $this->svc->run();\n"
+            "    }\n"
+            "}\n"
+        ),
+    })
+
+    go = _find(r, ".go()", "ctrl")
+    assert _ran(calls, go) == []
+
+
+def test_same_file_untyped_property_keeps_its_edge(tmp_path: Path):
+    """Regression guard for #2's accepted deviation (user story 9): a receiver
+    with NO annotation keeps today's same-file bare-name edge. Only an
+    annotation that was PRESENT and refused as multi-typed defers."""
+    calls, r = _calls(tmp_path, {
+        "app/N.php": _same_file("protected $svc;"),
+    })
+
+    go = _find(r, ".go()", "ctrl")
+    assert _ran(calls, go) == [_find(r, ".run()", "alpha")]
+
+
+def test_same_file_untyped_param_keeps_its_edge(tmp_path: Path):
+    calls, r = _calls(tmp_path, {
+        "app/NP.php": (
+            "<?php\n"
+            "namespace App;\n"
+            "class Alpha { public function run(): int { return 1; } }\n"
+            "class Ctrl {\n"
+            "    public function go($svc): int {\n"
+            "        return $svc->run();\n"
+            "    }\n"
+            "}\n"
+        ),
+    })
+
+    go = _find(r, ".go()", "ctrl")
+    assert _ran(calls, go) == [_find(r, ".run()", "alpha")]
+
+
+def test_same_file_this_call_keeps_its_edge(tmp_path: Path):
+    """Regression guard (user story 9): `$this->method()` never carries a
+    receiver type and must stay on the in-file arm."""
+    calls, r = _calls(tmp_path, {
+        "app/T.php": (
+            "<?php\n"
+            "namespace App;\n"
+            "class Ctrl {\n"
+            "    public function run(): int { return 1; }\n"
+            "    public function go(): int { return $this->run(); }\n"
+            "}\n"
+        ),
+    })
+
+    go = _find(r, ".go()", "ctrl")
+    assert _ran(calls, go) == [_find(r, ".run()", "ctrl")]
+
+
+def test_same_file_self_typed_property_keeps_its_edge(tmp_path: Path):
+    """Deletion-scope boundary: `self` is refused by the concrete-type policy but
+    declares no multiplicity, so it is NOT deferred and keeps today's edge."""
+    calls, r = _calls(tmp_path, {
+        "app/S.php": _same_file("protected self $svc;"),
+    })
+
+    go = _find(r, ".go()", "ctrl")
+    assert _ran(calls, go) == [_find(r, ".run()", "alpha")]
