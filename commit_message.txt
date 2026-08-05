@@ -1,0 +1,1 @@
+docs: add 3D viz usage and manual smoke-test instructions
