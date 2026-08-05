@@ -164,8 +164,17 @@ def _strip_diacritics(text: str | None) -> str:
 
 
 def _search_tokens(text: str) -> list[str]:
-    """Split text into word tokens, stripping punctuation and diacritics."""
-    return re.findall(r"\w+", _strip_diacritics(str(text)).lower())
+    """Split text into word tokens, stripping punctuation and diacritics.
+
+    `_` is a separator, exactly like `-`. `\\w` counts underscore as a word
+    character but not hyphen, so `graph_first_guard` stayed one token while the
+    label `graph-first-guard.py` split into three — and the query matched
+    nothing. Both the query and the node label pass through here, so splitting
+    on `_` keeps the two sides consistent and snake_case lookups still resolve
+    (their tokens simply match the same way). Found 2026-07-29: the graph could
+    not find the underscore spelling of its own `local_id`.
+    """
+    return re.findall(r"[^\W_]+", _strip_diacritics(str(text)).lower())
 
 
 def _has_chinese(text: str) -> bool:
