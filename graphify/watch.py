@@ -1397,7 +1397,11 @@ def _rebuild_code(
         # Inherit the existing graph's directed flag (#2342) so `graphify
         # update` can't silently downgrade a directed graph to undirected -
         # build_from_json defaults to directed=False otherwise.
-        G = build_from_json(result, directed=bool((existing_graph_data or {}).get("directed", False)))
+        G = build_from_json(
+            result,
+            directed=bool((existing_graph_data or {}).get("directed", False)),
+            root=watch_root,
+        )
         candidate_topology = _topology_from_graph(G)
         if existing_graph_data:
             try:
@@ -1492,7 +1496,8 @@ def _rebuild_code(
         from graphify.report import load_learning_for_report as _llfr
         report = generate(G, communities, cohesion, labels, gods, surprises, detection,
                           {"input": 0, "output": 0}, report_root, suggested_questions=questions,
-                          built_at_commit=commit, learning=_llfr(out / "graph.json"))
+                          built_at_commit=commit, learning=_llfr(out / "graph.json"),
+                          source_root=watch_root)
         report_path = out / "GRAPH_REPORT.md"
         labels_json = json.dumps({str(k): v for k, v in sorted(labels.items())}, ensure_ascii=False, indent=2) + "\n"
         graph_tmp = out / ".graph.tmp.json"

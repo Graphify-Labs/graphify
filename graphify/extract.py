@@ -53,6 +53,11 @@ from graphify.extractors.rust import extract_rust  # noqa: F401
 from graphify.extractors.sln import extract_sln  # noqa: F401
 from graphify.extractors.sql import extract_sql  # noqa: F401
 from graphify.extractors.terraform import extract_terraform  # noqa: F401
+from graphify.extractors.tetra import (
+    TETRA_EXTENSIONS,
+    extract_tetra,
+    extract_tetra_batch,
+)
 from graphify.extractors.verilog import extract_verilog  # noqa: F401
 from graphify.extractors.zig import extract_zig  # noqa: F401
 from graphify.security import sanitize_metadata
@@ -1858,6 +1863,7 @@ _LANG_FAMILY_BY_EXT: dict[str, str] = {
     ".dart": "dart",
     ".sh": "shell", ".bash": "shell",
     ".ps1": "powershell", ".psm1": "powershell", ".psd1": "powershell",
+    ".tetra": "tetra", ".t4": "tetra",
 }
 
 
@@ -4202,6 +4208,8 @@ def extract_xaml(path: Path) -> dict:
 
 
 _DISPATCH: dict[str, Any] = {
+    ".tetra": extract_tetra,
+    ".t4": extract_tetra,
     ".py": extract_python,
     ".js": extract_js,
     ".jsx": extract_js,
@@ -4782,8 +4790,19 @@ def extract(
     # Phase 1: separate cached hits from uncached work
     per_file: list[dict | None] = [None] * total
     uncached_work: list[tuple[int, Path]] = []
+    tetra_indices = [
+        i for i, path in enumerate(paths)
+        if path.suffix.lower() in TETRA_EXTENSIONS
+    ]
+    tetra_index_set = set(tetra_indices)
+    tetra_metadata: dict[str, Any] | None = None
 
     for i, path in enumerate(paths):
+        if i in tetra_index_set:
+            # Tetra's compiler resolves imports and calls across the whole
+            # corpus. Keep it out of the per-file/parallel dispatch and run one
+            # batch below, even for an incremental update.
+            continue
         if _get_extractor(path) is None:
             per_file[i] = {"nodes": [], "edges": []}
             continue
@@ -4794,6 +4813,28 @@ def extract(
                 per_file[i] = cached
                 continue
         uncached_work.append((i, path))
+
+    if tetra_indices:
+        tetra_result = extract_tetra_batch(
+            [paths[i] for i in tetra_indices], root, cache_root=cache_location,
+        )
+        tetra_metadata = tetra_result.get("tetra")
+        index_by_source: dict[str, int] = {}
+        for i in tetra_indices:
+            try:
+                index_by_source[paths[i].resolve().relative_to(root).as_posix()] = i
+            except ValueError:
+                pass
+            per_file[i] = {"nodes": [], "edges": []}
+        first_index = tetra_indices[0]
+        for node in tetra_result.get("nodes", []):
+            target_index = index_by_source.get(str(node.get("source_file") or ""), first_index)
+            per_file[target_index]["nodes"].append(node)
+        for edge in tetra_result.get("edges", []):
+            target_index = index_by_source.get(str(edge.get("source_file") or ""), first_index)
+            per_file[target_index]["edges"].append(edge)
+        if tetra_result.get("error"):
+            per_file[first_index]["error"] = tetra_result["error"]
 
     # Phase 2: extract uncached files (parallel or sequential)
     if uncached_work:
@@ -5902,12 +5943,15 @@ def extract(
     for e in all_edges:
         e["_origin"] = "ast"
 
-    return {
+    result = {
         "nodes": all_nodes,
         "edges": all_edges,
         "input_tokens": 0,
         "output_tokens": 0,
     }
+    if tetra_metadata is not None:
+        result["tetra"] = tetra_metadata
+    return result
 
 
 def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | None = None) -> list[Path]:
