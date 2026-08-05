@@ -47,6 +47,10 @@ from graphify.extractors.go import _GO_PREDECLARED_FUNCS, extract_go  # noqa: F4
 from graphify.extractors.json_config import extract_json  # noqa: F401
 from graphify.extractors.markdown import extract_markdown  # noqa: F401
 from graphify.extractors.pascal_forms import extract_delphi_form, extract_lazarus_form  # noqa: F401
+from graphify.extractors.php import (  # noqa: F401
+    PhpNameResolver,
+    _php_qualified_corroborates,
+)
 from graphify.extractors.powershell import extract_powershell, extract_powershell_manifest  # noqa: F401
 from graphify.extractors.razor import extract_razor  # noqa: F401
 from graphify.extractors.rust import extract_rust  # noqa: F401
@@ -3066,54 +3070,6 @@ _PHP_RESOLVER_SUFFIXES = (
 _OBJC_RESOLVER_SUFFIXES = (".m", ".mm", ".h")
 
 
-def _php_qualified_corroborates(
-    qualified: str | None,
-    type_node: dict | None,
-    declared_fqn: str | None = None,
-) -> bool:
-    """True when a source-written class name corroborates the resolved node (#1682).
-
-    ``(new \\App\\Services\\Svc())`` names the class outright, but the short-name
-    lookup that found the node ignored the namespace — so the namespace is
-    independent evidence, and only a match makes the edge EXTRACTED.
-
-    ``declared_fqn`` is the name the DEFINING FILE declares for that class,
-    read from its ``namespace`` statement at extraction time (#14). When it is
-    known the comparison is whole-name: `\\App\\Services\\Client` corroborates
-    `App\\Services\\Client` and nothing else. Two things that used to promote
-    now do not — a file whose declared namespace disagrees with its PSR-4 path
-    (the written name then denotes a class that exists nowhere in the corpus),
-    and a truncated qualifier like `\\Services\\Client`, which is a DIFFERENT
-    class from `App\\Services\\Client` but matched as a path tail.
-
-    Without a declaration — the file declares no namespace at all, or the node
-    came from a prior graph on an incremental run — the node's path is the only
-    corroborating fact left, and PSR-4 maps ``App\\Services\\Svc`` onto
-    ``app/Services/Svc.php``; every written segment must line up with the tail
-    of that path, case-insensitively.
-
-    A BARE name (no namespace segment) corroborates nothing and stays INFERRED;
-    a namespace that does not line up downgrades rather than refusing, since the
-    class name itself still resolved unambiguously.
-    """
-    if not qualified or not type_node:
-        return False
-    want = [seg.casefold() for seg in str(qualified).split("\\") if seg]
-    if len(want) < 2:
-        return False  # bare `new Svc()`: no namespace written, no evidence
-    if declared_fqn:
-        have = [seg.casefold() for seg in str(declared_fqn).split("\\") if seg]
-        return want == have  # whole name, not a suffix of one
-    source_file = str(type_node.get("source_file") or "")
-    parts = [p for p in source_file.replace("\\", "/").split("/")
-             if p and p not in (".", "..")]
-    if not parts:
-        return False
-    parts[-1] = parts[-1].rsplit(".", 1)[0]  # drop the file extension
-    parts = [p.casefold() for p in parts]
-    return len(parts) >= len(want) and parts[-len(want):] == want
-
-
 _PHP_NON_CLASS_TYPE_MARKERS = ("_php_non_class_types", "_php_interfaces")
 
 
@@ -3233,6 +3189,14 @@ def _resolve_php_member_calls(
         if declared and declared.get("path"):
             class_fqn_by_file[declared["path"]] = declared.get("classes", {})
 
+    # `use`-import/namespace-aware receiver typing (#21), consulted IN FRONT of
+    # the corpus-wide short-name index below — the shape of the C# call site in
+    # `_resolve_csharp_member_calls`. A name the calling file CLAIMS through a
+    # `use` import or writes out qualified is decided here and never falls back:
+    # that refusal is the whole fix for #16. It can only delete edges, never add
+    # or re-point one — see PhpNameResolver.
+    resolver = PhpNameResolver(all_nodes, all_edges, type_def_nids, class_fqn_by_file)
+
     def declared_fqn(type_node: dict | None) -> str | None:
         """The namespace-qualified name of ``type_node``'s class, if its file
         declared one. Absent for a global-namespace class, and for a node
@@ -3278,10 +3242,20 @@ def _resolve_php_member_calls(
                 # type, and an enum's methods live on no definition node:
                 # refuse rather than bind a same-short-named stranger.
                 continue
-            type_defs = type_def_nids.get(key(type_name), [])
-            if len(type_defs) != 1:
-                continue  # short name collides across the corpus: refuse
-            type_nid = type_defs[0]
+            resolved, decisive = resolver.resolve_type_name(
+                type_name,
+                raw_call.get("receiver_type_qualified"),
+                raw_call.get("source_file", ""),
+            )
+            if resolved:
+                type_nid = resolved
+            elif decisive:
+                continue  # the name is claimed and names no in-corpus class (#16)
+            else:
+                type_defs = type_def_nids.get(key(type_name), [])
+                if len(type_defs) != 1:
+                    continue  # short name collides across the corpus: refuse
+                type_nid = type_defs[0]
             if receiver == "(new)":
                 # The class is named in the source; promote to EXTRACTED
                 # only when the written namespace backs the node we found.
