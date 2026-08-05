@@ -1,6 +1,10 @@
-"""Regression tests for `graphify path` arrow direction (#849)."""
+"""Regression tests for `graphify path` arrow direction (#849) and determinism +
+honest edge labels (#2074)."""
 from __future__ import annotations
 import json
+import os
+import subprocess
+import sys
 import networkx as nx
 import pytest
 from networkx.readwrite import json_graph
@@ -103,3 +107,181 @@ def test_endpoint_falls_back_to_score_head(monkeypatch, tmp_path, capsys):
         mainmod.main()
     assert exc_info.value.code == 0
     assert "No path found" in capsys.readouterr().out
+
+
+# ── #2074: deterministic route + honest edge relation ────────────────────────
+
+def _diamond_graph(tmp_path):
+    """Two equal-length routes A->P->B and A->Q->B — a tie the traversal must
+    resolve deterministically."""
+    data = {
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [
+            {"id": "a", "label": "Alpha", "source_file": "a.py"},
+            {"id": "p", "label": "Pmid", "source_file": "p.py"},
+            {"id": "q", "label": "Qmid", "source_file": "q.py"},
+            {"id": "b", "label": "Beta", "source_file": "b.py"},
+        ],
+        "links": [
+            {"source": "a", "target": "p", "relation": "calls", "confidence": "EXTRACTED"},
+            {"source": "p", "target": "b", "relation": "calls", "confidence": "EXTRACTED"},
+            {"source": "a", "target": "q", "relation": "calls", "confidence": "EXTRACTED"},
+            {"source": "q", "target": "b", "relation": "calls", "confidence": "EXTRACTED"},
+        ],
+    }
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps(data))
+    return p
+
+
+def _arrow_line(stdout: str) -> str:
+    return next((l.strip() for l in stdout.splitlines() if "-->" in l or "<--" in l), "")
+
+
+def test_path_deterministic_across_hash_seeds(tmp_path):
+    """#2074: the same graph must yield the same route regardless of
+    PYTHONHASHSEED. pytest fixes the seed per process, so run out-of-process."""
+    gp = _diamond_graph(tmp_path)
+    routes = set()
+    for seed in ("0", "1", "2", "3", "4", "5", "6", "7"):
+        env = {**os.environ, "PYTHONHASHSEED": seed}
+        r = subprocess.run(
+            [sys.executable, "-m", "graphify", "path", "Alpha", "Beta", "--graph", str(gp)],
+            capture_output=True, text=True, env=env, cwd=str(tmp_path),
+        )
+        assert r.returncode == 0, r.stderr
+        routes.add(_arrow_line(r.stdout))
+    assert len(routes) == 1, f"non-deterministic path across hash seeds: {routes}"
+    # Canonical tie-break picks the lexicographically-smaller mid node (Pmid).
+    assert "Pmid" in next(iter(routes))
+
+
+def test_path_relation_matches_stored_edge_not_fabricated(monkeypatch, tmp_path, capsys):
+    """#2074: the printed relation must be the edge's ACTUAL stored relation,
+    never a hardcoded/fabricated `calls`."""
+    data = {
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [
+            {"id": "a", "label": "Alpha", "source_file": "a.py"},
+            {"id": "b", "label": "Beta", "source_file": "b.py"},
+        ],
+        "links": [
+            {"source": "a", "target": "b", "relation": "references", "confidence": "INFERRED"},
+        ],
+    }
+    gp = tmp_path / "graph.json"
+    gp.write_text(json.dumps(data))
+    out = _run(monkeypatch, gp, "Alpha", "Beta", capsys)
+    assert "--references [INFERRED]-->" in out
+    assert "calls" not in out
+
+
+def test_path_relation_fallback_related_when_missing(monkeypatch, tmp_path, capsys):
+    """#2074: an edge with no stored relation prints an honest 'related', not an
+    empty '---->' arrow and not a fabricated relation."""
+    data = {
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [
+            {"id": "a", "label": "Alpha", "source_file": "a.py"},
+            {"id": "b", "label": "Beta", "source_file": "b.py"},
+        ],
+        "links": [{"source": "a", "target": "b"}],
+    }
+    gp = tmp_path / "graph.json"
+    gp.write_text(json.dumps(data))
+    out = _run(monkeypatch, gp, "Alpha", "Beta", capsys)
+    assert "--related-->" in out
+    assert "---->" not in out.replace("--related-->", "")
+
+
+# ── #2309: hop direction must honor _src/_tgt markers, not stored arc order ──
+
+def _flipped_marker_graph(tmp_path):
+    """3-node chain where the middle link is PERSISTED in flipped endpoint
+    order (source/target swapped) but carries its direction truth in the
+    per-link _src/_tgt markers — the shape produced by pre-#563 graphs, raw
+    node_link_data dumps, and undirected-storage canonicalization."""
+    data = {
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [
+            {"id": "ingest", "label": "ingest.ts", "source_file": "src/ingest.ts"},
+            {"id": "logger", "label": "logger.ts", "source_file": "src/logger.ts"},
+            {"id": "draft", "label": "draft-generator.ts",
+             "source_file": "src/draft-generator.ts"},
+        ],
+        "links": [
+            # Canonical order + matching markers.
+            {"source": "ingest", "target": "logger",
+             "_src": "ingest", "_tgt": "logger",
+             "relation": "calls", "confidence": "EXTRACTED"},
+            # FLIPPED persisted order; truth is draft --imports_from--> logger.
+            {"source": "logger", "target": "draft",
+             "_src": "draft", "_tgt": "logger",
+             "relation": "imports_from", "confidence": "EXTRACTED"},
+        ],
+    }
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps(data))
+    return p
+
+
+def test_path_direction_recovered_from_src_tgt_markers(monkeypatch, tmp_path, capsys):
+    """#2309: a hop over a link stored in flipped order must render the TRUE
+    direction from its _src/_tgt markers, not the persisted arc order."""
+    p = _flipped_marker_graph(tmp_path)
+    out = _run(monkeypatch, p, "ingest", "draft-generator", capsys)
+    assert "Shortest path (2 hops):" in out
+    assert "ingest.ts --calls [EXTRACTED]--> logger.ts" in out
+    # True direction is draft -> logger, so the logger->draft hop is reversed.
+    assert "logger.ts <--imports_from [EXTRACTED]-- draft-generator.ts" in out
+    assert "--imports_from [EXTRACTED]-->" not in out
+
+
+def test_path_canonical_marker_graph_still_forward(monkeypatch, tmp_path, capsys):
+    """#2309 control: a to_json-shaped graph whose markers AGREE with the
+    persisted source/target order keeps rendering forward (no regression)."""
+    data = {
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [
+            {"id": "a", "label": "Alpha", "source_file": "a.py"},
+            {"id": "b", "label": "Beta", "source_file": "b.py"},
+        ],
+        "links": [
+            {"source": "a", "target": "b", "_src": "a", "_tgt": "b",
+             "relation": "calls", "confidence": "EXTRACTED"},
+        ],
+    }
+    gp = tmp_path / "graph.json"
+    gp.write_text(json.dumps(data))
+    out = _run(monkeypatch, gp, "Alpha", "Beta", capsys)
+    assert "Alpha --calls [EXTRACTED]--> Beta" in out
+    # And walking the same edge backwards still reverses the arrow.
+    out = _run(monkeypatch, gp, "Beta", "Alpha", capsys)
+    assert "Beta <--calls [EXTRACTED]-- Alpha" in out
+
+
+def test_explain_direction_recovered_from_src_tgt_markers(monkeypatch, tmp_path, capsys):
+    """#2309: explain's in/out classification must honor _src markers — an
+    edge persisted as hub->spoke but truly spoke->hub is an IN edge of hub."""
+    data = {
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [
+            {"id": "hub", "label": "hub.ts", "source_file": "src/hub.ts"},
+            {"id": "spoke", "label": "spoke.ts", "source_file": "src/spoke.ts"},
+        ],
+        "links": [
+            # Persisted arc hub->spoke, but the markers say spoke calls hub.
+            {"source": "hub", "target": "spoke",
+             "_src": "spoke", "_tgt": "hub",
+             "relation": "calls", "confidence": "EXTRACTED"},
+        ],
+    }
+    gp = tmp_path / "graph.json"
+    gp.write_text(json.dumps(data))
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(mainmod.sys, "argv",
+        ["graphify", "explain", "hub", "--graph", str(gp)])
+    mainmod.main()
+    out = capsys.readouterr().out
+    assert "<-- spoke.ts [calls]" in out
+    assert "--> spoke.ts" not in out

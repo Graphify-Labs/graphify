@@ -34,11 +34,11 @@ def test_cypher_command_basic(tmp_path):
     db_path = _build_db(tmp_path)
     result = subprocess.run(
         [sys.executable, "-m", "graphify", "cypher",
-         "MATCH (n:code) RETURN count(n)", "--db", db_path],
+         "MATCH (n) RETURN count(n)", "--db", db_path],
         capture_output=True, text=True, timeout=30,
     )
     assert result.returncode == 0
-    assert "3" in result.stdout
+    assert "4" in result.stdout
 
 
 def test_cypher_command_db_not_found(tmp_path):

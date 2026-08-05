@@ -321,9 +321,75 @@ def test_checkpoint_scopes_cache_writes_to_chunk_files(tmp_path):
     assert [n["id"] for n in after["nodes"]] == ["b_real"], (
         f"B.py cache was clobbered by an out-of-chunk node: {after}"
     )
-    # A.py (the actual chunk file) was legitimately cached.
-    a_cache = load_cached(a, tmp_path, kind="semantic")
+    # A.py (the actual chunk file) was legitimately cached. The checkpoint stamps
+    # entries with the prompt that produced them (#1939), so read that namespace.
+    from graphify.llm import _extraction_system
+
+    a_cache = load_cached(a, tmp_path, kind="semantic", prompt=_extraction_system())
     assert a_cache and any(n["id"] == "a_ok" for n in a_cache["nodes"])
+
+
+def test_truncated_chunk_is_cached_partial_and_missed_on_reload(tmp_path):
+    """A single-file chunk that stays truncated is checkpointed as a PARTIAL
+    entry, so reloading it is a cache miss (the file re-dispatches next run)
+    instead of serving the incomplete node set forever."""
+    from graphify.llm import extract_corpus_parallel, _extraction_system
+    from graphify.cache import load_cached
+
+    doc = tmp_path / "doc.md"; doc.write_text("# Heading\nlots of prose\n")
+
+    def truncated(chunk, **kwargs):
+        return {
+            "nodes": [{"id": "n1", "source_file": "doc.md", "file_type": "document"}],
+            "edges": [], "hyperedges": [],
+            "input_tokens": 1, "output_tokens": 1,
+            "finish_reason": "length",
+        }
+
+    with patch("graphify.llm.extract_files_direct", side_effect=truncated):
+        extract_corpus_parallel(
+            [doc], backend="kimi", root=tmp_path,
+            token_budget=None, chunk_size=1, max_concurrency=1,
+        )
+
+    # The entry was written but stamped partial, so load_cached rejects it.
+    assert load_cached(doc, tmp_path, kind="semantic", prompt=_extraction_system()) is None
+
+
+def test_checkpoint_writes_deep_namespace_in_deep_mode(tmp_path):
+    """#1894: the per-chunk checkpoint must follow the run's mode — a
+    deep_mode=True run checkpoints into cache/semantic-deep/, leaving the
+    standard cache/semantic/ namespace untouched (and vice versa)."""
+    from graphify.llm import extract_corpus_parallel, _extraction_system
+    from graphify.cache import load_cached
+
+    doc = tmp_path / "doc.md"
+    doc.write_text("# Doc\n\nsome content\n")
+
+    def ok(chunk, **kwargs):
+        return {
+            "nodes": [{"id": "d1", "source_file": "doc.md", "file_type": "document"}],
+            "edges": [], "hyperedges": [], "input_tokens": 1, "output_tokens": 1,
+        }
+
+    with patch("graphify.llm.extract_files_direct", side_effect=ok):
+        extract_corpus_parallel(
+            [doc], backend="kimi", root=tmp_path,
+            token_budget=None, chunk_size=1, max_concurrency=1,
+            deep_mode=True,
+        )
+
+    # The checkpoint also stamps entries with the prompt that produced them
+    # (#1939) — a deep run's prompt carries the deep suffix.
+    deep = load_cached(doc, tmp_path, kind="semantic-deep",
+                       prompt=_extraction_system(deep=True))
+    assert deep and [n["id"] for n in deep["nodes"]] == ["d1"], (
+        "deep-mode checkpoint must land in cache/semantic-deep/"
+    )
+    assert load_cached(doc, tmp_path, kind="semantic",
+                       prompt=_extraction_system(deep=False)) is None, (
+        "deep-mode checkpoint must not write the standard semantic namespace"
+    )
 
 
 def test_omitted_documents_are_reconciled_and_warned(tmp_path, capsys):
@@ -452,7 +518,9 @@ def test_checkpoint_caches_sliced_document_chunks(tmp_path, capsys):
     split into FileSlice units; before the fix each sliced chunk leaked the
     FileSlice object into the allowlist, so save_semantic_cache raised TypeError,
     the best-effort except swallowed it, and the slice was never checkpointed."""
-    from graphify.llm import extract_corpus_parallel, expand_oversized_files, _FILE_CHAR_CAP
+    from graphify.llm import (
+        extract_corpus_parallel, expand_oversized_files, _FILE_CHAR_CAP, _extraction_system,
+    )
     from graphify.file_slice import FileSlice
     from graphify.cache import load_cached
 
@@ -478,7 +546,8 @@ def test_checkpoint_caches_sliced_document_chunks(tmp_path, capsys):
     assert "incremental cache checkpoint failed" not in capsys.readouterr().err, (
         "checkpoint raised on a FileSlice chunk (#1870)"
     )
-    cached = load_cached(doc, tmp_path, kind="semantic")
+    # The checkpoint stamps entries with the prompt that produced them (#1939).
+    cached = load_cached(doc, tmp_path, kind="semantic", prompt=_extraction_system())
     assert cached and any(n["id"] == "big_title" for n in cached["nodes"]), (
         "sliced document was never checkpointed (#1870)"
     )
@@ -668,6 +737,68 @@ def test_adaptive_retry_single_file_truncation_does_not_recurse(tmp_path, capsys
     assert calls == [1], f"single-file chunk recursed; calls = {calls}"
     err = capsys.readouterr().err
     assert "single-file chunk" in err and "truncated" in err
+
+
+def test_adaptive_retry_marks_single_file_truncation_partial(tmp_path):
+    """A non-splittable single-file truncation keeps its partial result but
+    marks every item ``_partial`` so it is not cached as complete."""
+    from graphify.llm import _extract_with_adaptive_retry
+
+    f = tmp_path / "huge.py"; f.write_text("x")
+
+    def stub(chunk, **kwargs):
+        return _stub_with_finish(len(chunk), finish_reason="length")
+
+    with patch("graphify.llm.extract_files_direct", side_effect=stub):
+        result = _extract_with_adaptive_retry(
+            [f], backend="kimi", api_key=None, model=None, root=tmp_path, max_depth=3
+        )
+
+    assert result["nodes"], "the partial result should still be returned"
+    assert all(n.get("_partial") for n in result["nodes"])
+
+
+def test_adaptive_retry_marks_max_depth_giveup_partial(tmp_path):
+    """When recursion caps at max_depth with everything still truncated, the
+    merged partial result is marked ``_partial`` on every item."""
+    from graphify.llm import _extract_with_adaptive_retry
+
+    files = [tmp_path / f"f{i}.py" for i in range(8)]
+    for f in files:
+        f.write_text("x")
+
+    def stub(chunk, **kwargs):
+        return _stub_with_finish(len(chunk), finish_reason="length")
+
+    with patch("graphify.llm.extract_files_direct", side_effect=stub):
+        result = _extract_with_adaptive_retry(
+            files, backend="kimi", api_key=None, model=None, root=tmp_path, max_depth=2
+        )
+
+    assert result["nodes"]
+    assert all(n.get("_partial") for n in result["nodes"])
+
+
+def test_adaptive_retry_successful_split_is_not_marked_partial(tmp_path):
+    """A truncation that IS recovered by splitting yields a complete result —
+    it must NOT carry the partial marker."""
+    from graphify.llm import _extract_with_adaptive_retry
+
+    files = [tmp_path / f"f{i}.py" for i in range(4)]
+    for f in files:
+        f.write_text("x")
+
+    def stub(chunk, **kwargs):
+        finish = "length" if len(chunk) == 4 else "stop"
+        return _stub_with_finish(len(chunk), finish_reason=finish)
+
+    with patch("graphify.llm.extract_files_direct", side_effect=stub):
+        result = _extract_with_adaptive_retry(
+            files, backend="kimi", api_key=None, model=None, root=tmp_path, max_depth=3
+        )
+
+    assert result["nodes"]
+    assert not any(n.get("_partial") for n in result["nodes"])
 
 
 def test_corpus_parallel_uses_adaptive_retry(tmp_path):

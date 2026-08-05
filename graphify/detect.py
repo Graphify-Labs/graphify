@@ -7,6 +7,7 @@ import re
 import shlex
 from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
+from functools import lru_cache
 from pathlib import Path
 
 from graphify.google_workspace import (
@@ -14,7 +15,7 @@ from graphify.google_workspace import (
     convert_google_workspace_file,
     google_workspace_enabled,
 )
-from graphify.paths import GRAPHIFY_OUT, GRAPHIFY_OUT_NAME, out_path
+from graphify.paths import GRAPHIFY_OUT, out_path
 
 
 class FileType(str, Enum):
@@ -27,7 +28,7 @@ class FileType(str, Enum):
 
 _MANIFEST_PATH = str(out_path("manifest.json"))
 
-CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.ejs', '.ets', '.go', '.rs', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.cu', '.cuh', '.metal', '.rb', '.rake', '.swift', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.psm1', '.psd1', '.ex', '.exs', '.m', '.mm', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.tf', '.tfvars', '.hcl', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.slnx', '.csproj', '.fsproj', '.vbproj', '.xaml', '.razor', '.cshtml', '.cls', '.trigger'}
+CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.ejs', '.ets', '.go', '.rs', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.cu', '.cuh', '.metal', '.rb', '.rake', '.swift', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.psm1', '.psd1', '.ex', '.exs', '.m', '.mm', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.tf', '.tfvars', '.hcl', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.slnx', '.csproj', '.fsproj', '.vbproj', '.xaml', '.razor', '.cshtml', '.cls', '.trigger'}
 DOC_EXTENSIONS = {'.md', '.mdx', '.qmd', '.skill', '.txt', '.rst', '.html', '.yaml', '.yml'}
 PAPER_EXTENSIONS = {'.pdf'}
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'}
@@ -93,11 +94,21 @@ def _zip_within_caps(path: Path) -> bool:
         return False
     return True
 
-# Parent directories whose contents are always sensitive.
-# Checked against path.parts[:-1] (parents only) so a root-level file named
-# "credentials" or "secrets" is not falsely flagged by this stage.
-_SENSITIVE_DIRS = frozenset({
-    ".ssh", ".gnupg", ".aws", ".gcloud", "secrets", ".secrets", "credentials",
+# Dedicated credential-store directories: everything beneath them is sensitive,
+# with no carve-out — a .py inside ~/.ssh or ~/.aws is tooling for key material,
+# not a source package, and keys there are routinely extensionless.
+# Both sets are checked against path.parts[:-1] (parents only) so a root-level
+# file named "credentials" or "secrets" is not falsely flagged by this stage.
+_CREDENTIAL_STORE_DIRS = frozenset({
+    ".ssh", ".gnupg", ".aws", ".gcloud",
+})
+
+# Bare-name directories that are as often legitimate source packages (Go
+# internal/secrets, a credentials/ service module) as credential stores. Their
+# contents are sensitive EXCEPT genuine programming-language source, mirroring
+# the Stage 3 keyword carve-out (#1666) at the directory level (#1943).
+_AMBIGUOUS_SENSITIVE_DIRS = frozenset({
+    "secrets", ".secrets", "credentials",
 })
 
 # Files that may contain secrets - skip silently. These patterns are specific
@@ -105,10 +116,31 @@ _SENSITIVE_DIRS = frozenset({
 _SENSITIVE_PATTERNS = [
     re.compile(r'(^|[\\/])\.(env|envrc)(\.|$)', re.IGNORECASE),
     re.compile(r'\.(pem|key|p12|pfx|cert|crt|der|p8)$', re.IGNORECASE),
-    re.compile(r'(id_rsa|id_dsa|id_ecdsa|id_ed25519)(\.pub)?$'),
-    re.compile(r'(\.netrc|\.pgpass|\.htpasswd)$', re.IGNORECASE),
-    re.compile(r'(aws_credentials|gcloud_credentials|service.account)', re.IGNORECASE),
+    # SSH/GPG private keys. Left boundary + IGNORECASE so `grid_rsa` (alpha before
+    # `id_rsa`) and `ID_RSA` are handled correctly, not matched as a substring.
+    re.compile(r'(^|[^A-Za-z0-9])(id_rsa|id_dsa|id_ecdsa|id_ed25519)(\.pub)?$', re.IGNORECASE),
+    re.compile(r'^secring(\.(gpg|pgp))?$', re.IGNORECASE),  # GPG private keyring
+    # Auth/credential dotfiles that routinely hold tokens (#2106: .npmrc/.pypirc/
+    # .git-credentials/.boto were silently indexed before).
+    re.compile(r'(\.netrc|\.pgpass|\.htpasswd|\.npmrc|\.pypirc|\.git-credentials|\.boto)$', re.IGNORECASE),
+    # NOTE: aws_credentials/gcloud_credentials/service_account moved to the
+    # boundary-checked Stage 3 keyword path (#2106). The old unbounded
+    # `service.account` substring (regex `.` wildcard) matched real source like
+    # google/oauth2/service_account.py and prose like aws_credentials_rotation.md.
 ]
+
+# Committed dotenv / envrc templates — placeholders only, not live secrets.
+# Stage 2's `.env.` regex otherwise treats these like `.env.local` (#2184).
+_ENV_TEMPLATE_SUFFIXES = (".example", ".sample", ".template", ".dist")
+
+
+def _is_env_template(name: str) -> bool:
+    """True for `.env.example` / `.envrc.sample` style committed templates (#2184)."""
+    lower = name.lower()
+    if not lower.endswith(_ENV_TEMPLATE_SUFFIXES):
+        return False
+    # Basename must still be an .env* / .envrc* file (not e.g. secrets.example).
+    return bool(re.match(r"\.(env|envrc)\.", lower))
 
 # Generic keyword patterns - these only count when the keyword is LOAD-BEARING
 # in the filename (see _generic_keyword_hit), because a keyword buried mid-phrase
@@ -123,21 +155,51 @@ _SENSITIVE_PATTERNS = [
 _GENERIC_KEYWORD_PATTERNS = [
     re.compile(r'(?<![a-zA-Z0-9])(credential|secret|passwd|password|private_key)s?(?![a-zA-Z])', re.IGNORECASE),
     re.compile(r'(?<![a-zA-Z0-9])tokens?(?![a-zA-Z])', re.IGNORECASE),
+    # service_account / service-account / serviceaccount (GCP key files). In the
+    # keyword path so `service_account.py` (real source) is spared while
+    # `service-account.json` (a downloaded key) and bare names are still caught
+    # (#2106; was an unbounded Stage 2 substring). aws_credentials/gcloud_credentials
+    # are already covered by the `credential` keyword above.
+    re.compile(r'(?<![a-zA-Z0-9])service[._-]?account(?![a-zA-Z])', re.IGNORECASE),
 ]
 
+# Prose/note formats: a heavily-linked wiki article whose topic slug ends in a
+# keyword (privacy-tokens.md, token-economics.md) is a document ABOUT the topic,
+# not a credential store, so it must not be silently dropped (#2106). A BARE
+# keyword name (secrets.md, token.md, passwords.md) still reads as a dump and
+# stays excluded — see _is_prose_note.
+_PROSE_EXTS = frozenset({".md", ".markdown", ".rst", ".org", ".adoc", ".tex"})
+
 # Data/serialization extensions that commonly ARE secret stores when their name
-# hits a generic keyword (credentials.json, secrets.yaml, token.toml). These stay
-# subject to the Stage 3 keyword drop even though some route through the CODE path
-# for manifest parsing — only real programming-language source is exempt (#1666).
+# hits a generic keyword (credentials.json, secrets.yaml, token.toml) or they sit
+# in an ambiguous sensitive dir (secrets/db.json). These stay subject to the
+# Stage 1 ambiguous-dir drop and the Stage 3 keyword drop even though some route
+# through the CODE path for manifest parsing — only real programming-language
+# source is exempt (#1666, #1943).
 _SECRET_PRONE_DATA_EXTS = frozenset({
     ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".config",
     ".xml", ".properties", ".env", ".txt",
+    # .tfvars is Terraform's canonical VALUES store (routinely holds real
+    # secrets), not source — keep it out of the graph even though it sits in
+    # CODE_EXTENSIONS. .tf/.hcl are genuine infra source and stay graphable.
+    ".tfvars",
 })
 
 # Word separators for the load-bearing check (underscore intentionally included;
 # multi-word keywords like private_key are handled by the end-of-stem check,
 # which runs before word counting).
-_WORD_SPLIT = re.compile(r'[-_\s]+')
+_WORD_SPLIT = re.compile(r'[-_\s.]+')  # '.' included so `token.economics.notes` counts as 3 words (#2106)
+
+
+def _is_prose_note(path: Path) -> bool:
+    """A prose/note file (.md/.rst/...) whose stem is a multi-word topic slug is
+    exempt from the generic-keyword drop (#2106). A stem that IS exactly a bare
+    keyword (secrets / token / passwords) is NOT exempt — that still reads as a
+    credential dump."""
+    if path.suffix.lower() not in _PROSE_EXTS:
+        return False
+    stem = Path(path.name).stem.lstrip('.') or Path(path.name).stem
+    return not any(p.fullmatch(stem) for p in _GENERIC_KEYWORD_PATTERNS)
 
 
 def _generic_keyword_hit(name: str) -> bool:
@@ -150,9 +212,11 @@ def _generic_keyword_hit(name: str) -> bool:
     ("token-economics-of-recall.md", "password-policy-discussion.md") and must
     not cause the file to be silently dropped from the graph (#436, #718).
     """
-    # Stem = name up to the first dot, ignoring leading dots so dotfiles like
-    # ".token" keep their keyword ("" stems would never match).
-    stem = name.lstrip('.').split('.')[0]
+    # Stem = name minus only the FINAL extension (not up to the first dot), so a
+    # multi-dot topic slug like `token.economics.notes.md` keeps all its words and
+    # doesn't collapse to a bare `token` (#2106). Leading dots stripped so
+    # dotfiles like `.token` keep their keyword.
+    stem = Path(name).stem.lstrip('.') or Path(name).stem
     for pat in _GENERIC_KEYWORD_PATTERNS:
         hit = False
         for m in pat.finditer(stem):
@@ -182,16 +246,36 @@ _PAPER_SIGNALS = [
 _PAPER_SIGNAL_THRESHOLD = 3  # need at least this many signals to call it a paper
 
 
+def _is_graphable_source(path: Path) -> bool:
+    """True for genuine programming-language source — the only category exempt
+    from the ambiguous-dir (Stage 1, #1943) and generic-keyword (Stage 3, #1666)
+    drops. Data/serialization formats are NOT exempt even though some route
+    through the CODE path for manifest parsing: credentials.json / secrets.yaml
+    are exactly the stores those stages must keep catching.
+    """
+    return classify_file(path) == FileType.CODE and path.suffix.lower() not in _SECRET_PRONE_DATA_EXTS
+
+
 def _is_sensitive(path: Path) -> bool:
     """Return True if this file likely contains secrets and should be skipped."""
     # Stage 1: any PARENT directory is a known secrets dir (parts[:-1] excludes
     # the filename itself so a root-level file named "credentials" is not falsely
-    # skipped — the name patterns in Stage 2 handle the filename).
-    if any(part in _SENSITIVE_DIRS for part in path.parts[:-1]):
+    # skipped — the name patterns in Stage 2 handle the filename). Dedicated
+    # credential stores drop everything unconditionally; ambiguous bare-name dirs
+    # (secrets/, credentials/) spare genuine source (#1943), which still falls
+    # through so Stages 2-3 screen its filename like anywhere else.
+    parents = path.parts[:-1]
+    # Lowercase the segment comparison so `Secrets/`/`SECRETS/` (real on
+    # case-insensitive macOS/Windows filesystems) are still caught (#2106).
+    if any(part.lower() in _CREDENTIAL_STORE_DIRS for part in parents):
         return True
-    # Stage 2: filename pattern match
+    if any(part.lower() in _AMBIGUOUS_SENSITIVE_DIRS for part in parents) and not _is_graphable_source(path):
+        return True
+    # Stage 2: filename pattern match. Template suffixes (.example/.sample/…)
+    # on .env / .envrc are the usual "safe to commit" convention — keep them
+    # in the graph without opening a broad Stage 2 allowlist (#2184 / #1921).
     name = path.name
-    if any(p.search(name) for p in _SENSITIVE_PATTERNS):
+    if any(p.search(name) for p in _SENSITIVE_PATTERNS) and not _is_env_template(name):
         return True
     # Stage 3: generic keywords, only when load-bearing in the name. Do NOT let a
     # bare name keyword silently drop a genuine programming-language source file:
@@ -202,9 +286,9 @@ def _is_sensitive(path: Path) -> bool:
     # secret stores this stage must catch. The specific Stage 2 patterns (.env, .pem,
     # id_rsa, ...) still apply to everything regardless of extension.
     if _generic_keyword_hit(name):
-        ext = path.suffix.lower()
-        is_source_code = classify_file(path) == FileType.CODE and ext not in _SECRET_PRONE_DATA_EXTS
-        return not is_source_code
+        # Genuine source AND multi-word prose notes are exempt; a bare-keyword
+        # name (secrets.md, token.txt) still drops (#1666, #2106).
+        return not (_is_graphable_source(path) or _is_prose_note(path))
     return False
 
 
@@ -621,7 +705,7 @@ def xlsx_extract_structure(path: Path) -> dict:
     return {"nodes": nodes, "edges": edges}
 
 
-def convert_office_file(path: Path, out_dir: Path) -> Path | None:
+def convert_office_file(path: Path, out_dir: Path, root: "Path | None" = None) -> Path | None:
     """Convert a .docx or .xlsx to a markdown sidecar in out_dir.
 
     Returns the path of the converted .md file, or None if conversion failed
@@ -640,14 +724,30 @@ def convert_office_file(path: Path, out_dir: Path) -> Path | None:
 
     out_dir.mkdir(parents=True, exist_ok=True)
     # Use a stable name derived from the original path to avoid collisions.
-    # Normalize the resolved path to NFC before hashing: on macOS (HFS+/APFS)
-    # os.walk/rglob return filenames in NFD, while Python string literals and
-    # directly-constructed Path objects are NFC, so the same source file would
-    # otherwise hash to different sidecar names across runs — causing --update
-    # to treat every Office file as new and re-extract it (#1226).
+    # Hash the path RELATIVE to the scan root, not the absolute path: the
+    # absolute form salts the name with the checkout location, so the same
+    # tracked .xlsx in two clones/worktrees emits two differently-named,
+    # byte-identical sidecars — unbounded duplicates when graphify-out/ is
+    # committed, each ingested as a distinct source doc (#2059). The relative
+    # path still disambiguates same-stem files in different directories.
+    # Normalize to NFC before hashing: on macOS (HFS+/APFS) os.walk/rglob return
+    # filenames in NFD, while Python string literals and directly-constructed
+    # Path objects are NFC, so the same source file would otherwise hash to
+    # different sidecar names across runs — making --update treat every Office
+    # file as new and re-extract it (#1226).
     import hashlib
     import unicodedata
-    normalized_path = unicodedata.normalize("NFC", str(path.resolve()))
+    if root is None:
+        # Default layout: out_dir is <root>/<graphify-out>/converted.
+        root = out_dir.parent.parent
+    try:
+        key = path.resolve().relative_to(Path(root).resolve()).as_posix()
+    except (ValueError, OSError):
+        # Not under the scan root (custom GRAPHIFY_OUT layouts, --include
+        # sources, direct API callers): keep the previous absolute form rather
+        # than guessing, so behavior is unchanged for those cases.
+        key = str(path.resolve())
+    normalized_path = unicodedata.normalize("NFC", key)
     name_hash = hashlib.sha256(normalized_path.encode()).hexdigest()[:8]
     out_path = out_dir / f"{path.stem}_{name_hash}.md"
     # Skip re-writing only when the sidecar is present AND at least as new as the
@@ -687,15 +787,17 @@ def count_words(path: Path) -> int:
 
 # Directory names to always skip - venvs, caches, build artifacts, deps
 _SKIP_DIRS = {
-    "venv", ".venv", "env", ".env",
+    "venv", ".venv",  # "env"/".env"/"*_env" are gated on venv markers below (#2058)
     "node_modules", "__pycache__", ".git",
     "dist", "build", "target", "out",
     "site-packages", "lib64",
     ".pytest_cache", ".mypy_cache", ".ruff_cache",
     ".tox", ".nox", ".eggs", "*.egg-info",  # nox is tox's successor, same .nox/ venv shape (#1804)
-    "graphify-out", GRAPHIFY_OUT_NAME,  # never treat own output as source input (#524); honour GRAPHIFY_OUT (#1423)
+    "graphify-out",  # never treat the default output as source input (#524)
     # Coverage/test-artefact dirs — generated, never architecturally meaningful
-    "coverage", "lcov-report",              # Vitest/Istanbul/nyc HTML reports (#870)
+    "lcov-report",                          # Vitest/Istanbul/nyc HTML reports (#870);
+                                            # bare "coverage" is gated on report
+                                            # artefacts below (#2339)
     "visual-tests", "visual-test",          # Playwright/visual-regression bundles (#869)
     "__snapshots__",                        # Jest/Vitest snapshot dir (unambiguous)
     "storybook-static",                     # Storybook production build output
@@ -712,6 +814,9 @@ _SKIP_FILES = {
     "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
     "Cargo.lock", "poetry.lock", "Gemfile.lock",
     "composer.lock", "go.sum", "go.work.sum",
+    # Removed allowlist config (#2112) — no longer consumed, so keep a leftover
+    # file out of the unclassified list instead of surfacing it as scan input.
+    ".graphifyinclude",
 }
 
 # A bare "snapshots" dir is a Jest/Vitest artifact only when it actually holds
@@ -721,11 +826,79 @@ _SKIP_FILES = {
 # unconditionally pruned above; only the ambiguous bare name is gated here.
 _JS_SNAPSHOT_TEST_ROOTS = frozenset({"__tests__", "__test__"})
 
+# Files a coverage tool writes into its own output dir. Any one of them is proof
+# the directory is generated: lcov (lcov.info), nyc/Istanbul (coverage-final.json,
+# clover.xml, the lcov-report/ subtree), coverage.py (coverage.xml, .coverage),
+# JaCoCo/Cobertura (jacoco.xml, cobertura-coverage.xml).
+_COVERAGE_ARTIFACT_FILES = frozenset({
+    "lcov.info", "coverage-final.json", "coverage-summary.json",
+    "clover.xml", "coverage.xml", "cobertura-coverage.xml", "jacoco.xml",
+    ".coverage", "index.html",
+})
+_COVERAGE_ARTIFACT_DIRS = frozenset({"lcov-report", "html-report"})
+
+
+def _has_coverage_artifacts(d: "Path") -> bool:
+    """True only when *d* holds files a coverage tool actually generated.
+
+    ``coverage`` is a legitimate package name (a Python package, a Go/Rust module,
+    a domain namespace), so pruning it by name alone silently drops real source —
+    an entire 5-module package in #2339, with its dependents left in the graph so
+    queries still returned plausible neighbours. Prune it only on real evidence,
+    mirroring the ``snapshots``/``env`` gating (#1666/#2058): a coverage report
+    file, or an Istanbul/lcov HTML report subtree.
+    """
+    try:
+        for name in _COVERAGE_ARTIFACT_FILES:
+            if (d / name).is_file():
+                return True
+        for name in _COVERAGE_ARTIFACT_DIRS:
+            if (d / name).is_dir():
+                return True
+    except OSError:
+        pass
+    return False
+
+
+def _has_venv_markers(d: "Path") -> bool:
+    """True only when *d* has actual virtualenv/conda structure on disk.
+
+    ``env``/``.env``/``*_env`` is a real source-directory convention (UVM/ASIC
+    verification trees, and others), so pruning it by name alone silently drops
+    legitimate source with no trace (#2058). Prune it only on real evidence: a
+    ``pyvenv.cfg``, an ``activate`` script, a ``lib/python*`` tree, or conda's
+    ``conda-meta/`` (``conda create -p ./env`` writes no pyvenv.cfg).
+    """
+    try:
+        if (d / "pyvenv.cfg").is_file():
+            return True
+        if (d / "bin" / "activate").is_file() or (d / "Scripts" / "activate").is_file():
+            return True
+        if next(d.glob("lib/python*"), None) is not None:
+            return True
+        if (d / "conda-meta").is_dir():
+            return True
+    except OSError:
+        pass
+    return False
+
 
 def _is_noise_dir(part: str, parent: "Path | None" = None) -> bool:
     """Return True if this directory name looks like a venv, cache, or dep dir."""
     if part in _SKIP_DIRS:
         return True
+    if part in ("env", ".env") or part.endswith("_env"):
+        # Ambiguous: a real venv OR a real source dir. Prune only on actual venv
+        # evidence, mirroring the "snapshots" gating (#1666/#2058).
+        if parent is None:
+            return False  # cannot verify; keep a possibly-real code dir
+        return _has_venv_markers(parent / part)
+    if part == "coverage":
+        # Ambiguous: a generated report dir OR a real package named coverage.
+        # Prune only on actual coverage-artefact evidence (#2339).
+        if parent is None:
+            return False  # cannot verify; keep a possibly-real code dir
+        return _has_coverage_artifacts(parent / part)
     if part == "snapshots":
         # Prune only when it looks like an actual JS/Vitest snapshot dir.
         if parent is None:
@@ -739,8 +912,9 @@ def _is_noise_dir(part: str, parent: "Path | None" = None) -> bool:
         except OSError:
             pass
         return False
-    # Catch *_venv, *_repo/site-packages patterns
-    if part.endswith("_venv") or part.endswith("_env"):
+    # Catch *_venv (unambiguous — "venv" is always a virtualenv signal). "*_env"
+    # is gated on markers above (#2058), not pruned by name.
+    if part.endswith("_venv"):
         return True
     if part.endswith(".egg-info"):
         return True
@@ -832,7 +1006,7 @@ def _git_info_exclude(vcs_root: Path) -> Path | None:
     return exclude if exclude.is_file() else None
 
 
-def _load_dir_own_ignore(d: Path) -> list[tuple[Path, str]]:
+def _load_dir_own_ignore(d: Path, *, gitignore: bool = True) -> list[tuple[Path, str]]:
     """Read .gitignore/.graphifyignore directly inside *d* (not its ancestors).
 
     Merges .gitignore and .graphifyignore for this one directory (#1363):
@@ -849,17 +1023,17 @@ def _load_dir_own_ignore(d: Path) -> list[tuple[Path, str]]:
     were read, so e.g. `vendor/sub/.gitignore` was silently ignored (#1206).
     """
     patterns: list[tuple[Path, str]] = []
-    for fname in (".gitignore", ".graphifyignore"):
+    for fname in ((".gitignore", ".graphifyignore") if gitignore else (".graphifyignore",)):
         ignore_file = d / fname
         if ignore_file.exists():
-            for raw in ignore_file.read_text(encoding="utf-8", errors="ignore").splitlines():
+            for raw in ignore_file.read_text(encoding="utf-8-sig", errors="ignore").splitlines():
                 line = _parse_gitignore_line(raw)
                 if line:
                     patterns.append((d, line))
     return patterns
 
 
-def _load_graphifyignore(root: Path) -> list[tuple[Path, str]]:
+def _load_graphifyignore(root: Path, *, gitignore: bool = True) -> list[tuple[Path, str]]:
     """Read .graphifyignore files and return (anchor_dir, pattern) pairs.
 
     Patterns are returned outer-first so that inner (closer) rules are
@@ -892,16 +1066,44 @@ def _load_graphifyignore(root: Path) -> list[tuple[Path, str]]:
     # per-directory .gitignore/.graphifyignore — so load it first (lowest priority
     # under last-match-wins) anchored at the VCS root, letting a nearer `!`
     # re-include still override it (#1810).
-    info_exclude = _git_info_exclude(ceiling)
+    info_exclude = _git_info_exclude(ceiling) if gitignore else None
     if info_exclude is not None:
-        for raw in info_exclude.read_text(encoding="utf-8", errors="ignore").splitlines():
+        for raw in info_exclude.read_text(encoding="utf-8-sig", errors="ignore").splitlines():
             line = _parse_gitignore_line(raw)
             if line:
                 patterns.append((ceiling, line))
 
     for d in dirs:
-        patterns.extend(_load_dir_own_ignore(d))
+        patterns.extend(_load_dir_own_ignore(d, gitignore=gitignore))
     return patterns
+
+
+def _match_anchored_ignore_pattern(path: str, pattern: str) -> bool:
+    """Match an anchored gitignore pattern without letting ``*`` cross ``/``."""
+    path_parts = tuple(path.split("/"))
+    pattern_parts = tuple(pattern.split("/"))
+
+    @lru_cache(maxsize=None)
+    def _matches(path_idx: int, pattern_idx: int) -> bool:
+        if pattern_idx == len(pattern_parts):
+            return path_idx == len(path_parts)
+
+        part = pattern_parts[pattern_idx]
+        if part == "**":
+            if pattern_idx == len(pattern_parts) - 1:
+                return path_idx < len(path_parts)
+            return _matches(path_idx, pattern_idx + 1) or (
+                path_idx < len(path_parts)
+                and _matches(path_idx + 1, pattern_idx)
+            )
+
+        return (
+            path_idx < len(path_parts)
+            and fnmatch.fnmatchcase(path_parts[path_idx], part)
+            and _matches(path_idx + 1, pattern_idx + 1)
+        )
+
+    return _matches(0, 0)
 
 
 def _is_ignored(
@@ -931,9 +1133,9 @@ def _is_ignored(
         """Apply last-match-wins to a single target path."""
         if _cache is not None and target in _cache:
             return _cache[target]
-        def _matches(rel: str, p: str, anchored: bool) -> bool:
-            if anchored:
-                return fnmatch.fnmatch(rel, p)
+        def _matches(rel: str, p: str, path_relative: bool) -> bool:
+            if path_relative:
+                return _match_anchored_ignore_pattern(rel, p)
             parts = rel.split("/")
             if fnmatch.fnmatch(rel, p):
                 return True
@@ -950,7 +1152,8 @@ def _is_ignored(
         for anchor, pattern in patterns:
             negated = pattern.startswith("!")
             raw = pattern[1:] if negated else pattern
-            anchored = raw.startswith("/")
+            directory_only = raw.endswith("/")
+            path_relative = "/" in raw.rstrip("/")
             p = raw.strip("/")
             if not p:
                 continue
@@ -966,7 +1169,9 @@ def _is_ignored(
             except ValueError:
                 continue  # target outside this pattern's anchor: cannot match
             if rel_anchor != ".":
-                matched = _matches(rel_anchor, p, anchored=anchored)
+                matched = _matches(rel_anchor, p, path_relative=path_relative)
+                if matched and directory_only and not target.is_dir():
+                    matched = False
 
             if matched:
                 result = not negated  # last match wins; ! flips to un-ignore
@@ -989,117 +1194,6 @@ def _is_ignored(
         if _eval(ancestor):
             return True
     return _eval(path)
-
-
-def _load_graphifyinclude(root: Path) -> list[tuple[Path, str]]:
-    """Read .graphifyinclude allowlist patterns from root and ancestors.
-
-    Include patterns opt matching hidden files/dirs into traversal. Sensitive
-    files and hard-skipped noise directories are still excluded later.
-    Uses the same VCS-root ceiling logic as _load_graphifyignore.
-    """
-    root = root.resolve()
-    ceiling = _find_vcs_root(root) or root
-
-    dirs: list[Path] = []
-    current = root
-    while True:
-        dirs.append(current)
-        if current == ceiling:
-            break
-        current = current.parent
-    dirs.reverse()
-
-    patterns: list[tuple[Path, str]] = []
-    for d in dirs:
-        include_file = d / ".graphifyinclude"
-        if include_file.exists():
-            for raw in include_file.read_text(encoding="utf-8", errors="ignore").splitlines():
-                line = _parse_gitignore_line(raw)
-                if line:
-                    patterns.append((d, line))
-    return patterns
-
-
-def _is_included(path: Path, root: Path, patterns: list[tuple[Path, str]]) -> bool:
-    """Return True if path matches any .graphifyinclude allowlist pattern."""
-    if not patterns:
-        return False
-
-    def _matches(rel: str, p: str, anchored: bool) -> bool:
-        if anchored:
-            return fnmatch.fnmatch(rel, p)
-        parts = rel.split("/")
-        if fnmatch.fnmatch(rel, p):
-            return True
-        if fnmatch.fnmatch(path.name, p):
-            return True
-        for i, part in enumerate(parts):
-            if fnmatch.fnmatch(part, p):
-                return True
-            if fnmatch.fnmatch("/".join(parts[:i + 1]), p):
-                return True
-        return False
-
-    for anchor, pattern in patterns:
-        anchored = pattern.startswith("/")
-        p = pattern.strip("/")
-        if not p:
-            continue
-        if anchored:
-            try:
-                rel_anchor = str(path.relative_to(anchor)).replace(os.sep, "/")
-                if _matches(rel_anchor, p, anchored=True):
-                    return True
-            except ValueError:
-                pass
-        else:
-            try:
-                rel = str(path.relative_to(root)).replace(os.sep, "/")
-                if _matches(rel, p, anchored=False):
-                    return True
-            except ValueError:
-                pass
-            if anchor != root:
-                try:
-                    rel_anchor = str(path.relative_to(anchor)).replace(os.sep, "/")
-                    if _matches(rel_anchor, p, anchored=False):
-                        return True
-                except ValueError:
-                    pass
-    return False
-
-
-def _could_contain_included_path(path: Path, root: Path, patterns: list[tuple[Path, str]]) -> bool:
-    """Return True if a directory may contain files matched by .graphifyinclude."""
-    if not patterns:
-        return False
-
-    rels: list[str] = []
-    try:
-        rels.append(str(path.relative_to(root)).replace(os.sep, "/"))
-    except ValueError:
-        pass
-    for anchor, _ in patterns:
-        if anchor != root:
-            try:
-                rels.append(str(path.relative_to(anchor)).replace(os.sep, "/"))
-            except ValueError:
-                pass
-
-    for rel in rels:
-        rel = rel.strip("/")
-        if not rel:
-            return True
-        for _, pattern in patterns:
-            p = pattern.strip("/")
-            if not p:
-                continue
-            if p == rel or p.startswith(rel + "/"):
-                return True
-            if fnmatch.fnmatch(rel, p):
-                return True
-    return False
 
 
 def _auto_follow_symlinks(root: Path) -> bool:
@@ -1127,8 +1221,28 @@ def _resolves_under_root(path: Path, root: Path) -> bool:
     return True
 
 
-def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace: bool | None = None, extra_excludes: list[str] | None = None, cache_root: Path | None = None) -> dict:
+def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace: bool | None = None, extra_excludes: list[str] | None = None, cache_root: Path | None = None, gitignore: bool = True) -> dict:
     root = root.resolve()
+    configured_out_dir = root / GRAPHIFY_OUT
+    configured_out_names = {configured_out_dir.name}
+    try:
+        configured_out_dir = configured_out_dir.resolve()
+    except (OSError, RuntimeError):
+        configured_out_dir = configured_out_dir.absolute()
+    configured_out_names.add(configured_out_dir.name)
+    # .graphifyinclude support was removed (#2112): its loader and matchers had
+    # no consumers, so the file has been a silent no-op since dot directories
+    # became indexed by default (#873). Surface that once per scan so a
+    # leftover allowlist file is not a silent behavior change.
+    if (root / ".graphifyinclude").is_file():
+        import sys as _sys
+        print(
+            "[graphify] WARNING: .graphifyinclude is no longer supported "
+            "(it has been non-functional since dot directories became indexed "
+            "by default); to re-include ignored paths, use ! negation patterns "
+            "in .graphifyignore.",
+            file=_sys.stderr,
+        )
     if follow_symlinks is None:
         follow_symlinks = False
     google_workspace = google_workspace_enabled() if google_workspace is None else google_workspace
@@ -1151,7 +1265,13 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
 
     skipped_sensitive: list[str] = []
     unclassified: list[str] = []
-    ignore_patterns = _load_graphifyignore(root)
+    # Files/dirs dropped by a .gitignore/.graphifyignore rule. Recorded so an
+    # over-broad ignore (or a legitimately-ignored subtree) is visible instead
+    # of silently vanishing from the graph (#1922). Directory-level entries keep
+    # this bounded — a pruned `data/` is one entry, not one per contained file.
+    ignored: list[str] = []
+    pruned_noise: list[str] = []
+    ignore_patterns = _load_graphifyignore(root, gitignore=gitignore)
     ignore_cache: dict[Path, bool] = {}  # shared across all _is_ignored calls in this scan
     # CLI --exclude patterns are anchored at the scan root and appended last
     # so they win over any .graphifyignore/.gitignore rules (#947).
@@ -1160,7 +1280,6 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
             line = _parse_gitignore_line(pat)
             if line:
                 ignore_patterns.append((root, line))
-    include_patterns = _load_graphifyinclude(root)
 
     # Always include graphify-out/memory/ - query results filed back into the graph
     memory_dir = root / GRAPHIFY_OUT / "memory"
@@ -1209,7 +1328,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                 # Load it now, before pruning dp's children, so a nested ignore
                 # file governs its own subtree the same way git honors it (#1206).
                 if dp != root:
-                    ignore_patterns.extend(_load_dir_own_ignore(dp))
+                    ignore_patterns.extend(_load_dir_own_ignore(dp, gitignore=gitignore))
                 # Prune noise dirs in-place so os.walk never descends into them.
                 # Dot dirs are allowed — users often want .github/, .claude/, etc.
                 # Framework caches (.next, .nuxt, …) are caught by _is_noise_dir.
@@ -1222,11 +1341,29 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                 # any `!` rule existed — e.g. a single `!docs/**` made the walk descend
                 # bin/, obj/, wwwroot/, generated/, … : a pathological slowdown on large
                 # repos for no correctness gain.
-                dirnames[:] = [
-                    d for d in dirnames
-                    if not _is_noise_dir(d, dp)
-                    and not _is_ignored(dp / d, root, ignore_patterns, _cache=ignore_cache)
-                ]
+                kept_dirs: list[str] = []
+                for d in dirnames:
+                    child = dp / d
+                    is_configured_out = False
+                    if d in configured_out_names:
+                        try:
+                            is_configured_out = child.resolve() == configured_out_dir
+                        except (OSError, RuntimeError):
+                            pass
+                    if is_configured_out:
+                        pruned_noise.append(str(child) + os.sep)
+                        continue
+                    if _is_noise_dir(d, dp):
+                        # Record pruned-as-noise dirs so a wrongly-pruned real
+                        # source dir is at least traceable in the output rather
+                        # than vanishing silently (#2058).
+                        pruned_noise.append(str(dp / d) + os.sep)
+                        continue
+                    if _is_ignored(dp / d, root, ignore_patterns, _cache=ignore_cache):
+                        ignored.append(str(dp / d) + os.sep)
+                        continue
+                    kept_dirs.append(d)
+                dirnames[:] = kept_dirs
                 if follow_symlinks:
                     safe_dirs: list[str] = []
                     for d in dirnames:
@@ -1256,6 +1393,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
             if str(p).startswith(str(converted_dir)):
                 continue
         if not in_memory and _is_ignored(p, root, ignore_patterns, _cache=ignore_cache):
+            ignored.append(str(p))
             continue
         if not _resolves_under_root(p, root):
             skipped_sensitive.append(str(p) + " [symlink target outside scan root]")
@@ -1281,7 +1419,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                     )
                     continue
                 try:
-                    md_path = convert_google_workspace_file(p, converted_dir, xlsx_to_markdown=xlsx_to_markdown)
+                    md_path = convert_google_workspace_file(p, converted_dir, xlsx_to_markdown=xlsx_to_markdown, root=root)
                 except Exception as exc:
                     skipped_sensitive.append(str(p) + f" [Google Workspace export failed: {exc}]")
                     continue
@@ -1295,7 +1433,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                 continue
             # Office files: convert to markdown sidecar so subagents can read them
             if p.suffix.lower() in OFFICE_EXTENSIONS:
-                md_path = convert_office_file(p, converted_dir)
+                md_path = convert_office_file(p, converted_dir, root=root)
                 if md_path:
                     if _is_ignored(md_path, root, ignore_patterns, _cache=ignore_cache):
                         continue
@@ -1338,6 +1476,8 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
         "skipped_sensitive": skipped_sensitive,
         "unclassified": sorted(unclassified),
         "walk_errors": walk_errors,
+        "ignored": sorted(ignored),
+        "pruned_noise_dirs": sorted(pruned_noise),
         "graphifyignore_patterns": len(ignore_patterns),
         "scan_root": str(root.resolve()),
     }
@@ -1393,6 +1533,18 @@ def _stat_and_hash(path_str: str) -> tuple[str, float, str] | None:
         return None
 
 
+def _nfc(s: str) -> str:
+    """NFC-normalize a path string used as a manifest key.
+
+    On macOS, ``os.walk`` / ``getcwd`` yield NFD paths while path literals
+    and many skill-substituted roots are NFC. Raw string compare then treats
+    every file as both deleted and new, forcing a full re-extract (#2221).
+    Same boundary as the Office sidecar hash fix (#1226).
+    """
+    import unicodedata
+    return unicodedata.normalize("NFC", s)
+
+
 def _to_relative_for_storage(key: str, root: Path) -> str:
     """Return ``key`` as a forward-slash relative path from ``root``.
 
@@ -1407,12 +1559,18 @@ def _to_relative_for_storage(key: str, root: Path) -> str:
     under its own name. Resolving the key would point the stored entry at
     the symlink target, and the original key would then miss on reload and
     re-extract on every incremental run.
+
+    Both sides of ``relpath`` are NFC'd first: stamped keys may already be
+    NFC while ``Path(root).resolve()`` is NFD on macOS, and a mixed-form
+    compare would mark an in-root file as ``../…`` and keep it absolute
+    (#2221 / #777).
     """
     p = Path(key)
     if not p.is_absolute():
         return key
     try:
-        rel = os.path.relpath(p, Path(root).resolve())
+        base = _nfc(str(Path(root).resolve()))
+        rel = os.path.relpath(_nfc(str(p)), base)
     except (ValueError, OSError):
         return key  # outside root (e.g. Windows cross-drive)
     # ``os.path.relpath`` happily produces ``../foo`` for paths outside
@@ -1431,11 +1589,15 @@ def _to_absolute_from_storage(key: str, root: Path) -> str:
     that newly-loaded manifests from before this change remain readable.
     Uses ``Path(root).resolve()`` so the produced absolute path matches
     what :func:`detect` returns (which also resolves the scan root).
+    NFC both sides so a relative key and an NFD-resolved root still join
+    to the same string form the rest of the manifest path uses (#2221).
     """
     p = Path(key)
     if p.is_absolute():
         return str(p)
-    return str(Path(root).resolve() / p)
+    # NFC the joined result so an NFD-resolved root + relative key lands on
+    # the same form load_manifest / detect_incremental compare against.
+    return _nfc(str(Path(root).resolve() / p))
 
 
 def load_manifest(
@@ -1450,14 +1612,19 @@ def load_manifest(
     manifests with absolute keys pass through unchanged, so a graphify-out/
     written by an older version (or by a caller that didn't supply ``root``
     to :func:`save_manifest`) remains readable.
+
+    Keys are NFC-normalized on load so a manifest written under one Unicode
+    form still matches a scan that yields the other (#2221).
     """
     try:
         raw = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
     except Exception:
         return {}
-    if root is None or not isinstance(raw, dict):
+    if not isinstance(raw, dict):
         return raw
-    return {_to_absolute_from_storage(k, root): v for k, v in raw.items()}
+    if root is None:
+        return {_nfc(k): v for k, v in raw.items()}
+    return {_nfc(_to_absolute_from_storage(k, root)): v for k, v in raw.items()}
 
 
 def save_manifest(
@@ -1466,6 +1633,8 @@ def save_manifest(
     *,
     kind: str = "both",
     root: Path | None = None,
+    scan_corpus: set[str] | list[str] | None = None,
+    clear_semantic: set[str] | list[str] | None = None,
 ) -> None:
     """Save current file mtimes + content hashes for change detection.
 
@@ -1481,8 +1650,80 @@ def save_manifest(
     machines and checkout locations (#777). Out-of-root entries are written
     as absolute so they continue to round-trip on the saving machine.
     When ``root`` is None the legacy absolute-keyed format is preserved.
+
+    ``scan_corpus`` (#1908): full-scan callers pass the COMPLETE detect
+    corpus (absolute paths) so seeded rows for in-root files that are still
+    alive on disk but no longer part of the scan (newly excluded via
+    .graphifyignore/.gitignore/--exclude) are dropped instead of surviving
+    forever and masquerading as deletions in detect_incremental. It must be
+    the RAW detect output, not a stamp-filtered subset — pruning to a
+    filtered set would erase rows the filter merely omitted (failed chunks,
+    --code-only doc rows). Out-of-root entries are never pruned. Callers
+    saving a SUBSET of files (changed_paths hooks, skill runbooks, #917)
+    must leave this None so their untouched rows are preserved.
+
+    ``clear_semantic`` (#1948): files that were dispatched this run but
+    produced no stamped output (e.g. the LLM omitted their chunk on a
+    --force re-run) are absent from ``files``, so the seed loop below would
+    otherwise copy their prior semantic_hash verbatim — masking the omission
+    and making detect_incremental(kind="semantic") report them unchanged.
+    Pass the set of such files (any path form ``scan_corpus`` accepts) to
+    force their seeded semantic_hash to "" instead of inheriting it.
     """
     existing = load_manifest(manifest_path, root=root)
+
+    # Index both raw and NFC forms so scan/clear membership survives the
+    # same NFC/NFD mismatch that breaks manifest lookups (#2221).
+    def _path_index(paths: set[str] | list[str] | None) -> set[str] | None:
+        if paths is None:
+            return None
+        indexed: set[str] = set()
+        for p in paths:
+            indexed.add(p)
+            indexed.add(_nfc(p))
+        return indexed
+
+    scan_set = _path_index(scan_corpus)
+    clear_set = _path_index(clear_semantic)
+    try:
+        root_res: Path | None = Path(root).resolve() if root is not None else None
+    except (OSError, RuntimeError):
+        root_res = Path(root) if root is not None else None
+
+    def _in_scan(path_str: str) -> bool:
+        if path_str in scan_set or _nfc(path_str) in scan_set:
+            return True
+        try:
+            resolved = str(Path(path_str).resolve())
+            return resolved in scan_set or _nfc(resolved) in scan_set
+        except (OSError, RuntimeError):
+            return False
+
+    def _in_clear(path_str: str) -> bool:
+        if path_str in clear_set or _nfc(path_str) in clear_set:
+            return True
+        try:
+            resolved = str(Path(path_str).resolve())
+            return resolved in clear_set or _nfc(resolved) in clear_set
+        except (OSError, RuntimeError):
+            return False
+
+    def _in_root(path_str: str) -> bool:
+        # Without a root we cannot tell in-root from out-of-root; fail open
+        # (keep the row) so out-of-root corpora are never pruned by accident.
+        if root_res is None:
+            return False
+        p = Path(path_str)
+        try:
+            p.relative_to(root_res)
+            return True
+        except ValueError:
+            pass
+        try:
+            p.resolve().relative_to(root_res)
+            return True
+        except (ValueError, OSError, RuntimeError):
+            return False
 
     def _normalise_entry(entry):
         if isinstance(entry, (int, float)):
@@ -1496,17 +1737,27 @@ def save_manifest(
     # Seed from the existing manifest so incremental callers passing a subset
     # of files don't silently erase entries for untouched files (#917).
     # Prune entries whose file no longer exists on disk — those are genuine
-    # deletions that detect_incremental() should treat as gone.
+    # deletions that detect_incremental() should treat as gone. When the
+    # caller supplied the full scan corpus, additionally prune in-root rows
+    # the scan no longer covers: those files were excluded, not deleted, and
+    # keeping the row makes them look deleted on every future run (#1908).
     manifest: dict[str, dict] = {}
     for f, entry in existing.items():
         normalised = _normalise_entry(entry)
         if normalised is None:
             continue
         try:
-            if Path(f).exists():
-                manifest[f] = normalised
+            if not Path(f).exists():
+                continue
         except OSError:
             continue
+        if scan_set is not None and not _in_scan(f) and _in_root(f):
+            continue  # excluded-but-alive: drop the stale row (#1908)
+        if clear_set is not None and _in_clear(f):
+            # Dispatched-but-omitted this run: don't inherit the stale
+            # semantic_hash, or detect_incremental would call it unchanged (#1948).
+            normalised = {**normalised, "semantic_hash": ""}
+        manifest[f] = normalised
 
     all_files = [f for file_list in files.values() for f in file_list]
     with ThreadPoolExecutor() as pool:
@@ -1519,7 +1770,8 @@ def save_manifest(
         if f not in hashed:
             continue  # file deleted between detect() and manifest write
         mtime, h = hashed[f]
-        prev = _normalise_entry(existing.get(f, {})) or {}
+        key = _nfc(f)
+        prev = _normalise_entry(existing.get(key, {})) or {}
         entry: dict = {"mtime": mtime}
         if kind in ("ast", "both"):
             entry["ast_hash"] = h
@@ -1530,15 +1782,21 @@ def save_manifest(
         else:
             # Preserve semantic_hash only when content is unchanged
             entry["semantic_hash"] = prev.get("semantic_hash", "") if h == prev.get("ast_hash", "") else ""
-        manifest[f] = entry
+        manifest[key] = entry
     if root is not None:
         # Persist in portable form: forward-slash relative paths. Keys outside
         # ``root`` (out-of-tree symlinked corpora, --include sources) keep
         # their absolute form so the manifest round-trips on the saving
         # machine even when not every entry can be portably encoded.
-        manifest = {_to_relative_for_storage(k, root): v for k, v in manifest.items()}
-    Path(manifest_path).parent.mkdir(parents=True, exist_ok=True)
-    Path(manifest_path).write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        # NFC after relativize so on-disk keys match what load_manifest
+        # re-anchors and compares against (#2221).
+        manifest = {_nfc(_to_relative_for_storage(k, root)): v for k, v in manifest.items()}
+    else:
+        manifest = {_nfc(k): v for k, v in manifest.items()}
+    from graphify.paths import write_json_atomic
+    # Atomic write: a crash mid-write must not leave a truncated manifest that
+    # detect_incremental then fails to parse.
+    write_json_atomic(manifest_path, manifest, indent=2)
 
 
 def detect_incremental(
@@ -1549,6 +1807,7 @@ def detect_incremental(
     google_workspace: bool | None = None,
     kind: str = "semantic",
     extra_excludes: list[str] | None = None,
+    gitignore: bool = True,
 ) -> dict:
     """Like detect(), but returns only new or modified files since the last run.
 
@@ -1572,7 +1831,13 @@ def detect_incremental(
     runs. ``None`` (default) does not follow symlinked directories; callers must
     opt in explicitly, and resolved targets outside the scan root are skipped.
     """
-    full = detect(root, follow_symlinks=follow_symlinks, google_workspace=google_workspace, extra_excludes=extra_excludes)
+    full = detect(
+        root,
+        follow_symlinks=follow_symlinks,
+        google_workspace=google_workspace,
+        extra_excludes=extra_excludes,
+        gitignore=gitignore,
+    )
     # Pass ``root`` so a manifest written with relative keys (post-#777) is
     # re-anchored to the absolute form the rest of this function compares
     # against. Legacy absolute-keyed manifests pass through unchanged.
@@ -1584,6 +1849,8 @@ def detect_incremental(
         full["new_files"] = full["files"]
         full["unchanged_files"] = {k: [] for k in full["files"]}
         full["new_total"] = full["total_files"]
+        full["deleted_files"] = []
+        full["excluded_files"] = []
         return full
 
     new_files: dict[str, list[str]] = {k: [] for k in full["files"]}
@@ -1591,7 +1858,8 @@ def detect_incremental(
 
     for ftype, file_list in full["files"].items():
         for f in file_list:
-            stored = manifest.get(f)
+            # Manifest keys are NFC; scan paths may arrive NFD (#2221).
+            stored = manifest.get(_nfc(f))
             try:
                 current_mtime = os.stat(_os_path(Path(f))).st_mtime
             except Exception:
@@ -1636,9 +1904,23 @@ def detect_incremental(
             else:
                 unchanged_files[ftype].append(f)
 
-    # Files in manifest that no longer exist - their cached nodes are now ghost nodes
-    current_files = {f for flist in full["files"].values() for f in flist}
-    deleted_files = [f for f in manifest if f not in current_files]
+    # Manifest rows that left the corpus, split by disk existence (#1908):
+    # a row whose file is gone from DISK is a genuine deletion (its cached
+    # nodes are ghosts); a row whose file still exists but is out of the
+    # current scan was EXCLUDED (ignore rules / --exclude changed) and must
+    # not be reported as deleted. Mirrors the watch-side excluded-vs-deleted
+    # distinction (#1795).
+    current_files = {_nfc(f) for flist in full["files"].values() for f in flist}
+    deleted_files: list[str] = []
+    excluded_files: list[str] = []
+    for f in manifest:
+        if _nfc(f) in current_files:
+            continue
+        try:
+            alive = Path(f).exists()
+        except OSError:
+            alive = False
+        (excluded_files if alive else deleted_files).append(f)
 
     new_total = sum(len(v) for v in new_files.values())
     full["incremental"] = True
@@ -1646,4 +1928,5 @@ def detect_incremental(
     full["unchanged_files"] = unchanged_files
     full["new_total"] = new_total
     full["deleted_files"] = deleted_files
+    full["excluded_files"] = excluded_files
     return full

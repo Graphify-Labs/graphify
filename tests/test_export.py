@@ -429,6 +429,46 @@ def test_to_canvas_never_emits_punctuation_only_filenames():
         assert not bad, f"punctuation-only canvas filenames: {bad}"
 
 
+def test_to_obsidian_leading_dot_labels_are_not_hidden_filenames():
+    """#2205: Obsidian hides notes whose names start with `.` — `.env` must
+    become `dot-env.md` (and canvas must point at the same stem)."""
+    import networkx as nx
+    G = nx.Graph()
+    G.add_node("n_env", label=".env", source_file=".env", type="document")
+    G.add_node("n_gi", label=".gitignore", source_file=".gitignore", type="document")
+    G.add_node("n_readme", label="README", source_file="README.md", type="document")
+    G.add_edge("n_readme", "n_env", relation="references")
+    communities = {0: ["n_env", "n_gi", "n_readme"]}
+    with tempfile.TemporaryDirectory() as tmp:
+        to_obsidian(G, communities, tmp)
+        stems = {p.stem for p in Path(tmp).rglob("*.md") if not p.name.startswith("_")}
+        assert "dot-env" in stems, stems
+        assert "dot-gitignore" in stems, stems
+        assert not any(s.startswith(".") for s in stems), stems
+
+        canvas = Path(tmp) / "graph.canvas"
+        to_canvas(G, communities, str(canvas))
+        data = json.loads(canvas.read_text(encoding="utf-8"))
+        file_stems = {
+            Path(n["file"]).stem
+            for n in data["nodes"]
+            if n.get("type") == "file"
+        }
+        assert "dot-env" in file_stems, file_stems
+        assert "dot-gitignore" in file_stems, file_stems
+        assert not any(s.startswith(".") for s in file_stems), file_stems
+
+
+def test_obsidian_safe_stem_all_dots_label_falls_back_to_unnamed():
+    """#2205 follow-up: the `dot-` prefix only applies when a word char survives
+    the dot strip. An all-dots label like "..." must hit the #1409 "unnamed"
+    fallback, not produce the meaningless stem "dot-"."""
+    from graphify.export import _obsidian_safe_stem
+    assert _obsidian_safe_stem(".env") == "dot-env"        # #2205 fix unchanged
+    assert _obsidian_safe_stem("...") == "unnamed"         # not "dot-"
+    assert _obsidian_safe_stem("Database") == "Database"   # normal labels untouched
+
+
 # ── Existing-vault safety: graphify must not clobber user notes / .obsidian (#1506) ──
 
 def _two_node_graph():
@@ -775,3 +815,19 @@ def test_to_html_handles_null_source_file_and_label(tmp_path):
     out = tmp_path / "graph.html"
     to_html(G, {0: ["n1", "n2", "n3"]}, str(out))
     assert out.exists() and out.stat().st_size > 0
+
+
+def test_existing_graph_node_count(tmp_path):
+    from graphify.export import existing_graph_node_count, MALFORMED_GRAPH
+    p = tmp_path / "graph.json"
+    assert existing_graph_node_count(p) is None            # absent -> nothing to protect
+    p.write_text("", encoding="utf-8")
+    assert existing_graph_node_count(p) is None            # empty -> nothing to protect
+    # Non-empty but unparseable must fail CLOSED (sentinel), matching to_json's
+    # #479 guard — a corrupt/mid-write file could be hiding a complete graph.
+    p.write_text("{not json", encoding="utf-8")
+    assert existing_graph_node_count(p) is MALFORMED_GRAPH  # malformed -> fail closed
+    p.write_text('{"nodes": "notalist"}', encoding="utf-8")
+    assert existing_graph_node_count(p) is MALFORMED_GRAPH  # structurally wrong -> fail closed
+    p.write_text('{"nodes": [{"id": "a"}, {"id": "b"}], "links": []}', encoding="utf-8")
+    assert existing_graph_node_count(p) == 2               # valid

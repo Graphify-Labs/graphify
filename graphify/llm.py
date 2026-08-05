@@ -56,6 +56,47 @@ def _get_tokenizer():
 # Cached at import time. None if tiktoken is unavailable; consumers must handle.
 _TOKENIZER = _get_tokenizer()
 
+
+def _resolve_ollama_base_url(default: str) -> str:
+    """Resolve the Ollama base URL. Honors an explicit OLLAMA_BASE_URL first
+    (verbatim), else falls back to Ollama's own OLLAMA_HOST (#1940), else the
+    default. OLLAMA_HOST may be a bare host, host:port, ``:port`` or bare port —
+    normalized the way the ollama client does: add ``http://`` when the scheme is
+    missing, default the port to 11434 when absent, and append the OpenAI-compat
+    ``/v1`` suffix."""
+    ollama_base_url = os.environ.get("OLLAMA_BASE_URL")
+    if ollama_base_url is not None:
+        return ollama_base_url
+    ollama_host = os.environ.get("OLLAMA_HOST")
+    if ollama_host is None:
+        return default
+    host = ollama_host.strip()
+    if not host:
+        return default
+    # Bare port ("11434") or ":port" (":11434") -> localhost on that port.
+    if host.isdigit():
+        host = f"localhost:{host}"
+    elif host.startswith(":") and host[1:].isdigit():
+        host = f"localhost{host}"
+    if not host.startswith(("http://", "https://")):
+        host = f"http://{host}"
+    # Default the port to Ollama's 11434 when the host omits it (bare hostname
+    # would otherwise resolve to port 80 and silently fail to connect).
+    from urllib.parse import urlsplit, urlunsplit
+    try:
+        parts = urlsplit(host)
+        if parts.hostname and parts.port is None:
+            hostname = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
+            userinfo = parts.netloc.rsplit("@", 1)[0] + "@" if "@" in parts.netloc else ""
+            host = urlunsplit(parts._replace(netloc=f"{userinfo}{hostname}:11434"))
+    except (ValueError, TypeError):
+        pass
+    host = host.rstrip("/")
+    if not host.endswith("/v1"):
+        host = f"{host}/v1"
+    return host
+
+
 BACKENDS: dict[str, dict] = {
     "claude": {
         # ANTHROPIC_BASE_URL points the backend at any Anthropic-compatible
@@ -83,7 +124,7 @@ BACKENDS: dict[str, dict] = {
         "max_tokens": 16384,
     },
     "ollama": {
-        "base_url": os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1"),
+        "base_url": _resolve_ollama_base_url("http://localhost:11434/v1"),
         "default_model": os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:7b"),
         "env_key": "OLLAMA_API_KEY",
         "pricing": {"input": 0.0, "output": 0.0},
@@ -555,6 +596,128 @@ def _read_files(units: "list[Path | FileSlice]", root: Path) -> str:
     return "\n\n".join(parts)
 
 
+# ── Semantic evidence-binding ─────────────────────────────────────────────────
+# The semantic (LLM) extraction runs on documents/papers/images — code files are
+# handled by the deterministic AST engine and never reach the model. So a
+# ``file_type == "code"`` node here is a symbol the model surfaced from WITHIN a
+# document (a name in a fenced code block, an API referenced in a paper). Verify
+# that such a symbol actually occurs in the source bytes the model was shown; a
+# node the model asserts with no evidence in its source is a likely fabrication.
+# `_out_of_scope` (#1895) only rejects a node attributed to a real file that was
+# NOT dispatched; a fabricated symbol attributed to a file that WAS dispatched
+# slips through it. This closes that intra-file gap with a lenient substring
+# check and FLAGS (never drops) an unverifiable node with ``verification =
+# "unverified"``, surfaced by the caller (stderr), reported by the diagnostics,
+# and left on the node in graph.json.
+# Short tokens (len < 3) are ignored: they match too readily to be evidence and
+# their absence is not a reliable fabrication signal, so skipping them avoids
+# false positives.
+_LABEL_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# A dedicated node field — deliberately NOT the ``confidence`` key, whose
+# validated vocabulary ({EXTRACTED, INFERRED, AMBIGUOUS}, and only on edges)
+# this value does not belong to. Downstream (diagnostics) counts it.
+_VERIFICATION_FIELD = "verification"
+_UNVERIFIED_VALUE = "unverified"
+
+
+def _label_identifiers(label: str) -> list[str]:
+    """Identifier tokens from a node label, stripped of a trailing call/args
+    parenthesis (``foo()`` -> ``foo``, ``Cls.method(x)`` -> ``Cls``/``method``)."""
+    if not label:
+        return []
+    base = label.split("(", 1)[0]
+    return [t for t in _LABEL_IDENT_RE.findall(base) if len(t) >= 3]
+
+
+def _dispatched_source_text(units: "list[Path | FileSlice]", root: Path) -> dict[Path, str]:
+    """Map each dispatched text unit's resolved path to the (lower-cased, capped)
+    source bytes the model actually saw via :func:`_read_files`.
+
+    Slices of one file share a key, matching how ``_read_files`` reports a slice's
+    parent path as ``source_file`` — so a node attributed to that file is checked
+    against the union of the ranges dispatched in this call.
+    """
+    by_path: dict[Path, str] = {}
+    for u in units:
+        p = unit_path(u)
+        safe = _resolve_under_root(p, root)
+        if safe is None:
+            continue
+        try:
+            content = read_slice_text(u) if isinstance(u, FileSlice) else _file_to_text(safe)
+        except Exception:  # noqa: BLE001 — one unreadable file (e.g. a malformed PDF) must not disable binding for the whole chunk
+            continue
+        by_path[safe] = by_path.get(safe, "") + content[:_FILE_CHAR_CAP].lower()
+    return by_path
+
+
+def _bind_node_evidence(result: dict, text_units: "list[Path | FileSlice]", root: Path) -> int:
+    """Downgrade code-typed nodes whose symbol name has no evidence in the source
+    the model read, returning the number downgraded.
+
+    For every ``file_type == "code"`` node whose ``source_file`` resolves to one
+    of the (document/paper/image) files sent in THIS call, verify that at least
+    one identifier from its label OR id occurs in that file's source bytes. If
+    none does, set ``verification = "unverified"`` rather than dropping it.
+
+    Precision-first, to avoid false-positives on legitimately-derived names:
+      - Only ``code`` nodes are checked — code labels are verbatim symbol names,
+        whereas document/paper/concept labels are prose and would false-positive.
+      - Both the label AND the id are checked: the id (``stem_entityname``)
+        usually carries the verbatim symbol even when the label is prettified,
+        cutting false flags on human-readable labels.
+      - Nodes without a ``source_file``, and nodes attributed to a file not
+        dispatched in this call (left to #1895), are never touched.
+      - Verification is lenient: any identifier occurring as a substring
+        (case-insensitive) passes; a node is flagged only when NONE occur.
+      - A node with no checkable identifier (all short / non-ASCII) is left as-is.
+      - The action is a reversible flag, never a drop. A code symbol a document
+        only describes in prose (no verbatim occurrence) is legitimately
+        unverified — the model inferred it rather than read it.
+    """
+    nodes = result.get("nodes")
+    if not nodes:
+        return 0
+    # Perf: skip the (potentially expensive, e.g. PDF re-extraction) source read
+    # entirely when the result has no code-typed node with a source_file — the
+    # common case for a document/paper batch.
+    if not any(isinstance(n, dict) and n.get("file_type") == "code" and n.get("source_file")
+               for n in nodes):
+        return 0
+    source_by_path = _dispatched_source_text(text_units, root)
+    if not source_by_path:
+        return 0
+    downgraded = 0
+    for n in nodes:
+        if not isinstance(n, dict) or n.get("file_type") != "code":
+            continue
+        sf = n.get("source_file")
+        if not sf:
+            continue
+        p = Path(sf)
+        if not p.is_absolute():
+            p = root / p
+        try:
+            key = p.resolve()
+        except (OSError, RuntimeError):
+            continue
+        src = source_by_path.get(key)
+        if src is None:
+            continue  # not dispatched in this call — #1895's out-of-scope domain
+        idents = _label_identifiers(str(n.get("label", ""))) + _label_identifiers(str(n.get("id", "")))
+        if not idents:
+            continue  # nothing checkable — do not flag
+        if any(ident.lower() in src for ident in idents):
+            continue  # symbol name is present in the source — verified
+        # No evidence. Flag only a node the model itself presented as solid
+        # (EXTRACTED/unset) — one it already hedged (INFERRED/AMBIGUOUS) needs no
+        # second flag. Idempotent: never overwrites an existing verification.
+        if n.get("confidence") in (None, "", "EXTRACTED") and not n.get(_VERIFICATION_FIELD):
+            n[_VERIFICATION_FIELD] = _UNVERIFIED_VALUE
+            downgraded += 1
+    return downgraded
+
+
 # ── Image (vision) handling ───────────────────────────────────────────────────
 # Raster image types a vision model can actually look at. `.svg` is intentionally
 # excluded: it is XML markup, so `_read_files` reads it as text (the model parses
@@ -881,6 +1044,30 @@ def _parse_llm_json(raw: str) -> dict:
     return {"nodes": [], "edges": [], "hyperedges": []}
 
 
+def _bedrock_response_text(resp: dict, default: str = "") -> str:
+    """Return the first Converse content block that carries text.
+
+    Converse returns ``output.message.content`` as a list of blocks, and the
+    API does not promise a text block is first: reasoning-capable models emit a
+    ``reasoningContent`` block ahead of the answer, and ``toolUse`` or future
+    block types can precede it too. Indexing position 0 therefore yields no text
+    at all for those models, which reads downstream as a hollow response, gets
+    reclassified as truncation, and sends the chunk into bisection that cannot
+    converge. Select on the block's shape instead of its position so this holds
+    for any model; a response whose first block is already text is unaffected.
+    """
+    content = resp.get("output", {}).get("message", {}).get("content", [])
+    if not isinstance(content, list):
+        return default
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        text = block.get("text")
+        if isinstance(text, str) and text.strip():
+            return text
+    return default
+
+
 def _response_is_hollow(raw_content: str | None, parsed: dict) -> bool:
     """Detect a successful HTTP response that yielded no usable extraction.
 
@@ -1174,6 +1361,62 @@ def _claude_cli_envelope(stdout: str) -> dict:
     return envelope
 
 
+# A JSON Schema pinning the top-level shape graphify consumes. Passed to
+# `claude -p --json-schema` (structured output) so the CLI CONSTRAINS the model
+# to emit the object directly instead of relying on it CHOOSING to honour a
+# "raw JSON only" instruction in the prompt. Item internals stay loose so a
+# valid extraction is never rejected; the `result` envelope field still carries
+# the JSON string, so the parse path is unchanged. See #2076.
+_EXTRACTION_JSON_SCHEMA = json.dumps(
+    {
+        "type": "object",
+        "properties": {
+            "nodes": {"type": "array", "items": {"type": "object"}},
+            "edges": {"type": "array", "items": {"type": "object"}},
+            "hyperedges": {"type": "array", "items": {"type": "object"}},
+        },
+        "required": ["nodes", "edges"],
+    }
+)
+
+# Cache the `--json-schema` capability probe per resolved claude command so it
+# runs at most once per process (extract fans a chunk out per file/slice).
+_JSON_SCHEMA_SUPPORT: dict[str, bool] = {}
+
+
+def _claude_cli_supports_json_schema(claude_cmd: str) -> bool:
+    """Return True if this Claude Code CLI accepts ``--json-schema``.
+
+    Structured output (``--json-schema``) landed in newer Claude Code releases.
+    Probing ``claude --help`` for the flag is a direct capability check — more
+    reliable than guessing a version boundary — so graphify uses structured
+    output where it exists and falls back to the user-turn prompt on older CLIs
+    that predate it. Any probe failure is treated as "unsupported" (safe
+    fallback). Result is cached per resolved command.
+    """
+    import subprocess
+
+    cached = _JSON_SCHEMA_SUPPORT.get(claude_cmd)
+    if cached is not None:
+        return cached
+    try:
+        proc = subprocess.run(
+            [claude_cmd, "--help"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=False,
+            **_no_window_kwargs(),
+        )
+        supported = "--json-schema" in (proc.stdout or "")
+    except (OSError, subprocess.SubprocessError):
+        supported = False
+    _JSON_SCHEMA_SUPPORT[claude_cmd] = supported
+    return supported
+
+
 def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bool = False, images: list[_ImageRef] | None = None) -> dict:
     """Call Claude via the locally-installed Claude Code CLI (`claude -p`).
 
@@ -1262,6 +1505,16 @@ def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bo
     cli_model = os.environ.get("GRAPHIFY_CLAUDE_CLI_MODEL", "").strip()
     if cli_model:
         cli_args.extend(["--model", cli_model])
+    # Constrain the output shape structurally where the CLI supports it. Newer
+    # Claude Code releases increasingly treat a bare file-dump prompt as an
+    # agentic task and REPORT the extraction in prose ("Knowledge graph
+    # extracted — 21 nodes, 20 edges…") instead of returning it; that parses to
+    # zero nodes, reads as truncation, and gets bisected without ever
+    # converging (#2076). --json-schema pins the object shape regardless of
+    # that framing; the user-turn prompt above stays as the fallback for older
+    # CLIs that predate the flag.
+    if _claude_cli_supports_json_schema(claude_cmd):
+        cli_args.extend(["--json-schema", _EXTRACTION_JSON_SCHEMA])
     proc = subprocess.run(
         cli_args,
         input=combined_message,
@@ -1280,7 +1533,17 @@ def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bo
 
     envelope = _claude_cli_envelope(proc.stdout)
 
-    raw_content = envelope.get("result", "")
+    # When --json-schema is in effect the CLI puts the CONSTRAINED object in the
+    # `structured_output` envelope field; `result` stays the model's discretionary
+    # text, which on a "reporting" turn is prose even with the flag set (verified
+    # live on Claude Code 2.1.185). Prefer the structured channel and route it
+    # through the same _parse_llm_json normalizer; fall back to parsing `result`
+    # for older CLIs that don't emit structured_output (#2076 review).
+    structured = envelope.get("structured_output")
+    if isinstance(structured, dict):
+        raw_content = json.dumps(structured)
+    else:
+        raw_content = envelope.get("result", "")
     result = _parse_llm_json(raw_content or "{}")
     usage = envelope.get("usage") or {}
     result["input_tokens"] = (
@@ -1370,6 +1633,7 @@ def _call_bedrock(model: str, user_message: str, max_tokens: int = 8192, *, deep
     """Call AWS Bedrock via boto3 Converse API using the standard AWS credential chain."""
     try:
         import boto3
+        import botocore.config
         import botocore.exceptions
     except ImportError as exc:
         raise ImportError(
@@ -1379,7 +1643,19 @@ def _call_bedrock(model: str, user_message: str, max_tokens: int = 8192, *, deep
     region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "us-east-1"
     profile = os.environ.get("AWS_PROFILE")
     session = boto3.Session(profile_name=profile, region_name=region)
-    client = session.client("bedrock-runtime")
+    # Wire GRAPHIFY_API_TIMEOUT into the botocore read timeout. Without an
+    # explicit config, Converse uses botocore's 60s default and a long
+    # generation dies with "Read timeout on endpoint URL" no matter what the
+    # env var / --api-timeout is set to — the same gap #1112/#1442 closed for
+    # the claude-cli and secondary-dispatch paths, on the last cloud backend.
+    client = session.client(
+        "bedrock-runtime",
+        config=botocore.config.Config(
+            read_timeout=_resolve_api_timeout(),
+            connect_timeout=10,
+            retries={"max_attempts": _resolve_max_retries() + 1, "mode": "adaptive"},
+        ),
+    )
 
     try:
         resp = client.converse(
@@ -1393,7 +1669,7 @@ def _call_bedrock(model: str, user_message: str, max_tokens: int = 8192, *, deep
         msg = exc.response["Error"]["Message"]
         raise RuntimeError(f"Bedrock API error ({code}): {msg}") from exc
 
-    text = resp.get("output", {}).get("message", {}).get("content", [{}])[0].get("text", "{}")
+    text = _bedrock_response_text(resp, default="{}")
     result = _parse_llm_json(text)
     usage = resp.get("usage", {})
     result["input_tokens"] = usage.get("inputTokens", 0)
@@ -1450,7 +1726,7 @@ def extract_files_direct(
         # Ollama ignores auth but the OpenAI client library requires a non-empty
         # string. Use a placeholder and surface a visible warning so this never
         # silently routes traffic without the user realising — see F-029.
-        ollama_url = os.environ.get("OLLAMA_BASE_URL", cfg.get("base_url", ""))
+        ollama_url = _resolve_ollama_base_url(cfg.get("base_url", ""))
         _validate_ollama_base_url(ollama_url)
         print(
             "[graphify] WARNING: ollama backend selected with no OLLAMA_API_KEY set; "
@@ -1480,19 +1756,19 @@ def extract_files_direct(
     max_out = _resolve_max_tokens(cfg.get("max_tokens", 8192))
 
     if backend == "claude":
-        return _call_claude(key, mdl, user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
-    if backend == "claude-cli":
-        return _call_claude_cli(user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
-    if backend == "bedrock":
-        return _call_bedrock(mdl, user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
-    if backend == "azure":
+        result = _call_claude(key, mdl, user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
+    elif backend == "claude-cli":
+        result = _call_claude_cli(user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
+    elif backend == "bedrock":
+        result = _call_bedrock(mdl, user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
+    elif backend == "azure":
         endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip()
         if not endpoint:
             raise ValueError(
                 "Azure OpenAI backend requires AZURE_OPENAI_ENDPOINT to be set "
                 "(e.g. https://my-resource.openai.azure.com/)."
             )
-        return _call_azure(
+        result = _call_azure(
             key,
             endpoint,
             mdl,
@@ -1501,25 +1777,43 @@ def extract_files_direct(
             max_tokens=max_out,
             deep_mode=deep_mode,
         )
-    return _call_openai_compat(
-        cfg["base_url"],
-        key,
-        mdl,
-        user_msg,
-        temperature=_resolve_temperature(cfg.get("temperature", 0), mdl),
-        reasoning_effort=cfg.get("reasoning_effort"),
-        # Honour max_completion_tokens (gemini) or the older max_tokens key
-        # (ollama/deepseek/kimi/openai) -- most openai-compat configs define the
-        # latter, so reading only max_completion_tokens silently capped their
-        # output at the 8192 fallback and truncated deep-mode JSON (#1365).
-        max_completion_tokens=_resolve_max_tokens(
-            cfg.get("max_completion_tokens") or cfg.get("max_tokens", 8192)
-        ),
-        backend=backend,
-        deep_mode=deep_mode,
-        images=image_refs,
-        extra_body=cfg.get("extra_body"),
-    )
+    else:
+        result = _call_openai_compat(
+            cfg["base_url"],
+            key,
+            mdl,
+            user_msg,
+            temperature=_resolve_temperature(cfg.get("temperature", 0), mdl),
+            reasoning_effort=cfg.get("reasoning_effort"),
+            # Honour max_completion_tokens (gemini) or the older max_tokens key
+            # (ollama/deepseek/kimi/openai) -- most openai-compat configs define the
+            # latter, so reading only max_completion_tokens silently capped their
+            # output at the 8192 fallback and truncated deep-mode JSON (#1365).
+            max_completion_tokens=_resolve_max_tokens(
+                cfg.get("max_completion_tokens") or cfg.get("max_tokens", 8192)
+            ),
+            backend=backend,
+            deep_mode=deep_mode,
+            images=image_refs,
+            extra_body=cfg.get("extra_body"),
+        )
+
+    # Verify code-typed nodes against the source the model read and downgrade the
+    # confidence of any whose symbol name has no evidence there. Runs on the bytes
+    # the model actually saw (text_files, same cap as _read_files); images are
+    # excluded (binary, unverifiable). Best-effort — never abort extraction.
+    if isinstance(result, dict):
+        try:
+            _n_unverified = _bind_node_evidence(result, text_files, root)
+            if _n_unverified:
+                print(
+                    f"[graphify] {_n_unverified} semantic node(s) had no evidence in "
+                    "the source and were flagged verification=unverified",
+                    file=sys.stderr,
+                )
+        except Exception as _exc:  # noqa: BLE001 — evidence-binding is advisory
+            print(f"[graphify] evidence-binding skipped: {_exc}", file=sys.stderr)
+    return result
 
 
 def _estimate_file_tokens(unit: "Path | FileSlice") -> int:
@@ -1637,6 +1931,69 @@ def _looks_like_context_exceeded(exc: BaseException) -> bool:
     return any(marker in msg for marker in _CONTEXT_EXCEEDED_MARKERS)
 
 
+def _mark_partial(result: dict) -> None:
+    """Tag every node/edge/hyperedge in a truncated chunk result with an internal
+    ``_partial`` marker.
+
+    A chunk whose LLM response was truncated (`finish_reason="length"`) and could
+    not be recovered by splitting yields a PARTIAL node set. Left unmarked, that
+    set is checkpointed and (via the final save) written to the content-hash
+    semantic cache as authoritative, so it is served forever until the file
+    content changes or ``--force``. The marker rides these item dicts up through
+    every chunk merge (which concatenate the same object references) so it reaches
+    ``save_semantic_cache`` on both the checkpoint and the final-save paths, which
+    stamp the entry ``partial: True``; ``load_cached`` then treats it as a miss.
+    """
+    for bucket in ("nodes", "edges", "hyperedges"):
+        for item in result.get(bucket, []):
+            if isinstance(item, dict):
+                item["_partial"] = True
+
+
+def _chunk_partial_files(chunk) -> list[str]:
+    """Source paths covered by a chunk, for marking a chunk that truncated to an
+    EMPTY parse partial (#1950 gap): a mid-JSON cut yields zero items, so
+    ``_mark_partial`` has nothing to tag and the file it covered would be stamped
+    complete. Recording the chunk's own paths closes that. ``unit_path`` folds a
+    FileSlice back to its parent file so one truncated slice marks the whole doc."""
+    return sorted({str(unit_path(u)) for u in chunk})
+
+
+def _merged_partial_files(*results: dict) -> list[str]:
+    """Union of the ``_partial_files`` carried by each result (survives merges)."""
+    out: set[str] = set()
+    for r in results:
+        out.update(r.get("_partial_files", []) or [])
+    return sorted(out)
+
+
+def _partial_source_files(result: dict) -> list[str]:
+    """Source files known partial: those carrying a ``_partial`` item marker, plus
+    any recorded in ``_partial_files`` (a chunk that truncated to an empty parse
+    and so has no items to mark)."""
+    seen: set[str] = set(result.get("_partial_files", []) or [])
+    for bucket in ("nodes", "edges", "hyperedges"):
+        for item in result.get(bucket, []):
+            if isinstance(item, dict) and item.get("_partial"):
+                sf = item.get("source_file")
+                if sf:
+                    seen.add(str(sf))
+    return sorted(seen)
+
+
+def _strip_partial_markers(result: dict) -> None:
+    """Remove the internal ``_partial`` marker from every item in ``result``.
+
+    Call this only AFTER the semantic cache has been saved (the save consumes the
+    marker to stamp affected entries ``partial: True``). Stripping it keeps the
+    internal flag out of the graph.json nodes/edges the corpus result feeds into.
+    """
+    for bucket in ("nodes", "edges", "hyperedges"):
+        for item in result.get(bucket, []):
+            if isinstance(item, dict):
+                item.pop("_partial", None)
+
+
 def _extract_with_adaptive_retry(
     chunk: list[Path],
     backend: str,
@@ -1696,6 +2053,7 @@ def _extract_with_adaptive_retry(
             "output_tokens": left.get("output_tokens", 0) + right.get("output_tokens", 0),
             "model": model,
             "finish_reason": "stop",
+            "_partial_files": _merged_partial_files(left, right),
         }
 
     def _split_lone_slice() -> "tuple[FileSlice, FileSlice] | None":
@@ -1754,6 +2112,7 @@ def _extract_with_adaptive_retry(
             "output_tokens": left.get("output_tokens", 0) + right.get("output_tokens", 0),
             "model": model,
             "finish_reason": "stop",
+            "_partial_files": _merged_partial_files(left, right),
         }
 
     if result.get("finish_reason") != "length":
@@ -1770,16 +2129,32 @@ def _extract_with_adaptive_retry(
             return _merge_two([halves[0]], [halves[1]])
         print(
             f"[graphify] single-file chunk {unit_path(chunk[0])} truncated at "
-            f"max_completion_tokens — partial result kept",
+            f"max_completion_tokens — partial result kept (not cached as complete)",
             file=sys.stderr,
+        )
+        # The node set is incomplete; mark it so it is not promoted to the
+        # semantic cache as authoritative and is re-dispatched next run. Also
+        # record the chunk's files so a truncation that parsed to nothing (an
+        # empty item set) still marks the file partial (#1950 empty-parse gap).
+        _mark_partial(result)
+        result["_partial_files"] = sorted(
+            set(_chunk_partial_files(chunk)) | set(result.get("_partial_files", []) or [])
         )
         return result
 
     if _depth >= max_depth:
         print(
             f"[graphify] chunk of {len(chunk)} still truncated at recursion "
-            f"depth {_depth} (max {max_depth}) — partial result kept",
+            f"depth {_depth} (max {max_depth}) — partial result kept (not cached as complete)",
             file=sys.stderr,
+        )
+        # Conservative: this marks every file in the merged chunk partial, even
+        # ones that finished cleanly during recursion. Over-marking only costs a
+        # re-extraction next run; under-marking would serve a truncated file as
+        # complete, so err toward re-extraction.
+        _mark_partial(result)
+        result["_partial_files"] = sorted(
+            set(_chunk_partial_files(chunk)) | set(result.get("_partial_files", []) or [])
         )
         return result
 
@@ -1808,6 +2183,7 @@ def _extract_with_adaptive_retry(
         # truncation warning; the merged result is no longer truncated as a
         # logical unit.
         "finish_reason": "stop",
+        "_partial_files": _merged_partial_files(left, right),
     }
 
 
@@ -1823,6 +2199,7 @@ def extract_corpus_parallel(
     max_concurrency: int = 4,
     max_retry_depth: int = 3,
     deep_mode: bool = False,
+    cache_root: "Path | None" = None,
 ) -> dict:
     """Extract a corpus in chunks, merging results.
 
@@ -1857,6 +2234,14 @@ def extract_corpus_parallel(
     Returns merged dict with nodes, edges, hyperedges, input_tokens,
     output_tokens. Failed chunks are logged to stderr and skipped — one bad
     chunk does not abort the run.
+
+    ``cache_root`` (when given) is where per-chunk checkpoint cache entries are
+    written, decoupled from ``root`` which anchors content-hash keys and
+    ``source_file`` resolution — the same split the AST cache uses (#1774).
+    With ``--out``, cli.py passes the corpus as ``root`` and the output
+    directory as ``cache_root`` so checkpoints land where the recovery read
+    looks, instead of creating an unwanted ``graphify-out/`` inside the
+    analyzed source tree (#1990).
 
     Accepts ``str`` paths as well as ``Path``; string entries are coerced up
     front so packing/slicing helpers can rely on ``Path`` semantics (#1386).
@@ -1925,13 +2310,26 @@ def extract_corpus_parallel(
             # chunk leaked the FileSlice object into the allowlist and the write
             # raised TypeError, silently defeating the checkpoint.)
             allowed = [unit_path(item) for item in chunk]
+            # Deep-mode results checkpoint into their own namespace
+            # (cache/semantic-deep/) so a deep run never overwrites standard
+            # entries — and a later standard run never serves deep ones (#1894).
             _scs(
                 result.get("nodes", []),
                 result.get("edges", []),
                 result.get("hyperedges", []),
                 root=root,
+                cache_root=cache_root,
                 merge_existing=True,
                 allowed_source_files=allowed,
+                mode="deep" if deep_mode else None,
+                # Stamp the entry with the prompt that produced it, so a release
+                # that changes _EXTRACTION_SYSTEM re-extracts instead of replaying
+                # this vintage forever (#1939).
+                prompt=_extraction_system(deep=deep_mode),
+                # A truncated/partial chunk must not be checkpointed as
+                # authoritative: pass the partial file set so its entry is
+                # stamped ``partial: True`` and re-dispatched next run.
+                partial_source_files=_partial_source_files(result) or None,
             )
         except Exception as _exc:  # noqa: BLE001 — checkpoint is best-effort
             print(f"[graphify] incremental cache checkpoint failed: {_exc}", file=sys.stderr)
@@ -2091,6 +2489,14 @@ def _merge_into(merged: dict, result: dict) -> None:
     merged["hyperedges"].extend(result.get("hyperedges", []))
     merged["input_tokens"] += result.get("input_tokens", 0)
     merged["output_tokens"] += result.get("output_tokens", 0)
+    # Carry forward files a chunk truncated to an empty parse (#1950): these have
+    # no items to ride the merge, so they'd otherwise be lost from the run-level
+    # partial set the manifest stamp consults.
+    incoming = result.get("_partial_files")
+    if incoming:
+        merged["_partial_files"] = sorted(
+            set(merged.get("_partial_files", []) or []) | set(incoming)
+        )
 
 
 def _call_llm(
@@ -2122,7 +2528,7 @@ def _call_llm(
     cfg = BACKENDS[backend]
     key = _get_backend_api_key(backend)
     if not key and backend == "ollama":
-        ollama_url = os.environ.get("OLLAMA_BASE_URL", cfg.get("base_url", ""))
+        ollama_url = _resolve_ollama_base_url(cfg.get("base_url", ""))
         _validate_ollama_base_url(ollama_url)
         key = "ollama"
     if not key and backend not in ("bedrock", "claude-cli"):
@@ -2197,12 +2603,20 @@ def _call_llm(
     if backend == "bedrock":
         try:
             import boto3
+            import botocore.config
         except ImportError as exc:
             raise ImportError(_backend_pkg_hint("boto3", "bedrock")) from exc
         region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "us-east-1"
         profile = os.environ.get("AWS_PROFILE")
         session = boto3.Session(profile_name=profile, region_name=region)
-        client = session.client("bedrock-runtime")
+        client = session.client(
+            "bedrock-runtime",
+            config=botocore.config.Config(
+                read_timeout=_resolve_api_timeout(),
+                connect_timeout=10,
+                retries={"max_attempts": _resolve_max_retries() + 1, "mode": "adaptive"},
+            ),
+        )
         resp = client.converse(
             modelId=mdl,
             messages=[{"role": "user", "content": [{"text": prompt}]}],
@@ -2211,7 +2625,7 @@ def _call_llm(
         bu = resp.get("usage") or {}
         if bu:
             _rec(bu.get("inputTokens", 0), bu.get("outputTokens", 0))
-        return resp.get("output", {}).get("message", {}).get("content", [{}])[0].get("text", "")
+        return _bedrock_response_text(resp, default="")
 
     if backend == "azure":
         endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip()
@@ -2374,7 +2788,11 @@ def detect_backend() -> str | None:
         return "azure"
     if os.environ.get("AWS_PROFILE") or os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION"):
         return "bedrock"
-    ollama_url = os.environ.get("OLLAMA_BASE_URL")
+    # Honor Ollama's own OLLAMA_HOST here too, not just OLLAMA_BASE_URL (#1940) —
+    # otherwise a user who set the standard Ollama var but no --backend still
+    # gets "no LLM API key found". Empty default -> falsy when neither is set,
+    # so ollama stays opt-in and never shadows a paid key (checked first above).
+    ollama_url = _resolve_ollama_base_url("")
     if ollama_url:
         _validate_ollama_base_url(ollama_url)
         return "ollama"

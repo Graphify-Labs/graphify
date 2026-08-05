@@ -125,9 +125,12 @@ def build_tree(
         sym_children: List[Dict[str, Any]] = []
         for n in syms:
             label = n.get("label", n.get("id", "?"))
-            # Skip the redundant file-name node graphify emits.
-            if label == src_path.name and n.get("file_type") == "code":
-                continue
+            # Skip the redundant file-name node graphify emits (bare basename or
+            # the directory-qualified form from the #2032 disambiguation pass).
+            if n.get("file_type") == "code":
+                from graphify.build import _is_file_node_label
+                if _is_file_node_label(label, src_file):
+                    continue
             sym_children.append({
                 "name": label,
                 "total_count": 1,

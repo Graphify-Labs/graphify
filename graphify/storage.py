@@ -1006,6 +1006,17 @@ def find_surprising_connections(
     top_n: int = 5,
 ) -> list[dict]:
     """Cross-file or cross-community edges ranked by composite surprise score."""
+    # 0. Guard: skip tiny/edge-less graphs. The undirected degree query below
+    #    crashes neug on graphs without edges, and surprising connections are
+    #    meaningless without edges anyway.
+    edge_count = list(conn.execute(
+        "MATCH ()-[e:edge]->() RETURN count(e)"
+    ))
+    if not edge_count or edge_count[0][0] == 0:
+        return []
+    if sum(len(v) for v in communities.values()) < 4:
+        return []
+
     # 1. Determine multi-source vs single-source
     source_count = list(conn.execute(
         "MATCH (n:node) WHERE n.source_file <> '' "

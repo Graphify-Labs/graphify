@@ -283,6 +283,54 @@ def test_pg_introspect_fk_query_avoids_privilege_filtered_view():
     assert len(ref_edges) == 1
 
 
+def test_pg_introspect_fk_edges_survive_unparseable_function_stubs():
+    """#1854: FK edges must survive routines whose reconstructed DDL the SQL
+    grammar cannot parse.
+
+    A C-language routine's "body" from information_schema.routines is just the
+    C symbol name, so its reconstructed stub —
+        CREATE FUNCTION "public"."levenshtein"() RETURNS void
+            AS $gfx$ levenshtein $gfx$ LANGUAGE c;
+    — is unparseable, and tree-sitter's error recovery consumes the statements
+    that follow it. With FK ALTER TABLEs emitted after the function DDL, every
+    'references' edge was silently lost on any DB with a common extension
+    installed (uuid-ossp, pgcrypto, pg_trgm, fuzzystrmatch, …). FKs must be
+    emitted before the routine DDL so an unparseable stub can only damage
+    what follows it."""
+    n = 6
+    mock_tables = [("public", f"t{i}", "BASE TABLE") for i in range(n + 1)]
+    mock_views = []
+    # One C-language extension routine (unparseable stub) + one plpgsql routine
+    mock_routines = [
+        ("public", "levenshtein", "FUNCTION", "levenshtein", "C"),
+        ("public", "trigfunc", "FUNCTION", "BEGIN SELECT 1; END;", "PLPGSQL"),
+    ]
+    mock_fks = [
+        (f"fk{i}", "public", f"t{i}", ["ref_id"], "public", f"t{i+1}", ["id"])
+        for i in range(n)
+    ]
+
+    mock_psycopg = _make_mock_psycopg(mock_tables, mock_views, mock_routines, mock_fks)
+
+    with patch.dict("sys.modules", {"psycopg": mock_psycopg}):
+        res = introspect_postgres("postgresql://myuser:secret@myhost/mydb")
+
+    errors = validate_extraction(res)
+    assert errors == [], f"Validation errors: {errors}"
+
+    ids_to_labels = {node["id"]: node["label"] for node in res["nodes"]}
+    ref_pairs = {
+        (ids_to_labels[e["source"]], ids_to_labels[e["target"]])
+        for e in res["edges"]
+        if e["relation"] == "references"
+    }
+    expected = {(_q("public", f"t{i}"), _q("public", f"t{i+1}")) for i in range(n)}
+    assert ref_pairs == expected, (
+        f"FK edges lost to parser error recovery: expected {n}, "
+        f"got {len(ref_pairs)}: {sorted(ref_pairs)}"
+    )
+
+
 def test_pg_introspect_connection_error():
     """A psycopg.OperationalError must be re-raised as ConnectionError with a
     sanitized message (no DSN/credentials) and no stack-trace noise."""

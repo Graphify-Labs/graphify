@@ -949,3 +949,31 @@ def test_agents_audit_baseline_is_amps_v8_body():
     assert gen._v8_baseline_ref("agents") == "47042beb05d1f6dd2186c0c499ae2840ce604ead:graphify/skill-amp.md"
     problems = gen.audit_coverage(platforms["agents"])
     assert problems == [], "\n".join(problems)
+
+
+def test_semantic_cache_calls_pass_prompt_file_for_every_split_host():
+    """#1939: a skill's cache read and write must both name the extraction prompt
+    they use, or the run replays entries produced by an older prompt (the read) /
+    strands its results where the next read won't look (the write).
+
+    Locked per host because the two calls live ~80 lines apart in the rendered
+    body: adding the argument to one and not the other silently disables the
+    cache rather than failing loudly. The monolith hosts (aider, devin) inline
+    their prompt instead of shipping references/extraction-spec.md and are
+    deliberately excluded — they have no spec path to point at.
+    """
+    platforms = gen.load_platforms()
+    arts = gen.render_all(platforms)
+    bodies = [a for a in arts
+              if "check_semantic_cache(" in a.content
+              and "references/extraction-spec.md" in a.content]
+    assert bodies, "no rendered split-host skill body calls check_semantic_cache"
+    for a in bodies:
+        for call in ("check_semantic_cache(", "save_semantic_cache("):
+            line = next(ln for ln in a.content.splitlines() if call in ln and "import" not in ln)
+            assert "prompt_file='SPEC_PATH'" in line, (
+                f"{a.path}: {call} must pass prompt_file so entries are attributed "
+                f"to the extraction prompt (#1939) — got: {line.strip()}"
+            )
+        # The placeholder is inert unless the body tells the agent what to substitute.
+        assert "SPEC_PATH below is the **absolute** path" in a.content, a.path

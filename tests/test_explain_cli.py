@@ -123,3 +123,200 @@ def test_explain_no_lesson_line_for_unannotated_node(monkeypatch, tmp_path, caps
     p = _write_graph(tmp_path)
     out = _run(monkeypatch, p, "validateSanitySession", capsys)
     assert "Lesson:" not in out
+
+
+def test_explain_connection_shows_call_site_line(monkeypatch, tmp_path, capsys):
+    """BUG1: an explain connection shows the edge's call-SITE line (in the
+    caller's file), not the caller's def line."""
+    graph_data = {
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [
+            {"id": "loader", "label": "load_state()",
+             "source_file": "apollo.py", "source_location": "L90", "community": 0},
+            {"id": "trans", "label": "transition_state()",
+             "source_file": "state.py", "source_location": "L56", "community": 0},
+        ],
+        "links": [
+            {"source": "loader", "target": "trans", "relation": "calls",
+             "confidence": "EXTRACTED", "source_file": "apollo.py", "source_location": "L158"},
+        ],
+    }
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps(graph_data))
+    out = _run(monkeypatch, p, "transition_state", capsys)
+    # The inbound caller line must cite the call site apollo.py:L158.
+    caller_line = next(l for l in out.splitlines() if "<-- load_state()" in l)
+    assert "apollo.py:L158" in caller_line, f"call site missing from: {caller_line!r}"
+    assert "apollo.py:L90" not in caller_line  # never the caller's def line
+    # The queried node's own header still shows its def line (correct).
+    assert "state.py" in out and "L56" in out
+
+
+# --- #2009: high-degree nodes must not silently hide the cut connections ------
+
+def _write_high_degree_graph(tmp_path, n_callers=30, files=None):
+    """A node with n_callers callers, spread across `files` (default: 3
+    files, so counts land above 1 per file and truncation kicks in — the
+    CLI shows the top 20 by neighbor degree, cutting the rest)."""
+    files = files or ["app/handlers/email.py", "app/jobs/retry.py", "lib/workers/queue.py"]
+    nodes = [{"id": "hub", "label": "hub()",
+              "source_file": "lib/hub.py", "community": 0}]
+    links = []
+    for i in range(n_callers):
+        fpath = files[i % len(files)]
+        nid = f"caller_{i}"
+        nodes.append({"id": nid, "label": f"caller_{i}()",
+                       "source_file": fpath, "community": 0})
+        links.append({"source": nid, "target": "hub", "relation": "calls",
+                       "confidence": "EXTRACTED", "source_file": fpath,
+                       "source_location": f"L{10 + i}"})
+    graph_data = {"directed": False, "multigraph": False, "graph": {},
+                  "nodes": nodes, "links": links}
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps(graph_data))
+    return p
+
+
+def test_explain_truncation_notice_present_for_high_degree_node(monkeypatch, tmp_path, capsys):
+    """Baseline: the cut count is still announced (pre-existing behavior)."""
+    p = _write_high_degree_graph(tmp_path, n_callers=30)
+    out = _run(monkeypatch, p, "hub", capsys)
+    assert "Connections (30):" in out
+    assert "... and 10 more" in out
+
+
+def test_explain_groups_cut_callers_by_file_instead_of_dropping_them(monkeypatch, tmp_path, capsys):
+    """#2009: past the top-20 cutoff, the remaining callers must still be
+    accounted for — grouped by file with counts — instead of vanishing
+    behind a bare '... and N more'. No caller may be lost silently: the
+    per-file counts in the aggregation must sum back to the cut total."""
+    p = _write_high_degree_graph(
+        tmp_path, n_callers=30,
+        files=["app/handlers/email.py", "app/jobs/retry.py", "lib/workers/queue.py"],
+    )
+    out = _run(monkeypatch, p, "hub", capsys)
+    assert "Grouped by file:" in out
+    assert "<-- lib/workers/queue.py: 4 connections" in out
+    assert "<-- app/handlers/email.py: 3 connections" in out
+    assert "<-- app/jobs/retry.py: 3 connections" in out
+    # No silent loss: the aggregated counts must sum to the announced cut.
+    grouped_lines = [
+        l for l in out.splitlines() if l.strip().startswith(("<--", "-->")) and "connection" in l
+    ]
+    total = sum(int(l.rsplit(":", 1)[1].split()[0]) for l in grouped_lines)
+    assert total == 10  # 30 connections - 20 shown = 10 cut, all accounted for
+
+
+def test_explain_no_grouping_section_when_under_cutoff(monkeypatch, tmp_path, capsys):
+    """Regression guard: nodes at or below the 20-connection cutoff keep the
+    pre-#2009 output byte-for-byte (no new section, no behavior change)."""
+    p = _write_high_degree_graph(tmp_path, n_callers=5)
+    out = _run(monkeypatch, p, "hub", capsys)
+    assert "Grouped by file:" not in out
+    assert "more" not in out
+
+
+def test_explain_grouping_boundary_at_exactly_21_vs_20_connections(monkeypatch, tmp_path, capsys):
+    """Pin the exact `> 20` cutoff itself. The other #2009 tests use 30 and 5
+    connections, both comfortably clear of the edge — nothing here fails if a
+    future refactor shifts the boundary by one. One node at exactly 21
+    connections (one past the cutoff) must show the grouped section with
+    exactly one grouped entry; one node at exactly 20 (at the cutoff, not
+    past it) must show neither."""
+    p21 = _write_high_degree_graph(tmp_path, n_callers=21, files=["lib/only.py"])
+    out21 = _run(monkeypatch, p21, "hub", capsys)
+    assert "Grouped by file:" in out21
+    assert "<-- lib/only.py: 1 connection" in out21
+    grouped_lines21 = [
+        l for l in out21.splitlines() if l.strip().startswith(("<--", "-->")) and "connection" in l
+    ]
+    assert len(grouped_lines21) == 1  # exactly one grouped entry, not zero, not more
+
+    p20 = _write_high_degree_graph(tmp_path, n_callers=20, files=["lib/only.py"])
+    out20 = _run(monkeypatch, p20, "hub", capsys)
+    assert "Grouped by file:" not in out20
+    assert "more" not in out20
+
+
+# --- ambiguous label across files (#explain-ambiguity) -----------------------
+
+
+def _write_ambiguous_graph(tmp_path, *, reverse: bool = False):
+    """Two DIFFERENT symbols that happen to share a label, in different files.
+
+    This is the monorepo shape: each workspace defines its own `MetricsPort`.
+    Both land in `_find_node`'s `exact` tier, separated only by iteration order.
+    """
+    nodes = [
+        {"id": "chat_metrics_port", "label": "MetricsPort",
+         "source_file": "services/chat/src/application/ports/metrics.port.ts",
+         "community": 0},
+        {"id": "scraping_metrics_port", "label": "MetricsPort",
+         "source_file": "services/scraping/src/application/ports/metrics.port.ts",
+         "community": 0},
+    ]
+    graph_data = {
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": list(reversed(nodes)) if reverse else nodes,
+        "links": [],
+    }
+    p = tmp_path / ("graph_rev.json" if reverse else "graph.json")
+    p.write_text(json.dumps(graph_data))
+    return p
+
+
+def _run_expect_exit(monkeypatch, graph_path, label, capsys):
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(mainmod.sys, "argv",
+        ["graphify", "explain", label, "--graph", str(graph_path)])
+    try:
+        mainmod.main()
+    except SystemExit as exc:
+        return capsys.readouterr().out, exc.code
+    return capsys.readouterr().out, None
+
+
+def test_explain_ambiguous_label_lists_every_candidate(monkeypatch, tmp_path, capsys):
+    p = _write_ambiguous_graph(tmp_path)
+    out, code = _run_expect_exit(monkeypatch, p, "MetricsPort", capsys)
+    assert "Ambiguous" in out
+    assert "services/chat/src/application/ports/metrics.port.ts" in out
+    assert "services/scraping/src/application/ports/metrics.port.ts" in out
+    assert code == 1
+    # It must not present one file as the answer.
+    assert "Node: MetricsPort\n  ID:" not in out
+
+
+def test_explain_ambiguous_answer_does_not_depend_on_node_order(
+    monkeypatch, tmp_path, capsys
+):
+    """The bug: reversing node order flipped which file was reported as fact."""
+    forward, _ = _run_expect_exit(
+        monkeypatch, _write_ambiguous_graph(tmp_path), "MetricsPort", capsys)
+    reverse, _ = _run_expect_exit(
+        monkeypatch, _write_ambiguous_graph(tmp_path, reverse=True), "MetricsPort", capsys)
+    assert "Ambiguous" in forward and "Ambiguous" in reverse
+    # Same candidate set either way, regardless of iteration order.
+    assert sorted(l.strip() for l in forward.splitlines() if "metrics.port.ts" in l) == \
+           sorted(l.strip() for l in reverse.splitlines() if "metrics.port.ts" in l)
+
+
+def test_explain_matches_within_one_file_are_not_ambiguous(monkeypatch, tmp_path, capsys):
+    """A file node plus its members is ordinary precedence, not a tie."""
+    source_file = "services/chat/src/application/ports/metrics.port.ts"
+    graph_data = {
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [
+            {"id": "file_node", "label": "metrics.port.ts",
+             "source_file": source_file, "source_location": "L1", "community": 0},
+            {"id": "member", "label": "MetricsPort",
+             "source_file": source_file, "source_location": "L4", "community": 0},
+        ],
+        "links": [{"source": "file_node", "target": "member",
+                   "relation": "contains", "confidence": "EXTRACTED"}],
+    }
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps(graph_data))
+    out = _run(monkeypatch, p, "MetricsPort", capsys)
+    assert "Ambiguous" not in out
+    assert "Node: MetricsPort" in out
