@@ -52,6 +52,8 @@ That rubric describes edges Claude inferred. The per-language member-call resolv
 
 **PHP member calls refuse rather than guess.** `$this->prop->method()`, `$obj?->method()`, a typed parameter and a `$var = new T()` local all bind to the receiver's declared type as INFERRED 0.8; `(new Service())->method()` is EXTRACTED 1.0, but only when the namespace written at the call site corroborates the class that was found. When the type is not provably one concrete in-corpus class, no edge is emitted at all — untyped, union- and intersection-typed receivers, receivers typed by an `interface`, `enum` or `trait`, a short name that matches two classes, a method the receiver's class does not declare, chained and array-element receivers, a local rebound or shadowed anywhere in the method, anonymous classes, and `self`/`static`/`parent`. A Laravel corpus has many identically named `search()`/`log()`/`handle()` methods, so an absent edge is worth more than a guessed one.
 
+A PHP 8.1 first-class callable — `$obj->method(...)`, including the nullsafe and `$this` forms — resolves by exactly those rules but is emitted as **`indirect_call`**, not `calls`: the syntax creates a `Closure` and names the method without invoking it, the same shape the resolver already labels `indirect_call` for a callback passed by name. `calls` therefore keeps meaning "control flow transfers here". The spread form `$obj->method(...$args)` is a real invocation and stays `calls`.
+
 ---
 
 ## Token benchmark
