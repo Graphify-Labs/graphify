@@ -1438,59 +1438,71 @@ def _csharp_method_receiver_types(
     method_node,
     source: bytes,
     field_types: dict[str, str],
-) -> dict[str, str]:
-    """Build the receiver type table visible to one C# method (#2299).
+) -> tuple[dict[str, list[tuple[int, int, str | None]]], dict[str, str]]:
+    """Build the SCOPED receiver bindings visible to one C# method (#2299, #2472).
 
-    The C# twin of ``_java_method_receiver_types``: current-class fields and
-    properties are the base scope, and parameters plus local declarations bind
-    on top of them for the full method. C# scoping is per-method, so a name
-    rebound in a DIFFERENT method never poisons this one — the #2299 regression
-    under the old file-wide table, where ``var item = items[i]`` in one method
-    (untypable) silently deleted the true edge for a same-named, explicitly
-    typed parameter elsewhere in the file.
+    The C# twin of ``_java_method_receiver_types``, but positional: instead of
+    a flat name -> type map, the first element maps each name to a list of
+    ``(scope_start_byte, scope_end_byte, type_name)`` bindings and the second
+    is the class field/property base scope; ``_csharp_scoped_receiver_type``
+    resolves a call site against them by byte offset. C# scoping is per-method,
+    so a name rebound in a DIFFERENT method never affects this one (#2299) —
+    and, since #2472, an untypable binding (``out var x``) in one lexical scope
+    no longer wipes a same-named typed binding in a sibling or nested scope
+    (a ``static`` local-function parameter, a declaration in the other branch
+    of an ``if``), the regression the #2346 declaration-expression harvest
+    exposed under the old method-wide poison rule.
 
-    Poisoning stays method-local and conservative, because raw call facts do
-    not retain lexical position inside the method: a name is dropped entirely on
-    an unresolvable binding (``var x = Compute();``, a primitive, ``dynamic``,
-    an untyped lambda parameter), a same-method conflict, or a conflict with
-    the class field's type for that name. ``var v = new T()`` is typed from the
-    object-creation (precision over recall — an untypable receiver is left for
-    the resolver to drop rather than guess).
+    A receiver_type is stamped iff exactly one binding is lexically visible at
+    the call site (innermost scope wins) and it is typed; an untypable or tied
+    binding at the call site yields no edge (never a guess). Scope ranges are
+    deliberately conservative — a pattern binding (``is T x``, ``case T x:``)
+    spans its whole enclosing block, which is over-wide, but over-wide only
+    ever produces ties (drop), never a wrong bind. The class-field conflict
+    rule is unchanged: a local binding disagreeing with a same-named
+    field/property's type drops the name entirely. Residual limitation:
+    ``out var x`` itself stays untyped — resolving it from the callee's
+    ``out`` parameter signature is a separate, pre-existing gap.
     """
-    method_types: dict[str, str] = {}
-    ambiguous: set[str] = set()
+    bindings: dict[str, list[tuple[int, int, str | None]]] = {}
+    field_poisoned: set[str] = set()
 
-    def bind(name: str | None, type_name: str | None) -> None:
-        if not name or name in ambiguous:
+    def bind(name: str | None, type_name: str | None, scope_node) -> None:
+        if not name or scope_node is None:
             return
-        if (
-            type_name is None
-            or method_types.get(name, type_name) != type_name
-            or field_types.get(name) not in (None, type_name)
-        ):
-            method_types.pop(name, None)
-            ambiguous.add(name)
-        else:
-            method_types[name] = type_name
+        if field_types.get(name) not in (None, type_name):
+            field_poisoned.add(name)
+        bindings.setdefault(name, []).append(
+            (scope_node.start_byte, scope_node.end_byte, type_name)
+        )
 
-    def bind_parameter(param) -> None:
+    def bind_parameter(param, scope_node) -> None:
         name_node = param.child_by_field_name("name")
         if name_node is not None:
             bind(
                 _read_text(name_node, source),
                 _csharp_receiver_type_name(param.child_by_field_name("type"), source),
+                scope_node,
             )
 
+    body = method_node.child_by_field_name("body")
+    # Parameters scope to the BODY range: a parameter and an (illegal)
+    # same-named top-level local share one C# declaration space, and equal
+    # ranges tie at the call site — drop, never a guess.
+    param_scope = body if body is not None else method_node
     params = method_node.child_by_field_name("parameters")
     if params is not None:
         for param in params.children:
             if param.type == "parameter":
-                bind_parameter(param)
+                bind_parameter(param, param_scope)
 
-    body = method_node.child_by_field_name("body")
-    stack = list(body.children) if body is not None else []
+    stack = (
+        [(child, param_scope) for child in body.children]
+        if body is not None
+        else []
+    )
     while stack:
-        node = stack.pop()
+        node, scope = stack.pop()
         if node.type in (
             "class_declaration",
             "struct_declaration",
@@ -1500,26 +1512,26 @@ def _csharp_method_receiver_types(
         ):
             continue
         if node.type == "lambda_expression":
-            # Raw calls are method-scoped, so a lambda-local binding cannot be
-            # distinguished from an enclosing binding with the same name: a
-            # typed lambda parameter binds, an untyped one (`x => ...`,
-            # `(z) => ...`) binds None and poisons the name method-locally.
+            # A lambda parameter is visible exactly inside the lambda: a typed
+            # one binds its type there, an untyped one (`x => ...`,
+            # `(z) => ...`) binds None so calls on it inside the lambda stay
+            # unstamped — without wiping a same-named outer binding (#2472).
             lam_params = node.child_by_field_name("parameters")
             if lam_params is not None:
                 if lam_params.type == "implicit_parameter":
-                    bind(_read_text(lam_params, source), None)
+                    bind(_read_text(lam_params, source), None, node)
                 else:
                     for param in lam_params.children:
                         if param.type == "parameter":
-                            bind_parameter(param)
+                            bind_parameter(param, node)
                         elif param.type == "implicit_parameter":
-                            bind(_read_text(param, source), None)
+                            bind(_read_text(param, source), None, node)
         elif node.type == "local_function_statement":
             lf_params = node.child_by_field_name("parameters")
             if lf_params is not None:
                 for param in lf_params.children:
                     if param.type == "parameter":
-                        bind_parameter(param)
+                        bind_parameter(param, node)
         elif node.type == "local_declaration_statement":
             vd = next(
                 (c for c in node.children if c.type == "variable_declaration"), None
@@ -1546,16 +1558,16 @@ def _csharp_method_receiver_types(
                                     g.child_by_field_name("type"), source
                                 )
                                 break
-                    bind(_read_text(name_node, source), type_name)
+                    bind(_read_text(name_node, source), type_name, scope)
         elif node.type in ("declaration_expression", "declaration_pattern"):
             # #2346: inline-declared receivers. `out Sect s` is a
             # declaration_expression; `is Leaf lf`, `is not Node nd`,
             # `case Twig tw:` and a switch-arm `Stem st =>` are
             # declaration_patterns — all carry `type` + `name` fields and
-            # bind the name for the rest of the method. `out var v`
+            # bind the name for the enclosing block. `out var v`
             # (implicit_type) yields None from _csharp_receiver_type_name
-            # and poisons the name method-locally, matching the
-            # untypable-local rule above (no guess).
+            # and stays untypable inside that block only — no guess at its
+            # own call sites, no method-wide wipe of other scopes (#2472).
             name_node = node.child_by_field_name("name")
             if name_node is not None and name_node.type == "identifier":
                 bind(
@@ -1563,14 +1575,57 @@ def _csharp_method_receiver_types(
                     _csharp_receiver_type_name(
                         node.child_by_field_name("type"), source
                     ),
+                    scope,
                 )
-        stack.extend(node.children)
+        child_scope = (
+            node
+            if node.type in (
+                "block", "lambda_expression", "local_function_statement"
+            )
+            else scope
+        )
+        stack.extend((child, child_scope) for child in node.children)
 
-    table = dict(field_types)
-    table.update(method_types)
-    for name in ambiguous:
-        table.pop(name, None)
-    return table
+    base = {
+        name: type_name
+        for name, type_name in field_types.items()
+        if name not in field_poisoned
+    }
+    for name in field_poisoned:
+        bindings.pop(name, None)
+    return bindings, base
+
+
+def _csharp_scoped_receiver_type(
+    table: tuple[dict[str, list[tuple[int, int, str | None]]], dict[str, str]] | None,
+    name: str | None,
+    call_byte: int,
+) -> str | None:
+    """Resolve a C# receiver name to its type at a specific call offset (#2472).
+
+    ``table`` is the (scoped bindings, field base) pair built by
+    ``_csharp_method_receiver_types``. Bindings whose scope contains the call
+    offset are candidates and the innermost (smallest-range) one wins; no
+    candidate at all falls back to the class field/property base scope. A tie
+    at the innermost range (an illegal same-declaration-space clash, e.g. a
+    parameter redeclared as a top-level local, or two sibling pattern bindings
+    of the same name) or an untypable winner yields None — no edge, never a
+    guess.
+    """
+    if not table or not name:
+        return None
+    bindings, base = table
+    candidates = [
+        b for b in bindings.get(name, ())
+        if b[0] <= call_byte < b[1]
+    ]
+    if not candidates:
+        return base.get(name)
+    innermost = min(end - start for start, end, _ in candidates)
+    inner = [b for b in candidates if b[1] - b[0] == innermost]
+    if len(inner) == 1:
+        return inner[0][2]
+    return None
 
 def _ts_receiver_type_table(root, source: bytes, table: dict[str, str]) -> None:
     """Add TS/JS receiver bindings to ``table`` (name -> TypeName), for member-call
@@ -4146,7 +4201,9 @@ def _extract_generic(
     def walk_calls(
         node,
         caller_nid: str,
-        receiver_types: dict[str, str] | None = None,
+        # Java: flat name -> type. C#: the (scoped bindings, field base) pair
+        # from _csharp_method_receiver_types, resolved positionally (#2472).
+        receiver_types: dict[str, str] | tuple | None = None,
         extra_locals: frozenset[str] = frozenset(),
     ) -> None:
         if node.type in config.function_boundary_types:
@@ -4494,13 +4551,16 @@ def _extract_generic(
                     if config.ts_module == "tree_sitter_cpp":
                         rc_entry["lang"] = "cpp"
                     # C#: tag the raw_call so _resolve_csharp_member_calls claims
-                    # it, and stamp the receiver's type from the METHOD-scoped
-                    # table (#1609, per-method since #2299). `this.field.M()` is
+                    # it, and stamp the receiver's type from the method's SCOPED
+                    # bindings by the call's byte offset (#1609, per-method since
+                    # #2299, position-aware since #2472). `this.field.M()` is
                     # covered too: member_receiver is the bare field name, and
-                    # class fields/properties are in the table.
+                    # class fields/properties are the base scope.
                     if config.ts_module == "tree_sitter_c_sharp":
                         rc_entry["lang"] = "csharp"
-                        receiver_type = (receiver_types or {}).get(member_receiver or "")
+                        receiver_type = _csharp_scoped_receiver_type(
+                            receiver_types, member_receiver, node.start_byte
+                        )
                         if receiver_type:
                             rc_entry["receiver_type"] = receiver_type
                     if config.ts_module == "tree_sitter_java":
@@ -4743,8 +4803,9 @@ def _extract_generic(
     # (#1630 Pattern B). Guarding on the tracked set prevents double-walking.
     _tracked_body_ids.update(id(b) for _, b in function_bodies)
 
-    # Body ids are unique (one language per file), so the Java and C# per-method
-    # receiver tables merge without collision.
+    # Body ids are unique (one language per file), so the Java (flat) and C#
+    # (scoped, #2472) per-method receiver tables merge without collision — the
+    # stamp site branches on language to read the matching shape.
     receiver_types_by_body = {**java_receiver_types, **csharp_receiver_types}
     for caller_nid, body_node in function_bodies:
         walk_calls(
