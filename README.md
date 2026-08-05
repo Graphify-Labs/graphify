@@ -638,6 +638,7 @@ graphify-out/
 /graphify ./raw                    # run on a specific folder
 /graphify ./raw --mode deep        # more aggressive relationship extraction
 graphify extract ./raw --code-only # index code only — local AST, no API key (skips docs/PDFs/images); an `extract` flag, not a skill flag
+graphify extract ./raw --html-as-code # treat .html as code (embedded <script> JS AST) instead of a semantic document; opt-in, persists for update/watch
 /graphify ./raw --update           # re-extract only changed files
 /graphify ./raw --directed         # preserve edge direction
 /graphify ./raw --cluster-only     # rerun clustering on existing graph

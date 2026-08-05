@@ -79,6 +79,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _decldef_class_stem,
     _disambiguate_colliding_node_ids,
     _find_workspace_root,
+    _html_mask_non_script,
     _is_type_like_definition,
     _js_call_identifier,
     _js_default_export_name,
@@ -1563,6 +1564,39 @@ def extract_vue(path: Path) -> dict:
     except Exception:
         pass
     return result
+
+
+def extract_html(path: Path) -> dict:
+    """Extract functions/classes/imports from JS embedded in a .html file's
+    ``<script>`` blocks (#1230 — opt-in via ``--html-as-code``).
+
+    ``.html`` is DOCUMENT by default (see ``detect.classify_file``): most
+    HTML is a template or report, not application logic, and always shipping
+    it through the local AST path would silently change output for every
+    existing user. ``--html-as-code`` opts a project in; when it does, this
+    is the extractor that runs.
+
+    Mirrors :func:`extract_vue`: masks everything outside inline, JS-typed
+    ``<script>`` bodies (see :func:`_html_mask_non_script` — external
+    ``src="..."`` scripts and non-JS ``type="..."`` blocks are blanked, not
+    parsed) and feeds the result to the plain JS grammar. Plain HTML has no
+    ``lang="ts"`` convention the way a Vue SFC does, so unlike
+    :func:`extract_vue` there is no grammar selection: browsers execute
+    inline ``<script>`` as JavaScript, never TypeScript. Preserved newlines
+    keep ``source_location`` line numbers accurate in the *host* .html file,
+    and multiple ``<script>`` blocks in one file are all covered — each
+    becomes its own masked region, not just the first.
+
+    A file with no ``<script>`` block, or only external/non-JS ones, masks to
+    an all-blank source: `_extract_generic` still emits the file's own node
+    (structure), just with no JS symbol children.
+    """
+    try:
+        src = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {"nodes": [], "edges": []}
+    masked = _html_mask_non_script(src)
+    return _extract_generic(path, _JS_CONFIG, source_override=masked.encode("utf-8"))
 
 
 def extract_java(path: Path) -> dict:
@@ -4257,6 +4291,12 @@ _DISPATCH: dict[str, Any] = {
     ".vue": extract_vue,
     ".svelte": extract_svelte,
     ".astro": extract_astro,
+    # .html is DOCUMENT by default (detect.DOC_EXTENSIONS) — this entry only
+    # fires when a file is actually dispatched here as code, i.e. when a run
+    # opted in with --html-as-code (#1230). Registering it unconditionally is
+    # safe: extension-keyed dispatch is inert for a path that never enters
+    # code_files in the first place.
+    ".html": extract_html,
     ".dart": extract_dart,
     ".v": extract_verilog,
     ".sv": extract_verilog,

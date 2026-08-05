@@ -81,12 +81,13 @@ def _write_build_config(
     *,
     excludes: "list[str] | None",
     gitignore: bool | None = None,
+    html_as_code: bool | None = None,
 ) -> None:
     """Persist corpus-shaping options under ``out_dir``.
 
     Best effort and non clobbering: omitted options retain their existing values.
     """
-    if not excludes and gitignore is None:
+    if not excludes and gitignore is None and html_as_code is None:
         return
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -101,6 +102,8 @@ def _write_build_config(
             config["excludes"] = list(excludes)
         if gitignore is not None:
             config["gitignore"] = gitignore
+        if html_as_code is not None:
+            config["html_as_code"] = html_as_code
         path.write_text(json.dumps(config), encoding="utf-8")
     except OSError:
         pass
@@ -131,6 +134,25 @@ def _read_build_gitignore(out_dir: Path) -> bool:
     except (OSError, json.JSONDecodeError):
         pass
     return True
+
+
+def _read_build_html_as_code(out_dir: Path) -> bool:
+    """Return whether rebuilds should classify .html as code (default False, #1230).
+
+    Mirrors ``_read_build_gitignore``: an ``update``/``watch``/hook rebuild
+    re-runs ``detect()`` from scratch, so the initial ``extract
+    --html-as-code`` opt-in must be persisted or a later rebuild would
+    silently drop .html back to the semantic/document path.
+    """
+    try:
+        path = out_dir / _BUILD_CONFIG_FILENAME
+        if path.is_file():
+            cfg = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(cfg, dict) and isinstance(cfg.get("html_as_code"), bool):
+                return cfg["html_as_code"]
+    except (OSError, json.JSONDecodeError):
+        pass
+    return False
 
 
 def _merge_changed_paths(*sources: "list[Path] | None") -> list[Path]:
@@ -548,7 +570,18 @@ def _reconcile_existing_graph(
             identity = source_paths.identity(source_file)
             if not source_paths.in_watch_root(source_file):
                 continue
-            if _get_extractor(Path(source_file)) is None:
+            # .html always reads as a semantic source here, regardless of the
+            # current run's --html-as-code state: _get_extractor(".html") is
+            # non-None unconditionally (dispatch is a static extension map),
+            # but an EXISTING .html node in the graph may predate the flag, or
+            # predate this run's flag value, and this per-run detect() cannot
+            # tell which extraction tier produced it. Treating it uniformly as
+            # semantic avoids a spurious "left the scan corpus" warning on
+            # every incremental rebuild of a repo that never opted in (#1230)
+            # — a genuinely stale/rebuilt .html AST node is still evicted
+            # correctly below via current_sources/_origin, which this branch
+            # does not gate.
+            if _get_extractor(Path(source_file)) is None or Path(source_file).suffix.lower() == ".html":
                 # Non-AST source (semantic doc/paper/image — .txt/.pdf/.png/...):
                 # never present in current_sources (built from AST-extractable
                 # code_files), so corpus absence is meaningless. Disk absence is
@@ -995,14 +1028,15 @@ def _rebuild_code(
         from graphify.export import to_json, to_html
         from graphify.security import check_graph_file_size_cap
 
-        # Re-apply the excludes the initial extract recorded, so an update/watch/
-        # hook rebuild does not silently re-include deliberately excluded paths
-        # (#1886).
+        # Re-apply the excludes/--html-as-code the initial extract recorded, so
+        # an update/watch/hook rebuild does not silently re-include deliberately
+        # excluded paths (#1886) or drop .html back to the document path (#1230).
         _persisted_excludes = _read_build_excludes(out)
         detected = detect(
             watch_path, follow_symlinks=follow_symlinks,
             extra_excludes=_persisted_excludes or None,
             gitignore=_read_build_gitignore(out),
+            html_as_code=_read_build_html_as_code(out),
         )
         code_files = [Path(f) for f in detected['files']['code']]
 
@@ -1010,6 +1044,16 @@ def _rebuild_code(
         ast_doc_files: list[Path] = []
         for doc_file in detected['files'].get('document', []):
             p = Path(doc_file)
+            # .html is excluded from this fallback unconditionally: it always has
+            # a registered extractor (extract_html), but is only ever meant to run
+            # through it when --html-as-code opted the project in — and when it
+            # did, detect() above already classified .html as code, so it is in
+            # detected['files']['code'] (and therefore code_files) already, never
+            # in this 'document' list to begin with. This guard is the belt to
+            # that suspenders: it keeps .html out of the AST-fallback path when
+            # the flag is off, matching the opt-in contract (#1230).
+            if p.suffix.lower() == ".html":
+                continue
             if _get_extractor(p) is not None:
                 code_files.append(p)
                 ast_doc_files.append(p)
