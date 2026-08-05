@@ -3028,6 +3028,36 @@ def _resolve_java_member_calls(
             })
 
 
+def _php_qualified_corroborates(qualified: str | None, type_node: dict | None) -> bool:
+    """True when a source-written class name corroborates the resolved node (#1682).
+
+    ``(new \\App\\Services\\Svc())`` names the class outright, but the short-name
+    lookup that found the node ignored the namespace — so the namespace is
+    independent evidence, and only a match makes the edge EXTRACTED.
+
+    The check is deliberately narrow: PHP nodes carry no namespace, so the only
+    corroborating fact available here is the node's path, and PSR-4 maps
+    ``App\\Services\\Svc`` onto ``app/Services/Svc.php``. Every segment of the
+    written name must line up with the tail of that path, case-insensitively.
+    A BARE name (no namespace segment) corroborates nothing and stays INFERRED;
+    a namespace that does not line up downgrades rather than refusing, since the
+    class name itself still resolved unambiguously.
+    """
+    if not qualified or not type_node:
+        return False
+    want = [seg.casefold() for seg in str(qualified).split("\\") if seg]
+    if len(want) < 2:
+        return False  # bare `new Svc()`: no namespace written, no evidence
+    source_file = str(type_node.get("source_file") or "")
+    parts = [p for p in source_file.replace("\\", "/").split("/")
+             if p and p not in (".", "..")]
+    if not parts:
+        return False
+    parts[-1] = parts[-1].rsplit(".", 1)[0]  # drop the file extension
+    parts = [p.casefold() for p in parts]
+    return len(parts) >= len(want) and parts[-len(want):] == want
+
+
 def _resolve_php_member_calls(
     per_file: list[dict],
     all_nodes: list[dict],
@@ -3096,6 +3126,12 @@ def _resolve_php_member_calls(
                 if len(type_defs) != 1:
                     continue  # short name collides across the corpus: refuse
                 type_nid = type_defs[0]
+                if receiver == "(new)":
+                    # The class is named in the source; promote to EXTRACTED
+                    # only when the written namespace backs the node we found.
+                    exact = _php_qualified_corroborates(
+                        raw_call.get("receiver_qualified"), node_by_id.get(type_nid)
+                    )
 
             method_nids = method_index.get((type_nid, key(callee)), set())
             if len(method_nids) != 1:

@@ -373,3 +373,183 @@ def test_static_call_edge_unchanged(tmp_path: Path):
     index = _find(r, ".index()", "leadcontroller")
     context_class = _find(r, "SucursalContext", "app_context_sucursalcontext_sucursalcontext")
     assert (index, context_class) in calls
+
+
+# ── Inline instantiation receivers: `(new Service())->method()` (#3) ──────────
+#
+# The source names the class outright, so the receiver needs no type table. The
+# edge is EXTRACTED only when the written qualified name CORROBORATES the
+# resolved node (its namespace segments match the node's file path, PSR-4
+# style); a bare name carries no such evidence and stays INFERRED.
+
+
+def _controller(body: str, uses: str = "") -> str:
+    return (
+        "<?php\n"
+        "namespace App\\Http\\Controllers;\n"
+        f"{uses}"
+        "class LeadController {\n"
+        "    public function index(): array {\n"
+        f"        {body}\n"
+        "    }\n"
+        "}\n"
+    )
+
+
+def test_inline_new_qualified_name_resolves_extracted(tmp_path: Path):
+    calls, r = _calls(tmp_path, {
+        **_CORPUS,
+        "app/Http/Controllers/LeadController.php": _controller(
+            "return (new \\App\\Services\\LeadHunterService())->search([]);"
+        ),
+    })
+
+    index = _find(r, ".index()", "leadcontroller")
+    service_search = _find(r, ".search()", "leadhunterservice")
+    assert (index, service_search) in calls
+    assert (index, _find(r, ".search()", "auditlog")) not in calls
+    edge = calls[(index, service_search)]
+    assert edge["confidence"] == "EXTRACTED"
+    assert edge["confidence_score"] == 1.0
+
+
+def test_inline_new_bare_name_resolves_inferred(tmp_path: Path):
+    """A bare `new Service()` names no namespace — nothing corroborates it."""
+    calls, r = _calls(tmp_path, {
+        **_CORPUS,
+        "app/Http/Controllers/LeadController.php": _controller(
+            "return (new LeadHunterService())->search([]);",
+            uses="use App\\Services\\LeadHunterService;\n",
+        ),
+    })
+
+    index = _find(r, ".index()", "leadcontroller")
+    service_search = _find(r, ".search()", "leadhunterservice")
+    assert (index, service_search) in calls
+    assert (index, _find(r, ".search()", "auditlog")) not in calls
+    edge = calls[(index, service_search)]
+    assert edge["confidence"] == "INFERRED"
+    assert edge["confidence_score"] == 0.8
+
+
+def test_inline_new_without_ctor_parens_resolves(tmp_path: Path):
+    calls, r = _calls(tmp_path, {
+        **_CORPUS,
+        "app/Http/Controllers/LeadController.php": _controller(
+            "return (new \\App\\Services\\LeadHunterService)->search([]);"
+        ),
+    })
+
+    index = _find(r, ".index()", "leadcontroller")
+    service_search = _find(r, ".search()", "leadhunterservice")
+    assert (index, service_search) in calls
+    assert calls[(index, service_search)]["confidence"] == "EXTRACTED"
+    assert (index, _find(r, ".search()", "auditlog")) not in calls
+
+
+def test_inline_new_non_corroborating_namespace_downgrades(tmp_path: Path):
+    """`\\Legacy\\...\\LeadHunterService` resolves by short name to the only
+    definition in the corpus, but the written namespace does not match that
+    node's path — so the edge is emitted as INFERRED, not EXTRACTED."""
+    calls, r = _calls(tmp_path, {
+        **_CORPUS,
+        "app/Http/Controllers/LeadController.php": _controller(
+            "return (new \\Legacy\\Services\\LeadHunterService())->search([]);"
+        ),
+    })
+
+    index = _find(r, ".index()", "leadcontroller")
+    service_search = _find(r, ".search()", "leadhunterservice")
+    assert (index, service_search) in calls
+    edge = calls[(index, service_search)]
+    assert edge["confidence"] == "INFERRED"
+    assert edge["confidence_score"] == 0.8
+
+
+def test_inline_new_beats_same_file_same_named_method(tmp_path: Path):
+    """The named class wins over an identically named method in the caller's
+    own file — the bare-name match must not shadow an explicit `new`."""
+    calls, r = _calls(tmp_path, {
+        **_CORPUS,
+        "app/Http/Controllers/LeadController.php": (
+            "<?php\n"
+            "namespace App\\Http\\Controllers;\n"
+            "class LeadController {\n"
+            "    public function index(): array {\n"
+            "        return (new \\App\\Services\\LeadHunterService())->search([]);\n"
+            "    }\n"
+            "    public function search(array $filters): array { return []; }\n"
+            "}\n"
+        ),
+    })
+
+    index = _find(r, ".index()", "leadcontroller")
+    assert (index, _find(r, ".search()", "leadhunterservice")) in calls
+    assert (index, _find(r, ".search()", "leadcontroller")) not in calls
+
+
+def test_inline_new_self_emits_no_edge(tmp_path: Path):
+    calls, r = _calls(tmp_path, {
+        **_CORPUS,
+        "app/Http/Controllers/LeadController.php": _controller(
+            "return (new self())->search([]);"
+        ),
+    })
+
+    index = _find(r, ".index()", "leadcontroller")
+    assert not any(src == index and "search" in tgt.lower() for src, tgt in calls), \
+        "`new self()` needs inheritance context the raw-call facts lack — refuse"
+
+
+def test_inline_new_static_emits_no_edge(tmp_path: Path):
+    calls, r = _calls(tmp_path, {
+        **_CORPUS,
+        "app/Http/Controllers/LeadController.php": _controller(
+            "return (new static())->search([]);"
+        ),
+    })
+
+    index = _find(r, ".index()", "leadcontroller")
+    assert not any(src == index and "search" in tgt.lower() for src, tgt in calls)
+
+
+def test_anonymous_class_inline_new_emits_no_edge(tmp_path: Path):
+    """`new class { ... }` has no class name at all — nothing to resolve, and
+    no guess onto a same-named method elsewhere in the corpus."""
+    calls, r = _calls(tmp_path, {
+        **_CORPUS,
+        "app/Http/Controllers/LeadController.php": _controller(
+            "return (new class { public function search(array $f): array "
+            "{ return []; } })->search([]);"
+        ),
+    })
+
+    index = _find(r, ".index()", "leadcontroller")
+    assert (index, _find(r, ".search()", "leadhunterservice")) not in calls
+    assert (index, _find(r, ".search()", "auditlog")) not in calls
+
+
+def test_bare_new_statement_without_call_emits_no_edge(tmp_path: Path):
+    """`new Service();` on its own is not a call — still out of scope."""
+    calls, r = _calls(tmp_path, {
+        **_CORPUS,
+        "app/Http/Controllers/LeadController.php": _controller(
+            "new \\App\\Services\\LeadHunterService();\n        return [];"
+        ),
+    })
+
+    index = _find(r, ".index()", "leadcontroller")
+    assert not any(src == index for src, _tgt in calls)
+
+
+def test_inline_new_unknown_method_emits_no_edge(tmp_path: Path):
+    calls, r = _calls(tmp_path, {
+        **_CORPUS,
+        "app/Http/Controllers/LeadController.php": _controller(
+            "return (new \\App\\Services\\LeadHunterService())->missingMethod();"
+        ),
+    })
+
+    index = _find(r, ".index()", "leadcontroller")
+    assert not any(src == index for src, _tgt in calls), \
+        "the named class has no such method — refuse, don't fall back"

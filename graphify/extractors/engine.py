@@ -4276,6 +4276,11 @@ def _extract_generic(
             is_this_field_call: bool = False
             swift_receiver: str | None = None
             member_receiver: str | None = None
+            # PHP inline instantiation `(new X())->m()` (#1682): the class is
+            # named in the source, so it needs no type table — keep both the
+            # short name (for lookup) and the written text (for corroboration).
+            php_inline_new_type: str | None = None
+            php_inline_new_qualified: str | None = None
 
             # Special handling per language
             if config.ts_module == "tree_sitter_swift":
@@ -4424,6 +4429,28 @@ def _extract_generic(
                                     and _read_text(inner, source) == "$this"
                                     and prop is not None):
                                 member_receiver = f"this.{_read_text(prop, source)}"
+                        elif obj is not None and obj.type == "parenthesized_expression":
+                            # (new X())->m(): object_creation_expression is an
+                            # UNFIELDED named child, and the class it names is
+                            # an unfielded `name` (bare) or `qualified_name`
+                            # (namespaced) child. An ANONYMOUS class parses as
+                            # an `anonymous_class` child instead — it has no
+                            # name node, so the scan finds nothing and the
+                            # receiver stays uncaptured (verified by probe).
+                            created = next((c for c in obj.named_children
+                                            if c.type == "object_creation_expression"), None)
+                            cls = None
+                            if created is not None:
+                                cls = next((c for c in created.named_children
+                                            if c.type in ("name", "qualified_name")), None)
+                            short = _php_name_text(cls, source) if cls is not None else None
+                            # `new self()` / `new static()` / `new parent()`
+                            # need inheritance context the raw-call facts do
+                            # not carry — refused by the same non-concrete set.
+                            if short and short.lower() not in _PHP_NON_CONCRETE_TYPE_NAMES:
+                                member_receiver = "(new)"
+                                php_inline_new_type = short
+                                php_inline_new_qualified = _read_text(cls, source)
             elif config.ts_module == "tree_sitter_cpp":
                 # C++: function field, then field_expression/qualified_identifier
                 func_node = node.child_by_field_name(config.call_function_field) if config.call_function_field else None
@@ -4559,9 +4586,11 @@ def _extract_generic(
                 # and untyped receivers keep today's in-file match, since the
                 # resolver could add nothing for them anyway.
                 _php_receiver_type: str | None = None
-                if (config.ts_module == "tree_sitter_php"
-                        and member_receiver and member_receiver != "this"):
-                    _php_receiver_type = (receiver_types or {}).get(member_receiver)
+                if config.ts_module == "tree_sitter_php":
+                    if php_inline_new_type:
+                        _php_receiver_type = php_inline_new_type
+                    elif member_receiver and member_receiver != "this":
+                        _php_receiver_type = (receiver_types or {}).get(member_receiver)
                 _php_defer = bool(_php_receiver_type)
                 if _java_defer or _php_defer or (
                     is_member_call
@@ -4634,6 +4663,8 @@ def _extract_generic(
                         rc_entry["lang"] = "php"
                         if _php_receiver_type:
                             rc_entry["receiver_type"] = _php_receiver_type
+                        if php_inline_new_qualified:
+                            rc_entry["receiver_qualified"] = php_inline_new_qualified
                     raw_calls.append(rc_entry)
 
             # Indirect dispatch: a function passed BY NAME as a call argument
