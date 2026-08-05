@@ -1157,8 +1157,96 @@ def _rebuild_code(
             # AST heading layer intact alongside the semantic layer.
             extract_targets = [p for p in code_files if p not in semantic_doc_files]
 
+        # #2406: an incremental rebuild parses only the changed files, so the
+        # cross-file resolvers could not see a callee living in an unchanged
+        # file and every changed->unchanged `calls` edge disappeared (reconcile
+        # evicts the old one as AST-tier output of a re-extracted source, and
+        # nothing regenerates it). Hand extract() read-only resolution context:
+        # the persisted AST nodes of files this run is NOT re-extracting —
+        # including their `_callable`/`_callable_class` markers, so the
+        # indirect_call guard keeps working (#2438) — plus their contains/method
+        # edges, which the member-call resolvers walk (#2437).
+        #
+        # Scoping rules, in order of importance:
+        #   * AST-tier only — semantic/LLM nodes are not symbol definitions.
+        #   * never a file in extract_targets (its fresh nodes are authoritative)
+        #     nor a deleted one (its persisted symbols are gone).
+        #   * only sources still in the scanned corpus, so a renamed/removed file
+        #     cannot stay a resolver target.
+        # extract() uses these purely to widen the resolvers' indexes; nothing
+        # is parsed, mutated, or emitted from them (see extract()'s docstring).
+        resolution_context_nodes: list[dict] = []
+        resolution_context_edges: list[dict] = []
+        if changed_paths is not None and existing_graph.exists():
+            try:
+                check_graph_file_size_cap(existing_graph)
+                ctx_graph = json.loads(existing_graph.read_text(encoding="utf-8"))
+                ctx_paths = _StoredSourcePaths(
+                    ctx_graph,
+                    out=out,
+                    project_root=project_root,
+                    watch_root=watch_root,
+                    normalize_source=_nsf,
+                )
+                ctx_live = {
+                    ctx_paths.absolute_identity(str(p), project_root) for p in code_files
+                }
+                ctx_live -= {
+                    ctx_paths.absolute_identity(str(p), project_root) for p in extract_targets
+                }
+                ctx_live -= deleted_source_identities
+                ctx_live.discard(None)
+                for node in ctx_graph.get("nodes", []):
+                    if not node.get("id") or not _is_ast_tier(node):
+                        continue
+                    source_file = node.get("source_file")
+                    if not source_file or ctx_paths.identity(source_file) not in ctx_live:
+                        continue
+                    ctx_node = {
+                        "id": node["id"],
+                        "label": node.get("label"),
+                        "source_file": source_file,
+                        "file_type": node.get("file_type"),
+                        "type": node.get("type"),
+                    }
+                    # #2438: the persisted callability markers are the only
+                    # thing that lets an unchanged target pass the
+                    # indirect_call guard — never re-derived from the label.
+                    for marker in ("_callable", "_callable_class"):
+                        if node.get(marker):
+                            ctx_node[marker] = node[marker]
+                    resolution_context_nodes.append(ctx_node)
+                # #2437: the member-call resolvers map receiver type -> owning
+                # class -> method through contains/method edges; hand over the
+                # unchanged corpus's, scoped exactly like the nodes above so a
+                # deleted/re-extracted file's edges can never resurrect.
+                for edge in ctx_graph.get("links", ctx_graph.get("edges", [])):
+                    if edge.get("relation") not in ("contains", "method"):
+                        continue
+                    if not _is_ast_tier(edge):
+                        continue
+                    source_file = edge.get("source_file")
+                    if not source_file or ctx_paths.identity(source_file) not in ctx_live:
+                        continue
+                    resolution_context_edges.append({
+                        "source": edge.get("source"),
+                        "target": edge.get("target"),
+                        "relation": edge.get("relation"),
+                        "source_file": source_file,
+                    })
+            except Exception:
+                # Unreadable/oversized graph: resolve with the changed batch only
+                # (pre-#2406 behavior). Reconcile below still fails closed on it.
+                resolution_context_nodes = []
+                resolution_context_edges = []
+
         commit = _git_head(cwd=watch_root)
-        result = extract(extract_targets, cache_root=watch_root) if extract_targets else {
+        result = extract(
+            extract_targets,
+            cache_root=watch_root,
+            resolution_context_nodes=resolution_context_nodes or None,
+            resolution_context_edges=resolution_context_edges or None,
+        ) if extract_targets else {
             "nodes": [], "edges": [], "hyperedges": [],
             "input_tokens": 0, "output_tokens": 0,
         }

@@ -4,8 +4,11 @@
 carries the per-file stem), so the type's members split across the halves and
 every receiver-typed lookup on `Foo` bailed as ambiguous — cross-half calls
 never resolved. `_merge_csharp_partial_class_nodes` collapses the halves onto
-one canonical node, keyed by (namespace, label); same-named types in other
-namespaces, non-partial declarations, and nested partial types are left alone.
+one canonical node, keyed by (assembly, namespace, label); same-named types in
+other namespaces, non-partial declarations, and nested partial types are left
+alone. The assembly key is the nearest ancestor dir holding a `*.csproj`/
+`*.fsproj`/`*.vbproj` (#2411: `partial` never fuses across assemblies), with
+"" — halves under no project at all, which still merge — as the sentinel.
 """
 from __future__ import annotations
 
@@ -149,3 +152,107 @@ def test_nested_partial_not_merged(tmp_path):
     assert len(outers) == 1, "top-level partial halves still merge"
     assert len(inners) == 2, \
         f"nested partial types must NOT merge (id has no outer qualifier): {inners}"
+
+
+_TWO_ASSEMBLIES = {
+    "src/AsmOne/AsmOne.csproj": "<Project Sdk=\"Microsoft.NET.Sdk\"></Project>\n",
+    "src/AsmOne/Widget.cs": (
+        "namespace Shared {\n"
+        "    public partial class Widget {\n"
+        "        public void OnlyInAssemblyOne() {}\n"
+        "    }\n"
+        "}\n"
+    ),
+    "src/AsmOne/Widget.Part2.cs": (
+        "namespace Shared {\n"
+        "    public partial class Widget {\n"
+        "        public void AlsoInAssemblyOne() {}\n"
+        "    }\n"
+        "}\n"
+    ),
+    "src/AsmTwo/AsmTwo.csproj": "<Project Sdk=\"Microsoft.NET.Sdk\"></Project>\n",
+    "src/AsmTwo/Widget.cs": (
+        "namespace Shared {\n"
+        "    public partial class Widget {\n"
+        "        public void OnlyInAssemblyTwo() {}\n"
+        "    }\n"
+        "}\n"
+    ),
+}
+
+
+def _widget_methods_by_assembly(r):
+    """Map each Widget class node -> set of member-method labels hanging off it."""
+    widgets = _nodes_labeled(r, "Widget")
+    label_of = {n["id"]: n["label"] for n in r["nodes"]}
+    return widgets, {
+        w["id"]: {
+            label_of[e["target"]] for e in r["edges"]
+            if e["relation"] == "method" and e["source"] == w["id"]
+        }
+        for w in widgets
+    }
+
+
+def test_same_namespace_partials_in_different_assemblies_not_merged(tmp_path):
+    """#2411: same fully-qualified name under TWO .csproj projects is two
+    genuinely distinct types — never one node with phantom cross-assembly edges."""
+    calls, r = _extract(tmp_path, _TWO_ASSEMBLIES)
+    widgets, methods = _widget_methods_by_assembly(r)
+    assert len(widgets) == 2, \
+        f"partials in different assemblies must stay distinct: {widgets}"
+    asm_one = next(w["id"] for w in widgets if "asmone" in w["id"].lower())
+    asm_two = next(w["id"] for w in widgets if "asmtwo" in w["id"].lower())
+    assert methods[asm_one] == {".OnlyInAssemblyOne()", ".AlsoInAssemblyOne()"}, \
+        f"AsmOne's Widget owns exactly its own two members: {methods[asm_one]}"
+    assert methods[asm_two] == {".OnlyInAssemblyTwo()"}, \
+        f"AsmTwo's Widget owns exactly its own member: {methods[asm_two]}"
+    phantom = [
+        e for e in r["edges"]
+        if e["relation"] in ("contains", "method")
+        and e["target"] == asm_one and "asmtwo" in str(e["source"]).lower()
+    ]
+    assert not phantom, f"no AsmTwo-derived edge may reach AsmOne's Widget: {phantom}"
+
+
+def test_partial_halves_within_one_csproj_still_merge(tmp_path):
+    """Adding a .csproj must not break the #2332 merge within one project."""
+    calls, r = _extract(tmp_path, {
+        "src/AsmOne/AsmOne.csproj": "<Project Sdk=\"Microsoft.NET.Sdk\"></Project>\n",
+        "src/AsmOne/Widget.cs": (
+            "namespace Shared {\n"
+            "    public partial class Widget {\n"
+            "        public void Alpha() {}\n"
+            "    }\n"
+            "}\n"
+        ),
+        "src/AsmOne/Widget.Part2.cs": (
+            "namespace Shared {\n"
+            "    public partial class Widget {\n"
+            "        public void Beta() { Alpha(); }\n"
+            "    }\n"
+            "}\n"
+        ),
+    })
+    widgets, methods = _widget_methods_by_assembly(r)
+    assert len(widgets) == 1, \
+        f"same-project halves must still collapse to ONE node: {widgets}"
+    assert methods[widgets[0]["id"]] == {".Alpha()", ".Beta()"}, \
+        f"canonical Widget must own members from BOTH halves: {methods}"
+    alpha = _find(r, ".Alpha()", "widget")
+    beta = _find(r, ".Beta()", "widget")
+    assert (beta, alpha) in calls, "cross-half in-class call must still resolve"
+
+
+def test_assembly_probe_without_scanned_csproj(tmp_path):
+    """The .csproj files exist on disk but are NOT in the scanned paths — the
+    assembly key comes from the ancestor-dir walk, not the paths seed."""
+    for name, body in _TWO_ASSEMBLIES.items():
+        p = tmp_path / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(body)
+    cs_only = {n: b for n, b in _TWO_ASSEMBLIES.items() if n.endswith(".cs")}
+    calls, r = _extract(tmp_path, cs_only)
+    widgets = _nodes_labeled(r, "Widget")
+    assert len(widgets) == 2, \
+        f"on-disk (unscanned) project files must still split assemblies: {widgets}"

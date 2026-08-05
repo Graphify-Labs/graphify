@@ -3091,11 +3091,100 @@ def dispatch_command(cmd: str) -> None:
             ast_kwargs: dict = {"cache_root": out_root, "root": target}
             if cli_max_workers is not None:
                 ast_kwargs["max_workers"] = cli_max_workers
+            # #2437/#2438 (the `graphify update` twin of watch's #2406 fix): an
+            # incremental re-scan extracts only the changed code files, so the
+            # cross-file resolvers cannot see a callee living in an unchanged
+            # file and every changed->unchanged call edge silently vanished on
+            # merge. Hand extract() read-only resolution context from the
+            # persisted graph: its AST-tier nodes (with their `_callable`/
+            # `_callable_class` markers, #2438) plus the contains/method edges
+            # the member-call resolvers walk (#2437), scoped to the UNCHANGED
+            # live corpus — never a re-extracted, deleted, or excluded file, so
+            # stale symbols cannot resurrect. Fails open (changed-batch-only
+            # resolution, the pre-fix behavior) on an unreadable graph.
+            if incremental_mode and existing_graph_path.exists():
+                _ctx_nodes: list[dict] = []
+                _ctx_edges: list[dict] = []
+                try:
+                    from graphify.build import _is_ast_tier as _ctx_is_ast_tier
+                    from graphify.security import (
+                        check_graph_file_size_cap as _ctx_size_cap,
+                    )
+                    _ctx_size_cap(existing_graph_path)
+                    _ctx_graph = json.loads(
+                        existing_graph_path.read_text(encoding="utf-8")
+                    )
+                    _ctx_root = Path(os.path.abspath(target))
+
+                    def _ctx_identity(source_file) -> str | None:
+                        # graph.json source_file values are relative to the
+                        # scanned root (`root=target` above); detect's
+                        # unchanged_files keep their scan-time form. Compare
+                        # both as absolute posix paths.
+                        if not source_file:
+                            return None
+                        _p = Path(str(source_file))
+                        if not _p.is_absolute():
+                            _p = _ctx_root / _p
+                        return Path(os.path.abspath(_p)).as_posix()
+
+                    _ctx_live = {
+                        _ctx_identity(f)
+                        for _flist in detection.get("unchanged_files", {}).values()
+                        for f in _flist
+                    }
+                    _ctx_live.discard(None)
+                    for _node in _ctx_graph.get("nodes", []):
+                        if not _node.get("id") or not _ctx_is_ast_tier(_node):
+                            continue
+                        _sf = _node.get("source_file")
+                        if not _sf or _ctx_identity(_sf) not in _ctx_live:
+                            continue
+                        _ctx_node = {
+                            "id": _node["id"],
+                            "label": _node.get("label"),
+                            "source_file": _sf,
+                            "file_type": _node.get("file_type"),
+                            "type": _node.get("type"),
+                        }
+                        for _marker in ("_callable", "_callable_class"):
+                            if _node.get(_marker):
+                                _ctx_node[_marker] = _node[_marker]
+                        _ctx_nodes.append(_ctx_node)
+                    for _edge in _ctx_graph.get(
+                        "links", _ctx_graph.get("edges", [])
+                    ):
+                        if _edge.get("relation") not in ("contains", "method"):
+                            continue
+                        if not _ctx_is_ast_tier(_edge):
+                            continue
+                        _sf = _edge.get("source_file")
+                        if not _sf or _ctx_identity(_sf) not in _ctx_live:
+                            continue
+                        _ctx_edges.append({
+                            "source": _edge.get("source"),
+                            "target": _edge.get("target"),
+                            "relation": _edge.get("relation"),
+                            "source_file": _sf,
+                        })
+                except Exception:
+                    _ctx_nodes, _ctx_edges = [], []
+                if _ctx_nodes:
+                    ast_kwargs["resolution_context_nodes"] = _ctx_nodes
+                if _ctx_edges:
+                    ast_kwargs["resolution_context_edges"] = _ctx_edges
             print(f"[graphify extract] AST extraction on {len(code_files)} code files...")
             try:
                 ast_result = _ast_extract(code_files, **ast_kwargs)
             except Exception as exc:
                 print(f"[graphify extract] AST extraction failed: {exc}", file=sys.stderr)
+                # #2445: losing the whole AST pass is fatal by default. The
+                # empty stand-in only reaches the shrink guard when an existing
+                # graph is larger — on a fresh build it used to be written as a
+                # 0-node graph with exit 0, indistinguishable from success.
+                # --allow-partial opts back into the best-effort continuation.
+                if not cli_allow_partial:
+                    sys.exit(1)
                 ast_result = {"nodes": [], "edges": [], "input_tokens": 0, "output_tokens": 0}
                 _extraction_incomplete = True  # the whole AST pass was lost
         stages.mark("AST extract")
