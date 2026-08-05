@@ -3147,11 +3147,14 @@ def dispatch_command(cmd: str) -> None:
                             "file_type": _node.get("file_type"),
                             "type": _node.get("type"),
                         }
-                        # `_php_interfaces` (#11) rides the same marker channel
-                        # as the callability flags: without it an unchanged PHP
-                        # interface file stops refusing an interface-typed
-                        # receiver and a stranger class gets the edge.
-                        for _marker in ("_callable", "_callable_class", "_php_interfaces"):
+                        # `_php_non_class_types` (#11, #12) rides the same
+                        # marker channel as the callability flags: without it an
+                        # unchanged PHP file declaring an interface, enum or
+                        # trait stops refusing such a receiver and a stranger
+                        # class gets the edge. `_php_interfaces` is the pre-#12
+                        # spelling, still carried for older graphs.
+                        for _marker in ("_callable", "_callable_class",
+                                        "_php_non_class_types", "_php_interfaces"):
                             if _node.get(_marker):
                                 _ctx_node[_marker] = _node[_marker]
                         _ctx_nodes.append(_ctx_node)

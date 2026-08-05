@@ -1212,10 +1212,14 @@ def _rebuild_code(
                     # #2438: the persisted callability markers are the only
                     # thing that lets an unchanged target pass the
                     # indirect_call guard — never re-derived from the label.
-                    # `_php_interfaces` (#11) rides the same channel: it is the
-                    # only way an unchanged PHP interface file keeps refusing an
-                    # interface-typed receiver on an incremental rebuild.
-                    for marker in ("_callable", "_callable_class", "_php_interfaces"):
+                    # `_php_non_class_types` (#11, #12) rides the same channel:
+                    # it is the only way an unchanged PHP file declaring an
+                    # interface, enum or trait keeps refusing such a receiver on
+                    # an incremental rebuild. `_php_interfaces` is that marker's
+                    # pre-#12 spelling, carried so a graph.json written before
+                    # enums and traits joined the set still round-trips.
+                    for marker in ("_callable", "_callable_class",
+                                   "_php_non_class_types", "_php_interfaces"):
                         if node.get(marker):
                             ctx_node[marker] = node[marker]
                     resolution_context_nodes.append(ctx_node)

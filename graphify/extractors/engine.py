@@ -5274,10 +5274,13 @@ def _extract_generic(
         # file node is the host because none of these declarations mints a node
         # of its own; the names are listed explicitly rather than read off the
         # node's `<Name>.php` label, which would only hold under
-        # one-declaration-per-file PSR-4 convention.
+        # one-declaration-per-file PSR-4 convention. `_php_interfaces` is the
+        # pre-#12 spelling, carrying interfaces alone; readers still accept it,
+        # so a graph.json written before enums and traits joined the set keeps
+        # refusing what it does name.
         for n in nodes:
             if n["id"] == file_nid:
-                n["_php_interfaces"] = list(result["php_non_class_types"])
+                n["_php_non_class_types"] = list(result["php_non_class_types"])
                 break
     if php_class_fqns:
         # The `namespace` this file declares for each class it defines, so the

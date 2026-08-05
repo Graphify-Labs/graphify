@@ -1555,7 +1555,8 @@ def test_class_receiver_still_resolves_when_an_enum_exists(tmp_path: Path):
 # corpus's contains/method edges, both scoped to the files NOT being re-extracted.
 
 _CTX_NODE_FIELDS = ("label", "source_file", "file_type", "type")
-_CTX_MARKERS = ("_callable", "_callable_class", "_php_interfaces")
+_CTX_MARKERS = ("_callable", "_callable_class", "_php_non_class_types",
+                "_php_interfaces")
 
 
 def _watch_resolution_context(result: dict, unchanged: set[str]):
@@ -1720,3 +1721,158 @@ def test_class_typed_receiver_still_resolves_incrementally(tmp_path: Path):
         "the incremental path must still resolve a class-typed receiver"
     assert (go, _find(full, ".notify()", "audittrail")) not in inc_calls
     assert (go, _find(full, ".notify()", "support_notifier")) not in inc_calls
+
+
+# The same channel carries ENUM and TRAIT names (#12). They mint no definition
+# node either, so an unchanged `App\Enums\Status` file that reaches the resolver
+# through nothing but the persisted marker leaves `App\Legacy\Status` as the one
+# visible definition — the wrong edge #12 closed on the full-build path, coming
+# straight back on the incremental one.
+
+_INCR_RUNNER = "app/Http/Runner.php"
+
+
+def _incr_enum_corpus(body: str) -> dict[str, str]:
+    return {
+        **_ENUM_CORPUS,
+        _INCR_RUNNER: (
+            "<?php\n"
+            "namespace App\\Http;\n"
+            "use App\\Enums\\Status;\n"
+            "class Runner {\n"
+            f"{body}\n"
+            "}\n"
+        ),
+    }
+
+
+def test_enum_refusal_survives_incremental_rebuild(tmp_path: Path):
+    """The enum's file is unchanged and therefore NOT dispatched: its name must
+    still reach the resolver, so the rebuild agrees with the full build."""
+    (full_calls, full), (inc_calls, inc) = _full_then_incremental(
+        tmp_path,
+        _incr_enum_corpus(
+            "    private Status $status;\n"
+            "    public function go(): void { $this->status->label(); }"
+        ),
+        changed=_INCR_RUNNER,
+    )
+
+    go = _find(inc, ".go()", "runner")
+    stranger = _find(full, ".label()", "legacy_status")
+    assert not _labelled(full_calls, go), "full-build baseline must refuse"
+    assert (go, stranger) not in inc_calls, \
+        "an undispatched enum file must not hand the edge to App\\Legacy\\Status"
+    assert not _labelled(inc_calls, go)
+
+
+def test_enum_typed_param_refusal_survives_incremental_rebuild(tmp_path: Path):
+    """The typed-parameter entry point refuses across a rebuild too."""
+    (_, full), (inc_calls, inc) = _full_then_incremental(
+        tmp_path,
+        _incr_enum_corpus("    public function go(Status $s): void { $s->label(); }"),
+        changed=_INCR_RUNNER,
+    )
+
+    go = _find(inc, ".go()", "runner")
+    assert (go, _find(full, ".label()", "legacy_status")) not in inc_calls
+    assert not _labelled(inc_calls, go)
+
+
+def test_trait_refusal_survives_incremental_rebuild(tmp_path: Path):
+    (_, full), (inc_calls, inc) = _full_then_incremental(tmp_path, {
+        "app/Support/Cache.php": (
+            "<?php\nnamespace App\\Support;\n"
+            "trait Cache {\n    public function flush(): void {}\n}\n"
+        ),
+        "app/Legacy/Cache.php": (
+            "<?php\nnamespace App\\Legacy;\n"
+            "class Cache {\n    public function flush(): void {}\n}\n"
+        ),
+        _INCR_RUNNER: (
+            "<?php\n"
+            "namespace App\\Http;\n"
+            "use App\\Support\\Cache;\n"
+            "class Runner {\n"
+            "    private Cache $cache;\n"
+            "    public function go(): void { $this->cache->flush(); }\n"
+            "}\n"
+        ),
+    }, changed=_INCR_RUNNER)
+
+    go = _find(inc, ".go()", "runner")
+    assert (go, _find(full, ".flush()", "legacy_cache")) not in inc_calls
+    assert not any(src == go and "flush" in tgt.lower() for src, tgt in inc_calls)
+
+
+def test_class_typed_receiver_still_resolves_incrementally_beside_an_enum(tmp_path: Path):
+    """Positive control for the three above: the refusal stays name-scoped on the
+    incremental path — a CLASS-typed receiver still binds into its unchanged
+    file, with an unrelated enum and a same-named-method decoy in the corpus."""
+    (_, full), (inc_calls, inc) = _full_then_incremental(tmp_path, {
+        "app/Enums/Status.php": _ENUM_CORPUS["app/Enums/Status.php"],
+        "app/Models/Lead.php": (
+            "<?php\nnamespace App\\Models;\n"
+            "class Lead {\n    public function label(): string { return 'L'; }\n}\n"
+        ),
+        "app/Audit/AuditTrail.php": (
+            "<?php\nnamespace App\\Audit;\n"
+            "class AuditTrail {\n    public function label(): string { return 'A'; }\n}\n"
+        ),
+        _INCR_RUNNER: (
+            "<?php\n"
+            "namespace App\\Http;\n"
+            "use App\\Models\\Lead;\n"
+            "class Runner {\n"
+            "    private Lead $lead;\n"
+            "    public function go(): void { $this->lead->label(); }\n"
+            "}\n"
+        ),
+    }, changed=_INCR_RUNNER)
+
+    go = _find(inc, ".go()", "runner")
+    assert (go, _find(full, ".label()", "models_lead")) in inc_calls, \
+        "the incremental path must still resolve a class-typed receiver"
+    assert (go, _find(full, ".label()", "audittrail")) not in inc_calls
+
+
+def test_legacy_php_interfaces_marker_spelling_is_still_read(tmp_path: Path):
+    """Cache compatibility: a graph.json written before #12 carries the names
+    under `_php_interfaces`. Interfaces it names keep refusing — the rename must
+    not silently drop a channel that older graphs are still using."""
+    (_, full), _ = _full_then_incremental(tmp_path, {
+        **_IFACE_CORPUS,
+        _INCR_DISPATCHER: (
+            "<?php\n"
+            "namespace App\\Http;\n"
+            "use App\\Contracts\\Notifier;\n"
+            "class Dispatcher {\n"
+            "    private Notifier $notifier;\n"
+            "    public function go(): void { $this->notifier->notify('x'); }\n"
+            "}\n"
+        ),
+    }, changed=_INCR_DISPATCHER)
+
+    ctx_nodes, ctx_edges = _watch_resolution_context(
+        full, unchanged=set(_IFACE_CORPUS)
+    )
+    downgraded = 0
+    for node in ctx_nodes:
+        names = node.pop("_php_non_class_types", None)
+        if names:
+            node["_php_interfaces"] = names  # the pre-#12 spelling
+            downgraded += 1
+    assert downgraded == 1, "exactly the interface's file node carries the names"
+
+    caller = tmp_path / "corpus" / _INCR_DISPATCHER
+    inc = extract([caller], cache_root=tmp_path / "corpus",
+                  resolution_context_nodes=ctx_nodes,
+                  resolution_context_edges=ctx_edges)
+    inc_calls = {
+        (edge["source"], edge["target"])
+        for edge in inc["edges"] if edge.get("relation") == "calls"
+    }
+
+    go = _find(inc, ".go()", "dispatcher")
+    assert (go, _find(full, ".notify()", "support_notifier")) not in inc_calls
+    assert not _notified(inc_calls, go)
