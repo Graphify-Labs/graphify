@@ -3103,6 +3103,30 @@ def _php_qualified_corroborates(
     return len(parts) >= len(want) and parts[-len(want):] == want
 
 
+def _php_context_interface_entry(context_nodes: list[dict] | None) -> dict | None:
+    """Recover the unchanged corpus's PHP interface names for the resolver (#11).
+
+    A PHP interface mints no definition node, so the extractor stamps the names it
+    declared on the file's own node as ``_php_interfaces`` — a persisted marker,
+    like ``_callable`` (#2438) — and ``watch``/``graphify update`` hand it back on
+    the resolution-context nodes. Returns a synthetic ``per_file``-shaped entry
+    carrying just those names (or None when there are none), which extends the
+    resolver's existing single channel instead of adding a second one.
+
+    Read from the RAW context list rather than off the merged resolution nodes: a
+    changed caller that does `use App\\Contracts\\Notifier;` mints a sourceless
+    import stub whose id IS the interface file node's id, and the merge drops the
+    colliding context node (fresh wins) — taking the marker with it, exactly in the
+    case the refusal is needed.
+    """
+    names = sorted({
+        str(name)
+        for node in (context_nodes or [])
+        for name in (node.get("_php_interfaces") or ())
+    })
+    return {"php_interfaces": names} if names else None
+
+
 def _resolve_php_member_calls(
     per_file: list[dict],
     all_nodes: list[dict],
@@ -3160,6 +3184,13 @@ def _resolve_php_member_calls(
     # one definition. `php_interfaces` is the pre-#12 spelling of the same fact,
     # still read so an AST-cache entry written before enums and traits joined
     # the set keeps refusing interfaces.
+    #
+    # `per_file` aligns 1:1 with the files dispatched THIS run, so an incremental
+    # rebuild that leaves the declaring file untouched used to see no such names
+    # at all and mint a wrong edge into the same-short-named class (#11).
+    # extract() closes that hole by appending the unchanged corpus's persisted
+    # names as one extra entry, so this single channel still covers the whole
+    # corpus — see `_php_context_interface_entry`.
     non_class_type_names = {
         key(name)
         for result in per_file
@@ -4961,9 +4992,11 @@ def extract(
             `_callable_class` markers, #2438), and the member-call resolvers
             run by `run_language_resolvers` (#2437) — so a changed caller can
             still bind `foo()`, `obj.method()`, or `submit(handler)` to an
-            unchanged callee. They are never parsed, mutated, or returned;
-            raw_calls come only from `paths`, so only edges sourced by the
-            re-extracted files are emitted.
+            unchanged callee. They also carry the PHP resolver's interface
+            names, stamped as `_php_interfaces` on each PHP file node, so an
+            unchanged interface file keeps its refusal (#11). They are never
+            parsed, mutated, or returned; raw_calls come only from `paths`, so
+            only edges sourced by the re-extracted files are emitted.
         resolution_context_edges: the `contains`/`method` edges of the same
             unchanged corpus (#2437). The member-call resolvers walk these to
             map a receiver type to the single class owning the called method;
@@ -5970,11 +6003,22 @@ def extract(
     # results: raw_calls come solely from `paths`, so nothing sourced by an
     # unchanged file is ever emitted, and the ambiguity guards count the same
     # candidates a full build would (the context is the whole unchanged corpus).
+    #
+    # #11: nodes and edges are not the whole story — the PHP resolver also needs
+    # the unchanged corpus's INTERFACE names, which mint no node of their own. They
+    # ride in on the context nodes' `_php_interfaces` marker; hand them over as one
+    # extra `per_file` entry (scratch list, the real `per_file` is untouched) so an
+    # unchanged interface file keeps refusing an interface-typed receiver instead
+    # of letting it bind to a same-short-named class.
     if resolution_context_nodes or resolution_context_edges:
         _rl_nodes = list(resolution_nodes)
         _rl_edges = all_edges + list(resolution_context_edges or [])
+        _rl_per_file = per_file
+        _php_ctx_entry = _php_context_interface_entry(resolution_context_nodes)
+        if _php_ctx_entry is not None:
+            _rl_per_file = [*per_file, _php_ctx_entry]
         _n0, _e0 = len(_rl_nodes), len(_rl_edges)
-        run_language_resolvers(paths, per_file, _rl_nodes, _rl_edges)
+        run_language_resolvers(paths, _rl_per_file, _rl_nodes, _rl_edges)
         all_nodes.extend(_rl_nodes[_n0:])
         all_edges.extend(_rl_edges[_e0:])
     else:
@@ -6114,6 +6158,9 @@ def extract(
     # label (that would reintroduce the #1566/#2137 data-symbol false positives);
     # a graph written before the markers existed simply fails closed until its
     # files are re-extracted.
+    # `_php_interfaces` (#11) is kept for the same reason and with the opposite
+    # failure direction: a pre-marker graph simply loses the interface refusal on
+    # an incremental rebuild until the interface's file is re-extracted.
 
     # local_alias is a transient import-resolution hint (#2082), same shape as
     # target_file (#1814): it exists only so the module arm of

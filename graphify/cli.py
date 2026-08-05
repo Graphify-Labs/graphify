@@ -3147,7 +3147,11 @@ def dispatch_command(cmd: str) -> None:
                             "file_type": _node.get("file_type"),
                             "type": _node.get("type"),
                         }
-                        for _marker in ("_callable", "_callable_class"):
+                        # `_php_interfaces` (#11) rides the same marker channel
+                        # as the callability flags: without it an unchanged PHP
+                        # interface file stops refusing an interface-typed
+                        # receiver and a stranger class gets the edge.
+                        for _marker in ("_callable", "_callable_class", "_php_interfaces"):
                             if _node.get(_marker):
                                 _ctx_node[_marker] = _node[_marker]
                         _ctx_nodes.append(_ctx_node)
