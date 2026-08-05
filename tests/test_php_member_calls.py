@@ -553,3 +553,357 @@ def test_inline_new_unknown_method_emits_no_edge(tmp_path: Path):
     index = _find(r, ".index()", "leadcontroller")
     assert not any(src == index for src, _tgt in calls), \
         "the named class has no such method — refuse, don't fall back"
+
+
+# ── Typed locals and typed params, with scope poisoning (#4) ─────────────────
+#
+# A method-scoped receiver layer types `$var->m()` from `$var = new T()` locals
+# and natively typed parameters. Raw calls carry no lexical scope, so any name
+# whose binding is not provably single-typed is POISONED: a non-`new` rebind, a
+# conflicting `new`, a closure/arrow-fn parameter, a foreach target, or a
+# list-destructuring element. Anonymous-class bodies are a different scope
+# entirely and bind nothing in the enclosing method.
+
+
+def test_local_new_var_call_resolves(tmp_path: Path):
+    calls, r = _calls(tmp_path, {
+        **_CORPUS,
+        "app/Http/Controllers/LeadController.php": _controller(
+            "$svc = new LeadHunterService();\n"
+            "        return $svc->search([]);",
+            uses="use App\\Services\\LeadHunterService;\n",
+        ),
+    })
+
+    index = _find(r, ".index()", "leadcontroller")
+    service_search = _find(r, ".search()", "leadhunterservice")
+    assert (index, service_search) in calls
+    assert (index, _find(r, ".search()", "auditlog")) not in calls
+    edge = calls[(index, service_search)]
+    assert edge["confidence"] == "INFERRED"
+    assert edge["confidence_score"] == 0.8
+
+
+def test_local_new_qualified_var_call_resolves_inferred(tmp_path: Path):
+    """A local binding stays INFERRED even when the `new` is fully qualified —
+    FQN corroboration is scoped to the inline-new receiver form (#3)."""
+    calls, r = _calls(tmp_path, {
+        **_CORPUS,
+        "app/Http/Controllers/LeadController.php": _controller(
+            "$svc = new \\App\\Services\\LeadHunterService();\n"
+            "        return $svc->search([]);"
+        ),
+    })
+
+    index = _find(r, ".index()", "leadcontroller")
+    service_search = _find(r, ".search()", "leadhunterservice")
+    assert (index, service_search) in calls
+    assert calls[(index, service_search)]["confidence"] == "INFERRED"
+    assert (index, _find(r, ".search()", "auditlog")) not in calls
+
+
+def test_typed_param_receiver_resolves(tmp_path: Path):
+    calls, r = _calls(tmp_path, {
+        **_CORPUS,
+        "app/Http/Controllers/LeadController.php": (
+            "<?php\n"
+            "namespace App\\Http\\Controllers;\n"
+            "use App\\Services\\LeadHunterService;\n"
+            "class LeadController {\n"
+            "    public function handle(LeadHunterService $svc): array {\n"
+            "        return $svc->search([]);\n"
+            "    }\n"
+            "}\n"
+        ),
+    })
+
+    handle = _find(r, ".handle()", "leadcontroller")
+    service_search = _find(r, ".search()", "leadhunterservice")
+    assert (handle, service_search) in calls
+    assert (handle, _find(r, ".search()", "auditlog")) not in calls
+    assert calls[(handle, service_search)]["confidence"] == "INFERRED"
+
+
+def test_nullable_typed_param_receiver_resolves(tmp_path: Path):
+    calls, r = _calls(tmp_path, {
+        **_CORPUS,
+        "app/Http/Controllers/LeadController.php": (
+            "<?php\n"
+            "namespace App\\Http\\Controllers;\n"
+            "use App\\Services\\LeadHunterService;\n"
+            "class LeadController {\n"
+            "    public function handle(?LeadHunterService $svc): array {\n"
+            "        return $svc->search([]);\n"
+            "    }\n"
+            "}\n"
+        ),
+    })
+
+    handle = _find(r, ".handle()", "leadcontroller")
+    assert (handle, _find(r, ".search()", "leadhunterservice")) in calls
+    assert (handle, _find(r, ".search()", "auditlog")) not in calls
+
+
+def test_locals_resolve_per_method_independently(tmp_path: Path):
+    """The receiver layer is method-scoped: the same local name bound to two
+    different classes in two methods resolves to its own binding in each."""
+    calls, r = _calls(tmp_path, {
+        **_CORPUS,
+        "app/Http/Controllers/LeadController.php": (
+            "<?php\n"
+            "namespace App\\Http\\Controllers;\n"
+            "use App\\Audit\\AuditLog;\n"
+            "use App\\Services\\LeadHunterService;\n"
+            "class LeadController {\n"
+            "    public function index(): array {\n"
+            "        $svc = new LeadHunterService();\n"
+            "        return $svc->search([]);\n"
+            "    }\n"
+            "    public function audit(): array {\n"
+            "        $svc = new AuditLog();\n"
+            "        return $svc->search([]);\n"
+            "    }\n"
+            "}\n"
+        ),
+    })
+
+    index = _find(r, ".index()", "leadcontroller")
+    audit = _find(r, ".audit()", "leadcontroller")
+    service_search = _find(r, ".search()", "leadhunterservice")
+    decoy_search = _find(r, ".search()", "auditlog")
+    assert (index, service_search) in calls
+    assert (index, decoy_search) not in calls
+    assert (audit, decoy_search) in calls
+    assert (audit, service_search) not in calls
+
+
+def test_non_new_reassignment_poisons_local(tmp_path: Path):
+    calls, r = _calls(tmp_path, {
+        **_CORPUS,
+        "app/Http/Controllers/LeadController.php": _controller(
+            "$svc = new LeadHunterService();\n"
+            "        $svc = $other;\n"
+            "        return $svc->search([]);",
+            uses="use App\\Services\\LeadHunterService;\n",
+        ),
+    })
+
+    index = _find(r, ".index()", "leadcontroller")
+    assert not any(src == index and "search" in tgt.lower() for src, tgt in calls), \
+        "a rebind to an untypable value poisons the name"
+
+
+def test_conflicting_new_types_poison_local(tmp_path: Path):
+    calls, r = _calls(tmp_path, {
+        **_CORPUS,
+        "app/Http/Controllers/LeadController.php": _controller(
+            "$svc = new LeadHunterService();\n"
+            "        $svc = new AuditLog();\n"
+            "        return $svc->search([]);",
+            uses="use App\\Audit\\AuditLog;\nuse App\\Services\\LeadHunterService;\n",
+        ),
+    })
+
+    index = _find(r, ".index()", "leadcontroller")
+    assert not any(src == index and "search" in tgt.lower() for src, tgt in calls), \
+        "two conflicting `new` types poison the name — no edge to EITHER class"
+
+
+def test_augmented_assignment_poisons_local(tmp_path: Path):
+    calls, r = _calls(tmp_path, {
+        **_CORPUS,
+        "app/Http/Controllers/LeadController.php": _controller(
+            "$svc = new LeadHunterService();\n"
+            "        $svc ??= new AuditLog();\n"
+            "        return $svc->search([]);",
+            uses="use App\\Audit\\AuditLog;\nuse App\\Services\\LeadHunterService;\n",
+        ),
+    })
+
+    index = _find(r, ".index()", "leadcontroller")
+    assert not any(src == index and "search" in tgt.lower() for src, tgt in calls)
+
+
+def test_closure_param_shadow_poisons_outer_name(tmp_path: Path):
+    """Calls inside a closure are attributed to the enclosing method, so a
+    closure parameter that shadows an outer name makes BOTH unresolvable."""
+    calls, r = _calls(tmp_path, {
+        **_CORPUS,
+        "app/Http/Controllers/LeadController.php": _controller(
+            "$svc = new LeadHunterService();\n"
+            "        $fn = function (AuditLog $svc) { return $svc->search([]); };\n"
+            "        return $svc->search([]);",
+            uses="use App\\Audit\\AuditLog;\nuse App\\Services\\LeadHunterService;\n",
+        ),
+    })
+
+    index = _find(r, ".index()", "leadcontroller")
+    assert (index, _find(r, ".search()", "leadhunterservice")) not in calls
+    assert (index, _find(r, ".search()", "auditlog")) not in calls
+
+
+def test_arrow_fn_param_shadow_poisons_outer_name(tmp_path: Path):
+    calls, r = _calls(tmp_path, {
+        **_CORPUS,
+        "app/Http/Controllers/LeadController.php": _controller(
+            "$svc = new LeadHunterService();\n"
+            "        $fn = fn(AuditLog $svc) => $svc->search([]);\n"
+            "        return $svc->search([]);",
+            uses="use App\\Audit\\AuditLog;\nuse App\\Services\\LeadHunterService;\n",
+        ),
+    })
+
+    index = _find(r, ".index()", "leadcontroller")
+    assert (index, _find(r, ".search()", "leadhunterservice")) not in calls
+    assert (index, _find(r, ".search()", "auditlog")) not in calls
+
+
+def test_foreach_target_shadow_poisons_outer_name(tmp_path: Path):
+    calls, r = _calls(tmp_path, {
+        **_CORPUS,
+        "app/Http/Controllers/LeadController.php": _controller(
+            "$svc = new LeadHunterService();\n"
+            "        foreach ($rows as $svc) { $svc->search([]); }\n"
+            "        return [];",
+            uses="use App\\Services\\LeadHunterService;\n",
+        ),
+    })
+
+    index = _find(r, ".index()", "leadcontroller")
+    assert not any(src == index and "search" in tgt.lower() for src, tgt in calls), \
+        "a foreach target rebinds the name to an unknown element type"
+
+
+def test_list_destructuring_poisons_outer_name(tmp_path: Path):
+    calls, r = _calls(tmp_path, {
+        **_CORPUS,
+        "app/Http/Controllers/LeadController.php": _controller(
+            "$svc = new LeadHunterService();\n"
+            "        [$svc, $rest] = $pair;\n"
+            "        return $svc->search([]);",
+            uses="use App\\Services\\LeadHunterService;\n",
+        ),
+    })
+
+    index = _find(r, ".index()", "leadcontroller")
+    assert not any(src == index and "search" in tgt.lower() for src, tgt in calls)
+
+
+def test_new_inside_anonymous_class_does_not_bind_enclosing_name(tmp_path: Path):
+    """An anonymous-class body is its own scope — its `new` must not type a
+    same-named variable in the method that contains the literal."""
+    calls, r = _calls(tmp_path, {
+        **_CORPUS,
+        "app/Http/Controllers/LeadController.php": _controller(
+            "$anon = new class {\n"
+            "            public function q(): void { $svc = new \\App\\Services\\LeadHunterService(); }\n"
+            "        };\n"
+            "        return $svc->search([]);"
+        ),
+    })
+
+    index = _find(r, ".index()", "leadcontroller")
+    assert (index, _find(r, ".search()", "leadhunterservice")) not in calls
+    assert (index, _find(r, ".search()", "auditlog")) not in calls
+
+
+def test_chained_receiver_emits_no_edge(tmp_path: Path):
+    """`$a->b()->c()`: the outer receiver is a call result, not a typed name."""
+    calls, r = _calls(tmp_path, {
+        **_CORPUS,
+        "app/Report/Formatter.php": (
+            "<?php\nnamespace App\\Report;\n"
+            "class Formatter {\n"
+            "    public function format(array $rows): string { return ''; }\n"
+            "}\n"
+        ),
+        "app/Http/Controllers/LeadController.php": _controller(
+            "$svc = new LeadHunterService();\n"
+            "        return $svc->search([])->format([]);",
+            uses="use App\\Services\\LeadHunterService;\n",
+        ),
+    })
+
+    index = _find(r, ".index()", "leadcontroller")
+    assert (index, _find(r, ".search()", "leadhunterservice")) in calls, \
+        "the INNER call still resolves through the typed local"
+    assert (index, _find(r, ".format()", "formatter")) not in calls, \
+        "the chained call's receiver has no known type"
+
+
+def test_untyped_param_emits_no_edge(tmp_path: Path):
+    calls, r = _calls(tmp_path, {
+        **_CORPUS,
+        "app/Http/Controllers/LeadController.php": (
+            "<?php\n"
+            "namespace App\\Http\\Controllers;\n"
+            "class LeadController {\n"
+            "    public function handle($svc): array {\n"
+            "        return $svc->search([]);\n"
+            "    }\n"
+            "}\n"
+        ),
+    })
+
+    handle = _find(r, ".handle()", "leadcontroller")
+    assert not any(src == handle and "search" in tgt.lower() for src, tgt in calls)
+
+
+def test_union_typed_param_emits_no_edge(tmp_path: Path):
+    calls, r = _calls(tmp_path, {
+        **_CORPUS,
+        "app/Http/Controllers/LeadController.php": (
+            "<?php\n"
+            "namespace App\\Http\\Controllers;\n"
+            "use App\\Audit\\AuditLog;\n"
+            "use App\\Services\\LeadHunterService;\n"
+            "class LeadController {\n"
+            "    public function handle(LeadHunterService|AuditLog $svc): array {\n"
+            "        return $svc->search([]);\n"
+            "    }\n"
+            "}\n"
+        ),
+    })
+
+    handle = _find(r, ".handle()", "leadcontroller")
+    assert not any(src == handle and "search" in tgt.lower() for src, tgt in calls)
+
+
+def test_self_typed_param_emits_no_edge(tmp_path: Path):
+    """`self`/`static` parse as a plain `named_type` in parameter position, so
+    the non-concrete name set is what refuses them (probe-verified)."""
+    calls, r = _calls(tmp_path, {
+        **_CORPUS,
+        "app/Http/Controllers/LeadController.php": (
+            "<?php\n"
+            "namespace App\\Http\\Controllers;\n"
+            "class LeadController {\n"
+            "    public function handle(self $svc): array {\n"
+            "        return $svc->search([]);\n"
+            "    }\n"
+            "}\n"
+        ),
+    })
+
+    handle = _find(r, ".handle()", "leadcontroller")
+    assert not any(src == handle and "search" in tgt.lower() for src, tgt in calls)
+
+
+def test_variadic_typed_param_emits_no_edge(tmp_path: Path):
+    """`Service ...$svcs` binds an ARRAY of Service, not a Service."""
+    calls, r = _calls(tmp_path, {
+        **_CORPUS,
+        "app/Http/Controllers/LeadController.php": (
+            "<?php\n"
+            "namespace App\\Http\\Controllers;\n"
+            "use App\\Services\\LeadHunterService;\n"
+            "class LeadController {\n"
+            "    public function handle(LeadHunterService ...$svcs): array {\n"
+            "        return $svcs->search([]);\n"
+            "    }\n"
+            "}\n"
+        ),
+    })
+
+    handle = _find(r, ".handle()", "leadcontroller")
+    assert not any(src == handle and "search" in tgt.lower() for src, tgt in calls)

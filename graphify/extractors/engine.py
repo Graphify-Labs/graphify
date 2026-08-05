@@ -645,6 +645,24 @@ def _php_concrete_type_name(type_node, source: bytes) -> str | None:
     return None
 
 
+# Subtrees that are a DIFFERENT binding scope than the method being scanned:
+# their assignments must not type the enclosing method's variables. Closures are
+# deliberately absent — their calls are attributed to the enclosing method, so
+# their locals belong to the same raw-call scope (their PARAMETERS are poisoned
+# separately, since a shadowed name cannot be told apart from the outer one).
+_PHP_FOREIGN_SCOPE_TYPES = frozenset({
+    "anonymous_class",
+    "class_declaration",
+    "interface_declaration",
+    "trait_declaration",
+    "enum_declaration",
+    "function_definition",
+    "method_declaration",
+})
+
+_PHP_CLOSURE_TYPES = frozenset({"anonymous_function", "arrow_function"})
+
+
 def _php_method_receiver_types(
     method_node,
     source: bytes,
@@ -655,10 +673,111 @@ def _php_method_receiver_types(
     ``this.<prop>`` keys come from the declaring class's typed properties and
     constructor-promoted params. PHP properties are reachable ONLY through
     ``$this->``, so these keys can never collide with a local variable name.
-    Typed params and ``$var = new T()`` locals (bare keys) are a later slice —
-    the per-method signature is already in place for them.
+
+    Bare keys come from natively typed parameters and ``$var = new T()`` locals.
+    Raw calls retain no lexical scope, so a name is POISONED — dropped from the
+    table entirely — whenever its binding is not provably single-typed: a rebind
+    to anything but a `new`, two conflicting `new` types, an augmented
+    assignment, a closure or arrow-function parameter shadowing it, a foreach
+    target, or a list-destructuring element. Poisoning is order-independent,
+    which is why it can be decided from a single unordered walk.
     """
-    return {f"this.{name}": type_name for name, type_name in field_types.items()}
+    table = {f"this.{name}": type_name for name, type_name in field_types.items()}
+    method_types: dict[str, str] = {}
+    ambiguous: set[str] = set()
+
+    def poison(name: str) -> None:
+        if name:
+            method_types.pop(name, None)
+            ambiguous.add(name)
+
+    def bind(name: str, type_name: str | None) -> None:
+        if not name or name in ambiguous:
+            return
+        previous = method_types.get(name)
+        if type_name is None or (previous is not None and previous != type_name):
+            poison(name)
+        else:
+            method_types[name] = type_name
+
+    def poison_bound_vars(node) -> None:
+        """Poison every ``$var`` named anywhere in a binding-site subtree.
+
+        Covers `[$a, [$b]] = …`, `list($a, $b) = …`, `foreach … as $k => &$v`
+        and closure parameter lists in one sweep (shapes probe-verified).
+        """
+        stack = [node]
+        while stack:
+            n = stack.pop()
+            if n is None:
+                continue
+            if n.type == "variable_name":
+                poison(_read_text(n, source).lstrip("$"))
+                continue
+            stack.extend(n.children)
+
+    def new_type_name(node) -> str | None:
+        """Class named by an ``object_creation_expression``, or None."""
+        if node is None or node.type != "object_creation_expression":
+            return None
+        cls = next((c for c in node.named_children
+                    if c.type in ("name", "qualified_name")), None)
+        if cls is None:  # `new class { … }` names nothing
+            return None
+        text = _php_name_text(cls, source)
+        if not text or text.lower() in _PHP_NON_CONCRETE_TYPE_NAMES:
+            return None  # `new self()` / `new static()` need inheritance context
+        return text
+
+    # Natively typed parameters. `variadic_parameter` is excluded on purpose:
+    # `T ...$xs` binds an ARRAY of T, not a T.
+    params = method_node.child_by_field_name("parameters")
+    if params is not None:
+        for param in params.children:
+            if param.type not in ("simple_parameter", "property_promotion_parameter"):
+                continue
+            type_name = _php_concrete_type_name(
+                param.child_by_field_name("type"), source
+            )
+            name_node = param.child_by_field_name("name")
+            if name_node is not None and type_name:
+                # Untyped / union / primitive params simply stay unbound.
+                bind(_read_text(name_node, source).lstrip("$"), type_name)
+
+    body = method_node.child_by_field_name("body")
+    stack = list(body.children) if body is not None else []
+    while stack:
+        node = stack.pop()
+        if node.type in _PHP_FOREIGN_SCOPE_TYPES:
+            continue
+        if node.type in _PHP_CLOSURE_TYPES:
+            poison_bound_vars(node.child_by_field_name("parameters"))
+        elif node.type == "foreach_statement":
+            # children are [iterated expression, target(s)…, body]; only the
+            # targets rebind names, and the element type is unknown.
+            body_node = node.child_by_field_name("body")
+            targets = [c for c in node.named_children if c is not body_node]
+            for target in targets[1:]:
+                poison_bound_vars(target)
+        elif node.type == "augmented_assignment_expression":
+            left = node.child_by_field_name("left")
+            if left is not None and left.type == "variable_name":
+                poison(_read_text(left, source).lstrip("$"))
+        elif node.type == "assignment_expression":
+            left = node.child_by_field_name("left")
+            if left is not None and left.type == "list_literal":
+                poison_bound_vars(left)
+            elif left is not None and left.type == "variable_name":
+                bind(
+                    _read_text(left, source).lstrip("$"),
+                    new_type_name(node.child_by_field_name("right")),
+                )
+        stack.extend(node.children)
+
+    table.update(method_types)
+    for name in ambiguous:
+        table.pop(name, None)
+    return table
 
 
 def _php_method_return_type_node(method_node):
@@ -4416,10 +4535,10 @@ def _extract_generic(
                                      "nullsafe_member_call_expression"):
                         obj = node.child_by_field_name("object")
                         if obj is not None and obj.type == "variable_name":
-                            # $this->m() -> "this"; $svc->m() is a later slice.
-                            var = _read_text(obj, source).lstrip("$")
-                            if var == "this":
-                                member_receiver = "this"
+                            # $this->m() -> "this"; $svc->m() -> "svc", typed by
+                            # the method-scoped table. `$this` is a reserved name
+                            # in PHP, so the two key spaces cannot collide.
+                            member_receiver = _read_text(obj, source).lstrip("$")
                         elif obj is not None and obj.type == "member_access_expression":
                             # $this->prop->m(): object=variable_name($this),
                             # name=name(prop). Deeper chains stay uncaptured.
@@ -4595,6 +4714,11 @@ def _extract_generic(
                 if _java_defer or _php_defer or (
                     is_member_call
                     and member_receiver
+                    # PHP's defer decision is fully expressed by _php_defer. Its
+                    # receivers are variables, `this.<prop>` keys and `(new)` —
+                    # never a bare class name — so the capitalized rule below
+                    # would only strip in-file edges off an untypable `$Svc->m()`.
+                    and config.ts_module != "tree_sitter_php"
                     and (
                         member_receiver[:1].isupper()
                         or is_this_field_call
