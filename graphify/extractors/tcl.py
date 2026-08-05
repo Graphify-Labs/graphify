@@ -36,13 +36,21 @@ def extract_tcl(path: Path) -> dict:
             })
 
     def add_edge(src: str, tgt: str, relation: str, line: int,
-                 confidence: str = "EXTRACTED", score: float = 1.0) -> None:
-        edges.append({
+                 confidence: str = "EXTRACTED", score: float = 1.0,
+                 target_file: str | None = None) -> None:
+        edge = {
             "source": src, "target": tgt, "relation": relation,
             "confidence": confidence, "confidence_score": score,
             "source_file": str_path, "source_location": f"L{line}",
             "weight": 1.0,
-        })
+        }
+        # Transient resolved-target hint (mirrors bash.py's source-statement
+        # resolution) — lets the extract() id-remap pass canonicalize this
+        # edge onto the sourced file's real file-node id even when that file
+        # isn't in the current extraction batch. Popped before persisting.
+        if target_file is not None:
+            edge["target_file"] = target_file
+        edges.append(edge)
 
     file_nid = _make_id(str(path))
     add_node(file_nid, path.name, 1)
@@ -72,12 +80,17 @@ def extract_tcl(path: Path) -> dict:
         add_node(tgt, pkg, line)
         add_edge(file_nid, tgt, "imports_from", line)
 
-    # source <file> → import edge (quotes/braces optional)
+    # source <file> → import edge (quotes/braces optional). Resolve against this
+    # file's directory so the edge targets the sourced file's real file-node id
+    # (_make_id(str(path))) rather than a bare-filename id no file node ever
+    # uses — mirrors bash.py's source-statement resolution. Only emit when the
+    # target exists on disk, guarding against path-traversal-crafted sources.
     for m in re.finditer(r'^\s*source\s+\{?"?([\w./\\-]+\.tcl)"?\}?', source, re.MULTILINE):
         filename = m.group(1)
         line = source[: m.start()].count("\n") + 1
-        tgt = _make_id(filename)
-        add_node(tgt, filename, line)
-        add_edge(file_nid, tgt, "imports_from", line)
+        resolved = (path.parent / filename).resolve()
+        if resolved.exists():
+            tgt = _make_id(str(resolved))
+            add_edge(file_nid, tgt, "imports_from", line, target_file=str(resolved))
 
     return {"nodes": nodes, "edges": edges}

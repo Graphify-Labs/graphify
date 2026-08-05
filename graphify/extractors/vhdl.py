@@ -91,7 +91,10 @@ def extract_vhdl(path: Path) -> dict:
                 add_node(nid, arch_name, line)
                 add_edge(file_nid, nid, "defines", line)
                 if entity_name:
-                    tgt = _make_id(entity_name)
+                    # Same id scheme as entity_declaration's own node (_make_id(stem, name))
+                    # — architecture and entity are almost always in the same file, so this
+                    # resolves to the real entity node instead of minting a disconnected one.
+                    tgt = _make_id(stem, entity_name)
                     add_node(tgt, entity_name, line)
                     add_edge(nid, tgt, "implements", line, "INFERRED", 0.9)
                 for c in node.children:
