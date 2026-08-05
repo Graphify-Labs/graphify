@@ -3101,6 +3101,17 @@ def _resolve_php_member_calls(
         enclosing_type.setdefault(method, owner)
         method_index.setdefault((owner, key(method_node.get("label", ""))), set()).add(method)
 
+    # Names declared as `interface` anywhere in the corpus. PHP interfaces mint
+    # no definition node, so without this an interface-typed receiver would bind
+    # to whatever same-named CLASS happens to exist — the Laravel Contracts
+    # collision (`App\Contracts\Notifier` vs `App\Support\Notifier`), which the
+    # single-definition guard cannot see because there IS only one definition.
+    interface_names = {
+        key(name)
+        for result in per_file
+        for name in result.get("php_interfaces", [])
+    }
+
     existing_pairs = {(edge.get("source"), edge.get("target")) for edge in all_edges}
     for result in per_file:
         for raw_call in result.get("raw_calls", []):
@@ -3122,6 +3133,8 @@ def _resolve_php_member_calls(
                 type_name = raw_call.get("receiver_type")
                 if not type_name:
                     continue  # untyped / union-typed / unknown receiver: refuse
+                if key(type_name) in interface_names:
+                    continue  # a contract names no implementation: refuse
                 type_defs = type_def_nids.get(key(type_name), [])
                 if len(type_defs) != 1:
                     continue  # short name collides across the corpus: refuse

@@ -907,3 +907,184 @@ def test_variadic_typed_param_emits_no_edge(tmp_path: Path):
 
     handle = _find(r, ".handle()", "leadcontroller")
     assert not any(src == handle and "search" in tgt.lower() for src, tgt in calls)
+
+
+# ── Interface-typed receivers are refused (#5) ───────────────────────────────
+#
+# PHP `interface_declaration` mints no definition node, so an interface-typed
+# receiver normally resolves to nothing by accident. The dangerous case is
+# Laravel's Contracts convention: `App\Contracts\Notifier` (interface) next to
+# an unrelated `App\Support\Notifier` (class). The short-name lookup would find
+# exactly one definition — the wrong one — and satisfy the ambiguity guard.
+# Implementations are never guessed, and neither is a same-named stranger.
+
+_IFACE_CORPUS = {
+    "app/Contracts/Notifier.php": (
+        "<?php\nnamespace App\\Contracts;\n"
+        "interface Notifier {\n    public function notify(string $m): void;\n}\n"
+    ),
+    "app/Support/Notifier.php": (
+        "<?php\nnamespace App\\Support;\n"
+        "class Notifier {\n    public function notify(string $m): void {}\n}\n"
+    ),
+    "app/Services/MailNotifier.php": (
+        "<?php\nnamespace App\\Services;\n"
+        "use App\\Contracts\\Notifier;\n"
+        "class MailNotifier implements Notifier {\n"
+        "    public function notify(string $m): void {}\n}\n"
+    ),
+}
+
+
+def _notified(calls, caller: str) -> bool:
+    return any(src == caller and "notify" in tgt.lower() for src, tgt in calls)
+
+
+def test_interface_typed_property_does_not_guess_implementation(tmp_path: Path):
+    calls, r = _calls(tmp_path, {
+        **_IFACE_CORPUS,
+        "app/Http/Dispatcher.php": (
+            "<?php\n"
+            "namespace App\\Http;\n"
+            "use App\\Contracts\\Notifier;\n"
+            "class Dispatcher {\n"
+            "    private Notifier $notifier;\n"
+            "    public function go(): void { $this->notifier->notify('x'); }\n"
+            "}\n"
+        ),
+    })
+
+    go = _find(r, ".go()", "dispatcher")
+    assert (go, _find(r, ".notify()", "mailnotifier")) not in calls, \
+        "an interface names a contract, not an implementation — never guess"
+    assert not _notified(calls, go)
+
+
+def test_interface_short_name_collision_emits_no_edge(tmp_path: Path):
+    """`App\\Contracts\\Notifier` (interface) and `App\\Support\\Notifier`
+    (unrelated class): exactly one DEFINITION exists, so the ambiguity guard
+    alone would happily bind the call to the stranger."""
+    calls, r = _calls(tmp_path, {
+        **_IFACE_CORPUS,
+        "app/Http/Dispatcher.php": (
+            "<?php\n"
+            "namespace App\\Http;\n"
+            "use App\\Contracts\\Notifier;\n"
+            "class Dispatcher {\n"
+            "    private Notifier $notifier;\n"
+            "    public function go(): void { $this->notifier->notify('x'); }\n"
+            "}\n"
+        ),
+    })
+
+    go = _find(r, ".go()", "dispatcher")
+    assert (go, _find(r, ".notify()", "support_notifier")) not in calls, \
+        "the same-short-named class is not the interface the receiver declares"
+    assert not _notified(calls, go)
+
+
+def test_interface_refusal_is_case_insensitive(tmp_path: Path):
+    """PHP type names are case-insensitive: `notifier` IS `Notifier`."""
+    calls, r = _calls(tmp_path, {
+        **_IFACE_CORPUS,
+        "app/Http/Dispatcher.php": (
+            "<?php\n"
+            "namespace App\\Http;\n"
+            "use App\\Contracts\\Notifier;\n"
+            "class Dispatcher {\n"
+            "    private notifier $notifier;\n"
+            "    public function go(): void { $this->notifier->notify('x'); }\n"
+            "}\n"
+        ),
+    })
+
+    go = _find(r, ".go()", "dispatcher")
+    assert not _notified(calls, go)
+
+
+def test_interface_typed_param_emits_no_edge(tmp_path: Path):
+    """The typed-parameter receiver path (#4) refuses interfaces too."""
+    calls, r = _calls(tmp_path, {
+        **_IFACE_CORPUS,
+        "app/Http/Dispatcher.php": (
+            "<?php\n"
+            "namespace App\\Http;\n"
+            "use App\\Contracts\\Notifier;\n"
+            "class Dispatcher {\n"
+            "    public function go(Notifier $n): void { $n->notify('x'); }\n"
+            "}\n"
+        ),
+    })
+
+    go = _find(r, ".go()", "dispatcher")
+    assert (go, _find(r, ".notify()", "support_notifier")) not in calls
+    assert not _notified(calls, go)
+
+
+def test_interface_inline_new_emits_no_edge(tmp_path: Path):
+    """The inline-new receiver path (#3) refuses interfaces too — an interface
+    cannot be instantiated, so such a receiver must never bind a stranger."""
+    calls, r = _calls(tmp_path, {
+        **_IFACE_CORPUS,
+        "app/Http/Dispatcher.php": (
+            "<?php\n"
+            "namespace App\\Http;\n"
+            "class Dispatcher {\n"
+            "    public function go(): void {\n"
+            "        (new \\App\\Contracts\\Notifier())->notify('x');\n"
+            "    }\n"
+            "}\n"
+        ),
+    })
+
+    go = _find(r, ".go()", "dispatcher")
+    assert (go, _find(r, ".notify()", "support_notifier")) not in calls
+    assert not _notified(calls, go)
+
+
+def test_interface_typed_local_new_emits_no_edge(tmp_path: Path):
+    """The typed-local receiver path (#4) refuses interfaces too."""
+    calls, r = _calls(tmp_path, {
+        **_IFACE_CORPUS,
+        "app/Http/Dispatcher.php": (
+            "<?php\n"
+            "namespace App\\Http;\n"
+            "use App\\Contracts\\Notifier;\n"
+            "class Dispatcher {\n"
+            "    public function go(): void {\n"
+            "        $n = new Notifier();\n"
+            "        $n->notify('x');\n"
+            "    }\n"
+            "}\n"
+        ),
+    })
+
+    go = _find(r, ".go()", "dispatcher")
+    assert (go, _find(r, ".notify()", "support_notifier")) not in calls
+    assert not _notified(calls, go)
+
+
+def test_class_receiver_still_resolves_when_an_interface_exists(tmp_path: Path):
+    """The refusal is name-scoped: a CLASS-typed receiver still resolves, and
+    the same-named interface elsewhere in the corpus changes nothing."""
+    calls, r = _calls(tmp_path, {
+        **_IFACE_CORPUS,
+        "app/Audit/AuditTrail.php": (
+            "<?php\nnamespace App\\Audit;\n"
+            "class AuditTrail {\n    public function notify(string $m): void {}\n}\n"
+        ),
+        "app/Http/Dispatcher.php": (
+            "<?php\n"
+            "namespace App\\Http;\n"
+            "use App\\Services\\MailNotifier;\n"
+            "class Dispatcher {\n"
+            "    private MailNotifier $notifier;\n"
+            "    public function go(): void { $this->notifier->notify('x'); }\n"
+            "}\n"
+        ),
+    })
+
+    go = _find(r, ".go()", "dispatcher")
+    assert (go, _find(r, ".notify()", "mailnotifier")) in calls
+    assert (go, _find(r, ".notify()", "audittrail")) not in calls
+    assert (go, _find(r, ".notify()", "support_notifier")) not in calls
