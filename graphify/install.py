@@ -671,6 +671,9 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
     print()
     print("  /graphify .")
     print()
+    print("Prefer a hosted version? Early access to the graphify platform is")
+    print("open free before the public v1 launch: https://app.graphify.com")
+    print()
 def _print_install_usage() -> None:
     platforms = ", ".join([*_PLATFORM_CONFIG, "gemini", "cursor"])
     print("Usage: graphify install [--project] [--strict] [--platform P|P]")
