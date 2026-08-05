@@ -5182,6 +5182,20 @@ def _extract_generic(
         # from a same-named class without this (#1682). Sorted for a stable
         # AST-cache payload.
         result["php_interfaces"] = sorted(php_interface_names)
+        # The per-file payload above only reaches the resolver for files
+        # dispatched THIS run, so on an incremental rebuild an unchanged
+        # interface file stopped refusing and the receiver bound to a stranger
+        # class sharing the short name (#11). Also stamp the names on the FILE
+        # node — the marker rides the node dict into graph.json and back in as
+        # resolution context, the same channel `_callable` uses (#2438). The
+        # file node is the host because an interface mints no node of its own;
+        # the names are listed explicitly rather than read off the node's
+        # `<Name>.php` label, which would only hold under one-interface-per-file
+        # PSR-4 convention.
+        for n in nodes:
+            if n["id"] == file_nid:
+                n["_php_interfaces"] = list(result["php_interfaces"])
+                break
     # TS/JS: augment the constructor-injection type table with local `new`
     # bindings and type-annotated parameters, so `const s = new Svc(); s.m()` and
     # a call on a typed param (incl. inside a closure) resolve (#1630). The

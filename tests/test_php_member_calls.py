@@ -1088,3 +1088,184 @@ def test_class_receiver_still_resolves_when_an_interface_exists(tmp_path: Path):
     assert (go, _find(r, ".notify()", "mailnotifier")) in calls
     assert (go, _find(r, ".notify()", "audittrail")) not in calls
     assert (go, _find(r, ".notify()", "support_notifier")) not in calls
+
+
+# ── The refusal survives an incremental rebuild (#11) ─────────────────────────
+#
+# Every test above goes through ONE full extract(), where interface names reach
+# the resolver through `per_file` — which aligns 1:1 with the files dispatched
+# this run. `graphify update`/watch dispatch only the CHANGED files and hand the
+# unchanged corpus back as read-only resolution context, so a refusal that lives
+# only in `per_file` stopped applying the moment the interface's own file was not
+# re-extracted, and the receiver bound to the same-short-named stranger class.
+# The context below is assembled exactly as watch.py builds it from graph.json
+# (watch.py:1205-1240): a FIELD SUBSET of the persisted AST nodes — id, label,
+# source_file, file_type, type plus the persisted underscore markers — and the
+# corpus's contains/method edges, both scoped to the files NOT being re-extracted.
+
+_CTX_NODE_FIELDS = ("label", "source_file", "file_type", "type")
+_CTX_MARKERS = ("_callable", "_callable_class", "_php_interfaces")
+
+
+def _watch_resolution_context(result: dict, unchanged: set[str]):
+    """Mirror watch.py's resolution-context assembly for the `unchanged` files."""
+    nodes = []
+    for node in result["nodes"]:
+        if not node.get("id") or node.get("source_file") not in unchanged:
+            continue
+        ctx = {"id": node["id"]}
+        ctx.update({field: node.get(field) for field in _CTX_NODE_FIELDS})
+        ctx.update({m: node[m] for m in _CTX_MARKERS if node.get(m)})
+        nodes.append(ctx)
+    edges = [
+        {
+            "source": edge.get("source"),
+            "target": edge.get("target"),
+            "relation": edge.get("relation"),
+            "source_file": edge.get("source_file"),
+        }
+        for edge in result["edges"]
+        if edge.get("relation") in ("contains", "method")
+        and edge.get("source_file") in unchanged
+    ]
+    return nodes, edges
+
+
+def _full_then_incremental(tmp_path: Path, files: dict[str, str], changed: str):
+    """Full-extract `files`, then re-extract ONLY `changed` (its body edited) with
+    the rest supplied as watch-shaped resolution context.
+
+    Returns ((full_calls, full_result), (inc_calls, inc_result)). Both runs share
+    `cache_root`, the anchor watch passes, so node ids line up across them.
+    """
+    corpus = tmp_path / "corpus"
+    paths = {}
+    for name, body in files.items():
+        path = corpus / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+        paths[name] = path
+
+    def _calls_of(result):
+        return {
+            (edge["source"], edge["target"]): edge
+            for edge in result["edges"]
+            if edge.get("relation") == "calls"
+        }
+
+    full = extract(list(paths.values()), cache_root=corpus)
+    # Edit the caller only — an unrelated statement, so its raw_calls are re-derived
+    # while every other file stays byte-identical and therefore undispatched.
+    paths[changed].write_text(
+        files[changed].replace("class ", "// touched\nclass ", 1), encoding="utf-8"
+    )
+    ctx_nodes, ctx_edges = _watch_resolution_context(
+        full, unchanged=set(files) - {changed}
+    )
+    inc = extract(
+        [paths[changed]],
+        cache_root=corpus,
+        resolution_context_nodes=ctx_nodes,
+        resolution_context_edges=ctx_edges,
+    )
+    return (_calls_of(full), full), (_calls_of(inc), inc)
+
+
+_INCR_DISPATCHER = "app/Http/Dispatcher.php"
+
+
+def test_interface_refusal_survives_incremental_rebuild(tmp_path: Path):
+    """The interface file is unchanged and therefore NOT dispatched: the refusal
+    must still fire, so the incremental run agrees with the full one (#11)."""
+    (full_calls, full), (inc_calls, inc) = _full_then_incremental(tmp_path, {
+        **_IFACE_CORPUS,
+        _INCR_DISPATCHER: (
+            "<?php\n"
+            "namespace App\\Http;\n"
+            "use App\\Contracts\\Notifier;\n"
+            "class Dispatcher {\n"
+            "    private Notifier $notifier;\n"
+            "    public function go(): void { $this->notifier->notify('x'); }\n"
+            "}\n"
+        ),
+    }, changed=_INCR_DISPATCHER)
+
+    go = _find(inc, ".go()", "dispatcher")
+    assert not _notified(full_calls, go), "full-build baseline must refuse"
+    assert not _notified(inc_calls, go), \
+        "an undispatched interface file must not silently drop the refusal"
+
+
+def test_interface_short_name_collision_emits_no_edge_incrementally(tmp_path: Path):
+    """The Laravel Contracts collision across a rebuild: `App\\Support\\Notifier`
+    is the lone DEFINITION under that short name, so the single-definition guard
+    alone would bind the receiver to the stranger."""
+    (_, full), (inc_calls, inc) = _full_then_incremental(tmp_path, {
+        **_IFACE_CORPUS,
+        _INCR_DISPATCHER: (
+            "<?php\n"
+            "namespace App\\Http;\n"
+            "use App\\Contracts\\Notifier;\n"
+            "class Dispatcher {\n"
+            "    private Notifier $notifier;\n"
+            "    public function go(): void { $this->notifier->notify('x'); }\n"
+            "}\n"
+        ),
+    }, changed=_INCR_DISPATCHER)
+
+    go = _find(inc, ".go()", "dispatcher")
+    # The stranger's node lives in an unchanged file, so its id comes from the
+    # full result — the incremental run returns only fresh nodes.
+    stranger = _find(full, ".notify()", "support_notifier")
+    assert (go, stranger) not in inc_calls, \
+        "a rebuild must not bind a contract-typed receiver to a same-named class"
+    assert not _notified(inc_calls, go)
+
+
+def test_interface_refusal_is_case_insensitive_incrementally(tmp_path: Path):
+    """PHP type names are case-insensitive on the incremental path too: the
+    persisted names are folded on both sides, never compared verbatim."""
+    (_, full), (inc_calls, inc) = _full_then_incremental(tmp_path, {
+        **_IFACE_CORPUS,
+        _INCR_DISPATCHER: (
+            "<?php\n"
+            "namespace App\\Http;\n"
+            "use App\\Contracts\\Notifier;\n"
+            "class Dispatcher {\n"
+            "    private notifier $notifier;\n"
+            "    public function go(): void { $this->notifier->notify('x'); }\n"
+            "}\n"
+        ),
+    }, changed=_INCR_DISPATCHER)
+
+    go = _find(inc, ".go()", "dispatcher")
+    assert (go, _find(full, ".notify()", "support_notifier")) not in inc_calls
+    assert not _notified(inc_calls, go)
+
+
+def test_class_typed_receiver_still_resolves_incrementally(tmp_path: Path):
+    """Positive control for the two tests above: the refusal stays name-scoped
+    across a rebuild — a CLASS-typed receiver still binds into its unchanged
+    file (#2437), and the decoys still get nothing."""
+    (_, full), (inc_calls, inc) = _full_then_incremental(tmp_path, {
+        **_IFACE_CORPUS,
+        "app/Audit/AuditTrail.php": (
+            "<?php\nnamespace App\\Audit;\n"
+            "class AuditTrail {\n    public function notify(string $m): void {}\n}\n"
+        ),
+        _INCR_DISPATCHER: (
+            "<?php\n"
+            "namespace App\\Http;\n"
+            "use App\\Services\\MailNotifier;\n"
+            "class Dispatcher {\n"
+            "    private MailNotifier $notifier;\n"
+            "    public function go(): void { $this->notifier->notify('x'); }\n"
+            "}\n"
+        ),
+    }, changed=_INCR_DISPATCHER)
+
+    go = _find(inc, ".go()", "dispatcher")
+    assert (go, _find(full, ".notify()", "mailnotifier")) in inc_calls, \
+        "the incremental path must still resolve a class-typed receiver"
+    assert (go, _find(full, ".notify()", "audittrail")) not in inc_calls
+    assert (go, _find(full, ".notify()", "support_notifier")) not in inc_calls

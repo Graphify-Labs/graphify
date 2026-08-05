@@ -1212,7 +1212,10 @@ def _rebuild_code(
                     # #2438: the persisted callability markers are the only
                     # thing that lets an unchanged target pass the
                     # indirect_call guard — never re-derived from the label.
-                    for marker in ("_callable", "_callable_class"):
+                    # `_php_interfaces` (#11) rides the same channel: it is the
+                    # only way an unchanged PHP interface file keeps refusing an
+                    # interface-typed receiver on an incremental rebuild.
+                    for marker in ("_callable", "_callable_class", "_php_interfaces"):
                         if node.get(marker):
                             ctx_node[marker] = node[marker]
                     resolution_context_nodes.append(ctx_node)
