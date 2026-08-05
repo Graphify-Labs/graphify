@@ -487,8 +487,9 @@ def test_monoliths_change_only_sanctioned_lines():
     The round-trip (multiset diff vs the pinned v8 blob) must come back clean:
     each added/removed line matches one of the documented sanctioned predicates
     in gen — the enum unification, the unified description, the chunk-cleanup
-    rewrite (#1172), the four #1392 runbook fixes, and semantic-cache source
-    scoping (#1757). Anything else is drift.
+    rewrite (#1172), the four #1392 runbook fixes, semantic-cache source scoping
+    (#1757), and semantic-cache pruning in the skill runbooks (#2307). Anything
+    else is drift.
     """
     platforms = gen.load_platforms()
     for key in ("aider", "devin"):
@@ -569,6 +570,21 @@ def test_generated_runbooks_pass_root_to_save_manifest():
                     f"{path.relative_to(REPO_ROOT)}: save_manifest without root= (#1417): {ln.strip()!r}"
                 )
     assert checked >= 4, f"expected save_manifest calls across the runbooks, found {checked}"
+
+
+def test_generated_runbooks_prune_orphaned_semantic_cache_entries():
+    """#2307: every shipped full runbook sweeps against the full live corpus."""
+    targets = [
+        REPO_ROOT / "graphify" / "skill.md",
+        REPO_ROOT / "graphify" / "skill-aider.md",
+        REPO_ROOT / "graphify" / "skill-devin.md",
+    ]
+    for path in targets:
+        body = path.read_text(encoding="utf-8")
+        assert "from graphify.cache import file_hash, prune_semantic_cache" in body, path
+        assert "for _file in _corpus.get(_kind, []):" in body, path
+        assert "file_hash(_path, root=Path('INPUT_PATH'))" in body, path
+        assert "prune_semantic_cache(Path('INPUT_PATH'), _live_hashes)" in body, path
 
 
 def test_devin_keeps_its_multi_field_frontmatter():
