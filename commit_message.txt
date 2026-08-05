@@ -1,1 +1,1 @@
-docs: add 3D viz usage and manual smoke-test instructions
+tests: add docs presence smoke test for 3D viz docs
