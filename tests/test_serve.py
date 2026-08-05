@@ -29,6 +29,7 @@ from graphify.serve import (
     _load_graph,
     _community_header,
     _search_tokens,
+    _shortest_path_text,
 )
 
 
@@ -1386,3 +1387,42 @@ def test_subgraph_to_text_honors_valid_src_tgt_direction():
     out = _subgraph_to_text(G, {"caller", "callee"}, [("callee", "caller")])
     edge_line = next(l for l in out.splitlines() if l.startswith("EDGE"))
     assert "caller --calls" in edge_line and "--> callee" in edge_line
+
+
+# --- _shortest_path_text direction (#2487) ---
+
+def _directed_chain() -> nx.DiGraph:
+    """alpha --calls--> beta --calls--> gamma, as _load_graph would load it
+    (directed storage, arc order = true direction on post-#563 files)."""
+    G = nx.DiGraph()
+    for n in ("alpha", "beta", "gamma"):
+        G.add_node(n, label=n)
+    G.add_edge("alpha", "beta", relation="calls")
+    G.add_edge("beta", "gamma", relation="calls")
+    return G
+
+
+def test_shortest_path_tool_directed_respects_direction():
+    out = _shortest_path_text(_directed_chain(), {"source": "alpha", "target": "gamma"})
+    assert "Shortest path (2 hops)" in out
+    assert out.count("-->") == 2
+    assert "<--" not in out
+
+
+def test_shortest_path_tool_directed_backwards_is_no_path():
+    # Directed is the default (#2487): walking the chain backwards must report
+    # no directed path, with the undirected opt-out hint, not a reversed path.
+    out = _shortest_path_text(_directed_chain(), {"source": "gamma", "target": "alpha"})
+    assert "No directed path found" in out
+    assert "undirected=true" in out
+    assert "-->" not in out
+    assert "<--" not in out
+
+
+def test_shortest_path_tool_undirected_opt_in():
+    out = _shortest_path_text(
+        _directed_chain(), {"source": "gamma", "target": "alpha", "undirected": True}
+    )
+    assert "Shortest path (2 hops)" in out
+    assert out.count("<--calls--") == 2
+    assert "-->" not in out
