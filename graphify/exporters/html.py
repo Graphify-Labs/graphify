@@ -12,6 +12,22 @@ from graphify.security import sanitize_label
 
 MAX_NODES_FOR_VIZ = 5_000
 
+#: Renderers `to_html` can dispatch to. "2d" is the long-standing vis.js canvas
+#: view; "3d" is the WebGL view in graphify.exporters.html3d.
+VIZ_MODES = ("2d", "3d")
+
+def _resolve_viz_mode(mode: str | None) -> str:
+    """Pick the renderer: explicit argument > GRAPHIFY_VIZ_MODE > "2d".
+
+    Defaults to 2d so existing callers keep their byte-identical output; an
+    unknown value falls back to 2d rather than raising, matching how
+    _viz_node_limit() treats a malformed env var.
+    """
+    import os
+    raw = mode if mode is not None else os.environ.get("GRAPHIFY_VIZ_MODE", "")
+    candidate = (raw or "").strip().lower()
+    return candidate if candidate in VIZ_MODES else "2d"
+
 def _viz_node_limit() -> int:
     """Return the effective viz node limit, honoring GRAPHIFY_VIZ_NODE_LIMIT env var.
 
@@ -330,12 +346,17 @@ def to_html(
     member_counts: dict[int, int] | None = None,
     node_limit: int | None = None,
     learning_overlay: dict | None = None,
+    mode: str | None = None,
 ) -> None:
-    """Generate an interactive vis.js HTML visualization of the graph.
+    """Generate an interactive HTML visualization of the graph.
 
     Features: node size by degree, click-to-inspect panel, search box,
     community filter, physics clustering by community, confidence-styled edges.
     Raises ValueError if graph exceeds MAX_NODES_FOR_VIZ.
+
+    `mode` selects the renderer — "2d" (vis.js canvas, the default) or "3d"
+    (WebGL via 3d-force-graph). Both are fed the identical node/edge/legend
+    model built below, so the two views always describe the same graph.
 
     If member_counts is provided (aggregated community view), node sizes are
     based on community member counts rather than graph degree.
@@ -343,6 +364,7 @@ def to_html(
     If node_limit is set and the graph exceeds it, automatically builds an
     aggregated community-level meta-graph instead of raising ValueError.
     """
+    mode = _resolve_viz_mode(mode)
     limit = node_limit if node_limit is not None else _viz_node_limit()
     if G.number_of_nodes() > limit:
         if node_limit is not None:
@@ -392,7 +414,7 @@ def to_html(
                     })
                 meta.graph["hyperedges"] = remapped
             to_html(meta, meta_communities, output_path,
-                    community_labels=community_labels, member_counts=mc)
+                    community_labels=community_labels, member_counts=mc, mode=mode)
             print(f"graph.html written (aggregated: {meta.number_of_nodes()} community nodes, {meta.number_of_edges()} cross-community edges)")
             print("Tip: run with --obsidian for full node-level detail.")
             return
@@ -511,18 +533,46 @@ def to_html(
         n = member_counts.get(cid, len(communities.get(cid, []))) if member_counts else len(communities.get(cid, []))
         legend_data.append({"cid": cid, "color": color, "label": lbl, "count": n})
 
-    # Escape </script> sequences so embedded JSON cannot break out of the script tag
-    def _js_safe(obj) -> str:
-        return json.dumps(obj).replace("</", "<\\/")
+    # The renderer-agnostic view model. Both the 2d and the 3d renderer consume
+    # exactly this dict, so a node styled one way in vis.js is the same node,
+    # with the same fields, in the WebGL view.
+    model = {
+        "nodes": vis_nodes,
+        "edges": vis_edges,
+        "legend": legend_data,
+        "hyperedges": getattr(G, "graph", {}).get("hyperedges", []),
+        "title": _html.escape(sanitize_label(str(output_path))),
+        "stats": f"{G.number_of_nodes()} nodes &middot; {G.number_of_edges()} edges &middot; {len(communities)} communities",
+    }
 
-    nodes_json = _js_safe(vis_nodes)
-    edges_json = _js_safe(vis_edges)
-    legend_json = _js_safe(legend_data)
-    hyperedges_json = _js_safe(getattr(G, "graph", {}).get("hyperedges", []))
-    title = _html.escape(sanitize_label(str(output_path)))
-    stats = f"{G.number_of_nodes()} nodes &middot; {G.number_of_edges()} edges &middot; {len(communities)} communities"
+    if mode == "3d":
+        from graphify.exporters.html3d import render as _render_force3d
+        html = _render_force3d(model)
+    else:
+        html = _render_visjs(model)
 
-    html = f"""<!DOCTYPE html>
+    Path(output_path).write_text(html, encoding="utf-8")  # nosec
+
+
+def js_safe(obj) -> str:
+    """Serialize `obj` for embedding in a <script> block.
+
+    Escaping `</` keeps a node label containing a literal `</script>` from
+    closing the tag early and turning graph data into markup.
+    """
+    return json.dumps(obj).replace("</", "<\\/")
+
+
+def _render_visjs(model: dict) -> str:
+    """Render the view model as the vis.js 2D canvas viewer."""
+    nodes_json = js_safe(model["nodes"])
+    edges_json = js_safe(model["edges"])
+    legend_json = js_safe(model["legend"])
+    hyperedges_json = js_safe(model["hyperedges"])
+    title = model["title"]
+    stats = model["stats"]
+
+    return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -556,5 +606,3 @@ def to_html(
 {_hyperedge_script(hyperedges_json)}
 </body>
 </html>"""
-
-    Path(output_path).write_text(html, encoding="utf-8")  # nosec
