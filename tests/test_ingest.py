@@ -1,9 +1,10 @@
 """Tests for graphify.ingest.save_query_result"""
 from __future__ import annotations
 import re
+import urllib.error
 from pathlib import Path
 import pytest
-from graphify.ingest import save_query_result
+from graphify.ingest import ingest, save_query_result
 
 
 def test_file_created(tmp_path):
@@ -98,3 +99,88 @@ def test_no_outcome_means_no_outcome_section(tmp_path):
 def test_invalid_outcome_rejected(tmp_path):
     with pytest.raises(ValueError):
         save_query_result("q", "a", tmp_path / "memory", outcome="great")
+
+
+def test_ingest_webpage_writes_markdown(tmp_path, monkeypatch):
+    target = tmp_path / "raw"
+    monkeypatch.setattr("graphify.ingest.validate_url", lambda _url: None)
+    monkeypatch.setattr(
+        "graphify.ingest._fetch_webpage",
+        lambda _url, _author, _contributor: ("# Example", "example.md"),
+    )
+
+    out = ingest("https://example.com/docs", target)
+
+    assert out == target / "example.md"
+    assert out.read_text(encoding="utf-8") == "# Example"
+
+
+def test_ingest_avoids_overwrite_with_counter(tmp_path, monkeypatch):
+    target = tmp_path / "raw"
+    target.mkdir(parents=True)
+    (target / "example.md").write_text("existing", encoding="utf-8")
+    monkeypatch.setattr("graphify.ingest.validate_url", lambda _url: None)
+    monkeypatch.setattr(
+        "graphify.ingest._fetch_webpage",
+        lambda _url, _author, _contributor: ("# New", "example.md"),
+    )
+
+    out = ingest("https://example.com/docs", target)
+
+    assert out.name == "example_1.md"
+    assert out.read_text(encoding="utf-8") == "# New"
+
+
+def test_ingest_pdf_path_uses_binary_downloader(tmp_path, monkeypatch):
+    target = tmp_path / "raw"
+    downloaded = target / "paper.pdf"
+    monkeypatch.setattr("graphify.ingest.validate_url", lambda _url: None)
+    monkeypatch.setattr("graphify.ingest._download_binary", lambda *_a, **_k: downloaded)
+
+    out = ingest("https://example.com/paper.pdf", target)
+
+    assert out == downloaded
+
+
+def test_ingest_image_without_suffix_defaults_to_jpg(tmp_path, monkeypatch):
+    target = tmp_path / "raw"
+    monkeypatch.setattr("graphify.ingest.validate_url", lambda _url: None)
+    monkeypatch.setattr("graphify.ingest._detect_url_type", lambda _url: "image")
+    captured = {}
+
+    def _fake_download(url: str, suffix: str, _target):
+        captured["url"] = url
+        captured["suffix"] = suffix
+        return target / "img.jpg"
+
+    monkeypatch.setattr("graphify.ingest._download_binary", _fake_download)
+
+    out = ingest("https://example.com/image", target)
+
+    assert out.name == "img.jpg"
+    assert captured["suffix"] == ".jpg"
+
+
+def test_ingest_invalid_url_is_wrapped(tmp_path, monkeypatch):
+    target = tmp_path / "raw"
+
+    def _raise_invalid(_url: str) -> None:
+        raise ValueError("blocked")
+
+    monkeypatch.setattr("graphify.ingest.validate_url", _raise_invalid)
+
+    with pytest.raises(ValueError, match=r"^ingest: blocked$"):
+        ingest("javascript:alert(1)", target)
+
+
+def test_ingest_fetch_errors_are_wrapped(tmp_path, monkeypatch):
+    target = tmp_path / "raw"
+    monkeypatch.setattr("graphify.ingest.validate_url", lambda _url: None)
+
+    def _raise_fetch(_url, _author, _contributor):
+        raise urllib.error.URLError("timeout")
+
+    monkeypatch.setattr("graphify.ingest._fetch_webpage", _raise_fetch)
+
+    with pytest.raises(RuntimeError, match=r"^ingest: failed to fetch "):
+        ingest("https://example.com", target)
