@@ -19,6 +19,96 @@ def _make_corpus(tmp_path):
     return tmp_path
 
 
+def test_extract_exits_nonzero_when_ast_extraction_raises(
+    monkeypatch, tmp_path, capsys
+):
+    """#2445: an AST-pass failure on a fresh build must not be presented as a
+    successful empty corpus (exit 0 + 0-node graph.json)."""
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "main.go").write_text("package main\nfunc main() {}\n")
+    out_dir = tmp_path / "out"
+
+    import graphify.extract as extractmod
+
+    def _ast_failed(paths, **kwargs):
+        raise RuntimeError("worker pool failed")
+
+    monkeypatch.setattr(extractmod, "extract", _ast_failed)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "extract", str(corpus), "--code-only",
+         "--out", str(out_dir)],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        mainmod.main()
+
+    assert exc_info.value.code == 1
+    assert (
+        "[graphify extract] AST extraction failed: worker pool failed"
+        in capsys.readouterr().err
+    )
+    assert not (out_dir / "graphify-out" / "graph.json").exists(), (
+        "graph.json must not be written when the whole AST pass is lost"
+    )
+
+
+def test_extract_allow_partial_continues_past_ast_failure(
+    monkeypatch, tmp_path, capsys
+):
+    """#2445 complement: --allow-partial opts back into the best-effort path —
+    the run continues, and a graph built from the surviving (semantic) pass is
+    written with exit 0."""
+    corpus = _make_corpus(tmp_path)  # main.go + README.md
+    out_dir = tmp_path / "out"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-fake-key")
+
+    import graphify.extract as extractmod
+
+    def _ast_failed(paths, **kwargs):
+        raise RuntimeError("worker pool failed")
+
+    monkeypatch.setattr(extractmod, "extract", _ast_failed)
+
+    def _one_chunk_succeeded(paths, **kwargs):
+        chunk = {
+            "nodes": [
+                {"id": "concept_main_entry", "label": "main entry point",
+                 "type": "concept", "source_file": "README.md"},
+            ],
+            "edges": [],
+            "hyperedges": [],
+        }
+        on_chunk = kwargs.get("on_chunk_done")
+        if on_chunk:
+            on_chunk(0, 1, chunk)
+        return {**chunk, "input_tokens": 100, "output_tokens": 50}
+
+    monkeypatch.setattr(
+        "graphify.llm.extract_corpus_parallel", _one_chunk_succeeded
+    )
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "extract", str(corpus), "--backend", "claude",
+         "--allow-partial", "--out", str(out_dir)],
+    )
+
+    try:
+        mainmod.main()
+    except SystemExit as exc:
+        assert exc.code in (None, 0), f"unexpected exit code {exc.code}"
+
+    assert "AST extraction failed" in capsys.readouterr().err
+    assert (out_dir / "graphify-out" / "graph.json").exists(), (
+        "--allow-partial must still write the best-effort graph"
+    )
+
+
 def test_extract_exits_nonzero_when_all_semantic_chunks_fail(
     monkeypatch, tmp_path, capsys
 ):
