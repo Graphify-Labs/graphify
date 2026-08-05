@@ -924,7 +924,10 @@ _PHP_CONFIG = LanguageConfig(
     class_types=frozenset({"class_declaration"}),
     function_types=frozenset({"function_definition", "method_declaration"}),
     import_types=frozenset({"namespace_use_clause"}),
-    call_types=frozenset({"function_call_expression", "member_call_expression", "scoped_call_expression", "class_constant_access_expression"}),
+    # `$obj?->method()` parses as a distinct node type with the same
+    # object/name/arguments fields, so it flows through the member-call branch
+    # unchanged once it is recognized as a call at all (#1682).
+    call_types=frozenset({"function_call_expression", "member_call_expression", "nullsafe_member_call_expression", "scoped_call_expression", "class_constant_access_expression"}),
     static_prop_types=frozenset({"scoped_property_access_expression"}),
     helper_fn_names=frozenset({"config"}),
     container_bind_methods=frozenset({"bind", "singleton", "scoped", "instance"}),
@@ -3025,6 +3028,95 @@ def _resolve_java_member_calls(
             })
 
 
+def _resolve_php_member_calls(
+    per_file: list[dict],
+    all_nodes: list[dict],
+    all_edges: list[dict],
+) -> None:
+    """Resolve PHP member calls against the receiver's declared type (#1682).
+
+    Receiver ``this`` binds to the caller's enclosing class (exact). Receiver
+    ``this.<prop>`` carries the type stamped by the extractor from the class's
+    typed properties and constructor-promoted params (inferred). A missing or
+    ambiguous receiver type is skipped rather than falling back to a bare
+    method-name match — a Laravel corpus has many identically named service
+    methods, and guessing between them is worse than an absent edge.
+    """
+    def key(label: str) -> str:
+        # PHP class and method names are case-insensitive.
+        return str(label).strip().removeprefix(".").removesuffix("()").casefold()
+
+    contained = {edge.get("target") for edge in all_edges
+                 if edge.get("relation") == "contains"}
+    node_by_id = {node.get("id"): node for node in all_nodes}
+
+    type_def_nids: dict[str, list[str]] = {}
+    for node in all_nodes:
+        if (
+            node.get("source_file")
+            and node.get("id") in contained
+            and _is_type_like_definition(node)
+        ):
+            type_def_nids.setdefault(key(node.get("label", "")), []).append(node["id"])
+
+    method_index: dict[tuple[str, str], set[str]] = {}
+    enclosing_type: dict[str, str] = {}
+    for edge in all_edges:
+        if edge.get("relation") != "method":
+            continue
+        owner, method = edge.get("source"), edge.get("target")
+        method_node = node_by_id.get(method)
+        if method_node is None:
+            continue
+        enclosing_type.setdefault(method, owner)
+        method_index.setdefault((owner, key(method_node.get("label", ""))), set()).add(method)
+
+    existing_pairs = {(edge.get("source"), edge.get("target")) for edge in all_edges}
+    for result in per_file:
+        for raw_call in result.get("raw_calls", []):
+            if raw_call.get("lang") != "php" or not raw_call.get("is_member_call"):
+                continue
+            receiver = raw_call.get("receiver")
+            callee = raw_call.get("callee")
+            caller = raw_call.get("caller_nid")
+            if not receiver or not callee or not caller:
+                continue
+
+            if receiver == "this":
+                exact = True
+                type_nid = enclosing_type.get(caller)
+                if not type_nid:
+                    continue
+            else:
+                exact = False
+                type_name = raw_call.get("receiver_type")
+                if not type_name:
+                    continue  # untyped / union-typed / unknown receiver: refuse
+                type_defs = type_def_nids.get(key(type_name), [])
+                if len(type_defs) != 1:
+                    continue  # short name collides across the corpus: refuse
+                type_nid = type_defs[0]
+
+            method_nids = method_index.get((type_nid, key(callee)), set())
+            if len(method_nids) != 1:
+                continue  # the typed receiver's class has no such method: refuse
+            method_nid = next(iter(method_nids))
+            if method_nid == caller or (caller, method_nid) in existing_pairs:
+                continue
+            existing_pairs.add((caller, method_nid))
+            all_edges.append({
+                "source": caller,
+                "target": method_nid,
+                "relation": "calls",
+                "context": "call",
+                "confidence": "EXTRACTED" if exact else "INFERRED",
+                "confidence_score": 1.0 if exact else 0.8,
+                "source_file": raw_call.get("source_file", ""),
+                "source_location": raw_call.get("source_location"),
+                "weight": 1.0,
+            })
+
+
 def _resolve_objc_member_calls(
     per_file: list[dict],
     all_nodes: list[dict],
@@ -3177,6 +3269,15 @@ register_language_resolver(
 )
 register_language_resolver(
     LanguageResolver("java_member_calls", frozenset({".java"}), _resolve_java_member_calls)
+)
+# PHP receiver-typed member-call resolution (#1682): `$this->prop->method()`
+# bound to the property's declared type instead of a bare same-named match.
+register_language_resolver(
+    LanguageResolver(
+        "php_member_calls",
+        frozenset({".php", ".phtml", ".php3", ".php4", ".php5", ".php7", ".phps"}),
+        _resolve_php_member_calls,
+    )
 )
 # Pascal/Delphi cross-file inherited-method-call resolution: a call from a
 # manual descendant class to a method it inherits from an ancestor declared

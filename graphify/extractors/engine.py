@@ -609,6 +609,58 @@ def _php_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[s
             if c.is_named:
                 _php_collect_type_refs(c, source, generic, out)
 
+# PHP type names that never denote a resolvable class definition. `self`,
+# `static` and `parent` are relative (they need inheritance context the raw-call
+# facts do not carry), the rest are builtins with no user definition.
+_PHP_NON_CONCRETE_TYPE_NAMES = frozenset({
+    "self", "static", "parent", "object", "mixed", "iterable", "callable",
+    "void", "never", "null", "true", "false", "array", "string", "int",
+    "float", "bool",
+})
+
+
+def _php_concrete_type_name(type_node, source: bytes) -> str | None:
+    """Single concrete class name of a PHP type expression, or None (= refuse).
+
+    Deliberately NOT `_php_collect_type_refs`: that helper flattens a union into
+    several refs, whereas a receiver typed `A|B` has no single type and must be
+    refused. `named_type` yields its namespace-stripped name; a nullable wrapper
+    around exactly one type unwraps (`?Foo` is still concretely Foo); union,
+    intersection, primitive and missing types yield None (#1682).
+    """
+    if type_node is None:
+        return None
+    if type_node.type == "named_type":
+        for c in type_node.children:
+            if c.type in ("name", "qualified_name"):
+                text = _php_name_text(c, source)
+                if text and text.lower() not in _PHP_NON_CONCRETE_TYPE_NAMES:
+                    return text
+                return None
+        return None
+    if type_node.type in ("optional_type", "nullable_type"):
+        inner = [c for c in type_node.named_children if c.type != "comment"]
+        if len(inner) == 1:
+            return _php_concrete_type_name(inner[0], source)
+    return None
+
+
+def _php_method_receiver_types(
+    method_node,
+    source: bytes,
+    field_types: dict[str, str],
+) -> dict[str, str]:
+    """Build the receiver type table visible to one PHP method (#1682).
+
+    ``this.<prop>`` keys come from the declaring class's typed properties and
+    constructor-promoted params. PHP properties are reachable ONLY through
+    ``$this->``, so these keys can never collide with a local variable name.
+    Typed params and ``$var = new T()`` locals (bare keys) are a later slice —
+    the per-method signature is already in place for them.
+    """
+    return {f"this.{name}": type_name for name, type_name in field_types.items()}
+
+
 def _php_method_return_type_node(method_node):
     """Return the named_type/primitive_type node sitting after formal_parameters."""
     saw_params = False
@@ -2376,6 +2428,10 @@ def _extract_generic(
     # same-named, explicitly typed receiver in a different method.
     csharp_field_types: dict[str, dict[str, str]] = {}
     csharp_method_scopes: dict[int, tuple[object, str]] = {}
+    # PHP receiver typing (#1682): typed properties and constructor-promoted
+    # params of the declaring class, keyed `this.<prop>` per method scope.
+    php_field_types: dict[str, dict[str, str]] = {}
+    php_method_scopes: dict[int, tuple[object, str]] = {}
 
     csharp_interface_names: set[str] = set()
     if config.ts_module == "tree_sitter_c_sharp":
@@ -3209,6 +3265,18 @@ def _extract_generic(
                                    "union_type", "intersection_type", "optional_type"):
                     continue
                 line = node.start_point[0] + 1
+                # #1682: remember the property's declared type so a later
+                # `$this->prop->method()` resolves against it. Only a single
+                # concrete class name counts — unions/primitives are refused.
+                type_name = _php_concrete_type_name(c, source)
+                if type_name:
+                    fields = php_field_types.setdefault(parent_class_nid, {})
+                    for pe in node.children:
+                        if pe.type != "property_element":
+                            continue
+                        v = pe.child_by_field_name("name")
+                        if v is not None:
+                            fields[_read_text(v, source).lstrip("$")] = type_name
                 refs: list[tuple[str, str]] = []
                 _php_collect_type_refs(c, source, False, refs)
                 for ref_name, role in refs:
@@ -3540,6 +3608,15 @@ def _extract_generic(
                                              "union_type", "intersection_type", "optional_type"):
                                 type_node = sub
                                 break
+                        # #1682: a promoted param IS a typed class property —
+                        # record it in the same `this.<prop>` receiver table.
+                        if is_promoted and parent_class_nid:
+                            promoted_type = _php_concrete_type_name(type_node, source)
+                            v = p.child_by_field_name("name")
+                            if promoted_type and v is not None:
+                                php_field_types.setdefault(parent_class_nid, {})[
+                                    _read_text(v, source).lstrip("$")
+                                ] = promoted_type
                         refs: list[tuple[str, str]] = []
                         _php_collect_type_refs(type_node, source, False, refs)
                         for ref_name, role in refs:
@@ -3760,6 +3837,8 @@ def _extract_generic(
                     java_method_scopes[id(body)] = (node, parent_class_nid)
                 if config.ts_module == "tree_sitter_c_sharp" and parent_class_nid:
                     csharp_method_scopes[id(body)] = (node, parent_class_nid)
+                if config.ts_module == "tree_sitter_php" and parent_class_nid:
+                    php_method_scopes[id(body)] = (node, parent_class_nid)
                 function_bodies.append((func_nid, body))
                 if config.ts_module == "tree_sitter_kotlin":
                     # #2347: Kotlin anonymous objects (`object : Foo { … }`,
@@ -3996,6 +4075,14 @@ def _extract_generic(
             csharp_field_types.get(class_nid, {}),
         )
         for body_id, (method_node, class_nid) in csharp_method_scopes.items()
+    }
+    php_receiver_types = {
+        body_id: _php_method_receiver_types(
+            method_node,
+            source,
+            php_field_types.get(class_nid, {}),
+        )
+        for body_id, (method_node, class_nid) in php_method_scopes.items()
     }
 
     def _emit_indirect_by_name(ident_name: str, loc_node, scope_nid: str,
@@ -4310,11 +4397,33 @@ def _extract_generic(
                     if scope_node:
                         callee_name = _read_text(scope_node, source)
                 else:
-                    # member_call_expression: $obj->method()
+                    # member_call_expression / nullsafe_member_call_expression:
+                    # $obj->method() / $obj?->method()
                     is_member_call = True
                     name_node = node.child_by_field_name("name")
                     if name_node:
                         callee_name = _read_text(name_node, source)
+                    # #1682: capture the receiver so the cross-file PHP pass can
+                    # bind the call to the receiver's DECLARED type. Gated on the
+                    # node type because class_constant_access_expression lands in
+                    # this else-branch too and has no `object`/`name` fields.
+                    if node.type in ("member_call_expression",
+                                     "nullsafe_member_call_expression"):
+                        obj = node.child_by_field_name("object")
+                        if obj is not None and obj.type == "variable_name":
+                            # $this->m() -> "this"; $svc->m() is a later slice.
+                            var = _read_text(obj, source).lstrip("$")
+                            if var == "this":
+                                member_receiver = "this"
+                        elif obj is not None and obj.type == "member_access_expression":
+                            # $this->prop->m(): object=variable_name($this),
+                            # name=name(prop). Deeper chains stay uncaptured.
+                            inner = obj.child_by_field_name("object")
+                            prop = obj.child_by_field_name("name")
+                            if (inner is not None and inner.type == "variable_name"
+                                    and _read_text(inner, source) == "$this"
+                                    and prop is not None):
+                                member_receiver = f"this.{_read_text(prop, source)}"
             elif config.ts_module == "tree_sitter_cpp":
                 # C++: function field, then field_expression/qualified_identifier
                 func_node = node.child_by_field_name(config.call_function_field) if config.call_function_field else None
@@ -4444,7 +4553,17 @@ def _extract_generic(
                 _java_defer = (
                     config.ts_module == "tree_sitter_java" and is_member_call
                 )
-                if _java_defer or (
+                # PHP (#1682): defer ONLY when the receiver's type is actually
+                # known — a typed `$this->prop->m()` must not bare-match an
+                # unrelated same-named method in this file. Plain `$this->m()`
+                # and untyped receivers keep today's in-file match, since the
+                # resolver could add nothing for them anyway.
+                _php_receiver_type: str | None = None
+                if (config.ts_module == "tree_sitter_php"
+                        and member_receiver and member_receiver != "this"):
+                    _php_receiver_type = (receiver_types or {}).get(member_receiver)
+                _php_defer = bool(_php_receiver_type)
+                if _java_defer or _php_defer or (
                     is_member_call
                     and member_receiver
                     and (
@@ -4508,6 +4627,13 @@ def _extract_generic(
                         receiver_type = (receiver_types or {}).get(member_receiver or "")
                         if receiver_type:
                             rc_entry["receiver_type"] = receiver_type
+                    # PHP: tag the raw_call so _resolve_php_member_calls claims
+                    # it (and so other languages' resolvers can skip it), and
+                    # stamp the receiver type resolved above (#1682).
+                    if config.ts_module == "tree_sitter_php":
+                        rc_entry["lang"] = "php"
+                        if _php_receiver_type:
+                            rc_entry["receiver_type"] = _php_receiver_type
                     raw_calls.append(rc_entry)
 
             # Indirect dispatch: a function passed BY NAME as a call argument
@@ -4743,9 +4869,11 @@ def _extract_generic(
     # (#1630 Pattern B). Guarding on the tracked set prevents double-walking.
     _tracked_body_ids.update(id(b) for _, b in function_bodies)
 
-    # Body ids are unique (one language per file), so the Java and C# per-method
-    # receiver tables merge without collision.
-    receiver_types_by_body = {**java_receiver_types, **csharp_receiver_types}
+    # Body ids are unique (one language per file), so the Java, C# and PHP
+    # per-method receiver tables merge without collision.
+    receiver_types_by_body = {
+        **java_receiver_types, **csharp_receiver_types, **php_receiver_types,
+    }
     for caller_nid, body_node in function_bodies:
         walk_calls(
             body_node,
