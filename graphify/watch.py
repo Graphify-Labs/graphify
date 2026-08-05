@@ -1403,6 +1403,7 @@ def _rebuild_code(
             root=watch_root,
         )
         candidate_topology = _topology_from_graph(G)
+        same_commit = False
         if existing_graph_data:
             try:
                 same_topology = (
@@ -1411,7 +1412,11 @@ def _rebuild_code(
                 )
             except Exception:
                 same_topology = False
-            if same_topology:
+            # A commit-only change is still a freshness change.  Returning here
+            # would leave built_at_commit stale and make same-head release
+            # receipts impossible even though `graphify update .` succeeded.
+            same_commit = not commit or existing_graph_data.get("built_at_commit") == commit
+            if same_topology and same_commit:
                 try:
                     from graphify.detect import save_manifest
                     # Full-scan save: prune excluded-but-alive rows (#1908).
@@ -1534,7 +1539,7 @@ def _rebuild_code(
         if report_path.exists():
             old_report = report_path.read_text(encoding="utf-8")
             same_report = _report_for_compare(old_report) == _report_for_compare(report)
-        no_change = same_graph and same_report
+        no_change = same_graph and same_report and same_commit
         if no_change:
             graph_tmp.unlink(missing_ok=True)
             print("[graphify watch] No code-graph changes detected; graph.json/GRAPH_REPORT.md left untouched.")

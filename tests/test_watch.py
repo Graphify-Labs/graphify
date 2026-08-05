@@ -1004,6 +1004,22 @@ def test_rebuild_code_skips_cluster_when_topology_unchanged(tmp_path, monkeypatc
     assert calls["n"] == 1
 
 
+def test_rebuild_code_refreshes_commit_when_topology_is_unchanged(tmp_path, monkeypatch):
+    from graphify import watch
+
+    source = tmp_path / "app.py"
+    source.write_text("def alpha():\n    return 1\n", encoding="utf-8")
+    monkeypatch.setattr(watch, "_git_head", lambda cwd: "old-head")
+    assert watch._rebuild_code(tmp_path)
+
+    graph_path = tmp_path / "graphify-out" / "graph.json"
+    assert json.loads(graph_path.read_text())["built_at_commit"] == "old-head"
+
+    monkeypatch.setattr(watch, "_git_head", lambda cwd: "new-head")
+    assert watch._rebuild_code(tmp_path)
+    assert json.loads(graph_path.read_text())["built_at_commit"] == "new-head"
+
+
 # --- .graphifyignore honored in watch handler (gh-928) ---
 
 
