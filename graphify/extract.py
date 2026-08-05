@@ -3043,6 +3043,18 @@ def _resolve_java_member_calls(
             })
 
 
+# Source suffixes each resolver owns. Used BOTH to register the resolver and to
+# scope its receiver-type index (#8) — one definition so the two cannot drift.
+_PHP_RESOLVER_SUFFIXES = (
+    ".php", ".phtml", ".php3", ".php4", ".php5", ".php7", ".phps",
+)
+# `.h` routes to extract_cpp or extract_objc by content, so it appears in both
+# the C++ and ObjC sets. Raw calls are still claimed by the extractor-stamped
+# `lang`; only the DEFINITION index is scoped by suffix, where including `.h` is
+# correct — an ObjC @interface lives in one.
+_OBJC_RESOLVER_SUFFIXES = (".m", ".mm", ".h")
+
+
 def _php_qualified_corroborates(qualified: str | None, type_node: dict | None) -> bool:
     """True when a source-written class name corroborates the resolved node (#1682).
 
@@ -3095,10 +3107,15 @@ def _resolve_php_member_calls(
                  if edge.get("relation") == "contains"}
     node_by_id = {node.get("id"): node for node in all_nodes}
 
+    # Scoped to PHP sources (#8). An unscoped index matched a PHP receiver type
+    # against classes written in ANY language, which cut both ways: a Python
+    # `class Lead` could be bound as the receiver's type, and a Python class
+    # merely SHARING the name pushed the single-definition guard to 2 and
+    # silently suppressed the correct PHP edge.
     type_def_nids: dict[str, list[str]] = {}
     for node in all_nodes:
         if (
-            node.get("source_file")
+            str(node.get("source_file") or "").lower().endswith(_PHP_RESOLVER_SUFFIXES)
             and node.get("id") in contained
             and _is_type_like_definition(node)
         ):
@@ -3216,11 +3233,16 @@ def _resolve_objc_member_calls(
 
     contained = {e.get("target") for e in all_edges if e.get("relation") == "contains"}
 
+    # Scoped to ObjC sources (#8), same defect and fix as the PHP twin: an
+    # unscoped index let a foreign class type an ObjC receiver, and let a
+    # foreign class merely sharing the name suppress the correct ObjC edge.
     type_def_nids: dict[str, list[str]] = {}
     node_by_id: dict[str, dict] = {}
     for n in all_nodes:
         node_by_id[n.get("id")] = n
-        if n.get("source_file") and n.get("id") in contained and _is_type_like_definition(n):
+        sf = str(n.get("source_file") or "").lower()
+        if (sf.endswith(_OBJC_RESOLVER_SUFFIXES)
+                and n.get("id") in contained and _is_type_like_definition(n)):
             type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
 
     method_index: dict[tuple[str, str], str] = {}
@@ -3322,7 +3344,7 @@ register_language_resolver(
 register_language_resolver(
     LanguageResolver(
         "objc_member_calls",
-        frozenset({".m", ".mm", ".h"}),
+        frozenset(_OBJC_RESOLVER_SUFFIXES),
         _resolve_objc_member_calls,
     )
 )
@@ -3339,7 +3361,7 @@ register_language_resolver(
 register_language_resolver(
     LanguageResolver(
         "php_member_calls",
-        frozenset({".php", ".phtml", ".php3", ".php4", ".php5", ".php7", ".phps"}),
+        frozenset(_PHP_RESOLVER_SUFFIXES),
         _resolve_php_member_calls,
     )
 )

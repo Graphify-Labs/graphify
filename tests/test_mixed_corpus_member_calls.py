@@ -117,3 +117,107 @@ def test_python_member_calls_still_resolve_in_a_mixed_corpus(tmp_path: Path):
     decoy_search = _nid(result, ".search()", "decoy.py")
     assert (run, py_search) in calls, "genuine Python member call stopped resolving"
     assert (run, decoy_search) not in calls, "decoy class received an edge"
+
+
+# ── Language-scoped receiver type index (#8) ─────────────────────────────────
+#
+# The `lang` tag above keeps one language's raw calls out of another
+# language's resolver. It does NOT scope the DEFINITION index each resolver
+# builds: `type_def_nids` was assembled from every type-like node in the
+# corpus, so a receiver type name was matched against classes written in any
+# language. That cut both ways — a foreign class could be bound as the
+# receiver's type, and a foreign class sharing the name could trip the
+# single-definition guard and suppress the correct same-language edge.
+
+
+def test_php_receiver_type_does_not_match_a_python_class(tmp_path: Path):
+    """Defect 1: no PHP `class Lead` exists, only a Python one — refuse."""
+    calls, result = _calls(tmp_path, {
+        "svc.py": _PY_DECOY,
+        "app/Runner.php": (
+            "<?php\n"
+            "namespace App;\n"
+            "class Runner {\n"
+            "    private Lead $lead;\n"
+            "    public function go(): void { $this->lead->search([]); }\n"
+            "}\n"
+        ),
+    })
+
+    go = _nid(result, ".go()", "Runner.php")
+    py_search = _nid(result, ".search()", "svc.py")
+    assert (go, py_search) not in calls, \
+        "a PHP receiver type must not resolve against a Python class"
+
+
+def test_php_receiver_resolves_despite_a_same_named_python_class(tmp_path: Path):
+    """Defect 2 (the damaging one): a cross-language name collision must not
+    make the god-node guard suppress the legitimate PHP-to-PHP edge."""
+    calls, result = _calls(tmp_path, {
+        "svc.py": _PY_DECOY,
+        "app/Lead.php": (
+            "<?php\nnamespace App;\n"
+            "class Lead {\n"
+            "    public function search(array $filters): array { return []; }\n"
+            "}\n"
+        ),
+        "app/Runner.php": (
+            "<?php\n"
+            "namespace App;\n"
+            "class Runner {\n"
+            "    private Lead $lead;\n"
+            "    public function go(): void { $this->lead->search([]); }\n"
+            "}\n"
+        ),
+    })
+
+    go = _nid(result, ".go()", "Runner.php")
+    php_search = _nid(result, ".search()", "Lead.php")
+    py_search = _nid(result, ".search()", "svc.py")
+    assert (go, php_search) in calls, \
+        "a same-named class in another language suppressed the real PHP edge"
+    assert (go, py_search) not in calls
+    assert calls[(go, php_search)]["confidence"] == "INFERRED"
+
+
+def test_objc_receiver_type_does_not_match_a_python_class(tmp_path: Path):
+    """Defect 1, ObjC twin: `[Lead search]` with no ObjC `Lead` in the corpus."""
+    calls, result = _calls(tmp_path, {
+        "svc.py": _PY_DECOY,
+        "src/Runner.m": (
+            "@implementation Runner\n"
+            "- (void)go { [Lead search]; }\n"
+            "@end\n"
+        ),
+    })
+
+    go = _nid(result, "-go", "Runner.m")
+    py_search = _nid(result, ".search()", "svc.py")
+    assert (go, py_search) not in calls, \
+        "an ObjC receiver type must not resolve against a Python class"
+
+
+def test_objc_receiver_resolves_despite_a_same_named_python_class(tmp_path: Path):
+    """Defect 2, ObjC twin: the collision must not suppress the ObjC edge."""
+    calls, result = _calls(tmp_path, {
+        "svc.py": _PY_DECOY,
+        "src/Lead.h": "@interface Lead : NSObject\n- (void)search;\n@end\n",
+        "src/Lead.m": (
+            '#import "Lead.h"\n@implementation Lead\n- (void)search {}\n@end\n'
+        ),
+        "src/Runner.m": (
+            '#import "Lead.h"\n@implementation Runner\n'
+            "- (void)go { [Lead search]; }\n@end\n"
+        ),
+    })
+
+    go = _nid(result, "-go", "Runner.m")
+    py_search = _nid(result, ".search()", "svc.py")
+    objc_search = next(
+        node["id"] for node in result["nodes"]
+        if node.get("label") == "-search"
+        and str(node.get("source_file", "")).endswith((".h", ".m"))
+    )
+    assert (go, objc_search) in calls, \
+        "a same-named Python class suppressed the real ObjC edge"
+    assert (go, py_search) not in calls
