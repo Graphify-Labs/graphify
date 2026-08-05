@@ -2602,3 +2602,554 @@ def test_rebuild_code_fresh_build_defaults_undirected(tmp_path):
     graph_path = corpus / "graphify-out" / "graph.json"
     data = json.loads(graph_path.read_text(encoding="utf-8"))
     assert data.get("directed", False) is False
+
+
+def test_incremental_rebuild_preserves_call_to_unchanged_typescript_target(tmp_path):
+    """#2406: rebuilding a changed caller retains its SHARED DIRECT calls into unchanged files.
+
+    Scope here is the shared direct-call pass (a plain `shared()`); member calls
+    (#2437) and indirect_call (#2438) are covered by the tests at the end of
+    this file.
+
+    A later edit that removes the call must still remove the edge, preventing a
+    stale-edge-preservation workaround.
+    """
+    import json
+
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+
+    target = corpus / "B.ts"
+    caller = corpus / "A.ts"
+
+    target.write_text(
+        """
+export function shared(): number {
+  return 1;
+}
+""".lstrip(),
+        encoding="utf-8",
+    )
+    caller.write_text(
+        """
+import { shared } from "./B";
+
+export function run(): number {
+  return shared();
+}
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    graph_path = corpus / "graphify-out" / "graph.json"
+
+    def load_graph():
+        return json.loads(graph_path.read_text(encoding="utf-8"))
+
+    def node_id(graph, label, source_file):
+        return next(
+            node["id"]
+            for node in graph.get("nodes", [])
+            if node.get("label") == label
+            and node.get("source_file") == source_file
+        )
+
+    def has_call(graph):
+        run_id = node_id(graph, "run()", "A.ts")
+        shared_id = node_id(graph, "shared()", "B.ts")
+        return any(
+            edge.get("relation") == "calls"
+            and edge.get("source") == run_id
+            and edge.get("target") == shared_id
+            for edge in graph.get("links", graph.get("edges", []))
+        )
+
+    # Full-corpus baseline resolves A.run() -> B.shared().
+    assert _rebuild_code(
+        corpus,
+        no_cluster=True,
+        acquire_lock=False,
+    ) is True
+    assert has_call(load_graph()), "full rebuild must create the cross-file call edge"
+
+    # Change only the caller while retaining the same call. The unchanged target
+    # must remain available to the cross-file resolver.
+    caller.write_text(
+        """
+import { shared } from "./B";
+
+export function run(): number {
+  return shared() + 1;
+}
+""".lstrip(),
+        encoding="utf-8",
+    )
+    assert _rebuild_code(
+        corpus,
+        changed_paths=[caller],
+        no_cluster=True,
+        acquire_lock=False,
+    ) is True
+    assert has_call(
+        load_graph()
+    ), "incremental rebuild dropped the call edge to an unchanged target"
+
+    # Removing the call must remove the edge; do not merely preserve old outgoing
+    # edges from changed files.
+    caller.write_text(
+        """
+export function run(): number {
+  return 1;
+}
+""".lstrip(),
+        encoding="utf-8",
+    )
+    assert _rebuild_code(
+        corpus,
+        changed_paths=[caller],
+        no_cluster=True,
+        acquire_lock=False,
+    ) is True
+
+    final_graph = load_graph()
+    run_id = node_id(final_graph, "run()", "A.ts")
+    assert not any(
+        edge.get("relation") == "calls"
+        and edge.get("source") == run_id
+        for edge in final_graph.get("links", final_graph.get("edges", []))
+    ), "removed call must not survive as a stale edge"
+
+
+# --- #2406 incremental shared-direct-call resolution helpers -----------------
+
+def _2406_graph(corpus):
+    import json
+    return json.loads(
+        (corpus / "graphify-out" / "graph.json").read_text(encoding="utf-8")
+    )
+
+
+def _2406_nid(graph, label, source_file):
+    return next(
+        (
+            node["id"]
+            for node in graph.get("nodes", [])
+            if node.get("label") == label and node.get("source_file") == source_file
+        ),
+        None,
+    )
+
+
+def _2406_calls(graph):
+    """(source_id, target_id) of every `calls` edge."""
+    return [
+        (edge.get("source"), edge.get("target"))
+        for edge in graph.get("links", graph.get("edges", []))
+        if edge.get("relation") == "calls"
+    ]
+
+
+def _2406_seed(tmp_path, caller_src, target_src="export function shared(): number {\n  return 1;\n}\n"):
+    """Build a two-file TS corpus and do the initial full rebuild."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir(parents=True)
+    (corpus / "B.ts").write_text(target_src, encoding="utf-8")
+    (corpus / "A.ts").write_text(caller_src, encoding="utf-8")
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    return corpus
+
+
+_2406_CALLER = (
+    'import { shared } from "./B";\n'
+    "\n"
+    "export function run(): number {\n"
+    "  return shared();\n"
+    "}\n"
+)
+
+
+def test_incremental_rebuild_drops_call_when_import_is_removed(tmp_path):
+    """#2406: no import evidence => the persisted target must not be resolved."""
+    from graphify.watch import _rebuild_code
+
+    corpus = _2406_seed(tmp_path, _2406_CALLER)
+    caller = corpus / "A.ts"
+    # `shared` is now a local no-op call with no import backing it.
+    caller.write_text(
+        "declare function shared(): number;\n"
+        "\n"
+        "export function run(): number {\n"
+        "  return shared();\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    assert _rebuild_code(
+        corpus, changed_paths=[caller], no_cluster=True, acquire_lock=False
+    ) is True
+
+    graph = _2406_graph(corpus)
+    shared_id = _2406_nid(graph, "shared()", "B.ts")
+    run_id = _2406_nid(graph, "run()", "A.ts")
+    assert (run_id, shared_id) not in _2406_calls(graph)
+
+
+def test_incremental_rebuild_uses_fresh_nodes_when_target_also_changed(tmp_path):
+    """#2406: a changed target's persisted symbols must never win over fresh ones."""
+    from graphify.watch import _rebuild_code
+
+    corpus = _2406_seed(tmp_path, _2406_CALLER)
+    caller, target = corpus / "A.ts", corpus / "B.ts"
+    target.write_text(
+        "export function renamed(): number {\n  return 2;\n}\n", encoding="utf-8"
+    )
+    caller.write_text(
+        'import { renamed } from "./B";\n'
+        "\n"
+        "export function run(): number {\n"
+        "  return renamed();\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    assert _rebuild_code(
+        corpus,
+        changed_paths=[caller, target],
+        no_cluster=True,
+        acquire_lock=False,
+    ) is True
+
+    graph = _2406_graph(corpus)
+    calls = _2406_calls(graph)
+    run_id = _2406_nid(graph, "run()", "A.ts")
+    assert (run_id, _2406_nid(graph, "renamed()", "B.ts")) in calls
+    # The stale `shared()` node is gone entirely, so nothing can point at it.
+    assert _2406_nid(graph, "shared()", "B.ts") is None
+
+
+def test_incremental_rebuild_context_excludes_deleted_target(tmp_path):
+    """#2406: a deleted file cannot remain a resolver target."""
+    from graphify.watch import _rebuild_code
+
+    corpus = _2406_seed(tmp_path, _2406_CALLER)
+    caller, target = corpus / "A.ts", corpus / "B.ts"
+    target.unlink()
+    caller.write_text(
+        "export function run(): number {\n  return shared();\n}\n", encoding="utf-8"
+    )
+    assert _rebuild_code(
+        corpus,
+        changed_paths=[caller, target],
+        no_cluster=True,
+        acquire_lock=False,
+    ) is True
+
+    graph = _2406_graph(corpus)
+    assert _2406_nid(graph, "shared()", "B.ts") is None
+    assert _2406_calls(graph) == []
+
+
+def test_incremental_rebuild_does_not_reparse_unchanged_targets(tmp_path, monkeypatch):
+    """#2406 keeps the incremental contract: only changed files are extracted."""
+    import graphify.extract as extract_mod
+    from graphify.watch import _rebuild_code
+
+    corpus = _2406_seed(tmp_path, _2406_CALLER)
+    caller = corpus / "A.ts"
+
+    seen: list[list[str]] = []
+    real_extract = extract_mod.extract
+
+    def spy(paths, *args, **kwargs):
+        seen.append([Path(p).name for p in paths])
+        return real_extract(paths, *args, **kwargs)
+
+    monkeypatch.setattr(extract_mod, "extract", spy)
+    caller.write_text(_2406_CALLER.replace("shared();", "shared() + 1;"), encoding="utf-8")
+    assert _rebuild_code(
+        corpus, changed_paths=[caller], no_cluster=True, acquire_lock=False
+    ) is True
+
+    assert seen == [["A.ts"]]
+
+
+def test_incremental_rebuild_matches_full_rebuild_and_does_not_duplicate(tmp_path):
+    """#2406: full/incremental parity for edges sourced by the changed file."""
+    from graphify.watch import _rebuild_code
+
+    corpus = _2406_seed(tmp_path, _2406_CALLER)
+    caller = corpus / "A.ts"
+    edited = _2406_CALLER.replace("shared();", "shared() + 1;")
+    caller.write_text(edited, encoding="utf-8")
+
+    # Two incremental rebuilds in a row must be idempotent (no duplicate edges).
+    for _ in range(2):
+        assert _rebuild_code(
+            corpus, changed_paths=[caller], no_cluster=True, acquire_lock=False
+        ) is True
+    incremental = _2406_calls(_2406_graph(corpus))
+    assert len(incremental) == len(set(incremental))
+
+    # Same final corpus, built from scratch.
+    fresh = _2406_seed(tmp_path / "fresh", edited)
+    assert sorted(_2406_calls(_2406_graph(fresh))) == sorted(incremental)
+
+
+def test_incremental_rebuild_preserves_python_call_to_unchanged_target(tmp_path):
+    """#2406 is language-agnostic: the shared DIRECT cross-file call pass carries it."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "b.py").write_text("def shared():\n    return 1\n", encoding="utf-8")
+    caller = corpus / "a.py"
+    caller.write_text(
+        "from b import shared\n\n\ndef run():\n    return shared()\n", encoding="utf-8"
+    )
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    full = _2406_calls(_2406_graph(corpus))
+    assert full, "full rebuild must resolve the cross-file python call"
+
+    caller.write_text(
+        "from b import shared\n\n\ndef run():\n    return shared() + 1\n",
+        encoding="utf-8",
+    )
+    assert _rebuild_code(
+        corpus, changed_paths=[caller], no_cluster=True, acquire_lock=False
+    ) is True
+    assert sorted(_2406_calls(_2406_graph(corpus))) == sorted(full)
+
+
+# --- #2437 / #2438: member + indirect calls into unchanged files -------------
+# The #2406 resolution context now also carries the unchanged corpus's
+# contains/method edges (member-call resolvers, #2437) and the persisted
+# `_callable`/`_callable_class` markers (indirect_call guard, #2438), so both
+# edge families survive an incremental rebuild exactly like shared direct calls.
+
+_2437_TARGET = "export class Service {\n  ping(): number { return 1; }\n}\n"
+_2437_CALLER = (
+    'import { Service } from "./B";\n\n'
+    "export function run(): number {\n"
+    "  const service = new Service();\n"
+    "  return service.ping()%s;\n}\n"
+)
+
+
+def _2437_seed(tmp_path, caller_suffix=""):
+    """Build the member-call corpus (TS receiver-typed call) and full-rebuild it."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir(parents=True)
+    (corpus / "B.ts").write_text(_2437_TARGET, encoding="utf-8")
+    (corpus / "A.ts").write_text(_2437_CALLER % caller_suffix, encoding="utf-8")
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    return corpus
+
+
+_2438_CALLER = (
+    "from b import handler\n\n\ndef run(pool):\n%s    return pool.submit(handler)\n"
+)
+
+
+def _2438_seed(tmp_path, caller_prefix="", target_src="def handler():\n    return 1\n"):
+    """Build the indirect-call corpus (py callback into b.py) and full-rebuild it."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir(parents=True)
+    (corpus / "b.py").write_text(target_src, encoding="utf-8")
+    (corpus / "a.py").write_text(_2438_CALLER % caller_prefix, encoding="utf-8")
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    return corpus
+
+
+def _2438_indirects(graph):
+    """(source_id, target_id) of every `indirect_call` edge."""
+    return [
+        (edge.get("source"), edge.get("target"))
+        for edge in graph.get("links", graph.get("edges", []))
+        if edge.get("relation") == "indirect_call"
+    ]
+
+
+def test_incremental_rebuild_preserves_member_call_to_unchanged_target(tmp_path):
+    """#2437: a changed caller keeps its `service.ping()` edge into an unchanged file."""
+    from graphify.watch import _rebuild_code
+
+    corpus = _2437_seed(tmp_path)
+    full = _2406_calls(_2406_graph(corpus))
+    assert full, "full rebuild must resolve the cross-file member call"
+
+    caller = corpus / "A.ts"
+    caller.write_text(_2437_CALLER % " + 1", encoding="utf-8")
+    assert _rebuild_code(
+        corpus, changed_paths=[caller], no_cluster=True, acquire_lock=False
+    ) is True
+    assert sorted(_2406_calls(_2406_graph(corpus))) == sorted(full)
+
+
+def test_incremental_rebuild_preserves_indirect_call_to_unchanged_target(tmp_path):
+    """#2438: the persisted `_callable` marker keeps `pool.submit(handler)` resolving."""
+    from graphify.watch import _rebuild_code
+
+    corpus = _2438_seed(tmp_path)
+    full = _2438_indirects(_2406_graph(corpus))
+    assert full, "full rebuild must resolve the cross-file indirect call"
+
+    caller = corpus / "a.py"
+    caller.write_text(_2438_CALLER % "    x = 1\n", encoding="utf-8")
+    assert _rebuild_code(
+        corpus, changed_paths=[caller], no_cluster=True, acquire_lock=False
+    ) is True
+    assert sorted(_2438_indirects(_2406_graph(corpus))) == sorted(full)
+
+
+def test_incremental_rebuild_evicts_removed_member_call(tmp_path):
+    """#2437: removing the member call from the caller must remove the edge —
+    the fix regenerates edges from fresh raw_calls, it never preserves stale ones."""
+    from graphify.watch import _rebuild_code
+
+    corpus = _2437_seed(tmp_path)
+    assert _2406_calls(_2406_graph(corpus)), "member-call baseline missing"
+
+    caller = corpus / "A.ts"
+    caller.write_text(
+        "export function run(): number {\n  return 1;\n}\n", encoding="utf-8"
+    )
+    assert _rebuild_code(
+        corpus, changed_paths=[caller], no_cluster=True, acquire_lock=False
+    ) is True
+    assert _2406_calls(_2406_graph(corpus)) == []
+
+
+def test_incremental_rebuild_evicts_member_call_when_target_deleted(tmp_path):
+    """#2437: a deleted callee file must not resurrect through the context edges."""
+    from graphify.watch import _rebuild_code
+
+    corpus = _2437_seed(tmp_path)
+    caller, target = corpus / "A.ts", corpus / "B.ts"
+    target.unlink()
+    assert _rebuild_code(
+        corpus,
+        changed_paths=[caller, target],
+        no_cluster=True,
+        acquire_lock=False,
+    ) is True
+
+    graph = _2406_graph(corpus)
+    assert _2406_calls(graph) == []
+    assert not any(
+        node.get("source_file") == "B.ts" for node in graph.get("nodes", [])
+    ), "deleted target's nodes must be evicted, not resurrected as context"
+
+
+def test_incremental_rebuild_evicts_indirect_call_when_target_deleted(tmp_path):
+    """#2438: a deleted callback target must not resurrect through the context nodes."""
+    from graphify.watch import _rebuild_code
+
+    corpus = _2438_seed(tmp_path)
+    caller, target = corpus / "a.py", corpus / "b.py"
+    target.unlink()
+    assert _rebuild_code(
+        corpus,
+        changed_paths=[caller, target],
+        no_cluster=True,
+        acquire_lock=False,
+    ) is True
+
+    graph = _2406_graph(corpus)
+    assert _2438_indirects(graph) == []
+    assert not any(
+        node.get("source_file") == "b.py" for node in graph.get("nodes", [])
+    ), "deleted target's nodes must be evicted, not resurrected as context"
+
+
+def test_incremental_rebuild_callable_guard_excludes_unchanged_data_symbol(tmp_path):
+    """#2438 keeps the #1566/#2137 guard: a same-named DATA symbol in an unchanged
+    file (`handler = 1`) is not `_callable`, so `pool.submit(handler)` must emit no
+    indirect_call on the full build or the incremental one."""
+    from graphify.watch import _rebuild_code
+
+    corpus = _2438_seed(tmp_path, target_src="handler = 1\n")
+    assert _2438_indirects(_2406_graph(corpus)) == []
+
+    caller = corpus / "a.py"
+    caller.write_text(_2438_CALLER % "    x = 1\n", encoding="utf-8")
+    assert _rebuild_code(
+        corpus, changed_paths=[caller], no_cluster=True, acquire_lock=False
+    ) is True
+    assert _2438_indirects(_2406_graph(corpus)) == []
+
+
+def test_incremental_rebuild_legacy_graph_without_callable_markers(tmp_path):
+    """#2438 degradation contract: a graph written before the `_callable` markers
+    persisted must not crash the incremental rebuild — the guard fails closed (no
+    indirect_call, pre-fix behavior) and the next full rebuild self-heals."""
+    import json
+
+    from graphify.watch import _rebuild_code
+
+    corpus = _2438_seed(tmp_path)
+    graph_path = corpus / "graphify-out" / "graph.json"
+    assert _2438_indirects(_2406_graph(corpus)), "indirect-call baseline missing"
+
+    # Simulate a pre-#2438 graph: strip the persisted callability markers.
+    legacy = json.loads(graph_path.read_text(encoding="utf-8"))
+    for node in legacy.get("nodes", []):
+        node.pop("_callable", None)
+        node.pop("_callable_class", None)
+    graph_path.write_text(json.dumps(legacy), encoding="utf-8")
+
+    caller = corpus / "a.py"
+    caller.write_text(_2438_CALLER % "    x = 1\n", encoding="utf-8")
+    assert _rebuild_code(
+        corpus, changed_paths=[caller], no_cluster=True, acquire_lock=False
+    ) is True
+    assert _2438_indirects(_2406_graph(corpus)) == []
+
+    # A full rebuild re-extracts the target, restores the markers, and the edge.
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    assert _2438_indirects(_2406_graph(corpus)), "full rebuild must self-heal"
+
+
+def test_incremental_member_call_parity_and_idempotency(tmp_path):
+    """#2437: repeated incremental rebuilds neither duplicate the member-call edge
+    nor diverge from a from-scratch build of the same corpus."""
+    from graphify.watch import _rebuild_code
+
+    corpus = _2437_seed(tmp_path)
+    caller = corpus / "A.ts"
+    caller.write_text(_2437_CALLER % " + 1", encoding="utf-8")
+    for _ in range(2):
+        assert _rebuild_code(
+            corpus, changed_paths=[caller], no_cluster=True, acquire_lock=False
+        ) is True
+    incremental = _2406_calls(_2406_graph(corpus))
+    assert incremental, "member call lost across repeated incremental rebuilds"
+    assert len(incremental) == len(set(incremental))
+
+    fresh = _2437_seed(tmp_path / "fresh", caller_suffix=" + 1")
+    assert sorted(_2406_calls(_2406_graph(fresh))) == sorted(incremental)
+
+
+def test_incremental_indirect_call_parity_and_idempotency(tmp_path):
+    """#2438: repeated incremental rebuilds neither duplicate the indirect_call edge
+    nor diverge from a from-scratch build of the same corpus."""
+    from graphify.watch import _rebuild_code
+
+    corpus = _2438_seed(tmp_path)
+    caller = corpus / "a.py"
+    caller.write_text(_2438_CALLER % "    x = 1\n", encoding="utf-8")
+    for _ in range(2):
+        assert _rebuild_code(
+            corpus, changed_paths=[caller], no_cluster=True, acquire_lock=False
+        ) is True
+    incremental = _2438_indirects(_2406_graph(corpus))
+    assert incremental, "indirect call lost across repeated incremental rebuilds"
+    assert len(incremental) == len(set(incremental))
+
+    fresh = _2438_seed(tmp_path / "fresh", caller_prefix="    x = 1\n")
+    assert sorted(_2438_indirects(_2406_graph(fresh))) == sorted(incremental)

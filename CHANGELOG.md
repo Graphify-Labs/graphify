@@ -2,7 +2,14 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
-## 0.9.32 (unreleased)
+## 0.9.33 (unreleased)
+
+- Fix: the C# `partial class` merge (#2332) no longer conflates two same-named classes that live in different assemblies (#2411, thanks @JensD-git). The merge now keys on assembly (nearest ancestor directory containing a `.csproj`/`.fsproj`/`.vbproj`) in addition to namespace and name, so genuine partial halves within one project still merge while same-name types in separate projects stay distinct. A corpus with no project file keeps merging by namespace and name as before.
+- Fix: `graphify update` no longer drops member-call and `indirect_call` edges from a changed file into an unchanged target (#2437, #2438, thanks @aryanbonigala). Incremental re-resolution now sees the unchanged corpus (its nodes, `contains`/`method` edges, and the `_callable` markers, which now persist to `graph.json` like `_origin`), so cross-file calls survive an incremental rebuild while edges to a genuinely removed target are still evicted.
+- Fix: `graphify extract` no longer silently substitutes an empty result when a worker crashes (#2444, #2445, thanks @Baziar). A `BrokenProcessPool` now triggers the sequential fallback instead of being swallowed per future, a failed worker file is retried sequentially rather than merged as empty, and a whole-pass AST failure on a fresh build exits non-zero instead of writing a zero-node graph (use `--allow-partial` to opt into a best-effort partial graph).
+- `graphify install` now prints a one-time pointer to the hosted platform (early access is open free before the public v1 launch) after the setup summary.
+
+## 0.9.32 (2026-08-01)
 
 - Fix: incremental extraction and `_rebuild_code` no longer drop a file's other tier (#2333, #2334, #2336). Node/edge ownership was keyed on `source_file` alone, so a semantic re-extract deleted a doc's AST headings and a full rebuild deleted document AST nodes. Merge is now tier-aware (an AST re-extract replaces only AST nodes and keeps the semantic layer, and vice versa), the `_origin` provenance marker is backfilled on load so old graphs self-heal, and the full-rebuild drop is scoped to sources actually regenerated.
 - Fix: `graphify update` preserves the graph's `directed` flag instead of rebuilding it undirected (#2342, thanks @Rishet11), so God-node / path ranking keeps its direction on both the clustered and `--no-cluster` rebuild paths.
