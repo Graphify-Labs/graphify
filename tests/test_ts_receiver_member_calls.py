@@ -79,3 +79,38 @@ def test_array_typed_receiver_emits_no_edge(tmp_path):
                  "export function h(xs: Svc[]): number { return xs[0].doThing(); }\n"),
     })
     assert not any("h(" in s and "doThing" in t for s, t in calls)
+
+
+def test_namespace_import_does_not_bind_to_local_class(tmp_path):
+    calls, r = _calls(tmp_path, {
+        "mobile.ts": (
+            'import * as Notifications from "expo-notifications";\n\n'
+            'export function sendNotification() {\n'
+            '  Notifications.scheduleNotificationAsync();\n'
+            '}\n'
+        ),
+        "pages/Notifications.ts": (
+            'export class Notifications {\n'
+            '  scheduleNotificationAsync() {}\n'
+            '}\n'
+        ),
+        # Helper to populate the ts_type_table so the TS member call resolver runs
+        "dummy.ts": (
+            'export class Dummy { doThing() {} }\n'
+            'export function f(x: Dummy) { x.doThing(); }\n'
+        )
+    })
+    # Identify local nodes created from pages/Notifications.ts and mobile.ts
+    local_notifications_nodes = {
+        n["id"] for n in r["nodes"]
+        if n.get("source_file") and n["source_file"].replace("\\", "/").endswith("pages/Notifications.ts")
+    }
+    mobile_nodes = {
+        n["id"] for n in r["nodes"]
+        if n.get("source_file") and n["source_file"].replace("\\", "/").endswith("mobile.ts")
+    }
+    # Assert that no calls or references edge is created between mobile.ts and the local Notifications class
+    for e in r["edges"]:
+        if e.get("source") in mobile_nodes and e.get("target") in local_notifications_nodes:
+            assert e["relation"] not in ("calls", "references")
+

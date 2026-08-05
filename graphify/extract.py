@@ -492,6 +492,18 @@ def _import_js(node, source: bytes, file_nid: str, stem: str, edges: list, str_p
                                             "target_file": str(resolved_path),
                                         })
 
+    # Collect and return namespace import aliases for TS/JS resolver metadata
+    namespace_aliases = []
+    for child in node.children:
+        if child.type == "import_clause":
+            for sub in child.children:
+                if sub.type == "namespace_import":
+                    name_node = next((sc for sc in sub.children if sc.type == "identifier"), None)
+                    if name_node:
+                        namespace_aliases.append(_read_text(name_node, source))
+    return namespace_aliases
+
+
 
 def _import_java(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str, scope_stack: list[str] | None = None) -> None:
     def _walk_scoped(n) -> str:
@@ -2523,10 +2535,14 @@ def _resolve_typescript_member_calls(
     owning a method with the callee name, and emits an EXTRACTED ``calls`` edge.
     """
     type_table_by_file: dict[str, dict[str, str]] = {}
+    namespace_aliases_by_file: dict[str, set[str]] = {}
     for result in per_file:
         tt = result.get("ts_type_table")
         if tt and tt.get("path"):
             type_table_by_file[tt["path"]] = tt.get("table", {})
+        ns = result.get("ts_namespace_imports")
+        if ns and ns.get("path"):
+            namespace_aliases_by_file[ns["path"]] = set(ns.get("aliases", []))
     if not type_table_by_file:
         return
 
@@ -2565,6 +2581,8 @@ def _resolve_typescript_member_calls(
         if not receiver or not callee or not caller:
             continue
         if receiver[:1].isupper():
+            if receiver in namespace_aliases_by_file.get(rc.get("source_file", ""), set()):
+                continue
             type_name = receiver
         else:
             type_name = type_table_by_file.get(rc.get("source_file", ""), {}).get(receiver)

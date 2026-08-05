@@ -2366,6 +2366,7 @@ def _extract_generic(
     # threaded out as `swift_type_table` so member calls (`vm.update()`) can be
     # resolved to the receiver's real definition in _resolve_swift_member_calls.
     type_table: dict[str, str] = {}
+    ts_namespace_imports: set[str] = set()
     # Java receiver typing is method-scoped: current-class fields are shared,
     # while parameters and locals belong only to their declaring method.
     java_field_types: dict[str, dict[str, str]] = {}
@@ -2461,7 +2462,7 @@ def _extract_generic(
         # Import types
         if t in config.import_types:
             if config.import_handler:
-                imported_modules = config.import_handler(node, source, file_nid, stem, edges, str_path, scope_stack)
+                import_result = config.import_handler(node, source, file_nid, stem, edges, str_path, scope_stack)
                 # Module-level import handlers (Swift) name a module, not a file
                 # path, so there is no pre-existing node to anchor the edge to.
                 # They return (id, label) pairs for which we materialize a
@@ -2470,19 +2471,22 @@ def _extract_generic(
                 # imported from N files shares one id (file_type=code keeps
                 # build.py validation happy; `type=module` exempts it from
                 # id-disambiguation) so it collapses to one shared node (#1327).
-                if imported_modules:
-                    line = node.start_point[0] + 1
-                    for mod_nid, mod_label in imported_modules:
-                        if mod_nid not in seen_ids:
-                            seen_ids.add(mod_nid)
-                            nodes.append({
-                                "id": mod_nid,
-                                "label": mod_label,
-                                "file_type": "code",
-                                "type": "module",
-                                "source_file": str_path,
-                                "source_location": f"L{line}",
-                            })
+                if import_result:
+                    if config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript"):
+                        ts_namespace_imports.update(import_result)
+                    elif config.ts_module == "tree_sitter_swift":
+                        line = node.start_point[0] + 1
+                        for mod_nid, mod_label in import_result:
+                            if mod_nid not in seen_ids:
+                                seen_ids.add(mod_nid)
+                                nodes.append({
+                                    "id": mod_nid,
+                                    "label": mod_label,
+                                    "file_type": "code",
+                                    "type": "module",
+                                    "source_file": str_path,
+                                    "source_location": f"L{line}",
+                                })
             # For export_statement: only return (skip children) if it's a re-export
             # (has a `from` source). Otherwise fall through to walk children which may
             # contain function_declaration, class_declaration, etc.
@@ -4878,6 +4882,8 @@ def _extract_generic(
             result["ts_type_table"] = {"path": str_path, "table": type_table}
         elif config.ts_module == "tree_sitter_cpp":
             result["cpp_type_table"] = {"path": str_path, "table": type_table}
+    if ts_namespace_imports:
+        result["ts_namespace_imports"] = {"path": str_path, "aliases": list(ts_namespace_imports)}
     return result
 
 def _python_decorator_name(deco_node, source: bytes) -> str | None:
