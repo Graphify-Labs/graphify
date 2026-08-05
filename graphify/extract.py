@@ -46,6 +46,7 @@ from graphify.extractors.fortran import _cpp_preprocess, extract_fortran  # noqa
 from graphify.extractors.go import _GO_PREDECLARED_FUNCS, extract_go  # noqa: F401
 from graphify.extractors.json_config import extract_json  # noqa: F401
 from graphify.extractors.markdown import extract_markdown  # noqa: F401
+from graphify.extractors.mql5 import mask_mql5_source, mql5_input_facts  # noqa: F401
 from graphify.extractors.pascal_forms import extract_delphi_form, extract_lazarus_form  # noqa: F401
 from graphify.extractors.powershell import extract_powershell, extract_powershell_manifest  # noqa: F401
 from graphify.extractors.razor import extract_razor  # noqa: F401
@@ -1696,6 +1697,45 @@ def extract_cpp(path: Path) -> dict:
     return _extract_generic(path, _CPP_CONFIG)
 
 
+def extract_mql5(path: Path) -> dict:
+    """Extract an MQL5 expert advisor / indicator / include (.mq5/.mqh).
+
+    MQL5 is C++ plus a few trading-specific constructs, so the C++ grammar does
+    the real work here: `mask_mql5_source` blanks the four MQL5-only forms
+    tree-sitter-cpp cannot parse (preserving byte offsets, so line numbers stay
+    exact) and the normal `_CPP_CONFIG` pipeline runs over the result.
+
+    Masking deliberately reduces `input double Lots = 0.1;` to an ordinary
+    global, so the `input`/`extern` declarations are recovered separately and
+    re-attached: in an expert advisor the inputs are the strategy's tunable
+    surface, and "which function reads `magic_number`" is the question people
+    actually ask of one.
+    """
+    try:
+        source = path.read_bytes()
+    except OSError as e:
+        return {"nodes": [], "edges": [], "error": str(e)}
+
+    result = _extract_generic(path, _CPP_CONFIG, source_override=mask_mql5_source(source))
+    if result.get("error"):
+        return result
+
+    text = source.decode("utf-8", errors="replace")
+    in_nodes, in_edges, metadata = mql5_input_facts(path, text)
+
+    known = {n["id"] for n in result["nodes"]}
+    result["nodes"].extend(n for n in in_nodes if n["id"] not in known)
+    known.update(n["id"] for n in in_nodes)
+    # A `references` edge whose owner never became a node (e.g. a body the C++
+    # grammar folded into something else) would dangle, so drop it.
+    result["edges"].extend(
+        e for e in in_edges if e["source"] in known and e["target"] in known
+    )
+    if metadata and result["nodes"]:
+        result["nodes"][0].update(metadata)
+    return result
+
+
 def extract_ruby(path: Path) -> dict:
     """Extract classes, methods, singleton methods, and calls from a .rb file."""
     return _extract_generic(path, _RUBY_CONFIG)
@@ -1843,6 +1883,7 @@ _LANG_FAMILY_BY_EXT: dict[str, str] = {
     ".c": "native", ".h": "native", ".cpp": "native", ".cc": "native",
     ".cxx": "native", ".hpp": "native", ".cu": "native", ".cuh": "native",
     ".metal": "native", ".m": "native", ".mm": "native", ".swift": "native",
+    ".mq5": "native", ".mqh": "native",
     # Single-language families
     ".py": "python",
     ".go": "go",
@@ -3159,7 +3200,7 @@ register_language_resolver(
 register_language_resolver(
     LanguageResolver(
         "cpp_member_calls",
-        frozenset({".cpp", ".cc", ".cxx", ".hpp", ".cu", ".cuh", ".metal", ".h"}),
+        frozenset({".cpp", ".cc", ".cxx", ".hpp", ".cu", ".cuh", ".metal", ".h", ".mq5", ".mqh"}),
         _resolve_cpp_member_calls,
     )
 )
@@ -4296,6 +4337,8 @@ _DISPATCH: dict[str, Any] = {
     ".cshtml": extract_razor,
     ".cls": extract_apex,
     ".trigger": extract_apex,
+    ".mq5": extract_mql5,
+    ".mqh": extract_mql5,
 }
 
 
