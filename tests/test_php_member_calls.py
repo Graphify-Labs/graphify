@@ -2060,3 +2060,25 @@ def test_same_file_self_typed_property_keeps_its_edge(tmp_path: Path):
 
     go = _find(r, ".go()", "ctrl")
     assert _ran(calls, go) == [_find(r, ".run()", "alpha")]
+
+
+def test_same_file_dnf_typed_property_emits_no_edge_and_references_its_types(tmp_path: Path):
+    """PHP 8.2 disjunctive normal form (`(A&B)|C`) parses as its own node type,
+    which the property scanner's type-node list did not name — so a DNF property
+    reached neither the receiver table (it kept minting the bare-name edge this
+    ticket removes) nor the type-reference walk (its classes went unreferenced).
+    It is a union at top level, so it refuses like one, and references like one."""
+    calls, r = _calls(tmp_path, {
+        "app/D.php": _same_file("private (Alpha&Beta)|Beta $svc;", second_class=_BETA),
+    })
+
+    go = _find(r, ".go()", "ctrl")
+    assert _ran(calls, go) == []
+
+    refs = {
+        (edge["source"], edge["target"])
+        for edge in r["edges"] if edge.get("relation") == "references"
+    }
+    ctrl = _find(r, "Ctrl", "d_ctrl")
+    assert (ctrl, _find(r, "Alpha", "d_alpha")) in refs
+    assert (ctrl, _find(r, "Beta", "d_beta")) in refs

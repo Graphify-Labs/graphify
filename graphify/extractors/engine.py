@@ -741,9 +741,12 @@ def _php_concrete_type_name(type_node, source: bytes) -> str | None:
 
 
 # Type expressions that declare MORE THAN ONE possible class for a receiver:
-# union (`A|B`) and intersection (`A&B`) — node names probe-verified against
+# union (`A|B`), intersection (`A&B`) and PHP 8.2 disjunctive-normal-form
+# (`(A&B)|C`, a union at top level) — node names probe-verified against
 # tree-sitter-php 0.24.1.
-_PHP_MULTI_TYPE_NODES = frozenset({"union_type", "intersection_type"})
+_PHP_MULTI_TYPE_NODES = frozenset({
+    "union_type", "intersection_type", "disjunctive_normal_form_type",
+})
 
 
 def _php_multi_typed_annotation(type_node) -> bool:
@@ -3537,7 +3540,11 @@ def _extract_generic(
                 and parent_class_nid):
             for c in node.children:
                 if c.type not in ("named_type", "primitive_type", "nullable_type",
-                                   "union_type", "intersection_type", "optional_type"):
+                                   "union_type", "intersection_type", "optional_type",
+                                   # PHP 8.2 `(A&B)|C`, absent from this list until
+                                   # #9 and so invisible to both the receiver table
+                                   # and the type-reference walk below.
+                                   "disjunctive_normal_form_type"):
                     continue
                 line = node.start_point[0] + 1
                 # #1682: remember the property's declared type so a later
@@ -3884,7 +3891,8 @@ def _extract_generic(
                         type_node = None
                         for sub in p.children:
                             if sub.type in ("named_type", "primitive_type", "nullable_type",
-                                             "union_type", "intersection_type", "optional_type"):
+                                             "union_type", "intersection_type", "optional_type",
+                                             "disjunctive_normal_form_type"):
                                 type_node = sub
                                 break
                         # #1682: a promoted param IS a typed class property —
