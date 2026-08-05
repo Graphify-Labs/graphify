@@ -9,6 +9,7 @@ from graphify.extractors.models import LanguageConfig
 from graphify.extractors.resolution import _resolve_js_import_target
 from graphify.security import sanitize_metadata
 from pathlib import Path
+from typing import NamedTuple
 
 
 def _csharp_namespace_id(dotted_name: str) -> str:
@@ -714,29 +715,50 @@ _PHP_NON_CONCRETE_TYPE_NAMES = frozenset({
 })
 
 
-def _php_concrete_type_name(type_node, source: bytes) -> str | None:
-    """Single concrete class name of a PHP type expression, or None (= refuse).
+class _PhpReceiverType(NamedTuple):
+    """A receiver's declared type: the short name plus the WRITTEN form (#20).
+
+    `short` is what the resolver has always matched on — namespace-stripped, so
+    `\\Vendor\\Sdk\\Client` and a bare `Client` are the same key. `qualified` is
+    the annotation exactly as written, and ONLY when it carries a namespace
+    separator: an unqualified annotation leaves it None, so its facts stay
+    identical to the pre-#20 ones. It is independent evidence about WHICH
+    same-short-named class was meant — the fact the use-import resolver (#21)
+    needs and the flattening in `_php_name_text` used to destroy.
+    """
+    short: str
+    qualified: str | None
+
+
+def _php_written_type(name_node, source: bytes) -> _PhpReceiverType | None:
+    """Pair a PHP `name`/`qualified_name` node's short name with its written text."""
+    short = _php_name_text(name_node, source)
+    if not short or short.lower() in _PHP_NON_CONCRETE_TYPE_NAMES:
+        return None
+    written = _read_text(name_node, source)
+    return _PhpReceiverType(short, written if "\\" in written else None)
+
+
+def _php_concrete_type(type_node, source: bytes) -> _PhpReceiverType | None:
+    """Single concrete class named by a PHP type expression, or None (= refuse).
 
     Deliberately NOT `_php_collect_type_refs`: that helper flattens a union into
     several refs, whereas a receiver typed `A|B` has no single type and must be
-    refused. `named_type` yields its namespace-stripped name; a nullable wrapper
-    around exactly one type unwraps (`?Foo` is still concretely Foo); union,
-    intersection, primitive and missing types yield None (#1682).
+    refused. `named_type` yields its name (short + written, #20); a nullable
+    wrapper around exactly one type unwraps (`?Foo` is still concretely Foo);
+    union, intersection, primitive and missing types yield None (#1682).
     """
     if type_node is None:
         return None
     if type_node.type == "named_type":
         for c in type_node.children:
             if c.type in ("name", "qualified_name"):
-                text = _php_name_text(c, source)
-                if text and text.lower() not in _PHP_NON_CONCRETE_TYPE_NAMES:
-                    return text
-                return None
+                return _php_written_type(c, source)
         return None
     if type_node.type in ("optional_type", "nullable_type"):
         inner = [c for c in type_node.named_children if c.type != "comment"]
         if len(inner) == 1:
-            return _php_concrete_type_name(inner[0], source)
+            return _php_concrete_type(inner[0], source)
     return None
 
 
@@ -752,7 +774,7 @@ _PHP_MULTI_TYPE_NODES = frozenset({
 def _php_multi_typed_annotation(type_node) -> bool:
     """True when a PHP type annotation names more than one candidate class (#9).
 
-    `_php_concrete_type_name` refuses several shapes, and the two reasons for
+    `_php_concrete_type` refuses several shapes, and the two reasons for
     refusal must be told apart at the call site (user story 11): a receiver whose
     annotation is a UNION or INTERSECTION provably has several possible classes,
     so an in-file bare-name match can only pick one of them by file order and
@@ -787,8 +809,8 @@ _PHP_CLOSURE_TYPES = frozenset({"anonymous_function", "arrow_function"})
 def _php_method_receiver_types(
     method_node,
     source: bytes,
-    field_types: dict[str, str | None],
-) -> dict[str, str | None]:
+    field_types: dict[str, _PhpReceiverType | None],
+) -> dict[str, _PhpReceiverType | None]:
     """Build the receiver type table visible to one PHP method (#1682).
 
     ``this.<prop>`` keys come from the declaring class's typed properties and
@@ -809,11 +831,15 @@ def _php_method_receiver_types(
     ABSENT key, meaning no annotation at all (#9). Precedence is concrete type >
     multi-class refusal > absent, so a union-typed param later assigned a `new T()`
     still resolves to T, while a poisoned union-typed one stays refused.
+
+    A resolved value carries both the short name and the written qualified form
+    (#20); every decision below is taken on the SHORT name alone, so the table's
+    keys and their resolved/refused/absent status are exactly what they were.
     """
-    table: dict[str, str | None] = {
+    table: dict[str, _PhpReceiverType | None] = {
         f"this.{name}": type_name for name, type_name in field_types.items()
     }
-    method_types: dict[str, str] = {}
+    method_types: dict[str, _PhpReceiverType] = {}
     multi_typed_params: set[str] = set()
     ambiguous: set[str] = set()
 
@@ -822,14 +848,20 @@ def _php_method_receiver_types(
             method_types.pop(name, None)
             ambiguous.add(name)
 
-    def bind(name: str, type_name: str | None) -> None:
+    def bind(name: str, declared: _PhpReceiverType | None) -> None:
         if not name or name in ambiguous:
             return
         previous = method_types.get(name)
-        if type_name is None or (previous is not None and previous != type_name):
+        if declared is None or (previous is not None and previous.short != declared.short):
             poison(name)
+        elif previous is not None and previous.qualified != declared.qualified:
+            # Same short name written two ways (`new Client()` then
+            # `new \Vendor\Client()`): the SHORT binding is what it always was,
+            # so keep it. Only the qualified evidence conflicts — drop that
+            # rather than poison a name today's table still types (#20).
+            method_types[name] = _PhpReceiverType(previous.short, None)
         else:
-            method_types[name] = type_name
+            method_types[name] = declared
 
     def poison_bound_vars(node) -> None:
         """Poison every ``$var`` named anywhere in a binding-site subtree.
@@ -847,18 +879,19 @@ def _php_method_receiver_types(
                 continue
             stack.extend(n.children)
 
-    def new_type_name(node) -> str | None:
-        """Class named by an ``object_creation_expression``, or None."""
+    def new_type_name(node) -> _PhpReceiverType | None:
+        """Class named by an ``object_creation_expression``, or None.
+
+        `new self()` / `new static()` need inheritance context the raw-call
+        facts do not carry, so the non-concrete set refuses them.
+        """
         if node is None or node.type != "object_creation_expression":
             return None
         cls = next((c for c in node.named_children
                     if c.type in ("name", "qualified_name")), None)
         if cls is None:  # `new class { … }` names nothing
             return None
-        text = _php_name_text(cls, source)
-        if not text or text.lower() in _PHP_NON_CONCRETE_TYPE_NAMES:
-            return None  # `new self()` / `new static()` need inheritance context
-        return text
+        return _php_written_type(cls, source)
 
     # Natively typed parameters. `variadic_parameter` is excluded on purpose:
     # `T ...$xs` binds an ARRAY of T, not a T.
@@ -868,11 +901,11 @@ def _php_method_receiver_types(
             if param.type not in ("simple_parameter", "property_promotion_parameter"):
                 continue
             type_node = param.child_by_field_name("type")
-            type_name = _php_concrete_type_name(type_node, source)
+            declared = _php_concrete_type(type_node, source)
             name_node = param.child_by_field_name("name")
-            if name_node is not None and type_name:
+            if name_node is not None and declared:
                 # Untyped / primitive params simply stay unbound.
-                bind(_read_text(name_node, source).lstrip("$"), type_name)
+                bind(_read_text(name_node, source).lstrip("$"), declared)
             elif name_node is not None and _php_multi_typed_annotation(type_node):
                 # A union/intersection param is not BOUND — `bind(None)` would
                 # poison it, and poisoning is indistinguishable from untyped.
@@ -2702,7 +2735,7 @@ def _extract_generic(
     # `prop -> declared type` per class. A value of None means the annotation was
     # PRESENT but named several candidate classes (`A|B`, `A&B`), which the call
     # site must tell apart from an ABSENT key = no annotation at all (#9).
-    php_field_types: dict[str, dict[str, str | None]] = {}
+    php_field_types: dict[str, dict[str, _PhpReceiverType | None]] = {}
     php_method_scopes: dict[int, tuple[object, str]] = {}
 
     csharp_interface_names: set[str] = set()
@@ -3552,17 +3585,18 @@ def _extract_generic(
                 # concrete class name counts — unions/primitives are refused.
                 # A multi-class annotation is recorded as None so the call site
                 # can defer rather than bare-name match it (#9); every other
-                # refusal leaves the property out of the table entirely.
-                type_name = _php_concrete_type_name(c, source)
+                # refusal leaves the property out of the table entirely. A
+                # resolved type keeps the written qualified form too (#20).
+                declared = _php_concrete_type(c, source)
                 multi_typed = _php_multi_typed_annotation(c)
-                if type_name or multi_typed:
+                if declared or multi_typed:
                     fields = php_field_types.setdefault(parent_class_nid, {})
                     for pe in node.children:
                         if pe.type != "property_element":
                             continue
                         v = pe.child_by_field_name("name")
                         if v is not None:
-                            fields[_read_text(v, source).lstrip("$")] = type_name
+                            fields[_read_text(v, source).lstrip("$")] = declared
                 refs: list[tuple[str, str]] = []
                 _php_collect_type_refs(c, source, False, refs)
                 for ref_name, role in refs:
@@ -3899,7 +3933,7 @@ def _extract_generic(
                         # record it in the same `this.<prop>` receiver table,
                         # multi-class annotations included as None (#9).
                         if is_promoted and parent_class_nid:
-                            promoted_type = _php_concrete_type_name(type_node, source)
+                            promoted_type = _php_concrete_type(type_node, source)
                             v = p.child_by_field_name("name")
                             if v is not None and (
                                 promoted_type or _php_multi_typed_annotation(type_node)
@@ -4527,8 +4561,11 @@ def _extract_generic(
     def walk_calls(
         node,
         caller_nid: str,
-        # PHP entries may map a key to None — see _php_method_receiver_types.
-        receiver_types: dict[str, str | None] | None = None,
+        # Java/C# values are plain short names; PHP values are a
+        # (short, qualified) pair and may be None — see
+        # _php_method_receiver_types. Body ids are language-disjoint, so one
+        # body's table only ever meets its own language's reader.
+        receiver_types: dict[str, str | _PhpReceiverType | None] | None = None,
         extra_locals: frozenset[str] = frozenset(),
     ) -> None:
         if node.type in config.function_boundary_types:
@@ -4909,17 +4946,21 @@ def _extract_generic(
                 # a PRESENT key mapped to None is a refused multi-class
                 # annotation, an ABSENT key is no annotation at all.
                 _php_receiver_type: str | None = None
+                # The annotation as WRITTEN, when it carried a namespace (#20).
+                # Stamped alongside the short name; nothing decides on it yet.
+                _php_receiver_qualified: str | None = None
                 _php_multi_typed_receiver = False
                 if config.ts_module == "tree_sitter_php":
                     if php_inline_new_type:
                         _php_receiver_type = php_inline_new_type
                     elif member_receiver and member_receiver != "this":
                         _php_types = receiver_types or {}
-                        _php_receiver_type = _php_types.get(member_receiver)
-                        _php_multi_typed_receiver = (
-                            _php_receiver_type is None
-                            and member_receiver in _php_types
-                        )
+                        _php_declared = _php_types.get(member_receiver)
+                        if _php_declared is not None:
+                            _php_receiver_type = _php_declared.short
+                            _php_receiver_qualified = _php_declared.qualified
+                        else:
+                            _php_multi_typed_receiver = member_receiver in _php_types
                 _php_defer = bool(_php_receiver_type) or _php_multi_typed_receiver
                 if _java_defer or _php_defer or (
                     is_member_call
@@ -5031,6 +5072,12 @@ def _extract_generic(
                             rc_entry["fcc"] = True
                         if _php_receiver_type:
                             rc_entry["receiver_type"] = _php_receiver_type
+                        if _php_receiver_qualified:
+                            # Written form of the ANNOTATION that typed the
+                            # receiver (#20) — kept apart from the inline-`new`
+                            # `receiver_qualified` below, which is the class
+                            # named at the call itself.
+                            rc_entry["receiver_type_qualified"] = _php_receiver_qualified
                         if php_inline_new_qualified:
                             rc_entry["receiver_qualified"] = php_inline_new_qualified
                     raw_calls.append(rc_entry)
