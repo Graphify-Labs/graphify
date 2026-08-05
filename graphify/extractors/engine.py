@@ -4338,6 +4338,10 @@ def _extract_generic(
 
     seen_call_pairs: set[tuple[str, str]] = set()
     seen_indirect_pairs: set[tuple[str, str]] = set()  # Python indirect_call dedup
+    # PHP first-class-callable indirect_call dedup (#15), kept apart from
+    # seen_call_pairs so a `$this->m(...)` reference can never swallow the real
+    # `$this->m()` call to the same target.
+    seen_php_fcc_pairs: set[tuple[str, str]] = set()
     seen_dyn_import_pairs: set[tuple[str, str]] = set()
     seen_static_ref_pairs: set[tuple[str, str, str]] = set()
     seen_helper_ref_pairs: set[tuple[str, str, str]] = set()
@@ -4570,6 +4574,10 @@ def _extract_generic(
             # short name (for lookup) and the written text (for corroboration).
             php_inline_new_type: str | None = None
             php_inline_new_qualified: str | None = None
+            # PHP 8.1 first-class callable `$obj->method(...)` (#15): a
+            # reference to the method, not an invocation — re-tagged as
+            # `indirect_call` below and by the cross-file PHP resolver.
+            php_fcc: bool = False
 
             # Special handling per language
             if config.ts_module == "tree_sitter_swift":
@@ -4740,6 +4748,21 @@ def _extract_generic(
                                 member_receiver = "(new)"
                                 php_inline_new_type = short
                                 php_inline_new_qualified = _read_text(cls, source)
+                        # First-class callable `$obj->method(...)` (#15). PHP 8.1
+                        # reuses member_call_expression for it, so the shared
+                        # `node.type in config.call_types` gate cannot tell it
+                        # from an invocation — the argument list can. Probe-
+                        # verified on the pinned grammar (tree-sitter-php 0.24.1):
+                        # `m(...)` parses as `arguments: (arguments
+                        # (variadic_placeholder))` — exactly one named child of
+                        # that type. `m()`, `m(1)` and the spread `m(...$args)`
+                        # (one `argument` child) do not, so the discriminator is
+                        # unambiguous.
+                        args_node = node.child_by_field_name("arguments")
+                        if args_node is not None:
+                            named_args = args_node.named_children
+                            php_fcc = (len(named_args) == 1
+                                       and named_args[0].type == "variadic_placeholder")
             elif config.ts_module == "tree_sitter_cpp":
                 # C++: function field, then field_expression/qualified_identifier
                 func_node = node.child_by_field_name(config.call_function_field) if config.call_function_field else None
@@ -4900,9 +4923,38 @@ def _extract_generic(
                     tgt_nid = label_to_nid.get(callee_name)
                 if tgt_nid and tgt_nid != caller_nid:
                     pair = (caller_nid, tgt_nid)
-                    if pair not in seen_call_pairs:
+                    if php_fcc:
+                        # `$this->m(...)` names an in-file method: same target,
+                        # same EXTRACTED confidence, distinct relation (#15). A
+                        # direct call to the target already recorded wins the
+                        # pair — the precedence _emit_indirect_ref already uses.
+                        if (pair not in seen_call_pairs
+                                and pair not in seen_php_fcc_pairs):
+                            seen_php_fcc_pairs.add(pair)
+                            edges.append({
+                                "source": caller_nid,
+                                "target": tgt_nid,
+                                "relation": "indirect_call",
+                                "context": "call",
+                                "confidence": "EXTRACTED",
+                                "source_file": str_path,
+                                "source_location": f"L{node.start_point[0] + 1}",
+                                "weight": 1.0,
+                            })
+                    elif pair not in seen_call_pairs:
                         seen_call_pairs.add(pair)
                         line = node.start_point[0] + 1
+                        if pair in seen_php_fcc_pairs:
+                            # An earlier first-class-callable reference claimed
+                            # this pair; the real invocation supersedes it, so
+                            # the outcome does not depend on source order.
+                            seen_php_fcc_pairs.discard(pair)
+                            edges[:] = [
+                                e for e in edges
+                                if not (e.get("relation") == "indirect_call"
+                                        and e.get("source") == caller_nid
+                                        and e.get("target") == tgt_nid)
+                            ]
                         edges.append({
                             "source": caller_nid,
                             "target": tgt_nid,
@@ -4958,6 +5010,11 @@ def _extract_generic(
                     # stamp the receiver type resolved above (#1682).
                     if config.ts_module == "tree_sitter_php":
                         rc_entry["lang"] = "php"
+                        if php_fcc:
+                            # Marker read by _resolve_php_member_calls, which
+                            # emits `indirect_call` for it under the SAME
+                            # target-resolution and refusal rules (#15).
+                            rc_entry["fcc"] = True
                         if _php_receiver_type:
                             rc_entry["receiver_type"] = _php_receiver_type
                         if php_inline_new_qualified:
