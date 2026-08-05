@@ -3055,17 +3055,32 @@ _PHP_RESOLVER_SUFFIXES = (
 _OBJC_RESOLVER_SUFFIXES = (".m", ".mm", ".h")
 
 
-def _php_qualified_corroborates(qualified: str | None, type_node: dict | None) -> bool:
+def _php_qualified_corroborates(
+    qualified: str | None,
+    type_node: dict | None,
+    declared_fqn: str | None = None,
+) -> bool:
     """True when a source-written class name corroborates the resolved node (#1682).
 
     ``(new \\App\\Services\\Svc())`` names the class outright, but the short-name
     lookup that found the node ignored the namespace — so the namespace is
     independent evidence, and only a match makes the edge EXTRACTED.
 
-    The check is deliberately narrow: PHP nodes carry no namespace, so the only
-    corroborating fact available here is the node's path, and PSR-4 maps
-    ``App\\Services\\Svc`` onto ``app/Services/Svc.php``. Every segment of the
-    written name must line up with the tail of that path, case-insensitively.
+    ``declared_fqn`` is the name the DEFINING FILE declares for that class,
+    read from its ``namespace`` statement at extraction time (#14). When it is
+    known the comparison is whole-name: `\\App\\Services\\Client` corroborates
+    `App\\Services\\Client` and nothing else. Two things that used to promote
+    now do not — a file whose declared namespace disagrees with its PSR-4 path
+    (the written name then denotes a class that exists nowhere in the corpus),
+    and a truncated qualifier like `\\Services\\Client`, which is a DIFFERENT
+    class from `App\\Services\\Client` but matched as a path tail.
+
+    Without a declaration — the file declares no namespace at all, or the node
+    came from a prior graph on an incremental run — the node's path is the only
+    corroborating fact left, and PSR-4 maps ``App\\Services\\Svc`` onto
+    ``app/Services/Svc.php``; every written segment must line up with the tail
+    of that path, case-insensitively.
+
     A BARE name (no namespace segment) corroborates nothing and stays INFERRED;
     a namespace that does not line up downgrades rather than refusing, since the
     class name itself still resolved unambiguously.
@@ -3075,6 +3090,9 @@ def _php_qualified_corroborates(qualified: str | None, type_node: dict | None) -
     want = [seg.casefold() for seg in str(qualified).split("\\") if seg]
     if len(want) < 2:
         return False  # bare `new Svc()`: no namespace written, no evidence
+    if declared_fqn:
+        have = [seg.casefold() for seg in str(declared_fqn).split("\\") if seg]
+        return want == have  # whole name, not a suffix of one
     source_file = str(type_node.get("source_file") or "")
     parts = [p for p in source_file.replace("\\", "/").split("/")
              if p and p not in (".", "..")]
@@ -3149,6 +3167,27 @@ def _resolve_php_member_calls(
         for name in result.get(keyname, [])
     }
 
+    # Fully qualified class names as each defining file DECLARES them (#14), so
+    # the inline-`new` corroboration below compares the written name against the
+    # real one instead of against the file's path, which PSR-4 only conventionally
+    # agrees with. Keyed by defining file, then by short class name.
+    class_fqn_by_file: dict[str, dict[str, str]] = {}
+    for result in per_file:
+        declared = result.get("php_class_fqns")
+        if declared and declared.get("path"):
+            class_fqn_by_file[declared["path"]] = declared.get("classes", {})
+
+    def declared_fqn(type_node: dict | None) -> str | None:
+        """The namespace-qualified name of ``type_node``'s class, if its file
+        declared one. Absent for a global-namespace class, and for a node
+        replayed from a prior graph on an incremental run."""
+        if not type_node:
+            return None
+        by_name = class_fqn_by_file.get(str(type_node.get("source_file") or ""))
+        if not by_name:
+            return None
+        return by_name.get(key(type_node.get("label", "")))
+
     existing_pairs = {(edge.get("source"), edge.get("target")) for edge in all_edges}
     for result in per_file:
         for raw_call in result.get("raw_calls", []):
@@ -3182,8 +3221,11 @@ def _resolve_php_member_calls(
                 if receiver == "(new)":
                     # The class is named in the source; promote to EXTRACTED
                     # only when the written namespace backs the node we found.
+                    type_node = node_by_id.get(type_nid)
                     exact = _php_qualified_corroborates(
-                        raw_call.get("receiver_qualified"), node_by_id.get(type_nid)
+                        raw_call.get("receiver_qualified"),
+                        type_node,
+                        declared_fqn(type_node),
                     )
 
             method_nids = method_index.get((type_nid, key(callee)), set())

@@ -180,6 +180,64 @@ def _php_pre_scan_non_class_declarations(root_node, source: bytes) -> set[str]:
     return out
 
 
+def _php_pre_scan_class_namespaces(root_node, source: bytes) -> dict[str, str]:
+    """Map every namespaced class in this PHP file to its fully qualified name (#14).
+
+    PHP class NODES carry no namespace, so the inline-`new` corroboration in
+    ``_php_qualified_corroborates`` had only the file's path to compare a
+    written ``\\App\\Services\\Client`` against. PSR-4 is a convention, not an
+    invariant: a file at ``app/Services/Client.php`` may declare
+    ``namespace App\\Vendor;`` (PSR-0 leftovers, classmap autoloaders, moved
+    files, generated code), and the written name then corroborates a class that
+    exists nowhere. The declaration is right there in the source — read it.
+
+    Both namespace forms are handled: ``namespace X;`` applies to the
+    declarations that follow it (a file may switch namespaces mid-way), and
+    ``namespace X { … }`` applies to its block. A class declared in NO namespace
+    is deliberately absent from the map: the file states nothing, so the
+    resolver falls back to the path check rather than refusing. A short name
+    declared twice under different namespaces in one file is dropped — the map
+    is keyed by short name, and a wrong answer is worse than no answer.
+    """
+    out: dict[str, str] = {}
+    conflicting: set[str] = set()
+
+    # Each entry carries the namespace in force where it was queued, so the
+    # scopes stay right without walking siblings in order. A class body is never
+    # descended into: PHP has no nested class declarations, and an anonymous
+    # class inside a method names nothing.
+    stack = [(root_node, "")]
+    while stack:
+        node, namespace = stack.pop()
+        current = namespace
+        for child in node.children:
+            if child.type == "namespace_definition":
+                name_node = child.child_by_field_name("name")
+                # A braced `namespace { … }` names nothing: the global namespace.
+                declared = (_read_text(name_node, source).strip("\\")
+                            if name_node is not None else "")
+                body = child.child_by_field_name("body")
+                if body is not None:
+                    stack.append((body, declared))
+                else:
+                    current = declared  # applies to the declarations that follow
+                continue
+            if child.type == "class_declaration":
+                name_node = child.child_by_field_name("name")
+                name = _read_text(name_node, source) if name_node is not None else ""
+                if name and current:
+                    fqn = f"{current}\\{name}"
+                    short = name.casefold()
+                    if out.setdefault(short, fqn) != fqn:
+                        conflicting.add(short)
+                continue
+            if child.is_named:
+                stack.append((child, current))
+    for short in conflicting:
+        out.pop(short, None)
+    return out
+
+
 def _csharp_classify_base(name: str, interface_names: set[str]) -> str:
     """`implements` if the base name is an interface (declared or by I-prefix convention), else `inherits`."""
     if name in interface_names:
@@ -2606,8 +2664,10 @@ def _extract_generic(
         csharp_interface_names = _csharp_pre_scan_interfaces(root, source)
 
     php_non_class_type_names: set[str] = set()
+    php_class_fqns: dict[str, str] = {}
     if config.ts_module == "tree_sitter_php":
         php_non_class_type_names = _php_pre_scan_non_class_declarations(root, source)
+        php_class_fqns = _php_pre_scan_class_namespaces(root, source)
 
     swift_protocol_names: set[str] = set()
     swift_class_names: set[str] = set()
@@ -5205,6 +5265,12 @@ def _extract_generic(
         # cannot tell one from a same-named class without this (#1682). Sorted
         # for a stable AST-cache payload.
         result["php_non_class_types"] = sorted(php_non_class_type_names)
+    if php_class_fqns:
+        # The `namespace` this file declares for each class it defines, so the
+        # inline-`new` corroboration can compare a written FQN against the real
+        # one instead of guessing from the path (#14). Same `{"path": …}` shape
+        # as the type tables, which the cache re-anchors on load.
+        result["php_class_fqns"] = {"path": str_path, "classes": php_class_fqns}
     # TS/JS: augment the constructor-injection type table with local `new`
     # bindings and type-annotated parameters, so `const s = new Svc(); s.m()` and
     # a call on a typed param (incl. inside a closure) resolve (#1630). The

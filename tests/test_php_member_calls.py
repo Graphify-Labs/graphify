@@ -466,6 +466,116 @@ def test_inline_new_non_corroborating_namespace_downgrades(tmp_path: Path):
     assert edge["confidence_score"] == 0.8
 
 
+# The corroborating fact is the namespace the DEFINING FILE declares (#14).
+# PSR-4 is a convention, not an invariant, so the path alone promoted two wrong
+# names to EXTRACTED 1.0: one naming a class that exists nowhere in the corpus
+# (declared namespace ≠ path), and one naming a different class that merely
+# matched as a path tail. The path survives only as the fallback for a file
+# that declares no namespace at all.
+
+
+def test_declared_namespace_disagreeing_with_the_path_does_not_promote(tmp_path: Path):
+    """`app/Services/LeadHunterService.php` declaring `namespace App\\Vendor;`
+    means `App\\Services\\LeadHunterService` exists NOWHERE — the short name
+    still resolves to the one definition, but at INFERRED, not 1.0."""
+    calls, r = _calls(tmp_path, {
+        "app/Services/LeadHunterService.php": (
+            "<?php\nnamespace App\\Vendor;\n"
+            "class LeadHunterService {\n"
+            "    public function search(array $filters): array { return []; }\n}\n"
+        ),
+        "app/Audit/AuditLog.php": _DECOY,
+        "app/Http/Controllers/LeadController.php": _controller(
+            "return (new \\App\\Services\\LeadHunterService())->search([]);"
+        ),
+    })
+
+    index = _find(r, ".index()", "leadcontroller")
+    service_search = _find(r, ".search()", "leadhunterservice")
+    assert (index, _find(r, ".search()", "auditlog")) not in calls
+    edge = calls[(index, service_search)]
+    assert edge["confidence"] == "INFERRED"
+    assert edge["confidence_score"] == 0.8
+
+
+def test_truncated_root_namespace_does_not_corroborate(tmp_path: Path):
+    """`\\Services\\LeadHunterService` is a ROOT-namespace class, a different
+    one from `App\\Services\\LeadHunterService` — a missing `use` plus a leading
+    backslash is a common bug and must not be rewarded with 1.0."""
+    calls, r = _calls(tmp_path, {
+        **_CORPUS,
+        "app/Http/Controllers/LeadController.php": _controller(
+            "return (new \\Services\\LeadHunterService())->search([]);"
+        ),
+    })
+
+    index = _find(r, ".index()", "leadcontroller")
+    service_search = _find(r, ".search()", "leadhunterservice")
+    assert (index, _find(r, ".search()", "auditlog")) not in calls
+    edge = calls[(index, service_search)]
+    assert edge["confidence"] == "INFERRED"
+    assert edge["confidence_score"] == 0.8
+
+
+def test_braced_namespace_block_corroborates(tmp_path: Path):
+    """`namespace App\\Services { … }` declares the same fact as the statement
+    form, so the whole-name match still promotes."""
+    calls, r = _calls(tmp_path, {
+        "app/Services/LeadHunterService.php": (
+            "<?php\nnamespace App\\Services {\n"
+            "    class LeadHunterService {\n"
+            "        public function search(array $filters): array { return []; }\n"
+            "    }\n}\n"
+        ),
+        "app/Audit/AuditLog.php": _DECOY,
+        "app/Http/Controllers/LeadController.php": _controller(
+            "return (new \\App\\Services\\LeadHunterService())->search([]);"
+        ),
+    })
+
+    index = _find(r, ".index()", "leadcontroller")
+    service_search = _find(r, ".search()", "leadhunterservice")
+    assert (index, _find(r, ".search()", "auditlog")) not in calls
+    assert calls[(index, service_search)]["confidence"] == "EXTRACTED"
+
+
+def test_file_declaring_no_namespace_still_corroborates_by_path(tmp_path: Path):
+    """A file that declares nothing leaves the PSR-4 path as the only evidence
+    there is — unchanged behaviour, deliberately kept."""
+    calls, r = _calls(tmp_path, {
+        "app/Services/LeadHunterService.php": (
+            "<?php\n"
+            "class LeadHunterService {\n"
+            "    public function search(array $filters): array { return []; }\n}\n"
+        ),
+        "app/Audit/AuditLog.php": _DECOY,
+        "app/Http/Controllers/LeadController.php": _controller(
+            "return (new \\App\\Services\\LeadHunterService())->search([]);"
+        ),
+    })
+
+    index = _find(r, ".index()", "leadcontroller")
+    service_search = _find(r, ".search()", "leadhunterservice")
+    assert (index, _find(r, ".search()", "auditlog")) not in calls
+    assert calls[(index, service_search)]["confidence"] == "EXTRACTED"
+
+
+def test_written_namespace_match_is_case_insensitive(tmp_path: Path):
+    """PHP namespaces are case-insensitive, so `\\app\\services\\…` names the
+    same class the file declares."""
+    calls, r = _calls(tmp_path, {
+        **_CORPUS,
+        "app/Http/Controllers/LeadController.php": _controller(
+            "return (new \\app\\services\\LeadHunterService())->search([]);"
+        ),
+    })
+
+    index = _find(r, ".index()", "leadcontroller")
+    service_search = _find(r, ".search()", "leadhunterservice")
+    assert (index, _find(r, ".search()", "auditlog")) not in calls
+    assert calls[(index, service_search)]["confidence"] == "EXTRACTED"
+
+
 def test_inline_new_beats_same_file_same_named_method(tmp_path: Path):
     """The named class wins over an identically named method in the caller's
     own file — the bare-name match must not shadow an explicit `new`."""
