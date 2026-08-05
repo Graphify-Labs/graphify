@@ -47,6 +47,7 @@ from graphify.extractors.go import _GO_PREDECLARED_FUNCS, extract_go  # noqa: F4
 from graphify.extractors.json_config import extract_json  # noqa: F401
 from graphify.extractors.markdown import extract_markdown  # noqa: F401
 from graphify.extractors.pascal_forms import extract_delphi_form, extract_lazarus_form  # noqa: F401
+from graphify.extractors.pine import extract_pine  # noqa: F401
 from graphify.extractors.powershell import extract_powershell, extract_powershell_manifest  # noqa: F401
 from graphify.extractors.razor import extract_razor  # noqa: F401
 from graphify.extractors.rust import extract_rust  # noqa: F401
@@ -4296,6 +4297,7 @@ _DISPATCH: dict[str, Any] = {
     ".cshtml": extract_razor,
     ".cls": extract_apex,
     ".trigger": extract_apex,
+    ".pine": extract_pine,
 }
 
 

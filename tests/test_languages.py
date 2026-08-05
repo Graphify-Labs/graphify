@@ -9,7 +9,7 @@ from graphify.extract import (
     extract_groovy, extract_sln, extract_csproj, extract_xaml, extract_razor,
     extract_dm, extract_dmi, extract_dmm, extract_dmf,
     extract_powershell, extract_apex, extract_verilog,
-    extract_powershell_manifest,
+    extract_powershell_manifest, extract_pine,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -2999,3 +2999,62 @@ def test_decldef_merge_does_not_merge_same_name_same_dir_distinct_files():
     r = _corpus("cpp_samedir/Alpha.h", "cpp_samedir/Beta.h")
     dups = _nodes_with_label(r, "Dup")
     assert len(dups) == 2, f"same-dir distinct Dups must stay distinct, got {[n['id'] for n in dups]}"
+
+
+# --- Pine Script --------------------------------------------------------------
+
+def _pine():
+    return extract_pine(FIXTURES / "sample.pine")
+
+
+def _pine_pairs(r, relation):
+    lab = {n["id"]: n["label"] for n in r["nodes"]}
+    return {(lab.get(e["source"], e["source"]), lab.get(e["target"], e["target"]))
+            for e in r["edges"] if e["relation"] == relation}
+
+
+def test_pine_declarations():
+    r = _pine()
+    labels = {n["label"] for n in r["nodes"]}
+    assert 'strategy "Sample Breakout"' in labels      # wrapped declaration
+    assert {"pips()", "effRiskPct()", "calcQty()", "buildZone()"} <= labels
+    assert "Zone" in labels                            # user-defined type
+    assert {"rr", "riskPct", "slBuf", "lookback", "useHtf"} <= labels
+
+
+def test_pine_ignores_comments_and_string_bodies():
+    """`// ghost(x) => x` is a comment, and the payload input contains a literal
+    `//` inside a string — neither may produce a node."""
+    labels = {n["label"] for n in _pine()["nodes"]}
+    assert "ghost()" not in labels
+    assert "alertPayload" in labels
+
+
+def test_pine_calls_and_input_references():
+    r = _pine()
+    assert ("calcQty()", "effRiskPct()") in _pine_pairs(r, "calls")
+    assert ("calcQty()", "pips()") in _pine_pairs(r, "calls")
+    assert ("effRiskPct()", "riskPct") in _pine_pairs(r, "references")
+    assert ("buildZone()", "lookback") in _pine_pairs(r, "references")
+
+
+def test_pine_top_level_calls_anchor_on_the_script():
+    r = _pine()
+    calls = _pine_pairs(r, "calls")
+    assert ('strategy "Sample Breakout"', "calcQty()") in calls
+    assert ('strategy "Sample Breakout"', "buildZone()") in calls
+
+
+def test_pine_notable_builtins_and_imports():
+    r = _pine()
+    labels = {n["label"] for n in r["nodes"]}
+    assert {"strategy.entry", "strategy.exit", "request.security", "box.new",
+            "alertcondition", "plot"} <= labels
+    assert ("sample.pine", "tvta") in _pine_pairs(r, "imports")
+
+
+def test_pine_records_version_and_has_no_dangling_edges():
+    r = _pine()
+    assert r["nodes"][0]["pine_version"] == "6"
+    ids = {n["id"] for n in r["nodes"]}
+    assert all(e["source"] in ids and e["target"] in ids for e in r["edges"])

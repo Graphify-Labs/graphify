@@ -1,0 +1,52 @@
+//@version=6
+// A small but representative strategy: wrapped declaration, inputs, a
+// user-defined type, one-line and block functions, and top-level order calls.
+strategy("Sample Breakout", overlay=true,
+     initial_capital=10000,
+     pyramiding=1)
+
+import TradingView/ta/7 as tvta
+
+// Inputs
+rr           = input.float(1.5, "R:R", minval=0.1, step=0.1, group="Trade")
+riskPct      = input.float(0.5, "Risk %", minval=0.01, group="Trade")
+slBuf        = input.float(4.0, "SL buffer", minval=0.0, group="Trade")
+lookback     = input.int(20, "Breakout lookback", minval=2, group="Signal")
+useHtf       = input.bool(true, "Confirm on higher timeframe", group="Signal")
+alertPayload = input.string("{\"side\": \"long\"} // not a comment", "Payload")
+
+type Zone
+    float top
+    float bot
+    int   startBar
+
+// ghost(x) => x        <- commented out, must not be extracted
+
+pips(float p) => p * syminfo.mintick
+
+effRiskPct() =>
+    math.min(riskPct, 2.0)
+
+calcQty(float slDist) =>
+    risk = strategy.equity * effRiskPct() / 100.0
+    dist = pips(slDist) + slBuf
+    dist <= 0 ? 0.0 : risk / dist
+
+buildZone(int startShift,
+          bool isLong) =>
+    float t = ta.highest(high, lookback)
+    float b = ta.lowest(low, lookback)
+    Zone.new(t, b, bar_index - startShift)
+
+htfClose = request.security(syminfo.tickerid, "60", close)
+atr      = ta.atr(14)
+
+if barstate.isconfirmed and useHtf and close > htfClose
+    zone = buildZone(1, true)
+    qty  = calcQty(atr)
+    strategy.entry("Long", strategy.long, qty=qty)
+    strategy.exit("Exit", "Long", profit=atr * rr, loss=atr)
+    box.new(bar_index - 1, zone.top, bar_index, zone.bot, bgcolor=color.green)
+
+alertcondition(close > htfClose, "Breakout", "Long signal")
+plot(htfClose, "HTF close")
