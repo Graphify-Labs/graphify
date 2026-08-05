@@ -924,7 +924,10 @@ _PHP_CONFIG = LanguageConfig(
     class_types=frozenset({"class_declaration"}),
     function_types=frozenset({"function_definition", "method_declaration"}),
     import_types=frozenset({"namespace_use_clause"}),
-    call_types=frozenset({"function_call_expression", "member_call_expression", "scoped_call_expression", "class_constant_access_expression"}),
+    # `$obj?->method()` parses as a distinct node type with the same
+    # object/name/arguments fields, so it flows through the member-call branch
+    # unchanged once it is recognized as a call at all (#1682).
+    call_types=frozenset({"function_call_expression", "member_call_expression", "nullsafe_member_call_expression", "scoped_call_expression", "class_constant_access_expression"}),
     static_prop_types=frozenset({"scoped_property_access_expression"}),
     helper_fn_names=frozenset({"config"}),
     container_bind_methods=frozenset({"bind", "singleton", "scoped", "instance"}),
@@ -2312,6 +2315,11 @@ def _resolve_swift_member_calls(
 
     existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
     for rc in all_raw_calls:
+        # A tagged raw_call belongs to the resolver that stamped it (cpp, csharp,
+        # java, php, objc). Swift raw_calls carry no `lang`, so anything tagged is
+        # another language's data and must not mint a Swift edge here (#1682).
+        if rc.get("lang"):
+            continue
         if not rc.get("is_member_call"):
             continue
         receiver = rc.get("receiver")
@@ -2473,6 +2481,11 @@ def _resolve_python_member_calls(
         })
 
     for rc in all_raw_calls:
+        # A tagged raw_call belongs to the resolver that stamped it (cpp, csharp,
+        # java, php, objc). Python raw_calls carry no `lang`, so anything tagged is
+        # another language's data and must not mint a Python edge here (#1682).
+        if rc.get("lang"):
+            continue
         if not rc.get("is_member_call"):
             continue
         receiver = rc.get("receiver")
@@ -2557,6 +2570,11 @@ def _resolve_typescript_member_calls(
 
     existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
     for rc in all_raw_calls:
+        # A tagged raw_call belongs to the resolver that stamped it (cpp, csharp,
+        # java, php, objc). TypeScript raw_calls carry no `lang`, so anything tagged
+        # is another language's data and must not mint a TS edge here (#1682).
+        if rc.get("lang"):
+            continue
         if not rc.get("is_member_call"):
             continue
         receiver = rc.get("receiver")
@@ -3025,6 +3043,251 @@ def _resolve_java_member_calls(
             })
 
 
+# Source suffixes each resolver owns. Used BOTH to register the resolver and to
+# scope its receiver-type index (#8) — one definition so the two cannot drift.
+_PHP_RESOLVER_SUFFIXES = (
+    ".php", ".phtml", ".php3", ".php4", ".php5", ".php7", ".phps",
+)
+# `.h` routes to extract_cpp or extract_objc by content, so it appears in both
+# the C++ and ObjC sets. Raw calls are still claimed by the extractor-stamped
+# `lang`; only the DEFINITION index is scoped by suffix, where including `.h` is
+# correct — an ObjC @interface lives in one.
+_OBJC_RESOLVER_SUFFIXES = (".m", ".mm", ".h")
+
+
+def _php_qualified_corroborates(
+    qualified: str | None,
+    type_node: dict | None,
+    declared_fqn: str | None = None,
+) -> bool:
+    """True when a source-written class name corroborates the resolved node (#1682).
+
+    ``(new \\App\\Services\\Svc())`` names the class outright, but the short-name
+    lookup that found the node ignored the namespace — so the namespace is
+    independent evidence, and only a match makes the edge EXTRACTED.
+
+    ``declared_fqn`` is the name the DEFINING FILE declares for that class,
+    read from its ``namespace`` statement at extraction time (#14). When it is
+    known the comparison is whole-name: `\\App\\Services\\Client` corroborates
+    `App\\Services\\Client` and nothing else. Two things that used to promote
+    now do not — a file whose declared namespace disagrees with its PSR-4 path
+    (the written name then denotes a class that exists nowhere in the corpus),
+    and a truncated qualifier like `\\Services\\Client`, which is a DIFFERENT
+    class from `App\\Services\\Client` but matched as a path tail.
+
+    Without a declaration — the file declares no namespace at all, or the node
+    came from a prior graph on an incremental run — the node's path is the only
+    corroborating fact left, and PSR-4 maps ``App\\Services\\Svc`` onto
+    ``app/Services/Svc.php``; every written segment must line up with the tail
+    of that path, case-insensitively.
+
+    A BARE name (no namespace segment) corroborates nothing and stays INFERRED;
+    a namespace that does not line up downgrades rather than refusing, since the
+    class name itself still resolved unambiguously.
+    """
+    if not qualified or not type_node:
+        return False
+    want = [seg.casefold() for seg in str(qualified).split("\\") if seg]
+    if len(want) < 2:
+        return False  # bare `new Svc()`: no namespace written, no evidence
+    if declared_fqn:
+        have = [seg.casefold() for seg in str(declared_fqn).split("\\") if seg]
+        return want == have  # whole name, not a suffix of one
+    source_file = str(type_node.get("source_file") or "")
+    parts = [p for p in source_file.replace("\\", "/").split("/")
+             if p and p not in (".", "..")]
+    if not parts:
+        return False
+    parts[-1] = parts[-1].rsplit(".", 1)[0]  # drop the file extension
+    parts = [p.casefold() for p in parts]
+    return len(parts) >= len(want) and parts[-len(want):] == want
+
+
+_PHP_NON_CLASS_TYPE_MARKERS = ("_php_non_class_types", "_php_interfaces")
+
+
+def _php_context_interface_entry(context_nodes: list[dict] | None) -> dict | None:
+    """Recover the unchanged corpus's PHP interface/enum/trait names (#11, #12).
+
+    None of the three mints a definition node, so the extractor stamps the names a
+    file declared on that file's own node as ``_php_non_class_types`` — a persisted
+    marker, like ``_callable`` (#2438) — and ``watch``/``graphify update`` hand it
+    back on the resolution-context nodes. Returns a synthetic ``per_file``-shaped
+    entry carrying just those names (or None when there are none), which extends
+    the resolver's existing single channel instead of adding a second one.
+
+    ``_php_interfaces`` is the pre-#12 spelling of the same marker, carrying
+    interfaces alone; it is still read so a graph.json written before enums and
+    traits joined the set keeps refusing the names it does carry, rather than
+    losing the refusal outright until its files are re-extracted.
+
+    Read from the RAW context list rather than off the merged resolution nodes: a
+    changed caller that does `use App\\Contracts\\Notifier;` mints a sourceless
+    import stub whose id IS the interface file node's id, and the merge drops the
+    colliding context node (fresh wins) — taking the marker with it, exactly in the
+    case the refusal is needed.
+    """
+    names = sorted({
+        str(name)
+        for node in (context_nodes or [])
+        for marker in _PHP_NON_CLASS_TYPE_MARKERS
+        for name in (node.get(marker) or ())
+    })
+    return {"php_non_class_types": names} if names else None
+
+
+def _resolve_php_member_calls(
+    per_file: list[dict],
+    all_nodes: list[dict],
+    all_edges: list[dict],
+) -> None:
+    """Resolve PHP member calls against the receiver's declared type (#1682).
+
+    Receiver ``this`` binds to the caller's enclosing class (exact). Receiver
+    ``this.<prop>`` carries the type stamped by the extractor from the class's
+    typed properties and constructor-promoted params (inferred). A missing or
+    ambiguous receiver type is skipped rather than falling back to a bare
+    method-name match — a Laravel corpus has many identically named service
+    methods, and guessing between them is worse than an absent edge.
+    """
+    def key(label: str) -> str:
+        # PHP class and method names are case-insensitive.
+        return str(label).strip().removeprefix(".").removesuffix("()").casefold()
+
+    contained = {edge.get("target") for edge in all_edges
+                 if edge.get("relation") == "contains"}
+    node_by_id = {node.get("id"): node for node in all_nodes}
+
+    # Scoped to PHP sources (#8). An unscoped index matched a PHP receiver type
+    # against classes written in ANY language, which cut both ways: a Python
+    # `class Lead` could be bound as the receiver's type, and a Python class
+    # merely SHARING the name pushed the single-definition guard to 2 and
+    # silently suppressed the correct PHP edge.
+    type_def_nids: dict[str, list[str]] = {}
+    for node in all_nodes:
+        if (
+            str(node.get("source_file") or "").lower().endswith(_PHP_RESOLVER_SUFFIXES)
+            and node.get("id") in contained
+            and _is_type_like_definition(node)
+        ):
+            type_def_nids.setdefault(key(node.get("label", "")), []).append(node["id"])
+
+    method_index: dict[tuple[str, str], set[str]] = {}
+    enclosing_type: dict[str, str] = {}
+    for edge in all_edges:
+        if edge.get("relation") != "method":
+            continue
+        owner, method = edge.get("source"), edge.get("target")
+        method_node = node_by_id.get(method)
+        if method_node is None:
+            continue
+        enclosing_type.setdefault(method, owner)
+        method_index.setdefault((owner, key(method_node.get("label", ""))), set()).add(method)
+
+    # Names declared as `interface`, `enum` or `trait` anywhere in the corpus.
+    # None of the three mints a definition node, so without this such a receiver
+    # would bind to whatever same-named CLASS happens to exist — the Laravel
+    # Contracts collision (`App\Contracts\Notifier` vs `App\Support\Notifier`)
+    # or the enum-beside-model one (`App\Enums\Status` vs `App\Models\Status`),
+    # neither of which the single-definition guard can see because there IS only
+    # one definition. `php_interfaces` is the pre-#12 spelling of the same fact,
+    # still read so an AST-cache entry written before enums and traits joined
+    # the set keeps refusing interfaces.
+    #
+    # `per_file` aligns 1:1 with the files dispatched THIS run, so an incremental
+    # rebuild that leaves the declaring file untouched used to see no such names
+    # at all and mint a wrong edge into the same-short-named class (#11).
+    # extract() closes that hole by appending the unchanged corpus's persisted
+    # names as one extra entry, so this single channel still covers the whole
+    # corpus — see `_php_context_interface_entry`.
+    non_class_type_names = {
+        key(name)
+        for result in per_file
+        for keyname in ("php_non_class_types", "php_interfaces")
+        for name in result.get(keyname, [])
+    }
+
+    # Fully qualified class names as each defining file DECLARES them (#14), so
+    # the inline-`new` corroboration below compares the written name against the
+    # real one instead of against the file's path, which PSR-4 only conventionally
+    # agrees with. Keyed by defining file, then by short class name.
+    class_fqn_by_file: dict[str, dict[str, str]] = {}
+    for result in per_file:
+        declared = result.get("php_class_fqns")
+        if declared and declared.get("path"):
+            class_fqn_by_file[declared["path"]] = declared.get("classes", {})
+
+    def declared_fqn(type_node: dict | None) -> str | None:
+        """The namespace-qualified name of ``type_node``'s class, if its file
+        declared one. Absent for a global-namespace class, and for a node
+        replayed from a prior graph on an incremental run."""
+        if not type_node:
+            return None
+        by_name = class_fqn_by_file.get(str(type_node.get("source_file") or ""))
+        if not by_name:
+            return None
+        return by_name.get(key(type_node.get("label", "")))
+
+    existing_pairs = {(edge.get("source"), edge.get("target")) for edge in all_edges}
+    for result in per_file:
+        for raw_call in result.get("raw_calls", []):
+            if raw_call.get("lang") != "php" or not raw_call.get("is_member_call"):
+                continue
+            receiver = raw_call.get("receiver")
+            callee = raw_call.get("callee")
+            caller = raw_call.get("caller_nid")
+            if not receiver or not callee or not caller:
+                continue
+
+            if receiver == "this":
+                exact = True
+                type_nid = enclosing_type.get(caller)
+                if not type_nid:
+                    continue
+            else:
+                exact = False
+                type_name = raw_call.get("receiver_type")
+                if not type_name:
+                    continue  # untyped / union-typed / unknown receiver: refuse
+                if key(type_name) in non_class_type_names:
+                    # An interface names no implementation, a trait is not a
+                    # type, and an enum's methods live on no definition node:
+                    # refuse rather than bind a same-short-named stranger.
+                    continue
+                type_defs = type_def_nids.get(key(type_name), [])
+                if len(type_defs) != 1:
+                    continue  # short name collides across the corpus: refuse
+                type_nid = type_defs[0]
+                if receiver == "(new)":
+                    # The class is named in the source; promote to EXTRACTED
+                    # only when the written namespace backs the node we found.
+                    type_node = node_by_id.get(type_nid)
+                    exact = _php_qualified_corroborates(
+                        raw_call.get("receiver_qualified"),
+                        type_node,
+                        declared_fqn(type_node),
+                    )
+
+            method_nids = method_index.get((type_nid, key(callee)), set())
+            if len(method_nids) != 1:
+                continue  # the typed receiver's class has no such method: refuse
+            method_nid = next(iter(method_nids))
+            if method_nid == caller or (caller, method_nid) in existing_pairs:
+                continue
+            existing_pairs.add((caller, method_nid))
+            all_edges.append({
+                "source": caller,
+                "target": method_nid,
+                "relation": "calls",
+                "context": "call",
+                "confidence": "EXTRACTED" if exact else "INFERRED",
+                "confidence_score": 1.0 if exact else 0.8,
+                "source_file": raw_call.get("source_file", ""),
+                "source_location": raw_call.get("source_location"),
+                "weight": 1.0,
+            })
+
+
 def _resolve_objc_member_calls(
     per_file: list[dict],
     all_nodes: list[dict],
@@ -3060,11 +3323,16 @@ def _resolve_objc_member_calls(
 
     contained = {e.get("target") for e in all_edges if e.get("relation") == "contains"}
 
+    # Scoped to ObjC sources (#8), same defect and fix as the PHP twin: an
+    # unscoped index let a foreign class type an ObjC receiver, and let a
+    # foreign class merely sharing the name suppress the correct ObjC edge.
     type_def_nids: dict[str, list[str]] = {}
     node_by_id: dict[str, dict] = {}
     for n in all_nodes:
         node_by_id[n.get("id")] = n
-        if n.get("source_file") and n.get("id") in contained and _is_type_like_definition(n):
+        sf = str(n.get("source_file") or "").lower()
+        if (sf.endswith(_OBJC_RESOLVER_SUFFIXES)
+                and n.get("id") in contained and _is_type_like_definition(n)):
             type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
 
     method_index: dict[tuple[str, str], str] = {}
@@ -3166,7 +3434,7 @@ register_language_resolver(
 register_language_resolver(
     LanguageResolver(
         "objc_member_calls",
-        frozenset({".m", ".mm", ".h"}),
+        frozenset(_OBJC_RESOLVER_SUFFIXES),
         _resolve_objc_member_calls,
     )
 )
@@ -3177,6 +3445,15 @@ register_language_resolver(
 )
 register_language_resolver(
     LanguageResolver("java_member_calls", frozenset({".java"}), _resolve_java_member_calls)
+)
+# PHP receiver-typed member-call resolution (#1682): `$this->prop->method()`
+# bound to the property's declared type instead of a bare same-named match.
+register_language_resolver(
+    LanguageResolver(
+        "php_member_calls",
+        frozenset(_PHP_RESOLVER_SUFFIXES),
+        _resolve_php_member_calls,
+    )
 )
 # Pascal/Delphi cross-file inherited-method-call resolution: a call from a
 # manual descendant class to a method it inherits from an ancestor declared
@@ -4724,9 +5001,12 @@ def extract(
             `_callable_class` markers, #2438), and the member-call resolvers
             run by `run_language_resolvers` (#2437) — so a changed caller can
             still bind `foo()`, `obj.method()`, or `submit(handler)` to an
-            unchanged callee. They are never parsed, mutated, or returned;
-            raw_calls come only from `paths`, so only edges sourced by the
-            re-extracted files are emitted.
+            unchanged callee. They also carry the PHP resolver's interface,
+            enum and trait names, stamped as `_php_non_class_types` on each PHP
+            file node, so an unchanged declaring file keeps its refusal (#11,
+            #12). They are never
+            parsed, mutated, or returned; raw_calls come only from `paths`, so
+            only edges sourced by the re-extracted files are emitted.
         resolution_context_edges: the `contains`/`method` edges of the same
             unchanged corpus (#2437). The member-call resolvers walk these to
             map a receiver type to the single class owning the called method;
@@ -5733,11 +6013,22 @@ def extract(
     # results: raw_calls come solely from `paths`, so nothing sourced by an
     # unchanged file is ever emitted, and the ambiguity guards count the same
     # candidates a full build would (the context is the whole unchanged corpus).
+    #
+    # #11/#12: nodes and edges are not the whole story — the PHP resolver also
+    # needs the unchanged corpus's INTERFACE, ENUM and TRAIT names, which mint no
+    # node of their own. They ride in on the context nodes' `_php_non_class_types`
+    # marker; hand them over as one extra `per_file` entry (scratch list, the real
+    # `per_file` is untouched) so an unchanged declaring file keeps refusing such
+    # a receiver instead of letting it bind to a same-short-named class.
     if resolution_context_nodes or resolution_context_edges:
         _rl_nodes = list(resolution_nodes)
         _rl_edges = all_edges + list(resolution_context_edges or [])
+        _rl_per_file = per_file
+        _php_ctx_entry = _php_context_interface_entry(resolution_context_nodes)
+        if _php_ctx_entry is not None:
+            _rl_per_file = [*per_file, _php_ctx_entry]
         _n0, _e0 = len(_rl_nodes), len(_rl_edges)
-        run_language_resolvers(paths, per_file, _rl_nodes, _rl_edges)
+        run_language_resolvers(paths, _rl_per_file, _rl_nodes, _rl_edges)
         all_nodes.extend(_rl_nodes[_n0:])
         all_edges.extend(_rl_edges[_e0:])
     else:
@@ -5877,6 +6168,11 @@ def extract(
     # label (that would reintroduce the #1566/#2137 data-symbol false positives);
     # a graph written before the markers existed simply fails closed until its
     # files are re-extracted.
+    # `_php_non_class_types` (#11, #12) is kept for the same reason and with the
+    # opposite failure direction: a pre-marker graph simply loses the refusal on
+    # an incremental rebuild until the declaring file is re-extracted. A graph
+    # carrying only the pre-#12 `_php_interfaces` spelling keeps refusing the
+    # interfaces it names — both spellings are read.
 
     # local_alias is a transient import-resolution hint (#2082), same shape as
     # target_file (#1814): it exists only so the module arm of

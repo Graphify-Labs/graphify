@@ -143,6 +143,101 @@ def _csharp_pre_scan_interfaces(root_node, source: bytes) -> set[str]:
         stack.extend(n.children)
     return out
 
+# PHP declaration kinds that are NOT in `_PHP_CONFIG.class_types`: they mint no
+# definition node, so the resolver cannot recognize them after the fact (#1682).
+_PHP_NON_CLASS_DECLARATIONS = frozenset({
+    "interface_declaration",
+    "enum_declaration",
+    "trait_declaration",
+})
+
+
+def _php_pre_scan_non_class_declarations(root_node, source: bytes) -> set[str]:
+    """Return names declared as `interface`, `enum` or `trait` in this PHP file (#1682).
+
+    None of the three is in ``_PHP_CONFIG.class_types``, so they mint no
+    definition node and cannot be recognized by the resolver after the fact.
+    Laravel's conventions make the collision that follows realistic: an
+    `App\\Contracts\\Notifier` interface beside an unrelated
+    `App\\Support\\Notifier` class — or an `App\\Enums\\Status` enum beside an
+    Eloquent `App\\Models\\Status` — leaves exactly ONE definition under that
+    short name, which would satisfy the single-definition guard and bind the
+    receiver to a total stranger. The names are threaded to the resolver so it
+    can refuse instead. Refusal only: minting nodes for these declarations
+    would change what the graph contains, which is a separate decision.
+    """
+    out: set[str] = set()
+    stack = [root_node]
+    while stack:
+        n = stack.pop()
+        if n.type in _PHP_NON_CLASS_DECLARATIONS:
+            name_node = n.child_by_field_name("name")
+            if name_node is not None:
+                text = _read_text(name_node, source)
+                if text:
+                    out.add(text)
+        stack.extend(n.children)
+    return out
+
+
+def _php_pre_scan_class_namespaces(root_node, source: bytes) -> dict[str, str]:
+    """Map every namespaced class in this PHP file to its fully qualified name (#14).
+
+    PHP class NODES carry no namespace, so the inline-`new` corroboration in
+    ``_php_qualified_corroborates`` had only the file's path to compare a
+    written ``\\App\\Services\\Client`` against. PSR-4 is a convention, not an
+    invariant: a file at ``app/Services/Client.php`` may declare
+    ``namespace App\\Vendor;`` (PSR-0 leftovers, classmap autoloaders, moved
+    files, generated code), and the written name then corroborates a class that
+    exists nowhere. The declaration is right there in the source — read it.
+
+    Both namespace forms are handled: ``namespace X;`` applies to the
+    declarations that follow it (a file may switch namespaces mid-way), and
+    ``namespace X { … }`` applies to its block. A class declared in NO namespace
+    is deliberately absent from the map: the file states nothing, so the
+    resolver falls back to the path check rather than refusing. A short name
+    declared twice under different namespaces in one file is dropped — the map
+    is keyed by short name, and a wrong answer is worse than no answer.
+    """
+    out: dict[str, str] = {}
+    conflicting: set[str] = set()
+
+    # Each entry carries the namespace in force where it was queued, so the
+    # scopes stay right without walking siblings in order. A class body is never
+    # descended into: PHP has no nested class declarations, and an anonymous
+    # class inside a method names nothing.
+    stack = [(root_node, "")]
+    while stack:
+        node, namespace = stack.pop()
+        current = namespace
+        for child in node.children:
+            if child.type == "namespace_definition":
+                name_node = child.child_by_field_name("name")
+                # A braced `namespace { … }` names nothing: the global namespace.
+                declared = (_read_text(name_node, source).strip("\\")
+                            if name_node is not None else "")
+                body = child.child_by_field_name("body")
+                if body is not None:
+                    stack.append((body, declared))
+                else:
+                    current = declared  # applies to the declarations that follow
+                continue
+            if child.type == "class_declaration":
+                name_node = child.child_by_field_name("name")
+                name = _read_text(name_node, source) if name_node is not None else ""
+                if name and current:
+                    fqn = f"{current}\\{name}"
+                    short = name.casefold()
+                    if out.setdefault(short, fqn) != fqn:
+                        conflicting.add(short)
+                continue
+            if child.is_named:
+                stack.append((child, current))
+    for short in conflicting:
+        out.pop(short, None)
+    return out
+
+
 def _csharp_classify_base(name: str, interface_names: set[str]) -> str:
     """`implements` if the base name is an interface (declared or by I-prefix convention), else `inherits`."""
     if name in interface_names:
@@ -608,6 +703,189 @@ def _php_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[s
         for c in node.children:
             if c.is_named:
                 _php_collect_type_refs(c, source, generic, out)
+
+# PHP type names that never denote a resolvable class definition. `self`,
+# `static` and `parent` are relative (they need inheritance context the raw-call
+# facts do not carry), the rest are builtins with no user definition.
+_PHP_NON_CONCRETE_TYPE_NAMES = frozenset({
+    "self", "static", "parent", "object", "mixed", "iterable", "callable",
+    "void", "never", "null", "true", "false", "array", "string", "int",
+    "float", "bool",
+})
+
+
+def _php_concrete_type_name(type_node, source: bytes) -> str | None:
+    """Single concrete class name of a PHP type expression, or None (= refuse).
+
+    Deliberately NOT `_php_collect_type_refs`: that helper flattens a union into
+    several refs, whereas a receiver typed `A|B` has no single type and must be
+    refused. `named_type` yields its namespace-stripped name; a nullable wrapper
+    around exactly one type unwraps (`?Foo` is still concretely Foo); union,
+    intersection, primitive and missing types yield None (#1682).
+    """
+    if type_node is None:
+        return None
+    if type_node.type == "named_type":
+        for c in type_node.children:
+            if c.type in ("name", "qualified_name"):
+                text = _php_name_text(c, source)
+                if text and text.lower() not in _PHP_NON_CONCRETE_TYPE_NAMES:
+                    return text
+                return None
+        return None
+    if type_node.type in ("optional_type", "nullable_type"):
+        inner = [c for c in type_node.named_children if c.type != "comment"]
+        if len(inner) == 1:
+            return _php_concrete_type_name(inner[0], source)
+    return None
+
+
+# Subtrees that are a DIFFERENT binding scope than the method being scanned:
+# their assignments must not type the enclosing method's variables. Closures are
+# deliberately absent — their calls are attributed to the enclosing method, so
+# their locals belong to the same raw-call scope (their PARAMETERS are poisoned
+# separately, since a shadowed name cannot be told apart from the outer one).
+_PHP_FOREIGN_SCOPE_TYPES = frozenset({
+    "anonymous_class",
+    "class_declaration",
+    "interface_declaration",
+    "trait_declaration",
+    "enum_declaration",
+    "function_definition",
+    "method_declaration",
+})
+
+_PHP_CLOSURE_TYPES = frozenset({"anonymous_function", "arrow_function"})
+
+
+def _php_method_receiver_types(
+    method_node,
+    source: bytes,
+    field_types: dict[str, str],
+) -> dict[str, str]:
+    """Build the receiver type table visible to one PHP method (#1682).
+
+    ``this.<prop>`` keys come from the declaring class's typed properties and
+    constructor-promoted params. PHP properties are reachable ONLY through
+    ``$this->``, so these keys can never collide with a local variable name.
+
+    Bare keys come from natively typed parameters and ``$var = new T()`` locals.
+    Raw calls retain no lexical scope, so a name is POISONED — dropped from the
+    table entirely — whenever its binding is not provably single-typed: a rebind
+    to anything but a `new`, two conflicting `new` types, an augmented
+    assignment, a closure or arrow-function parameter shadowing it, a foreach
+    target, a list-destructuring element, or a `global`/`static` statement
+    rebinding it to other storage. Poisoning is order-independent, which is why
+    it can be decided from a single unordered walk.
+    """
+    table = {f"this.{name}": type_name for name, type_name in field_types.items()}
+    method_types: dict[str, str] = {}
+    ambiguous: set[str] = set()
+
+    def poison(name: str) -> None:
+        if name:
+            method_types.pop(name, None)
+            ambiguous.add(name)
+
+    def bind(name: str, type_name: str | None) -> None:
+        if not name or name in ambiguous:
+            return
+        previous = method_types.get(name)
+        if type_name is None or (previous is not None and previous != type_name):
+            poison(name)
+        else:
+            method_types[name] = type_name
+
+    def poison_bound_vars(node) -> None:
+        """Poison every ``$var`` named anywhere in a binding-site subtree.
+
+        Covers `[$a, [$b]] = …`, `list($a, $b) = …`, `foreach … as $k => &$v`
+        and closure parameter lists in one sweep (shapes probe-verified).
+        """
+        stack = [node]
+        while stack:
+            n = stack.pop()
+            if n is None:
+                continue
+            if n.type == "variable_name":
+                poison(_read_text(n, source).lstrip("$"))
+                continue
+            stack.extend(n.children)
+
+    def new_type_name(node) -> str | None:
+        """Class named by an ``object_creation_expression``, or None."""
+        if node is None or node.type != "object_creation_expression":
+            return None
+        cls = next((c for c in node.named_children
+                    if c.type in ("name", "qualified_name")), None)
+        if cls is None:  # `new class { … }` names nothing
+            return None
+        text = _php_name_text(cls, source)
+        if not text or text.lower() in _PHP_NON_CONCRETE_TYPE_NAMES:
+            return None  # `new self()` / `new static()` need inheritance context
+        return text
+
+    # Natively typed parameters. `variadic_parameter` is excluded on purpose:
+    # `T ...$xs` binds an ARRAY of T, not a T.
+    params = method_node.child_by_field_name("parameters")
+    if params is not None:
+        for param in params.children:
+            if param.type not in ("simple_parameter", "property_promotion_parameter"):
+                continue
+            type_name = _php_concrete_type_name(
+                param.child_by_field_name("type"), source
+            )
+            name_node = param.child_by_field_name("name")
+            if name_node is not None and type_name:
+                # Untyped / union / primitive params simply stay unbound.
+                bind(_read_text(name_node, source).lstrip("$"), type_name)
+
+    body = method_node.child_by_field_name("body")
+    stack = list(body.children) if body is not None else []
+    while stack:
+        node = stack.pop()
+        if node.type in _PHP_FOREIGN_SCOPE_TYPES:
+            continue
+        if node.type in _PHP_CLOSURE_TYPES:
+            poison_bound_vars(node.child_by_field_name("parameters"))
+        elif node.type == "foreach_statement":
+            # children are [iterated expression, target(s)…, body]; only the
+            # targets rebind names, and the element type is unknown.
+            body_node = node.child_by_field_name("body")
+            targets = [c for c in node.named_children if c is not body_node]
+            for target in targets[1:]:
+                poison_bound_vars(target)
+        elif node.type in ("global_declaration", "function_static_declaration"):
+            # `global $svc;` / `static $svc;` rebind the NAME to DIFFERENT
+            # storage — the global slot, or the function-static slot that starts
+            # out null — so any type learned from a `new` in this body is stale
+            # (#13). Name-targeted, not statement-targeted: `global $other;`
+            # must leave `$svc`'s binding intact. Both multi-name forms
+            # (`global $a, $svc;` and `static $x = 1, $svc;`) carry one
+            # `variable_name` per declared name, and a static initializer is a
+            # constant expression, so sweeping the whole statement names exactly
+            # the rebound variables (shapes probe-verified).
+            poison_bound_vars(node)
+        elif node.type == "augmented_assignment_expression":
+            left = node.child_by_field_name("left")
+            if left is not None and left.type == "variable_name":
+                poison(_read_text(left, source).lstrip("$"))
+        elif node.type == "assignment_expression":
+            left = node.child_by_field_name("left")
+            if left is not None and left.type == "list_literal":
+                poison_bound_vars(left)
+            elif left is not None and left.type == "variable_name":
+                bind(
+                    _read_text(left, source).lstrip("$"),
+                    new_type_name(node.child_by_field_name("right")),
+                )
+        stack.extend(node.children)
+
+    table.update(method_types)
+    for name in ambiguous:
+        table.pop(name, None)
+    return table
+
 
 def _php_method_return_type_node(method_node):
     """Return the named_type/primitive_type node sitting after formal_parameters."""
@@ -2376,10 +2654,20 @@ def _extract_generic(
     # same-named, explicitly typed receiver in a different method.
     csharp_field_types: dict[str, dict[str, str]] = {}
     csharp_method_scopes: dict[int, tuple[object, str]] = {}
+    # PHP receiver typing (#1682): typed properties and constructor-promoted
+    # params of the declaring class, keyed `this.<prop>` per method scope.
+    php_field_types: dict[str, dict[str, str]] = {}
+    php_method_scopes: dict[int, tuple[object, str]] = {}
 
     csharp_interface_names: set[str] = set()
     if config.ts_module == "tree_sitter_c_sharp":
         csharp_interface_names = _csharp_pre_scan_interfaces(root, source)
+
+    php_non_class_type_names: set[str] = set()
+    php_class_fqns: dict[str, str] = {}
+    if config.ts_module == "tree_sitter_php":
+        php_non_class_type_names = _php_pre_scan_non_class_declarations(root, source)
+        php_class_fqns = _php_pre_scan_class_namespaces(root, source)
 
     swift_protocol_names: set[str] = set()
     swift_class_names: set[str] = set()
@@ -3209,6 +3497,18 @@ def _extract_generic(
                                    "union_type", "intersection_type", "optional_type"):
                     continue
                 line = node.start_point[0] + 1
+                # #1682: remember the property's declared type so a later
+                # `$this->prop->method()` resolves against it. Only a single
+                # concrete class name counts — unions/primitives are refused.
+                type_name = _php_concrete_type_name(c, source)
+                if type_name:
+                    fields = php_field_types.setdefault(parent_class_nid, {})
+                    for pe in node.children:
+                        if pe.type != "property_element":
+                            continue
+                        v = pe.child_by_field_name("name")
+                        if v is not None:
+                            fields[_read_text(v, source).lstrip("$")] = type_name
                 refs: list[tuple[str, str]] = []
                 _php_collect_type_refs(c, source, False, refs)
                 for ref_name, role in refs:
@@ -3540,6 +3840,15 @@ def _extract_generic(
                                              "union_type", "intersection_type", "optional_type"):
                                 type_node = sub
                                 break
+                        # #1682: a promoted param IS a typed class property —
+                        # record it in the same `this.<prop>` receiver table.
+                        if is_promoted and parent_class_nid:
+                            promoted_type = _php_concrete_type_name(type_node, source)
+                            v = p.child_by_field_name("name")
+                            if promoted_type and v is not None:
+                                php_field_types.setdefault(parent_class_nid, {})[
+                                    _read_text(v, source).lstrip("$")
+                                ] = promoted_type
                         refs: list[tuple[str, str]] = []
                         _php_collect_type_refs(type_node, source, False, refs)
                         for ref_name, role in refs:
@@ -3760,6 +4069,8 @@ def _extract_generic(
                     java_method_scopes[id(body)] = (node, parent_class_nid)
                 if config.ts_module == "tree_sitter_c_sharp" and parent_class_nid:
                     csharp_method_scopes[id(body)] = (node, parent_class_nid)
+                if config.ts_module == "tree_sitter_php" and parent_class_nid:
+                    php_method_scopes[id(body)] = (node, parent_class_nid)
                 function_bodies.append((func_nid, body))
                 if config.ts_module == "tree_sitter_kotlin":
                     # #2347: Kotlin anonymous objects (`object : Foo { … }`,
@@ -3997,6 +4308,14 @@ def _extract_generic(
         )
         for body_id, (method_node, class_nid) in csharp_method_scopes.items()
     }
+    php_receiver_types = {
+        body_id: _php_method_receiver_types(
+            method_node,
+            source,
+            php_field_types.get(class_nid, {}),
+        )
+        for body_id, (method_node, class_nid) in php_method_scopes.items()
+    }
 
     def _emit_indirect_by_name(ident_name: str, loc_node, scope_nid: str,
                                context: str) -> None:
@@ -4189,6 +4508,11 @@ def _extract_generic(
             is_this_field_call: bool = False
             swift_receiver: str | None = None
             member_receiver: str | None = None
+            # PHP inline instantiation `(new X())->m()` (#1682): the class is
+            # named in the source, so it needs no type table — keep both the
+            # short name (for lookup) and the written text (for corroboration).
+            php_inline_new_type: str | None = None
+            php_inline_new_qualified: str | None = None
 
             # Special handling per language
             if config.ts_module == "tree_sitter_swift":
@@ -4310,11 +4634,55 @@ def _extract_generic(
                     if scope_node:
                         callee_name = _read_text(scope_node, source)
                 else:
-                    # member_call_expression: $obj->method()
+                    # member_call_expression / nullsafe_member_call_expression:
+                    # $obj->method() / $obj?->method()
                     is_member_call = True
                     name_node = node.child_by_field_name("name")
                     if name_node:
                         callee_name = _read_text(name_node, source)
+                    # #1682: capture the receiver so the cross-file PHP pass can
+                    # bind the call to the receiver's DECLARED type. Gated on the
+                    # node type because class_constant_access_expression lands in
+                    # this else-branch too and has no `object`/`name` fields.
+                    if node.type in ("member_call_expression",
+                                     "nullsafe_member_call_expression"):
+                        obj = node.child_by_field_name("object")
+                        if obj is not None and obj.type == "variable_name":
+                            # $this->m() -> "this"; $svc->m() -> "svc", typed by
+                            # the method-scoped table. `$this` is a reserved name
+                            # in PHP, so the two key spaces cannot collide.
+                            member_receiver = _read_text(obj, source).lstrip("$")
+                        elif obj is not None and obj.type == "member_access_expression":
+                            # $this->prop->m(): object=variable_name($this),
+                            # name=name(prop). Deeper chains stay uncaptured.
+                            inner = obj.child_by_field_name("object")
+                            prop = obj.child_by_field_name("name")
+                            if (inner is not None and inner.type == "variable_name"
+                                    and _read_text(inner, source) == "$this"
+                                    and prop is not None):
+                                member_receiver = f"this.{_read_text(prop, source)}"
+                        elif obj is not None and obj.type == "parenthesized_expression":
+                            # (new X())->m(): object_creation_expression is an
+                            # UNFIELDED named child, and the class it names is
+                            # an unfielded `name` (bare) or `qualified_name`
+                            # (namespaced) child. An ANONYMOUS class parses as
+                            # an `anonymous_class` child instead — it has no
+                            # name node, so the scan finds nothing and the
+                            # receiver stays uncaptured (verified by probe).
+                            created = next((c for c in obj.named_children
+                                            if c.type == "object_creation_expression"), None)
+                            cls = None
+                            if created is not None:
+                                cls = next((c for c in created.named_children
+                                            if c.type in ("name", "qualified_name")), None)
+                            short = _php_name_text(cls, source) if cls is not None else None
+                            # `new self()` / `new static()` / `new parent()`
+                            # need inheritance context the raw-call facts do
+                            # not carry — refused by the same non-concrete set.
+                            if short and short.lower() not in _PHP_NON_CONCRETE_TYPE_NAMES:
+                                member_receiver = "(new)"
+                                php_inline_new_type = short
+                                php_inline_new_qualified = _read_text(cls, source)
             elif config.ts_module == "tree_sitter_cpp":
                 # C++: function field, then field_expression/qualified_identifier
                 func_node = node.child_by_field_name(config.call_function_field) if config.call_function_field else None
@@ -4444,9 +4812,26 @@ def _extract_generic(
                 _java_defer = (
                     config.ts_module == "tree_sitter_java" and is_member_call
                 )
-                if _java_defer or (
+                # PHP (#1682): defer ONLY when the receiver's type is actually
+                # known — a typed `$this->prop->m()` must not bare-match an
+                # unrelated same-named method in this file. Plain `$this->m()`
+                # and untyped receivers keep today's in-file match, since the
+                # resolver could add nothing for them anyway.
+                _php_receiver_type: str | None = None
+                if config.ts_module == "tree_sitter_php":
+                    if php_inline_new_type:
+                        _php_receiver_type = php_inline_new_type
+                    elif member_receiver and member_receiver != "this":
+                        _php_receiver_type = (receiver_types or {}).get(member_receiver)
+                _php_defer = bool(_php_receiver_type)
+                if _java_defer or _php_defer or (
                     is_member_call
                     and member_receiver
+                    # PHP's defer decision is fully expressed by _php_defer. Its
+                    # receivers are variables, `this.<prop>` keys and `(new)` —
+                    # never a bare class name — so the capitalized rule below
+                    # would only strip in-file edges off an untypable `$Svc->m()`.
+                    and config.ts_module != "tree_sitter_php"
                     and (
                         member_receiver[:1].isupper()
                         or is_this_field_call
@@ -4508,6 +4893,15 @@ def _extract_generic(
                         receiver_type = (receiver_types or {}).get(member_receiver or "")
                         if receiver_type:
                             rc_entry["receiver_type"] = receiver_type
+                    # PHP: tag the raw_call so _resolve_php_member_calls claims
+                    # it (and so other languages' resolvers can skip it), and
+                    # stamp the receiver type resolved above (#1682).
+                    if config.ts_module == "tree_sitter_php":
+                        rc_entry["lang"] = "php"
+                        if _php_receiver_type:
+                            rc_entry["receiver_type"] = _php_receiver_type
+                        if php_inline_new_qualified:
+                            rc_entry["receiver_qualified"] = php_inline_new_qualified
                     raw_calls.append(rc_entry)
 
             # Indirect dispatch: a function passed BY NAME as a call argument
@@ -4743,9 +5137,11 @@ def _extract_generic(
     # (#1630 Pattern B). Guarding on the tracked set prevents double-walking.
     _tracked_body_ids.update(id(b) for _, b in function_bodies)
 
-    # Body ids are unique (one language per file), so the Java and C# per-method
-    # receiver tables merge without collision.
-    receiver_types_by_body = {**java_receiver_types, **csharp_receiver_types}
+    # Body ids are unique (one language per file), so the Java, C# and PHP
+    # per-method receiver tables merge without collision.
+    receiver_types_by_body = {
+        **java_receiver_types, **csharp_receiver_types, **php_receiver_types,
+    }
     for caller_nid, body_node in function_bodies:
         walk_calls(
             body_node,
@@ -4864,6 +5260,34 @@ def _extract_generic(
                     n["_callable_class"] = True
     if swift_extensions:
         result["swift_extensions"] = swift_extensions
+    if php_non_class_type_names:
+        # Interfaces, enums and traits mint no definition node, so the resolver
+        # cannot tell one from a same-named class without this (#1682). Sorted
+        # for a stable AST-cache payload.
+        result["php_non_class_types"] = sorted(php_non_class_type_names)
+        # The per-file payload above only reaches the resolver for files
+        # dispatched THIS run, so on an incremental rebuild an unchanged
+        # declaring file stopped refusing and the receiver bound to a stranger
+        # class sharing the short name (#11). Also stamp the names on the FILE
+        # node — the marker rides the node dict into graph.json and back in as
+        # resolution context, the same channel `_callable` uses (#2438). The
+        # file node is the host because none of these declarations mints a node
+        # of its own; the names are listed explicitly rather than read off the
+        # node's `<Name>.php` label, which would only hold under
+        # one-declaration-per-file PSR-4 convention. `_php_interfaces` is the
+        # pre-#12 spelling, carrying interfaces alone; readers still accept it,
+        # so a graph.json written before enums and traits joined the set keeps
+        # refusing what it does name.
+        for n in nodes:
+            if n["id"] == file_nid:
+                n["_php_non_class_types"] = list(result["php_non_class_types"])
+                break
+    if php_class_fqns:
+        # The `namespace` this file declares for each class it defines, so the
+        # inline-`new` corroboration can compare a written FQN against the real
+        # one instead of guessing from the path (#14). Same `{"path": …}` shape
+        # as the type tables, which the cache re-anchors on load.
+        result["php_class_fqns"] = {"path": str_path, "classes": php_class_fqns}
     # TS/JS: augment the constructor-injection type table with local `new`
     # bindings and type-annotated parameters, so `const s = new Svc(); s.m()` and
     # a call on a typed param (incl. inside a closure) resolve (#1630). The
