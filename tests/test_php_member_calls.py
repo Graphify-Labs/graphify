@@ -1088,3 +1088,220 @@ def test_class_receiver_still_resolves_when_an_interface_exists(tmp_path: Path):
     assert (go, _find(r, ".notify()", "mailnotifier")) in calls
     assert (go, _find(r, ".notify()", "audittrail")) not in calls
     assert (go, _find(r, ".notify()", "support_notifier")) not in calls
+
+
+# ── Enum- and trait-typed receivers are refused (#12) ────────────────────────
+#
+# `enum_declaration` and `trait_declaration` mint no definition node either, so
+# they leak exactly like interfaces did before #5: `App\Enums\Status` (enum)
+# beside an unrelated `App\Legacy\Status` (class) leaves ONE definition under
+# that short name, and the single-definition guard binds the stranger. The
+# Laravel shape is an enum mirroring a model. Enums and traits are added to the
+# refusal pre-scan only — they still mint no nodes, so an enum's own methods
+# stay unresolvable as call targets (a deliberate recall gap, not a wrong edge).
+
+_ENUM_CORPUS = {
+    "app/Enums/Status.php": (
+        "<?php\nnamespace App\\Enums;\n"
+        "enum Status: string {\n"
+        "    case Active = 'a';\n"
+        "    public function label(): string { return 'ENUM'; }\n}\n"
+    ),
+    "app/Legacy/Status.php": (
+        "<?php\nnamespace App\\Legacy;\n"
+        "class Status {\n    public function label(): string { return 'WRONG'; }\n}\n"
+    ),
+}
+
+
+def _labelled(calls, caller: str) -> bool:
+    return any(src == caller and "label" in tgt.lower() for src, tgt in calls)
+
+
+def _runner(body: str) -> str:
+    return (
+        "<?php\n"
+        "namespace App;\n"
+        "use App\\Enums\\Status;\n"
+        "class Runner {\n"
+        f"{body}\n"
+        "}\n"
+    )
+
+
+def test_enum_typed_property_emits_no_edge(tmp_path: Path):
+    """`private Status $status;` where Status is an enum: the same-short-named
+    `App\\Legacy\\Status` class is a total stranger, never the receiver."""
+    calls, r = _calls(tmp_path, {
+        **_ENUM_CORPUS,
+        "app/Runner.php": _runner(
+            "    private Status $status;\n"
+            "    public function go(): void { $this->status->label(); }"
+        ),
+    })
+
+    go = _find(r, ".go()", "runner")
+    assert (go, _find(r, ".label()", "legacy_status")) not in calls
+    assert not _labelled(calls, go)
+
+
+def test_enum_promoted_ctor_param_emits_no_edge(tmp_path: Path):
+    calls, r = _calls(tmp_path, {
+        **_ENUM_CORPUS,
+        "app/Runner.php": _runner(
+            "    public function __construct(private Status $status) {}\n"
+            "    public function go(): void { $this->status->label(); }"
+        ),
+    })
+
+    go = _find(r, ".go()", "runner")
+    assert (go, _find(r, ".label()", "legacy_status")) not in calls
+    assert not _labelled(calls, go)
+
+
+def test_enum_typed_param_emits_no_edge(tmp_path: Path):
+    calls, r = _calls(tmp_path, {
+        **_ENUM_CORPUS,
+        "app/Runner.php": _runner(
+            "    public function go(Status $s): void { $s->label(); }"
+        ),
+    })
+
+    go = _find(r, ".go()", "runner")
+    assert (go, _find(r, ".label()", "legacy_status")) not in calls
+    assert not _labelled(calls, go)
+
+
+def test_enum_fqn_typed_property_emits_no_edge(tmp_path: Path):
+    """The sharpest form: the source names `\\App\\Enums\\Status` outright, so
+    binding `App\\Legacy\\Status` contradicts the written type."""
+    calls, r = _calls(tmp_path, {
+        **_ENUM_CORPUS,
+        "app/Runner.php": _runner(
+            "    private \\App\\Enums\\Status $status;\n"
+            "    public function go(): void { $this->status->label(); }"
+        ),
+    })
+
+    go = _find(r, ".go()", "runner")
+    assert (go, _find(r, ".label()", "legacy_status")) not in calls
+    assert not _labelled(calls, go)
+
+
+def test_enum_typed_local_new_emits_no_edge(tmp_path: Path):
+    """The typed-local receiver path (#4) refuses enums too."""
+    calls, r = _calls(tmp_path, {
+        **_ENUM_CORPUS,
+        "app/Runner.php": _runner(
+            "    public function go(): void {\n"
+            "        $s = new Status();\n"
+            "        $s->label();\n"
+            "    }"
+        ),
+    })
+
+    go = _find(r, ".go()", "runner")
+    assert (go, _find(r, ".label()", "legacy_status")) not in calls
+    assert not _labelled(calls, go)
+
+
+def test_enum_inline_new_emits_no_edge(tmp_path: Path):
+    """The inline-new receiver path (#3) refuses enums too — an enum cannot be
+    instantiated, so such a receiver must never bind a stranger."""
+    calls, r = _calls(tmp_path, {
+        **_ENUM_CORPUS,
+        "app/Runner.php": _runner(
+            "    public function go(): void {\n"
+            "        (new \\App\\Enums\\Status())->label();\n"
+            "    }"
+        ),
+    })
+
+    go = _find(r, ".go()", "runner")
+    assert (go, _find(r, ".label()", "legacy_status")) not in calls
+    assert not _labelled(calls, go)
+
+
+def test_enum_refusal_is_case_insensitive(tmp_path: Path):
+    """PHP type names are case-insensitive: `status` IS `Status`."""
+    calls, r = _calls(tmp_path, {
+        **_ENUM_CORPUS,
+        "app/Runner.php": _runner(
+            "    private status $status;\n"
+            "    public function go(): void { $this->status->label(); }"
+        ),
+    })
+
+    go = _find(r, ".go()", "runner")
+    assert not _labelled(calls, go)
+
+
+def test_enum_without_a_colliding_class_emits_no_edge(tmp_path: Path):
+    """Control: an enum mints no definition node, so its methods are not call
+    targets at all. The collision above supplies the only candidate — this
+    documents the (deliberate) recall gap that leaves."""
+    calls, r = _calls(tmp_path, {
+        "app/Enums/Status.php": _ENUM_CORPUS["app/Enums/Status.php"],
+        "app/Runner.php": _runner(
+            "    private Status $status;\n"
+            "    public function go(): void { $this->status->label(); }"
+        ),
+    })
+
+    go = _find(r, ".go()", "runner")
+    assert not _labelled(calls, go)
+
+
+def test_trait_typed_receiver_emits_no_edge(tmp_path: Path):
+    """A trait is not a type, so a trait-typed receiver is already broken PHP —
+    but it must still refuse rather than bind the same-short-named class."""
+    calls, r = _calls(tmp_path, {
+        "app/Support/Cache.php": (
+            "<?php\nnamespace App\\Support;\n"
+            "trait Cache {\n    public function flush(): void {}\n}\n"
+        ),
+        "app/Legacy/Cache.php": (
+            "<?php\nnamespace App\\Legacy;\n"
+            "class Cache {\n    public function flush(): void {}\n}\n"
+        ),
+        "app/Runner.php": (
+            "<?php\nnamespace App;\n"
+            "use App\\Support\\Cache;\n"
+            "class Runner {\n"
+            "    private Cache $cache;\n"
+            "    public function go(): void { $this->cache->flush(); }\n"
+            "}\n"
+        ),
+    })
+
+    go = _find(r, ".go()", "runner")
+    assert (go, _find(r, ".flush()", "legacy_cache")) not in calls
+    assert not any(src == go and "flush" in tgt.lower() for src, tgt in calls)
+
+
+def test_class_receiver_still_resolves_when_an_enum_exists(tmp_path: Path):
+    """The refusal is name-scoped: a CLASS-typed receiver still resolves with an
+    unrelated enum (and a same-named-method decoy class) in the corpus."""
+    calls, r = _calls(tmp_path, {
+        "app/Enums/Status.php": _ENUM_CORPUS["app/Enums/Status.php"],
+        "app/Models/Lead.php": (
+            "<?php\nnamespace App\\Models;\n"
+            "class Lead {\n    public function label(): string { return 'L'; }\n}\n"
+        ),
+        "app/Audit/AuditTrail.php": (
+            "<?php\nnamespace App\\Audit;\n"
+            "class AuditTrail {\n    public function label(): string { return 'A'; }\n}\n"
+        ),
+        "app/Runner.php": (
+            "<?php\nnamespace App;\n"
+            "use App\\Models\\Lead;\n"
+            "class Runner {\n"
+            "    private Lead $lead;\n"
+            "    public function go(): void { $this->lead->label(); }\n"
+            "}\n"
+        ),
+    })
+
+    go = _find(r, ".go()", "runner")
+    assert (go, _find(r, ".label()", "lead")) in calls
+    assert (go, _find(r, ".label()", "audittrail")) not in calls

@@ -3133,15 +3133,20 @@ def _resolve_php_member_calls(
         enclosing_type.setdefault(method, owner)
         method_index.setdefault((owner, key(method_node.get("label", ""))), set()).add(method)
 
-    # Names declared as `interface` anywhere in the corpus. PHP interfaces mint
-    # no definition node, so without this an interface-typed receiver would bind
-    # to whatever same-named CLASS happens to exist — the Laravel Contracts
-    # collision (`App\Contracts\Notifier` vs `App\Support\Notifier`), which the
-    # single-definition guard cannot see because there IS only one definition.
-    interface_names = {
+    # Names declared as `interface`, `enum` or `trait` anywhere in the corpus.
+    # None of the three mints a definition node, so without this such a receiver
+    # would bind to whatever same-named CLASS happens to exist — the Laravel
+    # Contracts collision (`App\Contracts\Notifier` vs `App\Support\Notifier`)
+    # or the enum-beside-model one (`App\Enums\Status` vs `App\Models\Status`),
+    # neither of which the single-definition guard can see because there IS only
+    # one definition. `php_interfaces` is the pre-#12 spelling of the same fact,
+    # still read so an AST-cache entry written before enums and traits joined
+    # the set keeps refusing interfaces.
+    non_class_type_names = {
         key(name)
         for result in per_file
-        for name in result.get("php_interfaces", [])
+        for keyname in ("php_non_class_types", "php_interfaces")
+        for name in result.get(keyname, [])
     }
 
     existing_pairs = {(edge.get("source"), edge.get("target")) for edge in all_edges}
@@ -3165,8 +3170,11 @@ def _resolve_php_member_calls(
                 type_name = raw_call.get("receiver_type")
                 if not type_name:
                     continue  # untyped / union-typed / unknown receiver: refuse
-                if key(type_name) in interface_names:
-                    continue  # a contract names no implementation: refuse
+                if key(type_name) in non_class_type_names:
+                    # An interface names no implementation, a trait is not a
+                    # type, and an enum's methods live on no definition node:
+                    # refuse rather than bind a same-short-named stranger.
+                    continue
                 type_defs = type_def_nids.get(key(type_name), [])
                 if len(type_defs) != 1:
                     continue  # short name collides across the corpus: refuse

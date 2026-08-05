@@ -143,23 +143,34 @@ def _csharp_pre_scan_interfaces(root_node, source: bytes) -> set[str]:
         stack.extend(n.children)
     return out
 
-def _php_pre_scan_interfaces(root_node, source: bytes) -> set[str]:
-    """Return names declared as `interface` in this PHP file (#1682).
+# PHP declaration kinds that are NOT in `_PHP_CONFIG.class_types`: they mint no
+# definition node, so the resolver cannot recognize them after the fact (#1682).
+_PHP_NON_CLASS_DECLARATIONS = frozenset({
+    "interface_declaration",
+    "enum_declaration",
+    "trait_declaration",
+})
 
-    PHP interfaces are not in ``_PHP_CONFIG.class_types``, so they mint no
+
+def _php_pre_scan_non_class_declarations(root_node, source: bytes) -> set[str]:
+    """Return names declared as `interface`, `enum` or `trait` in this PHP file (#1682).
+
+    None of the three is in ``_PHP_CONFIG.class_types``, so they mint no
     definition node and cannot be recognized by the resolver after the fact.
-    Laravel's Contracts convention makes the collision that follows realistic:
-    an `App\\Contracts\\Notifier` interface beside an unrelated
-    `App\\Support\\Notifier` class leaves exactly ONE definition under that
-    short name, which would satisfy the single-definition guard and bind an
-    interface-typed receiver to a total stranger. The names are threaded to the
-    resolver so it can refuse instead.
+    Laravel's conventions make the collision that follows realistic: an
+    `App\\Contracts\\Notifier` interface beside an unrelated
+    `App\\Support\\Notifier` class — or an `App\\Enums\\Status` enum beside an
+    Eloquent `App\\Models\\Status` — leaves exactly ONE definition under that
+    short name, which would satisfy the single-definition guard and bind the
+    receiver to a total stranger. The names are threaded to the resolver so it
+    can refuse instead. Refusal only: minting nodes for these declarations
+    would change what the graph contains, which is a separate decision.
     """
     out: set[str] = set()
     stack = [root_node]
     while stack:
         n = stack.pop()
-        if n.type == "interface_declaration":
+        if n.type in _PHP_NON_CLASS_DECLARATIONS:
             name_node = n.child_by_field_name("name")
             if name_node is not None:
                 text = _read_text(name_node, source)
@@ -2582,9 +2593,9 @@ def _extract_generic(
     if config.ts_module == "tree_sitter_c_sharp":
         csharp_interface_names = _csharp_pre_scan_interfaces(root, source)
 
-    php_interface_names: set[str] = set()
+    php_non_class_type_names: set[str] = set()
     if config.ts_module == "tree_sitter_php":
-        php_interface_names = _php_pre_scan_interfaces(root, source)
+        php_non_class_type_names = _php_pre_scan_non_class_declarations(root, source)
 
     swift_protocol_names: set[str] = set()
     swift_class_names: set[str] = set()
@@ -5177,11 +5188,11 @@ def _extract_generic(
                     n["_callable_class"] = True
     if swift_extensions:
         result["swift_extensions"] = swift_extensions
-    if php_interface_names:
-        # Interfaces mint no definition node, so the resolver cannot tell one
-        # from a same-named class without this (#1682). Sorted for a stable
-        # AST-cache payload.
-        result["php_interfaces"] = sorted(php_interface_names)
+    if php_non_class_type_names:
+        # Interfaces, enums and traits mint no definition node, so the resolver
+        # cannot tell one from a same-named class without this (#1682). Sorted
+        # for a stable AST-cache payload.
+        result["php_non_class_types"] = sorted(php_non_class_type_names)
     # TS/JS: augment the constructor-injection type table with local `new`
     # bindings and type-annotated parameters, so `const s = new Svc(); s.m()` and
     # a call on a typed param (incl. inside a closure) resolve (#1630). The
