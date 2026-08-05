@@ -72,4 +72,12 @@ def extract_tcl(path: Path) -> dict:
         add_node(tgt, pkg, line)
         add_edge(file_nid, tgt, "imports_from", line)
 
+    # source <file> → import edge (quotes/braces optional)
+    for m in re.finditer(r'^\s*source\s+\{?"?([\w./\\-]+\.tcl)"?\}?', source, re.MULTILINE):
+        filename = m.group(1)
+        line = source[: m.start()].count("\n") + 1
+        tgt = _make_id(filename)
+        add_node(tgt, filename, line)
+        add_edge(file_nid, tgt, "imports_from", line)
+
     return {"nodes": nodes, "edges": edges}
