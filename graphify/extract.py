@@ -2086,21 +2086,31 @@ def _merge_csharp_partial_class_nodes(
     per_file: list[dict],
     all_nodes: list[dict],
     all_edges: list[dict],
+    paths: list[Path],
+    root: Path,
 ) -> None:
     """Collapse C# `partial class Foo` halves split across files into ONE node
-    (#2332).
+    (#2332), without crossing assembly boundaries (#2411).
 
     The per-file extractor mints class ids with the file stem, so each file
     declaring `partial class Foo` produces its own `Foo` node: members split
     across the halves and cross-half calls don't resolve (two candidate types
     make every receiver-typed lookup bail as ambiguous). Group partial-stamped
-    type nodes by (namespace, label) — same-named types in different namespaces
-    are distinct types, non-partial same-named types are separate declarations,
-    and nested partials are excluded (their ids omit the enclosing type, so a
-    same-named nested pair under different outers would falsely merge). The
-    canonical node is the sorted-first half by (source_file, source_location,
-    id); every edge endpoint and raw-call caller is remapped onto it. Member
-    node ids are left untouched — only the class-level nodes collapse.
+    type nodes by (assembly, namespace, label) — same-named types in different
+    namespaces are distinct types, non-partial same-named types are separate
+    declarations, and nested partials are excluded (their ids omit the
+    enclosing type, so a same-named nested pair under different outers would
+    falsely merge). The `partial` keyword only fuses declarations compiled into
+    the SAME assembly, so the key also carries the nearest ancestor directory
+    holding a `*.csproj`/`*.fsproj`/`*.vbproj` — same-named halves under
+    different project dirs are genuinely distinct types and stay apart. Halves
+    with NO project file on any ancestor (up to the scan root) all key to ""
+    and still merge together, so single-project/snippet corpora behave exactly
+    as before; the probe runs only for groups that are otherwise ambiguous.
+    The canonical node is the sorted-first half by (source_file,
+    source_location, id); every edge endpoint and raw-call caller is remapped
+    onto it. Member node ids are left untouched — only the class-level nodes
+    collapse.
 
     Must run BEFORE _disambiguate_colliding_node_ids / _rewire_unique_stub_nodes /
     _resolve_csharp_type_references and the resolver registry, so every later
@@ -2120,19 +2130,90 @@ def _merge_csharp_partial_class_nodes(
             continue
         groups.setdefault((str(md.get("namespace", "")), str(label)), []).append(n)
 
+    if not any(len(members) >= 2 for members in groups.values()):
+        return
+
+    # Assembly probe (#2411). A node's `source_file` can be a bare filename at
+    # this point (ambiguous across project dirs), so map nid -> scanned path
+    # via per_file, which aligns 1:1 with `paths`.
+    nid_to_path: dict[str, Path] = {}
+    for result, path in zip(per_file, paths):
+        for pn in result.get("nodes") or []:
+            nid_to_path.setdefault(pn["id"], path)
+
+    proj_exts = (".csproj", ".fsproj", ".vbproj")
+    project_dirs: set[Path] = set()
+    for p in paths:
+        if p.suffix.lower() in proj_exts:
+            try:
+                project_dirs.add(p.resolve().parent)
+            except OSError:
+                pass
+    try:
+        stop = root.resolve()
+    except OSError:
+        stop = root
+    dir_assembly: dict[Path, str] = {}
+
+    def _assembly_of_dir(d: Path) -> str:
+        """Nearest ancestor dir (self included) holding a project file, "" if
+        none up to the scan root; memoized along the walked chain."""
+        chain: list[Path] = []
+        key = ""
+        while True:
+            cached = dir_assembly.get(d)
+            if cached is not None:
+                key = cached
+                break
+            chain.append(d)
+            if d in project_dirs:
+                key = str(d)
+                break
+            try:
+                has_project = any(
+                    c.suffix.lower() in proj_exts for c in d.iterdir()
+                )
+            except OSError:
+                has_project = False
+            if has_project:
+                key = str(d)
+                break
+            if d == stop or d.parent == d:
+                break
+            d = d.parent
+        for c in chain:
+            dir_assembly[c] = key
+        return key
+
+    def _assembly_of_node(nid: str) -> str:
+        path = nid_to_path.get(nid)
+        if path is None:
+            return ""
+        try:
+            d = path.resolve().parent
+        except OSError:
+            return ""
+        return _assembly_of_dir(d)
+
     remap: dict[str, str] = {}
     for members in groups.values():
         if len(members) < 2:
             continue
-        members.sort(key=lambda n: (
-            str(n.get("source_file", "")),
-            str(n.get("source_location", "")),
-            str(n.get("id", "")),
-        ))
-        canonical_nid = members[0]["id"]
-        for other in members[1:]:
-            if other["id"] != canonical_nid:
-                remap[other["id"]] = canonical_nid
+        by_assembly: dict[str, list[dict]] = {}
+        for n in members:
+            by_assembly.setdefault(_assembly_of_node(n["id"]), []).append(n)
+        for halves in by_assembly.values():
+            if len(halves) < 2:
+                continue
+            halves.sort(key=lambda n: (
+                str(n.get("source_file", "")),
+                str(n.get("source_location", "")),
+                str(n.get("id", "")),
+            ))
+            canonical_nid = halves[0]["id"]
+            for other in halves[1:]:
+                if other["id"] != canonical_nid:
+                    remap[other["id"]] = canonical_nid
 
     if not remap:
         return
@@ -4491,6 +4572,7 @@ def _extract_parallel(
     work_items = [(idx, str(path), root_str, cache_loc_str) for idx, path in uncached_work]
 
     done_count = 0
+    failed: list[int] = []  # positions into uncached_work whose future failed
     _PROGRESS_INTERVAL = 100
     try:
         with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as pool:
@@ -4502,12 +4584,21 @@ def _extract_parallel(
                 try:
                     idx, result = future.result()
                     per_file[idx] = result
+                except concurrent.futures.process.BrokenProcessPool:
+                    # #2444: a pool that dies while results are being consumed
+                    # raises BrokenProcessPool from every pending future. It
+                    # must reach the pool-level handler below (which returns
+                    # False so the caller falls back to sequential), not be
+                    # swallowed here per-future — that left the remaining
+                    # per_file slots empty and silently dropped the files.
+                    raise
                 except Exception as exc:
                     pos = futures[future]
                     print(
                         f"  warning: worker failed for {work_items[pos][1]}: {exc}",
                         file=sys.stderr, flush=True,
                     )
+                    failed.append(pos)
                 done_count += 1
                 if (
                     total_files >= _PROGRESS_INTERVAL
@@ -4532,6 +4623,16 @@ def _extract_parallel(
             flush=True,
         )
         return False
+    if failed:
+        # #2445: retry per-future failures once, in-process, instead of leaving
+        # their per_file slots None (which the defensive fill downstream turned
+        # into well-formed empties — silent data loss). This is bounded, not a
+        # loop: _extract_sequential goes through _safe_extract, which converts
+        # a second failure into an error-carrying result.
+        _extract_sequential(
+            [uncached_work[pos] for pos in failed],
+            per_file, root, total_files, cache_location,
+        )
     if total_files >= _PROGRESS_INTERVAL:
         # Report the same denominator the intermediate lines used (uncached files
         # actually processed this run), not total_files — switching to the full
@@ -4591,6 +4692,8 @@ def extract(
     root: Path | None = None,
     parallel: bool = True,
     max_workers: int | None = None,
+    resolution_context_nodes: list[dict] | None = None,
+    resolution_context_edges: list[dict] | None = None,
 ) -> dict:
     """Extract AST nodes and edges from a list of code files.
 
@@ -4613,6 +4716,24 @@ def extract(
             use ProcessPoolExecutor for multi-core extraction.
         max_workers: max subprocess count. Defaults to cpu_count (or the
             value of GRAPHIFY_MAX_WORKERS if set), bounded by len(uncached_work).
+        resolution_context_nodes: read-only AST nodes from files that are NOT
+            being extracted this run (an incremental rebuild's unchanged
+            corpus, #2406). They extend the cross-file resolution indexes —
+            the shared direct-call pass's label/file indexes, the
+            indirect_call callable guard (via the persisted `_callable` /
+            `_callable_class` markers, #2438), and the member-call resolvers
+            run by `run_language_resolvers` (#2437) — so a changed caller can
+            still bind `foo()`, `obj.method()`, or `submit(handler)` to an
+            unchanged callee. They are never parsed, mutated, or returned;
+            raw_calls come only from `paths`, so only edges sourced by the
+            re-extracted files are emitted.
+        resolution_context_edges: the `contains`/`method` edges of the same
+            unchanged corpus (#2437). The member-call resolvers walk these to
+            map a receiver type to the single class owning the called method;
+            without them an unchanged callee's class never passes the
+            single-definition guard. Read-only, same contract as
+            resolution_context_nodes: they widen the resolvers' view but only
+            fresh results are appended to the returned nodes/edges.
     """
     paths = [Path(p) for p in paths]
     anchor_root = Path(root) if root is not None else None
@@ -4682,12 +4803,24 @@ def extract(
                 uncached_work, per_file, root, max_workers, total, cache_location
             )
         if not ran_parallel:
-            _extract_sequential(uncached_work, per_file, root, total, cache_location)
+            # #2444: only re-extract what the pool didn't finish. A pool that
+            # breaks mid-run has already filled some per_file slots; redoing
+            # the whole batch would throw that work away.
+            _extract_sequential(
+                [(i, p) for (i, p) in uncached_work if per_file[i] is None],
+                per_file, root, total, cache_location,
+            )
 
-    # Fill any remaining None slots (shouldn't happen, but defensive)
+    # Fill any remaining None slots. With the #2444/#2445 handling above this
+    # is unreachable; the error marker keeps any regression loud (and out of
+    # the caches/#1666 paths) instead of letting a dropped file masquerade as
+    # a legitimately-empty one.
     for i in range(total):
         if per_file[i] is None:
-            per_file[i] = {"nodes": [], "edges": []}
+            per_file[i] = {
+                "nodes": [], "edges": [],
+                "error": "internal: no extraction result produced",
+            }
 
     # #1666: surface any source file an extractor accepted but that produced zero
     # nodes (not even a file node). Such a file is silently absent from the graph,
@@ -5175,7 +5308,7 @@ def extract(
     # graph is identical regardless of scan root (#2072).
     _repoint_python_package_imports(paths, all_nodes, all_edges, root)
     _merge_swift_extensions(per_file, all_nodes, all_edges)
-    _merge_csharp_partial_class_nodes(per_file, all_nodes, all_edges)
+    _merge_csharp_partial_class_nodes(per_file, all_nodes, all_edges, paths, root)
     _disambiguate_colliding_node_ids(all_nodes, all_edges, all_raw_calls, root)
     _canonicalize_csharp_namespace_nodes(all_nodes, all_edges)
     # PHP namespace/use disambiguation must run BEFORE the unique-stub rewire:
@@ -5296,7 +5429,28 @@ def extract(
     # identifiers, and they were polluting matches for short names — #563).
     global_label_to_nids: dict[str, list[str]] = {}      # exact-case (all languages)
     global_label_to_nids_ci: dict[str, list[str]] = {}   # case-INSENSITIVE-language nodes
-    for n in all_nodes:
+    # #2406: on an incremental rebuild only the CHANGED files are parsed, so
+    # `all_nodes` alone cannot see a callee that lives in an unchanged file and
+    # every changed->unchanged DIRECT call silently vanished (while the file-level
+    # `imports` edge survived, because the JS/Python symbol-resolution pass
+    # reads the import TARGET off disk instead of off the node list). Extend the
+    # resolution indexes — and ONLY the indexes — with the caller-supplied
+    # unchanged-corpus nodes. Fresh nodes win on id collision, nothing is
+    # appended to `all_nodes`, and raw_calls still come solely from `paths`, so
+    # the emitted edges remain sourced by the re-extracted files.
+    #
+    # Scope: this list feeds the shared direct-call loop below, the
+    # indirect_call callable guard (#2438, via the persisted `_callable` /
+    # `_callable_class` markers), and — together with resolution_context_edges —
+    # the member-call resolvers run by run_language_resolvers (#2437).
+    resolution_nodes = all_nodes
+    if resolution_context_nodes:
+        _fresh_ids = {n["id"] for n in all_nodes}
+        resolution_nodes = all_nodes + [
+            n for n in resolution_context_nodes
+            if n.get("id") and n["id"] not in _fresh_ids
+        ]
+    for n in resolution_nodes:
         if n.get("file_type") == "rationale" or n.get("type") == "namespace":
             continue
         raw = n.get("label", "")
@@ -5313,12 +5467,15 @@ def extract(
     # Callable-def ids for the indirect_call callable guard, read from the `_callable`
     # marker on the FINAL (post-remap) nodes — so a callback resolves only to a real
     # function/method/class, never a same-named data symbol, and the guard never goes
-    # stale when node ids were relativized/disambiguated above (#1566).
-    callable_nids = {n["id"] for n in all_nodes if n.get("_callable")}
+    # stale when node ids were relativized/disambiguated above (#1566). Read from
+    # `resolution_nodes`, not `all_nodes` (#2438): an unchanged callee's context node
+    # carries the marker persisted in graph.json, so an incremental rebuild keeps
+    # resolving callbacks into unchanged files while data symbols stay excluded.
+    callable_nids = {n["id"] for n in resolution_nodes if n.get("_callable")}
     # Class defs are callable only via their constructor; they are frequently passed
     # as descriptive values (`select(Model)`, exception tuples), not invoked. Exclude
     # them from the indirect_call guard below to avoid false edges (#2137).
-    class_nids = {n["id"] for n in all_nodes if n.get("_callable_class")}
+    class_nids = {n["id"] for n in resolution_nodes if n.get("_callable_class")}
 
     # Build evidence index from import edges so cross-file calls backed by an
     # explicit import statement can be promoted from INFERRED to EXTRACTED.
@@ -5344,7 +5501,7 @@ def extract(
     # absolute-derived id — which would spuriously fail import evidence and (with
     # the #1659 JS/TS gate below) drop a legitimately-imported call.
     sf_to_file_nid: dict[str, str] = {}
-    for n in all_nodes:
+    for n in resolution_nodes:
         sf = n.get("source_file")
         if sf and n.get("label") == Path(str(sf)).name:
             sf_to_file_nid.setdefault(str(sf), n["id"])
@@ -5353,7 +5510,7 @@ def extract(
     # (test/non-test classification + path proximity). Kept separate from the
     # file-node-id map because tie-breaking compares the actual file paths.
     nid_to_source_file: dict[str, str] = {}
-    for n in all_nodes:
+    for n in resolution_nodes:
         sf = n.get("source_file")
         if not sf:
             continue
@@ -5567,7 +5724,24 @@ def extract(
     # receiver-typed/qualified calls the shared pass skipped) with its own
     # single-definition god-node guard. Registered in graphify.resolver_registry so
     # a new language plugs in without editing this body (#1356 Swift, #1446 Python).
-    run_language_resolvers(paths, per_file, all_nodes, all_edges)
+    #
+    # #2437: on an incremental rebuild the resolvers must also see the unchanged
+    # corpus — its nodes (types/methods, from resolution_nodes above) and its
+    # persisted contains/method edges (resolution_context_edges) — or the
+    # single-definition guards bail on every changed->unchanged member call. Run
+    # them over SCRATCH lists that include the context, then keep only the fresh
+    # results: raw_calls come solely from `paths`, so nothing sourced by an
+    # unchanged file is ever emitted, and the ambiguity guards count the same
+    # candidates a full build would (the context is the whole unchanged corpus).
+    if resolution_context_nodes or resolution_context_edges:
+        _rl_nodes = list(resolution_nodes)
+        _rl_edges = all_edges + list(resolution_context_edges or [])
+        _n0, _e0 = len(_rl_nodes), len(_rl_edges)
+        run_language_resolvers(paths, per_file, _rl_nodes, _rl_edges)
+        all_nodes.extend(_rl_nodes[_n0:])
+        all_edges.extend(_rl_edges[_e0:])
+    else:
+        run_language_resolvers(paths, per_file, all_nodes, all_edges)
 
     # Relativize source_file fields so paths are portable across machines (#555).
     # When the node's id was itself minted from the absolute path, remap it to a
@@ -5695,8 +5869,14 @@ def extract(
     # cache keeps its own copy, which is what the colliding-id pass reads on a cache hit.
     for n in all_nodes:
         n.pop("origin_file", None)
-        n.pop("_callable", None)  # internal indirect_call marker — never ships to graph.json
-        n.pop("_callable_class", None)  # internal #2137 marker — never ships to graph.json
+    # `_callable` / `_callable_class` are deliberately NOT popped (#2438): they
+    # persist into graph.json — the same underscore-provenance precedent as
+    # `_origin` below — so an incremental rebuild can hand them back as
+    # resolution context and the indirect_call callable guard keeps working for
+    # targets in unchanged files. Callability is never inferred from a persisted
+    # label (that would reintroduce the #1566/#2137 data-symbol false positives);
+    # a graph written before the markers existed simply fails closed until its
+    # files are re-extracted.
 
     # local_alias is a transient import-resolution hint (#2082), same shape as
     # target_file (#1814): it exists only so the module arm of
