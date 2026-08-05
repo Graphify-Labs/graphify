@@ -954,6 +954,21 @@ def _is_semantic_cache_scope_fix_line(line: str) -> bool:
     ) or stripped.startswith("saved = save_semantic_cache(")
 
 
+def _is_code_extensions_fix_line(line: str) -> bool:
+    """Whether a line replaces a stale code-extension literal (#2227).
+
+    The incremental runbooks used their own extension sets, so new extractors
+    silently triggered semantic work. They now import the detection module's
+    source-of-truth ``CODE_EXTENSIONS`` set.
+    """
+    return (
+        "from graphify.detect import CODE_EXTENSIONS" in line
+        or line.strip().startswith("code_exts = {")
+        or "Path(f).suffix.lower() in CODE_EXTENSIONS" in line
+        or "Path(f).suffix.lower() in code_exts" in line
+    )
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -974,6 +989,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_obsidian_usage_comment_line,
     _is_uv_from_interpreter_fix_line,
     _is_semantic_cache_scope_fix_line,
+    _is_code_extensions_fix_line,
 )
 
 
@@ -992,7 +1008,8 @@ def monolith_roundtrip(platform: Platform) -> list[str]:
     unification, the unified frontmatter description, the chunk-cleanup rewrite
     (#1172), the four #1392 runbook fixes (directed propagation, content-only
     semantic scope, stale-cache unlink, and the zero-node/shrink-guard ordering),
-    and semantic-cache source scoping (#1757).
+    semantic-cache source scoping (#1757), and the shared code-extension set
+    used by incremental runbooks (#2227).
 
     The comparison is a multiset diff, not a positional zip: a line whose text is
     unchanged but merely *moved* (the report-write line shifted below ``to_json``

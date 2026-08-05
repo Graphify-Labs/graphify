@@ -487,8 +487,9 @@ def test_monoliths_change_only_sanctioned_lines():
     The round-trip (multiset diff vs the pinned v8 blob) must come back clean:
     each added/removed line matches one of the documented sanctioned predicates
     in gen — the enum unification, the unified description, the chunk-cleanup
-    rewrite (#1172), the four #1392 runbook fixes, and semantic-cache source
-    scoping (#1757). Anything else is drift.
+    rewrite (#1172), the four #1392 runbook fixes, semantic-cache source scoping
+    (#1757), and the shared code-extension set for incremental runbooks (#2227).
+    Anything else is drift.
     """
     platforms = gen.load_platforms()
     for key in ("aider", "devin"):
@@ -569,6 +570,25 @@ def test_generated_runbooks_pass_root_to_save_manifest():
                     f"{path.relative_to(REPO_ROOT)}: save_manifest without root= (#1417): {ln.strip()!r}"
                 )
     assert checked >= 4, f"expected save_manifest calls across the runbooks, found {checked}"
+
+
+def test_generated_update_runbooks_use_detect_code_extensions():
+    """#2227: no shipped update runbook carries a stale extension literal."""
+    from graphify.detect import CODE_EXTENSIONS
+
+    targets = [
+        REPO_ROOT / "graphify" / "skill-aider.md",
+        REPO_ROOT / "graphify" / "skill-devin.md",
+    ]
+    targets += sorted((REPO_ROOT / "graphify" / "skills").glob("*/references/update.md"))
+    for path in targets:
+        body = path.read_text(encoding="utf-8")
+        assert "from graphify.detect import CODE_EXTENSIONS" in body, path
+        assert "Path(f).suffix.lower() in CODE_EXTENSIONS" in body, path
+        assert "code_exts = {" not in body, path
+
+    assert all(Path(file).suffix.lower() in CODE_EXTENSIONS for file in ("change.sql", "script.ps1", "analysis.R"))
+    assert not all(Path(file).suffix.lower() in CODE_EXTENSIONS for file in ("change.sql", "notes.md"))
 
 
 def test_devin_keeps_its_multi_field_frontmatter():
