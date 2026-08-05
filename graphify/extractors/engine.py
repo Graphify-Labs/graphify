@@ -716,8 +716,9 @@ def _php_method_receiver_types(
     table entirely — whenever its binding is not provably single-typed: a rebind
     to anything but a `new`, two conflicting `new` types, an augmented
     assignment, a closure or arrow-function parameter shadowing it, a foreach
-    target, or a list-destructuring element. Poisoning is order-independent,
-    which is why it can be decided from a single unordered walk.
+    target, a list-destructuring element, or a `global`/`static` statement
+    rebinding it to other storage. Poisoning is order-independent, which is why
+    it can be decided from a single unordered walk.
     """
     table = {f"this.{name}": type_name for name, type_name in field_types.items()}
     method_types: dict[str, str] = {}
@@ -796,6 +797,17 @@ def _php_method_receiver_types(
             targets = [c for c in node.named_children if c is not body_node]
             for target in targets[1:]:
                 poison_bound_vars(target)
+        elif node.type in ("global_declaration", "function_static_declaration"):
+            # `global $svc;` / `static $svc;` rebind the NAME to DIFFERENT
+            # storage — the global slot, or the function-static slot that starts
+            # out null — so any type learned from a `new` in this body is stale
+            # (#13). Name-targeted, not statement-targeted: `global $other;`
+            # must leave `$svc`'s binding intact. Both multi-name forms
+            # (`global $a, $svc;` and `static $x = 1, $svc;`) carry one
+            # `variable_name` per declared name, and a static initializer is a
+            # constant expression, so sweeping the whole statement names exactly
+            # the rebound variables (shapes probe-verified).
+            poison_bound_vars(node)
         elif node.type == "augmented_assignment_expression":
             left = node.child_by_field_name("left")
             if left is not None and left.type == "variable_name":

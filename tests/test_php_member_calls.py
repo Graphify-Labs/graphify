@@ -789,6 +789,130 @@ def test_list_destructuring_poisons_outer_name(tmp_path: Path):
     assert not any(src == index and "search" in tgt.lower() for src, tgt in calls)
 
 
+def test_global_statement_poisons_local(tmp_path: Path):
+    """`global $svc;` makes the name an alias of the GLOBAL slot — the local
+    `new` is discarded, so the type learned from it is stale (#13)."""
+    calls, r = _calls(tmp_path, {
+        **_CORPUS,
+        "app/Http/Controllers/LeadController.php": _controller(
+            "$svc = new LeadHunterService();\n"
+            "        global $svc;\n"
+            "        return $svc->search([]);",
+            uses="use App\\Services\\LeadHunterService;\n",
+        ),
+    })
+
+    index = _find(r, ".index()", "leadcontroller")
+    assert not any(src == index and "search" in tgt.lower() for src, tgt in calls), \
+        "at runtime $svc is the global, never the locally constructed service"
+
+
+def test_static_statement_poisons_local(tmp_path: Path):
+    """`static $svc;` rebinds the name to the function-static slot, which starts
+    out null and survives across calls."""
+    calls, r = _calls(tmp_path, {
+        **_CORPUS,
+        "app/Http/Controllers/LeadController.php": _controller(
+            "$svc = new LeadHunterService();\n"
+            "        static $svc;\n"
+            "        return $svc->search([]);",
+            uses="use App\\Services\\LeadHunterService;\n",
+        ),
+    })
+
+    index = _find(r, ".index()", "leadcontroller")
+    assert not any(src == index and "search" in tgt.lower() for src, tgt in calls)
+
+
+def test_global_statement_poisons_regardless_of_order(tmp_path: Path):
+    """Poisoning is order-independent: the raw calls carry no statement order,
+    so a `global` BEFORE the `new` must refuse just the same."""
+    calls, r = _calls(tmp_path, {
+        **_CORPUS,
+        "app/Http/Controllers/LeadController.php": _controller(
+            "global $svc;\n"
+            "        $svc = new LeadHunterService();\n"
+            "        return $svc->search([]);",
+            uses="use App\\Services\\LeadHunterService;\n",
+        ),
+    })
+
+    index = _find(r, ".index()", "leadcontroller")
+    assert not any(src == index and "search" in tgt.lower() for src, tgt in calls)
+
+
+def test_multi_name_global_poisons_every_listed_name(tmp_path: Path):
+    calls, r = _calls(tmp_path, {
+        **_CORPUS,
+        "app/Http/Controllers/LeadController.php": _controller(
+            "$svc = new LeadHunterService();\n"
+            "        $log = new AuditLog();\n"
+            "        global $log, $svc;\n"
+            "        $svc->search([]);\n"
+            "        return $log->search([]);",
+            uses="use App\\Audit\\AuditLog;\nuse App\\Services\\LeadHunterService;\n",
+        ),
+    })
+
+    index = _find(r, ".index()", "leadcontroller")
+    assert (index, _find(r, ".search()", "leadhunterservice")) not in calls
+    assert (index, _find(r, ".search()", "auditlog")) not in calls
+
+
+def test_multi_name_static_with_initializer_poisons_every_listed_name(tmp_path: Path):
+    """`static $x = 1, $svc;` declares two names; the constant initializer names
+    no variable, so exactly the declared ones are poisoned."""
+    calls, r = _calls(tmp_path, {
+        **_CORPUS,
+        "app/Http/Controllers/LeadController.php": _controller(
+            "$svc = new LeadHunterService();\n"
+            "        $log = new AuditLog();\n"
+            "        static $x = 1, $log, $svc;\n"
+            "        $svc->search([]);\n"
+            "        return $log->search([]);",
+            uses="use App\\Audit\\AuditLog;\nuse App\\Services\\LeadHunterService;\n",
+        ),
+    })
+
+    index = _find(r, ".index()", "leadcontroller")
+    assert (index, _find(r, ".search()", "leadhunterservice")) not in calls
+    assert (index, _find(r, ".search()", "auditlog")) not in calls
+
+
+def test_global_statement_naming_another_variable_keeps_the_binding(tmp_path: Path):
+    """The poison is name-targeted, not statement-targeted: `global $other;`
+    says nothing about `$svc`, whose `new` still types it."""
+    calls, r = _calls(tmp_path, {
+        **_CORPUS,
+        "app/Http/Controllers/LeadController.php": _controller(
+            "$svc = new LeadHunterService();\n"
+            "        global $other;\n"
+            "        return $svc->search([]);",
+            uses="use App\\Services\\LeadHunterService;\n",
+        ),
+    })
+
+    index = _find(r, ".index()", "leadcontroller")
+    assert (index, _find(r, ".search()", "leadhunterservice")) in calls
+    assert (index, _find(r, ".search()", "auditlog")) not in calls
+
+
+def test_static_statement_naming_another_variable_keeps_the_binding(tmp_path: Path):
+    calls, r = _calls(tmp_path, {
+        **_CORPUS,
+        "app/Http/Controllers/LeadController.php": _controller(
+            "$svc = new LeadHunterService();\n"
+            "        static $conn = null;\n"
+            "        return $svc->search([]);",
+            uses="use App\\Services\\LeadHunterService;\n",
+        ),
+    })
+
+    index = _find(r, ".index()", "leadcontroller")
+    assert (index, _find(r, ".search()", "leadhunterservice")) in calls
+    assert (index, _find(r, ".search()", "auditlog")) not in calls
+
+
 def test_new_inside_anonymous_class_does_not_bind_enclosing_name(tmp_path: Path):
     """An anonymous-class body is its own scope — its `new` must not type a
     same-named variable in the method that contains the literal."""
