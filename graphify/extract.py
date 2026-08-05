@@ -3149,6 +3149,11 @@ def _resolve_php_member_calls(
     ambiguous receiver type is skipped rather than falling back to a bare
     method-name match — a Laravel corpus has many identically named service
     methods, and guessing between them is worse than an absent edge.
+
+    A raw call marked ``fcc`` is a PHP 8.1 first-class callable
+    (``$obj->method(...)``): the method is referenced, not invoked, so it
+    resolves by exactly the rules above but is emitted as ``indirect_call``
+    (#15).
     """
     def key(label: str) -> str:
         # PHP class and method names are case-insensitive.
@@ -3229,63 +3234,75 @@ def _resolve_php_member_calls(
         return by_name.get(key(type_node.get("label", "")))
 
     existing_pairs = {(edge.get("source"), edge.get("target")) for edge in all_edges}
-    for result in per_file:
-        for raw_call in result.get("raw_calls", []):
-            if raw_call.get("lang") != "php" or not raw_call.get("is_member_call"):
-                continue
-            receiver = raw_call.get("receiver")
-            callee = raw_call.get("callee")
-            caller = raw_call.get("caller_nid")
-            if not receiver or not callee or not caller:
-                continue
+    # First-class callables (`fcc`, #15) go last: the sort is stable, so ordinary
+    # invocations keep source order and claim the (caller, method) pair first. A
+    # real call outranks a mere reference to the same method, which is also the
+    # precedence the in-file and cross-file indirect-dispatch passes use.
+    php_raw_calls = [
+        raw_call
+        for result in per_file
+        for raw_call in result.get("raw_calls", [])
+        if raw_call.get("lang") == "php" and raw_call.get("is_member_call")
+    ]
+    php_raw_calls.sort(key=lambda raw_call: bool(raw_call.get("fcc")))
+    for raw_call in php_raw_calls:
+        receiver = raw_call.get("receiver")
+        callee = raw_call.get("callee")
+        caller = raw_call.get("caller_nid")
+        if not receiver or not callee or not caller:
+            continue
 
-            if receiver == "this":
-                exact = True
-                type_nid = enclosing_type.get(caller)
-                if not type_nid:
-                    continue
-            else:
-                exact = False
-                type_name = raw_call.get("receiver_type")
-                if not type_name:
-                    continue  # untyped / union-typed / unknown receiver: refuse
-                if key(type_name) in non_class_type_names:
-                    # An interface names no implementation, a trait is not a
-                    # type, and an enum's methods live on no definition node:
-                    # refuse rather than bind a same-short-named stranger.
-                    continue
-                type_defs = type_def_nids.get(key(type_name), [])
-                if len(type_defs) != 1:
-                    continue  # short name collides across the corpus: refuse
-                type_nid = type_defs[0]
-                if receiver == "(new)":
-                    # The class is named in the source; promote to EXTRACTED
-                    # only when the written namespace backs the node we found.
-                    type_node = node_by_id.get(type_nid)
-                    exact = _php_qualified_corroborates(
-                        raw_call.get("receiver_qualified"),
-                        type_node,
-                        declared_fqn(type_node),
-                    )
-
-            method_nids = method_index.get((type_nid, key(callee)), set())
-            if len(method_nids) != 1:
-                continue  # the typed receiver's class has no such method: refuse
-            method_nid = next(iter(method_nids))
-            if method_nid == caller or (caller, method_nid) in existing_pairs:
+        if receiver == "this":
+            exact = True
+            type_nid = enclosing_type.get(caller)
+            if not type_nid:
                 continue
-            existing_pairs.add((caller, method_nid))
-            all_edges.append({
-                "source": caller,
-                "target": method_nid,
-                "relation": "calls",
-                "context": "call",
-                "confidence": "EXTRACTED" if exact else "INFERRED",
-                "confidence_score": 1.0 if exact else 0.8,
-                "source_file": raw_call.get("source_file", ""),
-                "source_location": raw_call.get("source_location"),
-                "weight": 1.0,
-            })
+        else:
+            exact = False
+            type_name = raw_call.get("receiver_type")
+            if not type_name:
+                continue  # untyped / union-typed / unknown receiver: refuse
+            if key(type_name) in non_class_type_names:
+                # An interface names no implementation, a trait is not a
+                # type, and an enum's methods live on no definition node:
+                # refuse rather than bind a same-short-named stranger.
+                continue
+            type_defs = type_def_nids.get(key(type_name), [])
+            if len(type_defs) != 1:
+                continue  # short name collides across the corpus: refuse
+            type_nid = type_defs[0]
+            if receiver == "(new)":
+                # The class is named in the source; promote to EXTRACTED
+                # only when the written namespace backs the node we found.
+                type_node = node_by_id.get(type_nid)
+                exact = _php_qualified_corroborates(
+                    raw_call.get("receiver_qualified"),
+                    type_node,
+                    declared_fqn(type_node),
+                )
+
+        method_nids = method_index.get((type_nid, key(callee)), set())
+        if len(method_nids) != 1:
+            continue  # the typed receiver's class has no such method: refuse
+        method_nid = next(iter(method_nids))
+        if method_nid == caller or (caller, method_nid) in existing_pairs:
+            continue
+        existing_pairs.add((caller, method_nid))
+        all_edges.append({
+            "source": caller,
+            "target": method_nid,
+            # A first-class callable NAMES the method without invoking it, so it
+            # is the repo's `indirect_call`, not `calls` (#15). Everything else
+            # above — receiver typing, the single-definition and interface/enum/
+            # trait refusals, the confidence ladder — is deliberately shared.
+            "relation": "indirect_call" if raw_call.get("fcc") else "calls",
+            "context": "call",
+            "confidence": "EXTRACTED" if exact else "INFERRED",
+            "confidence_score": 1.0 if exact else 0.8,
+            "source_file": raw_call.get("source_file", ""),
+            "source_location": raw_call.get("source_location"),
+            "weight": 1.0,
+        })
 
 
 def _resolve_objc_member_calls(
