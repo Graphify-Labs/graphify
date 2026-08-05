@@ -2,7 +2,16 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
-## 0.9.33 (unreleased)
+## 0.9.34 (unreleased)
+
+- Fix: C# receiver typing no longer drops a true call when a same-named variable is declared untypeably elsewhere in the method (#2472, thanks @JensD-git). Receiver types are now tracked per lexical declaration scope and resolved by the call's position, so a typed `static` local-function parameter keeps resolving even when an `out var` reuses the name in the enclosing body. This fixes a regression from 0.9.32 (#2346). Cross-method independence (#2299) and field-conflict poisoning are unchanged; an `out var` receiver itself remains untyped.
+- Fix: `graphify path` (and the MCP `shortest_path` tool) now respect edge direction by default instead of running on an undirected view, so a returned path no longer traverses edges backwards (#2487, thanks @luliaz0601). Direction is recovered from the stored `_src`/`_tgt` markers. Pass `--undirected` (CLI) or `undirected=true` (MCP) to search ignoring direction; when no directed path exists the command says so instead of silently returning a reversed one.
+- Fix: semantic extraction no longer aborts at merge with a `TypeError` when a hyperedge carries dict-shaped members (#2486, thanks @adminwat). Members are normalized to ids (or dropped with a warning) so a malformed hyperedge can no longer destroy a completed extraction.
+- Fix: `graphify merge-graphs` no longer drops hyperedges (#2484, thanks @sortakool, and @oleksii-tumanov for the approach in #1691). Hyperedge member ids and ids are now relabeled with the per-repo prefix, both inputs' hyperedges are unioned instead of one clobbering the other, and they are written to both the top-level and nested slots.
+- Fix: `build_from_json` now reads hyperedges from both the top-level and nested `graph` slots, so label and re-cluster runs no longer silently empty a graph's hyperedge set (#2485, thanks @sortakool); a full validation wipeout is now reported loudly.
+- Fix: the skill flow now passes the curated community labels to `to_json`, so `graph.json` ships with `community_name` on nodes instead of dropping it (#2490, thanks @PapiScholz).
+
+## 0.9.33 (2026-08-05)
 
 - Fix: the C# `partial class` merge (#2332) no longer conflates two same-named classes that live in different assemblies (#2411, thanks @JensD-git). The merge now keys on assembly (nearest ancestor directory containing a `.csproj`/`.fsproj`/`.vbproj`) in addition to namespace and name, so genuine partial halves within one project still merge while same-name types in separate projects stay distinct. A corpus with no project file keeps merging by namespace and name as before.
 - Fix: `graphify update` no longer drops member-call and `indirect_call` edges from a changed file into an unchanged target (#2437, #2438, thanks @aryanbonigala). Incremental re-resolution now sees the unchanged corpus (its nodes, `contains`/`method` edges, and the `_callable` markers, which now persist to `graph.json` like `_origin`), so cross-file calls survive an incremental rebuild while edges to a genuinely removed target are still evicted.

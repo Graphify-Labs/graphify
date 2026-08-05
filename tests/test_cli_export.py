@@ -252,6 +252,115 @@ def test_path_uses_graphify_out_env(tmp_path):
     assert r.returncode == 0, r.stderr
 
 
+# ── graphify path direction (#2487) ─────────────────────────────────────────
+
+def _write_path_graph(tmp_path: Path, nodes: list[str], links: list[dict]) -> Path:
+    """Write a minimal hand-rolled directed graph.json for path-direction tests."""
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    (out / "graph.json").write_text(json.dumps({
+        "directed": True,
+        "multigraph": False,
+        "graph": {},
+        "nodes": [{"id": n, "label": n} for n in nodes],
+        "links": links,
+    }))
+    return out
+
+
+def _calls(src: str, tgt: str) -> dict:
+    return {"source": src, "target": tgt, "relation": "calls"}
+
+
+def test_path_directed_respects_direction(tmp_path):
+    _write_path_graph(
+        tmp_path, ["alpha", "beta", "gamma"],
+        [_calls("alpha", "beta"), _calls("beta", "gamma")],
+    )
+    r = _run(["path", "alpha", "gamma"], tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.count("-->") == 2
+    assert "<--" not in r.stdout
+    # Explicit --directed is the same as the default.
+    r2 = _run(["path", "alpha", "gamma", "--directed"], tmp_path)
+    assert r2.returncode == 0, r2.stderr
+    assert r2.stdout == r.stdout
+
+
+def test_path_directed_backwards_is_no_path(tmp_path):
+    # Default-change guard (#2487): a plain `path` with no flag is directed,
+    # so walking the chain backwards must report no directed path.
+    _write_path_graph(
+        tmp_path, ["alpha", "beta", "gamma"],
+        [_calls("alpha", "beta"), _calls("beta", "gamma")],
+    )
+    r = _run(["path", "gamma", "alpha"], tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert "No directed path found" in r.stdout
+    assert "--undirected" in r.stdout
+    assert "-->" not in r.stdout
+    assert "<--" not in r.stdout
+
+
+def test_path_undirected_flag_opt_in(tmp_path):
+    _write_path_graph(
+        tmp_path, ["alpha", "beta", "gamma"],
+        [_calls("alpha", "beta"), _calls("beta", "gamma")],
+    )
+    r = _run(["path", "gamma", "alpha", "--undirected"], tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert "Shortest path (2 hops)" in r.stdout
+    assert r.stdout.count("<--calls--") == 2
+    assert "-->" not in r.stdout
+
+
+def test_path_directed_legacy_markers(tmp_path):
+    # Legacy canonicalized file: the persisted arc is flipped (beta->alpha) but
+    # the _src/_tgt markers carry the true direction alpha->beta. Direction
+    # truth must come from the markers, not the raw arc order (#2309/#2487).
+    _write_path_graph(
+        tmp_path, ["alpha", "beta"],
+        [{"source": "beta", "target": "alpha",
+          "_src": "alpha", "_tgt": "beta", "relation": "calls"}],
+    )
+    r = _run(["path", "alpha", "beta"], tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert "Shortest path (1 hops)" in r.stdout
+    assert "-->" in r.stdout
+    assert "<--" not in r.stdout
+    r2 = _run(["path", "beta", "alpha"], tmp_path)
+    assert r2.returncode == 0, r2.stderr
+    assert "No directed path found" in r2.stdout
+
+
+def test_path_directed_deterministic(tmp_path):
+    # Diamond with two equal-length directed routes: the chosen route must not
+    # depend on the process hash seed (#2074 discipline for the digraph too).
+    _write_path_graph(
+        tmp_path, ["start", "left", "right", "goal"],
+        [_calls("start", "left"), _calls("left", "goal"),
+         _calls("start", "right"), _calls("right", "goal")],
+    )
+    outputs = []
+    for seed in ("0", "1"):
+        env = os.environ.copy()
+        env["PYTHONHASHSEED"] = seed
+        r = _run(["path", "start", "goal"], tmp_path, env=env)
+        assert r.returncode == 0, r.stderr
+        assert "-->" in r.stdout
+        outputs.append(r.stdout)
+    assert outputs[0] == outputs[1]
+
+
+def test_path_flags_mutually_exclusive(tmp_path):
+    _write_path_graph(
+        tmp_path, ["alpha", "beta"], [_calls("alpha", "beta")],
+    )
+    r = _run(["path", "alpha", "beta", "--directed", "--undirected"], tmp_path)
+    assert r.returncode != 0
+    assert "mutually exclusive" in r.stderr
+
+
 # ── graphify explain ─────────────────────────────────────────────────────────
 
 def test_explain_runs_without_error(tmp_path):
