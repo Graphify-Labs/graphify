@@ -2315,6 +2315,11 @@ def _resolve_swift_member_calls(
 
     existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
     for rc in all_raw_calls:
+        # A tagged raw_call belongs to the resolver that stamped it (cpp, csharp,
+        # java, php, objc). Swift raw_calls carry no `lang`, so anything tagged is
+        # another language's data and must not mint a Swift edge here (#1682).
+        if rc.get("lang"):
+            continue
         if not rc.get("is_member_call"):
             continue
         receiver = rc.get("receiver")
@@ -2476,6 +2481,11 @@ def _resolve_python_member_calls(
         })
 
     for rc in all_raw_calls:
+        # A tagged raw_call belongs to the resolver that stamped it (cpp, csharp,
+        # java, php, objc). Python raw_calls carry no `lang`, so anything tagged is
+        # another language's data and must not mint a Python edge here (#1682).
+        if rc.get("lang"):
+            continue
         if not rc.get("is_member_call"):
             continue
         receiver = rc.get("receiver")
@@ -2560,6 +2570,11 @@ def _resolve_typescript_member_calls(
 
     existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
     for rc in all_raw_calls:
+        # A tagged raw_call belongs to the resolver that stamped it (cpp, csharp,
+        # java, php, objc). TypeScript raw_calls carry no `lang`, so anything tagged
+        # is another language's data and must not mint a TS edge here (#1682).
+        if rc.get("lang"):
+            continue
         if not rc.get("is_member_call"):
             continue
         receiver = rc.get("receiver")
