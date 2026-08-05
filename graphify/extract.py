@@ -729,6 +729,7 @@ _PYTHON_CONFIG = LanguageConfig(
     call_accessor_field="attribute",
     call_accessor_object_field="object",
     function_boundary_types=frozenset({"function_definition"}),
+    extract_nested_functions=True,
     import_handler=_import_python,
 )
 

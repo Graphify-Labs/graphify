@@ -2455,7 +2455,11 @@ def _extract_generic(
     file_nid = _make_id(str(path))
     add_node(file_nid, path.name, 1)
 
-    def walk(node, parent_class_nid: str | None = None) -> None:
+    def walk(
+        node,
+        parent_class_nid: str | None = None,
+        parent_func_nid: str | None = None,
+    ) -> None:
         t = node.type
 
         # Import types
@@ -3408,6 +3412,13 @@ def _extract_generic(
                 func_nid = _make_id(parent_class_nid, func_name)
                 add_node(func_nid, f".{func_name}()", line)
                 add_edge(parent_class_nid, func_nid, "method", line)
+            elif parent_func_nid:
+                # A nested def is owned by the function it lives in, not the
+                # file: qualifying the id keeps `outer.helper` distinct from a
+                # module-level `helper` of the same name.
+                func_nid = _make_id(parent_func_nid, func_name)
+                add_node(func_nid, f"{func_name}()", line)
+                add_edge(parent_func_nid, func_nid, "contains", line)
             else:
                 func_nid = _make_id(stem, func_name)
                 add_node(func_nid, f"{func_name}()", line)
@@ -3761,6 +3772,27 @@ def _extract_generic(
                 if config.ts_module == "tree_sitter_c_sharp" and parent_class_nid:
                     csharp_method_scopes[id(body)] = (node, parent_class_nid)
                 function_bodies.append((func_nid, body))
+                if config.extract_nested_functions:
+                    # This branch returns without recursing, so a `def` inside
+                    # another function's body got no node at all — and because
+                    # walk_calls stops at function_boundary_types, every call in
+                    # that body was dropped rather than attributed to the outer
+                    # function. A FastAPI endpoint whose whole implementation
+                    # lives in an inner `async def generate()` therefore showed
+                    # up in the graph as a near-leaf. Scan this body for the
+                    # next level of definitions and walk each one owned by this
+                    # function; deeper nesting is handled by that walk in turn.
+                    # Class bodies are skipped — a nested class's members are
+                    # already the class branch's job.
+                    nested_stack = list(body.children)
+                    while nested_stack:
+                        cand = nested_stack.pop()
+                        if cand.type in config.class_types:
+                            continue
+                        if cand.type in config.function_types:
+                            walk(cand, parent_func_nid=func_nid)
+                            continue
+                        nested_stack.extend(cand.children)
                 if config.ts_module == "tree_sitter_kotlin":
                     # #2347: Kotlin anonymous objects (`object : Foo { … }`,
                     # node type `object_literal`). The function branch never

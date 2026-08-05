@@ -1768,16 +1768,54 @@ def _resolve_python_module_path(module_name: str, current_path: Path, root: Path
             return cand
     return None
 
-def _python_top_level_function_bodies(path: Path, root_node, source: bytes) -> list[tuple[str, object]]:
-    bodies: list[tuple[str, object]] = []
-    stem = _file_stem(path)
-    for node in root_node.children:
-        if node.type != "function_definition":
+def _python_walk_to_function_boundary(body, *, yield_functions: bool):
+    """Walk ``body`` but never cross into a nested ``def``.
+
+    With ``yield_functions`` the nested definitions themselves are yielded (and
+    not descended into) — the next level of nesting. Without it they are skipped
+    and everything else is yielded: the nodes that genuinely belong to this
+    function. Calls inside an inner ``def`` belong to that def, which gets its
+    own entry from :func:`_python_top_level_function_bodies`; walking through the
+    boundary would attribute them to the outer function as well.
+    """
+    stack = list(body.children)
+    while stack:
+        node = stack.pop()
+        if node.type == "function_definition":
+            if yield_functions:
+                yield node
             continue
-        name_node = node.child_by_field_name("name")
-        body = node.child_by_field_name("body")
-        if name_node is not None and body is not None:
-            bodies.append((_make_id(stem, _read_text(name_node, source)), body))
+        if not yield_functions:
+            yield node
+        stack.extend(node.children)
+
+def _python_top_level_function_bodies(path: Path, root_node, source: bytes) -> list[tuple[str, object]]:
+    """(node_id, body) for every function definition in the file, nested included.
+
+    Ids mirror the ones the extractor mints: a module-level ``def`` is keyed on
+    the file stem, a nested one on its owning function, so a use fact collected
+    here lands on the node the graph already holds instead of dangling.
+    """
+    bodies: list[tuple[str, object]] = []
+
+    def collect(scope_children, owner_id: str) -> None:
+        for node in scope_children:
+            if node.type != "function_definition":
+                continue
+            name_node = node.child_by_field_name("name")
+            body = node.child_by_field_name("body")
+            if name_node is None or body is None:
+                continue
+            nid = _make_id(owner_id, _read_text(name_node, source))
+            bodies.append((nid, body))
+            # A nested def can sit under an if/try inside the body, so scan the
+            # whole body rather than just its direct children.
+            collect(
+                _python_walk_to_function_boundary(body, yield_functions=True),
+                nid,
+            )
+
+    collect(root_node.children, _file_stem(path))
     return bodies
 
 def _python_call_identifier(node, source: bytes) -> str | None:
@@ -1849,7 +1887,7 @@ def _collect_python_symbol_resolution_facts(
             continue
         source, root_node = parsed
         for source_id, body in _python_top_level_function_bodies(path, root_node, source):
-            for node in _walk_python_tree(body):
+            for node in _python_walk_to_function_boundary(body, yield_functions=False):
                 imported_name = _python_call_identifier(node, source)
                 if imported_name is None:
                     continue

@@ -50,6 +50,13 @@ class LanguageConfig:
     # Extra label formatting for functions: if True, functions get "name()" label
     function_label_parens: bool = True
 
+    # Emit nodes for function definitions nested inside another function's body.
+    # Off by default: languages whose idiom is inline callbacks (JS/TS arrow
+    # functions) already have their own handling and would gain a large number
+    # of low-signal nodes. On where a named inner def carries real structure
+    # (Python closures, streaming generators, decorator wrappers).
+    extract_nested_functions: bool = False
+
     # Extra walk hook called after generic dispatch (for JS arrow functions, C# namespaces, etc.)
     extra_walk_fn: Callable | None = None
 
