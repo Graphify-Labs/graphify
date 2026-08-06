@@ -2250,6 +2250,27 @@ def _merge_csharp_partial_class_nodes(
                 rc["caller_nid"] = remap[cn]
 
 
+# Source suffixes each member-call resolver owns. Used BOTH to register the
+# resolver and to scope what it consumes — one definition so the two cannot drift.
+_SWIFT_RESOLVER_SUFFIXES = (".swift",)
+_PYTHON_RESOLVER_SUFFIXES = (".py",)
+_TYPESCRIPT_RESOLVER_SUFFIXES = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx")
+_CSHARP_RESOLVER_SUFFIXES = (".cs",)
+_JAVA_RESOLVER_SUFFIXES = (".java",)
+
+
+def _raw_call_is_owned(rc: dict, suffixes: tuple[str, ...]) -> bool:
+    """True when ``rc`` was written in a source file with one of ``suffixes``.
+
+    How the three untagged resolvers (Swift, Python, TypeScript) claim their raw
+    calls. The tagged languages (cpp, csharp, java, objc) match on the
+    extractor-stamped ``lang`` instead, because C++ and ObjC share `.h` and a
+    suffix alone cannot tell their raw calls apart. Prior art for the suffix
+    form: ``ruby_resolution._ruby_raw_calls``.
+    """
+    return str(rc.get("source_file") or "").lower().endswith(suffixes)
+
+
 def _resolve_swift_member_calls(
     per_file: list[dict],
     all_nodes: list[dict],
@@ -2312,6 +2333,13 @@ def _resolve_swift_member_calls(
 
     existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
     for rc in all_raw_calls:
+        # Consume only raw calls written in Swift sources. A raw call carries no
+        # marker of its language unless the extractor stamped `lang` — and only
+        # cpp, csharp, java and objc do — so Python and TypeScript raw calls
+        # flowed straight into the arms below. A positive suffix filter is closed
+        # by construction, where excluding tagged languages one by one is not.
+        if not _raw_call_is_owned(rc, _SWIFT_RESOLVER_SUFFIXES):
+            continue
         if not rc.get("is_member_call"):
             continue
         receiver = rc.get("receiver")
@@ -2473,6 +2501,12 @@ def _resolve_python_member_calls(
         })
 
     for rc in all_raw_calls:
+        # Consume only raw calls written in Python sources. Nothing separated
+        # this resolver's raw calls from the other untagged languages': a
+        # TypeScript `Lead.search({})` reached the class arm below and minted an
+        # EXTRACTED edge into a Python method with no TS `Lead` in the corpus.
+        if not _raw_call_is_owned(rc, _PYTHON_RESOLVER_SUFFIXES):
+            continue
         if not rc.get("is_member_call"):
             continue
         receiver = rc.get("receiver")
@@ -2557,6 +2591,12 @@ def _resolve_typescript_member_calls(
 
     existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
     for rc in all_raw_calls:
+        # Consume only raw calls written in TS/JS sources. A Python or Swift raw
+        # call otherwise reached the arms below — and this resolver's
+        # `references` fallback minted a call-context edge onto the receiver's
+        # type even when no method matched.
+        if not _raw_call_is_owned(rc, _TYPESCRIPT_RESOLVER_SUFFIXES):
+            continue
         if not rc.get("is_member_call"):
             continue
         receiver = rc.get("receiver")
@@ -2771,11 +2811,19 @@ def _resolve_csharp_member_calls(
 
     contained = {e.get("target") for e in all_edges if e.get("relation") == "contains"}
 
+    # Scoped to C# sources: this index is the fallback for a name the
+    # namespace/using scoping below knows nothing about, and unscoped it matched
+    # a C# receiver type against classes written in ANY language. That cut both
+    # ways — a Python `class Lead` could type the receiver, and a Python class
+    # merely SHARING the name pushed the single-definition guard to 2 and
+    # silently suppressed the correct C# edge.
     type_def_nids: dict[str, list[str]] = {}
     node_by_id: dict[str, dict] = {}
     for n in all_nodes:
         node_by_id[n.get("id")] = n
-        if n.get("source_file") and n.get("id") in contained and _is_type_like_definition(n):
+        sf = str(n.get("source_file") or "").lower()
+        if (sf.endswith(_CSHARP_RESOLVER_SUFFIXES)
+                and n.get("id") in contained and _is_type_like_definition(n)):
             type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
 
     # Namespace/using/alias-aware simple-name resolution, shared with the C#
@@ -2955,10 +3003,13 @@ def _resolve_java_member_calls(
                  if edge.get("relation") == "contains"}
     node_by_id = {node.get("id"): node for node in all_nodes}
 
+    # Scoped to Java sources: an unscoped index let a Python `class Lead` type
+    # the receiver of `Lead lead; lead.search()` at INFERRED, and let a foreign
+    # class merely sharing the name suppress the correct Java edge.
     type_def_nids: dict[str, list[str]] = {}
     for node in all_nodes:
         if (
-            node.get("source_file")
+            str(node.get("source_file") or "").lower().endswith(_JAVA_RESOLVER_SUFFIXES)
             and node.get("id") in contained
             and _is_type_like_definition(node)
         ):
@@ -3140,10 +3191,18 @@ def _resolve_objc_member_calls(
 # by adding one register() call below — no edits to extract()'s body. Order
 # preserved from the prior inlined wiring: Swift (#1356) before Python (#1446).
 register_language_resolver(
-    LanguageResolver("swift_member_calls", frozenset({".swift"}), _resolve_swift_member_calls)
+    LanguageResolver(
+        "swift_member_calls",
+        frozenset(_SWIFT_RESOLVER_SUFFIXES),
+        _resolve_swift_member_calls,
+    )
 )
 register_language_resolver(
-    LanguageResolver("python_member_calls", frozenset({".py"}), _resolve_python_member_calls)
+    LanguageResolver(
+        "python_member_calls",
+        frozenset(_PYTHON_RESOLVER_SUFFIXES),
+        _resolve_python_member_calls,
+    )
 )
 # Ruby type-aware member-call resolution (Class.new + typed var.method). Lives in
 # graphify.ruby_resolution; registered here as a second consumer of the framework.
@@ -3151,7 +3210,11 @@ register_language_resolver(
     LanguageResolver("ruby_member_calls", frozenset({".rb", ".rake"}), resolve_ruby_member_calls)
 )
 register_language_resolver(
-    LanguageResolver("typescript_member_calls", frozenset({".ts", ".tsx", ".mts", ".cts", ".js", ".jsx"}), _resolve_typescript_member_calls)
+    LanguageResolver(
+        "typescript_member_calls",
+        frozenset(_TYPESCRIPT_RESOLVER_SUFFIXES),
+        _resolve_typescript_member_calls,
+    )
 )
 # C++ (#1547) and ObjC (#1556) receiver-typed member-call resolution. `.h` is in
 # both suffix sets because it routes to extract_cpp or extract_objc by content; the
@@ -3173,10 +3236,18 @@ register_language_resolver(
 # C# receiver-typed member-call resolution (#1609): `field/param/local.Method()`
 # bound to the receiver's declared type instead of a bare same-named match.
 register_language_resolver(
-    LanguageResolver("csharp_member_calls", frozenset({".cs"}), _resolve_csharp_member_calls)
+    LanguageResolver(
+        "csharp_member_calls",
+        frozenset(_CSHARP_RESOLVER_SUFFIXES),
+        _resolve_csharp_member_calls,
+    )
 )
 register_language_resolver(
-    LanguageResolver("java_member_calls", frozenset({".java"}), _resolve_java_member_calls)
+    LanguageResolver(
+        "java_member_calls",
+        frozenset(_JAVA_RESOLVER_SUFFIXES),
+        _resolve_java_member_calls,
+    )
 )
 # Pascal/Delphi cross-file inherited-method-call resolution: a call from a
 # manual descendant class to a method it inherits from an ancestor declared
