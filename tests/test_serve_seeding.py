@@ -265,3 +265,154 @@ def test_coverage_is_judged_on_the_seed_label_never_its_node_id():
         "'customer' was treated as covered by a seed with no label — coverage read "
         f"the node id, so the term's winner was starved: {seeds}"
     )
+
+
+# --------------------------------------------------------------------------- #
+# C3 — heuristic-context-filter starvation fallback (#42)                      #
+#                                                                              #
+# A class node has no call-context edges of its own: calls attach to its       #
+# methods, and the class->member edge carries `context=None`. So the `call`    #
+# filter that "Who calls X?" infers strands a perfectly-seeded class seed at   #
+# exactly one node. When an *inferred* filter discovers nothing beyond the     #
+# seeds, the query retraverses unfiltered and says so in the header; an        #
+# *explicit* filter is always honored. Assertions read the header and the      #
+# rendered NODE lines only.                                                    #
+# --------------------------------------------------------------------------- #
+
+from tests.seeding_fixtures import CALLERS, SERVICE_METHOD  # noqa: E402
+
+
+def context_segment(text: str) -> str:
+    """The `Context: ...` segment of a `_query_graph_text` header, or "" if the
+    query ran unfiltered. Read as a whole so the source and any relaxation note
+    are asserted where the caller actually sees them."""
+    for part in text.split("\n", 1)[0].split(" | "):
+        if part.startswith("Context:"):
+            return part
+    return ""
+
+
+def test_who_calls_phrasing_falls_back_when_heuristic_filter_strands_the_seed():
+    """The measured phrasing A end-to-end: "Who calls ChargeCustomerService?"
+
+    The inferred `call` filter leaves the class seed with nowhere to go, so the
+    traversal relaxes and every known caller renders — including the one
+    reachable only through its `references` edge (#38's extraction gap). The
+    header keeps the failure mode visible: the heuristic context is still
+    reported, annotated as relaxed, so a fallback answer never reads as a
+    filtered one.
+    """
+    G = make_charge_fixture()
+    text = _query_graph_text(G, "Who calls ChargeCustomerService?", mode="bfs", depth=2)
+    seeds = start_labels(text)
+    shown = shown_nodes(text)
+    context = context_segment(text)
+
+    assert label_of(SERVICE) in seeds
+    assert label_of(DECOY) not in seeds, f"verb-prefix decoy seeded: {seeds}"
+    for caller in caller_labels():
+        assert caller in shown, f"caller {caller!r} missing from shown output:\n{text}"
+    assert label_of(DECOY) not in shown, f"decoy neighborhood leaked in:\n{text}"
+    assert "heuristic" in context, f"header lost the inferred context: {context!r}"
+    assert "relaxed" in context, f"header does not report the relaxation: {context!r}"
+
+
+def test_expanding_heuristic_filter_is_left_in_force():
+    """A heuristic filter that does reach past the seeds is not second-guessed.
+
+    Seeded on a *method* node — `BillingController.processPayment()`, whose
+    identifier the question names directly — the inferred `call` filter walks
+    two real call edges, so no fallback fires. What proves the filter is still
+    doing its job rather than having been quietly dropped is what is *missing*:
+    the `references`-only caller (#38's extraction gap) and the service class
+    itself, whose `method` edge carries no context. Relaxing would pull both in.
+
+    The question says "invoked" rather than "calls": same inferred `call`
+    filter, but no fixture label matches it, so the seed set is exactly the one
+    identifier and the assertions below read only C3's behavior.
+    """
+    G = make_charge_fixture()
+    text = _query_graph_text(G, "Who invoked BillingController?", mode="bfs", depth=2)
+    seeds = start_labels(text)
+    shown = shown_nodes(text)
+    context = context_segment(text)
+
+    assert seeds == [label_of(CALLERS[0])], f"unexpected seed set: {seeds}"
+    assert "heuristic" in context, f"header lost the inferred context: {context!r}"
+    assert "relax" not in context, f"expanding filter was needlessly relaxed: {context!r}"
+    assert label_of(SERVICE_METHOD) in shown
+    assert label_of(CALLERS[1]) in shown
+    for filtered_out in (label_of(CALLERS[2]), label_of(SERVICE)):
+        assert filtered_out not in shown, (
+            f"filter no longer in force — {filtered_out!r} is reachable only "
+            f"through a non-`call` edge:\n{text}"
+        )
+
+
+def test_explicit_context_filter_never_falls_back_even_when_stranded():
+    """The identical stranding, with the filter passed explicitly: honored.
+
+    An explicit instruction is never overridden, so the answer stays at the seed
+    alone and the header reports an unqualified explicit filter.
+    """
+    G = make_charge_fixture()
+    text = _query_graph_text(
+        G, "Who calls ChargeCustomerService?", mode="bfs", depth=2,
+        context_filters=["call"],
+    )
+    shown = shown_nodes(text)
+    context = context_segment(text)
+
+    assert shown == [label_of(SERVICE)], f"explicit filter was relaxed:\n{text}"
+    assert "explicit" in context, f"header lost the explicit source: {context!r}"
+    assert "relax" not in context, f"explicit filter was annotated as relaxed: {context!r}"
+
+
+def test_starvation_fallback_is_identical_in_both_traversal_modes():
+    """Mode choice must not change filter behavior: DFS relaxes exactly where
+    BFS does, and reaches the same nodes."""
+    G = make_charge_fixture()
+    question = "Who calls ChargeCustomerService?"
+    bfs = _query_graph_text(G, question, mode="bfs", depth=2)
+    dfs = _query_graph_text(G, question, mode="dfs", depth=2)
+
+    for mode, text in (("BFS", bfs), ("DFS", dfs)):
+        context = context_segment(text)
+        assert "relaxed" in context, f"{mode} did not relax: {context!r}"
+        for caller in caller_labels():
+            assert caller in shown_nodes(text), (
+                f"{mode} missing caller {caller!r}:\n{text}"
+            )
+    assert set(shown_nodes(bfs)) == set(shown_nodes(dfs)), (
+        "traversal modes disagree under the fallback:\n"
+        f"BFS={shown_nodes(bfs)}\nDFS={shown_nodes(dfs)}"
+    )
+
+
+def test_single_node_expansion_is_not_starvation():
+    """The threshold is *zero* expansion, not "few nodes" — one discovered node
+    is enough to leave the filter alone.
+
+    Same single-seed scenario as the test above, with one local tweak: the other
+    caller's call edge into the service method is dropped, so the heuristic
+    `call` filter reaches exactly one node beyond the seed instead of two.
+    Pinning this boundary is what stops the threshold from drifting into a
+    tuning constant (`<= len(seeds) + 1` and friends): such an implementation
+    relaxes here — throwing away a filter that had in fact found its match, and
+    dragging in the class node and the hub — which this test rejects. Asserted
+    for both modes, since the threshold is shared.
+    """
+    for mode in ("bfs", "dfs"):
+        G = make_charge_fixture()
+        G.remove_edge(CALLERS[1], SERVICE_METHOD)
+        text = _query_graph_text(G, "Who invoked BillingController?", mode=mode, depth=2)
+        seeds = start_labels(text)
+        shown = shown_nodes(text)
+
+        assert set(shown) == set(seeds) | {label_of(SERVICE_METHOD)}, (
+            f"{mode}: expected exactly one node beyond the seeds:\n{text}"
+        )
+        assert "relax" not in context_segment(text), (
+            f"{mode}: a filter that discovered a node was relaxed anyway — the "
+            f"threshold is no longer zero expansion:\n{text}"
+        )
