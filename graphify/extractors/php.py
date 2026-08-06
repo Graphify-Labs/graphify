@@ -136,12 +136,16 @@ class PhpNameResolver:
     re-parsed, and no new persisted marker is needed: the ``use`` map belongs to
     the CALLING file, which an incremental rebuild always re-dispatches.
 
-    STRICTLY SUBTRACTIVE by construction. Every node this returns is looked up
-    under the receiver's WRITTEN short name in the very index the fallback
-    consults, so a positive verdict is always the answer the fallback would have
-    given; the only behavior change is the refusal. Binding ``use App\\X as Y;``
-    to a class the short name ``Y`` does not name, or picking the aliased one of
-    several same-short-named classes, is a recall ADDITION and belongs to #22.
+    The refusal (#21) is strictly subtractive; the declared-FQN index layered on
+    top (#22) is its additive counterpart. When the claimed FQN matches the name
+    some in-corpus class's own file DECLARES (#14), that match outranks the
+    short-name census: it picks the imported one of several same-short-named
+    classes, and follows a renaming alias (``use App\\X as Y;``) to a class the
+    written short name never would have found. The index only knows classes
+    whose declared FQNs are available — for a file left undispatched by an
+    incremental rebuild that is the persisted ``_php_class_fqns`` marker (#23);
+    a graph written before that marker simply yields no match and the verdict
+    falls back to the #21 rules, adding no edge rather than a wrong one.
     """
 
     def __init__(
@@ -190,6 +194,22 @@ class PhpNameResolver:
                 self.uses_by_file.setdefault(source_file, {}).setdefault(
                     claimed, target_fqn
                 )
+
+        # Declared FQN -> definition node, over the same node universe as the
+        # short-name index — every binding this enables is one the fallback
+        # could have made if only it could tell the namesakes apart (#22). An
+        # FQN declared by two nodes (copied fixtures, vendored duplicates) is
+        # poisoned rather than answered with either.
+        self.fqn_def_nid: dict[str, str | None] = {}
+        for nids in type_def_nids.values():
+            for nid in nids:
+                node = self.node_by_id.get(nid)
+                declared = self._declared_fqn(node)
+                if not declared:
+                    continue
+                fqn_key = _php_key(declared)
+                if self.fqn_def_nid.setdefault(fqn_key, nid) != nid:
+                    self.fqn_def_nid[fqn_key] = None
 
         # Per file: the namespace its declarations sit in, needed to resolve a
         # namespace-RELATIVE annotation (`Local\Client`). Derived from the
@@ -266,12 +286,24 @@ class PhpNameResolver:
         if not fqn:
             return None, False
 
+        # The claimed FQN against the names the defining files DECLARE (#22):
+        # a unique match is the strongest verdict there is — the calling file
+        # names the class in full and some file declares exactly that class —
+        # so it outranks the short-name census below, selecting the imported
+        # one of several namesakes and following a renaming alias to a class
+        # the written short name would never census. Absent a match (the
+        # defining file declares no namespace, or was not dispatched and left
+        # no #23 marker) nothing is asserted either way: fall through, where
+        # the #21 rules refuse or bind exactly as they did before this index.
+        declared_nid = self.fqn_def_nid.get(_php_key(fqn))
+        if declared_nid is not None:
+            return declared_nid, True
+
         candidates = self.type_def_nids.get(short, [])
         if len(candidates) != 1:
             # Nothing in the corpus answers to the written name, or several
-            # things do and the fallback would refuse too. Either way there is
-            # no edge to keep — telling the alias's target apart from its
-            # namesakes is #22's job, and this ticket may only delete.
+            # things do — and no declared FQN above told them apart. There
+            # is no edge the fallback could keep either way: refuse.
             return None, True
         node = self.node_by_id.get(candidates[0])
         if _php_fqn_names_another_class(fqn, node, self._declared_fqn(node)):

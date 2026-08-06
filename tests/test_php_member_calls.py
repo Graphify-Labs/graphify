@@ -251,7 +251,10 @@ def test_self_typed_property_emits_no_edge(tmp_path: Path):
 
 
 def test_duplicate_class_name_emits_no_edge(tmp_path: Path):
-    """Two `LeadHunterService` definitions: the single-definition guard refuses."""
+    """Two `LeadHunterService` definitions and no claim on the name: the
+    single-definition guard refuses. (With a `use` import naming one of them
+    the declared-FQN index now binds it instead — that recall win is #22's,
+    pinned in `test_php_alias_binding.py`.)"""
     calls, r = _calls(tmp_path, {
         **_CORPUS,
         "legacy/Services/LeadHunterService.php": (
@@ -263,7 +266,6 @@ def test_duplicate_class_name_emits_no_edge(tmp_path: Path):
         "app/Http/Controllers/LeadController.php": (
             "<?php\n"
             "namespace App\\Http\\Controllers;\n"
-            "use App\\Services\\LeadHunterService;\n"
             "class LeadController {\n"
             "    private LeadHunterService $leadHunter;\n"
             "    public function index(): array {\n"
