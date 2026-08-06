@@ -222,3 +222,204 @@ def test_duplicate_declared_fqn_refuses_rather_than_guessing(tmp_path: Path):
 
     go = _find(r, ".go()", "_go")
     assert _sends(calls, go) == []
+
+
+# ── the same bindings across an incremental rebuild (#23) ─────────────────────
+#
+# The context below is assembled exactly as watch.py builds it from graph.json:
+# a field subset of the persisted AST nodes — including the persisted underscore
+# markers, of which `_php_class_fqns` (#23) carries the declared FQNs the #22
+# binding needs — plus the corpus's contains/method edges, both scoped to the
+# files NOT being re-extracted.
+
+_CTX_NODE_FIELDS = ("label", "source_file", "file_type", "type")
+_CTX_MARKERS = ("_callable", "_callable_class", "_php_non_class_types",
+                "_php_interfaces", "_php_class_fqns")
+
+
+def _watch_resolution_context(result: dict, unchanged: set[str],
+                              markers: tuple[str, ...] = _CTX_MARKERS):
+    nodes = []
+    for node in result["nodes"]:
+        if not node.get("id") or node.get("source_file") not in unchanged:
+            continue
+        ctx = {"id": node["id"]}
+        ctx.update({field: node.get(field) for field in _CTX_NODE_FIELDS})
+        ctx.update({m: node[m] for m in markers if node.get(m)})
+        nodes.append(ctx)
+    edges = [
+        {
+            "source": edge.get("source"),
+            "target": edge.get("target"),
+            "relation": edge.get("relation"),
+            "source_file": edge.get("source_file"),
+        }
+        for edge in result["edges"]
+        if edge.get("relation") in ("contains", "method")
+        and edge.get("source_file") in unchanged
+    ]
+    return nodes, edges
+
+
+def _full_then_incremental(tmp_path: Path, files: dict[str, str], changed: str,
+                           markers: tuple[str, ...] = _CTX_MARKERS):
+    corpus = tmp_path / "corpus"
+    paths = {}
+    for name, body in files.items():
+        path = corpus / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+        paths[name] = path
+
+    def _calls_of(result):
+        return {
+            (edge["source"], edge["target"]): edge
+            for edge in result["edges"]
+            if edge.get("relation") == "calls"
+        }
+
+    full = extract(list(paths.values()), cache_root=corpus)
+    paths[changed].write_text(
+        files[changed].replace("class ", "// touched\nclass ", 1), encoding="utf-8"
+    )
+    ctx_nodes, ctx_edges = _watch_resolution_context(
+        full, unchanged=set(files) - {changed}, markers=markers
+    )
+    inc = extract(
+        [paths[changed]],
+        cache_root=corpus,
+        resolution_context_nodes=ctx_nodes,
+        resolution_context_edges=ctx_edges,
+    )
+    return (_calls_of(full), full), (_calls_of(inc), inc)
+
+
+_INCR_CALLER = "app/Http/I.php"
+
+
+def test_namesake_selection_survives_incremental_rebuild(tmp_path: Path):
+    """Acceptance (#23): the defining files are unchanged and NOT dispatched,
+    so the declared FQNs reach the resolver only through the persisted marker —
+    the full and incremental runs must agree edge for edge."""
+    (full_calls, full), (inc_calls, inc) = _full_then_incremental(tmp_path, {
+        **_NAMESAKES,
+        _INCR_CALLER: _caller("use App\\Alpha\\X;\n"),
+    }, changed=_INCR_CALLER)
+
+    go = _find(inc, ".go()", "_go")
+    # The targets live in unchanged files, so their ids come from the full run.
+    alpha = _find(full, ".send()", "alpha")
+    assert _sends(full_calls, go) == [alpha], "full-build baseline"
+    assert _sends(inc_calls, go) == [alpha], \
+        "an undispatched defining file must not lose the #22 binding"
+
+
+def test_renaming_alias_survives_incremental_rebuild(tmp_path: Path):
+    (full_calls, full), (inc_calls, inc) = _full_then_incremental(tmp_path, {
+        **_NAMESAKES,
+        _INCR_CALLER: _caller("use App\\Alpha\\X as Y;\n", annotation="Y"),
+    }, changed=_INCR_CALLER)
+
+    go = _find(inc, ".go()", "_go")
+    alpha = _find(full, ".send()", "alpha")
+    assert _sends(full_calls, go) == [alpha]
+    assert _sends(inc_calls, go) == [alpha]
+
+
+def test_written_fqn_selection_survives_incremental_rebuild(tmp_path: Path):
+    (full_calls, full), (inc_calls, inc) = _full_then_incremental(tmp_path, {
+        **_NAMESAKES,
+        _INCR_CALLER: _caller(annotation="\\App\\Alpha\\X"),
+    }, changed=_INCR_CALLER)
+
+    go = _find(inc, ".go()", "_go")
+    alpha = _find(full, ".send()", "alpha")
+    assert _sends(full_calls, go) == [alpha]
+    assert _sends(inc_calls, go) == [alpha]
+
+
+# ── pre-marker graphs: a graph.json written before #23 ────────────────────────
+
+_PRE_23_MARKERS = tuple(m for m in _CTX_MARKERS if m != "_php_class_fqns")
+
+
+def test_pre_marker_graph_fails_closed(tmp_path: Path):
+    """Acceptance (#23): a graph persisted before the marker existed carries no
+    declared FQNs, so the rebuild cannot tell the namesakes apart — it must add
+    NO edge (fail closed, matching the `_callable` precedent) and not crash,
+    until the defining files are re-extracted."""
+    (full_calls, full), (inc_calls, inc) = _full_then_incremental(tmp_path, {
+        **_NAMESAKES,
+        _INCR_CALLER: _caller("use App\\Alpha\\X;\n"),
+    }, changed=_INCR_CALLER, markers=_PRE_23_MARKERS)
+
+    go = _find(inc, ".go()", "_go")
+    assert _sends(full_calls, go) == [_find(full, ".send()", "alpha")], \
+        "full-build baseline still binds"
+    assert _sends(inc_calls, go) == [], \
+        "a pre-#23 graph must lose the binding, never misdirect it"
+
+
+def test_pre_marker_graph_keeps_the_21_refusal(tmp_path: Path):
+    """Fail-closed must not curdle into fail-open elsewhere: with no marker,
+    an out-of-corpus claim still refuses on the path evidence (#21)."""
+    (_, full), (inc_calls, inc) = _full_then_incremental(tmp_path, {
+        "app/Alpha/X.php": _X_A,
+        _INCR_CALLER: _caller("use Vendor\\Sdk\\X;\n"),
+    }, changed=_INCR_CALLER, markers=_PRE_23_MARKERS)
+
+    go = _find(inc, ".go()", "_go")
+    assert _sends(inc_calls, go) == []
+
+
+def test_pre_marker_graph_keeps_the_unique_name_binding(tmp_path: Path):
+    """And the pre-#22 recall is untouched: a `use` naming the lone in-corpus
+    class still binds through the PSR-4 path corroboration, exactly as the
+    incremental path behaved before the marker existed (pinned here after
+    `test_php_name_resolver.py`'s incremental tests moved onto the marker)."""
+    (_, full), (inc_calls, inc) = _full_then_incremental(tmp_path, {
+        "app/Alpha/X.php": _X_A,
+        "app/Audit/Recorder.php": (
+            "<?php\nnamespace App\\Audit;\n"
+            "class Recorder {\n    public function send(): int { return 0; }\n}\n"
+        ),
+        _INCR_CALLER: _caller("use App\\Alpha\\X;\n"),
+    }, changed=_INCR_CALLER, markers=_PRE_23_MARKERS)
+
+    go = _find(inc, ".go()", "_go")
+    alpha = _find(full, ".send()", "alpha")
+    assert (go, alpha) in inc_calls, \
+        "a pre-marker graph keeps the #21-era binding for a unique short name"
+    assert (go, _find(full, ".send()", "recorder")) not in inc_calls
+
+
+def test_non_psr4_layout_pre_marker_keeps_its_edge(tmp_path: Path):
+    """The pre-marker variant of `test_non_psr4_layout_keeps_its_edge_incrementally`:
+    composer maps a namespace PREFIX onto a directory (`App\\Weird\\` -> `src/`),
+    and with the declaration unavailable the shorter path must not read as a
+    contradiction — a stripped prefix looks exactly like one."""
+    caller = (
+        "<?php\nnamespace App\\Http;\n"
+        "use App\\Weird\\Odd;\n"
+        "class I {\n"
+        "    private Odd $o;\n"
+        "    public function go(): int { return $this->o->ping(); }\n"
+        "}\n"
+    )
+    (full_calls, full), (inc_calls, inc) = _full_then_incremental(tmp_path, {
+        "src/Odd.php": (
+            "<?php\nnamespace App\\Weird;\n"
+            "class Odd {\n    public function ping(): int { return 1; }\n}\n"
+        ),
+        "app/Audit/Pinger.php": (
+            "<?php\nnamespace App\\Audit;\n"
+            "class Pinger {\n    public function ping(): int { return 0; }\n}\n"
+        ),
+        _INCR_CALLER: caller,
+    }, changed=_INCR_CALLER, markers=_PRE_23_MARKERS)
+
+    go = _find(inc, ".go()", "_go")
+    odd = _find(full, ".ping()", "odd")
+    assert (go, odd) in full_calls
+    assert (go, odd) in inc_calls
+    assert (go, _find(full, ".ping()", "pinger")) not in inc_calls
