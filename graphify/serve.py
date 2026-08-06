@@ -670,17 +670,26 @@ def _pick_seeds(
     scores a dampened collision can still exceed.
 
     `skip_covered_terms` (default off, opted into only by `_query_graph_text`)
-    refines that guarantee to *every term with any match is matched by at least
-    one seed*, from *every term's own singleton winner gets a slot*: a term that
-    is a substring of an already-picked seed's normalized label — the same
-    predicate as _score_nodes' weakest match tier, and its label alone, so the
-    seed provably would have matched the term in scoring — is not starved, and
-    starvation is the only thing the guarantee exists to prevent. A seed with no
-    label covers nothing. Without this skip, a natural-language
-    question's generic nouns each drag in their own hub: "what code uses
-    ChargeCustomerService to charge a customer" seeds the `Customer` model and
-    `.charge()` on top of `ChargeCustomerService`, whose label already matches
-    both terms, and the hub's member fan-out then floods the traversal (#37/C2).
+    refines that guarantee to *every term with any match is matched by the
+    top-ranked seed or by a seed of its own*, from *every term's own singleton
+    winner gets a slot*: a term that is a substring of the top-ranked seed's
+    normalized label — the same predicate as _score_nodes' weakest match tier,
+    and its label alone, so that seed provably would have matched the term in
+    scoring — is not starved, and starvation is the only thing the guarantee
+    exists to prevent. A seed with no label covers nothing. Without this skip, a
+    natural-language question's generic nouns each drag in their own hub: "what
+    code uses ChargeCustomerService to charge a customer" seeds the `Customer`
+    model and `.charge()` on top of `ChargeCustomerService`, whose label already
+    matches both terms, and the hub's member fan-out then floods the traversal
+    (#37/C2).
+
+    Only the TOP-ranked seed may make that claim, not any picked seed. Coverage
+    asserts "the query's dominant match already answers this term", which is a
+    statement about the query's subject; a lower-ranked seed that merely happens
+    to contain the term's letters (`ReportService` for "port") is asserting a
+    coincidence, and letting it skip the guarantee starves the term's real
+    winner — for a term whose winner sits outside the gap window, the guarantee
+    is the only way in (Graphify-Labs#2516 review).
     """
     if not scored:
         return []
@@ -749,10 +758,15 @@ def _pick_seeds(
             key = _seed_label_key(best_nid)
             if best_nid in seeds or key in seen_labels:
                 continue
-            # Layered after that dedup gate, in this same sorted-term order, so
-            # the coverage check sees the gap-window seeds plus every guarantee
-            # seed appended so far.
-            if skip_covered_terms and any(term in _seed_norm_label(s) for s in seeds):
+            # Layered after that dedup gate, but only the TOP-ranked seed — the
+            # query's dominant match, always `scored[0]` and so always already
+            # present here — can declare a term covered. Letting any picked seed
+            # make that claim lets a coincidental substring collision inside an
+            # unrelated, lower-ranked seed's label silently starve a distinct
+            # term's real winner: `ReportService` contains "port", which would
+            # cost a corpus symbol literally named `port` the only seat it can
+            # get (Graphify-Labs#2516 review; the #1597 concern one layer down).
+            if skip_covered_terms and seeds and term in _seed_norm_label(seeds[0]):
                 continue
             seen_labels.add(key)
             seeds.append(best_nid)
@@ -760,7 +774,7 @@ def _pick_seeds(
 
 
 _CONTEXT_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("call", ("call", "calls", "called", "invoke", "invokes", "invoked")),
+    ("call", ("call", "calls", "called", "caller", "callers", "invoke", "invokes", "invoked")),
     ("import", ("import", "imports", "imported", "module", "modules")),
     ("field", ("field", "fields", "member", "members", "property", "properties")),
     ("parameter_type", ("parameter", "parameters", "param", "params", "argument", "arguments")),
@@ -824,16 +838,34 @@ _CONTEXT_FILTER_ALIASES: dict[str, str] = {
 # The vocabulary is derived from the two tables that already encode relational
 # intent, so there is one auditable definition instead of a scattered word list:
 # every `_CONTEXT_HINTS` word plus every `_CONTEXT_FILTER_ALIASES` key. The
-# extension set exists because "callers"/"uses" appear in NEITHER table (they
-# never trigger the traversal-filter heuristic) yet carry exactly the same
-# intent — an intent-consumed-only rule misses two of the three measured
-# phrasings. `_CONTEXT_HINTS` itself stays untouched on purpose: extending it
-# would change which queries get context-filtered, a separate behavior change.
+# first extension group exists because "uses" appears in NEITHER table (it never
+# triggers the traversal-filter heuristic) yet carries exactly the same intent —
+# an intent-consumed-only rule misses two of the three measured phrasings. It
+# still lists "caller"/"callers" for the same reason; upstream 0.9.35 has since
+# added them to `_CONTEXT_HINTS`' `call` entry (adopted in the 0.9.37 sync), so
+# the derivation now yields them too and the listing is belt-and-braces against
+# that hint entry changing back. `_CONTEXT_HINTS` itself stays untouched on
+# purpose beyond what upstream ships in it: extending it further would change
+# which queries get context-filtered, a separate behavior change.
+#
+# The extension set also ABSORBS upstream 0.9.35's own verbs-only
+# `_RELATIONAL_INTENT_TERMS` (their #2507 direction 2), which the 0.9.37 sync
+# replaced with this derived definition: the second group below is exactly the
+# twelve words upstream demoted that neither table yields here — `depend(s)`,
+# `export`, `extend/extends/extended`, `implement/implements/implemented`,
+# `reference/references/referenced`. (`exports`/`exported` and the `use*` family
+# are already covered by `_CONTEXT_FILTER_ALIASES` and the first group.) So no
+# demotion either fork ever shipped is lost, and the union stays a superset of
+# both parents' vocabularies.
 _RELATIONAL_INTENT_TERMS: frozenset[str] = frozenset(
     {word for _ctx, hints in _CONTEXT_HINTS for word in hints}
     | set(_CONTEXT_FILTER_ALIASES)
     | {"caller", "callers", "use", "uses", "used", "using", "usage",
        "listen", "listens", "listener", "listeners"}
+    | {"depend", "depends", "export",
+       "extend", "extends", "extended",
+       "implement", "implements", "implemented",
+       "reference", "references", "referenced"}
 )
 
 
