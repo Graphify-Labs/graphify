@@ -1427,3 +1427,66 @@ def test_build_from_json_prunes_dangling_hyperedge_members(capsys):
     assert set(hes) == {"he_partial"}, "an all-dangling hyperedge must be dropped"
     assert hes["he_partial"]["nodes"] == ["alpha", "beta"]
     assert "he_all_ghost" in capsys.readouterr().err
+
+
+def test_build_merge_replace_collision_reports_dropped_nodes(tmp_path, capsys):
+    """#2497: bare-basename source_file collision replaces another input's
+    nodes. The #479 shrink guard intentionally ignores replacement (same-file
+    re-extract that emits fewer nodes is legitimate), so the loss must be
+    visible on stderr the same way prune reports deleted sources.
+    """
+    import networkx as nx
+
+    graph_path = tmp_path / "graph.json"
+
+    # Project A contributed 10 nodes under the bare basename CHANGELOG.md.
+    chunk_a = {"nodes": [
+        {"id": f"a{i}", "label": f"A{i}", "file_type": "document",
+         "source_file": "CHANGELOG.md"}
+        for i in range(10)
+    ], "edges": []}
+    G0 = build([chunk_a], dedup=False)
+    graph_path.write_text(
+        json.dumps(nx.node_link_data(G0, edges="edges")), encoding="utf-8"
+    )
+    assert G0.number_of_nodes() == 10
+
+    # Unrelated project B re-extracts the same bare source_file with 1 node.
+    # Replacement drops A's 10; B adds 1. Net 10 → 1 — must be reported.
+    chunk_b = {"nodes": [
+        {"id": "b0", "label": "B0", "file_type": "document",
+         "source_file": "CHANGELOG.md"},
+    ], "edges": []}
+    G1 = build_merge([chunk_b], graph_path, dedup=False)
+    assert G1.number_of_nodes() == 1
+    err = capsys.readouterr().err
+    assert "Replaced 10 node(s) from 1 re-extracted source file(s)." in err
+
+
+def test_build_merge_replace_reports_replaced_count(tmp_path, capsys):
+    """#2497: replace-on-re-extract should log how many nodes it dropped,
+    matching the existing prune report for deleted sources.
+    """
+    import networkx as nx
+
+    graph_path = tmp_path / "graph.json"
+    # Keep.md stays; changed.md shrinks 2 → 2 so the shrink guard does not fire.
+    chunk0 = {"nodes": [
+        {"id": "A", "label": "A", "file_type": "document", "source_file": "changed.md"},
+        {"id": "B", "label": "B", "file_type": "document", "source_file": "changed.md"},
+        {"id": "K", "label": "K", "file_type": "document", "source_file": "keep.md"},
+    ], "edges": []}
+    G0 = build([chunk0], dedup=False)
+    graph_path.write_text(
+        json.dumps(nx.node_link_data(G0, edges="edges")), encoding="utf-8"
+    )
+
+    new_chunk = {"nodes": [
+        {"id": "A", "label": "A", "file_type": "document", "source_file": "changed.md"},
+        {"id": "C", "label": "C", "file_type": "document", "source_file": "changed.md"},
+    ], "edges": []}
+    G1 = build_merge([new_chunk], graph_path, dedup=False)
+    err = capsys.readouterr().err
+    assert "Replaced 2 node(s) from 1 re-extracted source file(s)." in err
+    labels = {d["label"] for _, d in G1.nodes(data=True)}
+    assert labels == {"A", "C", "K"}

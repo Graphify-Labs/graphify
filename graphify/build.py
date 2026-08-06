@@ -1486,6 +1486,10 @@ def build_merge(
     if directed is None:
         directed = existing_directed if had_graph else False
 
+    # Pre-replace count for the replace-on-re-extract report (#2497). Captured
+    # before the rebind below drops replaced-file nodes from ``existing_nodes``.
+    loaded_node_count = len(existing_nodes)
+
     # Effective root for relativizing absolute source_file / prune paths back to the
     # stored relative source_file keys. When the caller passes root we use it;
     # otherwise fall back to the graph's recorded scan root, so absolute
@@ -1535,6 +1539,24 @@ def build_merge(
             return sf not in own and _norm_source_file(sf, _replace_root) not in own
         existing_nodes = [n for n in existing_nodes if _kept(n)]
         existing_edges = [e for e in existing_edges if _kept(e)]
+        # Surface replace-on-re-extract the same way prune reports its effect
+        # (#2497). Without this, a bare-basename source_file collision can drop
+        # an unrelated project's nodes with no log line at all.
+        replaced = loaded_node_count - len(existing_nodes)
+        if replaced:
+            # Count distinct source_file keys from the new chunks (raw form only;
+            # norm aliases are extra entries in new_sources for matching).
+            n_files = len({
+                n.get("source_file")
+                for ch in new_chunks
+                for n in ch.get("nodes", [])
+                if n.get("source_file")
+            })
+            print(
+                f"[graphify] Replaced {replaced} node(s) from {n_files} "
+                f"re-extracted source file(s).",
+                file=sys.stderr,
+            )
 
     base = [{"nodes": existing_nodes, "edges": existing_edges}] if had_graph else []
 
@@ -1647,7 +1669,11 @@ def build_merge(
                 file=sys.stderr,
             )
 
-    # Safety check: refuse to shrink the graph silently (#479)
+    # Safety check: refuse to shrink the graph silently (#479).
+    # Uses the post-replace ``existing_nodes`` length: nodes dropped by
+    # re-extract replacement are intentional (and reported above, #2497).
+    # Comparing against the pre-replace loaded count would refuse every
+    # legitimate same-file shrink (a re-extract that emits fewer nodes).
     # Skip when dedup or prune_sources is active — shrinkage is intentional there.
     if graph_path.exists() and not dedup and not prune_sources:
         existing_n = len(existing_nodes)
