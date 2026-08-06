@@ -1168,13 +1168,34 @@ def _query_graph_text(
         return "No matching nodes found."
     resolved_filters, filter_source = _resolve_context_filters(question, context_filters)
     traversal_graph = _filter_graph_by_context(G, resolved_filters)
-    nodes, edges = _dfs(traversal_graph, start_nodes, depth) if mode == "dfs" else _bfs(traversal_graph, start_nodes, depth)
+    traverse = _dfs if mode == "dfs" else _bfs
+    nodes, edges = traverse(traversal_graph, start_nodes, depth)
+    # A guessed filter that reaches nothing is worse than no filter: "Who calls
+    # ChargeCustomerService?" infers a `call` filter, but a class node owns no
+    # call edges — calls land on its methods and the class->member edge carries
+    # `context=None` — so the filtered traversal cannot leave the seed and the
+    # answer comes back near-empty yet confident. Retraverse unfiltered instead,
+    # and say so in the header so a relaxed answer never reads as a filtered one
+    # (#37/C3).
+    #
+    # Both traversals visit every seed, so `nodes <= set(start_nodes)` means the
+    # traversal discovered nothing at all. That zero-expansion threshold is
+    # deliberate: "few nodes" would need a tuning constant, and a filter that
+    # found *something* is doing its job. Mode-independent by construction.
+    #
+    # Only the heuristic is second-guessed. An explicitly requested filter is an
+    # instruction, not a guess, and is honored even when it strands the seeds.
+    relaxed = filter_source == "heuristic" and nodes <= set(start_nodes)
+    if relaxed:
+        traversal_graph = G
+        nodes, edges = traverse(G, start_nodes, depth)
     header_parts = [
         f"Traversal: {mode.upper()} depth={depth}",
         f"Start: {[G.nodes[n].get('label', n) for n in start_nodes]}",
     ]
     if resolved_filters:
-        header_parts.append(f"Context: {', '.join(resolved_filters)} ({filter_source})")
+        note = "; relaxed — no matches beyond seeds" if relaxed else ""
+        header_parts.append(f"Context: {', '.join(resolved_filters)} ({filter_source}{note})")
     header_parts.append(f"{len(nodes)} nodes found")
     header = " | ".join(header_parts) + "\n\n"
     # Pass the seeds so the queried symbol renders first and survives truncation
