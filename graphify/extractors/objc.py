@@ -6,6 +6,40 @@ from graphify.extractors.engine import _cpp_declarator_name, _semantic_reference
 from graphify.extractors.resolution import _resolve_c_include_path
 from pathlib import Path
 from typing import Any
+import re
+
+# A category stem splits only when both halves look like plain ObjC identifiers, so
+# `C++Bridge.h` and `Foo+.h` are left intact.
+_OBJC_STEM_PART = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _objc_category_base_stem(stem: str) -> str:
+    """Strip an ObjC category/extension suffix from a file stem (``Foo+Cat`` -> ``Foo``).
+
+    A category (``@interface Foo (Cat)``) or class extension (``@interface Foo ()``)
+    declares members of an EXISTING class, so its class node must key to the same id
+    as ``Foo.h``'s ``@interface Foo`` instead of minting a second class node (#1556).
+    Only the final path segment is considered, and only a well-formed
+    ``Name+Suffix`` pair is split.
+
+    Mirrors ``_decldef_class_stem``, which already compares sibling header/impl files
+    by the stem before ``+``.
+    """
+    head, sep, tail = stem.rpartition("/")
+    base, plus, suffix = tail.partition("+")
+    if not plus or not _OBJC_STEM_PART.fullmatch(base) or not _OBJC_STEM_PART.fullmatch(suffix):
+        return stem
+    return f"{head}{sep}{base}"
+
+
+def _objc_is_category(node) -> bool:
+    """True for ``@interface/@implementation Foo (Cat)`` and ``Foo ()``.
+
+    The grammar emits the parentheses as anonymous children only for a category or
+    class extension; a generic class (``@interface Box<T>``) uses
+    ``parameterized_arguments`` instead, so it is not matched.
+    """
+    return any(c.type == "(" for c in node.children)
 
 
 def _objc_local_var_types(body_node, source: bytes, table: dict[str, str]) -> None:
@@ -187,7 +221,14 @@ def extract_objc(path: Path) -> dict:
                     walk(child, parent_nid)
                 return
             name = _read(identifiers[0])
-            cls_nid = _make_id(stem, name)
+            # A category / class extension extends an existing class, so key its
+            # class node off the BASE stem (`Foo+Cat.h` -> `Foo`). Without this,
+            # `Foo+Cat.h` minted a SECOND node labelled `Foo`, which made every
+            # `[Foo ...]` receiver ambiguous and tripped the resolver's
+            # single-definition god-node guard — destroying edges the same corpus
+            # produced fine when the members lived in `Foo.h` (#1556).
+            cls_stem = _objc_category_base_stem(stem) if _objc_is_category(node) else stem
+            cls_nid = _make_id(cls_stem, name)
             add_node(cls_nid, name, line)
             add_edge(file_nid, cls_nid, "contains", line)
             # superclass is second identifier after ':'
@@ -243,7 +284,8 @@ def extract_objc(path: Path) -> dict:
                 for child in node.children:
                     walk(child, parent_nid)
                 return
-            impl_nid = _make_id(stem, name)
+            impl_stem = _objc_category_base_stem(stem) if _objc_is_category(node) else stem
+            impl_nid = _make_id(impl_stem, name)
             if impl_nid not in seen_ids:
                 add_node(impl_nid, name, line)
                 add_edge(file_nid, impl_nid, "contains", line)
