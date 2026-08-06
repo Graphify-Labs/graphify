@@ -51,6 +51,7 @@ h3 { font-size: 1.25rem; margin: 32px 0 12px; color: var(--accent); }
 h4 { font-size: 1.05rem; margin: 20px 0 8px; color: var(--warn); }
 p { margin: 8px 0; color: var(--muted); }
 .subtitle { color: var(--muted); font-size: 1.1rem; margin-bottom: 32px; }
+.diagram-coverage { color: var(--muted); font-size: 0.85rem; margin: -4px 0 16px; font-style: italic; }
 .mermaid { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 24px; margin: 20px 0; overflow-x: auto; position: relative; }
 .mermaid.is-enhanced { padding: 0; overflow: hidden; min-height: 260px; }
 .mermaid-viewport { padding: 54px 24px 24px; overflow: hidden; cursor: grab; touch-action: none; min-height: 260px; }
@@ -1117,6 +1118,55 @@ def generate_overview_graph(sections: list, section_nodes_map: dict,
     return "\n".join(lines)
 
 
+def select_diagram_content(nodes: list, edges: list, max_nodes: int) -> tuple[list, list]:
+    """Nodes and edges a section diagram will actually draw.
+
+    Shared by the flowchart and its coverage note so the two cannot drift: a
+    disclosure that is computed separately from the drawing is a disclosure
+    that will eventually lie.
+    """
+    selected_nodes = select_diagram_nodes(nodes, edges, max_nodes)
+    selected_ids = {node.get("id") for node in selected_nodes}
+    visible_edges = [
+        edge for edge in preferred_edges(edges, allow_structure=False)
+        if edge.get("source") in selected_ids and edge.get("target") in selected_ids
+    ]
+    if not visible_edges:
+        visible_edges = [
+            edge for edge in preferred_edges(edges, allow_structure=True)
+            if edge.get("source") in selected_ids and edge.get("target") in selected_ids
+        ]
+    return selected_nodes, visible_edges
+
+
+def generate_diagram_coverage(nodes: list, edges: list, lang: str,
+                              max_nodes: int, max_edges: int) -> str:
+    """State how much of a section its diagram actually draws.
+
+    The counts were already computed inside generate_section_flowchart, but
+    emitted as a Mermaid ``%%`` comment -- which Mermaid never renders, so no
+    reader could see them. The section intro says only that the diagram shows
+    "representative relationships", never how much is missing, so a reader who
+    is told the section has 54 nodes reasonably assumes the diagram holds all
+    54. On a real graph an audited section drew 18 of 54.
+    """
+    if not nodes:
+        return ""
+    selected_nodes, visible_edges = select_diagram_content(nodes, edges, max_nodes)
+    shown_nodes, total_nodes = len(selected_nodes), len(nodes)
+    shown_edges, total_edges = min(len(visible_edges), max_edges), len(visible_edges)
+    if shown_nodes >= total_nodes and shown_edges >= total_edges:
+        return ""  # complete -- no disclosure needed
+    text = pick_text(
+        lang,
+        f"图中绘制了 {total_nodes} 个节点中的 {shown_nodes} 个、"
+        f"{total_edges} 条边中的 {shown_edges} 条；其余已省略以保持可读性。",
+        f"Diagram draws {shown_nodes} of {total_nodes} nodes and "
+        f"{shown_edges} of {total_edges} edges; the rest are omitted for readability.",
+    )
+    return f'<p class="diagram-coverage">{escape(text)}</p>'
+
+
 def generate_section_flowchart(section_id: str, section_name: str,
                                 nodes: list, edges: list, lang: str,
                                 diagram_scale: float, max_nodes: int,
@@ -1131,17 +1181,7 @@ def generate_section_flowchart(section_id: str, section_name: str,
         lines.extend(mermaid_class_defs())
         return "\n".join(lines)
 
-    selected_nodes = select_diagram_nodes(nodes, edges, max_nodes)
-    selected_ids = {node.get("id") for node in selected_nodes}
-    visible_edges = [
-        edge for edge in preferred_edges(edges, allow_structure=False)
-        if edge.get("source") in selected_ids and edge.get("target") in selected_ids
-    ]
-    if not visible_edges:
-        visible_edges = [
-            edge for edge in preferred_edges(edges, allow_structure=True)
-            if edge.get("source") in selected_ids and edge.get("target") in selected_ids
-        ]
+    selected_nodes, visible_edges = select_diagram_content(nodes, edges, max_nodes)
 
     groups = group_nodes_by_file(selected_nodes)
     class_lines = []
@@ -1760,6 +1800,7 @@ def write_callflow_html(
 <div class="mermaid">
 {generate_section_flowchart(sid, name, sec_nodes, sec_edges, lang, args.diagram_scale, args.max_diagram_nodes, args.max_diagram_edges)}
 </div>
+{generate_diagram_coverage(sec_nodes, sec_edges, lang, args.max_diagram_nodes, args.max_diagram_edges)}
 
 <h3>{h3_title}</h3>
 <table class="call-table">
