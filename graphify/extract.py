@@ -262,6 +262,132 @@ def _repoint_python_package_imports(paths, all_nodes, all_edges, root) -> None:
                 e["target"] = alias_map[tgt]
 
 
+# Languages whose import edges name their target by the imported file's bare
+# stem id, as (importer suffixes, importable target suffixes). Each pair is
+# closed within one language: an import written in one of the first set can only
+# ever mean a file from the second, which is what makes the hint below
+# unambiguous even when the colliding sibling belongs to another language (#33).
+#
+# Python's target set omits `.pyi` on purpose — it has no extractor, so it mints
+# no file node to point a hint at, and listing it could only mask a real `.py`
+# target behind a phantom ambiguity.
+_IMPORT_STEM_LANGUAGES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
+    ((".py", ".pyi"), (".py",)),
+    ((".rs",), (".rs",)),
+    ((".zig",), (".zig",)),
+    ((".ex", ".exs"), (".ex", ".exs")),
+    ((".ps1", ".psm1", ".psd1"), (".ps1", ".psm1", ".psd1")),
+    ((".sh", ".bash"), (".sh", ".bash")),
+    (
+        (".pas", ".pp", ".dpr", ".dpk", ".inc"),
+        (".pas", ".pp", ".dpr", ".dpk", ".inc"),
+    ),
+)
+
+
+def _file_nids_by_path(all_nodes, all_edges, root) -> dict:
+    """Resolved source path -> the id its file node carries RIGHT NOW.
+
+    For passes that run after ``_disambiguate_colliding_node_ids`` and therefore
+    cannot derive a file's id from its path: a same-stem sibling salts the id
+    away from whatever the path formula would produce. A file node is the one
+    that ``contains`` its file's other nodes; an empty file contains nothing, so
+    fall back to the node whose label is the file's own basename.
+    """
+    try:
+        root = Path(root).resolve()
+    except OSError:
+        root = Path(root)
+    contains_sources = {
+        e.get("source") for e in all_edges if e.get("relation") == "contains"
+    }
+    by_path: dict[Path, str] = {}
+    fallback: dict[Path, str] = {}
+    for n in all_nodes:
+        source_file, nid = n.get("source_file"), n.get("id")
+        if not source_file or not nid:
+            continue
+        candidate = Path(str(source_file))
+        try:
+            resolved = (
+                candidate if candidate.is_absolute() else root / candidate
+            ).resolve()
+        except OSError:
+            continue
+        if nid in contains_sources:
+            by_path.setdefault(resolved, nid)
+        elif n.get("label") == resolved.name:
+            fallback.setdefault(resolved, nid)
+    for resolved, nid in fallback.items():
+        by_path.setdefault(resolved, nid)
+    return by_path
+
+
+def _hint_import_targets(paths, all_edges, root) -> None:
+    """Tell id-disambiguation which file each stem-named import edge targets.
+
+    The extractors in ``_IMPORT_STEM_LANGUAGES`` name an import's target by the
+    bare file-node id of the imported file (``import lead`` -> ``lead``), which
+    resolves only while that id is unique. Add ANY same-stem file — a ``lead.md``
+    will do — and the two file nodes collide, so
+    ``_disambiguate_colliding_node_ids`` salts them apart into ``lead_py_lead``
+    and ``lead_md_lead``. The edge's target salt is keyed by the IMPORTER's
+    source_file, which matches neither, so the edge is left pointing at an id
+    that no longer names anything: silently dropped, along with everything
+    downstream of it (Python's ``module.func()`` call resolution among them).
+
+    The disambiguator already accepts a ``target_file`` hint for exactly this
+    (#1814), keying the target salt by that file instead. Stamp it here rather
+    than in each extractor, because an extractor sees one file and cannot know
+    which of the corpus's same-stem candidates the id will end up naming.
+
+    This cannot change WHICH node an edge resolves to — the hint only selects
+    among the salted variants of an id the edge already named — so a corpus with
+    no collision is bit-identical. Guards: never overwrite a hint an emitter
+    already stamped, and skip an id claimed by more than one importable file of
+    the same language (leave it dangling, as before).
+
+    Must run BEFORE ``_disambiguate_colliding_node_ids``, the hint's only reader.
+    """
+    try:
+        root = Path(root).resolve()
+    except OSError:
+        root = Path(root)
+    hints: list[tuple[tuple[str, ...], dict[str, str]]] = []
+    for importer_suffixes, target_suffixes in _IMPORT_STEM_LANGUAGES:
+        file_id_to_paths: dict[str, set[str]] = {}
+        for p in paths:
+            if p.suffix.lower() not in target_suffixes:
+                continue
+            try:
+                rel = Path(p).resolve().relative_to(root)
+            except (ValueError, OSError):
+                continue
+            file_id_to_paths.setdefault(_file_node_id(rel), set()).add(str(p))
+        hint_map = {
+            fid: next(iter(ps)) for fid, ps in file_id_to_paths.items() if len(ps) == 1
+        }
+        if hint_map:
+            hints.append((importer_suffixes, hint_map))
+    if not hints:
+        return
+    for e in all_edges:
+        if not (
+            isinstance(e, dict)
+            and e.get("relation") in ("imports", "imports_from")
+            and not e.get("target_file")
+        ):
+            continue
+        source_file = str(e.get("source_file", "")).lower()
+        for importer_suffixes, hint_map in hints:
+            if not source_file.endswith(importer_suffixes):
+                continue
+            target_path = hint_map.get(e.get("target"))
+            if target_path:
+                e["target_file"] = target_path
+            break
+
+
 SEMANTIC_RELATIONS = frozenset({
     "inherits", "implements", "mixes_in", "embeds", "references",
     "calls", "imports", "imports_from", "re_exports", "contains", "method",
@@ -5682,6 +5808,11 @@ def extract(
     # (src/) package root before the resolver/import-evidence passes run, so the
     # graph is identical regardless of scan root (#2072).
     _repoint_python_package_imports(paths, all_nodes, all_edges, root)
+    # Then hint the disambiguator at each stem-named import's real target file, so
+    # a same-stem sibling cannot strand the edge on a salted-away id (#33). Must
+    # be after the repoint above (it rewrites some targets) and before
+    # disambiguation (the hint's only reader).
+    _hint_import_targets(paths, all_edges, root)
     _merge_swift_extensions(per_file, all_nodes, all_edges)
     _merge_csharp_partial_class_nodes(per_file, all_nodes, all_edges, paths, root)
     _disambiguate_colliding_node_ids(all_nodes, all_edges, all_raw_calls, root)
@@ -5787,7 +5918,10 @@ def extract(
         sh_paths = [p for _, p in sh_pairs]
         try:
             all_edges.extend(
-                resolve_bash_source_edges(sh_results, sh_paths, root, existing_edges=all_edges)
+                resolve_bash_source_edges(
+                    sh_results, sh_paths, root, existing_edges=all_edges,
+                    file_nids=_file_nids_by_path(all_nodes, all_edges, root),
+                )
             )
         except Exception as exc:
             import logging

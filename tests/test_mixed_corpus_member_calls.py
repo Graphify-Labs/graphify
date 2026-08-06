@@ -615,12 +615,12 @@ def test_typescript_receiver_resolves_despite_a_same_named_python_class(tmp_path
 # filtering source-backed nodes, and its module arm resolves through the
 # caller's own `imports` edges -- but both were corpus-wide all the same.
 #
-# The class arm is covered in both directions. The module arm is covered only
-# for the leak: its suppression direction is unreachable, because two same-stem
-# files disambiguate the FILE node ids (`lead_py_lead`, `lead_ts_lead`) while
-# the `imports` edge target stays the bare alias `lead`, so the arm sees zero
-# candidates rather than an ambiguous two. That is a separate defect in the
-# import-alias remap, tracked as #33 and untouched here.
+# Both arms are covered in both directions. The module arm's suppression case
+# turned out not to be an index defect at all: two same-stem files disambiguate
+# the FILE node ids (`lead_py_lead`, `lead_ts_lead`) while the `imports` edge
+# target stays the bare alias `lead`, so the arm saw ZERO candidates rather
+# than an ambiguous two. That is fixed one layer down, in the import-alias
+# hinting (#33), and asserted at both layers below.
 
 _JAVA_DECOY = "class Lead { void search() {} }\n"
 
@@ -697,3 +697,58 @@ def test_python_module_receiver_still_resolves_its_own_module(tmp_path: Path):
     py_search = _nid(result, "search()", "lead.py")
     assert (run, py_search) in calls, "the module arm stopped resolving"
     assert calls[(run, py_search)]["confidence"] == "EXTRACTED"
+
+
+def test_python_module_receiver_resolves_despite_a_same_stem_typescript_file(
+    tmp_path: Path,
+):
+    """Module arm, defect 2: a same-stem foreign file must not delete the edge.
+
+    `lead.py` and `lead.ts` both derive the file node id `lead`, so
+    disambiguation salts them into `lead_py_lead` and `lead_ts_lead` — while the
+    `imports` edge target stays the bare alias `lead`, which now names nothing.
+    The arm then sees ZERO candidate modules rather than an ambiguous two, and
+    the one edge Python's own import genuinely supports disappears (#33).
+    """
+    calls, result = _calls(tmp_path, {
+        "caller.py": _MOD_CALLER,
+        "lead.py": "def search():\n    return []\n",
+        "lead.ts": _TS_MODULE_DECOY,
+    }, cache_root=tmp_path)
+
+    run = _nid(result, "run()", "caller.py")
+    py_search = _nid(result, "search()", "lead.py")
+    ts_search = _nid(result, "search()", "lead.ts")
+    assert (run, py_search) in calls, \
+        "a same-stem TypeScript file suppressed the real Python edge"
+    assert (run, ts_search) not in calls, "the TypeScript decoy received an edge"
+    assert calls[(run, py_search)]["confidence"] == "EXTRACTED"
+
+
+def test_python_import_edge_survives_a_same_stem_foreign_sibling(tmp_path: Path):
+    """The `imports` edge itself, one layer below the call edge above (#33).
+
+    Asserted separately because the module arm is only one consumer: any query
+    over Python imports lost this edge to the same dangling alias.
+    """
+    _, result = _calls(tmp_path, {
+        "caller.py": _MOD_CALLER,
+        "lead.py": "def search():\n    return []\n",
+        "lead.ts": _TS_MODULE_DECOY,
+    }, cache_root=tmp_path)
+
+    node_ids = {node["id"] for node in result["nodes"]}
+    py_file = _nid(result, "lead.py", "lead.py")
+    ts_file = _nid(result, "lead.ts", "lead.ts")
+    imports = {
+        (edge["source"], edge["target"])
+        for edge in result["edges"]
+        if edge["relation"] in ("imports", "imports_from")
+    }
+    caller_file = _nid(result, "caller.py", "caller.py")
+    assert (caller_file, py_file) in imports, \
+        "the Python import edge dangled on the pre-disambiguation alias"
+    assert (caller_file, ts_file) not in imports, \
+        "a Python import must never resolve to a TypeScript file"
+    for source, target in imports:
+        assert target in node_ids, f"import edge dangles: {source} -> {target}"
