@@ -570,6 +570,84 @@ def test_switch_arm_pattern_receiver_resolves(tmp_path):
     assert (r_a, twig_go) not in calls
 
 
+# ── Lexically-scoped receiver typing (#2472) ──────────────────────────────────
+# The #2346 harvest of `out var x` (untypable) rode the #2299 method-wide
+# poison rule: ANY None-typed binding of a name wiped a correctly typed
+# same-name binding in a DIFFERENT lexical scope of the same method, dropping
+# true calls edges. Bindings are now scoped by byte range and resolved at the
+# call site: exactly one visible typed binding stamps, an untypable or tied
+# binding at the call site still yields no edge (never a guess).
+
+
+def test_static_local_function_param_survives_out_var_reuse(tmp_path):
+    """#2472 corpus: a typed `Target2 shared` local-function parameter must
+    keep its calls edges despite an `out var shared` (untypable) elsewhere in
+    the enclosing method — while `shared.Gamma()` on the out-var itself stays
+    unresolved (`out var` is still untyped: recovering it from the callee's
+    `out` parameter signature is a separate, pre-existing gap)."""
+    calls, r = _calls(tmp_path, {
+        "S.cs": (
+            "public class Target2 {\n"
+            "    public bool Alpha() => true;\n"
+            "    public bool Beta() => true;\n"
+            "    public bool Gamma() => true;\n"
+            "}\n"
+            "public class Maker { public bool Make(out int v) { v = 1; return true; } }\n"
+            "public class R {\n"
+            "    public bool Outer(Maker m) {\n"
+            "        m.Make(out var shared);\n"
+            "        shared.Gamma();\n"
+            "        return Inner(new Target2());\n"
+            "        static bool Inner(Target2 shared) { return shared.Alpha() && shared.Beta(); }\n"
+            "    }\n"
+            "}\n"
+        )
+    })
+    outer = _find(r, ".Outer()", "_r_outer")
+    alpha = _find(r, ".Alpha()", "target2")
+    beta = _find(r, ".Beta()", "target2")
+    gamma = _find(r, ".Gamma()", "target2")
+    assert (outer, alpha) in calls, \
+        "typed local-function param must survive a same-named out-var elsewhere"
+    assert (outer, beta) in calls
+    for tgt in (alpha, beta):
+        edge = next(e for e in r["edges"] if e["relation"] == "calls"
+                    and e["source"] == outer and e["target"] == tgt)
+        assert edge["confidence"] == "INFERRED"
+    assert (outer, gamma) not in calls, \
+        "the out-var receiver itself stays untypable — no guessed edge, and no " \
+        "method-wide binding leak from the local-function param"
+
+
+def test_untypeable_out_var_in_sibling_block_does_not_poison(tmp_path):
+    """An `out var s` in the ELSE block must not wipe the typed `Server s`
+    declared in the sibling IF block — the two scopes never overlap."""
+    calls, r = _calls(tmp_path, {
+        "S.cs": (
+            "public class Server { public bool Save() => true; }\n"
+            "public class Cache  { public bool Save() => false; }\n"
+            "public class Maker { public bool Make(out int v) { v = 1; return true; } }\n"
+            "public class R {\n"
+            "    public bool A(Maker m, bool flag) {\n"
+            "        if (flag) {\n"
+            "            Server s = new Server();\n"
+            "            return s.Save();\n"
+            "        } else {\n"
+            "            m.Make(out var s);\n"
+            "            return true;\n"
+            "        }\n"
+            "    }\n"
+            "}\n"
+        )
+    })
+    r_a = _find(r, ".A()", "_r_a")
+    server_save = _find(r, ".Save()", "server")
+    cache_save = _find(r, ".Save()", "cache")
+    assert (r_a, server_save) in calls, \
+        "a sibling-block out-var must not poison the typed local's scope"
+    assert (r_a, cache_save) not in calls
+
+
 def test_sibling_pattern_rebind_conflict_poisons(tmp_path):
     """The same name pattern-bound to two DIFFERENT types in one method: raw
     calls carry no lexical position, so neither candidate may win — no edge."""

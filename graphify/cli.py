@@ -1175,7 +1175,8 @@ def dispatch_command(cmd: str) -> None:
     elif cmd == "path":
         if len(sys.argv) < 4:
             print(
-                'Usage: graphify path "<source>" "<target>" [--graph path]',
+                'Usage: graphify path "<source>" "<target>" [--graph path] '
+                "[--directed|--undirected]",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -1187,9 +1188,30 @@ def dispatch_command(cmd: str) -> None:
         target_label = sys.argv[3]
         graph_path = _default_graph_path()
         args = sys.argv[4:]
+        direction_flag = None
         for i, a in enumerate(args):
             if a == "--graph" and i + 1 < len(args):
                 graph_path = args[i + 1]
+            elif a == "--directed":
+                if direction_flag == "undirected":
+                    print(
+                        "error: --directed and --undirected are mutually exclusive",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+                direction_flag = "directed"
+            elif a == "--undirected":
+                if direction_flag == "directed":
+                    print(
+                        "error: --directed and --undirected are mutually exclusive",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+                direction_flag = "undirected"
+        # Directed by default (#2487): direction truth exists in every
+        # graph.json (arc order on post-#563 files, _src/_tgt markers on legacy
+        # canonicalized files), so respect it unless the caller opts out.
+        undirected = direction_flag == "undirected"
         gp = Path(graph_path).resolve()
         if not gp.exists():
             print(f"error: graph file not found: {gp}", file=sys.stderr)
@@ -1244,18 +1266,36 @@ def dispatch_command(cmd: str) -> None:
                         f"(top score {_top:g}, runner-up {_runner:g})",
                         file=sys.stderr,
                     )
-        # Deterministic shortest path (#2074): to_undirected(as_view=True)
-        # iterates neighbors via a hash-seeded set union, so among equal-length
-        # paths BFS returned an arbitrary route that varied per process. Build a
-        # sorted, materialized undirected graph so neighbor order — and thus the
-        # chosen path — is canonical for a given graph.json.
-        _und = _nx.Graph()
-        _und.add_nodes_from(sorted(G.nodes))
-        _und.add_edges_from(sorted((min(u, v), max(u, v)) for u, v in G.edges()))
+        # Deterministic shortest path (#2074): hash-seeded neighbor views
+        # returned an arbitrary route among equal-length paths that varied per
+        # process. Build a sorted, materialized graph so neighbor order — and
+        # thus the chosen path — is canonical for a given graph.json.
         try:
-            path_nodes = _nx.shortest_path(_und, src_nid, tgt_nid)
+            if undirected:
+                _und = _nx.Graph()
+                _und.add_nodes_from(sorted(G.nodes))
+                _und.add_edges_from(sorted((min(u, v), max(u, v)) for u, v in G.edges()))
+                path_nodes = _nx.shortest_path(_und, src_nid, tgt_nid)
+            else:
+                # Directed by default (#2487). True direction is NOT raw arc
+                # order: legacy canonicalized files persist a flipped arc with
+                # _src/_tgt markers (#2309), so build the digraph from _src/_tgt
+                # (falling back to the loaded arc) rather than to_directed().
+                _dg = _nx.DiGraph()
+                _dg.add_nodes_from(sorted(G.nodes))
+                _dg.add_edges_from(sorted(
+                    (d.get("_src", u), d.get("_tgt", v)) for u, v, d in G.edges(data=True)
+                ))
+                path_nodes = _nx.shortest_path(_dg, src_nid, tgt_nid)
         except (_nx.NetworkXNoPath, _nx.NodeNotFound):
-            print(f"No path found between '{source_label}' and '{target_label}'.")
+            if undirected:
+                print(f"No path found between '{source_label}' and '{target_label}'.")
+            else:
+                print(
+                    f"No directed path found between '{source_label}' and "
+                    f"'{target_label}'. Re-run with --undirected to search "
+                    "ignoring edge direction."
+                )
             sys.exit(0)
         hops = len(path_nodes) - 1
         segments = []
@@ -2145,6 +2185,12 @@ def dispatch_command(cmd: str) -> None:
                 G = _jg.node_link_graph(data, edges="links")
             except TypeError:
                 G = _jg.node_link_graph(data)
+            # node_link_graph restores only the nested `graph.hyperedges` slot;
+            # a graph.json whose hyperedges live only at the top level (the
+            # other half of to_json's dual-slot shape, #2485) would silently
+            # lose them here. Fall back to the top-level key (#2484).
+            if "hyperedges" not in G.graph and isinstance(data.get("hyperedges"), list):
+                G.graph["hyperedges"] = data["hyperedges"]
             graphs.append(G)
         # nx.compose requires all graphs to be the same type.  When input graphs
         # come from different sources (e.g. an AST-only run vs a full LLM run) one
@@ -2170,9 +2216,25 @@ def dispatch_command(cmd: str) -> None:
         if len(set(naive_tags)) != len(naive_tags):
             print(f"  note: repo dir names collide; using distinct tags: {', '.join(repo_tags)}")
         merged = _nx.Graph()
+        # nx.compose merges graph attrs with dict.update, so each iteration
+        # CLOBBERED the previously accumulated hyperedge list — only the last
+        # input's hyperedges survived (#2484, after @oleksii-tumanov's
+        # diagnosis in PR #1691). Collect every input's prefixed hyperedges
+        # and re-attach the union after composing.
+        collected_hyperedges: list = []
         for G, repo_tag in zip(graphs, repo_tags):
             prefixed = _to_simple(_prefix(G, repo_tag))
+            hes = prefixed.graph.get("hyperedges")
+            if isinstance(hes, list):
+                collected_hyperedges.extend(h for h in hes if isinstance(h, dict))
             merged = _nx.compose(merged, prefixed)
+        # Drop whatever compose left behind (the last input's list, possibly
+        # with internal duplicates) so attach_hyperedges dedups the full
+        # collection by id from a clean slate.
+        merged.graph.pop("hyperedges", None)
+        if collected_hyperedges:
+            from graphify.export import attach_hyperedges as _attach
+            _attach(merged, collected_hyperedges)
         try:
             out_data = _jg.node_link_data(merged, edges="links")
         except TypeError:
@@ -2184,6 +2246,11 @@ def dispatch_command(cmd: str) -> None:
             if tsrc is not None and ttgt is not None:
                 link["source"] = tsrc
                 link["target"] = ttgt
+        # Persist BOTH hyperedge slots (#2484): node_link_data only nests graph
+        # attrs under `graph`, so without this line the union would survive
+        # solely in the slot historic readers ignored (#2485). Mirror to_json's
+        # dual-slot shape so every writer agrees.
+        out_data["hyperedges"] = merged.graph.get("hyperedges", [])
         out_path.parent.mkdir(parents=True, exist_ok=True)
         from graphify.paths import write_json_atomic as _wja
         _wja(out_path, out_data, indent=2)

@@ -961,6 +961,18 @@ def _sanitize_fragment(parsed: dict) -> dict:
             parsed[key] = []
             continue
         parsed[key] = [entry for entry in value if isinstance(entry, dict)]
+    # Coerce hyperedge member refs to hashable scalar ids (#2486): a model can
+    # emit a member as an object ({"id": "a_ts"}) instead of a bare id. The
+    # per-entry filter above only checks the hyperedge dicts themselves, so the
+    # bad member shape used to persist into the semantic cache and crash
+    # build_from_json's rekey pass much later (a dict is unhashable). Applying
+    # the shared coercion at this parse chokepoint keeps the cache clean.
+    hyperedges = parsed.get("hyperedges")
+    if hyperedges:
+        from graphify.build import _coerce_hyperedge_member_refs
+        for he in hyperedges:
+            if isinstance(he.get("nodes"), list):
+                he["nodes"] = _coerce_hyperedge_member_refs(he, he["nodes"])
     return parsed
 
 
