@@ -3220,8 +3220,12 @@ def dispatch_command(cmd: str) -> None:
                         # trait stops refusing such a receiver and a stranger
                         # class gets the edge. `_php_interfaces` is the pre-#12
                         # spelling, still carried for older graphs.
+                        # `_php_class_fqns` (#23) is the positive counterpart:
+                        # the declared FQNs that let a claimed `use` import keep
+                        # binding into an unchanged defining file (#22).
                         for _marker in ("_callable", "_callable_class",
-                                        "_php_non_class_types", "_php_interfaces"):
+                                        "_php_non_class_types", "_php_interfaces",
+                                        "_php_class_fqns"):
                             if _node.get(_marker):
                                 _ctx_node[_marker] = _node[_marker]
                         _ctx_nodes.append(_ctx_node)

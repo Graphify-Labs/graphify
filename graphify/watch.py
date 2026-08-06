@@ -1218,8 +1218,12 @@ def _rebuild_code(
                     # an incremental rebuild. `_php_interfaces` is that marker's
                     # pre-#12 spelling, carried so a graph.json written before
                     # enums and traits joined the set still round-trips.
+                    # `_php_class_fqns` (#23) is the positive counterpart: the
+                    # declared FQNs that let a claimed `use` import keep binding
+                    # into an unchanged defining file (#22).
                     for marker in ("_callable", "_callable_class",
-                                   "_php_non_class_types", "_php_interfaces"):
+                                   "_php_non_class_types", "_php_interfaces",
+                                   "_php_class_fqns"):
                         if node.get(marker):
                             ctx_node[marker] = node[marker]
                     resolution_context_nodes.append(ctx_node)

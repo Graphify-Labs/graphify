@@ -1558,7 +1558,7 @@ def test_class_receiver_still_resolves_when_an_enum_exists(tmp_path: Path):
 
 _CTX_NODE_FIELDS = ("label", "source_file", "file_type", "type")
 _CTX_MARKERS = ("_callable", "_callable_class", "_php_non_class_types",
-                "_php_interfaces")
+                "_php_interfaces", "_php_class_fqns")
 
 
 def _watch_resolution_context(result: dict, unchanged: set[str]):
