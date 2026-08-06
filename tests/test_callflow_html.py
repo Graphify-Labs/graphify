@@ -199,3 +199,21 @@ def test_load_graph_preserves_edge_direction(tmp_path):
     directed = {(e["source"], e["target"]) for e in edges}
     assert ("run", "api") in directed
     assert ("api", "run") not in directed, "edge direction was lost (undirected load)"
+
+
+def test_call_table_caller_column_sees_other_sections(tmp_path):
+    """A node called from a different section is not an "External entry".
+
+    ``export`` is used by ``api``, which lives in another community. Computing
+    the Caller column from section-local edges alone mislabels it an entry
+    point -- a whole-graph claim made from partial data.
+    """
+    from graphify.callflow_html import generate_call_table_rows, load_graph
+
+    out = _make_graphify_out(tmp_path)
+    nodes, edges, _hyper, _meta = load_graph(out / "graph.json")
+    export_node = [n for n in nodes if n["id"] == "export"]
+
+    rows = generate_call_table_rows(export_node, [], "en", edges, nodes)
+    assert "External entry" not in rows
+    assert "ApiClient" in rows, "cross-section caller should render as a label"
