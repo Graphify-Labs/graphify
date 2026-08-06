@@ -1143,7 +1143,9 @@ def _find_node_tiers(
     # stored `norm_label` keeps punctuation ("blockstream.ts"). Matching only via
     # `term`/`label_tokens` works when the node label tokenizes the same way, but is
     # fragile if `label` and `norm_label` diverge. `norm_query` matches `norm_label`
-    # symmetrically so an exactly-typed punctuated label always resolves (#1704).
+    # symmetrically so an exactly-typed punctuated label always resolves (#1704),
+    # and against `nid_lower` so an exactly-typed node ID whose punctuation `term`
+    # tokenizes away (e.g. `concept:domain:x`) still resolves by id (#2467).
     norm_query = _strip_diacritics(str(label)).lower().strip()
     source_exact: list[str] = []
     exact: list[str] = []
@@ -1166,7 +1168,7 @@ def _find_node_tiers(
             source_exact.append(nid)
         elif (
             term == norm_label or term == bare_label or term == label_tokens or term == nid_lower
-            or norm_query == norm_label or norm_query == bare_label
+            or norm_query == norm_label or norm_query == bare_label or norm_query == nid_lower
         ):
             exact.append(nid)
         elif (

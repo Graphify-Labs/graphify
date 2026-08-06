@@ -10,6 +10,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: `graphify merge-graphs` no longer drops hyperedges (#2484, thanks @sortakool, and @oleksii-tumanov for the approach in #1691). Hyperedge member ids and ids are now relabeled with the per-repo prefix, both inputs' hyperedges are unioned instead of one clobbering the other, and they are written to both the top-level and nested slots.
 - Fix: `build_from_json` now reads hyperedges from both the top-level and nested `graph` slots, so label and re-cluster runs no longer silently empty a graph's hyperedge set (#2485, thanks @sortakool); a full validation wipeout is now reported loudly.
 - Fix: the skill flow now passes the curated community labels to `to_json`, so `graph.json` ships with `community_name` on nodes instead of dropping it (#2490, thanks @PapiScholz).
+- Fix: `graphify explain` (and `_find_node`) can now resolve a node by an exactly-typed id that contains punctuation, e.g. `concept:domain:x` (#2467, thanks @sean-soomgo). `term` tokenizes punctuation into spaces, so it never matched the punctuation-preserving node id; the punctuation-preserving `norm_query` is now also compared against the id, mirroring the `norm_query == norm_label` label path from #1704. Id lookups without punctuation and label lookups are unchanged.
 
 ## 0.9.33 (2026-08-05)
 

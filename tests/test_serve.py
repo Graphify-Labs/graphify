@@ -225,6 +225,23 @@ def test_find_node_resolves_when_label_and_norm_label_diverge():
     assert _find_node(G, "blockStream.ts") == ["n1"]
 
 
+def test_find_node_resolves_id_with_punctuation():
+    # #2467: an exactly-typed node ID containing punctuation (e.g. a
+    # `concept:domain:x` overlay id) must resolve. `term` tokenizes the ':'
+    # into spaces ("concept domain gosu"), so it can never equal the
+    # punctuation-preserving `nid_lower`; only the symmetric
+    # `norm_query == nid_lower` match reaches it. Without that path the node
+    # is unreachable by its own id, even though the docstring promises id
+    # lookup.
+    G = nx.Graph()
+    G.add_node("concept:domain:gosu", label="Gosu")
+    G.add_node("plain_node_id", label="Plain")
+    assert _find_node(G, "concept:domain:gosu") == ["concept:domain:gosu"]
+    # regression: punctuation-free ids and label lookups still resolve.
+    assert _find_node(G, "plain_node_id") == ["plain_node_id"]
+    assert _find_node(G, "Gosu") == ["concept:domain:gosu"]
+
+
 # --- trigram candidate prefilter (the trigram index that shrinks the O(N) scan) ---
 
 
