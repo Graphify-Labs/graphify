@@ -770,6 +770,59 @@ _CONTEXT_FILTER_ALIASES: dict[str, str] = {
 }
 
 
+# Words that name the *relation* a question asks about ("who CALLS X", "CALLERS
+# of X", "what USES X") rather than naming a symbol in the corpus. They lose the
+# unconditional seat the #1445 per-term seed guarantee hands every query term —
+# and nothing else. They are NOT stopworded: they still score, still compete in
+# the gap window, so a corpus symbol literally named `calls`/`uses` keeps its
+# exact-match dominance and stays seedable on merit (and `explain`/`path`/
+# `find_node` never take this code path at all).
+#
+# Why: a relational verb's junk matches lose everywhere on merit, but the
+# guarantee hands them a seat anyway, so an incidental prefix decoy — a
+# `callStoreWithAmount()` test helper prefix-matching "calls" — enters the
+# traversal and spends the budget on an unrelated test neighborhood instead of
+# the queried identifier's. See fork #37 (C1) / upstream #2507 direction 2.
+#
+# The vocabulary is derived from the two tables that already encode relational
+# intent, so there is one auditable definition instead of a scattered word list:
+# every `_CONTEXT_HINTS` word plus every `_CONTEXT_FILTER_ALIASES` key. The
+# extension set exists because "callers"/"uses" appear in NEITHER table (they
+# never trigger the traversal-filter heuristic) yet carry exactly the same
+# intent — an intent-consumed-only rule misses two of the three measured
+# phrasings. `_CONTEXT_HINTS` itself stays untouched on purpose: extending it
+# would change which queries get context-filtered, a separate behavior change.
+_RELATIONAL_INTENT_TERMS: frozenset[str] = frozenset(
+    {word for _ctx, hints in _CONTEXT_HINTS for word in hints}
+    | set(_CONTEXT_FILTER_ALIASES)
+    | {"caller", "callers", "use", "uses", "used", "using", "usage",
+       "listen", "listens", "listener", "listeners"}
+)
+
+
+def _demote_relational_intent_terms(best_seed_by_term: dict[str, str]) -> dict[str, str]:
+    """Drop relational-intent terms from the per-term seed guarantee map.
+
+    Applied by `_query_graph_text` between `_score_query` and `_pick_seeds`,
+    which is the whole point of the placement: `_score_query` stays
+    byte-identical (its legacy-equality property tests and the query-scoring
+    benchmark's equality gate hold untouched) and `_pick_seeds` keeps its
+    signature and semantics for every other caller, so the change is inert
+    outside the natural-language query pipeline.
+
+    All-relational fallback: if demotion would empty a non-empty map — the
+    query is nothing but relational words, e.g. `graphify query "calls"` — keep
+    it unfiltered, mirroring `_query_terms`' all-stopword fallback. Such a query
+    has no identifier to seed from, so the guarantee is all it has.
+    """
+    kept = {
+        term: nid
+        for term, nid in best_seed_by_term.items()
+        if term not in _RELATIONAL_INTENT_TERMS
+    }
+    return kept or best_seed_by_term
+
+
 def _normalize_context_filters(filters: list[str] | None) -> list[str]:
     if not filters:
         return []
@@ -1105,7 +1158,12 @@ def _query_graph_text(
     # time; on a 100k-node, three-term benchmark ~71% of scoring time was
     # spent in those redundant per-term passes.
     qs = _score_query(G, terms, collect_per_term_seeds=True)
-    start_nodes = _pick_seeds(qs.ranked, G=G, best_seed_by_term=qs.best_seed_by_term)
+    # A relational word ("calls", "callers", "uses") describes the question, not
+    # a symbol to start from, so it forfeits its unconditional per-term seed
+    # here — after scoring, before picking — while still competing for a seed on
+    # merit through the gap window below (#37/C1).
+    best_seed_by_term = _demote_relational_intent_terms(qs.best_seed_by_term)
+    start_nodes = _pick_seeds(qs.ranked, G=G, best_seed_by_term=best_seed_by_term)
     if not start_nodes:
         return "No matching nodes found."
     resolved_filters, filter_source = _resolve_context_filters(question, context_filters)
