@@ -5327,6 +5327,21 @@ def extract(
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("PHP type-reference resolution failed, skipping: %s", exc)
+    # Java package/import disambiguation must likewise run BEFORE the rewire
+    # (#2504): an EXTERNAL import (`org.springframework.stereotype.Component`)
+    # leaves a bare `Component` stub that the rewire would collapse onto the only
+    # internal class with that simple name, manufacturing a false hub. Parking
+    # such references on an FQN-labeled stub first prevents the merge, and
+    # import-exact resolution of internal references (#1318/#1744) still applies.
+    _java_sel = [(r, p) for r, p in zip(per_file, paths) if p.suffix == ".java"]
+    if _java_sel:
+        try:
+            _resolve_java_type_references(
+                [r for r, _ in _java_sel], [p for _, p in _java_sel], all_nodes, all_edges
+            )
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("Java type-reference resolution failed, skipping: %s", exc)
     _rewire_unique_stub_nodes(all_nodes, all_edges)
 
     # Add cross-file class-level edges (Python only - uses Python parser internally)
@@ -5349,13 +5364,6 @@ def extract(
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("Java cross-file import resolution failed, skipping: %s", exc)
-        # Re-point dangling implements/inherits edges that bare-name resolution
-        # left on shadow stubs, using imports for exact-package disambiguation (#1318).
-        try:
-            _resolve_java_type_references(java_results, java_paths, all_nodes, all_edges)
-        except Exception as exc:
-            import logging
-            logging.getLogger(__name__).warning("Java type-reference resolution failed, skipping: %s", exc)
 
     # Cross-file C# type-reference resolution: re-point dangling inherits/implements/
     # references edges left on shadow stubs, disambiguating same-named types by the

@@ -548,9 +548,11 @@ def _java_method_receiver_types(
     return table
 
 
-def _java_annotation_names(declaration_node, source: bytes) -> list[str]:
-    """Collect annotation names from a Java declaration's `modifiers` child."""
-    names: list[str] = []
+def _java_annotation_names(declaration_node, source: bytes) -> list[tuple[str, str]]:
+    """Collect ``(simple, raw)`` annotation names from a Java declaration's
+    `modifiers` child. ``raw`` keeps the dotted qualifier of an inline-qualified
+    annotation (``@org.pkg.Foo``); it equals ``simple`` when unqualified."""
+    names: list[tuple[str, str]] = []
     modifiers = None
     for child in declaration_node.children:
         if child.type == "modifiers":
@@ -568,9 +570,10 @@ def _java_annotation_names(declaration_node, source: bytes) -> list[str]:
                     name_node = sub
                     break
         if name_node is not None:
-            text = _read_text(name_node, source).rsplit(".", 1)[-1]
+            raw = _read_text(name_node, source)
+            text = raw.rsplit(".", 1)[-1]
             if text:
-                names.append(text)
+                names.append((text, raw))
     return names
 
 def _php_name_text(node, source: bytes) -> str | None:
@@ -2946,7 +2949,14 @@ def _extract_generic(
                                         if tid.is_named:
                                             _emit_java_parent_type(tid, "inherits", line)
 
-                for anno_name in _java_annotation_names(node, source):
+                for anno_name, anno_raw in _java_annotation_names(node, source):
+                    # An inline-qualified annotation (`@org.pkg.Foo`) keeps its
+                    # full dotted name so a bare same-named local class can't
+                    # absorb it; _resolve_java_type_references maps internal
+                    # FQNs back to their real nodes (#2504). Groovy has no such
+                    # resolver pass, so it keeps the legacy bare-name stub.
+                    if "." in anno_raw and config.ts_module == "tree_sitter_java":
+                        anno_name = anno_raw
                     target_nid = ensure_named_node(anno_name, line)
                     if target_nid != class_nid:
                         add_edge(class_nid, target_nid, "references", line,
@@ -3568,8 +3578,11 @@ def _extract_generic(
                         target_nid = ensure_named_node(ref_name, line)
                         if target_nid != func_nid:
                             add_edge(func_nid, target_nid, "references", line, context=ctx)
-                for anno_name in _java_annotation_names(node, source):
-                    target_nid = ensure_named_node(anno_name, line)
+                for anno_name, anno_raw in _java_annotation_names(node, source):
+                    # Inline-qualified: keep the dotted name (#2504); see the
+                    # class-level annotation handling above.
+                    target_nid = ensure_named_node(
+                        anno_raw if "." in anno_raw else anno_name, line)
                     if target_nid != func_nid:
                         add_edge(func_nid, target_nid, "references", line, context="attribute")
 
