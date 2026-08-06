@@ -2257,6 +2257,16 @@ _PYTHON_RESOLVER_SUFFIXES = (".py",)
 _TYPESCRIPT_RESOLVER_SUFFIXES = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx")
 _CSHARP_RESOLVER_SUFFIXES = (".cs",)
 _JAVA_RESOLVER_SUFFIXES = (".java",)
+# `.h` routes to extract_cpp or extract_objc by content, so it appears in both
+# the C++ and ObjC sets. Their raw calls are claimed by the extractor-stamped
+# `lang`, never by suffix; only the DEFINITION index is scoped by suffix, where
+# including `.h` is correct — a C++ class and an ObjC @interface both live in
+# one. The consequence is that C++ and ObjC are isolated from every other
+# language but not from each other, which no suffix can fix.
+_CPP_RESOLVER_SUFFIXES = (
+    ".cpp", ".cc", ".cxx", ".hpp", ".cu", ".cuh", ".metal", ".h",
+)
+_OBJC_RESOLVER_SUFFIXES = (".m", ".mm", ".h")
 
 
 def _raw_call_is_owned(rc: dict, suffixes: tuple[str, ...]) -> bool:
@@ -2309,12 +2319,17 @@ def _resolve_swift_member_calls(
     contained = {e.get("target") for e in all_edges if e.get("relation") == "contains"}
 
     # Type name -> definition node ids (real, source-backed, type-like defs only).
-    # len != 1 is the god-node guard: an ambiguous type name bails.
+    # len != 1 is the god-node guard: an ambiguous type name bails. Scoped to
+    # Swift sources: unscoped, a Python `class Lead` could type `let lead: Lead`
+    # and mint a cross-language edge, and a foreign class merely SHARING the
+    # short name pushed the guard to 2 and deleted the correct Swift edge.
     type_def_nids: dict[str, list[str]] = {}
     node_by_id: dict[str, dict] = {}
     for n in all_nodes:
         node_by_id[n.get("id")] = n
-        if n.get("source_file") and n.get("id") in contained and _is_type_like_definition(n):
+        sf = str(n.get("source_file") or "").lower()
+        if (sf.endswith(_SWIFT_RESOLVER_SUFFIXES)
+                and n.get("id") in contained and _is_type_like_definition(n)):
             type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
 
     # (type_node_id, method_key) -> method_node_id, from `method` edges.
@@ -2569,11 +2584,17 @@ def _resolve_typescript_member_calls(
 
     contained = {e.get("target") for e in all_edges if e.get("relation") == "contains"}
 
+    # Scoped to TS/JS sources: unscoped, a Python `class Lead` could type
+    # `private lead: Lead` and mint a cross-language edge, and a foreign class
+    # merely SHARING the short name pushed the single-definition guard to 2 and
+    # deleted the correct TypeScript edge.
     type_def_nids: dict[str, list[str]] = {}
     node_by_id: dict[str, dict] = {}
     for n in all_nodes:
         node_by_id[n.get("id")] = n
-        if n.get("source_file") and n.get("id") in contained and _is_type_like_definition(n):
+        sf = str(n.get("source_file") or "").lower()
+        if (sf.endswith(_TYPESCRIPT_RESOLVER_SUFFIXES)
+                and n.get("id") in contained and _is_type_like_definition(n)):
             type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
 
     method_index: dict[tuple[str, str], str] = {}
@@ -2681,11 +2702,18 @@ def _resolve_cpp_member_calls(
     # excluding non-contained nodes keeps them from making a real type ambiguous.
     contained = {e.get("target") for e in all_edges if e.get("relation") == "contains"}
 
+    # Scoped to C++ sources: unscoped, a Python `class Lead` could type
+    # `Lead lead;` and mint a cross-language edge, and a foreign class merely
+    # SHARING the short name pushed the single-definition guard to 2 and deleted
+    # the correct C++ edge. `.h` is in the set (and in ObjC's), so the two stay
+    # distinguishable from every other language but not from each other.
     type_def_nids: dict[str, list[str]] = {}
     node_by_id: dict[str, dict] = {}
     for n in all_nodes:
         node_by_id[n.get("id")] = n
-        if n.get("source_file") and n.get("id") in contained and _is_type_like_definition(n):
+        sf = str(n.get("source_file") or "").lower()
+        if (sf.endswith(_CPP_RESOLVER_SUFFIXES)
+                and n.get("id") in contained and _is_type_like_definition(n)):
             type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
 
     # (type_node_id, method_key) -> method_node_id, and caller -> enclosing type
@@ -3111,11 +3139,18 @@ def _resolve_objc_member_calls(
 
     contained = {e.get("target") for e in all_edges if e.get("relation") == "contains"}
 
+    # Scoped to ObjC sources: unscoped, a Python `class Lead` could answer the
+    # receiver type behind `[Lead search]` — at EXTRACTED, since a capitalized
+    # receiver names its type explicitly — and a foreign class merely SHARING
+    # the short name pushed the single-definition guard to 2 and deleted the
+    # correct ObjC edge. `.h` is in the set (and in C++'s); see the note there.
     type_def_nids: dict[str, list[str]] = {}
     node_by_id: dict[str, dict] = {}
     for n in all_nodes:
         node_by_id[n.get("id")] = n
-        if n.get("source_file") and n.get("id") in contained and _is_type_like_definition(n):
+        sf = str(n.get("source_file") or "").lower()
+        if (sf.endswith(_OBJC_RESOLVER_SUFFIXES)
+                and n.get("id") in contained and _is_type_like_definition(n)):
             type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
 
     method_index: dict[tuple[str, str], str] = {}
@@ -3222,14 +3257,14 @@ register_language_resolver(
 register_language_resolver(
     LanguageResolver(
         "cpp_member_calls",
-        frozenset({".cpp", ".cc", ".cxx", ".hpp", ".cu", ".cuh", ".metal", ".h"}),
+        frozenset(_CPP_RESOLVER_SUFFIXES),
         _resolve_cpp_member_calls,
     )
 )
 register_language_resolver(
     LanguageResolver(
         "objc_member_calls",
-        frozenset({".m", ".mm", ".h"}),
+        frozenset(_OBJC_RESOLVER_SUFFIXES),
         _resolve_objc_member_calls,
     )
 )

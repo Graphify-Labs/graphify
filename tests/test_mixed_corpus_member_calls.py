@@ -62,6 +62,25 @@ def _call_context_pairs(result: dict) -> set[tuple[str, str]]:
     }
 
 
+def _cross_language_targets(result: dict, caller: str, file_suffix: str) -> set[str]:
+    """Call-context targets of ``caller`` that live in ``file_suffix``.
+
+    Wider than naming one node: an index leak surfaces as ``calls`` onto the
+    foreign METHOD, or — when the callee name misses on the foreign type — as a
+    ``references`` edge onto the foreign TYPE itself. Both are the same bug.
+    """
+    foreign = {
+        node["id"]
+        for node in result["nodes"]
+        if str(node.get("source_file") or "").endswith(file_suffix)
+    }
+    return {
+        target
+        for source, target in _call_context_pairs(result)
+        if source == caller and target in foreign
+    }
+
+
 # A Python class whose method name collides with the other languages' callee.
 # Nothing written in another language may ever bind to it.
 _PY_DECOY = (
@@ -290,3 +309,168 @@ def test_csharp_receiver_resolves_despite_a_same_named_python_class(tmp_path: Pa
     assert (go, cs_search) in calls, \
         "a same-named class in another language suppressed the real C# edge"
     assert (go, py_search) not in calls, "the Python decoy received an edge"
+
+
+# ── Language-scoped C++, ObjC, Swift and TypeScript receiver type indexes ────
+#
+# The remaining copies of the same shape. Each of these four resolvers built
+# `type_def_nids` from every type-like node in the corpus, so the receiver's
+# declared type name was matched against class definitions written in ANY
+# language. Both directions of the defect are covered per language: the foreign
+# class TYPING the receiver, and the foreign class merely SHARING the short name
+# pushing the single-definition guard to 2 and deleting the correct edge.
+#
+# Raw-call ownership (above) cannot close this: the raw call being resolved is
+# genuinely the resolver's own, and the leak is in what its INDEX offers up.
+
+_CPP_CALLER = (
+    "class Runner {\n"
+    "public:\n"
+    "    void go() { Lead lead; lead.search(); }\n"
+    "};\n"
+)
+"""`Lead lead;` is a local declaration, so the C++ `cpp_type_table` types the
+receiver and the call resolves at INFERRED."""
+
+_OBJC_CALLER = (
+    "@interface Runner : NSObject\n"
+    "- (void)go;\n"
+    "@end\n"
+    "\n"
+    "@implementation Runner\n"
+    "- (void)go {\n"
+    "    [Lead search];\n"
+    "}\n"
+    "@end\n"
+)
+"""A capitalized ObjC receiver names the type explicitly, so this arm resolves
+at EXTRACTED -- the strongest confidence a leak can carry."""
+
+_SWIFT_CALLER = (
+    "class Runner {\n"
+    "    let lead: Lead\n"
+    "    func go() { lead.search() }\n"
+    "}\n"
+)
+"""Declared without an initializer on purpose: `= Lead()` would additionally be
+picked up by the shared cross-file CALL pass, which is a different mechanism
+and would muddy what this test pins down."""
+
+_TS_CALLER = (
+    "export class Runner {\n"
+    "  constructor(private lead: Lead) {}\n"
+    "  go() { return this.lead.search(); }\n"
+    "}\n"
+)
+
+
+def test_cpp_receiver_type_does_not_match_a_python_class(tmp_path: Path):
+    """No C++ `Lead` exists in the corpus, only a Python one."""
+    _, result = _calls(tmp_path, {"svc.py": _PY_DECOY, "Runner.cpp": _CPP_CALLER})
+
+    go = _nid(result, ".go()", "Runner.cpp")
+    assert not _cross_language_targets(result, go, "svc.py"), \
+        "a C++ receiver type must not resolve against a Python class"
+
+
+def test_cpp_receiver_resolves_despite_a_same_named_python_class(tmp_path: Path):
+    """The same-named Python class must not suppress the real C++ edge."""
+    calls, result = _calls(tmp_path, {
+        "svc.py": _PY_DECOY,
+        "lead.cpp": "class Lead {\npublic:\n    void search() {}\n};\n",
+        "Runner.cpp": _CPP_CALLER,
+    })
+
+    go = _nid(result, ".go()", "Runner.cpp")
+    cpp_search = _nid(result, ".search()", "lead.cpp")
+    py_search = _nid(result, ".search()", "svc.py")
+    assert (go, cpp_search) in calls, \
+        "a same-named Python class suppressed the real C++ edge"
+    assert (go, py_search) not in calls, "the Python decoy received an edge"
+    assert calls[(go, cpp_search)]["confidence"] == "INFERRED"
+
+
+def test_objc_receiver_type_does_not_match_a_python_class(tmp_path: Path):
+    """No ObjC `Lead` exists in the corpus, only a Python one."""
+    _, result = _calls(tmp_path, {"svc.py": _PY_DECOY, "Runner.m": _OBJC_CALLER})
+
+    go = _nid(result, "-go", "Runner.m")
+    assert not _cross_language_targets(result, go, "svc.py"), \
+        "an ObjC receiver type must not resolve against a Python class"
+
+
+def test_objc_receiver_resolves_despite_a_same_named_python_class(tmp_path: Path):
+    """The same-named Python class must not suppress the real ObjC edge."""
+    calls, result = _calls(tmp_path, {
+        "svc.py": _PY_DECOY,
+        "Lead.m": (
+            "@interface Lead : NSObject\n"
+            "+ (void)search;\n"
+            "@end\n"
+            "\n"
+            "@implementation Lead\n"
+            "+ (void)search {}\n"
+            "@end\n"
+        ),
+        "Runner.m": _OBJC_CALLER,
+    })
+
+    go = _nid(result, "-go", "Runner.m")
+    objc_search = _nid(result, "+search", "Lead.m")
+    py_search = _nid(result, ".search()", "svc.py")
+    assert (go, objc_search) in calls, \
+        "a same-named Python class suppressed the real ObjC edge"
+    assert (go, py_search) not in calls, "the Python decoy received an edge"
+    assert calls[(go, objc_search)]["confidence"] == "EXTRACTED"
+
+
+def test_swift_receiver_type_does_not_match_a_python_class(tmp_path: Path):
+    """No Swift `Lead` exists in the corpus, only a Python one."""
+    _, result = _calls(tmp_path, {"svc.py": _PY_DECOY, "Runner.swift": _SWIFT_CALLER})
+
+    go = _nid(result, ".go()", "Runner.swift")
+    assert not _cross_language_targets(result, go, "svc.py"), \
+        "a Swift receiver type must not resolve against a Python class"
+
+
+def test_swift_receiver_resolves_despite_a_same_named_python_class(tmp_path: Path):
+    """The same-named Python class must not suppress the real Swift edge."""
+    calls, result = _calls(tmp_path, {
+        "svc.py": _PY_DECOY,
+        "Lead.swift": "class Lead { func search() {} }\n",
+        "Runner.swift": _SWIFT_CALLER,
+    })
+
+    go = _nid(result, ".go()", "Runner.swift")
+    swift_search = _nid(result, ".search()", "Lead.swift")
+    py_search = _nid(result, ".search()", "svc.py")
+    assert (go, swift_search) in calls, \
+        "a same-named Python class suppressed the real Swift edge"
+    assert (go, py_search) not in calls, "the Python decoy received an edge"
+    assert calls[(go, swift_search)]["confidence"] == "INFERRED"
+
+
+def test_typescript_receiver_type_does_not_match_a_python_class(tmp_path: Path):
+    """No TypeScript `Lead` exists in the corpus, only a Python one."""
+    _, result = _calls(tmp_path, {"svc.py": _PY_DECOY, "runner.ts": _TS_CALLER})
+
+    go = _nid(result, ".go()", "runner.ts")
+    assert not _cross_language_targets(result, go, "svc.py"), \
+        "a TypeScript receiver type must not resolve against a Python class"
+
+
+def test_typescript_receiver_resolves_despite_a_same_named_python_class(tmp_path: Path):
+    """The same-named Python class must not suppress the real TypeScript edge."""
+    calls, result = _calls(tmp_path, {
+        "svc.py": _PY_DECOY,
+        "lead.ts": "export class Lead { search() { return []; } }\n",
+        "runner.ts": _TS_CALLER,
+    })
+
+    go = _nid(result, ".go()", "runner.ts")
+    ts_search = _nid(result, ".search()", "lead.ts")
+    py_search = _nid(result, ".search()", "svc.py")
+    assert (go, ts_search) in calls, \
+        "a same-named Python class suppressed the real TypeScript edge"
+    assert (go, py_search) not in calls, "the Python decoy received an edge"
+    assert calls[(go, ts_search)]["confidence"] == "EXTRACTED"
