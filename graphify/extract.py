@@ -256,6 +256,58 @@ def _repoint_python_package_imports(paths, all_nodes, all_edges, root) -> None:
                 e["target"] = alias_map[tgt]
 
 
+def _hint_python_import_targets(paths, all_edges, root) -> None:
+    """Tell id-disambiguation which file a Python import edge really targets.
+
+    A Python import edge targets the bare file-node id of the imported module
+    (``import lead`` -> ``lead``), which works only while that id is unique. Add
+    a ``lead.ts`` and the two file nodes collide, so
+    ``_disambiguate_colliding_node_ids`` salts them apart into ``lead_py_lead``
+    and ``lead_ts_lead`` — and the edge, keyed by the IMPORTER's source_file
+    rather than the target's, matches neither salt and is left pointing at an id
+    that no longer names anything. The import edge is dropped and every consumer
+    of it loses out, the Python resolver's ``module.func()`` arm among them.
+
+    The disambiguator already accepts a ``target_file`` hint for exactly this
+    (#1814): stamp it and the target salt is keyed by that file instead. A
+    Python import can only ever mean a Python file, so the hint is unambiguous
+    even when the colliding sibling is another language's. Guards: never
+    overwrite a hint an emitter already stamped, and skip an id claimed by more
+    than one Python file (leave it dangling, as before).
+
+    ``.pyi`` is excluded deliberately — it has no extractor, so it mints no file
+    node to point a hint at. Must run BEFORE ``_disambiguate_colliding_node_ids``.
+    """
+    try:
+        root = Path(root).resolve()
+    except OSError:
+        root = Path(root)
+    file_id_to_paths: dict[str, set[str]] = {}
+    for p in paths:
+        if p.suffix.lower() != ".py":
+            continue
+        try:
+            rel = Path(p).resolve().relative_to(root)
+        except (ValueError, OSError):
+            continue
+        file_id_to_paths.setdefault(_file_node_id(rel), set()).add(str(p))
+    hint_map = {
+        fid: next(iter(ps)) for fid, ps in file_id_to_paths.items() if len(ps) == 1
+    }
+    if not hint_map:
+        return
+    for e in all_edges:
+        if (
+            isinstance(e, dict)
+            and e.get("relation") in ("imports", "imports_from")
+            and not e.get("target_file")
+            and str(e.get("source_file", "")).lower().endswith((".py", ".pyi"))
+        ):
+            target_path = hint_map.get(e.get("target"))
+            if target_path:
+                e["target_file"] = target_path
+
+
 SEMANTIC_RELATIONS = frozenset({
     "inherits", "implements", "mixes_in", "embeds", "references",
     "calls", "imports", "imports_from", "re_exports", "contains", "method",
@@ -5427,6 +5479,11 @@ def extract(
     # (src/) package root before the resolver/import-evidence passes run, so the
     # graph is identical regardless of scan root (#2072).
     _repoint_python_package_imports(paths, all_nodes, all_edges, root)
+    # Then hint the disambiguator at each import's real target file, so a
+    # same-stem sibling in another language cannot strand the edge on a salted-
+    # away id. Must be after the repoint above (it rewrites some targets) and
+    # before disambiguation (the hint's only reader).
+    _hint_python_import_targets(paths, all_edges, root)
     _merge_swift_extensions(per_file, all_nodes, all_edges)
     _merge_csharp_partial_class_nodes(per_file, all_nodes, all_edges, paths, root)
     _disambiguate_colliding_node_ids(all_nodes, all_edges, all_raw_calls, root)
