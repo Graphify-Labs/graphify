@@ -221,10 +221,52 @@ def test_covered_term_skips_guarantee_while_starved_term_is_still_recovered():
 
     assert SERVICE in seeds
     assert HUB not in seeds, (
-        "'customer' is a substring of the picked seed's label, so it is not starved"
+        "'customer' is a substring of the top-ranked seed's label, so it is not starved"
     )
     assert DOC in seeds, (
         "'code' is matched by no picked seed's label — the #1445 guarantee must still fire"
+    )
+
+
+def test_only_the_top_ranked_seed_can_declare_a_term_covered():
+    """A substring collision inside a *lower-ranked* seed must not starve a term.
+
+    Coverage means "the query's dominant match already answers this term", which
+    is a claim only the top-ranked seed is entitled to make. Let any picked seed
+    make it and an unrelated one absorbs a term by coincidence: `ReportService`
+    contains the letters of "port", so a corpus symbol literally named `port`
+    loses the guaranteed seat that is the only way it can enter this seed list —
+    the #1597 concern (a corpus may legitimately name a symbol after a common
+    word) reappearing one layer down.
+
+    Ranks are supplied directly rather than scored, the same way
+    `test_coverage_is_judged_on_the_seed_label_never_its_node_id` does: the point
+    is a specific gap-window shape (a dominant match, an unrelated runner-up that
+    happens to contain the term, and the term's own winner below the cutoff), and
+    naming it beats coaxing a synthetic corpus into producing it.
+    """
+    G = nx.Graph()
+    G.add_node("cfg", label="port", source_file="src/config/server.py")
+    G.add_node("report", label="ReportService", source_file="app/Reports/ReportService.php")
+    G.add_node("boot", label="ServerBootstrap", source_file="src/server_bootstrap.py")
+
+    qs = _score_query(G, ["port"], collect_per_term_seeds=True)
+    # Premise: the term's winner is the exact-match node, by ~7300x — `port` is a
+    # real symbol here, not a coincidence, and `ReportService` is the coincidence.
+    assert qs.best_seed_by_term["port"] == "cfg"
+
+    scored = [(1000.0, "boot"), (300.0, "report"), (1.0, "cfg")]
+    seeds = _pick_seeds(
+        scored, G=G, best_seed_by_term=qs.best_seed_by_term, skip_covered_terms=True
+    )
+
+    # Premise: both of the unrelated nodes clear the gap window, and the term's
+    # own winner does not — so the guarantee is its only way in.
+    assert seeds[0] == "boot", f"top-ranked seed is not the dominant match: {seeds}"
+    assert "report" in seeds
+    assert "cfg" in seeds, (
+        "'port' was declared covered by `ReportService`, a lower-ranked seed that "
+        f"merely contains the letters — the term's real winner was starved: {seeds}"
     )
 
 
@@ -259,6 +301,11 @@ def test_coverage_is_judged_on_the_seed_label_never_its_node_id():
     not, or the ghost's path fragments silently cover unrelated terms and starve
     their winners. `_score_nodes`' substring tier reads `norm_label` only, so a
     seed with no label covers nothing.
+
+    Still load-bearing under the top-ranked-seed-only rule: the ghost is forced
+    to be the *only* gap-window seed below, so it IS `seeds[0]` — the one seed
+    entitled to declare coverage. Narrowing which seed may cover does not narrow
+    what this test traps.
     """
     ghost = "src/customer_utils.py::helper"
     G = nx.Graph()
