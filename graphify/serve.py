@@ -670,17 +670,26 @@ def _pick_seeds(
     scores a dampened collision can still exceed.
 
     `skip_covered_terms` (default off, opted into only by `_query_graph_text`)
-    refines that guarantee to *every term with any match is matched by at least
-    one seed*, from *every term's own singleton winner gets a slot*: a term that
-    is a substring of an already-picked seed's normalized label — the same
-    predicate as _score_nodes' weakest match tier, and its label alone, so the
-    seed provably would have matched the term in scoring — is not starved, and
-    starvation is the only thing the guarantee exists to prevent. A seed with no
-    label covers nothing. Without this skip, a natural-language
-    question's generic nouns each drag in their own hub: "what code uses
-    ChargeCustomerService to charge a customer" seeds the `Customer` model and
-    `.charge()` on top of `ChargeCustomerService`, whose label already matches
-    both terms, and the hub's member fan-out then floods the traversal (#37/C2).
+    refines that guarantee to *every term with any match is matched by the
+    top-ranked seed or by a seed of its own*, from *every term's own singleton
+    winner gets a slot*: a term that is a substring of the top-ranked seed's
+    normalized label — the same predicate as _score_nodes' weakest match tier,
+    and its label alone, so that seed provably would have matched the term in
+    scoring — is not starved, and starvation is the only thing the guarantee
+    exists to prevent. A seed with no label covers nothing. Without this skip, a
+    natural-language question's generic nouns each drag in their own hub: "what
+    code uses ChargeCustomerService to charge a customer" seeds the `Customer`
+    model and `.charge()` on top of `ChargeCustomerService`, whose label already
+    matches both terms, and the hub's member fan-out then floods the traversal
+    (#37/C2).
+
+    Only the TOP-ranked seed may make that claim, not any picked seed. Coverage
+    asserts "the query's dominant match already answers this term", which is a
+    statement about the query's subject; a lower-ranked seed that merely happens
+    to contain the term's letters (`ReportService` for "port") is asserting a
+    coincidence, and letting it skip the guarantee starves the term's real
+    winner — for a term whose winner sits outside the gap window, the guarantee
+    is the only way in (Graphify-Labs#2516 review).
     """
     if not scored:
         return []
@@ -749,10 +758,15 @@ def _pick_seeds(
             key = _seed_label_key(best_nid)
             if best_nid in seeds or key in seen_labels:
                 continue
-            # Layered after that dedup gate, in this same sorted-term order, so
-            # the coverage check sees the gap-window seeds plus every guarantee
-            # seed appended so far.
-            if skip_covered_terms and any(term in _seed_norm_label(s) for s in seeds):
+            # Layered after that dedup gate, but only the TOP-ranked seed — the
+            # query's dominant match, always `scored[0]` and so always already
+            # present here — can declare a term covered. Letting any picked seed
+            # make that claim lets a coincidental substring collision inside an
+            # unrelated, lower-ranked seed's label silently starve a distinct
+            # term's real winner: `ReportService` contains "port", which would
+            # cost a corpus symbol literally named `port` the only seat it can
+            # get (Graphify-Labs#2516 review; the #1597 concern one layer down).
+            if skip_covered_terms and seeds and term in _seed_norm_label(seeds[0]):
                 continue
             seen_labels.add(key)
             seeds.append(best_nid)
