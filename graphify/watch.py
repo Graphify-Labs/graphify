@@ -424,10 +424,16 @@ class _StoredSourcePaths:
     def is_evicted(self, item: dict, identities: set[str]) -> bool:
         return self.identity(item.get("source_file")) in identities
 
-    def rebase_preserved(self, item: dict) -> None:
+    def rebase_preserved(
+        self,
+        item: dict,
+        canonical_identities: dict[str, str] | None = None,
+    ) -> None:
         identity = self.identity(item.get("source_file"))
         if not identity:
             return
+        if canonical_identities:
+            identity = canonical_identities.get(identity, identity)
         identity_path = Path(identity)
         if not _is_relative_to(identity_path, self.watch_root):
             normalized = self.normalize(item.get("source_file"))
@@ -515,6 +521,22 @@ def _reconcile_existing_graph(
         current_sources = {
             source_paths.absolute_identity(str(path), project_root) for path in code_files
         }
+        current_sources_by_casefold: dict[str, str] = {}
+        ambiguous_casefolds: set[str] = set()
+        for identity in current_sources:
+            if not identity:
+                continue
+            # APFS can resolve two case-only spellings to one file while Python
+            # keeps the spellings as distinct strings. Only accept the alias
+            # after samefile() proves both names point at the same disk object.
+            folded = identity.casefold()
+            previous = current_sources_by_casefold.get(folded)
+            if previous is not None and previous != identity:
+                ambiguous_casefolds.add(folded)
+            else:
+                current_sources_by_casefold[folded] = identity
+        for folded in ambiguous_casefolds:
+            current_sources_by_casefold.pop(folded, None)
         rebuilt_source_identities = {
             source_paths.absolute_identity(str(path), project_root) for path in extract_targets
         }
@@ -540,6 +562,7 @@ def _reconcile_existing_graph(
         # excluded sources via the AST ownership rule below.
         excluded_alive_files: set[str] = set()
         excluded_alive_nodes = 0
+        source_identity_aliases: dict[str, str] = {}
         _alive_cache: dict[str, bool] = {}
         for node in existing.get("nodes", []):
             source_file = node.get("source_file")
@@ -571,6 +594,15 @@ def _reconcile_existing_graph(
                 continue
             if identity not in current_sources:
                 if identity:
+                    canonical_identity = current_sources_by_casefold.get(identity.casefold())
+                    if canonical_identity and canonical_identity != identity:
+                        try:
+                            same_file = os.path.samefile(identity, canonical_identity)
+                        except OSError:
+                            same_file = False
+                        if same_file:
+                            source_identity_aliases[identity] = canonical_identity
+                            continue
                     alive = _alive_cache.get(identity)
                     if alive is None:
                         alive = Path(identity).exists()
@@ -656,7 +688,7 @@ def _reconcile_existing_graph(
             preserved_hyperedges.append(edge)
 
         for item in preserved_nodes + preserved_edges + preserved_hyperedges:
-            source_paths.rebase_preserved(item)
+            source_paths.rebase_preserved(item, source_identity_aliases)
 
         return {
             "nodes": result["nodes"] + preserved_nodes,

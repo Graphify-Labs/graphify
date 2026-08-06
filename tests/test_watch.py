@@ -1781,6 +1781,64 @@ def test_rebuild_code_preserves_nodes_from_excluded_but_alive_file(tmp_path, cap
     assert "fail-closed: kept" in capsys.readouterr().out
 
 
+def test_reconcile_case_alias_uses_current_source_spelling(tmp_path, monkeypatch, capsys):
+    """A stored path whose case-only spelling resolves to the scanned file is
+    current, not excluded. Preserve its semantic node without a fail-closed
+    warning and rewrite source_file to the scanner's canonical spelling.
+
+    ``samefile`` is patched so this regression runs on case-sensitive CI while
+    modelling the APFS behavior that exposed the bug on macOS.
+    """
+    from graphify import watch as watch_mod
+    from graphify.watch import _reconcile_existing_graph
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    current = corpus / "Design.md"
+    current.write_text("# Design\n", encoding="utf-8")
+    out = corpus / "graphify-out"
+    out.mkdir()
+    graph_path = out / "graph.json"
+    graph_path.write_text(
+        json.dumps({
+            "nodes": [{
+                "id": "design_concept",
+                "label": "Design concept",
+                "file_type": "concept",
+                "source_file": "design.md",
+            }],
+            "links": [],
+            "hyperedges": [],
+        }),
+        encoding="utf-8",
+    )
+
+    real_samefile = watch_mod.os.path.samefile
+
+    def case_insensitive_samefile(left, right):
+        if str(left).casefold() == str(right).casefold():
+            return True
+        return real_samefile(left, right)
+
+    monkeypatch.setattr(watch_mod.os.path, "samefile", case_insensitive_samefile)
+
+    result, _ = _reconcile_existing_graph(
+        graph_path,
+        {"nodes": [], "edges": [], "hyperedges": []},
+        out=out,
+        project_root=corpus,
+        watch_root=corpus,
+        code_files=[current],
+        extract_targets=[],
+        full_rebuild=False,
+        deleted_paths=set(),
+        deleted_source_identities=set(),
+    )
+
+    assert [node["source_file"] for node in result["nodes"]] == ["Design.md"]
+    assert "fail-closed: kept" not in capsys.readouterr().out
+
+
 def test_rebuild_code_still_evicts_when_excluded_file_is_also_deleted(tmp_path):
     """The fail-closed preserve must not weaken true-deletion eviction: once the
     excluded file is actually gone from disk, its nodes are evicted as before."""
