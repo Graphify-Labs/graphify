@@ -2281,6 +2281,16 @@ def _raw_call_is_owned(rc: dict, suffixes: tuple[str, ...]) -> bool:
     return str(rc.get("source_file") or "").lower().endswith(suffixes)
 
 
+def _is_owned_definition(node: "dict | None", suffixes: tuple[str, ...]) -> bool:
+    """True when ``node`` was declared in a source file with one of ``suffixes``.
+
+    The definition-index twin of ``_raw_call_is_owned``. Every member-call
+    resolver scopes its receiver-type index through this, so a receiver's
+    declared type can only ever bind to a type written in the same language.
+    """
+    return str((node or {}).get("source_file") or "").lower().endswith(suffixes)
+
+
 def _resolve_swift_member_calls(
     per_file: list[dict],
     all_nodes: list[dict],
@@ -2327,8 +2337,7 @@ def _resolve_swift_member_calls(
     node_by_id: dict[str, dict] = {}
     for n in all_nodes:
         node_by_id[n.get("id")] = n
-        sf = str(n.get("source_file") or "").lower()
-        if (sf.endswith(_SWIFT_RESOLVER_SUFFIXES)
+        if (_is_owned_definition(n, _SWIFT_RESOLVER_SUFFIXES)
                 and n.get("id") in contained and _is_type_like_definition(n)):
             type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
 
@@ -2435,7 +2444,11 @@ def _resolve_python_member_calls(
 
     # A class owns methods: it is the source of one or more `method` edges. Index
     # class label -> owning class node ids (len != 1 is the god-node guard), and
-    # (class_node_id, method_key) -> method_node_id.
+    # (class_node_id, method_key) -> method_node_id. Only classes declared in
+    # Python sources are candidates: unscoped, `Lead.search()` bound to a Java
+    # `class Lead` at EXTRACTED, and a foreign class merely SHARING the name
+    # pushed the guard to 2 and deleted the correct Python edge. `method_index`
+    # needs no scoping — it is only ever keyed by a class id already admitted here.
     class_def_nids: dict[str, list[str]] = {}
     method_index: dict[tuple[str, str], str] = {}
     for e in all_edges:
@@ -2443,7 +2456,7 @@ def _resolve_python_member_calls(
             continue
         src, tgt = e.get("source"), e.get("target")
         cnode = node_by_id.get(src)
-        if cnode is not None:
+        if cnode is not None and _is_owned_definition(cnode, _PYTHON_RESOLVER_SUFFIXES):
             class_def_nids.setdefault(_key(cnode.get("label", "")), []).append(src)
         tnode = node_by_id.get(tgt)
         if tnode is not None:
@@ -2543,11 +2556,16 @@ def _resolve_python_member_calls(
             # never match), then to the single callable that module contains. A
             # receiver also matches the local alias bound on that import edge
             # (#2082), so an aliased import resolves the same as the bare name.
+            # A candidate module must itself be a Python file: matching on the
+            # stem alone, a `lead.ts` answered `import lead` and bound the call
+            # to a TypeScript function, and a `lead.ts` sitting beside the real
+            # `lead.py` made the pair ambiguous and deleted the true edge.
             rkey = _key(receiver)
             caller_file = file_of_node.get(caller)
             file_aliases = import_alias_by_filenode.get(caller_file, {})
             mods = [t for t in imported_by_filenode.get(caller_file, ())
                     if t in contains_children
+                    and _is_owned_definition(node_by_id.get(t), _PYTHON_RESOLVER_SUFFIXES)
                     and (_module_stem_key(t) == rkey or file_aliases.get(t) == rkey)]
             if len(mods) != 1:  # not an imported module, or ambiguous -> bail
                 continue
@@ -2592,8 +2610,7 @@ def _resolve_typescript_member_calls(
     node_by_id: dict[str, dict] = {}
     for n in all_nodes:
         node_by_id[n.get("id")] = n
-        sf = str(n.get("source_file") or "").lower()
-        if (sf.endswith(_TYPESCRIPT_RESOLVER_SUFFIXES)
+        if (_is_owned_definition(n, _TYPESCRIPT_RESOLVER_SUFFIXES)
                 and n.get("id") in contained and _is_type_like_definition(n)):
             type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
 
@@ -2711,8 +2728,7 @@ def _resolve_cpp_member_calls(
     node_by_id: dict[str, dict] = {}
     for n in all_nodes:
         node_by_id[n.get("id")] = n
-        sf = str(n.get("source_file") or "").lower()
-        if (sf.endswith(_CPP_RESOLVER_SUFFIXES)
+        if (_is_owned_definition(n, _CPP_RESOLVER_SUFFIXES)
                 and n.get("id") in contained and _is_type_like_definition(n)):
             type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
 
@@ -2849,8 +2865,7 @@ def _resolve_csharp_member_calls(
     node_by_id: dict[str, dict] = {}
     for n in all_nodes:
         node_by_id[n.get("id")] = n
-        sf = str(n.get("source_file") or "").lower()
-        if (sf.endswith(_CSHARP_RESOLVER_SUFFIXES)
+        if (_is_owned_definition(n, _CSHARP_RESOLVER_SUFFIXES)
                 and n.get("id") in contained and _is_type_like_definition(n)):
             type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
 
@@ -3037,7 +3052,7 @@ def _resolve_java_member_calls(
     type_def_nids: dict[str, list[str]] = {}
     for node in all_nodes:
         if (
-            str(node.get("source_file") or "").lower().endswith(_JAVA_RESOLVER_SUFFIXES)
+            _is_owned_definition(node, _JAVA_RESOLVER_SUFFIXES)
             and node.get("id") in contained
             and _is_type_like_definition(node)
         ):
@@ -3148,8 +3163,7 @@ def _resolve_objc_member_calls(
     node_by_id: dict[str, dict] = {}
     for n in all_nodes:
         node_by_id[n.get("id")] = n
-        sf = str(n.get("source_file") or "").lower()
-        if (sf.endswith(_OBJC_RESOLVER_SUFFIXES)
+        if (_is_owned_definition(n, _OBJC_RESOLVER_SUFFIXES)
                 and n.get("id") in contained and _is_type_like_definition(n)):
             type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
 

@@ -22,14 +22,14 @@ from pathlib import Path
 from graphify.extract import extract
 
 
-def _calls(tmp_path: Path, files: dict[str, str]):
+def _calls(tmp_path: Path, files: dict[str, str], cache_root: Path | None = None):
     paths = []
     for name, body in files.items():
         path = tmp_path / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(body, encoding="utf-8")
         paths.append(path)
-    result = extract(paths, cache_root=tmp_path / "graphify-out")
+    result = extract(paths, cache_root=cache_root or (tmp_path / "graphify-out"))
     calls = {
         (edge["source"], edge["target"]): edge
         for edge in result["edges"]
@@ -474,3 +474,94 @@ def test_typescript_receiver_resolves_despite_a_same_named_python_class(tmp_path
         "a same-named Python class suppressed the real TypeScript edge"
     assert (go, py_search) not in calls, "the Python decoy received an edge"
     assert calls[(go, ts_search)]["confidence"] == "EXTRACTED"
+
+
+# ── Language-scoped Python class and module indexes ──────────────────────────
+#
+# The Python resolver's two arms are indexed differently from every resolver
+# above -- its class index is built by walking `method` edges rather than by
+# filtering source-backed nodes, and its module arm resolves through the
+# caller's own `imports` edges -- but both were corpus-wide all the same.
+#
+# The class arm is covered in both directions. The module arm is covered only
+# for the leak: its suppression direction is unreachable, because two same-stem
+# files disambiguate the FILE node ids (`lead_py_lead`, `lead_ts_lead`) while
+# the `imports` edge target stays the bare alias `lead`, so the arm sees zero
+# candidates rather than an ambiguous two. That is a separate defect in the
+# import-alias remap, untouched here.
+
+_JAVA_DECOY = "class Lead { void search() {} }\n"
+
+
+def test_python_class_receiver_does_not_match_a_java_class(tmp_path: Path):
+    """Class arm, defect 1: no Python `Lead` exists, only a Java one.
+
+    `Lead.search()` is a Python raw call the Python resolver rightly owns. Its
+    class index held every class in the corpus, so the Java `Lead` answered for
+    the receiver and the call was minted at EXTRACTED -- the label reserved for
+    an explicitly named, unambiguous class reference.
+    """
+    _, result = _calls(tmp_path, {
+        "caller.py": "def run():\n    Lead.search()\n",
+        "Lead.java": _JAVA_DECOY,
+    })
+
+    run = _nid(result, "run()", "caller.py")
+    assert not _cross_language_targets(result, run, "Lead.java"), \
+        "a Python class receiver must not resolve against a Java class"
+
+
+def test_python_class_receiver_resolves_despite_a_same_named_java_class(tmp_path: Path):
+    """Class arm, defect 2: the Java decoy must not delete the Python edge."""
+    calls, result = _calls(tmp_path, {
+        "caller.py": "from svc import Lead\n\n\ndef run():\n    Lead.search()\n",
+        "svc.py": _PY_DECOY,
+        "Lead.java": _JAVA_DECOY,
+    })
+
+    run = _nid(result, "run()", "caller.py")
+    py_search = _nid(result, ".search()", "svc.py")
+    java_search = _nid(result, ".search()", "Lead.java")
+    assert (run, py_search) in calls, \
+        "a same-named Java class suppressed the real Python edge"
+    assert (run, java_search) not in calls, "the Java decoy received an edge"
+    assert calls[(run, py_search)]["confidence"] == "EXTRACTED"
+
+
+# The module arm resolves an `import` to the imported file's node, which only
+# lines up when ids are relativized against the corpus root itself -- hence the
+# explicit `cache_root`, matching the prior art in
+# `tests/test_extract.py::test_python_module_qualified_call_resolves_extracted`.
+_MOD_CALLER = "import lead\n\n\ndef run():\n    lead.search()\n"
+_TS_MODULE_DECOY = "export function search() { return []; }\n"
+
+
+def test_python_module_receiver_does_not_match_a_typescript_file(tmp_path: Path):
+    """Module arm, defect 1: `import lead` must not reach `lead.ts`.
+
+    No `lead.py` exists. The arm matched any corpus file whose stem equalled the
+    receiver, so a TypeScript file of the same stem satisfied it and
+    `lead.search()` bound to a TypeScript function at EXTRACTED -- an import
+    edge Python could not possibly have.
+    """
+    _, result = _calls(tmp_path, {
+        "caller.py": _MOD_CALLER,
+        "lead.ts": _TS_MODULE_DECOY,
+    }, cache_root=tmp_path)
+
+    run = _nid(result, "run()", "caller.py")
+    assert not _cross_language_targets(result, run, "lead.ts"), \
+        "a Python module receiver must not resolve against a TypeScript file"
+
+
+def test_python_module_receiver_still_resolves_its_own_module(tmp_path: Path):
+    """The module arm's positive control: scoping must not cost the real edge."""
+    calls, result = _calls(tmp_path, {
+        "caller.py": _MOD_CALLER,
+        "lead.py": "def search():\n    return []\n",
+    }, cache_root=tmp_path)
+
+    run = _nid(result, "run()", "caller.py")
+    py_search = _nid(result, "search()", "lead.py")
+    assert (run, py_search) in calls, "the module arm stopped resolving"
+    assert calls[(run, py_search)]["confidence"] == "EXTRACTED"
