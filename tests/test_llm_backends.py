@@ -962,6 +962,19 @@ def test_native_extraction_prompt_matches_skill_spec_on_hyperedges():
     assert shared in llm._EXTRACTION_SYSTEM, "native prompt drifted from the skill hyperedge wording"
 
 
+def test_native_extraction_prompt_requests_rationale():
+    """Verify that _EXTRACTION_SYSTEM requests rationale and includes it in the schema."""
+    for deep in (False, True):
+        prompt = llm._extraction_system(deep=deep)
+        assert "rationale" in prompt.lower()
+        # Assert distinctive phrases from the instruction
+        assert "store as a `rationale` attribute on the relevant node" in prompt
+        assert "Do NOT create separate rationale nodes" in prompt
+        assert "If the source does not explicitly provide a reason, omit this attribute" in prompt
+        # Verify the node schema example includes rationale: null
+        assert '"rationale":null' in prompt.replace(" ", "").replace("\n", "")
+
+
 # --- *_BASE_URL env overrides for kimi / gemini / deepseek (#1458) -------------
 # BACKENDS reads the env at import time, so each case runs in a fresh interpreter
 # (subprocess) to avoid reload contamination of the test session.
