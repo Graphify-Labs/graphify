@@ -637,6 +637,7 @@ def _pick_seeds(
     *,
     G: "nx.Graph | None" = None,
     best_seed_by_term: dict[str, str] | None = None,
+    skip_covered_terms: bool = False,
 ) -> list[str]:
     """Select BFS seed nodes, stopping when score drops too far below the top.
 
@@ -667,6 +668,19 @@ def _pick_seeds(
     nodes back inside the gap window; this per-term guarantee remains
     load-bearing for relevant nodes matched only via substrings, whose flat
     scores a dampened collision can still exceed.
+
+    `skip_covered_terms` (default off, opted into only by `_query_graph_text`)
+    refines that guarantee to *every term with any match is matched by at least
+    one seed*, from *every term's own singleton winner gets a slot*: a term that
+    is a substring of an already-picked seed's normalized label — the same
+    predicate as _score_nodes' weakest match tier, and its label alone, so the
+    seed provably would have matched the term in scoring — is not starved, and
+    starvation is the only thing the guarantee exists to prevent. A seed with no
+    label covers nothing. Without this skip, a natural-language question's
+    generic nouns each drag in their own hub: "what code uses
+    ChargeCustomerService to charge a customer" seeds the `Customer` model and
+    `.charge()` on top of `ChargeCustomerService`, whose label already matches
+    both terms, and the hub's member fan-out then floods the traversal (#2507).
     """
     if not scored:
         return []
@@ -684,6 +698,23 @@ def _pick_seeds(
         data = G.nodes[nid]
         return (data.get("norm_label")
                 or _strip_diacritics(data.get("label") or "").lower()) or nid
+
+    # The `skip_covered_terms` coverage predicate needs the seed's normalized
+    # LABEL alone — empty when the node has none — not `_seed_label_key`. That
+    # key's `or nid` tail is correct for the dedup gate above (a labelless node
+    # still needs something unique to dedup on) but wrong for coverage: a
+    # `norm_label == ""` node is real (build.py's `_fold_node_aliases`: an
+    # alias-only node enters the graph with no label) and is still seedable
+    # through _score_nodes' source-file tier, so the tail would let its node-id
+    # path fragments declare unrelated terms covered — a match _score_nodes never
+    # makes, since its substring tier reads `norm_label` only. That would starve
+    # the term's real winner and break the very invariant this flag refines.
+    def _seed_norm_label(nid: str) -> str:
+        if G is None:
+            return ""
+        data = G.nodes[nid]
+        return (data.get("norm_label")
+                or _strip_diacritics(data.get("label") or "").lower())
 
     top_score = scored[0][0]
     seeds: list[str] = []
@@ -716,9 +747,15 @@ def _pick_seeds(
             # Honor the same per-label cap so the per-term guarantee can't
             # reintroduce a second copy of an already-seeded generic label.
             key = _seed_label_key(best_nid)
-            if best_nid not in seeds and key not in seen_labels:
-                seen_labels.add(key)
-                seeds.append(best_nid)
+            if best_nid in seeds or key in seen_labels:
+                continue
+            # Layered after that dedup gate, in this same sorted-term order, so
+            # the coverage check sees the gap-window seeds plus every guarantee
+            # seed appended so far.
+            if skip_covered_terms and any(term in _seed_norm_label(s) for s in seeds):
+                continue
+            seen_labels.add(key)
+            seeds.append(best_nid)
     return seeds
 
 
@@ -1141,18 +1178,45 @@ def _query_graph_text(
         best_seed_by_term = {
             t: nid for t, nid in best_seed_by_term.items() if t not in intent
         }
-    start_nodes = _pick_seeds(qs.ranked, G=G, best_seed_by_term=best_seed_by_term)
+    # `skip_covered_terms` is the other half of the seed hygiene: a term an
+    # already-picked seed's label matches is not starved, so it claims no extra
+    # seed and a generic noun stops dragging in its own hub (#2507). Opted into
+    # here only, so every other `_pick_seeds` caller keeps the legacy guarantee.
+    start_nodes = _pick_seeds(
+        qs.ranked, G=G, best_seed_by_term=best_seed_by_term, skip_covered_terms=True
+    )
     if not start_nodes:
         return "No matching nodes found."
     resolved_filters, filter_source = _resolve_context_filters(question, context_filters)
     traversal_graph = _filter_graph_by_context(G, resolved_filters)
-    nodes, edges = _dfs(traversal_graph, start_nodes, depth) if mode == "dfs" else _bfs(traversal_graph, start_nodes, depth)
+    traverse = _dfs if mode == "dfs" else _bfs
+    nodes, edges = traverse(traversal_graph, start_nodes, depth)
+    # A guessed filter that reaches nothing is worse than no filter: "Who calls
+    # ChargeCustomerService?" infers a `call` filter, but a class node owns no
+    # call edges — calls land on its methods and the class->member edge carries
+    # `context=None` — so the filtered traversal cannot leave the seed and the
+    # answer comes back near-empty yet confident. Retraverse unfiltered instead,
+    # and say so in the header so a relaxed answer never reads as a filtered one
+    # (#2507).
+    #
+    # Both traversals visit every seed, so `nodes <= set(start_nodes)` means the
+    # traversal discovered nothing at all. That zero-expansion threshold is
+    # deliberate: "few nodes" would need a tuning constant, and a filter that
+    # found *something* is doing its job. Mode-independent by construction.
+    #
+    # Only the heuristic is second-guessed. An explicitly requested filter is an
+    # instruction, not a guess, and is honored even when it strands the seeds.
+    relaxed = filter_source == "heuristic" and nodes <= set(start_nodes)
+    if relaxed:
+        traversal_graph = G
+        nodes, edges = traverse(G, start_nodes, depth)
     header_parts = [
         f"Traversal: {mode.upper()} depth={depth}",
         f"Start: {[G.nodes[n].get('label', n) for n in start_nodes]}",
     ]
     if resolved_filters:
-        header_parts.append(f"Context: {', '.join(resolved_filters)} ({filter_source})")
+        note = "; relaxed — no matches beyond seeds" if relaxed else ""
+        header_parts.append(f"Context: {', '.join(resolved_filters)} ({filter_source}{note})")
     header_parts.append(f"{len(nodes)} nodes found")
     header = " | ".join(header_parts) + "\n\n"
     # Pass the seeds so the queried symbol renders first and survives truncation
