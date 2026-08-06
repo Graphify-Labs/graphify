@@ -3303,6 +3303,37 @@ def _php_context_interface_entry(context_nodes: list[dict] | None) -> dict | Non
     return {"php_non_class_types": names} if names else None
 
 
+def _php_context_class_fqn_entries(context_nodes: list[dict] | None) -> list[dict]:
+    """Recover the unchanged corpus's declared PHP class FQNs (#23).
+
+    The ``php_class_fqns`` payload aligns 1:1 with the files dispatched this
+    run, so on an incremental rebuild the declared-FQN binding (#22) went blind
+    to every class whose defining file was unchanged, and the edges it adds on
+    a full build silently vanished. The extractor stamps each PHP file node
+    with its ``_php_class_fqns`` map — the same persisted-marker channel as
+    ``_php_non_class_types`` — and this hands the stamps back as synthetic
+    ``per_file``-shaped entries, one per file since the payload is keyed by
+    the DEFINING file's path. The path is the context node's own
+    ``source_file``: that is the exact form the resolver's type nodes carry,
+    because both come from the same persisted graph. A graph written before
+    the marker existed yields no entries and the binding fails closed — no
+    edge rather than a guessed one — until the defining file is re-extracted.
+
+    Read from the RAW context list for the reason `_php_context_interface_entry`
+    is: an import stub minted by a changed caller can collide with the file
+    node's id and take the marker down with it in the merge.
+    """
+    entries = []
+    for node in context_nodes or []:
+        classes = node.get("_php_class_fqns")
+        source_file = node.get("source_file")
+        if isinstance(classes, dict) and classes and source_file:
+            entries.append({
+                "php_class_fqns": {"path": str(source_file), "classes": classes}
+            })
+    return entries
+
+
 def _resolve_php_member_calls(
     per_file: list[dict],
     all_nodes: list[dict],
@@ -3389,12 +3420,13 @@ def _resolve_php_member_calls(
         if declared and declared.get("path"):
             class_fqn_by_file[declared["path"]] = declared.get("classes", {})
 
-    # `use`-import/namespace-aware receiver typing (#21), consulted IN FRONT of
-    # the corpus-wide short-name index below — the shape of the C# call site in
-    # `_resolve_csharp_member_calls`. A name the calling file CLAIMS through a
-    # `use` import or writes out qualified is decided here and never falls back:
-    # that refusal is the whole fix for #16. It can only delete edges, never add
-    # or re-point one — see PhpNameResolver.
+    # `use`-import/namespace-aware receiver typing (#21, #22), consulted IN
+    # FRONT of the corpus-wide short-name index below — the shape of the C#
+    # call site in `_resolve_csharp_member_calls`. A name the calling file
+    # CLAIMS through a `use` import or writes out qualified is decided here and
+    # never falls back: the refusal is the whole fix for #16, and the claimed
+    # FQN binding to the class whose file declares exactly that name is the
+    # recall counterpart (#22) — see PhpNameResolver.
     resolver = PhpNameResolver(all_nodes, all_edges, type_def_nids, class_fqn_by_file)
 
     def declared_fqn(type_node: dict | None) -> str | None:
@@ -6254,8 +6286,14 @@ def extract(
         _rl_edges = all_edges + list(resolution_context_edges or [])
         _rl_per_file = per_file
         _php_ctx_entry = _php_context_interface_entry(resolution_context_nodes)
-        if _php_ctx_entry is not None:
-            _rl_per_file = [*per_file, _php_ctx_entry]
+        # #23: the declared-FQN maps ride the same marker channel, per defining
+        # file — without them the #22 binding goes blind to every class whose
+        # file this rebuild left alone, and its edges exist only on full builds.
+        _php_ctx_fqns = _php_context_class_fqn_entries(resolution_context_nodes)
+        if _php_ctx_entry is not None or _php_ctx_fqns:
+            _rl_per_file = [*per_file,
+                            *([_php_ctx_entry] if _php_ctx_entry else []),
+                            *_php_ctx_fqns]
         _n0, _e0 = len(_rl_nodes), len(_rl_edges)
         run_language_resolvers(paths, _rl_per_file, _rl_nodes, _rl_edges)
         all_nodes.extend(_rl_nodes[_n0:])
@@ -6402,6 +6440,10 @@ def extract(
     # an incremental rebuild until the declaring file is re-extracted. A graph
     # carrying only the pre-#12 `_php_interfaces` spelling keeps refusing the
     # interfaces it names — both spellings are read.
+    # `_php_class_fqns` (#23) persists likewise, failing in the safe direction
+    # too: a pre-marker graph loses the declared-FQN BINDING (#22) on an
+    # incremental rebuild — an absent edge, never a guessed one — until the
+    # defining file is re-extracted.
 
     # local_alias is a transient import-resolution hint (#2082), same shape as
     # target_file (#1814): it exists only so the module arm of

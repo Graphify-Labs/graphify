@@ -10,11 +10,11 @@ and minted a wrong `INFERRED 0.8` edge.
 `PhpNameResolver` (mirroring `CsharpNameResolver`) answers with a
 `(node_id, decisive)` verdict and is consulted IN FRONT of that fallback: a
 claimed name that does not land on an in-corpus class refuses instead of falling
-back. The pass is strictly SUBTRACTIVE — every verdict it returns positively is
-one the fallback would have returned anyway, so it can only delete edges.
-Binding an alias to the right one of several same-short-named classes is a
-recall ADDITION and belongs to #22, pinned below by
-`test_alias_renaming_to_an_unclaimed_short_name_stays_unresolved`.
+back. The refusal is strictly subtractive; its additive counterpart — binding
+the claimed FQN to the class whose file declares exactly that name (#22) — is
+covered by `test_php_alias_binding.py`, and
+`test_alias_renaming_to_an_unclaimed_short_name_binds_since_22` below pins the
+boundary from this side.
 
 Every test goes through the public `extract()` seam, and every positive case
 carries a decoy class with an identically named method that must get no edge.
@@ -242,18 +242,21 @@ def test_unclaimed_short_name_still_falls_back(tmp_path: Path):
     assert (go, _find(r, ".send()", "recorder")) not in calls
 
 
-def test_alias_renaming_to_an_unclaimed_short_name_stays_unresolved(tmp_path: Path):
-    """The #21/#22 boundary. `use App\\Local\\Client as Api;` names an in-corpus
-    class, but the WRITTEN short name is `Api` and nothing in the corpus is
-    called that, so today's fallback finds nothing and this ticket adds no edge:
-    binding the alias to `App\\Local\\Client` is #22's recall win."""
+def test_alias_renaming_to_an_unclaimed_short_name_binds_since_22(tmp_path: Path):
+    """The #21/#22 boundary, from the #21 side. `use App\\Local\\Client as Api;`
+    names an in-corpus class under a WRITTEN short name (`Api`) nothing in the
+    corpus is called, so #21's fallback found nothing and refused. The declared-
+    FQN index (#22) follows the alias to its target — the recall win this test
+    used to pin as out of scope."""
     calls, r = _calls(tmp_path, {
         **_CORPUS,
         "app/Http/I.php": _caller("use App\\Local\\Client as Api;\n", annotation="Api"),
     })
 
     go = _find(r, ".go()", "_go")
-    assert _sends(calls, go) == []
+    send = _find(r, ".send()", "client")
+    assert (go, send) in calls
+    assert (go, _find(r, ".send()", "recorder")) not in calls
 
 
 # ── the same verdicts across an incremental rebuild ───────────────────────────
@@ -266,7 +269,7 @@ def test_alias_renaming_to_an_unclaimed_short_name_stays_unresolved(tmp_path: Pa
 
 _CTX_NODE_FIELDS = ("label", "source_file", "file_type", "type")
 _CTX_MARKERS = ("_callable", "_callable_class", "_php_non_class_types",
-                "_php_interfaces")
+                "_php_interfaces", "_php_class_fqns")
 
 
 def _watch_resolution_context(result: dict, unchanged: set[str]):
@@ -342,9 +345,11 @@ def test_alias_refusal_survives_incremental_rebuild(tmp_path: Path):
 
 
 def test_in_corpus_alias_still_resolves_incrementally(tmp_path: Path):
-    """Positive control for the test above: the defining file's declared FQN is
-    unavailable on an incremental run, so the class is corroborated against its
-    PSR-4 path instead — and the edge survives, decoy still empty."""
+    """Positive control for the test above: the defining file's declared FQN
+    now rides the persisted `_php_class_fqns` marker (#23), so the binding holds
+    across the rebuild — decoy still empty. The pre-#23 path, where the marker
+    is absent and the class is corroborated against its PSR-4 path instead, is
+    pinned in `test_php_alias_binding.py`."""
     (full_calls, full), (inc_calls, inc) = _full_then_incremental(tmp_path, {
         **_CORPUS,
         _INCR_CALLER: _caller("use App\\Local\\Client;\n"),
@@ -362,9 +367,11 @@ def test_in_corpus_alias_still_resolves_incrementally(tmp_path: Path):
 def test_non_psr4_layout_keeps_its_edge_incrementally(tmp_path: Path):
     """Composer maps a namespace PREFIX onto a directory (`App\\Weird\\` ->
     `src/`), so `App\\Weird\\Odd` legitimately lives at `src/Odd.php`. The full
-    run corroborates the `use` against the namespace that file DECLARES; the
-    incremental run no longer has the declaration and must not read the shorter
-    path as a contradiction — a stripped prefix looks exactly like one."""
+    run corroborates the `use` against the namespace that file DECLARES, and
+    since #23 the incremental run reads the same declaration off the persisted
+    marker. `test_php_alias_binding.py` pins the pre-marker variant, where the
+    shorter path must not read as a contradiction — a stripped prefix looks
+    exactly like one."""
     caller = (
         "<?php\nnamespace App\\Http;\n"
         "use App\\Weird\\Odd;\n"

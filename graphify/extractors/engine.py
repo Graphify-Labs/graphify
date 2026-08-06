@@ -5466,6 +5466,19 @@ def _extract_generic(
         # one instead of guessing from the path (#14). Same `{"path": …}` shape
         # as the type tables, which the cache re-anchors on load.
         result["php_class_fqns"] = {"path": str_path, "classes": php_class_fqns}
+        # Like `_php_non_class_types` above, the payload only reaches the
+        # resolver for files dispatched THIS run — but the declared-FQN
+        # binding (#22) needs the names of the files an incremental rebuild
+        # left alone, or every edge it adds silently vanishes on the first
+        # `graphify update` (#23). Stamp the map on the FILE node too; it
+        # rides graph.json into the resolution context over the same channel
+        # as the other persisted markers. The path key is deliberately NOT
+        # stored: at read-back time it is the node's own `source_file`, in
+        # whatever form that graph carries.
+        for n in nodes:
+            if n["id"] == file_nid:
+                n["_php_class_fqns"] = dict(php_class_fqns)
+                break
     # TS/JS: augment the constructor-injection type table with local `new`
     # bindings and type-annotated parameters, so `const s = new Svc(); s.m()` and
     # a call on a typed param (incl. inside a closure) resolve (#1630). The
