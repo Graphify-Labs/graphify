@@ -24,6 +24,9 @@ from graphify.serve import (
     _query_terms,
     _query_graph_text,
     _resolve_context_filters,
+    _normalize_seed_ignore_patterns,
+    _resolve_seed_ignore_patterns,
+    _source_is_seed_ignored,
     _subgraph_to_text,
     _cut_lines_to_budget,
     _load_graph,
@@ -430,6 +433,90 @@ def test_query_graph_text_keeps_short_non_english_terms():
     text = _query_graph_text(G, "前端", mode="bfs", depth=1)
     assert "No matching nodes found." not in text
     assert "NODE 前端" in text
+
+
+def _seed_ignore_graph():
+    G = nx.Graph()
+    G.add_node("production", label="CrawlEngine", source_file="src/crawler.py", source_location="L1")
+    G.add_node("test_noise", label="Engine", source_file="mcp-svc/tests/test_crawler.py", source_location="L1")
+    return G
+
+
+def test_default_seed_ignore_patterns_match_root_and_nested_tests(monkeypatch):
+    monkeypatch.delenv("GRAPHIFY_QUERY_IGNORE_PATTERNS", raising=False)
+    patterns = _resolve_seed_ignore_patterns()
+
+    assert _source_is_seed_ignored("tests/test_crawler.py", patterns)
+    assert _source_is_seed_ignored("mcp-svc/tests/test_crawler.py", patterns)
+    assert _source_is_seed_ignored("nested/generated/noise.py", ["generated/"])
+    assert not _source_is_seed_ignored("docs/testing.md", patterns)
+
+
+def test_seed_ignore_env_replaces_defaults_and_supports_negation(monkeypatch):
+    monkeypatch.setenv(
+        "GRAPHIFY_QUERY_IGNORE_PATTERNS",
+        "generated/**,!generated/keep/**",
+    )
+    patterns = _resolve_seed_ignore_patterns()
+
+    assert _source_is_seed_ignored("generated/noise.py", patterns)
+    assert not _source_is_seed_ignored("generated/keep/example.py", patterns)
+    assert not _source_is_seed_ignored("tests/test_crawler.py", patterns)
+    assert _resolve_seed_ignore_patterns([]) == []
+
+
+def test_seed_ignore_normalization_handles_untrusted_mcp_values():
+    assert _normalize_seed_ignore_patterns("generated/**") == ["generated/**"]
+    assert _normalize_seed_ignore_patterns({"generated": "**"}) == []
+
+
+def test_query_default_seed_ignore_keeps_production_symbol_ahead_of_test_noise(monkeypatch):
+    monkeypatch.delenv("GRAPHIFY_QUERY_IGNORE_PATTERNS", raising=False)
+    text = _query_graph_text(_seed_ignore_graph(), "engine", depth=0)
+
+    assert "Start: ['CrawlEngine']" in text
+    assert "NODE CrawlEngine" in text
+    assert "NODE Engine" not in text
+
+
+def test_seed_ignore_is_query_only_and_keeps_reachable_test_context(monkeypatch):
+    monkeypatch.delenv("GRAPHIFY_QUERY_IGNORE_PATTERNS", raising=False)
+    G = _seed_ignore_graph()
+    G.add_edge("production", "test_noise", relation="calls", confidence="EXTRACTED")
+
+    # explain/path score through _score_nodes, which must retain prior behavior.
+    assert _score_nodes(G, ["engine"])[0][1] == "test_noise"
+
+    text = _query_graph_text(G, "engine", depth=1)
+    assert "Start: ['CrawlEngine']" in text
+    assert "NODE Engine" in text
+
+
+def test_query_empty_seed_ignore_patterns_restores_test_seed(monkeypatch):
+    monkeypatch.delenv("GRAPHIFY_QUERY_IGNORE_PATTERNS", raising=False)
+    text = _query_graph_text(_seed_ignore_graph(), "engine", depth=0, seed_ignore_patterns=[])
+
+    assert "Start: ['Engine']" in text
+    assert "NODE Engine" in text
+
+
+def test_empty_seed_ignore_environment_restores_test_seed(monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_QUERY_IGNORE_PATTERNS", "")
+    text = _query_graph_text(_seed_ignore_graph(), "engine", depth=0)
+
+    assert "Start: ['Engine']" in text
+    assert "NODE Engine" in text
+
+
+def test_query_seed_ignore_falls_back_when_only_test_nodes_match(monkeypatch):
+    monkeypatch.delenv("GRAPHIFY_QUERY_IGNORE_PATTERNS", raising=False)
+    G = nx.Graph()
+    G.add_node("test_engine", label="Engine", source_file="tests/test_engine.py", source_location="L1")
+
+    text = _query_graph_text(G, "engine", depth=0)
+
+    assert "Start: ['Engine']" in text
+    assert "NODE Engine" in text
 
 
 def test_infer_context_filters_for_calls_question():

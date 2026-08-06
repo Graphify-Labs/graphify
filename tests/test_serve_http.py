@@ -166,8 +166,39 @@ def test_tools_list_over_http(tmp_path):
             json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
         )
         assert resp.status_code == 200
-        names = {t["name"] for t in resp.json()["result"]["tools"]}
+        tools = resp.json()["result"]["tools"]
+        names = {t["name"] for t in tools}
         assert {"query_graph", "get_node", "graph_stats"} <= names
+        query_graph = next(tool for tool in tools if tool["name"] == "query_graph")
+        assert "seed_ignore_patterns" in query_graph["inputSchema"]["properties"]
+
+
+def test_query_graph_mcp_honors_seed_ignore_patterns(tmp_path):
+    graph = {
+        "directed": True,
+        "nodes": [
+            {"id": "production", "label": "CrawlEngine", "source_file": "src/crawler.py"},
+            {"id": "generated", "label": "Engine", "source_file": "generated/noise.py"},
+        ],
+        "edges": [],
+    }
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(json.dumps(graph), encoding="utf-8")
+    app = serve_mod._build_http_app(str(graph_path), json_response=True)
+
+    with _client(app) as client:
+        headers = _init_session(client)
+        result = _call_tool(
+            client,
+            headers,
+            "query_graph",
+            {"question": "engine", "seed_ignore_patterns": ["generated/**"]},
+            rid=2,
+        )
+
+    assert "Start: ['CrawlEngine']" in result
+    assert "NODE CrawlEngine" in result
+    assert "NODE Engine" not in result
 
 
 def _project_with_graph(tmp_path, node_count: int, name: str = "proj") -> str:
