@@ -167,3 +167,83 @@ def test_merge_graphs_preserves_import_edge_direction(tmp_path):
     assert repo2_link["source"] == "repo2::main"
     assert repo2_link["target"] == "repo2::utils"
 
+
+def _write_with_hyperedges(p: Path, node_ids: list[str], hyperedges: list[dict],
+                           *, top_level_only: bool = False):
+    # Mirrors to_json's dual-slot shape: hyperedges live top-level AND under
+    # the node_link graph attrs. top_level_only drops the nested slot to model
+    # older writers (#2485).
+    p.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "directed": False, "multigraph": False,
+        "graph": {} if top_level_only else {"hyperedges": hyperedges},
+        "nodes": [{"id": n} for n in node_ids], "links": [],
+        "hyperedges": hyperedges,
+    }
+    p.write_text(json.dumps(data))
+
+
+def test_merge_graphs_carries_hyperedges_from_all_inputs(tmp_path):
+    # #2484: prefix_graph_for_global never rewrote G.graph["hyperedges"], and
+    # nx.compose's dict.update graph-attr merge clobbered each prior input's
+    # list, so at best the LAST graph's hyperedges survived — with stale,
+    # unprefixed member ids. Both inputs' hyperedges must reach the output,
+    # relabeled to the prefixed node ids, in BOTH persistence slots.
+    a = tmp_path / "alpha" / "graphify-out" / "graph.json"
+    b = tmp_path / "beta" / "graphify-out" / "graph.json"
+    _write_with_hyperedges(a, ["x", "y"], [{"id": "h_alpha", "nodes": ["x", "y"]}])
+    _write_with_hyperedges(b, ["p", "q"], [{"id": "h_beta", "nodes": ["p", "q"]}])
+    out = tmp_path / "merged.json"
+
+    r = _run(["merge-graphs", str(a), str(b), "--out", str(out)], tmp_path)
+    assert r.returncode == 0, r.stderr
+    data = json.loads(out.read_text())
+
+    hyperedges = data.get("hyperedges")
+    assert isinstance(hyperedges, list), "top-level hyperedges slot must be written"
+    assert {h["id"] for h in hyperedges} == {"alpha::h_alpha", "beta::h_beta"}
+    assert len(hyperedges) == 2
+
+    # every member id must resolve in the merged (prefixed) node set
+    node_ids = {n["id"] for n in data["nodes"]}
+    for h in hyperedges:
+        assert set(h["nodes"]) <= node_ids, f"dangling members in {h}"
+
+    # nested slot mirrors the top-level one (to_json's dual-slot shape)
+    assert data["graph"]["hyperedges"] == hyperedges
+
+
+def test_merge_graphs_hyperedges_dedup_on_shared_prefixed_id(tmp_path):
+    # Idempotence: a duplicated hyperedge id within an input must not produce
+    # duplicate entries in the merged output (attach_hyperedges dedups by id).
+    a = tmp_path / "alpha" / "graphify-out" / "graph.json"
+    b = tmp_path / "beta" / "graphify-out" / "graph.json"
+    he = {"id": "h_alpha", "nodes": ["x"]}
+    _write_with_hyperedges(a, ["x"], [he, dict(he)])
+    _write_with_hyperedges(b, ["p"], [{"id": "h_beta", "nodes": ["p"]}])
+    out = tmp_path / "merged.json"
+
+    r = _run(["merge-graphs", str(a), str(b), "--out", str(out)], tmp_path)
+    assert r.returncode == 0, r.stderr
+    data = json.loads(out.read_text())
+    ids = [h["id"] for h in data["hyperedges"]]
+    assert sorted(ids) == ["alpha::h_alpha", "beta::h_beta"], f"dup survived: {ids}"
+
+
+def test_merge_graphs_reads_top_level_only_hyperedges(tmp_path):
+    # #2485 skew on the input side: node_link_graph restores only the nested
+    # graph-attrs slot, so an input whose hyperedges live only at the top
+    # level used to lose them entirely.
+    a = tmp_path / "alpha" / "graphify-out" / "graph.json"
+    b = tmp_path / "beta" / "graphify-out" / "graph.json"
+    _write_with_hyperedges(a, ["x"], [{"id": "h_top", "nodes": ["x"]}],
+                           top_level_only=True)
+    _write_with_hyperedges(b, ["p"], [])
+    out = tmp_path / "merged.json"
+
+    r = _run(["merge-graphs", str(a), str(b), "--out", str(out)], tmp_path)
+    assert r.returncode == 0, r.stderr
+    data = json.loads(out.read_text())
+    assert [h["id"] for h in data["hyperedges"]] == ["alpha::h_top"]
+    assert data["hyperedges"][0]["nodes"] == ["alpha::x"]
+

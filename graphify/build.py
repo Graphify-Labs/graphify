@@ -99,36 +99,68 @@ _FILE_TYPE_SYNONYMS = {
 _HE_MEMBER_ALIASES = ("members", "node_ids")
 
 
+def _coerce_hyperedge_member_refs(he: dict, members: list) -> list:
+    """Coerce a hyperedge member list to hashable scalar ids, deduped in order.
+
+    LLM/subagent drift sometimes emits a member as an object (``{"id": "a_ts"}``)
+    instead of a bare id string. Left uncoerced, the dict member is unhashable,
+    so the semantic-rekey pass's ``_rekey.get(n, n)`` raised ``TypeError`` and
+    aborted the whole merge — destroying a completed extraction (#2486). Object
+    members collapse to their non-empty ``id`` (numeric ids str-coerced via
+    ``_coerce_id``, matching #2326); members with no usable id are dropped with
+    a stderr WARNING naming the hyperedge, never a crash. Hashable scalar refs
+    pass through unchanged. A hyperedge that loses every member this way falls
+    to the existing no-valid-members drop-with-warning in ``build_from_json``.
+    """
+    seen: set = set()
+    coerced: list = []
+    for ref in members:
+        if isinstance(ref, dict):
+            inner = _coerce_id(ref.get("id"))
+            if inner in (None, "") or not _hashable(inner):
+                print(
+                    f"[graphify] WARNING: hyperedge "
+                    f"'{he.get('id', '?')}' has a member object with no usable "
+                    f"'id' ({ref!r}); dropping that member.",
+                    file=sys.stderr,
+                )
+                continue
+            ref = inner
+        elif not _hashable(ref):
+            print(
+                f"[graphify] WARNING: hyperedge "
+                f"'{he.get('id', '?')}' has an unusable member reference "
+                f"{ref!r}; dropping that member.",
+                file=sys.stderr,
+            )
+            continue
+        if ref in seen:
+            continue
+        seen.add(ref)
+        coerced.append(ref)
+    return coerced
+
+
 def _normalize_hyperedge_members(he: object) -> None:
     """Canonicalize a hyperedge's member list onto the `nodes` key, in place.
 
     If `nodes` is already a list it wins (canonical), and only stray alias keys
     are dropped. Otherwise the first alias (`members`, then `node_ids`) that is a
-    list is moved to `nodes`, deduped preserving order, with a single stderr
-    WARNING naming the hyperedge id and alias used. Leftover alias keys are
-    always removed so downstream code never re-reads them.
+    list is moved to `nodes`, with a single stderr WARNING naming the hyperedge
+    id and alias used. Leftover alias keys are always removed so downstream code
+    never re-reads them. Whichever branch supplied the list, member VALUES are
+    coerced to hashable scalar ids and deduped preserving order (#2486) — see
+    ``_coerce_hyperedge_member_refs``.
     """
     if not isinstance(he, dict):
         return
-    if not isinstance(he.get("nodes"), list):
+    if isinstance(he.get("nodes"), list):
+        he["nodes"] = _coerce_hyperedge_member_refs(he, he["nodes"])
+    else:
         for alias in _HE_MEMBER_ALIASES:
             val = he.get(alias)
             if isinstance(val, list):
-                seen: set = set()
-                deduped: list = []
-                for ref in val:
-                    try:
-                        is_dupe = ref in seen
-                    except TypeError:
-                        is_dupe = False  # unhashable ref: keep it, validator flags it
-                    if is_dupe:
-                        continue
-                    try:
-                        seen.add(ref)
-                    except TypeError:
-                        pass
-                    deduped.append(ref)
-                he["nodes"] = deduped
+                he["nodes"] = _coerce_hyperedge_member_refs(he, val)
                 print(
                     f"[graphify] WARNING: hyperedge "
                     f"'{he.get('id', '?')}' uses field '{alias}' instead of "
@@ -183,6 +215,16 @@ def _coerce_id(value: object) -> object:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return value
     return str(value)
+
+
+def _hashable(value: object) -> bool:
+    """True when value can be a dict key / set member (same probe as the
+    inline ``try: hash(m)`` in build_from_json's hyperedge revalidation)."""
+    try:
+        hash(value)
+    except TypeError:
+        return False
+    return True
 
 
 def _coerce_non_string_ids(extraction: dict) -> None:
@@ -622,6 +664,17 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     if "edges" not in extraction and "links" in extraction:
         extraction = dict(extraction, edges=extraction["links"])
 
+    # Hyperedge persistence is dual-slot (#2485): to_json writes BOTH a
+    # top-level `hyperedges` key AND the nested `graph.hyperedges` (node_link
+    # graph attrs), but node_link_data-only writers emit just the nested slot.
+    # Fold the nested slot onto the top-level key ONCE, so every downstream
+    # pass (_coerce_non_string_ids, _normalize_hyperedge_members, the member
+    # revalidation before G.graph["hyperedges"] is set) reads one location.
+    if "hyperedges" not in extraction and isinstance(
+        (extraction.get("graph") or {}).get("hyperedges"), list
+    ):
+        extraction = dict(extraction, hyperedges=extraction["graph"]["hyperedges"])
+
     # Numeric ids from a loose backend become str before anything keys on them
     # (#2326) — after the links remap so aliased edges are covered too.
     _coerce_non_string_ids(extraction)
@@ -718,7 +771,12 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 edge["target"] = _rekey[edge["target"]]
         for he in extraction.get("hyperedges", []) or []:
             if isinstance(he, dict) and isinstance(he.get("nodes"), list):
-                he["nodes"] = [_rekey.get(n, n) for n in he["nodes"]]
+                # Guard on hashability (#2486): _normalize_hyperedge_members
+                # has already coerced members above, but a still-unhashable ref
+                # must pass through rather than abort the merge on dict.get.
+                he["nodes"] = [
+                    _rekey.get(n, n) if _hashable(n) else n for n in he["nodes"]
+                ]
 
     # Merge markdown quick-scan bare doc nodes into their semantic `_doc` twin
     # for the same file, so a document is one node regardless of which pipeline
@@ -745,7 +803,10 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         extraction["edges"] = _new_edges
         for he in extraction.get("hyperedges", []) or []:
             if isinstance(he, dict) and isinstance(he.get("nodes"), list):
-                he["nodes"] = [_doc_remap.get(n, n) for n in he["nodes"]]
+                # Same hashability guard as the _rekey pass above (#2486).
+                he["nodes"] = [
+                    _doc_remap.get(n, n) if _hashable(n) else n for n in he["nodes"]
+                ]
 
     G: nx.Graph = nx.DiGraph() if directed else nx.Graph()
     for node in extraction.get("nodes", []):
@@ -1092,6 +1153,19 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             kept_hyperedges.append(he)
         if kept_hyperedges:
             G.graph["hyperedges"] = kept_hyperedges
+        else:
+            # Full wipeout (#2485): every incoming hyperedge failed member
+            # revalidation. Store an EXPLICIT empty list — distinct from
+            # "this graph never carried hyperedge metadata" — and say loudly
+            # that the persisted set is about to be emptied, so the per-edge
+            # warnings above can't scroll past unnoticed.
+            G.graph["hyperedges"] = []
+            print(
+                f"[graphify] WARNING: all {len(hyperedges)} hyperedge(s) were "
+                f"dropped by member revalidation; graph.json's hyperedge set "
+                f"will be emptied on the next export.",
+                file=sys.stderr,
+            )
     # Runs LAST, after the alias-competition above (which relies on file-node
     # labels still being bare basenames): give colliding-basename file nodes a
     # directory-qualified display label so lookup/discovery can disambiguate
@@ -1605,6 +1679,28 @@ def prefix_graph_for_global(G: nx.Graph, repo_tag: str) -> nx.Graph:
             data["_src"] = relabel[data["_src"]]
         if "_tgt" in data and data["_tgt"] in relabel:
             data["_tgt"] = relabel[data["_tgt"]]
+    # Out-of-band hyperedges must be relabeled with the nodes (#2484, after
+    # @oleksii-tumanov's diagnosis in PR #1691): relabel_nodes copies graph
+    # attrs by reference, so member ids kept their pre-prefix form and dangled
+    # after a cross-repo merge. Rebuild the list (fresh dicts — the input
+    # graph's list is shared with H) with member ids mapped through the same
+    # relabel table, and prefix the hyperedge id itself so same-named
+    # hyperedges from different repos cannot collide when merged.
+    hyperedges = H.graph.get("hyperedges")
+    if isinstance(hyperedges, list):
+        rewritten = []
+        for he in hyperedges:
+            if isinstance(he, dict):
+                he = dict(he)
+                if isinstance(he.get("nodes"), list):
+                    he["nodes"] = [
+                        relabel.get(m, m) if _hashable(m) else m
+                        for m in he["nodes"]
+                    ]
+                if he.get("id"):
+                    he["id"] = f"{repo_tag}::{he['id']}"
+            rewritten.append(he)
+        H.graph["hyperedges"] = rewritten
     return H
 
 
