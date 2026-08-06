@@ -233,7 +233,14 @@ def _node_link_payload(data: dict) -> tuple[list, list] | None:
         # though the shape check above accepts "edges" (#2212).
         from graphify.paths import load_node_link_graph
 
-        graph = load_node_link_graph(data)
+        # Force directed/multigraph so the stored caller->callee direction and
+        # parallel edges survive the round-trip; mirrors affected.py:263,
+        # serve.py:42 and cli.py:1229 (#1174). graph.json is written with
+        # "directed": false for backward compatibility (build.py:658), so
+        # without this networkx returns an undirected Graph and edge
+        # orientation becomes arbitrary -- which silently swaps the Caller and
+        # Callee columns of the call table and drops parallel edges.
+        graph = load_node_link_graph({**data, "directed": True, "multigraph": True})
     except Exception:
         return None
 

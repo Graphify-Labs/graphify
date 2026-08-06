@@ -185,3 +185,17 @@ def test_load_graph_rejects_oversized_file(monkeypatch, tmp_path):
     with pytest.raises(SystemExit) as excinfo:
         load_graph(graph_path)
     assert "exceeds" in str(excinfo.value)
+
+
+def test_load_graph_preserves_edge_direction(tmp_path):
+    """#1174: graph.json is written with "directed": false, so the node-link
+    parser must be told otherwise or networkx returns an undirected Graph and
+    caller->callee orientation becomes arbitrary."""
+    from graphify.callflow_html import load_graph
+
+    out = _make_graphify_out(tmp_path)
+    _nodes, edges, _hyper, _meta = load_graph(out / "graph.json")
+
+    directed = {(e["source"], e["target"]) for e in edges}
+    assert ("run", "api") in directed
+    assert ("api", "run") not in directed, "edge direction was lost (undirected load)"
