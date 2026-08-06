@@ -262,6 +262,132 @@ def _repoint_python_package_imports(paths, all_nodes, all_edges, root) -> None:
                 e["target"] = alias_map[tgt]
 
 
+# Languages whose import edges name their target by the imported file's bare
+# stem id, as (importer suffixes, importable target suffixes). Each pair is
+# closed within one language: an import written in one of the first set can only
+# ever mean a file from the second, which is what makes the hint below
+# unambiguous even when the colliding sibling belongs to another language (#33).
+#
+# Python's target set omits `.pyi` on purpose — it has no extractor, so it mints
+# no file node to point a hint at, and listing it could only mask a real `.py`
+# target behind a phantom ambiguity.
+_IMPORT_STEM_LANGUAGES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
+    ((".py", ".pyi"), (".py",)),
+    ((".rs",), (".rs",)),
+    ((".zig",), (".zig",)),
+    ((".ex", ".exs"), (".ex", ".exs")),
+    ((".ps1", ".psm1", ".psd1"), (".ps1", ".psm1", ".psd1")),
+    ((".sh", ".bash"), (".sh", ".bash")),
+    (
+        (".pas", ".pp", ".dpr", ".dpk", ".inc"),
+        (".pas", ".pp", ".dpr", ".dpk", ".inc"),
+    ),
+)
+
+
+def _file_nids_by_path(all_nodes, all_edges, root) -> dict:
+    """Resolved source path -> the id its file node carries RIGHT NOW.
+
+    For passes that run after ``_disambiguate_colliding_node_ids`` and therefore
+    cannot derive a file's id from its path: a same-stem sibling salts the id
+    away from whatever the path formula would produce. A file node is the one
+    that ``contains`` its file's other nodes; an empty file contains nothing, so
+    fall back to the node whose label is the file's own basename.
+    """
+    try:
+        root = Path(root).resolve()
+    except OSError:
+        root = Path(root)
+    contains_sources = {
+        e.get("source") for e in all_edges if e.get("relation") == "contains"
+    }
+    by_path: dict[Path, str] = {}
+    fallback: dict[Path, str] = {}
+    for n in all_nodes:
+        source_file, nid = n.get("source_file"), n.get("id")
+        if not source_file or not nid:
+            continue
+        candidate = Path(str(source_file))
+        try:
+            resolved = (
+                candidate if candidate.is_absolute() else root / candidate
+            ).resolve()
+        except OSError:
+            continue
+        if nid in contains_sources:
+            by_path.setdefault(resolved, nid)
+        elif n.get("label") == resolved.name:
+            fallback.setdefault(resolved, nid)
+    for resolved, nid in fallback.items():
+        by_path.setdefault(resolved, nid)
+    return by_path
+
+
+def _hint_import_targets(paths, all_edges, root) -> None:
+    """Tell id-disambiguation which file each stem-named import edge targets.
+
+    The extractors in ``_IMPORT_STEM_LANGUAGES`` name an import's target by the
+    bare file-node id of the imported file (``import lead`` -> ``lead``), which
+    resolves only while that id is unique. Add ANY same-stem file — a ``lead.md``
+    will do — and the two file nodes collide, so
+    ``_disambiguate_colliding_node_ids`` salts them apart into ``lead_py_lead``
+    and ``lead_md_lead``. The edge's target salt is keyed by the IMPORTER's
+    source_file, which matches neither, so the edge is left pointing at an id
+    that no longer names anything: silently dropped, along with everything
+    downstream of it (Python's ``module.func()`` call resolution among them).
+
+    The disambiguator already accepts a ``target_file`` hint for exactly this
+    (#1814), keying the target salt by that file instead. Stamp it here rather
+    than in each extractor, because an extractor sees one file and cannot know
+    which of the corpus's same-stem candidates the id will end up naming.
+
+    This cannot change WHICH node an edge resolves to — the hint only selects
+    among the salted variants of an id the edge already named — so a corpus with
+    no collision is bit-identical. Guards: never overwrite a hint an emitter
+    already stamped, and skip an id claimed by more than one importable file of
+    the same language (leave it dangling, as before).
+
+    Must run BEFORE ``_disambiguate_colliding_node_ids``, the hint's only reader.
+    """
+    try:
+        root = Path(root).resolve()
+    except OSError:
+        root = Path(root)
+    hints: list[tuple[tuple[str, ...], dict[str, str]]] = []
+    for importer_suffixes, target_suffixes in _IMPORT_STEM_LANGUAGES:
+        file_id_to_paths: dict[str, set[str]] = {}
+        for p in paths:
+            if p.suffix.lower() not in target_suffixes:
+                continue
+            try:
+                rel = Path(p).resolve().relative_to(root)
+            except (ValueError, OSError):
+                continue
+            file_id_to_paths.setdefault(_file_node_id(rel), set()).add(str(p))
+        hint_map = {
+            fid: next(iter(ps)) for fid, ps in file_id_to_paths.items() if len(ps) == 1
+        }
+        if hint_map:
+            hints.append((importer_suffixes, hint_map))
+    if not hints:
+        return
+    for e in all_edges:
+        if not (
+            isinstance(e, dict)
+            and e.get("relation") in ("imports", "imports_from")
+            and not e.get("target_file")
+        ):
+            continue
+        source_file = str(e.get("source_file", "")).lower()
+        for importer_suffixes, hint_map in hints:
+            if not source_file.endswith(importer_suffixes):
+                continue
+            target_path = hint_map.get(e.get("target"))
+            if target_path:
+                e["target_file"] = target_path
+            break
+
+
 SEMANTIC_RELATIONS = frozenset({
     "inherits", "implements", "mixes_in", "embeds", "references",
     "calls", "imports", "imports_from", "re_exports", "contains", "method",
@@ -2281,8 +2407,13 @@ _PHP_RESOLVER_SUFFIXES = (
 )
 # `.h` routes to extract_cpp or extract_objc by content, so it appears in both
 # the C++ and ObjC sets. Raw calls are still claimed by the extractor-stamped
-# `lang`; only the DEFINITION index is scoped by suffix, where including `.h` is
-# correct — an ObjC @interface lives in one.
+# `lang`, never by suffix; only the DEFINITION index is scoped by suffix, where
+# including `.h` is correct — a C++ class and an ObjC @interface both live in
+# one. The consequence is that C++ and ObjC are isolated from every other
+# language but not from each other, which no suffix can fix (#24).
+_CPP_RESOLVER_SUFFIXES = (
+    ".cpp", ".cc", ".cxx", ".hpp", ".cu", ".cuh", ".metal", ".h",
+)
 _OBJC_RESOLVER_SUFFIXES = (".m", ".mm", ".h")
 
 
@@ -2296,6 +2427,17 @@ def _raw_call_is_owned(rc: dict, suffixes: tuple[str, ...]) -> bool:
     form: ``ruby_resolution._ruby_raw_calls``.
     """
     return str(rc.get("source_file") or "").lower().endswith(suffixes)
+
+
+def _is_owned_definition(node: "dict | None", suffixes: tuple[str, ...]) -> bool:
+    """True when ``node`` was declared in a source file with one of ``suffixes``.
+
+    The definition-index twin of ``_raw_call_is_owned`` (#8, #10, #24). Every
+    member-call resolver scopes its receiver-type index through this, so a
+    receiver's declared type can only ever bind to a type written in the same
+    language.
+    """
+    return str((node or {}).get("source_file") or "").lower().endswith(suffixes)
 
 
 def _resolve_swift_member_calls(
@@ -2336,12 +2478,17 @@ def _resolve_swift_member_calls(
     contained = {e.get("target") for e in all_edges if e.get("relation") == "contains"}
 
     # Type name -> definition node ids (real, source-backed, type-like defs only).
-    # len != 1 is the god-node guard: an ambiguous type name bails.
+    # len != 1 is the god-node guard: an ambiguous type name bails. Scoped to
+    # Swift sources (#24): unscoped, a Python `class Lead` could type
+    # `let lead: Lead` and mint a cross-language edge, and a foreign class merely
+    # SHARING the short name pushed the guard to 2 and deleted the correct Swift
+    # edge.
     type_def_nids: dict[str, list[str]] = {}
     node_by_id: dict[str, dict] = {}
     for n in all_nodes:
         node_by_id[n.get("id")] = n
-        if n.get("source_file") and n.get("id") in contained and _is_type_like_definition(n):
+        if (_is_owned_definition(n, _SWIFT_RESOLVER_SUFFIXES)
+                and n.get("id") in contained and _is_type_like_definition(n)):
             type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
 
     # (type_node_id, method_key) -> method_node_id, from `method` edges.
@@ -2447,7 +2594,11 @@ def _resolve_python_member_calls(
 
     # A class owns methods: it is the source of one or more `method` edges. Index
     # class label -> owning class node ids (len != 1 is the god-node guard), and
-    # (class_node_id, method_key) -> method_node_id.
+    # (class_node_id, method_key) -> method_node_id. Only classes declared in
+    # Python sources are candidates (#24): unscoped, `Lead.search()` bound to a
+    # Java `class Lead` at EXTRACTED, and a foreign class merely SHARING the name
+    # pushed the guard to 2 and deleted the correct Python edge. `method_index`
+    # needs no scoping — it is only ever keyed by a class id already admitted here.
     class_def_nids: dict[str, list[str]] = {}
     method_index: dict[tuple[str, str], str] = {}
     for e in all_edges:
@@ -2455,7 +2606,7 @@ def _resolve_python_member_calls(
             continue
         src, tgt = e.get("source"), e.get("target")
         cnode = node_by_id.get(src)
-        if cnode is not None:
+        if cnode is not None and _is_owned_definition(cnode, _PYTHON_RESOLVER_SUFFIXES):
             class_def_nids.setdefault(_key(cnode.get("label", "")), []).append(src)
         tnode = node_by_id.get(tgt)
         if tnode is not None:
@@ -2555,11 +2706,16 @@ def _resolve_python_member_calls(
             # never match), then to the single callable that module contains. A
             # receiver also matches the local alias bound on that import edge
             # (#2082), so an aliased import resolves the same as the bare name.
+            # A candidate module must itself be a Python file (#24): matching on
+            # the stem alone, a `lead.ts` answered `import lead` and bound the
+            # call to a TypeScript function, and a `lead.ts` sitting beside the
+            # real `lead.py` made the pair ambiguous and deleted the true edge.
             rkey = _key(receiver)
             caller_file = file_of_node.get(caller)
             file_aliases = import_alias_by_filenode.get(caller_file, {})
             mods = [t for t in imported_by_filenode.get(caller_file, ())
                     if t in contains_children
+                    and _is_owned_definition(node_by_id.get(t), _PYTHON_RESOLVER_SUFFIXES)
                     and (_module_stem_key(t) == rkey or file_aliases.get(t) == rkey)]
             if len(mods) != 1:  # not an imported module, or ambiguous -> bail
                 continue
@@ -2596,11 +2752,16 @@ def _resolve_typescript_member_calls(
 
     contained = {e.get("target") for e in all_edges if e.get("relation") == "contains"}
 
+    # Scoped to TS/JS sources (#24): unscoped, a Python `class Lead` could type
+    # `private lead: Lead` and mint a cross-language edge, and a foreign class
+    # merely SHARING the short name pushed the single-definition guard to 2 and
+    # deleted the correct TypeScript edge.
     type_def_nids: dict[str, list[str]] = {}
     node_by_id: dict[str, dict] = {}
     for n in all_nodes:
         node_by_id[n.get("id")] = n
-        if n.get("source_file") and n.get("id") in contained and _is_type_like_definition(n):
+        if (_is_owned_definition(n, _TYPESCRIPT_RESOLVER_SUFFIXES)
+                and n.get("id") in contained and _is_type_like_definition(n)):
             type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
 
     method_index: dict[tuple[str, str], str] = {}
@@ -2709,11 +2870,17 @@ def _resolve_cpp_member_calls(
     # excluding non-contained nodes keeps them from making a real type ambiguous.
     contained = {e.get("target") for e in all_edges if e.get("relation") == "contains"}
 
+    # Scoped to C++ sources (#24): unscoped, a Python `class Lead` could type
+    # `Lead lead;` and mint a cross-language edge, and a foreign class merely
+    # SHARING the short name pushed the single-definition guard to 2 and deleted
+    # the correct C++ edge. `.h` is in the set (and in ObjC's), so the two stay
+    # distinguishable from every other language but not from each other.
     type_def_nids: dict[str, list[str]] = {}
     node_by_id: dict[str, dict] = {}
     for n in all_nodes:
         node_by_id[n.get("id")] = n
-        if n.get("source_file") and n.get("id") in contained and _is_type_like_definition(n):
+        if (_is_owned_definition(n, _CPP_RESOLVER_SUFFIXES)
+                and n.get("id") in contained and _is_type_like_definition(n)):
             type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
 
     # (type_node_id, method_key) -> method_node_id, and caller -> enclosing type
@@ -2848,8 +3015,7 @@ def _resolve_csharp_member_calls(
     node_by_id: dict[str, dict] = {}
     for n in all_nodes:
         node_by_id[n.get("id")] = n
-        sf = str(n.get("source_file") or "").lower()
-        if (sf.endswith(_CSHARP_RESOLVER_SUFFIXES)
+        if (_is_owned_definition(n, _CSHARP_RESOLVER_SUFFIXES)
                 and n.get("id") in contained and _is_type_like_definition(n)):
             type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
 
@@ -3037,7 +3203,7 @@ def _resolve_java_member_calls(
     type_def_nids: dict[str, list[str]] = {}
     for node in all_nodes:
         if (
-            str(node.get("source_file") or "").lower().endswith(_JAVA_RESOLVER_SUFFIXES)
+            _is_owned_definition(node, _JAVA_RESOLVER_SUFFIXES)
             and node.get("id") in contained
             and _is_type_like_definition(node)
         ):
@@ -3172,7 +3338,7 @@ def _resolve_php_member_calls(
     type_def_nids: dict[str, list[str]] = {}
     for node in all_nodes:
         if (
-            str(node.get("source_file") or "").lower().endswith(_PHP_RESOLVER_SUFFIXES)
+            _is_owned_definition(node, _PHP_RESOLVER_SUFFIXES)
             and node.get("id") in contained
             and _is_type_like_definition(node)
         ):
@@ -3366,8 +3532,7 @@ def _resolve_objc_member_calls(
     node_by_id: dict[str, dict] = {}
     for n in all_nodes:
         node_by_id[n.get("id")] = n
-        sf = str(n.get("source_file") or "").lower()
-        if (sf.endswith(_OBJC_RESOLVER_SUFFIXES)
+        if (_is_owned_definition(n, _OBJC_RESOLVER_SUFFIXES)
                 and n.get("id") in contained and _is_type_like_definition(n)):
             type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
 
@@ -3475,7 +3640,7 @@ register_language_resolver(
 register_language_resolver(
     LanguageResolver(
         "cpp_member_calls",
-        frozenset({".cpp", ".cc", ".cxx", ".hpp", ".cu", ".cuh", ".metal", ".h"}),
+        frozenset(_CPP_RESOLVER_SUFFIXES),
         _resolve_cpp_member_calls,
     )
 )
@@ -5643,6 +5808,11 @@ def extract(
     # (src/) package root before the resolver/import-evidence passes run, so the
     # graph is identical regardless of scan root (#2072).
     _repoint_python_package_imports(paths, all_nodes, all_edges, root)
+    # Then hint the disambiguator at each stem-named import's real target file, so
+    # a same-stem sibling cannot strand the edge on a salted-away id (#33). Must
+    # be after the repoint above (it rewrites some targets) and before
+    # disambiguation (the hint's only reader).
+    _hint_import_targets(paths, all_edges, root)
     _merge_swift_extensions(per_file, all_nodes, all_edges)
     _merge_csharp_partial_class_nodes(per_file, all_nodes, all_edges, paths, root)
     _disambiguate_colliding_node_ids(all_nodes, all_edges, all_raw_calls, root)
@@ -5748,7 +5918,10 @@ def extract(
         sh_paths = [p for _, p in sh_pairs]
         try:
             all_edges.extend(
-                resolve_bash_source_edges(sh_results, sh_paths, root, existing_edges=all_edges)
+                resolve_bash_source_edges(
+                    sh_results, sh_paths, root, existing_edges=all_edges,
+                    file_nids=_file_nids_by_path(all_nodes, all_edges, root),
+                )
             )
         except Exception as exc:
             import logging
