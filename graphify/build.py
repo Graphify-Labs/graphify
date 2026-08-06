@@ -1528,9 +1528,45 @@ def build_merge(
             if norm:
                 tier_sources.add(norm)
     new_sources: set[str] = new_ast_sources | new_sem_sources
-    if new_sources:
+
+    # Tier-scoped replace is not sufficient on its own: a base node whose id is
+    # re-emitted by a new chunk for the SAME source_file is that node's own
+    # freshly-extracted version, never a coexisting other-tier node. Tier scoping
+    # exists to protect the other tier's DISTINCT nodes (#2333), so it must not
+    # keep a stale copy of an id the re-extract just regenerated.
+    #
+    # It can, because _is_ast_tier's shape fallback is a guess: a legacy unstamped
+    # SEMANTIC node whose source_location happens to look like 'L<line>' is read as
+    # AST-tier, so a semantic re-extract does not replace it. It then collides with
+    # its own fresh version, and _collision_rank — which ties here on definer-ness
+    # and source_file — decides on len(label), keeping the SHORTER one. Freshness
+    # is not a factor, so a re-extract that expands a claim loses to the stale text
+    # it was meant to correct. Silent: node counts stay correct, no edge dangles.
+    #
+    # Shape cannot be made reliable here (semantic extractors do emit 'L<line>'
+    # for markdown, and .md is in the AST registry, so a doc legitimately carries
+    # both tiers), so key on identity instead: same id + same file = same entity.
+    new_node_keys: set[tuple[str, str]] = set()
+    for ch in new_chunks:
+        for n in ch.get("nodes", []):
+            nid, sf = n.get("id"), n.get("source_file")
+            if not nid or not sf:
+                continue
+            new_node_keys.add((nid, sf))
+            norm = _norm_source_file(sf, _replace_root)
+            if norm:
+                new_node_keys.add((nid, norm))
+
+    if new_sources or new_node_keys:
         def _kept(item: dict) -> bool:
             sf = item.get("source_file")
+            nid = item.get("id")
+            if nid and sf:
+                if (nid, sf) in new_node_keys:
+                    return False
+                norm = _norm_source_file(sf, _replace_root)
+                if norm and (nid, norm) in new_node_keys:
+                    return False
             own = new_ast_sources if _is_ast_tier(item) else new_sem_sources
             return sf not in own and _norm_source_file(sf, _replace_root) not in own
         existing_nodes = [n for n in existing_nodes if _kept(n)]

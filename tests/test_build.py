@@ -1182,6 +1182,59 @@ def test_is_ast_tier_legacy_fallback():
     assert _is_ast_tier({"_origin": "semantic", "source_location": "L10"}) is False
 
 
+def test_build_merge_reextract_wins_over_legacy_lookalike_node(tmp_path):
+    """#2334 follow-up: a re-extracted node must REPLACE its own prior version
+    even when that prior version is an unstamped legacy item whose
+    source_location happens to look like AST ('L<line>').
+
+    _is_ast_tier's shape fallback reads such an item as AST-tier, so a SEMANTIC
+    re-extract does not replace it. It survives, collides with its own fresh
+    version, and _collision_rank picks the survivor — tying here on definer-ness
+    and source_file, so it decides on len(label) and keeps the SHORTER one.
+    Freshness is not a factor, so a re-extract that EXPANDS a claim loses to the
+    stale text it was meant to correct. Silent: node counts stay correct and no
+    edge dangles, so nothing downstream flags it.
+
+    Shape cannot disambiguate this: semantic extractors do emit 'L<line>' for
+    markdown (build.py's dedup path guards against exactly that -- "may carry
+    drifted 'L<line>' source_locations"), and '.md' is in the AST extractor
+    registry, so a doc legitimately carries both tiers. Identity can: two items
+    sharing an id AND a source_file are the same entity, so the fresh one must
+    win whatever tier each is read as.
+    """
+    graph_path = tmp_path / "graph.json"
+    stale = "Unreconciled: book-to-rank labels off by one between C-23 and C-27"
+    fresh = ("Resolved: the C-23/C-27 book-to-rank off-by-one, closed by C-45 "
+             "mapping to Technical Ranks 2/3/4")
+    assert len(fresh) > len(stale), "fixture must reproduce the losing-by-length case"
+
+    graph_path.write_text(json.dumps({
+        "directed": False,
+        "nodes": [
+            # Legacy semantic node: unstamped, AST-LOOKING source_location.
+            {"id": "notes_rank", "label": stale, "file_type": "concept",
+             "source_file": "notes.md", "source_location": "L38-41"},
+        ],
+        "links": [],
+        "hyperedges": [],
+    }), encoding="utf-8")
+
+    # Semantic re-extract of the same file, same id, corrected (longer) label.
+    chunk = {"nodes": [
+        {"id": "notes_rank", "label": fresh, "file_type": "concept",
+         "source_file": "notes.md", "source_location": "# Rank"},
+    ], "edges": []}
+
+    G = build_merge([chunk], graph_path=graph_path, root=str(tmp_path), directed=False)
+
+    assert G.nodes["notes_rank"]["label"] == fresh, (
+        "re-extracted node lost to its own stale legacy copy: the base item's "
+        "'L<line>' source_location made _is_ast_tier read it as AST-tier, so the "
+        "semantic replace skipped it, and _collision_rank then kept the shorter "
+        "(stale) label"
+    )
+
+
 def test_build_merge_root_collapses_convention_drift(tmp_path):
     """Skill contract: the extraction subagent must emit source_file as the
     verbatim path from FILE_LIST AND the caller must pass root= (the build root).
