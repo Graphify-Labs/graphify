@@ -10,11 +10,11 @@ and minted a wrong `INFERRED 0.8` edge.
 `PhpNameResolver` (mirroring `CsharpNameResolver`) answers with a
 `(node_id, decisive)` verdict and is consulted IN FRONT of that fallback: a
 claimed name that does not land on an in-corpus class refuses instead of falling
-back. The pass is strictly SUBTRACTIVE — every verdict it returns positively is
-one the fallback would have returned anyway, so it can only delete edges.
-Binding an alias to the right one of several same-short-named classes is a
-recall ADDITION and belongs to #22, pinned below by
-`test_alias_renaming_to_an_unclaimed_short_name_stays_unresolved`.
+back. The refusal is strictly subtractive; its additive counterpart — binding
+the claimed FQN to the class whose file declares exactly that name (#22) — is
+covered by `test_php_alias_binding.py`, and
+`test_alias_renaming_to_an_unclaimed_short_name_binds_since_22` below pins the
+boundary from this side.
 
 Every test goes through the public `extract()` seam, and every positive case
 carries a decoy class with an identically named method that must get no edge.
@@ -242,18 +242,21 @@ def test_unclaimed_short_name_still_falls_back(tmp_path: Path):
     assert (go, _find(r, ".send()", "recorder")) not in calls
 
 
-def test_alias_renaming_to_an_unclaimed_short_name_stays_unresolved(tmp_path: Path):
-    """The #21/#22 boundary. `use App\\Local\\Client as Api;` names an in-corpus
-    class, but the WRITTEN short name is `Api` and nothing in the corpus is
-    called that, so today's fallback finds nothing and this ticket adds no edge:
-    binding the alias to `App\\Local\\Client` is #22's recall win."""
+def test_alias_renaming_to_an_unclaimed_short_name_binds_since_22(tmp_path: Path):
+    """The #21/#22 boundary, from the #21 side. `use App\\Local\\Client as Api;`
+    names an in-corpus class under a WRITTEN short name (`Api`) nothing in the
+    corpus is called, so #21's fallback found nothing and refused. The declared-
+    FQN index (#22) follows the alias to its target — the recall win this test
+    used to pin as out of scope."""
     calls, r = _calls(tmp_path, {
         **_CORPUS,
         "app/Http/I.php": _caller("use App\\Local\\Client as Api;\n", annotation="Api"),
     })
 
     go = _find(r, ".go()", "_go")
-    assert _sends(calls, go) == []
+    send = _find(r, ".send()", "client")
+    assert (go, send) in calls
+    assert (go, _find(r, ".send()", "recorder")) not in calls
 
 
 # ── the same verdicts across an incremental rebuild ───────────────────────────

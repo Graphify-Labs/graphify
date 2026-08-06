@@ -3223,12 +3223,13 @@ def _resolve_php_member_calls(
         if declared and declared.get("path"):
             class_fqn_by_file[declared["path"]] = declared.get("classes", {})
 
-    # `use`-import/namespace-aware receiver typing (#21), consulted IN FRONT of
-    # the corpus-wide short-name index below — the shape of the C# call site in
-    # `_resolve_csharp_member_calls`. A name the calling file CLAIMS through a
-    # `use` import or writes out qualified is decided here and never falls back:
-    # that refusal is the whole fix for #16. It can only delete edges, never add
-    # or re-point one — see PhpNameResolver.
+    # `use`-import/namespace-aware receiver typing (#21, #22), consulted IN
+    # FRONT of the corpus-wide short-name index below — the shape of the C#
+    # call site in `_resolve_csharp_member_calls`. A name the calling file
+    # CLAIMS through a `use` import or writes out qualified is decided here and
+    # never falls back: the refusal is the whole fix for #16, and the claimed
+    # FQN binding to the class whose file declares exactly that name is the
+    # recall counterpart (#22) — see PhpNameResolver.
     resolver = PhpNameResolver(all_nodes, all_edges, type_def_nids, class_fqn_by_file)
 
     def declared_fqn(type_node: dict | None) -> str | None:
