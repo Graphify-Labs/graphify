@@ -2477,17 +2477,12 @@ def _php_use_clause_context(clause, source: bytes) -> tuple[str, str]:
 def _php_use_declaration_facts(
     decl,
     source: bytes,
-    *,
-    apply_declaration_kind: bool = True,
 ) -> list[tuple[str, str | None, str]]:
     """Every ``(target_fqn, alias, use_kind)`` a ``namespace_use_declaration`` declares.
 
     ``use function A\\f;`` puts the keyword on the *clause*, while
-    ``use function A\\{f, g};`` puts it on the *declaration*.
-    ``_resolve_php_type_references`` has only ever honored the clause-level
-    keyword, so it passes ``apply_declaration_kind=False`` to keep that
-    behavior byte-identical while this change stays metadata-only. New
-    consumers should leave it on.
+    ``use function A\\{f, g};`` puts it on the *declaration* — both spellings
+    yield ``use_kind == "function"`` here.
     """
     prefix, kind, group = "", "class", None
     direct = []
@@ -2495,8 +2490,7 @@ def _php_use_declaration_facts(
         if c.type == "namespace_name":
             prefix = _read_text(c, source)
         elif c.type in ("function", "const"):
-            if apply_declaration_kind:
-                kind = c.type
+            kind = c.type
         elif c.type == "namespace_use_group":
             group = c
         elif c.type == "namespace_use_clause":
@@ -2583,9 +2577,7 @@ def _resolve_php_type_references(
                         namespaces.append(_read_text(c, source))
                         break
             elif t == "namespace_use_declaration":
-                for fqn, alias, use_kind in _php_use_declaration_facts(
-                    n, source, apply_declaration_kind=False
-                ):
+                for fqn, alias, use_kind in _php_use_declaration_facts(n, source):
                     if use_kind != "class":
                         continue  # `use function` / `use const` are not class imports
                     key = (alias or fqn.rsplit("\\", 1)[-1]).strip().lower()
