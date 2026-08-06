@@ -3046,6 +3046,10 @@ def _resolve_objc_member_calls(
     An uninferable receiver is SKIPPED (no guess), so an ambiguous selector across
     classes never fans out. ``_merge_decl_def_classes`` folds each @interface/@impl
     pair into one node, so a paired class clears the single-definition guard.
+    ``@protocol`` declarations are excluded from the receiver-type index: a protocol
+    is a contract, not a message receiver, and ObjC keeps protocol and class names in
+    separate namespaces, so a same-named pair used to both mis-bind a message to the
+    protocol's declaration and, when a real class existed, trip the god-node guard.
 
     Must run after id-disambiguation so node ids and caller_nids are final.
     """
@@ -3060,11 +3064,22 @@ def _resolve_objc_member_calls(
 
     contained = {e.get("target") for e in all_edges if e.get("relation") == "contains"}
 
+    def _is_protocol_declaration(n: dict) -> bool:
+        """A ``@protocol`` declaration, which the ObjC extractor labels ``<Name>``.
+
+        A protocol is a contract, never a message receiver, so it must not be a
+        receiver-typing candidate. It stays a valid target for `implements`; only
+        this pass's type index excludes it.
+        """
+        label = str(n.get("label", "")).strip()
+        return label.startswith("<") and label.endswith(">")
+
     type_def_nids: dict[str, list[str]] = {}
     node_by_id: dict[str, dict] = {}
     for n in all_nodes:
         node_by_id[n.get("id")] = n
-        if n.get("source_file") and n.get("id") in contained and _is_type_like_definition(n):
+        if (n.get("source_file") and n.get("id") in contained
+                and _is_type_like_definition(n) and not _is_protocol_declaration(n)):
             type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
 
     method_index: dict[tuple[str, str], str] = {}
