@@ -106,6 +106,8 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _pascal_resolve_class,
     _pascal_resolve_unit,
     _pascal_unit_cache,
+    _php_use_clause_context,
+    _php_use_clause_fact,
     _pnpm_workspace_globs,
     _python_call_identifier,
     _python_import_from_module,
@@ -662,23 +664,32 @@ def _import_scala(node, source: bytes, file_nid: str, stem: str, edges: list, st
 
 
 def _import_php(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str, scope_stack: list[str] | None = None) -> None:
-    for child in node.children:
-        if child.type in ("qualified_name", "name", "identifier"):
-            raw = _read_text(child, source)
-            module_name = raw.split("\\")[-1].strip()
-            if module_name:
-                tgt_nid = _make_id(module_name)
-                edges.append({
-                    "source": file_nid,
-                    "target": tgt_nid,
-                    "relation": "imports",
-                    "context": "import",
-                    "confidence": "EXTRACTED",
-                    "source_file": str_path,
-                    "source_location": f"L{node.start_point[0] + 1}",
-                    "weight": 1.0,
-                })
-            break
+    # `node` is a single `namespace_use_clause`; the group-use prefix and the
+    # `function`/`const` keyword of a group use live on the parent declaration,
+    # so the clause alone cannot spell its own FQN. Shared parser with
+    # `_resolve_php_type_references` — see resolution.py.
+    fact = _php_use_clause_fact(node, source, *_php_use_clause_context(node, source))
+    if fact is None:
+        return
+    target_fqn, alias, use_kind = fact
+    # The edge target stays keyed on the imported short name: re-pointing it is
+    # the resolvers' job (`_resolve_php_type_references`), not the capture's.
+    module_name = target_fqn.rsplit("\\", 1)[-1].strip()
+    if not module_name:
+        return
+    edges.append({
+        "source": file_nid,
+        "target": _make_id(module_name),
+        "relation": "imports",
+        "context": "import",
+        "confidence": "EXTRACTED",
+        "source_file": str_path,
+        "source_location": f"L{node.start_point[0] + 1}",
+        "weight": 1.0,
+        "metadata": sanitize_metadata({k: v for k, v in
+            {"use_kind": use_kind, "alias": alias, "target_fqn": target_fqn}.items()
+            if v is not None}),
+    })
 
 
 # ── C/C++ function name helpers ───────────────────────────────────────────────

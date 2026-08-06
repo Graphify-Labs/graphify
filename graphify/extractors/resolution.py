@@ -2414,6 +2414,108 @@ def _php_fqn_from_raw(raw: str, ns: str, uses: dict[str, str]) -> str:
     return f"{ns}\\{raw}" if ns else raw
 
 
+# ── Shared PHP `use`-statement parser ─────────────────────────────────────────
+# One parser for both consumers: the `uses_by_file` map below and the `imports`
+# edge capture in `_import_php` (extract.py). Group use `use A\{B, C as X};`,
+# aliases, leading-backslash absolutes and `use function` / `use const` are all
+# handled here so neither consumer has to re-derive them.
+
+def _php_use_clause_fact(
+    clause,
+    source: bytes,
+    prefix: str = "",
+    kind: str = "class",
+) -> tuple[str, str | None, str] | None:
+    """Parse one ``namespace_use_clause`` into ``(target_fqn, alias, use_kind)``.
+
+    ``prefix`` is the group-use prefix (empty for a standalone clause) and
+    ``kind`` the declaration-level ``function``/``const`` keyword, if any; a
+    clause-level keyword overrides it. Returns ``None`` when the clause names
+    no target (e.g. a parse error).
+    """
+    target: str | None = None
+    alias: str | None = None
+    saw_as = False
+    for c in clause.children:
+        if c.type in ("function", "const"):
+            kind = c.type
+        elif c.type == "as":
+            saw_as = True
+        elif c.type in ("qualified_name", "name"):
+            if saw_as:
+                alias = _read_text(c, source)
+            elif target is None:
+                target = _read_text(c, source)
+    if not target:
+        return None
+    fqn = (f"{prefix}\\{target}" if prefix else target).lstrip("\\")
+    return fqn, alias, kind
+
+
+def _php_use_clause_context(clause, source: bytes) -> tuple[str, str]:
+    """``(group prefix, use kind)`` a ``namespace_use_clause`` inherits from its
+    parent ``namespace_use_declaration``.
+
+    For consumers that are dispatched per clause and never see the declaration
+    (`_import_php`). The prefix only applies to clauses inside a
+    ``namespace_use_group``; a standalone clause carries its own full name.
+    """
+    parent = getattr(clause, "parent", None)
+    in_group = parent is not None and parent.type == "namespace_use_group"
+    decl = parent.parent if in_group else parent
+    prefix, kind = "", "class"
+    if decl is None or decl.type != "namespace_use_declaration":
+        return prefix, kind
+    for c in decl.children:
+        if c.type == "namespace_name" and in_group:
+            prefix = _read_text(c, source)
+        elif c.type in ("function", "const"):
+            kind = c.type
+    return prefix, kind
+
+
+def _php_use_declaration_facts(
+    decl,
+    source: bytes,
+    *,
+    apply_declaration_kind: bool = True,
+) -> list[tuple[str, str | None, str]]:
+    """Every ``(target_fqn, alias, use_kind)`` a ``namespace_use_declaration`` declares.
+
+    ``use function A\\f;`` puts the keyword on the *clause*, while
+    ``use function A\\{f, g};`` puts it on the *declaration*.
+    ``_resolve_php_type_references`` has only ever honored the clause-level
+    keyword, so it passes ``apply_declaration_kind=False`` to keep that
+    behavior byte-identical while this change stays metadata-only. New
+    consumers should leave it on.
+    """
+    prefix, kind, group = "", "class", None
+    direct = []
+    for c in decl.children:
+        if c.type == "namespace_name":
+            prefix = _read_text(c, source)
+        elif c.type in ("function", "const"):
+            if apply_declaration_kind:
+                kind = c.type
+        elif c.type == "namespace_use_group":
+            group = c
+        elif c.type == "namespace_use_clause":
+            direct.append(c)
+
+    facts: list[tuple[str, str | None, str]] = []
+    for c in direct:
+        fact = _php_use_clause_fact(c, source, "", kind)
+        if fact:
+            facts.append(fact)
+    if group is not None:
+        for c in group.children:
+            if c.type == "namespace_use_clause":
+                fact = _php_use_clause_fact(c, source, prefix, kind)
+                if fact:
+                    facts.append(fact)
+    return facts
+
+
 def _resolve_php_type_references(
     per_file: list[dict],
     paths: list[Path],
@@ -2473,27 +2575,6 @@ def _resolve_php_type_references(
             else:
                 raws.setdefault(key, raw)
 
-        def _record_use_clause(clause, prefix: str) -> None:
-            target = None
-            alias = None
-            saw_as = False
-            for c in clause.children:
-                if c.type in ("function", "const"):
-                    return  # not a class import
-                if c.type == "as":
-                    saw_as = True
-                elif c.type in ("qualified_name", "name"):
-                    if saw_as:
-                        alias = _read_text(c, source)
-                    elif target is None:
-                        target = _read_text(c, source)
-            if not target:
-                return
-            fqn = (f"{prefix}\\{target}" if prefix else target).lstrip("\\")
-            key = (alias or fqn.rsplit("\\", 1)[-1]).strip().lower()
-            if key:
-                uses.setdefault(key, fqn)
-
         def walk(n) -> None:
             t = n.type
             if t == "namespace_definition":
@@ -2502,19 +2583,14 @@ def _resolve_php_type_references(
                         namespaces.append(_read_text(c, source))
                         break
             elif t == "namespace_use_declaration":
-                prefix = ""
-                group = None
-                for c in n.children:
-                    if c.type == "namespace_name":
-                        prefix = _read_text(c, source)          # group-use prefix
-                    elif c.type == "namespace_use_group":
-                        group = c
-                    elif c.type == "namespace_use_clause":
-                        _record_use_clause(c, "")
-                if group is not None:
-                    for c in group.children:
-                        if c.type == "namespace_use_clause":
-                            _record_use_clause(c, prefix)
+                for fqn, alias, use_kind in _php_use_declaration_facts(
+                    n, source, apply_declaration_kind=False
+                ):
+                    if use_kind != "class":
+                        continue  # `use function` / `use const` are not class imports
+                    key = (alias or fqn.rsplit("\\", 1)[-1]).strip().lower()
+                    if key:
+                        uses.setdefault(key, fqn)
                 return
             elif t == "class_declaration":
                 for child in n.children:

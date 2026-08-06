@@ -10,6 +10,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: `graphify merge-graphs` no longer drops hyperedges (#2484, thanks @sortakool, and @oleksii-tumanov for the approach in #1691). Hyperedge member ids and ids are now relabeled with the per-repo prefix, both inputs' hyperedges are unioned instead of one clobbering the other, and they are written to both the top-level and nested slots.
 - Fix: `build_from_json` now reads hyperedges from both the top-level and nested `graph` slots, so label and re-cluster runs no longer silently empty a graph's hyperedge set (#2485, thanks @sortakool); a full validation wipeout is now reported loudly.
 - Fix: the skill flow now passes the curated community labels to `to_json`, so `graph.json` ships with `community_name` on nodes instead of dropping it (#2490, thanks @PapiScholz).
+- PHP `imports` edges now carry `use_kind` (`class`/`function`/`const`), `alias` and `target_fqn` metadata, mirroring the C# `using` capture. The `use`-statement parser is now shared between the capture path and the PHP type-reference pass, so group use `use A\{B, C as X};`, aliases and leading-backslash absolutes are spelled out once. Edge targets are unchanged — they stay keyed on the imported short name — so this is additive for existing consumers; note that the type-reference pass re-points `imports` edges without rewriting metadata, making `metadata.target_fqn` the reliable read rather than the target node's label.
 
 ## 0.9.33 (2026-08-05)
 
