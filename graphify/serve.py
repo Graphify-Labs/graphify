@@ -34,6 +34,11 @@ def _load_graph(graph_path: str) -> nx.Graph:
         data = json.loads(safe.read_text(encoding="utf-8"))
         if "links" not in data and "edges" in data:
             data = dict(data, links=data["edges"])
+        # Stash the on-disk logical flag before the load-time override below:
+        # `directed: True` exists only so renderers can recover stored arc
+        # order (#2309); tools that care about logical direction (#2487) must
+        # not mistake the override for graph truth.
+        _logical_directed = bool(data.get("directed", False))
         data = {**data, "directed": True}
         try:
             from graphify.build import graph_has_legacy_ids as _legacy
@@ -49,6 +54,7 @@ def _load_graph(graph_path: str) -> nx.Graph:
             G = json_graph.node_link_graph(data, edges="links")
         except TypeError:
             G = json_graph.node_link_graph(data)
+        G.graph["_logical_directed"] = _logical_directed
         # Attach the work-memory overlay (derived sidecar next to graph.json) so
         # the query/MCP read surface can annotate NODE lines display-only. Empty
         # when no sidecar exists, leaving un-annotated output byte-identical.
@@ -1230,6 +1236,107 @@ def find_node_ambiguity(G: nx.Graph, label: str) -> list[str]:
     return []
 
 
+def _shortest_path_text(G: nx.Graph, arguments: dict) -> str:
+    """Body of the `shortest_path` MCP tool (module-level so tests can call it
+    without an mcp install).
+
+    Directed by default (#2487): the returned path must follow stored
+    caller→callee direction; pass ``undirected=True`` to ignore it.
+    """
+    src_scored = _score_nodes(G, [t.lower() for t in arguments["source"].split()])
+    tgt_scored = _score_nodes(G, [t.lower() for t in arguments["target"].split()])
+    if not src_scored:
+        return f"No node matching source '{arguments['source']}' found."
+    if not tgt_scored:
+        return f"No node matching target '{arguments['target']}' found."
+    src_nid = _pick_scored_endpoint(G, src_scored, arguments["source"])
+    tgt_nid = _pick_scored_endpoint(G, tgt_scored, arguments["target"])
+    # Ambiguity guard: when both queries resolve to the same node, the
+    # shortest path is trivially zero hops, which is almost never what the
+    # caller wanted (see bug #828).
+    if src_nid == tgt_nid:
+        return (
+            f"'{arguments['source']}' and '{arguments['target']}' both resolved to "
+            f"the same node '{src_nid}'. Use a more specific label or the exact node ID."
+        )
+    warnings: list[str] = []
+    for name, scored, nid in (
+        ("source", src_scored, src_nid),
+        ("target", tgt_scored, tgt_nid),
+    ):
+        # Only meaningful when the raw score head is what got picked — a
+        # full-token override was chosen on token coverage, not score.
+        if len(scored) >= 2 and nid == scored[0][1]:
+            top, runner = scored[0][0], scored[1][0]
+            if top > 0 and (top - runner) / top < 0.10:
+                warnings.append(
+                    f"warning: {name} match was ambiguous "
+                    f"(top score {top:g}, runner-up {runner:g})"
+                )
+    max_hops = int(arguments.get("max_hops", 8))
+    undirected = bool(arguments.get("undirected", False))
+    try:
+        # Deterministic path (#2074): the hash-seeded undirected view picked an
+        # arbitrary route among equal-length paths. Build a sorted, materialized
+        # graph so the chosen path is canonical. Serve's shared G is left
+        # untouched (its degree feeds query-seed tie-breaks).
+        if undirected:
+            _und = nx.Graph()
+            _und.add_nodes_from(sorted(G.nodes))
+            _und.add_edges_from(sorted((min(u, v), max(u, v)) for u, v in G.edges()))
+            path_nodes = nx.shortest_path(_und, src_nid, tgt_nid)
+        else:
+            # Directed by default (#2487). True direction is NOT raw arc
+            # order: legacy canonicalized files persist a flipped arc with
+            # _src/_tgt markers (#2309), so build the digraph from _src/_tgt
+            # (falling back to the loaded arc) rather than to_directed().
+            _dg = nx.DiGraph()
+            _dg.add_nodes_from(sorted(G.nodes))
+            _dg.add_edges_from(sorted(
+                (d.get("_src", u), d.get("_tgt", v)) for u, v, d in G.edges(data=True)
+            ))
+            path_nodes = nx.shortest_path(_dg, src_nid, tgt_nid)
+    except (nx.NetworkXNoPath, nx.NodeNotFound):
+        src_label = G.nodes[src_nid].get("label", src_nid)
+        tgt_label = G.nodes[tgt_nid].get("label", tgt_nid)
+        if undirected:
+            return f"No path found between '{src_label}' and '{tgt_label}'."
+        return (
+            f"No directed path found between '{src_label}' and '{tgt_label}'. "
+            "Retry with undirected=true to search ignoring edge direction."
+        )
+    hops = len(path_nodes) - 1
+    if hops > max_hops:
+        return f"Path exceeds max_hops={max_hops} ({hops} hops found)."
+    segments = []
+    for i in range(len(path_nodes) - 1):
+        u, v = path_nodes[i], path_nodes[i + 1]
+        # Report the actual stored relation(s), never a fabricated `calls`;
+        # fall back to an honest "related" when the edge has no relation (#2074).
+        # Direction truth lives in the per-link _src/_tgt markers (#2309): a
+        # legacy canonicalized file can persist a flipped arc, so classify each
+        # hop by _src (falling back to the arc tail) instead of raw arc order.
+        fwd, bwd = [], []
+        for a, b in ((u, v), (v, u)):
+            if G.has_edge(a, b):
+                for d in edge_datas(G, a, b):
+                    (fwd if d.get("_src", a) == u else bwd).append(d)
+        datas = fwd or bwd
+        forward = bool(fwd)
+        rels = sorted({d.get("relation") for d in datas if d.get("relation")})
+        rel = "/".join(rels) if rels else "related"
+        confs = sorted({d.get("confidence") for d in datas if d.get("confidence")})
+        conf_str = f" [{'/'.join(confs)}]" if confs else ""
+        if i == 0:
+            segments.append(G.nodes[u].get("label", u))
+        if forward:
+            segments.append(f"--{rel}{conf_str}--> {G.nodes[v].get('label', v)}")
+        else:
+            segments.append(f"<--{rel}{conf_str}-- {G.nodes[v].get('label', v)}")
+    prefix = ("\n".join(warnings) + "\n") if warnings else ""
+    return prefix + f"Shortest path ({hops} hops):\n  " + " ".join(segments)
+
+
 def _filter_blank_stdin() -> None:
     """Filter blank lines from stdin before MCP reads it.
 
@@ -1411,13 +1518,18 @@ def _build_server(graph_path: str):
             ),
             types.Tool(
                 name="shortest_path",
-                description="Find the shortest path between two concepts in the knowledge graph.",
+                description=(
+                    "Find the shortest path between two concepts in the knowledge graph. "
+                    "Follows stored edge direction by default; set undirected=true to ignore it."
+                ),
                 inputSchema={
                     "type": "object",
                     "properties": {
                         "source": {"type": "string", "description": "Source concept label or keyword"},
                         "target": {"type": "string", "description": "Target concept label or keyword"},
                         "max_hops": {"type": "integer", "default": 8, "description": "Maximum hops to consider"},
+                        "undirected": {"type": "boolean", "default": False,
+                                       "description": "Ignore stored edge direction when searching"},
                     },
                     "required": ["source", "target"],
                 },
@@ -1623,74 +1735,7 @@ def _build_server(graph_path: str):
         )
 
     def _tool_shortest_path(arguments: dict) -> str:
-        src_scored = _score_nodes(G, [t.lower() for t in arguments["source"].split()])
-        tgt_scored = _score_nodes(G, [t.lower() for t in arguments["target"].split()])
-        if not src_scored:
-            return f"No node matching source '{arguments['source']}' found."
-        if not tgt_scored:
-            return f"No node matching target '{arguments['target']}' found."
-        src_nid = _pick_scored_endpoint(G, src_scored, arguments["source"])
-        tgt_nid = _pick_scored_endpoint(G, tgt_scored, arguments["target"])
-        # Ambiguity guard: when both queries resolve to the same node, the
-        # shortest path is trivially zero hops, which is almost never what the
-        # caller wanted (see bug #828).
-        if src_nid == tgt_nid:
-            return (
-                f"'{arguments['source']}' and '{arguments['target']}' both resolved to "
-                f"the same node '{src_nid}'. Use a more specific label or the exact node ID."
-            )
-        warnings: list[str] = []
-        for name, scored, nid in (
-            ("source", src_scored, src_nid),
-            ("target", tgt_scored, tgt_nid),
-        ):
-            # Only meaningful when the raw score head is what got picked — a
-            # full-token override was chosen on token coverage, not score.
-            if len(scored) >= 2 and nid == scored[0][1]:
-                top, runner = scored[0][0], scored[1][0]
-                if top > 0 and (top - runner) / top < 0.10:
-                    warnings.append(
-                        f"warning: {name} match was ambiguous "
-                        f"(top score {top:g}, runner-up {runner:g})"
-                    )
-        max_hops = int(arguments.get("max_hops", 8))
-        try:
-            # Deterministic path (#2074): the hash-seeded undirected view picked an
-            # arbitrary route among equal-length paths. Build a sorted, materialized
-            # undirected graph so the chosen path is canonical. Serve's shared G is
-            # left untouched (its degree feeds query-seed tie-breaks).
-            _und = nx.Graph()
-            _und.add_nodes_from(sorted(G.nodes))
-            _und.add_edges_from(sorted((min(u, v), max(u, v)) for u, v in G.edges()))
-            path_nodes = nx.shortest_path(_und, src_nid, tgt_nid)
-        except (nx.NetworkXNoPath, nx.NodeNotFound):
-            return f"No path found between '{G.nodes[src_nid].get('label', src_nid)}' and '{G.nodes[tgt_nid].get('label', tgt_nid)}'."
-        hops = len(path_nodes) - 1
-        if hops > max_hops:
-            return f"Path exceeds max_hops={max_hops} ({hops} hops found)."
-        segments = []
-        for i in range(len(path_nodes) - 1):
-            u, v = path_nodes[i], path_nodes[i + 1]
-            # Report the actual stored relation(s), never a fabricated `calls`;
-            # fall back to an honest "related" when the edge has no relation (#2074).
-            if G.has_edge(u, v):
-                datas = edge_datas(G, u, v)
-                forward = True
-            else:
-                datas = edge_datas(G, v, u)
-                forward = False
-            rels = sorted({d.get("relation") for d in datas if d.get("relation")})
-            rel = "/".join(rels) if rels else "related"
-            confs = sorted({d.get("confidence") for d in datas if d.get("confidence")})
-            conf_str = f" [{'/'.join(confs)}]" if confs else ""
-            if i == 0:
-                segments.append(G.nodes[u].get("label", u))
-            if forward:
-                segments.append(f"--{rel}{conf_str}--> {G.nodes[v].get('label', v)}")
-            else:
-                segments.append(f"<--{rel}{conf_str}-- {G.nodes[v].get('label', v)}")
-        prefix = ("\n".join(warnings) + "\n") if warnings else ""
-        return prefix + f"Shortest path ({hops} hops):\n  " + " ".join(segments)
+        return _shortest_path_text(G, arguments)
 
     def _tool_list_prs(arguments: dict) -> str:
         from graphify.prs import fetch_prs, fetch_worktrees, format_prs_text, _detect_default_branch
