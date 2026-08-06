@@ -2,7 +2,16 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
-## 0.9.34 (unreleased)
+## 0.9.35 (unreleased)
+
+- Fix: the `build_merge` #479 shrink guard is no longer effectively dead (#2497, thanks @sortakool). It read the post-replace node count, so a broken partial re-extract could silently destroy nodes without tripping the guard, and the guard was skipped entirely under `prune_sources`. The guard now diffs the on-disk baseline by node identity and refuses any loss from a source that was neither re-extracted nor pruned this run (active even under `prune_sources`, skipped only under `dedup`), and reports how many nodes a re-extract replaced.
+- Fix: `build_merge`/`merge_raw_extraction` `prune_sources` now prunes correctly when given absolute paths under a non-standard layout, deriving the scan root by suffix-matching stored source paths, and warns (instead of reporting "already clean") when a prune matches nothing (#2446, thanks @AI-invest).
+- Fix: `graphify update` now removes newly-ignored files from an existing graph (#2495, thanks @alisson-acioli). A file that was added to `.graphifyignore`/`--exclude` (or a skip rule) is evicted even though it still exists on disk; `.gitignore`-driven eviction applies on an explicit full `update`. Files that merely changed are still preserved, and a file that leaves the corpus without matching any live ignore rule stays (fail-closed, #1795).
+- Fix: a Java local class and a same-named external annotation (e.g. a local `class Component` and Spring's `@Component`) no longer collapse into one node (#2504, thanks @te7ina-honey). The Java type resolver now runs before the unique-label stub rewire and parks an imported-but-external type on its fully-qualified name, and cross-file import resolution checks the package. In-corpus annotation resolution is unchanged.
+- Fix: `graphify callflow` now respects edge direction, so the caller/callee columns are correct (#2508, thanks @Tomaskobel). The call-flow HTML loads the graph directed and recovers direction from the stored `_src`/`_tgt` markers (consistent with the `path` fix), and indirect calls are counted.
+- Fix: relational-intent verbs in a `query` ("calls", "uses", "extends", ...) no longer seat spurious seeds (#2507, thanks @filipechagas). Such a verb is excluded from the per-term seed guarantee, so a decoy matching only the verb no longer becomes a traversal root, while a verb that is a genuine symbol name can still be seeded on merit.
+
+## 0.9.34 (2026-08-05)
 
 - Fix: C# receiver typing no longer drops a true call when a same-named variable is declared untypeably elsewhere in the method (#2472, thanks @JensD-git). Receiver types are now tracked per lexical declaration scope and resolved by the call's position, so a typed `static` local-function parameter keeps resolving even when an `out var` reuses the name in the enclosing body. This fixes a regression from 0.9.32 (#2346). Cross-method independence (#2299) and field-conflict poisoning are unchanged; an `out var` receiver itself remains untyped.
 - Fix: `graphify path` (and the MCP `shortest_path` tool) now respect edge direction by default instead of running on an undirected view, so a returned path no longer traverses edges backwards (#2487, thanks @luliaz0601). Direction is recovered from the stored `_src`/`_tgt` markers. Pass `--undirected` (CLI) or `undirected=true` (MCP) to search ignoring direction; when no directed path exists the command says so instead of silently returning a reversed one.

@@ -921,6 +921,86 @@ def test_query_seeds_from_identifier_not_noise():
     assert "ServiceClient" in text
 
 
+# --- relational-intent verbs must not seat decoy seeds (#2507) ---
+
+def _make_callers_graph() -> nx.Graph:
+    """A service, three callers wired via context='call' edges, and a decoy
+    whose tokenized label ('callstorewithamount') prefix-matches the intent
+    verb 'calls' — the #2507 pollution vector."""
+    G = nx.Graph()
+    G.add_node("svc", label="ChargeCustomerService", source_file="billing/charge.py")
+    G.add_node("c1", label="BillingJob", source_file="billing/job.py")
+    G.add_node("c2", label="CheckoutFlow", source_file="checkout/flow.py")
+    G.add_node("c3", label="RetryWorker", source_file="workers/retry.py")
+    for caller in ("c1", "c2", "c3"):
+        G.add_edge(caller, "svc", relation="calls", context="call")
+    G.add_node("decoy", label=".callStoreWithAmount()", source_file="store/amount.py")
+    return G
+
+
+def test_relational_verb_does_not_seat_decoy_seed():
+    """'Who calls X?' must seed on X, not on a decoy that merely prefix-matches
+    the intent verb 'calls' via its tokenized label (#2507). The gap window
+    already excludes the decoy; the per-term guarantee must not re-seat it."""
+    G = _make_callers_graph()
+    # Sanity-check the pollution premise: the decoy IS the singleton winner for
+    # 'calls', so pre-fix the guarantee loop would have seated it as a BFS root.
+    qs = _score_query(G, _query_terms("Who calls ChargeCustomerService?"), collect_per_term_seeds=True)
+    assert qs.best_seed_by_term.get("calls") == "decoy"
+
+    text = _query_graph_text(G, "Who calls ChargeCustomerService?", mode="bfs", depth=2)
+    header = text.splitlines()[0]
+    assert "ChargeCustomerService" in header.split("Start:")[1]
+    assert ".callStoreWithAmount()" not in header
+    for caller in ("BillingJob", "CheckoutFlow", "RetryWorker"):
+        assert caller in text
+
+
+def test_relational_verb_as_bare_query_still_seeds_symbol():
+    """All-intent fallback: a query that is ONLY intent words keeps the seed
+    guarantee, so a corpus-legit identifier literally named 'calls' stays
+    reachable via the bare query 'calls' (#2507, preserving #1597's intent)."""
+    G = nx.Graph()
+    G.add_node("calls_fn", label="calls", source_file="src/calls.py")
+    G.add_node("other", label="unrelated_helper", source_file="src/other.py")
+    text = _query_graph_text(G, "calls", mode="bfs", depth=1)
+    assert "No matching nodes found." not in text
+    assert "calls" in text.splitlines()[0].split("Start:")[1]
+
+
+def test_relational_verb_symbol_still_wins_seat_on_merit():
+    """Demotion only strips the GUARANTEE: a node literally named 'calls' whose
+    score sits within the gap window is still seeded alongside the other term's
+    node on a multi-term query (#2507)."""
+    G = nx.Graph()
+    G.add_node("calls_fn", label="calls", source_file="src/calls.py")
+    G.add_node("ext", label="extract", source_file="src/extract.py")
+    text = _query_graph_text(G, "calls extract", mode="bfs", depth=1)
+    start = text.splitlines()[0].split("Start:")[1]
+    assert "calls" in start
+    assert "extract" in start
+
+
+def test_uses_phrasing_does_not_seat_decoy_seed():
+    """'what uses X' must not seat a decoy that prefix-matches the intent verb
+    'uses' (#2507). 'uses' is deliberately NOT a _CONTEXT_HINTS alias (its
+    relation is ambiguous); the demotion set alone handles it."""
+    G = nx.Graph()
+    G.add_node("svc", label="ChargeCustomerService", source_file="billing/charge.py")
+    G.add_node("c1", label="BillingJob", source_file="billing/job.py")
+    G.add_edge("c1", "svc", relation="uses", context="call")
+    G.add_node("decoy", label="usesDiscountCode()", source_file="promo/discount.py")
+    text = _query_graph_text(G, "what uses ChargeCustomerService?", mode="bfs", depth=2)
+    header = text.splitlines()[0]
+    assert "ChargeCustomerService" in header.split("Start:")[1]
+    assert "usesDiscountCode()" not in header
+
+
+def test_infer_context_filters_for_callers_question():
+    """'callers of X' phrasing infers the call context (#2507 companion)."""
+    assert _infer_context_filters("callers of ChargeCustomerService") == ["call"]
+
+
 def test_query_graph_text_parameter_type_context_filter_changes_traversal():
     import networkx as nx
     from graphify.serve import _query_graph_text
