@@ -120,6 +120,8 @@ def test_scorer_and_picker_are_unchanged_for_direct_callers():
 # NODE lines, the header's node count, and the seed lists the prior seeding
 # tests already assert on.
 
+import networkx as nx  # noqa: E402
+
 from graphify.serve import _bfs, _demote_relational_intent_terms  # noqa: E402
 
 from tests.seeding_fixtures import DOC, HUB  # noqa: E402
@@ -223,3 +225,43 @@ def test_covered_term_skip_is_off_unless_the_caller_opts_in():
     )
     assert HUB in legacy, f"the covered-term skip leaked into the default picker: {legacy}"
     assert DOC in legacy
+
+
+def test_coverage_is_judged_on_the_seed_label_never_its_node_id():
+    """A labelless seed must not declare a term covered through its node id.
+
+    `norm_label == ""` ghost nodes are real (see `_fold_node_aliases` in
+    build.py: an alias-only node enters the graph with no label) and they can
+    still be seeds, because the source-file tier scores them. The dedup gate
+    falls back to the node id for such a node — it has to, since a labelless
+    node needs *something* unique to dedup on — but the coverage predicate must
+    not, or the ghost's path fragments silently cover unrelated terms and starve
+    their winners. `_score_nodes`' substring tier reads `norm_label` only, so a
+    seed with no label covers nothing.
+    """
+    ghost = "src/customer_utils.py::helper"
+    G = nx.Graph()
+    G.add_node(ghost, label="", source_file="src/customer_utils.py")
+    G.add_node("cm", label="CustomerModel", source_file="app/Models/CustomerModel.php")
+
+    qs = _score_query(G, ["customer"], collect_per_term_seeds=True)
+    # Premise 1: the term's real winner is the labelled node.
+    assert qs.best_seed_by_term["customer"] == "cm"
+    # Premise 2: the labelless ghost still scores — via the source-file tier —
+    # so it is a legitimate seed candidate rather than a hypothetical.
+    assert dict((nid, s) for s, nid in qs.ranked)[ghost] > 0
+
+    # Force the ghost to be the only gap-window seed, the way an unrelated exact
+    # match does on a real corpus (the #1445 shape): `cm` can now enter only
+    # through the per-term guarantee.
+    seeds = _pick_seeds(
+        [(1000.0, ghost), (1.0, "cm")],
+        G=G,
+        best_seed_by_term=qs.best_seed_by_term,
+        skip_covered_terms=True,
+    )
+    assert ghost in seeds
+    assert "cm" in seeds, (
+        "'customer' was treated as covered by a seed with no label — coverage read "
+        f"the node id, so the term's winner was starved: {seeds}"
+    )

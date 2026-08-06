@@ -673,9 +673,10 @@ def _pick_seeds(
     refines that guarantee to *every term with any match is matched by at least
     one seed*, from *every term's own singleton winner gets a slot*: a term that
     is a substring of an already-picked seed's normalized label — the same
-    predicate as _score_nodes' weakest match tier, so the seed would have
-    matched the term in scoring — is not starved, and starvation is the only
-    thing the guarantee exists to prevent. Without it, a natural-language
+    predicate as _score_nodes' weakest match tier, and its label alone, so the
+    seed provably would have matched the term in scoring — is not starved, and
+    starvation is the only thing the guarantee exists to prevent. A seed with no
+    label covers nothing. Without this skip, a natural-language
     question's generic nouns each drag in their own hub: "what code uses
     ChargeCustomerService to charge a customer" seeds the `Customer` model and
     `.charge()` on top of `ChargeCustomerService`, whose label already matches
@@ -697,6 +698,23 @@ def _pick_seeds(
         data = G.nodes[nid]
         return (data.get("norm_label")
                 or _strip_diacritics(data.get("label") or "").lower()) or nid
+
+    # The `skip_covered_terms` coverage predicate needs the seed's normalized
+    # LABEL alone — empty when the node has none — not `_seed_label_key`. That
+    # key's `or nid` tail is correct for the dedup gate above (a labelless node
+    # still needs something unique to dedup on) but wrong for coverage: a
+    # `norm_label == ""` node is real (build.py's `_fold_node_aliases`: an
+    # alias-only node enters the graph with no label) and is still seedable
+    # through _score_nodes' source-file tier, so the tail would let its node-id
+    # path fragments declare unrelated terms covered — a match _score_nodes never
+    # makes, since its substring tier reads `norm_label` only. That would starve
+    # the term's real winner and break the very invariant this flag refines.
+    def _seed_norm_label(nid: str) -> str:
+        if G is None:
+            return ""
+        data = G.nodes[nid]
+        return (data.get("norm_label")
+                or _strip_diacritics(data.get("label") or "").lower())
 
     top_score = scored[0][0]
     seeds: list[str] = []
@@ -734,7 +752,7 @@ def _pick_seeds(
             # Layered after that dedup gate, in this same sorted-term order, so
             # the coverage check sees the gap-window seeds plus every guarantee
             # seed appended so far.
-            if skip_covered_terms and any(term in _seed_label_key(s) for s in seeds):
+            if skip_covered_terms and any(term in _seed_norm_label(s) for s in seeds):
                 continue
             seen_labels.add(key)
             seeds.append(best_nid)
