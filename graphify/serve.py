@@ -637,6 +637,7 @@ def _pick_seeds(
     *,
     G: "nx.Graph | None" = None,
     best_seed_by_term: dict[str, str] | None = None,
+    skip_covered_terms: bool = False,
 ) -> list[str]:
     """Select BFS seed nodes, stopping when score drops too far below the top.
 
@@ -667,6 +668,18 @@ def _pick_seeds(
     nodes back inside the gap window; this per-term guarantee remains
     load-bearing for relevant nodes matched only via substrings, whose flat
     scores a dampened collision can still exceed.
+
+    `skip_covered_terms` (default off, opted into only by `_query_graph_text`)
+    refines that guarantee to *every term with any match is matched by at least
+    one seed*, from *every term's own singleton winner gets a slot*: a term that
+    is a substring of an already-picked seed's normalized label — the same
+    predicate as _score_nodes' weakest match tier, so the seed would have
+    matched the term in scoring — is not starved, and starvation is the only
+    thing the guarantee exists to prevent. Without it, a natural-language
+    question's generic nouns each drag in their own hub: "what code uses
+    ChargeCustomerService to charge a customer" seeds the `Customer` model and
+    `.charge()` on top of `ChargeCustomerService`, whose label already matches
+    both terms, and the hub's member fan-out then floods the traversal (#37/C2).
     """
     if not scored:
         return []
@@ -716,9 +729,15 @@ def _pick_seeds(
             # Honor the same per-label cap so the per-term guarantee can't
             # reintroduce a second copy of an already-seeded generic label.
             key = _seed_label_key(best_nid)
-            if best_nid not in seeds and key not in seen_labels:
-                seen_labels.add(key)
-                seeds.append(best_nid)
+            if best_nid in seeds or key in seen_labels:
+                continue
+            # Layered after that dedup gate, in this same sorted-term order, so
+            # the coverage check sees the gap-window seeds plus every guarantee
+            # seed appended so far.
+            if skip_covered_terms and any(term in _seed_label_key(s) for s in seeds):
+                continue
+            seen_labels.add(key)
+            seeds.append(best_nid)
     return seeds
 
 
@@ -1163,7 +1182,13 @@ def _query_graph_text(
     # here — after scoring, before picking — while still competing for a seed on
     # merit through the gap window below (#37/C1).
     best_seed_by_term = _demote_relational_intent_terms(qs.best_seed_by_term)
-    start_nodes = _pick_seeds(qs.ranked, G=G, best_seed_by_term=best_seed_by_term)
+    # `skip_covered_terms` is the other half of the seed hygiene: a term an
+    # already-picked seed's label matches is not starved, so it claims no extra
+    # seed and a generic noun stops dragging in its own hub (#37/C2). Opted into
+    # here only, so every other `_pick_seeds` caller keeps the legacy guarantee.
+    start_nodes = _pick_seeds(
+        qs.ranked, G=G, best_seed_by_term=best_seed_by_term, skip_covered_terms=True
+    )
     if not start_nodes:
         return "No matching nodes found."
     resolved_filters, filter_source = _resolve_context_filters(question, context_filters)

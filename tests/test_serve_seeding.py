@@ -105,3 +105,121 @@ def test_scorer_and_picker_are_unchanged_for_direct_callers():
     )
     seeds = _pick_seeds(qs.ranked, G=G, best_seed_by_term=qs.best_seed_by_term)
     assert DECOY in seeds, "demotion leaked into _pick_seeds' semantics"
+
+
+# ===== C2 — covered-term guarantee skip (#41) ================================
+#
+# A query term that an already-picked seed's normalized label plainly matches —
+# the scorer's own weakest tier, so "this seed would have matched the term in
+# scoring" — is not *starved*, and starvation is the only thing the #1445
+# guarantee exists to prevent. It therefore claims no additional seed. The
+# refined invariant: every term with any match is matched by at least one seed
+# (previously: every term's own singleton winner gets a slot).
+#
+# Assertions here read external behavior only: the `Start:` header, the rendered
+# NODE lines, the header's node count, and the seed lists the prior seeding
+# tests already assert on.
+
+from graphify.serve import _bfs, _demote_relational_intent_terms  # noqa: E402
+
+from tests.seeding_fixtures import DOC, HUB  # noqa: E402
+
+_GENERIC_NOUN_QUESTION = "what code uses ChargeCustomerService to charge a customer"
+# The hub's 12 members sit one `references` hop past the service, so they enter a
+# depth-2 traversal only when the hub itself is seeded. Depth 2 is also the depth
+# the spec's measurements were taken at.
+_GENERIC_NOUN_DEPTH = 2
+# Terms that exercise both sides of the refined invariant on this fixture:
+# "customer" is covered by the `ChargeCustomerService` seed's label, "code" is
+# covered by no seed at all (its winner is the `coder.md` prefix decoy — the
+# documented residual, and here the load-bearing proof that recovery survives).
+_COVERED_AND_STARVED_QUESTION = "ChargeCustomerService customer code"
+
+
+def _nodes_found(text: str) -> int:
+    """The `N nodes found` count from a `_query_graph_text` header."""
+    for part in text.split("\n", 1)[0].split(" | "):
+        if part.endswith(" nodes found"):
+            return int(part.split(" ", 1)[0])
+    raise AssertionError(f"no node count in header: {text.splitlines()[:1]}")
+
+
+def test_generic_noun_phrasing_seeds_no_hub_and_stays_bounded():
+    """"what code uses X to charge a customer" must not seed the `Customer` hub.
+
+    "customer" and "charge" are both substrings of the `ChargeCustomerService`
+    seed's label, so neither is starved and neither buys a seat. Measured on this
+    fixture: 22 nodes with the hub seeded (12 of them the hub's member fan-out)
+    against 10 without it — so the bound is asserted against the pre-C2 seed
+    list's own traversal rather than a hard-coded number. This phrasing triggers
+    no context filter, so the comparison traversal is unfiltered like the
+    pipeline's.
+    """
+    G = make_charge_fixture()
+    text = _query_graph_text(
+        G, _GENERIC_NOUN_QUESTION, mode="bfs", depth=_GENERIC_NOUN_DEPTH
+    )
+    seeds = start_labels(text)
+    shown = shown_nodes(text)
+
+    assert label_of(SERVICE) in seeds
+    assert label_of(HUB) not in seeds, f"generic-noun hub still seeded: {seeds}"
+    for caller in caller_labels():
+        assert caller in shown, f"caller {caller!r} missing from shown output:\n{text}"
+
+    hub_fanout = [lbl for lbl in shown if lbl.startswith(label_of(HUB) + ".")]
+    assert not hub_fanout, f"hub member fan-out flooded the answer: {hub_fanout}"
+
+    qs = _score_query(G, _query_terms(_GENERIC_NOUN_QUESTION), collect_per_term_seeds=True)
+    pre_c2_seeds = _pick_seeds(
+        qs.ranked, G=G, best_seed_by_term=_demote_relational_intent_terms(qs.best_seed_by_term)
+    )
+    pre_c2_nodes, _edges = _bfs(G, pre_c2_seeds, _GENERIC_NOUN_DEPTH)
+    assert _nodes_found(text) < len(pre_c2_nodes), (
+        f"traversal not bounded: {_nodes_found(text)} nodes from {seeds} is no smaller "
+        f"than the {len(pre_c2_nodes)} the pre-C2 seed list {pre_c2_seeds} reached"
+    )
+
+
+def test_covered_term_skips_guarantee_while_starved_term_is_still_recovered():
+    """The picker seam, where the starvation-recovery and dedup prior art sits.
+
+    Both halves of the refined invariant in one test: the covered term loses its
+    guaranteed seat, and the genuinely starved term keeps its — C2 provably
+    cannot reintroduce starvation.
+    """
+    G = make_charge_fixture()
+    qs = _score_query(
+        G, _query_terms(_COVERED_AND_STARVED_QUESTION), collect_per_term_seeds=True
+    )
+    seeds = _pick_seeds(
+        qs.ranked, G=G, best_seed_by_term=qs.best_seed_by_term, skip_covered_terms=True
+    )
+
+    assert SERVICE in seeds
+    assert HUB not in seeds, (
+        "'customer' is a substring of the picked seed's label, so it is not starved"
+    )
+    assert DOC in seeds, (
+        "'code' is matched by no picked seed's label — the #1445 guarantee must still fire"
+    )
+
+
+def test_covered_term_skip_is_off_unless_the_caller_opts_in():
+    """Default-off: identical results for every caller that does not opt in.
+
+    `path`, `explain`, the legacy-equality property tests and the benchmark's two
+    arms all reach `_pick_seeds` without the flag; passing it explicitly False
+    must be the same call.
+    """
+    G = make_charge_fixture()
+    qs = _score_query(
+        G, _query_terms(_COVERED_AND_STARVED_QUESTION), collect_per_term_seeds=True
+    )
+    legacy = _pick_seeds(qs.ranked, G=G, best_seed_by_term=qs.best_seed_by_term)
+
+    assert legacy == _pick_seeds(
+        qs.ranked, G=G, best_seed_by_term=qs.best_seed_by_term, skip_covered_terms=False
+    )
+    assert HUB in legacy, f"the covered-term skip leaked into the default picker: {legacy}"
+    assert DOC in legacy
