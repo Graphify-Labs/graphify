@@ -1875,6 +1875,21 @@ def dispatch_command(cmd: str) -> None:
             })
         stages.mark("label")
         questions = suggest_questions(G, communities, labels)
+        # Snapshot BEFORE any artifact is replaced: GRAPH_REPORT.md was written
+        # first, so the dated folder held the NEW report, not the previous (#2402).
+        from graphify.export import backup_if_protected as _backup
+        _backup(out)
+        # The #479 guard can refuse this write, so it goes before the sidecars —
+        # a report and labels describing a clustering graph.json does not contain
+        # are worse than no run at all (#2436).
+        if not to_json(G, communities, str(out / "graph.json"), community_labels=labels):
+            print(
+                "graph.json NOT written: refusing to overwrite (see warning above). "
+                "GRAPH_REPORT.md, .graphify_labels.json and .graphify_analysis.json "
+                "left untouched.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         tokens = label_token_usage
         from graphify.export import _git_head as _gh
         _commit = _gh()
@@ -1886,8 +1901,6 @@ def dispatch_command(cmd: str) -> None:
                           learning=_llfr(out / "graph.json"))
         (out / "GRAPH_REPORT.md").write_text(report, encoding="utf-8")
         stages.mark("report")
-        from graphify.export import backup_if_protected as _backup
-        _backup(out)
         analysis = {
             "communities": {str(k): v for k, v in communities.items()},
             "cohesion": {str(k): v for k, v in cohesion.items()},
@@ -1899,7 +1912,6 @@ def dispatch_command(cmd: str) -> None:
             json.dumps(analysis, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
-        to_json(G, communities, str(out / "graph.json"), community_labels=labels)
         # Don't persist placeholder-only labels (or their .sig): leaving the
         # sidecar absent lets a later run generate real labels instead of reading
         # back "Community N" as authoritative (#2073).

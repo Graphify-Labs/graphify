@@ -650,3 +650,29 @@ def test_graph_json_node_ids_are_portable_across_checkout_paths(tmp_path):
     leak = {"alice_home", "bob_elsewhere", "checkout", "tmp", "private", "users", "home", "var"}
     assert not any(part in leak for ident in a for part in ident.split("_")), \
         f"node id embeds an absolute-path component: {a}"
+
+
+def test_cluster_only_reports_failure_when_write_is_refused(tmp_path):
+    """The #479 shrink guard can refuse to overwrite graph.json. cluster-only
+    still printed "graph.json updated" and exited 0, and it had already written
+    GRAPH_REPORT.md and the labels for the clustering it then discarded (#2436)."""
+    out = _make_graph(tmp_path)
+    graph_json = out / "graph.json"
+
+    # Duplicate node ids make the file look larger than the graph it loads into,
+    # which is what trips the guard on a real re-cluster.
+    data = json.loads(graph_json.read_text(encoding="utf-8"))
+    data["nodes"] = data["nodes"] + data["nodes"][:3]
+    graph_json.write_text(json.dumps(data), encoding="utf-8")
+
+    report = out / "GRAPH_REPORT.md"
+    report.write_text("PREVIOUS REPORT\n", encoding="utf-8")
+    before = graph_json.read_text(encoding="utf-8")
+
+    r = _run(["cluster-only", ".", "--no-viz", "--no-label"], tmp_path)
+
+    assert r.returncode != 0, r.stdout
+    assert "graph.json NOT written" in r.stderr, r.stderr
+    assert "graph.json updated" not in r.stdout, r.stdout
+    assert graph_json.read_text(encoding="utf-8") == before
+    assert report.read_text(encoding="utf-8") == "PREVIOUS REPORT\n"
