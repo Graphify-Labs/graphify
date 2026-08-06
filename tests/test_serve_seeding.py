@@ -42,9 +42,17 @@ def test_who_calls_phrasing_does_not_seed_verb_prefix_decoy():
 
 
 def test_callers_of_phrasing_renders_all_callers_and_drops_junk_seed():
-    """"callers of X" — the agent-noun phrasing, which triggers no context
-    filter — must render all three known callers with no junk seed and no junk
-    neighborhood in the shown output."""
+    """"callers of X" — the agent-noun phrasing — must render all three known
+    callers with no junk seed and no junk neighborhood in the shown output.
+
+    Upstream 0.9.35 added "caller"/"callers" to `_CONTEXT_HINTS`' `call` entry
+    (adopted in the 0.9.37 sync), so this phrasing now infers the same `call`
+    filter "Who calls X?" does, and therefore inherits the same stranding on a
+    class seed — where before that hint entry it traversed unfiltered. The
+    answer is unchanged because C3 relaxes it back; what is new is the header's
+    relaxation note, pinned below so the adopted hint cannot silently regress
+    into the near-empty answer it causes without C3.
+    """
     G = make_charge_fixture()
     text = _query_graph_text(G, "callers of ChargeCustomerService", mode="bfs", depth=2)
     seeds = start_labels(text)
@@ -57,6 +65,9 @@ def test_callers_of_phrasing_renders_all_callers_and_drops_junk_seed():
     # The junk seed's whole neighborhood is what used to eat the budget.
     assert label_of(DECOY) not in shown
     assert label_of(CALLERS_DECOY) not in shown
+    context = context_segment(text)
+    assert "call (heuristic" in context, f"the adopted hint did not fire: {context!r}"
+    assert "relaxed" in context, f"header does not report the relaxation: {context!r}"
 
 
 def test_all_relational_query_keeps_its_per_term_guarantee():

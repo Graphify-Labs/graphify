@@ -760,7 +760,7 @@ def _pick_seeds(
 
 
 _CONTEXT_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("call", ("call", "calls", "called", "invoke", "invokes", "invoked")),
+    ("call", ("call", "calls", "called", "caller", "callers", "invoke", "invokes", "invoked")),
     ("import", ("import", "imports", "imported", "module", "modules")),
     ("field", ("field", "fields", "member", "members", "property", "properties")),
     ("parameter_type", ("parameter", "parameters", "param", "params", "argument", "arguments")),
@@ -824,16 +824,34 @@ _CONTEXT_FILTER_ALIASES: dict[str, str] = {
 # The vocabulary is derived from the two tables that already encode relational
 # intent, so there is one auditable definition instead of a scattered word list:
 # every `_CONTEXT_HINTS` word plus every `_CONTEXT_FILTER_ALIASES` key. The
-# extension set exists because "callers"/"uses" appear in NEITHER table (they
-# never trigger the traversal-filter heuristic) yet carry exactly the same
-# intent — an intent-consumed-only rule misses two of the three measured
-# phrasings. `_CONTEXT_HINTS` itself stays untouched on purpose: extending it
-# would change which queries get context-filtered, a separate behavior change.
+# first extension group exists because "uses" appears in NEITHER table (it never
+# triggers the traversal-filter heuristic) yet carries exactly the same intent —
+# an intent-consumed-only rule misses two of the three measured phrasings. It
+# still lists "caller"/"callers" for the same reason; upstream 0.9.35 has since
+# added them to `_CONTEXT_HINTS`' `call` entry (adopted in the 0.9.37 sync), so
+# the derivation now yields them too and the listing is belt-and-braces against
+# that hint entry changing back. `_CONTEXT_HINTS` itself stays untouched on
+# purpose beyond what upstream ships in it: extending it further would change
+# which queries get context-filtered, a separate behavior change.
+#
+# The extension set also ABSORBS upstream 0.9.35's own verbs-only
+# `_RELATIONAL_INTENT_TERMS` (their #2507 direction 2), which the 0.9.37 sync
+# replaced with this derived definition: the second group below is exactly the
+# twelve words upstream demoted that neither table yields here — `depend(s)`,
+# `export`, `extend/extends/extended`, `implement/implements/implemented`,
+# `reference/references/referenced`. (`exports`/`exported` and the `use*` family
+# are already covered by `_CONTEXT_FILTER_ALIASES` and the first group.) So no
+# demotion either fork ever shipped is lost, and the union stays a superset of
+# both parents' vocabularies.
 _RELATIONAL_INTENT_TERMS: frozenset[str] = frozenset(
     {word for _ctx, hints in _CONTEXT_HINTS for word in hints}
     | set(_CONTEXT_FILTER_ALIASES)
     | {"caller", "callers", "use", "uses", "used", "using", "usage",
        "listen", "listens", "listener", "listeners"}
+    | {"depend", "depends", "export",
+       "extend", "extends", "extended",
+       "implement", "implements", "implemented",
+       "reference", "references", "referenced"}
 )
 
 
