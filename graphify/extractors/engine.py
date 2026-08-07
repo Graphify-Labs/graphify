@@ -144,8 +144,12 @@ def _csharp_pre_scan_interfaces(root_node, source: bytes) -> set[str]:
         stack.extend(n.children)
     return out
 
-# PHP declaration kinds that are NOT in `_PHP_CONFIG.class_types`: they mint no
-# definition node, so the resolver cannot recognize them after the fact (#1682).
+# PHP declaration kinds whose names the member-call resolver refuses to bind a
+# receiver to (#1682). All three ARE in `_PHP_CONFIG.class_types` and do mint
+# definition nodes as of #47, so this is no longer "the kinds outside
+# class_types" — it is the refusal policy, stated for its own sake. The name is
+# historical and kept because the marker it feeds (`_php_non_class_types`) is
+# persisted in graph.json and read back on incremental rebuilds (#11/#12).
 _PHP_NON_CLASS_DECLARATIONS = frozenset({
     "interface_declaration",
     "enum_declaration",
@@ -156,16 +160,21 @@ _PHP_NON_CLASS_DECLARATIONS = frozenset({
 def _php_pre_scan_non_class_declarations(root_node, source: bytes) -> set[str]:
     """Return names declared as `interface`, `enum` or `trait` in this PHP file (#1682).
 
-    None of the three is in ``_PHP_CONFIG.class_types``, so they mint no
-    definition node and cannot be recognized by the resolver after the fact.
-    Laravel's conventions make the collision that follows realistic: an
-    `App\\Contracts\\Notifier` interface beside an unrelated
+    The member-call resolver refuses to bind a receiver typed with one of these
+    names. Laravel's conventions make the collision that motivates the refusal
+    realistic: an `App\\Contracts\\Notifier` interface beside an unrelated
     `App\\Support\\Notifier` class — or an `App\\Enums\\Status` enum beside an
-    Eloquent `App\\Models\\Status` — leaves exactly ONE definition under that
-    short name, which would satisfy the single-definition guard and bind the
+    Eloquent `App\\Models\\Status` — used to leave exactly ONE definition under
+    that short name, which satisfied the single-definition guard and bound the
     receiver to a total stranger. The names are threaded to the resolver so it
-    can refuse instead. Refusal only: minting nodes for these declarations
-    would change what the graph contains, which is a separate decision.
+    can refuse instead.
+
+    Since #47 all three kinds mint definition nodes, so that same collision now
+    presents TWO definitions and the single-definition guard would refuse on its
+    own. The pre-scan is kept anyway: it still refuses the case the guard cannot
+    see — a lone interface with no same-named class, which would otherwise start
+    binding — and that is a behavior change #47 deliberately did not make.
+    Whether to lift the refusal now that the nodes exist is a separate decision.
     """
     out: set[str] = set()
     stack = [root_node]
@@ -964,6 +973,170 @@ def _php_method_receiver_types(
         # name (popped just above) falls back to the multi-class refusal.
         table.setdefault(name, None)
     return table
+
+
+def _php_ctor_assigned_field_types(
+    ctor_node,
+    other_method_nodes,
+    source: bytes,
+) -> dict[str, _PhpReceiverType]:
+    """Type the properties a CONSTRUCTOR BODY assigns from a typed param (#38).
+
+    The pre-promotion idiom that dominates a Laravel corpus declares the
+    property untyped — its type living only in a ``@var`` docblock — and takes
+    the collaborator as a typed constructor parameter::
+
+        /** @var ChargeCustomerService */
+        protected $chargeCustomerService;
+        public function __construct(ChargeCustomerService $chargeCustomerService) {
+            $this->chargeCustomerService = $chargeCustomerService;
+        }
+
+    The parameter's SIGNATURE is the evidence; the docblock is deliberately not
+    read (docblocks lie more often than signatures do). The result feeds the
+    same ``this.<prop>`` receiver table as a native property type, merged UNDER
+    it — a real annotation, including a union's refusal (#9), always wins.
+
+    Refusal discipline mirrors the local-variable one: a property is POISONED —
+    left out entirely — unless its binding is provably single-typed. Poisoned by
+    a second assignment of a different or untypable type, an augmented or
+    by-reference assignment, or a list-destructuring or ``foreach`` target.
+    Every poison rule is order-independent, so one unordered walk decides them
+    all.
+
+    A property is not a local, so the poison scope is the whole CLASS, not the
+    constructor: ``other_method_nodes`` (every other method of the same class)
+    is walked for writes to ``$this->prop`` too, and any it finds refuses the
+    binding. Such a write is the same category as a write from inside a closure
+    — deferred, and possibly running never, later, or repeatedly — so both take
+    the identical ``deferred`` path below, which can only refuse and never bind.
+    The refusal is unconditional on the write rather than conditional on the
+    written type: a same-typed setter is provably harmless and loses its edge
+    anyway, which is the trade this discipline makes everywhere else too.
+    The DECLARED path is untouched by all of this and needs no such sweep — PHP
+    enforces a native property type on every write, so a setter cannot retype a
+    typed or promoted property, while an untyped one carries no such guarantee.
+
+    The right-hand side must name a parameter of THIS constructor whose own
+    binding survived ``_php_method_receiver_types``, which is what rules out an
+    untyped or union-typed parameter and one rebound anywhere in the body
+    (including by a shadowing closure parameter). A local built in the body is
+    not a parameter: ``$this->prop = $svc`` after ``$svc = new T()`` poisons the
+    property rather than binding it, keeping this to the one form #38 scopes.
+    """
+    # Bare keys only (no field types are passed in): the constructor's own
+    # parameters and locals, already stripped of every poisoned name.
+    local_types = _php_method_receiver_types(ctor_node, source, {})
+
+    param_names: set[str] = set()
+    params = ctor_node.child_by_field_name("parameters")
+    for param in params.children if params is not None else ():
+        if param.type not in ("simple_parameter", "property_promotion_parameter"):
+            continue
+        name_node = param.child_by_field_name("name")
+        if name_node is not None:
+            param_names.add(_read_text(name_node, source).lstrip("$"))
+
+    assigned: dict[str, _PhpReceiverType] = {}
+    refused: set[str] = set()
+
+    def refuse(prop: str) -> None:
+        if prop:
+            assigned.pop(prop, None)
+            refused.add(prop)
+
+    def bind(prop: str, declared: _PhpReceiverType | None) -> None:
+        if not prop or prop in refused:
+            return
+        previous = assigned.get(prop)
+        if declared is None or (previous is not None and previous.short != declared.short):
+            refuse(prop)
+        elif previous is not None and previous.qualified != declared.qualified:
+            # Same short name reached through two differently written params:
+            # keep the short binding, drop the conflicting qualified evidence
+            # (the local-table rule, #20).
+            assigned[prop] = _PhpReceiverType(previous.short, None)
+        else:
+            assigned[prop] = declared
+
+    def this_prop(node) -> str:
+        """Property name in ``$this->prop``, or "" for any other target.
+
+        Rejects ``$other->prop`` (a different object), ``$this->{$name}`` (the
+        name is computed) and ``$this->a->b`` (whose target is a property of
+        the property, leaving ``a``'s own binding untouched).
+        """
+        if node is None or node.type != "member_access_expression":
+            return ""
+        obj = node.child_by_field_name("object")
+        name = node.child_by_field_name("name")
+        if obj is None or name is None or name.type != "name":
+            return ""
+        if obj.type != "variable_name" or _read_text(obj, source) != "$this":
+            return ""
+        return _read_text(name, source)
+
+    def refuse_props_in(node) -> None:
+        """Refuse every ``$this->prop`` named anywhere in a binding-site subtree
+        (``[$this->a, $b] = …``, ``foreach … as $this->a``)."""
+        stack = [node]
+        while stack:
+            n = stack.pop()
+            if n is None:
+                continue
+            refuse(this_prop(n))
+            stack.extend(n.children)
+
+    def param_type(node) -> _PhpReceiverType | None:
+        """The type of the parameter ``node`` names, or None (which refuses)."""
+        if node is None or node.type != "variable_name":
+            return None
+        name = _read_text(node, source).lstrip("$")
+        return local_types.get(name) if name in param_names else None
+
+    def body_children(method_node):
+        body = method_node.child_by_field_name("body")
+        return body.children if body is not None else ()
+
+    # `deferred` rides along with each node and marks a write whose timing is
+    # not the constructor's own: one made from inside a closure, or one made by
+    # another method of the class. The walk descends into both (to poison what
+    # they write) without ever letting them BIND. An abstract or interface
+    # method has no body and contributes nothing.
+    stack = [(child, False) for child in body_children(ctor_node)]
+    for method_node in other_method_nodes:
+        stack.extend((child, True) for child in body_children(method_node))
+    while stack:
+        node, deferred = stack.pop()
+        if node.type in _PHP_FOREIGN_SCOPE_TYPES:
+            continue  # a nested class/function has a different (or no) `$this`
+        if node.type == "assignment_expression":
+            left = node.child_by_field_name("left")
+            if left is not None and left.type == "list_literal":
+                refuse_props_in(left)
+            elif deferred:
+                refuse(this_prop(left))
+            else:
+                prop = this_prop(left)
+                if prop:
+                    bind(prop, param_type(node.child_by_field_name("right")))
+        elif node.type in ("augmented_assignment_expression",
+                           "reference_assignment_expression"):
+            # `$this->prop .= …` composes an unknown value; `$this->prop = &$svc`
+            # aliases the variable's storage, so rebinding it retypes the
+            # property. Neither is a single-typed binding.
+            refuse_props_in(node.child_by_field_name("left"))
+        elif node.type == "foreach_statement":
+            body_node = node.child_by_field_name("body")
+            targets = [c for c in node.named_children if c is not body_node]
+            for target in targets[1:]:  # children are [iterated, target(s)…, body]
+                refuse_props_in(target)
+        nested = deferred or node.type in _PHP_CLOSURE_TYPES
+        stack.extend((child, nested) for child in node.children)
+
+    for prop in refused:
+        assigned.pop(prop, None)
+    return assigned
 
 
 def _php_method_return_type_node(method_node):
@@ -4472,6 +4645,47 @@ def _extract_generic(
         )
         for body_id, (method_node, class_nid) in csharp_method_scopes.items()
     }
+    # #38: a property assigned in the CONSTRUCTOR BODY from a typed constructor
+    # parameter (`$this->svc = $svc;`) is typed as surely as a natively typed
+    # property is — the pre-promotion idiom that dominates a Laravel corpus,
+    # where the declaration carries only a `@var` docblock. Merged with
+    # setdefault, so the declared and promoted types the walk already collected
+    # win, and this fills only the gaps. Runs before the tables below because
+    # `walk(root)` is complete, so declaration order is free and a call inside
+    # the constructor itself sees the binding too.
+    #
+    # Grouped by class because the refusal is PROPERTY-scoped, not
+    # constructor-scoped: every OTHER method of the same class is handed to the
+    # walk as well, so a setter that rewrites the property refuses the
+    # constructor's binding instead of leaving a stale one behind. `class_nid`
+    # keys the group, so a second class in the same file can never poison this
+    # one's properties — and an anonymous class registers no method scope at
+    # all (it is not a `class_declaration`, so it owns no class_nid; probed),
+    # which keeps its own `$this` writes out of every group.
+    php_class_methods: dict[str, list] = {}
+    for method_node, class_nid in php_method_scopes.values():
+        php_class_methods.setdefault(class_nid, []).append(method_node)
+
+    def _php_is_ctor(method_node) -> bool:
+        # PHP method names are case-insensitive, `__CONSTRUCT` included.
+        name_node = method_node.child_by_field_name("name")
+        return (name_node is not None
+                and _read_text(name_node, source).casefold() == "__construct")
+
+    for class_nid, method_nodes in php_class_methods.items():
+        ctor_node = next((m for m in method_nodes if _php_is_ctor(m)), None)
+        if ctor_node is None:
+            continue
+        assigned = _php_ctor_assigned_field_types(
+            ctor_node,
+            [m for m in method_nodes if m is not ctor_node],
+            source,
+        )
+        if assigned:
+            fields = php_field_types.setdefault(class_nid, {})
+            for prop, declared in assigned.items():
+                fields.setdefault(prop, declared)
+
     php_receiver_types = {
         body_id: _php_method_receiver_types(
             method_node,
@@ -4808,7 +5022,16 @@ def _extract_generic(
                     # Static method call: Helper::format() → callee = "Helper"
                     scope_node = node.child_by_field_name("scope")
                     if scope_node:
-                        callee_name = _read_text(scope_node, source)
+                        scope_text = _read_text(scope_node, source)
+                        # `parent::m()` / `self::m()` / `static::m()` name no
+                        # callee: which class the scope denotes needs inheritance
+                        # context the raw-call facts do not carry (#39). Naming
+                        # the scope anyway let the cross-file label match bind
+                        # them to any unrelated `->parent()` method in the
+                        # corpus. Refused by the same non-concrete set the
+                        # `(new X())->m()` branch below applies.
+                        if scope_text.lower() not in _PHP_NON_CONCRETE_TYPE_NAMES:
+                            callee_name = scope_text
                 else:
                     # member_call_expression / nullsafe_member_call_expression:
                     # $obj->method() / $obj?->method()
