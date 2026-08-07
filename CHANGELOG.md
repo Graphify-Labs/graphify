@@ -2,7 +2,14 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
-## 0.9.35 (unreleased)
+## 0.9.36 (unreleased)
+
+- Fix: four commands that failed silently while exiting 0 now surface the problem (#2534, thanks @elecnix). `cluster-only` warns when `--backend`/`--model`/`--batch-size` are ignored because saved labels are being reused; the community-label prompt no longer collides with the discard sentinel (a model echoing the key back is no longer silently dropped); `tree --root` exits non-zero when the root matches no source file instead of silently flattening the tree; and `cluster-only` stamps `built_at_commit` from the analysed graph rather than the shell's working directory. Also folds in the `cluster-only` refused-write guard from #2522 (thanks @aniJani).
+- Fix: a Swift `extension Foo` in a different file from `Foo` no longer drops static and singleton call edges into the type (#2538, thanks @pawelo446). The extension node id is now remapped consistently so the extension merges onto its base type before call resolution, and the merge is gated so it never absorbs a same-named type from another language.
+- Fix: node-id collision resolution is now deterministic and prefers active over archived paths (#2532, thanks @michaelxer for the active/archived idea in #2540). Two files that mint the same id (for example `plans/_done/x.md` vs `plans/in-progress/x.md`) are ranked by a lifecycle penalty computed on the root-relative path and a reversed-segment tie-break, so the winner no longer depends on ASCII filename order, absolute-vs-relative path form, or the checkout directory name.
+- Fix: the Windows skill now runs on PowerShell (#2528, thanks @tannermosher2015-debug). The Windows skill variant's steps were bash-only (`$(cat ...)`, `rm -f`, `find -delete`); they are now emitted as PowerShell (here-string interpreter invocations and `Remove-Item` cleanup), with POSIX skills unchanged and step parity enforced by a generator check.
+
+## 0.9.35 (2026-08-06)
 
 - Fix: the `build_merge` #479 shrink guard is no longer effectively dead (#2497, thanks @sortakool). It read the post-replace node count, so a broken partial re-extract could silently destroy nodes without tripping the guard, and the guard was skipped entirely under `prune_sources`. The guard now diffs the on-disk baseline by node identity and refuses any loss from a source that was neither re-extracted nor pruned this run (active even under `prune_sources`, skipped only under `dedup`), and reports how many nodes a re-extract replaced.
 - Fix: `build_merge`/`merge_raw_extraction` `prune_sources` now prunes correctly when given absolute paths under a non-standard layout, deriving the scan root by suffix-matching stored source paths, and warns (instead of reporting "already clean") when a prune matches nothing (#2446, thanks @AI-invest).
