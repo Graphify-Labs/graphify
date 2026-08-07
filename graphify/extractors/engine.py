@@ -144,8 +144,12 @@ def _csharp_pre_scan_interfaces(root_node, source: bytes) -> set[str]:
         stack.extend(n.children)
     return out
 
-# PHP declaration kinds that are NOT in `_PHP_CONFIG.class_types`: they mint no
-# definition node, so the resolver cannot recognize them after the fact (#1682).
+# PHP declaration kinds whose names the member-call resolver refuses to bind a
+# receiver to (#1682). All three ARE in `_PHP_CONFIG.class_types` and do mint
+# definition nodes as of #47, so this is no longer "the kinds outside
+# class_types" — it is the refusal policy, stated for its own sake. The name is
+# historical and kept because the marker it feeds (`_php_non_class_types`) is
+# persisted in graph.json and read back on incremental rebuilds (#11/#12).
 _PHP_NON_CLASS_DECLARATIONS = frozenset({
     "interface_declaration",
     "enum_declaration",
@@ -156,16 +160,21 @@ _PHP_NON_CLASS_DECLARATIONS = frozenset({
 def _php_pre_scan_non_class_declarations(root_node, source: bytes) -> set[str]:
     """Return names declared as `interface`, `enum` or `trait` in this PHP file (#1682).
 
-    None of the three is in ``_PHP_CONFIG.class_types``, so they mint no
-    definition node and cannot be recognized by the resolver after the fact.
-    Laravel's conventions make the collision that follows realistic: an
-    `App\\Contracts\\Notifier` interface beside an unrelated
+    The member-call resolver refuses to bind a receiver typed with one of these
+    names. Laravel's conventions make the collision that motivates the refusal
+    realistic: an `App\\Contracts\\Notifier` interface beside an unrelated
     `App\\Support\\Notifier` class — or an `App\\Enums\\Status` enum beside an
-    Eloquent `App\\Models\\Status` — leaves exactly ONE definition under that
-    short name, which would satisfy the single-definition guard and bind the
+    Eloquent `App\\Models\\Status` — used to leave exactly ONE definition under
+    that short name, which satisfied the single-definition guard and bound the
     receiver to a total stranger. The names are threaded to the resolver so it
-    can refuse instead. Refusal only: minting nodes for these declarations
-    would change what the graph contains, which is a separate decision.
+    can refuse instead.
+
+    Since #47 all three kinds mint definition nodes, so that same collision now
+    presents TWO definitions and the single-definition guard would refuse on its
+    own. The pre-scan is kept anyway: it still refuses the case the guard cannot
+    see — a lone interface with no same-named class, which would otherwise start
+    binding — and that is a behavior change #47 deliberately did not make.
+    Whether to lift the refusal now that the nodes exist is a separate decision.
     """
     out: set[str] = set()
     stack = [root_node]
