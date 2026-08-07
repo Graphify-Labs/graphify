@@ -144,12 +144,13 @@ def _csharp_pre_scan_interfaces(root_node, source: bytes) -> set[str]:
         stack.extend(n.children)
     return out
 
-# PHP declaration kinds whose names the member-call resolver refuses to bind a
-# receiver to (#1682). All three ARE in `_PHP_CONFIG.class_types` and do mint
-# definition nodes as of #47, so this is no longer "the kinds outside
-# class_types" — it is the refusal policy, stated for its own sake. The name is
-# historical and kept because the marker it feeds (`_php_non_class_types`) is
-# persisted in graph.json and read back on incremental rebuilds (#11/#12).
+# The PHP declaration kinds that are not `class`. All three ARE in
+# `_PHP_CONFIG.class_types` and mint definition nodes as of #47, so this is no
+# longer "the kinds outside class_types"; it was the member-call resolver's
+# refusal policy (#1682) until #53 lifted that refusal, and what remains is a
+# record of declaration KIND. The name and the marker it feeds
+# (`_php_non_class_types`) are kept as spelled: the marker is persisted in
+# graph.json and read back on incremental rebuilds (#11/#12).
 _PHP_NON_CLASS_DECLARATIONS = frozenset({
     "interface_declaration",
     "enum_declaration",
@@ -160,21 +161,21 @@ _PHP_NON_CLASS_DECLARATIONS = frozenset({
 def _php_pre_scan_non_class_declarations(root_node, source: bytes) -> set[str]:
     """Return names declared as `interface`, `enum` or `trait` in this PHP file (#1682).
 
-    The member-call resolver refuses to bind a receiver typed with one of these
-    names. Laravel's conventions make the collision that motivates the refusal
-    realistic: an `App\\Contracts\\Notifier` interface beside an unrelated
-    `App\\Support\\Notifier` class — or an `App\\Enums\\Status` enum beside an
-    Eloquent `App\\Models\\Status` — used to leave exactly ONE definition under
-    that short name, which satisfied the single-definition guard and bound the
-    receiver to a total stranger. The names are threaded to the resolver so it
-    can refuse instead.
+    These names once drove a REFUSAL: the member-call resolver would not bind a
+    receiver typed with one of them. Laravel's conventions make the collision
+    that motivated it realistic — an `App\\Contracts\\Notifier` interface beside
+    an unrelated `App\\Support\\Notifier` class, or an `App\\Enums\\Status` enum
+    beside an Eloquent `App\\Models\\Status` — because while the three minted no
+    definition node, exactly ONE definition existed under the short name, which
+    satisfied the single-definition guard and bound the receiver to a stranger.
 
-    Since #47 all three kinds mint definition nodes, so that same collision now
-    presents TWO definitions and the single-definition guard would refuse on its
-    own. The pre-scan is kept anyway: it still refuses the case the guard cannot
-    see — a lone interface with no same-named class, which would otherwise start
-    binding — and that is a behavior change #47 deliberately did not make.
-    Whether to lift the refusal now that the nodes exist is a separate decision.
+    #47 gave all three kinds definition nodes, so the collision now presents TWO
+    and the guard refuses on its own; #53 lifted the blanket refusal on that
+    basis, and nothing consumes these names for resolution any more (see
+    `_php_context_interface_entry` in extract.py). The pre-scan and its
+    `_php_non_class_types` marker are kept because they are persisted in
+    graph.json: they are the only record of declaration KIND that survives into
+    a graph, and older graphs carry them.
     """
     out: set[str] = set()
     stack = [root_node]
@@ -190,8 +191,22 @@ def _php_pre_scan_non_class_declarations(root_node, source: bytes) -> set[str]:
     return out
 
 
+# The declaration kinds `_php_pre_scan_class_namespaces` reads a declared FQN
+# off. `class_declaration` alone until #53: once an interface/enum/trait-typed
+# receiver became bindable, a declaration WITHOUT a declared FQN was one the
+# name guard could only judge by its PSR-4 path — strictly weaker, and weakest
+# on exactly the incremental path where paths arrive relativized. All four kinds
+# declare a namespaced type, so all four are read.
+_PHP_FQN_DECLARATIONS = frozenset({
+    "class_declaration",
+    "interface_declaration",
+    "enum_declaration",
+    "trait_declaration",
+})
+
+
 def _php_pre_scan_class_namespaces(root_node, source: bytes) -> dict[str, str]:
-    """Map every namespaced class in this PHP file to its fully qualified name (#14).
+    """Map every namespaced type in this PHP file to its fully qualified name (#14).
 
     PHP class NODES carry no namespace, so the inline-`new` corroboration in
     ``_php_qualified_corroborates`` had only the file's path to compare a
@@ -201,9 +216,23 @@ def _php_pre_scan_class_namespaces(root_node, source: bytes) -> dict[str, str]:
     files, generated code), and the written name then corroborates a class that
     exists nowhere. The declaration is right there in the source — read it.
 
+    ``interface``, ``enum`` and ``trait`` declarations are read alongside
+    ``class`` (#53). They were left out while #5/#12 refused every receiver
+    typed with such a name, which made their FQNs unused; once the refusal was
+    lifted and those declarations became bindable, the omission left
+    ``PhpNameResolver`` judging them by PSR-4 path alone — and
+    ``_php_fqn_names_another_class`` treats a path with fewer segments than the
+    written name as NO EVIDENCE and keeps the edge. A rebuild replays context
+    nodes with RELATIVIZED paths, so ``use Illuminate\\Contracts\\…\\Notifier;``
+    (4 segments) against a replayed ``app/Contracts/Notifier.php`` (3) bound the
+    in-corpus interface that the vendor import provably does not name — a wrong
+    edge of the #16 class, and only on the incremental path. A declared FQN
+    makes that comparison whole-name and decisive on both paths, and lets
+    ``fqn_def_nid`` (#22) pick the imported one of several namesakes.
+
     Both namespace forms are handled: ``namespace X;`` applies to the
     declarations that follow it (a file may switch namespaces mid-way), and
-    ``namespace X { … }`` applies to its block. A class declared in NO namespace
+    ``namespace X { … }`` applies to its block. A type declared in NO namespace
     is deliberately absent from the map: the file states nothing, so the
     resolver falls back to the path check rather than refusing. A short name
     declared twice under different namespaces in one file is dropped — the map
@@ -213,9 +242,9 @@ def _php_pre_scan_class_namespaces(root_node, source: bytes) -> dict[str, str]:
     conflicting: set[str] = set()
 
     # Each entry carries the namespace in force where it was queued, so the
-    # scopes stay right without walking siblings in order. A class body is never
-    # descended into: PHP has no nested class declarations, and an anonymous
-    # class inside a method names nothing.
+    # scopes stay right without walking siblings in order. A declaration body is
+    # never descended into: PHP has no nested type declarations, and an
+    # anonymous class inside a method names nothing.
     stack = [(root_node, "")]
     while stack:
         node, namespace = stack.pop()
@@ -232,7 +261,7 @@ def _php_pre_scan_class_namespaces(root_node, source: bytes) -> dict[str, str]:
                 else:
                     current = declared  # applies to the declarations that follow
                 continue
-            if child.type == "class_declaration":
+            if child.type in _PHP_FQN_DECLARATIONS:
                 name_node = child.child_by_field_name("name")
                 name = _read_text(name_node, source) if name_node is not None else ""
                 if name and current:
@@ -4903,6 +4932,13 @@ def _extract_generic(
             # reference to the method, not an invocation — re-tagged as
             # `indirect_call` below and by the cross-file PHP resolver.
             php_fcc: bool = False
+            # PHP `function_call_expression`, i.e. a bare `name(...)` (#52). It
+            # can only invoke a global/namespaced FUNCTION — a method needs
+            # `$obj->`, `Class::` or callable syntax — so the cross-file pass
+            # refuses method candidates for it. Recorded here because the
+            # raw-call facts otherwise cannot tell it from a `scoped_call`
+            # (which is also not a member call and names its scope as callee).
+            php_function_call: bool = False
 
             # Special handling per language
             if config.ts_module == "tree_sitter_swift":
@@ -5015,6 +5051,7 @@ def _extract_generic(
             elif config.ts_module == "tree_sitter_php":
                 # PHP: distinguish call expression subtypes
                 if node.type == "function_call_expression":
+                    php_function_call = True
                     func_node = node.child_by_field_name("function")
                     if func_node:
                         callee_name = _read_text(func_node, source)
@@ -5363,6 +5400,10 @@ def _extract_generic(
                     # stamp the receiver type resolved above (#1682).
                     if config.ts_module == "tree_sitter_php":
                         rc_entry["lang"] = "php"
+                        if php_function_call:
+                            # Marker read by the shared cross-file pass, which
+                            # drops METHOD candidates for this call site (#52).
+                            rc_entry["php_function_call"] = True
                         if php_fcc:
                             # Marker read by _resolve_php_member_calls, which
                             # emits `indirect_call` for it under the SAME
@@ -5739,32 +5780,36 @@ def _extract_generic(
     if swift_extensions:
         result["swift_extensions"] = swift_extensions
     if php_non_class_type_names:
-        # Interfaces, enums and traits mint no definition node, so the resolver
-        # cannot tell one from a same-named class without this (#1682). Sorted
-        # for a stable AST-cache payload.
+        # Which names this file declares as `interface`/`enum`/`trait` rather
+        # than `class` (#1682). Sorted for a stable AST-cache payload. The
+        # member-call resolver consumed this to refuse such receivers until #53
+        # lifted the refusal; what is left is a persisted record of declaration
+        # KIND, which nothing else in a graph carries.
         result["php_non_class_types"] = sorted(php_non_class_type_names)
         # The per-file payload above only reaches the resolver for files
         # dispatched THIS run, so on an incremental rebuild an unchanged
-        # declaring file stopped refusing and the receiver bound to a stranger
-        # class sharing the short name (#11). Also stamp the names on the FILE
-        # node — the marker rides the node dict into graph.json and back in as
-        # resolution context, the same channel `_callable` uses (#2438). The
-        # file node is the host because none of these declarations mints a node
-        # of its own; the names are listed explicitly rather than read off the
-        # node's `<Name>.php` label, which would only hold under
-        # one-declaration-per-file PSR-4 convention. `_php_interfaces` is the
-        # pre-#12 spelling, carrying interfaces alone; readers still accept it,
-        # so a graph.json written before enums and traits joined the set keeps
-        # refusing what it does name.
+        # declaring file used to drop out of the refusal entirely and the
+        # receiver bound to a stranger class sharing the short name (#11). Also
+        # stamp the names on the FILE node — the marker rides the node dict into
+        # graph.json and back in as resolution context, the same channel
+        # `_callable` uses (#2438). The file node is the host because the marker
+        # describes the file's declarations as a set; the names are listed
+        # explicitly rather than read off the node's `<Name>.php` label, which
+        # would only hold under one-declaration-per-file PSR-4 convention.
+        # `_php_interfaces` is the pre-#12 spelling, carrying interfaces alone;
+        # readers still accept it, so a graph.json written before enums and
+        # traits joined the set still hands back what it does name.
         for n in nodes:
             if n["id"] == file_nid:
                 n["_php_non_class_types"] = list(result["php_non_class_types"])
                 break
     if php_class_fqns:
-        # The `namespace` this file declares for each class it defines, so the
-        # inline-`new` corroboration can compare a written FQN against the real
-        # one instead of guessing from the path (#14). Same `{"path": …}` shape
-        # as the type tables, which the cache re-anchors on load.
+        # The `namespace` this file declares for each type it defines — classes
+        # plus, since #53, interfaces/enums/traits — so the inline-`new`
+        # corroboration and the `use`-claim guard can compare a written FQN
+        # against the real one instead of guessing from the path (#14). Same
+        # `{"path": …}` shape as the type tables, which the cache re-anchors on
+        # load.
         result["php_class_fqns"] = {"path": str_path, "classes": php_class_fqns}
         # Like `_php_non_class_types` above, the payload only reaches the
         # resolver for files dispatched THIS run — but the declared-FQN

@@ -622,9 +622,16 @@ def test_assignment_in_a_non_constructor_method_emits_no_edge(tmp_path: Path):
     assert _no_search_edge(calls, index)
 
 
-def test_interface_typed_param_assigned_to_a_property_emits_no_edge(tmp_path: Path):
-    """The interface/enum/trait refusal (#5, #12) applies to a ctor-body-bound
-    receiver too: an interface names no implementation."""
+def test_interface_typed_param_assigned_to_a_property_binds_the_interface(tmp_path: Path):
+    """A ctor-body-bound receiver typed with an INTERFACE binds to the
+    interface's own method (#53), not to a same-short-named implementation.
+
+    #5/#12 refused this outright, back when an interface minted no definition
+    node and the only thing a receiver could land on was a stranger class. Post
+    #47/#53 the contract has its own `search()` node and the `use` names it
+    unambiguously — `App\\Services\\LeadHunterService` is a DIFFERENT type that
+    the controller never imported, and it stays unbound, which is the whole
+    point the original refusal was protecting."""
     calls, r = _calls(tmp_path, {
         "app/Contracts/LeadHunterService.php": (
             "<?php\n"
@@ -644,7 +651,10 @@ def test_interface_typed_param_assigned_to_a_property_emits_no_edge(tmp_path: Pa
     })
 
     index = _find(r, ".index()", "leadcontroller")
-    assert _no_search_edge(calls, index)
+    assert (index, _find(r, ".search()", "contracts_leadhunterservice")) in calls, \
+        "the imported contract is the receiver's declared type"
+    assert (index, _find(r, ".search()", "services_leadhunterservice")) not in calls, \
+        "an interface names no implementation — never guess one"
 
 
 def test_out_of_corpus_param_type_emits_no_edge(tmp_path: Path):

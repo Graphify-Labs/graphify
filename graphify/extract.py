@@ -3289,23 +3289,29 @@ _PHP_NON_CLASS_TYPE_MARKERS = ("_php_non_class_types", "_php_interfaces")
 def _php_context_interface_entry(context_nodes: list[dict] | None) -> dict | None:
     """Recover the unchanged corpus's PHP interface/enum/trait names (#11, #12).
 
-    None of the three mints a definition node, so the extractor stamps the names a
-    file declared on that file's own node as ``_php_non_class_types`` — a persisted
-    marker, like ``_callable`` (#2438) — and ``watch``/``graphify update`` hand it
-    back on the resolution-context nodes. Returns a synthetic ``per_file``-shaped
-    entry carrying just those names (or None when there are none), which extends
-    the resolver's existing single channel instead of adding a second one.
+    The extractor stamps the names a file declared on that file's own node as
+    ``_php_non_class_types`` — a persisted marker, like ``_callable`` (#2438) —
+    and ``watch``/``graphify update`` hand it back on the resolution-context
+    nodes. Returns a synthetic ``per_file``-shaped entry carrying just those
+    names (or None when there are none), which extends the resolver's existing
+    single channel instead of adding a second one.
 
     ``_php_interfaces`` is the pre-#12 spelling of the same marker, carrying
     interfaces alone; it is still read so a graph.json written before enums and
-    traits joined the set keeps refusing the names it does carry, rather than
-    losing the refusal outright until its files are re-extracted.
+    traits joined the set keeps handing back the names it does carry.
+
+    The MEMBER-CALL RESOLVER no longer consults these names: #5/#12 used them to
+    refuse an interface/enum/trait-typed receiver outright, and #53 lifted that
+    refusal once #47 gave the three declarations canonical nodes of their own
+    (`_resolve_php_member_calls`). The channel itself — pre-scan, stamp, replay —
+    is kept whole: it is what a graph written by an older version still carries,
+    and it is the only record of which corpus names are non-class declarations
+    that survives a rebuild in which the declaring file is never dispatched.
 
     Read from the RAW context list rather than off the merged resolution nodes: a
     changed caller that does `use App\\Contracts\\Notifier;` mints a sourceless
     import stub whose id IS the interface file node's id, and the merge drops the
-    colliding context node (fresh wins) — taking the marker with it, exactly in the
-    case the refusal is needed.
+    colliding context node (fresh wins) — taking the marker with it.
     """
     names = sorted({
         str(name)
@@ -3365,6 +3371,22 @@ def _resolve_php_member_calls(
     (``$obj->method(...)``): the method is referenced, not invoked, so it
     resolves by exactly the rules above but is emitted as ``indirect_call``
     (#15).
+
+    A receiver typed with an ``interface``, ``enum`` or ``trait`` name resolves
+    by those same rules (#53). Until #47 the three minted no definition node, so
+    such a receiver could only ever land on a same-short-named CLASS — the
+    Laravel Contracts collision (``App\\Contracts\\Notifier`` vs
+    ``App\\Support\\Notifier``) or the enum-beside-model one — and #5/#12
+    refused every one of them outright, off a corpus-wide pre-scan of the
+    declared names. Now that each declaration mints a canonical sourced node
+    that its own methods attach to, the same two rules that keep a CLASS-typed
+    receiver honest cover them: a calling file that names one through a ``use``
+    import gets ``PhpNameResolver``'s verdict — the declared-FQN match when the
+    import names an in-corpus declaration, a refusal when it names a vendor type
+    that merely shares the short name — and a file that claims nothing falls to
+    the single-definition guard, which sees the collision as the two definitions
+    it now is. What the blanket refusal was costing is the rest: an interface or
+    enum named by exactly one declaration binds to that declaration's method.
     """
     def key(label: str) -> str:
         # PHP class and method names are case-insensitive.
@@ -3400,33 +3422,14 @@ def _resolve_php_member_calls(
         enclosing_type.setdefault(method, owner)
         method_index.setdefault((owner, key(method_node.get("label", ""))), set()).add(method)
 
-    # Names declared as `interface`, `enum` or `trait` anywhere in the corpus.
-    # None of the three mints a definition node, so without this such a receiver
-    # would bind to whatever same-named CLASS happens to exist — the Laravel
-    # Contracts collision (`App\Contracts\Notifier` vs `App\Support\Notifier`)
-    # or the enum-beside-model one (`App\Enums\Status` vs `App\Models\Status`),
-    # neither of which the single-definition guard can see because there IS only
-    # one definition. `php_interfaces` is the pre-#12 spelling of the same fact,
-    # still read so an AST-cache entry written before enums and traits joined
-    # the set keeps refusing interfaces.
-    #
-    # `per_file` aligns 1:1 with the files dispatched THIS run, so an incremental
-    # rebuild that leaves the declaring file untouched used to see no such names
-    # at all and mint a wrong edge into the same-short-named class (#11).
-    # extract() closes that hole by appending the unchanged corpus's persisted
-    # names as one extra entry, so this single channel still covers the whole
-    # corpus — see `_php_context_interface_entry`.
-    non_class_type_names = {
-        key(name)
-        for result in per_file
-        for keyname in ("php_non_class_types", "php_interfaces")
-        for name in result.get(keyname, [])
-    }
-
-    # Fully qualified class names as each defining file DECLARES them (#14), so
+    # Fully qualified type names as each defining file DECLARES them (#14), so
     # the inline-`new` corroboration below compares the written name against the
     # real one instead of against the file's path, which PSR-4 only conventionally
-    # agrees with. Keyed by defining file, then by short class name.
+    # agrees with. Keyed by defining file, then by short name. Covers every
+    # namespaced declaration, `interface`/`enum`/`trait` included since they
+    # became bindable receiver types (#53) — a declaration without a declared
+    # FQN is one the guards can only judge by its path, and a replayed context
+    # node's path is short enough to make that judgement abstain.
     class_fqn_by_file: dict[str, dict[str, str]] = {}
     for result in per_file:
         declared = result.get("php_class_fqns")
@@ -3438,7 +3441,7 @@ def _resolve_php_member_calls(
     # call site in `_resolve_csharp_member_calls`. A name the calling file
     # CLAIMS through a `use` import or writes out qualified is decided here and
     # never falls back: the refusal is the whole fix for #16, and the claimed
-    # FQN binding to the class whose file declares exactly that name is the
+    # FQN binding to the type whose file declares exactly that name is the
     # recall counterpart (#22) — see PhpNameResolver.
     resolver = PhpNameResolver(all_nodes, all_edges, type_def_nids, class_fqn_by_file)
 
@@ -3482,11 +3485,6 @@ def _resolve_php_member_calls(
             type_name = raw_call.get("receiver_type")
             if not type_name:
                 continue  # untyped / union-typed / unknown receiver: refuse
-            if key(type_name) in non_class_type_names:
-                # An interface names no implementation, a trait is not a
-                # type, and an enum's methods live on no definition node:
-                # refuse rather than bind a same-short-named stranger.
-                continue
             resolved, decisive = resolver.resolve_type_name(
                 type_name,
                 raw_call.get("receiver_type_qualified"),
@@ -3523,8 +3521,8 @@ def _resolve_php_member_calls(
             "target": method_nid,
             # A first-class callable NAMES the method without invoking it, so it
             # is the repo's `indirect_call`, not `calls` (#15). Everything else
-            # above — receiver typing, the single-definition and interface/enum/
-            # trait refusals, the confidence ladder — is deliberately shared.
+            # above — receiver typing, the claimed-name and single-definition
+            # refusals, the confidence ladder — is deliberately shared.
             "relation": "indirect_call" if raw_call.get("fcc") else "calls",
             "context": "call",
             "confidence": "EXTRACTED" if exact else "INFERRED",
@@ -5267,10 +5265,11 @@ def extract(
             `_callable_class` markers, #2438), and the member-call resolvers
             run by `run_language_resolvers` (#2437) — so a changed caller can
             still bind `foo()`, `obj.method()`, or `submit(handler)` to an
-            unchanged callee. They also carry the PHP resolver's interface,
-            enum and trait names, stamped as `_php_non_class_types` on each PHP
-            file node, so an unchanged declaring file keeps its refusal (#11,
-            #12). They are never
+            unchanged callee. They also carry the unchanged corpus's PHP
+            interface, enum and trait names, stamped as `_php_non_class_types`
+            on each PHP file node (#11, #12) — a persisted channel kept whole
+            for older graphs, though the member-call resolver stopped consuming
+            it when #53 lifted the refusal it fed. They are never
             parsed, mutated, or returned; raw_calls come only from `paths`, so
             only edges sourced by the re-extracted files are emitted.
         resolution_context_edges: the `contains`/`method` edges of the same
@@ -6012,11 +6011,22 @@ def extract(
             n for n in resolution_context_nodes
             if n.get("id") and n["id"] not in _fresh_ids
         ]
+    # #52: ids of nodes whose label marks them as a MEMBER of a type — the
+    # engine labels a method `.name()` and a property `.name`, against a
+    # top-level function's `name()`. The normalization below erases that marker
+    # (`.event()` and `event()` both key as `event`), which is what let a PHP
+    # `event(...)` function call bind to a class's `event()` METHOD. The label
+    # is persisted in graph.json, so the discriminator holds just as well for
+    # candidates handed back as unchanged-corpus resolution context (#2406) —
+    # unlike an id-shape or edge-derived test.
+    member_labelled_nids: set[str] = set()
     for n in resolution_nodes:
         if n.get("file_type") == "rationale" or n.get("type") == "namespace":
             continue
         raw = n.get("label", "")
         normalised = raw.strip("()").lstrip(".")
+        if raw.strip("()").startswith("."):
+            member_labelled_nids.add(n["id"])
         if normalised:
             # Case is semantic in most languages, so index (and match, below) by exact
             # case — folding collapses `Path` (class) into `PATH` (env var) and makes a
@@ -6038,6 +6048,20 @@ def extract(
     # as descriptive values (`select(Model)`, exception tuples), not invoked. Exclude
     # them from the indirect_call guard below to avoid false edges (#2137).
     class_nids = {n["id"] for n in resolution_nodes if n.get("_callable_class")}
+
+    def _is_php_function_target(nid: str) -> bool:
+        """Can a bare PHP ``name(...)`` reach this candidate? (#52)
+
+        Only a global or namespaced FUNCTION. A METHOD needs ``$obj->`` /
+        ``Class::`` / callable syntax, and a CLASS-LIKE declaration (class,
+        interface, enum, trait) is not invocable at all — ``Report($e)`` where
+        only ``class Report`` exists is a "Call to undefined function" fatal,
+        not a constructor call. Both discriminators survive an incremental
+        rebuild: the member marker rides the persisted LABEL, and
+        ``_callable_class`` is one of the markers `graphify update` / `watch`
+        replay onto their `resolution_context_nodes` (cli.py, watch.py).
+        """
+        return nid not in member_labelled_nids and nid not in class_nids
 
     # Build evidence index from import edges so cross-file calls backed by an
     # explicit import statement can be promoted from INFERRED to EXTRACTED.
@@ -6142,6 +6166,35 @@ def extract(
             candidates = global_label_to_nids_ci.get(callee.lower(), [])
         if not candidates:
             continue
+        # #52: a PHP `function_call_expression` — a bare `name(...)` — can only
+        # invoke a global/namespaced FUNCTION, so only plausible function targets
+        # stay candidates (`_is_php_function_target`). Laravel's `event(...)`
+        # helper was binding to whichever class declared an `event()` METHOD —
+        # 848 incoming edges on one test method in the measured corpus — because
+        # the label index erases the `.` member marker and the method was then
+        # the sole candidate → single-candidate bind. Filtering the candidate
+        # list (rather than the index) covers every consumer below at once —
+        # single-candidate bind, import-evidence disambiguation and the god-node
+        # tie-break. PHP-only by design: Ruby and Python bare calls reach methods
+        # through implicit self, so their candidate filtering is unchanged.
+        if rc.get("php_function_call"):
+            candidates = [c for c in candidates if _is_php_function_target(c)]
+            # Refusing the exact-case candidates re-opens the folded fallback,
+            # which only ever fires on an EMPTY exact-case list above. A method
+            # shadowing the exact-case key (`.event()` → `event`) otherwise hid a
+            # real `function Event()` — reachable solely under the folded key —
+            # and the site resolved to nothing at all. Same folded index, same
+            # case-insensitive-caller gate, same refusal applied to it: without
+            # the refusal here the retry reaches a capitalized CLASS under the
+            # folded key (`report(...)` → `class Report`) that the exact-case
+            # path never offered — 7 such edges on the measured corpus.
+            if not candidates and _lang_is_case_insensitive(rc.get("source_file")):
+                candidates = [
+                    c for c in global_label_to_nids_ci.get(callee.lower(), [])
+                    if _is_php_function_target(c)
+                ]
+            if not candidates:
+                continue
         # Cross-language guard: never bind a call to a definition in a different
         # language family. Name-only matching was resolving a TSX callback passed
         # by name to a same-named Kotlin method in the Android half of the repo
@@ -6296,12 +6349,12 @@ def extract(
     # unchanged file is ever emitted, and the ambiguity guards count the same
     # candidates a full build would (the context is the whole unchanged corpus).
     #
-    # #11/#12: nodes and edges are not the whole story — the PHP resolver also
-    # needs the unchanged corpus's INTERFACE, ENUM and TRAIT names, which mint no
-    # node of their own. They ride in on the context nodes' `_php_non_class_types`
-    # marker; hand them over as one extra `per_file` entry (scratch list, the real
-    # `per_file` is untouched) so an unchanged declaring file keeps refusing such
-    # a receiver instead of letting it bind to a same-short-named class.
+    # #11/#12: the unchanged corpus's INTERFACE, ENUM and TRAIT names ride in on
+    # the context nodes' `_php_non_class_types` marker and are handed over as one
+    # extra `per_file` entry (scratch list, the real `per_file` is untouched).
+    # The member-call resolver stopped consuming them in #53 — its refusal was
+    # made redundant by the declaration nodes #47 mints — but the channel is kept
+    # whole for the graphs still carrying it; see `_php_context_interface_entry`.
     if resolution_context_nodes or resolution_context_edges:
         _rl_nodes = list(resolution_nodes)
         _rl_edges = all_edges + list(resolution_context_edges or [])
@@ -6456,11 +6509,12 @@ def extract(
     # label (that would reintroduce the #1566/#2137 data-symbol false positives);
     # a graph written before the markers existed simply fails closed until its
     # files are re-extracted.
-    # `_php_non_class_types` (#11, #12) is kept for the same reason and with the
-    # opposite failure direction: a pre-marker graph simply loses the refusal on
-    # an incremental rebuild until the declaring file is re-extracted. A graph
-    # carrying only the pre-#12 `_php_interfaces` spelling keeps refusing the
-    # interfaces it names — both spellings are read.
+    # `_php_non_class_types` (#11, #12) persists for the same reason: it is the
+    # only record of which corpus names are interface/enum/trait declarations
+    # that survives a rebuild leaving the declaring file undispatched. Both
+    # spellings are read back, the pre-#12 `_php_interfaces` included. Nothing
+    # consumes it for resolution since #53 lifted the receiver refusal it fed;
+    # the channel stays because the graphs written by earlier versions carry it.
     # `_php_class_fqns` (#23) persists likewise, failing in the safe direction
     # too: a pre-marker graph loses the declared-FQN BINDING (#22) on an
     # incremental rebuild — an absent edge, never a guessed one — until the
