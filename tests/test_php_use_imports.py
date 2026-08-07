@@ -1,14 +1,16 @@
 """PHP `use`-import capture (#19).
 
-Every assertion goes through the public `extract()` seam. These are
-metadata-shape tests: the `imports` edges themselves (their targets) must stay
-exactly as they were — only `target_fqn` / `alias` / `use_kind` are new.
+Every assertion goes through a public extract seam. These are metadata-shape
+tests: at capture time the `imports` edges themselves (their targets) must stay
+exactly as they were — only `target_fqn` / `alias` / `use_kind` are new. Since
+#48 the *resolver* re-points class imports off that captured FQN, so the
+capture-invariant test uses the single-file `extract_php()` seam.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
-from graphify.extract import extract
+from graphify.extract import extract, extract_php
 
 
 def _write(path: Path, text: str) -> Path:
@@ -137,8 +139,28 @@ def test_php_trait_use_inside_a_class_body_is_not_an_import(tmp_path: Path):
 
 
 def test_php_import_edge_targets_are_unchanged_by_metadata_capture(tmp_path: Path):
-    # Regression guard: capturing the FQN must not re-point the edge. Targets
-    # stay keyed on the imported short name exactly as before.
+    # Regression guard: capturing the FQN must not re-point the edge. At capture
+    # time the targets stay keyed on the imported short name exactly as before —
+    # re-pointing is the resolver's job (see the companion test below).
+    f = _write(
+        tmp_path / "lib.php",
+        "<?php\nuse A\\B\\C;\nuse A\\B\\C2 as D;\nuse A\\{B2, C3 as X};\n"
+        "use function Vendor\\Sdk\\Render;\nclass I {}\n",
+    )
+    result = extract_php(f)
+
+    targets = sorted(
+        e["target"] for e in result["edges"] if e.get("relation") == "imports"
+    )
+    assert targets == ["b2", "c", "c2", "c3", "render"], targets
+
+
+def test_php_class_imports_are_repointed_onto_their_target_fqn(tmp_path: Path):
+    # #48: the resolver re-points class `imports` edges from their own
+    # `target_fqn`. None of these FQNs exist in the corpus, so each parks on its
+    # own FQN-labeled external stub instead of dangling on a bare short name
+    # that the legacy rewire could collapse onto an unrelated class.
+    # `use function` targets are not types and are left alone.
     f = _write(
         tmp_path / "lib.php",
         "<?php\nuse A\\B\\C;\nuse A\\B\\C2 as D;\nuse A\\{B2, C3 as X};\n"
@@ -149,4 +171,5 @@ def test_php_import_edge_targets_are_unchanged_by_metadata_capture(tmp_path: Pat
     targets = sorted(
         e["target"] for e in result["edges"] if e.get("relation") == "imports"
     )
-    assert targets == ["b2", "c", "c2", "c3", "render"], targets
+    assert targets == ["a_b2", "a_b_c", "a_b_c2", "a_c3", "render"], targets
+    assert {"A\\B\\C", "A\\B\\C2", "A\\B2", "A\\C3"} <= _labels(result), _labels(result)

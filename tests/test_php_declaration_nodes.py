@@ -188,18 +188,17 @@ def test_php_trait_and_enum_declared_in_a_differently_named_file(tmp_path: Path)
     ]
 
     # `enum Status` is imported by Consumer3 but only used as `Status::Active`, so
-    # nothing mints a stub node for it and the repoint pass — which reads the
-    # target's stub LABEL — skips the edge. That is RC2 (#48), an independent root
-    # cause: the edge must be resolved from its own `target_fqn` metadata. RC1's
-    # contract here is the half #48 needs and cannot supply: the node exists, is
-    # sourced, and carries the FQN the metadata will resolve to.
+    # nothing mints a stub node for it. RC1 (#47) supplies the sourced node with
+    # the FQN, and RC2 (#48) resolves the edge from its own `target_fqn` metadata
+    # instead of a stub label — with both landed, the import canonicalizes onto
+    # the enum's declaration node.
     enum_import = next(
         e for e in _edges(result, "imports")
         if (e.get("metadata") or {}).get("target_fqn") == "App\\Repo\\Status"
     )
-    assert enum_import["target"] not in {n["id"] for n in result["nodes"]}, (
-        "enum import no longer dangles — RC2 (#48) has landed; tighten this "
-        "assertion to `enum_import['target'] == status['id']`"
+    assert enum_import["target"] == status["id"], (
+        "the enum's imports edge must land on the sourced declaration node "
+        "now that RC1 (#47) and RC2 (#48) are both present"
     )
 
 
