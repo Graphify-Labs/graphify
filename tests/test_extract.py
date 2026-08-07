@@ -1650,6 +1650,255 @@ def test_extract_parallel_still_spawns_pool_for_multiple_workers(tmp_path, monke
     assert spawned["count"] == 1, "multi-worker runs must still use the pool"
 
 
+def test_extract_falls_back_when_worker_future_breaks_pool(
+    tmp_path, monkeypatch, capsys
+):
+    """#2444: a BrokenProcessPool raised from future.result() (pool died while
+    results were being consumed) must trigger the sequential fallback, not be
+    swallowed per-future leaving empty per_file slots."""
+    from concurrent.futures.process import BrokenProcessPool
+    import concurrent.futures
+    from graphify import extract as extract_mod
+
+    class BrokenFuture:
+        def result(self):
+            raise BrokenProcessPool("simulated worker termination")
+
+    class FakePool:
+        def __init__(self, *a, **kw): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def submit(self, *a, **kw):
+            return BrokenFuture()
+
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", FakePool)
+    monkeypatch.setattr(
+        concurrent.futures, "as_completed", lambda futures: iter(futures)
+    )
+    # A 1-CPU runner resolves max_workers to 1 and never enters the pool (#2173).
+    monkeypatch.setenv("GRAPHIFY_MAX_WORKERS", "2")
+
+    sequential_calls = 0
+    real_sequential = extract_mod._extract_sequential
+
+    def wrapped_sequential(*args, **kwargs):
+        nonlocal sequential_calls
+        sequential_calls += 1
+        return real_sequential(*args, **kwargs)
+
+    monkeypatch.setattr(extract_mod, "_extract_sequential", wrapped_sequential)
+
+    files = [FIXTURES / "sample.py"] * 25  # >= _PARALLEL_THRESHOLD
+    result = extract_mod.extract(files, cache_root=tmp_path / "cache")
+
+    assert sequential_calls == 1, "sequential fallback should have run exactly once"
+    assert result["nodes"], "sequential fallback must recover AST nodes"
+    assert "BrokenProcessPool" in capsys.readouterr().out
+
+
+def test_extract_bpp_fallback_skips_already_completed_files(tmp_path, monkeypatch):
+    """#2444: when the pool breaks mid-run, the sequential fallback must
+    re-extract only the files whose futures never completed."""
+    from concurrent.futures.process import BrokenProcessPool
+    import concurrent.futures
+    from graphify import extract as extract_mod
+
+    completed_before_break = 5
+
+    class GoodFuture:
+        def __init__(self, value): self._value = value
+        def result(self): return self._value
+
+    class BrokenFuture:
+        def result(self):
+            raise BrokenProcessPool("simulated worker termination")
+
+    class FakePool:
+        def __init__(self, *a, **kw):
+            self._submitted = 0
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def submit(self, fn, item):
+            self._submitted += 1
+            if self._submitted <= completed_before_break:
+                return GoodFuture(fn(item))  # extract in-process, eagerly
+            return BrokenFuture()
+
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", FakePool)
+    monkeypatch.setattr(
+        concurrent.futures, "as_completed", lambda futures: iter(futures)
+    )
+    monkeypatch.setenv("GRAPHIFY_MAX_WORKERS", "2")
+
+    retried: list[list[int]] = []
+    real_sequential = extract_mod._extract_sequential
+
+    def wrapped_sequential(uncached_work, *args, **kwargs):
+        retried.append([idx for idx, _ in uncached_work])
+        return real_sequential(uncached_work, *args, **kwargs)
+
+    monkeypatch.setattr(extract_mod, "_extract_sequential", wrapped_sequential)
+
+    files = [FIXTURES / "sample.py"] * 25
+    result = extract_mod.extract(files, cache_root=tmp_path / "cache")
+
+    assert len(retried) == 1, "sequential fallback should have run exactly once"
+    assert sorted(retried[0]) == list(range(completed_before_break, 25)), (
+        "files whose futures completed before the pool broke must not be re-extracted"
+    )
+    assert result["nodes"]
+
+
+def test_extract_parallel_retries_failed_future_sequentially(
+    tmp_path, monkeypatch, capsys
+):
+    """#2445: a non-BPP per-future failure must be surfaced and retried
+    in-process, not silently replaced by a well-formed empty result."""
+    import concurrent.futures
+    from graphify import extract as extract_mod
+
+    class GoodFuture:
+        def __init__(self, value): self._value = value
+        def result(self): return self._value
+
+    class FailingFuture:
+        def result(self):
+            raise RuntimeError("simulated worker crash")
+
+    class FakePool:
+        def __init__(self, *a, **kw):
+            self._submitted = 0
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def submit(self, fn, item):
+            self._submitted += 1
+            if self._submitted == 1:
+                return FailingFuture()
+            return GoodFuture(fn(item))
+
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", FakePool)
+    monkeypatch.setattr(
+        concurrent.futures, "as_completed", lambda futures: iter(futures)
+    )
+    monkeypatch.setenv("GRAPHIFY_MAX_WORKERS", "2")
+
+    retried: list[list[int]] = []
+    real_sequential = extract_mod._extract_sequential
+
+    def wrapped_sequential(uncached_work, *args, **kwargs):
+        retried.append([idx for idx, _ in uncached_work])
+        return real_sequential(uncached_work, *args, **kwargs)
+
+    monkeypatch.setattr(extract_mod, "_extract_sequential", wrapped_sequential)
+
+    files = [FIXTURES / "sample.py"] * 25
+    result = extract_mod.extract(files, cache_root=tmp_path / "cache")
+
+    assert retried == [[0]], "only the failed file may be retried, exactly once"
+    assert result["nodes"]
+    err = capsys.readouterr().err
+    assert "worker failed" in err
+    assert "zero nodes" not in err, (
+        "a retried-and-recovered file must not trip the #1666 empty warning"
+    )
+
+
+def test_extract_twice_failing_file_carries_error_marker(tmp_path, monkeypatch):
+    """#2445: a file that fails in the pool AND on the sequential retry must
+    end up with an error-carrying result (via _safe_extract), not loop and not
+    masquerade as legitimately empty. Other files still complete."""
+    import concurrent.futures
+    from graphify import extract as extract_mod
+
+    bad_file = tmp_path / "boom.go"
+    bad_file.write_text("package main\n")
+
+    def _boom_extractor(path):
+        raise RuntimeError("extractor always crashes")
+
+    monkeypatch.setitem(extract_mod._DISPATCH, ".go", _boom_extractor)
+
+    class GoodFuture:
+        def __init__(self, value): self._value = value
+        def result(self): return self._value
+
+    class FailingFuture:
+        def result(self):
+            raise RuntimeError("simulated worker crash")
+
+    class FakePool:
+        def __init__(self, *a, **kw):
+            self._submitted = 0
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def submit(self, fn, item):
+            self._submitted += 1
+            if self._submitted == 1:  # boom.go is first in the batch
+                return FailingFuture()
+            return GoodFuture(fn(item))
+
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", FakePool)
+    monkeypatch.setattr(
+        concurrent.futures, "as_completed", lambda futures: iter(futures)
+    )
+    monkeypatch.setenv("GRAPHIFY_MAX_WORKERS", "2")
+
+    captured: dict = {"calls": 0}
+    real_sequential = extract_mod._extract_sequential
+
+    def wrapped_sequential(uncached_work, per_file, *args, **kwargs):
+        captured["calls"] += 1
+        captured["retry_indices"] = [idx for idx, _ in uncached_work]
+        real_sequential(uncached_work, per_file, *args, **kwargs)
+        captured["per_file"] = list(per_file)
+
+    monkeypatch.setattr(extract_mod, "_extract_sequential", wrapped_sequential)
+
+    files = [bad_file] + [FIXTURES / "sample.py"] * 24
+    result = extract_mod.extract(files, cache_root=tmp_path / "cache")
+
+    assert captured["calls"] == 1, "the retry must be bounded: one pass, no loop"
+    assert captured["retry_indices"] == [0]
+    assert "error" in captured["per_file"][0], (
+        "a twice-failing file must carry an error marker, not a clean empty"
+    )
+    assert result["nodes"], "the other files must still complete"
+
+
+def test_extract_legitimately_empty_result_keeps_no_error_marker(
+    tmp_path, monkeypatch, capsys
+):
+    """Guard for the #2445 error-marked None-fill: a file whose extractor
+    genuinely returns zero nodes gets a real (marker-free) result and still
+    trips the #1666 zero-nodes warning — behavior unchanged."""
+    from graphify import extract as extract_mod
+
+    empty_file = tmp_path / "empty.go"
+    empty_file.write_text("package main\n")
+
+    monkeypatch.setitem(
+        extract_mod._DISPATCH, ".go", lambda path: {"nodes": [], "edges": []}
+    )
+
+    captured: dict = {}
+    real_sequential = extract_mod._extract_sequential
+
+    def wrapped_sequential(uncached_work, per_file, *args, **kwargs):
+        real_sequential(uncached_work, per_file, *args, **kwargs)
+        captured["per_file"] = list(per_file)
+
+    monkeypatch.setattr(extract_mod, "_extract_sequential", wrapped_sequential)
+
+    extract_mod.extract([empty_file], cache_root=tmp_path / "cache")
+
+    assert "error" not in captured["per_file"][0], (
+        "a legitimately-empty extraction must not be error-marked"
+    )
+    assert "zero nodes" in capsys.readouterr().err, (
+        "the #1666 zero-nodes warning must still fire for a genuine empty"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Bash extractor tests (#866)
 # ---------------------------------------------------------------------------

@@ -548,9 +548,11 @@ def _java_method_receiver_types(
     return table
 
 
-def _java_annotation_names(declaration_node, source: bytes) -> list[str]:
-    """Collect annotation names from a Java declaration's `modifiers` child."""
-    names: list[str] = []
+def _java_annotation_names(declaration_node, source: bytes) -> list[tuple[str, str]]:
+    """Collect ``(simple, raw)`` annotation names from a Java declaration's
+    `modifiers` child. ``raw`` keeps the dotted qualifier of an inline-qualified
+    annotation (``@org.pkg.Foo``); it equals ``simple`` when unqualified."""
+    names: list[tuple[str, str]] = []
     modifiers = None
     for child in declaration_node.children:
         if child.type == "modifiers":
@@ -568,9 +570,10 @@ def _java_annotation_names(declaration_node, source: bytes) -> list[str]:
                     name_node = sub
                     break
         if name_node is not None:
-            text = _read_text(name_node, source).rsplit(".", 1)[-1]
+            raw = _read_text(name_node, source)
+            text = raw.rsplit(".", 1)[-1]
             if text:
-                names.append(text)
+                names.append((text, raw))
     return names
 
 def _php_name_text(node, source: bytes) -> str | None:
@@ -1438,59 +1441,71 @@ def _csharp_method_receiver_types(
     method_node,
     source: bytes,
     field_types: dict[str, str],
-) -> dict[str, str]:
-    """Build the receiver type table visible to one C# method (#2299).
+) -> tuple[dict[str, list[tuple[int, int, str | None]]], dict[str, str]]:
+    """Build the SCOPED receiver bindings visible to one C# method (#2299, #2472).
 
-    The C# twin of ``_java_method_receiver_types``: current-class fields and
-    properties are the base scope, and parameters plus local declarations bind
-    on top of them for the full method. C# scoping is per-method, so a name
-    rebound in a DIFFERENT method never poisons this one — the #2299 regression
-    under the old file-wide table, where ``var item = items[i]`` in one method
-    (untypable) silently deleted the true edge for a same-named, explicitly
-    typed parameter elsewhere in the file.
+    The C# twin of ``_java_method_receiver_types``, but positional: instead of
+    a flat name -> type map, the first element maps each name to a list of
+    ``(scope_start_byte, scope_end_byte, type_name)`` bindings and the second
+    is the class field/property base scope; ``_csharp_scoped_receiver_type``
+    resolves a call site against them by byte offset. C# scoping is per-method,
+    so a name rebound in a DIFFERENT method never affects this one (#2299) —
+    and, since #2472, an untypable binding (``out var x``) in one lexical scope
+    no longer wipes a same-named typed binding in a sibling or nested scope
+    (a ``static`` local-function parameter, a declaration in the other branch
+    of an ``if``), the regression the #2346 declaration-expression harvest
+    exposed under the old method-wide poison rule.
 
-    Poisoning stays method-local and conservative, because raw call facts do
-    not retain lexical position inside the method: a name is dropped entirely on
-    an unresolvable binding (``var x = Compute();``, a primitive, ``dynamic``,
-    an untyped lambda parameter), a same-method conflict, or a conflict with
-    the class field's type for that name. ``var v = new T()`` is typed from the
-    object-creation (precision over recall — an untypable receiver is left for
-    the resolver to drop rather than guess).
+    A receiver_type is stamped iff exactly one binding is lexically visible at
+    the call site (innermost scope wins) and it is typed; an untypable or tied
+    binding at the call site yields no edge (never a guess). Scope ranges are
+    deliberately conservative — a pattern binding (``is T x``, ``case T x:``)
+    spans its whole enclosing block, which is over-wide, but over-wide only
+    ever produces ties (drop), never a wrong bind. The class-field conflict
+    rule is unchanged: a local binding disagreeing with a same-named
+    field/property's type drops the name entirely. Residual limitation:
+    ``out var x`` itself stays untyped — resolving it from the callee's
+    ``out`` parameter signature is a separate, pre-existing gap.
     """
-    method_types: dict[str, str] = {}
-    ambiguous: set[str] = set()
+    bindings: dict[str, list[tuple[int, int, str | None]]] = {}
+    field_poisoned: set[str] = set()
 
-    def bind(name: str | None, type_name: str | None) -> None:
-        if not name or name in ambiguous:
+    def bind(name: str | None, type_name: str | None, scope_node) -> None:
+        if not name or scope_node is None:
             return
-        if (
-            type_name is None
-            or method_types.get(name, type_name) != type_name
-            or field_types.get(name) not in (None, type_name)
-        ):
-            method_types.pop(name, None)
-            ambiguous.add(name)
-        else:
-            method_types[name] = type_name
+        if field_types.get(name) not in (None, type_name):
+            field_poisoned.add(name)
+        bindings.setdefault(name, []).append(
+            (scope_node.start_byte, scope_node.end_byte, type_name)
+        )
 
-    def bind_parameter(param) -> None:
+    def bind_parameter(param, scope_node) -> None:
         name_node = param.child_by_field_name("name")
         if name_node is not None:
             bind(
                 _read_text(name_node, source),
                 _csharp_receiver_type_name(param.child_by_field_name("type"), source),
+                scope_node,
             )
 
+    body = method_node.child_by_field_name("body")
+    # Parameters scope to the BODY range: a parameter and an (illegal)
+    # same-named top-level local share one C# declaration space, and equal
+    # ranges tie at the call site — drop, never a guess.
+    param_scope = body if body is not None else method_node
     params = method_node.child_by_field_name("parameters")
     if params is not None:
         for param in params.children:
             if param.type == "parameter":
-                bind_parameter(param)
+                bind_parameter(param, param_scope)
 
-    body = method_node.child_by_field_name("body")
-    stack = list(body.children) if body is not None else []
+    stack = (
+        [(child, param_scope) for child in body.children]
+        if body is not None
+        else []
+    )
     while stack:
-        node = stack.pop()
+        node, scope = stack.pop()
         if node.type in (
             "class_declaration",
             "struct_declaration",
@@ -1500,26 +1515,26 @@ def _csharp_method_receiver_types(
         ):
             continue
         if node.type == "lambda_expression":
-            # Raw calls are method-scoped, so a lambda-local binding cannot be
-            # distinguished from an enclosing binding with the same name: a
-            # typed lambda parameter binds, an untyped one (`x => ...`,
-            # `(z) => ...`) binds None and poisons the name method-locally.
+            # A lambda parameter is visible exactly inside the lambda: a typed
+            # one binds its type there, an untyped one (`x => ...`,
+            # `(z) => ...`) binds None so calls on it inside the lambda stay
+            # unstamped — without wiping a same-named outer binding (#2472).
             lam_params = node.child_by_field_name("parameters")
             if lam_params is not None:
                 if lam_params.type == "implicit_parameter":
-                    bind(_read_text(lam_params, source), None)
+                    bind(_read_text(lam_params, source), None, node)
                 else:
                     for param in lam_params.children:
                         if param.type == "parameter":
-                            bind_parameter(param)
+                            bind_parameter(param, node)
                         elif param.type == "implicit_parameter":
-                            bind(_read_text(param, source), None)
+                            bind(_read_text(param, source), None, node)
         elif node.type == "local_function_statement":
             lf_params = node.child_by_field_name("parameters")
             if lf_params is not None:
                 for param in lf_params.children:
                     if param.type == "parameter":
-                        bind_parameter(param)
+                        bind_parameter(param, node)
         elif node.type == "local_declaration_statement":
             vd = next(
                 (c for c in node.children if c.type == "variable_declaration"), None
@@ -1546,14 +1561,74 @@ def _csharp_method_receiver_types(
                                     g.child_by_field_name("type"), source
                                 )
                                 break
-                    bind(_read_text(name_node, source), type_name)
-        stack.extend(node.children)
+                    bind(_read_text(name_node, source), type_name, scope)
+        elif node.type in ("declaration_expression", "declaration_pattern"):
+            # #2346: inline-declared receivers. `out Sect s` is a
+            # declaration_expression; `is Leaf lf`, `is not Node nd`,
+            # `case Twig tw:` and a switch-arm `Stem st =>` are
+            # declaration_patterns — all carry `type` + `name` fields and
+            # bind the name for the enclosing block. `out var v`
+            # (implicit_type) yields None from _csharp_receiver_type_name
+            # and stays untypable inside that block only — no guess at its
+            # own call sites, no method-wide wipe of other scopes (#2472).
+            name_node = node.child_by_field_name("name")
+            if name_node is not None and name_node.type == "identifier":
+                bind(
+                    _read_text(name_node, source),
+                    _csharp_receiver_type_name(
+                        node.child_by_field_name("type"), source
+                    ),
+                    scope,
+                )
+        child_scope = (
+            node
+            if node.type in (
+                "block", "lambda_expression", "local_function_statement"
+            )
+            else scope
+        )
+        stack.extend((child, child_scope) for child in node.children)
 
-    table = dict(field_types)
-    table.update(method_types)
-    for name in ambiguous:
-        table.pop(name, None)
-    return table
+    base = {
+        name: type_name
+        for name, type_name in field_types.items()
+        if name not in field_poisoned
+    }
+    for name in field_poisoned:
+        bindings.pop(name, None)
+    return bindings, base
+
+
+def _csharp_scoped_receiver_type(
+    table: tuple[dict[str, list[tuple[int, int, str | None]]], dict[str, str]] | None,
+    name: str | None,
+    call_byte: int,
+) -> str | None:
+    """Resolve a C# receiver name to its type at a specific call offset (#2472).
+
+    ``table`` is the (scoped bindings, field base) pair built by
+    ``_csharp_method_receiver_types``. Bindings whose scope contains the call
+    offset are candidates and the innermost (smallest-range) one wins; no
+    candidate at all falls back to the class field/property base scope. A tie
+    at the innermost range (an illegal same-declaration-space clash, e.g. a
+    parameter redeclared as a top-level local, or two sibling pattern bindings
+    of the same name) or an untypable winner yields None — no edge, never a
+    guess.
+    """
+    if not table or not name:
+        return None
+    bindings, base = table
+    candidates = [
+        b for b in bindings.get(name, ())
+        if b[0] <= call_byte < b[1]
+    ]
+    if not candidates:
+        return base.get(name)
+    innermost = min(end - start for start, end, _ in candidates)
+    inner = [b for b in candidates if b[1] - b[0] == innermost]
+    if len(inner) == 1:
+        return inner[0][2]
+    return None
 
 def _ts_receiver_type_table(root, source: bytes, table: dict[str, str]) -> None:
     """Add TS/JS receiver bindings to ``table`` (name -> TypeName), for member-call
@@ -2171,12 +2246,19 @@ def _ruby_const_last_name(node, source: bytes) -> str:
             return _read_text(consts[-1], source)
     return ""
 
+def _ruby_const_full_name(node, source: bytes) -> str:
+    """Full constant path of a ``constant`` or ``scope_resolution`` (``A::B::C`` kept whole)."""
+    if node is None or node.type not in ("constant", "scope_resolution"):
+        return ""
+    return _read_text(node, source).strip()
+
 _RUBY_CLASS_FACTORIES = frozenset({("Struct", "new"), ("Class", "new"), ("Data", "define")})
 
 def _ruby_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                      nodes: list, edges: list, seen_ids: set, function_bodies: list,
                      parent_class_nid: str | None, add_node, add_edge, walk,
-                     callable_def_nids: set, callable_class_nids: set) -> bool:
+                     callable_def_nids: set, callable_class_nids: set,
+                     ruby_namespace: list) -> bool:
     """Ruby: a constant assignment whose RHS is ``Struct.new(...)``,
     ``Class.new(Super)`` or ``Data.define(...)`` defines a class named after the
     constant (#1640). Synthesize the class node, attach block-defined methods via
@@ -2199,6 +2281,11 @@ def _ruby_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: st
     const_name = _read_text(left, source)
     if not const_name:
         return False
+    # Qualify the factory-defined const against the enclosing scope, mirroring
+    # the generic class branch (#2302): `module Billing; Invoice = Struct.new`
+    # labels `Billing::Invoice`.
+    const_segments = const_name.split("::")
+    const_name = "::".join(ruby_namespace + const_segments)
     line = node.start_point[0] + 1
     class_nid = _make_id(stem, const_name)
     add_node(class_nid, const_name, line)
@@ -2242,8 +2329,12 @@ def _ruby_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: st
     block = next((c for c in right.children if c.type in ("do_block", "block")), None)
     if block is not None:
         body = next((c for c in block.children if c.type == "body_statement"), block)
-        for child in body.children:
-            walk(child, parent_class_nid=class_nid)
+        ruby_namespace.extend(const_segments)
+        try:
+            for child in body.children:
+                walk(child, parent_class_nid=class_nid)
+        finally:
+            del ruby_namespace[-len(const_segments):]
     return True
 
 def _extract_generic(
@@ -2293,6 +2384,11 @@ def _extract_generic(
     edges: list[dict] = []
     seen_ids: set[str] = set()
     namespace_stack: list[str] = []
+    # Ruby only: enclosing module/class segments, so `module Foo::Bar` (compact)
+    # and `module Foo; module Bar` (nested) label the same node `Foo::Bar` and
+    # `include Foo::Bar` resolves for both spellings (#2302). Kept separate from
+    # namespace_stack so Ruby method ids/labels are unchanged.
+    ruby_namespace: list[str] = []
     scope_stack: list[str] = []
     function_bodies: list[tuple[str, object]] = []
     # nids of function / method / class definitions in this file. The indirect-
@@ -2467,11 +2563,35 @@ def _extract_generic(
             if not name_node:
                 return
             class_name = _read_text(name_node, source)
+            # Ruby: fully qualify the module/class label with its enclosing
+            # scope, splitting compact `Foo::Bar` names into segments so both
+            # declaration styles converge on one `Foo::Bar` label (#2302).
+            ruby_segments: list[str] = []
+            if config.ts_module == "tree_sitter_ruby":
+                ruby_segments = class_name.split("::")
+                class_name = "::".join(ruby_namespace + ruby_segments)
             class_nid = _make_id(stem, ".".join(namespace_stack), class_name)
             line = node.start_point[0] + 1
             metadata = None
-            if config.ts_module == "tree_sitter_c_sharp" and parent_class_nid:
-                metadata = {"is_nested_type": True}
+            if config.ts_module == "tree_sitter_c_sharp":
+                if parent_class_nid:
+                    metadata = {"is_nested_type": True}
+                # #2332: `partial class Foo` split across files mints one node
+                # per file (the id carries the file stem). Stamp the halves so
+                # the corpus-level _merge_csharp_partial_class_nodes pass can
+                # collapse them onto one canonical node. Grammar: `partial` is
+                # a `modifier` direct child of the type declaration.
+                if t in (
+                    "class_declaration",
+                    "struct_declaration",
+                    "interface_declaration",
+                    "record_declaration",
+                ) and any(
+                    c.type == "modifier" and _read_text(c, source) == "partial"
+                    for c in node.children
+                ):
+                    metadata = dict(metadata or {})
+                    metadata["is_partial"] = True
             add_node(class_nid, class_name, line, metadata=metadata)
             callable_def_nids.add(class_nid)  # a class is callable (constructor)
             callable_class_nids.add(class_nid)  # ...but only via its constructor (#2137)
@@ -2703,7 +2823,11 @@ def _extract_generic(
                         for _arg in _args.children:
                             if _arg.type not in ("constant", "scope_resolution"):
                                 continue
-                            _mod = _ruby_const_last_name(_arg, source)
+                            # Full path, not last segment: `include Foo::Bar`
+                            # must reference `Foo::Bar`, and truncating
+                            # `ActiveSupport::Concern` to `Concern` fabricated
+                            # edges to any local `Concern` module (#2302).
+                            _mod = _ruby_const_full_name(_arg, source)
                             if _mod:
                                 _ruby_mixin_calls.append({
                                     "caller_nid": class_nid,
@@ -2825,7 +2949,14 @@ def _extract_generic(
                                         if tid.is_named:
                                             _emit_java_parent_type(tid, "inherits", line)
 
-                for anno_name in _java_annotation_names(node, source):
+                for anno_name, anno_raw in _java_annotation_names(node, source):
+                    # An inline-qualified annotation (`@org.pkg.Foo`) keeps its
+                    # full dotted name so a bare same-named local class can't
+                    # absorb it; _resolve_java_type_references maps internal
+                    # FQNs back to their real nodes (#2504). Groovy has no such
+                    # resolver pass, so it keeps the legacy bare-name stub.
+                    if "." in anno_raw and config.ts_module == "tree_sitter_java":
+                        anno_name = anno_raw
                     target_nid = ensure_named_node(anno_name, line)
                     if target_nid != class_nid:
                         add_edge(class_nid, target_nid, "references", line,
@@ -2962,11 +3093,18 @@ def _extract_generic(
                                     add_edge(class_nid, target_nid, "references",
                                              line, context="generic_arg")
 
-            # Find body and recurse
+            # Find body and recurse. Ruby pushes its scope segments so nested
+            # declarations qualify against the enclosing module/class (#2302);
+            # ruby_segments is empty for every other language.
             body = _find_body(node, config)
             if body:
-                for child in body.children:
-                    walk(child, parent_class_nid=class_nid)
+                ruby_namespace.extend(ruby_segments)
+                try:
+                    for child in body.children:
+                        walk(child, parent_class_nid=class_nid)
+                finally:
+                    if ruby_segments:
+                        del ruby_namespace[-len(ruby_segments):]
             return
 
         # Event listener property arrays: $listen = [Event::class => [Listener::class]]
@@ -3440,8 +3578,11 @@ def _extract_generic(
                         target_nid = ensure_named_node(ref_name, line)
                         if target_nid != func_nid:
                             add_edge(func_nid, target_nid, "references", line, context=ctx)
-                for anno_name in _java_annotation_names(node, source):
-                    target_nid = ensure_named_node(anno_name, line)
+                for anno_name, anno_raw in _java_annotation_names(node, source):
+                    # Inline-qualified: keep the dotted name (#2504); see the
+                    # class-level annotation handling above.
+                    target_nid = ensure_named_node(
+                        anno_raw if "." in anno_raw else anno_name, line)
                     if target_nid != func_nid:
                         add_edge(func_nid, target_nid, "references", line, context="attribute")
 
@@ -3688,6 +3829,90 @@ def _extract_generic(
                 if config.ts_module == "tree_sitter_c_sharp" and parent_class_nid:
                     csharp_method_scopes[id(body)] = (node, parent_class_nid)
                 function_bodies.append((func_nid, body))
+                if config.ts_module == "tree_sitter_kotlin":
+                    # #2347: Kotlin anonymous objects (`object : Foo { … }`,
+                    # node type `object_literal`). The function branch never
+                    # recurses into bodies and object_literal is not a
+                    # class_type, so the literal's members (and every call
+                    # inside them) got no nodes at all. Scan this body for
+                    # object_literal descendants — without crossing a nested
+                    # function_declaration boundary (a local fun's literals
+                    # are not this function's) and without descending into a
+                    # found literal — then emit an owner node per literal and
+                    # walk its class_body exactly like the class branch, so
+                    # members and their calls flow through the normal
+                    # machinery (walk_calls' function_boundary_types already
+                    # keep the enclosing function from absorbing them).
+                    _kt_literals = []
+                    _kt_stack = list(body.children)
+                    while _kt_stack:
+                        _kt_node = _kt_stack.pop()
+                        if _kt_node.type == "function_declaration":
+                            continue
+                        if _kt_node.type == "object_literal":
+                            _kt_literals.append(_kt_node)
+                            continue
+                        _kt_stack.extend(_kt_node.children)
+                    _kt_literals.sort(key=lambda n: n.start_byte)
+                    for lit in _kt_literals:
+                        lit_line = lit.start_point[0] + 1
+                        # Supertypes from the literal's delegation_specifiers,
+                        # shaped like the Kotlin class-branch handling:
+                        # constructor_invocation -> inherits, bare user_type
+                        # (or explicit_delegation) -> implements.
+                        lit_bases: list[tuple[str, str]] = []
+                        for dchild in lit.children:
+                            if dchild.type != "delegation_specifiers":
+                                continue
+                            for spec in dchild.children:
+                                if spec.type != "delegation_specifier":
+                                    continue
+                                relation = "implements"
+                                user_type_node = None
+                                for sub in spec.children:
+                                    if sub.type == "constructor_invocation":
+                                        relation = "inherits"
+                                        for inner in sub.children:
+                                            if inner.type == "user_type":
+                                                user_type_node = inner
+                                                break
+                                        break
+                                    if sub.type == "user_type":
+                                        user_type_node = sub
+                                        break
+                                    if sub.type == "explicit_delegation":
+                                        for inner in sub.children:
+                                            if inner.type == "user_type":
+                                                user_type_node = inner
+                                                break
+                                        break
+                                base = _kotlin_user_type_name(
+                                    user_type_node, source
+                                )
+                                if base:
+                                    lit_bases.append((base, relation))
+                        obj_label = (
+                            lit_bases[0][0] if lit_bases
+                            else f"object@L{lit_line}"
+                        )
+                        obj_nid = _make_id(
+                            func_nid, f"object:{obj_label}", f"L{lit_line}"
+                        )
+                        add_node(obj_nid, obj_label, lit_line)
+                        add_edge(func_nid, obj_nid, "contains", lit_line)
+                        callable_def_nids.add(obj_nid)
+                        callable_class_nids.add(obj_nid)
+                        for base, relation in lit_bases:
+                            base_nid = ensure_named_node(base, lit_line)
+                            if base_nid != obj_nid:
+                                add_edge(obj_nid, base_nid, relation, lit_line)
+                        lit_body = next(
+                            (c for c in lit.children if c.type == "class_body"),
+                            None,
+                        )
+                        if lit_body is not None:
+                            for child in lit_body.children:
+                                walk(child, parent_class_nid=obj_nid)
             return
 
         # JS/TS arrow functions and C# namespaces — language-specific extra handling
@@ -3735,7 +3960,8 @@ def _extract_generic(
             if _ruby_extra_walk(node, source, file_nid, stem, str_path,
                                 nodes, edges, seen_ids, function_bodies,
                                 parent_class_nid, add_node, add_edge, walk,
-                                callable_def_nids, callable_class_nids):
+                                callable_def_nids, callable_class_nids,
+                                ruby_namespace):
                 return
 
         # Python's `@property` / `@staticmethod` / `@classmethod` wrap the
@@ -3988,7 +4214,9 @@ def _extract_generic(
     def walk_calls(
         node,
         caller_nid: str,
-        receiver_types: dict[str, str] | None = None,
+        # Java: flat name -> type. C#: the (scoped bindings, field base) pair
+        # from _csharp_method_receiver_types, resolved positionally (#2472).
+        receiver_types: dict[str, str] | tuple | None = None,
         extra_locals: frozenset[str] = frozenset(),
     ) -> None:
         if node.type in config.function_boundary_types:
@@ -4336,13 +4564,16 @@ def _extract_generic(
                     if config.ts_module == "tree_sitter_cpp":
                         rc_entry["lang"] = "cpp"
                     # C#: tag the raw_call so _resolve_csharp_member_calls claims
-                    # it, and stamp the receiver's type from the METHOD-scoped
-                    # table (#1609, per-method since #2299). `this.field.M()` is
+                    # it, and stamp the receiver's type from the method's SCOPED
+                    # bindings by the call's byte offset (#1609, per-method since
+                    # #2299, position-aware since #2472). `this.field.M()` is
                     # covered too: member_receiver is the bare field name, and
-                    # class fields/properties are in the table.
+                    # class fields/properties are the base scope.
                     if config.ts_module == "tree_sitter_c_sharp":
                         rc_entry["lang"] = "csharp"
-                        receiver_type = (receiver_types or {}).get(member_receiver or "")
+                        receiver_type = _csharp_scoped_receiver_type(
+                            receiver_types, member_receiver, node.start_byte
+                        )
                         if receiver_type:
                             rc_entry["receiver_type"] = receiver_type
                     if config.ts_module == "tree_sitter_java":
@@ -4585,8 +4816,9 @@ def _extract_generic(
     # (#1630 Pattern B). Guarding on the tracked set prevents double-walking.
     _tracked_body_ids.update(id(b) for _, b in function_bodies)
 
-    # Body ids are unique (one language per file), so the Java and C# per-method
-    # receiver tables merge without collision.
+    # Body ids are unique (one language per file), so the Java (flat) and C#
+    # (scoped, #2472) per-method receiver tables merge without collision — the
+    # stamp site branches on language to read the matching shape.
     receiver_types_by_body = {**java_receiver_types, **csharp_receiver_types}
     for caller_nid, body_node in function_bodies:
         walk_calls(
