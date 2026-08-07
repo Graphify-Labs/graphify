@@ -203,3 +203,12 @@ bucket = "monolith"
 skill_dst = "graphify/skill-devin.md"
 monolith = "devin"
 roundtrip_ref = "47042beb05d1f6dd2186c0c499ae2840ce604ead:graphify/skill-devin.md"
+
+# Mistral Vibe (mistralai/mistral-vibe). Monolith bucket because vibe's SkillMetadata
+# schema requires extra frontmatter fields (user-invocable, allowed-tools) that the
+# split-bucket _render_frontmatter emits only name+description for. Post-v8 platform,
+# so no roundtrip_ref (no v8 baseline to diff against).
+[platform.vibe]
+bucket = "monolith"
+skill_dst = "graphify/skill-vibe.md"
+monolith = "vibe"
