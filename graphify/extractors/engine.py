@@ -4808,7 +4808,16 @@ def _extract_generic(
                     # Static method call: Helper::format() → callee = "Helper"
                     scope_node = node.child_by_field_name("scope")
                     if scope_node:
-                        callee_name = _read_text(scope_node, source)
+                        scope_text = _read_text(scope_node, source)
+                        # `parent::m()` / `self::m()` / `static::m()` name no
+                        # callee: which class the scope denotes needs inheritance
+                        # context the raw-call facts do not carry (#39). Naming
+                        # the scope anyway let the cross-file label match bind
+                        # them to any unrelated `->parent()` method in the
+                        # corpus. Refused by the same non-concrete set the
+                        # `(new X())->m()` branch below applies.
+                        if scope_text.lower() not in _PHP_NON_CONCRETE_TYPE_NAMES:
+                            callee_name = scope_text
                 else:
                     # member_call_expression / nullsafe_member_call_expression:
                     # $obj->method() / $obj?->method()
