@@ -6012,11 +6012,22 @@ def extract(
             n for n in resolution_context_nodes
             if n.get("id") and n["id"] not in _fresh_ids
         ]
+    # #52: ids of nodes whose label marks them as a MEMBER of a type — the
+    # engine labels a method `.name()` and a property `.name`, against a
+    # top-level function's `name()`. The normalization below erases that marker
+    # (`.event()` and `event()` both key as `event`), which is what let a PHP
+    # `event(...)` function call bind to a class's `event()` METHOD. The label
+    # is persisted in graph.json, so the discriminator holds just as well for
+    # candidates handed back as unchanged-corpus resolution context (#2406) —
+    # unlike an id-shape or edge-derived test.
+    member_labelled_nids: set[str] = set()
     for n in resolution_nodes:
         if n.get("file_type") == "rationale" or n.get("type") == "namespace":
             continue
         raw = n.get("label", "")
         normalised = raw.strip("()").lstrip(".")
+        if raw.strip("()").startswith("."):
+            member_labelled_nids.add(n["id"])
         if normalised:
             # Case is semantic in most languages, so index (and match, below) by exact
             # case — folding collapses `Path` (class) into `PATH` (env var) and makes a
@@ -6038,6 +6049,20 @@ def extract(
     # as descriptive values (`select(Model)`, exception tuples), not invoked. Exclude
     # them from the indirect_call guard below to avoid false edges (#2137).
     class_nids = {n["id"] for n in resolution_nodes if n.get("_callable_class")}
+
+    def _is_php_function_target(nid: str) -> bool:
+        """Can a bare PHP ``name(...)`` reach this candidate? (#52)
+
+        Only a global or namespaced FUNCTION. A METHOD needs ``$obj->`` /
+        ``Class::`` / callable syntax, and a CLASS-LIKE declaration (class,
+        interface, enum, trait) is not invocable at all — ``Report($e)`` where
+        only ``class Report`` exists is a "Call to undefined function" fatal,
+        not a constructor call. Both discriminators survive an incremental
+        rebuild: the member marker rides the persisted LABEL, and
+        ``_callable_class`` is one of the markers `graphify update` / `watch`
+        replay onto their `resolution_context_nodes` (cli.py, watch.py).
+        """
+        return nid not in member_labelled_nids and nid not in class_nids
 
     # Build evidence index from import edges so cross-file calls backed by an
     # explicit import statement can be promoted from INFERRED to EXTRACTED.
@@ -6142,6 +6167,35 @@ def extract(
             candidates = global_label_to_nids_ci.get(callee.lower(), [])
         if not candidates:
             continue
+        # #52: a PHP `function_call_expression` — a bare `name(...)` — can only
+        # invoke a global/namespaced FUNCTION, so only plausible function targets
+        # stay candidates (`_is_php_function_target`). Laravel's `event(...)`
+        # helper was binding to whichever class declared an `event()` METHOD —
+        # 848 incoming edges on one test method in the measured corpus — because
+        # the label index erases the `.` member marker and the method was then
+        # the sole candidate → single-candidate bind. Filtering the candidate
+        # list (rather than the index) covers every consumer below at once —
+        # single-candidate bind, import-evidence disambiguation and the god-node
+        # tie-break. PHP-only by design: Ruby and Python bare calls reach methods
+        # through implicit self, so their candidate filtering is unchanged.
+        if rc.get("php_function_call"):
+            candidates = [c for c in candidates if _is_php_function_target(c)]
+            # Refusing the exact-case candidates re-opens the folded fallback,
+            # which only ever fires on an EMPTY exact-case list above. A method
+            # shadowing the exact-case key (`.event()` → `event`) otherwise hid a
+            # real `function Event()` — reachable solely under the folded key —
+            # and the site resolved to nothing at all. Same folded index, same
+            # case-insensitive-caller gate, same refusal applied to it: without
+            # the refusal here the retry reaches a capitalized CLASS under the
+            # folded key (`report(...)` → `class Report`) that the exact-case
+            # path never offered — 7 such edges on the measured corpus.
+            if not candidates and _lang_is_case_insensitive(rc.get("source_file")):
+                candidates = [
+                    c for c in global_label_to_nids_ci.get(callee.lower(), [])
+                    if _is_php_function_target(c)
+                ]
+            if not candidates:
+                continue
         # Cross-language guard: never bind a call to a definition in a different
         # language family. Name-only matching was resolving a TSX callback passed
         # by name to a same-named Kotlin method in the Android half of the repo

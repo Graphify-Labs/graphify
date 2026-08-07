@@ -4903,6 +4903,13 @@ def _extract_generic(
             # reference to the method, not an invocation — re-tagged as
             # `indirect_call` below and by the cross-file PHP resolver.
             php_fcc: bool = False
+            # PHP `function_call_expression`, i.e. a bare `name(...)` (#52). It
+            # can only invoke a global/namespaced FUNCTION — a method needs
+            # `$obj->`, `Class::` or callable syntax — so the cross-file pass
+            # refuses method candidates for it. Recorded here because the
+            # raw-call facts otherwise cannot tell it from a `scoped_call`
+            # (which is also not a member call and names its scope as callee).
+            php_function_call: bool = False
 
             # Special handling per language
             if config.ts_module == "tree_sitter_swift":
@@ -5015,6 +5022,7 @@ def _extract_generic(
             elif config.ts_module == "tree_sitter_php":
                 # PHP: distinguish call expression subtypes
                 if node.type == "function_call_expression":
+                    php_function_call = True
                     func_node = node.child_by_field_name("function")
                     if func_node:
                         callee_name = _read_text(func_node, source)
@@ -5363,6 +5371,10 @@ def _extract_generic(
                     # stamp the receiver type resolved above (#1682).
                     if config.ts_module == "tree_sitter_php":
                         rc_entry["lang"] = "php"
+                        if php_function_call:
+                            # Marker read by the shared cross-file pass, which
+                            # drops METHOD candidates for this call site (#52).
+                            rc_entry["php_function_call"] = True
                         if php_fcc:
                             # Marker read by _resolve_php_member_calls, which
                             # emits `indirect_call` for it under the SAME
