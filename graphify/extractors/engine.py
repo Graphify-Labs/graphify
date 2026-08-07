@@ -582,6 +582,11 @@ def _php_name_text(node, source: bytes) -> str | None:
         return None
     return _read_text(node, source).rsplit("\\", 1)[-1] or None
 
+# PHP's relative scopes. Each is resolvable only against the inheritance context
+# of the class it is written in, which the raw-call facts do not carry, so none of
+# them ever names a concrete callee.
+_PHP_RELATIVE_SCOPE_NAMES = frozenset({"self", "static", "parent"})
+
 def _php_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[str, str]]) -> None:
     """Walk a PHP type expression; append (name, role) tuples."""
     if node is None:
@@ -4378,7 +4383,15 @@ def _extract_generic(
                     # Static method call: Helper::format() → callee = "Helper"
                     scope_node = node.child_by_field_name("scope")
                     if scope_node:
-                        callee_name = _read_text(scope_node, source)
+                        scope_text = _read_text(scope_node, source)
+                        # `parent::m()` / `self::m()` / `static::m()` name no
+                        # callee: which class the scope denotes needs inheritance
+                        # context the raw-call facts do not carry. Naming
+                        # the scope anyway let the cross-file label match bind
+                        # them to any unrelated `->parent()` method in the
+                        # corpus. Absolute scopes are unaffected.
+                        if scope_text.lower() not in _PHP_RELATIVE_SCOPE_NAMES:
+                            callee_name = scope_text
                 else:
                     # member_call_expression: $obj->method()
                     is_member_call = True
