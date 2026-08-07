@@ -2037,12 +2037,30 @@ def _merge_swift_extensions(
     if not extension_nids:
         return
 
+    # A genuine Swift type is the target of a `contains` edge from its file node;
+    # bare-reference shadow nodes (`let x: Foo`) carry a source_file but are NOT
+    # contained, so excluding them keeps a stub from making a real type look
+    # ambiguous — same predicate the Swift member-call resolver uses (#2538).
+    contained = {e.get("target") for e in all_edges if e.get("relation") == "contains"}
+
     label_to_canonical: dict[str, list[str]] = {}
     for n in all_nodes:
         if n.get("id") in extension_nids:
             continue
         label = n.get("label")
         if not label:
+            continue
+        # The merge matches on label alone, so without a language gate
+        # `extension Data` / `extension Store` — idiomatic Swift — would absorb a
+        # same-named TypeScript or Python class in a polyglot repo and invent
+        # cross-language edges. Restrict candidates to Swift's own family, which
+        # keeps the intended Swift↔Objective-C folding, and skip builtin globals
+        # the way the member-call resolvers do (#1726, #2147).
+        if _lang_family(n.get("source_file")) != "native":
+            continue
+        if label in _LANGUAGE_BUILTIN_GLOBALS:
+            continue
+        if not (n.get("source_file") and n.get("id") in contained and _is_type_like_definition(n)):
             continue
         label_to_canonical.setdefault(label, []).append(n["id"])
 
@@ -2065,16 +2083,29 @@ def _merge_swift_extensions(
     # the type owns the methods, the files own their slice. Self-loops are
     # dropped (e.g. an in-file extension method whose call already pointed at
     # the canonical type).
+    def _key_of(e: dict, src: str, tgt: str) -> tuple:
+        return (src, tgt, e.get("relation"), e.get("source_file"), e.get("source_location"))
+
     rewritten: list[dict] = []
     seen_keys: set[tuple] = set()
     for e in all_edges:
-        src = remap.get(e.get("source"), e.get("source"))
-        tgt = remap.get(e.get("target"), e.get("target"))
+        src0, tgt0 = e.get("source"), e.get("target")
+        src = remap.get(src0, src0)
+        tgt = remap.get(tgt0, tgt0)
+        if src == src0 and tgt == tgt0:
+            # Untouched by the merge — keep verbatim. The key below ignores
+            # confidence/weight/context, so deduping edges this pass never
+            # rewrote prunes legitimate parallel edges emitted elsewhere in the
+            # pipeline; one Swift extension in a polyglot repo was enough to
+            # silently drop unrelated edges from other languages (#2538).
+            seen_keys.add(_key_of(e, src0, tgt0))
+            rewritten.append(e)
+            continue
         if src == tgt:
             continue
         e["source"] = src
         e["target"] = tgt
-        key = (src, tgt, e.get("relation"), e.get("source_file"), e.get("source_location"))
+        key = _key_of(e, src, tgt)
         if key in seen_keys:
             continue
         seen_keys.add(key)
@@ -5122,6 +5153,17 @@ def extract(
             cn = rc.get("caller_nid")
             if cn in id_remap:
                 rc["caller_nid"] = id_remap[cn]
+        # swift_extensions[].nid is the same kind of id carrier as caller_nid
+        # above (cache.py remaps both), consumed by _merge_swift_extensions far
+        # below. Left stale it matches no node, so whether the extension merge
+        # runs at all depends on the FORM of the paths handed to extract() —
+        # relative input already yields the post-remap slug, absolute input does
+        # not (#2538). Remap it here so both agree.
+        for result in per_file:
+            for ext in result.get("swift_extensions", []) or []:
+                en = ext.get("nid")
+                if en in id_remap:
+                    ext["nid"] = id_remap[en]
     if prefix_remap:
         sym_remap: dict[str, str] = {}
         edge_alias_candidates: dict[str, set[str]] = {}
@@ -5183,6 +5225,12 @@ def extract(
                 cn = rc.get("caller_nid")
                 if cn in sym_remap:
                     rc["caller_nid"] = sym_remap[cn]
+            # Same for swift_extensions[].nid (see the id_remap pass above).
+            for result in per_file:
+                for ext in result.get("swift_extensions", []) or []:
+                    en = ext.get("nid")
+                    if en in sym_remap:
+                        ext["nid"] = sym_remap[en]
         if edge_alias_candidates:
             def _edge_key(edge: dict) -> str:
                 # target_file is a transient stamp (#1814/#1983); exclude it
