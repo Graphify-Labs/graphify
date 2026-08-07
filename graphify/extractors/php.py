@@ -101,6 +101,13 @@ def _php_fqn_names_another_class(
         from a different class. Refusing there would delete true edges on
         incremental rebuilds only, where the declaration is what is missing;
         persisting it for unchanged files is #23.
+
+    That second branch is why every bindable declaration KIND has to reach the
+    declared-FQN map: an `interface`/`enum`/`trait` left out of it was judged by
+    path alone, and a replayed context node's relativized path has fewer
+    segments than a 4-segment vendor FQN — so `use Illuminate\\Contracts\\…\\
+    Notifier;` read as "no evidence" and kept an edge onto the in-corpus
+    `App\\Contracts\\Notifier` it provably does not name (#53).
     """
     if type_node is None:
         return False
@@ -138,14 +145,17 @@ class PhpNameResolver:
 
     The refusal (#21) is strictly subtractive; the declared-FQN index layered on
     top (#22) is its additive counterpart. When the claimed FQN matches the name
-    some in-corpus class's own file DECLARES (#14), that match outranks the
+    some in-corpus type's own file DECLARES (#14), that match outranks the
     short-name census: it picks the imported one of several same-short-named
-    classes, and follows a renaming alias (``use App\\X as Y;``) to a class the
-    written short name never would have found. The index only knows classes
-    whose declared FQNs are available — for a file left undispatched by an
-    incremental rebuild that is the persisted ``_php_class_fqns`` marker (#23);
-    a graph written before that marker simply yields no match and the verdict
-    falls back to the #21 rules, adding no edge rather than a wrong one.
+    types, and follows a renaming alias (``use App\\X as Y;``) to a type the
+    written short name never would have found. The index only knows types whose
+    declared FQNs are available — for a file left undispatched by an incremental
+    rebuild that is the persisted ``_php_class_fqns`` marker (#23); a graph
+    written before that marker simply yields no match and the verdict falls back
+    to the #21 rules, adding no edge rather than a wrong one. ``interface``,
+    ``enum`` and ``trait`` declarations are in the index since #53 made them
+    bindable receiver types; without their FQNs the #21 rules judged them by
+    PSR-4 path alone, which is weaker and, on replayed context nodes, wrong.
     """
 
     def __init__(

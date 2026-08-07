@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from graphify.extract import extract
+from graphify.extract import _php_context_interface_entry, extract
 
 
 def _calls(tmp_path: Path, files: dict[str, str]):
@@ -1145,15 +1145,40 @@ def test_variadic_typed_param_emits_no_edge(tmp_path: Path):
     assert not any(src == handle and "search" in tgt.lower() for src, tgt in calls)
 
 
-# ── Interface-typed receivers are refused (#5) ───────────────────────────────
+# ── Interface-typed receivers bind to the interface itself (#5, #53) ─────────
 #
-# PHP `interface_declaration` mints no definition node, so an interface-typed
-# receiver normally resolves to nothing by accident. The dangerous case is
-# Laravel's Contracts convention: `App\Contracts\Notifier` (interface) next to
-# an unrelated `App\Support\Notifier` (class). The short-name lookup would find
-# exactly one definition — the wrong one — and satisfy the ambiguity guard.
-# Implementations are never guessed, and neither is a same-named stranger.
+# Pre-#47 a PHP `interface_declaration` minted NO definition node, so an
+# interface-typed receiver could only ever bind a same-short-named STRANGER.
+# The dangerous case is Laravel's Contracts convention: `App\Contracts\Notifier`
+# (interface) next to an unrelated `App\Support\Notifier` (class) — the
+# short-name lookup found exactly one definition, the wrong one, and satisfied
+# the ambiguity guard. #5 answered that with a blanket refusal keyed off a
+# pre-scan of every interface/enum/trait name in the corpus.
+#
+# Post-#47 the declaration mints a canonical sourced node and its own methods
+# attach to it, so the blanket refusal is no longer what keeps the stranger out:
+# the collision now presents TWO definitions under the short name and is refused
+# by the single-definition guard, or decisively by `PhpNameResolver` when the
+# calling file `use`-imports the name. #53 lifts it, so a receiver typed with an
+# UNAMBIGUOUS interface name binds to that interface's own method. Both halves
+# are pinned below: the collisions stay unbound, the unique names now bind.
+# Implementations are still never guessed.
 
+# One `Notifier` in the corpus (an interface), plus a decoy class carrying the
+# same METHOD name under a different type name — a bare method-name match would
+# take the decoy, only the receiver's declared type picks the interface.
+_UNIQUE_IFACE_CORPUS = {
+    "app/Contracts/Notifier.php": (
+        "<?php\nnamespace App\\Contracts;\n"
+        "interface Notifier {\n    public function send(string $m): void;\n}\n"
+    ),
+    "app/Audit/AuditLog.php": (
+        "<?php\nnamespace App\\Audit;\n"
+        "class AuditLog {\n    public function send(string $m): void {}\n}\n"
+    ),
+}
+
+# The Contracts collision: TWO types answer to `Notifier`, so nothing may bind.
 _IFACE_CORPUS = {
     "app/Contracts/Notifier.php": (
         "<?php\nnamespace App\\Contracts;\n"
@@ -1176,7 +1201,118 @@ def _notified(calls, caller: str) -> bool:
     return any(src == caller and "notify" in tgt.lower() for src, tgt in calls)
 
 
+def test_unique_interface_typed_property_binds_to_the_interface_method(tmp_path: Path):
+    """#53 criterion 1: `private Notifier $n` + `$this->n->send()` where the
+    corpus holds exactly ONE `Notifier` — the interface — binds to the
+    interface's own `send()` declaration node (post-#47 it has one)."""
+    calls, r = _calls(tmp_path, {
+        **_UNIQUE_IFACE_CORPUS,
+        "app/Http/Dispatcher.php": (
+            "<?php\n"
+            "namespace App\\Http;\n"
+            "use App\\Contracts\\Notifier;\n"
+            "class Dispatcher {\n"
+            "    private Notifier $notifier;\n"
+            "    public function go(): void { $this->notifier->send('x'); }\n"
+            "}\n"
+        ),
+    })
+
+    go = _find(r, ".go()", "dispatcher")
+    contract_send = _find(r, ".send()", "contracts_notifier")
+    assert (go, contract_send) in calls, \
+        "an unambiguous interface-typed receiver names the interface's method"
+    assert (go, _find(r, ".send()", "auditlog")) not in calls, \
+        "the same method name on an unrelated class is not the receiver's type"
+    edge = calls[(go, contract_send)]
+    assert edge["confidence"] == "INFERRED"
+    assert edge["confidence_score"] == 0.8
+    assert edge["context"] == "call"
+
+
+def test_unique_interface_binds_through_the_single_definition_guard(tmp_path: Path):
+    """The same binding with NO `use` import to claim the name, so
+    `PhpNameResolver` abstains and the corpus-wide short-name census decides —
+    the plain single-definition guard path. Both files sit in the global
+    namespace, which is what makes the unqualified annotation name the
+    interface."""
+    calls, r = _calls(tmp_path, {
+        "app/Contracts/Notifier.php": (
+            "<?php\n"
+            "interface Notifier {\n    public function send(string $m): void;\n}\n"
+        ),
+        "app/Audit/AuditLog.php": (
+            "<?php\n"
+            "class AuditLog {\n    public function send(string $m): void {}\n}\n"
+        ),
+        "app/Http/Dispatcher.php": (
+            "<?php\n"
+            "class Dispatcher {\n"
+            "    private Notifier $notifier;\n"
+            "    public function go(): void { $this->notifier->send('x'); }\n"
+            "}\n"
+        ),
+    })
+
+    go = _find(r, ".go()", "dispatcher")
+    assert (go, _find(r, ".send()", "contracts_notifier")) in calls
+    assert (go, _find(r, ".send()", "auditlog")) not in calls
+
+
+def test_interface_typed_param_binds_to_the_interface_method(tmp_path: Path):
+    """The typed-parameter receiver path (#4) reaches the interface too."""
+    calls, r = _calls(tmp_path, {
+        **_UNIQUE_IFACE_CORPUS,
+        "app/Http/Dispatcher.php": (
+            "<?php\n"
+            "namespace App\\Http;\n"
+            "use App\\Contracts\\Notifier;\n"
+            "class Dispatcher {\n"
+            "    public function go(Notifier $n): void { $n->send('x'); }\n"
+            "}\n"
+        ),
+    })
+
+    go = _find(r, ".go()", "dispatcher")
+    assert (go, _find(r, ".send()", "contracts_notifier")) in calls
+    assert (go, _find(r, ".send()", "auditlog")) not in calls
+
+
+def test_colliding_interface_and_class_short_name_emits_no_edge(tmp_path: Path):
+    """#53 criterion 3, on the guard the lifted refusal hands the job to: with
+    `App\\Contracts\\Notifier` (interface) and `App\\Support\\Notifier` (class)
+    both in the corpus the short name censuses TWO definitions, so the
+    single-definition guard refuses on its own. No `use` import here — the
+    caller shares the interface's namespace, which is what makes the bare
+    annotation name it — so `PhpNameResolver` abstains and the guard is the only
+    thing standing between the receiver and the stranger. PHP itself would bind
+    the interface; refusing is a recall gap, never a wrong edge."""
+    calls, r = _calls(tmp_path, {
+        **_IFACE_CORPUS,
+        "app/Contracts/Dispatcher.php": (
+            "<?php\n"
+            "namespace App\\Contracts;\n"
+            "class Dispatcher {\n"
+            "    private Notifier $notifier;\n"
+            "    public function go(): void { $this->notifier->notify('x'); }\n"
+            "}\n"
+        ),
+    })
+
+    go = _find(r, ".go()", "dispatcher")
+    assert (go, _find(r, ".notify()", "support_notifier")) not in calls, \
+        "the same-short-named class is not the interface the receiver declares"
+    assert not _notified(calls, go)
+
+
 def test_interface_typed_property_does_not_guess_implementation(tmp_path: Path):
+    """The contract is the receiver's type; its implementations are not.
+
+    `MailNotifier implements Notifier` is the only class that could satisfy the
+    annotation at runtime, and it still gets NOTHING — an interface names a
+    contract, and picking one implementation out of the corpus is the guess #5
+    forbade and #53 does not reintroduce. What the receiver does bind is the
+    interface's OWN `notify()` node (#47), which is where the fan-in belongs."""
     calls, r = _calls(tmp_path, {
         **_IFACE_CORPUS,
         "app/Http/Dispatcher.php": (
@@ -1193,13 +1329,20 @@ def test_interface_typed_property_does_not_guess_implementation(tmp_path: Path):
     go = _find(r, ".go()", "dispatcher")
     assert (go, _find(r, ".notify()", "mailnotifier")) not in calls, \
         "an interface names a contract, not an implementation — never guess"
-    assert not _notified(calls, go)
+    assert (go, _find(r, ".notify()", "contracts_notifier")) in calls
 
 
-def test_interface_short_name_collision_emits_no_edge(tmp_path: Path):
+def test_interface_short_name_collision_binds_the_imported_one(tmp_path: Path):
     """`App\\Contracts\\Notifier` (interface) and `App\\Support\\Notifier`
-    (unrelated class): exactly one DEFINITION exists, so the ambiguity guard
-    alone would happily bind the call to the stranger."""
+    (unrelated class) share a short name, and the calling file's `use` says
+    WHICH one it means.
+
+    #5 could only refuse here: the interface minted no node, so the short-name
+    census saw the stranger alone and would have bound it. Post-#47/#53 both
+    are definitions, and the declared-FQN index (#22, extended to non-class
+    declarations for #53) matches the imported FQN against the name the
+    interface's own file declares — decisively, without ever consulting the
+    census. The stranger is still what must not be bound."""
     calls, r = _calls(tmp_path, {
         **_IFACE_CORPUS,
         "app/Http/Dispatcher.php": (
@@ -1216,11 +1359,13 @@ def test_interface_short_name_collision_emits_no_edge(tmp_path: Path):
     go = _find(r, ".go()", "dispatcher")
     assert (go, _find(r, ".notify()", "support_notifier")) not in calls, \
         "the same-short-named class is not the interface the receiver declares"
-    assert not _notified(calls, go)
+    assert (go, _find(r, ".notify()", "contracts_notifier")) in calls
 
 
-def test_interface_refusal_is_case_insensitive(tmp_path: Path):
-    """PHP type names are case-insensitive: `notifier` IS `Notifier`."""
+def test_interface_binding_is_case_insensitive(tmp_path: Path):
+    """PHP type names are case-insensitive: `notifier` IS `Notifier`, so the
+    lowercase annotation reaches the same interface and still never the
+    same-short-named class."""
     calls, r = _calls(tmp_path, {
         **_IFACE_CORPUS,
         "app/Http/Dispatcher.php": (
@@ -1235,11 +1380,12 @@ def test_interface_refusal_is_case_insensitive(tmp_path: Path):
     })
 
     go = _find(r, ".go()", "dispatcher")
-    assert not _notified(calls, go)
+    assert (go, _find(r, ".notify()", "contracts_notifier")) in calls
+    assert (go, _find(r, ".notify()", "support_notifier")) not in calls
 
 
-def test_interface_typed_param_emits_no_edge(tmp_path: Path):
-    """The typed-parameter receiver path (#4) refuses interfaces too."""
+def test_interface_typed_param_binds_the_imported_interface(tmp_path: Path):
+    """The typed-parameter receiver path (#4) reaches the interface too."""
     calls, r = _calls(tmp_path, {
         **_IFACE_CORPUS,
         "app/Http/Dispatcher.php": (
@@ -1253,13 +1399,19 @@ def test_interface_typed_param_emits_no_edge(tmp_path: Path):
     })
 
     go = _find(r, ".go()", "dispatcher")
+    assert (go, _find(r, ".notify()", "contracts_notifier")) in calls
     assert (go, _find(r, ".notify()", "support_notifier")) not in calls
-    assert not _notified(calls, go)
+    assert (go, _find(r, ".notify()", "mailnotifier")) not in calls
 
 
 def test_interface_inline_new_emits_no_edge(tmp_path: Path):
-    """The inline-new receiver path (#3) refuses interfaces too — an interface
-    cannot be instantiated, so such a receiver must never bind a stranger."""
+    """The inline-new receiver path (#3) emits nothing here, and for the reason
+    that survives the lift: this file imports nothing, and an inline `new`
+    carries its written namespace on `receiver_qualified` — which only feeds the
+    EXTRACTED promotion, not `resolve_type_name`. So the resolver abstains, the
+    short name censuses TWO `Notifier` definitions, and the single-definition
+    guard refuses. `new` on an interface is invalid PHP anyway; the invariant
+    worth pinning is that the same-short-named stranger is never what it binds."""
     calls, r = _calls(tmp_path, {
         **_IFACE_CORPUS,
         "app/Http/Dispatcher.php": (
@@ -1278,8 +1430,11 @@ def test_interface_inline_new_emits_no_edge(tmp_path: Path):
     assert not _notified(calls, go)
 
 
-def test_interface_typed_local_new_emits_no_edge(tmp_path: Path):
-    """The typed-local receiver path (#4) refuses interfaces too."""
+def test_interface_typed_local_new_binds_the_imported_interface(tmp_path: Path):
+    """The typed-local receiver path (#4): `$n = new Notifier()` is broken PHP
+    for an interface, but the local's declared type is still the name the file
+    imported — so it binds the interface it NAMES, never the stranger the short
+    name would otherwise census."""
     calls, r = _calls(tmp_path, {
         **_IFACE_CORPUS,
         "app/Http/Dispatcher.php": (
@@ -1297,12 +1452,12 @@ def test_interface_typed_local_new_emits_no_edge(tmp_path: Path):
 
     go = _find(r, ".go()", "dispatcher")
     assert (go, _find(r, ".notify()", "support_notifier")) not in calls
-    assert not _notified(calls, go)
+    assert (go, _find(r, ".notify()", "contracts_notifier")) in calls
 
 
 def test_class_receiver_still_resolves_when_an_interface_exists(tmp_path: Path):
-    """The refusal is name-scoped: a CLASS-typed receiver still resolves, and
-    the same-named interface elsewhere in the corpus changes nothing."""
+    """Name scoping: a CLASS-typed receiver resolves to its class, and the
+    same-named interface elsewhere in the corpus changes nothing."""
     calls, r = _calls(tmp_path, {
         **_IFACE_CORPUS,
         "app/Audit/AuditTrail.php": (
@@ -1326,15 +1481,15 @@ def test_class_receiver_still_resolves_when_an_interface_exists(tmp_path: Path):
     assert (go, _find(r, ".notify()", "support_notifier")) not in calls
 
 
-# ── Enum- and trait-typed receivers are refused (#12) ────────────────────────
+# ── Enum- and trait-typed receivers (#12, #53) ───────────────────────────────
 #
-# `enum_declaration` and `trait_declaration` mint no definition node either, so
-# they leak exactly like interfaces did before #5: `App\Enums\Status` (enum)
-# beside an unrelated `App\Legacy\Status` (class) leaves ONE definition under
-# that short name, and the single-definition guard binds the stranger. The
-# Laravel shape is an enum mirroring a model. Enums and traits are added to the
-# refusal pre-scan only — they still mint no nodes, so an enum's own methods
-# stay unresolvable as call targets (a deliberate recall gap, not a wrong edge).
+# Pre-#47 `enum_declaration` and `trait_declaration` minted no definition node
+# either, so they leaked exactly like interfaces did before #5: `App\Enums\Status`
+# (enum) beside an unrelated `App\Legacy\Status` (class) left ONE definition under
+# that short name, and the single-definition guard bound the stranger. The
+# Laravel shape is an enum mirroring a model. Post-#47/#53 the collision censuses
+# two definitions and is refused on that basis, while an enum's own methods ARE
+# call targets — the recall gap #12 documented is closed below.
 
 _ENUM_CORPUS = {
     "app/Enums/Status.php": (
@@ -1365,9 +1520,11 @@ def _runner(body: str) -> str:
     )
 
 
-def test_enum_typed_property_emits_no_edge(tmp_path: Path):
-    """`private Status $status;` where Status is an enum: the same-short-named
-    `App\\Legacy\\Status` class is a total stranger, never the receiver."""
+def test_enum_typed_property_binds_the_imported_enum(tmp_path: Path):
+    """`private Status $status;` where Status is the imported enum: the
+    same-short-named `App\\Legacy\\Status` class is a total stranger and never
+    the receiver, while the enum's own `label()` (#47) is exactly what the
+    annotation names."""
     calls, r = _calls(tmp_path, {
         **_ENUM_CORPUS,
         "app/Runner.php": _runner(
@@ -1378,10 +1535,10 @@ def test_enum_typed_property_emits_no_edge(tmp_path: Path):
 
     go = _find(r, ".go()", "runner")
     assert (go, _find(r, ".label()", "legacy_status")) not in calls
-    assert not _labelled(calls, go)
+    assert (go, _find(r, ".label()", "enums_status")) in calls
 
 
-def test_enum_promoted_ctor_param_emits_no_edge(tmp_path: Path):
+def test_enum_promoted_ctor_param_binds_the_imported_enum(tmp_path: Path):
     calls, r = _calls(tmp_path, {
         **_ENUM_CORPUS,
         "app/Runner.php": _runner(
@@ -1392,10 +1549,10 @@ def test_enum_promoted_ctor_param_emits_no_edge(tmp_path: Path):
 
     go = _find(r, ".go()", "runner")
     assert (go, _find(r, ".label()", "legacy_status")) not in calls
-    assert not _labelled(calls, go)
+    assert (go, _find(r, ".label()", "enums_status")) in calls
 
 
-def test_enum_typed_param_emits_no_edge(tmp_path: Path):
+def test_enum_typed_param_binds_the_imported_enum(tmp_path: Path):
     calls, r = _calls(tmp_path, {
         **_ENUM_CORPUS,
         "app/Runner.php": _runner(
@@ -1405,12 +1562,13 @@ def test_enum_typed_param_emits_no_edge(tmp_path: Path):
 
     go = _find(r, ".go()", "runner")
     assert (go, _find(r, ".label()", "legacy_status")) not in calls
-    assert not _labelled(calls, go)
+    assert (go, _find(r, ".label()", "enums_status")) in calls
 
 
-def test_enum_fqn_typed_property_emits_no_edge(tmp_path: Path):
+def test_enum_fqn_typed_property_binds_the_written_enum(tmp_path: Path):
     """The sharpest form: the source names `\\App\\Enums\\Status` outright, so
-    binding `App\\Legacy\\Status` contradicts the written type."""
+    binding `App\\Legacy\\Status` would contradict the written type — and the
+    written type is precisely what the declared-FQN index now matches."""
     calls, r = _calls(tmp_path, {
         **_ENUM_CORPUS,
         "app/Runner.php": _runner(
@@ -1421,11 +1579,13 @@ def test_enum_fqn_typed_property_emits_no_edge(tmp_path: Path):
 
     go = _find(r, ".go()", "runner")
     assert (go, _find(r, ".label()", "legacy_status")) not in calls
-    assert not _labelled(calls, go)
+    assert (go, _find(r, ".label()", "enums_status")) in calls
 
 
-def test_enum_typed_local_new_emits_no_edge(tmp_path: Path):
-    """The typed-local receiver path (#4) refuses enums too."""
+def test_enum_typed_local_new_binds_the_imported_enum(tmp_path: Path):
+    """The typed-local receiver path (#4): `new Status()` is broken PHP for an
+    enum, but the local's declared type still names the imported enum and never
+    the stranger."""
     calls, r = _calls(tmp_path, {
         **_ENUM_CORPUS,
         "app/Runner.php": _runner(
@@ -1438,12 +1598,17 @@ def test_enum_typed_local_new_emits_no_edge(tmp_path: Path):
 
     go = _find(r, ".go()", "runner")
     assert (go, _find(r, ".label()", "legacy_status")) not in calls
-    assert not _labelled(calls, go)
+    assert (go, _find(r, ".label()", "enums_status")) in calls
 
 
-def test_enum_inline_new_emits_no_edge(tmp_path: Path):
-    """The inline-new receiver path (#3) refuses enums too — an enum cannot be
-    instantiated, so such a receiver must never bind a stranger."""
+def test_enum_inline_new_binds_the_written_enum(tmp_path: Path):
+    """The inline-new receiver path (#3) contrasted with the interface one
+    above: `new` on an enum is equally invalid PHP, but here the runner DOES
+    `use App\\Enums\\Status`, so the claim is decided by the declared-FQN index
+    rather than left to the two-candidate census. The written
+    `\\App\\Enums\\Status` then corroborates the enum's declared name, which is
+    what promotes the edge to EXTRACTED. The stranger stays unbound either
+    way — that is the invariant #12 was protecting."""
     calls, r = _calls(tmp_path, {
         **_ENUM_CORPUS,
         "app/Runner.php": _runner(
@@ -1454,11 +1619,13 @@ def test_enum_inline_new_emits_no_edge(tmp_path: Path):
     })
 
     go = _find(r, ".go()", "runner")
+    enum_label = _find(r, ".label()", "enums_status")
     assert (go, _find(r, ".label()", "legacy_status")) not in calls
-    assert not _labelled(calls, go)
+    assert (go, enum_label) in calls
+    assert calls[(go, enum_label)]["confidence"] == "EXTRACTED"
 
 
-def test_enum_refusal_is_case_insensitive(tmp_path: Path):
+def test_enum_binding_is_case_insensitive(tmp_path: Path):
     """PHP type names are case-insensitive: `status` IS `Status`."""
     calls, r = _calls(tmp_path, {
         **_ENUM_CORPUS,
@@ -1469,15 +1636,22 @@ def test_enum_refusal_is_case_insensitive(tmp_path: Path):
     })
 
     go = _find(r, ".go()", "runner")
-    assert not _labelled(calls, go)
+    assert (go, _find(r, ".label()", "enums_status")) in calls
+    assert (go, _find(r, ".label()", "legacy_status")) not in calls
 
 
-def test_enum_without_a_colliding_class_emits_no_edge(tmp_path: Path):
-    """Control: an enum mints no definition node, so its methods are not call
-    targets at all. The collision above supplies the only candidate — this
-    documents the (deliberate) recall gap that leaves."""
+def test_enum_without_a_colliding_class_binds_to_the_enum_method(tmp_path: Path):
+    """#53 criterion 2: drop the colliding class and `Status` names exactly one
+    type — the enum — whose `label()` hangs off its own declaration node
+    (#47). The receiver binds there. This is the recall gap #12 documented,
+    now closed; the decoy class proves it is the declared type doing the work
+    and not a bare method-name match."""
     calls, r = _calls(tmp_path, {
         "app/Enums/Status.php": _ENUM_CORPUS["app/Enums/Status.php"],
+        "app/Models/Lead.php": (
+            "<?php\nnamespace App\\Models;\n"
+            "class Lead {\n    public function label(): string { return 'L'; }\n}\n"
+        ),
         "app/Runner.php": _runner(
             "    private Status $status;\n"
             "    public function go(): void { $this->status->label(); }"
@@ -1485,12 +1659,21 @@ def test_enum_without_a_colliding_class_emits_no_edge(tmp_path: Path):
     })
 
     go = _find(r, ".go()", "runner")
-    assert not _labelled(calls, go)
+    enum_label = _find(r, ".label()", "enums_status")
+    assert (go, enum_label) in calls, \
+        "an unambiguous enum-typed receiver names the enum's own method"
+    assert (go, _find(r, ".label()", "models_lead")) not in calls
+    edge = calls[(go, enum_label)]
+    assert edge["confidence"] == "INFERRED"
+    assert edge["confidence_score"] == 0.8
 
 
-def test_trait_typed_receiver_emits_no_edge(tmp_path: Path):
-    """A trait is not a type, so a trait-typed receiver is already broken PHP —
-    but it must still refuse rather than bind the same-short-named class."""
+def test_trait_typed_receiver_binds_the_imported_trait(tmp_path: Path):
+    """A trait is not a type, so a trait-typed receiver is already broken PHP.
+    The graph follows the name the source actually writes — the imported
+    `App\\Support\\Cache` trait, whose `flush()` is a real node post-#47 — and
+    never the same-short-named `App\\Legacy\\Cache` class, which is what the
+    #12 refusal existed to prevent."""
     calls, r = _calls(tmp_path, {
         "app/Support/Cache.php": (
             "<?php\nnamespace App\\Support;\n"
@@ -1512,11 +1695,11 @@ def test_trait_typed_receiver_emits_no_edge(tmp_path: Path):
 
     go = _find(r, ".go()", "runner")
     assert (go, _find(r, ".flush()", "legacy_cache")) not in calls
-    assert not any(src == go and "flush" in tgt.lower() for src, tgt in calls)
+    assert (go, _find(r, ".flush()", "support_cache")) in calls
 
 
 def test_class_receiver_still_resolves_when_an_enum_exists(tmp_path: Path):
-    """The refusal is name-scoped: a CLASS-typed receiver still resolves with an
+    """Name scoping: a CLASS-typed receiver resolves to its class with an
     unrelated enum (and a same-named-method decoy class) in the corpus."""
     calls, r = _calls(tmp_path, {
         "app/Enums/Status.php": _ENUM_CORPUS["app/Enums/Status.php"],
@@ -1543,15 +1726,19 @@ def test_class_receiver_still_resolves_when_an_enum_exists(tmp_path: Path):
     assert (go, _find(r, ".label()", "audittrail")) not in calls
 
 
-# ── The refusal survives an incremental rebuild (#11) ─────────────────────────
+# ── Full and incremental builds must AGREE (#11, #12, #53) ───────────────────
 #
-# Every test above goes through ONE full extract(), where interface names reach
-# the resolver through `per_file` — which aligns 1:1 with the files dispatched
-# this run. `graphify update`/watch dispatch only the CHANGED files and hand the
-# unchanged corpus back as read-only resolution context, so a refusal that lives
-# only in `per_file` stopped applying the moment the interface's own file was not
-# re-extracted, and the receiver bound to the same-short-named stranger class.
-# The context below is assembled exactly as watch.py builds it from graph.json
+# Every test above goes through ONE full extract(), where a declaring file's
+# facts reach the resolver through `per_file` — which aligns 1:1 with the files
+# dispatched this run. `graphify update`/watch dispatch only the CHANGED files
+# and hand the unchanged corpus back as read-only resolution context, so any
+# fact that lives only in `per_file` stops applying the moment the declaring
+# file is not re-extracted. That asymmetry has bitten in both directions: #11
+# lost the interface REFUSAL and bound a same-short-named stranger, and #53's
+# `use`-claim guard lost its DECLARED FQN and bound an in-corpus interface a
+# vendor import provably does not name (`..._refuses_on_both_builds` below).
+# Each test here therefore asserts the incremental verdict AND the full one.
+# The context is assembled exactly as watch.py builds it from graph.json
 # (watch.py:1205-1240): a FIELD SUBSET of the persisted AST nodes — id, label,
 # source_file, file_type, type plus the persisted underscore markers — and the
 # corpus's contains/method edges, both scoped to the files NOT being re-extracted.
@@ -1628,9 +1815,11 @@ def _full_then_incremental(tmp_path: Path, files: dict[str, str], changed: str):
 _INCR_DISPATCHER = "app/Http/Dispatcher.php"
 
 
-def test_interface_refusal_survives_incremental_rebuild(tmp_path: Path):
-    """The interface file is unchanged and therefore NOT dispatched: the refusal
-    must still fire, so the incremental run agrees with the full one (#11)."""
+def test_interface_binding_agrees_across_an_incremental_rebuild(tmp_path: Path):
+    """The interface file is unchanged and therefore NOT dispatched: its
+    declaration node, its `method` edge and its declared FQN all reach the
+    resolver through the replay channel alone, and the verdict must match the
+    full build's (#11, #53)."""
     (full_calls, full), (inc_calls, inc) = _full_then_incremental(tmp_path, {
         **_IFACE_CORPUS,
         _INCR_DISPATCHER: (
@@ -1645,16 +1834,19 @@ def test_interface_refusal_survives_incremental_rebuild(tmp_path: Path):
     }, changed=_INCR_DISPATCHER)
 
     go = _find(inc, ".go()", "dispatcher")
-    assert not _notified(full_calls, go), "full-build baseline must refuse"
-    assert not _notified(inc_calls, go), \
-        "an undispatched interface file must not silently drop the refusal"
+    contract = _find(full, ".notify()", "contracts_notifier")
+    assert (go, contract) in full_calls, "full-build baseline binds the contract"
+    assert (go, contract) in inc_calls, \
+        "an undispatched interface file must keep its replayed binding"
 
 
-def test_interface_short_name_collision_emits_no_edge_incrementally(tmp_path: Path):
-    """The Laravel Contracts collision across a rebuild: `App\\Support\\Notifier`
-    is the lone DEFINITION under that short name, so the single-definition guard
-    alone would bind the receiver to the stranger."""
-    (_, full), (inc_calls, inc) = _full_then_incremental(tmp_path, {
+def test_interface_short_name_collision_never_binds_the_stranger_incrementally(tmp_path: Path):
+    """The Laravel Contracts collision across a rebuild. Whatever the resolver
+    decides about the imported `App\\Contracts\\Notifier`, the unrelated
+    `App\\Support\\Notifier` class is what must never receive the edge — it was
+    the lone DEFINITION under that short name before #47, which is exactly how
+    #11 used to bind it."""
+    (full_calls, full), (inc_calls, inc) = _full_then_incremental(tmp_path, {
         **_IFACE_CORPUS,
         _INCR_DISPATCHER: (
             "<?php\n"
@@ -1671,15 +1863,15 @@ def test_interface_short_name_collision_emits_no_edge_incrementally(tmp_path: Pa
     # The stranger's node lives in an unchanged file, so its id comes from the
     # full result — the incremental run returns only fresh nodes.
     stranger = _find(full, ".notify()", "support_notifier")
+    assert (go, stranger) not in full_calls
     assert (go, stranger) not in inc_calls, \
         "a rebuild must not bind a contract-typed receiver to a same-named class"
-    assert not _notified(inc_calls, go)
 
 
-def test_interface_refusal_is_case_insensitive_incrementally(tmp_path: Path):
-    """PHP type names are case-insensitive on the incremental path too: the
-    persisted names are folded on both sides, never compared verbatim."""
-    (_, full), (inc_calls, inc) = _full_then_incremental(tmp_path, {
+def test_interface_binding_is_case_insensitive_incrementally(tmp_path: Path):
+    """PHP type names are case-insensitive on the incremental path too: names
+    are folded on both sides, never compared verbatim."""
+    (full_calls, full), (inc_calls, inc) = _full_then_incremental(tmp_path, {
         **_IFACE_CORPUS,
         _INCR_DISPATCHER: (
             "<?php\n"
@@ -1693,12 +1885,14 @@ def test_interface_refusal_is_case_insensitive_incrementally(tmp_path: Path):
     }, changed=_INCR_DISPATCHER)
 
     go = _find(inc, ".go()", "dispatcher")
+    contract = _find(full, ".notify()", "contracts_notifier")
+    assert (go, contract) in full_calls
+    assert (go, contract) in inc_calls
     assert (go, _find(full, ".notify()", "support_notifier")) not in inc_calls
-    assert not _notified(inc_calls, go)
 
 
 def test_class_typed_receiver_still_resolves_incrementally(tmp_path: Path):
-    """Positive control for the two tests above: the refusal stays name-scoped
+    """Positive control for the two tests above: binding stays name-scoped
     across a rebuild — a CLASS-typed receiver still binds into its unchanged
     file (#2437), and the decoys still get nothing."""
     (_, full), (inc_calls, inc) = _full_then_incremental(tmp_path, {
@@ -1725,11 +1919,101 @@ def test_class_typed_receiver_still_resolves_incrementally(tmp_path: Path):
     assert (go, _find(full, ".notify()", "support_notifier")) not in inc_calls
 
 
-# The same channel carries ENUM and TRAIT names (#12). They mint no definition
-# node either, so an unchanged `App\Enums\Status` file that reaches the resolver
-# through nothing but the persisted marker leaves `App\Legacy\Status` as the one
-# visible definition — the wrong edge #12 closed on the full-build path, coming
-# straight back on the incremental one.
+def _sent(calls, caller: str) -> bool:
+    return any(src == caller and "send" in tgt.lower() for src, tgt in calls)
+
+
+def test_vendor_import_shadowing_an_interface_refuses_on_both_builds(tmp_path: Path):
+    """A `use` of a same-short-named type from OUTSIDE the corpus must refuse —
+    on the incremental path as well as the full one (#16, #53).
+
+    `use Illuminate\\Contracts\\Notifications\\Notifier;` CLAIMS the short name
+    for a vendor interface the corpus does not contain, so the in-corpus
+    `App\\Contracts\\Notifier` is a different type and must get no edge. That
+    verdict is `PhpNameResolver`'s (#21), and it is only decisive when the
+    declaration carries a declared FQN: without one the guard falls back to
+    comparing the node's PSR-4 PATH, and a replayed context node's path is
+    RELATIVIZED — fewer segments than the vendor FQN has — which trips the
+    "not enough evidence" bail-out and binds. The full build never sees that
+    (its paths are still absolute at resolver time), so full and incremental
+    must be asserted TOGETHER or the hole hides in the mode `graphify update`
+    actually runs in."""
+    (full_calls, full), (inc_calls, inc) = _full_then_incremental(tmp_path, {
+        "app/Contracts/Notifier.php": (
+            "<?php\nnamespace App\\Contracts;\n"
+            "interface Notifier {\n    public function send(string $m): void;\n}\n"
+        ),
+        _INCR_DISPATCHER: (
+            "<?php\n"
+            "namespace App\\Http;\n"
+            "use Illuminate\\Contracts\\Notifications\\Notifier;\n"
+            "class Dispatcher {\n"
+            "    private Notifier $notifier;\n"
+            "    public function go(): void { $this->notifier->send('x'); }\n"
+            "}\n"
+        ),
+    }, changed=_INCR_DISPATCHER)
+
+    go = _find(inc, ".go()", "dispatcher")
+    assert not _sent(full_calls, go), "full-build baseline must refuse the claim"
+    assert not _sent(inc_calls, go), \
+        "a vendor `use` must not bind the in-corpus interface on a rebuild"
+
+
+def test_vendor_import_shadowing_an_enum_refuses_on_both_builds(tmp_path: Path):
+    """The enum shape of the test above, same channel and same verdict."""
+    (full_calls, full), (inc_calls, inc) = _full_then_incremental(tmp_path, {
+        "app/Enums/Status.php": _ENUM_CORPUS["app/Enums/Status.php"],
+        _INCR_RUNNER: (
+            "<?php\n"
+            "namespace App\\Http;\n"
+            "use Illuminate\\Contracts\\Support\\Status;\n"
+            "class Runner {\n"
+            "    private Status $status;\n"
+            "    public function go(): void { $this->status->label(); }\n"
+            "}\n"
+        ),
+    }, changed=_INCR_RUNNER)
+
+    go = _find(inc, ".go()", "runner")
+    assert not _labelled(full_calls, go), "full-build baseline must refuse the claim"
+    assert not _labelled(inc_calls, go), \
+        "a vendor `use` must not bind the in-corpus enum on a rebuild"
+
+
+def test_unique_interface_binding_survives_incremental_rebuild(tmp_path: Path):
+    """#53 criterion 4: the interface's file is unchanged and therefore NOT
+    dispatched — its declaration node and its `method` edge reach the resolver
+    only through the #2437 replay channel. The binding must be the same one the
+    full build makes, or every interface edge would evaporate on the first
+    `graphify update`."""
+    (full_calls, full), (inc_calls, inc) = _full_then_incremental(tmp_path, {
+        **_UNIQUE_IFACE_CORPUS,
+        _INCR_DISPATCHER: (
+            "<?php\n"
+            "namespace App\\Http;\n"
+            "use App\\Contracts\\Notifier;\n"
+            "class Dispatcher {\n"
+            "    private Notifier $notifier;\n"
+            "    public function go(): void { $this->notifier->send('x'); }\n"
+            "}\n"
+        ),
+    }, changed=_INCR_DISPATCHER)
+
+    go = _find(inc, ".go()", "dispatcher")
+    contract_send = _find(full, ".send()", "contracts_notifier")
+    assert (go, contract_send) in full_calls, "full-build baseline must bind"
+    assert (go, contract_send) in inc_calls, \
+        "an undispatched interface file must keep its replayed binding"
+    assert (go, _find(full, ".send()", "auditlog")) not in inc_calls
+
+
+# ENUM and TRAIT declarations replay over the same channel and get the same
+# parity treatment (#12). Before #47 an unchanged `App\Enums\Status` file left
+# `App\Legacy\Status` as the one visible definition on a rebuild — the wrong edge
+# #12 had closed on the full-build path, coming straight back on the incremental
+# one. Now it is the declared FQN that has to survive the replay for the two
+# builds to agree; the assertions below pin both ends of that.
 
 _INCR_RUNNER = "app/Http/Runner.php"
 
@@ -1748,9 +2032,11 @@ def _incr_enum_corpus(body: str) -> dict[str, str]:
     }
 
 
-def test_enum_refusal_survives_incremental_rebuild(tmp_path: Path):
-    """The enum's file is unchanged and therefore NOT dispatched: its name must
-    still reach the resolver, so the rebuild agrees with the full build."""
+def test_enum_binding_agrees_across_an_incremental_rebuild(tmp_path: Path):
+    """The enum's file is unchanged and therefore NOT dispatched: its node, its
+    `method` edge and its declared FQN must all still reach the resolver, so the
+    rebuild agrees with the full build — and the same-short-named
+    `App\\Legacy\\Status` gets nothing on either."""
     (full_calls, full), (inc_calls, inc) = _full_then_incremental(
         tmp_path,
         _incr_enum_corpus(
@@ -1762,27 +2048,34 @@ def test_enum_refusal_survives_incremental_rebuild(tmp_path: Path):
 
     go = _find(inc, ".go()", "runner")
     stranger = _find(full, ".label()", "legacy_status")
-    assert not _labelled(full_calls, go), "full-build baseline must refuse"
+    enum_label = _find(full, ".label()", "enums_status")
+    assert (go, enum_label) in full_calls, "full-build baseline binds the enum"
+    assert (go, enum_label) in inc_calls, \
+        "an undispatched enum file must keep its replayed binding"
     assert (go, stranger) not in inc_calls, \
-        "an undispatched enum file must not hand the edge to App\\Legacy\\Status"
-    assert not _labelled(inc_calls, go)
+        "a rebuild must not hand the edge to App\\Legacy\\Status"
 
 
-def test_enum_typed_param_refusal_survives_incremental_rebuild(tmp_path: Path):
-    """The typed-parameter entry point refuses across a rebuild too."""
-    (_, full), (inc_calls, inc) = _full_then_incremental(
+def test_enum_typed_param_binding_agrees_across_an_incremental_rebuild(tmp_path: Path):
+    """The typed-parameter entry point keeps full/incremental parity too."""
+    (full_calls, full), (inc_calls, inc) = _full_then_incremental(
         tmp_path,
         _incr_enum_corpus("    public function go(Status $s): void { $s->label(); }"),
         changed=_INCR_RUNNER,
     )
 
     go = _find(inc, ".go()", "runner")
+    enum_label = _find(full, ".label()", "enums_status")
+    assert (go, enum_label) in full_calls
+    assert (go, enum_label) in inc_calls
     assert (go, _find(full, ".label()", "legacy_status")) not in inc_calls
-    assert not _labelled(inc_calls, go)
 
 
-def test_trait_refusal_survives_incremental_rebuild(tmp_path: Path):
-    (_, full), (inc_calls, inc) = _full_then_incremental(tmp_path, {
+def test_trait_binding_agrees_across_an_incremental_rebuild(tmp_path: Path):
+    """A trait-typed receiver is broken PHP, but its verdict must not depend on
+    which files a rebuild happened to dispatch: the imported trait on both
+    builds, the same-short-named `App\\Legacy\\Cache` class on neither."""
+    (full_calls, full), (inc_calls, inc) = _full_then_incremental(tmp_path, {
         "app/Support/Cache.php": (
             "<?php\nnamespace App\\Support;\n"
             "trait Cache {\n    public function flush(): void {}\n}\n"
@@ -1803,12 +2096,14 @@ def test_trait_refusal_survives_incremental_rebuild(tmp_path: Path):
     }, changed=_INCR_RUNNER)
 
     go = _find(inc, ".go()", "runner")
+    trait_flush = _find(full, ".flush()", "support_cache")
+    assert (go, trait_flush) in full_calls
+    assert (go, trait_flush) in inc_calls
     assert (go, _find(full, ".flush()", "legacy_cache")) not in inc_calls
-    assert not any(src == go and "flush" in tgt.lower() for src, tgt in inc_calls)
 
 
 def test_class_typed_receiver_still_resolves_incrementally_beside_an_enum(tmp_path: Path):
-    """Positive control for the three above: the refusal stays name-scoped on the
+    """Positive control for the three above: binding stays name-scoped on the
     incremental path — a CLASS-typed receiver still binds into its unchanged
     file, with an unrelated enum and a same-named-method decoy in the corpus."""
     (_, full), (inc_calls, inc) = _full_then_incremental(tmp_path, {
@@ -1838,10 +2133,47 @@ def test_class_typed_receiver_still_resolves_incrementally_beside_an_enum(tmp_pa
     assert (go, _find(full, ".label()", "audittrail")) not in inc_calls
 
 
+def test_unique_enum_binding_survives_incremental_rebuild(tmp_path: Path):
+    """#53 criterion 4 for the enum shape: the enum's file is unchanged, so its
+    declaration node and its `method` edge reach the resolver only through the
+    #2437 replay channel — and the binding must match the full build's."""
+    (full_calls, full), (inc_calls, inc) = _full_then_incremental(tmp_path, {
+        "app/Enums/Status.php": _ENUM_CORPUS["app/Enums/Status.php"],
+        "app/Models/Lead.php": (
+            "<?php\nnamespace App\\Models;\n"
+            "class Lead {\n    public function label(): string { return 'L'; }\n}\n"
+        ),
+        _INCR_RUNNER: (
+            "<?php\n"
+            "namespace App\\Http;\n"
+            "use App\\Enums\\Status;\n"
+            "class Runner {\n"
+            "    private Status $status;\n"
+            "    public function go(): void { $this->status->label(); }\n"
+            "}\n"
+        ),
+    }, changed=_INCR_RUNNER)
+
+    go = _find(inc, ".go()", "runner")
+    enum_label = _find(full, ".label()", "enums_status")
+    assert (go, enum_label) in full_calls, "full-build baseline must bind"
+    assert (go, enum_label) in inc_calls, \
+        "an undispatched enum file must keep its replayed binding"
+    assert (go, _find(full, ".label()", "models_lead")) not in inc_calls
+
+
 def test_legacy_php_interfaces_marker_spelling_is_still_read(tmp_path: Path):
     """Cache compatibility: a graph.json written before #12 carries the names
-    under `_php_interfaces`. Interfaces it names keep refusing — the rename must
-    not silently drop a channel that older graphs are still using."""
+    under `_php_interfaces`, and both spellings must keep being read back off
+    the resolution context — the rename must not silently drop a channel that
+    older graphs are still using.
+
+    #53 lifted the RECEIVER REFUSAL these names used to feed, so what is pinned
+    here is the channel itself: `_php_context_interface_entry` recovering the
+    unchanged corpus's declared names under either spelling. Resolution now runs
+    off a different marker on the same nodes — `_php_class_fqns` (#23) — which
+    is why the downgraded context still binds the imported contract and still
+    leaves `App\\Support\\Notifier` alone."""
     (_, full), _ = _full_then_incremental(tmp_path, {
         **_IFACE_CORPUS,
         _INCR_DISPATCHER: (
@@ -1865,6 +2197,9 @@ def test_legacy_php_interfaces_marker_spelling_is_still_read(tmp_path: Path):
             node["_php_interfaces"] = names  # the pre-#12 spelling
             downgraded += 1
     assert downgraded == 1, "exactly the interface's file node carries the names"
+    assert _php_context_interface_entry(ctx_nodes) == {
+        "php_non_class_types": ["Notifier"]
+    }, "the pre-#12 spelling must still be recovered off the context nodes"
 
     caller = tmp_path / "corpus" / _INCR_DISPATCHER
     inc = extract([caller], cache_root=tmp_path / "corpus",
@@ -1877,7 +2212,7 @@ def test_legacy_php_interfaces_marker_spelling_is_still_read(tmp_path: Path):
 
     go = _find(inc, ".go()", "dispatcher")
     assert (go, _find(full, ".notify()", "support_notifier")) not in inc_calls
-    assert not _notified(inc_calls, go)
+    assert (go, _find(full, ".notify()", "contracts_notifier")) in inc_calls
 
 
 # ── Same-file union / intersection receivers (user story 11, #9) ──────────────
