@@ -1638,6 +1638,7 @@ def dispatch_command(cmd: str) -> None:
         co_exclude_hubs: float | None = None
         label_max_concurrency: int = 4
         label_batch_size: int = 100
+        label_language: str | None = None
         i_arg = 0
         while i_arg < len(args):
             a = args[i_arg]
@@ -1667,6 +1668,10 @@ def dispatch_command(cmd: str) -> None:
                 label_batch_size = int(args[i_arg + 1]); i_arg += 2
             elif a.startswith("--batch-size="):
                 label_batch_size = int(a.split("=", 1)[1]); i_arg += 1
+            elif a == "--label-language" and i_arg + 1 < len(args):
+                label_language = args[i_arg + 1]; i_arg += 2
+            elif a.startswith("--label-language="):
+                label_language = a.split("=", 1)[1]; i_arg += 1
             elif a in ("--no-viz", "--missing-only") or a.startswith("--min-community-size="):
                 i_arg += 1
             elif a.startswith("--"):
@@ -1864,7 +1869,7 @@ def dispatch_command(cmd: str) -> None:
             generated_labels, _ = generate_community_labels(
                 G, label_communities_input, backend=label_backend, model=label_model, gods=gods,
                 max_concurrency=label_max_concurrency, batch_size=label_batch_size,
-                usage_out=label_token_usage,
+                usage_out=label_token_usage, label_language=label_language,
             )
             # Only let the LLM OVERRIDE where it produced a real name — its no-backend
             # fallback returns "Community {cid}" placeholders, which must not clobber
