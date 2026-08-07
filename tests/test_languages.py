@@ -2999,3 +2999,119 @@ def test_decldef_merge_does_not_merge_same_name_same_dir_distinct_files():
     r = _corpus("cpp_samedir/Alpha.h", "cpp_samedir/Beta.h")
     dups = _nodes_with_label(r, "Dup")
     assert len(dups) == 2, f"same-dir distinct Dups must stay distinct, got {[n['id'] for n in dups]}"
+
+
+# ── Markdown: node_kind + frontmatter ────────────────────────────────────────
+
+def _md_extract(src: str):
+    """Write *src* to a temp .md file and extract it."""
+    import tempfile, os
+    with tempfile.NamedTemporaryFile(suffix=".md", mode="w", delete=False) as fh:
+        fh.write(src)
+        fpath = fh.name
+    try:
+        return extract_markdown(Path(fpath))
+    finally:
+        os.unlink(fpath)
+
+
+def test_markdown_node_kind_separates_pages_from_headings():
+    """Headings must be filterable. file_type is 'document' for both, so a
+    consumer needs node_kind to tell a page from a heading."""
+    r = _md_extract("# Title\n\n## Section\n\n### Deeper\n")
+    kinds = [n["node_kind"] for n in r["nodes"]]
+    assert kinds.count("page") == 1, f"expected exactly one page node, got {kinds}"
+    assert kinds.count("heading") == 3, f"expected three heading nodes, got {kinds}"
+    # file_type stays 'document' on both — build.py's twin-merge depends on it.
+    assert {n["file_type"] for n in r["nodes"]} == {"document"}
+
+
+def test_markdown_frontmatter_lands_on_page_node():
+    r = _md_extract(
+        "---\n"
+        "title: Two Tier Model\n"
+        "type: decision\n"
+        "review_status: reviewed\n"
+        "---\n"
+        "\n"
+        "# Body Heading\n"
+    )
+    page = [n for n in r["nodes"] if n["node_kind"] == "page"][0]
+    assert page["frontmatter"]["type"] == "decision"
+    assert page["frontmatter"]["review_status"] == "reviewed"
+    heading = [n for n in r["nodes"] if n["node_kind"] == "heading"][0]
+    assert "frontmatter" not in heading
+
+
+def test_markdown_no_frontmatter_key_when_absent():
+    """A plain document must not grow an empty frontmatter dict."""
+    r = _md_extract("# Just A Heading\n")
+    page = [n for n in r["nodes"] if n["node_kind"] == "page"][0]
+    assert "frontmatter" not in page
+
+
+def test_markdown_yaml_comment_is_not_a_heading():
+    """`#` inside frontmatter is a YAML comment, not an H1."""
+    r = _md_extract(
+        "---\n"
+        "# this is a yaml comment\n"
+        "title: Real Title\n"
+        "---\n"
+        "\n"
+        "# Actual Heading\n"
+    )
+    labels = _labels(r)
+    assert not any("yaml comment" in l for l in labels), \
+        f"YAML comment parsed as heading: {labels}"
+    assert any("Actual Heading" in l for l in labels)
+
+
+def test_markdown_horizontal_rule_is_not_frontmatter():
+    """A `---` that is not on line 1 is a horizontal rule."""
+    r = _md_extract("# Title\n\n---\n\nsome text\n")
+    page = [n for n in r["nodes"] if n["node_kind"] == "page"][0]
+    assert "frontmatter" not in page
+    assert any("Title" in l for l in _labels(r))
+
+
+def test_markdown_unterminated_frontmatter_fence_is_content():
+    """An opening `---` with no closing fence must not swallow the document."""
+    r = _md_extract("---\ntitle: Dangling\n\n# Still A Heading\n")
+    assert any("Still A Heading" in l for l in _labels(r))
+
+
+def test_markdown_frontmatter_wikilinks_still_produce_edges():
+    """Review workflows keep wikilinks in frontmatter (a `consulted:` list);
+    those are genuine references and must not be dropped."""
+    import tempfile, os
+    d = tempfile.mkdtemp()
+    try:
+        (Path(d) / "target.md").write_text("# Target\n")
+        src = Path(d) / "source.md"
+        src.write_text("---\nconsulted: [[target]]\n---\n\n# Source\n")
+        r = extract_markdown(src)
+        refs = [e for e in r["edges"] if e["relation"] == "references"]
+        assert refs, "wikilink in frontmatter produced no reference edge"
+    finally:
+        import shutil; shutil.rmtree(d)
+
+
+def test_markdown_nested_frontmatter_survives():
+    """Nested blocks (a coherence_check: record) must not be flattened away."""
+    r = _md_extract(
+        "---\n"
+        "title: Nested\n"
+        "coherence_check:\n"
+        "  verdict: extends\n"
+        "---\n"
+        "\n"
+        "# Body\n"
+    )
+    page = [n for n in r["nodes"] if n["node_kind"] == "page"][0]
+    assert page["frontmatter"]["coherence_check"]["verdict"] == "extends"
+
+
+def test_markdown_malformed_frontmatter_does_not_raise():
+    r = _md_extract("---\n: : : not valid yaml : :\n---\n\n# Body\n")
+    assert "error" not in r
+    assert any("Body" in l for l in _labels(r))
