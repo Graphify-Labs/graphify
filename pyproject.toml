@@ -75,6 +75,11 @@ gemini = ["openai", "tiktoken"]
 openai = ["openai", "tiktoken"]
 chinese = ["jieba"]
 sql = ["tree-sitter-sql"]
+# extract_yaml() models Docker Compose services and GitHub Actions jobs. YAML
+# stays a DOC_EXTENSIONS document either way, so without this extra the file is
+# still read by the semantic pass — the extra only adds the free, deterministic
+# structural edges on top, which is why it is optional rather than a base dep.
+yaml = ["tree-sitter-yaml"]
 # extract_pascal() uses tree-sitter-pascal for AST-quality extraction (more
 # accurate calls/inherits edges) and falls back to a regex extractor when it is
 # absent (#781), so this stays optional. Unlike tree-sitter-dm below, it ships
@@ -85,7 +90,7 @@ pascal = ["tree-sitter-pascal"]
 # avoids breaking the default `uv tool install graphifyy` for everyone (#1104).
 dm = ["tree-sitter-dm"]
 terraform = ["tree-sitter-hcl"]
-all = ["mcp>=1,<3", "starlette>=1.3.1,<2", "neo4j", "falkordb", "pypdf>=6.12.0", "markdownify", "watchdog", "graspologic; python_version < '3.13'", "python-docx", "openpyxl", "faster-whisper; python_version >= '3.11'", "yt-dlp>=2026.6.9", "matplotlib", "numpy>=2.0; python_version >= '3.13'", "openai", "tiktoken", "boto3", "anthropic", "tree-sitter-sql", "jieba", "tree-sitter-dm", "tree-sitter-hcl", "tree-sitter-pascal"]
+all = ["mcp>=1,<3", "starlette>=1.3.1,<2", "neo4j", "falkordb", "pypdf>=6.12.0", "markdownify", "watchdog", "graspologic; python_version < '3.13'", "python-docx", "openpyxl", "faster-whisper; python_version >= '3.11'", "yt-dlp>=2026.6.9", "matplotlib", "numpy>=2.0; python_version >= '3.13'", "openai", "tiktoken", "boto3", "anthropic", "tree-sitter-sql", "tree-sitter-yaml", "jieba", "tree-sitter-dm", "tree-sitter-hcl", "tree-sitter-pascal"]
 
 [project.scripts]
 graphify = "graphify.__main__:main"

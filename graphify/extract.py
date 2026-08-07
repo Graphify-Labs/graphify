@@ -54,6 +54,7 @@ from graphify.extractors.sln import extract_sln  # noqa: F401
 from graphify.extractors.sql import extract_sql  # noqa: F401
 from graphify.extractors.terraform import extract_terraform  # noqa: F401
 from graphify.extractors.verilog import extract_verilog  # noqa: F401
+from graphify.extractors.yaml_config import extract_yaml  # noqa: F401
 from graphify.extractors.zig import extract_zig  # noqa: F401
 from graphify.security import sanitize_metadata
 from graphify.paths import disambiguate_ambiguous_candidates
@@ -4278,6 +4279,8 @@ _DISPATCH: dict[str, Any] = {
     ".sh": extract_bash,
     ".bash": extract_bash,
     ".json": extract_json,
+    ".yaml": extract_yaml,
+    ".yml": extract_yaml,
     ".tf": extract_terraform,
     ".tfvars": extract_terraform,
     ".hcl": extract_terraform,
@@ -4305,6 +4308,8 @@ _DISPATCH: dict[str, Any] = {
 # extract() to tell the user which extra restores the language.
 _EXTRA_FOR_EXTENSION = {
     ".sql": "sql",
+    ".yaml": "yaml",
+    ".yml": "yaml",
     ".tf": "terraform",
     ".tfvars": "terraform",
     ".hcl": "terraform",
