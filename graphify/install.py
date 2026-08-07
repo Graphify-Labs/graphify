@@ -16,6 +16,7 @@ import json
 import os
 import platform
 import re
+import shlex
 import shutil
 import sys
 from pathlib import Path
@@ -111,6 +112,11 @@ def _platform_skill_destination(platform_name: str, *, project: bool = False, pr
             return (project_dir or Path(".")) / ".agents" / "skills" / "graphify" / "SKILL.md"
         # Global Antigravity skill dir (all workspaces): ~/.gemini/config/skills/
         return Path.home() / ".gemini" / "config" / "skills" / "graphify" / "SKILL.md"
+
+    if platform_name == "vibe":
+        if project:
+            return (project_dir or Path(".")) / ".vibe" / "skills" / "graphify" / "SKILL.md"
+        return _vibe_home() / "skills" / "graphify" / "SKILL.md"
 
     cfg = _PLATFORM_CONFIG[platform_name]
     if project:
@@ -463,6 +469,13 @@ _PLATFORM_CONFIG: dict[str, dict] = {
         "skill_dst": Path(".config") / "devin" / "skills" / "graphify" / "SKILL.md",
         "claude_md": False,
     },
+    "vibe": {
+        # Mistral Vibe (mistralai/mistral-vibe): reuses the `agents` references bundle.
+        "skill_file": "skill-vibe.md",
+        "skill_dst": Path(".vibe") / "skills" / "graphify" / "SKILL.md",
+        "claude_md": False,
+        "skill_refs": "agents",
+    },
 }
 # CLI-only platform aliases, resolved to a real _PLATFORM_CONFIG key before
 # dispatch. `skills` is the friendly alias for the generic `agents` platform
@@ -587,7 +600,7 @@ def _print_banner() -> None:
 """)
     except Exception:
         pass
-def install(platform: str = "claude", *, project: bool = False, project_dir: Path | None = None) -> None:
+def install(platform: str = "claude", *, project: bool = False, project_dir: Path | None = None, strict: bool = False) -> None:
     _print_banner()
     platform = _canonical_platform(platform)
     if platform == "gemini":
@@ -595,6 +608,9 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
         return
     if platform == "cursor":
         _cursor_install(Path("."))
+        return
+    if platform == "vibe":
+        _vibe_install(project_dir, project=project, strict=strict)
         return
     # On Windows, antigravity needs the PowerShell skill, not the bash one
     if platform == "antigravity" and sys.platform == "win32":
@@ -725,11 +741,11 @@ def gemini_install(project_dir: Path | None = None, *, project: bool = False) ->
 def _refuse_to_modify(settings_path: Path) -> "NoReturn":
     """Abort a hook install rather than clobber a config file we can't parse (#2167)."""
     print(
-        f"[graphify] refusing to modify {settings_path}: not valid JSON "
+        f"[graphify] refusing to modify {settings_path}: not valid JSON or TOML "
         "(fix or move it and re-run)",
         file=sys.stderr,
     )
-    sys.exit(1)
+    raise SystemExit(1)
 def _read_settings_for_merge(settings_path: Path) -> dict:
     """Load an existing settings/hooks JSON file for a read-modify-write merge.
 
@@ -1467,6 +1483,187 @@ def _uninstall_codex_hook(project_dir: Path) -> None:
     existing["hooks"]["PreToolUse"] = filtered
     hooks_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
     print(f"  .codex/hooks.json  ->  PreToolUse hook removed")
+
+
+_VIBE_HOOK_ENTRIES: "tuple[tuple[str, str, tuple[str, ...], str], ...]" = (
+    (
+        "graphify-nudge-search",
+        "grep",
+        ("hook-guard", "search"),
+        "Nudge toward `graphify query` instead of raw grep.",
+    ),
+    (
+        "graphify-nudge-read",
+        "read_file",
+        ("hook-guard", "read"),
+        "Nudge toward `graphify query` instead of raw file reads.",
+    ),
+)
+
+
+_VIBE_OWNED_HOOK_NAMES: frozenset[str] = frozenset(
+    name for name, _, _, _ in _VIBE_HOOK_ENTRIES
+)
+
+
+def _vibe_home() -> Path:
+    """Resolve the vibe home dir, honoring vibe's own `VIBE_HOME` env var."""
+    override = os.environ.get("VIBE_HOME")
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".vibe"
+
+
+def _vibe_hooks_path(project_dir: Path, *, project: bool) -> Path:
+    """Return the hooks.toml path vibe reads for the requested scope."""
+    if project:
+        return (project_dir or Path(".")) / ".vibe" / "hooks.toml"
+    return _vibe_home() / "hooks.toml"
+
+
+def _vibe_agents_md_path(project_dir: Path, *, project: bool) -> Path:
+    """Return the AGENTS.md path vibe merges for the requested scope."""
+    if project:
+        return (project_dir or Path(".")) / "AGENTS.md"
+    return _vibe_home() / "AGENTS.md"
+
+
+def _vibe_hook_entries(strict: bool = False) -> "list[dict]":
+    """Build the two pre_tool entries (grep + read) with shlex-safe commands."""
+    exe = _resolve_graphify_exe()
+    entries: list[dict] = []
+    for name, matcher, subcommand_parts, description in _VIBE_HOOK_ENTRIES:
+        argv: list[str] = [exe, *subcommand_parts]
+        if subcommand_parts == ("hook-guard", "read") and strict:
+            argv.append("--strict")
+        command = shlex.join(argv)
+        entries.append({
+            "name": name,
+            "type": "pre_tool",
+            "match": matcher,
+            "command": command,
+            "timeout": 5.0,
+            "strict": False,
+            "description": description,
+        })
+    return entries
+
+
+def _install_vibe_hook(project_dir: Path, *, project: bool, strict: bool = False) -> None:
+    """Merge graphify pre_tool entries into vibe's hooks.toml (idempotent, name-owned)."""
+    try:
+        import tomlkit
+        from tomlkit.items import AoT
+    except ImportError as exc:
+        raise RuntimeError(
+            "graphify vibe install requires `tomlkit`. "
+            "Reinstall graphifyy (e.g. `uv tool install --reinstall graphifyy`)."
+        ) from exc
+
+    hooks_path = _vibe_hooks_path(project_dir, project=project)
+    hooks_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if hooks_path.exists():
+        try:
+            doc = tomlkit.parse(hooks_path.read_text(encoding="utf-8-sig"))
+        except Exception:
+            _refuse_to_modify(hooks_path)
+    else:
+        doc = tomlkit.document()
+
+    existing = doc.get("hooks")
+    if existing is None:
+        table_array = tomlkit.aot()
+        doc["hooks"] = table_array
+    elif isinstance(existing, AoT):
+        table_array = existing
+    else:
+        _refuse_to_modify(hooks_path)
+
+    kept: list = []
+    for h in table_array:
+        if not hasattr(h, "get"):
+            _refuse_to_modify(hooks_path)
+        if h.get("name") in _VIBE_OWNED_HOOK_NAMES:
+            continue
+        kept.append(h)
+
+    while len(table_array) > 0:
+        table_array.pop()
+    for entry in kept:
+        table_array.append(entry)
+    for entry in _vibe_hook_entries(strict=strict):
+        table = tomlkit.table()
+        for key, value in entry.items():
+            table[key] = value
+        table_array.append(table)
+
+    output = tomlkit.dumps(doc)
+    if hooks_path.exists():
+        current = hooks_path.read_text(encoding="utf-8")
+        if _normalize_toml(current) == _normalize_toml(output):
+            print(f"  {hooks_path}  ->  pre_tool hooks already registered (no change)")
+            return
+        backup = hooks_path.with_name(hooks_path.name + ".graphify-bak")
+        shutil.copy2(hooks_path, backup)
+    hooks_path.write_text(output, encoding="utf-8")
+    strict_note = " (strict)" if strict else ""
+    print(f"  {hooks_path}  ->  pre_tool hooks registered (grep + read){strict_note}")
+
+
+def _normalize_toml(text: str) -> str:
+    """Collapse tomlkit fresh-vs-parsed whitespace drift for idempotency checks."""
+    return "\n".join(line for line in text.splitlines() if line.strip()) + "\n"
+
+
+def _uninstall_vibe_hook(project_dir: Path, *, project: bool) -> None:
+    """Strip graphify pre_tool entries from vibe's hooks.toml (name-owned)."""
+    try:
+        import tomlkit
+        from tomlkit.items import AoT
+    except ImportError as exc:
+        raise RuntimeError(
+            "graphify vibe uninstall requires `tomlkit`. "
+            "Reinstall graphifyy (e.g. `uv tool install --reinstall graphifyy`)."
+        ) from exc
+
+    hooks_path = _vibe_hooks_path(project_dir, project=project)
+    if not hooks_path.exists():
+        return
+    try:
+        doc = tomlkit.parse(hooks_path.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return
+
+    table_array = doc.get("hooks")
+    if not isinstance(table_array, AoT):
+        return
+
+    kept: list = []
+    for h in table_array:
+        if not hasattr(h, "get"):
+            return
+        if h.get("name") in _VIBE_OWNED_HOOK_NAMES:
+            continue
+        kept.append(h)
+
+    if len(kept) == len(table_array):
+        return
+
+    while len(table_array) > 0:
+        table_array.pop()
+    for entry in kept:
+        table_array.append(entry)
+    if len(table_array) == 0:
+        del doc["hooks"]
+
+    output = tomlkit.dumps(doc)
+    if not output.strip():
+        hooks_path.unlink()
+        print(f"  {hooks_path}  ->  removed (empty after graphify uninstall)")
+    else:
+        hooks_path.write_text(output, encoding="utf-8")
+        print(f"  {hooks_path}  ->  pre_tool hooks removed")
 def _agents_install(project_dir: Path, platform: str) -> None:
     """Write the graphify section to the local AGENTS.md for always-on platforms."""
     target = (project_dir or Path(".")) / "AGENTS.md"
@@ -1526,6 +1723,87 @@ def _amp_uninstall(project_dir: Path | None = None) -> None:
     if removed:
         print("skill removed")
     _agents_uninstall(project_dir or Path("."), platform="amp")
+def _install_vibe_agents_md(target: Path) -> None:
+    """Write or refresh the graphify AGENTS.md section at target (idempotent)."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    body = _always_on("agents-md")
+    new_content = (
+        _replace_or_append_section(target.read_text(encoding="utf-8"), _AGENTS_MD_MARKER, body)
+        if target.exists() else body
+    )
+    if target.exists() and new_content == target.read_text(encoding="utf-8"):
+        print(f"graphify already configured in {target.resolve()} (no change)")
+        return
+    target.write_text(new_content, encoding="utf-8")
+    print(f"graphify section written to {target.resolve()}")
+
+
+def _uninstall_vibe_agents_md(targets: list[Path]) -> None:
+    """Strip the graphify section from every AGENTS.md in targets (skips missing)."""
+    for target in targets:
+        if not target.exists():
+            continue
+        cleaned = _remove_marker_section(target.read_text(encoding="utf-8"), _AGENTS_MD_MARKER)
+        if cleaned is None:
+            continue
+        if cleaned:
+            target.write_text(cleaned + "\n", encoding="utf-8")
+            print(f"graphify section removed from {target.resolve()}")
+        else:
+            target.unlink()
+            print(f"AGENTS.md was empty after removal - deleted {target.resolve()}")
+
+
+def _print_vibe_install_summary(strict: bool) -> None:
+    """Post-install summary + optional strict-mode note."""
+    print()
+    print("Mistral Vibe will now check the knowledge graph before answering")
+    print("codebase questions and rebuild it after code changes.")
+    print("Use /graphify in vibe to build or update the graph.")
+    if strict:
+        print("Strict mode: the first raw file read per session is blocked until")
+        print("one `graphify query` runs (toggle with GRAPHIFY_HOOK_STRICT=0).")
+
+
+def _vibe_install(project_dir: Path | None = None, *, project: bool = False, strict: bool = False) -> None:
+    """Full-parity Vibe install: skill + AGENTS.md always-on + hooks.toml."""
+    project_dir = project_dir or Path(".")
+    skill_dst = _copy_skill_file("vibe", project=project, project_dir=project_dir)
+    _install_vibe_agents_md(_vibe_agents_md_path(project_dir, project=project))
+    _install_vibe_hook(project_dir, project=project, strict=strict)
+
+    if project:
+        _print_project_git_add_hint([
+            _project_scope_root(skill_dst, project_dir),
+            project_dir / "AGENTS.md",
+            project_dir / ".vibe",
+        ])
+    else:
+        _refresh_all_version_stamps()
+
+    _print_vibe_install_summary(strict)
+
+
+def _vibe_uninstall(project_dir: Path | None = None, *, project: bool = False, remove_user_skill: bool | None = None) -> None:
+    """Reverse of `_vibe_install`; scope rules mirror `gemini_uninstall` (#2215)."""
+    explicit_dir = project_dir is not None
+    project_dir = project_dir or Path(".")
+    if remove_user_skill is None:
+        remove_user_skill = not project and not explicit_dir
+
+    agents_md_targets: list[Path] = []
+    if project or (explicit_dir and not remove_user_skill):
+        _remove_skill_file("vibe", project=True, project_dir=project_dir)
+        _uninstall_vibe_hook(project_dir, project=True)
+        agents_md_targets.append(_vibe_agents_md_path(project_dir, project=True))
+    if remove_user_skill:
+        _remove_skill_file("vibe", project=False)
+        _uninstall_vibe_hook(project_dir, project=False)
+        agents_md_targets.append(_vibe_agents_md_path(project_dir, project=False))
+
+    _uninstall_vibe_agents_md(agents_md_targets)
+
+
 def _agents_platform_install(project_dir: Path | None = None) -> None:
     """`graphify agents install`: skill into ~/.agents/skills + AGENTS.md.
 
@@ -1569,6 +1847,8 @@ def _project_install(platform_name: str, project_dir: Path | None = None, strict
         elif platform_name == "codex":
             hint_paths.append(project_dir / ".codex")
         _print_project_git_add_hint(hint_paths)
+    elif platform_name == "vibe":
+        _vibe_install(project_dir, project=True, strict=strict)
     elif platform_name == "devin":
         skill_dst = _copy_skill_file("devin", project=True, project_dir=project_dir)
         _devin_rules_install(project_dir)
@@ -1606,6 +1886,8 @@ def _project_uninstall(platform_name: str, project_dir: Path | None = None) -> N
         _agents_uninstall(project_dir, platform=platform_name)
         if platform_name == "codex":
             _uninstall_codex_hook(project_dir)
+    elif platform_name == "vibe":
+        _vibe_uninstall(project_dir, project=True)
     elif platform_name == "antigravity":
         _antigravity_uninstall(project_dir, project=True)
     elif platform_name == "devin":
@@ -1786,6 +2068,7 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
     claude_uninstall(pd, remove_user_skill=True)
     codebuddy_uninstall(pd, remove_user_skill=True)
     gemini_uninstall(pd, remove_user_skill=True)
+    _vibe_uninstall(pd, project=True, remove_user_skill=True)
     vscode_uninstall(pd)
     _cursor_uninstall(pd)
     _kiro_uninstall(pd)
@@ -2009,6 +2292,7 @@ _CLI_INSTALL_COMMANDS = frozenset({
     "trae",
     "trae-cn",
     "uninstall",
+    "vibe",
     "vscode",
 })
 
@@ -2070,13 +2354,13 @@ def dispatch_install_cli(cmd: str) -> bool:
         if project_scope:
             _project_install(chosen_platform, Path("."), strict=strict)
         else:
-            if strict:
+            if strict and _canonical_platform(chosen_platform) != "vibe":
                 print(
                     "note: --strict applies to the project PreToolUse hook; run "
                     "`graphify install --project --strict` or `graphify claude install --strict`.",
                     file=sys.stderr,
                 )
-            install(platform=chosen_platform)
+            install(platform=chosen_platform, strict=strict)
     elif cmd == "uninstall":
         args = sys.argv[2:]
         purge = "--purge" in args
@@ -2287,5 +2571,19 @@ def dispatch_install_cli(cmd: str) -> bool:
                 _antigravity_uninstall(Path("."))
         else:
             print("Usage: graphify antigravity [install|uninstall]", file=sys.stderr)
+            sys.exit(1)
+    elif cmd == "vibe":
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        project_scope = "--project" in sys.argv[3:]
+        strict = "--strict" in sys.argv[3:]
+        if subcmd == "install":
+            _vibe_install(Path("."), project=project_scope, strict=strict)
+        elif subcmd == "uninstall":
+            if project_scope:
+                _vibe_uninstall(Path("."), project=True)
+            else:
+                _vibe_uninstall()
+        else:
+            print("Usage: graphify vibe [install|uninstall] [--project] [--strict]", file=sys.stderr)
             sys.exit(1)
     return True
