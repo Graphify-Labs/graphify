@@ -623,10 +623,10 @@ def _import_kotlin(node, source: bytes, file_nid: str, stem: str, edges: list, s
                 "weight": 1.0,
             })
         return
-    # Fallback: find identifier child
+    # Fallback: find identifier or qualified_identifier child
     for child in node.children:
-        if child.type == "identifier":
-            raw = _read_text(child, source)
+        if child.type in ("identifier", "qualified_identifier"):
+            raw = _read_text(child, source).split(".")[-1].strip()
             tgt_nid = _make_id(raw)
             edges.append({
                 "source": file_nid,
@@ -883,12 +883,11 @@ _CSHARP_CONFIG = LanguageConfig(
     function_boundary_types=frozenset({"method_declaration"}),
     import_handler=_import_csharp,
 )
-
 _KOTLIN_CONFIG = LanguageConfig(
     ts_module="tree_sitter_kotlin",
     class_types=frozenset({"class_declaration", "object_declaration"}),
     function_types=frozenset({"function_declaration"}),
-    import_types=frozenset({"import_header"}),
+    import_types=frozenset({"import_header", "import"}),
     call_types=frozenset({"call_expression"}),
     call_function_field="",
     call_accessor_node_types=frozenset({"navigation_expression"}),
