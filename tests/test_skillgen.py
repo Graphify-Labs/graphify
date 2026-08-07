@@ -951,16 +951,20 @@ def test_agents_audit_baseline_is_amps_v8_body():
     assert problems == [], "\n".join(problems)
 
 
-def test_semantic_cache_calls_pass_prompt_file_for_every_split_host():
-    """#1939: a skill's cache read and write must both name the extraction prompt
-    they use, or the run replays entries produced by an older prompt (the read) /
-    strands its results where the next read won't look (the write).
+def test_semantic_cache_calls_share_prompt_identity_for_every_split_host():
+    """#1939/#2303: a skill's cache read and write must both name the
+    extraction prompt they use, or the run replays entries produced by an older
+    prompt (the read) / strands its results where the next read won't look (the
+    write).
 
     Locked per host because the two calls live ~80 lines apart in the rendered
     body: adding the argument to one and not the other silently disables the
-    cache rather than failing loudly. The monolith hosts (aider, devin) inline
-    their prompt instead of shipping references/extraction-spec.md and are
-    deliberately excluded — they have no spec path to point at.
+    cache rather than failing loudly. Split-host skills use SPEC_PATH for the
+    subagent prompt, but the Gemini direct path must use the native
+    _extraction_system() prompt because extract_corpus_parallel checkpoints with
+    that fingerprint. The monolith hosts (aider, devin) inline their prompt
+    instead of shipping references/extraction-spec.md and are deliberately
+    excluded — they have no spec path to point at.
     """
     platforms = gen.load_platforms()
     arts = gen.render_all(platforms)
@@ -971,9 +975,14 @@ def test_semantic_cache_calls_pass_prompt_file_for_every_split_host():
     for a in bodies:
         for call in ("check_semantic_cache(", "save_semantic_cache("):
             line = next(ln for ln in a.content.splitlines() if call in ln and "import" not in ln)
-            assert "prompt_file='SPEC_PATH'" in line, (
-                f"{a.path}: {call} must pass prompt_file so entries are attributed "
-                f"to the extraction prompt (#1939) — got: {line.strip()}"
+            assert "**prompt_kwargs" in line, (
+                f"{a.path}: {call} must pass the shared prompt_kwargs so cache "
+                f"reads and writes use the same prompt identity (#1939/#2303) "
+                f"— got: {line.strip()}"
             )
         # The placeholder is inert unless the body tells the agent what to substitute.
         assert "SPEC_PATH below is the **absolute** path" in a.content, a.path
+        assert "'prompt_file': 'SPEC_PATH'" in a.content, a.path
+        assert "from graphify.llm import _extraction_system" in a.content, a.path
+        assert "'prompt': _extraction_system(deep=DEEP_MODE)" in a.content, a.path
+        assert "using_gemini_direct = bool" in a.content, a.path
