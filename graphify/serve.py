@@ -425,6 +425,21 @@ class _QueryScores(NamedTuple):
     best_seed_by_term: dict[str, str]
 
 
+def _is_sourceless(data: dict) -> bool:
+    """True when a node carries no `source_file` — extractor placeholder, not a
+    declaration.
+
+    A sourceless node is a stub the extractor minted for a reference it could not
+    resolve (an unresolved base type, a dangling import target); serve also
+    materializes attributeless nodes for dangling edge endpoints, which have no
+    `source_file` key at all. Either way, when a real sourced declaration carries
+    the same label the stub is a broken duplicate of it and never the better
+    answer — the same presence test (never a count threshold) `_find_node_tiers`
+    applies to its exact tier (#49).
+    """
+    return not str(data.get("source_file") or "")
+
+
 def _score_nodes(G: nx.Graph, terms: list[str]) -> list[tuple[float, str]]:
     """Combined query scorer returning the existing ranked `(score, node_id)` list.
 
@@ -442,9 +457,11 @@ def _score_query(
     """Single-pass combined scorer that optionally also records the best seed
     for each normalized query token.
 
-    The combined ranking is byte-identical to what `_score_nodes` produced
-    before the refactor; `_score_nodes` is now a thin wrapper that asks for
-    `collect_per_term_seeds=False` and returns only `.ranked`.
+    The combined ranking is the one `_score_nodes` has always returned — the
+    single-pass refactor left it byte-identical, and the only deliberate change
+    since is #54's sourced-preference tie-break in the sort below, which reorders
+    exact score ties and nothing else. `_score_nodes` is now a thin wrapper that
+    asks for `collect_per_term_seeds=False` and returns only `.ranked`.
 
     When `collect_per_term_seeds=True`, the per-token singleton winner is
     computed alongside the combined score in the *same* per-node visit (it
@@ -453,14 +470,17 @@ def _score_query(
     straight into `_pick_seeds` and skip the T additional whole-graph rescoring
     passes the old per-token `_score_nodes([token])` loop ran.
 
-    Singleton-winner semantics match the legacy per-token path exactly. The
-    score itself mirrors `_score_nodes([token])` with `n_terms == 1` (so the
-    coverage term is 1 and the per-token tier is unscaled) plus the broader
-    joined-singlet tier (which also checks `label_tokens` and `nid_lower`).
-    Tie-break order is (1) highest singleton score, (2) highest graph degree,
-    (3) shortest displayed label, (4) lexicographically smallest node id —
-    exactly what `max(tied, key=degree)` over a sort by `(-score, label_len,
-    nid)` produced in the legacy `_pick_seeds` per-token loop. The combined
+    Singleton-winner semantics match the legacy per-token path, with #54's
+    sourced preference layered on top of it. The score itself mirrors
+    `_score_nodes([token])` with `n_terms == 1` (so the coverage term is 1 and
+    the per-token tier is unscaled) plus the broader joined-singlet tier (which
+    also checks `label_tokens` and `nid_lower`). Tie-break order is (1) highest
+    singleton score, (2) a sourced node over a sourceless stub, (3) highest
+    graph degree, (4) shortest displayed label, (5) lexicographically smallest
+    node id. Everything but (2) is exactly what `max(tied, key=degree)` over a
+    sort by `(-score, label_len, nid)` produced in the legacy `_pick_seeds`
+    per-token loop; (2) is #54's, and sits where the combined sort below puts
+    it — directly under the score, above degree. The combined
     trigram candidate set (needles `norm_terms + [joined]`) is a superset of
     each per-token `[t]` candidate set, so iterating combined candidates
     discovers every non-zero singleton-score node for every term.
@@ -588,8 +608,14 @@ def _score_query(
                     # Tie-break key mirrors the legacy sort+max(degree):
                     # (-singleton, -degree, label_len, nid) — the minimum
                     # tuple wins, exactly matching max(tied, key=degree)
-                    # over (label_len asc, nid asc)-sorted ties.
-                    key = (-singleton, -G.degree(nid), len(data.get("label") or nid), nid)
+                    # over (label_len asc, nid asc)-sorted ties — with the
+                    # sourced preference (#54) inserted directly under the
+                    # score, exactly where the combined sort below puts it, so
+                    # a term's per-token winner cannot be a stub that a sourced
+                    # rival ties with. Same carve-out: an all-sourceless field
+                    # still yields a winner.
+                    key = (-singleton, _is_sourceless(data), -G.degree(nid),
+                           len(data.get("label") or nid), nid)
                     cur = best_by_term.get(t)
                     if cur is None or key < cur[0]:
                         best_by_term[t] = (key, nid)
@@ -597,9 +623,26 @@ def _score_query(
             score += tiered * (matched / n_terms) ** 2
         if score > 0:
             scored.append((score, nid))
-    # Sort by score desc; break ties toward the shorter label so a concise exact
-    # match beats a longer superset that happens to share the same score.
-    scored.sort(key=lambda s: (-s[0], len(G.nodes[s[1]].get("label") or s[1]), s[1]))
+    # Sort by score desc; among equal scores prefer a sourced declaration over a
+    # sourceless stub (#54), then break remaining ties toward the shorter label so
+    # a concise exact match beats a longer superset that happens to share the same
+    # score.
+    #
+    # The sourced preference sits directly under the score because a stub can
+    # never *out*-score an otherwise-identical sourced node — the source-file tier
+    # above only ever adds — so a shadowing stub always arrives here as an exact
+    # tie, and both remaining keys (label length, node id) are arbitrary with
+    # respect to which node is real: on the #54 repro two `FooRepository` nodes
+    # score 5619.08 apiece and the id sort answered with the stub, while
+    # `_find_node`/`resolve_seed` answered with the declaration. This is #49's rule
+    # applied to the tie the scored path actually produces; ordering it above the
+    # label-length key mirrors `_find_node_tiers`, which drops stubs from the tier
+    # outright rather than ranking them within it. Ties with no sourced candidate
+    # at all are untouched, so a lone stub still wins its query (#49's carve-out).
+    scored.sort(key=lambda s: (
+        -s[0], _is_sourceless(G.nodes[s[1]]),
+        len(G.nodes[s[1]].get("label") or s[1]), s[1],
+    ))
     best_seed_by_term: dict[str, str] = {}
     if collect_per_term_seeds and best_by_term:
         best_seed_by_term = {t: nid for t, (_key, nid) in best_by_term.items()}
