@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
 from functools import lru_cache
 from pathlib import Path
+from typing import Callable
 
 from graphify.google_workspace import (
     GOOGLE_WORKSPACE_EXTENSIONS,
@@ -1194,6 +1195,69 @@ def _is_ignored(
         if _eval(ancestor):
             return True
     return _eval(path)
+
+
+def ignored_predicate(
+    root: Path,
+    *,
+    extra_excludes: list[str] | None = None,
+    gitignore: bool = True,
+) -> Callable[[Path], bool]:
+    """Build a per-path predicate answering "would detect() exclude this path?".
+
+    Mirrors detect()'s ignore decisions for a single existing path WITHOUT
+    re-walking the corpus, from the same machinery detect() uses: the ancestor
+    .graphifyignore/.gitignore chain (_load_graphifyignore), CLI/persisted
+    ``--exclude`` patterns appended last at the root anchor (#947), nested
+    per-directory ignore files along the path's own lineage (#1206), the
+    _is_noise_dir directory pruning, and _SKIP_FILES. The sensitive-file
+    heuristic (_is_sensitive) is deliberately NOT included: callers use this
+    predicate as positive evidence of a live ignore RULE (#2495), and a
+    heuristic match is not user intent.
+
+    Nested patterns are loaded lazily, once per directory, into one shared
+    pattern list. That accumulation cannot cross-contaminate results — a
+    pattern only ever matches paths under its anchor directory, so patterns
+    from a sibling subtree are inert — which is the same invariant detect()'s
+    live os.walk relies on, and it keeps the shared _is_ignored cache valid.
+    """
+    root = root.resolve()
+    patterns = _load_graphifyignore(root, gitignore=gitignore)
+    if extra_excludes:
+        for pat in extra_excludes:
+            line = _parse_gitignore_line(pat)
+            if line:
+                patterns.append((root, line))
+    cache: dict[Path, bool] = {}
+    # root's own ignore file is the last entry of _load_graphifyignore's chain.
+    loaded_dirs: set[Path] = {root}
+
+    def _ignored(path: Path) -> bool:
+        path = Path(os.path.abspath(path))
+        try:
+            rel_parts = path.relative_to(root).parts
+        except ValueError:
+            return False  # outside the scan root: detect() never considered it
+        if path.name in _SKIP_FILES:
+            return True
+        # Noise-dir pruning: os.walk never descends these, so anything beneath
+        # one is excluded from the corpus regardless of ignore patterns.
+        parent = root
+        for part in rel_parts[:-1]:
+            if _is_noise_dir(part, parent):
+                return True
+            parent = parent / part
+        # Load ignore files along this path's own lineage — detect()'s walk
+        # would have loaded exactly these before reaching the file (#1206).
+        ancestor = root
+        for part in rel_parts[:-1]:
+            ancestor = ancestor / part
+            if ancestor not in loaded_dirs:
+                loaded_dirs.add(ancestor)
+                patterns.extend(_load_dir_own_ignore(ancestor, gitignore=gitignore))
+        return _is_ignored(path, root, patterns, _cache=cache)
+
+    return _ignored
 
 
 def _auto_follow_symlinks(root: Path) -> bool:
