@@ -1217,6 +1217,16 @@ def _find_node_tiers(
         elif term in norm_label or term in label_tokens or norm_query in norm_label:
             substring.append(nid)
 
+    # A sourceless node is a placeholder the extractor minted for a reference it
+    # could not resolve (an unresolved base type, a dangling import target). When
+    # a real, sourced declaration carries the same label, the stub is a broken
+    # duplicate of it — never the better answer, and never something the caller
+    # could disambiguate anyway, since it has no path to retry with. Drop the
+    # stubs so the exact tier holds only real declarations.
+    sourced_exact = [nid for nid in exact if str(G.nodes[nid].get("source_file") or "")]
+    if sourced_exact:
+        exact = sourced_exact
+
     if source_exact:
         query_basename = _strip_diacritics(Path(label).name).lower()
         preferred = []
@@ -1258,6 +1268,19 @@ def find_node_ambiguity(G: nx.Graph, label: str) -> list[str]:
     tier is split that way, else `[]`. Several matches *within one file* (a file
     node plus its members) are ordinary precedence, not ambiguity, and return `[]`.
 
+    Sourceless nodes are the exception to the per-file grouping, in *every* tier:
+    each one counts as its own rival. They all carry `source_file == ""`, so keying
+    them by source made N unrelated stub nodes look like N members of a single
+    file — the 18 stubs shadowing `BalanceitemRepository` reported no ambiguity at
+    all, and the caller answered with `matches[0]`.
+
+    Note the two halves of this fix have different reach. `_find_node_tiers` drops
+    stubs from a mixed tier only for the *exact* tier, so an exact tier arrives
+    here already reduced to real declarations and the per-stub keying changes
+    nothing for it. A winning prefix or substring tier is not reduced and can
+    still arrive mixed; there the keying is what stops its stubs from hiding
+    behind one another.
+
     `_disambiguate_file_node_labels` (#2032) already relabels colliding *file*
     nodes; this covers the symbol case it does not reach.
     """
@@ -1267,7 +1290,8 @@ def find_node_ambiguity(G: nx.Graph, label: str) -> list[str]:
         by_source: dict[str, str] = {}
         for nid in tier:
             source = str(G.nodes[nid].get("source_file") or "")
-            by_source.setdefault(source, nid)
+            # "\0" can't occur in a path, so a stub never joins a real file's group.
+            by_source.setdefault(source or "\0" + nid, nid)
         return list(by_source.values()) if len(by_source) > 1 else []
     return []
 
