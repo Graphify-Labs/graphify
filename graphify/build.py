@@ -1306,7 +1306,7 @@ def build(
                 _fold_node_aliases(n)
         combined["nodes"], combined["edges"] = deduplicate_entities(
             combined["nodes"], combined["edges"], communities={},
-            dedup_llm_backend=dedup_llm_backend,
+            dedup_llm_backend=dedup_llm_backend, root=root,
         )
     return build_from_json(combined, directed=directed, root=root)
 
