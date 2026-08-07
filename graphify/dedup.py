@@ -225,22 +225,69 @@ def _defines_id(node: dict) -> bool:
                for prefix in _id_prefixes(source_file))
 
 
+# Path-segment lifecycle markers used by _collision_rank. Lower penalty wins.
+# Without this, pure lexical source_file order makes ``plans/_done/…`` beat
+# ``plans/in-progress/…`` because "_" < "i" in ASCII (#2532).
+_ACTIVE_PATH_SEGMENTS = frozenset({
+    "in-progress",
+    "in_progress",
+    "wip",
+    "active",
+    "current",
+    "ongoing",
+})
+_ARCHIVED_PATH_SEGMENTS = frozenset({
+    "_done",
+    "done",
+    "archive",
+    "archived",
+    "_archive",
+    "deprecated",
+    "retired",
+    "trash",
+    "obsolete",
+})
+
+
+def _lifecycle_penalty(source_file: str) -> int:
+    """Prefer live path segments over archived ones when ranking collisions.
+
+    Returns 0 for active/in-progress paths, 2 for archived/done paths, and 1
+    when no lifecycle marker is present. Among mixed markers the best (lowest)
+    score wins so an active segment is not drowned out by an unrelated archive
+    directory higher in the tree.
+    """
+    parts = [p for p in source_file.replace("\\", "/").casefold().split("/") if p]
+    marked: list[int] = []
+    for part in parts:
+        if part in _ARCHIVED_PATH_SEGMENTS:
+            marked.append(2)
+        elif part in _ACTIVE_PATH_SEGMENTS:
+            marked.append(0)
+    if not marked:
+        return 1
+    return min(marked)
+
+
 def _collision_rank(node: dict) -> tuple:
     """A total order for choosing the survivor of an ID collision, independent of
     the order the colliding nodes arrive in.
 
     The winner is the node with the SMALLEST rank. A node whose ``source_file``
     defines the ID always outranks a mere reference; among equally-(non-)defining
-    nodes it prefers the shorter, more canonical label over a longer qualified
+    nodes an active/in-progress path outranks an archived/done path (#2532), then
+    it prefers the shorter, more canonical label over a longer qualified
     variant, then breaks any remaining tie lexically on label and then source_file
     (so the lexically-first path wins) — fully deterministic regardless of order.
     """
     label = node.get("label") or ""
+    source_file = node.get("source_file") or ""
     return (
         not _defines_id(node),  # definers (False) sort before references (True)
+        _lifecycle_penalty(source_file),  # live paths beat archived ones (#2532)
         len(label),             # shorter, more canonical label first
         label,                  # lexical tiebreak
-        node.get("source_file") or "",  # lexically-first source path wins
+        source_file,            # lexically-first source path wins
     )
 
 

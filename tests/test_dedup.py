@@ -1,7 +1,14 @@
 """Tests for graphify/dedup.py entity deduplication pipeline."""
 from __future__ import annotations
 import pytest
-from graphify.dedup import deduplicate_entities, _defines_id, _entropy, _shingles
+from graphify.dedup import (
+    deduplicate_entities,
+    _collision_rank,
+    _defines_id,
+    _entropy,
+    _lifecycle_penalty,
+    _shingles,
+)
 
 
 # ── entropy gate ─────────────────────────────────────────────────────────────
@@ -626,6 +633,61 @@ def test_defines_id_helper():
     # A path that is merely a string-prefix of the ID's path does not define it.
     assert not _defines_id({"id": "agents_foo", "source_file": "agent/foo.md"})
     assert not _defines_id({"id": "docs_intro_foo", "source_file": ""})
+
+
+# ── #2532: lifecycle-aware collision ranking ──────────────────────────────────
+
+def test_lifecycle_penalty_prefers_active_over_archived():
+    assert _lifecycle_penalty("plans/in-progress/binding.md") == 0
+    assert _lifecycle_penalty("plans/_done/binding.md") == 2
+    assert _lifecycle_penalty("docs/binding.md") == 1
+    # Mixed markers: best (active) segment wins.
+    assert _lifecycle_penalty("archive/in-progress/note.md") == 0
+
+
+def test_archived_path_does_not_beat_active_path_by_ascii_order():
+    """#2532: plans/_done sorts before plans/in-progress in ASCII, but the live
+    copy must still win when both mint the same node id."""
+    nid = "plans_binding_doctrine"
+    done = {
+        "id": nid,
+        "label": "binding doctrine",
+        "file_type": "concept",
+        "source_file": "plans/_done/binding-doctrine.md",
+    }
+    active = {
+        "id": nid,
+        "label": "binding doctrine",
+        "file_type": "concept",
+        "source_file": "plans/in-progress/binding-doctrine.md",
+    }
+    assert _collision_rank(active) < _collision_rank(done)
+    assert done["source_file"] < active["source_file"]  # pure lexical trap
+
+
+def test_active_plan_survives_over_archived_copy_order_independent(capsys):
+    """#2532 reproduction: archived copy must not win just because '_' < 'i'."""
+    import itertools
+
+    nid = "plans_binding_doctrine"
+    done = {
+        "id": nid,
+        "label": "binding doctrine",
+        "file_type": "concept",
+        "source_file": "plans/_done/binding-doctrine.md",
+    }
+    active = {
+        "id": nid,
+        "label": "binding doctrine",
+        "file_type": "concept",
+        "source_file": "plans/in-progress/binding-doctrine.md",
+    }
+    survivors = set()
+    for perm in itertools.permutations([done, active]):
+        out, _ = deduplicate_entities([dict(n) for n in perm], [], communities={})
+        assert len(out) == 1
+        survivors.add(out[0]["source_file"])
+    assert survivors == {"plans/in-progress/binding-doctrine.md"}
 
 
 # ── #2091 review: attribute-merge correctness (fixes A-D) ─────────────────────
