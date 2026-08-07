@@ -2489,6 +2489,15 @@ def _resolve_java_type_references(
 _PHP_SUPERTYPE_RELATIONS = ("inherits", "implements", "mixes_in")
 _PHP_REPOINT_RELATIONS = frozenset({"inherits", "implements", "mixes_in", "imports", "references"})
 
+# Every PHP declaration kind that mints a definition node (`_PHP_CONFIG.class_types`)
+# and can therefore carry an extends/implements/`use`-trait clause. The raw-scan
+# below used to read `class_declaration` only, so `interface Reader extends
+# Sub\Repo` recorded no raw text and fell through to the same-namespace guess —
+# which resolves to the wrong `Repo` when both exist.
+_PHP_DECLARATION_TYPES = frozenset({
+    "class_declaration", "interface_declaration", "trait_declaration", "enum_declaration",
+})
+
 
 def _php_fqn_from_raw(raw: str, ns: str, uses: dict[str, str]) -> str:
     """Resolve a raw (possibly qualified) PHP class reference to an FQN.
@@ -2617,7 +2626,7 @@ def _resolve_php_type_references(
                         if c.type == "namespace_use_clause":
                             _record_use_clause(c, prefix)
                 return
-            elif t == "class_declaration":
+            elif t in _PHP_DECLARATION_TYPES:
                 for child in n.children:
                     if child.type == "base_clause":
                         for sub in child.children:
@@ -2627,7 +2636,7 @@ def _resolve_php_type_references(
                         for sub in child.children:
                             if sub.type in ("name", "qualified_name"):
                                 _record_raw("implements", _read_text(sub, source))
-                    elif child.type == "declaration_list":
+                    elif child.type in ("declaration_list", "enum_declaration_list"):
                         for member in child.children:
                             if member.type != "use_declaration":
                                 continue

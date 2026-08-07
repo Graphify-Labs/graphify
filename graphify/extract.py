@@ -921,7 +921,17 @@ _SCALA_CONFIG = LanguageConfig(
 _PHP_CONFIG = LanguageConfig(
     ts_module="tree_sitter_php",
     ts_language_fn="language_php",
-    class_types=frozenset({"class_declaration"}),
+    # `interface`, `trait` and `enum` are declaration kinds exactly like `class`
+    # (all four carry a `name` field and a body of member declarations), so they
+    # mint definition nodes too — mirroring Java (above) and Groovy. Leaving them
+    # out meant no PHP interface/trait/enum ever had a canonical node, so every
+    # resolution pass had nothing to land on: implements/mixes_in kept bare
+    # sourceless stubs, `Foo::CONST` fan-in fragmented across per-file stubs, and
+    # imports/param-type references parked on the *file* node or a FQN stub.
+    class_types=frozenset({
+        "class_declaration", "interface_declaration", "trait_declaration",
+        "enum_declaration",
+    }),
     function_types=frozenset({"function_definition", "method_declaration"}),
     import_types=frozenset({"namespace_use_clause"}),
     call_types=frozenset({"function_call_expression", "member_call_expression", "scoped_call_expression", "class_constant_access_expression"}),
@@ -933,7 +943,10 @@ _PHP_CONFIG = LanguageConfig(
     call_accessor_node_types=frozenset({"member_call_expression"}),
     call_accessor_field="name",
     name_fallback_child_types=("name",),
-    body_fallback_child_types=("declaration_list", "compound_statement"),
+    # An enum's body is an `enum_declaration_list`, not a `declaration_list`; it
+    # is reachable through the `body` field, but the fallback has to know it too
+    # for the paths that scan children by type.
+    body_fallback_child_types=("declaration_list", "enum_declaration_list", "compound_statement"),
     function_boundary_types=frozenset({"function_definition", "method_declaration"}),
     import_handler=_import_php,
 )
