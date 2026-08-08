@@ -2048,6 +2048,160 @@ def test_ts_local_const_does_not_emit_phantom_node(tmp_path):
     assert "topLevel" in labels, f"module-level TS const 'topLevel' missing: {labels}"
 
 
+_OBJECT_LITERAL_JS = (
+    "function helper() { return 1; }\n"
+    "\n"
+    "export const topLevelObj = {\n"
+    "  objMethod() {\n"
+    "    return helper();\n"
+    "  }\n"
+    "};\n"
+    "\n"
+    "export const Factory = service({\n"
+    "  methods: {\n"
+    "    nestedMethod() {\n"
+    "      return helper();\n"
+    "    },\n"
+    "    async nestedAsync() {\n"
+    "      return helper();\n"
+    "    }\n"
+    "  }\n"
+    "});\n"
+)
+
+
+def _owner_of(r, method_label):
+    """Return the labels of nodes owning `method_label` via a `method` edge."""
+    by_id = {n["id"]: n["label"] for n in r["nodes"]}
+    return {
+        by_id.get(e["source"], e["source"])
+        for e in r["edges"]
+        if e["relation"] == "method" and by_id.get(e["target"]) == method_label
+    }
+
+
+def test_js_object_literal_methods_owned_by_const(tmp_path):
+    """Shorthand methods in module-level object literals become const-owned methods (#2419).
+
+    `_js_extra_walk` emits the const node and returns True, so the main walker
+    never descends into the initializer — these methods used to vanish entirely.
+    """
+    f = tmp_path / "obj_literal.js"
+    f.write_text(_OBJECT_LITERAL_JS)
+    r = extract_js(f)
+    labels = _labels(r)
+
+    for m in (".objMethod()", ".nestedMethod()", ".nestedAsync()"):
+        assert m in labels, f"missing object-literal method {m}: {labels}"
+        assert labels.count(m) == 1, f"duplicate node for {m}: {labels}"
+
+    assert _owner_of(r, ".objMethod()") == {"topLevelObj"}
+    assert _owner_of(r, ".nestedMethod()") == {"Factory"}
+    assert _owner_of(r, ".nestedAsync()") == {"Factory"}
+
+    # Calls inside the method bodies must be attributed to the method nodes.
+    calls = _calls(r)
+    for m in (".objMethod()", ".nestedMethod()", ".nestedAsync()"):
+        assert (m, "helper()") in calls, f"call from {m} to helper() missing: {calls}"
+
+    # Methods are owned by the const via `method`, never `contains`-ed by the file.
+    method_ids = {n["id"] for n in r["nodes"] if n["label"].startswith(".")}
+    ownership = [(e["source"], e["target"], e["relation"]) for e in r["edges"]
+                 if e["target"] in method_ids]
+    assert all(rel == "method" for _, _, rel in ownership), f"non-method ownership edge: {ownership}"
+    assert len(ownership) == len(set(ownership)) == 3, f"bad ownership edges: {ownership}"
+
+
+def test_ts_object_literal_methods_owned_by_const(tmp_path):
+    """TypeScript shares `_js_extra_walk`, so the same path must be active (#2419)."""
+    f = tmp_path / "obj_literal.ts"
+    f.write_text(
+        "function helper(): number { return 1; }\n"
+        "\n"
+        "export const topLevelObj = {\n"
+        "  objMethod(): number {\n"
+        "    return helper();\n"
+        "  }\n"
+        "};\n"
+    )
+    r = extract_js(f)
+
+    assert ".objMethod()" in _labels(r), f"TS object-literal method missing: {_labels(r)}"
+    assert _owner_of(r, ".objMethod()") == {"topLevelObj"}
+    assert (".objMethod()", "helper()") in _calls(r)
+
+
+def test_js_object_literal_scan_respects_scope_and_execution_boundaries(tmp_path):
+    """Locals and callback bodies must stay unindexed (#2419).
+
+    The initializer scan stops at function-value nodes, so a method defined in
+    an object returned from a callback is not attributed to the outer binding.
+    """
+    f = tmp_path / "boundaries.js"
+    f.write_text(
+        "function helper() { return 1; }\n"
+        "\n"
+        "function outer() {\n"
+        "  const local = {\n"
+        "    localMethod() { return helper(); }\n"
+        "  };\n"
+        "  return local;\n"
+        "}\n"
+        "\n"
+        "export const CallbackFactory = configure(() => {\n"
+        "  return {\n"
+        "    callbackLocal() { return helper(); }\n"
+        "  };\n"
+        "});\n"
+    )
+    r = extract_js(f)
+    labels = _labels(r)
+
+    assert ".localMethod()" not in labels, f"local-object method leaked: {labels}"
+    assert ".callbackLocal()" not in labels, f"callback-body method leaked: {labels}"
+    assert "local" not in labels, f"function-local const leaked: {labels}"
+
+    callers = {src for src, _ in _calls(r)}
+    assert "CallbackFactory" not in callers, f"callback call leaked onto the const: {_calls(r)}"
+
+
+def test_js_class_expression_const_is_not_object_literal_scanned(tmp_path):
+    """`const C = class { m() {} }` must keep the existing class handling (#2419)."""
+    f = tmp_path / "class_expr.js"
+    f.write_text(
+        "export const Constructor = class {\n"
+        "  classExpressionMethod() {}\n"
+        "};\n"
+    )
+    r = extract_js(f)
+    labels = _labels(r)
+
+    assert "Constructor" in labels, f"module-level binding missing: {labels}"
+    assert ".classExpressionMethod()" not in labels, (
+        f"class-expression method leaked into the object-literal scan: {labels}"
+    )
+
+
+def test_js_object_literal_duplicate_method_names_collapse(tmp_path):
+    """Flattening onto the binding means same-named nested methods share one node (#2419).
+
+    Nested property paths are not modelled; the guard is that this yields exactly
+    one node and one ownership edge, never duplicates.
+    """
+    f = tmp_path / "dupes.js"
+    f.write_text(
+        "export const Service = {\n"
+        "  first: { run() {} },\n"
+        "  second: { run() {} }\n"
+        "};\n"
+    )
+    r = extract_js(f)
+
+    assert _labels(r).count(".run()") == 1, f"duplicate .run() node: {_labels(r)}"
+    method_edges = [(e["source"], e["target"]) for e in r["edges"] if e["relation"] == "method"]
+    assert len(method_edges) == len(set(method_edges)) == 1, f"duplicate method edges: {method_edges}"
+
+
 def test_ts_constructor_injection_calls_edge(tmp_path):
     """this.repo.findById() in a class with constructor(private repo: IUserRepository)
     must produce a calls edge from getUser() to findById() (#1316)."""
