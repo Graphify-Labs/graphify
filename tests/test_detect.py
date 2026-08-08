@@ -540,6 +540,47 @@ def test_detect_incremental_survives_dict_valued_mtime(tmp_path, monkeypatch):
     assert not any("mod.py" in f for f in result["unchanged_files"]["code"])
 
 
+def test_detect_incremental_kind_ast_ignores_empty_semantic_hash(tmp_path, monkeypatch):
+    """#2459: kind="ast" must NOT report unchanged files whose semantic_hash
+    is "" (AST-extracted, never semantically chunked).
+
+    The semantic default treats an empty semantic_hash as "changed" so
+    `graphify extract` re-queues files the update path never semantically
+    extracted. The update flow must pass kind="ast", which diffs the
+    content hash only — otherwise every AST-only file is re-flagged and
+    re-dispatched to a semantic subagent on every --update run.
+    """
+    import json
+
+    monkeypatch.chdir(tmp_path)
+
+    (tmp_path / "mod.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    (tmp_path / "note.md").write_text("# note\n\nsome content", encoding="utf-8")
+
+    manifest_dir = tmp_path / "graphify-out"
+    manifest_dir.mkdir()
+    manifest_path = str(manifest_dir / "manifest.json")
+
+    # Full build stamps both hashes, then a semantic pass never runs: blank
+    # every semantic_hash, leaving content and mtime untouched — exactly the
+    # state of an AST-extracted-only corpus (or one whose semantic chunk
+    # failed and was cleared, #1948).
+    detected = detect(tmp_path)
+    save_manifest(detected["files"], manifest_path, kind="both")
+    manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    for entry in manifest.values():
+        entry["semantic_hash"] = ""
+    Path(manifest_path).write_text(json.dumps(manifest), encoding="utf-8")
+
+    # Semantic mode: every empty semantic_hash is a "changed" file.
+    semantic = detect_incremental(tmp_path, manifest_path)
+    assert semantic["new_total"] > 0
+
+    # Ast mode: content is unchanged, so nothing is reported changed.
+    ast = detect_incremental(tmp_path, manifest_path, kind="ast")
+    assert ast["new_total"] == 0, ast["new_files"]
+
+
 def test_detect_incremental_legacy_float_reextracts_on_backwards_mtime(tmp_path, monkeypatch):
     """Legacy float manifests must re-extract when mtime moves BACKWARDS (#1859).
 
