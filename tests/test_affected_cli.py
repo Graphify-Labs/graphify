@@ -268,3 +268,46 @@ def test_affected_cli_source_file_path_uses_file_level_node(monkeypatch, tmp_pat
     assert "consumer.ts" in out
     assert "imports_from" in out
     assert "No unique node matched" not in out
+
+
+# ── BUG1: caller lists must show the call-SITE line, not the caller def line ──
+
+def _write_callsite_graph(tmp_path):
+    """A caller whose call site (L158) differs from its own def line (L90)."""
+    g = nx.DiGraph()
+    g.add_node("loader", label="_load_apollo_app_state()",
+               source_file="apollo_pipeline_status.py", source_location="L90")
+    g.add_node("transition", label="transition_state()",
+               source_file="state.py", source_location="L56")
+    # The call happens at line 158 inside the caller's file.
+    g.add_edge("loader", "transition", relation="calls", context="call",
+               confidence="EXTRACTED", source_file="apollo_pipeline_status.py",
+               source_location="L158")
+    gp = tmp_path / "graph.json"
+    gp.write_text(json.dumps(json_graph.node_link_data(g, edges="links")), encoding="utf-8")
+    return gp
+
+
+def test_affected_reports_call_site_line_not_def_line(monkeypatch, tmp_path, capsys):
+    gp = _write_callsite_graph(tmp_path)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(mainmod.sys, "argv",
+                        ["graphify", "affected", "transition_state", "--graph", str(gp)])
+    mainmod.main()
+    out = capsys.readouterr().out
+    assert "apollo_pipeline_status.py:L158" in out, "must report the call SITE line (BUG1)"
+    assert "apollo_pipeline_status.py:L90" not in out, "must NOT report the caller's def line"
+
+
+def test_affected_falls_back_to_def_line_when_edge_has_no_location(monkeypatch, tmp_path, capsys):
+    """An edge with no stored location honestly falls back to the node's def line."""
+    g = nx.DiGraph()
+    g.add_node("loader", label="load()", source_file="a.py", source_location="L90")
+    g.add_node("t", label="target()", source_file="b.py", source_location="L5")
+    g.add_edge("loader", "t", relation="calls", confidence="INFERRED")  # no source_location
+    gp = tmp_path / "graph.json"
+    gp.write_text(json.dumps(json_graph.node_link_data(g, edges="links")), encoding="utf-8")
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(mainmod.sys, "argv", ["graphify", "affected", "target", "--graph", str(gp)])
+    mainmod.main()
+    assert "a.py:L90" in capsys.readouterr().out

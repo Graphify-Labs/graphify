@@ -404,6 +404,52 @@ def test_svelte_rune_import_resolves_svelte_ts_file(tmp_path: Path):
     assert _has_edge(result, "src/routes/page.ts", "src/lib/hooks/is-mobile.svelte.ts")
 
 
+def test_ts_dynamic_import_does_not_create_phantom_cycle(tmp_path: Path):
+    # A deferred `import('./x')` is not a static import: it must be emitted as a
+    # `dynamic_import` edge (like the Svelte/Astro/Vue emitters), not
+    # `imports_from`. Otherwise two files that reference each other via one static
+    # import + one dynamic import are reported as a phantom circular dependency.
+    # Regression test for #1241.
+    import networkx as nx
+
+    from graphify.analyze import find_import_cycles
+
+    actions = _write(
+        tmp_path / "actions.ts",
+        'export function doThing() {}\n'
+        'export async function lazy() {\n'
+        '  const m = await import("./modal");\n'
+        '  return m.openModal();\n'
+        '}\n',
+    )
+    modal = _write(
+        tmp_path / "modal.ts",
+        'import { doThing } from "./actions";\n'
+        'export function openModal() { doThing(); }\n',
+    )
+
+    result = _extract_for([actions, modal], tmp_path)
+
+    # The deferred import() edge stays in the graph as an `imports_from` edge
+    # marked `deferred` (the dependency remains visible); the real static import
+    # (modal.ts -> actions.ts) is unaffected.
+    deferred = [edge for edge in result["edges"] if edge.get("deferred")]
+    assert deferred and all(edge["relation"] == "imports_from" for edge in deferred)
+    assert _has_edge(result, "modal.ts", "actions.ts", "imports_from")
+
+    # End to end: the deferred import must not manufacture a file cycle.
+    graph = nx.DiGraph()
+    for node in result["nodes"]:
+        graph.add_node(node["id"], **{k: v for k, v in node.items() if k != "id"})
+    for edge in result["edges"]:
+        graph.add_edge(
+            edge["source"],
+            edge["target"],
+            **{k: v for k, v in edge.items() if k not in ("source", "target")},
+        )
+    assert find_import_cycles(graph) == []
+
+
 def test_tsconfig_alias_import_resolves_existing_ts_file(tmp_path: Path):
     _write(
         tmp_path / "tsconfig.json",
@@ -1166,15 +1212,378 @@ def test_alias_import_edge_resolves_with_relative_input_paths(tmp_path, monkeypa
     # that exists in the graph), not an orphan keyed by an absolute prefix.
     assert _has_edge(result, "src/components/Button.tsx", "src/lib/utils.ts")
     assert target_id in node_ids
-    import_targets = {
+    import_targets = [
         e["target"]
         for e in result["edges"]
         if e["relation"] == "imports_from" and e["source"] == _file_node_id(Path("src/components/Button.tsx"))
-    }
-    assert target_id in import_targets
+    ]
+    assert import_targets == [target_id]
     # No surviving edge target may carry an absolute-path prefix from tmp_path.
     abs_prefix = _file_node_id(Path("src/lib/utils.ts").resolve())
     assert all(not t.startswith(abs_prefix + "_") and t != abs_prefix for t in import_targets)
 
     # The named-symbol edge to formatDate must resolve to the real symbol node too.
     assert _has_symbol_edge(result, "src/components/Button.tsx", "src/lib/utils.ts", "formatDate")
+    symbol_target = _make_id(_file_stem(Path("src/lib/utils.ts")), "formatDate")
+    named_imports = [
+        edge
+        for edge in result["edges"]
+        if edge["source"] == _file_node_id(Path("src/components/Button.tsx"))
+        and edge["relation"] == "imports"
+        and edge["source_location"] == "L1"
+    ]
+    assert [edge["target"] for edge in named_imports] == [symbol_target]
+    assert all(
+        edge["source"] in node_ids and edge["target"] in node_ids
+        for edge in result["edges"]
+        if edge["relation"] in ("imports", "imports_from")
+    )
+
+
+def test_alias_import_symbol_resolves_from_parent_working_directory(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    _write(
+        project / "tsconfig.json",
+        json.dumps({"compilerOptions": {"baseUrl": ".", "paths": {"@/*": ["src/*"]}}}),
+    )
+    _write(project / "src/lib/utils.ts", "export function formatDate(d) { return d }\n")
+    _write(
+        project / "src/components/Button.tsx",
+        "import { formatDate } from '@/lib/utils'\n",
+    )
+
+    monkeypatch.chdir(tmp_path)
+    result = extract(
+        [Path("project/src/lib/utils.ts"), Path("project/src/components/Button.tsx")],
+        cache_root=Path("project"),
+    )
+
+    node_ids = {node["id"] for node in result["nodes"]}
+    source_id = _file_node_id(Path("src/components/Button.tsx"))
+    symbol_target = _make_id(_file_stem(Path("src/lib/utils.ts")), "formatDate")
+    named_imports = [
+        edge
+        for edge in result["edges"]
+        if edge["source"] == source_id and edge["relation"] == "imports"
+    ]
+
+    assert [edge["target"] for edge in named_imports] == [symbol_target]
+    assert all(edge["source"] in node_ids and edge["target"] in node_ids for edge in named_imports)
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "export { formatDate } from '@/lib/utils'\n",
+        "export { formatDate as displayDate } from '@/lib/utils'\n",
+    ],
+)
+def test_alias_reexport_symbol_resolves_with_relative_input_paths(
+    tmp_path, monkeypatch, statement
+):
+    _write(
+        tmp_path / "tsconfig.json",
+        json.dumps({"compilerOptions": {"baseUrl": ".", "paths": {"@/*": ["src/*"]}}}),
+    )
+    _write(tmp_path / "src/lib/utils.ts", "export function formatDate() { return 'ok' }\n")
+    _write(tmp_path / "src/lib/index.ts", statement)
+
+    monkeypatch.chdir(tmp_path)
+    target = Path("src/lib/utils.ts")
+    barrel = Path("src/lib/index.ts")
+    result = extract([target, barrel], cache_root=Path("."))
+
+    node_ids = {node["id"] for node in result["nodes"]}
+    file_target = _file_node_id(target)
+    symbol_target = _make_id(_file_stem(target), "formatDate")
+    reexports = [
+        edge
+        for edge in result["edges"]
+        if edge["source"] == _file_node_id(barrel)
+        and edge["relation"] == "re_exports"
+    ]
+
+    assert sorted(edge["target"] for edge in reexports) == sorted(
+        [file_target, symbol_target]
+    )
+    assert all(edge["target"] in node_ids for edge in reexports)
+    absolute_prefix = _file_node_id(target.resolve())
+    assert all(not edge["target"].startswith(absolute_prefix + "_") for edge in reexports)
+
+
+def test_alias_reexport_symbol_resolves_from_parent_working_directory(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    _write(
+        project / "tsconfig.json",
+        json.dumps({"compilerOptions": {"baseUrl": ".", "paths": {"@/*": ["src/*"]}}}),
+    )
+    _write(project / "src/lib/utils.ts", "export function formatDate() { return 'ok' }\n")
+    _write(project / "src/lib/index.ts", "export { formatDate } from '@/lib/utils'\n")
+
+    monkeypatch.chdir(tmp_path)
+    target = Path("project/src/lib/utils.ts")
+    barrel = Path("project/src/lib/index.ts")
+    result = extract([target, barrel], cache_root=Path("project"))
+
+    node_ids = {node["id"] for node in result["nodes"]}
+    source = _file_node_id(Path("src/lib/index.ts"))
+    symbol_target = _make_id(_file_stem(Path("src/lib/utils.ts")), "formatDate")
+    symbol_reexports = [
+        edge
+        for edge in result["edges"]
+        if edge["source"] == source
+        and edge["relation"] == "re_exports"
+        and edge["target"] != _file_node_id(Path("src/lib/utils.ts"))
+    ]
+
+    assert [edge["target"] for edge in symbol_reexports] == [symbol_target]
+    assert all(edge["target"] in node_ids for edge in symbol_reexports)
+
+
+def test_alias_reexport_does_not_rewrite_an_owned_symbol_id(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    target = Path("src/lib/utils.ts")
+    absolute_prefix = _file_node_id(target.resolve())
+    mirror = Path(f"{absolute_prefix}.ts")
+    barrel = Path("src/lib/index.ts")
+
+    _write(
+        Path("tsconfig.json"),
+        json.dumps({"compilerOptions": {"baseUrl": ".", "paths": {"@/*": ["src/*"]}}}),
+    )
+    _write(target, "export function formatDate() { return 'target' }\n")
+    _write(mirror, "export function formatDate() { return 'mirror' }\n")
+    _write(barrel, "export { formatDate } from '@/lib/utils'\n")
+
+    result = extract([target, mirror, barrel], cache_root=Path("."))
+
+    node_ids = {node["id"] for node in result["nodes"]}
+    owned_target = _make_id(_file_stem(mirror), "formatDate")
+    symbol_reexports = [
+        edge
+        for edge in result["edges"]
+        if edge["source"] == _file_node_id(barrel)
+        and edge["relation"] == "re_exports"
+        and edge["target"] != _file_node_id(target)
+    ]
+
+    assert [edge["target"] for edge in symbol_reexports] == [owned_target]
+    assert owned_target in node_ids
+
+
+def test_alias_import_does_not_remap_an_owned_symbol_id(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    target = Path("src/lib/utils.ts")
+    absolute_prefix = _file_node_id(target.resolve())
+    mirror = Path(f"{absolute_prefix}.ts")
+    button = Path("src/components/Button.tsx")
+    mirror_user = Path("src/components/Mirror.tsx")
+
+    _write(
+        Path("tsconfig.json"),
+        json.dumps({"compilerOptions": {"baseUrl": ".", "paths": {"@/*": ["src/*"]}}}),
+    )
+    _write(target, "export function formatDate(d) { return d }\n")
+    _write(mirror, "export function formatDate(d) { return 999 }\n")
+    _write(
+        button,
+        "import { formatDate } from '@/lib/utils'\nexport const a = formatDate(1)\n",
+    )
+    _write(
+        mirror_user,
+        f"import {{ formatDate }} from '../../{mirror.stem}'\nexport const b = formatDate(2)\n",
+    )
+
+    result = extract(
+        [target, mirror, button, mirror_user],
+        cache_root=Path("."),
+    )
+
+    node_ids = {node["id"] for node in result["nodes"]}
+    symbols = {
+        node["source_file"]: node["id"]
+        for node in result["nodes"]
+        if node.get("label") == "formatDate()"
+    }
+    target_symbol = _make_id(_file_stem(target), "formatDate")
+    mirror_symbol = _make_id(_file_stem(mirror), "formatDate")
+    assert symbols[str(target)] == target_symbol
+    assert symbols[str(mirror)] == mirror_symbol
+
+    imports = [
+        edge
+        for edge in result["edges"]
+        if edge["relation"] == "imports" and edge["source_location"] == "L1"
+    ]
+    by_source: dict[str, list[str]] = {}
+    for edge in imports:
+        by_source.setdefault(edge["source_file"], []).append(edge["target"])
+    assert by_source[str(button)] == [target_symbol]
+    assert by_source[str(mirror_user)] == [mirror_symbol]
+    assert all(edge["source"] in node_ids and edge["target"] in node_ids for edge in imports)
+
+
+def test_alias_import_preserves_owned_same_line_symbol_edge(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    target = Path("src/lib/utils.ts")
+    absolute_prefix = _file_node_id(target.resolve())
+    mirror = Path(f"{absolute_prefix}.ts")
+    importer = Path("src/components/Both.tsx")
+
+    _write(
+        Path("tsconfig.json"),
+        json.dumps({"compilerOptions": {"baseUrl": ".", "paths": {"@/*": ["src/*"]}}}),
+    )
+    _write(target, "export function formatDate(d) { return d }\n")
+    _write(mirror, "export function formatDate(d) { return 999 }\n")
+    _write(
+        importer,
+        f"import {{ formatDate as a }} from '@/lib/utils'; "
+        f"import {{ formatDate as b }} from '../../{mirror.stem}';\n"
+        "export const value = a(1) + b(2)\n",
+    )
+
+    result = extract([target, mirror, importer], cache_root=Path("."))
+
+    node_ids = {node["id"] for node in result["nodes"]}
+    target_symbol = _make_id(_file_stem(target), "formatDate")
+    mirror_symbol = _make_id(_file_stem(mirror), "formatDate")
+    imports = [
+        edge
+        for edge in result["edges"]
+        if edge["source"] == _file_node_id(importer)
+        and edge["relation"] == "imports"
+        and edge["source_location"] == "L1"
+    ]
+
+    assert sorted(edge["target"] for edge in imports) == sorted([target_symbol, mirror_symbol])
+    assert all(edge["source"] in node_ids and edge["target"] in node_ids for edge in imports)
+
+
+# --- #1983 (follow-up): alias re-exports THROUGH a barrel ---------------------
+# The candidates rewrite learns old->canonical symbol forms only from symbols a
+# file DEFINES. A barrel defines nothing, so a re-export/import that resolves to
+# the barrel synthesizes an absolute-prefixed target no rewrite ever learns:
+# the checkout path leaks into the id and the edge dangles.
+
+def _barrel_fixture(tmp_path):
+    _write(
+        tmp_path / "tsconfig.json",
+        json.dumps({"compilerOptions": {"baseUrl": ".", "paths": {"@/*": ["src/*"]}}}),
+    )
+    _write(tmp_path / "src/lib/utils.ts", "export function formatDate() { return 'ok' }\n")
+    _write(tmp_path / "src/lib/index.ts", "export { formatDate } from '@/lib/utils'\n")
+
+
+def test_alias_reexport_through_barrel_resolves_to_defining_symbol(tmp_path, monkeypatch):
+    _barrel_fixture(tmp_path)
+    _write(tmp_path / "src/barrel2.ts", "export { formatDate } from '@/lib'\n")
+
+    monkeypatch.chdir(tmp_path)
+    files = sorted(Path("src").rglob("*.ts"))
+    result = extract(files, cache_root=Path("."))
+
+    node_ids = {node["id"] for node in result["nodes"]}
+    defining_symbol = _make_id(_file_stem(Path("src/lib/utils.ts")), "formatDate")
+    barrel_reexports = [
+        edge
+        for edge in result["edges"]
+        if edge["source"] == _file_node_id(Path("src/barrel2.ts"))
+        and edge["relation"] == "re_exports"
+        and edge["target"] != _file_node_id(Path("src/lib/index.ts"))
+    ]
+
+    assert [edge["target"] for edge in barrel_reexports] == [defining_symbol]
+    assert all(edge["target"] in node_ids for edge in barrel_reexports)
+
+
+def test_alias_reexport_two_hop_barrel_chain_resolves(tmp_path, monkeypatch):
+    _barrel_fixture(tmp_path)
+    _write(tmp_path / "src/barrel2.ts", "export { formatDate } from '@/lib'\n")
+    _write(tmp_path / "src/barrel3.ts", "export { formatDate } from '@/barrel2'\n")
+
+    monkeypatch.chdir(tmp_path)
+    files = sorted(Path("src").rglob("*.ts"))
+    result = extract(files, cache_root=Path("."))
+
+    node_ids = {node["id"] for node in result["nodes"]}
+    defining_symbol = _make_id(_file_stem(Path("src/lib/utils.ts")), "formatDate")
+    barrel3_reexports = [
+        edge
+        for edge in result["edges"]
+        if edge["source"] == _file_node_id(Path("src/barrel3.ts"))
+        and edge["relation"] == "re_exports"
+        and edge["target"] != _file_node_id(Path("src/barrel2.ts"))
+    ]
+
+    assert [edge["target"] for edge in barrel3_reexports] == [defining_symbol]
+    assert all(edge["target"] in node_ids for edge in barrel3_reexports)
+
+
+def test_no_symbol_edge_target_contains_checkout_prefix(tmp_path, monkeypatch):
+    """No re_exports/imports target may embed the absolute checkout path —
+    the core complaint of #1983, which barrels still triggered after the
+    single-hop fix."""
+    _barrel_fixture(tmp_path)
+    _write(tmp_path / "src/barrel2.ts", "export { formatDate } from '@/lib'\n")
+    _write(
+        tmp_path / "src/consumer.ts",
+        "import { formatDate } from '@/lib'\nexport function useIt() { return formatDate() }\n",
+    )
+
+    monkeypatch.chdir(tmp_path)
+    files = sorted(Path("src").rglob("*.ts"))
+    result = extract(files, cache_root=Path("."))
+
+    abs_prefix = _make_id(str(Path("src").resolve().parent))
+    offenders = [
+        (edge["relation"], edge["target"])
+        for edge in result["edges"]
+        if edge.get("relation") in ("re_exports", "imports")
+        and str(edge.get("target", "")).startswith(abs_prefix)
+    ]
+    assert offenders == [], f"checkout path leaked into edge targets: {offenders}"
+
+
+def test_ambiguous_barrel_reexport_chain_does_not_guess(tmp_path, monkeypatch):
+    """When a barrel re-exports the SAME local name from two different modules,
+    the barrel-chain resolver must NOT collapse an importer's edge onto one of
+    them by last-write-wins (#2034 follow-up). With the ambiguity guard the chain
+    leaves the import unresolved at the barrel symbol (dangling, dropped at build)
+    rather than fabricating a specific target; without it the chain repoints to
+    whichever module was learned last."""
+    _write(
+        tmp_path / "tsconfig.json",
+        json.dumps({"compilerOptions": {"baseUrl": ".", "paths": {"@/*": ["src/*"]}}}),
+    )
+    _write(tmp_path / "src/lib/a.ts", "export function dup() { return 'a' }\n")
+    _write(tmp_path / "src/lib/b.ts", "export function dup() { return 'b' }\n")
+    _write(tmp_path / "src/lib/index.ts",
+           "export { dup } from '@/lib/a'\nexport { dup } from '@/lib/b'\n")
+    _write(tmp_path / "src/consumer.ts",
+           "import { dup } from '@/lib'\nexport function useIt() { return dup() }\n")
+
+    monkeypatch.chdir(tmp_path)
+    result = extract(sorted(Path("src").rglob("*.ts")), cache_root=Path("."))
+
+    barrel_sym = _make_id(_file_stem(Path("src/lib/index.ts")), "dup")
+    consumer = _file_node_id(Path("src/consumer.ts"))
+    consumer_imports = [
+        e for e in result["edges"]
+        if e.get("source") == consumer and e.get("relation") == "imports"
+    ]
+    # The chain-produced import edge stays at the barrel symbol (unresolved) —
+    # proof the chain refused to guess. Without the fix it would be repointed to
+    # src_lib_a_dup / src_lib_b_dup (last-write-wins), so this edge would vanish.
+    assert any(e.get("target") == barrel_sym for e in consumer_imports), (
+        f"ambiguous barrel import was chain-resolved instead of left unresolved: "
+        f"{[e.get('target') for e in consumer_imports]}"
+    )
+    # Both legitimate barrel re-exports still resolve to their own module.
+    barrel = _file_node_id(Path("src/lib/index.ts"))
+    reexport_targets = {
+        e.get("target") for e in result["edges"]
+        if e.get("source") == barrel and e.get("relation") == "re_exports"
+    }
+    assert _make_id(_file_stem(Path("src/lib/a.ts")), "dup") in reexport_targets
+    assert _make_id(_file_stem(Path("src/lib/b.ts")), "dup") in reexport_targets

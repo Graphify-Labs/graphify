@@ -115,6 +115,15 @@ def test_java_no_dangling_edges():
         assert e["source"] in node_ids
 
 
+def test_java_enum_constants_have_case_of_edge():
+    r = extract_java(FIXTURES / "sample.java")
+    labels = _labels(r)
+    assert "OK" in labels
+    assert "GAME_DONE" in labels
+    assert ("ErrorCode", "OK") in _edge_labels(r, "case_of")
+    assert ("ErrorCode", "GAME_DONE") in _edge_labels(r, "case_of")
+
+
 # ── C ────────────────────────────────────────────────────────────────────────
 
 def test_c_no_error():
@@ -472,7 +481,9 @@ def test_java_record_component_type_references(tmp_path):
     result = extract_java(source)
 
     assert ("Order", "Payload") in _edge_labels(result, "references", "field")
-    assert ("Order", "List") in _edge_labels(result, "references", "field")
+    # `List` is a java.util library type: skipped as noise, so only its user-type
+    # generic argument (`Item`) survives, not the container itself.
+    assert ("Order", "List") not in _edge_labels(result, "references")
     assert ("Order", "Item") in _edge_labels(result, "references", "generic_arg")
     assert ("Order", "Attachment") in _edge_labels(result, "references", "field")
 
@@ -542,6 +553,39 @@ def test_java_enum_and_annotation_declarations_are_type_nodes(tmp_path):
     assert definitions["Audited"].get("source_file") == str(source)
 
 
+def test_nested_types_contained_by_enclosing_type(tmp_path):
+    """#2040: a nested class/object/trait's `contains` edge sources from its
+    ENCLOSING type, not the file node; top-level types still source from the file
+    (keeping the tree connected: file -> Outer -> Inner)."""
+    # Java inner class
+    j = tmp_path / "Outer.java"
+    j.write_text("class Outer {\n  class Inner { void m() {} }\n}\n")
+    cj = _edge_labels(extract_java(j), "contains")
+    assert ("Outer.java", "Outer") in cj      # top-level still file-sourced
+    assert ("Outer", "Inner") in cj           # nested sourced from enclosing type
+    assert ("Outer.java", "Inner") not in cj  # NOT from the file (the bug)
+
+    # Scala nested class + object (the issue's repro shape)
+    s = tmp_path / "Outer.scala"
+    s.write_text("class Outer {\n  class Inner\n  object Obj\n}\n")
+    cs = _edge_labels(extract_scala(s), "contains")
+    assert ("Outer.scala", "Outer") in cs
+    assert ("Outer", "Inner") in cs
+    assert ("Outer", "Obj") in cs
+    assert ("Outer.scala", "Inner") not in cs
+
+
+def test_csharp_nested_type_gets_containment_edge(tmp_path):
+    """#2040 for C#: the nested type now gets a real `contains` edge from its
+    enclosing type (the is_nested_type flag it already carried is retained and
+    covered by test_csharp_type_resolution)."""
+    c = tmp_path / "N.cs"
+    c.write_text("namespace N {\n  class Outer {\n    class Inner {}\n  }\n}\n")
+    cc = _edge_labels(extract_csharp(c), "contains")
+    assert ("Outer", "Inner") in cc
+    assert ("N.cs", "Inner") not in cc
+
+
 def test_csharp_field_type_references_have_field_context():
     r = extract_csharp(FIXTURES / "sample.cs")
     refs = _references(r)
@@ -604,6 +648,14 @@ def test_kotlin_finds_function():
     r = extract_kotlin(FIXTURES / "sample.kt")
     assert any("createClient" in l for l in _labels(r))
 
+def test_kotlin_enum_entries_have_case_of_edge():
+    # #1700 (Kotlin half): enum entries must be nodes with case_of edges to the enum.
+    r = extract_kotlin(FIXTURES / "sample.kt")
+    labels = _labels(r)
+    assert "NORMAL" in labels and "GROUP" in labels and "SYSTEM" in labels
+    assert ("ChatType", "NORMAL") in _edge_labels(r, "case_of")
+    assert ("ChatType", "SYSTEM") in _edge_labels(r, "case_of")
+
 def test_kotlin_emits_in_file_calls():
     """Regression test for the call-walker `simple_identifier` /
     `identifier` rename — see graphify-kmp's PythonParityTest."""
@@ -623,12 +675,40 @@ def test_kotlin_splits_inherits_and_implements():
     assert ("DataProcessor", "Loggable") in _edge_labels(r, "implements")
 
 
+def test_kotlin_interface_delegation_emits_implements():
+    """`class Foo : Bar by baz` wraps the delegated interface in an
+    `explicit_delegation` node — it must still emit an implements edge."""
+    r = extract_kotlin(FIXTURES / "sample.kt")
+    assert ("LoggingList", "MutableList") in _edge_labels(r, "implements")
+
+
 def test_kotlin_parameter_return_generic_and_field_contexts():
     r = extract_kotlin(FIXTURES / "sample.kt")
     assert ("run", "DataProcessor") in _edge_labels(r, "references", "parameter_type")
     assert ("run", "Result") in _edge_labels(r, "references", "return_type")
     assert ("run", "DataProcessor") in _edge_labels(r, "references", "generic_arg")
     assert ("DataProcessor", "Result") in _edge_labels(r, "references", "field")
+
+def test_kotlin_builtin_types_not_emitted_as_references():
+    # kotlin.* scalar/collection/core types used as parameter, return, or field
+    # types carry no useful graph meaning: they never resolve to a project node,
+    # so emitting `references` edges to them is pure noise (mirrors the Java
+    # _JAVA_BUILTIN_TYPES / Python _PYTHON_ANNOTATION_NOISE handling).
+    r = extract_kotlin(FIXTURES / "sample.kt")
+    ref_targets = {target for (_, target) in _edge_labels(r, "references")}
+    for builtin in ("String", "Int"):
+        assert builtin not in ref_targets, (
+            f"builtin type {builtin!r} should not be a references target"
+        )
+
+def test_kotlin_user_types_still_emit_references():
+    # Guard against over-filtering: a user-defined class sharing its name with a
+    # common domain-modeling identifier (Result) must still resolve to a real
+    # edge - the builtin filter is a fixed name list, so it must stay narrow
+    # enough not to swallow common user-chosen names like a sealed-class "Result".
+    r = extract_kotlin(FIXTURES / "sample.kt")
+    assert ("DataProcessor", "Result") in _edge_labels(r, "references", "field")
+    assert ("run", "DataProcessor") in _edge_labels(r, "references", "parameter_type")
 
 
 # ── Scala ─────────────────────────────────────────────────────────────────────
@@ -2626,6 +2706,16 @@ def test_apex_interface_extraction():
     r = extract_apex(FIXTURES / "sample.cls")
     labels = _labels(r)
     assert "Notifiable" in labels
+
+def test_apex_interface_extends(tmp_path):
+    source = tmp_path / "PaymentProcessor.cls"
+    source.write_text(
+        "public interface PaymentProcessor extends Processor, Auditable { void process(); }\n"
+    )
+    result = extract_apex(source)
+    inheritance = _edge_labels(result, "extends") | _edge_labels(result, "implements")
+    assert ("PaymentProcessor", "Processor") in inheritance
+    assert ("PaymentProcessor", "Auditable") in inheritance
 
 def test_apex_method_extraction():
     r = extract_apex(FIXTURES / "sample.cls")

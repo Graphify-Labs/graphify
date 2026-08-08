@@ -22,6 +22,34 @@ def _clear_backend_env(monkeypatch):
         monkeypatch.delenv(env_key, raising=False)
 
 
+def test_resolve_ollama_base_url_prefers_base_url(monkeypatch):
+    monkeypatch.setenv("OLLAMA_BASE_URL", "custom-base-url")
+    monkeypatch.setenv("OLLAMA_HOST", "ignored-host:11434")
+
+    assert llm._resolve_ollama_base_url("default-url") == "custom-base-url"
+
+
+def test_resolve_ollama_base_url_normalizes_host_without_scheme(monkeypatch):
+    monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+    monkeypatch.setenv("OLLAMA_HOST", "myhost:11434")
+
+    assert llm._resolve_ollama_base_url("default-url") == "http://myhost:11434/v1"
+
+
+def test_resolve_ollama_base_url_preserves_normalized_host(monkeypatch):
+    monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+    monkeypatch.setenv("OLLAMA_HOST", "https://myhost:11434/v1")
+
+    assert llm._resolve_ollama_base_url("default-url") == "https://myhost:11434/v1"
+
+
+def test_resolve_ollama_base_url_returns_default_without_env(monkeypatch):
+    monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
+
+    assert llm._resolve_ollama_base_url("default-url") == "default-url"
+
+
 def test_gemini_accepts_gemini_api_key(monkeypatch):
     _clear_backend_env(monkeypatch)
     monkeypatch.setenv("GEMINI_API_KEY", "gemini-key")
@@ -572,6 +600,53 @@ def test_call_openai_compat_extra_body_wins_over_moonshot_default(monkeypatch):
     llm._call_openai_compat(
         "https://api.moonshot.ai/v1", "tk", "kimi-k2-thinking",
         "u", temperature=0, max_completion_tokens=8192, backend="kimi",
+        extra_body={"thinking": {"type": "enabled"}},
+    )
+
+    assert captured["extra_body"] == {"thinking": {"type": "enabled"}}
+
+
+# ---------------------------------------------------------------------------
+# GRAPHIFY_DISABLE_THINKING: opt-in disable-thinking for reasoning models like
+# deepseek-v4-flash. Off by default — disabling thinking trades a rare reasoning
+# leak for lower extraction quality/coverage, so it must not be forced (#1621).
+# ---------------------------------------------------------------------------
+
+
+def test_deepseek_thinking_on_by_default(monkeypatch):
+    monkeypatch.delenv("GRAPHIFY_DISABLE_THINKING", raising=False)
+    captured = _install_capturing_openai(monkeypatch)
+
+    llm._call_openai_compat(
+        "https://api.deepseek.com", "sk", "deepseek-v4-flash",
+        "u", temperature=0, max_completion_tokens=8192, backend="deepseek",
+    )
+
+    eb = captured.get("extra_body")
+    assert eb is None or "thinking" not in eb, "thinking must NOT be disabled by default"
+
+
+def test_deepseek_thinking_disabled_via_env(monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_DISABLE_THINKING", "1")
+    captured = _install_capturing_openai(monkeypatch)
+
+    llm._call_openai_compat(
+        "https://api.deepseek.com", "sk", "deepseek-v4-flash",
+        "u", temperature=0, max_completion_tokens=8192, backend="deepseek",
+    )
+
+    assert captured["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
+def test_explicit_extra_body_wins_over_thinking_env(monkeypatch):
+    # A provider-supplied extra_body is an explicit request-shape choice and must
+    # take precedence over the env toggle.
+    monkeypatch.setenv("GRAPHIFY_DISABLE_THINKING", "1")
+    captured = _install_capturing_openai(monkeypatch)
+
+    llm._call_openai_compat(
+        "https://api.deepseek.com", "sk", "deepseek-v4-flash",
+        "u", temperature=0, max_completion_tokens=8192, backend="deepseek",
         extra_body={"thinking": {"type": "enabled"}},
     )
 

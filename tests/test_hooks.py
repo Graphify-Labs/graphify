@@ -1,5 +1,6 @@
 """Tests for hooks.py - git hook install/uninstall."""
 import os
+import shutil
 import subprocess
 from types import SimpleNamespace
 from pathlib import Path
@@ -247,10 +248,10 @@ def test_hooks_do_not_use_nohup(name, script):
 @pytest.mark.parametrize("name,script", _HOOK_SCRIPTS)
 def test_hooks_use_cross_platform_detach(name, script):
     """The replacement detaches via Python: start_new_session on POSIX and
-    DETACHED_PROCESS|CREATE_NEW_PROCESS_GROUP on Windows (#1161)."""
+    CREATE_NO_WINDOW|CREATE_NEW_PROCESS_GROUP on Windows (#1161 / #2253)."""
     assert "subprocess.Popen" in script
     assert "start_new_session=True" in script, f"{name} missing POSIX detach"
-    assert "0x00000008" in script, f"{name} missing Windows DETACHED_PROCESS flag"
+    assert "0x08000000" in script, f"{name} missing Windows CREATE_NO_WINDOW flag"
     assert "0x00000200" in script, f"{name} missing CREATE_NEW_PROCESS_GROUP flag"
 
 
@@ -327,6 +328,31 @@ def test_rebuild_bodies_with_graphify_root_are_valid_python():
     that crashes the moment git fires it (#1173)."""
     for body in (_REBUILD_BODY_COMMIT, _REBUILD_BODY_CHECKOUT):
         ast.parse(body)
+
+
+@pytest.mark.parametrize(
+    "name,body",
+    [("post-commit", _REBUILD_BODY_COMMIT), ("post-checkout", _REBUILD_BODY_CHECKOUT)],
+)
+def test_rebuild_bodies_arm_a_timeout_without_sigalrm(name, body):
+    """Windows has no signal.SIGALRM, so the #791 rebuild timeout never armed
+    there at all (#2148). The fallback has to sit in the else-branch of the
+    SIGALRM check rather than merely appear somewhere in the body, so that a
+    watchdog firing unconditionally or on every platform still fails here."""
+    fallbacks = [
+        node.orelse
+        for node in ast.walk(ast.parse(body))
+        if isinstance(node, ast.If) and "'SIGALRM'" in ast.dump(node.test) and node.orelse
+    ]
+    assert fallbacks, f"{name} has no else-branch for the missing-SIGALRM case (#2148)"
+    dumped = "".join(ast.dump(stmt) for stmt in fallbacks[0])
+    assert "attr='Timer'" in dumped, f"{name} fallback does not arm a threading.Timer (#2148)"
+    assert "attr='_exit'" in dumped, f"{name} fallback does not kill the stuck rebuild (#2148)"
+    # The fallback logs the timeout itself, because os._exit skips the except
+    # handler that reports it on the SIGALRM path. Its prefix has to match the
+    # rest of the body, or the same event reads differently per platform.
+    prefixes = set(re.findall(r"print\(f'\[([a-z ]+)\]", body))
+    assert len(prefixes) == 1, f"{name} mixes log prefixes {sorted(prefixes)} (#2148)"
 
 
 def test_detached_launch_targets_graphify_python():
@@ -424,9 +450,308 @@ def test_probe_prefers_sibling_python_exe_on_windows_layouts():
     assert "/python.exe" in _PYTHON_DETECT
 
 
+def _extract_case_pattern(marker: str) -> str:
+    """Pull the `*[!...]*` glob portion of a real case arm out of _PYTHON_DETECT
+    by a unique anchor, so tests run against the emitted text, not a copy."""
+    from graphify.hooks import _PYTHON_DETECT
+    for line in _PYTHON_DETECT.splitlines():
+        if marker in line:
+            return line.strip().split(")")[0]
+    raise AssertionError(f"case arm containing {marker!r} not found in _PYTHON_DETECT")
+
+
+def _shell_verdict(pattern: str, candidate: str) -> str:
+    result = subprocess.run(
+        ["bash", "-c", f'case "$1" in\n{pattern}) echo REJECTED ;;\n*) echo ACCEPTED ;;\nesac', "_", candidate],
+        capture_output=True, text=True,
+    )
+    # Fail loudly on a malformed case snippet instead of returning "" and
+    # producing a confusing ACCEPTED/REJECTED mismatch downstream.
+    assert result.returncode == 0, (
+        f"bash exited {result.returncode} for pattern {pattern!r}: {result.stderr.strip()}"
+    )
+    return result.stdout.strip()
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash required to exercise emitted glob")
+@pytest.mark.parametrize("winpath", [
+    r"C:\Users\u\.venv\Scripts\python.exe",
+    r"C:\Python311\python.exe",
+])
+def test_file_path_allowlist_accepts_windows_backslash_path(winpath):
+    """#2126: the .graphify_python FILE allowlist must accept real Windows paths
+    at actual shell runtime. Old pattern rejected them due to bash bracket-escape."""
+    pattern = _extract_case_pattern('_FROM_FILE=""')
+    assert _shell_verdict(pattern, winpath) == "ACCEPTED", (
+        f"Windows path {winpath!r} rejected by file-path allowlist at shell runtime"
+    )
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash required to exercise emitted glob")
+@pytest.mark.parametrize("shebang_path", [
+    r"C:\Users\u\.venv\Scripts\python.exe",
+])
+def test_shebang_allowlist_accepts_windows_backslash_path(shebang_path):
+    """#2126: the shebang-parsed launcher allowlist had no `:` or `\\` at all, so
+    any Windows-style shebang path was unconditionally emptied. Must ACCEPT now."""
+    pattern = _extract_case_pattern('GRAPHIFY_PYTHON="" ;;')
+    assert _shell_verdict(pattern, shebang_path) == "ACCEPTED", (
+        f"Windows shebang path {shebang_path!r} rejected by launcher allowlist"
+    )
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash required to exercise emitted glob")
+@pytest.mark.parametrize("dangerous", ["foo;rm -rf /", "foo`id`", "foo$(id)", "foo$IFS"])
+def test_python_detect_allowlists_still_reject_shell_metacharacters(dangerous):
+    """Guard against a naive fix (backslash right before `]`) that forms a
+    `:`-to-`\\` range admitting `;`, backtick, `$`. Both allowlists must reject."""
+    for marker in ('_FROM_FILE=""', 'GRAPHIFY_PYTHON="" ;;'):
+        pattern = _extract_case_pattern(marker)
+        assert _shell_verdict(pattern, dangerous) == "REJECTED", (
+            f"{marker} allowlist wrongly accepted dangerous input {dangerous!r}"
+        )
+
+
 @pytest.mark.parametrize("name,script", _HOOK_SCRIPTS)
 def test_hooks_reuse_git_dir_from_env(name, script):
     """git exports GIT_DIR to hooks, so the rev-parse fallback should only run
     when the script is invoked by hand — each extra git exec costs 1s+ on
     AV-scanned Windows machines and lands in the commit's foreground."""
     assert "GIT_DIR=${GIT_DIR:-" in script, f"{name} always re-runs git rev-parse"
+
+
+@pytest.mark.parametrize("name,script", _HOOK_SCRIPTS)
+def test_hooks_honor_skip_env(name, script):
+    """GRAPHIFY_SKIP_HOOK=1 must suppress BOTH hooks. post-checkout previously
+    lacked the check, so the var stopped commit rebuilds but not branch-switch
+    ones (#1809)."""
+    assert '[ "${GRAPHIFY_SKIP_HOOK:-0}" = "1" ] && exit 0' in script, (
+        f"{name} does not honor GRAPHIFY_SKIP_HOOK"
+    )
+
+
+@pytest.mark.parametrize("name,script", _HOOK_SCRIPTS)
+def test_hooks_skip_linked_worktrees(name, script):
+    """Both hooks must short-circuit in a linked worktree (git-dir != common-dir),
+    and must compare ABSOLUTE paths so the primary checkout (where --git-common-dir
+    is the relative ".git") is not false-positived and wrongly skipped (#1809, #1806)."""
+    assert script.count("_GFY_GITDIR=") == 1, f"{name} guard not present exactly once"
+    assert "git rev-parse --git-common-dir" in script
+    # absolute-normalized compare, not a raw string compare of git output
+    assert 'cd "$(git rev-parse --git-dir 2>/dev/null)" 2>/dev/null && pwd' in script
+    assert '[ "$_GFY_GITDIR" != "$_GFY_COMMONDIR" ]' in script
+
+
+def _worktree_guard_snippet() -> str:
+    from graphify.hooks import _WORKTREE_GUARD
+    return _WORKTREE_GUARD + "echo RAN\n"
+
+
+def test_worktree_guard_runs_on_primary_skips_linked(tmp_path):
+    """End-to-end against a real `git worktree`: the guard falls through on the
+    primary checkout and exits early inside a linked worktree (#1809, #1806)."""
+    if shutil.which("git") is None:  # pragma: no cover
+        pytest.skip("git not available")
+    primary = tmp_path / "primary"
+    primary.mkdir()
+
+    def _git(*args, cwd):
+        subprocess.run(["git", *args], cwd=cwd, check=True,
+                       capture_output=True, text=True)
+
+    _git("init", "-q", ".", cwd=primary)
+    _git("config", "user.email", "t@t.co", cwd=primary)
+    _git("config", "user.name", "t", cwd=primary)
+    (primary / "a.txt").write_text("x")
+    _git("add", "-A", cwd=primary)
+    _git("commit", "-qm", "init", cwd=primary)
+    linked = tmp_path / "linked"
+    _git("worktree", "add", "-q", str(linked), "-b", "feature", cwd=primary)
+
+    snippet = _worktree_guard_snippet()
+    r_primary = subprocess.run(["sh", "-c", snippet], cwd=primary,
+                               capture_output=True, text=True)
+    r_linked = subprocess.run(["sh", "-c", snippet], cwd=linked,
+                              capture_output=True, text=True)
+    assert "RAN" in r_primary.stdout, "guard wrongly skipped the primary checkout"
+    assert "RAN" not in r_linked.stdout, "guard failed to skip the linked worktree"
+
+
+# ── #1907: duplicate keys in .git/config must not trigger spurious warnings ──
+
+def _append_duplicate_config_entries(repo: Path) -> None:
+    """Append git-legal duplicate keys/sections (as VS Code writes them)."""
+    cfg = repo / ".git" / "config"
+    cfg.write_text(
+        cfg.read_text(encoding="utf-8")
+        + '[remote "origin"]\n'
+        + "\tfetch = +refs/heads/*:refs/remotes/origin/*\n"
+        + "\tfetch = +refs/heads/*:refs/remotes/origin/*\n"
+        + "[core]\n"
+        + "\tignorecase = true\n",
+        encoding="utf-8",
+    )
+
+
+def test_hooks_dir_no_warning_on_duplicate_config_keys(tmp_path, capsys):
+    """git legally allows duplicate keys and repeated sections in .git/config;
+    a strict configparser raised DuplicateOptionError/DuplicateSectionError and
+    printed a spurious 'could not read core.hooksPath' warning on every hook
+    command (#1907). _hooks_dir must resolve cleanly with no stderr noise."""
+    repo = _make_git_repo(tmp_path)
+    _append_duplicate_config_entries(repo)
+    d = _hooks_dir(repo)
+    err = capsys.readouterr().err
+    assert "could not read core.hooksPath" not in err
+    assert d == (repo / ".git" / "hooks").resolve()
+
+
+def test_hooks_dir_duplicate_config_keys_honor_custom_hookspath(tmp_path, capsys):
+    """With duplicate keys present, a custom core.hooksPath must still be
+    honored (no fall-through to .git/hooks) and no warning printed (#1907)."""
+    repo = _make_git_repo(tmp_path)
+    _set_hookspath(repo, ".husky")
+    _append_duplicate_config_entries(repo)
+    d = _hooks_dir(repo)
+    err = capsys.readouterr().err
+    assert "could not read core.hooksPath" not in err
+    assert d == (repo / ".husky").resolve()
+
+
+# ── #1902: hook install must register the graph.json union merge driver ─────
+
+def test_install_registers_merge_driver(tmp_path):
+    """install() must set merge.graphify.* via git config and add the
+    .gitattributes line that README/CHANGELOG 0.7.0 document (#1902)."""
+    repo = _make_git_repo(tmp_path)
+    result = install(repo)
+    res = subprocess.run(
+        ["git", "-C", str(repo), "config", "--get", "merge.graphify.driver"],
+        capture_output=True, text=True,
+    )
+    assert res.returncode == 0
+    driver = res.stdout.strip()
+    assert driver
+    assert "merge-driver %O %A %B" in driver
+    attrs = (repo / ".gitattributes").read_text(encoding="utf-8")
+    assert any(
+        "graph.json" in line and "merge=graphify" in line
+        for line in attrs.splitlines()
+    )
+    assert "merge driver" in result
+
+
+def test_install_merge_driver_idempotent(tmp_path):
+    """Running install twice must not duplicate the .gitattributes line."""
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    install(repo)
+    lines = (repo / ".gitattributes").read_text(encoding="utf-8").splitlines()
+    matches = [l for l in lines if "merge=graphify" in l]
+    assert len(matches) == 1
+
+
+def test_install_preserves_existing_gitattributes(tmp_path):
+    """A pre-existing .gitattributes entry must survive install (no clobber)."""
+    repo = _make_git_repo(tmp_path)
+    (repo / ".gitattributes").write_text("*.png binary\n", encoding="utf-8")
+    install(repo)
+    content = (repo / ".gitattributes").read_text(encoding="utf-8")
+    assert "*.png binary" in content
+    assert "merge=graphify" in content
+
+
+def test_uninstall_removes_merge_driver_keeps_other_attrs(tmp_path):
+    """uninstall() must unset merge.graphify.* and remove only the graphify
+    .gitattributes line, keeping the file when other entries exist."""
+    repo = _make_git_repo(tmp_path)
+    (repo / ".gitattributes").write_text("*.png binary\n", encoding="utf-8")
+    install(repo)
+    uninstall(repo)
+    res = subprocess.run(
+        ["git", "-C", str(repo), "config", "--get", "merge.graphify.driver"],
+        capture_output=True, text=True,
+    )
+    assert res.returncode != 0
+    content = (repo / ".gitattributes").read_text(encoding="utf-8")
+    assert "*.png binary" in content
+    assert "merge=graphify" not in content
+
+
+@pytest.mark.parametrize("exe", [
+    r"C:\Users\First Last\AppData\Roaming\uv\tools\graphifyy\Scripts\python.exe",
+    r"C:\Program Files\Python312\python.exe",
+    "/home/first last/.local/share/uv/tools/graphifyy/bin/python",
+])
+def test_pinned_python_accepts_paths_containing_spaces(exe, monkeypatch):
+    """#2166: a space must not empty the pin.
+
+    The install-time allowlist had no space, so `sys.executable` under any Windows
+    profile whose name contains one (`C:\\Users\\First Last\\...`, or the very common
+    `C:\\Program Files\\...`) was rejected wholesale and the hook shipped `_PINNED=''`.
+    Every interpreter probe then failed and each commit no-op'd with the "could not
+    locate a Python" warning, so the graph never rebuilt.
+    """
+    import sys as _sys
+
+    from graphify.hooks import _pinned_python
+
+    monkeypatch.setattr(_sys, "executable", exe)
+    assert _pinned_python() == exe, "a path containing a space must still be pinned"
+
+
+@pytest.mark.parametrize("exe", [
+    r"C:\Users\evil\python.exe; rm -rf /",
+    "/tmp/py`id`",
+    "/tmp/py$(id)",
+    "/tmp/py$IFS",
+    r"C:\Users\ev'il\python.exe",
+    '/tmp/py"quote',
+])
+def test_pinned_python_still_rejects_shell_metacharacters(exe, monkeypatch):
+    """Widening the allowlist for spaces (#2166) must not admit anything that can
+    start a substitution, end the single-quoted assignment, or chain a command."""
+    import sys as _sys
+
+    from graphify.hooks import _pinned_python
+
+    monkeypatch.setattr(_sys, "executable", exe)
+    assert _pinned_python() == "", f"dangerous interpreter path accepted: {exe!r}"
+
+
+def test_merge_driver_quotes_interpreter_with_spaces(tmp_path, monkeypatch):
+    """#2166: git runs the merge driver through a shell, so a pinned path with a
+    space has to be quoted or the driver splits into two words and never runs."""
+    import subprocess
+    import sys as _sys
+
+    from graphify.hooks import install
+
+    exe = r"C:\Users\First Last\AppData\Roaming\uv\tools\graphifyy\Scripts\python.exe"
+    repo = _make_git_repo(tmp_path)
+    monkeypatch.setattr(_sys, "executable", exe)
+    install(repo)
+
+    driver = subprocess.run(
+        ["git", "-C", str(repo), "config", "--get", "merge.graphify.driver"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert driver.startswith(f'"{exe}"'), f"interpreter not quoted in merge driver: {driver!r}"
+    assert driver.endswith("-m graphify merge-driver %O %A %B")
+
+
+def test_install_pins_interpreter_path_with_spaces(tmp_path, monkeypatch):
+    """#2166 end to end: the emitted hooks must carry the real interpreter, not ''."""
+    import sys as _sys
+
+    from graphify.hooks import install
+
+    exe = r"C:\Users\First Last\AppData\Roaming\uv\tools\graphifyy\Scripts\python.exe"
+    repo = _make_git_repo(tmp_path)
+    monkeypatch.setattr(_sys, "executable", exe)
+    install(repo)
+
+    for name in ("post-commit", "post-checkout"):
+        script = (repo / ".git" / "hooks" / name).read_text()
+        assert f"_PINNED='{exe}'" in script, f"{name} did not pin the spaced interpreter"
+        assert "_PINNED=''" not in script, f"{name} pinned an empty interpreter (#2166)"

@@ -16,11 +16,81 @@ flow) and every reader honours it.
 
 from __future__ import annotations
 
+import json
 import os
 import re
+import stat
+import tempfile
 from pathlib import Path, PurePosixPath
 
 GRAPHIFY_OUT = os.environ.get("GRAPHIFY_OUT", "graphify-out")
+
+
+def _atomic_replace(path: "str | Path", write_fn) -> None:
+    """Atomically replace ``path`` with content written by ``write_fn(f)``.
+
+    Writes a temp file in the SAME directory, then ``os.replace``s it into place
+    (an atomic rename on one filesystem). A process kill (SIGKILL/Ctrl-C), OOM, or
+    ENOSPC mid-write leaves the previous file intact — the destination is
+    untouched until the rename. This is NOT a power-loss durability guarantee:
+    there is no fsync (matching the rest of the codebase), so an OS/hardware crash
+    right after the rename can still expose unflushed bytes on some filesystems.
+    The temp file is removed if the write fails.
+
+    A symlinked destination is resolved first so the write goes THROUGH the link
+    to its target (rather than replacing the link with a regular file), keeping
+    the shared-output/worktree symlink setups this module documents working.
+    """
+    # Resolve symlinks so the temp lands on the target's filesystem (same-fs
+    # atomic rename) and the replace writes through the link, not over it.
+    real = Path(os.path.realpath(str(path)))
+    real.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(real.parent), prefix=f".{real.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            write_fn(f)
+        # mkstemp creates the temp file 0600; match the destination's existing
+        # mode (or the umask default for a new file) so an atomic replace never
+        # silently tightens a previously group/world-readable output to
+        # owner-only. Best-effort — a chmod failure must not fail the write.
+        try:
+            mode = stat.S_IMODE(os.stat(real).st_mode)
+        except OSError:
+            umask = os.umask(0)
+            os.umask(umask)
+            mode = 0o666 & ~umask
+        try:
+            os.chmod(tmp, mode)
+        except OSError:
+            pass
+        try:
+            os.replace(tmp, str(real))
+        except PermissionError:
+            # Windows: os.replace fails (WinError 5/32) when the destination is
+            # briefly locked by another handle (antivirus, an open reader). Fall
+            # back to copy-then-delete, matching graphify.cache's atomic writer.
+            import shutil
+            shutil.copy2(tmp, str(real))
+            os.unlink(tmp)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def write_text_atomic(path: "str | Path", text: str) -> None:
+    """Atomically write ``text`` (UTF-8) to ``path``. See :func:`_atomic_replace`."""
+    _atomic_replace(path, lambda f: f.write(text))
+
+
+def write_json_atomic(path: "str | Path", obj, *, indent: "int | None" = None, ensure_ascii: bool = True) -> None:
+    """Atomically write ``obj`` as JSON to ``path``, streaming the encode into the
+    temp file rather than materializing the whole string first (matters for very
+    large graphs). ``ensure_ascii`` mirrors ``json.dump`` so callers that emit raw
+    UTF-8 (non-ASCII labels/paths) keep byte-for-byte output. See :func:`_atomic_replace`."""
+    _atomic_replace(path, lambda f: json.dump(obj, f, indent=indent, ensure_ascii=ensure_ascii))
 
 # Directory segments that, when they appear as a whole path component, mark the
 # whole path as a test location. Matched against path *segments* (not raw
@@ -209,9 +279,8 @@ def disambiguate_ambiguous_candidates(
         {c: candidate_files.get(c, "") for c in survivors},
     )
 
-# Bare directory name even when GRAPHIFY_OUT is an absolute path. Used by the
-# path guards that walk parents looking for the output dir by name, and by the
-# detect scan-exclude so a custom output dir is never re-ingested as source.
+# Bare directory name even when GRAPHIFY_OUT is an absolute path. Used by path
+# guards that walk parents looking for the output directory by name.
 GRAPHIFY_OUT_NAME = os.path.basename(os.path.normpath(GRAPHIFY_OUT))
 
 
@@ -232,3 +301,44 @@ def default_graph_json() -> str:
     the path is passed explicitly (#1423).
     """
     return str(out_path("graph.json"))
+
+
+def nfc(s: str) -> str:
+    """NFC-normalize a path string.
+
+    macOS (HFS+/APFS) reports filenames in NFD while manifests, graph
+    ``source_file`` entries and user input are typically NFC. Comparing raw
+    strings makes the same file look like two different paths, so any path
+    membership test must normalize BOTH sides (#2210, #2221/#2224).
+    """
+    import unicodedata
+    return unicodedata.normalize("NFC", s)
+
+
+def load_node_link_graph(path_or_data):
+    """Load a graphify graph.json into a networkx graph, accepting both writers.
+
+    The clustered writer stores edges under ``links`` (networkx's node-link
+    default); the raw ``--no-cluster`` writer stores them under ``edges``.
+    Consumers that call ``node_link_graph(data, edges="links")`` directly
+    raise ``KeyError: 'links'`` on a raw graph (#2212) — the ``except
+    TypeError`` fallback only covers old networkx without the ``edges``
+    kwarg, not the missing key. Normalize before parsing, same idiom as
+    affected.py/serve.py.
+
+    Accepts a path (size-cap-checked via the security module, then parsed)
+    or an already-parsed dict (no size check — the caller owns any cap).
+    """
+    from networkx.readwrite import json_graph
+    data = path_or_data
+    if not isinstance(data, dict):
+        p = Path(data)
+        from graphify.security import check_graph_file_size_cap  # lazy: security imports paths
+        check_graph_file_size_cap(p)
+        data = json.loads(p.read_text(encoding="utf-8"))
+    if isinstance(data, dict) and "links" not in data and "edges" in data:
+        data = dict(data, links=data["edges"])
+    try:
+        return json_graph.node_link_graph(data, edges="links")
+    except TypeError:  # networkx too old for the edges kwarg; default is "links"
+        return json_graph.node_link_graph(data)

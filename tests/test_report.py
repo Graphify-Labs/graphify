@@ -105,3 +105,52 @@ def test_report_work_memory_section_absent_without_overlay():
                      tokens, "./project", learning={"overlay": {}, "dead_ends": []})
     assert "## Work-memory lessons" not in empty
     assert before == empty
+
+
+def test_import_cycles_section_present_for_code_corpus():
+    # #1657: the fixture is a code corpus, so the Import Cycles section shows.
+    G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
+    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
+    assert "## Import Cycles" in report
+
+
+def test_import_cycles_section_absent_for_documents_only_corpus():
+    # #1657: a documents-only corpus has no imports; the section is pure noise
+    # ("None detected") and must be suppressed.
+    extraction = {
+        "nodes": [
+            {"id": "d1", "label": "intro.md", "file_type": "document"},
+            {"id": "d2", "label": "guide.md", "file_type": "document"},
+        ],
+        "edges": [{"source": "d1", "target": "d2", "relation": "references"}],
+        "input_tokens": 0, "output_tokens": 0,
+    }
+    G = build_from_json(extraction)
+    communities = cluster(G)
+    cohesion = score_all(G, communities)
+    labels = {cid: f"Community {cid}" for cid in communities}
+    gods = god_nodes(G)
+    surprises = surprising_connections(G)
+    detection = {"total_files": 2, "total_words": 100, "needs_graph": True, "warning": None}
+    tokens = {"input": 0, "output": 0}
+    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
+    assert "## Import Cycles" not in report
+
+
+def test_report_hubs_are_plain_text_by_default():
+    # #1712: without --obsidian the _COMMUNITY_*.md notes don't exist, so wikilinks
+    # would dangle (and pollute an Obsidian vault's graph view). Default to plain text.
+    G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
+    labels = {cid: f"Widget {cid}" for cid in communities}
+    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project", min_community_size=1)
+    assert "## Community Hubs (Navigation)" in report
+    assert "[[_COMMUNITY_" not in report, "must not emit dangling Obsidian wikilinks by default (#1712)"
+    assert any(f"- Widget {cid}" in report for cid in communities)
+
+
+def test_report_hubs_use_wikilinks_when_obsidian():
+    # The opt-in path keeps the vault-navigable wikilink form.
+    G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
+    labels = {cid: f"Widget {cid}" for cid in communities}
+    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project", min_community_size=1, obsidian=True)
+    assert "[[_COMMUNITY_" in report

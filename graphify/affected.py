@@ -22,6 +22,7 @@ DEFAULT_AFFECTED_RELATIONS = (
     "uses",
     "mixes_in",
     "embeds",
+    "requires",
 )
 
 
@@ -30,6 +31,11 @@ class AffectedHit:
     node_id: str
     depth: int
     via_relation: str
+    # The traversed edge's location — the actual call/import/reference SITE in
+    # this node's file, not the node's own definition line (#BUG1). Defaults keep
+    # existing constructors/tests working; None falls back to the node's def line.
+    via_file: "str | None" = None
+    via_location: "str | None" = None
 
 
 def _node_label(graph: nx.Graph, node_id: str) -> str:
@@ -149,6 +155,27 @@ def affected_nodes(
     queue: deque[tuple[str, int]] = deque([(seed, 0)])
     hits: list[AffectedHit] = []
 
+    # #1669: seed the reverse walk with the root's own member nodes (one outward
+    # `method`/`contains` hop). A caller can bind to a class's method node rather
+    # than the class node itself (e.g. `Service.call` resolves to the `def
+    # self.call` node, #1634), so those callers are unreachable from the class
+    # otherwise. The member nodes are seeds only (not reported as hits), and
+    # `method`/`contains` stay out of the general relation-filtered walk, so this
+    # adds no forward noise anywhere else.
+    if hasattr(graph, "out_edges"):
+        member_edges = graph.out_edges(seed, data=True)
+    else:
+        member_edges = (
+            (s, t, d) for s, t, d in graph.edges(data=True) if s == seed
+        )
+    for _s, member, data in member_edges:
+        if str(data.get("relation", "")) not in ("method", "contains"):
+            continue
+        member = str(member)
+        if member not in seen:
+            seen.add(member)
+            queue.append((member, 0))
+
     while queue:
         current, current_depth = queue.popleft()
         if current_depth >= depth:
@@ -169,7 +196,15 @@ def affected_nodes(
             if source in seen:
                 continue
             seen.add(source)
-            hit = AffectedHit(source, current_depth + 1, relation)
+            # Carry the matched edge's location (taken from the SAME edge dict
+            # whose relation passed the filter, so relation and location stay
+            # consistent) — that is the call/import/reference site in `source`'s
+            # own file, which is where the user should click (#BUG1).
+            hit = AffectedHit(
+                source, current_depth + 1, relation,
+                via_file=str(data.get("source_file") or "") or None,
+                via_location=str(data.get("source_location") or "") or None,
+            )
             hits.append(hit)
             queue.append((source, current_depth + 1))
 
@@ -200,8 +235,14 @@ def format_affected(
 
     for hit in hits:
         data = graph.nodes[hit.node_id]
+        if hit.via_location:
+            # The relation SITE in this node's file (call/import/reference line),
+            # labeled by [via_relation] so it's never mistaken for a def line.
+            location = f"{hit.via_file or data.get('source_file') or '-'}:{hit.via_location}"
+        else:
+            location = _format_location(data)  # honest fallback: the node's own def line
         lines.append(
-            f"- {_node_label(graph, hit.node_id)} [{hit.via_relation}] {_format_location(data)}"
+            f"- {_node_label(graph, hit.node_id)} [{hit.via_relation}] {location}"
         )
     return "\n".join(lines)
 

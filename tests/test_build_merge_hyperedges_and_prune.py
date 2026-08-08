@@ -149,3 +149,118 @@ def test_prune_matches_across_symlinked_root(tmp_path):
                     prune_sources=[str(link / "HANDOFF.md")], root=str(real), dedup=False)
     labels = {d["label"] for _, d in G.nodes(data=True)}
     assert "handoff" not in labels and "keep" in labels
+
+
+def test_reextracted_file_in_prune_sources_is_not_deleted(tmp_path):
+    """#1796: a file present in BOTH new_chunks (re-extracted) and prune_sources
+    must be REPLACED, not deleted. The old edit-workflow passed the changed file
+    in prune_sources; combined with dedup keeping a same-label node, that used to
+    silently delete the freshly re-extracted concept. Replace wins over delete."""
+    graph_path = tmp_path / "graphify-out" / "graph.json"
+    graph_path.parent.mkdir(parents=True)
+    _write_graph(
+        graph_path,
+        nodes=[
+            {"id": "foo_widget_cache", "label": "Widget Cache Design",
+             "file_type": "concept", "source_file": "docs/foo.md", "source_location": "L1"},
+            {"id": "bar_other", "label": "Other",
+             "file_type": "concept", "source_file": "docs/bar.md", "source_location": "L1"},
+        ],
+        edges=[],
+        hyperedges=[],
+    )
+    # foo.md edited: same-label node re-extracted (new content/line)
+    new_chunk = {"nodes": [
+        {"id": "foo_widget_cache", "label": "Widget Cache Design",
+         "file_type": "concept", "source_file": "docs/foo.md", "source_location": "L2"}
+    ], "edges": []}
+
+    G = build_merge([new_chunk], graph_path=str(graph_path),
+                    prune_sources=["docs/foo.md"], root=str(tmp_path))
+    labels = {G.nodes[n].get("label") for n in G.nodes()}
+    assert "Widget Cache Design" in labels, "re-extracted node was wrongly pruned"
+
+
+def test_genuine_deletion_still_prunes(tmp_path):
+    """#1796 guard must not break real deletions: a file in prune_sources but NOT
+    in new_chunks is still removed."""
+    graph_path = tmp_path / "graphify-out" / "graph.json"
+    graph_path.parent.mkdir(parents=True)
+    _write_graph(
+        graph_path,
+        nodes=[
+            {"id": "foo_widget_cache", "label": "Widget Cache Design",
+             "file_type": "concept", "source_file": "docs/foo.md", "source_location": "L1"},
+            {"id": "bar_other", "label": "Other",
+             "file_type": "concept", "source_file": "docs/bar.md", "source_location": "L1"},
+        ],
+        edges=[],
+        hyperedges=[],
+    )
+    new_chunk = {"nodes": [
+        {"id": "foo_widget_cache", "label": "Widget Cache Design",
+         "file_type": "concept", "source_file": "docs/foo.md", "source_location": "L2"}
+    ], "edges": []}
+    # bar.md genuinely deleted (not re-extracted)
+    G = build_merge([new_chunk], graph_path=str(graph_path),
+                    prune_sources=["docs/bar.md"], root=str(tmp_path))
+    labels = {G.nodes[n].get("label") for n in G.nodes()}
+    assert "Other" not in labels, "genuinely deleted file's node should be pruned"
+    assert "Widget Cache Design" in labels
+
+
+# ── #2012: form-insensitive prune (absolute node vs relative prune, and back) ──
+
+def test_prune_matches_node_stored_absolute_against_relative_delete(tmp_path):
+    """#2012: a node whose source_file survived in ABSOLUTE form must still be
+    pruned when the deletion is expressed relative to root. The runbook calls
+    build_merge WITHOUT root, so build() does not re-normalize the node's stored
+    absolute source_file; the old prune membership test then compared that raw
+    absolute string against a prune_set that only held the relative forms, so the
+    node slipped through and a deleted file's graph survived silently. build_merge
+    now normalizes the node side too + an absolute-identity fallback."""
+    root = tmp_path / "corpus"
+    (root / "graphify-out").mkdir(parents=True)
+    graph_path = root / "graphify-out" / "graph.json"
+    nodes = [
+        # gone.py's node kept an ABSOLUTE source_file (a semantic subagent wrote
+        # it that way, #932); keep.py's is relative.
+        {"id": "g1", "label": "gone", "file_type": "code",
+         "source_file": str(root / "gone.py")},
+        {"id": "k1", "label": "keep", "file_type": "code", "source_file": "keep.py"},
+    ]
+    edges = [
+        {"source": "g1", "target": "k1", "type": "calls",
+         "source_file": str(root / "gone.py")},
+    ]
+    _write_graph(graph_path, nodes, edges, [])
+    # Runbook-style: NO root passed (eff_root inferred from the graphify-out
+    # grandparent), so build() leaves the absolute node form intact. Deletion is
+    # expressed RELATIVE — a third form vs the stored absolute node.
+    G = build_merge([], graph_path, prune_sources=["gone.py"], dedup=False)
+    labels = {d["label"] for _, d in G.nodes(data=True)}
+    assert "gone" not in labels, "absolute-stored node not pruned by relative delete (#2012)"
+    assert "keep" in labels
+    assert G.number_of_edges() == 0, "edge from the deleted file must be pruned too (#2012)"
+
+
+def test_prune_reextracted_absolute_node_not_deleted(tmp_path):
+    """#1796 protection must hold in absolute-identity space too: a file present
+    in BOTH new_chunks and prune_sources (in mismatched forms) is REPLACED, not
+    deleted — the #2012 form-insensitive match must not resurrect the delete for
+    a re-extracted file."""
+    root = tmp_path / "corpus"
+    (root / "graphify-out").mkdir(parents=True)
+    graph_path = root / "graphify-out" / "graph.json"
+    _write_graph(graph_path, [
+        {"id": "g1", "label": "gone", "file_type": "code",
+         "source_file": str(root / "mod.py")},
+    ], [], [])
+    # Re-extracted with a RELATIVE source_file; prune lists it RELATIVE too.
+    # No root passed (runbook), so the stored absolute node is not re-normalized.
+    new_chunk = {"nodes": [
+        {"id": "g1", "label": "gone", "file_type": "code", "source_file": "mod.py"},
+    ], "edges": []}
+    G = build_merge([new_chunk], graph_path, prune_sources=["mod.py"], dedup=False)
+    labels = {d["label"] for _, d in G.nodes(data=True)}
+    assert "gone" in labels, "re-extracted file wrongly pruned across mismatched forms (#2012/#1796)"
