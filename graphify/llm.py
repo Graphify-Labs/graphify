@@ -1373,6 +1373,30 @@ def _claude_cli_envelope(stdout: str) -> dict:
     return envelope
 
 
+def _claude_cli_error(stdout: str) -> str:
+    """Return the CLI's own error text when the envelope flags `is_error`.
+
+    `claude -p` reports API failures (rate limits, auth) in the stdout JSON
+    envelope with `is_error: true` and leaves stderr EMPTY — and on a rate limit
+    it still exits 0. So the two obvious checks both miss it: a non-zero exit
+    printed a bare "exited 1: " with no cause, and a zero exit fed the error
+    string to the JSON parser, producing an empty graph that `_response_is_hollow`
+    misread as truncation and adaptive retry then bisected, re-issuing requests
+    that were still being refused (#2554). Best-effort: unparseable stdout is not
+    this function's problem, the caller's `_claude_cli_envelope` reports that.
+    """
+    try:
+        envelope = _claude_cli_envelope(stdout)
+    except RuntimeError:
+        return ""
+    if not envelope.get("is_error"):
+        return ""
+    detail = envelope.get("result")
+    if isinstance(detail, str) and detail.strip():
+        return detail.strip()
+    return "unspecified error"
+
+
 # A JSON Schema pinning the top-level shape graphify consumes. Passed to
 # `claude -p --json-schema` (structured output) so the CLI CONSTRAINS the model
 # to emit the object directly instead of relying on it CHOOSING to honour a
@@ -1538,10 +1562,12 @@ def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bo
         check=False,
         **_no_window_kwargs(),
     )
+    cli_error = _claude_cli_error(proc.stdout)
     if proc.returncode != 0:
-        raise RuntimeError(
-            f"claude -p exited {proc.returncode}: {proc.stderr.strip()[:500]}"
-        )
+        detail = proc.stderr.strip() or cli_error or "(no stderr, no error envelope)"
+        raise RuntimeError(f"claude -p exited {proc.returncode}: {detail[:500]}")
+    if cli_error:
+        raise RuntimeError(f"claude -p reported an error: {cli_error[:500]}")
 
     envelope = _claude_cli_envelope(proc.stdout)
 
@@ -2597,8 +2623,14 @@ def _call_llm(
             check=False,
             **_no_window_kwargs(),
         )
+        cli_error = _claude_cli_error(proc.stdout)
         if proc.returncode != 0:
-            raise RuntimeError(f"claude -p exited {proc.returncode}: {proc.stderr.strip()[:500]}")
+            detail = proc.stderr.strip() or cli_error or "(no stderr, no error envelope)"
+            raise RuntimeError(f"claude -p exited {proc.returncode}: {detail[:500]}")
+        if cli_error:
+            # Without this the error text is returned as the model's reply and
+            # the caller writes it into the graph as a community label (#2554).
+            raise RuntimeError(f"claude -p reported an error: {cli_error[:500]}")
         envelope = _claude_cli_envelope(proc.stdout)
         cli_usage = envelope.get("usage") or {}
         if cli_usage:
