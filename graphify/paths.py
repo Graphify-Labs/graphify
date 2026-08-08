@@ -279,9 +279,8 @@ def disambiguate_ambiguous_candidates(
         {c: candidate_files.get(c, "") for c in survivors},
     )
 
-# Bare directory name even when GRAPHIFY_OUT is an absolute path. Used by the
-# path guards that walk parents looking for the output dir by name, and by the
-# detect scan-exclude so a custom output dir is never re-ingested as source.
+# Bare directory name even when GRAPHIFY_OUT is an absolute path. Used by path
+# guards that walk parents looking for the output directory by name.
 GRAPHIFY_OUT_NAME = os.path.basename(os.path.normpath(GRAPHIFY_OUT))
 
 
@@ -302,3 +301,44 @@ def default_graph_json() -> str:
     the path is passed explicitly (#1423).
     """
     return str(out_path("graph.json"))
+
+
+def nfc(s: str) -> str:
+    """NFC-normalize a path string.
+
+    macOS (HFS+/APFS) reports filenames in NFD while manifests, graph
+    ``source_file`` entries and user input are typically NFC. Comparing raw
+    strings makes the same file look like two different paths, so any path
+    membership test must normalize BOTH sides (#2210, #2221/#2224).
+    """
+    import unicodedata
+    return unicodedata.normalize("NFC", s)
+
+
+def load_node_link_graph(path_or_data):
+    """Load a graphify graph.json into a networkx graph, accepting both writers.
+
+    The clustered writer stores edges under ``links`` (networkx's node-link
+    default); the raw ``--no-cluster`` writer stores them under ``edges``.
+    Consumers that call ``node_link_graph(data, edges="links")`` directly
+    raise ``KeyError: 'links'`` on a raw graph (#2212) — the ``except
+    TypeError`` fallback only covers old networkx without the ``edges``
+    kwarg, not the missing key. Normalize before parsing, same idiom as
+    affected.py/serve.py.
+
+    Accepts a path (size-cap-checked via the security module, then parsed)
+    or an already-parsed dict (no size check — the caller owns any cap).
+    """
+    from networkx.readwrite import json_graph
+    data = path_or_data
+    if not isinstance(data, dict):
+        p = Path(data)
+        from graphify.security import check_graph_file_size_cap  # lazy: security imports paths
+        check_graph_file_size_cap(p)
+        data = json.loads(p.read_text(encoding="utf-8"))
+    if isinstance(data, dict) and "links" not in data and "edges" in data:
+        data = dict(data, links=data["edges"])
+    try:
+        return json_graph.node_link_graph(data, edges="links")
+    except TypeError:  # networkx too old for the edges kwarg; default is "links"
+        return json_graph.node_link_graph(data)

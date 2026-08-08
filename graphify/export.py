@@ -311,6 +311,34 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
         if true_src is not None and true_tgt is not None:
             link["source"] = true_src
             link["target"] = true_tgt
+    if "hyperedges" not in getattr(G, "graph", {}):
+        # Hardening (#2485): a graph with NO hyperedges key at all was built by
+        # a path that never engaged hyperedge metadata — distinct from an
+        # intentional empty set ([], which build_from_json now stores
+        # explicitly after a full-wipeout revalidation). If the file on disk
+        # already holds a non-empty set, emptying it without a trace is silent
+        # data loss; warn loudly so the wipeout is attributable. We still write
+        # the graph's truth rather than preserving the stale set — resurrecting
+        # hyperedges whose members may no longer exist would reintroduce the
+        # dangling-member shape #1916 removed.
+        _prev_hyperedges = None
+        try:
+            if existing_path.exists():
+                from graphify.security import check_graph_file_size_cap
+                check_graph_file_size_cap(existing_path)
+                _prev = json.loads(existing_path.read_text(encoding="utf-8"))
+                if isinstance(_prev, dict):
+                    _prev_hyperedges = _prev.get("hyperedges")
+        except Exception:
+            _prev_hyperedges = None
+        if _prev_hyperedges:
+            print(
+                f"[graphify] WARNING: graph carries no hyperedge metadata but "
+                f"{existing_path} already holds {len(_prev_hyperedges)} "
+                f"hyperedge(s); writing an empty set. Rebuild from the original "
+                f"extraction if this is unexpected.",
+                file=sys.stderr,
+            )
     data["hyperedges"] = getattr(G, "graph", {}).get("hyperedges", [])
     commit = built_at_commit if built_at_commit is not None else _git_head()
     if commit:
@@ -429,6 +457,37 @@ def _cap_filename(s: str, limit: int = 200) -> str:
     return f"{truncated}_{digest}"
 
 
+def _obsidian_safe_stem(label: str) -> str:
+    """Filename stem for an Obsidian note / canvas card from a node label.
+
+    Strips filesystem-unsafe characters, a trailing ``.md``-family extension
+    (so ``CLAUDE.md`` does not become ``CLAUDE.md.md``), and a leading ``.`` —
+    Obsidian hides every note whose name starts with a dot, so ``.env.md``
+    would be written but invisible in the UI (#2205). The ``dot-`` prefix keeps
+    the name recognizable; H1 / frontmatter still carry the true label.
+    """
+    cleaned = re.sub(
+        r'[\\/*?:"<>|#^[\]]',
+        "",
+        label.replace("\r\n", " ").replace("\r", " ").replace("\n", " "),
+    ).strip()
+    cleaned = re.sub(r"\.(md|mdx|qmd|markdown)$", "", cleaned, flags=re.IGNORECASE)
+    # Obsidian treats a leading-dot filename as a hidden file (#2205). Only
+    # prefix when something nameable remains after the dots: an all-dots label
+    # like "..." would otherwise become the meaningless stem "dot-" instead of
+    # falling through to the "unnamed" guard below (#1409).
+    if cleaned.startswith(".") and re.search(r"\w", cleaned.lstrip("."), flags=re.UNICODE):
+        cleaned = "dot-" + cleaned.lstrip(".")
+    # A stem of only punctuation (e.g. "@", "*", "#") survives the unsafe-char
+    # strip above but is empty once a downstream tool re-slugs on word chars
+    # (e.g. qmd's handelize() reduces "@" -> "" and raises, aborting the whole
+    # `qmd update`). Require at least one word char; else fall back so we never
+    # emit a "@.md"-style filename. (#1409)
+    if not re.search(r"\w", cleaned, flags=re.UNICODE):
+        return "unnamed"
+    return _cap_filename(cleaned)
+
+
 def _dedup_node_filenames(G: nx.Graph, safe_name) -> dict[str, str]:
     """Map each node_id to a unique note filename, appending a numeric suffix on
     collision. The collision set is keyed on the lowercased name so two labels
@@ -497,20 +556,7 @@ def to_obsidian(
 
     # Map node_id → safe filename so wikilinks stay consistent.
     # Deduplicate: if two nodes produce the same filename, append a numeric suffix.
-    def safe_name(label: str) -> str:
-        cleaned = re.sub(r'[\\/*?:"<>|#^[\]]', "", label.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")).strip()
-        # Strip trailing .md/.mdx/.markdown so "CLAUDE.md" doesn't become "CLAUDE.md.md"
-        cleaned = re.sub(r"\.(md|mdx|qmd|markdown)$", "", cleaned, flags=re.IGNORECASE)
-        # A stem of only punctuation (e.g. "@", "*", "#") survives the unsafe-char
-        # strip above but is empty once a downstream tool re-slugs on word chars
-        # (e.g. qmd's handelize() reduces "@" -> "" and raises, aborting the whole
-        # `qmd update`). Require at least one word char; else fall back so we never
-        # emit a "@.md"-style filename. (#1409)
-        if not re.search(r"\w", cleaned, flags=re.UNICODE):
-            return "unnamed"
-        return _cap_filename(cleaned)
-
-    node_filename = _dedup_node_filenames(G, safe_name)
+    node_filename = _dedup_node_filenames(G, _obsidian_safe_stem)
 
     # Helper: compute dominant confidence for a node across all its edges
     def _dominant_confidence(node_id: str) -> str:
@@ -625,7 +671,7 @@ def to_obsidian(
     community_filename: dict = {}
     used_community: set[str] = set()
     for cid in communities:
-        base = f"_COMMUNITY_{safe_name(_community_name(cid))}"
+        base = f"_COMMUNITY_{_obsidian_safe_stem(_community_name(cid))}"
         candidate = base
         n = 1
         while candidate.lower() in used_community:
@@ -700,7 +746,7 @@ def to_obsidian(
         if cross:
             lines.append("## Connections to other communities")
             for other_cid, edge_count in sorted(cross.items(), key=lambda x: -x[1]):
-                other_fname = community_filename.get(other_cid) or f"_COMMUNITY_{safe_name(_community_name(other_cid))}"
+                other_fname = community_filename.get(other_cid) or f"_COMMUNITY_{_obsidian_safe_stem(_community_name(other_cid))}"
                 lines.append(f"- {edge_count} edge{'s' if edge_count != 1 else ''} to [[{other_fname}]]")
             lines.append("")
 
@@ -798,21 +844,9 @@ def to_canvas(
     # Obsidian canvas color codes (cycle through for communities)
     CANVAS_COLORS = ["1", "2", "3", "4", "5", "6"]  # red, orange, yellow, green, cyan, purple
 
-    def safe_name(label: str) -> str:
-        cleaned = re.sub(r'[\\/*?:"<>|#^[\]]', "", label.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")).strip()
-        cleaned = re.sub(r"\.(md|mdx|qmd|markdown)$", "", cleaned, flags=re.IGNORECASE)
-        # A stem of only punctuation (e.g. "@", "*", "#") survives the unsafe-char
-        # strip above but is empty once a downstream tool re-slugs on word chars
-        # (e.g. qmd's handelize() reduces "@" -> "" and raises, aborting the whole
-        # `qmd update`). Require at least one word char; else fall back so we never
-        # emit a "@.md"-style filename. (#1409)
-        if not re.search(r"\w", cleaned, flags=re.UNICODE):
-            return "unnamed"
-        return _cap_filename(cleaned)
-
     # Build node_filenames if not provided (same dedup logic as to_obsidian)
     if node_filenames is None:
-        node_filenames = _dedup_node_filenames(G, safe_name)
+        node_filenames = _dedup_node_filenames(G, _obsidian_safe_stem)
 
     # Fallback: with no community data (e.g. --no-cluster builds or a missing
     # analysis sidecar) the grid below produces nothing and the canvas is written
@@ -926,7 +960,7 @@ def to_canvas(
             row = m_idx // inner_cols
             nx_x = gx + 20 + col * (180 + 20)
             nx_y = gy + 80 + row * (60 + 20)
-            fname = node_filenames.get(node_id, safe_name(G.nodes[node_id].get("label", node_id)))
+            fname = node_filenames.get(node_id, _obsidian_safe_stem(G.nodes[node_id].get("label", node_id)))
             canvas_nodes.append({
                 "id": f"n_{node_id}",
                 "type": "file",

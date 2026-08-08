@@ -135,6 +135,145 @@ def test_legacy_edge_from_to_canonicalized():
     assert G.number_of_edges() == 1
 
 
+def test_legacy_node_name_path_aliases_folded():
+    """#2194: nodes carrying `name`/`path` instead of `label`/`source_file` must
+    be canonicalized before validation, not enter the graph as label-less
+    ghosts. After build the canonicalized dict also passes validation."""
+    from graphify.validate import validate_extraction
+    ext = {"nodes": [{"id": "n1", "name": "Foo", "path": "a/b.md", "file_type": "concept"}],
+           "edges": [], "input_tokens": 0, "output_tokens": 0}
+    G = build_from_json(ext)
+    attrs = G.nodes["n1"]
+    assert attrs["label"] == "Foo"
+    assert attrs["source_file"] == "a/b.md"
+    assert "name" not in attrs
+    assert "path" not in attrs
+    # build_from_json canonicalizes in place; the extraction dict must now be
+    # schema-valid (no missing-field errors for the alias node).
+    assert not [e for e in validate_extraction(ext) if "missing required field" in e]
+
+
+def test_legacy_edge_type_confidence_score_aliases_folded():
+    """#2194: edges carrying `type`/`confidence_score` instead of
+    `relation`/`confidence` fold to canonical fields. Recovery confidence is
+    INFERRED (never EXTRACTED — alias recovery is not provenance) and the
+    companion confidence_score float is retained, not popped."""
+    ext = {"nodes": [{"id": "n1", "label": "A", "file_type": "code", "source_file": "a.py"},
+                     {"id": "n2", "label": "B", "file_type": "code", "source_file": "b.py"}],
+           "edges": [{"source": "n1", "target": "n2", "type": "references",
+                      "confidence_score": 0.9, "source_file": "a.py"}],
+           "input_tokens": 0, "output_tokens": 0}
+    G = build_from_json(ext)
+    data = edge_data(G, "n1", "n2")
+    assert data["relation"] == "references"
+    assert data["confidence"] == "INFERRED"
+    assert data["confidence_score"] == 0.9
+    assert "type" not in data
+
+
+def test_node_alias_canonical_field_wins():
+    """#2194: when both the canonical field and its alias are present, the
+    canonical value wins and the alias key is left untouched."""
+    ext = {"nodes": [{"id": "n1", "label": "Real", "name": "Alias",
+                      "file_type": "code", "source_file": "a.py"}],
+           "edges": [], "input_tokens": 0, "output_tokens": 0}
+    G = build_from_json(ext)
+    assert G.nodes["n1"]["label"] == "Real"
+    assert G.nodes["n1"]["name"] == "Alias"  # preserved, not consumed
+
+
+def test_alias_node_ghost_merges_into_ast_twin():
+    """#2194: an alias-only semantic node (name/path) must participate in the
+    AST/LLM ghost merge once folded — same label and file as an AST node with a
+    different id collapses into the AST node instead of surviving as a ghost."""
+    ext = {"nodes": [
+        {"id": "src_foo_helper", "label": "helper", "file_type": "code",
+         "source_file": "src/foo.py", "_origin": "ast", "source_location": "L10"},
+        {"id": "helper_ghost", "name": "helper", "path": "src/foo.py",
+         "file_type": "code"},
+    ], "edges": [], "input_tokens": 0, "output_tokens": 0}
+    G = build_from_json(ext)
+    assert "src_foo_helper" in G.nodes
+    assert "helper_ghost" not in G.nodes
+    assert G.number_of_nodes() == 1
+
+
+def test_alias_node_gets_nonempty_norm_label(tmp_path):
+    """#2194: a recovered alias node must serialize with a non-empty norm_label
+    so query/explain can find it."""
+    from graphify.export import to_json
+    ext = {"nodes": [{"id": "n1", "name": "Foo", "path": "a/b.md", "file_type": "concept"}],
+           "edges": [], "input_tokens": 0, "output_tokens": 0}
+    G = build_from_json(ext)
+    out = tmp_path / "graph.json"
+    assert to_json(G, {}, str(out))
+    data = json.loads(out.read_text())
+    node = next(n for n in data["nodes"] if n["id"] == "n1")
+    assert node["norm_label"] == "foo"
+
+
+def test_extraction_warning_breakdown_by_cause(capsys):
+    """#2194: a mixed batch of schema errors must report per-cause counts, not
+    just the first error."""
+    ext = {"nodes": [
+        {"id": "n1", "label": "A", "file_type": "code", "source_file": "a.py"},
+        {"id": "n2", "label": "B", "file_type": "code", "source_file": "b.py"},
+        # two nodes missing label (and carrying no name alias)
+        {"id": "x1", "file_type": "code", "source_file": "x.py"},
+        {"id": "x2", "file_type": "code", "source_file": "x.py"},
+    ], "edges": [
+        # three edges missing relation (and carrying no type alias)
+        {"source": "n1", "target": "n2", "confidence": "EXTRACTED", "source_file": "a.py"},
+        {"source": "n2", "target": "n1", "confidence": "EXTRACTED", "source_file": "a.py"},
+        {"source": "n1", "target": "x1", "confidence": "EXTRACTED", "source_file": "a.py"},
+    ], "input_tokens": 0, "output_tokens": 0}
+    build_from_json(ext)
+    err = capsys.readouterr().err
+    assert "2x missing required field 'label'" in err
+    assert "3x missing required field 'relation'" in err
+
+
+def test_absolute_derived_semantic_ids_rekeyed(tmp_path):
+    """#2197: a semantic fragment whose ids were derived from an ABSOLUTE
+    source_file (Windows detect() emits them) must re-key to the canonical
+    repo-relative stem instead of ghosting against the existing graph."""
+    from graphify.ids import make_id
+    (tmp_path / "docs").mkdir()
+    abs_sf = str(tmp_path / "docs" / "DATAFLOW.md")
+    abs_stem = make_id(str(tmp_path / "docs" / "DATAFLOW"))
+    ext = {"nodes": [
+        {"id": abs_stem, "label": "DATAFLOW.md", "file_type": "document",
+         "source_file": abs_sf},
+        {"id": f"{abs_stem}_pipeline", "label": "Pipeline", "file_type": "concept",
+         "source_file": abs_sf},
+    ], "edges": [
+        {"source": abs_stem, "target": f"{abs_stem}_pipeline", "relation": "describes",
+         "confidence": "INFERRED", "source_file": abs_sf, "weight": 1.0},
+    ], "input_tokens": 0, "output_tokens": 0}
+    G = build_from_json(ext, root=tmp_path)
+    assert "docs_dataflow" in G.nodes
+    assert "docs_dataflow_pipeline" in G.nodes
+    assert abs_stem not in G.nodes
+    assert G.nodes["docs_dataflow"]["source_file"] == "docs/DATAFLOW.md"
+    assert G.has_edge("docs_dataflow", "docs_dataflow_pipeline")
+
+
+def test_absolute_derived_semantic_ids_rekeyed_backslash(tmp_path):
+    """#2197 (separator variant): the same absolute-derived-id fragment with
+    backslash separators in source_file re-keys identically."""
+    from graphify.ids import make_id
+    (tmp_path / "docs").mkdir()
+    abs_sf = str(tmp_path / "docs" / "DATAFLOW.md").replace("/", "\\")
+    abs_stem = make_id(str(tmp_path / "docs" / "DATAFLOW"))
+    ext = {"nodes": [
+        {"id": f"{abs_stem}_pipeline", "label": "Pipeline", "file_type": "concept",
+         "source_file": abs_sf},
+    ], "edges": [], "input_tokens": 0, "output_tokens": 0}
+    G = build_from_json(ext, root=tmp_path)
+    assert "docs_dataflow_pipeline" in G.nodes
+    assert G.nodes["docs_dataflow_pipeline"]["source_file"] == "docs/DATAFLOW.md"
+
+
 def test_source_file_backslash_normalized():
     """Windows backslash paths and POSIX paths for the same file must produce one node."""
     extraction = {
@@ -424,6 +563,97 @@ def test_build_merge_preserves_call_edge_direction(tmp_path):
         f"calls edge target flipped after build_merge round-trip: "
         f"expected {truth_tgt} (b), got {reloaded_calls[0]['target']}"
     )
+
+
+def test_build_merge_directed_edge_direction_survives_round_trip(tmp_path):
+    """Regression for #2342: once build_merge correctly inherits the on-disk
+    `directed` flag, the resulting graph must actually be a DiGraph whose
+    edges are readable in the right direction (a -> b, not b -> a)."""
+    from graphify.extract import extract_js
+    from graphify.export import to_json
+
+    src = "function b() {}\nfunction a() { b(); }\n"
+    src_file = tmp_path / "x.js"
+    src_file.write_text(src)
+
+    extraction = extract_js(src_file)
+    call_edges = [e for e in extraction["edges"] if e["relation"] == "calls"]
+    assert len(call_edges) == 1
+    truth_src = call_edges[0]["source"]
+    truth_tgt = call_edges[0]["target"]
+
+    G1 = build([extraction], directed=True, dedup=False)
+    graph_path = tmp_path / "graph.json"
+    assert to_json(G1, {}, str(graph_path), force=True)
+
+    G2 = build_merge([], graph_path, dedup=False)
+    assert G2.is_directed() is True
+    assert G2.has_edge(truth_src, truth_tgt)
+    assert not G2.has_edge(truth_tgt, truth_src)
+
+
+def test_build_merge_inherits_directed_flag_from_disk(tmp_path):
+    """Regression for #2342.
+
+    build_merge with no explicit `directed=` must honor the on-disk graph's
+    own `directed` flag instead of silently defaulting to False, or an
+    incremental --update on a directed graph downgrades it to undirected.
+    """
+    ext = {
+        "nodes": [{"id": "a", "label": "a", "file_type": "concept",
+                   "source_file": "x.md", "source_location": "L1"}],
+        "edges": [],
+    }
+    from graphify.export import to_json
+
+    graph_path = tmp_path / "graph.json"
+
+    # Directed graph on disk -> no directed= kwarg -> stays directed.
+    G1 = build([ext], directed=True, dedup=False)
+    assert to_json(G1, {}, str(graph_path), force=True)
+    G2 = build_merge([], graph_path, dedup=False)
+    assert G2.is_directed() is True
+    saved = json.loads(graph_path.read_text())
+    assert saved.get("directed") is True
+
+    # Undirected graph on disk -> no directed= kwarg -> stays undirected (no regression).
+    G3 = build([ext], directed=False, dedup=False)
+    assert to_json(G3, {}, str(graph_path), force=True)
+    G4 = build_merge([], graph_path, dedup=False)
+    assert G4.is_directed() is False
+
+
+def test_build_merge_fresh_graph_defaults_undirected(tmp_path):
+    """No existing graph.json + no directed= kwarg -> falls back to the
+    current default (False), same as before #2342."""
+    graph_path = tmp_path / "does_not_exist.json"
+    G = build_merge([], graph_path, dedup=False)
+    assert G.is_directed() is False
+
+
+def test_build_merge_explicit_directed_overrides_disk_flag(tmp_path):
+    """An explicit directed=True/False from the caller must still win over
+    whatever is stored on disk (#2342)."""
+    ext = {
+        "nodes": [{"id": "a", "label": "a", "file_type": "concept",
+                   "source_file": "x.md", "source_location": "L1"}],
+        "edges": [],
+    }
+    from graphify.export import to_json
+
+    graph_path = tmp_path / "graph.json"
+
+    # Directed on disk, explicit directed=False -> caller wins.
+    G1 = build([ext], directed=True, dedup=False)
+    assert to_json(G1, {}, str(graph_path), force=True)
+    G2 = build_merge([], graph_path, directed=False, dedup=False)
+    assert G2.is_directed() is False
+
+    # Undirected on disk, explicit directed=True -> caller wins.
+    G3 = build([ext], directed=False, dedup=False)
+    assert to_json(G3, {}, str(graph_path), force=True)
+    G4 = build_merge([], graph_path, directed=True, dedup=False)
+    assert G4.is_directed() is True
 
 
 def test_build_from_json_preserves_first_direction_on_bidirectional_pair(tmp_path):
@@ -814,6 +1044,142 @@ def test_build_merge_replaces_changed_file_stale_edges(tmp_path):
     # An unchanged file is untouched.
     assert "K" in labels, "unchanged file's node must survive"
     assert ("K", "A") in edges, "unchanged file's edge must survive"
+
+
+def _write_two_tier_graph(graph_path):
+    """A graph where docs/readme.md carries BOTH tiers (#2333 COEXIST): an
+    AST layer (document/heading nodes + a contains edge, _origin=ast) and a
+    semantic layer (an unstamped concept node, source_location=None)."""
+    data = {
+        "directed": False,
+        "nodes": [
+            {"id": "docs_readme", "label": "Readme", "file_type": "document",
+             "source_file": "docs/readme.md", "source_location": "L1",
+             "_origin": "ast"},
+            {"id": "docs_readme_intro", "label": "Intro", "file_type": "document",
+             "source_file": "docs/readme.md", "source_location": "L3",
+             "_origin": "ast"},
+            {"id": "auth_flow", "label": "Auth Flow", "file_type": "concept",
+             "source_file": "docs/readme.md", "source_location": None},
+        ],
+        "links": [
+            {"source": "docs_readme", "target": "docs_readme_intro",
+             "relation": "contains", "confidence": "EXTRACTED",
+             "source_file": "docs/readme.md", "source_location": "L3",
+             "weight": 1.0, "_origin": "ast"},
+        ],
+        "hyperedges": [
+            {"id": "auth_group", "label": "Auth Group",
+             "nodes": ["docs_readme", "auth_flow"], "relation": "form",
+             "confidence": "INFERRED", "source_file": "docs/readme.md"},
+        ],
+    }
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_build_merge_semantic_reextract_preserves_ast_layer(tmp_path):
+    """#2333/#2336 (COEXIST): a semantic-only re-extract of a file replaces
+    only that file's SEMANTIC tier — its AST document/heading nodes and AST
+    edges must survive. Before the fix, replace-by-source was tier-blind and
+    the semantic chunk deleted the doc's AST layer."""
+    graph_path = tmp_path / "graph.json"
+    _write_two_tier_graph(graph_path)
+
+    # Semantic-only chunk for the same file: no _origin, null source_location
+    # (the extraction-spec shape — the semantic path never stamps _origin).
+    chunk = {"nodes": [
+        {"id": "session_model", "label": "Session Model", "file_type": "concept",
+         "source_file": "docs/readme.md", "source_location": None},
+    ], "edges": []}
+    G = build_merge([chunk], graph_path, dedup=False)
+
+    assert "docs_readme" in G and "docs_readme_intro" in G, (
+        "AST layer deleted by a semantic-only re-extract of the same file"
+    )
+    assert G.has_edge("docs_readme", "docs_readme_intro"), (
+        "AST contains edge deleted by a semantic-only re-extract"
+    )
+    assert "auth_flow" not in G, "old semantic node must be replaced"
+    assert "session_model" in G, "new semantic node must be present"
+
+
+def test_build_merge_ast_reextract_preserves_semantic_layer(tmp_path):
+    """#2333/#2336 inverse: an AST-only re-extract of a file replaces only
+    that file's AST tier — its semantic concept nodes (and semantic-tier
+    hyperedges, which an AST pass cannot regenerate) must survive."""
+    graph_path = tmp_path / "graph.json"
+    _write_two_tier_graph(graph_path)
+
+    # AST-only re-extract: the doc changed — Intro heading replaced by
+    # Quickstart. extract() always stamps _origin=ast.
+    chunk = {"nodes": [
+        {"id": "docs_readme", "label": "Readme", "file_type": "document",
+         "source_file": "docs/readme.md", "source_location": "L1",
+         "_origin": "ast"},
+        {"id": "docs_readme_quickstart", "label": "Quickstart",
+         "file_type": "document", "source_file": "docs/readme.md",
+         "source_location": "L5", "_origin": "ast"},
+    ], "edges": [
+        {"source": "docs_readme", "target": "docs_readme_quickstart",
+         "relation": "contains", "confidence": "EXTRACTED",
+         "source_file": "docs/readme.md", "source_location": "L5",
+         "weight": 1.0, "_origin": "ast"},
+    ]}
+    G = build_merge([chunk], graph_path, dedup=False)
+
+    assert "auth_flow" in G, (
+        "semantic layer deleted by an AST-only re-extract of the same file"
+    )
+    assert "docs_readme_intro" not in G, "stale AST node must be replaced"
+    assert "docs_readme_quickstart" in G, "fresh AST node must be present"
+    assert G.has_edge("docs_readme", "docs_readme_quickstart")
+    carried_he_ids = {he.get("id") for he in G.graph.get("hyperedges", [])}
+    assert "auth_group" in carried_he_ids, (
+        "semantic-tier hyperedge dropped by an AST-only re-extract (#2336)"
+    )
+
+
+def test_merge_raw_extraction_tier_scoped(tmp_path):
+    """#2333 raw-path mirror: merge_raw_extraction (extract --no-cluster
+    incremental) applies the same tier-scoped replace as build_merge — a
+    semantic-only re-extract keeps the file's AST nodes/edges."""
+    from graphify.build import merge_raw_extraction
+
+    graph_path = tmp_path / "graph.json"
+    _write_two_tier_graph(graph_path)
+
+    new = {"nodes": [
+        {"id": "session_model", "label": "Session Model", "file_type": "concept",
+         "source_file": "docs/readme.md", "source_location": None},
+    ], "edges": [], "input_tokens": 0, "output_tokens": 0}
+    out = merge_raw_extraction(new, graph_path)
+
+    node_ids = {n["id"] for n in out["nodes"]}
+    assert {"docs_readme", "docs_readme_intro", "session_model"} <= node_ids, (
+        "AST layer dropped by a semantic-only raw re-extract"
+    )
+    assert "auth_flow" not in node_ids, "old semantic node must be replaced"
+    edge_keys = {(e.get("source"), e.get("target")) for e in out["edges"]}
+    assert ("docs_readme", "docs_readme_intro") in edge_keys, (
+        "AST edge dropped by a semantic-only raw re-extract"
+    )
+    he_ids = {he.get("id") for he in out.get("hyperedges", [])}
+    assert "auth_group" not in he_ids, (
+        "semantic-tier hyperedge must be replaced by a semantic re-extract"
+    )
+
+
+def test_is_ast_tier_legacy_fallback():
+    """#2334: _origin wins when present; unstamped legacy items fall back to
+    the source_location shape (AST emits 'L<line>', semantic emits null)."""
+    from graphify.build import _is_ast_tier
+
+    assert _is_ast_tier({"_origin": "ast"}) is True
+    assert _is_ast_tier({"_origin": "ast", "source_location": None}) is True
+    assert _is_ast_tier({"source_location": "L10"}) is True
+    assert _is_ast_tier({"source_location": None}) is False
+    assert _is_ast_tier({}) is False
+    assert _is_ast_tier({"_origin": "semantic", "source_location": "L10"}) is False
 
 
 def test_build_merge_root_collapses_convention_drift(tmp_path):

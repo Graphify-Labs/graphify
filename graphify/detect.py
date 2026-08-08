@@ -9,13 +9,14 @@ from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
 from functools import lru_cache
 from pathlib import Path
+from typing import Callable
 
 from graphify.google_workspace import (
     GOOGLE_WORKSPACE_EXTENSIONS,
     convert_google_workspace_file,
     google_workspace_enabled,
 )
-from graphify.paths import GRAPHIFY_OUT, GRAPHIFY_OUT_NAME, out_path
+from graphify.paths import GRAPHIFY_OUT, out_path
 
 
 class FileType(str, Enum):
@@ -128,6 +129,19 @@ _SENSITIVE_PATTERNS = [
     # `service.account` substring (regex `.` wildcard) matched real source like
     # google/oauth2/service_account.py and prose like aws_credentials_rotation.md.
 ]
+
+# Committed dotenv / envrc templates — placeholders only, not live secrets.
+# Stage 2's `.env.` regex otherwise treats these like `.env.local` (#2184).
+_ENV_TEMPLATE_SUFFIXES = (".example", ".sample", ".template", ".dist")
+
+
+def _is_env_template(name: str) -> bool:
+    """True for `.env.example` / `.envrc.sample` style committed templates (#2184)."""
+    lower = name.lower()
+    if not lower.endswith(_ENV_TEMPLATE_SUFFIXES):
+        return False
+    # Basename must still be an .env* / .envrc* file (not e.g. secrets.example).
+    return bool(re.match(r"\.(env|envrc)\.", lower))
 
 # Generic keyword patterns - these only count when the keyword is LOAD-BEARING
 # in the filename (see _generic_keyword_hit), because a keyword buried mid-phrase
@@ -258,9 +272,11 @@ def _is_sensitive(path: Path) -> bool:
         return True
     if any(part.lower() in _AMBIGUOUS_SENSITIVE_DIRS for part in parents) and not _is_graphable_source(path):
         return True
-    # Stage 2: filename pattern match
+    # Stage 2: filename pattern match. Template suffixes (.example/.sample/…)
+    # on .env / .envrc are the usual "safe to commit" convention — keep them
+    # in the graph without opening a broad Stage 2 allowlist (#2184 / #1921).
     name = path.name
-    if any(p.search(name) for p in _SENSITIVE_PATTERNS):
+    if any(p.search(name) for p in _SENSITIVE_PATTERNS) and not _is_env_template(name):
         return True
     # Stage 3: generic keywords, only when load-bearing in the name. Do NOT let a
     # bare name keyword silently drop a genuine programming-language source file:
@@ -778,9 +794,11 @@ _SKIP_DIRS = {
     "site-packages", "lib64",
     ".pytest_cache", ".mypy_cache", ".ruff_cache",
     ".tox", ".nox", ".eggs", "*.egg-info",  # nox is tox's successor, same .nox/ venv shape (#1804)
-    "graphify-out", GRAPHIFY_OUT_NAME,  # never treat own output as source input (#524); honour GRAPHIFY_OUT (#1423)
+    "graphify-out",  # never treat the default output as source input (#524)
     # Coverage/test-artefact dirs — generated, never architecturally meaningful
-    "coverage", "lcov-report",              # Vitest/Istanbul/nyc HTML reports (#870)
+    "lcov-report",                          # Vitest/Istanbul/nyc HTML reports (#870);
+                                            # bare "coverage" is gated on report
+                                            # artefacts below (#2339)
     "visual-tests", "visual-test",          # Playwright/visual-regression bundles (#869)
     "__snapshots__",                        # Jest/Vitest snapshot dir (unambiguous)
     "storybook-static",                     # Storybook production build output
@@ -808,6 +826,39 @@ _SKIP_FILES = {
 # silently dropped legitimate source from the graph (#1666). "__snapshots__" stays
 # unconditionally pruned above; only the ambiguous bare name is gated here.
 _JS_SNAPSHOT_TEST_ROOTS = frozenset({"__tests__", "__test__"})
+
+# Files a coverage tool writes into its own output dir. Any one of them is proof
+# the directory is generated: lcov (lcov.info), nyc/Istanbul (coverage-final.json,
+# clover.xml, the lcov-report/ subtree), coverage.py (coverage.xml, .coverage),
+# JaCoCo/Cobertura (jacoco.xml, cobertura-coverage.xml).
+_COVERAGE_ARTIFACT_FILES = frozenset({
+    "lcov.info", "coverage-final.json", "coverage-summary.json",
+    "clover.xml", "coverage.xml", "cobertura-coverage.xml", "jacoco.xml",
+    ".coverage", "index.html",
+})
+_COVERAGE_ARTIFACT_DIRS = frozenset({"lcov-report", "html-report"})
+
+
+def _has_coverage_artifacts(d: "Path") -> bool:
+    """True only when *d* holds files a coverage tool actually generated.
+
+    ``coverage`` is a legitimate package name (a Python package, a Go/Rust module,
+    a domain namespace), so pruning it by name alone silently drops real source —
+    an entire 5-module package in #2339, with its dependents left in the graph so
+    queries still returned plausible neighbours. Prune it only on real evidence,
+    mirroring the ``snapshots``/``env`` gating (#1666/#2058): a coverage report
+    file, or an Istanbul/lcov HTML report subtree.
+    """
+    try:
+        for name in _COVERAGE_ARTIFACT_FILES:
+            if (d / name).is_file():
+                return True
+        for name in _COVERAGE_ARTIFACT_DIRS:
+            if (d / name).is_dir():
+                return True
+    except OSError:
+        pass
+    return False
 
 
 def _has_venv_markers(d: "Path") -> bool:
@@ -843,6 +894,12 @@ def _is_noise_dir(part: str, parent: "Path | None" = None) -> bool:
         if parent is None:
             return False  # cannot verify; keep a possibly-real code dir
         return _has_venv_markers(parent / part)
+    if part == "coverage":
+        # Ambiguous: a generated report dir OR a real package named coverage.
+        # Prune only on actual coverage-artefact evidence (#2339).
+        if parent is None:
+            return False  # cannot verify; keep a possibly-real code dir
+        return _has_coverage_artifacts(parent / part)
     if part == "snapshots":
         # Prune only when it looks like an actual JS/Vitest snapshot dir.
         if parent is None:
@@ -970,7 +1027,7 @@ def _load_dir_own_ignore(d: Path, *, gitignore: bool = True) -> list[tuple[Path,
     for fname in ((".gitignore", ".graphifyignore") if gitignore else (".graphifyignore",)):
         ignore_file = d / fname
         if ignore_file.exists():
-            for raw in ignore_file.read_text(encoding="utf-8", errors="ignore").splitlines():
+            for raw in ignore_file.read_text(encoding="utf-8-sig", errors="ignore").splitlines():
                 line = _parse_gitignore_line(raw)
                 if line:
                     patterns.append((d, line))
@@ -1012,7 +1069,7 @@ def _load_graphifyignore(root: Path, *, gitignore: bool = True) -> list[tuple[Pa
     # re-include still override it (#1810).
     info_exclude = _git_info_exclude(ceiling) if gitignore else None
     if info_exclude is not None:
-        for raw in info_exclude.read_text(encoding="utf-8", errors="ignore").splitlines():
+        for raw in info_exclude.read_text(encoding="utf-8-sig", errors="ignore").splitlines():
             line = _parse_gitignore_line(raw)
             if line:
                 patterns.append((ceiling, line))
@@ -1140,6 +1197,69 @@ def _is_ignored(
     return _eval(path)
 
 
+def ignored_predicate(
+    root: Path,
+    *,
+    extra_excludes: list[str] | None = None,
+    gitignore: bool = True,
+) -> Callable[[Path], bool]:
+    """Build a per-path predicate answering "would detect() exclude this path?".
+
+    Mirrors detect()'s ignore decisions for a single existing path WITHOUT
+    re-walking the corpus, from the same machinery detect() uses: the ancestor
+    .graphifyignore/.gitignore chain (_load_graphifyignore), CLI/persisted
+    ``--exclude`` patterns appended last at the root anchor (#947), nested
+    per-directory ignore files along the path's own lineage (#1206), the
+    _is_noise_dir directory pruning, and _SKIP_FILES. The sensitive-file
+    heuristic (_is_sensitive) is deliberately NOT included: callers use this
+    predicate as positive evidence of a live ignore RULE (#2495), and a
+    heuristic match is not user intent.
+
+    Nested patterns are loaded lazily, once per directory, into one shared
+    pattern list. That accumulation cannot cross-contaminate results — a
+    pattern only ever matches paths under its anchor directory, so patterns
+    from a sibling subtree are inert — which is the same invariant detect()'s
+    live os.walk relies on, and it keeps the shared _is_ignored cache valid.
+    """
+    root = root.resolve()
+    patterns = _load_graphifyignore(root, gitignore=gitignore)
+    if extra_excludes:
+        for pat in extra_excludes:
+            line = _parse_gitignore_line(pat)
+            if line:
+                patterns.append((root, line))
+    cache: dict[Path, bool] = {}
+    # root's own ignore file is the last entry of _load_graphifyignore's chain.
+    loaded_dirs: set[Path] = {root}
+
+    def _ignored(path: Path) -> bool:
+        path = Path(os.path.abspath(path))
+        try:
+            rel_parts = path.relative_to(root).parts
+        except ValueError:
+            return False  # outside the scan root: detect() never considered it
+        if path.name in _SKIP_FILES:
+            return True
+        # Noise-dir pruning: os.walk never descends these, so anything beneath
+        # one is excluded from the corpus regardless of ignore patterns.
+        parent = root
+        for part in rel_parts[:-1]:
+            if _is_noise_dir(part, parent):
+                return True
+            parent = parent / part
+        # Load ignore files along this path's own lineage — detect()'s walk
+        # would have loaded exactly these before reaching the file (#1206).
+        ancestor = root
+        for part in rel_parts[:-1]:
+            ancestor = ancestor / part
+            if ancestor not in loaded_dirs:
+                loaded_dirs.add(ancestor)
+                patterns.extend(_load_dir_own_ignore(ancestor, gitignore=gitignore))
+        return _is_ignored(path, root, patterns, _cache=cache)
+
+    return _ignored
+
+
 def _auto_follow_symlinks(root: Path) -> bool:
     """Return whether ``root`` has any direct symlinked child.
 
@@ -1167,6 +1287,13 @@ def _resolves_under_root(path: Path, root: Path) -> bool:
 
 def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace: bool | None = None, extra_excludes: list[str] | None = None, cache_root: Path | None = None, gitignore: bool = True) -> dict:
     root = root.resolve()
+    configured_out_dir = root / GRAPHIFY_OUT
+    configured_out_names = {configured_out_dir.name}
+    try:
+        configured_out_dir = configured_out_dir.resolve()
+    except (OSError, RuntimeError):
+        configured_out_dir = configured_out_dir.absolute()
+    configured_out_names.add(configured_out_dir.name)
     # .graphifyinclude support was removed (#2112): its loader and matchers had
     # no consumers, so the file has been a silent no-op since dot directories
     # became indexed by default (#873). Surface that once per scan so a
@@ -1280,6 +1407,16 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                 # repos for no correctness gain.
                 kept_dirs: list[str] = []
                 for d in dirnames:
+                    child = dp / d
+                    is_configured_out = False
+                    if d in configured_out_names:
+                        try:
+                            is_configured_out = child.resolve() == configured_out_dir
+                        except (OSError, RuntimeError):
+                            pass
+                    if is_configured_out:
+                        pruned_noise.append(str(child) + os.sep)
+                        continue
                     if _is_noise_dir(d, dp):
                         # Record pruned-as-noise dirs so a wrongly-pruned real
                         # source dir is at least traceable in the output rather
@@ -1460,6 +1597,18 @@ def _stat_and_hash(path_str: str) -> tuple[str, float, str] | None:
         return None
 
 
+def _nfc(s: str) -> str:
+    """NFC-normalize a path string used as a manifest key.
+
+    On macOS, ``os.walk`` / ``getcwd`` yield NFD paths while path literals
+    and many skill-substituted roots are NFC. Raw string compare then treats
+    every file as both deleted and new, forcing a full re-extract (#2221).
+    Same boundary as the Office sidecar hash fix (#1226).
+    """
+    import unicodedata
+    return unicodedata.normalize("NFC", s)
+
+
 def _to_relative_for_storage(key: str, root: Path) -> str:
     """Return ``key`` as a forward-slash relative path from ``root``.
 
@@ -1474,12 +1623,18 @@ def _to_relative_for_storage(key: str, root: Path) -> str:
     under its own name. Resolving the key would point the stored entry at
     the symlink target, and the original key would then miss on reload and
     re-extract on every incremental run.
+
+    Both sides of ``relpath`` are NFC'd first: stamped keys may already be
+    NFC while ``Path(root).resolve()`` is NFD on macOS, and a mixed-form
+    compare would mark an in-root file as ``../…`` and keep it absolute
+    (#2221 / #777).
     """
     p = Path(key)
     if not p.is_absolute():
         return key
     try:
-        rel = os.path.relpath(p, Path(root).resolve())
+        base = _nfc(str(Path(root).resolve()))
+        rel = os.path.relpath(_nfc(str(p)), base)
     except (ValueError, OSError):
         return key  # outside root (e.g. Windows cross-drive)
     # ``os.path.relpath`` happily produces ``../foo`` for paths outside
@@ -1498,11 +1653,15 @@ def _to_absolute_from_storage(key: str, root: Path) -> str:
     that newly-loaded manifests from before this change remain readable.
     Uses ``Path(root).resolve()`` so the produced absolute path matches
     what :func:`detect` returns (which also resolves the scan root).
+    NFC both sides so a relative key and an NFD-resolved root still join
+    to the same string form the rest of the manifest path uses (#2221).
     """
     p = Path(key)
     if p.is_absolute():
         return str(p)
-    return str(Path(root).resolve() / p)
+    # NFC the joined result so an NFD-resolved root + relative key lands on
+    # the same form load_manifest / detect_incremental compare against.
+    return _nfc(str(Path(root).resolve() / p))
 
 
 def load_manifest(
@@ -1517,14 +1676,19 @@ def load_manifest(
     manifests with absolute keys pass through unchanged, so a graphify-out/
     written by an older version (or by a caller that didn't supply ``root``
     to :func:`save_manifest`) remains readable.
+
+    Keys are NFC-normalized on load so a manifest written under one Unicode
+    form still matches a scan that yields the other (#2221).
     """
     try:
         raw = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
     except Exception:
         return {}
-    if root is None or not isinstance(raw, dict):
+    if not isinstance(raw, dict):
         return raw
-    return {_to_absolute_from_storage(k, root): v for k, v in raw.items()}
+    if root is None:
+        return {_nfc(k): v for k, v in raw.items()}
+    return {_nfc(_to_absolute_from_storage(k, root)): v for k, v in raw.items()}
 
 
 def save_manifest(
@@ -1572,26 +1736,39 @@ def save_manifest(
     """
     existing = load_manifest(manifest_path, root=root)
 
-    scan_set: set[str] | None = set(scan_corpus) if scan_corpus is not None else None
-    clear_set: set[str] | None = set(clear_semantic) if clear_semantic is not None else None
+    # Index both raw and NFC forms so scan/clear membership survives the
+    # same NFC/NFD mismatch that breaks manifest lookups (#2221).
+    def _path_index(paths: set[str] | list[str] | None) -> set[str] | None:
+        if paths is None:
+            return None
+        indexed: set[str] = set()
+        for p in paths:
+            indexed.add(p)
+            indexed.add(_nfc(p))
+        return indexed
+
+    scan_set = _path_index(scan_corpus)
+    clear_set = _path_index(clear_semantic)
     try:
         root_res: Path | None = Path(root).resolve() if root is not None else None
     except (OSError, RuntimeError):
         root_res = Path(root) if root is not None else None
 
     def _in_scan(path_str: str) -> bool:
-        if path_str in scan_set:
+        if path_str in scan_set or _nfc(path_str) in scan_set:
             return True
         try:
-            return str(Path(path_str).resolve()) in scan_set
+            resolved = str(Path(path_str).resolve())
+            return resolved in scan_set or _nfc(resolved) in scan_set
         except (OSError, RuntimeError):
             return False
 
     def _in_clear(path_str: str) -> bool:
-        if path_str in clear_set:
+        if path_str in clear_set or _nfc(path_str) in clear_set:
             return True
         try:
-            return str(Path(path_str).resolve()) in clear_set
+            resolved = str(Path(path_str).resolve())
+            return resolved in clear_set or _nfc(resolved) in clear_set
         except (OSError, RuntimeError):
             return False
 
@@ -1657,7 +1834,8 @@ def save_manifest(
         if f not in hashed:
             continue  # file deleted between detect() and manifest write
         mtime, h = hashed[f]
-        prev = _normalise_entry(existing.get(f, {})) or {}
+        key = _nfc(f)
+        prev = _normalise_entry(existing.get(key, {})) or {}
         entry: dict = {"mtime": mtime}
         if kind in ("ast", "both"):
             entry["ast_hash"] = h
@@ -1668,13 +1846,17 @@ def save_manifest(
         else:
             # Preserve semantic_hash only when content is unchanged
             entry["semantic_hash"] = prev.get("semantic_hash", "") if h == prev.get("ast_hash", "") else ""
-        manifest[f] = entry
+        manifest[key] = entry
     if root is not None:
         # Persist in portable form: forward-slash relative paths. Keys outside
         # ``root`` (out-of-tree symlinked corpora, --include sources) keep
         # their absolute form so the manifest round-trips on the saving
         # machine even when not every entry can be portably encoded.
-        manifest = {_to_relative_for_storage(k, root): v for k, v in manifest.items()}
+        # NFC after relativize so on-disk keys match what load_manifest
+        # re-anchors and compares against (#2221).
+        manifest = {_nfc(_to_relative_for_storage(k, root)): v for k, v in manifest.items()}
+    else:
+        manifest = {_nfc(k): v for k, v in manifest.items()}
     from graphify.paths import write_json_atomic
     # Atomic write: a crash mid-write must not leave a truncated manifest that
     # detect_incremental then fails to parse.
@@ -1740,7 +1922,8 @@ def detect_incremental(
 
     for ftype, file_list in full["files"].items():
         for f in file_list:
-            stored = manifest.get(f)
+            # Manifest keys are NFC; scan paths may arrive NFD (#2221).
+            stored = manifest.get(_nfc(f))
             try:
                 current_mtime = os.stat(_os_path(Path(f))).st_mtime
             except Exception:
@@ -1791,11 +1974,11 @@ def detect_incremental(
     # current scan was EXCLUDED (ignore rules / --exclude changed) and must
     # not be reported as deleted. Mirrors the watch-side excluded-vs-deleted
     # distinction (#1795).
-    current_files = {f for flist in full["files"].values() for f in flist}
+    current_files = {_nfc(f) for flist in full["files"].values() for f in flist}
     deleted_files: list[str] = []
     excluded_files: list[str] = []
     for f in manifest:
-        if f in current_files:
+        if _nfc(f) in current_files:
             continue
         try:
             alive = Path(f).exists()

@@ -187,7 +187,46 @@ def _body_content(content: bytes) -> bytes:
 # skip the cache reads and re-dispatch everything when needed (#1894).
 _stat_index: dict[str, dict] = {}
 _stat_index_root: Path | None = None
+# Key anchor for the ON-DISK index (#2199): the first caller's key-root, i.e.
+# the corpus. Distinct from _stat_index_root, which is the cache-FILE location
+# (cache_root, #1774) — the two differ under --out and must not be conflated.
+_stat_index_anchor: Path | None = None
 _stat_index_dirty: bool = False
+
+
+def _stat_key_to_relative(key: str, anchor: Path) -> str:
+    """Return ``key`` as a forward-slash relative path from ``anchor``.
+
+    Local duplicate of :func:`graphify.detect._to_relative_for_storage` —
+    detect imports cache, so cache cannot import detect without a cycle
+    (and pulling detect in during the atexit flush would be fragile).
+    Out-of-anchor and already-relative keys pass through unchanged, and
+    ``..``-escaping relpaths are rejected (kept absolute), mirroring the
+    manifest's portability rules.
+    """
+    p = Path(key)
+    if not p.is_absolute():
+        return key
+    try:
+        rel = os.path.relpath(p, anchor)
+    except (ValueError, OSError):
+        return key  # outside anchor (e.g. Windows cross-drive)
+    if rel == ".." or rel.startswith(".." + os.sep) or rel.startswith("../"):
+        return key  # escaped anchor — keep absolute
+    return rel.replace(os.sep, "/")
+
+
+def _stat_key_to_absolute(key: str, anchor: Path) -> str:
+    """Inverse of :func:`_stat_key_to_relative`.
+
+    Re-anchor a stored relative key against ``anchor``. Already-absolute keys
+    (legacy indexes, out-of-anchor entries) pass through unchanged so an index
+    written by an older graphify remains readable.
+    """
+    p = Path(key)
+    if p.is_absolute():
+        return str(p)
+    return str(anchor / p)
 
 
 def _stat_index_file(root: Path) -> Path:
@@ -197,22 +236,36 @@ def _stat_index_file(root: Path) -> Path:
 
 
 def _ensure_stat_index(root: Path, cache_root: "Path | None" = None) -> None:
-    global _stat_index, _stat_index_root, _stat_index_dirty
+    global _stat_index, _stat_index_root, _stat_index_anchor, _stat_index_dirty
     if _stat_index_root is not None:
         return
-    # The stat index only determines the cache FILE location (entry keys are
-    # absolute paths), so honoring an explicit cache_root keeps detect()'s
-    # word-count cache under the requested --out dir instead of polluting the
-    # scanned corpus with a stray graphify-out/ (#1747).
+    # _stat_index_root determines the cache FILE location, so honoring an
+    # explicit cache_root keeps detect()'s word-count cache under the requested
+    # --out dir instead of polluting the scanned corpus with a stray
+    # graphify-out/ (#1747). _stat_index_anchor is the separate KEY anchor:
+    # in-memory keys stay absolute, but the on-disk index stores in-anchor keys
+    # relative so a moved/cloned corpus still hits (#2199) — same load/save
+    # re-anchoring the detect manifest uses.
     _stat_index_root = Path(cache_root if cache_root is not None else root).resolve()
+    _stat_index_anchor = Path(root).resolve()
     p = _stat_index_file(_stat_index_root)
+    _stat_index = {}
     if p.exists():
         try:
-            _stat_index = json.loads(p.read_text(encoding="utf-8"))
+            raw = json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                for k, v in raw.items():
+                    if not isinstance(k, str):
+                        continue
+                    if Path(k).is_absolute():
+                        # Legacy/out-of-anchor key: pass through, but never
+                        # clobber a re-anchored relative (new-format) entry
+                        # that resolved to the same absolute path.
+                        _stat_index.setdefault(k, v)
+                    else:
+                        _stat_index[_stat_key_to_absolute(k, _stat_index_anchor)] = v
         except (json.JSONDecodeError, OSError):
             _stat_index = {}
-    else:
-        _stat_index = {}
     atexit.register(_flush_stat_index)
 
 
@@ -221,11 +274,26 @@ def _flush_stat_index() -> None:
     if not _stat_index_dirty or _stat_index_root is None:
         return
     p = _stat_index_file(_stat_index_root)
+    # Build the on-disk form (#2199): prune entries whose file is gone (the
+    # index otherwise grows without bound), then store in-anchor keys as
+    # forward-slash relative paths so the index survives a corpus move/clone.
+    # Out-of-anchor keys stay absolute (same rule as the detect manifest); a
+    # reader tells the formats apart by absoluteness, so no version marker is
+    # needed. In-memory keys are untouched — only the serialization changes.
+    on_disk: dict[str, dict] = {}
+    for k, v in _stat_index.items():
+        try:
+            if not os.path.exists(k):
+                continue
+        except OSError:
+            continue
+        dk = _stat_key_to_relative(k, _stat_index_anchor) if _stat_index_anchor is not None else k
+        on_disk[dk] = v
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=p.parent, prefix="stat-index.", suffix=".tmp")
         try:
-            os.write(fd, json.dumps(_stat_index, separators=(",", ":")).encode())
+            os.write(fd, json.dumps(on_disk, separators=(",", ":")).encode())
             os.close(fd)
             os.replace(tmp, p)
         except Exception:
@@ -423,6 +491,225 @@ def _relativize_source_files_in(payload: dict, root: Path) -> None:
             item["source_file"] = rel.replace(os.sep, "/")
 
 
+def _normalize_source_file_value(src: "str | Path", root_resolved: Path) -> str:
+    """Return ``src`` in portable form: backslashes flipped to forward slashes,
+    then relativized against ``root_resolved`` when the path is in-root.
+
+    Windows ``detect()`` emits absolute backslash paths, and a semantic
+    fragment carrying one verbatim used to be persisted as-is — poisoning later
+    ``graphify update`` runs with a machine-specific ``source_file`` (#2197).
+    Out-of-root absolute paths pass through (slash-normalized only), same
+    in/out rule and ``..``-rejection as :func:`_relativize_source_files_in`.
+    """
+    s = str(src).replace("\\", "/")
+    p = Path(s)
+    if not p.is_absolute():
+        return s
+    try:
+        rel = os.path.relpath(p, root_resolved)
+    except (ValueError, OSError):
+        return s  # out-of-root (e.g. Windows cross-drive)
+    if rel == ".." or rel.startswith(".." + os.sep) or rel.startswith("../"):
+        return s  # escaped root — keep absolute
+    return rel.replace(os.sep, "/")
+
+
+# Storage marker standing in for the absolute root a cached id/path was minted
+# under (#2257). Extractors mint node ids from the path STRING they are handed
+# (``_make_id(str(path))``, ``_file_node_id(path)``), so a cache entry written
+# under root A embeds A's slug in every id and edge endpoint. Those are only
+# rewritten to the canonical root-relative form by extract()'s whole-graph
+# id-remap, which keys its rewrites off the CURRENT run's paths — so on a warm
+# hit under root B (a clone, a moved checkout, a second mount) the stored ids
+# match no key and A's machine slug survives into graph.json. Entries are
+# therefore stored root-anchored: the root's contribution is replaced by this
+# marker on write and re-anchored to the current root on read, so a replay is
+# portable by construction and reproduces exactly what a cold run under the
+# current root would have minted (the pre-remap form every downstream pass in
+# extract() expects). Same store-portable/re-anchor-on-load contract as
+# ``source_file`` (#777) and the stat index (#2199). Neither ``$`` nor ``-`` can
+# occur in a normalized id (``normalize_id`` drops every non-word character), and
+# no plausible source literal — a shell ``$root``, a template ``${root}`` — opens
+# with this exact token, so the marker cannot collide with extractor output.
+_ROOT_MARKER = "$graphify-root$"
+
+
+def _id_anchor(path_str: str, rel_str: str) -> str:
+    """Return the id-slug prefix ``path_str`` contributes above ``rel_str``.
+
+    ``_make_id`` normalizes a whole path string, and normalization distributes
+    over path joins (every separator run collapses to one ``_``), so an id
+    minted from an absolute path decomposes exactly as
+    ``normalize_id(root) + "_" + normalize_id(rel)``. Recovering the root half
+    from the file's own two spellings — rather than assuming it equals the
+    scan root — keeps the decomposition exact when the extractor was handed an
+    unresolved or relative path (a symlinked root such as macOS ``/tmp`` ->
+    ``/private/tmp``, or inputs given relative to CWD).
+
+    Returns "" when ``path_str`` contributes no prefix (it already IS the
+    relative form) or when the two spellings disagree about the tail — both
+    mean "nothing to re-anchor", which leaves the entry untouched.
+    """
+    from graphify.ids import normalize_id  # ids imports only re/unicodedata: no cycle
+
+    full = normalize_id(path_str)
+    tail = normalize_id(rel_str)
+    if not tail or full == tail:
+        return ""
+    suffix = "_" + tail
+    return full[: -len(suffix)] if full.endswith(suffix) else ""
+
+
+def _portability_anchors(path: "str | Path", root: "str | Path") -> tuple[list[str], str, list[str], str]:
+    """Root forms to strip from / restore into one cache entry (#2257).
+
+    Returns ``(id_anchors, id_restore, path_anchors, path_restore)``. The two
+    ``*_anchors`` lists are the forms a stored value may have been minted from,
+    longest first so a shorter form can't shadow a longer one; the two
+    ``*_restore`` values are what the CURRENT run's extractor would mint.
+
+    Several spellings are collected because one entry can hold ids minted from
+    different forms: this file's own path as passed and as resolved, plus
+    cross-file edge targets minted from ANOTHER in-root file's absolute path
+    (which share the scan root's spelling). They collapse to a single marker on
+    write; that is safe because extract()'s remap registers both the input-form
+    and absolute-resolved-form ids for every path (#1529) and maps them to the
+    same canonical id, so restoring either one canonicalizes identically.
+    """
+    from graphify.ids import normalize_id
+
+    try:
+        root_resolved = Path(root).resolve()
+    except OSError:
+        return [], "", [], ""
+    try:
+        path_resolved = Path(path).resolve()
+    except (OSError, RuntimeError):
+        path_resolved = Path(path)
+    try:
+        rel = os.path.relpath(path_resolved, root_resolved)
+    except (ValueError, OSError):
+        rel = ""
+
+    # Ordered by preference for the restore form: the spelling the extractor was
+    # actually handed first, then its resolved form, then the scan root.
+    from_given = _id_anchor(str(path), rel)
+    from_resolved = _id_anchor(str(path_resolved), rel)
+    id_restore = next(
+        (a for a in (from_given, from_resolved, normalize_id(str(root_resolved))) if a), ""
+    )
+    # Every strippable form must be one this same call would RESTORE, or an id
+    # is re-anchored under a prefix it was never minted with. That rules out a
+    # relative ``root`` spelling ("src"): with an absolute ``path`` the restore
+    # form is the resolved slug, so admitting ``src`` as an anchor would rewrite
+    # an already-canonical ``src_utils_foo`` into ``<abs-root-slug>_utils_foo``.
+    # The two path-derived forms are always safe — they ARE the restore
+    # candidates — and cover a relative root on their own whenever the extractor
+    # was handed a matching relative path.
+    root_id_forms = (normalize_id(str(root_resolved)),)
+    if Path(root).is_absolute():
+        root_id_forms += (normalize_id(str(root)),)
+    id_anchors = sorted(
+        {a for a in (from_given, from_resolved, *root_id_forms) if a},
+        key=len, reverse=True,
+    )
+    # Only absolute roots may anchor a PATH value: a relative one ("corpus")
+    # would also match a genuinely relative value that merely starts with the
+    # same segment, and there is no way to tell the two apart on read.
+    path_anchors = sorted(
+        {s for s in (str(root_resolved), str(root)) if Path(s).is_absolute()},
+        key=len, reverse=True,
+    )
+    return id_anchors, id_restore, path_anchors, str(root_resolved)
+
+
+def _rewrite_strings(obj: object, fn) -> None:
+    """Apply ``fn`` to every string VALUE reachable in ``obj``, in place.
+
+    Values only, never dict keys: no extractor bucket is keyed by a node id or a
+    path (the ``*_type_table`` maps are ``name -> type``), and rewriting keys
+    could silently collide two entries into one.
+    """
+    if isinstance(obj, dict):
+        items: "Iterable" = obj.items()
+    elif isinstance(obj, list):
+        items = enumerate(obj)
+    else:
+        return
+    for key, value in list(items):
+        if isinstance(value, str):
+            new = fn(value)
+            if new != value:
+                obj[key] = new  # type: ignore[index]
+        else:
+            _rewrite_strings(value, fn)
+
+
+def _relativize_ids_in(payload: dict, path: "str | Path", root: Path) -> None:
+    """Replace the absolute root inside every stored id / path with the marker.
+
+    Walks the WHOLE payload rather than a list of known buckets. The id form is
+    self-identifying — a long casefolded path slug that nothing but an
+    absolute-path-derived id can start with — so this reaches carriers a
+    hand-maintained bucket list misses or has yet to grow: ``nodes[].id``,
+    ``edges[].source``/``target``, hyperedge member lists under any of their
+    aliases, ``raw_calls[].caller_nid``, ``swift_extensions[].nid``, plus the
+    path-valued ``edges[].target_file``, ``bash_sources[].source_file`` and
+    ``*_type_table.path``, which resolution passes need pointing at the current
+    root to reproduce a cold run's edges.
+
+    Call AFTER :func:`_relativize_source_files_in`: that stores ``source_file``
+    as a bare relative path (the #777 format), and running this first would
+    leave it marker-prefixed instead, churning the on-disk format for nothing.
+    """
+    id_anchors, _, path_anchors, _ = _portability_anchors(path, root)
+    if not id_anchors and not path_anchors:
+        return
+
+    def anchor(value: str) -> str:
+        # Path form first: it requires a separator, which an id never contains.
+        for a in path_anchors:
+            if value == a:
+                return _ROOT_MARKER
+            for sep in ("/", "\\"):
+                if value.startswith(a + sep):
+                    return _ROOT_MARKER + "/" + value[len(a) + 1:].replace("\\", "/")
+        for a in id_anchors:
+            if value.startswith(a + "_"):
+                return _ROOT_MARKER + "_" + value[len(a) + 1:]
+        return value
+
+    _rewrite_strings(payload, anchor)
+
+
+def _absolutize_ids_in(payload: dict, path: "str | Path", root: Path) -> None:
+    """Inverse of :func:`_relativize_ids_in` — re-anchor to the current root.
+
+    The restored string is assembled by slicing, never by re-normalizing: the
+    stored form (``$graphify-root$_pkg_mod_base``) is a storage encoding, not a valid id,
+    and running it back through ``normalize_id`` would drop the marker's ``$``
+    and fuse it into the slug. Entries written before #2257 carry no marker and
+    pass through untouched — they are swept anyway, since AST entries live under
+    a per-version directory (:func:`cache_dir`).
+    """
+    _, id_restore, _, path_restore = _portability_anchors(path, root)
+
+    def restore(value: str) -> str:
+        if not value.startswith(_ROOT_MARKER):
+            return value
+        rest = value[len(_ROOT_MARKER):]
+        if not rest:
+            return path_restore
+        if rest[0] == "/":
+            tail = rest[1:]
+            return str(Path(path_restore) / tail) if tail else path_restore
+        if rest[0] == "_":
+            return (id_restore + rest) if id_restore else rest[1:]
+        return value
+
+    _rewrite_strings(payload, restore)
+
+
 def _absolutize_source_files_in(payload: dict, root: Path) -> None:
     """Inverse of :func:`_relativize_source_files_in`.
 
@@ -553,6 +840,12 @@ def load_cached(path: Path, root: Path = Path("."), kind: str = "ast",
         # (#777). Legacy entries with absolute source_file pass through.
         if isinstance(result, dict):
             _absolutize_source_files_in(result, root)
+            # Same contract for the ids and remaining paths the entry embeds
+            # (#2257): without this a warm hit under a different absolute root
+            # replays ids minted from the ORIGINAL root, which extract()'s
+            # id-remap cannot fix because they match none of its current-path
+            # keys. Order is free — source_file never carries the marker.
+            _absolutize_ids_in(result, path, root)
         return result
     return None
 
@@ -593,11 +886,21 @@ def save_cached(path: Path, result: dict, root: Path = Path("."), kind: str = "a
     # looks up Path(source_file).resolve() in a prefix table) depend on the
     # source_file field's original absolute form. Mutating the input here would
     # silently break those remaps on the first extraction pass.
+    #
+    # The copy is unconditional (it used to be gated on a non-empty
+    # nodes/edges/hyperedges/raw_calls bucket): a truthiness gate skips the copy
+    # for a result whose only payload lives in another bucket — an empty
+    # ``nodes`` beside a populated ``bash_sources`` — and the id/path anchoring
+    # below would then mutate the caller's dict for real.
     on_disk = result
-    if isinstance(result, dict) and any(result.get(k) for k in ("nodes", "edges", "hyperedges", "raw_calls")):
+    if isinstance(result, dict):
         import copy as _copy
         on_disk = _copy.deepcopy(result)
         _relativize_source_files_in(on_disk, root)
+        # Then replace the absolute root inside the ids and remaining paths, so
+        # the entry replays portably under any root (#2257). Strictly after the
+        # source_file pass, which owns that field's bare-relative format.
+        _relativize_ids_in(on_disk, p, root)
     h = file_hash(p, root, cache_root=cache_root)
     location = cache_root if cache_root is not None else root
     target_dir = cache_dir(location, kind, _resolve_prompt_fp(prompt, prompt_file))
@@ -869,21 +1172,42 @@ def save_semantic_cache(
     from collections import defaultdict
 
     kind = "semantic" if mode is None else f"semantic-{mode}"
+    root_path = Path(root).resolve()
+
+    def _normalized(item: dict) -> dict:
+        """Copy of ``item`` with a portable ``source_file`` (#2197).
+
+        Normalizing BEFORE grouping means both the group key and the persisted
+        item carry the relative forward-slash form, so a fragment whose
+        source_file arrived absolute (Windows detect() output) can never be
+        cached verbatim. A shallow copy keeps the caller's dicts untouched —
+        downstream steps may still rely on the original absolute shape (same
+        reasoning as :func:`save_cached`'s on-disk deepcopy).
+        """
+        src = item.get("source_file")
+        if not src:
+            return item
+        norm = _normalize_source_file_value(src, root_path)
+        if norm != src:
+            item = {**item, "source_file": norm}
+        return item
+
     by_file: dict[str, dict] = defaultdict(lambda: {"nodes": [], "edges": [], "hyperedges": []})
     for n in nodes:
+        n = _normalized(n)
         src = n.get("source_file", "")
         if src:
             by_file[src]["nodes"].append(n)
     for e in edges:
+        e = _normalized(e)
         src = e.get("source_file", "")
         if src:
             by_file[src]["edges"].append(e)
     for h in (hyperedges or []):
+        h = _normalized(h)
         src = h.get("source_file", "")
         if src:
             by_file[src]["hyperedges"].append(h)
-
-    root_path = Path(root).resolve()
 
     def resolved_source_path(value: str | Path) -> Path:
         path = Path(value)

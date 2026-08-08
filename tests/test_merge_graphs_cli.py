@@ -92,3 +92,158 @@ def test_distinct_repo_tags_unit(tmp_path):
         Path("c/src/graphify-out/graph.json"),
     ])
     assert len(set(tags3)) == 3, tags3
+
+
+def test_merge_graphs_preserves_import_edge_direction(tmp_path):
+    # #2261: merge-graphs loaded graph.json into an undirected nx.Graph without
+    # stashing _src/_tgt directional markers, causing node_link_data to re-serialize
+    # edges based on arbitrary node ordering and reversing import edge direction whenever
+    # target node index < source node index (turning imports into self-imports/reversed links).
+    a = tmp_path / "repo1" / "graphify-out" / "graph.json"
+    b = tmp_path / "repo2" / "graphify-out" / "graph.json"
+    a.parent.mkdir(parents=True, exist_ok=True)
+    b.parent.mkdir(parents=True, exist_ok=True)
+
+    # Note: collections comes BEFORE rota in nodes list, so collections has a smaller index
+    a.write_text(json.dumps({
+        "directed": False,
+        "multigraph": False,
+        "nodes": [
+            {"id": "collections", "label": "collections.js"},
+            {"id": "empresa", "label": "empresa.js"},
+            {"id": "logger", "label": "logger.js"},
+            {"id": "rota", "label": "rota.js"},
+        ],
+        "links": [
+            {"source": "rota", "target": "collections", "relation": "imports_from", "context": "import"},
+            {"source": "rota", "target": "empresa", "relation": "imports_from", "context": "import"},
+            {"source": "rota", "target": "logger", "relation": "imports_from", "context": "import"},
+        ],
+    }))
+
+    b.write_text(json.dumps({
+        "directed": False,
+        "multigraph": False,
+        "nodes": [
+            {"id": "main", "label": "main.js"},
+            {"id": "utils", "label": "utils.js"},
+        ],
+        "links": [
+            {"source": "main", "target": "utils", "relation": "imports_from", "context": "import"},
+        ],
+    }))
+
+    out = tmp_path / "merged.json"
+    r = _run(["merge-graphs", str(a), str(b), "--out", str(out)], tmp_path)
+    assert r.returncode == 0, f"merge failed: {r.stderr}"
+
+    data = json.loads(out.read_text(encoding="utf-8"))
+
+    # 1. Node count & edge count correct
+    assert len(data["nodes"]) == 6
+    assert len(data["links"]) == 4
+
+    # 2. Repo prefixes applied
+    node_ids = {n["id"] for n in data["nodes"]}
+    expected_ids = {
+        "repo1::collections", "repo1::empresa", "repo1::logger", "repo1::rota",
+        "repo2::main", "repo2::utils"
+    }
+    assert node_ids == expected_ids
+
+    # 3. Import relationships preserve original direction (source=rota, target=collections/empresa/logger)
+    #    and no import edge becomes a self-import or reversed.
+    repo1_links = [l for l in data["links"] if l["source"].startswith("repo1::") or l["target"].startswith("repo1::")]
+    assert len(repo1_links) == 3
+
+    for link in repo1_links:
+        src = link["source"]
+        tgt = link["target"]
+        assert src != tgt, f"import edge became a self-import: {link}"
+        assert src == "repo1::rota", f"expected source repo1::rota, got {src} in link {link}"
+        assert tgt in {"repo1::collections", "repo1::empresa", "repo1::logger"}, f"unexpected target {tgt} in link {link}"
+
+    repo2_link = [l for l in data["links"] if l["source"].startswith("repo2::")][0]
+    assert repo2_link["source"] == "repo2::main"
+    assert repo2_link["target"] == "repo2::utils"
+
+
+def _write_with_hyperedges(p: Path, node_ids: list[str], hyperedges: list[dict],
+                           *, top_level_only: bool = False):
+    # Mirrors to_json's dual-slot shape: hyperedges live top-level AND under
+    # the node_link graph attrs. top_level_only drops the nested slot to model
+    # older writers (#2485).
+    p.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "directed": False, "multigraph": False,
+        "graph": {} if top_level_only else {"hyperedges": hyperedges},
+        "nodes": [{"id": n} for n in node_ids], "links": [],
+        "hyperedges": hyperedges,
+    }
+    p.write_text(json.dumps(data))
+
+
+def test_merge_graphs_carries_hyperedges_from_all_inputs(tmp_path):
+    # #2484: prefix_graph_for_global never rewrote G.graph["hyperedges"], and
+    # nx.compose's dict.update graph-attr merge clobbered each prior input's
+    # list, so at best the LAST graph's hyperedges survived — with stale,
+    # unprefixed member ids. Both inputs' hyperedges must reach the output,
+    # relabeled to the prefixed node ids, in BOTH persistence slots.
+    a = tmp_path / "alpha" / "graphify-out" / "graph.json"
+    b = tmp_path / "beta" / "graphify-out" / "graph.json"
+    _write_with_hyperedges(a, ["x", "y"], [{"id": "h_alpha", "nodes": ["x", "y"]}])
+    _write_with_hyperedges(b, ["p", "q"], [{"id": "h_beta", "nodes": ["p", "q"]}])
+    out = tmp_path / "merged.json"
+
+    r = _run(["merge-graphs", str(a), str(b), "--out", str(out)], tmp_path)
+    assert r.returncode == 0, r.stderr
+    data = json.loads(out.read_text())
+
+    hyperedges = data.get("hyperedges")
+    assert isinstance(hyperedges, list), "top-level hyperedges slot must be written"
+    assert {h["id"] for h in hyperedges} == {"alpha::h_alpha", "beta::h_beta"}
+    assert len(hyperedges) == 2
+
+    # every member id must resolve in the merged (prefixed) node set
+    node_ids = {n["id"] for n in data["nodes"]}
+    for h in hyperedges:
+        assert set(h["nodes"]) <= node_ids, f"dangling members in {h}"
+
+    # nested slot mirrors the top-level one (to_json's dual-slot shape)
+    assert data["graph"]["hyperedges"] == hyperedges
+
+
+def test_merge_graphs_hyperedges_dedup_on_shared_prefixed_id(tmp_path):
+    # Idempotence: a duplicated hyperedge id within an input must not produce
+    # duplicate entries in the merged output (attach_hyperedges dedups by id).
+    a = tmp_path / "alpha" / "graphify-out" / "graph.json"
+    b = tmp_path / "beta" / "graphify-out" / "graph.json"
+    he = {"id": "h_alpha", "nodes": ["x"]}
+    _write_with_hyperedges(a, ["x"], [he, dict(he)])
+    _write_with_hyperedges(b, ["p"], [{"id": "h_beta", "nodes": ["p"]}])
+    out = tmp_path / "merged.json"
+
+    r = _run(["merge-graphs", str(a), str(b), "--out", str(out)], tmp_path)
+    assert r.returncode == 0, r.stderr
+    data = json.loads(out.read_text())
+    ids = [h["id"] for h in data["hyperedges"]]
+    assert sorted(ids) == ["alpha::h_alpha", "beta::h_beta"], f"dup survived: {ids}"
+
+
+def test_merge_graphs_reads_top_level_only_hyperedges(tmp_path):
+    # #2485 skew on the input side: node_link_graph restores only the nested
+    # graph-attrs slot, so an input whose hyperedges live only at the top
+    # level used to lose them entirely.
+    a = tmp_path / "alpha" / "graphify-out" / "graph.json"
+    b = tmp_path / "beta" / "graphify-out" / "graph.json"
+    _write_with_hyperedges(a, ["x"], [{"id": "h_top", "nodes": ["x"]}],
+                           top_level_only=True)
+    _write_with_hyperedges(b, ["p"], [])
+    out = tmp_path / "merged.json"
+
+    r = _run(["merge-graphs", str(a), str(b), "--out", str(out)], tmp_path)
+    assert r.returncode == 0, r.stderr
+    data = json.loads(out.read_text())
+    assert [h["id"] for h in data["hyperedges"]] == ["alpha::h_top"]
+    assert data["hyperedges"][0]["nodes"] == ["alpha::x"]
+

@@ -961,6 +961,18 @@ def _sanitize_fragment(parsed: dict) -> dict:
             parsed[key] = []
             continue
         parsed[key] = [entry for entry in value if isinstance(entry, dict)]
+    # Coerce hyperedge member refs to hashable scalar ids (#2486): a model can
+    # emit a member as an object ({"id": "a_ts"}) instead of a bare id. The
+    # per-entry filter above only checks the hyperedge dicts themselves, so the
+    # bad member shape used to persist into the semantic cache and crash
+    # build_from_json's rekey pass much later (a dict is unhashable). Applying
+    # the shared coercion at this parse chokepoint keeps the cache clean.
+    hyperedges = parsed.get("hyperedges")
+    if hyperedges:
+        from graphify.build import _coerce_hyperedge_member_refs
+        for he in hyperedges:
+            if isinstance(he.get("nodes"), list):
+                he["nodes"] = _coerce_hyperedge_member_refs(he, he["nodes"])
     return parsed
 
 
@@ -1042,6 +1054,30 @@ def _parse_llm_json(raw: str) -> dict:
         file=sys.stderr,
     )
     return {"nodes": [], "edges": [], "hyperedges": []}
+
+
+def _bedrock_response_text(resp: dict, default: str = "") -> str:
+    """Return the first Converse content block that carries text.
+
+    Converse returns ``output.message.content`` as a list of blocks, and the
+    API does not promise a text block is first: reasoning-capable models emit a
+    ``reasoningContent`` block ahead of the answer, and ``toolUse`` or future
+    block types can precede it too. Indexing position 0 therefore yields no text
+    at all for those models, which reads downstream as a hollow response, gets
+    reclassified as truncation, and sends the chunk into bisection that cannot
+    converge. Select on the block's shape instead of its position so this holds
+    for any model; a response whose first block is already text is unaffected.
+    """
+    content = resp.get("output", {}).get("message", {}).get("content", [])
+    if not isinstance(content, list):
+        return default
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        text = block.get("text")
+        if isinstance(text, str) and text.strip():
+            return text
+    return default
 
 
 def _response_is_hollow(raw_content: str | None, parsed: dict) -> bool:
@@ -1609,6 +1645,7 @@ def _call_bedrock(model: str, user_message: str, max_tokens: int = 8192, *, deep
     """Call AWS Bedrock via boto3 Converse API using the standard AWS credential chain."""
     try:
         import boto3
+        import botocore.config
         import botocore.exceptions
     except ImportError as exc:
         raise ImportError(
@@ -1618,7 +1655,19 @@ def _call_bedrock(model: str, user_message: str, max_tokens: int = 8192, *, deep
     region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "us-east-1"
     profile = os.environ.get("AWS_PROFILE")
     session = boto3.Session(profile_name=profile, region_name=region)
-    client = session.client("bedrock-runtime")
+    # Wire GRAPHIFY_API_TIMEOUT into the botocore read timeout. Without an
+    # explicit config, Converse uses botocore's 60s default and a long
+    # generation dies with "Read timeout on endpoint URL" no matter what the
+    # env var / --api-timeout is set to — the same gap #1112/#1442 closed for
+    # the claude-cli and secondary-dispatch paths, on the last cloud backend.
+    client = session.client(
+        "bedrock-runtime",
+        config=botocore.config.Config(
+            read_timeout=_resolve_api_timeout(),
+            connect_timeout=10,
+            retries={"max_attempts": _resolve_max_retries() + 1, "mode": "adaptive"},
+        ),
+    )
 
     try:
         resp = client.converse(
@@ -1632,7 +1681,7 @@ def _call_bedrock(model: str, user_message: str, max_tokens: int = 8192, *, deep
         msg = exc.response["Error"]["Message"]
         raise RuntimeError(f"Bedrock API error ({code}): {msg}") from exc
 
-    text = resp.get("output", {}).get("message", {}).get("content", [{}])[0].get("text", "{}")
+    text = _bedrock_response_text(resp, default="{}")
     result = _parse_llm_json(text)
     usage = resp.get("usage", {})
     result["input_tokens"] = usage.get("inputTokens", 0)
@@ -2565,12 +2614,20 @@ def _call_llm(
     if backend == "bedrock":
         try:
             import boto3
+            import botocore.config
         except ImportError as exc:
             raise ImportError(_backend_pkg_hint("boto3", "bedrock")) from exc
         region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "us-east-1"
         profile = os.environ.get("AWS_PROFILE")
         session = boto3.Session(profile_name=profile, region_name=region)
-        client = session.client("bedrock-runtime")
+        client = session.client(
+            "bedrock-runtime",
+            config=botocore.config.Config(
+                read_timeout=_resolve_api_timeout(),
+                connect_timeout=10,
+                retries={"max_attempts": _resolve_max_retries() + 1, "mode": "adaptive"},
+            ),
+        )
         resp = client.converse(
             modelId=mdl,
             messages=[{"role": "user", "content": [{"text": prompt}]}],
@@ -2579,7 +2636,7 @@ def _call_llm(
         bu = resp.get("usage") or {}
         if bu:
             _rec(bu.get("inputTokens", 0), bu.get("outputTokens", 0))
-        return resp.get("output", {}).get("message", {}).get("content", [{}])[0].get("text", "")
+        return _bedrock_response_text(resp, default="")
 
     if backend == "azure":
         endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip()
@@ -2799,7 +2856,11 @@ def _community_label_lines(G, communities, gods, max_communities, top_k):
             if len(names) >= top_k:
                 break
         if names:
-            lines.append(f"Community {cid}: {', '.join(names)}")
+            # Bare id key, NOT "Community {cid}: ..." — that string doubles as the
+            # placeholder sentinel (_placeholder_community_labels), so a model that
+            # echoed the key back produced a "name" indistinguishable from the
+            # no-backend fallback and the caller's sentinel filter dropped it (#2534).
+            lines.append(f"{cid}: {', '.join(names)}")
             labeled_cids.append(int(cid))
     return lines, labeled_cids
 
@@ -2870,6 +2931,7 @@ def _label_batch_with_retry(
         "You are naming clusters in a knowledge graph. For each community below, "
         "return a concise 2-5 word plain-language name describing what it is about "
         "(e.g. \"Order Management\", \"Payment Flow\", \"Auth Middleware\"). "
+        "Each input line is '<community id>: <representative member names>'. "
         "Respond ONLY with a JSON object mapping the community id (as a string) to "
         "its name - no prose, no markdown fences.\n\n" + "\n".join(batch_lines)
     )

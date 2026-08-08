@@ -19,6 +19,9 @@ import sys
 
 _TSCONFIG_ALIAS_CACHE: dict[str, dict[str, list[str]]] = {}
 
+# compilerOptions.baseUrl per config path, as an absolute dir (#2153).
+_TSCONFIG_BASEURL_CACHE: "dict[str, Path | None]" = {}
+
 _WORKSPACE_MANIFEST_NAMES = ("pnpm-workspace.yaml", "package.json")
 
 _JS_RESOLVE_EXTS = (".ts", ".tsx", ".mts", ".cts", ".svelte", ".js", ".jsx", ".mjs", ".cjs")
@@ -164,23 +167,82 @@ def _read_tsconfig_aliases(tsconfig: Path, base_dir: Path, seen: set) -> dict[st
 
     return aliases
 
+def _read_json_config(path: Path) -> "dict | None":
+    """Parse a tsconfig/jsconfig as JSON, falling back to JSONC (#2153).
+
+    Mirrors the read/parse handling in `_read_tsconfig_aliases`; returns None on
+    any unreadable or unparseable file so a malformed config degrades to "no
+    baseUrl" instead of raising.
+    """
+    try:
+        raw = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    for candidate in (raw, _strip_jsonc(raw)):
+        try:
+            data = json.loads(candidate)
+        except Exception:
+            continue
+        return data if isinstance(data, dict) else None
+    return None
+
+def _find_js_config(start_dir: Path) -> "tuple[Path, Path] | None":
+    """Nearest tsconfig.json/jsconfig.json walking up from start_dir.
+
+    `jsconfig.json` is the plain-JS spelling of the same file (already indexed by
+    json_config.py) and was never probed here, so a Rails/webpacker project that
+    configures resolution in jsconfig.json got no aliases at all (#2153).
+    tsconfig.json wins when both sit in one directory, matching tsc and editors,
+    which consult jsconfig.json only when there is no tsconfig.json.
+    """
+    current = start_dir.resolve()
+    for candidate in [current, *current.parents]:
+        for name in ("tsconfig.json", "jsconfig.json"):
+            config = candidate / name
+            if config.exists():
+                return config, candidate
+    return None
+
 def _load_tsconfig_aliases(start_dir: Path) -> dict[str, list[str]]:
-    """Walk up from start_dir to find tsconfig.json and return compilerOptions.paths aliases.
+    """Walk up from start_dir to find tsconfig/jsconfig.json and return compilerOptions.paths aliases.
 
     Follows extends chains so SvelteKit/Nuxt/NestJS inherited aliases are included.
     Returns a dict mapping alias patterns to ordered resolved target patterns;
     wildcard tokens remain intact for substitution during resolution (#927).
-    Result is cached by tsconfig path string.
+    Result is cached by config path string.
     """
-    current = start_dir.resolve()
-    for candidate in [current, *current.parents]:
-        tsconfig = candidate / "tsconfig.json"
-        if tsconfig.exists():
-            key = str(tsconfig)
-            if key not in _TSCONFIG_ALIAS_CACHE:
-                _TSCONFIG_ALIAS_CACHE[key] = _read_tsconfig_aliases(tsconfig, candidate, seen=set())
-            return _TSCONFIG_ALIAS_CACHE[key]
-    return {}
+    found = _find_js_config(start_dir)
+    if found is None:
+        return {}
+    config, candidate = found
+    key = str(config)
+    if key not in _TSCONFIG_ALIAS_CACHE:
+        _TSCONFIG_ALIAS_CACHE[key] = _read_tsconfig_aliases(config, candidate, seen=set())
+    return _TSCONFIG_ALIAS_CACHE[key]
+
+def _load_tsconfig_base_url(start_dir: Path) -> "Path | None":
+    """`compilerOptions.baseUrl` of the nearest config, as an absolute directory.
+
+    baseUrl was only ever used as the base that `paths` targets resolve against,
+    so a config declaring baseUrl and NO paths yielded an empty alias map and
+    every non-relative import went unresolved (#2153). Exposed separately so it
+    can act as a resolution root of last resort, after all declared aliases miss.
+    Returns None when no config declares baseUrl.
+    """
+    found = _find_js_config(start_dir)
+    if found is None:
+        return None
+    config, candidate = found
+    key = str(config)
+    if key not in _TSCONFIG_BASEURL_CACHE:
+        base_url = None
+        data = _read_json_config(config)
+        if data is not None:
+            raw_base = data.get("compilerOptions", {}).get("baseUrl")
+            if isinstance(raw_base, str) and raw_base:
+                base_url = Path(os.path.normpath(candidate / raw_base))
+        _TSCONFIG_BASEURL_CACHE[key] = base_url
+    return _TSCONFIG_BASEURL_CACHE[key]
 
 def _match_tsconfig_alias(raw: str, pattern: str) -> "tuple[tuple[int, int], str, bool] | None":
     """Return (specificity, captured text, is_wildcard) when pattern matches raw.
@@ -208,12 +270,21 @@ def _match_tsconfig_alias(raw: str, pattern: str) -> "tuple[tuple[int, int], str
         return (2, -len(prefix)), raw[len(prefix):].lstrip("/"), False
     return None
 
-def _resolve_tsconfig_alias(raw: str, aliases: dict[str, list[str]]) -> "Path | None":
+def _resolve_tsconfig_alias(raw: str, aliases: dict[str, list[str]],
+                            base_url: "Path | None" = None) -> "Path | None":
     """Resolve `raw` against the most specific matching tsconfig alias pattern.
 
     Within that pattern, try targets in declared order and return the first whose
     candidate resolves to a real file. If none exist, return the first candidate
     so existing phantom/external-edge behavior stays unchanged.
+
+    `base_url` is a resolution root of last resort, tried only when NO declared
+    alias matches (#2153). It must not participate in the specificity contest:
+    a bare `*` alias would score (1, 0) and so beat a declared non-wildcard
+    directory-prefix alias at (2, -len), silently shadowing it and regressing
+    #1269. Unlike the alias path this returns a candidate only when it is a real
+    file on disk, so a genuine external package (`import React from 'react'`)
+    still resolves to nothing instead of a fabricated <baseUrl>/react edge.
     """
     best: "tuple[tuple[int, int], str, bool, list[str]] | None" = None
     for pattern, targets in aliases.items():
@@ -225,6 +296,11 @@ def _resolve_tsconfig_alias(raw: str, aliases: dict[str, list[str]]) -> "Path | 
             best = specificity, captured, is_wildcard, targets
 
     if best is None:
+        if base_url is not None:
+            candidate = Path(os.path.normpath(base_url / raw))
+            resolved = _resolve_js_import_path(candidate)
+            if resolved.is_file():
+                return resolved
         return None
 
     _, captured, is_wildcard, targets = best
@@ -442,7 +518,8 @@ def _resolve_js_module_path(raw: str | Path, start_dir: Path | None = None) -> P
         return _resolve_js_import_path(start_dir / raw)
 
     aliases = _load_tsconfig_aliases(start_dir)
-    hit = _resolve_tsconfig_alias(raw, aliases)
+    hit = _resolve_tsconfig_alias(raw, aliases,
+                                  base_url=_load_tsconfig_base_url(start_dir))
     if hit is not None:
         return _resolve_js_import_path(hit)
 
@@ -980,6 +1057,16 @@ def _apply_symbol_resolution_facts(
             local_alias=local_name if local_name != to_path.stem else None,
         )
 
+    # #2262 producer guard: never emit a `calls` use-edge from a source id
+    # that owns no node. All node appends (ensure_symbol_node, declarations,
+    # namespace exports) happened above, so the owned set is complete here.
+    # A node-less caller id can never be canonicalized by the extract()
+    # remaps (they learn only from nodes), so an absolute-derived one would
+    # leak the machine/scan-path slug into the edge source. Reattribute the
+    # edge to the caller's FILE node — the true file-level dependency
+    # survives, and the file id is exactly what the #2231 remap
+    # canonicalizes — or drop it when no file node id is available.
+    owned = {str(n.get("id")) for n in nodes}
     for use_fact in facts.uses:
         file_path = use_fact.file_path.resolve()
         target_id = None
@@ -997,8 +1084,13 @@ def _apply_symbol_resolution_facts(
             target_id = symbol_nodes.get((file_path, use_fact.local_name))
         if target_id is None:
             continue
+        source_id = use_fact.source_id
+        if use_fact.relation == "calls" and source_id not in owned:
+            source_id = source_file_id.get(file_path)
+            if source_id is None:
+                continue
         add_edge(
-            use_fact.source_id,
+            source_id,
             target_id,
             use_fact.relation,
             use_fact.context,
@@ -1019,10 +1111,20 @@ def _parse_js_tree(path: Path):
             source = masked.encode("utf-8")
         else:
             source = path.read_bytes()
-        use_ts = path.suffix in (".ts", ".tsx", ".mts", ".cts") or (
+        use_ts = path.suffix in (".ts", ".mts", ".cts") or (
             path.suffix == ".vue" and vue_lang not in ("js", "jsx")
         )
-        if use_ts:
+        if path.suffix == ".tsx":
+            # .tsx must use the JSX-aware TSX grammar, mirroring the engine's
+            # _TSX_CONFIG (ts_language_fn="language_tsx"). Parsing .tsx with
+            # language_typescript misparses JSX, and tree-sitter's error
+            # recovery floats nested arrow components up to top level —
+            # _js_top_level_function_bodies then mints caller ids for callers
+            # that own no node, leaking absolute-path slugs into calls-edge
+            # sources (#2262).
+            import tree_sitter_typescript as tstypescript
+            language = Language(tstypescript.language_tsx())
+        elif use_ts:
             import tree_sitter_typescript as tstypescript
             language = Language(tstypescript.language_typescript())
         else:
@@ -2072,9 +2174,14 @@ def _resolve_cross_file_java_imports(
 ) -> list[dict]:
     """Two-pass Java import resolution.
 
-    Pass 1: build a global index {ClassName: [node_id, ...]} across all Java nodes.
+    Pass 1: build a global index {ClassName: [(node_id, package), ...]} across
+    all Java nodes (packages come from a re-parse; node metadata doesn't carry
+    them).
     Pass 2: re-parse each Java file; for every `import a.b.C;`, resolve C against
-    the index. Wildcard and stdlib imports produce no edge.
+    the index, skipping candidates whose defining file declares a different
+    package — an external `org.springframework.stereotype.Component` must not
+    link to a local `com.example.model.Component` (#2504). Wildcard and stdlib
+    imports produce no edge.
     """
     try:
         import tree_sitter_java as tsjava
@@ -2085,8 +2192,45 @@ def _resolve_cross_file_java_imports(
     language = Language(tsjava.language())
     parser = Parser(language)
 
-    # Pass 1: class-name → node_id index (only internal, uppercase-starting names)
-    name_to_ids: dict[str, list[str]] = {}
+    # Pre-pass: declared package per source_file string (and parsed trees for
+    # pass 2, so each file is only parsed once).
+    parsed: dict[str, tuple[bytes, object]] = {}
+    pkg_by_src: dict[str, str] = {}
+    for path, file_result in zip(paths, per_file):
+        try:
+            source = path.read_bytes()
+            tree = parser.parse(source)
+        except Exception:
+            continue
+        parsed[str(path)] = (source, tree)
+        pkg = ""
+        for child in tree.root_node.children:
+            if child.type == "package_declaration":
+                pkg = _read_text(child, source).strip()[len("package"):].strip().rstrip(";").strip()
+                break
+        pkg_by_src[str(path)] = pkg
+        for node in file_result.get("nodes", []):
+            src = node.get("source_file")
+            if src:
+                pkg_by_src.setdefault(src, pkg)
+
+    def _pkg_matches(imp_pkg: str, tgt_pkg: str) -> bool:
+        if imp_pkg == tgt_pkg:
+            return True
+        # `import p.Outer.Inner` against a nested type defined in package p:
+        # the leftover segments must all be type-like (uppercase-first), which
+        # conventional lowercase external packages can never satisfy.
+        if tgt_pkg:
+            if not imp_pkg.startswith(tgt_pkg + "."):
+                return False
+            rest = imp_pkg[len(tgt_pkg) + 1:]
+        else:
+            rest = imp_pkg
+        return bool(rest) and all(seg[:1].isupper() for seg in rest.split("."))
+
+    # Pass 1: class-name → (node_id, package) index (only internal,
+    # uppercase-starting names)
+    name_to_ids: dict[str, list[tuple[str, str]]] = {}
     for file_result in per_file:
         for node in file_result.get("nodes", []):
             label = node.get("label", "")
@@ -2098,18 +2242,17 @@ def _resolve_cross_file_java_imports(
                 continue
             if not label[0].isalpha() or not label[0].isupper():
                 continue
-            name_to_ids.setdefault(label, []).append(nid)
+            name_to_ids.setdefault(label, []).append((nid, pkg_by_src.get(src, "")))
 
     # Pass 2: resolve imports to real node IDs
     new_edges: list[dict] = []
     seen_pairs: set[tuple[str, str]] = set()
     for path in paths:
         file_nid = _make_id(str(path))
-        try:
-            source = path.read_bytes()
-            tree = parser.parse(source)
-        except Exception:
+        entry = parsed.get(str(path))
+        if entry is None:
             continue
+        source, tree = entry
 
         def walk(n) -> None:
             if n.type == "import_declaration":
@@ -2123,11 +2266,15 @@ def _resolve_cross_file_java_imports(
                 if not parts:
                     return
                 last = parts[-1]
+                imp_pkg = ".".join(parts[:-1])
                 if last and last[0].islower() and len(parts) >= 2:
                     last = parts[-2]
+                    imp_pkg = ".".join(parts[:-2])
                 at_line = n.start_point[0] + 1
-                for tgt_nid in name_to_ids.get(last, []):
+                for tgt_nid, tgt_pkg in name_to_ids.get(last, []):
                     if tgt_nid == file_nid:
+                        continue
+                    if not _pkg_matches(imp_pkg, tgt_pkg):
                         continue
                     key = (file_nid, tgt_nid)
                     if key in seen_pairs:
@@ -2168,8 +2315,14 @@ def _resolve_java_type_references(
     names the exact package, so it disambiguates where bare-name matching cannot.
 
     Mutates ``all_nodes``/``all_edges`` in place. Runs after id-disambiguation so
-    target ids are final, and after ``_rewire_unique_stub_nodes`` so it only has
-    to handle the ambiguous remainder.
+    target ids are final, but BEFORE ``_rewire_unique_stub_nodes`` (#2504): the
+    rewire itself manufactures a false merge when the bare stub for an EXTERNAL
+    import (``org.springframework.stereotype.Component``) collapses onto the
+    only internal class with that simple name. References proven external by an
+    explicit import are re-pointed to an FQN-labeled sourceless stub the
+    bare-label rewire cannot collapse; references with no import/package facts
+    are left untouched so the legacy unique-label rewire keeps handling plain
+    same-package/default-package corpora (mirrors the PHP #1923 fix).
     """
     try:
         import tree_sitter_java as tsjava
@@ -2230,11 +2383,15 @@ def _resolve_java_type_references(
         pkg = pkg_by_file[src]
         fqn_to_id.setdefault(f"{pkg}.{label}" if pkg else label, nid)
 
-    # Bare shadow stubs: no source_file, type-like label.
+    # Shadow stubs: no source_file, type-like label. Dotted labels are included
+    # for qualified inline annotations (`@com.example.anno.Loggable`), which the
+    # engine mints with their full dotted name so a same-named local class can't
+    # absorb them (#2504).
     stub_label: dict[str, str] = {
         node["id"]: node.get("label", "")
         for node in all_nodes
-        if node.get("id") and not node.get("source_file") and node.get("label", "")[:1].isupper()
+        if node.get("id") and not node.get("source_file")
+        and (node.get("label", "")[:1].isupper() or "." in node.get("label", ""))
     }
     if not stub_label:
         return
@@ -2249,6 +2406,28 @@ def _resolve_java_type_references(
     # the reference must point at the RIGHT one (#1744). Mirrors the C# resolver,
     # whose REPOINT set already covers `references`.
     REPOINT_RELATIONS = {"implements", "inherits", "extends", "imports", "references"}
+
+    node_ids = {n.get("id") for n in all_nodes if n.get("id")}
+    external_stub_ids: dict[str, str] = {}
+    new_nodes: list[dict] = []
+
+    def _external_stub(fqn: str) -> str:
+        nid = external_stub_ids.get(fqn)
+        if nid:
+            return nid
+        nid = _make_id(fqn)
+        if nid not in node_ids:
+            new_nodes.append({
+                "id": nid,
+                "label": fqn,
+                "file_type": "code",
+                "source_file": "",
+                "source_location": "",
+            })
+            node_ids.add(nid)
+        external_stub_ids[fqn] = nid
+        return nid
+
     repointed_from: set[str] = set()
     for edge in all_edges:
         if edge.get("relation") not in REPOINT_RELATIONS:
@@ -2258,17 +2437,41 @@ def _resolve_java_type_references(
         if not label:
             continue
         ref_file = edge.get("source_file", "")
-        resolved = None
+        if "." in label:
+            # FQN-labeled stub (qualified inline annotation): resolve it against
+            # the internal definitions; an external FQN stays parked as-is.
+            resolved = fqn_to_id.get(label)
+            if resolved and resolved != tgt:
+                edge["target"] = resolved
+                repointed_from.add(tgt)
+            continue
         fqn = imports_by_file.get(ref_file, {}).get(label)
         if fqn:
             resolved = fqn_to_id.get(fqn)
-        if resolved is None:  # same-package reference (no explicit import)
+            if resolved is None:
+                # `import p.Outer.Inner`: strip trailing type-like segments to
+                # find the defining package of an internal nested type.
+                head = fqn.split(".")[:-1]
+                while resolved is None and head and head[-1][:1].isupper():
+                    head.pop()
+                    resolved = fqn_to_id.get(".".join(head + [label]))
+            if resolved is None:
+                # Explicit import with no internal definition: proven EXTERNAL.
+                # Park the edge on an FQN-labeled stub the bare-name rewire
+                # cannot collapse onto a same-named local class (#2504 — this
+                # is the Java counterpart of the PHP #1923 fix).
+                edge["target"] = _external_stub(fqn)
+                repointed_from.add(tgt)
+                continue
+        else:  # same-package reference (no explicit import)
             pkg = pkg_by_file.get(ref_file, "")
             resolved = fqn_to_id.get(f"{pkg}.{label}" if pkg else label)
         if resolved and resolved != tgt:
             edge["target"] = resolved
             repointed_from.add(tgt)
 
+    if new_nodes:
+        all_nodes.extend(new_nodes)
     if not repointed_from:
         return
 

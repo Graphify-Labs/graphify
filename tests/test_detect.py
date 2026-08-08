@@ -136,6 +136,92 @@ def test_graphifyignore_comments_ignored(tmp_path):
     assert any("other.py" in f for f in result["files"]["code"])
 
 
+def test_graphifyignore_utf8_bom_first_pattern_honored(tmp_path):
+    """A UTF-8 BOM at the start of .graphifyignore must not corrupt the first
+    pattern (#2163): git strips a single leading BOM, so `*.log` on line 1
+    must still exclude app.log."""
+    (tmp_path / ".graphifyignore").write_bytes(b"\xef\xbb\xbf*.log\nbuild/\n")
+    build = tmp_path / "build"
+    build.mkdir()
+    (build / "lib.py").write_text("x = 1")
+    (tmp_path / "app.log").write_text("log line")
+    (tmp_path / "main.py").write_text("print('hi')")
+
+    result = detect(tmp_path)
+    all_files = [f for files in result["files"].values() for f in files]
+    assert not any("app.log" in f for f in all_files), "BOM'd first pattern was dropped"
+    assert not any("build" in f for f in all_files)
+    assert any("main.py" in f for f in all_files)
+    assert result["graphifyignore_patterns"] == 2
+
+
+def test_gitignore_utf8_bom_matches_git(tmp_path):
+    """A BOM'd .gitignore first pattern must match, exactly like git (#2163)."""
+    (tmp_path / ".gitignore").write_bytes(b"\xef\xbb\xbf*.log\n")
+    (tmp_path / "app.log").write_text("log line")
+    (tmp_path / "main.py").write_text("print('hi')")
+
+    result = detect(tmp_path)
+    all_files = [f for files in result["files"].values() for f in files]
+    assert not any("app.log" in f for f in all_files)
+    assert any("main.py" in f for f in all_files)
+
+
+def test_graphifyignore_bom_only_file(tmp_path):
+    """A .graphifyignore containing only a BOM yields zero patterns, not one
+    bogus U+FEFF pattern (#2163)."""
+    (tmp_path / ".graphifyignore").write_bytes(b"\xef\xbb\xbf")
+    (tmp_path / "main.py").write_text("x = 1")
+
+    result = detect(tmp_path)
+    assert result["graphifyignore_patterns"] == 0
+    assert any("main.py" in f for f in result["files"]["code"])
+
+
+def test_graphifyignore_bom_then_comment(tmp_path):
+    """A BOM followed by a comment must still parse as a comment, not become
+    a `\\ufeff# comment` pattern (#2163)."""
+    (tmp_path / ".graphifyignore").write_bytes(b"\xef\xbb\xbf# comment\nmain.py\n")
+    (tmp_path / "main.py").write_text("x = 1")
+    (tmp_path / "other.py").write_text("x = 2")
+
+    result = detect(tmp_path)
+    assert not any("main.py" in f for f in result["files"]["code"])
+    assert any("other.py" in f for f in result["files"]["code"])
+    assert result["graphifyignore_patterns"] == 1, "BOM'd comment became a pattern"
+
+
+def test_nested_gitignore_utf8_bom(tmp_path):
+    """A BOM'd .gitignore below the scan root (loaded live during the walk,
+    #1206 path) must also have its first pattern honored (#2163)."""
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / ".gitignore").write_bytes(b"\xef\xbb\xbf*.log\n")
+    (sub / "app.log").write_text("log line")
+    (sub / "keep.py").write_text("x = 1")
+
+    result = detect(tmp_path)
+    all_files = [f for files in result["files"].values() for f in files]
+    assert not any("app.log" in f for f in all_files)
+    assert any("keep.py" in f for f in all_files)
+
+
+def test_git_info_exclude_utf8_bom(tmp_path):
+    """A BOM at the start of $GIT_DIR/info/exclude must not corrupt the first
+    pattern either (#2163) — second read site in _load_graphifyignore."""
+    (tmp_path / ".git" / "info").mkdir(parents=True)
+    (tmp_path / ".git" / "info" / "exclude").write_bytes(b"\xef\xbb\xbfsecrets/\n")
+    secrets = tmp_path / "secrets"
+    secrets.mkdir()
+    (secrets / "x.py").write_text("token = 'x'")
+    (tmp_path / "real.py").write_text("def real(): pass")
+
+    result = detect(tmp_path)
+    all_files = [f for files in result["files"].values() for f in files]
+    assert not any("secrets" in f for f in all_files), "BOM'd info/exclude pattern was dropped"
+    assert any("real.py" in f for f in all_files)
+
+
 def test_detect_follows_symlinked_directory(tmp_path):
     real_dir = tmp_path / "real_lib"
     real_dir.mkdir()
@@ -598,6 +684,85 @@ def test_detect_skips_coverage_dir(tmp_path):
     cov_prefix = str(tmp_path / "coverage")
     assert not any(f.startswith(cov_prefix) for f in all_files)
     assert any("main.py" in f for f in all_files)
+
+
+def test_detect_skips_coverage_dir_by_lcov_info(tmp_path):
+    """A coverage/ dir is still pruned on any single artefact file — an lcov.info
+    with no lcov-report/ subtree is enough evidence (#870, #2339)."""
+    cov = tmp_path / "coverage"
+    cov.mkdir()
+    (cov / "lcov.info").write_text("TN:\nSF:src/app.ts\nend_of_record\n")
+    (cov / "prettify.js").write_text("var PR_SHOULD_USE_CONTINUATION=true;")
+    (tmp_path / "main.py").write_text("def hello(): pass")
+    result = detect(tmp_path)
+    all_files = [f for files in result["files"].values() for f in files]
+    assert not any(f.startswith(str(cov)) for f in all_files)
+    assert any("main.py" in f for f in all_files)
+
+
+def test_detect_keeps_coverage_code_namespace(tmp_path):
+    """#2339: a coverage/ dir holding real modules and no coverage artefacts is a
+    legitimate package name, not a generated report, and must NOT be pruned.
+
+    Pruning it by name dropped an entire production package while leaving its
+    dependents in the graph, so queries kept returning plausible neighbours and
+    nothing in the report or skipped lists showed the loss."""
+    pkg = tmp_path / "auditor_toolkit" / "assurance" / "coverage"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("from .impact import Impact\n")
+    (pkg / "impact.py").write_text("class Impact:\n    def score(self): return 1\n")
+    (pkg / "inventory.py").write_text("def inventory():\n    return []\n")
+    (tmp_path / "app.py").write_text("from auditor_toolkit.assurance import coverage\n")
+    result = detect(tmp_path)
+    all_files = [f for files in result["files"].values() for f in files]
+    assert any("impact.py" in f for f in all_files)
+    assert any("inventory.py" in f for f in all_files)
+    assert any(f.endswith("coverage" + os.sep + "__init__.py") for f in all_files)
+
+
+def test_collect_files_keeps_coverage_code_namespace(tmp_path):
+    """#2339 as reported: collect_files returned [] for a real coverage package,
+    both when it is the walk target and when it is reached through the repo root.
+    A genuine report dir alongside it must still be skipped."""
+    from graphify.extract import collect_files
+
+    pkg = tmp_path / "auditor_toolkit" / "assurance" / "coverage"
+    pkg.mkdir(parents=True)
+    for name in ("__init__.py", "impact.py", "mapping.py"):
+        (pkg / name).write_text("def f(): pass\n")
+
+    report = tmp_path / "webapp" / "coverage"
+    report.mkdir(parents=True)
+    (report / "index.html").write_text("<html>coverage</html>")
+    (report / "base.css").write_text("body{}")
+    (report / "prettify.js").write_text("var PR=1;")
+
+    assert sorted(p.name for p in collect_files(pkg)) == [
+        "__init__.py", "impact.py", "mapping.py",
+    ]
+    walked = {str(p.relative_to(tmp_path)) for p in collect_files(tmp_path)}
+    assert any(p.endswith("impact.py") for p in walked)
+    assert not any("webapp" in p for p in walked), (
+        "a generated Istanbul report dir must still be pruned (#870)"
+    )
+
+
+def test_is_noise_dir_coverage_is_evidence_gated(tmp_path):
+    """The gate itself: name alone is not enough, and an unverifiable call
+    (no parent) keeps a possibly-real code dir — same contract as env/snapshots."""
+    src = tmp_path / "coverage"
+    src.mkdir()
+    (src / "__init__.py").write_text("")
+    assert detect_mod._is_noise_dir("coverage", tmp_path) is False
+
+    generated = tmp_path / "report" / "coverage"
+    generated.mkdir(parents=True)
+    (generated / "coverage-final.json").write_text("{}")
+    assert detect_mod._is_noise_dir("coverage", tmp_path / "report") is True
+
+    assert detect_mod._is_noise_dir("coverage") is False
+    # lcov-report stays unconditional — no package is ever named that.
+    assert detect_mod._is_noise_dir("lcov-report") is True
 
 
 def test_detect_skips_visual_tests_dir(tmp_path):
@@ -1835,6 +2000,91 @@ def test_detect_incremental_portable_across_paths(tmp_path):
     )
 
 
+def _rewrite_manifest_keys_nfd(manifest_path):
+    """Rewrite a saved manifest so every key is in NFD form, simulating a
+    manifest written by a macOS run where os.walk/getcwd yielded decomposed
+    paths (#2221). Returns the rewritten key list for sanity checks."""
+    import json
+    p = Path(manifest_path)
+    raw = json.loads(p.read_text(encoding="utf-8"))
+    nfd = {unicodedata.normalize("NFD", k): v for k, v in raw.items()}
+    p.write_text(json.dumps(nfd), encoding="utf-8")
+    return list(nfd)
+
+
+def test_manifest_nfc_keys_survive_macos_path_forms(tmp_path):
+    """#2221 (portable/relative-key manifest): a manifest whose keys were
+    written in NFD (macOS os.walk form) must still match an NFC scan, so
+    --update reports nothing new/changed/deleted instead of re-extracting
+    the whole corpus.
+
+    NOTE: the fixture filename must contain a character that actually
+    decomposes under NFD ("é" in "café" does, as do "ä" and "й"). Plain
+    Cyrillic like "заметка" has no decomposition, so NFC == NFD and the
+    test would pass vacuously even without the fix. Keep the byte-wise
+    inequality assertion below when changing the fixture name.
+    """
+    corpus = tmp_path / "corpus"
+    (corpus / "docs").mkdir(parents=True)
+    nfc_name = unicodedata.normalize("NFC", "café.md")
+    assert nfc_name != unicodedata.normalize("NFD", nfc_name)  # must decompose
+    (corpus / "docs" / nfc_name).write_text("hello unicode\n")
+
+    # Manifest lives OUTSIDE the corpus so it never enters the scan.
+    manifest_path = str(tmp_path / "out" / "manifest.json")
+    full = detect(corpus)
+    assert full["total_files"] == 1  # sanity: the café file was scanned
+    save_manifest(full["files"], manifest_path, root=corpus)
+
+    # Simulate the macOS-written manifest: keys stored in NFD form.
+    nfd_keys = _rewrite_manifest_keys_nfd(manifest_path)
+    # Sanity: the on-disk keys are genuinely decomposed, not silently NFC.
+    assert any(unicodedata.normalize("NFC", k) != k for k in nfd_keys)
+
+    inc = detect_incremental(corpus, manifest_path)
+    assert inc["new_total"] == 0, (
+        f"NFD manifest keys must match NFC scan paths (#2221); "
+        f"new_files={inc['new_files']}"
+    )
+    assert all(v == [] for v in inc["new_files"].values())
+    assert inc["deleted_files"] == [], (
+        f"NFD keys misreported as deletions: {inc['deleted_files']}"
+    )
+    assert inc["excluded_files"] == []
+
+
+def test_manifest_nfc_keys_legacy_absolute(tmp_path):
+    """#2221 exact repro: legacy manifest saved WITHOUT root (absolute keys),
+    then rewritten to NFD. Before the load_manifest/detect_incremental NFC
+    normalization, every file looked simultaneously new AND deleted on
+    --update.
+
+    NOTE: as above, the filename must contain an NFD-decomposable character
+    ("é"); a non-decomposing name would make this test vacuous.
+    """
+    corpus = tmp_path / "corpus"
+    (corpus / "docs").mkdir(parents=True)
+    nfc_name = unicodedata.normalize("NFC", "café.md")
+    assert nfc_name != unicodedata.normalize("NFD", nfc_name)  # must decompose
+    (corpus / "docs" / nfc_name).write_text("hello unicode\n")
+
+    manifest_path = str(tmp_path / "out" / "manifest.json")
+    full = detect(corpus)
+    assert full["total_files"] == 1
+    # No root= -> legacy absolute-keyed manifest format.
+    save_manifest(full["files"], manifest_path)
+
+    _rewrite_manifest_keys_nfd(manifest_path)
+
+    inc = detect_incremental(corpus, manifest_path)
+    assert inc["new_total"] == 0, (
+        f"legacy absolute NFD keys must match NFC scan (#2221); "
+        f"new_files={inc['new_files']}"
+    )
+    assert inc["deleted_files"] == []
+    assert inc["excluded_files"] == []
+
+
 def test_save_manifest_in_root_symlink_roundtrips(tmp_path):
     """In-root symlinks must store under the symlink's own name, not the
     resolved target. Resolving the key when relativizing pointed the stored
@@ -2019,6 +2269,78 @@ def test_detect_prunes_venv_names_without_markers(tmp_path):
     assert any("app.py" in f for f in all_files)
     for name in ("venv", ".venv", "my_venv"):
         assert not any(f"{os.sep}{name}{os.sep}" in f for f in all_files), f"{name} must stay pruned"
+
+
+@pytest.mark.parametrize(
+    ("configured_out", "absolute", "symlink_target"),
+    [
+        pytest.param("graphify-out/nlp", False, None, id="default-parent"),
+        pytest.param("artifacts/nlp", False, None, id="custom-parent"),
+        pytest.param("artifacts/nlp", True, None, id="absolute"),
+        pytest.param(
+            "aliases/output-link",
+            False,
+            "artifacts/nlp",
+            id="in-root-symlink",
+        ),
+    ],
+)
+def test_nested_graphify_out_prunes_only_configured_path(
+    tmp_path, configured_out, absolute, symlink_target
+):
+    """#2273: a nested output basename must not prune same-named source dirs."""
+    import json
+    import subprocess
+    import sys
+
+    if absolute:
+        configured_out = str(tmp_path / configured_out)
+
+    source = tmp_path / "src" / "revil" / "nexus" / "nlp" / "core.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("def tokenize(text):\n    return text.split()\n")
+
+    output_dir = (
+        tmp_path / symlink_target
+        if symlink_target is not None
+        else tmp_path / configured_out
+    )
+    if symlink_target is not None:
+        output_dir.mkdir(parents=True)
+        configured_out_link = tmp_path / configured_out
+        configured_out_link.parent.mkdir(parents=True)
+        try:
+            configured_out_link.symlink_to(output_dir, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("filesystem does not support symlinks")
+
+    generated = output_dir / "generated.py"
+    generated.parent.mkdir(parents=True, exist_ok=True)
+    generated.write_text("SHOULD_NOT_BE_INDEXED = True\n")
+
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import json, sys\n"
+                "from pathlib import Path\n"
+                "from graphify.detect import detect\n"
+                "result = detect(Path(sys.argv[1]))\n"
+                "print(json.dumps(result['files']['code']))\n"
+            ),
+            str(tmp_path),
+        ],
+        cwd=Path(__file__).parents[1],
+        env={**os.environ, "GRAPHIFY_OUT": configured_out},
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    detected = {Path(p).resolve() for p in json.loads(probe.stdout)}
+
+    assert source.resolve() in detected
+    assert generated.resolve() not in detected
 
 
 def test_detect_records_unclassified_extensionless_files(tmp_path):
@@ -2359,3 +2681,42 @@ def test_sensitive_bare_keyword_prose_still_dropped():
     assert _is_sensitive(Path("secrets.md"))
     assert _is_sensitive(Path("token.rst"))
     assert not _is_sensitive(Path("token-lifecycle.md"))  # multi-word slug indexed
+
+
+# ── #2232 / #2184: committed dotenv templates (.env.example etc.) are graphable ──
+
+@pytest.mark.parametrize("path", [
+    ".env.example",
+    ".env.sample",
+    ".env.template",
+    ".env.dist",
+    ".ENV.EXAMPLE",              # case-insensitive, real on macOS/Windows
+    ".envrc.sample",             # direnv template
+    ".env.production.example",   # per-environment template
+])
+def test_sensitive_filter_indexes_env_templates(path):
+    """Placeholder-only committed templates must not be treated as live secrets."""
+    assert not _is_sensitive(Path(path)), f"{path} is a committed template, must be indexed (#2184)"
+
+
+@pytest.mark.parametrize("path", [
+    ".env",
+    ".env.local",
+    ".env.production",
+    ".envrc",
+    ".env.example.local",   # template suffix not final -> a real local override
+    ".env.example.bak",     # backup of a (possibly filled-in) env file
+])
+def test_sensitive_filter_still_excludes_real_env_files(path):
+    """The template carve-out is suffix-anchored; live env files stay excluded."""
+    assert _is_sensitive(Path(path)), f"{path} is a live env file, must stay excluded (#2184)"
+
+
+@pytest.mark.parametrize("path", [
+    "secrets/.env.example",
+    "deploy/credentials/.env.example",
+])
+def test_sensitive_env_template_inside_secrets_dir_still_dropped(path):
+    """Stage 1 dir guard runs before the Stage 2 template exemption: anything
+    under a secrets/credentials dir stays excluded, template suffix or not."""
+    assert _is_sensitive(Path(path)), f"{path} is under a secrets dir, must stay excluded (#2184)"
