@@ -30,6 +30,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 # the examples never leaks in.
 _EXAMPLE_RE = re.compile(r"`([^`]+)`\s*\+\s*`([^`]+)`\s*→\s*`([^`]+)`")
 
+# `path.md` → `id`  — the whole-file-node convention (no `+`/entity group, so this
+# never overlaps with `_EXAMPLE_RE` above).
+_WHOLE_FILE_EXAMPLE_RE = re.compile(r"`([\w./-]+\.md)`\s*→\s*`([a-z0-9_]+)`")
+
 
 def _spec_files() -> list[Path]:
     roots = [REPO_ROOT / "graphify" / "skills", REPO_ROOT / "tools" / "skillgen" / "fragments"]
@@ -57,6 +61,23 @@ def _ast_symbol_id(path: str, entity: str) -> str:
     """Reproduce the symbol ID the AST extractor emits for a file + symbol, using
     the real production helpers (not a re-implementation)."""
     return _make_id(_file_stem(Path(path)), entity)
+
+
+def _ast_file_id(path: str) -> str:
+    """Reproduce the AST extractor's whole-file node ID (no entity part) - what
+    `extract_markdown`'s `file_nid` canonicalizes to after extract()'s id-remap
+    post-pass, and what a semantic subagent must independently reproduce for a
+    whole-file node to merge instead of splitting (#1033-shaped bug class)."""
+    return _make_id(_file_stem(Path(path)))
+
+
+def _whole_file_examples() -> list[tuple[Path, str, str]]:
+    out: list[tuple[Path, str, str]] = []
+    for f in _spec_files():
+        text = f.read_text(encoding="utf-8")
+        for path, expected in _WHOLE_FILE_EXAMPLE_RE.findall(text):
+            out.append((f, path, expected))
+    return out
 
 
 def test_spec_files_are_discoverable():
@@ -94,3 +115,39 @@ def test_cautionary_wrong_forms_are_actually_wrong():
     # are both wrong now that the stem is the full repo-relative path (#1504).
     assert _make_id("session", "ValidateToken") != correct
     assert _make_id("auth", "session", "ValidateToken") != correct
+
+
+def test_whole_file_node_examples_are_discoverable():
+    """Guard the guard, for the whole-file-node convention specifically: if the
+    spec wording changes so the example no longer parses, fail loudly."""
+    examples = _whole_file_examples()
+    assert examples, (
+        "no whole-file-node ID examples found across host specs — did the "
+        "'Whole-file nodes' wording change?"
+    )
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    [(p, x) for (_f, p, x) in _whole_file_examples()],
+    ids=[f"{f.parent.parent.name}:{p}" for (f, p, x) in _whole_file_examples()],
+)
+def test_whole_file_node_id_examples_match_ast_extractor(path, expected):
+    got = _ast_file_id(path)
+    assert got == expected, (
+        f"whole-file node-ID spec drift: spec says `{path}` → `{expected}`, but "
+        f"extract._make_id(_file_stem(...)) produces `{got}`. Update the spec "
+        f"example and the ID functions together."
+    )
+
+
+def test_whole_file_node_id_has_no_document_suffix():
+    """Regression test for the exact split-node bug this spec section closes: two
+    subagents extracting the same doc suite in parallel independently produced
+    `docs_architecture` and `docs_architecture_document` for one real file,
+    because nothing told either of them what a whole-file node's ID should be.
+    The correct, single ID is the bare stem — the same recipe as a symbol ID
+    with the entity part simply omitted, never a `_document`/`_file` suffix."""
+    correct = _ast_file_id("docs/ARCHITECTURE.md")
+    assert correct == "docs_architecture"
+    assert correct != "docs_architecture_document"

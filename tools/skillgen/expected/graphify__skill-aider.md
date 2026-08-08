@@ -183,29 +183,45 @@ This step has two parts: **structural extraction** (deterministic, free) and **s
 
 Note: Parallelizing AST + semantic saves 5-15s on large corpora. AST is deterministic and fast; start it while subagents are processing docs/papers.
 
-#### Part A - Structural extraction for code files
+#### Part A - Structural extraction for code and structurally-supported docs
 
-For any code files detected, run AST extraction in parallel with Part B subagents:
+Run AST extraction in parallel with Part B subagents, over every code file plus any
+document/paper file whose extension has a registered structural extractor
+(currently `.md`/`.mdx`/`.qmd`/`.skill`, via a deterministic Markdown parser that
+mints one whole-file node and one node per heading, no LLM involved). Doc files
+without a registered extractor (`.txt`, `.rst`, `.html`, `.pdf`, ...) are unaffected
+and still go through Part B only. This also gives every Part B subagent a
+pre-existing, deterministic ID for "the node representing this file" to reference,
+instead of each subagent inventing its own convention and splitting one file into
+two disconnected nodes.
 
 ```bash
 $(cat graphify-out/.graphify_python) -c "
 import sys, json
-from graphify.extract import collect_files, extract
+from graphify.extract import collect_files, extract, structural_extensions
 from pathlib import Path
 import json
 
-code_files = []
+exts = structural_extensions()
+structural_files = []
 detect = json.loads(Path('.graphify_detect.json').read_text())
 for f in detect.get('files', {}).get('code', []):
-    code_files.extend(collect_files(Path(f)) if Path(f).is_dir() else [Path(f)])
+    structural_files.extend(collect_files(Path(f)) if Path(f).is_dir() else [Path(f)])
+for cat in ('document', 'paper'):
+    for f in detect.get('files', {}).get(cat, []):
+        p = Path(f)
+        if p.is_dir():
+            structural_files.extend(x for x in collect_files(p) if x.suffix in exts)
+        elif p.suffix in exts:
+            structural_files.append(p)
 
-if code_files:
-    result = extract(code_files)
+if structural_files:
+    result = extract(structural_files)
     Path('.graphify_ast.json').write_text(json.dumps(result, indent=2))
     print(f'AST: {len(result[\"nodes\"])} nodes, {len(result[\"edges\"])} edges')
 else:
     Path('.graphify_ast.json').write_text(json.dumps({'nodes':[],'edges':[],'input_tokens':0,'output_tokens':0}))
-    print('No code files - skipping AST extraction')
+    print('No structurally-supported files - skipping AST extraction')
 "
 ```
 

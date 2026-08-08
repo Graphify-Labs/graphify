@@ -109,7 +109,7 @@ def test_lean_core_runs_default_pipeline_with_zero_references():
         "### Step 1 - Ensure graphify is installed",
         "### Step 2 - Detect files",
         "### Step 3 - Extract entities and relationships",
-        "#### Part A - Structural extraction for code files",
+        "#### Part A - Structural extraction for code and structurally-supported docs",
         "#### Part C - Merge AST + semantic into final extraction",
         "### Step 4 - Build graph, cluster, analyze, generate outputs",
         "### Step 5 - Label communities",
@@ -363,7 +363,7 @@ _STEP_HEADINGS = (
     "### Step 1 - Ensure graphify is installed",
     "### Step 2 - Detect files",
     "### Step 3 - Extract entities and relationships",
-    "#### Part A - Structural extraction for code files",
+    "#### Part A - Structural extraction for code and structurally-supported docs",
     "#### Part B - Semantic extraction (parallel subagents)",
     "#### Part C - Merge AST + semantic into final extraction",
     "### Step 4 - Build graph, cluster, analyze, generate outputs",
@@ -886,7 +886,7 @@ def test_audit_allowlist_documents_only_consolidations():
     A genuine drop (trae's native AGENTS.md integration) must never be in the
     allowlist, or the guard would rubber-stamp the regression it exists to catch.
     """
-    all_allowlisted = set(gen.SHARED_INTRO_ALLOWLIST)
+    all_allowlisted = set(gen.SHARED_CORE_ALLOWLIST)
     for hs in gen._CONSOLIDATION_ALLOWLIST.values():
         all_allowlisted |= set(hs)
     assert "## For native AGENTS.md integration (Trae)" not in all_allowlisted
