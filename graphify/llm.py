@@ -2856,7 +2856,11 @@ def _community_label_lines(G, communities, gods, max_communities, top_k):
             if len(names) >= top_k:
                 break
         if names:
-            lines.append(f"Community {cid}: {', '.join(names)}")
+            # Bare id key, NOT "Community {cid}: ..." — that string doubles as the
+            # placeholder sentinel (_placeholder_community_labels), so a model that
+            # echoed the key back produced a "name" indistinguishable from the
+            # no-backend fallback and the caller's sentinel filter dropped it (#2534).
+            lines.append(f"{cid}: {', '.join(names)}")
             labeled_cids.append(int(cid))
     return lines, labeled_cids
 
@@ -2927,6 +2931,7 @@ def _label_batch_with_retry(
         "You are naming clusters in a knowledge graph. For each community below, "
         "return a concise 2-5 word plain-language name describing what it is about "
         "(e.g. \"Order Management\", \"Payment Flow\", \"Auth Middleware\"). "
+        "Each input line is '<community id>: <representative member names>'. "
         "Respond ONLY with a JSON object mapping the community id (as a string) to "
         "its name - no prose, no markdown fences.\n\n" + "\n".join(batch_lines)
     )

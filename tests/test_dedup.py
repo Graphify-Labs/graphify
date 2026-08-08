@@ -1,7 +1,14 @@
 """Tests for graphify/dedup.py entity deduplication pipeline."""
 from __future__ import annotations
 import pytest
-from graphify.dedup import deduplicate_entities, _defines_id, _entropy, _shingles
+from graphify.dedup import (
+    deduplicate_entities,
+    _collision_rank,
+    _defines_id,
+    _entropy,
+    _lifecycle_penalty,
+    _shingles,
+)
 
 
 # ── entropy gate ─────────────────────────────────────────────────────────────
@@ -626,6 +633,108 @@ def test_defines_id_helper():
     # A path that is merely a string-prefix of the ID's path does not define it.
     assert not _defines_id({"id": "agents_foo", "source_file": "agent/foo.md"})
     assert not _defines_id({"id": "docs_intro_foo", "source_file": ""})
+
+
+# ── #2532: lifecycle-aware, environment-stable collision ranking ──────────────
+# Active-vs-archived path markers adapted from @michaelxer's PR #2540, judged on
+# root-relative segments with a reversed-segment final tiebreak so the survivor
+# cannot flip with path form or checkout location.
+
+_DONE_PLAN = {"id": "plans_binding_doctrine", "label": "binding doctrine",
+              "file_type": "concept",
+              "source_file": "plans/_done/binding-doctrine.md"}
+_ACTIVE_PLAN = {"id": "plans_binding_doctrine", "label": "binding doctrine",
+                "file_type": "concept",
+                "source_file": "plans/in-progress/binding-doctrine.md"}
+
+
+def test_lifecycle_penalty_on_relative_segments():
+    assert _lifecycle_penalty("plans/_done/x.md") == 2
+    assert _lifecycle_penalty("plans/in-progress/x.md") == 0
+    assert _lifecycle_penalty("docs/x.md") == 1
+    # A FILE named after a marker is not a marker — only directory segments count.
+    assert _lifecycle_penalty("done.md") == 1
+    assert _lifecycle_penalty("plans/done.md") == 1
+    # Mixed markers: the best (most active) marked segment wins.
+    assert _lifecycle_penalty("archive/in-progress/x.md") == 0
+
+
+def test_archived_path_ranks_below_active_despite_ascii_order():
+    """#2532: `plans/_done` sorts before `plans/in-progress` lexically ('_' < 'i'),
+    so a raw-string tiebreak picks the archived copy — assert the ASCII trap is
+    real, then that the rank inverts it."""
+    assert _DONE_PLAN["source_file"] < _ACTIVE_PLAN["source_file"]  # the trap
+    assert _collision_rank(_ACTIVE_PLAN) < _collision_rank(_DONE_PLAN)
+
+
+def test_active_plan_survives_archived_copy_order_independent():
+    """#2532 reported case: the in-progress copy survives, whichever order the
+    colliding nodes arrive in."""
+    import itertools
+    for perm in itertools.permutations([_DONE_PLAN, _ACTIVE_PLAN]):
+        out, _ = deduplicate_entities([dict(n) for n in perm], [], communities={})
+        assert len(out) == 1
+        assert out[0]["source_file"] == "plans/in-progress/binding-doctrine.md"
+
+
+def test_checkout_dir_lifecycle_name_does_not_mark_paths(tmp_path):
+    """Gap in #2540: markers must be matched on ROOT-RELATIVE segments only. An
+    absolute source_file stored under a checkout directory named `wip` must not
+    be scored active by the checkout location — the archived copy still loses."""
+    import itertools
+    root = tmp_path / "wip" / "repo"
+    archived = {"id": "plans_doc", "label": "doc", "file_type": "concept",
+                "source_file": str(root / "plans" / "_done" / "doc.md")}
+    active = {"id": "plans_doc", "label": "doc", "file_type": "concept",
+              "source_file": "plans/roadmap/doc.md"}
+    for perm in itertools.permutations([archived, active]):
+        out, _ = deduplicate_entities([dict(n) for n in perm], [],
+                                      communities={}, root=root)
+        assert len(out) == 1
+        assert out[0]["source_file"] == "plans/roadmap/doc.md"
+
+
+def test_neutral_collision_survivor_is_stable_across_path_forms(tmp_path):
+    """#2532: with no lifecycle markers, the tiebreak must not depend on whether
+    either path is stored absolute or repo-relative — one root-relative file
+    identity survives across all four form combinations and both insertion
+    orders (8 runs)."""
+    import itertools
+    root = tmp_path / "repo"
+    rel_a, rel_b = "plans/q3/doc.md", "plans/roadmap/doc.md"
+    survivors = set()
+    for form_a in (rel_a, str(root / rel_a)):
+        for form_b in (rel_b, str(root / rel_b)):
+            a = {"id": "plans_doc", "label": "doc", "file_type": "concept",
+                 "source_file": form_a}
+            b = {"id": "plans_doc", "label": "doc", "file_type": "concept",
+                 "source_file": form_b}
+            for perm in itertools.permutations([a, b]):
+                out, _ = deduplicate_entities([dict(n) for n in perm], [],
+                                              communities={}, root=root)
+                assert len(out) == 1
+                sf = out[0]["source_file"].replace("\\", "/")
+                prefix = str(root).replace("\\", "/") + "/"
+                survivors.add(sf.removeprefix(prefix))
+    assert survivors == {"plans/q3/doc.md"}, (
+        f"survivor depends on path form or order: {survivors}"
+    )
+
+
+def test_archived_definer_beats_active_reference():
+    """The definer flag outranks the lifecycle penalty: a node that owns its ID
+    survives even from an archived folder against a live cross-reference."""
+    import itertools
+    nid = "plans_done_spec_spec"
+    definer = {"id": nid, "label": "spec doc", "file_type": "concept",
+               "source_file": "plans/_done/spec.md"}
+    reference = {"id": nid, "label": "spec", "file_type": "concept",
+                 "source_file": "plans/in-progress/roadmap.md"}
+    assert _defines_id(definer) and not _defines_id(reference)
+    for perm in itertools.permutations([definer, reference]):
+        out, _ = deduplicate_entities([dict(n) for n in perm], [], communities={})
+        assert len(out) == 1
+        assert out[0]["source_file"] == "plans/_done/spec.md"
 
 
 # ── #2091 review: attribute-merge correctness (fixes A-D) ─────────────────────

@@ -650,3 +650,128 @@ def test_graph_json_node_ids_are_portable_across_checkout_paths(tmp_path):
     leak = {"alice_home", "bob_elsewhere", "checkout", "tmp", "private", "users", "home", "var"}
     assert not any(part in leak for ident in a for part in ident.split("_")), \
         f"node id embeds an absolute-path component: {a}"
+
+
+# ── cluster-only silent failures (#2534) + refused-write exit code (#2522) ───
+
+
+def test_cluster_only_reports_failure_when_write_is_refused(tmp_path):
+    """The #479 shrink guard can refuse to overwrite graph.json. cluster-only
+    still printed "graph.json updated" and exited 0, and it had already written
+    GRAPH_REPORT.md and the labels for the clustering it then discarded (#2436).
+    Contributed by @aniJani (#2522)."""
+    out = _make_graph(tmp_path)
+    graph_json = out / "graph.json"
+
+    # Duplicate node ids make the file look larger than the graph it loads into,
+    # which is what trips the guard on a real re-cluster.
+    data = json.loads(graph_json.read_text(encoding="utf-8"))
+    data["nodes"] = data["nodes"] + data["nodes"][:3]
+    graph_json.write_text(json.dumps(data), encoding="utf-8")
+
+    report = out / "GRAPH_REPORT.md"
+    report.write_text("PREVIOUS REPORT\n", encoding="utf-8")
+    before = graph_json.read_text(encoding="utf-8")
+
+    r = _run(["cluster-only", ".", "--no-viz", "--no-label"], tmp_path)
+
+    assert r.returncode != 0, r.stdout
+    assert "graph.json NOT written" in r.stderr, r.stderr
+    assert "graph.json updated" not in r.stdout, r.stdout
+    assert graph_json.read_text(encoding="utf-8") == before
+    assert report.read_text(encoding="utf-8") == "PREVIOUS REPORT\n"
+
+
+def test_cluster_only_happy_path_exits_zero(tmp_path):
+    """Guard for the #2522 reordering: the normal re-cluster still succeeds."""
+    _make_graph(tmp_path)
+    r = _run(["cluster-only", ".", "--no-viz"], tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert "Done -" in r.stdout, r.stdout
+    assert "communities" in r.stdout
+
+
+def test_cluster_only_warns_when_labeling_flags_are_ignored(tmp_path):
+    """#2534 case 1: with a saved .graphify_labels.json the reuse branch never
+    calls the LLM, so --backend/--model/--batch-size used to be silently
+    ignored while exiting 0. Reuse stays a success (exit 0), but the ignored
+    flags must be named on stderr."""
+    _make_graph(tmp_path)  # persists .graphify_labels.json -> reuse branch
+
+    r = _run(["cluster-only", ".", "--backend", "openai", "--no-viz"], tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert "--backend" in r.stderr and "ignored" in r.stderr, r.stderr
+    assert "reusing saved labels" in r.stderr, r.stderr
+    # the reuse branch must NOT have gone through the LLM labeling path
+    assert "Labeling communities" not in r.stdout, r.stdout
+
+
+def test_cluster_only_reuse_without_labeling_flags_stays_quiet(tmp_path):
+    """Control for the #2534 case-1 warning: plain reuse prints no flag warning."""
+    _make_graph(tmp_path)
+    r = _run(["cluster-only", ".", "--no-viz"], tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert "ignored" not in r.stderr, r.stderr
+    assert "reusing saved labels" not in r.stderr, r.stderr
+
+
+# ── cluster-only must not re-stamp built_at_commit from the shell's cwd ──────
+
+
+def _init_git_repo(path: Path, message: str) -> str:
+    """git init + one empty commit; returns the HEAD sha."""
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q", str(path)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(path), "-c", "user.email=t@test", "-c", "user.name=t",
+         "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", message],
+        check=True, capture_output=True,
+    )
+    return subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+
+def test_cluster_only_preserves_built_at_commit_from_other_repo_cwd(tmp_path):
+    """#2534 case 4: cluster-only re-clusters an EXISTING graph, so the
+    extract-time built_at_commit must survive — running it from a DIFFERENT
+    repo used to re-stamp graph.json with that repo's HEAD."""
+    target = tmp_path / "target"
+    commit_x = _init_git_repo(target, "init target")
+    out = _make_graph(target)
+    graph_json = out / "graph.json"
+    data = json.loads(graph_json.read_text(encoding="utf-8"))
+    data["built_at_commit"] = commit_x
+    graph_json.write_text(json.dumps(data), encoding="utf-8")
+
+    other = tmp_path / "other"
+    commit_y = _init_git_repo(other, "init other")
+    assert commit_x != commit_y
+
+    r = _run(["cluster-only", str(target), "--no-viz"], other)
+    assert r.returncode == 0, r.stderr
+    final = json.loads(graph_json.read_text(encoding="utf-8"))
+    assert final.get("built_at_commit") == commit_x, (
+        f"built_at_commit re-stamped from the shell's cwd: expected {commit_x}, "
+        f"got {final.get('built_at_commit')} (other repo HEAD is {commit_y})"
+    )
+
+
+def test_cluster_only_preserves_built_at_commit_from_non_repo_cwd(tmp_path):
+    """#2534 case 4: from a cwd that is not a git repo at all, the stamp must
+    still be preserved — not dropped."""
+    target = tmp_path / "target"
+    commit_x = _init_git_repo(target, "init target")
+    out = _make_graph(target)
+    graph_json = out / "graph.json"
+    data = json.loads(graph_json.read_text(encoding="utf-8"))
+    data["built_at_commit"] = commit_x
+    graph_json.write_text(json.dumps(data), encoding="utf-8")
+
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    r = _run(["cluster-only", str(target), "--no-viz"], plain)
+    assert r.returncode == 0, r.stderr
+    final = json.loads(graph_json.read_text(encoding="utf-8"))
+    assert final.get("built_at_commit") == commit_x

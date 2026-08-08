@@ -1638,6 +1638,12 @@ def dispatch_command(cmd: str) -> None:
         co_exclude_hubs: float | None = None
         label_max_concurrency: int = 4
         label_batch_size: int = 100
+        # #2534: defaults make presence undetectable for these, so track whether
+        # the user actually passed them — the label-reuse branch below warns when
+        # labeling flags are silently ignored. (--backend/--model default to None,
+        # so `is not None` already means "explicitly passed" for those.)
+        label_max_concurrency_explicit = False
+        label_batch_size_explicit = False
         i_arg = 0
         while i_arg < len(args):
             a = args[i_arg]
@@ -1660,13 +1666,13 @@ def dispatch_command(cmd: str) -> None:
             elif a.startswith("--exclude-hubs="):
                 co_exclude_hubs = float(a.split("=", 1)[1]); i_arg += 1
             elif a == "--max-concurrency" and i_arg + 1 < len(args):
-                label_max_concurrency = int(args[i_arg + 1]); i_arg += 2
+                label_max_concurrency = int(args[i_arg + 1]); label_max_concurrency_explicit = True; i_arg += 2
             elif a.startswith("--max-concurrency="):
-                label_max_concurrency = int(a.split("=", 1)[1]); i_arg += 1
+                label_max_concurrency = int(a.split("=", 1)[1]); label_max_concurrency_explicit = True; i_arg += 1
             elif a == "--batch-size" and i_arg + 1 < len(args):
-                label_batch_size = int(args[i_arg + 1]); i_arg += 2
+                label_batch_size = int(args[i_arg + 1]); label_batch_size_explicit = True; i_arg += 2
             elif a.startswith("--batch-size="):
-                label_batch_size = int(a.split("=", 1)[1]); i_arg += 1
+                label_batch_size = int(a.split("=", 1)[1]); label_batch_size_explicit = True; i_arg += 1
             elif a in ("--no-viz", "--missing-only") or a.startswith("--min-community-size="):
                 i_arg += 1
             elif a.startswith("--"):
@@ -1774,6 +1780,22 @@ def dispatch_command(cmd: str) -> None:
         # as fresh forever, permanently blocking real labeling on later runs.
         placeholder_only = False
         if labels_path.exists() and not force_relabel:
+            # #2534: this branch never calls the LLM, so labeling flags would be
+            # silently ignored. Reuse is still the correct (exit 0) outcome — but
+            # say so, instead of letting `--backend openai` look like it relabeled.
+            _ignored_label_flags = [flag for flag, given in (
+                ("--backend", label_backend is not None),
+                ("--model", label_model is not None),
+                ("--batch-size", label_batch_size_explicit),
+                ("--max-concurrency", label_max_concurrency_explicit),
+            ) if given]
+            if _ignored_label_flags:
+                print(
+                    f"[graphify] warning: {'/'.join(_ignored_label_flags)} ignored: "
+                    f"reusing saved labels at {labels_path}. "
+                    f"Run `graphify label` to relabel, or delete the labels file.",
+                    file=sys.stderr,
+                )
             # Reuse saved labels, but don't blindly trust them: the graph may have
             # been re-scoped/re-clustered since labeling, in which case a cid now
             # covers a DIFFERENT community and its old (LLM) name is wrong (#label-stale).
@@ -1868,16 +1890,41 @@ def dispatch_command(cmd: str) -> None:
             )
             # Only let the LLM OVERRIDE where it produced a real name — its no-backend
             # fallback returns "Community {cid}" placeholders, which must not clobber
-            # the deterministic hub labels.
+            # the deterministic hub labels. Also reject a model echoing the prompt
+            # key back ("5" for community 5) — that is an id, not a name (#2534).
             labels.update({
                 cid: v for cid, v in generated_labels.items()
-                if v and v != f"Community {cid}"
+                if v and v != f"Community {cid}" and v != str(cid)
             })
         stages.mark("label")
         questions = suggest_questions(G, communities, labels)
+        # cluster-only re-clusters an EXISTING graph: the code content is exactly
+        # what extract saw, so keep the extract-time commit stamp instead of
+        # re-deriving it from the shell's cwd — running from another repo used to
+        # re-stamp graph.json with THAT repo's HEAD (#2534). When the loaded
+        # graph predates the stamp, fall back to the analysed repo's HEAD via
+        # the cwd-aware helper (#2316).
+        _commit = _raw.get("built_at_commit")
+        if not _commit:
+            from graphify.watch import _git_head as _gh
+            _commit = _gh(cwd=watch_path)
+        # Snapshot BEFORE any artifact is replaced: GRAPH_REPORT.md was written
+        # first, so the dated folder held the NEW report, not the previous (#2402).
+        from graphify.export import backup_if_protected as _backup
+        _backup(out)
+        # The #479 guard can refuse this write, so it goes before the sidecars —
+        # a report and labels describing a clustering graph.json does not contain
+        # are worse than no run at all (#2436).
+        if not to_json(G, communities, str(out / "graph.json"),
+                       community_labels=labels, built_at_commit=_commit):
+            print(
+                "graph.json NOT written: refusing to overwrite (see warning above). "
+                "GRAPH_REPORT.md, .graphify_labels.json and .graphify_analysis.json "
+                "left untouched.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         tokens = label_token_usage
-        from graphify.export import _git_head as _gh
-        _commit = _gh()
         from graphify.report import load_learning_for_report as _llfr
         report = generate(G, communities, cohesion, labels, gods, surprises,
                           {"warning": "cluster-only mode — file stats not available"},
@@ -1886,8 +1933,6 @@ def dispatch_command(cmd: str) -> None:
                           learning=_llfr(out / "graph.json"))
         (out / "GRAPH_REPORT.md").write_text(report, encoding="utf-8")
         stages.mark("report")
-        from graphify.export import backup_if_protected as _backup
-        _backup(out)
         analysis = {
             "communities": {str(k): v for k, v in communities.items()},
             "cohesion": {str(k): v for k, v in cohesion.items()},
@@ -1899,7 +1944,6 @@ def dispatch_command(cmd: str) -> None:
             json.dumps(analysis, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
-        to_json(G, communities, str(out / "graph.json"), community_labels=labels)
         # Don't persist placeholder-only labels (or their .sig): leaving the
         # sidecar absent lets a later run generate real labels instead of reading
         # back "Community N" as authoritative (#2073).
@@ -2067,11 +2111,17 @@ def dispatch_command(cmd: str) -> None:
         _enforce_graph_size_cap_or_exit(graph_path)
         if output_path is None:
             output_path = graph_path.parent / "GRAPH_TREE.html"
-        out = write_tree_html(
-            graph_path=graph_path, output_path=output_path,
-            root=root, max_children=max_children,
-            top_k_edges=top_k_edges, project_label=project_label,
-        )
+        try:
+            out = write_tree_html(
+                graph_path=graph_path, output_path=output_path,
+                root=root, max_children=max_children,
+                top_k_edges=top_k_edges, project_label=project_label,
+            )
+        except ValueError as exc:
+            # e.g. an explicit --root that matches no source_file — the tree
+            # would silently flatten, so fail loudly instead (#2534).
+            print(f"error: {exc}", file=sys.stderr)
+            sys.exit(1)
         size_kb = out.stat().st_size / 1024
         print(f"wrote {out} ({size_kb:.1f} KB)")
         print(f"open with: xdg-open {out}  (or file://{out.resolve()})")
