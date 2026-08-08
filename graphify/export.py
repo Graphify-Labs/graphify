@@ -311,6 +311,34 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
         if true_src is not None and true_tgt is not None:
             link["source"] = true_src
             link["target"] = true_tgt
+    if "hyperedges" not in getattr(G, "graph", {}):
+        # Hardening (#2485): a graph with NO hyperedges key at all was built by
+        # a path that never engaged hyperedge metadata — distinct from an
+        # intentional empty set ([], which build_from_json now stores
+        # explicitly after a full-wipeout revalidation). If the file on disk
+        # already holds a non-empty set, emptying it without a trace is silent
+        # data loss; warn loudly so the wipeout is attributable. We still write
+        # the graph's truth rather than preserving the stale set — resurrecting
+        # hyperedges whose members may no longer exist would reintroduce the
+        # dangling-member shape #1916 removed.
+        _prev_hyperedges = None
+        try:
+            if existing_path.exists():
+                from graphify.security import check_graph_file_size_cap
+                check_graph_file_size_cap(existing_path)
+                _prev = json.loads(existing_path.read_text(encoding="utf-8"))
+                if isinstance(_prev, dict):
+                    _prev_hyperedges = _prev.get("hyperedges")
+        except Exception:
+            _prev_hyperedges = None
+        if _prev_hyperedges:
+            print(
+                f"[graphify] WARNING: graph carries no hyperedge metadata but "
+                f"{existing_path} already holds {len(_prev_hyperedges)} "
+                f"hyperedge(s); writing an empty set. Rebuild from the original "
+                f"extraction if this is unexpected.",
+                file=sys.stderr,
+            )
     data["hyperedges"] = getattr(G, "graph", {}).get("hyperedges", [])
     commit = built_at_commit if built_at_commit is not None else _git_head()
     if commit:

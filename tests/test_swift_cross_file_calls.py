@@ -177,3 +177,119 @@ def test_deferred_singleton_local_var_resolves(tmp_path):
     assert any("loadIfNeeded" in s and "isLoading" in t for s, t in calls)
     # constructor-into-local still resolves
     assert any("makeFresh" in s and "fetchData" in t for s, t in calls)
+
+
+def _extension_fixture(base: Path) -> list[Path]:
+    """A singleton, a caller, and a cross-file `extension` of that singleton."""
+    return [
+        _write(base / "Core/Singleton.swift",
+               "class Singleton {\n    static let shared = Singleton()\n"
+               "    static func sm() {}\n    func method() {}\n}\n"),
+        _write(base / "Views/HomeView.swift",
+               "class HomeView {\n    func go() {\n        Singleton.sm()\n"
+               "        Singleton.shared.method()\n        Singleton.shared.extra()\n    }\n}\n"),
+        _write(base / "Core/Singleton+Ext.swift",
+               "extension Singleton {\n    func extra() {}\n}\n"),
+    ]
+
+
+def test_cross_file_extension_does_not_erase_static_calls(tmp_path: Path):
+    # #2538: swift_extensions[].nid is recorded pre-remap, so with absolute input
+    # paths the extension merge matched nothing and Singleton kept two definition
+    # nodes; the single-definition guard in _resolve_swift_member_calls then
+    # dropped every call edge into it. One `extension Singleton {}` in its own
+    # file was enough to zero the type's call graph, defeating #1533.
+    files = _extension_fixture(tmp_path / "src")
+    # root= is what the CLI passes; it triggers the id remap that made the
+    # recorded extension nid stale. Without it the merge silently works.
+    result = extract(files, cache_root=tmp_path / "cache", root=tmp_path / "src", parallel=False)
+
+    defs = [n for n in result["nodes"] if n.get("label") == "Singleton"]
+    assert len(defs) == 1, f"extension must merge into the canonical type, got {[n['id'] for n in defs]}"
+    edges = _edge_labels(result)
+    assert (".go()", "calls", ".sm()") in edges         # Singleton.sm()
+    assert (".go()", "calls", ".method()") in edges     # Singleton.shared.method()
+    assert (".go()", "calls", ".extra()") in edges      # extension method via .shared
+    # Type-qualified static/singleton calls name the receiver in source: EXTRACTED.
+    extracted = {
+        (_label(result, e["source"]), _label(result, e["target"]))
+        for e in result["edges"]
+        if e.get("relation") == "calls" and e.get("confidence") == "EXTRACTED"
+    }
+    for tgt in (".sm()", ".method()", ".extra()"):
+        assert (".go()", tgt) in extracted
+
+
+def test_type_annotation_stub_does_not_block_extension_merge(tmp_path: Path):
+    # A bare `var s: Singleton?` mints a sourceless shadow node labelled
+    # Singleton; counting it as a merge candidate made the label look ambiguous.
+    files = _extension_fixture(tmp_path / "src")
+    files.append(_write(tmp_path / "src/Views/Holder.swift",
+                        "class Holder {\n    var s: Singleton?\n}\n"))
+    result = extract(files, cache_root=tmp_path / "cache", root=tmp_path / "src", parallel=False)
+
+    assert (".go()", "calls", ".method()") in _edge_labels(result)
+
+
+def test_same_file_extension_still_merges(tmp_path: Path):
+    # Type, extension, and caller in ONE file: the pre-#2538 behaviour must hold —
+    # a single Widget node and resolved calls into both halves.
+    f = _write(tmp_path / "src/All.swift", (
+        "class Widget {\n    static func sm() {}\n}\n\n"
+        "extension Widget {\n    func extra() {}\n}\n\n"
+        "class User {\n    let w = Widget()\n    func go() {\n"
+        "        Widget.sm()\n        w.extra()\n    }\n}\n"
+    ))
+    result = extract([f], cache_root=tmp_path / "cache", root=tmp_path / "src", parallel=False)
+
+    defs = [n for n in result["nodes"] if n.get("label") == "Widget"]
+    assert len(defs) == 1, f"same-file extension must fold, got {[n['id'] for n in defs]}"
+    edges = _edge_labels(result)
+    assert (".go()", "calls", ".sm()") in edges
+    assert (".go()", "calls", ".extra()") in edges
+
+
+def test_extension_does_not_merge_into_same_named_foreign_type(tmp_path: Path):
+    # The merge matches on label alone, so `extension Store` must not absorb a
+    # TypeScript `class Store` in a polyglot repo — that fabricates a Swift call
+    # into a TS method and makes the TS class own a Swift one.
+    files = [
+        _write(tmp_path / "src/web/Store.ts", "export class Store {\n  save() { return 1; }\n}\n"),
+        _write(tmp_path / "src/ios/StoreExt.swift", "extension Store {\n    func reset() { }\n}\n"),
+        _write(tmp_path / "src/ios/VM.swift",
+               "final class VM {\n    let store: Store = Store()\n    func f() {\n        store.save()\n    }\n}\n"),
+    ]
+    result = extract(files, cache_root=tmp_path / "cache", root=tmp_path / "src", parallel=False)
+
+    ts_store = next(n["id"] for n in result["nodes"]
+                    if n.get("label") == "Store" and str(n.get("source_file", "")).endswith(".ts"))
+    swift_nids = {n["id"] for n in result["nodes"]
+                  if str(n.get("source_file", "")).endswith(".swift")}
+    for e in result["edges"]:
+        src_file = str(e.get("source_file", ""))
+        if src_file.endswith(".swift"):
+            assert e.get("target") != ts_store, f"Swift edge {e.get('relation')} bound to the TS Store"
+        if e.get("source") == ts_store:
+            assert e.get("target") not in swift_nids, "the TS Store came to own a Swift node"
+
+
+def test_extension_merge_does_not_prune_unrelated_edges(tmp_path: Path):
+    # The post-merge edge rebuild dedups on a key that ignores confidence and
+    # weight. It must only touch edges the merge actually rewrote, or a single
+    # Swift extension silently prunes parallel edges from other languages.
+    # `g` emits three references to Thing sharing one (src, tgt, relation, file,
+    # line) key — legitimate parallel edges the dedup key cannot tell apart.
+    py = _write(tmp_path / "src/mod.py",
+                "class Thing:\n    def run(self): return 1\n\n"
+                "def g(a: Thing, b: Thing) -> Thing:\n    return a\n")
+    swift = [
+        _write(tmp_path / "src/Foo.swift", "struct Foo {\n    func bar() {}\n}\n"),
+        _write(tmp_path / "src/FooExt.swift", "extension Foo {\n    func baz() {}\n}\n"),
+    ]
+    with_ext = extract([py, *swift], cache_root=tmp_path / "cache-a", root=tmp_path / "src", parallel=False)
+    without_ext = extract([py, swift[0]], cache_root=tmp_path / "cache-b", root=tmp_path / "src", parallel=False)
+
+    def _py_edges(result):
+        return sum(1 for e in result["edges"] if str(e.get("source_file", "")).endswith(".py"))
+
+    assert _py_edges(with_ext) == _py_edges(without_ext), "the extension merge pruned unrelated .py edges"

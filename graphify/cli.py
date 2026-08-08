@@ -1175,7 +1175,8 @@ def dispatch_command(cmd: str) -> None:
     elif cmd == "path":
         if len(sys.argv) < 4:
             print(
-                'Usage: graphify path "<source>" "<target>" [--graph path]',
+                'Usage: graphify path "<source>" "<target>" [--graph path] '
+                "[--directed|--undirected]",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -1187,9 +1188,30 @@ def dispatch_command(cmd: str) -> None:
         target_label = sys.argv[3]
         graph_path = _default_graph_path()
         args = sys.argv[4:]
+        direction_flag = None
         for i, a in enumerate(args):
             if a == "--graph" and i + 1 < len(args):
                 graph_path = args[i + 1]
+            elif a == "--directed":
+                if direction_flag == "undirected":
+                    print(
+                        "error: --directed and --undirected are mutually exclusive",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+                direction_flag = "directed"
+            elif a == "--undirected":
+                if direction_flag == "directed":
+                    print(
+                        "error: --directed and --undirected are mutually exclusive",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+                direction_flag = "undirected"
+        # Directed by default (#2487): direction truth exists in every
+        # graph.json (arc order on post-#563 files, _src/_tgt markers on legacy
+        # canonicalized files), so respect it unless the caller opts out.
+        undirected = direction_flag == "undirected"
         gp = Path(graph_path).resolve()
         if not gp.exists():
             print(f"error: graph file not found: {gp}", file=sys.stderr)
@@ -1244,18 +1266,36 @@ def dispatch_command(cmd: str) -> None:
                         f"(top score {_top:g}, runner-up {_runner:g})",
                         file=sys.stderr,
                     )
-        # Deterministic shortest path (#2074): to_undirected(as_view=True)
-        # iterates neighbors via a hash-seeded set union, so among equal-length
-        # paths BFS returned an arbitrary route that varied per process. Build a
-        # sorted, materialized undirected graph so neighbor order — and thus the
-        # chosen path — is canonical for a given graph.json.
-        _und = _nx.Graph()
-        _und.add_nodes_from(sorted(G.nodes))
-        _und.add_edges_from(sorted((min(u, v), max(u, v)) for u, v in G.edges()))
+        # Deterministic shortest path (#2074): hash-seeded neighbor views
+        # returned an arbitrary route among equal-length paths that varied per
+        # process. Build a sorted, materialized graph so neighbor order — and
+        # thus the chosen path — is canonical for a given graph.json.
         try:
-            path_nodes = _nx.shortest_path(_und, src_nid, tgt_nid)
+            if undirected:
+                _und = _nx.Graph()
+                _und.add_nodes_from(sorted(G.nodes))
+                _und.add_edges_from(sorted((min(u, v), max(u, v)) for u, v in G.edges()))
+                path_nodes = _nx.shortest_path(_und, src_nid, tgt_nid)
+            else:
+                # Directed by default (#2487). True direction is NOT raw arc
+                # order: legacy canonicalized files persist a flipped arc with
+                # _src/_tgt markers (#2309), so build the digraph from _src/_tgt
+                # (falling back to the loaded arc) rather than to_directed().
+                _dg = _nx.DiGraph()
+                _dg.add_nodes_from(sorted(G.nodes))
+                _dg.add_edges_from(sorted(
+                    (d.get("_src", u), d.get("_tgt", v)) for u, v, d in G.edges(data=True)
+                ))
+                path_nodes = _nx.shortest_path(_dg, src_nid, tgt_nid)
         except (_nx.NetworkXNoPath, _nx.NodeNotFound):
-            print(f"No path found between '{source_label}' and '{target_label}'.")
+            if undirected:
+                print(f"No path found between '{source_label}' and '{target_label}'.")
+            else:
+                print(
+                    f"No directed path found between '{source_label}' and "
+                    f"'{target_label}'. Re-run with --undirected to search "
+                    "ignoring edge direction."
+                )
             sys.exit(0)
         hops = len(path_nodes) - 1
         segments = []
@@ -1598,6 +1638,12 @@ def dispatch_command(cmd: str) -> None:
         co_exclude_hubs: float | None = None
         label_max_concurrency: int = 4
         label_batch_size: int = 100
+        # #2534: defaults make presence undetectable for these, so track whether
+        # the user actually passed them — the label-reuse branch below warns when
+        # labeling flags are silently ignored. (--backend/--model default to None,
+        # so `is not None` already means "explicitly passed" for those.)
+        label_max_concurrency_explicit = False
+        label_batch_size_explicit = False
         i_arg = 0
         while i_arg < len(args):
             a = args[i_arg]
@@ -1620,13 +1666,13 @@ def dispatch_command(cmd: str) -> None:
             elif a.startswith("--exclude-hubs="):
                 co_exclude_hubs = float(a.split("=", 1)[1]); i_arg += 1
             elif a == "--max-concurrency" and i_arg + 1 < len(args):
-                label_max_concurrency = int(args[i_arg + 1]); i_arg += 2
+                label_max_concurrency = int(args[i_arg + 1]); label_max_concurrency_explicit = True; i_arg += 2
             elif a.startswith("--max-concurrency="):
-                label_max_concurrency = int(a.split("=", 1)[1]); i_arg += 1
+                label_max_concurrency = int(a.split("=", 1)[1]); label_max_concurrency_explicit = True; i_arg += 1
             elif a == "--batch-size" and i_arg + 1 < len(args):
-                label_batch_size = int(args[i_arg + 1]); i_arg += 2
+                label_batch_size = int(args[i_arg + 1]); label_batch_size_explicit = True; i_arg += 2
             elif a.startswith("--batch-size="):
-                label_batch_size = int(a.split("=", 1)[1]); i_arg += 1
+                label_batch_size = int(a.split("=", 1)[1]); label_batch_size_explicit = True; i_arg += 1
             elif a in ("--no-viz", "--missing-only") or a.startswith("--min-community-size="):
                 i_arg += 1
             elif a.startswith("--"):
@@ -1734,6 +1780,22 @@ def dispatch_command(cmd: str) -> None:
         # as fresh forever, permanently blocking real labeling on later runs.
         placeholder_only = False
         if labels_path.exists() and not force_relabel:
+            # #2534: this branch never calls the LLM, so labeling flags would be
+            # silently ignored. Reuse is still the correct (exit 0) outcome — but
+            # say so, instead of letting `--backend openai` look like it relabeled.
+            _ignored_label_flags = [flag for flag, given in (
+                ("--backend", label_backend is not None),
+                ("--model", label_model is not None),
+                ("--batch-size", label_batch_size_explicit),
+                ("--max-concurrency", label_max_concurrency_explicit),
+            ) if given]
+            if _ignored_label_flags:
+                print(
+                    f"[graphify] warning: {'/'.join(_ignored_label_flags)} ignored: "
+                    f"reusing saved labels at {labels_path}. "
+                    f"Run `graphify label` to relabel, or delete the labels file.",
+                    file=sys.stderr,
+                )
             # Reuse saved labels, but don't blindly trust them: the graph may have
             # been re-scoped/re-clustered since labeling, in which case a cid now
             # covers a DIFFERENT community and its old (LLM) name is wrong (#label-stale).
@@ -1828,16 +1890,41 @@ def dispatch_command(cmd: str) -> None:
             )
             # Only let the LLM OVERRIDE where it produced a real name — its no-backend
             # fallback returns "Community {cid}" placeholders, which must not clobber
-            # the deterministic hub labels.
+            # the deterministic hub labels. Also reject a model echoing the prompt
+            # key back ("5" for community 5) — that is an id, not a name (#2534).
             labels.update({
                 cid: v for cid, v in generated_labels.items()
-                if v and v != f"Community {cid}"
+                if v and v != f"Community {cid}" and v != str(cid)
             })
         stages.mark("label")
         questions = suggest_questions(G, communities, labels)
+        # cluster-only re-clusters an EXISTING graph: the code content is exactly
+        # what extract saw, so keep the extract-time commit stamp instead of
+        # re-deriving it from the shell's cwd — running from another repo used to
+        # re-stamp graph.json with THAT repo's HEAD (#2534). When the loaded
+        # graph predates the stamp, fall back to the analysed repo's HEAD via
+        # the cwd-aware helper (#2316).
+        _commit = _raw.get("built_at_commit")
+        if not _commit:
+            from graphify.watch import _git_head as _gh
+            _commit = _gh(cwd=watch_path)
+        # Snapshot BEFORE any artifact is replaced: GRAPH_REPORT.md was written
+        # first, so the dated folder held the NEW report, not the previous (#2402).
+        from graphify.export import backup_if_protected as _backup
+        _backup(out)
+        # The #479 guard can refuse this write, so it goes before the sidecars —
+        # a report and labels describing a clustering graph.json does not contain
+        # are worse than no run at all (#2436).
+        if not to_json(G, communities, str(out / "graph.json"),
+                       community_labels=labels, built_at_commit=_commit):
+            print(
+                "graph.json NOT written: refusing to overwrite (see warning above). "
+                "GRAPH_REPORT.md, .graphify_labels.json and .graphify_analysis.json "
+                "left untouched.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         tokens = label_token_usage
-        from graphify.export import _git_head as _gh
-        _commit = _gh()
         from graphify.report import load_learning_for_report as _llfr
         report = generate(G, communities, cohesion, labels, gods, surprises,
                           {"warning": "cluster-only mode — file stats not available"},
@@ -1846,8 +1933,6 @@ def dispatch_command(cmd: str) -> None:
                           learning=_llfr(out / "graph.json"))
         (out / "GRAPH_REPORT.md").write_text(report, encoding="utf-8")
         stages.mark("report")
-        from graphify.export import backup_if_protected as _backup
-        _backup(out)
         analysis = {
             "communities": {str(k): v for k, v in communities.items()},
             "cohesion": {str(k): v for k, v in cohesion.items()},
@@ -1859,7 +1944,6 @@ def dispatch_command(cmd: str) -> None:
             json.dumps(analysis, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
-        to_json(G, communities, str(out / "graph.json"), community_labels=labels)
         # Don't persist placeholder-only labels (or their .sig): leaving the
         # sidecar absent lets a later run generate real labels instead of reading
         # back "Community N" as authoritative (#2073).
@@ -2027,11 +2111,17 @@ def dispatch_command(cmd: str) -> None:
         _enforce_graph_size_cap_or_exit(graph_path)
         if output_path is None:
             output_path = graph_path.parent / "GRAPH_TREE.html"
-        out = write_tree_html(
-            graph_path=graph_path, output_path=output_path,
-            root=root, max_children=max_children,
-            top_k_edges=top_k_edges, project_label=project_label,
-        )
+        try:
+            out = write_tree_html(
+                graph_path=graph_path, output_path=output_path,
+                root=root, max_children=max_children,
+                top_k_edges=top_k_edges, project_label=project_label,
+            )
+        except ValueError as exc:
+            # e.g. an explicit --root that matches no source_file — the tree
+            # would silently flatten, so fail loudly instead (#2534).
+            print(f"error: {exc}", file=sys.stderr)
+            sys.exit(1)
         size_kb = out.stat().st_size / 1024
         print(f"wrote {out} ({size_kb:.1f} KB)")
         print(f"open with: xdg-open {out}  (or file://{out.resolve()})")
@@ -2145,6 +2235,12 @@ def dispatch_command(cmd: str) -> None:
                 G = _jg.node_link_graph(data, edges="links")
             except TypeError:
                 G = _jg.node_link_graph(data)
+            # node_link_graph restores only the nested `graph.hyperedges` slot;
+            # a graph.json whose hyperedges live only at the top level (the
+            # other half of to_json's dual-slot shape, #2485) would silently
+            # lose them here. Fall back to the top-level key (#2484).
+            if "hyperedges" not in G.graph and isinstance(data.get("hyperedges"), list):
+                G.graph["hyperedges"] = data["hyperedges"]
             graphs.append(G)
         # nx.compose requires all graphs to be the same type.  When input graphs
         # come from different sources (e.g. an AST-only run vs a full LLM run) one
@@ -2170,9 +2266,25 @@ def dispatch_command(cmd: str) -> None:
         if len(set(naive_tags)) != len(naive_tags):
             print(f"  note: repo dir names collide; using distinct tags: {', '.join(repo_tags)}")
         merged = _nx.Graph()
+        # nx.compose merges graph attrs with dict.update, so each iteration
+        # CLOBBERED the previously accumulated hyperedge list — only the last
+        # input's hyperedges survived (#2484, after @oleksii-tumanov's
+        # diagnosis in PR #1691). Collect every input's prefixed hyperedges
+        # and re-attach the union after composing.
+        collected_hyperedges: list = []
         for G, repo_tag in zip(graphs, repo_tags):
             prefixed = _to_simple(_prefix(G, repo_tag))
+            hes = prefixed.graph.get("hyperedges")
+            if isinstance(hes, list):
+                collected_hyperedges.extend(h for h in hes if isinstance(h, dict))
             merged = _nx.compose(merged, prefixed)
+        # Drop whatever compose left behind (the last input's list, possibly
+        # with internal duplicates) so attach_hyperedges dedups the full
+        # collection by id from a clean slate.
+        merged.graph.pop("hyperedges", None)
+        if collected_hyperedges:
+            from graphify.export import attach_hyperedges as _attach
+            _attach(merged, collected_hyperedges)
         try:
             out_data = _jg.node_link_data(merged, edges="links")
         except TypeError:
@@ -2184,6 +2296,11 @@ def dispatch_command(cmd: str) -> None:
             if tsrc is not None and ttgt is not None:
                 link["source"] = tsrc
                 link["target"] = ttgt
+        # Persist BOTH hyperedge slots (#2484): node_link_data only nests graph
+        # attrs under `graph`, so without this line the union would survive
+        # solely in the slot historic readers ignored (#2485). Mirror to_json's
+        # dual-slot shape so every writer agrees.
+        out_data["hyperedges"] = merged.graph.get("hyperedges", [])
         out_path.parent.mkdir(parents=True, exist_ok=True)
         from graphify.paths import write_json_atomic as _wja
         _wja(out_path, out_data, indent=2)

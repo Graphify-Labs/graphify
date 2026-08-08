@@ -9,6 +9,7 @@ import re
 import sys
 import unicodedata
 from collections import defaultdict
+from pathlib import Path
 
 from graphify._minhash import MinHash, MinHashLSH
 from rapidfuzz.distance import Jaro, JaroWinkler
@@ -225,22 +226,89 @@ def _defines_id(node: dict) -> bool:
                for prefix in _id_prefixes(source_file))
 
 
-def _collision_rank(node: dict) -> tuple:
+# Path-segment lifecycle markers used by _collision_rank (#2532). Lower penalty
+# wins. Without them, pure lexical source_file order makes ``plans/_done/…``
+# beat ``plans/in-progress/…`` because "_" < "i" in ASCII. Active-vs-archived
+# marker idea by @michaelxer (#2540); matched against ROOT-RELATIVE directory
+# segments only, so a checkout directory that happens to be named ``wip`` or
+# ``done`` never leaks into the ranking.
+_ACTIVE_PATH_SEGMENTS = frozenset({
+    "in-progress",
+    "in_progress",
+    "active",
+    "current",
+    "wip",
+})
+_ARCHIVED_PATH_SEGMENTS = frozenset({
+    "_done",
+    "done",
+    "archive",
+    "archived",
+    "backup",
+    "bak",
+    "old",
+    "attic",
+    "graveyard",
+    "completed",
+})
+
+
+def _lifecycle_penalty(rank_path: str) -> int:
+    """0 for active/in-progress paths, 2 for archived/done paths, 1 otherwise.
+
+    Judged on the DIRECTORY segments of the root-relative rank path — a file
+    literally named ``done.md`` is not a marker. Among mixed markers the best
+    (lowest) score wins so an active segment is not drowned out by an unrelated
+    archive directory higher in the tree (#2532).
+    """
+    segments = [s for s in rank_path.casefold().split("/") if s]
+    marked = [
+        0 if s in _ACTIVE_PATH_SEGMENTS else 2
+        for s in segments[:-1]  # directories only, never the basename
+        if s in _ACTIVE_PATH_SEGMENTS or s in _ARCHIVED_PATH_SEGMENTS
+    ]
+    return min(marked) if marked else 1
+
+
+def _rank_path(source_file: str, root: Path | None) -> str:
+    """The root-relative form of ``source_file`` used for collision ranking.
+
+    Mirrors ``_source_key`` in extractors/resolution.py: with a scan root, an
+    absolute stored path and its repo-relative twin rank identically, and the
+    checkout location's own segments never participate (#2532). Without a root
+    (or when relativizing fails) the normalized stored path is used as-is.
+    """
+    normalized = source_file.replace("\\", "/")
+    if root is not None and normalized:
+        try:
+            return Path(normalized).resolve().relative_to(root).as_posix()
+        except Exception:
+            pass
+    return normalized
+
+
+def _collision_rank(node: dict, root: Path | None = None) -> tuple:
     """A total order for choosing the survivor of an ID collision, independent of
     the order the colliding nodes arrive in.
 
     The winner is the node with the SMALLEST rank. A node whose ``source_file``
     defines the ID always outranks a mere reference; among equally-(non-)defining
-    nodes it prefers the shorter, more canonical label over a longer qualified
-    variant, then breaks any remaining tie lexically on label and then source_file
-    (so the lexically-first path wins) — fully deterministic regardless of order.
+    nodes an active/in-progress path outranks an archived/done one (#2532); then
+    it prefers the shorter, more canonical label over a longer qualified variant,
+    then breaks any remaining tie lexically on label and finally on the REVERSED
+    segments of the root-relative path. Basename-first comparison decides two
+    in-repo colliders by segments present in both path forms, so absolute and
+    repo-relative spellings of the same layout order identically — fully
+    deterministic regardless of arrival order (#1851) or checkout location.
     """
     label = node.get("label") or ""
+    rank_path = _rank_path(node.get("source_file") or "", root)
     return (
         not _defines_id(node),  # definers (False) sort before references (True)
+        _lifecycle_penalty(rank_path),  # active paths beat archived ones (#2532)
         len(label),             # shorter, more canonical label first
         label,                  # lexical tiebreak
-        node.get("source_file") or "",  # lexically-first source path wins
+        tuple(reversed([s for s in rank_path.split("/") if s and s != "."])),
     )
 
 
@@ -323,6 +391,7 @@ def deduplicate_entities(
     *,
     communities: dict[str, int],
     dedup_llm_backend: str | None = None,
+    root: str | Path | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """Deduplicate near-identical entities in a knowledge graph.
 
@@ -331,6 +400,8 @@ def deduplicate_entities(
         edges: list of edge dicts with {"source": str, "target": str, ...}
         communities: mapping of node_id -> community_id (from cluster())
         dedup_llm_backend: if set, use LLM to resolve ambiguous pairs
+        root: scan root; ID-collision ranking judges source paths relative to
+            it so path form and checkout location cannot flip the survivor (#2532)
 
     Returns:
         (deduped_nodes, deduped_edges) with edges rewired to survivors
@@ -348,6 +419,15 @@ def deduplicate_entities(
     if len(nodes) <= 1:
         return nodes, edges
 
+    # Resolve the scan root once: _collision_rank ranks each node's source_file
+    # relative to it, so an absolute stored path and its repo-relative twin rank
+    # identically and lifecycle markers in the checkout location's own segments
+    # cannot flip the survivor (#2532).
+    try:
+        root_resolved: Path | None = Path(root).resolve() if root else None
+    except Exception:
+        root_resolved = None
+
     # Pre-deduplicate: one node per ID. The survivor is the node that *defines* the
     # ID (its source_file is the file the ID encodes), not merely the first seen —
     # otherwise chunk order decides whether an entity keeps its own attributes or a
@@ -363,7 +443,7 @@ def deduplicate_entities(
         incumbent = seen_ids.get(nid)
         if incumbent is None:
             seen_ids[nid] = node
-        elif _collision_rank(node) < _collision_rank(incumbent):
+        elif _collision_rank(node, root_resolved) < _collision_rank(incumbent, root_resolved):
             # Smallest-ranked node wins; the min over a total order is independent
             # of the order nodes arrive in, so the survivor no longer depends on
             # chunk ordering (#1851).
@@ -381,7 +461,7 @@ def deduplicate_entities(
         survivor = seen_ids[nid]
         same_source = sorted(
             (l for l in losers if _same_source_entity(survivor, l)),
-            key=_collision_rank,
+            key=lambda l: _collision_rank(l, root_resolved),
         )
         for loser in same_source:
             survivor = _merge_missing_attributes(survivor, loser)
