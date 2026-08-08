@@ -2,7 +2,15 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
-## 0.9.36 (unreleased)
+## 0.9.37 (unreleased)
+
+- Fix: TypeScript member calls no longer fabricate a high-confidence `calls` edge by matching a receiver type by name alone (#2553, thanks @Earthfreedom). A member call now resolves only when the receiver's type is defined in the same file or actually imported by the caller's file, so a third-party `import type { Repo }` can no longer bind to an unrelated local `class Repo`; table-inferred receivers are tiered to INFERRED rather than EXTRACTED.
+- Fix: TypeScript/JavaScript calls inside a callback body passed to another call (for example `export const handler = wrapper(async (req) => { helper() })`) are no longer dropped (#2552, thanks @Earthfreedom). The callback body is now walked and its calls attributed to the declaration, through the same import-gated resolution so it cannot fabricate edges.
+- Fix: Kotlin imports, fully-qualified calls, and one-line type bodies (#2526, #2550, #2551, thanks @spaceBrownie, @thomasrengot-hub, and @Mustaqeem66 for #2531). The extractor now matches the bundled grammar's `import` node (imports were silently dropped) and resolves each import to the real target node; a fully-qualified call like `com.example.Foo.bar()` now produces a `calls` edge; and a file with syntax the bundled grammar cannot parse (such as a one-line `class C { val x }`) now emits a warning instead of silently extracting nothing, and declarations recovered inside an error span keep their enclosing class.
+- Fix: `graphify update` now retries a file whose extractor failed on a previous run instead of stamping it up-to-date forever (#2543, thanks @michaelxer). A failed extraction is no longer recorded in the manifest as processed, a manifest already poisoned by the old behavior is healed on the next run, and the fix avoids re-processing a genuinely-unchanged file.
+- Fix: the claude-cli backend now surfaces an API error carried in the stdout envelope (for example a rate limit returned with a zero exit code) instead of treating it as an empty success (#2554, thanks @annieyii). The error is raised on both the zero and non-zero exit paths.
+
+## 0.9.36 (2026-08-07)
 
 - Fix: four commands that failed silently while exiting 0 now surface the problem (#2534, thanks @elecnix). `cluster-only` warns when `--backend`/`--model`/`--batch-size` are ignored because saved labels are being reused; the community-label prompt no longer collides with the discard sentinel (a model echoing the key back is no longer silently dropped); `tree --root` exits non-zero when the root matches no source file instead of silently flattening the tree; and `cluster-only` stamps `built_at_commit` from the analysed graph rather than the shell's working directory. Also folds in the `cluster-only` refused-write guard from #2522 (thanks @aniJani).
 - Fix: a Swift `extension Foo` in a different file from `Foo` no longer drops static and singleton call edges into the type (#2538, thanks @pawelo446). The extension node id is now remapped consistently so the extension merges onto its base type before call resolution, and the merge is gated so it never absorbs a same-named type from another language.
