@@ -1452,6 +1452,49 @@ def test_save_manifest_clear_semantic_erases_stale_hash_for_omitted_file(tmp_pat
     )
 
 
+def test_save_manifest_clear_ast_blanks_both_hashes_for_failed_extra(tmp_path):
+    """#2543: AST failure (missing optional extra) must blank both hashes so
+    the next extract re-queues the file without deleting graphify-out/."""
+    import json
+
+    sql = tmp_path / "schema.sql"
+    sql.write_text("CREATE TABLE users (id INT);\n")
+    py = tmp_path / "main.py"
+    py.write_text("def main():\n    return 1\n")
+    manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
+    corpus = {str(sql), str(py)}
+
+    # Run 1: both files stamped as if a prior full extract succeeded.
+    save_manifest(
+        {"code": [str(sql), str(py)]},
+        manifest_path,
+        root=tmp_path,
+        scan_corpus=corpus,
+    )
+    manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    assert manifest["schema.sql"]["ast_hash"] != ""
+    assert manifest["schema.sql"]["semantic_hash"] != ""
+    assert manifest["main.py"]["ast_hash"] != ""
+
+    # Run 2: sql fails (missing extra) — omitted from stamped files, listed in clear_ast.
+    save_manifest(
+        {"code": [str(py)]},
+        manifest_path,
+        root=tmp_path,
+        scan_corpus=corpus,
+        clear_ast={str(sql)},
+    )
+    manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    assert manifest["schema.sql"]["ast_hash"] == "", "failed AST source must lose ast_hash"
+    assert manifest["schema.sql"]["semantic_hash"] == "", "failed AST source must lose semantic_hash"
+    assert manifest["main.py"]["ast_hash"] != "", "successful code must keep its stamp"
+
+    inc = detect_incremental(tmp_path, manifest_path, kind="semantic")
+    new_names = {Path(f).name for f in inc["new_files"].get("code", [])}
+    assert "schema.sql" in new_names, "failed-extra file must be re-queued"
+    assert "main.py" not in new_names, "unchanged successful code must stay warm"
+
+
 def test_save_manifest_without_filter_unchanged_for_code(tmp_path):
     """Code files must be stamped in the manifest regardless of semantic cache."""
     import json

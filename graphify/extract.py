@@ -4926,6 +4926,28 @@ def extract(
             file=sys.stderr, flush=True,
         )
 
+    # #2543: collect sources that must NOT be stamped as up-to-date in the
+    # incremental manifest. Two cases:
+    #   - extractor returned an error (missing optional extra, parse failure, …)
+    #   - extractor exists but produced zero nodes (#1666 empty-source set)
+    # The CLI drops these from the stamped file set and clears any prior
+    # hashes so the next run retries them after the user installs the extra
+    # (or the transient failure self-heals) without deleting graphify-out/.
+    _failed_sources: list[str] = []
+    _failed_seen: set[str] = set()
+    for i, _p in enumerate(paths):
+        _res = per_file[i] or {}
+        _key = str(_p)
+        if _res.get("error"):
+            if _key not in _failed_seen:
+                _failed_sources.append(_key)
+                _failed_seen.add(_key)
+            continue
+        if (not _res.get("nodes")) and _get_extractor(_p) is not None:
+            if _key not in _failed_seen:
+                _failed_sources.append(_key)
+                _failed_seen.add(_key)
+
     all_nodes: list[dict] = []
     all_edges: list[dict] = []
     all_raw_calls: list[dict] = []
@@ -5963,6 +5985,10 @@ def extract(
         "edges": all_edges,
         "input_tokens": 0,
         "output_tokens": 0,
+        # Surfaces failed/empty AST sources to the CLI so the incremental
+        # manifest does not freeze them as processed (#2543). Callers that
+        # only read nodes/edges ignore this key.
+        "failed_sources": _failed_sources,
     }
 
 

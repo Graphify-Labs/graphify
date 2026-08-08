@@ -90,6 +90,7 @@ def _stamped_manifest_files(
     sem_result: dict,
     root: Path,
     partial_source_files: "set[str] | None" = None,
+    failed_ast_sources: "set[str] | list[str] | None" = None,
 ) -> dict[str, list[str]]:
     """Manifest-safe files dict: only stamp semantic files that actually
     produced output (cache hit or fresh extraction). Files whose chunk failed
@@ -115,6 +116,10 @@ def _stamped_manifest_files(
     doc unstamped, so detect_incremental re-queued it on every run. The stamping
     condition mirrors the cache-write keying (a hyperedge carries its own
     ``source_file``); do not derive it from member nodes.
+
+    ``failed_ast_sources`` (#2543): code files whose AST extractor errored
+    (missing optional extra, etc.) or returned zero nodes. They must not be
+    stamped as up-to-date or a later install of the extra will never re-run.
     """
     root = Path(root)
 
@@ -134,12 +139,16 @@ def _stamped_manifest_files(
             if sf:
                 sem_extracted.add(_resolve(sf))
     partial_resolved = {_resolve(p) for p in (partial_source_files or set())}
+    failed_ast_resolved = {_resolve(p) for p in (failed_ast_sources or [])}
     sem_types = {"document", "paper", "image"}
     return {
         ftype: [
             f for f in flist
-            if ftype not in sem_types
-            or (_resolve(f) in sem_extracted and _resolve(f) not in partial_resolved)
+            if _resolve(f) not in failed_ast_resolved
+            and (
+                ftype not in sem_types
+                or (_resolve(f) in sem_extracted and _resolve(f) not in partial_resolved)
+            )
         ]
         for ftype, flist in files_by_type.items()
     }
@@ -3528,8 +3537,16 @@ def dispatch_command(cmd: str) -> None:
         # Path normalization against the scan root happens inside the helper
         # (#1897) so fresh root-relative source_files match detect()'s
         # absolute file lists.
-        _manifest_files = _stamped_manifest_files(files_by_type, sem_result, target,
-                                                   partial_source_files=_partial_semantic_files)
+        # #2543: also drop AST sources that failed (missing optional extra /
+        # zero-node anomaly) so they are not frozen as up-to-date.
+        _failed_ast_sources = list(ast_result.get("failed_sources") or [])
+        _manifest_files = _stamped_manifest_files(
+            files_by_type,
+            sem_result,
+            target,
+            partial_source_files=_partial_semantic_files,
+            failed_ast_sources=_failed_ast_sources,
+        )
 
         # Files dispatched this run but dropped by _stamped_manifest_files
         # above (failed chunk, LLM omission, or any future exclusion) still
@@ -3546,6 +3563,9 @@ def dispatch_command(cmd: str) -> None:
             f for _flist in _manifest_files.values() for f in _flist
         }
         _cleared_semantic = {str(p) for p in semantic_files} - _stamped_semantic
+        # #2543: AST failures need both hashes blanked (clear_ast), not just
+        # semantic_hash — otherwise a prior bad stamp keeps the file "unchanged".
+        _cleared_ast = set(_failed_ast_sources)
 
         # Full-scan manifest saves prune rows for in-root files that left the
         # scan corpus but still exist on disk (#1908). The corpus must be the
@@ -3607,7 +3627,7 @@ def dispatch_command(cmd: str) -> None:
                     "(--no-cluster); outputs left untouched."
                 )
                 try:
-                    _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic)
+                    _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic, clear_ast=_cleared_ast or None)
                 except Exception as exc:
                     print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
                 stages.total()
@@ -3713,7 +3733,7 @@ def dispatch_command(cmd: str) -> None:
                 )
             try:
                 if has_path:
-                    _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic)
+                    _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic, clear_ast=_cleared_ast or None)
             except Exception as exc:
                 print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
             if global_merge:
@@ -3860,7 +3880,7 @@ def dispatch_command(cmd: str) -> None:
         _wja(analysis_path, analysis, indent=2)
         try:
             if has_path:
-                _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic)
+                _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic, clear_ast=_cleared_ast or None)
         except Exception as exc:
             print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
 
