@@ -22,6 +22,10 @@ Rules:
 - If a file has YAML frontmatter (--- ... ---), copy source_url, captured_at, author, contributor onto every node from that file.
 - confidence_score is REQUIRED on every edge — never omit it, never use 0.5 as a default. EXTRACTED = 1.0 always. INFERRED: pick exactly ONE of 0.95 (direct structural evidence), 0.85 (strong inference), 0.75 (reasonable inference), 0.65 (weak inference), 0.55 (speculative but plausible) — never 0.5; if none fit, mark the edge AMBIGUOUS. AMBIGUOUS = 0.1-0.3.
 
+- Constraints: a PROHIBITION, REQUIREMENT or PRECONDITION ("NEVER do X", "must not", "requires privilege Y", "only works if Z") is its OWN node whose label states the constraint (e.g. "Prohibition: instantiating new Mysql()") — folded into an entity node as an attribute, it disappears.
+- Negative facts: "X does not exist", "X does not kill Y", "X is not the source of truth" is its OWN node. Keeping only the positive half of a rule is worse than keeping nothing — it reads as permission.
+- Numbers: a MEANINGFUL NUMBER (threshold, limit, cost, size, latency, volume, growth rate) MUST appear INSIDE the node label — the schema has no field for quantities, so a number left out of the label is lost. "table has ~45M rows" → label "clienteTitularPorCelular (table ~45M rows)"; "requires <2ms latency" → label "Co-location requirement (<2ms latency)".
+
 Node ID format: lowercase, only `[a-z0-9_]`, no dots or slashes. Format `{stem}_{entity}` where stem is the full repo-relative path with the extension dropped, every segment joined with `_` (each lowercased with non-alphanumeric chars replaced by `_`) and entity is the symbol name similarly normalized. Use every directory level, not just the immediate parent. `src/auth/session.py` + `ValidateToken` → `src_auth_session_validatetoken`. Top-level files use just the filename stem. This must match the AST extractor's ID. Never append chunk or sequence suffixes — IDs must be deterministic from the label alone.
 
 Output exactly this JSON (no other text):

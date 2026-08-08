@@ -58,6 +58,21 @@ confidence_score is REQUIRED on every edge - never omit it, never use 0.5 as a d
   the edge AMBIGUOUS rather than picking 0.4 or below.
 - AMBIGUOUS edges: 0.1-0.3
 
+Constraints and quantities — extract these; they are lost by default:
+- A PROHIBITION, REQUIREMENT or PRECONDITION is its own node. Source text like "NEVER do X",
+  "must not", "always filter by", "requires privilege Y", "only works if Z", "do not run in a loop"
+  becomes a node whose label STATES the constraint, e.g. "Prohibition: instantiating new Mysql()".
+  Do not fold it into the entity node as an attribute — folded there, it disappears.
+- A NEGATIVE FACT ("X does not exist", "X does not kill Y", "X is not the source of truth",
+  "X does not run on K8s") is its own node. Keeping only the positive half of a rule is worse
+  than keeping nothing, because it reads as permission.
+- A MEANINGFUL NUMBER (threshold, limit, cost, size, latency, volume, count, growth rate) MUST
+  appear INSIDE the node label — the schema has no field for quantities, so a number left out
+  of the label is lost. Examples: "the table has ~45M rows" -> label
+  "clienteTitularPorCelular (table ~45M rows)"; "requires <2ms latency" -> label
+  "Co-location requirement (<2ms latency)"; "~US$341/month" -> label
+  "OCI MySQL DB System (~US$341/month)".
+
 Node ID format: lowercase, only `[a-z0-9_]`, no dots or slashes. Format: `{stem}_{entity}` where stem is the **full repo-relative path with the extension dropped**, every path segment kept and joined with `_` (each segment lowercased with non-alphanumeric chars replaced by `_`), and entity is the symbol name similarly normalized. Use every directory level, not just the immediate parent — this keeps same-named files in different directories distinct. Examples: `src/auth/session.py` + `ValidateToken` → `src_auth_session_validatetoken`; `lib/utils/helpers.py` + `parse_url` → `lib_utils_helpers_parse_url`; `tests/test_foo.py` + `_helper` → `tests_test_foo_helper`; `docs/v1/api/README.md` + `getUser` → `docs_v1_api_readme_getuser`. Top-level files (no parent dir, e.g. `setup.py`) use just the filename stem: `setup_my_func`. This must match the ID the AST extractor generates — using just the filename (e.g., `session_validatetoken`) or only the immediate parent (e.g., `auth_session_validatetoken`) will create orphan ghost-duplicate nodes. If you are re-extracting a project built under the old immediate-parent format, the user should run `graphify extract --force` to rebuild cleanly. CRITICAL: never append chunk numbers, sequence numbers, or any suffix to an ID (no `_c1`, `_c2`, `_chunk2`, etc.). IDs must be deterministic from the label alone — the same entity must always produce the same ID regardless of which chunk processes it.
 
 Generate the extraction JSON matching this schema exactly:
