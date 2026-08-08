@@ -1154,7 +1154,7 @@ def _is_update_kind_ast_fix_line(line: str) -> bool:
     """
     return (
         "detect_incremental(Path('INPUT_PATH')" in line
-        or "#2459" in line
+        or "not re-flagged changed on every run (#2459)" in line
         or "semantic_hash is still empty" in line
         or 'kind="ast": the update flow diffs content' in line
     )

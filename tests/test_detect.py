@@ -550,8 +550,6 @@ def test_detect_incremental_kind_ast_ignores_empty_semantic_hash(tmp_path, monke
     content hash only — otherwise every AST-only file is re-flagged and
     re-dispatched to a semantic subagent on every --update run.
     """
-    import json
-
     monkeypatch.chdir(tmp_path)
 
     (tmp_path / "mod.py").write_text("def f():\n    return 1\n", encoding="utf-8")
@@ -561,16 +559,10 @@ def test_detect_incremental_kind_ast_ignores_empty_semantic_hash(tmp_path, monke
     manifest_dir.mkdir()
     manifest_path = str(manifest_dir / "manifest.json")
 
-    # Full build stamps both hashes, then a semantic pass never runs: blank
-    # every semantic_hash, leaving content and mtime untouched — exactly the
-    # state of an AST-extracted-only corpus (or one whose semantic chunk
-    # failed and was cleared, #1948).
-    detected = detect(tmp_path)
-    save_manifest(detected["files"], manifest_path, kind="both")
-    manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
-    for entry in manifest.values():
-        entry["semantic_hash"] = ""
-    Path(manifest_path).write_text(json.dumps(manifest), encoding="utf-8")
+    # The update path's manifest state for an AST-extracted-only file:
+    # ast_hash stamped, semantic_hash still "" (exactly what an ast-kind
+    # save produces on a fresh manifest — the semantic pass never ran).
+    save_manifest(detect(tmp_path)["files"], manifest_path, kind="ast")
 
     # Semantic mode: every empty semantic_hash is a "changed" file.
     semantic = detect_incremental(tmp_path, manifest_path)

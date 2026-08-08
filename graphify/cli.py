@@ -2971,10 +2971,8 @@ def dispatch_command(cmd: str) -> None:
                 google_workspace=google_workspace or None,
                 extra_excludes=_effective_excludes or None,
                 gitignore=_effective_gitignore,
-                # Extract re-queues files whose semantic_hash is empty (update
-                # ran but extraction hasn't); the update path passes kind="ast"
-                # instead. Explicit so the contract never depends on the
-                # default (#2459).
+                # semantic kind re-queues empty-semantic_hash files; explicit
+                # so the extract contract survives default drift (#2459).
                 kind="semantic",
             )
             files_by_type = detection.get("files", {})

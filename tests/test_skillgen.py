@@ -717,7 +717,9 @@ def test_runbook_update_flows_pass_kind_ast():
                     f"{path.relative_to(REPO_ROOT)}: detect_incremental without "
                     f"kind=\"ast\" over-reports unchanged files on --update (#2459): {ln.strip()!r}"
                 )
-    assert checked >= 16, f"expected detect_incremental update calls across the runbooks, found {checked}"
+    assert checked >= len(targets), (
+        f"expected detect_incremental update calls across the runbooks, found {checked}"
+    )
 
 
 def test_devin_keeps_its_multi_field_frontmatter():
