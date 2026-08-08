@@ -1479,7 +1479,8 @@ def dispatch_command(cmd: str) -> None:
             print(
                 "Usage: graphify diagnose multigraph "
                 "[--graph path] [--json] [--max-examples N] "
-                "[--directed] [--undirected] [--extract-path path]",
+                "[--directed] [--undirected] [--extract-path path] "
+                "[--fail-on-noncanonical]",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -1490,6 +1491,10 @@ def dispatch_command(cmd: str) -> None:
         direction_flag: str | None = None
         json_output = False
         extract_path: Path | None = None
+        # Opt-in, not the default: existing scripts/CI that already run this
+        # command must keep getting exit 0 on a non-canonical (but structurally
+        # loadable) graph unless they explicitly ask to gate on it.
+        fail_on_noncanonical = False
 
         i = 3
         while i < len(sys.argv):
@@ -1539,6 +1544,8 @@ def dispatch_command(cmd: str) -> None:
                     print("error: --extract-path requires a path", file=sys.stderr)
                     sys.exit(1)
                 extract_path = Path(sys.argv[i])
+            elif arg == "--fail-on-noncanonical":
+                fail_on_noncanonical = True
             else:
                 print(f"error: unknown diagnose option {arg}", file=sys.stderr)
                 sys.exit(1)
@@ -1566,6 +1573,9 @@ def dispatch_command(cmd: str) -> None:
             print(json.dumps(format_diagnostic_json(summary), indent=2))
         else:
             print(format_diagnostic_report(summary))
+
+        if fail_on_noncanonical and not summary.get("canonical", True):
+            sys.exit(1)
 
     elif cmd == "add":
         if len(sys.argv) < 3:
