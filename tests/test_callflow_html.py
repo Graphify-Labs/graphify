@@ -345,3 +345,55 @@ def test_call_table_rows_without_whole_graph_params_unchanged(tmp_path):
     # semantics other call sites may rely on).
     export_node = [n for n in nodes if n["id"] == "export"]
     assert "External entry" in generate_call_table_rows(export_node, section_edges, "en")
+
+
+def test_write_callflow_html_inline_assets(tmp_path):
+    out = _make_graphify_out(tmp_path)
+
+    # 1. Default behavior (CDN)
+    html_path_default = write_callflow_html(
+        tmp_path,
+        output="graphify-out/callflow-default.html",
+        max_sections=4,
+        inline_assets=False,
+    )
+    content_default = html_path_default.read_text(encoding="utf-8")
+    assert '<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>' in content_default
+    assert html_path_default.stat().st_size < 100000
+
+    # 2. Inline asset behavior
+    html_path_inline = write_callflow_html(
+        tmp_path,
+        output="graphify-out/callflow-inline.html",
+        max_sections=4,
+        inline_assets=True,
+    )
+    content_inline = html_path_inline.read_text(encoding="utf-8")
+    assert '<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>' not in content_inline
+    assert "<script>" in content_inline
+    assert html_path_inline.stat().st_size > 1000000
+
+
+def test_export_callflow_html_cli_inline_assets(tmp_path):
+    _make_graphify_out(tmp_path)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "graphify",
+            "export",
+            "callflow-html",
+            "--output",
+            "graphify-out/from-cli-inline.html",
+            "--max-sections",
+            "4",
+            "--inline-assets",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    html_path = tmp_path / "graphify-out" / "from-cli-inline.html"
+    assert html_path.exists()
+    assert html_path.stat().st_size > 1000000

@@ -206,6 +206,57 @@ def test_to_html_pins_visjs_version_with_sri():
     # crossorigin="anonymous" is required for SRI on cross-origin scripts.
     assert 'crossorigin="anonymous"' in content
 
+
+def test_to_html_inline_assets():
+    G = make_graph()
+    communities = cluster(G)
+    
+    # 1. Default behaviour: emits the CDN script tag.
+    with tempfile.TemporaryDirectory() as tmp:
+        out_default = Path(tmp) / "graph-default.html"
+        to_html(G, communities, str(out_default), inline_assets=False)
+        content_default = out_default.read_text(encoding="utf-8")
+        assert "vis-network@9.1.6/standalone/umd/vis-network.min.js" in content_default
+        assert out_default.stat().st_size < 100000
+
+    # 2. Inline assets mode: embeds script contents.
+    with tempfile.TemporaryDirectory() as tmp:
+        out_inline = Path(tmp) / "graph-inline.html"
+        to_html(G, communities, str(out_inline), inline_assets=True)
+        content_inline = out_inline.read_text(encoding="utf-8")
+        assert "vis-network@9.1.6/standalone/umd/vis-network.min.js" not in content_inline
+        assert "<script>" in content_inline
+        assert out_inline.stat().st_size > 500000
+
+
+def test_export_html_cli_inline_assets(tmp_path):
+    import subprocess
+    import sys
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    (out / "graph.json").write_text((FIXTURES / "extraction.json").read_text(), encoding="utf-8")
+    
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "graphify",
+            "export",
+            "html",
+            "--graph",
+            str(out / "graph.json"),
+            "--inline-assets",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    html_path = out / "graph.html"
+    assert html_path.exists()
+    assert html_path.stat().st_size > 500000
+
+
 def test_to_html_contains_search():
     G = make_graph()
     communities = cluster(G)

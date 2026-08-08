@@ -330,6 +330,7 @@ def to_html(
     member_counts: dict[int, int] | None = None,
     node_limit: int | None = None,
     learning_overlay: dict | None = None,
+    inline_assets: bool = False,
 ) -> None:
     """Generate an interactive vis.js HTML visualization of the graph.
 
@@ -392,7 +393,8 @@ def to_html(
                     })
                 meta.graph["hyperedges"] = remapped
             to_html(meta, meta_communities, output_path,
-                    community_labels=community_labels, member_counts=mc)
+                    community_labels=community_labels, member_counts=mc,
+                    inline_assets=inline_assets)
             print(f"graph.html written (aggregated: {meta.number_of_nodes()} community nodes, {meta.number_of_edges()} cross-community edges)")
             print("Tip: run with --obsidian for full node-level detail.")
             return
@@ -522,14 +524,28 @@ def to_html(
     title = _html.escape(sanitize_label(str(output_path)))
     stats = f"{G.number_of_nodes()} nodes &middot; {G.number_of_edges()} edges &middot; {len(communities)} communities"
 
+    if inline_assets:
+        try:
+            vis_src = (Path(__file__).parent.parent / "assets" / "vis-network.min.js").read_text(encoding="utf-8")
+            script_tag = f"<script>\n{vis_src}\n</script>"
+        except Exception as e:
+            raise FileNotFoundError(
+                f"Required local asset vis-network.min.js not found. "
+                f"Please reinstall graphify to restore packaged assets. Error: {e}"
+            )
+    else:
+        script_tag = (
+            '<script src="https://unpkg.com/vis-network@9.1.6/standalone/umd/vis-network.min.js"\n'
+            '        integrity="sha384-Ux6phic9PEHJ38YtrijhkzyJ8yQlH8i/+buBR8s3mAZOJrP1gwyvAcIYl3GWtpX1"\n'
+            '        crossorigin="anonymous"></script>'
+        )
+
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <title>graphify - {title}</title>
-<script src="https://unpkg.com/vis-network@9.1.6/standalone/umd/vis-network.min.js"
-        integrity="sha384-Ux6phic9PEHJ38YtrijhkzyJ8yQlH8i/+buBR8s3mAZOJrP1gwyvAcIYl3GWtpX1"
-        crossorigin="anonymous"></script>
+{script_tag}
 {_html_styles()}
 </head>
 <body>

@@ -2078,6 +2078,7 @@ def dispatch_command(cmd: str) -> None:
         max_children = DEFAULT_MAX_CHILDREN
         top_k_edges = 0
         project_label: "_Opt[str]" = None
+        inline_assets = False
         args = sys.argv[2:]
         i_arg = 0
         while i_arg < len(args):
@@ -2094,6 +2095,8 @@ def dispatch_command(cmd: str) -> None:
                 top_k_edges = int(args[i_arg + 1]); i_arg += 2
             elif a == "--label" and i_arg + 1 < len(args):
                 project_label = args[i_arg + 1]; i_arg += 2
+            elif a == "--inline-assets":
+                inline_assets = True; i_arg += 1
             elif a in ("-h", "--help"):
                 print("Usage: graphify tree [--graph PATH] [--output HTML]")
                 print("  --graph PATH         path to graph.json (default graphify-out/graph.json)")
@@ -2102,6 +2105,7 @@ def dispatch_command(cmd: str) -> None:
                 print("  --max-children N     cap visible children per node (default 200)")
                 print("  --top-k-edges N      pre-compute top-K outbound edges per symbol (default 12)")
                 print("  --label NAME         project label shown in the page header")
+                print("  --inline-assets      inline JavaScript dependencies for offline/CSP support")
                 return
             else:
                 i_arg += 1
@@ -2116,6 +2120,7 @@ def dispatch_command(cmd: str) -> None:
                 graph_path=graph_path, output_path=output_path,
                 root=root, max_children=max_children,
                 top_k_edges=top_k_edges, project_label=project_label,
+                inline_assets=inline_assets,
             )
         except ValueError as exc:
             # e.g. an explicit --root that matches no source_file — the tree
@@ -2335,9 +2340,9 @@ def dispatch_command(cmd: str) -> None:
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
         if subcmd not in ("html", "callflow-html", "obsidian", "wiki", "svg", "graphml", "neo4j", "falkordb"):
             print("Usage: graphify export <format>", file=sys.stderr)
-            print("  html      [--graph PATH] [--labels PATH] [--node-limit N] [--no-viz]", file=sys.stderr)
-            print("  callflow-html [GRAPH|DIR] [--graph PATH] [--labels PATH] [--report PATH] [--sections PATH] [--output HTML]", file=sys.stderr)
-            print("            [--lang auto|zh-CN|en] [--max-sections N] [--diagram-scale N]", file=sys.stderr)
+            print("  html      [--graph PATH] [--labels PATH] [--node-limit N] [--no-viz] [--inline-assets]", file=sys.stderr)
+            print("  callflow-html [GRAPH|DIR] [--graph PATH] [--labels PATH] [--report PATH] [--sections PATH] [--output HTML] [--inline-assets]", file=sys.stderr)
+            print("            [--lang auto|zh-CN|en] [--max-sections N] [--diagram-scale N] [--inline-assets]", file=sys.stderr)
             print("  obsidian  [--graph PATH] [--labels PATH] [--dir PATH]", file=sys.stderr)
             print("  wiki      [--graph PATH] [--labels PATH]", file=sys.stderr)
             print("  svg       [--graph PATH] [--labels PATH]", file=sys.stderr)
@@ -2366,6 +2371,7 @@ def dispatch_command(cmd: str) -> None:
         analysis_path = Path(_GRAPHIFY_OUT) / ".graphify_analysis.json"
         node_limit = 5000
         no_viz = False
+        inline_assets = False
         obsidian_dir = Path(_GRAPHIFY_OUT) / "obsidian"
         # Shared push-connection settings for the graph-database sinks (neo4j,
         # falkordb), parsed from the generic --push/--user/--password flags below.
@@ -2421,11 +2427,14 @@ def dispatch_command(cmd: str) -> None:
                 print("  --diagram-scale N      Mermaid diagram scale (default 1.0)")
                 print("  --max-diagram-nodes N  representative nodes per section (default 18)")
                 print("  --max-diagram-edges N  representative edges per section (default 24)")
+                print("  --inline-assets        inline JavaScript dependencies for offline/CSP support")
                 sys.exit(0)
             elif a == "--node-limit" and i + 1 < len(args):
                 node_limit = int(args[i + 1]); i += 2
             elif a == "--no-viz":
                 no_viz = True; i += 1
+            elif a == "--inline-assets":
+                inline_assets = True; i += 1
             elif a == "--dir" and i + 1 < len(args):
                 obsidian_dir = Path(args[i + 1]); i += 2
             elif a == "--push" and i + 1 < len(args):
@@ -2475,6 +2484,7 @@ def dispatch_command(cmd: str) -> None:
                 max_diagram_nodes=callflow_max_diagram_nodes,
                 max_diagram_edges=callflow_max_diagram_edges,
                 verbose=True,
+                inline_assets=inline_assets,
             )
             print(f"callflow HTML written - open in any browser: {out}")
             sys.exit(0)
@@ -2565,7 +2575,8 @@ def dispatch_command(cmd: str) -> None:
                 # path so the oversized graph still renders a usable artifact.
                 _effective_node_limit = 5000 if _over_cap else node_limit
                 _to_html(G, communities, str(out_dir / "graph.html"),
-                         community_labels=labels or None, node_limit=_effective_node_limit)
+                         community_labels=labels or None, node_limit=_effective_node_limit,
+                         inline_assets=inline_assets)
                 if G.number_of_nodes() <= _effective_node_limit:
                     print(f"graph.html written - open in any browser, no server needed")
                 if _over_cap:

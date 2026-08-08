@@ -111,3 +111,33 @@ def test_tree_cli_partial_match_root_succeeds(tmp_path):
     r = _run(["tree", "--root", "pkg"], tmp_path)
     assert r.returncode == 0, r.stderr
     assert (tmp_path / "graphify-out" / "GRAPH_TREE.html").exists()
+
+
+def test_tree_inline_assets(tmp_path):
+    from graphify.tree_html import write_tree_html
+    _write_graph(tmp_path, _graph({"pkg/a.py": "func_a", "pkg/sub/b.py": "func_b"}))
+    graph_path = tmp_path / "graphify-out" / "graph.json"
+
+    # 1. Default behaviour: emits the CDN script tag.
+    out_default = tmp_path / "graphify-out" / "GRAPH_TREE_default.html"
+    write_tree_html(graph_path, out_default, inline_assets=False)
+    content_default = out_default.read_text(encoding="utf-8")
+    assert '<script src="https://d3js.org/d3.v7.min.js"></script>' in content_default
+    assert out_default.stat().st_size < 100000
+
+    # 2. Inline assets mode: embeds script contents.
+    out_inline = tmp_path / "graphify-out" / "GRAPH_TREE_inline.html"
+    write_tree_html(graph_path, out_inline, inline_assets=True)
+    content_inline = out_inline.read_text(encoding="utf-8")
+    assert '<script src="https://d3js.org/d3.v7.min.js"></script>' not in content_inline
+    assert "<script>" in content_inline
+    assert out_inline.stat().st_size > 200000
+
+
+def test_tree_cli_inline_assets(tmp_path):
+    _write_graph(tmp_path, _graph({"pkg/a.py": "func_a", "pkg/sub/b.py": "func_b"}))
+    r = _run(["tree", "--inline-assets"], tmp_path)
+    assert r.returncode == 0, r.stderr
+    html_path = tmp_path / "graphify-out" / "GRAPH_TREE.html"
+    assert html_path.exists()
+    assert html_path.stat().st_size > 200000

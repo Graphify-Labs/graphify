@@ -1555,6 +1555,7 @@ class CallflowOptions:
         diagram_scale: float = 1.0,
         max_diagram_nodes: int = 18,
         max_diagram_edges: int = 24,
+        inline_assets: bool = False,
     ):
         self.project = str(project) if project is not None else None
         self.graphify_out = str(graphify_out) if graphify_out is not None else None
@@ -1568,6 +1569,7 @@ class CallflowOptions:
         self.diagram_scale = diagram_scale
         self.max_diagram_nodes = max_diagram_nodes
         self.max_diagram_edges = max_diagram_edges
+        self.inline_assets = inline_assets
 
 
 def _report_highlights(report_text: str, lang: str) -> str:
@@ -1620,6 +1622,7 @@ def write_callflow_html(
     max_diagram_nodes: int = 18,
     max_diagram_edges: int = 24,
     verbose: bool = False,
+    inline_assets: bool = False,
 ) -> Path:
     """Generate call-flow architecture HTML from graphify output files."""
     args = CallflowOptions(
@@ -1635,6 +1638,7 @@ def write_callflow_html(
         diagram_scale=diagram_scale,
         max_diagram_nodes=max_diagram_nodes,
         max_diagram_edges=max_diagram_edges,
+        inline_assets=inline_assets,
     )
 
     paths = resolve_graphify_paths(args)
@@ -1698,6 +1702,18 @@ def write_callflow_html(
         else f"{meta.get('project_name', 'Project')} — Complete Call Flow & Architecture Documentation"
     )
 
+    if args.inline_assets:
+        try:
+            mermaid_src = (Path(__file__).parent / "assets" / "mermaid.min.js").read_text(encoding="utf-8")
+            script_tag = f"<script>\n{mermaid_src}\n</script>"
+        except Exception as e:
+            raise FileNotFoundError(
+                f"Required local asset mermaid.min.js not found. "
+                f"Please reinstall graphify to restore packaged assets. Error: {e}"
+            )
+    else:
+        script_tag = '<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>'
+
     # Doctype and head
     html.append(f"""<!DOCTYPE html>
 <html lang="{escape(lang, quote=True)}">
@@ -1705,7 +1721,7 @@ def write_callflow_html(
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{escape(doc_title)}</title>
-<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+{script_tag}
 <style>
 {CSS}
 </style>
@@ -2024,6 +2040,7 @@ def main():
     parser.add_argument("--diagram-scale", type=float, default=1.0, help="Mermaid-native diagram scale via init directive (0.65-1.8)")
     parser.add_argument("--max-diagram-nodes", type=int, default=18, help="Maximum representative nodes per section diagram")
     parser.add_argument("--max-diagram-edges", type=int, default=24, help="Maximum representative edges per section diagram")
+    parser.add_argument("--inline-assets", action="store_true", help="Inline JavaScript dependencies for offline/CSP support")
     args = parser.parse_args()
 
     try:
@@ -2041,6 +2058,7 @@ def main():
             max_diagram_nodes=args.max_diagram_nodes,
             max_diagram_edges=args.max_diagram_edges,
             verbose=True,
+            inline_assets=args.inline_assets,
         )
     except (FileNotFoundError, ValueError, SystemExit) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

@@ -279,7 +279,7 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
     <svg id="tree-svg" width="{svg_width}" height="{svg_height}"></svg>
   </div>
 
-  <script src="https://d3js.org/d3.v7.min.js"></script>
+  {script_tag}
   <script>
     const initialJsonData = {data_json};
 
@@ -567,7 +567,20 @@ def emit_html(
     header: str,
     svg_width: int = 6000,
     svg_height: int = 8000,
+    inline_assets: bool = False,
 ) -> str:
+    if inline_assets:
+        try:
+            d3_src = (Path(__file__).parent / "assets" / "d3.v7.min.js").read_text(encoding="utf-8")
+            script_tag = f"<script>\n{d3_src}\n</script>"
+        except Exception as e:
+            raise FileNotFoundError(
+                f"Required local asset d3.v7.min.js not found. "
+                f"Please reinstall graphify to restore packaged assets. Error: {e}"
+            )
+    else:
+        script_tag = '<script src="https://d3js.org/d3.v7.min.js"></script>'
+
     # Escape </script> sequences so embedded JSON cannot break out of the
     # <script> tag, and HTML-escape values that land in <title>/<h1>.
     data_json = json.dumps(tree, ensure_ascii=True, separators=(",", ":")).replace("</", "<\\/")
@@ -577,6 +590,7 @@ def emit_html(
         svg_width=svg_width,
         svg_height=svg_height,
         data_json=data_json,
+        script_tag=script_tag,
     )
 
 
@@ -589,6 +603,7 @@ def write_tree_html(
     project_label: Optional[str] = None,
     # kept for CLI compatibility with the older signature; ignored now
     top_k_edges: int = 0,
+    inline_assets: bool = False,
 ) -> Path:
     from graphify.security import check_graph_file_size_cap
     check_graph_file_size_cap(graph_path)
@@ -597,7 +612,7 @@ def write_tree_html(
                       project_label=project_label)
     title = f"{tree['name']} — graphify tree viewer"
     header = f"{tree['name']} — Knowledge Graph"
-    html = emit_html(tree, title=title, header=header)
+    html = emit_html(tree, title=title, header=header, inline_assets=inline_assets)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(html, encoding="utf-8")
     return output_path
