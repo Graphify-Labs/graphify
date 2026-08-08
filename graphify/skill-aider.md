@@ -764,7 +764,10 @@ import sys, json
 from graphify.detect import detect_incremental, save_manifest
 from pathlib import Path
 
-result = detect_incremental(Path('INPUT_PATH'))
+# kind="ast": the update flow diffs content (ast_hash) only, so files whose
+# semantic_hash is still empty (AST-extracted, never semantically chunked)
+# are not re-flagged changed on every run (#2459).
+result = detect_incremental(Path('INPUT_PATH'), kind="ast")
 new_total = result.get('new_total', 0)
 print(json.dumps(result, indent=2))
 Path('.graphify_incremental.json').write_text(json.dumps(result))
