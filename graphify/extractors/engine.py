@@ -1561,7 +1561,6 @@ def _csharp_method_receiver_types(
                                     g.child_by_field_name("type"), source
                                 )
                                 break
-                    bind(_read_text(name_node, source), type_name)
                     bind(_read_text(name_node, source), type_name, scope)
         elif node.type in ("declaration_expression", "declaration_pattern"):
             # #2346: inline-declared receivers. `out Sect s` is a
