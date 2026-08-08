@@ -606,39 +606,61 @@ def _import_csharp(node, source: bytes, file_nid: str, stem: str, edges: list, s
 
 
 def _import_kotlin(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str, scope_stack: list[str] | None = None) -> None:
+    # Grammar 1.1.0 (PyPI tree_sitter_kotlin) emits an `import` node whose
+    # children are the `import` keyword and a `qualified_identifier` (the dotted
+    # path), optionally followed by `.` `*` (wildcard) or `as` + `identifier`
+    # (alias). There is no `path` field. Older forks emit `import_header` with a
+    # `path` field or a bare `identifier` child; keep those branches so the
+    # extractor works across grammar generations (#2526, adapted from PR #2531
+    # by @Mustaqeem66).
     path_node = node.child_by_field_name("path")
-    if path_node:
-        raw = _read_text(path_node, source)
-        module_name = raw.split(".")[-1].strip()
-        if module_name:
-            tgt_nid = _make_id(module_name)
-            edges.append({
-                "source": file_nid,
-                "target": tgt_nid,
-                "relation": "imports",
-                "context": "import",
-                "confidence": "EXTRACTED",
-                "source_file": str_path,
-                "source_location": f"L{node.start_point[0] + 1}",
-                "weight": 1.0,
-            })
+    if path_node is None:
+        path_node = next(
+            (c for c in node.children if c.type == "qualified_identifier"), None
+        )
+    if path_node is not None:
+        raw = _read_text(path_node, source).strip()
+    else:
+        raw = next(
+            (_read_text(c, source).strip() for c in node.children
+             if c.type == "identifier"),
+            "",
+        )
+    if not raw:
         return
-    # Fallback: find identifier child
+    # Wildcard (`import a.b.*`): imports a whole package, not a symbol. The last
+    # path segment is a PACKAGE name, so a symbol-level edge would dangle on (or
+    # collide with) an unrelated node that happens to share the package's name.
+    if raw.endswith(".*") or raw == "*" or any(c.type == "*" for c in node.children):
+        return
+    # Alias (`import a.b.C as D`): the alias is the identifier child after `as`.
+    alias = None
+    saw_as = False
     for child in node.children:
-        if child.type == "identifier":
-            raw = _read_text(child, source)
-            tgt_nid = _make_id(raw)
-            edges.append({
-                "source": file_nid,
-                "target": tgt_nid,
-                "relation": "imports",
-                "context": "import",
-                "confidence": "EXTRACTED",
-                "source_file": str_path,
-                "source_location": f"L{node.start_point[0] + 1}",
-                "weight": 1.0,
-            })
+        if not saw_as:
+            saw_as = child.type == "as"
+        elif child.type in ("identifier", "simple_identifier"):
+            alias = _read_text(child, source).strip() or None
             break
+    module_name = raw.split(".")[-1].strip()
+    if not module_name:
+        return
+    # Target is the bare last segment for now; _resolve_kotlin_import_targets
+    # rewrites it to the real node id via the target_fqn stamped here, once the
+    # per-file package index exists. Unresolved targets stay dangling like other
+    # languages' external imports.
+    edges.append({
+        "source": file_nid,
+        "target": _make_id(module_name),
+        "relation": "imports",
+        "context": "import",
+        "confidence": "EXTRACTED",
+        "source_file": str_path,
+        "source_location": f"L{node.start_point[0] + 1}",
+        "weight": 1.0,
+        "metadata": sanitize_metadata({k: v for k, v in
+            {"target_fqn": raw, "alias": alias}.items() if v is not None}),
+    })
 
 
 def _import_scala(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str, scope_stack: list[str] | None = None) -> None:
@@ -888,7 +910,9 @@ _KOTLIN_CONFIG = LanguageConfig(
     ts_module="tree_sitter_kotlin",
     class_types=frozenset({"class_declaration", "object_declaration"}),
     function_types=frozenset({"function_declaration"}),
-    import_types=frozenset({"import_header"}),
+    # Grammar 1.1.0 (PyPI tree_sitter_kotlin) names the import node `import`;
+    # older forks use `import_header`. Accept both (#2526).
+    import_types=frozenset({"import_header", "import"}),
     call_types=frozenset({"call_expression"}),
     call_function_field="",
     call_accessor_node_types=frozenset({"navigation_expression"}),
@@ -2551,7 +2575,17 @@ def _resolve_typescript_member_calls(
     parameter-property modifiers (``private repo: IUserRepository``) produce a
     per-file type table mapping field names to their declared types.  This pass
     looks up the receiver field's type, finds a single-definition class/interface
-    owning a method with the callee name, and emits an EXTRACTED ``calls`` edge.
+    owning a method with the callee name, and emits a ``calls`` edge — EXTRACTED
+    when the receiver names the type in source (``Type.method()``), INFERRED when
+    the type came from the table (the Swift/C#/Java tiering).
+
+    Origin gate (#2553): a name-only match is not evidence the caller can even
+    see the matched type. ``import type { Repo } from 'external-pkg'`` plus
+    ``this.repo.save()`` must not fabricate an edge to an unrelated local
+    ``class Repo`` in another file. The matched type must be origin-verified:
+    defined in the caller's own file, a named import of the caller's file, or
+    contained in a module the caller's file imports. Otherwise EMIT NOTHING —
+    a false call edge is worse than a missing one (the C++ resolver's bar).
     """
     type_table_by_file: dict[str, dict[str, str]] = {}
     for result in per_file:
@@ -2582,6 +2616,29 @@ def _resolve_typescript_member_calls(
         if tnode is not None:
             method_index[(src, _key(tnode.get("label", "")))] = tgt
 
+    # Origin maps (#2553), built like the Python resolver's module arm: key on
+    # stable NODE ids, not source_file strings (raw_calls keep their original
+    # pre-relativization paths, so a string join would miss under an explicit
+    # cache_root). ``contains`` maps a node to its file node; a member call's
+    # caller is usually a METHOD node, which hangs off its class via a ``method``
+    # edge instead, so fold those through to the owning class's file.
+    file_of_node: dict[str, str] = {}
+    for e in all_edges:
+        if e.get("relation") == "contains":
+            file_of_node[e.get("target")] = e.get("source")
+    for e in all_edges:
+        if e.get("relation") == "method":
+            owner_file = file_of_node.get(e.get("source"))
+            if owner_file is not None:
+                file_of_node.setdefault(e.get("target"), owner_file)
+    # ``imports`` targets are the imported symbol nodes; ``imports_from`` targets
+    # are module file nodes. A symbol id never collides with a file id, so one
+    # set serves both origin checks below.
+    imported_by_filenode: dict[str, set[str]] = {}
+    for e in all_edges:
+        if e.get("relation") in ("imports", "imports_from"):
+            imported_by_filenode.setdefault(e.get("source"), set()).add(e.get("target"))
+
     all_raw_calls: list[dict] = []
     for result in per_file:
         all_raw_calls.extend(result.get("raw_calls", []))
@@ -2597,7 +2654,9 @@ def _resolve_typescript_member_calls(
             continue
         if receiver[:1].isupper():
             type_name = receiver
+            type_qualified = True  # the receiver names the type in source
         else:
+            type_qualified = False
             type_name = type_table_by_file.get(rc.get("source_file", ""), {}).get(receiver)
         if not type_name:
             continue
@@ -2612,19 +2671,38 @@ def _resolve_typescript_member_calls(
         if len(type_defs) != 1:
             continue
         type_nid = type_defs[0]
-        method_nid = method_index.get((type_nid, _key(callee)))
-        target = method_nid or type_nid
-        relation = "calls" if method_nid else "references"
-        if target == caller or (caller, target) in existing_pairs:
+        # Origin gate (#2553): the caller's file must actually see the matched
+        # type — same file, a named import of the type, or a module import of
+        # the type's file. Otherwise a third-party type name that happens to
+        # collide with a local class fabricates an edge; emit nothing.
+        caller_file = file_of_node.get(caller)
+        type_file = file_of_node.get(type_nid)
+        imported = imported_by_filenode.get(caller_file, set())
+        if not (
+            (caller_file is not None and caller_file == type_file)
+            or type_nid in imported
+            or (type_file is not None and type_file in imported)
+        ):
             continue
-        existing_pairs.add((caller, target))
+        method_nid = method_index.get((type_nid, _key(callee)))
+        if not method_nid:
+            # Receiver typed, but the type has no such method. The old fallback
+            # (a `references` edge to the type node) was another fabrication
+            # vector; skip instead, matching the C# resolver.
+            continue
+        if method_nid == caller or (caller, method_nid) in existing_pairs:
+            continue
+        existing_pairs.add((caller, method_nid))
+        # `Type.method()` names the receiver type explicitly in source —
+        # EXTRACTED; a receiver typed via the constructor-injection/local table
+        # is inference — INFERRED (the Swift/C#/Java ternary).
         all_edges.append({
             "source": caller,
-            "target": target,
-            "relation": relation,
+            "target": method_nid,
+            "relation": "calls",
             "context": "call",
-            "confidence": "EXTRACTED",
-            "confidence_score": 1.0,
+            "confidence": "EXTRACTED" if type_qualified else "INFERRED",
+            "confidence_score": 1.0 if type_qualified else 0.8,
             "source_file": rc.get("source_file", ""),
             "source_location": rc.get("source_location"),
             "weight": 1.0,
@@ -3166,6 +3244,195 @@ def _resolve_objc_member_calls(
         })
 
 
+def _kotlin_package_index(per_file: list[dict]) -> dict[str, list[dict]]:
+    """Group per-file results by the Kotlin package they declare.
+
+    ``kotlin_package`` is stamped by the generic engine from the file's
+    ``package_header`` (see extractors/engine.py); every node in the file
+    inherits it. Files with no package header contribute nothing.
+    """
+    pkg_results: dict[str, list[dict]] = {}
+    for result in per_file:
+        pkg = result.get("kotlin_package")
+        if pkg:
+            pkg_results.setdefault(pkg, []).append(result)
+    return pkg_results
+
+
+def _resolve_kotlin_import_targets(
+    per_file: list[dict],
+    all_nodes: list[dict],
+    all_edges: list[dict],
+) -> None:
+    """Rewrite Kotlin ``imports`` edge targets from the bare last segment to the
+    node the written FQN actually names (#2526).
+
+    ``_import_kotlin`` emits ``file --imports--> _make_id(last_segment)`` with
+    the full dotted path stamped as ``metadata.target_fqn``. That target dangles
+    (node ids carry a file-stem prefix), so build pruned every Kotlin import and
+    the import-evidence promotion in the shared call pass never fired. Here the
+    per-file ``kotlin_package`` declarations index each package's importable
+    (non-member) symbols by exact label; an edge whose ``target_fqn`` splits
+    into a known package P plus a Name defined exactly ONCE in P is rewritten to
+    that node id. The FQN is written verbatim in source, so the match is exact —
+    confidence stays EXTRACTED. Anything else (external dependency, ambiguous
+    name) is left untouched and dangles like other languages' external imports.
+
+    Must run BEFORE the shared call pass builds its import-evidence index (it is
+    invoked directly in extract(), not via the tail registry run).
+    """
+    pkg_results = _kotlin_package_index(per_file)
+    if not pkg_results:
+        return
+    # package fqn -> {importable label -> [node ids]}. Member labels (leading
+    # dot) are not importable as `P.Name`, and sourceless reference stubs are
+    # not definitions; both are excluded so they can't shadow the real symbol.
+    pkg_symbols: dict[str, dict[str, list[str]]] = {}
+    for pkg, results in pkg_results.items():
+        by_label = pkg_symbols.setdefault(pkg, {})
+        for result in results:
+            for n in result.get("nodes", []):
+                if not n.get("source_file") or n.get("type") == "namespace":
+                    continue
+                label = str(n.get("label", ""))
+                if not label or label.startswith("."):
+                    continue
+                by_label.setdefault(label.strip("()"), []).append(n["id"])
+    for e in all_edges:
+        if e.get("relation") != "imports":
+            continue
+        if not str(e.get("source_file", "")).endswith((".kt", ".kts")):
+            continue
+        fqn = (e.get("metadata") or {}).get("target_fqn", "")
+        pkg, _, name = str(fqn).rpartition(".")
+        if not pkg or not name:
+            continue
+        candidates = pkg_symbols.get(pkg, {}).get(name, [])
+        if len(candidates) == 1:  # single-candidate guard: never fabricate
+            e["target"] = candidates[0]
+
+
+def _resolve_kotlin_qualified_calls(
+    per_file: list[dict],
+    all_nodes: list[dict],
+    all_edges: list[dict],
+) -> None:
+    """Resolve Kotlin fully-qualified call expressions (#2550).
+
+    ``com.example.nav.NavGraph()`` parses to a nested navigation_expression
+    chain; the engine flattens it and stamps the raw_call with
+    ``qualified_prefix="com.example.nav"`` + ``lang="kotlin"`` when EVERY chain
+    segment is a plain identifier. The shared pass skips member calls, so these
+    raw_calls produced no edge at all — this pass is strictly additive.
+
+    Resolution, guarded by exactly-one-candidate at every step:
+      * prefix == a declared package FQN P -> candidates are P's top-level
+        callables (functions/classes the file node `contains`) named callee;
+      * prefix == P + "." + TypeName where TypeName is a class/object declared
+        in P -> candidates are that type's methods (`method` edges, `.callee()`
+        label).
+    Zero or 2+ candidates -> no edge. The FQN is written verbatim in source, so
+    a unique match is EXTRACTED.
+    """
+    pkg_results = _kotlin_package_index(per_file)
+    if not pkg_results:
+        return
+    raw = [
+        rc
+        for result in per_file
+        for rc in result.get("raw_calls", [])
+        if rc.get("lang") == "kotlin" and rc.get("qualified_prefix")
+        and rc.get("callee") and rc.get("caller_nid")
+    ]
+    if not raw:
+        return
+
+    node_by_id: dict[str, dict] = {n.get("id"): n for n in all_nodes}
+    contains_by_source: dict[str, list[str]] = {}
+    methods_by_type: dict[str, list[str]] = {}
+    for e in all_edges:
+        rel = e.get("relation")
+        if rel == "contains":
+            contains_by_source.setdefault(e.get("source"), []).append(e.get("target"))
+        elif rel == "method":
+            methods_by_type.setdefault(e.get("source"), []).append(e.get("target"))
+
+    # package fqn -> {name -> [top-level callable nids]} and
+    # package fqn -> {name -> [top-level type nids]} (classes/objects).
+    pkg_callables: dict[str, dict[str, list[str]]] = {}
+    pkg_types: dict[str, dict[str, list[str]]] = {}
+    for pkg, results in pkg_results.items():
+        callables = pkg_callables.setdefault(pkg, {})
+        types = pkg_types.setdefault(pkg, {})
+        for result in results:
+            file_nid = next(
+                (n["id"] for n in result.get("nodes", [])
+                 if n.get("source_file")
+                 and n.get("label") == Path(str(n["source_file"])).name),
+                None,
+            )
+            if file_nid is None:
+                continue
+            for tgt in contains_by_source.get(file_nid, []):
+                n = node_by_id.get(tgt)
+                if n is None or not n.get("source_file"):
+                    continue
+                name = str(n.get("label", "")).strip("()")
+                if not name or name.startswith("."):
+                    continue
+                if n.get("_callable"):
+                    callables.setdefault(name, []).append(tgt)
+                if n.get("_callable_class"):
+                    types.setdefault(name, []).append(tgt)
+
+    existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
+    for rc in raw:
+        prefix = rc["qualified_prefix"]
+        callee = rc["callee"]
+        caller = rc["caller_nid"]
+        candidates: list[str] = []
+        if prefix in pkg_callables:
+            # `P.callee()` — a top-level function or class constructor in P.
+            candidates = pkg_callables[prefix].get(callee, [])
+        else:
+            # `P.Type.callee()` — a method of a class/object declared in P.
+            pkg, _, type_name = prefix.rpartition(".")
+            type_nids = pkg_types.get(pkg, {}).get(type_name, []) if pkg else []
+            if len(type_nids) == 1:
+                wanted = f".{callee}"
+                candidates = [
+                    m for m in methods_by_type.get(type_nids[0], [])
+                    if str(node_by_id.get(m, {}).get("label", "")).strip("()") == wanted
+                ]
+        if len(candidates) != 1:  # zero or ambiguous -> no edge (god-node guard)
+            continue
+        tgt = candidates[0]
+        if tgt == caller or (caller, tgt) in existing_pairs:
+            continue
+        existing_pairs.add((caller, tgt))
+        all_edges.append({
+            "source": caller,
+            "target": tgt,
+            "relation": "calls",
+            "context": "call",
+            "confidence": "EXTRACTED",  # the FQN is written verbatim in source
+            "confidence_score": 1.0,
+            "source_file": rc.get("source_file", ""),
+            "source_location": rc.get("source_location"),
+            "weight": 1.0,
+        })
+
+
+# Kotlin import-target resolution runs EARLY (directly in extract(), before the
+# shared call pass builds its import-evidence index) — registering it in the
+# tail registry would rewrite the targets after promotion already read them.
+# It still uses the registry's LanguageResolver/driver for the suffix gate and
+# failure isolation.
+_KOTLIN_IMPORT_TARGET_RESOLVER = LanguageResolver(
+    "kotlin_import_targets", frozenset({".kt", ".kts"}), _resolve_kotlin_import_targets
+)
+
+
 # Register the cross-file, language-specific member-call resolvers into the shared
 # registry (framework lives in graphify.resolver_registry). A new language plugs in
 # by adding one register() call below — no edits to extract()'s body. Order
@@ -3220,6 +3487,15 @@ register_language_resolver(
         "pascal_inherited_calls",
         frozenset({".pas", ".pp", ".dpr", ".dpk", ".inc"}),
         resolve_pascal_inherited_calls,
+    )
+)
+# Kotlin fully-qualified call resolution (#2550): `com.pkg.Fn()` /
+# `com.pkg.Object.method()` raw_calls the shared pass skips (member calls with
+# no receiver). Runs in the tail registry like the other member-call resolvers;
+# its sibling import-target pass runs earlier (see _KOTLIN_IMPORT_TARGET_RESOLVER).
+register_language_resolver(
+    LanguageResolver(
+        "kotlin_qualified_calls", frozenset({".kt", ".kts"}), _resolve_kotlin_qualified_calls
     )
 )
 
@@ -4874,6 +5150,28 @@ def extract(
             file=sys.stderr, flush=True,
         )
 
+    # #2543: collect sources that must NOT be stamped as up-to-date in the
+    # incremental manifest. Two cases:
+    #   - extractor returned an error (missing optional extra, parse failure, …)
+    #   - extractor exists but produced zero nodes (#1666 empty-source set)
+    # The CLI drops these from the stamped file set and clears any prior
+    # hashes so the next run retries them after the user installs the extra
+    # (or the transient failure self-heals) without deleting graphify-out/.
+    _failed_sources: list[str] = []
+    _failed_seen: set[str] = set()
+    for i, _p in enumerate(paths):
+        _res = per_file[i] or {}
+        _key = str(_p)
+        if _res.get("error"):
+            if _key not in _failed_seen:
+                _failed_sources.append(_key)
+                _failed_seen.add(_key)
+            continue
+        if (not _res.get("nodes")) and _get_extractor(_p) is not None:
+            if _key not in _failed_seen:
+                _failed_sources.append(_key)
+                _failed_seen.add(_key)
+
     # #1689: a file counted as code (extension in CODE_EXTENSIONS) but with no AST
     # extractor wired up (e.g. .r/.R — there is no tree-sitter-r dispatch) silently
     # contributes zero nodes. The #1666 warning above deliberately skips these (it
@@ -4923,6 +5221,32 @@ def extract(
         print(
             f"  warning: {_n} {_ext} file(s) contributed nothing to the graph "
             f"because a dependency is missing: {_reason}.{_hint} (#1745)",
+            file=sys.stderr, flush=True,
+        )
+
+    # #2551: a file the parser ACCEPTED but only with ERROR recovery (e.g. the
+    # Kotlin grammar rejecting one-line `class C { val x }` bodies, or Luau
+    # syntax the Lua grammar can't parse, #2520) extracts partially — sometimes
+    # to nothing but the file node — with no other signal. Neither warning
+    # above fires (nodes exist, no error marker), so surface it explicitly,
+    # naming the first error line so the user can find the construct.
+    _syntax_error_files: list[tuple[str, int | None]] = []
+    for i, _p in enumerate(paths):
+        _pe = (per_file[i] or {}).get("parse_errors")
+        if _pe:
+            _syntax_error_files.append((str(_p), _pe.get("first_error_line")))
+    if _syntax_error_files:
+        _shown = ", ".join(
+            f"{Path(x).name} (first error at line {ln})" if ln else Path(x).name
+            for x, ln in _syntax_error_files[:5]
+        )
+        _more = (
+            f" (+{len(_syntax_error_files) - 5} more)"
+            if len(_syntax_error_files) > 5 else ""
+        )
+        print(
+            f"  warning: {len(_syntax_error_files)} file(s) had syntax errors and "
+            f"may be partially extracted: {_shown}{_more} (#2551)",
             file=sys.stderr, flush=True,
         )
 
@@ -5533,6 +5857,17 @@ def extract(
     # them from the indirect_call guard below to avoid false edges (#2137).
     class_nids = {n["id"] for n in resolution_nodes if n.get("_callable_class")}
 
+    # Kotlin import targets (#2526): rewrite each `imports` edge from the bare
+    # last-segment id to the node its written FQN names, via the per-file
+    # package declarations. Runs HERE — after the id-remap/disambiguation passes
+    # (ids are final) but before the import-evidence index just below reads the
+    # edges — so genuine imported calls get promoted INFERRED -> EXTRACTED. The
+    # tail registry run (run_language_resolvers below) would be too late.
+    run_language_resolvers(
+        paths, per_file, all_nodes, all_edges,
+        resolvers=[_KOTLIN_IMPORT_TARGET_RESOLVER],
+    )
+
     # Build evidence index from import edges so cross-file calls backed by an
     # explicit import statement can be promoted from INFERRED to EXTRACTED.
     # Direct symbol imports (`import { foo }` / `const { foo } = require()`) are
@@ -5963,6 +6298,10 @@ def extract(
         "edges": all_edges,
         "input_tokens": 0,
         "output_tokens": 0,
+        # Surfaces failed/empty AST sources to the CLI so the incremental
+        # manifest does not freeze them as processed (#2543). Callers that
+        # only read nodes/edges ignore this key.
+        "failed_sources": _failed_sources,
     }
 
 

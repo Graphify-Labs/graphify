@@ -1781,6 +1781,16 @@ def _require_imports_js(node, source: bytes, file_nid: str, stem: str, edges: li
 
 _JS_FUNCTION_VALUE_TYPES = frozenset({"arrow_function", "function_expression", "function", "generator_function"})
 
+def _js_topmost_closures(node, out: list) -> None:
+    """Collect the TOPMOST closure nodes (arrow / function expressions) under
+    ``node``, without descending into a found closure — its nested closures
+    belong to it and are reached by the walk_calls closure descend (#1630)."""
+    for c in node.children:
+        if c.type in _JS_FUNCTION_VALUE_TYPES:
+            out.append(c)
+        else:
+            _js_topmost_closures(c, out)
+
 def _js_member_assignment_target(left, source: bytes):
     """Classify the symbol an `assignment_expression` LHS defines when its RHS
     is a function. Returns (kind, owner_name, member_name) or None.
@@ -1952,7 +1962,8 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                     elif value and (
                         is_exported_scalar_binding
                         or value.type in (
-                            "object", "array", "as_expression", "call_expression",
+                            "object", "array", "as_expression",
+                            "satisfies_expression", "call_expression",
                             "new_expression",
                         )
                     ):
@@ -1965,6 +1976,33 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                             add_node_fn(const_nid, const_name, line)
                             add_edge_fn(file_nid, const_nid, "contains", line)
                             const_found = True
+                            # #2552: `const handler = wrapper(async (req) => …)`
+                            # created the const node above but, unlike the arrow
+                            # branch, never tracked the callback's body — so
+                            # walk_calls never descended into it and its calls
+                            # were dropped. Track each TOPMOST closure in the
+                            # initializer under the const's nid; nested closures
+                            # are reached by the #1630 closure descend with the
+                            # same caller, so appending them too would
+                            # double-walk. `_tracked_body_ids` picks these up,
+                            # so the descend skips them (no double-count).
+                            inner = value
+                            while inner is not None and inner.type in (
+                                    "as_expression", "satisfies_expression"):
+                                inner = (inner.named_children[0]
+                                         if inner.named_children else None)
+                            if inner is not None and inner.type in (
+                                    "call_expression", "new_expression"):
+                                closures: list = []
+                                _js_topmost_closures(inner, closures)
+                                for closure in closures:
+                                    if local_bound_names is not None:
+                                        local_bound_names[const_nid] = (
+                                            local_bound_names.get(const_nid, set())
+                                            | _js_local_bound_names(closure, source))
+                                    body = closure.child_by_field_name("body")
+                                    if body:
+                                        function_bodies.append((const_nid, body))
         if arrow_found:
             return True
         if const_found:
@@ -2156,6 +2194,70 @@ def _kotlin_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: 
                     walk_fn(member, parent_class_nid=const_nid)
         return True
     return False
+
+
+def _kotlin_package_name(root, source: bytes) -> str | None:
+    """Dotted package FQN from the file's ``package_header``, or None.
+
+    Grammar 1.1.0 puts the path in a ``qualified_identifier`` child; older
+    forks use an ``identifier`` that spans the whole dotted text. Either way
+    the node's text IS the FQN.
+    """
+    for child in root.children:
+        if child.type != "package_header":
+            continue
+        for c in child.children:
+            if c.type in ("qualified_identifier", "identifier"):
+                pkg = _read_text(c, source).strip()
+                return pkg or None
+        return None
+    return None
+
+
+def _kotlin_nav_identifier_segments(nav, source: bytes) -> list[str] | None:
+    """Flatten a Kotlin ``navigation_expression`` chain into its dotted
+    identifier segments (``com.example.Foo.bar`` -> [com, example, Foo, bar]).
+
+    Returns None when any segment is not a plain identifier — a receiver that
+    is an expression, a call, ``this``, a string literal, etc. must never read
+    as a qualified name (#2550). Older grammars with a different navigation
+    shape also bail here, preserving their current behavior.
+    """
+    segments: list[str] = []
+    node = nav
+    while node is not None and node.type == "navigation_expression":
+        named = [c for c in node.children if c.is_named]
+        # Grammar 1.1.0 shape: <receiver> "." <identifier> (the dot is unnamed).
+        if len(named) != 2:
+            return None
+        head, tail = named
+        if tail.type not in ("simple_identifier", "identifier"):
+            return None
+        segments.append(_read_text(tail, source))
+        node = head
+    if node is None or node.type not in ("simple_identifier", "identifier"):
+        return None
+    segments.append(_read_text(node, source))
+    segments.reverse()
+    return segments
+
+
+def _first_parse_error_line(root) -> int:
+    """1-based line of the first ERROR/MISSING node under ``root`` (#2551).
+
+    Descends the first erroring child at each level (document order), so it
+    lands on the earliest error region. Some recoveries set ``has_error``
+    without materializing an ERROR/MISSING child (zero-width recovery); the
+    deepest still-erroring node's line is reported for those.
+    """
+    node = root
+    while True:
+        if node.type == "ERROR" or node.is_missing:
+            return node.start_point[0] + 1
+        child = next((c for c in node.children if c.has_error), None)
+        if child is None:
+            return node.start_point[0] + 1
+        node = child
 
 
 def _read_csharp_type_name(node, source: bytes) -> tuple[str, bool, str] | None:
@@ -4015,6 +4117,17 @@ def _extract_generic(
                 walk(child, parent_class_nid=parent_class_nid)
             return
 
+        # #2551: tree-sitter ERROR recovery can wrap declarations that plainly
+        # sit inside a class body (e.g. the Kotlin grammar choking on a one-line
+        # sibling member). The default recurse below deliberately drops
+        # parent_class_nid (an unknown wrapper usually IS a scope boundary), but
+        # an ERROR node is a parse artifact, not a scope — keep the enclosing
+        # class linkage for whatever declarations were recovered inside it.
+        if t == "ERROR":
+            for child in node.children:
+                walk(child, parent_class_nid=parent_class_nid)
+            return
+
         # Default: recurse
         for child in node.children:
             walk(child, parent_class_nid=None)
@@ -4259,6 +4372,7 @@ def _extract_generic(
             is_this_field_call: bool = False
             swift_receiver: str | None = None
             member_receiver: str | None = None
+            kotlin_qualified_prefix: str | None = None
 
             # Special handling per language
             if config.ts_module == "tree_sitter_swift":
@@ -4294,6 +4408,19 @@ def _extract_generic(
                             if child.type in ("simple_identifier", "identifier"):
                                 callee_name = _read_text(child, source)
                                 break
+                        # #2550: `com.example.Foo.bar()` is a NESTED
+                        # navigation_expression chain; the last identifier alone
+                        # (`bar`) rarely matches in-file, so the call was dropped
+                        # (the shared cross-file pass skips member calls). When
+                        # EVERY chain segment is a plain identifier and there are
+                        # >= 3 (a real dotted FQN, not `recv.method()`), stamp the
+                        # dotted prefix for _resolve_kotlin_qualified_calls.
+                        # member_receiver is deliberately NOT set: an uppercase
+                        # receiver would trip the capitalized-receiver deferral
+                        # below and regress in-file `Foo.bar()` resolution.
+                        segments = _kotlin_nav_identifier_segments(first, source)
+                        if segments is not None and len(segments) >= 3:
+                            kotlin_qualified_prefix = ".".join(segments[:-1])
             elif config.ts_module == "tree_sitter_scala":
                 # Scala: first child
                 first = node.children[0] if node.children else None
@@ -4581,6 +4708,11 @@ def _extract_generic(
                         receiver_type = (receiver_types or {}).get(member_receiver or "")
                         if receiver_type:
                             rc_entry["receiver_type"] = receiver_type
+                    # Kotlin fully-qualified call (#2550): the dotted prefix +
+                    # lang tag let _resolve_kotlin_qualified_calls claim it.
+                    if kotlin_qualified_prefix:
+                        rc_entry["lang"] = "kotlin"
+                        rc_entry["qualified_prefix"] = kotlin_qualified_prefix
                     raw_calls.append(rc_entry)
 
             # Indirect dispatch: a function passed BY NAME as a call argument
@@ -4922,6 +5054,19 @@ def _extract_generic(
     if _ruby_mixin_calls:
         raw_calls.extend(_ruby_mixin_calls)
     result = {"nodes": nodes, "edges": clean_edges, "raw_calls": raw_calls}
+    # #2551: the parser recovered from syntax errors, so extraction may be
+    # partial (in the worst case, nothing but the file node). Record the first
+    # error's line so extract() can warn instead of reporting silent success.
+    # Rides on the result dict, so it survives the per-file AST cache.
+    if root.has_error:
+        result["parse_errors"] = {"first_error_line": _first_parse_error_line(root)}
+    # Kotlin (#2526/#2550): the declared package qualifies every node in the
+    # file; the import-target and qualified-call resolvers key their per-package
+    # symbol indexes off it.
+    if config.ts_module == "tree_sitter_kotlin":
+        _pkg = _kotlin_package_name(root, source)
+        if _pkg:
+            result["kotlin_package"] = _pkg
     if callable_def_nids:
         # Mark function / method / class defs with a `_callable` attribute so the
         # cross-file indirect_call pass can resolve a by-name callback only to a real
