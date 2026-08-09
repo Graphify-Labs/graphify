@@ -301,19 +301,46 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         for child in node.children:
             walk(child)
 
-    def _walk_from_refs(node, caller_nid: str, line: int) -> None:
-        """Recursively find FROM/JOIN table references inside a node."""
+    def _cte_names(node) -> set[str]:
+        """Names bound by `WITH <name> AS (...)` anywhere inside this statement.
+
+        A CTE is scoped to the statement that declares it, so it is not a table and must not
+        become a `reads_from` target. Left unfiltered it mints a bare `_ref_stub`, and because
+        that stub is intentionally sourceless (see `_ref_stub`) it carries no schema, file, or
+        language namespace, so a CTE named `levels` or `slug` collides with any same-named node
+        from another language during the build (#2577).
+        """
+        names: set[str] = set()
+
+        def collect(n) -> None:
+            if n.type == "cte":
+                for c in n.children:
+                    if c.type in ("identifier", "object_reference"):
+                        names.add(_norm_ident(_read(c)))
+                        break
+            for c in n.children:
+                collect(c)
+
+        collect(node)
+        return names
+
+    def _walk_from_refs(node, caller_nid: str, line: int, cte_names: set[str] | None = None) -> None:
+        """Recursively find FROM/JOIN table references inside a node, skipping CTE names."""
+        if cte_names is None:
+            cte_names = _cte_names(node)
         if node.type in ("from", "join"):
             for c in node.children:
                 if c.type == "relation":
                     for cc in c.children:
                         if cc.type == "object_reference":
                             tbl = _read(cc)
+                            if _norm_ident(tbl) in cte_names:
+                                continue
                             tbl_nid = table_nids.get(_norm_ident(tbl)) or _ref_stub(tbl)
                             _add_edge(caller_nid, tbl_nid, "reads_from",
                                       c.start_point[0] + 1)
         for child in node.children:
-            _walk_from_refs(child, caller_nid, line)
+            _walk_from_refs(child, caller_nid, line, cte_names)
 
     # Pre-pass: register every table/view DEFINED in this file before walking,
     # so forward references (a FK to a table created later in the same file)

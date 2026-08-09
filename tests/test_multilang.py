@@ -481,6 +481,22 @@ def test_sql_emits_reads_from_edge():
     relations = {e["relation"] for e in r["edges"]}
     assert "reads_from" in relations
 
+def test_sql_cte_is_not_read_as_a_table():
+    """#2577: a name bound by WITH ... AS (...) is scoped to its statement, not a table.
+
+    Emitting it as a reads_from target minted a bare, sourceless stub carrying no schema,
+    file, or language namespace, so a CTE named `levels` or `slug` collided with a same-named
+    node from another language. The real table in the same FROM/JOIN must still resolve.
+    """
+    r = _extract_sql_or_skip("sample_cte.sql")
+    labels = [n["label"] for n in r["nodes"]]
+    assert "levels" not in labels, "CTE name leaked into the graph as a table node"
+
+    reads = [e for e in r["edges"] if e["relation"] == "reads_from"]
+    assert reads, "the real table reference should still emit a reads_from edge"
+    assert not any(e["target"] == "levels" for e in reads), "CTE emitted as a reads_from target"
+
+
 def test_sql_no_dangling_edges():
     r = _extract_sql_or_skip()
     node_ids = {n["id"] for n in r["nodes"]}
