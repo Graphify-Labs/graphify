@@ -1699,6 +1699,7 @@ def save_manifest(
     root: Path | None = None,
     scan_corpus: set[str] | list[str] | None = None,
     clear_semantic: set[str] | list[str] | None = None,
+    clear_ast: set[str] | list[str] | None = None,
 ) -> None:
     """Save current file mtimes + content hashes for change detection.
 
@@ -1733,6 +1734,12 @@ def save_manifest(
     and making detect_incremental(kind="semantic") report them unchanged.
     Pass the set of such files (any path form ``scan_corpus`` accepts) to
     force their seeded semantic_hash to "" instead of inheriting it.
+
+    ``clear_ast`` (#2543): same idea for AST failures (missing optional extra,
+    zero-node anomalous extract). Blanks BOTH ``ast_hash`` and
+    ``semantic_hash`` on the seeded row so either detect_incremental kind
+    re-queues the file after the failure is fixed, without deleting
+    graphify-out/.
     """
     existing = load_manifest(manifest_path, root=root)
 
@@ -1749,6 +1756,7 @@ def save_manifest(
 
     scan_set = _path_index(scan_corpus)
     clear_set = _path_index(clear_semantic)
+    clear_ast_set = _path_index(clear_ast)
     try:
         root_res: Path | None = Path(root).resolve() if root is not None else None
     except (OSError, RuntimeError):
@@ -1764,11 +1772,24 @@ def save_manifest(
             return False
 
     def _in_clear(path_str: str) -> bool:
+        if clear_set is None:
+            return False
         if path_str in clear_set or _nfc(path_str) in clear_set:
             return True
         try:
             resolved = str(Path(path_str).resolve())
             return resolved in clear_set or _nfc(resolved) in clear_set
+        except (OSError, RuntimeError):
+            return False
+
+    def _in_clear_ast(path_str: str) -> bool:
+        if clear_ast_set is None:
+            return False
+        if path_str in clear_ast_set or _nfc(path_str) in clear_ast_set:
+            return True
+        try:
+            resolved = str(Path(path_str).resolve())
+            return resolved in clear_ast_set or _nfc(resolved) in clear_ast_set
         except (OSError, RuntimeError):
             return False
 
@@ -1817,7 +1838,11 @@ def save_manifest(
             continue
         if scan_set is not None and not _in_scan(f) and _in_root(f):
             continue  # excluded-but-alive: drop the stale row (#1908)
-        if clear_set is not None and _in_clear(f):
+        if clear_ast_set is not None and _in_clear_ast(f):
+            # AST failure this run (missing extra / zero nodes, #2543): blank
+            # both hashes so either detect_incremental kind re-queues.
+            normalised = {**normalised, "ast_hash": "", "semantic_hash": ""}
+        elif clear_set is not None and _in_clear(f):
             # Dispatched-but-omitted this run: don't inherit the stale
             # semantic_hash, or detect_incremental would call it unchanged (#1948).
             normalised = {**normalised, "semantic_hash": ""}
