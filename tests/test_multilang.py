@@ -496,6 +496,24 @@ def test_sql_cte_is_not_read_as_a_table():
     assert reads, "the real table reference should still emit a reads_from edge"
     assert not any(e["target"] == "levels" for e in reads), "CTE emitted as a reads_from target"
 
+def test_sql_cte_scope_ends_at_its_own_statement():
+    """A CTE is scoped to the statement that declares it, not to the whole routine.
+
+    A SQL-standard function body (Postgres 14+ `BEGIN ATOMIC`) puts sibling statements
+    under one node, so collecting CTE names across that node hid the real table from
+    every sibling of the statement that happened to declare a CTE of the same name.
+    Scope runs the other way too: a CTE body still sees the CTEs declared beside it,
+    which is how a chained or recursive reference stays a non-table.
+    """
+    r = _extract_sql_or_skip("sample_cte_scope.sql")
+    sourced = {n["id"] for n in r["nodes"] if n["label"] == "orders" and n["source_file"]}
+    reads = [e for e in r["edges"] if e["relation"] == "reads_from"]
+
+    assert any(e["target"] in sourced for e in reads), \
+        "a sibling statement's reference to the real `orders` table was dropped"
+    assert not any(e["target"] in ("a", "b") for e in reads), \
+        "a CTE referenced from a sibling CTE's body was emitted as a table"
+
 
 def test_sql_no_dangling_edges():
     r = _extract_sql_or_skip()

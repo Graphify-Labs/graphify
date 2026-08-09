@@ -27,6 +27,12 @@ def _norm_ident(name: str) -> str:
     return ".".join(parts)
 
 
+# Node types that open a scope a WITH clause can bind names in. A CTE declared in
+# one is invisible in the next, which is what keeps a routine body's statements
+# from sharing each other's names.
+_CTE_SCOPES = ("statement", "subquery")
+
+
 def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
     """Extract tables, views, functions, and relationships from .sql files via tree-sitter."""
     try:
@@ -301,33 +307,43 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         for child in node.children:
             walk(child)
 
-    def _cte_names(node) -> set[str]:
-        """Names bound by `WITH <name> AS (...)` anywhere inside this statement.
+    def _declared_ctes(node) -> set[str]:
+        """Names bound by this scope's own `WITH <name> AS (...)` clause.
 
         A CTE is scoped to the statement that declares it, so it is not a table and must not
         become a `reads_from` target. Left unfiltered it mints a bare `_ref_stub`, and because
         that stub is intentionally sourceless (see `_ref_stub`) it carries no schema, file, or
         language namespace, so a CTE named `levels` or `slug` collides with any same-named node
         from another language during the build (#2577).
+
+        Only this scope: a nested statement or subquery brings its own WITH clause, and a CTE
+        body is a scope of its own, so neither contributes a name here.
         """
         names: set[str] = set()
 
         def collect(n) -> None:
-            if n.type == "cte":
-                for c in n.children:
-                    if c.type in ("identifier", "object_reference"):
-                        names.add(_norm_ident(_read(c)))
-                        break
             for c in n.children:
-                collect(c)
+                if c.type == "cte":
+                    for cc in c.children:
+                        if cc.type in ("identifier", "object_reference"):
+                            names.add(_norm_ident(_read(cc)))
+                            break
+                elif c.type not in _CTE_SCOPES:
+                    collect(c)
 
         collect(node)
         return names
 
     def _walk_from_refs(node, caller_nid: str, line: int, cte_names: set[str] | None = None) -> None:
-        """Recursively find FROM/JOIN table references inside a node, skipping CTE names."""
-        if cte_names is None:
-            cte_names = _cte_names(node)
+        """Recursively find FROM/JOIN table references inside a node, skipping CTE names.
+
+        Names are gathered per scope on the way down, never once for the whole subtree: a
+        SQL-standard routine body (Postgres `BEGIN ATOMIC`) holds sibling statements, and one
+        statement's CTE must not hide a real table of that name from the next. Inherited names
+        carry inward so a CTE body can still reference a sibling or recursive CTE.
+        """
+        if cte_names is None or node.type in _CTE_SCOPES:
+            cte_names = (cte_names or set()) | _declared_ctes(node)
         if node.type in ("from", "join"):
             for c in node.children:
                 if c.type == "relation":
