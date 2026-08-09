@@ -1164,6 +1164,13 @@ def _js_local_bound_names(func_node, source: bytes) -> set[str]:
     params = func_node.child_by_field_name("parameters")
     if params is not None:
         _js_collect_pattern_idents(params, source, bound)
+    # An arrow with ONE unparenthesised parameter exposes it as `parameter`
+    # (singular) — there is no `parameters` list node — so `x => f(x)` bound
+    # nothing at all and `x` read as a by-name reference to any same-named
+    # callable in the corpus. Same singular/plural trap as `catch_clause`.
+    solo = func_node.child_by_field_name("parameter")
+    if solo is not None:
+        _js_collect_pattern_idents(solo, source, bound)
 
     def walk(n) -> None:
         for c in n.children:
