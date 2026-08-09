@@ -40,6 +40,38 @@ def test_to_json_nodes_have_community():
         for node in data["nodes"]:
             assert "community" in node
 
+
+def test_to_json_sorts_graph_collections_across_insertion_order(tmp_path):
+    import networkx as nx
+
+    nodes = [("b", {"label": "Beta"}), ("a", {"label": "Alpha"}), ("c", {"label": "Gamma"})]
+    links = [
+        ("b", "c", {"relation": "uses", "_src": "b", "_tgt": "c"}),
+        ("a", "b", {"relation": "calls", "_src": "a", "_tgt": "b"}),
+    ]
+    hyperedges = [
+        {"id": "h2", "nodes": ["b", "c"]},
+        {"id": "h1", "nodes": ["a", "b"]},
+    ]
+
+    def make_graph(reverse=False):
+        graph = nx.Graph()
+        graph.add_nodes_from(reversed(nodes) if reverse else nodes)
+        graph.add_edges_from(reversed(links) if reverse else links)
+        graph.graph["hyperedges"] = list(reversed(hyperedges)) if reverse else hyperedges
+        return graph
+
+    outputs = [tmp_path / "first.json", tmp_path / "second.json"]
+    for output, reverse in zip(outputs, (False, True)):
+        assert to_json(
+            make_graph(reverse),
+            {0: ["a", "b"], 1: ["c"]},
+            str(output),
+            built_at_commit="fixed",
+        )
+
+    assert outputs[0].read_bytes() == outputs[1].read_bytes()
+
 def test_to_cypher_creates_file():
     G = make_graph()
     with tempfile.TemporaryDirectory() as tmp:
