@@ -2,7 +2,15 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
-## 0.9.37 (unreleased)
+## 0.9.38 (unreleased)
+
+- Fix: the 0.9.37 callback-body fix (#2552) no longer lets a local declared in one callback suppress a call in a sibling callback (#2568, thanks @imagineers-tyler). Each callback body's local names are now scoped to that body instead of unioned under the shared declaration, so a real `indirect_call` in one sibling closure is no longer dropped because another sibling declared a same-named local. This can only restore dropped edges, never fabricate.
+- Fix: Kotlin calls in a property initializer are now collected (#2565, thanks @kskchaitanya1993). A class property (`val repo = createRepo()`), a `by lazy { ... }` delegate, a companion-object property, and a top-level property initializer now produce `calls` edges attributed to the enclosing class (or file), including fully-qualified calls. A plain literal initializer produces no edge.
+- Fix: Swift receiver-type inference now handles `@Environment(Store.self)` properties and factory-initialised bindings (#2561, thanks @fakewaffle). A member call on a receiver typed only through an `@Environment(Type.self)` attribute, or bound to an in-corpus factory whose return type is known (`let x = ServiceFactory.make()`), now resolves. Ambiguous or non-concrete returns (opaque `some P`, arrays, out-of-corpus) stay unresolved rather than guessing.
+- Fix: the SQL extractor no longer emits a `reads_from` edge to a CTE name (#2577, thanks @wilyan09007). A `WITH cte AS (...)` name is scoped to its query and is no longer treated as a table, so it no longer mints a bare stub that could bind to an unrelated same-named symbol; an outer real table sharing a subquery-CTE's name still resolves.
+- Fix: a dynamic `await import('…')` inside a nested function or at module scope now produces an edge (#2575, thanks @phudayyy), and `dynamic_import` edges are now included in `affected`. Calls inside a nested named function are also collected now. A dynamic import already captured as a deferred `imports_from` is not double-counted.
+
+## 0.9.37 (2026-08-08)
 
 - Fix: TypeScript member calls no longer fabricate a high-confidence `calls` edge by matching a receiver type by name alone (#2553, thanks @Earthfreedom). A member call now resolves only when the receiver's type is defined in the same file or actually imported by the caller's file, so a third-party `import type { Repo }` can no longer bind to an unrelated local `class Repo`; table-inferred receivers are tiered to INFERRED rather than EXTRACTED.
 - Fix: TypeScript/JavaScript calls inside a callback body passed to another call (for example `export const handler = wrapper(async (req) => { helper() })`) are no longer dropped (#2552, thanks @Earthfreedom). The callback body is now walked and its calls attributed to the declaration, through the same import-gated resolution so it cannot fabricate edges.

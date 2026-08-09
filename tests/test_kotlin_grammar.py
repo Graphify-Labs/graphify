@@ -299,6 +299,154 @@ def test_kotlin_one_line_class_keeps_field_reference(tmp_path):
     assert (c, money) in field_refs
 
 
+# ── #2565: property-initializer calls ────────────────────────────────────────
+
+_INIT_CORPUS = {
+    "lib/Lib.kt": (
+        "package com.demo.lib\n"
+        "\n"
+        "class Repo\n"
+        "\n"
+        "class HttpClient(val url: String)\n"
+        "\n"
+        "fun createRepo(): Repo {\n"
+        "    return Repo()\n"
+        "}\n"
+        "\n"
+        "fun base(): String {\n"
+        "    return \"\"\n"
+        "}\n"
+        "\n"
+        "fun compute(): Int {\n"
+        "    return 1\n"
+        "}\n"
+        "\n"
+        "fun companionInit(): Int {\n"
+        "    return 2\n"
+        "}\n"
+    ),
+    "app/Service.kt": (
+        "package com.demo.app\n"
+        "\n"
+        "import com.demo.lib.HttpClient\n"
+        "import com.demo.lib.base\n"
+        "import com.demo.lib.companionInit\n"
+        "import com.demo.lib.compute\n"
+        "import com.demo.lib.createRepo\n"
+        "\n"
+        "class Service {\n"
+        "    val repo = createRepo()\n"
+        "    private val client = HttpClient(base())\n"
+        "    val x by lazy {\n"
+        "        compute()\n"
+        "    }\n"
+        "    val plain = 5\n"
+        "    companion object {\n"
+        "        val shared = companionInit()\n"
+        "    }\n"
+        "    fun go() {\n"
+        "        val r = createRepo()\n"
+        "    }\n"
+        "}\n"
+    ),
+    # No import here on purpose: the shared cross-file pass dedups on
+    # (source, target) across relations, so a file-level `imports` edge to
+    # createRepo would mask the file-level `calls` edge this corpus pins down
+    # (single-candidate resolution needs no import evidence outside JS/TS).
+    "app/TopLevel.kt": (
+        "package com.demo.app\n"
+        "\n"
+        "val topRepo = createRepo()\n"
+    ),
+}
+
+
+def test_kotlin_class_property_initializer_calls(tmp_path):
+    r = _extract(tmp_path, _INIT_CORPUS)
+    calls = _edges(r, "calls")
+    service = _find(r, "Service")
+    create = _find(r, "createRepo()")
+    client = _find(r, "HttpClient")
+    base = _find(r, "base()")
+    assert (service, create) in calls, \
+        "`val repo = createRepo()` runs at construction time — a calls edge"
+    assert (service, client) in calls, \
+        "`val client = HttpClient(...)` is a constructor call"
+    assert (service, base) in calls, \
+        "walk_calls recurses into nested initializer argument calls"
+
+
+def test_kotlin_delegate_initializer_calls(tmp_path):
+    r = _extract(tmp_path, _INIT_CORPUS)
+    service = _find(r, "Service")
+    compute = _find(r, "compute()")
+    assert (service, compute) in _edges(r, "calls"), \
+        "`by lazy { compute() }` invokes compute() to produce the property"
+
+
+def test_kotlin_companion_property_initializer_attributes_to_class(tmp_path):
+    r = _extract(tmp_path, _INIT_CORPUS)
+    service = _find(r, "Service")
+    ci = _find(r, "companionInit()")
+    assert (service, ci) in _edges(r, "calls"), \
+        "a companion object is not an attribution scope: its property " \
+        "initializers belong to the enclosing class"
+
+
+def test_kotlin_literal_initializer_emits_nothing(tmp_path):
+    r = _extract(tmp_path, _INIT_CORPUS)
+    service = _find(r, "Service")
+    plain_line = _INIT_CORPUS["app/Service.kt"].splitlines().index(
+        "    val plain = 5") + 1
+    assert not [e for e in r["edges"] if e["source"] == service
+                and e.get("source_location") == f"L{plain_line}"], \
+        "`val plain = 5` contains no call — nothing to emit"
+
+
+def test_kotlin_function_body_calls_unchanged(tmp_path):
+    r = _extract(tmp_path, _INIT_CORPUS)
+    calls = _edges(r, "calls")
+    go = _find(r, ".go()")
+    create = _find(r, "createRepo()")
+    repo = _find(r, "Repo")
+    assert (go, create) in calls
+    assert (create, repo) in calls
+
+
+def test_kotlin_top_level_property_initializer_attributes_to_file(tmp_path):
+    r = _extract(tmp_path, _INIT_CORPUS)
+    top_file = _find(r, "TopLevel.kt")
+    create = _find(r, "createRepo()")
+    assert (top_file, create) in _edges(r, "calls"), \
+        "a top-level `val` has no class: its initializer belongs to the file"
+
+
+def test_kotlin_fq_initializer_call_resolves_extracted(tmp_path):
+    # Composition with #2550: a fully-qualified constructor call in a property
+    # initializer flows through walk_calls' qualified_prefix stamping and
+    # resolves to the REAL Router node via _resolve_kotlin_qualified_calls.
+    r = _extract(tmp_path, {
+        "nav/Router.kt": (
+            "package com.demo.nav\n"
+            "\n"
+            "class Router\n"
+        ),
+        "app/App.kt": (
+            "package com.demo.app\n"
+            "\n"
+            "class App {\n"
+            "    val r = com.demo.nav.Router()\n"
+            "}\n"
+        ),
+    })
+    app = _find(r, "App")
+    router = _find(r, "Router")
+    edge = next(e for e in r["edges"] if e["relation"] == "calls"
+                and e["source"] == app and e["target"] == router)
+    assert edge["confidence"] == "EXTRACTED", \
+        "the FQN is written verbatim in source: exact match, EXTRACTED"
+
+
 # ── keep-the-bar: multi-line Kotlin is byte-identical ────────────────────────
 
 def test_multiline_kotlin_unchanged(tmp_path, capsys):

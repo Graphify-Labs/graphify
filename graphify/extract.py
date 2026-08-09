@@ -1231,7 +1231,86 @@ def extract_js(path: Path) -> dict:
     result = _extract_generic(path, config)
     if "error" not in result:
         _extract_js_rationale(path, result)
+        _rescue_js_dynamic_imports(path, result)
     return result
+
+
+def _rescue_js_dynamic_imports(path: Path, result: dict) -> None:
+    """Recover ``import('…')`` edges the AST pass does not emit for plain JS/TS.
+
+    tree-sitter models ``await import('x')`` as a ``call_expression``, not an
+    ``import_statement``, so the specifier only reaches the graph when
+    ``walk_calls`` visits that call — which it never does at module scope
+    (only function bodies are walked for calls). The Svelte/Astro/Vue
+    extractors already patch the same gap by regex because their AST pass
+    fails wholesale; plain ``.ts``/``.js`` was left out on the reasoning that
+    its AST pass "works". It works for STATIC imports; dynamic ones outside a
+    walked body fell through silently (#2575), and because they cluster under
+    hub modules the loss compounds with ``affected`` traversal depth.
+
+    Dedupe: a dynamic import the AST pass DID capture is already in the graph
+    as an ``imports_from`` edge marked ``deferred`` (``_dynamic_import_js``).
+    Re-emitting it here as a second ``dynamic_import`` edge would state the
+    same fact twice, so a match whose resolved target already has a deferred
+    edge is skipped.
+
+    Regex false positives in comments/strings are the precedented trade of
+    the Svelte/Vue rescues; a ``//``-prefix guard covers the common case.
+    """
+    try:
+        import re as _re
+        src = path.read_text(encoding="utf-8", errors="replace")
+        if "import(" not in src:  # cheap bail — most files have none
+            return
+        existing_ids = {n["id"] for n in result.get("nodes", [])}
+        file_node_id = _make_id(str(path))
+        aliases = _load_tsconfig_aliases(path.parent)
+        base_url = _load_tsconfig_base_url(path.parent)
+        deferred_ids: set[str] = set()
+        deferred_files: set[str] = set()
+        for e in result.get("edges", []):
+            if e.get("deferred") and e.get("relation") == "imports_from":
+                deferred_ids.add(e.get("target"))
+                tf = e.get("target_file")
+                if tf:
+                    try:
+                        deferred_files.add(str(Path(tf).resolve()))
+                    except OSError:
+                        deferred_files.add(str(tf))
+        # `(?<!\w)` so `fooimport('x')` and `_import('x')` do not match. The
+        # backtick alternative mirrors _dynamic_import_js's template-string
+        # handling: a literal `import(`./x`)` resolves, `${`-substituted ones
+        # are excluded (no `$` in the class) as statically unresolvable.
+        for m in _re.finditer(
+            r"""(?<!\w)import\(\s*(?:'([^'\n]+)'|"([^"\n]+)"|`([^`$\n]+)`)\s*\)""",
+            src,
+        ):
+            raw = m.group(1) or m.group(2) or m.group(3)
+            if not raw:
+                continue
+            line_start = src.rfind("\n", 0, m.start()) + 1
+            if "//" in src[line_start:m.start()]:
+                continue  # line-commented-out import
+            resolution = _resolve_rescued_specifier(path, raw, aliases, base_url)
+            if resolution is None:
+                continue
+            node_id, _stub_sf, resolved_file = resolution
+            # AST-captured already: same resolved target id, same resolved
+            # on-disk file, or the engine's ref-namespaced external id.
+            if node_id in deferred_ids or _make_id("ref", raw) in deferred_ids:
+                continue
+            if resolved_file is not None:
+                try:
+                    if str(resolved_file.resolve()) in deferred_files:
+                        continue
+                except OSError:
+                    pass
+            _emit_rescued_import(
+                result, existing_ids, file_node_id, path, raw,
+                "dynamic_import", aliases, base_url,
+            )
+    except Exception:
+        pass
 
 
 # ── JS/TS rationale + doc-reference extraction ────────────────────────────────
@@ -1342,6 +1421,46 @@ def _extract_js_rationale(path: Path, result: dict) -> None:
                 _add_doc_ref(m.group(1), lineno)
 
 
+def _resolve_rescued_specifier(
+    path: Path,
+    raw: str,
+    aliases,
+    base_url,
+) -> "tuple[str, str, Path | None] | None":
+    """Resolve a regex-rescued import specifier the way ``_import_js`` does.
+
+    Returns ``(node_id, stub_source_file, resolved_file)`` — ``resolved_file``
+    is the target as a real on-disk file, or None when the specifier is
+    external or dangling. Returns None when no target can be minted at all
+    (empty bare-import segment). Split out of :func:`_emit_rescued_import` so
+    :func:`_rescue_js_dynamic_imports` can resolve a match FIRST and skip
+    specifiers the AST pass already emitted, without duplicating the
+    resolution rules.
+    """
+    if raw.startswith("."):
+        resolved = _resolve_js_module_path(
+            Path(os.path.normpath(path.parent / raw))
+        )
+        resolved_file = resolved if resolved is not None and resolved.is_file() else None
+        return _make_id(str(resolved)), str(resolved), resolved_file
+    # Check tsconfig.json path aliases (e.g. "$lib/" -> "src/lib/",
+    # "@/" -> "src/") before treating as external. Mirrors _import_js
+    # logic so alias imports resolve to the same file node IDs the
+    # extractor creates (#701).
+    resolved_alias = _resolve_tsconfig_alias(raw, aliases, base_url=base_url)
+    if resolved_alias is not None:
+        resolved_alias = _resolve_js_module_path(resolved_alias)
+        resolved_file = (resolved_alias if resolved_alias is not None
+                         and resolved_alias.is_file() else None)
+        return _make_id(str(resolved_alias)), str(resolved_alias), resolved_file
+    # Bare/scoped import (node_modules) - use last segment;
+    # build_from_json drops as external if no matching node exists.
+    module_name = raw.split("/")[-1]
+    if not module_name:
+        return None
+    return _make_id(module_name), raw, None
+
+
 def _emit_rescued_import(
     result: dict,
     existing_ids: set,
@@ -1369,35 +1488,10 @@ def _emit_rescued_import(
     dedupe (#2195). Stub nodes are still minted for unresolved specifiers
     (externals, not-yet-created files) so prior behavior is preserved.
     """
-    resolved_file: "Path | None" = None
-    if raw.startswith("."):
-        resolved = _resolve_js_module_path(
-            Path(os.path.normpath(path.parent / raw))
-        )
-        node_id = _make_id(str(resolved))
-        stub_source_file = str(resolved)
-        if resolved is not None and resolved.is_file():
-            resolved_file = resolved
-    else:
-        # Check tsconfig.json path aliases (e.g. "$lib/" -> "src/lib/",
-        # "@/" -> "src/") before treating as external. Mirrors _import_js
-        # logic so alias imports resolve to the same file node IDs the
-        # extractor creates (#701).
-        resolved_alias = _resolve_tsconfig_alias(raw, aliases, base_url=base_url)
-        if resolved_alias is not None:
-            resolved_alias = _resolve_js_module_path(resolved_alias)
-            node_id = _make_id(str(resolved_alias))
-            stub_source_file = str(resolved_alias)
-            if resolved_alias is not None and resolved_alias.is_file():
-                resolved_file = resolved_alias
-        else:
-            # Bare/scoped import (node_modules) - use last segment;
-            # build_from_json drops as external if no matching node exists.
-            module_name = raw.split("/")[-1]
-            if not module_name:
-                return
-            node_id = _make_id(module_name)
-            stub_source_file = raw
+    resolution = _resolve_rescued_specifier(path, raw, aliases, base_url)
+    if resolution is None:
+        return
+    node_id, stub_source_file, resolved_file = resolution
     edge = {
         "source": file_node_id, "target": node_id,
         "relation": relation, "confidence": "EXTRACTED",
@@ -2360,6 +2454,56 @@ def _resolve_swift_member_calls(
         tnode = node_by_id.get(tgt)
         if tnode is not None:
             method_index[(src, _key(tnode.get("label", "")))] = tgt
+
+    # #2561: pending factory bindings (`let x = Factory.make()`) are label-only —
+    # resolve each against the factory method's marked plain return type
+    # (`swift_plain_return` on the return_type references edge) and fold the
+    # result into the declaring file's table so the raw-call loop below types
+    # `x.method()` through the existing INFERRED path. Every step is
+    # exactly-one guarded; any failure leaves the receiver untyped (no edge,
+    # never a wrong one). setdefault: an explicit annotation wins.
+    factory_by_file: dict[str, dict] = {}
+    for result in per_file:
+        tt = result.get("swift_type_table")
+        if tt and tt.get("path") and tt.get("factory"):
+            factory_by_file[tt["path"]] = tt["factory"]
+    if factory_by_file:
+        # method nid -> marked plain-return target nids (must be exactly one).
+        return_targets_by_method: dict[str, set[str]] = {}
+        for e in all_edges:
+            if (e.get("relation") == "references"
+                    and e.get("context") == "return_type"
+                    and (e.get("metadata") or {}).get("swift_plain_return")):
+                return_targets_by_method.setdefault(
+                    e.get("source"), set()).add(e.get("target"))
+        for path, pending in factory_by_file.items():
+            # Copy before folding: the resolved label is corpus-dependent and
+            # must not leak back into the per-file result.
+            table = dict(type_table_by_file.get(path, {}))
+            type_table_by_file[path] = table
+            for receiver, bind in pending.items():
+                try:
+                    factory_type, factory_method = bind
+                except (TypeError, ValueError):
+                    continue
+                if factory_type in _LANGUAGE_BUILTIN_GLOBALS:
+                    continue
+                factory_defs = type_def_nids.get(_key(factory_type), [])
+                if len(factory_defs) != 1:
+                    continue
+                method_nid = method_index.get((factory_defs[0], _key(factory_method)))
+                if method_nid is None:
+                    continue
+                targets = return_targets_by_method.get(method_nid, set())
+                if len(targets) != 1:
+                    continue
+                tnode = node_by_id.get(next(iter(targets)))
+                ret_label = str(tnode.get("label", "")) if tnode else ""
+                if not ret_label or ret_label in _LANGUAGE_BUILTIN_GLOBALS:
+                    continue
+                if len(type_def_nids.get(_key(ret_label), [])) != 1:
+                    continue
+                table.setdefault(receiver, ret_label)
 
     all_raw_calls: list[dict] = []
     for result in per_file:
