@@ -668,6 +668,75 @@ def _dart_lib_root(start_dir: Path) -> "Path | None":
     return None
 
 
+def _resolve_dart_package_uri(raw: str, start_dir: Path) -> "Path | None":
+    """Resolve `package:<name>/<sub>` to `<root of name>/lib/<sub>`."""
+    pkg, _, sub = raw[len("package:"):].partition("/")
+    if not pkg or not sub:
+        return None
+    for name, root in _dart_package_index(str(start_dir)):
+        if name != pkg:
+            continue
+        try:
+            candidate = (Path(root) / "lib" / sub).resolve()
+        except OSError:
+            return None
+        return candidate if candidate.is_file() else None
+    return None
+
+
+def _resolve_dart_relative_uri(raw: str, start_dir: Path) -> "Path | None":
+    """Resolve a relative Dart URI, clamping `..` at the package root.
+
+    A relative URI is resolved against the importing library's OWN uri, and for
+    anything under `lib/` that uri is `package:<name>/...`, not a file path. The
+    difference is not cosmetic: RFC 3986 drops `..` segments that would escape the
+    base, so from `package:app/core/data/x.dart` an import of
+    `../../../features/y.dart` CLAMPS at the package root and resolves to
+    `package:app/features/y.dart`, while the same join over the file path escapes
+    `lib/` and lands on a file that does not exist. Dart accepts the first — this
+    is live, compiling code in real repos — so resolving on the filesystem alone
+    reports a false miss on exactly those imports.
+
+    Outside `lib/` (bin/, test/, tool/, a loose script) the base really is a file
+    uri, so a plain join is the correct semantics there.
+    """
+    lib_root = _dart_lib_root(start_dir)
+    if lib_root is None:
+        try:
+            candidate = (start_dir / raw).resolve()
+        except OSError:
+            return None
+        return candidate if candidate.is_file() else None
+
+    try:
+        segments = list(start_dir.resolve().relative_to(lib_root).parts)
+    except ValueError:
+        segments = []
+    for part in raw.split("/"):
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if segments:
+                segments.pop()
+            continue  # already at the package root: clamp, as `package:` does
+        segments.append(part)
+    candidate = lib_root.joinpath(*segments)
+    return candidate if candidate.is_file() else None
+
+
+def _resolve_dart_uri(raw: str, start_dir: Path) -> "Path | None":
+    """Resolve a non-SDK Dart URI against `start_dir`.
+
+    Split out of `_resolve_dart_import_target` so that entry point stays a thin
+    dispatcher; see its docstring for the URI forms handled here.
+    """
+    if raw.startswith("package:"):
+        return _resolve_dart_package_uri(raw, start_dir)
+    if raw.startswith(("http:", "https:", "asset:")):
+        return None
+    return _resolve_dart_relative_uri(raw, start_dir)
+
+
 def _resolve_dart_import_target(raw: str, str_path: str) -> "Path | None":
     """Resolve a Dart `import`/`export`/`part` URI to a real file on disk.
 
@@ -683,67 +752,13 @@ def _resolve_dart_import_target(raw: str, str_path: str) -> "Path | None":
     `_resolve_c_include_path`, so the caller keeps its existing external-node
     behaviour untouched.
     """
-    if not raw:
+    if not raw or raw.startswith("dart:"):
         return None
-    if raw.startswith("dart:"):
-        return None
-
     try:
         start_dir = Path(str_path).parent
     except Exception:
         return None
-
-    if raw.startswith("package:"):
-        pkg, _, sub = raw[len("package:"):].partition("/")
-        if not pkg or not sub:
-            return None
-        for name, root in _dart_package_index(str(start_dir)):
-            if name != pkg:
-                continue
-            try:
-                candidate = (Path(root) / "lib" / sub).resolve()
-            except OSError:
-                return None
-            return candidate if candidate.is_file() else None
-        return None
-
-    if raw.startswith(("http:", "https:", "asset:")):
-        return None
-
-    # A relative URI is resolved against the importing library's OWN uri, and for
-    # anything under `lib/` that uri is `package:<name>/...`, not a file path. The
-    # difference is not cosmetic: RFC 3986 drops `..` segments that would escape the
-    # base, so from `package:app/core/data/x.dart` an import of
-    # `../../../features/y.dart` CLAMPS at the package root and resolves to
-    # `package:app/features/y.dart`, while the same join over the file path escapes
-    # `lib/` and lands on a file that does not exist. Dart accepts the first — this
-    # is live, compiling code in real repos — so resolving on the filesystem alone
-    # reports a false miss on exactly those imports. Walk the segments against
-    # `lib/` and clamp there to match.
-    lib_root = _dart_lib_root(start_dir)
-    if lib_root is not None:
-        try:
-            segments = list(start_dir.resolve().relative_to(lib_root).parts)
-        except ValueError:
-            segments = []
-        for part in raw.split("/"):
-            if part in ("", "."):
-                continue
-            if part == "..":
-                if segments:
-                    segments.pop()
-                continue  # already at the package root: clamp, as `package:` does
-            segments.append(part)
-        candidate = lib_root.joinpath(*segments)
-        return candidate if candidate.is_file() else None
-
-    # Outside `lib/` (bin/, test/, tool/, a loose script) the base really is a file
-    # uri, so a plain join is the correct semantics.
-    try:
-        candidate = (start_dir / raw).resolve()
-    except OSError:
-        return None
-    return candidate if candidate.is_file() else None
+    return _resolve_dart_uri(raw, start_dir)
 
 
 def _resolve_lua_import_target(raw_module: str, str_path: str) -> str:
