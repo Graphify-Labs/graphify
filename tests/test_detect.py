@@ -76,6 +76,25 @@ def test_detect_skips_noise_dot_dirs():
                 assert noise not in f
 
 
+def test_detect_skips_obsidian_vault_metadata_dirs(tmp_path):
+    """Obsidian metadata and plugin caches are not part of the source corpus (#2493)."""
+    for directory in (".obsidian", ".smart-env"):
+        metadata_dir = tmp_path / directory
+        metadata_dir.mkdir()
+        (metadata_dir / "state.json").write_text("{}")
+    trash_dir = tmp_path / ".trash"
+    trash_dir.mkdir()
+    (trash_dir / "state.json").write_text("{}")
+    (tmp_path / "project.json").write_text("{}")
+
+    result = detect(tmp_path)
+
+    assert result["files"]["code"] == [
+        str(trash_dir / "state.json"),
+        str(tmp_path / "project.json"),
+    ]
+
+
 def test_classify_md_paper_by_signals(tmp_path):
     """A .md file with enough paper signals should classify as PAPER."""
     paper = tmp_path / "paper.md"
