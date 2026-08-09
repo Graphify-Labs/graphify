@@ -5,6 +5,7 @@ import re
 
 from pathlib import Path
 from graphify.extractors.base import _file_stem, _make_id
+from graphify.extractors.resolution import _resolve_dart_import_target
 
 
 def extract_dart(path: Path) -> dict:
@@ -500,17 +501,21 @@ def extract_dart(path: Path) -> dict:
                 add_edge(nid, route_nid, "navigates", context="route_object")
 
     # 6. Imports and Exports
-    for m in re.finditer(r"""^\s*import\s+['"]([^'"]+)['"]""", src_clean, re.MULTILINE):
-        pkg = m.group(1)
-        tgt_nid = _make_id(pkg)
-        add_node(tgt_nid, pkg, source_file=None)
-        add_edge(file_nid, tgt_nid, "imports")
-
-    for m in re.finditer(r"""^\s*export\s+['"]([^'"]+)['"]""", src_clean, re.MULTILINE):
-        pkg = m.group(1)
-        tgt_nid = _make_id(pkg)
-        add_node(tgt_nid, pkg, source_file=None)
-        add_edge(file_nid, tgt_nid, "exports")
+    for kind, pattern in (("imports", r"""^\s*import\s+['"]([^'"]+)['"]"""),
+                          ("exports", r"""^\s*export\s+['"]([^'"]+)['"]""")):
+        for m in re.finditer(pattern, src_clean, re.MULTILINE):
+            pkg = m.group(1)
+            # Resolve the URI so the edge target is the id that file's own node
+            # carries. Without this every Dart import edge pointed at a bare string
+            # node with source_file=None, so reverse traversal ("who imports this
+            # file", `affected`) was blind on Dart while Python/TS resolved (#2329).
+            resolved = _resolve_dart_import_target(pkg, str(path))
+            if resolved is not None:
+                add_edge(file_nid, _make_id(str(resolved)), kind, context="import")
+            else:
+                tgt_nid = _make_id(pkg)
+                add_node(tgt_nid, pkg, source_file=None)
+                add_edge(file_nid, tgt_nid, kind)
 
     # 7. Generic Invocations / Type Lookups (Universal Dependency Lookup)
     # Matches any method call with type parameters: methodName<Type>() or object.methodName<Type>()
