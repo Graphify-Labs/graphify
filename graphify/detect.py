@@ -807,6 +807,7 @@ _SKIP_DIRS = {
     ".next", ".nuxt", ".turbo", ".angular",
     ".idea", ".cache", ".parcel-cache", ".svelte-kit", ".terraform", ".serverless",
     ".graphify",  # graphify's own extraction cache — never index self-generated data
+    ".obsidian", ".smart-env",  # Obsidian vault metadata and plugin caches (#2493)
     ".worktrees",  # git worktree convention (#947) — sibling checkouts, always redundant
 }
 
