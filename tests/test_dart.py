@@ -753,6 +753,23 @@ class TestDartImportResolution(unittest.TestCase):
         script.write_text("import '../../../lib/helper.dart';")
         self.assertIn(_make_id("../../../lib/helper.dart"), self._import_targets(script))
 
+    def test_dot_segments_in_the_importing_files_own_path_are_normalized(self):
+        """The importing file's own path may carry `.`/`..` segments (a scan rooted
+        through one, a symlinked corpus). Both the `lib/` root and the start
+        directory are resolved before the relative walk, so those segments never
+        shift the result or the clamping."""
+        pkg = self._pkg("app")
+        target = self._write(pkg, "features/auth/repo.dart", "class Repo {}")
+        self._write(pkg, "core/data/prefs.dart", "")
+        (pkg / "lib" / "core" / "zzz").mkdir(parents=True, exist_ok=True)
+        noisy = str(pkg / "lib" / "core" / "zzz" / ".." / "data" / "prefs.dart")
+        clean = str(pkg / "lib" / "core" / "data" / "prefs.dart")
+        for path in (clean, noisy):
+            for raw in ("../../features/auth/repo.dart",        # exact
+                        "../../../features/auth/repo.dart"):    # one too many: clamps
+                _DART_PACKAGE_INDEX_CACHE.clear()
+                self.assertEqual(_resolve_dart_import_target(raw, path), target, (path, raw))
+
     def test_resolver_returns_none_for_unresolvable_uris(self):
         pkg = self._pkg("app")
         f = self._write(pkg, "main.dart", "")
