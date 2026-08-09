@@ -52,6 +52,7 @@ from graphify.install import (  # noqa: E402,F401
     _install_codex_hook,
     _install_gemini_hook,
     _install_kilo_plugin,
+    _install_jcode_hook,
     _install_opencode_plugin,
     _install_skill_references,
     _kilo_config_path,
@@ -85,6 +86,7 @@ from graphify.install import (  # noqa: E402,F401
     _uninstall_codex_hook,
     _uninstall_gemini_hook,
     _uninstall_kilo_plugin,
+    _uninstall_jcode_hook,
     _uninstall_opencode_plugin,
     claude_install,
     claude_uninstall,
@@ -507,7 +509,7 @@ def _run_cli() -> None:
         print("Usage: graphify <command>")
         print()
         print("Commands:")
-        print("  install [--platform P]  copy skill to platform config dir (claude|windows|codebuddy|codex|opencode|aider|amp|agents|claw|droid|trae|trae-cn|gemini|cursor|antigravity|hermes|kiro|pi|devin)")
+        print("  install [--platform P]  copy skill to platform config dir (claude|windows|codebuddy|codex|jcode|opencode|aider|amp|agents|claw|droid|trae|trae-cn|gemini|cursor|antigravity|hermes|kiro|pi|devin)")
         print("  uninstall               remove graphify from all detected platforms in one shot")
         print("    --purge                 also delete graphify-out/ directory")
         print("  path \"A\" \"B\"            shortest path between two nodes in graph.json")

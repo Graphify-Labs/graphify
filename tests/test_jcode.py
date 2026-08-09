@@ -91,7 +91,8 @@ def test_jcode_hook_allows_graphify_queries_and_unrelated_tools(tmp_path: Path) 
 
 
 def test_jcode_install_registers_skill_and_pre_tool_hook_idempotently(
-    tmp_path: Path, monkeypatch,
+    tmp_path: Path,
+    monkeypatch,
 ) -> None:
     from graphify.__main__ import main
 
@@ -101,8 +102,7 @@ def test_jcode_install_registers_skill_and_pre_tool_hook_idempotently(
     config = home / ".jcode" / "config.toml"
     config.parent.mkdir(parents=True)
     config.write_text(
-        "[agents]\nmemory_sidecar_enabled = true\n\n"
-        "[hooks]\npre_tool = \"keep-existing-policy\"\n",
+        '[agents]\nmemory_sidecar_enabled = true\n\n[hooks]\npre_tool = "keep-existing-policy"\n',
         encoding="utf-8",
     )
 
@@ -120,7 +120,8 @@ def test_jcode_install_registers_skill_and_pre_tool_hook_idempotently(
 
 
 def test_jcode_uninstall_removes_only_graphify_owned_entries(
-    tmp_path: Path, monkeypatch,
+    tmp_path: Path,
+    monkeypatch,
 ) -> None:
     from graphify.__main__ import main
 
@@ -130,8 +131,7 @@ def test_jcode_uninstall_removes_only_graphify_owned_entries(
     config = home / ".jcode" / "config.toml"
     config.parent.mkdir(parents=True)
     config.write_text(
-        "[hooks]\n"
-        "pre_tool = [\"keep-existing-policy\", \"/usr/bin/graphify jcode-hook\"]\n",
+        '[hooks]\npre_tool = ["keep-existing-policy", "/usr/bin/graphify jcode-hook"]\n',
         encoding="utf-8",
     )
     skill = home / ".jcode" / "skills" / "graphify" / "SKILL.md"

@@ -710,6 +710,52 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
         pass
 
 
+def _run_jcode_hook_guard() -> bool:
+    """Redirect Jcode's first raw code lookup to Graphify.
+
+    Jcode sends the tool input JSON on stdin, exports metadata through
+    ``JCODE_HOOK_*``, and treats exit 2 plus stderr as a blocked tool call.
+    Return True only for the first matching raw lookup in a session; malformed
+    input and unsupported tools fail open.
+    """
+    from graphify.paths import out_path
+
+    try:
+        if not out_path("graph.json").is_file() or _query_stamp_fresh():
+            return False
+        payload = json.loads(sys.stdin.buffer.read().decode("utf-8", "replace"))
+        if not isinstance(payload, dict):
+            return False
+
+        tool_name = os.environ.get("JCODE_HOOK_TOOL_NAME", "").strip().lower()
+        command = str(payload.get("command") or "")
+        command_lower = command.lower()
+        if "graphify query" in command_lower:
+            return False
+
+        is_raw_lookup = tool_name in {"agentgrep", "grep", "read"}
+        if tool_name == "bash":
+            is_raw_lookup = any(
+                token in command_lower
+                for token in ("grep", "ripgrep", "rg ", "find ", "fd ", "ack ", "ag ")
+            )
+        if not is_raw_lookup:
+            return False
+
+        session_id = os.environ.get("JCODE_HOOK_SESSION_ID", "").strip()
+        if not session_id or not _mark_session_denied(f"jcode-{session_id}"):
+            return False
+
+        sys.stderr.write(
+            "Graphify knowledge graph is available for this project. "
+            "Run `graphify query \"<your codebase question>\"` before raw "
+            "search/read, then retry this tool if more detail is needed.\n"
+        )
+        return True
+    except Exception:
+        return False
+
+
 def _target_is_indexed(file_path: str, root: "Path") -> bool:
     """Guard the strict deny: only block a read of a file the graph actually indexes.
     Reads manifest.json (cheap, capped); on any doubt (missing/corrupt/oversized
@@ -2155,6 +2201,10 @@ def dispatch_command(cmd: str) -> None:
             strict="--strict" in sys.argv[3:],
         )
         sys.exit(0)
+    elif cmd == "jcode-hook":
+        # Jcode pre_tool gate: exit 2 blocks once and exposes stderr to the
+        # model; every unsupported/error path fails open with exit 0.
+        sys.exit(2 if _run_jcode_hook_guard() else 0)
     elif cmd == "check-update":
         if len(sys.argv) < 3:
             print("Usage: graphify check-update <path>", file=sys.stderr)
