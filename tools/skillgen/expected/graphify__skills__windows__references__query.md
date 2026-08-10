@@ -31,7 +31,7 @@ Fix this **without inventing tokens** by expanding the query against the actual 
 $(cat graphify-out/.graphify_python) -c "
 import json, re
 from pathlib import Path
-data = json.loads(Path('graphify-out/graph.json').read_text())
+data = json.loads(Path('graphify-out/graph.json').read_text(encoding='utf-8'))
 vocab = set()
 for n in data['nodes']:
     for c in re.findall(r'[^\W\d_]+', n.get('label','') or '', re.UNICODE):
@@ -40,7 +40,7 @@ for n in data['nodes']:
             t = p.lower()
             if 3 <= len(t) <= 30:
                 vocab.add(t)
-Path('graphify-out/.vocab.txt').write_text('\n'.join(sorted(vocab)))
+Path('graphify-out/.vocab.txt').write_text('\n'.join(sorted(vocab)), encoding='utf-8')
 print(f'vocab: {len(vocab)} tokens')
 "
 ```
@@ -83,7 +83,7 @@ from networkx.readwrite import json_graph
 import networkx as nx
 from pathlib import Path
 
-data = json.loads(Path('graphify-out/graph.json').read_text())
+data = json.loads(Path('graphify-out/graph.json').read_text(encoding='utf-8'))
 G = json_graph.node_link_graph(data, edges='links')
 
 question = 'QUESTION'
@@ -173,6 +173,14 @@ $(cat graphify-out/.graphify_python) -m graphify save-result --question "ORIGINA
 
 Replace `ORIGINAL_QUESTION` with the user's verbatim question, `ANSWER` with your full answer text (containing the expanded-token trace), `NODE1 NODE2` with the list of node labels you cited. This closes the feedback loop: the next `--update` will extract this Q&A as a node in the graph.
 
+**Work memory (self-improving loop).** Add an `--outcome` so future sessions learn from this one — append `--outcome useful|dead_end|corrected` to the `save-result` command (and `--correction "the right answer"` when correcting):
+
+- `useful` — the cited nodes answered the question well (they become *preferred sources*).
+- `dead_end` — the question/path led nowhere; don't re-derive it next time.
+- `corrected` — the saved answer was wrong; `--correction` records what was right.
+
+At the **start** of graph work, refresh and read the lessons: run `graphify reflect --if-stale` (cheap, deterministic, no LLM; `--if-stale` makes it a no-op when `LESSONS.md` is already newer than every input, e.g. when the git hook just refreshed it), then read `graphify-out/reflections/LESSONS.md`. It lists **preferred sources** (start there), **known dead ends** (skip them), and prior **corrections**. Running `reflect` yourself keeps the lessons current even without the git hook installed; if the post-commit hook *is* installed, `--if-stale` means your session-start run costs almost nothing.
+
 ---
 
 ## For /graphify path
@@ -192,7 +200,7 @@ import networkx as nx
 from networkx.readwrite import json_graph
 from pathlib import Path
 
-data = json.loads(Path('graphify-out/graph.json').read_text())
+data = json.loads(Path('graphify-out/graph.json').read_text(encoding='utf-8'))
 G = json_graph.node_link_graph(data, edges='links')
 
 a_term = 'NODE_A'
@@ -260,7 +268,7 @@ import networkx as nx
 from networkx.readwrite import json_graph
 from pathlib import Path
 
-data = json.loads(Path('graphify-out/graph.json').read_text())
+data = json.loads(Path('graphify-out/graph.json').read_text(encoding='utf-8'))
 G = json_graph.node_link_graph(data, edges='links')
 
 term = 'NODE_NAME'

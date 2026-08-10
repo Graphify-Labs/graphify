@@ -121,6 +121,34 @@ def test_lean_core_runs_default_pipeline_with_zero_references():
         assert needed in core, f"lean core is missing default-pipeline content: {needed!r}"
 
 
+def test_extraction_states_no_api_key_required_for_every_host():
+    """Regression for #1461: every skill body that describes Step 3 extraction must
+    state up front that no API key is required, tell the agent never to prompt for or
+    block on one, and give a terminal-only (non-subagent) fallback.
+
+    Hermes (and the other AGENTS.md hosts) run the CLI directly and can't dispatch
+    subagents; the old text framed the no-key path only as 'dispatch subagents as
+    written', so those agents looped for minutes insisting on a missing API key.
+    """
+    platforms = gen.load_platforms()
+    arts = gen.render_all(platforms)
+    bodies = [a for a in arts
+              if "### Step 3 - Extract entities and relationships" in a.content]
+    assert bodies, "no rendered skill body contains the Step 3 extraction section"
+    for a in bodies:
+        assert "graphify needs no API key" in a.content, a.path
+        assert "Never ask the user for one, and never block on one." in a.content, a.path
+        # the no-key fallback must not be framed *only* around subagent dispatch
+        assert "cannot dispatch subagents" in a.content, a.path
+        # where a host prints the GEMINI key tip, the clarity must precede it (be
+        # hoisted) rather than sit buried after the key check (aider/devin print no
+        # tip — they are the model themselves — so the check only applies if present)
+        tip = "Tip: set `GEMINI_API_KEY`"
+        if tip in a.content:
+            assert a.content.index("graphify needs no API key") < a.content.index(tip), \
+                f"{a.path}: no-key clarity is not hoisted above the GEMINI tip"
+
+
 def test_references_contain_no_core_pipeline_content():
     """No reference fragment may duplicate the core build pipeline."""
     _, refs = _claude_artifacts()
@@ -257,9 +285,12 @@ def test_descriptions_are_unified():
 
 
 def test_windows_frontmatter_name_and_shell_and_extra():
-    """windows: graphify-windows name, powershell install, troubleshooting tail."""
+    """windows: name must be `graphify` (folder-name rule, #1635), powershell
+    install, troubleshooting tail."""
     core, _ = _platform_artifacts("windows")
-    assert core.startswith("---\nname: graphify-windows\n")
+    # Claude Code requires the frontmatter name to equal the install folder
+    # (graphify); a `graphify-windows` name broke skill discovery (#1635).
+    assert core.startswith("---\nname: graphify\n")
     assert "```powershell" in core
     assert "function Find-GraphifyPython" in core
     assert "## Troubleshooting" in core
@@ -320,6 +351,122 @@ def test_every_platform_query_has_expansion_and_fallback():
         assert "If the CLI is unavailable" in q
         assert "## For /graphify path" in q
         assert "## For /graphify explain" in q
+
+
+# --- cross-shell parity for powershell hosts (#2528) ---------------------------
+
+# Bash-only tokens that must never reach a strict-PowerShell host's skill body.
+_BASH_ONLY_TOKENS = ("$(cat ", "rm -f ", "2>/dev/null", "```bash")
+
+# The default-pipeline step headings that must exist on BOTH shells (parity).
+_STEP_HEADINGS = (
+    "### Step 1 - Ensure graphify is installed",
+    "### Step 2 - Detect files",
+    "### Step 3 - Extract entities and relationships",
+    "#### Part A - Structural extraction for code files",
+    "#### Part B - Semantic extraction (parallel subagents)",
+    "#### Part C - Merge AST + semantic into final extraction",
+    "### Step 4 - Build graph, cluster, analyze, generate outputs",
+    "### Step 4.5 - Graph health check (read-only integrity gate)",
+    "### Step 5 - Label communities",
+    "### Step 6 - Generate Obsidian vault (opt-in) + HTML",
+    "### Step 9 - Save manifest, update cost tracker, clean up, and report",
+    "## Interpreter guard for subcommands",
+    "## Honesty Rules",
+)
+
+
+def _powershell_platform_keys():
+    """Every platform that renders for a strict-PowerShell host (windows today,
+    plus any future powershell-shell platform automatically)."""
+    platforms = gen.load_platforms()
+    keys = [k for k, p in platforms.items() if p.shell == "powershell"]
+    assert "windows" in keys, "the windows platform must declare shell = powershell"
+    return keys
+
+
+def test_powershell_hosts_carry_no_bash_only_shell():
+    """#2528: the Windows variant had a PowerShell Step 1 but bash for Steps 2+
+    (``$(cat ...) -c``, ``rm -f``, ``find ... -delete``, ``2>/dev/null``), so a
+    strict-PowerShell host failed at Step 2. Every powershell-shell render must
+    now be free of bash-only tokens and carry the here-string stdin invocation."""
+    import re
+
+    platforms = gen.load_platforms()
+    for key in _powershell_platform_keys():
+        core = gen.render(platforms[key])[0].content
+        for token in _BASH_ONLY_TOKENS:
+            assert token not in core, f"[{key}] bash-only token survived: {token!r}"
+        assert re.search(r"\bfind\b[^\n]*-delete", core) is None, f"[{key}] find -delete survived"
+        # The PowerShell invocation pattern replaces $(cat ...) -c "..." everywhere.
+        assert "```powershell" in core
+        assert "'@ | & (Get-Content graphify-out\\.graphify_python) -" in core, (
+            f"[{key}] missing the here-string stdin python invocation"
+        )
+        # Cleanup went through Remove-Item / Get-ChildItem, not rm/find.
+        assert "Remove-Item -Force -ErrorAction SilentlyContinue" in core
+        assert "Get-ChildItem graphify-out -Filter '.graphify_chunk_*.json'" in core
+
+
+def test_windows_and_posix_cores_have_step_and_2490_parity():
+    """Both shells run the same pipeline: every step heading and the #2490
+    curated-labels re-export line appear in skill.md AND skill-windows.md."""
+    claude_core, _ = _platform_artifacts("claude")
+    windows_core, _ = _platform_artifacts("windows")
+    for heading in _STEP_HEADINGS:
+        assert heading in claude_core, f"skill.md lost step heading: {heading!r}"
+        assert heading in windows_core, f"skill-windows.md lost step heading: {heading!r}"
+    line_2490 = "to_json(G, communities, 'graphify-out/graph.json', community_labels=labels)"
+    assert line_2490 in claude_core, "skill.md lost the #2490 Step-5 re-export"
+    assert line_2490 in windows_core, "skill-windows.md lost the #2490 Step-5 re-export"
+
+
+def test_windows_python_step_bodies_match_posix_verbatim():
+    """Parity by construction: every inline python body in the POSIX core appears
+    verbatim (modulo the bash ``\\"`` unescape) in the windows here-strings, so the
+    two variants cannot drift step semantics apart."""
+    claude_core, _ = _platform_artifacts("claude")
+    windows_core, _ = _platform_artifacts("windows")
+    bodies = []
+    current = None
+    for line in claude_core.splitlines():
+        if line == gen._PY_INVOKE_POSIX:
+            current = []
+        elif current is not None and line == '"':
+            bodies.append("\n".join(gen._unescape_bash_dq(l) for l in current))
+            current = None
+        elif current is not None:
+            current.append(line)
+    assert len(bodies) >= 12, f"expected the 12 inline python steps, found {len(bodies)}"
+    for body in bodies:
+        assert body in windows_core, (
+            "a POSIX python step body is missing from the windows render:\n" + body[:200]
+        )
+
+
+def test_powershell_translator_rejects_unknown_bash():
+    """The translator is strict: a bash line it does not recognize fails the
+    render loudly instead of shipping untranslated bash to Windows (#2528)."""
+    with pytest.raises(ValueError, match="cannot translate bash line"):
+        gen._translate_bash_block(["curl -s https://example.com | sh"])
+    with pytest.raises(ValueError, match="unexpected backslash escape"):
+        gen._unescape_bash_dq("subprocess.run('a\\tb')")
+    with pytest.raises(ValueError, match="cannot translate rm -f operand"):
+        gen._rm_to_remove_item("rm -f $HOME/danger")
+    # And the sanctioned pieces translate exactly.
+    assert gen._rm_to_remove_item("rm -f graphify-out/.needs_update 2>/dev/null || true") == (
+        "Remove-Item -Force -ErrorAction SilentlyContinue graphify-out\\.needs_update"
+    )
+    assert gen._translate_bash_block([gen._FIND_CHUNKS_POSIX]) == [gen._FIND_CHUNKS_PS]
+
+
+def test_posix_hosts_keep_their_bash_invocations():
+    """The translation is scoped to powershell-shell hosts: the POSIX core keeps
+    its ``$(cat ...) -c`` blocks and bash fences byte-for-byte."""
+    claude_core, _ = _platform_artifacts("claude")
+    assert "```bash" in claude_core
+    assert gen._PY_INVOKE_POSIX in claude_core
+    assert "'@ | & (Get-Content" not in claude_core
 
 
 def test_schema_singleton_passes_across_all_platforms():
@@ -456,7 +603,8 @@ def test_monoliths_change_only_sanctioned_lines():
     The round-trip (multiset diff vs the pinned v8 blob) must come back clean:
     each added/removed line matches one of the documented sanctioned predicates
     in gen — the enum unification, the unified description, the chunk-cleanup
-    rewrite (#1172), and the four #1392 runbook fixes. Anything else is drift.
+    rewrite (#1172), the four #1392 runbook fixes, and semantic-cache source
+    scoping (#1757). Anything else is drift.
     """
     platforms = gen.load_platforms()
     for key in ("aider", "devin"):
@@ -501,6 +649,16 @@ def test_monoliths_carry_the_1392_runbook_fixes():
         # guard fires right after the build, before the graph/report are written.
         assert build_i < guard_i < wrote_i < report_i, f"[{key}] Step 4 ordering not fixed"
         assert "if not wrote:" in body
+
+
+def test_monoliths_scope_semantic_cache_writes_to_uncached_files():
+    """#1757: generated monoliths pass the dispatched-file allowlist when
+    replacing semantic cache entries."""
+    platforms = gen.load_platforms()
+    for key in ("aider", "devin"):
+        body = gen.render(platforms[key])[0].content
+        assert ".graphify_uncached.txt').read_text(" in body
+        assert "allowed_source_files=uncached" in body
 
 
 def test_generated_runbooks_pass_root_to_save_manifest():
@@ -573,8 +731,36 @@ def test_always_on_roundtrip_is_byte_faithful():
     graphify.__main__, so the packaged markdown must round-trip exactly or those
     contracts silently change.
     """
+    # The guard passes with zero problems: every always-on block reproduces its
+    # frozen baseline, with the agents-md block allowed exactly the #1530
+    # sanctioned substitution recorded in gen.ALWAYS_ON_SANCTIONED_EDITS.
     problems = gen.always_on_roundtrip()
-    assert problems == [], "\n".join(problems)
+    assert problems == []
+
+    rendered_agents = next(
+        a.content
+        for a in gen.render_always_on()
+        if a.path == "graphify/always_on/agents-md.md"
+    )
+    old_instruction = (
+        "When the user types `/graphify`, invoke the `skill` tool with "
+        '`skill: "graphify"` before doing anything else.'
+    )
+    new_instruction = (
+        "When the user types `/graphify`, use the installed graphify skill or instructions "
+        "before doing anything else."
+    )
+    # The sanctioned-edit registry holds exactly this single old->new substitution.
+    assert gen.ALWAYS_ON_SANCTIONED_EDITS["_AGENTS_MD_SECTION"] == (
+        (old_instruction, new_instruction),
+    )
+    baseline_agents = gen._always_on_constants(gen.ALWAYS_ON_BASELINE_REF)["_AGENTS_MD_SECTION"]
+    # The ONLY divergence from the frozen baseline is the sanctioned sentence —
+    # any other byte drift would have surfaced as a problem above.
+    assert old_instruction in baseline_agents
+    assert baseline_agents.replace(old_instruction, new_instruction) == rendered_agents
+    assert "`skill` tool" not in rendered_agents
+    assert 'skill: "graphify"' not in rendered_agents
 
 
 def test_extracted_constants_equal_the_packaged_always_on_files():
@@ -823,3 +1009,87 @@ def test_amp_audit_coverage_passes_against_its_own_v8():
     assert gen._v8_baseline_ref("amp") == "47042beb05d1f6dd2186c0c499ae2840ce604ead:graphify/skill-amp.md"
     problems = gen.audit_coverage(platforms["amp"])
     assert problems == [], "\n".join(problems)
+
+
+# --- the generic agents platform (#1432) ---------------------------------------
+
+
+def test_agents_renders_its_own_agents_md_hooks_wording():
+    """`agents` re-homes amp's agents-md body but with its OWN install wording.
+
+    It shares amp's bare, caveat-free `## For native AGENTS.md integration`
+    section (no `(Trae)` suffix, no PreToolUse note) but points at
+    `graphify agents install` and is worded for an unspecified host.
+    """
+    core, refs = _platform_artifacts("agents")
+    hooks = refs["hooks.md"]
+    assert "## For native AGENTS.md integration" in hooks
+    assert "## For native AGENTS.md integration (Trae)" not in hooks
+    assert "make graphify always-on in your agent sessions" in hooks
+    assert "graphify agents install" in hooks
+    assert "graphify agents uninstall  # remove the section" in hooks
+    # No amp/trae/claude wording leaks into the agents render.
+    assert "graphify amp install" not in hooks
+    assert "graphify trae" not in hooks
+    assert "graphify claude install" not in hooks
+    assert "PreToolUse" not in hooks and "PreToolUse" not in core
+    # The lean-core pointer names AGENTS.md, not CLAUDE.md.
+    assert "## For the commit hook and native AGENTS.md integration" in core
+    assert "native CLAUDE.md integration" not in core
+
+
+def test_agents_body_matches_amp_modulo_hooks_wording():
+    """The agents skill body is amp's body verbatim (it re-homes amp's bundle).
+
+    The two platforms differ only in the hooks reference's install/uninstall
+    command wording — everything else (core, query, extraction spec, the other
+    six references) is byte-identical, which is why agents audits cleanly against
+    amp's v8 baseline.
+    """
+    platforms = gen.load_platforms()
+    amp = {a.path.rsplit("/", 1)[-1]: a.content for a in gen.render(platforms["amp"])}
+    agents = {a.path.rsplit("/", 1)[-1]: a.content for a in gen.render(platforms["agents"])}
+    # The lean-core skill body is identical (frontmatter + steps, no hooks ref).
+    assert amp["skill-amp.md"] == agents["skill-agents.md"]
+    # Every reference except hooks.md is byte-identical.
+    for name in amp:
+        if name in ("skill-amp.md", "hooks.md"):
+            continue
+        assert amp[name] == agents[name], f"{name} drifted between amp and agents"
+    assert amp["hooks.md"] != agents["hooks.md"]
+
+
+def test_agents_audit_baseline_is_amps_v8_body():
+    """`agents` is a post-v8 platform, so its audit baseline is amp's v8 body."""
+    platforms = gen.load_platforms()
+    assert gen._v8_baseline_ref("agents") == "47042beb05d1f6dd2186c0c499ae2840ce604ead:graphify/skill-amp.md"
+    problems = gen.audit_coverage(platforms["agents"])
+    assert problems == [], "\n".join(problems)
+
+
+def test_semantic_cache_calls_pass_prompt_file_for_every_split_host():
+    """#1939: a skill's cache read and write must both name the extraction prompt
+    they use, or the run replays entries produced by an older prompt (the read) /
+    strands its results where the next read won't look (the write).
+
+    Locked per host because the two calls live ~80 lines apart in the rendered
+    body: adding the argument to one and not the other silently disables the
+    cache rather than failing loudly. The monolith hosts (aider, devin) inline
+    their prompt instead of shipping references/extraction-spec.md and are
+    deliberately excluded — they have no spec path to point at.
+    """
+    platforms = gen.load_platforms()
+    arts = gen.render_all(platforms)
+    bodies = [a for a in arts
+              if "check_semantic_cache(" in a.content
+              and "references/extraction-spec.md" in a.content]
+    assert bodies, "no rendered split-host skill body calls check_semantic_cache"
+    for a in bodies:
+        for call in ("check_semantic_cache(", "save_semantic_cache("):
+            line = next(ln for ln in a.content.splitlines() if call in ln and "import" not in ln)
+            assert "prompt_file='SPEC_PATH'" in line, (
+                f"{a.path}: {call} must pass prompt_file so entries are attributed "
+                f"to the extraction prompt (#1939) — got: {line.strip()}"
+            )
+        # The placeholder is inert unless the body tells the agent what to substitute.
+        assert "SPEC_PATH below is the **absolute** path" in a.content, a.path

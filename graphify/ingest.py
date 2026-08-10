@@ -268,6 +268,8 @@ def ingest(url: str, target_dir: Path, author: str | None = None, contributor: s
     print(f"Saved {url_type}: {out_path.name}")
     return out_path
 
+OUTCOMES = ("useful", "dead_end", "corrected")
+
 
 def save_query_result(
     question: str,
@@ -275,13 +277,23 @@ def save_query_result(
     memory_dir: Path,
     query_type: str = "query",
     source_nodes: list[str] | None = None,
+    outcome: str | None = None,
+    correction: str | None = None,
 ) -> Path:
     """Save a Q&A result as markdown so it gets extracted into the graph on next --update.
 
     Files are stored in memory_dir (typically graphify-out/memory/) with YAML frontmatter
     that graphify's extractor reads as node metadata. This closes the feedback loop:
     the system grows smarter from both what you add AND what you ask.
+
+    ``outcome`` (one of :data:`OUTCOMES`) and ``correction`` are optional work-memory
+    signals: they are written both to the frontmatter (so `graphify reflect` can
+    aggregate them deterministically) and to an ``## Outcome`` body section (so the
+    signal round-trips into the graph on the next semantic re-extraction).
     """
+    if outcome is not None and outcome not in OUTCOMES:
+        raise ValueError(f"outcome must be one of {OUTCOMES}, got {outcome!r}")
+
     memory_dir = Path(memory_dir)
     memory_dir.mkdir(parents=True, exist_ok=True)
 
@@ -296,8 +308,12 @@ def save_query_result(
         f'question: "{_yaml_str(question)}"',
         'contributor: "graphify"',
     ]
+    if outcome:
+        frontmatter_lines.append(f'outcome: "{_yaml_str(outcome)}"')
+    if correction:
+        frontmatter_lines.append(f'correction: "{_yaml_str(correction)}"')
     if source_nodes:
-        nodes_str = ", ".join(f'"{n}"' for n in source_nodes[:10])
+        nodes_str = ", ".join(f'"{_yaml_str(n)}"' for n in source_nodes[:10])
         frontmatter_lines.append(f"source_nodes: [{nodes_str}]")
     frontmatter_lines.append("---")
 
@@ -309,6 +325,12 @@ def save_query_result(
         "",
         answer,
     ]
+    if outcome or correction:
+        body_lines += ["", "## Outcome", ""]
+        if outcome:
+            body_lines.append(f"- Signal: {outcome}")
+        if correction:
+            body_lines.append(f"- Correction: {correction}")
     if source_nodes:
         body_lines += ["", "## Source Nodes", ""]
         body_lines += [f"- {n}" for n in source_nodes]

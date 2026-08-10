@@ -100,6 +100,9 @@ def test_resolve_cross_file_raw_calls_skips_member_calls() -> None:
 
 
 def test_resolve_cross_file_raw_calls_skips_ambiguous_duplicate_labels() -> None:
+    """Two genuine NON-test defs of the same name: the god-node guard must still
+    hold even with the #1553 tie-breakers, because neither the non-test filter
+    nor path proximity yields a unique winner (#543/#1219 stays closed)."""
     per_file = [
         {
             "raw_calls": [
@@ -107,18 +110,101 @@ def test_resolve_cross_file_raw_calls_skips_ambiguous_duplicate_labels() -> None
                     "caller_nid": "caller_run",
                     "callee": "log",
                     "is_member_call": False,
-                    "source_file": "caller.py",
+                    "source_file": "pkg/caller.py",
                     "source_location": "L2",
                 }
             ]
         }
     ]
     nodes = [
-        {"id": "caller_run", "label": "run()", "file_type": "code"},
-        {"id": "a_log", "label": "log()", "file_type": "code"},
-        {"id": "b_log", "label": "log()", "file_type": "code"},
+        {"id": "caller_run", "label": "run()", "file_type": "code", "source_file": "pkg/caller.py"},
+        {"id": "a_log", "label": "log()", "file_type": "code", "source_file": "alpha/a.py"},
+        {"id": "b_log", "label": "log()", "file_type": "code", "source_file": "beta/b.py"},
     ]
     assert resolve_cross_file_raw_calls(per_file, nodes, []) == []
+
+
+def test_resolve_cross_file_raw_calls_real_edge_survives_test_mock() -> None:
+    """A real cross-file call must resolve to the SRC definition even when a
+    same-named TEST mock exists in the corpus (#1553)."""
+    per_file = [
+        {
+            "raw_calls": [
+                {
+                    "caller_nid": "caller_run",
+                    "callee": "save",
+                    "is_member_call": False,
+                    "source_file": "src/caller.py",
+                    "source_location": "L2",
+                }
+            ]
+        }
+    ]
+    nodes = [
+        {"id": "caller_run", "label": "run()", "file_type": "code", "source_file": "src/caller.py"},
+        {"id": "src_save", "label": "save()", "file_type": "code", "source_file": "src/service.py"},
+        {"id": "mock_save", "label": "save()", "file_type": "code",
+         "source_file": "tests/test_service.py"},
+    ]
+    resolved = resolve_cross_file_raw_calls(per_file, nodes, [])
+    assert [(e["source"], e["target"]) for e in resolved] == [("caller_run", "src_save")]
+    assert all(e["target"] != "mock_save" for e in resolved)
+
+
+def test_resolve_cross_file_raw_calls_n_mock_scale() -> None:
+    """One src def plus many same-named test stubs: exactly one edge to src."""
+    per_file = [
+        {
+            "raw_calls": [
+                {
+                    "caller_nid": "caller_run",
+                    "callee": "save",
+                    "is_member_call": False,
+                    "source_file": "src/caller.py",
+                    "source_location": "L2",
+                }
+            ]
+        }
+    ]
+    nodes = [
+        {"id": "caller_run", "label": "run()", "file_type": "code", "source_file": "src/caller.py"},
+        {"id": "src_save", "label": "save()", "file_type": "code", "source_file": "src/service.py"},
+        {"id": "m1", "label": "save()", "file_type": "code", "source_file": "tests/foo_test.py"},
+        {"id": "m2", "label": "save()", "file_type": "code", "source_file": "spec/bar.Tests.ps1"},
+        {"id": "m3", "label": "save()", "file_type": "code", "source_file": "test/baz_test.go"},
+        {"id": "m4", "label": "save()", "file_type": "code", "source_file": "__tests__/q.test.js"},
+    ]
+    resolved = resolve_cross_file_raw_calls(per_file, nodes, [])
+    assert [(e["source"], e["target"]) for e in resolved] == [("caller_run", "src_save")]
+
+
+def test_resolve_cross_file_raw_calls_call_site_is_test_prefers_test_local() -> None:
+    """A test file calling save() with both a src def and a test-local def present
+    resolves to the test-local def (call-site-is-test symmetry, #1553)."""
+    per_file = [
+        {
+            "raw_calls": [
+                {
+                    "caller_nid": "test_caller",
+                    "callee": "save",
+                    "is_member_call": False,
+                    "source_file": "tests/test_service.py",
+                    "source_location": "L5",
+                }
+            ]
+        }
+    ]
+    nodes = [
+        {"id": "test_caller", "label": "test_it()", "file_type": "code",
+         "source_file": "tests/test_service.py"},
+        {"id": "src_save", "label": "save()", "file_type": "code", "source_file": "src/service.py"},
+        {"id": "test_save", "label": "save()", "file_type": "code",
+         "source_file": "tests/test_service.py"},
+    ]
+    resolved = resolve_cross_file_raw_calls(per_file, nodes, [])
+    targets = [e["target"] for e in resolved]
+    assert targets == ["test_save"]
+    assert "src_save" not in targets
 
 
 def test_resolve_cross_file_raw_calls_skips_existing_pair() -> None:

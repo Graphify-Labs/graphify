@@ -3,7 +3,7 @@ subprocess argv shape introduced in the hollow-response fix.
 
 These tests cover:
 - The four parser failure modes described in PR #1062
-- The switch from --append-system-prompt to --system-prompt
+- Extraction instructions delivered in the user turn (Claude Code >= 2.1)
 - The GRAPHIFY_CLAUDE_CLI_MODEL env-var passthrough
 """
 from __future__ import annotations
@@ -101,21 +101,30 @@ def _make_envelope(result_obj: dict) -> str:
 
 @patch("shutil.which", return_value="/usr/local/bin/claude")
 @patch("subprocess.run")
-def test_uses_system_prompt_not_append(mock_run, _which):
-    """The hollow-response root cause was --append-system-prompt
-    layering graphify's extraction prompt on top of Claude Code's
-    default interactive-agent prompt. The fix switches to
-    --system-prompt (replace) to eliminate the conflict."""
+def test_instructions_ride_in_user_turn_not_system_prompt(mock_run, _which):
+    """Extraction instructions must be delivered in the user turn, not via
+    --system-prompt.
+
+    History: the original hollow-response cause was --append-system-prompt
+    layering graphify's prompt on top of Claude Code's default agent prompt;
+    the first fix switched to --system-prompt (replace). But newer Claude Code
+    CLIs (>= ~2.1) don't treat --system-prompt as the sole authority — they
+    keep the coding-agent context and reply conversationally to a bare file
+    dump, which parses to zero nodes and gets bisected forever. The instructions
+    now ride in the user turn (stdin) and neither system-prompt flag is used."""
     mock_run.return_value.returncode = 0
     mock_run.return_value.stdout = _make_envelope({"nodes": [], "edges": [], "hyperedges": []})
     mock_run.return_value.stderr = ""
     llm._call_claude_cli("payload")
     argv = mock_run.call_args.args[0]
-    assert "--system-prompt" in argv, f"--system-prompt missing from argv: {argv}"
-    assert "--append-system-prompt" not in argv, (
-        "--append-system-prompt should have been replaced — it's the root "
-        "cause of the hollow-response loop"
+    assert "--system-prompt" not in argv, (
+        f"--system-prompt is ignored by Claude Code >= 2.1; argv: {argv}"
     )
+    assert "--append-system-prompt" not in argv
+    sent = mock_run.call_args.kwargs["input"]
+    assert "graphify semantic extraction agent" in sent
+    assert "output ONLY the JSON object" in sent
+    assert "payload" in sent
 
 
 @patch("shutil.which", return_value="/usr/local/bin/claude")

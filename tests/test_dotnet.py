@@ -1,8 +1,9 @@
-"""Tests for .NET project file extraction (.sln, .csproj, .razor)."""
+"""Tests for .NET project file extraction (.sln, .csproj, .xaml, .razor)."""
 from pathlib import Path
+import shutil
 import tempfile
 import pytest
-from graphify.extract import extract_sln, extract_slnx, extract_csproj, extract_razor
+from graphify.extract import extract, extract_sln, extract_slnx, extract_csproj, extract_xaml, extract_razor
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -13,6 +14,13 @@ def _labels(r):
 
 def _relations(r):
     return {e["relation"] for e in r["edges"]}
+
+
+def _view_model_edges(r):
+    return [
+        e for e in r["edges"]
+        if e["relation"] == "references" and e.get("context") == "view_model"
+    ]
 
 
 # ── .sln ─────────────────────────────────────────────────────────────────────
@@ -35,6 +43,35 @@ def test_sln_contains_edges():
 def test_sln_project_dependency():
     r = extract_sln(FIXTURES / "sample.sln")
     assert "imports" in _relations(r)
+
+
+def test_sln_solution_folder_ids_are_relative(tmp_path):
+    """Solution folders are virtual groupings, not files. Their node ids must be
+    derived from the folder name only — never the resolved absolute scan path,
+    which would leak the local username into a committed graph.json (#1789)."""
+    sln = tmp_path / "App.sln"
+    sln.write_text(
+        'Microsoft Visual Studio Solution File, Format Version 12.00\n'
+        # a solution folder: type GUID 2150E333-... , name == path, no real file
+        'Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Plugins", "Plugins", '
+        '"{11111111-1111-1111-1111-111111111111}"\n'
+        'EndProject\n'
+        # a real project resolves to an absolute path as before
+        'Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "App", "App\\App.csproj", '
+        '"{22222222-2222-2222-2222-222222222222}"\n'
+        'EndProject\n',
+        encoding="utf-8",
+    )
+    r = extract_sln(sln)
+    assert "error" not in r
+    # The virtual solution folder must be keyed off its name, with no trace of the
+    # absolute scan path. (Real-file nodes — the .sln and .csproj — legitimately
+    # carry absolute ids here; the CLI's id-relativization pass remaps those, but
+    # never the virtual folder, which is why the leak had to be fixed at source.)
+    folder = next(n for n in r["nodes"] if n["label"] == "Plugins")
+    assert folder["id"] == "plugins"
+    assert folder["source_file"] == "Plugins"
+    assert str(tmp_path) not in folder["id"]
 
 
 # ── .slnx ────────────────────────────────────────────────────────────────────
@@ -89,6 +126,35 @@ def test_csproj_project_references():
     assert len(imports) == 6  # 4 packages + 2 project refs
 
 
+def test_csproj_out_of_root_reference_id_is_portable(tmp_path):
+    """#1899: a ProjectReference to a project OUTSIDE the scan root must not leak
+    the absolute scan path (including the OS username) into the node id or
+    source_file. The out-of-root target gets a portable, `ext_`-namespaced id and
+    a walk-up relative source_file rather than the absolute-derived form."""
+    web = tmp_path / "WebApi"; web.mkdir()
+    core = tmp_path / "Core"; core.mkdir()
+    (core / "Core.csproj").write_text(
+        '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>'
+        '<TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>'
+    )
+    (web / "WebApi.csproj").write_text(
+        '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup>'
+        '<ProjectReference Include="..\\Core\\Core.csproj" /></ItemGroup></Project>'
+    )
+    result = extract([web / "WebApi.csproj"], cache_root=web)
+    marker = str(tmp_path)
+    for n in result["nodes"]:
+        assert marker not in n["id"], f"absolute path leaked into id: {n}"
+        assert marker not in (n.get("source_file") or ""), f"leaked into source_file: {n}"
+    for e in result["edges"]:
+        for f in ("source", "target", "source_file"):
+            assert marker not in str(e.get(f, "")), f"leaked into edge {f}: {e}"
+    core_ref = [n for n in result["nodes"] if "core" in n["id"].lower()]
+    assert core_ref, "out-of-root Core reference node missing"
+    assert core_ref[0]["id"].startswith("ext_")
+    assert core_ref[0]["source_file"] == "../Core/Core.csproj"
+
+
 def test_csproj_target_framework():
     r = extract_csproj(FIXTURES / "sample.csproj")
     assert "net8.0" in _labels(r)
@@ -105,6 +171,352 @@ def test_csproj_invalid_xml():
         f.flush()
         r = extract_csproj(Path(f.name))
     assert "error" in r
+
+
+# ── .xaml ────────────────────────────────────────────────────────────────────
+
+def test_xaml_class_resolves_to_codebehind_partial_class():
+    r = extract_xaml(FIXTURES / "sample.xaml")
+    assert "error" not in r
+    class_nodes = [
+        n for n in r["nodes"]
+        if n["label"] == "MainWindow" and str(n.get("source_file", "")).endswith("sample.xaml.cs")
+    ]
+    assert class_nodes
+    assert any(
+        e["relation"] == "references"
+        and e.get("context") == "x_class"
+        and e["target"] == class_nodes[0]["id"]
+        for e in r["edges"]
+    )
+
+
+def test_xaml_named_controls_and_bindings():
+    r = extract_xaml(FIXTURES / "sample.xaml")
+    labels = set(_labels(r))
+    assert {"RootPanel", "UserNameBox", "SaveButton", "UserName"} <= labels
+    assert any(e["relation"] == "references" and e.get("context") == "binding_path" for e in r["edges"])
+
+
+def test_xaml_extracts_binding_paths_commands_and_converters():
+    r = extract_xaml(FIXTURES / "bindings.xaml")
+    labels_by_id = {n["id"]: n["label"] for n in r["nodes"]}
+    refs = {
+        (labels_by_id[e["target"]], e.get("context"))
+        for e in r["edges"]
+        if e["relation"] == "references"
+    }
+
+    assert ("User.Name", "binding_path") in refs
+    assert ("Order.Total", "binding_path") in refs
+    assert ("Invoice.Tax", "binding_path") in refs
+    assert ("SaveCommand", "binding_command") in refs
+    assert ("MoneyConverter", "binding_converter") in refs
+    assert ("TaxConverter", "binding_converter") in refs
+    assert ("TwoWay", "binding_path") not in refs
+
+
+def test_xaml_element_datacontext_links_real_viewmodel_class():
+    r = extract_xaml(FIXTURES / "xaml_viewmodel" / "Views" / "ExplicitMainWindow.xaml")
+    nodes = {n["id"]: n for n in r["nodes"]}
+    edges = _view_model_edges(r)
+
+    assert len(edges) == 1
+    assert edges[0]["confidence"] == "EXTRACTED"
+    assert nodes[edges[0]["target"]]["label"] == "MainViewModel"
+    assert nodes[edges[0]["target"]]["source_file"].endswith("MainViewModel.cs")
+
+
+def test_xaml_design_instance_datacontext_links_real_viewmodel_class():
+    r = extract_xaml(FIXTURES / "xaml_viewmodel" / "Views" / "DesignView.xaml")
+    nodes = {n["id"]: n for n in r["nodes"]}
+    edges = _view_model_edges(r)
+
+    assert len(edges) == 1
+    assert edges[0]["confidence"] == "EXTRACTED"
+    assert nodes[edges[0]["target"]]["label"] == "DesignViewModel"
+
+
+def test_xaml_infers_viewmodel_by_name_only_without_datacontext():
+    r = extract_xaml(FIXTURES / "xaml_viewmodel" / "Views" / "SettingsView.xaml")
+    nodes = {n["id"]: n for n in r["nodes"]}
+    edges = _view_model_edges(r)
+
+    assert len(edges) == 1
+    assert edges[0]["confidence"] == "INFERRED"
+    assert nodes[edges[0]["target"]]["label"] == "SettingsViewModel"
+
+
+def test_xaml_prism_autowire_infers_viewmodel_from_filename():
+    r = extract_xaml(FIXTURES / "xaml_viewmodel" / "Views" / "PrismOrderView.xaml")
+    nodes = {n["id"]: n for n in r["nodes"]}
+    edges = _view_model_edges(r)
+
+    assert len(edges) == 1
+    assert edges[0]["confidence"] == "INFERRED"
+    assert nodes[edges[0]["target"]]["label"] == "PrismOrderViewModel"
+
+
+def test_xaml_prism_autowire_false_does_not_infer_from_filename(tmp_path):
+    project = tmp_path / "xaml_viewmodel"
+    shutil.copytree(FIXTURES / "xaml_viewmodel", project)
+    xaml = project / "Views" / "PrismOrderView.xaml"
+    xaml.write_text(
+        xaml.read_text(encoding="utf-8").replace(
+            'AutoWireViewModel="True"', 'AutoWireViewModel="False"'
+        ),
+        encoding="utf-8",
+    )
+
+    r = extract_xaml(xaml)
+
+    assert _view_model_edges(r) == []
+
+
+def test_xaml_cs_scan_prunes_noise_dirs_and_stays_bounded(tmp_path):
+    """The code-behind/.cs scan prunes noise dirs (node_modules/.venv/.git/...)
+    during traversal and is bounded, so it links the real ViewModel while a decoy
+    .cs buried in node_modules is never scanned — and it can't rglob a huge tree
+    and hang (the standalone-root escape that stalled the suite)."""
+    proj = tmp_path / "App"
+    (proj / "Views").mkdir(parents=True)
+    (proj / "ViewModels").mkdir()
+    (proj / "App.csproj").write_text('<Project Sdk="Microsoft.NET.Sdk" />', encoding="utf-8")
+    (proj / "Views" / "MainWindow.xaml").write_text(
+        '<Window x:Class="App.Views.MainWindow"\n'
+        '  xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"\n'
+        '  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"\n'
+        '  xmlns:vm="clr-namespace:App.ViewModels">\n'
+        '  <Window.DataContext><vm:MainWindowViewModel/></Window.DataContext>\n'
+        "</Window>\n", encoding="utf-8")
+    (proj / "ViewModels" / "MainWindowViewModel.cs").write_text(
+        "namespace App.ViewModels { public class MainWindowViewModel {} }\n", encoding="utf-8")
+    # A decoy with the SAME class name inside a noise dir: if pruning failed it
+    # would be scanned and make the link ambiguous/wrong.
+    nm = proj / "node_modules" / "pkg"
+    nm.mkdir(parents=True)
+    (nm / "Decoy.cs").write_text(
+        "namespace App.ViewModels { public class MainWindowViewModel {} }\n", encoding="utf-8")
+    r = extract_xaml(proj / "Views" / "MainWindow.xaml")
+    assert "error" not in r
+    nodes = {n["id"]: n for n in r["nodes"]}
+    edges = _view_model_edges(r)
+    assert len(edges) == 1
+    tgt = nodes[edges[0]["target"]]
+    assert tgt["label"] == "MainWindowViewModel"
+    assert "node_modules" not in (tgt.get("source_file") or ""), "decoy in node_modules was scanned"
+
+
+def test_xaml_links_communitytoolkit_generated_members_and_event_to_command():
+    r = extract_xaml(FIXTURES / "xaml_viewmodel" / "Views" / "ToolkitView.xaml")
+    nodes = {n["id"]: n for n in r["nodes"]}
+    refs = [
+        (nodes[e["target"]], e.get("context"), e["confidence"])
+        for e in r["edges"]
+        if e["relation"] == "references"
+    ]
+    generated_defs = {
+        (nodes[e["target"]]["label"], e.get("context"))
+        for e in r["edges"]
+        if e["relation"] == "defines"
+    }
+
+    assert ("UserName", "communitytoolkit_observable_property") in generated_defs
+    assert ("Email", "communitytoolkit_observable_property") in generated_defs
+    assert ("SaveCommand", "communitytoolkit_relay_command") in generated_defs
+    assert ("RefreshCommand", "communitytoolkit_relay_command") in generated_defs
+    assert ("IgnoredName", "communitytoolkit_observable_property") not in generated_defs
+    assert ("IgnoredCommand", "communitytoolkit_relay_command") not in generated_defs
+    assert any(
+        node["label"] == "UserName"
+        and node["source_file"].endswith("ToolkitViewModel.cs")
+        and context == "binding_path"
+        and confidence == "INFERRED"
+        for node, context, confidence in refs
+    )
+    assert any(
+        node["label"] == "SaveCommand"
+        and node["source_file"].endswith("ToolkitViewModel.cs")
+        and context == "binding_command"
+        and confidence == "INFERRED"
+        for node, context, confidence in refs
+    )
+    assert any(
+        node["label"] == "Email"
+        and node["source_file"].endswith("ToolkitViewModel.cs")
+        and context == "binding_path"
+        and confidence == "INFERRED"
+        for node, context, confidence in refs
+    )
+    assert any(
+        node["label"] == "RefreshCommand"
+        and node["source_file"].endswith("ToolkitViewModel.cs")
+        and context == "binding_command"
+        and confidence == "INFERRED"
+        for node, context, confidence in refs
+    )
+
+
+def test_extract_preserves_xaml_viewmodel_edge_after_id_remap(tmp_path):
+    project = tmp_path / "xaml_viewmodel"
+    shutil.copytree(FIXTURES / "xaml_viewmodel", project)
+    files = sorted(project.rglob("*.xaml")) + sorted(project.rglob("*.cs"))
+
+    r = extract(files, cache_root=project, parallel=False)
+    nodes = {n["id"]: n for n in r["nodes"]}
+    edges = _view_model_edges(r)
+
+    assert any(nodes[e["target"]]["label"] == "MainViewModel" for e in edges)
+    assert any(nodes[e["target"]]["label"] == "DesignViewModel" for e in edges)
+    assert any(
+        nodes[e["target"]]["label"] == "SettingsViewModel" and e["confidence"] == "INFERRED"
+        for e in edges
+    )
+
+
+def test_extract_xaml_viewmodel_resolution_stays_inside_cache_root(tmp_path):
+    project = tmp_path / "xaml_viewmodel"
+    shutil.copytree(FIXTURES / "xaml_viewmodel", project)
+
+    r = extract(
+        [project / "Views" / "ExplicitMainWindow.xaml"],
+        cache_root=project / "Views",
+        parallel=False,
+    )
+
+    assert _view_model_edges(r) == []
+
+
+def test_xaml_viewmodel_resolution_respects_graphifyignore(tmp_path):
+    project = tmp_path / "xaml_viewmodel"
+    shutil.copytree(FIXTURES / "xaml_viewmodel", project)
+    (project / ".graphifyignore").write_text("ViewModels/MainViewModel.cs\n", encoding="utf-8")
+
+    r = extract_xaml(project / "Views" / "ExplicitMainWindow.xaml")
+
+    assert _view_model_edges(r) == []
+
+
+def test_xaml_ambiguous_viewmodel_names_emit_no_edge(tmp_path):
+    (tmp_path / "Views").mkdir()
+    (tmp_path / "ViewModels").mkdir()
+    (tmp_path / "App.csproj").write_text("<Project Sdk=\"Microsoft.NET.Sdk\" />", encoding="utf-8")
+    xaml = (
+        '<Window x:Class="Demo.MainWindow"\n'
+        '        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"\n'
+        '        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">\n'
+        "</Window>\n"
+    )
+    (tmp_path / "Views" / "MainWindow.xaml").write_text(xaml, encoding="utf-8")
+    (tmp_path / "ViewModels" / "MainWindowViewModel.cs").write_text(
+        "namespace Demo { public class MainWindowViewModel { } }\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "ViewModels" / "MainViewModel.cs").write_text(
+        "namespace Demo { public class MainViewModel { } }\n",
+        encoding="utf-8",
+    )
+
+    r = extract_xaml(tmp_path / "Views" / "MainWindow.xaml")
+
+    assert _view_model_edges(r) == []
+
+
+def test_xaml_events_resolve_to_codebehind_methods():
+    r = extract_xaml(FIXTURES / "sample.xaml")
+    method_nodes = {
+        n["label"].strip("()").lstrip("."): n["id"]
+        for n in r["nodes"]
+        if str(n.get("source_file", "")).endswith("sample.xaml.cs")
+    }
+    assert {"Window_Loaded", "UserNameChanged", "Save_Click"} <= set(method_nodes)
+    event_targets = {
+        e["target"] for e in r["edges"]
+        if e["relation"] == "references" and e.get("context") == "event"
+    }
+    assert method_nodes["Window_Loaded"] in event_targets
+    assert method_nodes["UserNameChanged"] in event_targets
+    assert method_nodes["Save_Click"] in event_targets
+
+
+def _event_targets(r):
+    return {e["target"] for e in r["edges"]
+            if e["relation"] == "references" and e.get("context") == "event"}
+
+
+def test_xaml_event_match_requires_handler_signature():
+    """A property value that matches an ordinary method's name must not become an
+    event edge -- only methods with a (object sender, ...EventArgs e) signature do."""
+    xaml = (
+        '<Window x:Class="Demo.MainWindow"\n'
+        '  xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"\n'
+        '  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">\n'
+        '  <Button Content="Refresh" Click="Refresh"/>\n'
+        "</Window>\n"
+    )
+    cs = (
+        "using System.Windows;\n"
+        "namespace Demo { public partial class MainWindow : Window {\n"
+        "  public void Refresh() {}\n"  # business method, not a handler signature
+        "}}\n"
+    )
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "view.xaml"
+        p.write_text(xaml)
+        (Path(d) / "view.xaml.cs").write_text(cs)
+        r = extract_xaml(p)
+    assert "error" not in r
+    assert _event_targets(r) == set()
+
+
+def test_xaml_non_event_attribute_value_does_not_fabricate_event():
+    """Content=/Tag= holding a string that equals a real handler's name must not
+    create an event edge; only the genuine event attribute (Click) should."""
+    xaml = (
+        '<Window x:Class="Demo.MainWindow"\n'
+        '  xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"\n'
+        '  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">\n'
+        '  <Button x:Name="B1" Content="Save_Click" Tag="OnLoaded" Click="Save_Click"/>\n'
+        "</Window>\n"
+    )
+    cs = (
+        "using System.Windows;\n"
+        "namespace Demo { public partial class MainWindow : Window {\n"
+        "  private void Save_Click(object sender, RoutedEventArgs e) {}\n"
+        "  private void OnLoaded(object sender, RoutedEventArgs e) {}\n"
+        "}}\n"
+    )
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "view.xaml"
+        p.write_text(xaml)
+        (Path(d) / "view.xaml.cs").write_text(cs)
+        r = extract_xaml(p)
+    handlers = {n["label"].strip("()").lstrip("."): n["id"]
+                for n in r["nodes"] if str(n.get("source_file", "")).endswith("view.xaml.cs")}
+    targets = _event_targets(r)
+    # Click -> Save_Click is the only real event; OnLoaded (referenced only via Tag) is not.
+    assert handlers["Save_Click"] in targets
+    assert handlers.get("OnLoaded") not in targets
+    assert len(targets) == 1
+
+
+def test_xaml_viewmodel_with_non_utf8_codebehind_does_not_crash(tmp_path):
+    """A ViewModel .cs with invalid UTF-8 bytes must not abort extract_xaml: the
+    CommunityToolkit member reader uses errors='replace' like every other reader."""
+    project = tmp_path / "xaml_viewmodel"
+    shutil.copytree(FIXTURES / "xaml_viewmodel", project)
+    vm = project / "ViewModels" / "SettingsViewModel.cs"
+    # prepend a stray non-UTF8 byte (0xFF) before valid source
+    vm.write_bytes(b"\xff// stray byte\n" + vm.read_bytes())
+
+    r = extract_xaml(project / "Views" / "SettingsView.xaml")
+
+    assert "error" not in r
+    # the VM class is still found (extract_csharp reads bytes), so the inferred edge survives
+    nodes = {n["id"]: n for n in r["nodes"]}
+    edges = _view_model_edges(r)
+    assert len(edges) == 1
+    assert nodes[edges[0]["target"]]["label"] == "SettingsViewModel"
 
 
 # ── .razor ───────────────────────────────────────────────────────────────────
@@ -150,11 +562,11 @@ def test_razor_missing_file():
 
 def test_dispatch_table():
     from graphify.extract import _get_extractor
-    for ext in (".sln", ".slnx", ".csproj", ".fsproj", ".vbproj", ".razor", ".cshtml"):
+    for ext in (".sln", ".slnx", ".csproj", ".fsproj", ".vbproj", ".xaml", ".razor", ".cshtml"):
         assert _get_extractor(Path(f"foo{ext}")) is not None, f"{ext} not in dispatch"
 
 
 def test_code_extensions():
     from graphify.detect import CODE_EXTENSIONS
-    for ext in (".sln", ".slnx", ".csproj", ".fsproj", ".vbproj", ".razor", ".cshtml"):
+    for ext in (".sln", ".slnx", ".csproj", ".fsproj", ".vbproj", ".xaml", ".razor", ".cshtml"):
         assert ext in CODE_EXTENSIONS, f"{ext} missing"

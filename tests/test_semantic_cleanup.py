@@ -51,11 +51,15 @@ def test_validate_semantic_fragment_rejects_path_separator_in_id():
     assert any("nodes[0].id" in e for e in errors)
 
 
-def test_validate_semantic_fragment_rejects_invalid_file_type():
+def test_validate_semantic_fragment_accepts_unknown_file_type():
+    """An unknown/synonym file_type is NOT a validation failure: build_from_json
+    coerces any value via _FILE_TYPE_SYNONYMS (unknown -> "concept", #840), so
+    rejecting a whole chunk over it would be pure data loss. file_type carries no
+    security risk, so it is left to build's coercion rather than gated here."""
     fragment = _valid_fragment()
     fragment["nodes"][0]["file_type"] = "executable"
     errors = sc.validate_semantic_fragment(fragment)
-    assert any("file_type" in e for e in errors)
+    assert not any("file_type" in e for e in errors)
 
 
 def test_validate_semantic_fragment_accepts_rationale_file_type():
@@ -342,3 +346,36 @@ def test_sanitize_rationale_only_propagates_through_rationale_for_edges():
     assert "tree-sitter" in ids["rationale_target"].get("rationale", "")
     # unrelated_target should NOT have rationale leaked from the `references` edge
     assert "rationale" not in ids["unrelated_target"]
+
+
+def test_sanitize_keeps_members_keyed_hyperedge(capsys):
+    """#1561: a `members`-keyed hyperedge with >=2 surviving members must be
+    KEPT (normalized to `nodes`), not silently dropped before build."""
+    fragment = {
+        "nodes": [
+            {"id": "real_a", "label": "A", "file_type": "code"},
+            {"id": "real_b", "label": "B", "file_type": "code"},
+        ],
+        "edges": [],
+        "hyperedges": [
+            {"id": "grp", "label": "Group", "members": ["real_a", "real_b"]},
+        ],
+    }
+    out = sc.sanitize_semantic_fragment(fragment)
+    assert len(out["hyperedges"]) == 1
+    he = out["hyperedges"][0]
+    assert he["id"] == "grp"
+    assert he["nodes"] == ["real_a", "real_b"]
+    assert "members" not in he
+
+
+def test_validate_accepts_node_ids_keyed_hyperedge():
+    """#1561: an alias-keyed hyperedge must not be rejected for a missing
+    `nodes` list — validate normalizes first."""
+    fragment = _valid_fragment()
+    fragment["nodes"].append({"id": "second", "label": "Second", "file_type": "code"})
+    fragment["hyperedges"] = [
+        {"id": "grp", "label": "G", "node_ids": ["module_func", "second"]}
+    ]
+    errors = sc.validate_semantic_fragment(fragment)
+    assert errors == []

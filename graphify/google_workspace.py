@@ -121,8 +121,21 @@ def _run_gws_export(file_id: str, mime_type: str, output: Path, resource_key: st
         raise RuntimeError(f"gws export failed for {file_id}: {stderr}")
 
 
-def _sidecar_path(path: Path, out_dir: Path) -> Path:
-    name_hash = hashlib.sha256(str(path.resolve()).encode()).hexdigest()[:8]
+def _sidecar_path(path: Path, out_dir: Path, root: "Path | None" = None) -> Path:
+    # Hash the scan-root-relative, NFC-normalized path — not the absolute path.
+    # The absolute form salts the sidecar name with the checkout location, so the
+    # same shortcut in two clones/worktrees emits differently-named byte-identical
+    # sidecars, each ingested as a distinct source doc when graphify-out/ is
+    # committed (#2059; mirrors convert_office_file). NFC guards macOS NFD drift
+    # (#1226). The relative path still disambiguates same-stem files.
+    import unicodedata
+    if root is None:
+        root = out_dir.parent.parent
+    try:
+        key = path.resolve().relative_to(Path(root).resolve()).as_posix()
+    except (ValueError, OSError):
+        key = str(path.resolve())
+    name_hash = hashlib.sha256(unicodedata.normalize("NFC", key).encode()).hexdigest()[:8]
     return out_dir / f"{path.stem}_{name_hash}.md"
 
 
@@ -152,6 +165,7 @@ def convert_google_workspace_file(
     out_dir: Path,
     *,
     xlsx_to_markdown: Callable[[Path], str] | None = None,
+    root: "Path | None" = None,
 ) -> Path | None:
     """Export a Google Workspace shortcut to a Markdown sidecar.
 
@@ -164,7 +178,7 @@ def convert_google_workspace_file(
 
     shortcut = read_google_shortcut(path)
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = _sidecar_path(path, out_dir)
+    out_path = _sidecar_path(path, out_dir, root=root)
 
     if ext == ".gdoc":
         with tempfile.NamedTemporaryFile("w+b", suffix=".md", delete=False, dir=out_dir) as tmp:

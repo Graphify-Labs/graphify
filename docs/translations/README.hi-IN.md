@@ -11,7 +11,7 @@
   <a href="https://pypi.org/project/graphifyy/"><img src="https://img.shields.io/pypi/v/graphifyy" alt="PyPI"/></a>
   <a href="https://pepy.tech/project/graphifyy"><img src="https://static.pepy.tech/badge/graphifyy" alt="Downloads"/></a>
   <a href="https://github.com/sponsors/safishamsi"><img src="https://img.shields.io/badge/sponsor-safishamsi-ea4aaa?logo=github-sponsors" alt="Sponsor"/></a>
-  <a href="https://www.linkedin.com/in/safi-shamsi"><img src="https://img.shields.io/badge/LinkedIn-Safi%20Shamsi-0077B5?logo=linkedin" alt="LinkedIn"/></a>
+  <a href="https://www.linkedin.com/company/graphify-labs"><img src="https://img.shields.io/badge/LinkedIn-Graphify%20Labs-0077B5?logo=linkedin" alt="LinkedIn"/></a>
 </p>
 
 **एक AI कोडिंग असिस्टेंट स्किल।** Claude Code, Codex, OpenCode, Cursor, Gemini CLI, GitHub Copilot CLI, VS Code Copilot Chat, Aider, OpenClaw, Factory Droid, Trae, Hermes, Kiro या Google Antigravity में `/graphify` टाइप करें — यह आपकी फ़ाइलें पढ़ता है, एक नॉलेज ग्राफ बनाता है, और आपको वह संरचना वापस देता है जो आप नहीं जानते थे कि मौजूद है। कोडबेस को तेज़ी से समझें। आर्किटेक्चरल निर्णयों के पीछे का "क्यों" खोजें।

@@ -38,7 +38,8 @@ def _max_graph_file_bytes() -> int:
     Honors the ``GRAPHIFY_MAX_GRAPH_BYTES`` environment variable so users with
     large codebases can raise the limit without editing source. The value may
     be plain bytes (``671088640``) or carry an ``MB`` / ``GB`` suffix
-    (``640MB``, ``2GB`` — case-insensitive, decimal multipliers of 1024).
+    (``640MB``, ``2GB`` — case-insensitive, binary multipliers: ``MB`` is
+    1024*1024 and ``GB`` is 1024*1024*1024, i.e. MiB / GiB).
     Falls back to ``_MAX_GRAPH_FILE_BYTES`` (512 MiB) when the env var is unset,
     blank, or unparseable.
 

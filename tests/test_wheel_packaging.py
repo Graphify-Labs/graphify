@@ -29,14 +29,27 @@ def _has_build() -> bool:
         return False
 
 
+def _skill_bodies() -> list[Path]:
+    """Every distinct skill body a platform installs (the SKILL.md is copied from
+    one of these). A body missing from the wheel makes `graphify install
+    --platform <host>` hard-exit "not found in package" — the exact failure that
+    motivated adding the agents platform's skill-agents.md to package-data."""
+    from graphify.__main__ import _PLATFORM_CONFIG
+
+    names = {cfg["skill_file"] for cfg in _PLATFORM_CONFIG.values()}
+    return sorted({PKG / name for name in names})
+
+
 def _expected_artifacts() -> list[Path]:
-    """Every committed references/*.md (per host) + always_on/*.md block."""
+    """Every committed skill body + references/*.md (per host) + always_on/*.md block."""
+    bodies = _skill_bodies()
     refs = sorted((PKG / "skills").glob("*/references/*.md"))
     always = sorted((PKG / "always_on").glob("*.md"))
     # Sanity: if these are empty the test wiring is broken, not the wheel.
+    assert bodies, "no platform skill bodies found — packaging test mis-wired"
     assert refs, "no skills/*/references/*.md found in repo — packaging test mis-wired"
     assert always, "no always_on/*.md found in repo — packaging test mis-wired"
-    return refs + always
+    return bodies + refs + always
 
 
 @pytest.fixture(scope="module")

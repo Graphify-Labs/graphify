@@ -346,10 +346,36 @@ def test_rust_supertrait_emits_inherits():
     assert ("Logger", "Processor") in _edge_labels(r, "inherits")
 
 
+def test_rust_enum_variant_references():
+    """Enum variant payload types must emit `references` edges.
+
+    Tuple variants (`Click(T)`) and struct variants (`Resize { x: T }`) nest
+    their field types under enum_variant_list -> enum_variant; that path was
+    never traversed, so every enum-variant type reference was dropped.
+    """
+    r = extract_rust(FIXTURES / "sample.rs")
+    refs = _edge_labels(r, "references")
+    assert ("GraphEvent", "Graph") in refs, "tuple-variant reference missing"
+    assert ("GraphEvent", "DataProcessor") in refs, "struct-variant reference missing"
+
+
 def test_rust_struct_field_emits_field_context():
     r = extract_rust(FIXTURES / "sample.rs")
     assert ("DataProcessor", "Result") in _edge_labels(r, "references", "field")
     assert ("DataProcessor", "DataProcessor") not in _edge_labels(r, "references", "field")
+
+
+def test_rust_tuple_struct_field_references():
+    """Tuple struct fields (`struct Wrapper(A, B);`) nest their positional types
+    under ordered_field_declaration_list with no field_declaration wrapper -- the
+    same shape as tuple enum variants. That path was not traversed for structs, so
+    tuple-struct field type references were silently dropped.
+    """
+    r = extract_rust(FIXTURES / "sample.rs")
+    field_refs = _edge_labels(r, "references", "field")
+    assert ("GraphPair", "Graph") in field_refs, "tuple-struct field reference missing"
+    assert ("GraphPair", "Result") in field_refs, "tuple-struct generic field reference missing"
+    assert ("GraphPair", "DataProcessor") in _edge_labels(r, "references", "generic_arg")
 
 
 def test_rust_method_parameter_return_and_generic_contexts():
@@ -461,6 +487,164 @@ def test_sql_no_dangling_edges():
     for e in r["edges"]:
         assert e["source"] in node_ids, f"dangling source: {e['source']}"
 
+def test_sql_cte_is_not_read_as_a_table():
+    """#2577: a name bound by WITH ... AS (...) is scoped to its statement, not a table.
+
+    Emitting it as a reads_from target minted a bare, sourceless stub carrying no
+    schema, file, or language namespace, so a CTE named `levels` or `slug` collided
+    with a same-named node from another language. The real table in the same
+    FROM/JOIN must still resolve.
+    """
+    r = _extract_sql_or_skip("sample_cte.sql")
+    labels = [n["label"] for n in r["nodes"]]
+    assert "levels" not in labels, "CTE name leaked into the graph as a table node"
+
+    reads = [e for e in r["edges"] if e["relation"] == "reads_from"]
+    assert reads, "the real table reference should still emit a reads_from edge"
+    assert not any(e["target"] == "levels" for e in reads), "CTE emitted as a reads_from target"
+
+    # the real v_roles -> users edge is kept
+    nid = {n["label"]: n["id"] for n in r["nodes"]}
+    assert (nid["v_roles"], nid["users"]) in {(e["source"], e["target"]) for e in reads}
+
+def test_sql_column_list_cte_is_not_read_as_a_table(tmp_path):
+    """#2577: `WITH levels(a, b) AS (...)` — the name precedes a column list."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text(
+        "CREATE TABLE users (id INT, role TEXT);\n"
+        "CREATE VIEW v AS\n"
+        "  WITH levels(role, rank) AS (SELECT 'admin', 1)\n"
+        "  SELECT * FROM users JOIN levels ON levels.role = users.role;\n"
+    )
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"]]
+    assert "levels" not in labels
+    reads = [e for e in r["edges"] if e["relation"] == "reads_from"]
+    assert not any(e["target"] == "levels" for e in reads)
+
+def test_sql_cte_shadows_same_named_table_within_its_statement(tmp_path):
+    """#2577: inside the declaring statement the CTE shadows a real same-named
+    table (SQL scoping), so v1's FROM binds to the CTE and emits nothing; v2 has
+    no CTE in scope and reads the real table. Exactly one deterministic edge."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text(
+        "CREATE TABLE levels (role TEXT);\n"
+        "CREATE VIEW v1 AS WITH levels AS (SELECT 'admin' AS role)"
+        " SELECT * FROM levels;\n"
+        "CREATE VIEW v2 AS SELECT * FROM levels;\n"
+    )
+    r = extract_sql(p)
+    reads = [e for e in r["edges"] if e["relation"] == "reads_from"]
+    assert len(reads) == 1, f"expected exactly one reads_from, got {reads}"
+    nid = {n["label"]: n["id"] for n in r["nodes"]}
+    assert reads[0]["source"] == nid["v2"]
+    assert reads[0]["target"] == nid["levels"]  # the real, sourced table node
+
+def test_sql_subquery_cte_does_not_suppress_outer_real_table(tmp_path):
+    """#2577 refinement: a WITH inside a subquery is scoped to that subquery
+    only. A statement-wide pre-collect would also swallow the OUTER reference
+    to the real `t2`, dropping a true edge — per-subtree scoping keeps it."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text(
+        "CREATE TABLE t2 (id INT);\n"
+        "CREATE VIEW v6 AS SELECT * FROM t2 JOIN"
+        " (WITH t2 AS (SELECT 1 AS id) SELECT * FROM t2) sub"
+        " ON sub.id = t2.id;\n"
+    )
+    r = extract_sql(p)
+    nid = {n["label"]: n["id"] for n in r["nodes"]}
+    reads = {(e["source"], e["target"]) for e in r["edges"]
+             if e["relation"] == "reads_from"}
+    assert (nid["v6"], nid["t2"]) in reads, (
+        "outer reference to the real t2 table was wrongly suppressed"
+    )
+
+def test_sql_cte_never_binds_to_cross_language_symbol(tmp_path):
+    """#2577: the reported leak — the CTE's sourceless stub was unique corpus-wide,
+    so _rewire_unique_stub_nodes bound it to a same-named symbol from ANOTHER
+    language (schema_v_roles -> ui_levels). With the CTE excluded, no reads_from
+    edge may target a TypeScript node."""
+    pytest.importorskip("tree_sitter_sql")
+    sql = tmp_path / "schema.sql"
+    sql.write_text(
+        "CREATE TABLE users (id INT, role TEXT);\n"
+        "CREATE VIEW v_roles AS\n"
+        "  WITH levels AS (SELECT 'admin' AS role)\n"
+        "  SELECT * FROM users JOIN levels ON levels.role = users.role;\n"
+    )
+    ts = tmp_path / "ui.ts"
+    ts.write_text("export function levels() { return ['admin']; }\n")
+
+    r = extract([sql, ts], root=tmp_path)
+    ts_nodes = {n["id"] for n in r["nodes"]
+                if str(n.get("source_file", "")).endswith(".ts")}
+    for e in r["edges"]:
+        if e["relation"] == "reads_from":
+            assert e["target"] not in ts_nodes, (
+                f"SQL reads_from leaked cross-language: {e}"
+            )
+
+def test_sql_cross_file_fk_resolves_and_never_leaks_scan_path(tmp_path):
+    """#2324: a REFERENCES target defined in ANOTHER file must collapse onto the
+    real table node (via the sourceless-stub rewire), and no node id or edge
+    endpoint may embed the absolute scan path. Before the fix, the fallback
+    minted a node-less id under the referencing file's own stem, which with
+    absolute inputs leaked the machine path AND could never match the m1
+    definition, so prisma-style cross-migration FKs dangled."""
+    pytest.importorskip("tree_sitter_sql")
+    from graphify.ids import make_id
+
+    m1 = tmp_path / "prisma" / "migrations" / "m1"
+    m2 = tmp_path / "prisma" / "migrations" / "m2"
+    m1.mkdir(parents=True)
+    m2.mkdir(parents=True)
+    (m1 / "migration.sql").write_text(
+        'CREATE TABLE "Tenant" (\n'
+        '    "id" TEXT NOT NULL,\n'
+        '    CONSTRAINT "Tenant_pkey" PRIMARY KEY ("id")\n'
+        ');\n'
+    )
+    (m2 / "migration.sql").write_text(
+        'CREATE TABLE "StockGapEvent" (\n'
+        '    "id" TEXT NOT NULL,\n'
+        '    "tenantId" TEXT NOT NULL,\n'
+        '    CONSTRAINT "StockGapEvent_pkey" PRIMARY KEY ("id")\n'
+        ');\n'
+        'ALTER TABLE "StockGapEvent" ADD CONSTRAINT "StockGapEvent_tenantId_fkey"'
+        ' FOREIGN KEY ("tenantId") REFERENCES "Tenant"("id");\n'
+    )
+
+    r = extract(
+        [(m1 / "migration.sql").resolve(), (m2 / "migration.sql").resolve()],
+        root=tmp_path,
+    )
+    node_ids = {n["id"] for n in r["nodes"]}
+
+    # (a) the FK resolved cross-file onto the REAL Tenant definition node
+    tenant_ids = [i for i in node_ids if i.endswith("m1_migration_tenant")]
+    assert len(tenant_ids) == 1, f"expected one real Tenant node, got {tenant_ids}"
+    ref_targets = {e["target"] for e in r["edges"] if e["relation"] == "references"}
+    assert tenant_ids[0] in ref_targets, (
+        f"cross-file FK did not rewire onto {tenant_ids[0]}; "
+        f"references targets: {ref_targets}"
+    )
+
+    # (b) no dangling endpoints anywhere
+    for e in r["edges"]:
+        assert e["source"] in node_ids, f"dangling source: {e['source']}"
+        assert e["target"] in node_ids, f"dangling target: {e['target']}"
+
+    # (c) the absolute scan path never leaks into any id or endpoint
+    abs_slug = make_id(str(tmp_path.resolve()))
+    for i in node_ids:
+        assert abs_slug not in i, f"absolute path leaked into node id: {i}"
+    for e in r["edges"]:
+        assert abs_slug not in e["source"], f"absolute path leaked: {e['source']}"
+        assert abs_slug not in e["target"], f"absolute path leaked: {e['target']}"
+
 def test_sql_alter_table_fk_edge():
     """ALTER TABLE ... FOREIGN KEY ... REFERENCES produces a references edge."""
     r = _extract_sql_or_skip("sample_alter_fk.sql")
@@ -487,3 +671,76 @@ def test_sql_schema_qualified_alter_fk():
     for e in fk_edges:
         assert e["source"] in node_ids, f"dangling source: {e['source']}"
         assert e["target"] in node_ids, f"dangling target: {e['target']}"
+
+def test_sql_plpgsql_functions_survive_parse_errors():
+    """PL/pgSQL bodies make tree-sitter-sql emit ERROR nodes; the functions
+    must still be extracted (#1910), without cascading into later statements."""
+    r = _extract_sql_or_skip("sample_plpgsql.sql")
+    labels = [n["label"] for n in r["nodes"]]
+    # Both PL/pgSQL functions extracted, schema-qualified name kept whole
+    assert "exposed.important_function()" in labels
+    assert "tagged_quote_fn()" in labels
+    # Tables before and after the broken functions still extract
+    assert any("accounts" in l for l in labels)
+    assert any("audit_log" in l for l in labels)
+    # No spurious or empty nodes from the error recovery
+    for l in labels:
+        assert l, "empty node label"
+        assert l != "ERROR"
+    # Every function got a contains edge from the file node
+    contains_targets = {e["target"] for e in r["edges"] if e["relation"] == "contains"}
+    fn_ids = {n["id"] for n in r["nodes"] if n["label"].endswith("()")}
+    assert fn_ids <= contains_targets
+
+def test_sql_plpgsql_clean_function_not_double_emitted():
+    """A cleanly-parsed LANGUAGE sql function in the same file is emitted once."""
+    r = _extract_sql_or_skip("sample_plpgsql.sql")
+    labels = [n["label"] for n in r["nodes"]]
+    assert labels.count("plain_sql_fn()") == 1
+    # And nothing else is duplicated either
+    ids = [n["id"] for n in r["nodes"]]
+    assert len(ids) == len(set(ids))
+
+def test_sql_quoted_plpgsql_routines_are_recovered():
+    """#2180: quoted identifiers must not defeat the ERROR-node name recovery.
+
+    Generated PostgreSQL DDL (Supabase-style dumps, for example) quotes every
+    identifier: CREATE OR REPLACE FUNCTION "public"."fn"(...). The recovery
+    pattern matched a bare [\\w$.]+, which stops at the leading quote, so every
+    routine whose body also failed to parse -- RAISE, PERFORM, :=, IF..THEN,
+    bare NULL; -- was dropped with no warning and exit code 0. The same body
+    with an *unquoted* name recovered fine, which is why the drop looked like it
+    depended only on the body statement.
+    """
+    r = _extract_sql_or_skip("sample_plpgsql_quoted.sql")
+    labels = [n["label"] for n in r["nodes"]]
+    for name in (
+        "raise_exception_fn",
+        "raise_notice_fn",
+        "perform_fn",
+        "assign_fn",
+        "if_then_fn",
+        "null_body_fn",
+        "quoted_proc",
+    ):
+        assert f'"public"."{name}"()' in labels, f"{name} dropped from a quoted-DDL file (#2180)"
+
+def test_sql_quoted_plpgsql_file_stays_clean():
+    """The #2180 recovery must not add junk, duplicates, or drop the tables."""
+    r = _extract_sql_or_skip("sample_plpgsql_quoted.sql")
+    labels = [n["label"] for n in r["nodes"]]
+    # Tables before and after the unparseable routines still extract.
+    assert any("accounts" in l for l in labels)
+    assert any("audit_log" in l for l in labels)
+    # No empty or ERROR labels leaked out of the recovery.
+    for l in labels:
+        assert l, "empty node label"
+        assert l != "ERROR"
+    # Nothing emitted twice (a routine must not come from both paths).
+    ids = [n["id"] for n in r["nodes"]]
+    assert len(ids) == len(set(ids)), "duplicate node ids"
+    assert len(labels) == len(set(labels)), f"duplicate labels: {labels}"
+    # Every recovered routine is reachable from the file node.
+    contains_targets = {e["target"] for e in r["edges"] if e["relation"] == "contains"}
+    fn_ids = {n["id"] for n in r["nodes"] if n["label"].endswith("()")}
+    assert fn_ids <= contains_targets

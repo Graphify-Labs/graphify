@@ -174,3 +174,140 @@ def test_resolve_seed_bare_name_tie_still_returns_none():
     graph.add_node("b", label="dup()", source_file="pkg/two.py")
 
     assert resolve_seed(graph, "dup") is None
+
+
+def test_resolve_seed_source_file_path_prefers_file_level_node():
+    from graphify.affected import resolve_seed
+
+    graph = nx.DiGraph()
+    source_file = "app/api/example/route.ts"
+    graph.add_node(
+        "example_route_get",
+        label="GET()",
+        source_file=source_file,
+        source_location="L42",
+    )
+    graph.add_node(
+        "example_route",
+        label="route.ts",
+        source_file=source_file,
+        source_location="L1",
+    )
+
+    assert resolve_seed(graph, source_file) == "example_route"
+
+
+def test_resolve_seed_source_file_trailing_slash_parity():
+    """A trailing path separator must not change the match (parity with explain's
+    _find_node, which tokenizes the path and drops the slash)."""
+    from graphify.affected import resolve_seed
+
+    graph = nx.DiGraph()
+    source_file = "app/api/example/route.ts"
+    graph.add_node("get", label="GET()", source_file=source_file, source_location="L42")
+    graph.add_node("file", label="route.ts", source_file=source_file, source_location="L1")
+
+    assert resolve_seed(graph, source_file + "/") == "file"
+
+
+def test_resolve_seed_source_file_ambiguous_no_file_node_returns_none():
+    """Several nodes share a source_file but none is the L1 file node and none's
+    basename matches the path — must not guess; return None."""
+    from graphify.affected import resolve_seed
+
+    graph = nx.DiGraph()
+    source_file = "pkg/handlers.py"
+    graph.add_node("a", label="handle_a()", source_file=source_file, source_location="L10")
+    graph.add_node("b", label="handle_b()", source_file=source_file, source_location="L20")
+
+    assert resolve_seed(graph, source_file) is None
+
+
+def test_affected_cli_source_file_path_uses_file_level_node(monkeypatch, tmp_path, capsys):
+    graph = nx.DiGraph()
+    source_file = "app/api/example/route.ts"
+    graph.add_node(
+        "example_route_get",
+        label="GET()",
+        source_file=source_file,
+        source_location="L42",
+    )
+    graph.add_node(
+        "example_route",
+        label="route.ts",
+        source_file=source_file,
+        source_location="L1",
+    )
+    graph.add_node(
+        "consumer",
+        label="consumer.ts",
+        source_file="app/consumer.ts",
+        source_location="L1",
+    )
+    graph.add_edge(
+        "consumer",
+        "example_route",
+        relation="imports_from",
+        context="import",
+        confidence="EXTRACTED",
+    )
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(json.dumps(json_graph.node_link_data(graph, edges="links")), encoding="utf-8")
+
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "affected", source_file, "--graph", str(graph_path)],
+    )
+
+    mainmod.main()
+
+    out = capsys.readouterr().out
+    assert "Affected nodes for route.ts" in out
+    assert "consumer.ts" in out
+    assert "imports_from" in out
+    assert "No unique node matched" not in out
+
+
+# ── BUG1: caller lists must show the call-SITE line, not the caller def line ──
+
+def _write_callsite_graph(tmp_path):
+    """A caller whose call site (L158) differs from its own def line (L90)."""
+    g = nx.DiGraph()
+    g.add_node("loader", label="_load_apollo_app_state()",
+               source_file="apollo_pipeline_status.py", source_location="L90")
+    g.add_node("transition", label="transition_state()",
+               source_file="state.py", source_location="L56")
+    # The call happens at line 158 inside the caller's file.
+    g.add_edge("loader", "transition", relation="calls", context="call",
+               confidence="EXTRACTED", source_file="apollo_pipeline_status.py",
+               source_location="L158")
+    gp = tmp_path / "graph.json"
+    gp.write_text(json.dumps(json_graph.node_link_data(g, edges="links")), encoding="utf-8")
+    return gp
+
+
+def test_affected_reports_call_site_line_not_def_line(monkeypatch, tmp_path, capsys):
+    gp = _write_callsite_graph(tmp_path)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(mainmod.sys, "argv",
+                        ["graphify", "affected", "transition_state", "--graph", str(gp)])
+    mainmod.main()
+    out = capsys.readouterr().out
+    assert "apollo_pipeline_status.py:L158" in out, "must report the call SITE line (BUG1)"
+    assert "apollo_pipeline_status.py:L90" not in out, "must NOT report the caller's def line"
+
+
+def test_affected_falls_back_to_def_line_when_edge_has_no_location(monkeypatch, tmp_path, capsys):
+    """An edge with no stored location honestly falls back to the node's def line."""
+    g = nx.DiGraph()
+    g.add_node("loader", label="load()", source_file="a.py", source_location="L90")
+    g.add_node("t", label="target()", source_file="b.py", source_location="L5")
+    g.add_edge("loader", "t", relation="calls", confidence="INFERRED")  # no source_location
+    gp = tmp_path / "graph.json"
+    gp.write_text(json.dumps(json_graph.node_link_data(g, edges="links")), encoding="utf-8")
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(mainmod.sys, "argv", ["graphify", "affected", "target", "--graph", str(gp)])
+    mainmod.main()
+    assert "a.py:L90" in capsys.readouterr().out

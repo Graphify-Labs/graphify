@@ -66,6 +66,22 @@ def test_prefix_graph_rewrites_edges():
     assert not H.has_edge("a", "b")
 
 
+def test_prefix_graph_rewrites_edge_directional_attributes():
+    """prefix_graph_for_global must update directional edge attributes (_src/_tgt)
+    so they stay aligned with the prefixed node IDs (#2261)."""
+    from graphify.build import prefix_graph_for_global
+    G = _make_graph(
+        [{"id": "rota", "label": "rota.js"}, {"id": "collections", "label": "collections.js"}],
+        [{"source": "rota", "target": "collections", "relation": "imports_from", "_src": "rota", "_tgt": "collections"}],
+    )
+    H = prefix_graph_for_global(G, "repoA")
+    assert H.has_edge("repoA::rota", "repoA::collections")
+    data = H.get_edge_data("repoA::rota", "repoA::collections")
+    assert data["_src"] == "repoA::rota"
+    assert data["_tgt"] == "repoA::collections"
+
+
+
 def test_prune_repo_removes_correct_nodes():
     from graphify.build import prune_repo_from_graph
     G = nx.Graph()
