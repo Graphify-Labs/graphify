@@ -93,10 +93,26 @@ def test_module_scope_dynamic_import_edges(tmp_path: Path):
     assert any(e["relation"] == "dynamic_import" for e in edges)
 
 
-def test_ast_captured_dynamic_import_is_one_fact_not_two(tmp_path: Path):
-    """Dedupe: a dynamic import the AST pass already emitted (as a deferred
-    imports_from edge) must not be restated by the rescue as a second
-    dynamic_import edge to the same target."""
+def test_ast_captured_dynamic_import_still_gets_a_file_level_edge(tmp_path: Path):
+    """One import() inside a function, two granularities — #2584.
+
+    This test used to assert `len(edges) == 1`, on the reasoning that the rescue would be
+    restating what the AST pass had already said. The two edges are not the same statement:
+    the AST pass anchors on `caller_nid`, which is the enclosing FUNCTION when the import()
+    is written inside one, while the rescue anchors on the FILE. Only the second is a fact
+    `affected` can walk, since it traverses file to file.
+
+    Suppressing it cost real recall: on a ~700-file TS repo `affected --depth 3` returned 39
+    of 49 truly affected files, precision 1.00, and more depth did not help — a dead end, not
+    a depth limit. The reverse walk reached the enclosing function and stopped there, because
+    the only edge pointing at it is `contains`, deliberately not in
+    DEFAULT_AFFECTED_RELATIONS.
+
+    The dedupe is still right, just keyed wrong: it now matches on (source file, target)
+    rather than target alone, so the genuinely redundant case — a module-scope import(),
+    where `caller_nid` IS the file node — still collapses to one edge. That case is pinned
+    by `test_module_scope_dynamic_import_is_still_one_fact` below.
+    """
     _write(tmp_path / "src/dep.ts", "export const dep = 1\n")
     importer = _write(
         tmp_path / "src/page.ts",
@@ -109,9 +125,35 @@ def test_ast_captured_dynamic_import_is_one_fact_not_two(tmp_path: Path):
     result = extract([tmp_path / "src/dep.ts", importer], root=tmp_path)
 
     edges = _edges_to(result, "src/dep.ts")
-    assert len(edges) == 1, f"one import(), one edge — got {edges}"
-    assert edges[0]["relation"] == "imports_from"
-    assert edges[0].get("deferred") is True
+    page = _file_node_id(Path("src/page.ts"))
+
+    # The precise fact: which function defers the load. `explain` reads this one.
+    symbol_level = [e for e in edges if e["source"] != page]
+    assert symbol_level, f"lost the call-site edge — got {edges}"
+    assert symbol_level[0]["relation"] == "imports_from"
+    assert symbol_level[0].get("deferred") is True
+
+    # The traversable fact: this file depends on that module. `affected` reads this one.
+    file_level = [e for e in edges if e["source"] == page]
+    assert file_level, f"no file-level edge — `affected` cannot traverse this: {edges}"
+    assert file_level[0]["relation"] == "dynamic_import"
+
+
+def test_module_scope_dynamic_import_is_still_one_fact(tmp_path: Path):
+    """At module scope `caller_nid` IS the file node, so the rescue is genuinely redundant.
+
+    This is the half of the old dedupe that was always correct, kept as its own test so a
+    future change cannot quietly restore double-counting here while fixing #2584.
+    """
+    _write(tmp_path / "src/dep.ts", "export const dep = 1\n")
+    importer = _write(
+        tmp_path / "src/boot2.ts",
+        "const { dep } = await import('./dep')\nexport const booted = dep\n",
+    )
+
+    result = extract([tmp_path / "src/dep.ts", importer], root=tmp_path)
+
+    assert len(_edges_to(result, "src/dep.ts")) == 1
 
 
 def test_static_import_alongside_dynamic_is_untouched(tmp_path: Path):
@@ -130,7 +172,15 @@ def test_static_import_alongside_dynamic_is_untouched(tmp_path: Path):
 
     a_edges = _edges_to(result, "src/a.ts", "imports_from")
     assert a_edges and not any(e.get("deferred") for e in a_edges)
-    assert len(_edges_to(result, "src/b.ts")) == 1
+
+    # The point of this test is the STATIC edge above: the rescue must leave it alone, and
+    # in particular must not mark it deferred. The dynamic side is asserted only for the
+    # property that concerns this test — every edge to b.ts is flagged as deferred one way
+    # or another, so no arrow into b.ts can be mistaken for a static dependency. Its COUNT
+    # is #2584's subject, pinned in test_ast_captured_dynamic_import_still_gets_a_file_level_edge.
+    b_edges = _edges_to(result, "src/b.ts")
+    assert b_edges
+    assert all(e.get("deferred") or e["relation"] == "dynamic_import" for e in b_edges)
 
 
 def test_tsconfig_aliased_dynamic_import_edges(tmp_path: Path):

@@ -1252,7 +1252,10 @@ def _rescue_js_dynamic_imports(path: Path, result: dict) -> None:
     as an ``imports_from`` edge marked ``deferred`` (``_dynamic_import_js``).
     Re-emitting it here as a second ``dynamic_import`` edge would state the
     same fact twice, so a match whose resolved target already has a deferred
-    edge is skipped.
+    edge FROM THIS FILE'S NODE is skipped. The source check matters: the AST
+    pass anchors the edge on the enclosing function when the ``import()`` is
+    written inside one, and that is a different fact from "this file depends on
+    that module" — the only one file-level traversal can use (#2584).
 
     Regex false positives in comments/strings are the precedented trade of
     the Svelte/Vue rescues; a ``//``-prefix guard covers the common case.
@@ -1268,8 +1271,28 @@ def _rescue_js_dynamic_imports(path: Path, result: dict) -> None:
         base_url = _load_tsconfig_base_url(path.parent)
         deferred_ids: set[str] = set()
         deferred_files: set[str] = set()
+        rescued_targets: set[str] = set()
         for e in result.get("edges", []):
-            if e.get("deferred") and e.get("relation") == "imports_from":
+            # Only a FILE-level deferred edge makes the rescue redundant (#2584).
+            #
+            # `_dynamic_import_js` emits `caller_nid -> target`, and `caller_nid` is this
+            # file's node only when the `import()` sits at module scope. Written inside a
+            # function it is that function's node — a different fact, at a granularity
+            # `affected` does not walk. Matching on target alone treated the two as one and
+            # skipped the rescue, so a dynamic import inside a function ended up with no
+            # file-level edge at all. The reverse walk then reached the enclosing function
+            # and stopped: the only edge pointing at it is `contains`, deliberately kept out
+            # of DEFAULT_AFFECTED_RELATIONS.
+            #
+            # Measured on a ~700-file TS repo: `affected --depth 3` returned 39 of 49 truly
+            # affected files (recall 0.80, precision 1.00) and deeper traversal did not help,
+            # which is a dead end rather than a depth limit. It stayed hidden because the
+            # usual case still resolves — when the next importer imports that exact symbol
+            # by name there IS an edge into the function. Switch that importer to
+            # `import * as ns` or a side-effect `import './dyn'` and the same graph goes
+            # silent.
+            if (e.get("deferred") and e.get("relation") == "imports_from"
+                    and e.get("source") == file_node_id):
                 deferred_ids.add(e.get("target"))
                 tf = e.get("target_file")
                 if tf:
@@ -1305,6 +1328,16 @@ def _rescue_js_dynamic_imports(path: Path, result: dict) -> None:
                         continue
                 except OSError:
                     pass
+            # One file depending on one module is one file-level fact, however many
+            # call sites defer it. Pre-existing (two module-scope `import('./x')` in one
+            # file already emitted two identical edges on v8), but #2584 routes every
+            # in-function dynamic import through here too, which would turn an edge case
+            # into the common one — a hub module deferred from eight functions of the same
+            # file would carry eight identical arrows.
+            emit_key = str(resolved_file.resolve()) if resolved_file is not None else raw
+            if emit_key in rescued_targets:
+                continue
+            rescued_targets.add(emit_key)
             _emit_rescued_import(
                 result, existing_ids, file_node_id, path, raw,
                 "dynamic_import", aliases, base_url,
