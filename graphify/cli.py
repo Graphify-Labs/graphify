@@ -3924,7 +3924,8 @@ def dispatch_command(cmd: str) -> None:
         # passing --allow-partial (the good graph is preserved and the manifest
         # is not stamped, so the retry re-extracts).
         _force_write = cli_allow_partial or not _extraction_incomplete
-        _wrote = _to_json(G, communities, str(graph_json_path), force=_force_write)
+        _wrote = _to_json(G, communities, str(graph_json_path), force=_force_write,
+                          backend=backend, model=model, mode=extract_mode)
         if not _wrote:
             # The shrink guard refused: this partial build is smaller than the
             # existing graph. Exit before writing the manifest/marker below, which

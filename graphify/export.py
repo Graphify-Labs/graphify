@@ -229,7 +229,58 @@ def existing_graph_node_count(path: "str | Path"):
     return len(nodes) if isinstance(nodes, list) else MALFORMED_GRAPH
 
 
-def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *, force: bool = False, built_at_commit: str | None = None, community_labels: dict[int, str] | None = None) -> bool:
+_MAX_PROVENANCE_STR = 256
+
+
+def _graphify_version() -> str | None:
+    try:
+        from importlib.metadata import version
+        return version("graphifyy")
+    except Exception:
+        return None
+
+
+def _extractor_block(backend: str | None, model: str | None,
+                     mode: str | None) -> dict | None:
+    """Assemble the extraction-provenance block for graph.json (#2077). Returns
+    None when there is no extractor identity to record, so plain AST runs keep the
+    existing schema. Records what produced the graph (backend/model/mode) plus the
+    graphify version, so model-vs-model comparisons stay attributable."""
+    def _clean(v: str | None) -> str | None:
+        return str(v)[:_MAX_PROVENANCE_STR] if v else None
+    backend, model, mode = _clean(backend), _clean(model), _clean(mode)
+    if not (backend or model or mode):
+        return None
+    block: dict[str, str] = {}
+    if backend:
+        block["backend"] = backend
+    if model:
+        block["model"] = model
+    ver = _graphify_version()
+    if ver:
+        block["graphify_version"] = ver
+    if mode:
+        block["mode"] = mode
+    return block
+
+
+def _read_existing_extractor(output_path: str) -> dict | None:
+    """Return the `extractor` block already recorded in an existing graph.json so a
+    re-write that supplies no new provenance (community labeling, watch) doesn't
+    drop it (#2077). Size-capped and best-effort."""
+    p = Path(output_path)
+    if not p.exists():
+        return None
+    try:
+        from graphify.security import check_graph_file_size_cap
+        check_graph_file_size_cap(p)
+        block = json.loads(p.read_text(encoding="utf-8")).get("extractor")
+    except Exception:
+        return None
+    return block if isinstance(block, dict) and block else None
+
+
+def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *, force: bool = False, built_at_commit: str | None = None, community_labels: dict[int, str] | None = None, backend: str | None = None, model: str | None = None, mode: str | None = None) -> bool:
     # Safety check: refuse to silently shrink an existing graph (#479)
     existing_path = Path(output_path)
     if not force and existing_path.exists():
@@ -343,6 +394,12 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
     commit = built_at_commit if built_at_commit is not None else _git_head()
     if commit:
         data["built_at_commit"] = commit
+    # Extraction provenance (#2077): stamp what produced this graph. Carry forward
+    # any block an earlier extract wrote when this re-write supplies none, so a
+    # later labeling/watch pass doesn't strip attribution.
+    extractor = _extractor_block(backend, model, mode) or _read_existing_extractor(output_path)
+    if extractor:
+        data["extractor"] = extractor
     from graphify.paths import write_json_atomic
     # Atomic write: a crash/ENOSPC mid-write must not truncate a good graph.json.
     write_json_atomic(output_path, data, indent=2)

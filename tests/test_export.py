@@ -40,6 +40,43 @@ def test_to_json_nodes_have_community():
         for node in data["nodes"]:
             assert "community" in node
 
+def test_to_json_records_extractor_provenance(tmp_path):
+    """`graphify extract --backend X --model Y` must stamp graph.json so a graph
+    can be attributed to what produced it (#2077)."""
+    G = make_graph()
+    communities = cluster(G)
+    out = tmp_path / "graph.json"
+    to_json(G, communities, str(out),
+            backend="ollama", model="gemma4:12b", mode="semantic")
+    data = json.loads(out.read_text())
+    prov = data["extractor"]
+    assert prov["backend"] == "ollama"
+    assert prov["model"] == "gemma4:12b"
+    assert prov["mode"] == "semantic"
+    assert isinstance(prov.get("graphify_version"), str) and prov["graphify_version"]
+
+def test_to_json_omits_extractor_block_when_no_identity(tmp_path):
+    """A plain AST run with no extractor identity leaves the schema unchanged."""
+    G = make_graph()
+    communities = cluster(G)
+    out = tmp_path / "graph.json"
+    to_json(G, communities, str(out))
+    assert "extractor" not in json.loads(out.read_text())
+
+def test_to_json_carries_forward_extractor_on_relabel(tmp_path):
+    """A later community-labeling rewrite (which passes no backend/model) must not
+    drop the provenance recorded at extraction time (#2077)."""
+    G = make_graph()
+    communities = cluster(G)
+    out = tmp_path / "graph.json"
+    to_json(G, communities, str(out),
+            backend="ollama", model="gemma4:12b", mode="semantic")
+    # relabel pass: same graph, no provenance args (mirrors `graphify cluster-only`)
+    to_json(G, communities, str(out), community_labels={0: "Core"})
+    prov = json.loads(out.read_text())["extractor"]
+    assert prov["backend"] == "ollama"
+    assert prov["model"] == "gemma4:12b"
+
 def test_to_cypher_creates_file():
     G = make_graph()
     with tempfile.TemporaryDirectory() as tmp:
