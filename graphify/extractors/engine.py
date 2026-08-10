@@ -2827,6 +2827,39 @@ def _extract_generic(
                             base_nid = ensure_named_node(base, line)
                             add_edge(class_nid, base_nid, "inherits", line)
 
+                # Class-body field annotations (`point: PricePoint`), which is the
+                # dataclass shape (#2363). _python_collect_type_refs was only ever
+                # reached from function parameters and return types, so a field type
+                # produced no edge at all — while Java (record components / field
+                # declarations) and TS (`public_field_definition`) both emit
+                # `references`/context="field" for the identical shape. An assignment
+                # without a `type` child is a plain value binding (`plain = 3`), not a
+                # type reference, so it is skipped.
+                body_node = node.child_by_field_name("body")
+                if body_node is not None:
+                    for stmt in body_node.children:
+                        if stmt.type != "expression_statement":
+                            continue
+                        for assign in stmt.children:
+                            if assign.type != "assignment":
+                                continue
+                            type_node = assign.child_by_field_name("type")
+                            if type_node is None:
+                                continue
+                            field_refs: list[tuple[str, str]] = []
+                            _python_collect_type_refs(type_node, source, False, field_refs)
+                            field_line = assign.start_point[0] + 1
+                            for ref_name, role in field_refs:
+                                ctx = "generic_arg" if role == "generic_arg" else "field"
+                                target_nid = ensure_named_node(ref_name, field_line)
+                                if target_nid != class_nid:
+                                    # Same emitter as the parameter/return-type path
+                                    # below, which validates ctx against
+                                    # REFERENCE_CONTEXTS rather than trusting it.
+                                    edges.append(_semantic_reference_edge(
+                                        class_nid, target_nid, ctx, str_path, field_line
+                                    ))
+
             # Swift-specific: conformance / inheritance
             if config.ts_module == "tree_sitter_swift":
                 swift_kind = _swift_declaration_keyword(node) if t == "class_declaration" else "protocol"
