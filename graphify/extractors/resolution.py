@@ -2056,6 +2056,11 @@ def _decldef_class_stem(source_file: str) -> tuple[str, str] | None:
         return None
     return (str(p.parent), stem)
 
+def _source_stem(node: dict) -> str:
+    """Filename stem of a node's ``source_file`` (``""`` when it has none)."""
+    return Path(str(node.get("source_file", ""))).stem
+
+
 def _merge_decl_def_classes(
     all_nodes: list[dict],
     all_edges: list[dict],
@@ -2137,10 +2142,22 @@ def _merge_decl_def_classes(
                 headers.append(node)
         if not ok:
             continue
-        # All from one (dir, base_stem) sibling family, with a UNIQUE header.
-        if len(sibling_keys) != 1 or len(headers) != 1:
+        # All from one (dir, base_stem) sibling family. Pick the declaring header.
+        # Usually there is exactly one. An ObjC class whose members are split across
+        # categories has several (`Foo.h`, `Foo+Cat.h`) — fold those too, keeping the
+        # BASE header (the stem with no `+`), or the lowest-sorting category header
+        # when the base class lives outside the corpus (`NSString+Trim.h`). Two
+        # NON-category headers still bail to disambiguation, as before, so an
+        # unrelated `Foo.h` / `Foo.hpp` pair is untouched.
+        if len(sibling_keys) != 1 or not headers:
             continue
-        keeper = headers[0]
+        if len(headers) == 1:
+            keeper = headers[0]
+        else:
+            base_headers = [h for h in headers if "+" not in _source_stem(h)]
+            if len(base_headers) > 1:
+                continue
+            keeper = base_headers[0] if base_headers else min(headers, key=_source_stem)
         for node in group:
             if node is not keeper:
                 drop_objs.add(id(node))
