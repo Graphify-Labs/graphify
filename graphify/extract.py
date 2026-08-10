@@ -40,6 +40,7 @@ from graphify.extractors.csharp import (
     _resolve_csharp_type_references,
 )
 from graphify.extractors.dart import extract_dart  # noqa: F401
+from graphify.extractors.dbt_sql import extract_dbt_sql, _is_dbt_model_sql  # noqa: F401
 from graphify.extractors.dm import extract_dm, extract_dmf, extract_dmi, extract_dmm  # noqa: F401
 from graphify.extractors.elixir import extract_elixir  # noqa: F401
 from graphify.extractors.fortran import _cpp_preprocess, extract_fortran  # noqa: F401
@@ -4763,6 +4764,14 @@ _EXTRA_FOR_EXTENSION = {
     ".dme": "dm",
 }
 
+# `.sql` can hard-fail on two different missing deps (tree-sitter-sql or
+# jinja2) depending on content, so _EXTRA_FOR_EXTENSION's flat per-extension
+# lookup would name the wrong extra for a dbt model missing jinja2. Checked
+# against the error string before falling back to the extension map.
+_EXTRA_FOR_MISSING_PACKAGE = {
+    "jinja2": "dbt",
+}
+
 
 # Extensionless executables (CLI entry points like `devctl` or `manage`) carry
 # their language in the shebang, not the suffix. detect.classify_file already
@@ -4896,6 +4905,11 @@ def _get_extractor(path: Path) -> Any | None:
     # mis-parsed. `.mm` is unambiguously Objective-C++ and stays on extract_objc.
     if suffix == ".m" and not _is_objc_source(path):
         return None
+    # dbt models wrap SQL in Jinja, which tree-sitter-sql cannot parse (either
+    # 1 bare node or an ERROR-node blob). Reroute those to extract_dbt_sql;
+    # plain .sql files stay on extract_sql.
+    if suffix == ".sql" and _is_dbt_model_sql(path):
+        return extract_dbt_sql
     # Extensionless files: resolve by shebang, mirroring detect.classify_file.
     # Without this, detect labels e.g. `#!/usr/bin/env bash` CLIs as code but
     # extraction returns no extractor and the file silently contributes nothing.
@@ -5355,7 +5369,11 @@ def extract(
             _missing_dep_count[_ext] = _missing_dep_count.get(_ext, 0) + 1
             _missing_dep_error.setdefault(_ext, _err)
     for _ext, _n in sorted(_missing_dep_count.items(), key=lambda kv: (-kv[1], kv[0])):
-        _extra = _EXTRA_FOR_EXTENSION.get(_ext)
+        _err_text = _missing_dep_error[_ext]
+        _extra = next(
+            (v for k, v in _EXTRA_FOR_MISSING_PACKAGE.items() if k in _err_text),
+            None,
+        ) or _EXTRA_FOR_EXTENSION.get(_ext)
         if _extra:
             _reason = _missing_dep_error[_ext].split(". ")[0]
             _hint = f' Install it with: pip install "graphifyy[{_extra}]"'
