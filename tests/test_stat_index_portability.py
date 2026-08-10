@@ -18,6 +18,7 @@ import hashlib
 import json
 import os
 import shutil
+import time
 from pathlib import Path
 
 from graphify import cache
@@ -54,6 +55,13 @@ def _count_read_bytes(monkeypatch):
     return calls
 
 
+def _age_for_stat_fastpath(*paths: Path) -> None:
+    """Put test files outside the recent-write safety window."""
+    stamp = time.time_ns() - cache._STAT_STABILITY_WINDOW_NS - 1_000_000
+    for path in paths:
+        os.utime(path, ns=(stamp, stamp))
+
+
 def _fail_compute(p: Path) -> int:
     raise AssertionError(f"word-count compute invoked for {p}; expected a warm stat hit")
 
@@ -69,6 +77,7 @@ def test_cache_hits_survive_corpus_move(tmp_path, monkeypatch):
     sub = a / "sub"
     sub.mkdir()
     (sub / "f2.md").write_text("hello world one two\n")
+    _age_for_stat_fastpath(a / "f1.py", sub / "f2.md")
 
     digests_a = {
         "f1.py": cache.file_hash(a / "f1.py", a),
@@ -122,14 +131,13 @@ def test_deleted_entries_are_pruned_on_flush(tmp_path):
 
 
 def test_legacy_absolute_index_migrates_gracefully(tmp_path, monkeypatch):
-    """A pre-#2199 index keyed by absolute paths still HITS on the unmoved
-    root, and the first flush prunes dead entries and rewrites live keys
-    relative (self-heals)."""
+    """A pre-volatile index is revalidated once and rewritten portably."""
     _reset_stat_index()
     a = tmp_path / "a"
     a.mkdir()
     f1 = a / "f1.py"
     f1.write_text("x = 1\n")
+    _age_for_stat_fastpath(f1)
     st = f1.stat()
     salt = "f1.py"
     digest = hashlib.sha256(f1.read_bytes() + b"\x00" + salt.encode()).hexdigest()
@@ -147,11 +155,9 @@ def test_legacy_absolute_index_migrates_gracefully(tmp_path, monkeypatch):
 
     reads = _count_read_bytes(monkeypatch)
     assert cache.file_hash(f1, a) == digest
-    assert reads["n"] == 0, "legacy absolute key should still serve a warm hit"
+    assert reads["n"] == 2, "legacy hash must pass two-snapshot revalidation"
+    assert cache._stat_index[str(f1.resolve())]["hashes_volatile"] is False
 
-    # Force a write so the self-heal is observable (a pure warm run leaves the
-    # index clean and flush is a no-op by design).
-    cache._stat_index_dirty = True
     cache._flush_stat_index()
 
     on_disk = _read_index(a)
@@ -165,6 +171,7 @@ def test_out_of_root_key_round_trips_absolute(tmp_path, monkeypatch):
     a.mkdir()
     outside = tmp_path / "outside.txt"
     outside.write_text("out of root\n")
+    _age_for_stat_fastpath(outside)
 
     d1 = cache.file_hash(outside, a)
     cache._flush_stat_index()
