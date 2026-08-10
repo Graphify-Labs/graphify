@@ -86,8 +86,15 @@ def test_minimax_model_override(monkeypatch):
     assert llm._default_model_for_backend("minimax") == "MiniMax-M2.7"
 
 
-def test_minimax_backend_supports_vision():
-    assert llm._backend_supports_vision("minimax") is True
+def test_minimax_backend_capabilities_are_model_specific():
+    assert llm._backend_supports_vision("minimax", "MiniMax-M3") is True
+    assert llm._backend_supports_vision("minimax", "MiniMax-M2.7") is False
+
+
+def test_minimax_model_pricing(monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_MINIMAX_MODEL", "MiniMax-M2.7")
+
+    assert llm.estimate_cost("minimax", 1_000_000, 500_000) == pytest.approx(0.90)
 
 
 def test_backend_detection_prefers_gemini(monkeypatch):
@@ -660,6 +667,18 @@ def test_deepseek_thinking_disabled_via_env(monkeypatch):
     )
 
     assert captured["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
+def test_minimax_m27_thinking_cannot_be_disabled(monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_DISABLE_THINKING", "1")
+    captured = _install_capturing_openai(monkeypatch)
+
+    llm._call_openai_compat(
+        "https://api.minimax.io/v1", "sk", "MiniMax-M2.7",
+        "u", temperature=0, max_completion_tokens=8192, backend="minimax",
+    )
+
+    assert "extra_body" not in captured
 
 
 def test_explicit_extra_body_wins_over_thinking_env(monkeypatch):

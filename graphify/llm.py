@@ -130,9 +130,14 @@ BACKENDS: dict[str, dict] = {
         "env_key": "MINIMAX_API_KEY",
         "model_env_key": "GRAPHIFY_MINIMAX_MODEL",
         "pricing": {"input": 0.60, "output": 2.40},  # USD per 1M tokens
+        "model_pricing": {
+            "MiniMax-M3": {"input": 0.60, "output": 2.40},
+            "MiniMax-M2.7": {"input": 0.30, "output": 1.20},
+        },
         "temperature": 0,
         "max_tokens": 16384,
         "vision": True,
+        "model_vision": {"MiniMax-M3": True, "MiniMax-M2.7": False},
     },
     "ollama": {
         "base_url": _resolve_ollama_base_url("http://localhost:11434/v1"),
@@ -851,7 +856,7 @@ def _strip_pixels(refs: list[_ImageRef]) -> list[_ImageRef]:
     return [replace(r, raw=None) for r in refs]
 
 
-def _backend_supports_vision(backend: str) -> bool:
+def _backend_supports_vision(backend: str, model: str | None = None) -> bool:
     """Whether `backend`'s configured model can see images.
 
     Ollama is special-cased: its default model is text-only, so vision is
@@ -860,7 +865,13 @@ def _backend_supports_vision(backend: str) -> bool:
     """
     if backend == "ollama":
         return os.environ.get("GRAPHIFY_OLLAMA_VISION", "").strip() == "1"
-    return bool(BACKENDS.get(backend, {}).get("vision", False))
+    cfg = BACKENDS.get(backend, {})
+    model_vision = cfg.get("model_vision", {})
+    if model_vision:
+        model = model or _default_model_for_backend(backend)
+        if model in model_vision:
+            return bool(model_vision[model])
+    return bool(cfg.get("vision", False))
 
 
 def _image_notes(refs: list[_ImageRef], *, with_paths: bool = False) -> str:
@@ -1188,6 +1199,9 @@ def _call_openai_compat(
     # Kimi-k2.6 is a reasoning model — disable thinking so content isn't empty
     elif "moonshot" in base_url:
         kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+    # MiniMax-M2.7 always reasons, so the global opt-out must not disable it.
+    elif backend == "minimax" and model == "MiniMax-M2.7":
+        pass
     # Opt-in only: disable thinking for reasoning models like deepseek-v4-flash
     # (#1621). Not a default — see _thinking_disabled_via_env for the tradeoff.
     elif _thinking_disabled_via_env():
@@ -1720,7 +1734,7 @@ def extract_files_direct(
     # (vision backends) or as a text reference node (everything else).
     text_files, image_files = _partition_semantic_files(files)
     user_msg = _read_files(text_files, root)
-    vision = _backend_supports_vision(backend)
+    vision = _backend_supports_vision(backend, mdl)
     # Only base64 (inline) vision backends need the bytes loaded + size-capped;
     # path-based backends (claude-cli) and non-vision backends do not.
     read_bytes = vision and backend not in _PATH_IMAGE_BACKENDS
@@ -2657,7 +2671,9 @@ def estimate_cost(backend: str, input_tokens: int, output_tokens: int) -> float:
     """Estimate USD cost for a given token count using published pricing."""
     if backend not in BACKENDS:
         return 0.0
-    p = BACKENDS[backend]["pricing"]
+    cfg = BACKENDS[backend]
+    model_pricing = cfg.get("model_pricing", {})
+    p = model_pricing.get(_default_model_for_backend(backend), cfg["pricing"])
     return (input_tokens * p["input"] + output_tokens * p["output"]) / 1_000_000
 
 
