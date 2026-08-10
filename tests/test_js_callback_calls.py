@@ -11,6 +11,12 @@ The composition test guards the #2552/#2553 coupling: the newly-walked callback
 body feeds member calls into `_resolve_typescript_member_calls`, whose origin
 gate (#2553) must keep a third-party-typed receiver from fabricating an edge to
 an unrelated local class.
+
+#2568 (regression of the #2552 fix): the const-literal branch unioned ALL
+sibling closures' params/locals under the one const nid, so a name that is a
+LOCAL in sibling closure A wrongly suppressed a real `indirect_call` to that
+same name in sibling closure B. The fix scopes each closure's bindings to its
+own body (fed to walk_calls as extra_locals), so shadowing stays per-closure.
 """
 from __future__ import annotations
 
@@ -83,3 +89,90 @@ def test_callback_member_call_is_origin_gated(tmp_path):
                   and sf.get(e["target"], "").endswith("fileb.ts")]
     assert not fabricated, \
         f"third-party-typed receiver fabricated edge(s) to local Repo: {fabricated}"
+
+
+def _indirect(r, lbl):
+    return [(lbl.get(e["source"]), lbl.get(e["target"])) for e in r["edges"]
+            if e["relation"] == "indirect_call"]
+
+
+def test_sibling_closure_param_does_not_suppress_indirect_call(tmp_path):
+    # #2568: closure 1's param `alpha` must not shadow closure 2's reference
+    # to the module-level function `alpha` — each sibling closure tracked
+    # under the const nid gets only its OWN bindings as scope.
+    _, lbl, r = _extract(tmp_path, {
+        "handler.ts": (
+            "function alpha(x: unknown) { return x; }\n"
+            "function wrapper(a: unknown, b: unknown) { return a || b; }\n"
+            "export const handler = wrapper(\n"
+            "  (alpha) => { return alpha; },\n"
+            "  (pool) => { pool.submit(alpha); });\n"),
+    })
+    indirect = _indirect(r, lbl)
+    assert ("handler", "alpha()") in indirect, \
+        f"sibling closure's param suppressed a real indirect_call; indirect={indirect}"
+
+
+def test_own_closure_local_still_suppresses_indirect_call(tmp_path):
+    # A binding in the SAME closure still shadows the module function — the
+    # per-body scoping must not drop genuine suppression.
+    _, lbl, r = _extract(tmp_path, {
+        "handler.ts": (
+            "function alpha(x: unknown) { return x; }\n"
+            "function wrapper(a: unknown, b: unknown) { return a || b; }\n"
+            "export const handler = wrapper(\n"
+            "  (beta) => beta,\n"
+            "  (pool) => { const alpha = pool.get(); pool.submit(alpha); });\n"),
+    })
+    to_alpha = [p for p in _indirect(r, lbl) if p[1] == "alpha()"]
+    assert not to_alpha, \
+        f"closure's own local `alpha` must shadow the module fn; got {to_alpha}"
+
+
+def test_shadow_and_reference_split_across_siblings(tmp_path):
+    # Closure 1 passes its OWN param `alpha` (no edge); closure 2 references
+    # the module `alpha` (one edge). Exactly one indirect_call to alpha.
+    _, lbl, r = _extract(tmp_path, {
+        "handler.ts": (
+            "function alpha(x: unknown) { return x; }\n"
+            "function wrapper(a: unknown, b: unknown) { return a || b; }\n"
+            "const q: unknown[] = [];\n"
+            "export const handler = wrapper(\n"
+            "  (alpha) => { q.push(alpha); },\n"
+            "  (pool) => { pool.submit(alpha); });\n"),
+    })
+    to_alpha = [p for p in _indirect(r, lbl) if p[1] == "alpha()"]
+    assert to_alpha == [("handler", "alpha()")], \
+        f"expected exactly one handler -> alpha indirect_call, got {to_alpha}"
+
+
+def test_multi_closure_direct_calls_still_captured(tmp_path):
+    # #2552 guard for the multi-closure shape: a direct call inside the first
+    # of two sibling closures still yields a `calls` edge from the const.
+    calls, _, _ = _extract(tmp_path, {
+        "helpers.ts": _HELPERS,
+        "handler.ts": (
+            "import { helperA } from './helpers';\n"
+            "function wrapper(a: unknown, b: unknown) { return a || b; }\n"
+            "export const handler = wrapper(\n"
+            "  (a) => { helperA(); },\n"
+            "  (b) => b);\n"),
+    })
+    assert ("handler", "helperA()") in calls, \
+        f"direct call in first sibling closure dropped; calls={sorted(calls)}"
+
+
+def test_unreferenced_module_name_fabricates_nothing(tmp_path):
+    # No fabrication: a sibling param named after a module callable, with the
+    # module name never referenced in an emission position, yields no
+    # indirect_call to it.
+    _, lbl, r = _extract(tmp_path, {
+        "handler.ts": (
+            "function alpha(x: unknown) { return x; }\n"
+            "function wrapper(a: unknown, b: unknown) { return a || b; }\n"
+            "export const handler = wrapper(\n"
+            "  (alpha) => alpha + 1,\n"
+            "  (pool) => pool.drain());\n"),
+    })
+    to_alpha = [p for p in _indirect(r, lbl) if p[1] == "alpha()"]
+    assert not to_alpha, f"fabricated indirect_call(s) to alpha: {to_alpha}"

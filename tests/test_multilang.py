@@ -487,6 +487,106 @@ def test_sql_no_dangling_edges():
     for e in r["edges"]:
         assert e["source"] in node_ids, f"dangling source: {e['source']}"
 
+def test_sql_cte_is_not_read_as_a_table():
+    """#2577: a name bound by WITH ... AS (...) is scoped to its statement, not a table.
+
+    Emitting it as a reads_from target minted a bare, sourceless stub carrying no
+    schema, file, or language namespace, so a CTE named `levels` or `slug` collided
+    with a same-named node from another language. The real table in the same
+    FROM/JOIN must still resolve.
+    """
+    r = _extract_sql_or_skip("sample_cte.sql")
+    labels = [n["label"] for n in r["nodes"]]
+    assert "levels" not in labels, "CTE name leaked into the graph as a table node"
+
+    reads = [e for e in r["edges"] if e["relation"] == "reads_from"]
+    assert reads, "the real table reference should still emit a reads_from edge"
+    assert not any(e["target"] == "levels" for e in reads), "CTE emitted as a reads_from target"
+
+    # the real v_roles -> users edge is kept
+    nid = {n["label"]: n["id"] for n in r["nodes"]}
+    assert (nid["v_roles"], nid["users"]) in {(e["source"], e["target"]) for e in reads}
+
+def test_sql_column_list_cte_is_not_read_as_a_table(tmp_path):
+    """#2577: `WITH levels(a, b) AS (...)` — the name precedes a column list."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text(
+        "CREATE TABLE users (id INT, role TEXT);\n"
+        "CREATE VIEW v AS\n"
+        "  WITH levels(role, rank) AS (SELECT 'admin', 1)\n"
+        "  SELECT * FROM users JOIN levels ON levels.role = users.role;\n"
+    )
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"]]
+    assert "levels" not in labels
+    reads = [e for e in r["edges"] if e["relation"] == "reads_from"]
+    assert not any(e["target"] == "levels" for e in reads)
+
+def test_sql_cte_shadows_same_named_table_within_its_statement(tmp_path):
+    """#2577: inside the declaring statement the CTE shadows a real same-named
+    table (SQL scoping), so v1's FROM binds to the CTE and emits nothing; v2 has
+    no CTE in scope and reads the real table. Exactly one deterministic edge."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text(
+        "CREATE TABLE levels (role TEXT);\n"
+        "CREATE VIEW v1 AS WITH levels AS (SELECT 'admin' AS role)"
+        " SELECT * FROM levels;\n"
+        "CREATE VIEW v2 AS SELECT * FROM levels;\n"
+    )
+    r = extract_sql(p)
+    reads = [e for e in r["edges"] if e["relation"] == "reads_from"]
+    assert len(reads) == 1, f"expected exactly one reads_from, got {reads}"
+    nid = {n["label"]: n["id"] for n in r["nodes"]}
+    assert reads[0]["source"] == nid["v2"]
+    assert reads[0]["target"] == nid["levels"]  # the real, sourced table node
+
+def test_sql_subquery_cte_does_not_suppress_outer_real_table(tmp_path):
+    """#2577 refinement: a WITH inside a subquery is scoped to that subquery
+    only. A statement-wide pre-collect would also swallow the OUTER reference
+    to the real `t2`, dropping a true edge — per-subtree scoping keeps it."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text(
+        "CREATE TABLE t2 (id INT);\n"
+        "CREATE VIEW v6 AS SELECT * FROM t2 JOIN"
+        " (WITH t2 AS (SELECT 1 AS id) SELECT * FROM t2) sub"
+        " ON sub.id = t2.id;\n"
+    )
+    r = extract_sql(p)
+    nid = {n["label"]: n["id"] for n in r["nodes"]}
+    reads = {(e["source"], e["target"]) for e in r["edges"]
+             if e["relation"] == "reads_from"}
+    assert (nid["v6"], nid["t2"]) in reads, (
+        "outer reference to the real t2 table was wrongly suppressed"
+    )
+
+def test_sql_cte_never_binds_to_cross_language_symbol(tmp_path):
+    """#2577: the reported leak — the CTE's sourceless stub was unique corpus-wide,
+    so _rewire_unique_stub_nodes bound it to a same-named symbol from ANOTHER
+    language (schema_v_roles -> ui_levels). With the CTE excluded, no reads_from
+    edge may target a TypeScript node."""
+    pytest.importorskip("tree_sitter_sql")
+    sql = tmp_path / "schema.sql"
+    sql.write_text(
+        "CREATE TABLE users (id INT, role TEXT);\n"
+        "CREATE VIEW v_roles AS\n"
+        "  WITH levels AS (SELECT 'admin' AS role)\n"
+        "  SELECT * FROM users JOIN levels ON levels.role = users.role;\n"
+    )
+    ts = tmp_path / "ui.ts"
+    ts.write_text("export function levels() { return ['admin']; }\n")
+
+    r = extract([sql, ts], root=tmp_path)
+    ts_nodes = {n["id"] for n in r["nodes"]
+                if str(n.get("source_file", "")).endswith(".ts")}
+    for e in r["edges"]:
+        if e["relation"] == "reads_from":
+            assert e["target"] not in ts_nodes, (
+                f"SQL reads_from leaked cross-language: {e}"
+            )
+
 def test_sql_cross_file_fk_resolves_and_never_leaks_scan_path(tmp_path):
     """#2324: a REFERENCES target defined in ANOTHER file must collapse onto the
     real table node (via the sourceless-stub rewire), and no node id or edge

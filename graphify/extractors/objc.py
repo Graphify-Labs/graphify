@@ -6,6 +6,40 @@ from graphify.extractors.engine import _cpp_declarator_name, _semantic_reference
 from graphify.extractors.resolution import _resolve_c_include_path
 from pathlib import Path
 from typing import Any
+import re
+
+# A category stem splits only when both halves look like plain ObjC identifiers, so
+# `C++Bridge.h` and `Foo+.h` are left intact.
+_OBJC_STEM_PART = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _objc_category_base_stem(stem: str) -> str:
+    """Strip an ObjC category/extension suffix from a file stem (``Foo+Cat`` -> ``Foo``).
+
+    A category (``@interface Foo (Cat)``) or class extension (``@interface Foo ()``)
+    declares members of an EXISTING class, so its class node must key to the same id
+    as ``Foo.h``'s ``@interface Foo`` instead of minting a second class node (#1556).
+    Only the final path segment is considered, and only a well-formed
+    ``Name+Suffix`` pair is split.
+
+    Mirrors ``_decldef_class_stem``, which already compares sibling header/impl files
+    by the stem before ``+``.
+    """
+    head, sep, tail = stem.rpartition("/")
+    base, plus, suffix = tail.partition("+")
+    if not plus or not _OBJC_STEM_PART.fullmatch(base) or not _OBJC_STEM_PART.fullmatch(suffix):
+        return stem
+    return f"{head}{sep}{base}"
+
+
+def _objc_is_category(node) -> bool:
+    """True for ``@interface/@implementation Foo (Cat)`` and ``Foo ()``.
+
+    The grammar emits the parentheses as anonymous children only for a category or
+    class extension; a generic class (``@interface Box<T>``) uses
+    ``parameterized_arguments`` instead, so it is not matched.
+    """
+    return any(c.type == "(" for c in node.children)
 
 
 def _objc_local_var_types(body_node, source: bytes, table: dict[str, str]) -> None:
@@ -74,6 +108,12 @@ def extract_objc(path: Path) -> dict:
     # per-file `var -> ClassName` table from `Foo *f = ...;` local declarations.
     raw_calls: list[dict] = []
     objc_type_table: dict[str, str] = {}
+    # #1556: per-CLASS `field -> ClassName` tables from `@property Bar *bar;` and
+    # ivar `Bar *_bar;` declarations, keyed by the class nid the .h/.m pair share
+    # (preserved by _merge_decl_def_classes), so the cross-file resolver can type a
+    # `[self.bar doIt]` / `[_bar doIt]` receiver. A conflicting redeclaration of the
+    # same (class, field) tombstones the entry (None) — drop, don't guess.
+    objc_field_types: dict[str, dict[str, str | None]] = {}
 
     def add_node(nid: str, label: str, line: int) -> None:
         if nid not in seen_ids:
@@ -137,6 +177,55 @@ def extract_objc(path: Path) -> dict:
             })
         return nid
 
+    def _field_decl_entry(sd) -> tuple[str, str] | None:
+        """``(field, TypeName)`` from a property/ivar ``struct_declaration``, else None.
+
+        Precision gates (#1556): the type must be a BARE capitalized
+        ``type_identifier`` DIRECTLY under the struct_declaration — a
+        ``generic_specifier`` (``NSArray<Bar *>``) or ``typedefed_specifier``
+        (``id<P>``) wraps its type_identifier, so both are naturally excluded and
+        never type a receiver — and there must be exactly one ``struct_declarator``
+        whose name unwraps via the C++ declarator unwrapper (identical grammar).
+        """
+        type_ids = [s for s in sd.children if s.type == "type_identifier"]
+        declarators = [s for s in sd.children if s.type == "struct_declarator"]
+        if len(type_ids) != 1 or len(declarators) != 1:
+            return None
+        type_name = _read(type_ids[0]).strip()
+        if not type_name or not type_name[:1].isupper():
+            return None
+        # struct_declarator wraps ONE pointer_declarator (`*bar`) or identifier
+        # (`bar`); anything else (bitfields, arrays) has more children -> bail.
+        inner = declarators[0].children
+        if len(inner) != 1:
+            return None
+        field = _cpp_declarator_name(inner[0], source)
+        if not field:
+            return None
+        return field, type_name
+
+    def _record_field_type(cls_nid: str, field: str, type_name: str) -> None:
+        table = objc_field_types.setdefault(cls_nid, {})
+        if field in table:
+            if table[field] != type_name:
+                table[field] = None  # conflicting redeclaration -> drop, don't guess
+        else:
+            table[field] = type_name
+
+    def _collect_instance_variables(ivars_node, cls_nid: str) -> None:
+        """Record field types from an ``instance_variables`` block (``{ Bar *_b; }``)
+        under an @interface or @implementation. No nodes/edges are emitted here;
+        the table only feeds receiver typing in the cross-file resolver (#1556).
+        """
+        for iv in ivars_node.children:
+            if iv.type != "instance_variable":
+                continue
+            for sd in iv.children:
+                if sd.type == "struct_declaration":
+                    entry = _field_decl_entry(sd)
+                    if entry is not None:
+                        _record_field_type(cls_nid, *entry)
+
     def walk(node, parent_nid: str | None = None) -> None:
         t = node.type
         line = node.start_point[0] + 1
@@ -187,7 +276,14 @@ def extract_objc(path: Path) -> dict:
                     walk(child, parent_nid)
                 return
             name = _read(identifiers[0])
-            cls_nid = _make_id(stem, name)
+            # A category / class extension extends an existing class, so key its
+            # class node off the BASE stem (`Foo+Cat.h` -> `Foo`). Without this,
+            # `Foo+Cat.h` minted a SECOND node labelled `Foo`, which made every
+            # `[Foo ...]` receiver ambiguous and tripped the resolver's
+            # single-definition god-node guard — destroying edges the same corpus
+            # produced fine when the members lived in `Foo.h` (#1556).
+            cls_stem = _objc_category_base_stem(stem) if _objc_is_category(node) else stem
+            cls_nid = _make_id(cls_stem, name)
             add_node(cls_nid, name, line)
             add_edge(file_nid, cls_nid, "contains", line)
             # superclass is second identifier after ':'
@@ -228,6 +324,13 @@ def extract_objc(path: Path) -> dict:
                                     type_nid = ensure_named_node(tname, prop_line)
                                     edges.append(_semantic_reference_edge(
                                         cls_nid, type_nid, "field", str_path, prop_line))
+                            # #1556: a bare capitalized property type also types the
+                            # `[self.field msg]` receiver in the cross-file resolver.
+                            entry = _field_decl_entry(sub)
+                            if entry is not None:
+                                _record_field_type(cls_nid, *entry)
+                elif child.type == "instance_variables":
+                    _collect_instance_variables(child, cls_nid)
                 elif child.type == "method_declaration":
                     walk(child, cls_nid)
             return
@@ -243,12 +346,15 @@ def extract_objc(path: Path) -> dict:
                 for child in node.children:
                     walk(child, parent_nid)
                 return
-            impl_nid = _make_id(stem, name)
+            impl_stem = _objc_category_base_stem(stem) if _objc_is_category(node) else stem
+            impl_nid = _make_id(impl_stem, name)
             if impl_nid not in seen_ids:
                 add_node(impl_nid, name, line)
                 add_edge(file_nid, impl_nid, "contains", line)
             for child in node.children:
-                if child.type == "implementation_definition":
+                if child.type == "instance_variables":
+                    _collect_instance_variables(child, impl_nid)
+                elif child.type == "implementation_definition":
                     for sub in child.children:
                         walk(sub, impl_nid)
             return
@@ -379,6 +485,28 @@ def extract_objc(path: Path) -> dict:
                             "receiver": _read(recv),
                             "lang": "objc",
                         })
+                    elif recv is not None and recv.type == "field_expression":
+                        # `[self.bar doIt]`: capture ONLY the exact `self.<field>`
+                        # shape and stamp the BARE field name, typed via the class's
+                        # property/ivar table. Anything else (`obj.prop`, chains,
+                        # `Foo.shared`) stays dropped: passing the dotted text
+                        # through would let a capitalized `Foo.shared` enter the
+                        # explicit-class arm, where _key strips the dot and collides
+                        # with a real class `FooShared` — a fabricated edge (#1556).
+                        kids = recv.children
+                        if (len(kids) == 3 and kids[0].type == "identifier"
+                                and _read(kids[0]) == "self" and kids[1].type == "."
+                                and kids[2].type == "field_identifier"):
+                            raw_calls.append({
+                                "caller_nid": caller_nid,
+                                "callee": method_name,
+                                "is_member_call": True,
+                                "source_file": str_path,
+                                "source_location": f"L{n.start_point[0] + 1}",
+                                "receiver": _read(kids[2]),
+                                "receiver_kind": "self_field",
+                                "lang": "objc",
+                            })
             elif n.type == "field_expression":
                 # self.name / self.product.name — dot-syntax sugar for [self name].
                 # Resolve to a sibling method of the SAME class, matched by EXACT
@@ -427,4 +555,12 @@ def extract_objc(path: Path) -> dict:
               "input_tokens": 0, "output_tokens": 0}
     if objc_type_table:
         result["objc_type_table"] = {"path": str_path, "table": objc_type_table}
+    # Drop tombstoned (conflicting) entries and empty tables before export.
+    field_tables = {
+        cls: {f: t for f, t in tbl.items() if t}
+        for cls, tbl in objc_field_types.items()
+    }
+    field_tables = {cls: tbl for cls, tbl in field_tables.items() if tbl}
+    if field_tables:
+        result["objc_field_types"] = {"path": str_path, "tables": field_tables}
     return result
