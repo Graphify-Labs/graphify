@@ -7,7 +7,14 @@ import time
 from pathlib import Path
 import pytest
 
-from graphify.watch import _notify_only, _WATCHED_EXTENSIONS, _rebuild_lock, _check_shrink
+from graphify.watch import (
+    _notify_only,
+    _WATCHED_EXTENSIONS,
+    _rebuild_lock,
+    _check_shrink,
+    _batch_triggers_rebuild,
+    _batch_needs_llm_flag,
+)
 
 
 # --- _notify_only ---
@@ -54,6 +61,75 @@ def test_watched_extensions_excludes_noise():
     assert ".sh" in _WATCHED_EXTENSIONS
     assert ".pyc" not in _WATCHED_EXTENSIONS
     assert ".log" not in _WATCHED_EXTENSIONS
+
+
+# --- _batch_triggers_rebuild / _batch_needs_llm_flag: watch dispatch gating ---
+
+def test_batch_doc_only_deletion_triggers_rebuild(tmp_path):
+    """#2580: deleting ONLY doc files while `graphify watch` runs must trigger
+    an immediate full rebuild (eviction needs no LLM), not just the
+    needs_update flag deferred to the next code event."""
+    gone = tmp_path / "docs" / "x.md"
+    assert not gone.exists()
+    assert _batch_triggers_rebuild([gone]) is True
+
+def test_batch_doc_only_deletion_skips_llm_flag(tmp_path):
+    """A pure-deletion batch has nothing left needing LLM re-extraction —
+    the reconcile sweep inside the rebuild evicts it, so no needs_update flag."""
+    gone = tmp_path / "docs" / "x.md"
+    assert not gone.exists()
+    assert _batch_needs_llm_flag([gone]) is False
+
+def test_batch_modified_doc_only_does_not_rebuild(tmp_path):
+    """A doc that still exists needs LLM re-extraction, not an AST rebuild:
+    stays on the _notify_only path."""
+    doc = tmp_path / "docs" / "x.md"
+    doc.parent.mkdir()
+    doc.write_text("# heading\n", encoding="utf-8")
+    assert _batch_triggers_rebuild([doc]) is False
+    assert _batch_needs_llm_flag([doc]) is True
+
+def test_batch_code_file_still_triggers_rebuild(tmp_path):
+    """Regression: existing code-file batches keep rebuilding as before."""
+    code = tmp_path / "app.py"
+    code.write_text("x = 1\n", encoding="utf-8")
+    assert _batch_triggers_rebuild([code]) is True
+    assert _batch_needs_llm_flag([code]) is False
+
+def test_batch_mixed_deletion_and_modified_doc(tmp_path):
+    """Deleted doc + still-existing modified doc in one debounce window:
+    rebuild fires for the eviction AND the flag is kept for the survivor."""
+    survivor = tmp_path / "docs" / "kept.md"
+    survivor.parent.mkdir()
+    survivor.write_text("# kept\n", encoding="utf-8")
+    gone = tmp_path / "docs" / "gone.md"
+    batch = [survivor, gone]
+    assert _batch_triggers_rebuild(batch) is True
+    assert _batch_needs_llm_flag(batch) is True
+
+def test_doc_only_deletion_full_rebuild_evicts_md_nodes(tmp_path):
+    """End-to-end pin for #2580: the full rebuild the watcher now triggers on
+    a doc-only deletion actually evicts the deleted .md's nodes."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "app.py").write_text("def run(): pass\n", encoding="utf-8")
+    doc = corpus / "notes.md"
+    doc.write_text("# Notes\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    labels = {n["label"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+    assert "notes.md" in labels
+
+    doc.unlink()
+    batch = [doc]
+    assert _batch_triggers_rebuild(batch) is True
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+    labels = {n["label"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+    assert "notes.md" not in labels, "deleted doc's nodes must be evicted by the watch-triggered rebuild"
+    assert "run()" in labels
 
 
 # --- watch() import error without watchdog ---
@@ -1748,11 +1824,13 @@ def test_merge_changed_paths_dedupes_in_order():
 
 
 def test_rebuild_code_preserves_nodes_from_excluded_but_alive_file(tmp_path, capsys):
-    """Fail-closed eviction: a file that leaves the scan corpus (newly ignored)
-    but still exists on disk was EXCLUDED, not deleted — its nodes must survive
-    an incremental rebuild, with a loud message, instead of being silently
-    mass-evicted as stale sources (the docs/brainstorms incident: an upgrade
-    started honoring .gitignore and evicted 655 nodes whose files were present).
+    """Fail-closed eviction: a file that leaves the scan corpus but still exists
+    on disk was EXCLUDED, not deleted — on an INCREMENTAL rebuild its nodes must
+    survive a newly-honored .gitignore, with a loud message, instead of being
+    silently mass-evicted as stale sources (the docs/brainstorms incident: an
+    upgrade started honoring .gitignore and evicted 655 nodes whose files were
+    present). .gitignore-driven eviction is deliberately gated on a full rebuild
+    (#2495): only .graphifyignore/--exclude matches evict on the hook path.
     """
     import json
     from graphify.watch import _rebuild_code
@@ -1769,14 +1847,14 @@ def test_rebuild_code_preserves_nodes_from_excluded_but_alive_file(tmp_path, cap
     labels = {n["label"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
     assert "brainstorm.md" in labels
 
-    # The file becomes ignored (leaves the corpus) but stays on disk.
-    (corpus / ".graphifyignore").write_text("notes/\n", encoding="utf-8")
+    # The file becomes gitignored (leaves the corpus) but stays on disk.
+    (corpus / ".gitignore").write_text("notes/\n", encoding="utf-8")
     capsys.readouterr()
 
     assert _rebuild_code(corpus, changed_paths=[Path("auth.py")], acquire_lock=False) is True
     labels = {n["label"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
     assert "brainstorm.md" in labels, (
-        "nodes from an excluded-but-alive file must be preserved, not evicted"
+        "nodes from a gitignored-but-alive file must be preserved on an incremental rebuild"
     )
     assert "fail-closed: kept" in capsys.readouterr().out
 
@@ -1801,6 +1879,233 @@ def test_rebuild_code_still_evicts_when_excluded_file_is_also_deleted(tmp_path):
     labels = {n["label"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
     assert "brainstorm.md" not in labels, "deleted file's nodes must still be evicted"
     assert "login()" in labels
+
+
+# ── #2495: `graphify update` purges newly-ignored files that still exist ───────
+
+
+def test_update_prunes_newly_graphifyignored_file(tmp_path, monkeypatch, capsys):
+    """#2495: a file added to .graphifyignore while still on disk must be purged
+    from the graph by a full `graphify update` — nodes, edges, and hyperedges —
+    instead of being preserved forever by the fail-closed keep. The legitimate
+    shrink passes without --force/GRAPHIFY_FORCE, unchanged in-corpus files stay
+    byte-identical, and the prune is reported distinctly from the fail-closed
+    keep line."""
+    from graphify.watch import _rebuild_code
+
+    monkeypatch.delenv("GRAPHIFY_FORCE", raising=False)
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "a.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+    (corpus / "b.py").write_text("def helper():\n    return 2\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    assert any(n.get("source_file") == "b.py" for n in data["nodes"])
+    # Inject a hyperedge OWNED by b.py whose members all live in a.py, so only
+    # the source-identity eviction (not member loss) can remove it.
+    a_ids = [n["id"] for n in data["nodes"] if n.get("source_file") == "a.py"]
+    assert a_ids
+    data.setdefault("hyperedges", []).append(
+        {"id": "h_b", "nodes": a_ids, "source_file": "b.py"}
+    )
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+
+    def _a_items(payload):
+        return sorted(
+            (
+                json.dumps(item, sort_keys=True)
+                for bucket in ("nodes", "links")
+                for item in payload.get(bucket, [])
+                if item.get("source_file") == "a.py"
+            ),
+        )
+
+    a_before = _a_items(data)
+    (corpus / ".graphifyignore").write_text("b.py\n", encoding="utf-8")
+    capsys.readouterr()
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+
+    after = json.loads(graph_path.read_text(encoding="utf-8"))
+    for bucket in ("nodes", "links", "hyperedges"):
+        assert not any(
+            item.get("source_file") == "b.py" for item in after.get(bucket, [])
+        ), f"{bucket} still reference newly-ignored b.py (#2495)"
+    assert "h_b" not in {h.get("id") for h in after.get("hyperedges", [])}
+    assert _a_items(after) == a_before, (
+        "unchanged in-corpus file's items must survive the prune byte-identical"
+    )
+    out = capsys.readouterr().out
+    assert "newly-ignored file(s)" in out
+    assert "fail-closed: kept" not in out
+
+
+def test_update_still_prunes_deleted_file_with_ignore_rules_present(tmp_path):
+    """Regression guard for #2495: routing ignore-rule evidence through the
+    corpus sweep must not weaken plain deletion eviction while unrelated ignore
+    rules exist."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / ".graphifyignore").write_text("unrelated/\n", encoding="utf-8")
+    (corpus / "a.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+    (corpus / "b.py").write_text("def helper():\n    return 2\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+
+    (corpus / "b.py").unlink()
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    sources = {n.get("source_file") for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+    assert "b.py" not in sources, "deleted file's nodes must still be evicted"
+    assert "a.py" in sources
+
+
+def test_update_keeps_alive_file_dropped_from_corpus_without_ignore_rule(
+    tmp_path, monkeypatch, capsys
+):
+    """#1795 retained under #2495: evicting an alive file now requires POSITIVE
+    evidence — a live ignore rule matching it. A file that leaves the corpus for
+    any other reason (filter regression, extractor loss) stays preserved, with
+    the fail-closed message."""
+    from graphify import detect as detect_mod
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "a.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+    (corpus / "b.py").write_text("def helper():\n    return 2\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+
+    real_detect = detect_mod.detect
+
+    def narrowed(root, **kwargs):
+        res = real_detect(root, **kwargs)
+        res["files"]["code"] = [
+            f for f in res["files"]["code"] if not str(f).endswith("b.py")
+        ]
+        return res
+
+    monkeypatch.setattr(detect_mod, "detect", narrowed)
+    capsys.readouterr()
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    sources = {n.get("source_file") for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+    assert "b.py" in sources, (
+        "alive file dropped from the corpus with NO matching ignore rule must be kept"
+    )
+    out = capsys.readouterr().out
+    assert "fail-closed: kept" in out
+    assert "newly-ignored" not in out
+
+
+def test_update_evicts_semantic_nodes_from_newly_ignored_non_ast_source(tmp_path, capsys):
+    """#2495 extends #2051: a non-AST source (.txt) whose semantic nodes evict on
+    disk absence must also evict when the file is alive but newly matched by a
+    .graphifyignore rule."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "app.py").write_text("def handle():\n    return 1\n", encoding="utf-8")
+    (corpus / "notes.txt").write_text("Rationale to be ignored.\n", encoding="utf-8")
+    (corpus / "kept.txt").write_text("Rationale that stays.\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    # No LLM in tests, so inject the semantic layer these .txt files would carry.
+    data["nodes"].extend([
+        {"id": "notes_concept", "label": "Notes Concept", "file_type": "concept",
+         "source_file": "notes.txt"},
+        {"id": "kept_concept", "label": "Kept Concept", "file_type": "concept",
+         "source_file": "kept.txt"},
+    ])
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+
+    (corpus / ".graphifyignore").write_text("notes.txt\n", encoding="utf-8")
+    capsys.readouterr()
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    after_ids = {n["id"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+    assert "notes_concept" not in after_ids, (
+        "semantic node from a newly-ignored alive non-AST source must be evicted (#2495)"
+    )
+    assert "kept_concept" in after_ids
+    assert "newly-ignored file(s)" in capsys.readouterr().out
+
+
+def test_gitignore_eviction_gated_on_full_rebuild(tmp_path, capsys):
+    """#2495 policy split: a .gitignore-only match is preserved fail-closed on an
+    incremental rebuild (#1795's motivating case — a deliberately-graphed
+    .gitignore'd tree survives the hook path), but an explicit full
+    `graphify update` honors it and purges the file."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    generated = corpus / "generated"
+    generated.mkdir(parents=True)
+    (corpus / "app.py").write_text("def handle():\n    return 1\n", encoding="utf-8")
+    (generated / "gen.py").write_text("def generated():\n    return 2\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    sources = {n.get("source_file") for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+    assert "generated/gen.py" in sources
+
+    (corpus / ".gitignore").write_text("generated/\n", encoding="utf-8")
+    capsys.readouterr()
+
+    # Incremental (hook) rebuild: .gitignore-driven eviction is NOT honored.
+    assert _rebuild_code(
+        corpus, changed_paths=[Path("app.py")], no_cluster=True, acquire_lock=False
+    ) is True
+    sources = {n.get("source_file") for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+    assert "generated/gen.py" in sources, (
+        ".gitignore-only match must be preserved on the incremental path"
+    )
+    assert "fail-closed: kept" in capsys.readouterr().out
+
+    # Explicit full update: the .gitignore match is honored and purged.
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    sources = {n.get("source_file") for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+    assert "generated/gen.py" not in sources, (
+        ".gitignore match must be purged by an explicit full update (#2495)"
+    )
+    assert "newly-ignored file(s)" in capsys.readouterr().out
+
+
+def test_graphifyignore_eviction_applies_to_incremental_rebuilds(tmp_path, capsys):
+    """#2495 policy split, other half: a .graphifyignore match is unambiguous
+    graph-level intent and evicts on the incremental (hook) path too."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "app.py").write_text("def handle():\n    return 1\n", encoding="utf-8")
+    (corpus / "vendor.py").write_text("def vendored():\n    return 2\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+
+    (corpus / ".graphifyignore").write_text("vendor.py\n", encoding="utf-8")
+    capsys.readouterr()
+
+    assert _rebuild_code(
+        corpus, changed_paths=[Path("app.py")], no_cluster=True, acquire_lock=False
+    ) is True
+    sources = {n.get("source_file") for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+    assert "vendor.py" not in sources, (
+        ".graphifyignore match must evict on an incremental rebuild too (#2495)"
+    )
+    assert "app.py" in sources
+    assert "newly-ignored file(s)" in capsys.readouterr().out
 
 
 # --- #1915: semantic-backed docs must not be double-represented by the AST quick-scan ---

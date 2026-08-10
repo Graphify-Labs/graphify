@@ -8,6 +8,7 @@ import re
 import sys
 import time
 from pathlib import Path
+from typing import Callable
 
 # Single source of truth in graphify.paths (#1423); re-exported as _GRAPHIFY_OUT.
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
@@ -467,8 +468,20 @@ def _reconcile_existing_graph(
     full_rebuild: bool,
     deleted_paths: set[str],
     deleted_source_identities: set[str],
+    is_ignored_always: Callable[[Path], bool] | None = None,
+    is_ignored_full: Callable[[Path], bool] | None = None,
 ) -> tuple[dict, dict]:
-    """Merge fresh extraction with preserved graph entries and evict stale sources."""
+    """Merge fresh extraction with preserved graph entries and evict stale sources.
+
+    ``is_ignored_always``/``is_ignored_full`` (#2495) report whether a LIVE
+    ignore rule matches a path, mirroring the detect() call that produced
+    ``code_files`` (detect.ignored_predicate). ``is_ignored_always`` covers
+    .graphifyignore + persisted ``--exclude`` patterns — unambiguous
+    graph-level intent, honored on every rebuild. ``is_ignored_full`` adds
+    .gitignore-driven rules, honored only on a full rebuild (an explicit
+    ``graphify update``) so the incremental/hook path keeps preserving a
+    deliberately-graphed .gitignore'd tree (#1795).
+    """
     existing_graph_data: dict = {}
     if not existing_graph.exists():
         return result, existing_graph_data
@@ -533,14 +546,38 @@ def _reconcile_existing_graph(
         #
         # Fail-closed eviction: a source identity missing from the corpus is only
         # DELETION evidence when the file is actually gone from disk. A file that
-        # still exists but stopped being collected was *excluded* (ignore rules or
-        # filters changed — e.g. a .gitignore the scanner newly honors), and
-        # treating that as deletion silently mass-evicts good nodes. Preserve
-        # instead and say so; a full re-extraction still purges deliberately
-        # excluded sources via the AST ownership rule below.
+        # still exists but stopped being collected was *excluded*, and treating
+        # that as deletion silently mass-evicts good nodes. Evicting an alive
+        # source therefore needs POSITIVE evidence — a live ignore rule matching
+        # the path (#2495) — not mere corpus absence: a filter regression, an
+        # extractor loss, or the sensitive-file heuristic still preserves, with
+        # a loud message (#1795).
         excluded_alive_files: set[str] = set()
         excluded_alive_nodes = 0
+        newly_ignored_files: set[str] = set()
+        newly_ignored_nodes = 0
         _alive_cache: dict[str, bool] = {}
+        _ignored_cache: dict[str, bool] = {}
+
+        def _ignored_now(identity: str) -> bool:
+            """True when a live ignore rule matches this alive, corpus-absent source.
+
+            .graphifyignore/--exclude matches evict on every rebuild;
+            .gitignore-driven matches only on a full rebuild (see docstring).
+            """
+            ignored = _ignored_cache.get(identity)
+            if ignored is None:
+                target = Path(identity)
+                ignored = bool(
+                    (is_ignored_always is not None and is_ignored_always(target))
+                    or (
+                        full_rebuild
+                        and is_ignored_full is not None
+                        and is_ignored_full(target)
+                    )
+                )
+                _ignored_cache[identity] = ignored
+            return ignored
         for node in existing.get("nodes", []):
             source_file = node.get("source_file")
             if not source_file or _is_remote_source(source_file):
@@ -551,17 +588,23 @@ def _reconcile_existing_graph(
             if _get_extractor(Path(source_file)) is None:
                 # Non-AST source (semantic doc/paper/image — .txt/.pdf/.png/...):
                 # never present in current_sources (built from AST-extractable
-                # code_files), so corpus absence is meaningless. Disk absence is
-                # the ONLY deletion evidence here — otherwise its semantic nodes
+                # code_files), so corpus absence is meaningless. Deletion
+                # evidence here is disk absence — otherwise its semantic nodes
                 # are preserved forever and returned as authoritative even after
-                # the file is deleted (#2051). A present-but-unextractable file
-                # stays preserved (alive -> skip).
+                # the file is deleted (#2051) — or a live ignore rule matching
+                # the alive file (#2495), the same positive evidence the AST
+                # branch below requires. A present-but-unexcluded-but-
+                # unextractable file stays preserved (alive -> skip).
                 if identity:
                     alive = _alive_cache.get(identity)
                     if alive is None:
                         alive = Path(identity).exists()
                         _alive_cache[identity] = alive
-                    if not alive:
+                    ignored = alive and _ignored_now(identity)
+                    if ignored:
+                        newly_ignored_files.add(identity)
+                        newly_ignored_nodes += 1
+                    if not alive or ignored:
                         normalized = source_paths.normalize(source_file)
                         if normalized:
                             deleted_paths.add(normalized)
@@ -576,9 +619,16 @@ def _reconcile_existing_graph(
                         alive = Path(identity).exists()
                         _alive_cache[identity] = alive
                     if alive:
-                        excluded_alive_files.add(identity)
-                        excluded_alive_nodes += 1
-                        continue
+                        if _ignored_now(identity):
+                            # Intentionally excluded by a live ignore rule:
+                            # deliberate graph-level intent, so treat it exactly
+                            # like a deletion (#2495) — fall through to evict.
+                            newly_ignored_files.add(identity)
+                            newly_ignored_nodes += 1
+                        else:
+                            excluded_alive_files.add(identity)
+                            excluded_alive_nodes += 1
+                            continue
                 normalized = source_paths.normalize(source_file)
                 if normalized:
                     deleted_paths.add(normalized)
@@ -586,12 +636,18 @@ def _reconcile_existing_graph(
                     node_evicted_source_identities.add(identity)
                     edge_evicted_source_identities.add(identity)
                     hyperedge_evicted_source_identities.add(identity)
+        if newly_ignored_files:
+            print(
+                f"[graphify watch] pruned {newly_ignored_nodes} node(s) from "
+                f"{len(newly_ignored_files)} newly-ignored file(s) "
+                "(matched by a live ignore rule while absent from the scan corpus)."
+            )
         if excluded_alive_files:
             print(
                 f"[graphify watch] fail-closed: kept {excluded_alive_nodes} node(s) "
                 f"from {len(excluded_alive_files)} file(s) that left the scan corpus "
-                "but still exist on disk (ignore rules or filters changed?). "
-                "Run a full re-extraction to purge them if the exclusion is intentional."
+                "but still exist on disk and match no current ignore rule (filters "
+                "changed?). Add them to .graphifyignore if the exclusion is intentional."
             )
 
         # A full re-extraction owns the AST nodes of every source it actually
@@ -999,12 +1055,29 @@ def _rebuild_code(
         # hook rebuild does not silently re-include deliberately excluded paths
         # (#1886).
         _persisted_excludes = _read_build_excludes(out)
+        _gitignore_enabled = _read_build_gitignore(out)
         detected = detect(
             watch_path, follow_symlinks=follow_symlinks,
             extra_excludes=_persisted_excludes or None,
-            gitignore=_read_build_gitignore(out),
+            gitignore=_gitignore_enabled,
         )
         code_files = [Path(f) for f in detected['files']['code']]
+
+        # #2495: hand reconcile the same ignore decisions the detect() call
+        # above made, so a newly-ignored file that still exists on disk is
+        # purged from the graph instead of preserved forever by the fail-closed
+        # keep. Two tiers: .graphifyignore + persisted --exclude patterns are
+        # unambiguous graph-level intent (evict on every rebuild), while
+        # .gitignore-driven exclusion is honored only on a full rebuild — the
+        # incremental/hook path keeps preserving a deliberately-graphed
+        # .gitignore'd tree (#1795).
+        from graphify.detect import ignored_predicate
+        _ignored_always = ignored_predicate(
+            watch_root, extra_excludes=_persisted_excludes or None, gitignore=False,
+        )
+        _ignored_full = ignored_predicate(
+            watch_root, extra_excludes=_persisted_excludes or None, gitignore=True,
+        ) if _gitignore_enabled else _ignored_always
 
         # Include document files that have AST extractors (e.g. .md, .mdx, .qmd)
         ast_doc_files: list[Path] = []
@@ -1132,8 +1205,8 @@ def _rebuild_code(
                     # disables the shrink guard that would otherwise catch the
                     # loss. Preserve it — a genuine deletion still evicts via the
                     # branch below, the corpus sweep evicts a truly-gone non-AST
-                    # source, and a deliberate exclusion is purged by a full
-                    # re-extraction.
+                    # source, and a deliberate exclusion is purged by the
+                    # corpus sweep's ignore-rule check (#2495).
                     continue
 
                 deleted_in_root = next(
@@ -1252,6 +1325,41 @@ def _rebuild_code(
         }
         _rebase_relative_source_files(result, watch_root, project_root)
 
+        # #2543: AST sources that failed this run (error result, or extractor
+        # present but zero nodes) must not be stamped kind="ast" below, and any
+        # prior stamp must be blanked (clear_ast) — otherwise the incremental
+        # gate reports them unchanged forever and only deleting graphify-out/
+        # recovers. Mirrors the extract CLI's _stamped_manifest_files handling.
+        _failed_ast_sources = set(result.get("failed_sources") or [])
+
+        def _ast_manifest_files() -> dict[str, list[str]]:
+            """detected["files"] minus this run's failed AST sources (#2543).
+
+            Only the STAMPED set shrinks; scan_corpus at the save sites stays
+            the raw detect output so #1908 pruning is unaffected.
+            """
+            if not _failed_ast_sources:
+                return detected["files"]
+            failed_res = set(_failed_ast_sources)
+            for p in _failed_ast_sources:
+                try:
+                    failed_res.add(str(Path(p).resolve()))
+                except (OSError, RuntimeError):
+                    pass
+
+            def _failed(f: str) -> bool:
+                if f in failed_res:
+                    return True
+                try:
+                    return str(Path(f).resolve()) in failed_res
+                except (OSError, RuntimeError):
+                    return False
+
+            return {
+                ftype: [f for f in flist if not _failed(f)]
+                for ftype, flist in detected["files"].items()
+            }
+
         # Preserve semantic nodes/edges from a previous full run.
         # AST-only rebuild replaces nodes for changed files; everything else is kept.
         # Filter by node ID membership in the new AST output, not by file_type —
@@ -1272,6 +1380,8 @@ def _rebuild_code(
                 full_rebuild=changed_paths is None,
                 deleted_paths=deleted_paths,
                 deleted_source_identities=deleted_source_identities,
+                is_ignored_always=_ignored_always,
+                is_ignored_full=_ignored_full,
             )
         except (RuntimeError, ValueError) as exc:
             # Existing graph present but unreadable — over the size cap
@@ -1364,10 +1474,13 @@ def _rebuild_code(
                 # pass it as the scan corpus too: rows for files that left the
                 # scan but still exist on disk (newly excluded) are pruned
                 # instead of surviving as phantom "deleted" entries (#1908).
+                # Failed AST sources are dropped from the stamped set and
+                # their prior hashes blanked (#2543).
                 save_manifest(
-                    detected["files"], manifest_path=str(out / "manifest.json"),
+                    _ast_manifest_files(), manifest_path=str(out / "manifest.json"),
                     kind="ast", root=watch_root,
                     scan_corpus={f for _fl in detected["files"].values() for f in _fl},
+                    clear_ast=_failed_ast_sources or None,
                 )
             except Exception:
                 pass
@@ -1410,11 +1523,13 @@ def _rebuild_code(
             if same_topology:
                 try:
                     from graphify.detect import save_manifest
-                    # Full-scan save: prune excluded-but-alive rows (#1908).
+                    # Full-scan save: prune excluded-but-alive rows (#1908);
+                    # leave failed AST sources unstamped (#2543).
                     save_manifest(
-                        detected["files"], manifest_path=str(out / "manifest.json"),
+                        _ast_manifest_files(), manifest_path=str(out / "manifest.json"),
                         kind="ast", root=watch_root,
                         scan_corpus={f for _fl in detected["files"].values() for f in _fl},
+                        clear_ast=_failed_ast_sources or None,
                     )
                 except Exception:
                     pass
@@ -1557,11 +1672,13 @@ def _rebuild_code(
 
         try:
             from graphify.detect import save_manifest
-            # Full-scan save: prune excluded-but-alive rows (#1908).
+            # Full-scan save: prune excluded-but-alive rows (#1908);
+            # leave failed AST sources unstamped (#2543).
             save_manifest(
-                detected["files"], manifest_path=str(out / "manifest.json"),
+                _ast_manifest_files(), manifest_path=str(out / "manifest.json"),
                 kind="ast", root=watch_root,
                 scan_corpus={f for _fl in detected["files"].values() for f in _fl},
+                clear_ast=_failed_ast_sources or None,
             )
         except Exception:
             pass
@@ -1667,6 +1784,30 @@ def _has_non_code(changed_paths: list[Path]) -> bool:
     return any(p.suffix.lower() not in _CODE_EXTENSIONS for p in changed_paths)
 
 
+def _batch_triggers_rebuild(batch: list[Path]) -> bool:
+    """True when a debounced watch batch needs an immediate rebuild.
+
+    Code changes always rebuild (AST extraction needs no LLM). Deletions of
+    ANY watched file also rebuild: eviction needs no LLM either — the full
+    corpus reconcile drops nodes whose source is gone from disk. Without
+    this, a doc-only deletion batch would sit behind the needs_update flag
+    until the next code event or a manual `graphify update` (#2580).
+    """
+    has_code = any(p.suffix.lower() in _CODE_EXTENSIONS for p in batch)
+    has_deletion = any(not p.exists() for p in batch)
+    return has_code or has_deletion
+
+
+def _batch_needs_llm_flag(batch: list[Path]) -> bool:
+    """True when the batch contains a non-code file that still exists on disk.
+
+    Only surviving non-code files need the needs_update flag (LLM-backed
+    re-extraction); deleted ones are already handled by the rebuild's
+    reconcile sweep, so a pure-deletion batch must not leave a stale flag.
+    """
+    return _has_non_code([p for p in batch if p.exists()])
+
+
 def watch(watch_path: Path, debounce: float = 3.0) -> None:
     """
     Watch watch_path for new or modified files and auto-update the graph.
@@ -1747,11 +1888,9 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
                 batch = list(changed)
                 changed.clear()
                 print(f"\n[graphify watch] {len(batch)} file(s) changed")
-                has_non_code = _has_non_code(batch)
-                has_code = any(p.suffix.lower() in _CODE_EXTENSIONS for p in batch)
-                if has_code:
+                if _batch_triggers_rebuild(batch):
                     _rebuild_code(watch_path)
-                if has_non_code:
+                if _batch_needs_llm_flag(batch):
                     _notify_only(watch_path)
     except KeyboardInterrupt:
         print("\n[graphify watch] Stopped.")

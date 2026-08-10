@@ -363,6 +363,14 @@ _TS_CALLER = (
     "}\n"
 )
 
+# The same caller, importing the type it names. Upstream's origin gate (#2553)
+# resolves a TS member call only when the matched type is visible to the calling
+# file -- same file, a named import, or a module the file imports -- so the
+# positive-direction test needs the import that real TypeScript would require
+# anyway. `_TS_CALLER` deliberately keeps no import, so the negative test below
+# still pins this PR's definition-index scoping on its own evidence.
+_TS_CALLER_IMPORTING = "import { Lead } from './lead';\n" + _TS_CALLER
+
 
 def test_cpp_receiver_type_does_not_match_a_python_class(tmp_path: Path):
     """No C++ `Lead` exists in the corpus, only a Python one."""
@@ -464,7 +472,7 @@ def test_typescript_receiver_resolves_despite_a_same_named_python_class(tmp_path
     calls, result = _calls(tmp_path, {
         "svc.py": _PY_DECOY,
         "lead.ts": "export class Lead { search() { return []; } }\n",
-        "runner.ts": _TS_CALLER,
+        "runner.ts": _TS_CALLER_IMPORTING,
     })
 
     go = _nid(result, ".go()", "runner.ts")
@@ -473,7 +481,11 @@ def test_typescript_receiver_resolves_despite_a_same_named_python_class(tmp_path
     assert (go, ts_search) in calls, \
         "a same-named Python class suppressed the real TypeScript edge"
     assert (go, py_search) not in calls, "the Python decoy received an edge"
-    assert calls[(go, ts_search)]["confidence"] == "EXTRACTED"
+    # INFERRED, not EXTRACTED: the receiver is typed through the
+    # constructor-injection table rather than named at the call site, which
+    # upstream's #2553 tiers like the Swift/C#/Java resolvers (sibling Swift
+    # test above asserts the same).
+    assert calls[(go, ts_search)]["confidence"] == "INFERRED"
 
 
 # ── Language-scoped Python class and module indexes ──────────────────────────
