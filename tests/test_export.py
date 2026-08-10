@@ -159,6 +159,37 @@ def test_to_html_contains_visjs():
         assert "vis-network" in content
 
 
+
+def test_to_html_title_uses_portable_path_not_host_absolute():
+    """#2598 / #433: <title> must not embed the generator host absolute path."""
+    import re
+
+    G = make_graph()
+    communities = cluster(G)
+    with tempfile.TemporaryDirectory() as tmp:
+        userish = Path(tmp) / "Users" / "mike" / "proj" / "graphify-out" / "graph.html"
+        userish.parent.mkdir(parents=True)
+        to_html(G, communities, str(userish))
+        html = userish.read_text(encoding="utf-8")
+    m = re.search(r"<title>(.*?)</title>", html)
+    assert m, "expected a <title> tag"
+    title = m.group(1)
+    assert title.startswith("graphify - ")
+    label = title[len("graphify - "):]
+    assert "mike" not in label
+    assert "Users" not in label
+    assert not label.startswith("/")
+    assert "graphify-out/graph.html" in label or label == "graph.html"
+
+
+def test_html_document_title_helper_windows_and_relative():
+    from graphify.exporters.html import _html_document_title
+
+    assert _html_document_title(r"C:\Users\mike\proj\graphify-out\graph.html") == "graphify-out/graph.html"
+    assert _html_document_title("/home/u/proj/graphify-out/graph.html") == "graphify-out/graph.html"
+    assert _html_document_title("graphify-out/graph.html") == "graphify-out/graph.html"
+    assert _html_document_title("/tmp/only/graph.html") == "graph.html"
+
 def test_to_html_neighbor_links_have_no_inline_onclick_xss():
     """#1838: neighbor links dropped an unescaped JSON.stringify(nid) into a
     quoted inline onclick — which broke every link (the value's own quotes
