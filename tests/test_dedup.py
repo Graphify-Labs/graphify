@@ -356,6 +356,65 @@ def test_dedup_does_not_merge_crossfile_document_headings():
     assert len(result_nodes) == 2
 
 
+def test_crossfile_fileanchored_fuzzy_candidates_skip_similarity_scoring(monkeypatch):
+    """Cross-file file-anchored candidates are impossible merges, so the fuzzy
+    pass must not spend Jaro/Jaro-Winkler work on them."""
+    import graphify.dedup as dedup
+
+    def fail_similarity(*_args, **_kwargs):
+        raise AssertionError("cross-file file-anchored pair reached similarity scoring")
+
+    monkeypatch.setattr(dedup.Jaro, "normalized_similarity", fail_similarity)
+    monkeypatch.setattr(dedup.JaroWinkler, "normalized_similarity", fail_similarity)
+
+    boiler = ("Django app config for {}. No business logic here. "
+              "Domain services live in services.py and adapters in providers.")
+    nodes = [
+        {"id": "r1", "label": boiler.format("apps.platform.cards"),
+         "file_type": "rationale", "source_file": "apps/platform/cards/apps.py"},
+        {"id": "r2", "label": boiler.format("apps.platform.cores"),
+         "file_type": "rationale", "source_file": "apps/platform/cores/apps.py"},
+        {"id": "r3", "label": boiler.format("apps.platform.profiles"),
+         "file_type": "rationale", "source_file": "apps/platform/profiles/apps.py"},
+    ]
+
+    result_nodes, _ = dedup.deduplicate_entities(nodes, [], communities={})
+
+    assert {node["id"] for node in result_nodes} == {"r1", "r2", "r3"}
+
+
+def test_crossfile_fileanchored_llm_tiebreak_skips_similarity_scoring(monkeypatch):
+    """The opt-in LLM tiebreaker must not reintroduce O(n²) scoring for
+    cross-file file-anchored candidates."""
+    import graphify.dedup as dedup
+    import graphify.llm as llm
+
+    monkeypatch.setattr(llm, "_get_backend_api_key", lambda _backend: "test-key")
+
+    def fail_similarity(*_args, **_kwargs):
+        raise AssertionError("cross-file file-anchored pair reached LLM tiebreak scoring")
+
+    monkeypatch.setattr(dedup.Jaro, "normalized_similarity", fail_similarity)
+    monkeypatch.setattr(dedup.JaroWinkler, "normalized_similarity", fail_similarity)
+
+    boiler = ("Django app config for {}. No business logic here. "
+              "Domain services live in services.py and adapters in providers.")
+    nodes = [
+        {"id": "r1", "label": boiler.format("apps.platform.cards"),
+         "file_type": "rationale", "source_file": "apps/platform/cards/apps.py"},
+        {"id": "r2", "label": boiler.format("apps.platform.cores"),
+         "file_type": "rationale", "source_file": "apps/platform/cores/apps.py"},
+        {"id": "r3", "label": boiler.format("apps.platform.profiles"),
+         "file_type": "rationale", "source_file": "apps/platform/profiles/apps.py"},
+    ]
+
+    result_nodes, _ = dedup.deduplicate_entities(
+        nodes, [], communities={}, dedup_llm_backend="openai"
+    )
+
+    assert {node["id"] for node in result_nodes} == {"r1", "r2", "r3"}
+
+
 def test_dedup_still_merges_samefile_rationale_duplicates():
     """The file-anchored guard only blocks cross-file pairs — near-identical
     rationale duplicates within one file still merge (#1284 non-regression)."""

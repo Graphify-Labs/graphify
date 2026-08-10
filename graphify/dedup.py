@@ -122,6 +122,10 @@ def _numeric_tokens_differ(a: str, b: str) -> bool:
 _FILE_ANCHORED_NONCODE = frozenset({"rationale", "document"})
 
 
+def _is_file_anchored_noncode(node: dict) -> bool:
+    return node.get("file_type") in _FILE_ANCHORED_NONCODE
+
+
 def _crossfile_fileanchored_blocked(node: dict, neighbor: dict) -> bool:
     """Block label-based merging of file-anchored non-code nodes across files (#1284).
 
@@ -135,6 +139,36 @@ def _crossfile_fileanchored_blocked(node: dict, neighbor: dict) -> bool:
             and neighbor.get("file_type") not in _FILE_ANCHORED_NONCODE):
         return False
     return (node.get("source_file") or "") != (neighbor.get("source_file") or "")
+
+
+def _fuzzy_candidate_groups(candidates: list[dict]) -> list[list[dict]]:
+    """Group candidates so impossible file-anchored cross-file pairs never enter LSH.
+
+    `rationale` and `document` nodes can merge only with nodes from the same
+    source_file. Concepts and other non-file-anchored candidates keep the old
+    global fuzzy-dedup behavior.
+    """
+    groups: list[list[dict]] = []
+    global_group: list[dict] = []
+    by_source: dict[str, list[dict]] = defaultdict(list)
+    anchored_sources: set[str] = set()
+
+    for node in candidates:
+        source_file = node.get("source_file") or ""
+        by_source[source_file].append(node)
+        if _is_file_anchored_noncode(node):
+            anchored_sources.add(source_file)
+        else:
+            global_group.append(node)
+
+    if len(global_group) >= 2:
+        groups.append(global_group)
+
+    for source_file, source_group in by_source.items():
+        if source_file in anchored_sources and len(source_group) >= 2:
+            groups.append(source_group)
+
+    return groups
 
 
 # ── union-find ────────────────────────────────────────────────────────────────
@@ -548,103 +582,112 @@ def deduplicate_entities(
 
     fuzzy_merges = 0
     if len(candidates) >= 2:
-        lsh = MinHashLSH(threshold=_LSH_THRESHOLD, num_perm=_NUM_PERM)
-        minhashes: dict[str, MinHash] = {}
-        # Pre-build O(1) lookup structures so the query loop below doesn't scan
-        # the candidates list linearly for every LSH neighbor (was O(n²×B)).
-        candidates_by_id: dict[str, dict] = {}
         norm_cache: dict[str, str] = {}
-
+        minhashes: dict[str, MinHash] = {}
         for node in candidates:
             node_id = node["id"]
-            candidates_by_id[node_id] = node
             nl = _norm(node.get("label", node.get("id", "")))
             norm_cache[node_id] = nl
             m = _make_minhash(nl)
             minhashes[node_id] = m
-            try:
-                lsh.insert(node_id, m)
-            except ValueError:
-                pass  # duplicate key in LSH — already inserted
 
-        for node in candidates:
-            node_id = node["id"]
-            norm_label = norm_cache[node_id]
-            neighbors = lsh.query(minhashes[node_id])
+        seen_pairs: set[tuple[str, str]] = set()
+        for group in _fuzzy_candidate_groups(candidates):
+            lsh = MinHashLSH(threshold=_LSH_THRESHOLD, num_perm=_NUM_PERM)
+            # Pre-build O(1) lookup structures so the query loop below doesn't scan
+            # the candidates list linearly for every LSH neighbor (was O(n²×B)).
+            candidates_by_id: dict[str, dict] = {}
 
-            for neighbor_id in neighbors:
-                if neighbor_id == node_id:
-                    continue
-                if uf.find(node_id) == uf.find(neighbor_id):
-                    continue
+            for node in group:
+                node_id = node["id"]
+                candidates_by_id[node_id] = node
+                try:
+                    lsh.insert(node_id, minhashes[node_id])
+                except ValueError:
+                    pass  # duplicate key in LSH — already inserted
 
-                neighbor = candidates_by_id.get(neighbor_id)
-                if neighbor is None:
-                    continue
+            for node in group:
+                node_id = node["id"]
+                norm_label = norm_cache[node_id]
+                neighbors = lsh.query(minhashes[node_id])
 
-                neighbor_norm = norm_cache.get(neighbor_id) or _norm(neighbor.get("label", neighbor.get("id", "")))
-                # Cross-file long labels score on plain Jaro (no prefix bonus).
-                # Jaro-Winkler's leading-prefix bonus lifts pairs that share a
-                # prefix but diverge in a distinguishing token ("testing-library
-                # jest-native" vs "react-native") past threshold, fabricating
-                # destructive cross-file merges; on Jaro alone they fall short
-                # while true cross-file duplicates still clear it (#1243). Same-file
-                # near-duplicates keep Jaro-Winkler (low-risk, and a mid-string
-                # stopword insertion needs the prefix bonus to merge); short labels
-                # keep Jaro-Winkler too (gated by _short_label_blocked).
-                _xfile = (node.get("source_file") or "") != (neighbor.get("source_file") or "")
-                if _xfile and max(len(norm_label), len(neighbor_norm)) >= 12:
-                    score = Jaro.normalized_similarity(norm_label, neighbor_norm) * 100
-                else:
-                    score = JaroWinkler.normalized_similarity(norm_label, neighbor_norm) * 100
+                for neighbor_id in neighbors:
+                    if neighbor_id == node_id:
+                        continue
+                    pair_key = tuple(sorted((node_id, neighbor_id)))
+                    if pair_key in seen_pairs:
+                        continue
+                    seen_pairs.add(pair_key)
+                    if uf.find(node_id) == uf.find(neighbor_id):
+                        continue
 
-                if _is_variant_pair(norm_label, neighbor_norm):
-                    continue
-                if _short_label_blocked(norm_label, neighbor_norm, score):
-                    continue
-                # Prefix-extension pairs (getActiveSession / getActiveSessions,
-                # parseConfig / parseConfigFile) are almost never duplicates —
-                # one is a strict suffix-extension of the other. Block the merge
-                # regardless of JW score (#1201).
-                _lo, _hi = sorted((norm_label, neighbor_norm), key=len)
-                if _hi.startswith(_lo) and _hi != _lo:
-                    continue
-                # Numbered/versioned siblings and cross-file file-anchored
-                # boilerplate (rationale/document) are decisively distinct
-                # regardless of score (#1284).
-                if _numeric_tokens_differ(norm_label, neighbor_norm):
-                    continue
-                if _crossfile_fileanchored_blocked(node, neighbor):
-                    continue
+                    neighbor = candidates_by_id.get(neighbor_id)
+                    if neighbor is None:
+                        continue
 
-                c1 = communities.get(node_id)
-                c2 = communities.get(neighbor_id)
-                if (c1 is not None and c2 is not None and c1 == c2
-                        and min(len(norm_label), len(neighbor_norm)) >= 12):
-                    score += _COMMUNITY_BOOST
+                    neighbor_norm = norm_cache.get(neighbor_id) or _norm(neighbor.get("label", neighbor.get("id", "")))
+                    # Cross-file long labels score on plain Jaro (no prefix bonus).
+                    # Jaro-Winkler's leading-prefix bonus lifts pairs that share a
+                    # prefix but diverge in a distinguishing token ("testing-library
+                    # jest-native" vs "react-native") past threshold, fabricating
+                    # destructive cross-file merges; on Jaro alone they fall short
+                    # while true cross-file duplicates still clear it (#1243). Same-file
+                    # near-duplicates keep Jaro-Winkler (low-risk, and a mid-string
+                    # stopword insertion needs the prefix bonus to merge); short labels
+                    # keep Jaro-Winkler too (gated by _short_label_blocked).
+                    _xfile = (node.get("source_file") or "") != (neighbor.get("source_file") or "")
+                    if _xfile and max(len(norm_label), len(neighbor_norm)) >= 12:
+                        score = Jaro.normalized_similarity(norm_label, neighbor_norm) * 100
+                    else:
+                        score = JaroWinkler.normalized_similarity(norm_label, neighbor_norm) * 100
 
-                if score >= _MERGE_THRESHOLD:
-                    # Belt-and-braces (#1046, narrowed by #2182): candidates are
-                    # norm-unique (`seen_norms` above), so two candidates can
-                    # never share a normalized label and this branch is
-                    # unreachable today. Retained in case candidate selection
-                    # changes. Equal-norm cross-file pairs are handled in Pass 1
-                    # instead, gated to `concept` nodes — the original #1046
-                    # rationale (same-named code symbols) was obsoleted by code
-                    # being excluded from label matching entirely (#1205, #1247).
-                    if norm_label == neighbor_norm:
-                        sf_a = node.get("source_file") or ""
-                        sf_b = neighbor.get("source_file") or ""
-                        if sf_a != sf_b:
-                            continue
-                    # Pick the winner from the verified pair only. Selecting it
-                    # from the union of both normalized-label groups pulls
-                    # never-compared nodes (same label, different source_file)
-                    # into the merge, bypassing the #1046/#1178 guards.
-                    winner = _pick_winner([node, neighbor])
-                    uf.union(winner["id"], node_id)
-                    uf.union(winner["id"], neighbor_id)
-                    fuzzy_merges += 1
+                    if _is_variant_pair(norm_label, neighbor_norm):
+                        continue
+                    if _short_label_blocked(norm_label, neighbor_norm, score):
+                        continue
+                    # Prefix-extension pairs (getActiveSession / getActiveSessions,
+                    # parseConfig / parseConfigFile) are almost never duplicates —
+                    # one is a strict suffix-extension of the other. Block the merge
+                    # regardless of JW score (#1201).
+                    _lo, _hi = sorted((norm_label, neighbor_norm), key=len)
+                    if _hi.startswith(_lo) and _hi != _lo:
+                        continue
+                    # Numbered/versioned siblings and cross-file file-anchored
+                    # boilerplate (rationale/document) are decisively distinct
+                    # regardless of score (#1284).
+                    if _numeric_tokens_differ(norm_label, neighbor_norm):
+                        continue
+                    if _crossfile_fileanchored_blocked(node, neighbor):
+                        continue
+
+                    c1 = communities.get(node_id)
+                    c2 = communities.get(neighbor_id)
+                    if (c1 is not None and c2 is not None and c1 == c2
+                            and min(len(norm_label), len(neighbor_norm)) >= 12):
+                        score += _COMMUNITY_BOOST
+
+                    if score >= _MERGE_THRESHOLD:
+                        # Belt-and-braces (#1046, narrowed by #2182): candidates are
+                        # norm-unique (`seen_norms` above), so two candidates can
+                        # never share a normalized label and this branch is
+                        # unreachable today. Retained in case candidate selection
+                        # changes. Equal-norm cross-file pairs are handled in Pass 1
+                        # instead, gated to `concept` nodes -- the original #1046
+                        # rationale (same-named code symbols) was obsoleted by code
+                        # being excluded from label matching entirely (#1205, #1247).
+                        if norm_label == neighbor_norm:
+                            sf_a = node.get("source_file") or ""
+                            sf_b = neighbor.get("source_file") or ""
+                            if sf_a != sf_b:
+                                continue
+                        # Pick the winner from the verified pair only. Selecting it
+                        # from the union of both normalized-label groups pulls
+                        # never-compared nodes (same label, different source_file)
+                        # into the merge, bypassing the #1046/#1178 guards.
+                        winner = _pick_winner([node, neighbor])
+                        uf.union(winner["id"], node_id)
+                        uf.union(winner["id"], neighbor_id)
+                        fuzzy_merges += 1
 
     # ── pass 3: LLM tiebreaker for ambiguous pairs (opt-in) ──────────────────
     if dedup_llm_backend is not None:
@@ -758,38 +801,44 @@ def _llm_tiebreak(
         return
 
     ambiguous: list[tuple[dict, dict, float]] = []
-    for i, node in enumerate(candidates):
-        norm_i = _norm(node.get("label", node.get("id", "")))
-        for j in range(i + 1, len(candidates)):
-            neighbor = candidates[j]
-            if uf.find(node["id"]) == uf.find(neighbor["id"]):
-                continue
-            norm_j = _norm(neighbor.get("label", neighbor.get("id", "")))
-            # Mirror pass 2: plain Jaro for cross-file long labels (#1243).
-            _xfile = (node.get("source_file") or "") != (neighbor.get("source_file") or "")
-            if _xfile and max(len(norm_i), len(norm_j)) >= 12:
-                score = Jaro.normalized_similarity(norm_i, norm_j) * 100
-            else:
-                score = JaroWinkler.normalized_similarity(norm_i, norm_j) * 100
-            if _is_variant_pair(norm_i, norm_j):
-                continue
-            if _short_label_blocked(norm_i, norm_j, score):
-                continue
-            _lo, _hi = sorted((norm_i, norm_j), key=len)
-            if _hi.startswith(_lo) and _hi != _lo:
-                continue
-            # Mirror pass 2: decisively-distinct pairs never reach the LLM (#1284).
-            if _numeric_tokens_differ(norm_i, norm_j):
-                continue
-            if _crossfile_fileanchored_blocked(node, neighbor):
-                continue
-            c1 = communities.get(node["id"])
-            c2 = communities.get(neighbor["id"])
-            if (c1 is not None and c2 is not None and c1 == c2
-                    and min(len(norm_i), len(norm_j)) >= 12):
-                score += _COMMUNITY_BOOST
-            if low <= score < high:
-                ambiguous.append((node, neighbor, score))
+    seen_pairs: set[tuple[str, str]] = set()
+    for group in _fuzzy_candidate_groups(candidates):
+        for i, node in enumerate(group):
+            norm_i = _norm(node.get("label", node.get("id", "")))
+            for j in range(i + 1, len(group)):
+                neighbor = group[j]
+                pair_key = tuple(sorted((node["id"], neighbor["id"])))
+                if pair_key in seen_pairs:
+                    continue
+                seen_pairs.add(pair_key)
+                if uf.find(node["id"]) == uf.find(neighbor["id"]):
+                    continue
+                norm_j = _norm(neighbor.get("label", neighbor.get("id", "")))
+                # Mirror pass 2: plain Jaro for cross-file long labels (#1243).
+                _xfile = (node.get("source_file") or "") != (neighbor.get("source_file") or "")
+                if _xfile and max(len(norm_i), len(norm_j)) >= 12:
+                    score = Jaro.normalized_similarity(norm_i, norm_j) * 100
+                else:
+                    score = JaroWinkler.normalized_similarity(norm_i, norm_j) * 100
+                if _is_variant_pair(norm_i, norm_j):
+                    continue
+                if _short_label_blocked(norm_i, norm_j, score):
+                    continue
+                _lo, _hi = sorted((norm_i, norm_j), key=len)
+                if _hi.startswith(_lo) and _hi != _lo:
+                    continue
+                # Mirror pass 2: decisively-distinct pairs never reach the LLM (#1284).
+                if _numeric_tokens_differ(norm_i, norm_j):
+                    continue
+                if _crossfile_fileanchored_blocked(node, neighbor):
+                    continue
+                c1 = communities.get(node["id"])
+                c2 = communities.get(neighbor["id"])
+                if (c1 is not None and c2 is not None and c1 == c2
+                        and min(len(norm_i), len(norm_j)) >= 12):
+                    score += _COMMUNITY_BOOST
+                if low <= score < high:
+                    ambiguous.append((node, neighbor, score))
 
     if not ambiguous:
         return
