@@ -1427,3 +1427,55 @@ def test_build_from_json_prunes_dangling_hyperedge_members(capsys):
     assert set(hes) == {"he_partial"}, "an all-dangling hyperedge must be dropped"
     assert hes["he_partial"]["nodes"] == ["alpha", "beta"]
     assert "he_all_ghost" in capsys.readouterr().err
+
+
+def test_leaked_biomedical_category_recovered_into_entry_type():
+    # #(new): biomedical semantic subagents are told to put the entity category
+    # (drug/gene/disease/...) in `entry_type`, but models sometimes also write
+    # it to `file_type`, which is not a valid file_type. Recover the category
+    # into entry_type and coerce file_type to a valid `document` — without
+    # emitting an invalid-file_type warning and without discarding the category.
+    ext = {
+        "nodes": [
+            # peptide is biomedical-exclusive: recovered even without entry_type
+            {"id": "phlip", "label": "pHLIP", "file_type": "peptide",
+             "source_file": "patents/records/x.md"},
+            # entry_type already correct; must not be overwritten
+            {"id": "mitocatch", "label": "MitoCatch", "file_type": "technology",
+             "entry_type": "technology", "source_file": "patents/records/y.md"},
+        ],
+        "edges": [],
+    }
+    G = build_from_json(ext)
+    assert G.nodes["phlip"]["file_type"] == "document"
+    assert G.nodes["phlip"]["entry_type"] == "peptide"
+    assert G.nodes["mitocatch"]["file_type"] == "document"
+    assert G.nodes["mitocatch"]["entry_type"] == "technology"
+
+
+def test_ambiguous_technology_without_signal_stays_code_synonym():
+    # `technology` is ambiguous with the code-corpus synonym (-> concept). With
+    # no biomedical signal (no entry_type), preserve the existing behavior so
+    # non-biomedical corpora are unaffected.
+    ext = {
+        "nodes": [
+            {"id": "n1", "label": "Some Tech", "file_type": "technology",
+             "source_file": "docs/a.md"},
+        ],
+        "edges": [],
+    }
+    G = build_from_json(ext)
+    assert G.nodes["n1"]["file_type"] == "concept"
+    assert "entry_type" not in G.nodes["n1"]
+
+
+def test_unknown_invalid_file_type_still_falls_back_to_concept():
+    ext = {
+        "nodes": [
+            {"id": "n1", "label": "Junk", "file_type": "gizmo",
+             "source_file": "docs/a.md"},
+        ],
+        "edges": [],
+    }
+    G = build_from_json(ext)
+    assert G.nodes["n1"]["file_type"] == "concept"

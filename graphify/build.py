@@ -31,7 +31,7 @@ from pathlib import Path
 import networkx as nx
 from .ids import make_id, normalize_id as _normalize_id
 from .paths import default_graph_json as _default_graph_json
-from .validate import validate_extraction
+from .validate import validate_extraction, VALID_FILE_TYPES
 
 
 # Deterministic (AST) extractors emit source_location "L<line>"; the semantic
@@ -88,6 +88,20 @@ _FILE_TYPE_SYNONYMS = {
     "data_source": "concept",
     "gotcha": "concept",
     "framework": "concept",
+}
+
+# Biomedical entity categories that semantic subagents are told to record in a
+# node's `entry_type` (see the biomedical extraction rules in the /graphify
+# skill). Models sometimes leak the category into `file_type` instead, where it
+# is not a valid file_type. Unlike the generic synonyms above — which collapse
+# unknown types to `concept` and discard the original token — these categories
+# carry real information, so we preserve them in `entry_type` rather than lose
+# them. `technology` is intentionally also present in _FILE_TYPE_SYNONYMS (it is
+# ambiguous with the code-corpus sense), so it is only recovered as biomedical
+# when the node already shows a biomedical signal (an existing `entry_type`).
+_BIOMEDICAL_CATEGORIES = {
+    "drug", "gene", "disease", "protein", "technology",
+    "peptide", "institution", "company",
 }
 
 
@@ -796,8 +810,19 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         if node.get("file_type") in (None, ""):
             node["file_type"] = "concept"
         ft = node.get("file_type", "")
-        if ft and ft not in {"code", "document", "paper", "image", "rationale", "concept"}:
-            node["file_type"] = _FILE_TYPE_SYNONYMS.get(ft, "concept")
+        if ft and ft not in VALID_FILE_TYPES:
+            # A leaked biomedical entity category (drug/gene/disease/...) carries
+            # real information, so preserve it in entry_type instead of
+            # collapsing it to `concept` and discarding it. `technology` is
+            # ambiguous with the code-corpus synonym, so only treat it as
+            # biomedical when the node already carries a biomedical signal.
+            if ft in _BIOMEDICAL_CATEGORIES and (
+                node.get("entry_type") or ft not in _FILE_TYPE_SYNONYMS
+            ):
+                node.setdefault("entry_type", ft)
+                node["file_type"] = "document"
+            else:
+                node["file_type"] = _FILE_TYPE_SYNONYMS.get(ft, "concept")
 
     # Canonicalize hyperedge member lists (#1561): producers sometimes key the
     # member list `members`/`node_ids` instead of `nodes`. Fold aliases onto
