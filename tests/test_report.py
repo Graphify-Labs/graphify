@@ -63,6 +63,33 @@ def test_report_shows_raw_cohesion_scores():
     assert "⚠" not in report
 
 
+def test_report_shows_tetra_coverage():
+    G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
+    G.add_node("tetra_a", label="app.main()", file_type="code", source_file="a.tetra",
+               language="tetra", tetra_status="indexed")
+    G.add_node("tetra_b", label="broken.t4", file_type="code", source_file="b.t4",
+               language="tetra", tetra_status="diagnostic")
+    detection["files"] = {"code": ["a.tetra", "b.t4", "other.go"]}
+    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
+    assert "## Tetra Coverage" in report
+    assert "2 detected" in report
+    assert "1 indexed" in report
+    assert "1 with diagnostics" in report
+
+
+def test_report_normalizes_absolute_tetra_paths(tmp_path):
+    G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
+    source = tmp_path / "src" / "a.tetra"
+    G.add_node("tetra_a", label="app.main()", file_type="code", source_file="src/a.tetra",
+               language="tetra", tetra_status="indexed")
+    detection["files"] = {"code": [str(source)]}
+    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens,
+                      "project", source_root=tmp_path)
+    assert "1 detected" in report
+    assert "1 indexed" in report
+    assert "0 skipped/no-node" in report
+
+
 # --- work-memory lessons section ----------------------------------------------
 
 def test_report_work_memory_section_present_with_overlay_and_dead_ends():

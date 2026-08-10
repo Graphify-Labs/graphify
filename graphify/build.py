@@ -1258,6 +1258,10 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     # directory-qualified display label so lookup/discovery can disambiguate
     # them (#2032). Labels only — ids and edges are untouched.
     _disambiguate_file_node_labels(G)
+    if _root is not None:
+        from graphify.knowledge_links import apply_knowledge_links
+
+        apply_knowledge_links(G, _root)
     return G
 
 

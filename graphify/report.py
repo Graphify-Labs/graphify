@@ -2,6 +2,7 @@
 from __future__ import annotations
 import re
 from datetime import date
+from pathlib import Path
 import networkx as nx
 
 
@@ -83,6 +84,7 @@ def generate(
     built_at_commit: str | None = None,
     learning: dict | None = None,
     obsidian: bool = False,
+    source_root: str | Path | None = None,
 ) -> str:
     today = date.today().isoformat()
 
@@ -131,6 +133,43 @@ def generate(
         + (f" · INFERRED: {len(inf_edges)} edges (avg confidence: {inf_avg})" if inf_avg is not None else ""),
         f"- Token cost: {token_cost.get('input', 0):,} input · {token_cost.get('output', 0):,} output",
     ]
+
+    tetra_nodes = [d for _, d in G.nodes(data=True) if d.get("language") == "tetra"]
+    detected_files = detection_result.get("files", {}).get("code", [])
+    corpus_root = Path(source_root if source_root is not None else root).resolve()
+    detected_tetra: set[str] = set()
+    for path in detected_files:
+        value = Path(str(path))
+        if value.suffix.lower() not in {".tetra", ".t4"}:
+            continue
+        if value.is_absolute():
+            try:
+                value = value.resolve().relative_to(corpus_root)
+            except ValueError:
+                continue
+        detected_tetra.add(value.as_posix().removeprefix("./"))
+    if tetra_nodes or detected_tetra:
+        indexed = {
+            str(node.get("source_file")) for node in tetra_nodes
+            if node.get("source_file") and node.get("tetra_status") == "indexed"
+        }
+        diagnostics = {
+            str(node.get("source_file")) for node in tetra_nodes
+            if node.get("source_file") and node.get("tetra_status") == "diagnostic"
+        }
+        failed = {
+            str(node.get("source_file")) for node in tetra_nodes
+            if node.get("source_file") and node.get("tetra_status") not in {"indexed", "diagnostic"}
+        }
+        represented = indexed | diagnostics | failed
+        skipped = max(0, len(detected_tetra - represented))
+        lines += [
+            "",
+            "## Tetra Coverage",
+            f"- {len(detected_tetra)} detected · {len(indexed)} indexed · "
+            f"{len(diagnostics)} with diagnostics · {len(failed)} failed/unavailable · "
+            f"{skipped} skipped/no-node",
+        ]
 
     if built_at_commit:
         lines += [
