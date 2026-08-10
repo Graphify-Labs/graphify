@@ -3068,6 +3068,20 @@ def test_extract_warns_when_sql_extra_missing(tmp_path, capsys, monkeypatch):
     # the Python file still extracts normally
     labels = [n.get("label") for n in result["nodes"]]
     assert any(str(l).startswith("main") for l in labels)
+    # #2543: failed sql sources must be surfaced so the CLI can leave them
+    # unstamped in the incremental manifest.
+    failed = {Path(p).name for p in result.get("failed_sources", [])}
+    assert failed == {"schema.sql", "views.sql"}
+    assert "main.py" not in failed
+
+
+def test_extract_failed_sources_empty_when_sql_installed(tmp_path):
+    """#2543: successful extracts do not appear in failed_sources."""
+    pytest.importorskip("tree_sitter_sql")
+    s = tmp_path / "schema.sql"; s.write_text("CREATE TABLE users (id INT);\n")
+    py = tmp_path / "main.py"; py.write_text("def main():\n    return 1\n")
+    result = extract([s, py], cache_root=tmp_path)
+    assert result.get("failed_sources") == []
 
 
 def test_extract_no_missing_dep_warning_when_sql_installed(tmp_path, capsys):
