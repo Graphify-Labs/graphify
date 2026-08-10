@@ -90,6 +90,7 @@ def _stamped_manifest_files(
     sem_result: dict,
     root: Path,
     partial_source_files: "set[str] | None" = None,
+    failed_ast_sources: "set[str] | list[str] | None" = None,
 ) -> dict[str, list[str]]:
     """Manifest-safe files dict: only stamp semantic files that actually
     produced output (cache hit or fresh extraction). Files whose chunk failed
@@ -115,6 +116,10 @@ def _stamped_manifest_files(
     doc unstamped, so detect_incremental re-queued it on every run. The stamping
     condition mirrors the cache-write keying (a hyperedge carries its own
     ``source_file``); do not derive it from member nodes.
+
+    ``failed_ast_sources`` (#2543): code files whose AST extractor errored
+    (missing optional extra, etc.) or returned zero nodes. They must not be
+    stamped as up-to-date or a later install of the extra will never re-run.
     """
     root = Path(root)
 
@@ -134,12 +139,16 @@ def _stamped_manifest_files(
             if sf:
                 sem_extracted.add(_resolve(sf))
     partial_resolved = {_resolve(p) for p in (partial_source_files or set())}
+    failed_ast_resolved = {_resolve(p) for p in (failed_ast_sources or [])}
     sem_types = {"document", "paper", "image"}
     return {
         ftype: [
             f for f in flist
-            if ftype not in sem_types
-            or (_resolve(f) in sem_extracted and _resolve(f) not in partial_resolved)
+            if _resolve(f) not in failed_ast_resolved
+            and (
+                ftype not in sem_types
+                or (_resolve(f) in sem_extracted and _resolve(f) not in partial_resolved)
+            )
         ]
         for ftype, flist in files_by_type.items()
     }
@@ -328,6 +337,88 @@ def _stale_graph_sources(
             file=sys.stderr,
         )
     return stale
+
+
+def _zero_node_stamped_code_sources(
+    graph_path: Path,
+    scan_root: Path,
+    unchanged_code: list[str],
+) -> list[str]:
+    """Manifest-stamped code files with a registered extractor but ZERO nodes
+    in the existing graph.json (#2543 heal).
+
+    The failed-source unstamping only covers failures that happen AFTER it
+    shipped; a manifest poisoned by an earlier run (extraction failed, hashes
+    stamped anyway) keeps reporting the file unchanged forever, and the only
+    documented recovery was deleting graphify-out/. A stamped file that the
+    graph has no nodes for, despite an extractor being wired up for it, is
+    exactly that state — re-queue it as changed. Bounded by the same no-wedge
+    property: if it fails again this run it is now left unstamped, and if it
+    succeeds its nodes enter graph.json so the next scan stops re-queuing it.
+
+    Membership mirrors the ``source_file`` spellings extracts store (#1897/
+    #1941: scan-root-relative, forward slash; absolute for out-of-root) and
+    compares NFC-normalized (#2210/#2221).
+    """
+    if not unchanged_code:
+        return []
+    from graphify.paths import nfc
+    try:
+        data = json.loads(graph_path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if not isinstance(data, dict):
+        return []
+    try:
+        root_res = scan_root.resolve()
+    except (OSError, RuntimeError):
+        root_res = scan_root
+    # <out>/graphify-out/graph.json — legacy relative source_files may be
+    # anchored here instead of the scan root (<=0.9.16, #555/#1899).
+    out_base = graph_path.parent.parent
+    try:
+        out_base = out_base.resolve()
+    except (OSError, RuntimeError):
+        pass
+
+    present: set[str] = set()
+    for n in data.get("nodes", []):
+        if not isinstance(n, dict):
+            continue
+        sf = n.get("source_file")
+        if not sf or not isinstance(sf, str):
+            continue
+        present.add(nfc(sf))
+        p = Path(sf)
+        if p.is_absolute():
+            try:
+                present.add(nfc(str(p.resolve())))
+            except (OSError, RuntimeError):
+                pass
+        else:
+            rel = sf.replace("\\", "/")
+            for base in (root_res, out_base):
+                present.add(nfc(os.path.normpath(str(base / rel))))
+
+    from graphify.extract import _get_extractor
+    healed: list[str] = []
+    for f in unchanged_code:
+        p = Path(f)
+        if _get_extractor(p) is None:
+            continue  # no extractor: absence from the graph is expected
+        spellings = {nfc(str(p))}
+        try:
+            spellings.add(nfc(str(p.resolve())))
+        except (OSError, RuntimeError):
+            pass
+        try:
+            spellings.add(nfc(p.resolve().relative_to(root_res).as_posix()))
+        except (ValueError, OSError, RuntimeError):
+            pass
+        if spellings & present:
+            continue  # the graph has this file: stamp is honest
+        healed.append(f)
+    return healed
 
 
 def _prune_graph_json_sources(graph_path: Path, stale_sources: list[str]) -> int:
@@ -2991,6 +3082,24 @@ def dispatch_command(cmd: str) -> None:
             graph_stale_sources = _stale_graph_sources(
                 existing_graph_path, target, _seen_files, detection=detection
             )
+            # #2543 heal: manifests poisoned BEFORE failed-source unstamping
+            # existed carry live hashes for code files whose extraction failed
+            # (missing extra, crash) — stamped up-to-date yet absent from
+            # graph.json, so the incremental gate skips them forever. Treat
+            # such a file as changed and re-queue it; if it fails again this
+            # run it is now left unstamped, so this cannot wedge.
+            _healed_sources = _zero_node_stamped_code_sources(
+                existing_graph_path,
+                target,
+                detection.get("unchanged_files", {}).get("code", []),
+            )
+            if _healed_sources:
+                print(
+                    f"[graphify extract] re-queuing {len(_healed_sources)} "
+                    f"manifest-stamped code file(s) with no nodes in graph.json "
+                    f"(prior failed extraction, #2543)"
+                )
+                code_files.extend(Path(p) for p in _healed_sources)
         else:
             print(f"[graphify extract] scanning {target}")
             detection = _detect(
@@ -3528,8 +3637,16 @@ def dispatch_command(cmd: str) -> None:
         # Path normalization against the scan root happens inside the helper
         # (#1897) so fresh root-relative source_files match detect()'s
         # absolute file lists.
-        _manifest_files = _stamped_manifest_files(files_by_type, sem_result, target,
-                                                   partial_source_files=_partial_semantic_files)
+        # #2543: also drop AST sources that failed (missing optional extra /
+        # zero-node anomaly) so they are not frozen as up-to-date.
+        _failed_ast_sources = list(ast_result.get("failed_sources") or [])
+        _manifest_files = _stamped_manifest_files(
+            files_by_type,
+            sem_result,
+            target,
+            partial_source_files=_partial_semantic_files,
+            failed_ast_sources=_failed_ast_sources,
+        )
 
         # Files dispatched this run but dropped by _stamped_manifest_files
         # above (failed chunk, LLM omission, or any future exclusion) still
@@ -3546,6 +3663,9 @@ def dispatch_command(cmd: str) -> None:
             f for _flist in _manifest_files.values() for f in _flist
         }
         _cleared_semantic = {str(p) for p in semantic_files} - _stamped_semantic
+        # #2543: AST failures need both hashes blanked (clear_ast), not just
+        # semantic_hash — otherwise a prior bad stamp keeps the file "unchanged".
+        _cleared_ast = set(_failed_ast_sources)
 
         # Full-scan manifest saves prune rows for in-root files that left the
         # scan corpus but still exist on disk (#1908). The corpus must be the
@@ -3607,7 +3727,7 @@ def dispatch_command(cmd: str) -> None:
                     "(--no-cluster); outputs left untouched."
                 )
                 try:
-                    _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic)
+                    _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic, clear_ast=_cleared_ast or None)
                 except Exception as exc:
                     print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
                 stages.total()
@@ -3713,7 +3833,7 @@ def dispatch_command(cmd: str) -> None:
                 )
             try:
                 if has_path:
-                    _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic)
+                    _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic, clear_ast=_cleared_ast or None)
             except Exception as exc:
                 print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
             if global_merge:
@@ -3860,7 +3980,7 @@ def dispatch_command(cmd: str) -> None:
         _wja(analysis_path, analysis, indent=2)
         try:
             if has_path:
-                _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic)
+                _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic, clear_ast=_cleared_ast or None)
         except Exception as exc:
             print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
 
