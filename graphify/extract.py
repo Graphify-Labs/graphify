@@ -2117,9 +2117,6 @@ def _merge_csharp_partial_class_nodes(
     per_file: list[dict],
     all_nodes: list[dict],
     all_edges: list[dict],
-) -> None:
-    """Collapse C# `partial class Foo` halves split across files into ONE node
-    (#2332).
     paths: list[Path],
     root: Path,
 ) -> None:
