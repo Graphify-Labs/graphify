@@ -2,7 +2,15 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
-## 0.9.38 (unreleased)
+## 0.9.39 (unreleased)
+
+- Fix: `affected` now traverses a dynamic `import('…')` made inside a function or at module scope (#2584, thanks @phudayyy). The 0.9.38 dedupe keyed only on the target, so an in-function dynamic import (whose symbol-level edge is anchored on the enclosing function) suppressed the file-level edge `affected` follows; the dedupe now keys on the importing file, emitting one file-level `dynamic_import` edge per file/target while keeping the call-site edge.
+- Fix: a Python member call on an untyped receiver (`x.get(...)`) no longer binds by name alone to a same-named module-level function, fabricating a false high-confidence `calls` edge and a god node (#2417, #2586, thanks @EZZEASY). Such a call is now resolved only with receiver-type, import, or `self`/`cls`/`super` evidence, matching the TypeScript fix from 0.9.37; `super().method()` still resolves.
+- Fix: fuzzy dedup no longer over-merges two distinct entities in the same file whose long labels differ by a content word (#2576, thanks @wilyan09007). A one-token difference is judged on the differing tokens rather than the prefix-weighted whole-label similarity, so `asset contribution flow` and `asset consumption flow` stay separate while genuine typo and whitespace/case variants still collapse.
+- Fix: `graphify watch` now rebuilds on a documentation-only deletion batch instead of only flagging it (#2580, thanks @angmeng), so a deleted doc's nodes are evicted immediately rather than waiting for the next code-file event. (The general deleted-file leak was already fixed in 0.9.10; this closes the live-watcher residual.)
+- Fix: Objective-C member-call resolution (#2589, #2590, #2591, thanks @xiongjianxu). A `@protocol` declaration is no longer treated as a receiver type (it collided with a same-named class); a category or class-extension interface (`@interface Foo (Bar)`) now folds into the base class instead of minting a duplicate node; and a message send to a `@property` or ivar receiver (`[self.svc run]`, `[_svc run]`) now resolves through the property/ivar's declared type.
+
+## 0.9.38 (2026-08-09)
 
 - Fix: the 0.9.37 callback-body fix (#2552) no longer lets a local declared in one callback suppress a call in a sibling callback (#2568, thanks @imagineers-tyler). Each callback body's local names are now scoped to that body instead of unioned under the shared declaration, so a real `indirect_call` in one sibling closure is no longer dropped because another sibling declared a same-named local. This can only restore dropped edges, never fabricate.
 - Fix: Kotlin calls in a property initializer are now collected (#2565, thanks @kskchaitanya1993). A class property (`val repo = createRepo()`), a `by lazy { ... }` delegate, a companion-object property, and a top-level property initializer now produce `calls` edges attributed to the enclosing class (or file), including fully-qualified calls. A plain literal initializer produces no edge.

@@ -4778,6 +4778,21 @@ def _extract_generic(
                             obj = func_node.child_by_field_name(config.call_accessor_object_field)
                             if obj is not None and obj.type == "identifier":
                                 member_receiver = _read_text(obj, source)
+                            elif (
+                                config.ts_module == "tree_sitter_python"
+                                and obj is not None
+                                and obj.type == "call"
+                            ):
+                                # ``super().method()`` has a call node as its
+                                # receiver. Preserve it as a known intra-class
+                                # receiver instead of treating it as unresolved.
+                                receiver_func = obj.child_by_field_name("function")
+                                if (
+                                    receiver_func is not None
+                                    and receiver_func.type == "identifier"
+                                    and _read_text(receiver_func, source) == "super"
+                                ):
+                                    member_receiver = "super"
                             elif (obj is not None
                                   and obj.type in config.call_accessor_node_types
                                   and config.call_accessor_object_field):
@@ -4792,12 +4807,17 @@ def _extract_generic(
                         callee_name = _read_text(func_node, source)
 
             if callee_name and callee_name not in _LANGUAGE_BUILTIN_GLOBALS:
-                # A capitalized-receiver member call (`ClassName.method()`) must defer
-                # to receiver-based cross-file resolution: the bare method name can
-                # collide with an in-file node — even the calling method itself, when a
-                # viewset action delegates to a same-named service action — which would
-                # match `tgt_nid == caller_nid` and silently drop the call (#1446). The
-                # captured receiver is resolved later in _resolve_python_member_calls.
+                # Python member calls defer to receiver-based resolution unless the
+                # receiver is known to stay in the current class. Falling back to a
+                # bare method name for an unresolved/lowercase receiver (`d.get()` or
+                # `self.store.get()`) can bind to an unrelated module function and
+                # inflate it into a god node (#2417). Qualified class/module calls are
+                # recovered later by _resolve_python_member_calls when the receiver
+                # supplies enough evidence (#1446/#1883). Known recall trade (#2586):
+                # a same-file `x = Thing(); x.method()` no longer gets an edge — it
+                # came from the same evidence-free bare-name map and could bind wrong
+                # under label collision; local-instantiation receiver typing is a
+                # separate follow-up.
                 # C#: ANY member call with a captured receiver defers to the
                 # receiver-typed resolver — a bare method-name match ignores the
                 # receiver's declared type and mis-binds to an unrelated same-named
@@ -4807,10 +4827,15 @@ def _extract_generic(
                     config.ts_module == "tree_sitter_c_sharp"
                     and is_member_call and member_receiver
                 )
+                _python_defer = (
+                    config.ts_module == "tree_sitter_python"
+                    and is_member_call
+                    and member_receiver not in {"self", "cls", "super"}
+                )
                 _java_defer = (
                     config.ts_module == "tree_sitter_java" and is_member_call
                 )
-                if _java_defer or (
+                if _python_defer or _java_defer or (
                     is_member_call
                     and member_receiver
                     and (
