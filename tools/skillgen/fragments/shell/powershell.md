@@ -51,7 +51,7 @@ if (-not $GRAPHIFY_PYTHON) {
 }
 
 # Save interpreter path — all subsequent steps read this
-$GRAPHIFY_PYTHON | Out-File -FilePath graphify-out\.graphify_python -Encoding utf8 -NoNewline
+[System.IO.File]::WriteAllText("graphify-out\.graphify_python", $GRAPHIFY_PYTHON)
 # Save scan root so `graphify update` (no args) knows where to look next time
 (Resolve-Path INPUT_PATH).Path | Out-File -FilePath graphify-out\.graphify_root -Encoding utf8 -NoNewline
 ```

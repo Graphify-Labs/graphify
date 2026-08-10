@@ -179,7 +179,8 @@ def test_install_embeds_pinned_interpreter(tmp_path):
     commit_hook = (repo / ".git" / "hooks" / "post-commit").read_text()
     checkout_hook = (repo / ".git" / "hooks" / "post-checkout").read_text()
     # Compute the sanitized value the same way install() does.
-    expected = sys.executable if not re.search(r"[^a-zA-Z0-9/_.@:\\-]", sys.executable) else ""
+    from graphify.hooks import _pinned_python
+    expected = _pinned_python()
     if expected:
         assert expected in commit_hook, "sanitized sys.executable missing from post-commit"
         assert expected in checkout_hook, "sanitized sys.executable missing from post-checkout"
@@ -456,6 +457,9 @@ def _extract_case_pattern(marker: str) -> str:
     from graphify.hooks import _PYTHON_DETECT
     for line in _PYTHON_DETECT.splitlines():
         if marker in line:
+            parts = line.strip().split(") ")
+            if len(parts) > 1:
+                return parts[0]
             return line.strip().split(")")[0]
     raise AssertionError(f"case arm containing {marker!r} not found in _PYTHON_DETECT")
 
@@ -477,6 +481,8 @@ def _shell_verdict(pattern: str, candidate: str) -> str:
 @pytest.mark.parametrize("winpath", [
     r"C:\Users\u\.venv\Scripts\python.exe",
     r"C:\Python311\python.exe",
+    r"C:\Program Files\Python313\python.exe",
+    r"C:\Program Files (x86)\Python313\python.exe",
 ])
 def test_file_path_allowlist_accepts_windows_backslash_path(winpath):
     """#2126: the .graphify_python FILE allowlist must accept real Windows paths
@@ -490,6 +496,8 @@ def test_file_path_allowlist_accepts_windows_backslash_path(winpath):
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash required to exercise emitted glob")
 @pytest.mark.parametrize("shebang_path", [
     r"C:\Users\u\.venv\Scripts\python.exe",
+    r"C:\Program Files\Python313\python.exe",
+    r"C:\Program Files (x86)\Python313\python.exe",
 ])
 def test_shebang_allowlist_accepts_windows_backslash_path(shebang_path):
     """#2126: the shebang-parsed launcher allowlist had no `:` or `\\` at all, so
@@ -755,3 +763,64 @@ def test_install_pins_interpreter_path_with_spaces(tmp_path, monkeypatch):
         script = (repo / ".git" / "hooks" / name).read_text()
         assert f"_PINNED='{exe}'" in script, f"{name} did not pin the spaced interpreter"
         assert "_PINNED=''" not in script, f"{name} pinned an empty interpreter (#2166)"
+
+
+def test_install_pins_interpreter_path_with_parentheses(tmp_path, monkeypatch):
+    """Verify that path with parentheses is successfully pinned in the hooks."""
+    import sys as _sys
+
+    from graphify.hooks import install
+
+    exe = r"C:\Program Files (x86)\Python313\python.exe"
+    repo = _make_git_repo(tmp_path)
+    monkeypatch.setattr(_sys, "executable", exe)
+    install(repo)
+
+    for name in ("post-commit", "post-checkout"):
+        script = (repo / ".git" / "hooks" / name).read_text()
+        assert f"_PINNED='{exe}'" in script, f"{name} did not pin the parentheses interpreter"
+        assert "_PINNED=''" not in script, f"{name} pinned an empty interpreter"
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash required to exercise emitted glob")
+def test_python_detect_bom_and_spaces(tmp_path):
+    """Verify that _PYTHON_DETECT correctly strips BOM and preserves spaces in bash."""
+    from graphify.hooks import _PYTHON_DETECT
+    test_python_file = tmp_path / ".graphify_python"
+
+    path_with_space = r"C:\Program Files\Python313\python.exe"
+    path_with_parens = r"C:\Program Files (x86)\Python313\python.exe"
+
+    cases = [
+        (b"\xef\xbb\xbf" + path_with_space.encode("utf-8"), path_with_space),
+        (path_with_space.encode("utf-8"), path_with_space),
+        (b"\xef\xbb\xbf" + path_with_parens.encode("utf-8"), path_with_parens),
+    ]
+
+    for content, expected_resolved in cases:
+        test_python_file.write_bytes(content)
+
+        lines = []
+        in_second_probe = False
+        for line in _PYTHON_DETECT.splitlines():
+            if "# Second probe:" in line:
+                in_second_probe = True
+            elif "# Third probe:" in line:
+                in_second_probe = False
+            if in_second_probe:
+                line = line.replace('graphify-out/.graphify_python', '.graphify_python')
+                lines.append(line)
+
+        lines.append('echo "RESOLVED:$_FROM_FILE"')
+
+        script_content = "\n".join(lines)
+        script_file = tmp_path / "run_test.sh"
+        script_file.write_text(script_content, encoding="utf-8", newline="\n")
+
+        res = subprocess.run(["bash", script_file.name], cwd=str(tmp_path), capture_output=True, text=True)
+        assert res.returncode == 0, res.stderr
+
+        resolved_line = [l for l in res.stdout.splitlines() if l.startswith("RESOLVED:")]
+        assert resolved_line, f"Resolved line not found: {res.stdout}"
+        resolved = resolved_line[0].split(":", 1)[1]
+        assert resolved == expected_resolved, f"Expected {expected_resolved!r}, got {resolved!r}"
