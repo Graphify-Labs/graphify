@@ -327,6 +327,109 @@ def test_unresolved_base_poisons_inherited_member_lookup(tmp_path):
         "unresolved base chain must bail, not mis-bind to Server.Save"
 
 
+# ── Method-scoped receiver typing (#2299) ────────────────────────────────────
+# C# scoping is per-method: a name rebound (even untypably) in ONE method must
+# not poison a same-named, explicitly typed receiver in a DIFFERENT method. The
+# old file-wide table did exactly that, silently deleting true calls edges.
+
+
+def test_cross_method_name_reuse_does_not_poison(tmp_path):
+    """#2299 corpus: `var item = items[i]` (untypable) in RunIndexed must not
+    poison the explicitly typed `Item item` parameter in RunOne."""
+    calls, r = _calls(tmp_path, {
+        "Item.cs": (
+            "namespace Demo {\n"
+            "    public class Item { public void Handle() {} }\n"
+            "}\n"
+        ),
+        "Runner.cs": (
+            "using System.Collections.Generic;\n"
+            "namespace Demo {\n"
+            "    public class Runner {\n"
+            "        public void RunOne(Item item) { item.Handle(); }\n"
+            "        public void RunIndexed(List<Item> items, int i) {\n"
+            "            var item = items[i];\n"
+            "            item.Handle();\n"
+            "        }\n"
+            "    }\n"
+            "}\n"
+        ),
+    })
+    run_one = _find(r, ".RunOne()", "runner")
+    run_indexed = _find(r, ".RunIndexed()", "runner")
+    handle = _find(r, ".Handle()", "item")
+    assert (run_one, handle) in calls, \
+        "typed param receiver must resolve despite a same-named untypable local elsewhere"
+    edge = next(e for e in r["edges"] if e["relation"] == "calls"
+                and e["source"] == run_one and e["target"] == handle)
+    assert edge["confidence"] == "INFERRED"
+    assert (run_indexed, handle) not in calls, \
+        "the untypable local (`var item = items[i]`) stays unresolved — no guessed edge"
+
+
+def test_per_method_locals_resolve_independently(tmp_path):
+    """Same local name bound to DIFFERENT types in different methods: each
+    method resolves to its own binding (the file-wide table poisoned both)."""
+    calls, r = _calls(tmp_path, {
+        "S.cs": (
+            "public class HtmlWriter { public void Render() {} }\n"
+            "public class TextWriter { public void Render() {} }\n"
+            "public class Doc {\n"
+            "    public void AsHtml() { var w = new HtmlWriter(); w.Render(); }\n"
+            "    public void AsText() { var w = new TextWriter(); w.Render(); }\n"
+            "}\n"
+        )
+    })
+    as_html = _find(r, ".AsHtml()", "doc")
+    as_text = _find(r, ".AsText()", "doc")
+    html_render = _find(r, ".Render()", "htmlwriter")
+    text_render = _find(r, ".Render()", "textwriter")
+    assert (as_html, html_render) in calls
+    assert (as_text, text_render) in calls
+    assert (as_html, text_render) not in calls, "no cross-method binding leak"
+    assert (as_text, html_render) not in calls, "no cross-method binding leak"
+
+
+def test_same_method_shadow_still_poisons(tmp_path):
+    """Keep-the-bar: a SAME-method conflict (param `Server x` + local `Other x`)
+    still poisons the name — raw calls carry no lexical position, so neither
+    candidate may win."""
+    calls, r = _calls(tmp_path, {
+        "S.cs": (
+            "public class Server { public bool Run() => true; }\n"
+            "public class Other  { public bool Run() => false; }\n"
+            "public class Holder {\n"
+            "    public bool A(Server x) { Other x = new Other(); return x.Run(); }\n"
+            "}\n"
+        )
+    })
+    holder_a = _find(r, ".A()", "holder")
+    server_run = _find(r, ".Run()", "server")
+    other_run = _find(r, ".Run()", "other")
+    assert (holder_a, server_run) not in calls
+    assert (holder_a, other_run) not in calls
+
+
+def test_file_scoped_namespace_receiver_resolves(tmp_path):
+    """The C# 10 file-scoped namespace form (`namespace Demo;`) types receivers
+    the same as the braced form."""
+    calls, r = _calls(tmp_path, {
+        "Item.cs": (
+            "namespace Demo;\n"
+            "public class Item { public void Handle() {} }\n"
+        ),
+        "Runner.cs": (
+            "namespace Demo;\n"
+            "public class Runner {\n"
+            "    public void RunOne(Item item) { item.Handle(); }\n"
+            "}\n"
+        ),
+    })
+    run_one = _find(r, ".RunOne()", "runner")
+    handle = _find(r, ".Handle()", "item")
+    assert (run_one, handle) in calls
+
+
 def test_method_chained_off_new_expression_resolves(tmp_path):
     """#1770: a method invoked directly on a `new X(...)` object-creation
     expression (no intermediate variable) must still emit a calls edge to the
@@ -349,3 +452,219 @@ def test_method_chained_off_new_expression_resolves(tmp_path):
         "run" in s and label.get(t) == ".Combine()"
         for s, t in calls
     ), f"chained call off new Merger(...) not captured: {[(s, label.get(t)) for s, t in calls]}"
+
+
+# ── Inline-declared receivers (#2346) ─────────────────────────────────────────
+# `out T x`, `is T x`, `is not T x`, `case T x:` and switch-arm `T x =>` all
+# introduce a binding the receiver table never saw — `x.Method()` on any of
+# them silently dropped the edge. `out var x` stays untypable (poison, never a
+# guess), and the existing bind/poison conflict rules apply unchanged.
+
+
+_TWO_GO = (
+    "public class Sect { public bool Go() => true; }\n"
+    "public class Twig { public bool Go() => false; }\n"
+)
+
+
+def test_out_declared_receiver_resolves(tmp_path):
+    """`b.TryGet(out Sect s)` binds s: Sect — `s.Go()` resolves to Sect.Go."""
+    calls, r = _calls(tmp_path, {
+        "S.cs": (
+            _TWO_GO +
+            "public class Box { public bool TryGet(out Sect s) { s = new Sect(); return true; } }\n"
+            "public class R {\n"
+            "    public bool A(Box b) { if (b.TryGet(out Sect s)) { return s.Go(); } return false; }\n"
+            "}\n"
+        )
+    })
+    r_a = _find(r, ".A()", "_r_a")
+    sect_go = _find(r, ".Go()", "sect")
+    twig_go = _find(r, ".Go()", "twig")
+    assert (r_a, sect_go) in calls, "out-declared receiver must resolve to its declared type"
+    assert (r_a, twig_go) not in calls
+
+
+def test_out_var_receiver_stays_unbound(tmp_path):
+    """`out var v` carries no type name — `v.Go()` must emit NO edge (poison,
+    not a guess)."""
+    calls, r = _calls(tmp_path, {
+        "S.cs": (
+            _TWO_GO +
+            "public class Box { public bool TryGet(out Sect s) { s = new Sect(); return true; } }\n"
+            "public class R {\n"
+            "    public bool B(Box b) { b.TryGet(out var v); return v.Go(); }\n"
+            "}\n"
+        )
+    })
+    assert not any("_r_b" in s and "go" in t.lower() for s, t in calls), \
+        "`out var` receiver is untypable — no edge to either Go()"
+
+
+def test_is_pattern_receiver_resolves(tmp_path):
+    calls, r = _calls(tmp_path, {
+        "S.cs": (
+            _TWO_GO +
+            "public class R {\n"
+            "    public bool A(object o) { if (o is Sect s) { return s.Go(); } return false; }\n"
+            "}\n"
+        )
+    })
+    r_a = _find(r, ".A()", "_r_a")
+    sect_go = _find(r, ".Go()", "sect")
+    twig_go = _find(r, ".Go()", "twig")
+    assert (r_a, sect_go) in calls, "is-pattern receiver must resolve"
+    assert (r_a, twig_go) not in calls
+
+
+def test_is_not_pattern_receiver_resolves(tmp_path):
+    calls, r = _calls(tmp_path, {
+        "S.cs": (
+            _TWO_GO +
+            "public class R {\n"
+            "    public bool A(object o) { if (o is not Sect s) { return false; } return s.Go(); }\n"
+            "}\n"
+        )
+    })
+    r_a = _find(r, ".A()", "_r_a")
+    sect_go = _find(r, ".Go()", "sect")
+    twig_go = _find(r, ".Go()", "twig")
+    assert (r_a, sect_go) in calls, "is-not-pattern receiver must resolve"
+    assert (r_a, twig_go) not in calls
+
+
+def test_case_pattern_receiver_resolves(tmp_path):
+    calls, r = _calls(tmp_path, {
+        "S.cs": (
+            _TWO_GO +
+            "public class R {\n"
+            "    public bool A(object o) {\n"
+            "        switch (o) { case Sect s: return s.Go(); }\n"
+            "        return false;\n"
+            "    }\n"
+            "}\n"
+        )
+    })
+    r_a = _find(r, ".A()", "_r_a")
+    sect_go = _find(r, ".Go()", "sect")
+    twig_go = _find(r, ".Go()", "twig")
+    assert (r_a, sect_go) in calls, "case-pattern receiver must resolve"
+    assert (r_a, twig_go) not in calls
+
+
+def test_switch_arm_pattern_receiver_resolves(tmp_path):
+    calls, r = _calls(tmp_path, {
+        "S.cs": (
+            _TWO_GO +
+            "public class R {\n"
+            "    public bool A(object o) {\n"
+            "        return o switch { Sect s => s.Go(), _ => false };\n"
+            "    }\n"
+            "}\n"
+        )
+    })
+    r_a = _find(r, ".A()", "_r_a")
+    sect_go = _find(r, ".Go()", "sect")
+    twig_go = _find(r, ".Go()", "twig")
+    assert (r_a, sect_go) in calls, "switch-expression-arm receiver must resolve"
+    assert (r_a, twig_go) not in calls
+
+
+# ── Lexically-scoped receiver typing (#2472) ──────────────────────────────────
+# The #2346 harvest of `out var x` (untypable) rode the #2299 method-wide
+# poison rule: ANY None-typed binding of a name wiped a correctly typed
+# same-name binding in a DIFFERENT lexical scope of the same method, dropping
+# true calls edges. Bindings are now scoped by byte range and resolved at the
+# call site: exactly one visible typed binding stamps, an untypable or tied
+# binding at the call site still yields no edge (never a guess).
+
+
+def test_static_local_function_param_survives_out_var_reuse(tmp_path):
+    """#2472 corpus: a typed `Target2 shared` local-function parameter must
+    keep its calls edges despite an `out var shared` (untypable) elsewhere in
+    the enclosing method — while `shared.Gamma()` on the out-var itself stays
+    unresolved (`out var` is still untyped: recovering it from the callee's
+    `out` parameter signature is a separate, pre-existing gap)."""
+    calls, r = _calls(tmp_path, {
+        "S.cs": (
+            "public class Target2 {\n"
+            "    public bool Alpha() => true;\n"
+            "    public bool Beta() => true;\n"
+            "    public bool Gamma() => true;\n"
+            "}\n"
+            "public class Maker { public bool Make(out int v) { v = 1; return true; } }\n"
+            "public class R {\n"
+            "    public bool Outer(Maker m) {\n"
+            "        m.Make(out var shared);\n"
+            "        shared.Gamma();\n"
+            "        return Inner(new Target2());\n"
+            "        static bool Inner(Target2 shared) { return shared.Alpha() && shared.Beta(); }\n"
+            "    }\n"
+            "}\n"
+        )
+    })
+    outer = _find(r, ".Outer()", "_r_outer")
+    alpha = _find(r, ".Alpha()", "target2")
+    beta = _find(r, ".Beta()", "target2")
+    gamma = _find(r, ".Gamma()", "target2")
+    assert (outer, alpha) in calls, \
+        "typed local-function param must survive a same-named out-var elsewhere"
+    assert (outer, beta) in calls
+    for tgt in (alpha, beta):
+        edge = next(e for e in r["edges"] if e["relation"] == "calls"
+                    and e["source"] == outer and e["target"] == tgt)
+        assert edge["confidence"] == "INFERRED"
+    assert (outer, gamma) not in calls, \
+        "the out-var receiver itself stays untypable — no guessed edge, and no " \
+        "method-wide binding leak from the local-function param"
+
+
+def test_untypeable_out_var_in_sibling_block_does_not_poison(tmp_path):
+    """An `out var s` in the ELSE block must not wipe the typed `Server s`
+    declared in the sibling IF block — the two scopes never overlap."""
+    calls, r = _calls(tmp_path, {
+        "S.cs": (
+            "public class Server { public bool Save() => true; }\n"
+            "public class Cache  { public bool Save() => false; }\n"
+            "public class Maker { public bool Make(out int v) { v = 1; return true; } }\n"
+            "public class R {\n"
+            "    public bool A(Maker m, bool flag) {\n"
+            "        if (flag) {\n"
+            "            Server s = new Server();\n"
+            "            return s.Save();\n"
+            "        } else {\n"
+            "            m.Make(out var s);\n"
+            "            return true;\n"
+            "        }\n"
+            "    }\n"
+            "}\n"
+        )
+    })
+    r_a = _find(r, ".A()", "_r_a")
+    server_save = _find(r, ".Save()", "server")
+    cache_save = _find(r, ".Save()", "cache")
+    assert (r_a, server_save) in calls, \
+        "a sibling-block out-var must not poison the typed local's scope"
+    assert (r_a, cache_save) not in calls
+
+
+def test_sibling_pattern_rebind_conflict_poisons(tmp_path):
+    """The same name pattern-bound to two DIFFERENT types in one method: raw
+    calls carry no lexical position, so neither candidate may win — no edge."""
+    calls, r = _calls(tmp_path, {
+        "S.cs": (
+            _TWO_GO +
+            "public class R {\n"
+            "    public bool A(object o) {\n"
+            "        if (o is Sect x) { return x.Go(); }\n"
+            "        if (o is Twig x) { return x.Go(); }\n"
+            "        return false;\n"
+            "    }\n"
+            "}\n"
+        )
+    })
+    r_a = _find(r, ".A()", "_r_a")
+    sect_go = _find(r, ".Go()", "sect")
+    twig_go = _find(r, ".Go()", "twig")
+    assert (r_a, sect_go) not in calls, "conflicting pattern bindings must poison the name"
+    assert (r_a, twig_go) not in calls, "conflicting pattern bindings must poison the name"

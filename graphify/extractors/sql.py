@@ -7,6 +7,26 @@ from pathlib import Path
 from graphify.extractors.base import _file_stem, _make_id
 
 
+def _norm_ident(name: str) -> str:
+    """Normalize a SQL identifier for name-based reference resolution.
+
+    Splits on `.`, strips one pair of surrounding delimiters from each part
+    (double quotes for Postgres/ANSI, backticks for MySQL, brackets for
+    T-SQL), lowercases, and rejoins. So `"public"."users"`, `public.users`,
+    and `PUBLIC.USERS` all normalize to `public.users`. Used ONLY for
+    `table_nids` keys and lookups — node ids and display labels keep the
+    original text.
+    """
+    parts = []
+    for part in name.split("."):
+        p = part.strip()
+        if len(p) >= 2 and ((p[0] == p[-1] and p[0] in ('"', "`"))
+                            or (p[0] == "[" and p[-1] == "]")):
+            p = p[1:-1]
+        parts.append(p.lower())
+    return ".".join(parts)
+
+
 def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
     """Extract tables, views, functions, and relationships from .sql files via tree-sitter."""
     try:
@@ -61,6 +81,29 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                        "confidence": "EXTRACTED", "source_file": str_path,
                        "source_location": f"L{line}", "weight": 1.0})
 
+    def _ref_stub(name: str) -> str:
+        """Sourceless bare-name stub for a table referenced but not defined here.
+
+        SQL references are NAME-based, so a table defined in another file (e.g.
+        prisma migration m2 referencing a table created in m1) can only resolve
+        at the corpus level. Minting `_make_id(stem, name)` under THIS file's
+        stem fabricated a node-less compound id — an absolute-path slug when the
+        input path was absolute — that could never match the real definition
+        (#2324). Instead emit a SOURCELESS stub, mirroring the Go extractor's
+        cross-file pattern (#1402): `_rewire_unique_stub_nodes` collapses it
+        onto the unique real table definition, and an unresolvable name survives
+        as a portable name-only node instead of dangling. No contains edge: a
+        sourced/contained stub would get the referencing file's path baked into
+        its id by disambiguation, blocking the rewire.
+        """
+        nid = _make_id(name)
+        if nid not in seen_ids:
+            seen_ids.add(nid)
+            nodes.append({"id": nid, "label": name, "file_type": "code",
+                           "source_file": "", "source_location": "",
+                           "origin_file": str_path})
+        return nid
+
     def walk(node) -> None:
         t = node.type
         line = node.start_point[0] + 1
@@ -70,7 +113,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
             if name:
                 nid = _make_id(stem, name)
                 _add_node(nid, name, line)
-                table_nids[name.lower()] = nid
+                table_nids[_norm_ident(name)] = nid
                 # Foreign key REFERENCES
                 for col in node.children:
                     if col.type == "column_definitions":
@@ -88,9 +131,9 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                                         ref_name = _read(cc)
                                         break
                                 if ref_name:
-                                    ref_nid = table_nids.get(ref_name.lower()) or _make_id(stem, ref_name)
+                                    ref_nid = table_nids.get(_norm_ident(ref_name)) or _ref_stub(ref_name)
                                     _add_edge(nid, ref_nid, "references", line)
-                                    seen_refs.add(ref_name.lower())
+                                    seen_refs.add(_norm_ident(ref_name))
                             elif cd.type == "constraints":
                                 # Table-level FOREIGN KEY ... REFERENCES ... constraints
                                 for constraint in cd.children:
@@ -105,9 +148,9 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                                             ref_name = _read(cc)
                                             break
                                     if ref_name:
-                                        ref_nid = table_nids.get(ref_name.lower()) or _make_id(stem, ref_name)
+                                        ref_nid = table_nids.get(_norm_ident(ref_name)) or _ref_stub(ref_name)
                                         _add_edge(nid, ref_nid, "references", line)
-                                        seen_refs.add(ref_name.lower())
+                                        seen_refs.add(_norm_ident(ref_name))
                         if has_error:
                             # Dialect-specific syntax (e.g. Firebird COMPUTED BY) causes ERROR
                             # nodes that make the parser drop the trailing constraints block.
@@ -115,17 +158,17 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                             col_text = _read(col)
                             for rm in re.finditer(r"\bREFERENCES\s+([\w$]+)", col_text, re.IGNORECASE):
                                 ref_name = rm.group(1)
-                                if ref_name.lower() not in seen_refs:
-                                    ref_nid = table_nids.get(ref_name.lower()) or _make_id(stem, ref_name)
+                                if _norm_ident(ref_name) not in seen_refs:
+                                    ref_nid = table_nids.get(_norm_ident(ref_name)) or _ref_stub(ref_name)
                                     _add_edge(nid, ref_nid, "references", line)
-                                    seen_refs.add(ref_name.lower())
+                                    seen_refs.add(_norm_ident(ref_name))
 
         elif t == "create_view":
             name = _obj_name(node)
             if name:
                 nid = _make_id(stem, name)
                 _add_node(nid, name, line)
-                table_nids[name.lower()] = nid
+                table_nids[_norm_ident(name)] = nid
                 # FROM/JOIN table references inside view body
                 _walk_from_refs(node, nid, line)
 
@@ -146,11 +189,12 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         elif t == "alter_table":
             name = _obj_name(node)
             if name:
-                src_nid = table_nids.get(name.lower())
+                src_nid = table_nids.get(_norm_ident(name))
                 if not src_nid:
-                    src_nid = _make_id(stem, name)
-                    _add_node(src_nid, name, line)
-                    table_nids[name.lower()] = src_nid
+                    # Subject table not defined in this file: sourceless stub,
+                    # not a sourced wrong-stem node (#2324).
+                    src_nid = _ref_stub(name)
+                    table_nids[_norm_ident(name)] = src_nid
                 for child in node.children:
                     if child.type == "add_constraint":
                         for cc in child.children:
@@ -165,9 +209,8 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                                     ref_name = _read(ccc)
                                     break
                             if ref_name:
-                                ref_nid = table_nids.get(ref_name.lower())
-                                if not ref_nid:
-                                    ref_nid = _make_id(stem, ref_name)
+                                ref_nid = (table_nids.get(_norm_ident(ref_name))
+                                           or _ref_stub(ref_name))
                                 _add_edge(src_nid, ref_nid, "references", line)
 
         elif t == "create_trigger":
@@ -188,7 +231,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                 trig_nid = _make_id(stem, trig_name)
                 _add_node(trig_nid, trig_name, line)
                 if tbl_name:
-                    tbl_nid = table_nids.get(tbl_name.lower()) or _make_id(stem, tbl_name)
+                    tbl_nid = table_nids.get(_norm_ident(tbl_name)) or _ref_stub(tbl_name)
                     _add_edge(trig_nid, tbl_nid, "triggers", line)
 
         elif t == "ERROR":
@@ -235,42 +278,111 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                     fm = re.search(r"\bFOR\s+([\w$]+)", text, re.IGNORECASE)
                     if fm:
                         tbl = fm.group(1)
-                        tbl_nid = table_nids.get(tbl.lower()) or _make_id(stem, tbl)
+                        tbl_nid = table_nids.get(_norm_ident(tbl)) or _ref_stub(tbl)
                         _add_edge(obj_nid, tbl_nid, "triggers", line)
                 _NON_TABLES = {
                     "select", "where", "set", "dual", "null", "true", "false",
                     "first", "skip", "rows", "next", "only", "lateral",
                 }
+                # Same CTE-blindness as the AST path (#2577): a `WITH <name> AS (`
+                # binding is statement-local, not a table, so its name must not
+                # become a reads_from stub. The regex has no scope tree, so the
+                # skip is body-wide — the right trade for a recovery path.
+                for cm in re.finditer(
+                    r"(?:\bWITH\s+(?:RECURSIVE\s+)?|,\s*)([\w$]+)\s*(?:\([^()]*\))?\s+AS\s*\(",
+                    text, re.IGNORECASE,
+                ):
+                    _NON_TABLES.add(_norm_ident(cm.group(1)))
                 seen_tbls: set[str] = set()
                 for rm in re.finditer(r"\b(?:FROM|JOIN|INTO)\s+([\w$]+)", text, re.IGNORECASE):
                     tbl = rm.group(1)
-                    if tbl.lower() not in _NON_TABLES and tbl.lower() not in seen_tbls:
-                        seen_tbls.add(tbl.lower())
-                        tbl_nid = table_nids.get(tbl.lower()) or _make_id(stem, tbl)
+                    if _norm_ident(tbl) not in _NON_TABLES and _norm_ident(tbl) not in seen_tbls:
+                        seen_tbls.add(_norm_ident(tbl))
+                        tbl_nid = table_nids.get(_norm_ident(tbl)) or _ref_stub(tbl)
                         _add_edge(obj_nid, tbl_nid, "reads_from", line)
                 for rm in re.finditer(r"\bUPDATE\s+([\w$]+)", text, re.IGNORECASE):
                     tbl = rm.group(1)
-                    if tbl.lower() not in _NON_TABLES and tbl.lower() not in seen_tbls:
-                        seen_tbls.add(tbl.lower())
-                        tbl_nid = table_nids.get(tbl.lower()) or _make_id(stem, tbl)
+                    if _norm_ident(tbl) not in _NON_TABLES and _norm_ident(tbl) not in seen_tbls:
+                        seen_tbls.add(_norm_ident(tbl))
+                        tbl_nid = table_nids.get(_norm_ident(tbl)) or _ref_stub(tbl)
                         _add_edge(obj_nid, tbl_nid, "reads_from", line)
 
         for child in node.children:
             walk(child)
 
-    def _walk_from_refs(node, caller_nid: str, line: int) -> None:
-        """Recursively find FROM/JOIN table references inside a node."""
+    def _walk_from_refs(node, caller_nid: str, line: int,
+                        cte_names: frozenset[str] = frozenset()) -> None:
+        """Recursively find FROM/JOIN table references inside a node, skipping CTEs.
+
+        A name bound by `WITH <name> AS (...)` is not a table: emitting it as a
+        `reads_from` target minted a bare `_ref_stub`, and because that stub is
+        intentionally sourceless (see `_ref_stub`) it carried no schema, file, or
+        language namespace, so a CTE named `levels` or `slug` collided with any
+        same-named node from another language during the build (#2577).
+
+        Scoping matters: a CTE is visible only inside the query that declares it,
+        and a `WITH` inside a subquery is scoped to that subquery alone. So the
+        active set is extended PER SUBTREE — each node's directly-owned `cte`
+        children (`create_query` for a statement-level WITH, `subquery` for a
+        nested one) join the set passed down into that node's recursion only. A
+        single statement-wide pre-collect would also suppress an OUTER reference
+        to a real table that merely shares a subquery-CTE's name
+        (`... FROM t2 JOIN (WITH t2 AS (...) SELECT ...) sub`), dropping the
+        real `-> t2` edge.
+        """
+        own: set[str] = set()
+        for c in node.children:
+            if c.type != "cte":
+                continue
+            # First identifier is the CTE's name; later ones are its column
+            # list (`WITH levels(a, b) AS (...)`), which must not be skipped.
+            for cc in c.children:
+                if cc.type in ("identifier", "object_reference"):
+                    own.add(_norm_ident(_read(cc)))
+                    break
+        if own:
+            cte_names = frozenset(cte_names | own)
         if node.type in ("from", "join"):
             for c in node.children:
                 if c.type == "relation":
                     for cc in c.children:
                         if cc.type == "object_reference":
                             tbl = _read(cc)
-                            tbl_nid = _make_id(stem, tbl)
+                            if _norm_ident(tbl) in cte_names:
+                                continue
+                            tbl_nid = table_nids.get(_norm_ident(tbl)) or _ref_stub(tbl)
                             _add_edge(caller_nid, tbl_nid, "reads_from",
                                       c.start_point[0] + 1)
         for child in node.children:
-            _walk_from_refs(child, caller_nid, line)
+            _walk_from_refs(child, caller_nid, line, cte_names)
+
+    # Pre-pass: register every table/view DEFINED in this file before walking,
+    # so forward references (a FK to a table created later in the same file)
+    # still resolve to the real sourced node instead of falling back to a stub.
+    def _collect_defined_names(node) -> None:
+        if node.type in ("create_table", "create_view"):
+            name = _obj_name(node)
+            if name:
+                table_nids[_norm_ident(name)] = _make_id(stem, name)
+        for child in node.children:
+            _collect_defined_names(child)
+
+    _collect_defined_names(root)
+
+    # Secondary bare-name aliases: a reference written without a schema
+    # (`REFERENCES users`) should resolve to a schema-qualified definition
+    # (`public.users`) when that is unambiguous. Never shadow an explicit
+    # definition, and skip bare names defined under more than one schema.
+    bare_candidates: dict[str, str | None] = {}
+    for key, alias_nid in table_nids.items():
+        if "." in key:
+            bare = key.rsplit(".", 1)[1]
+            bare_candidates[bare] = (
+                alias_nid if bare_candidates.get(bare, alias_nid) == alias_nid else None
+            )
+    for bare, alias_nid in bare_candidates.items():
+        if alias_nid is not None and bare not in table_nids:
+            table_nids[bare] = alias_nid
 
     for stmt in root.children:
         if stmt.type == "statement":
@@ -286,7 +398,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
     src_text = source.decode("utf-8", errors="replace")
     for m in re.finditer(r"CREATE\s+TABLE\s+([\w$]+)\s*\(", src_text, re.IGNORECASE):
         tbl_name = m.group(1)
-        tbl_nid = table_nids.get(tbl_name.lower())
+        tbl_nid = table_nids.get(_norm_ident(tbl_name))
         if tbl_nid is None:
             continue
         tbl_line = src_text[: m.start()].count("\n") + 1
@@ -295,7 +407,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         block = tail[: end.start() + 1] if end else tail
         for rm in re.finditer(r"\bREFERENCES\s+([\w$]+)", block, re.IGNORECASE):
             ref_name = rm.group(1)
-            ref_nid = table_nids.get(ref_name.lower()) or _make_id(stem, ref_name)
+            ref_nid = table_nids.get(_norm_ident(ref_name)) or _ref_stub(ref_name)
             if (tbl_nid, ref_nid) not in emitted:
                 _add_edge(tbl_nid, ref_nid, "references", tbl_line)
                 emitted.add((tbl_nid, ref_nid))

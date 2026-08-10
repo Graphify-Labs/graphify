@@ -671,6 +671,9 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
     print()
     print("  /graphify .")
     print()
+    print("Prefer a hosted version? Early access to the graphify platform is")
+    print("open free before the public v1 launch: https://app.graphify.com")
+    print()
 def _print_install_usage() -> None:
     platforms = ", ".join([*_PLATFORM_CONFIG, "gemini", "cursor"])
     print("Usage: graphify install [--project] [--strict] [--platform P|P]")
@@ -915,6 +918,9 @@ def vscode_uninstall(project_dir: Path | None = None) -> None:
         print(f"  {instructions}  ->  deleted (was empty after removal)")
 _ANTIGRAVITY_RULES_PATH = Path(".agents") / "rules" / "graphify.md"
 _ANTIGRAVITY_WORKFLOW_PATH = Path(".agents") / "workflows" / "graphify.md"
+# Names no SKILL.md location on purpose: this constant is shared by the global and
+# project-scoped installs, which put the skill in different places, so any hardcoded
+# path dangles for the other scope. Antigravity resolves the skill by frontmatter name.
 _ANTIGRAVITY_WORKFLOW = """\
 ---
 name: graphify
@@ -923,7 +929,7 @@ description: Turn any folder of files into a navigable knowledge graph
 
 # Workflow: graphify
 
-Follow the graphify skill installed at ~/.gemini/config/skills/graphify/SKILL.md to run the full pipeline.
+Follow the graphify skill to run the full pipeline.
 
 If no path argument is given, use `.` (current directory).
 """

@@ -9,13 +9,14 @@ from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
 from functools import lru_cache
 from pathlib import Path
+from typing import Callable
 
 from graphify.google_workspace import (
     GOOGLE_WORKSPACE_EXTENSIONS,
     convert_google_workspace_file,
     google_workspace_enabled,
 )
-from graphify.paths import GRAPHIFY_OUT, GRAPHIFY_OUT_NAME, out_path
+from graphify.paths import GRAPHIFY_OUT, out_path
 
 
 class FileType(str, Enum):
@@ -793,9 +794,11 @@ _SKIP_DIRS = {
     "site-packages", "lib64",
     ".pytest_cache", ".mypy_cache", ".ruff_cache",
     ".tox", ".nox", ".eggs", "*.egg-info",  # nox is tox's successor, same .nox/ venv shape (#1804)
-    "graphify-out", GRAPHIFY_OUT_NAME,  # never treat own output as source input (#524); honour GRAPHIFY_OUT (#1423)
+    "graphify-out",  # never treat the default output as source input (#524)
     # Coverage/test-artefact dirs — generated, never architecturally meaningful
-    "coverage", "lcov-report",              # Vitest/Istanbul/nyc HTML reports (#870)
+    "lcov-report",                          # Vitest/Istanbul/nyc HTML reports (#870);
+                                            # bare "coverage" is gated on report
+                                            # artefacts below (#2339)
     "visual-tests", "visual-test",          # Playwright/visual-regression bundles (#869)
     "__snapshots__",                        # Jest/Vitest snapshot dir (unambiguous)
     "storybook-static",                     # Storybook production build output
@@ -823,6 +826,39 @@ _SKIP_FILES = {
 # silently dropped legitimate source from the graph (#1666). "__snapshots__" stays
 # unconditionally pruned above; only the ambiguous bare name is gated here.
 _JS_SNAPSHOT_TEST_ROOTS = frozenset({"__tests__", "__test__"})
+
+# Files a coverage tool writes into its own output dir. Any one of them is proof
+# the directory is generated: lcov (lcov.info), nyc/Istanbul (coverage-final.json,
+# clover.xml, the lcov-report/ subtree), coverage.py (coverage.xml, .coverage),
+# JaCoCo/Cobertura (jacoco.xml, cobertura-coverage.xml).
+_COVERAGE_ARTIFACT_FILES = frozenset({
+    "lcov.info", "coverage-final.json", "coverage-summary.json",
+    "clover.xml", "coverage.xml", "cobertura-coverage.xml", "jacoco.xml",
+    ".coverage", "index.html",
+})
+_COVERAGE_ARTIFACT_DIRS = frozenset({"lcov-report", "html-report"})
+
+
+def _has_coverage_artifacts(d: "Path") -> bool:
+    """True only when *d* holds files a coverage tool actually generated.
+
+    ``coverage`` is a legitimate package name (a Python package, a Go/Rust module,
+    a domain namespace), so pruning it by name alone silently drops real source —
+    an entire 5-module package in #2339, with its dependents left in the graph so
+    queries still returned plausible neighbours. Prune it only on real evidence,
+    mirroring the ``snapshots``/``env`` gating (#1666/#2058): a coverage report
+    file, or an Istanbul/lcov HTML report subtree.
+    """
+    try:
+        for name in _COVERAGE_ARTIFACT_FILES:
+            if (d / name).is_file():
+                return True
+        for name in _COVERAGE_ARTIFACT_DIRS:
+            if (d / name).is_dir():
+                return True
+    except OSError:
+        pass
+    return False
 
 
 def _has_venv_markers(d: "Path") -> bool:
@@ -858,6 +894,12 @@ def _is_noise_dir(part: str, parent: "Path | None" = None) -> bool:
         if parent is None:
             return False  # cannot verify; keep a possibly-real code dir
         return _has_venv_markers(parent / part)
+    if part == "coverage":
+        # Ambiguous: a generated report dir OR a real package named coverage.
+        # Prune only on actual coverage-artefact evidence (#2339).
+        if parent is None:
+            return False  # cannot verify; keep a possibly-real code dir
+        return _has_coverage_artifacts(parent / part)
     if part == "snapshots":
         # Prune only when it looks like an actual JS/Vitest snapshot dir.
         if parent is None:
@@ -1155,6 +1197,69 @@ def _is_ignored(
     return _eval(path)
 
 
+def ignored_predicate(
+    root: Path,
+    *,
+    extra_excludes: list[str] | None = None,
+    gitignore: bool = True,
+) -> Callable[[Path], bool]:
+    """Build a per-path predicate answering "would detect() exclude this path?".
+
+    Mirrors detect()'s ignore decisions for a single existing path WITHOUT
+    re-walking the corpus, from the same machinery detect() uses: the ancestor
+    .graphifyignore/.gitignore chain (_load_graphifyignore), CLI/persisted
+    ``--exclude`` patterns appended last at the root anchor (#947), nested
+    per-directory ignore files along the path's own lineage (#1206), the
+    _is_noise_dir directory pruning, and _SKIP_FILES. The sensitive-file
+    heuristic (_is_sensitive) is deliberately NOT included: callers use this
+    predicate as positive evidence of a live ignore RULE (#2495), and a
+    heuristic match is not user intent.
+
+    Nested patterns are loaded lazily, once per directory, into one shared
+    pattern list. That accumulation cannot cross-contaminate results — a
+    pattern only ever matches paths under its anchor directory, so patterns
+    from a sibling subtree are inert — which is the same invariant detect()'s
+    live os.walk relies on, and it keeps the shared _is_ignored cache valid.
+    """
+    root = root.resolve()
+    patterns = _load_graphifyignore(root, gitignore=gitignore)
+    if extra_excludes:
+        for pat in extra_excludes:
+            line = _parse_gitignore_line(pat)
+            if line:
+                patterns.append((root, line))
+    cache: dict[Path, bool] = {}
+    # root's own ignore file is the last entry of _load_graphifyignore's chain.
+    loaded_dirs: set[Path] = {root}
+
+    def _ignored(path: Path) -> bool:
+        path = Path(os.path.abspath(path))
+        try:
+            rel_parts = path.relative_to(root).parts
+        except ValueError:
+            return False  # outside the scan root: detect() never considered it
+        if path.name in _SKIP_FILES:
+            return True
+        # Noise-dir pruning: os.walk never descends these, so anything beneath
+        # one is excluded from the corpus regardless of ignore patterns.
+        parent = root
+        for part in rel_parts[:-1]:
+            if _is_noise_dir(part, parent):
+                return True
+            parent = parent / part
+        # Load ignore files along this path's own lineage — detect()'s walk
+        # would have loaded exactly these before reaching the file (#1206).
+        ancestor = root
+        for part in rel_parts[:-1]:
+            ancestor = ancestor / part
+            if ancestor not in loaded_dirs:
+                loaded_dirs.add(ancestor)
+                patterns.extend(_load_dir_own_ignore(ancestor, gitignore=gitignore))
+        return _is_ignored(path, root, patterns, _cache=cache)
+
+    return _ignored
+
+
 def _auto_follow_symlinks(root: Path) -> bool:
     """Return whether ``root`` has any direct symlinked child.
 
@@ -1182,6 +1287,13 @@ def _resolves_under_root(path: Path, root: Path) -> bool:
 
 def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace: bool | None = None, extra_excludes: list[str] | None = None, cache_root: Path | None = None, gitignore: bool = True) -> dict:
     root = root.resolve()
+    configured_out_dir = root / GRAPHIFY_OUT
+    configured_out_names = {configured_out_dir.name}
+    try:
+        configured_out_dir = configured_out_dir.resolve()
+    except (OSError, RuntimeError):
+        configured_out_dir = configured_out_dir.absolute()
+    configured_out_names.add(configured_out_dir.name)
     # .graphifyinclude support was removed (#2112): its loader and matchers had
     # no consumers, so the file has been a silent no-op since dot directories
     # became indexed by default (#873). Surface that once per scan so a
@@ -1295,6 +1407,16 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                 # repos for no correctness gain.
                 kept_dirs: list[str] = []
                 for d in dirnames:
+                    child = dp / d
+                    is_configured_out = False
+                    if d in configured_out_names:
+                        try:
+                            is_configured_out = child.resolve() == configured_out_dir
+                        except (OSError, RuntimeError):
+                            pass
+                    if is_configured_out:
+                        pruned_noise.append(str(child) + os.sep)
+                        continue
                     if _is_noise_dir(d, dp):
                         # Record pruned-as-noise dirs so a wrongly-pruned real
                         # source dir is at least traceable in the output rather
@@ -1577,6 +1699,7 @@ def save_manifest(
     root: Path | None = None,
     scan_corpus: set[str] | list[str] | None = None,
     clear_semantic: set[str] | list[str] | None = None,
+    clear_ast: set[str] | list[str] | None = None,
 ) -> None:
     """Save current file mtimes + content hashes for change detection.
 
@@ -1611,6 +1734,12 @@ def save_manifest(
     and making detect_incremental(kind="semantic") report them unchanged.
     Pass the set of such files (any path form ``scan_corpus`` accepts) to
     force their seeded semantic_hash to "" instead of inheriting it.
+
+    ``clear_ast`` (#2543): same idea for AST failures (missing optional extra,
+    zero-node anomalous extract). Blanks BOTH ``ast_hash`` and
+    ``semantic_hash`` on the seeded row so either detect_incremental kind
+    re-queues the file after the failure is fixed, without deleting
+    graphify-out/.
     """
     existing = load_manifest(manifest_path, root=root)
 
@@ -1627,6 +1756,7 @@ def save_manifest(
 
     scan_set = _path_index(scan_corpus)
     clear_set = _path_index(clear_semantic)
+    clear_ast_set = _path_index(clear_ast)
     try:
         root_res: Path | None = Path(root).resolve() if root is not None else None
     except (OSError, RuntimeError):
@@ -1642,11 +1772,24 @@ def save_manifest(
             return False
 
     def _in_clear(path_str: str) -> bool:
+        if clear_set is None:
+            return False
         if path_str in clear_set or _nfc(path_str) in clear_set:
             return True
         try:
             resolved = str(Path(path_str).resolve())
             return resolved in clear_set or _nfc(resolved) in clear_set
+        except (OSError, RuntimeError):
+            return False
+
+    def _in_clear_ast(path_str: str) -> bool:
+        if clear_ast_set is None:
+            return False
+        if path_str in clear_ast_set or _nfc(path_str) in clear_ast_set:
+            return True
+        try:
+            resolved = str(Path(path_str).resolve())
+            return resolved in clear_ast_set or _nfc(resolved) in clear_ast_set
         except (OSError, RuntimeError):
             return False
 
@@ -1695,7 +1838,11 @@ def save_manifest(
             continue
         if scan_set is not None and not _in_scan(f) and _in_root(f):
             continue  # excluded-but-alive: drop the stale row (#1908)
-        if clear_set is not None and _in_clear(f):
+        if clear_ast_set is not None and _in_clear_ast(f):
+            # AST failure this run (missing extra / zero nodes, #2543): blank
+            # both hashes so either detect_incremental kind re-queues.
+            normalised = {**normalised, "ast_hash": "", "semantic_hash": ""}
+        elif clear_set is not None and _in_clear(f):
             # Dispatched-but-omitted this run: don't inherit the stale
             # semantic_hash, or detect_incremental would call it unchanged (#1948).
             normalised = {**normalised, "semantic_hash": ""}

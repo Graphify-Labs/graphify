@@ -220,12 +220,13 @@ def test_plain_module_gets_a_node_with_methods(tmp_path: Path) -> None:
 
 
 def test_nested_modules_each_get_a_node(tmp_path: Path) -> None:
-    """#1640 shape 1, nested."""
+    """#1640 shape 1, nested — the inner module is labelled fully qualified
+    (#2302), so nested and compact declarations converge on one label."""
     r = extract_ruby(_write(tmp_path, "n.rb",
         "module Billing\n  module Rounding\n    def round(x)\n      x.round(2)\n    end\n  end\nend\n"))
     labels = _node_labels(r)
-    assert "Billing" in labels and "Rounding" in labels
-    assert ("Rounding", ".round()") in _method_edges(r)
+    assert "Billing" in labels and "Billing::Rounding" in labels
+    assert ("Billing::Rounding", ".round()") in _method_edges(r)
 
 
 def test_struct_new_constant_creates_class_with_methods(tmp_path: Path) -> None:
@@ -348,6 +349,61 @@ def test_mixin_is_not_emitted_as_calls_edge(tmp_path: Path) -> None:
              for e in g["edges"] if e.get("relation") == "calls"}
     assert ("K", "C") not in calls
     assert ("K", "C") in _mixes_in(g)
+
+
+# ── #2302 compact-syntax mixins + qualified constant lookup ──────────────────
+
+
+def test_compact_and_nested_module_includes_resolve(tmp_path: Path) -> None:
+    """#2302: `module Billing::TotalsConcern` (compact) and a top-level module
+    both resolve as mixin targets, lexically from the including class."""
+    _write(tmp_path, "totals_concern.rb",
+           "module Billing::TotalsConcern\n  def total; end\nend\n")
+    _write(tmp_path, "archivable_concern.rb",
+           "module ArchivableConcern\n  extend ActiveSupport::Concern\n  def archive; end\nend\n")
+    _write(tmp_path, "models.rb",
+           "module Billing\n  class Invoice\n    include TotalsConcern\n  end\nend\n"
+           "\nclass Account\n  extend ArchivableConcern\nend\n")
+    g = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+    mix = _mixes_in(g)
+    assert ("Billing::Invoice", "Billing::TotalsConcern") in mix
+    assert ("Account", "ArchivableConcern") in mix
+    # `extend ActiveSupport::Concern` must not fabricate an edge to any local
+    # module — no phantom `Concern` target of any spelling.
+    assert not any(t.split("::")[-1] == "Concern" for _s, t in mix)
+
+
+def test_qualified_external_mixin_does_not_bind_to_local(tmp_path: Path) -> None:
+    """#2302: `extend ActiveSupport::Concern` must NOT resolve to an unrelated
+    local `module Concern` just because the last segment matches."""
+    _write(tmp_path, "concern.rb", "module Concern\n  def local_thing; end\nend\n")
+    _write(tmp_path, "post.rb", "class Post\n  extend ActiveSupport::Concern\nend\n")
+    mix = _mixes_in(extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False))
+    assert ("Post", "Concern") not in mix
+    assert not mix
+
+
+def test_in_corpus_qualified_mixin_resolves(tmp_path: Path) -> None:
+    """#2302 over-suppression guard: a qualified reference whose full path IS
+    defined in the corpus still resolves."""
+    _write(tmp_path, "foo.rb", "module Foo\n  module Concern\n    def helper; end\n  end\nend\n")
+    _write(tmp_path, "k.rb", "class K\n  include Foo::Concern\nend\n")
+    mix = _mixes_in(extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False))
+    assert ("K", "Foo::Concern") in mix
+
+
+def test_nested_declared_class_still_resolves_as_receiver(tmp_path: Path) -> None:
+    """#2302 regression guard: qualifying labels must not break bare constant
+    receivers — `Processor.new` / typed `p.run` still find `Billing::Processor`."""
+    _write(tmp_path, "billing.rb",
+           "module Billing\n  class Processor\n    def run\n      42\n    end\n  end\nend\n")
+    _write(tmp_path, "caller.rb",
+           "def process_all\n  p = Processor.new\n  p.run\nend\n")
+    g = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+    assert _has_call_edge(g, "process_all", "Processor") is not None, \
+        "Processor.new should still resolve to the nested-declared class"
+    assert _has_call_edge(g, "process_all", "run") is not None, \
+        "typed p.run should still resolve to Billing::Processor#run"
 
 
 def test_rake_files_extract_and_resolve_like_rb(tmp_path):

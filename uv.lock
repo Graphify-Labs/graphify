@@ -1090,7 +1090,7 @@ wheels = [
 
 [[package]]
 name = "graphifyy"
-version = "0.9.30"
+version = "0.9.31"
 source = { editable = "." }
 dependencies = [
     { name = "networkx", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -1264,8 +1264,8 @@ requires-dist = [
     { name = "markdownify", marker = "extra == 'pdf'" },
     { name = "matplotlib", marker = "extra == 'all'" },
     { name = "matplotlib", marker = "extra == 'svg'" },
-    { name = "mcp", marker = "extra == 'all'", specifier = ">=1,<2" },
-    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1,<2" },
+    { name = "mcp", marker = "extra == 'all'", specifier = ">=1,<3" },
+    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1,<3" },
     { name = "neo4j", marker = "extra == 'all'" },
     { name = "neo4j", marker = "extra == 'neo4j'" },
     { name = "networkx", specifier = ">=3.4" },
