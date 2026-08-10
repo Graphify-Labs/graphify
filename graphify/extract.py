@@ -23,6 +23,7 @@ from .resolver_registry import (
 )
 from .ruby_resolution import resolve_ruby_member_calls
 from .pascal_resolution import resolve_pascal_inherited_calls
+from .r_resolution import resolve_r_calls
 
 # --- migrated to graphify/extractors/ (see graphify/extractors/MIGRATION.md) ---
 from graphify.extractors.base import (  # noqa: F401
@@ -48,6 +49,7 @@ from graphify.extractors.json_config import extract_json  # noqa: F401
 from graphify.extractors.markdown import extract_markdown  # noqa: F401
 from graphify.extractors.pascal_forms import extract_delphi_form, extract_lazarus_form  # noqa: F401
 from graphify.extractors.powershell import extract_powershell, extract_powershell_manifest  # noqa: F401
+from graphify.extractors.r import extract_r  # noqa: F401
 from graphify.extractors.razor import extract_razor  # noqa: F401
 from graphify.extractors.rust import extract_rust  # noqa: F401
 from graphify.extractors.sln import extract_sln  # noqa: F401
@@ -3736,6 +3738,14 @@ register_language_resolver(
     )
 )
 
+# R resolves every call at runtime against one shared namespace and has no import
+# statement binding a name to a file, so the per-file extractor cannot tell a base
+# R call from a sibling-file one. Lives in graphify.r_resolution; registered here
+# as a consumer of the framework, same as the Ruby and Pascal resolvers above.
+register_language_resolver(
+    LanguageResolver("r_calls", frozenset({".r", ".R"}), resolve_r_calls)
+)
+
 
 # Inline markdown link: [text](target "optional title"). The negative lookbehind
 # excludes images (![alt](src)). The target stops at whitespace/closing paren so
@@ -4788,6 +4798,11 @@ _DISPATCH: dict[str, Any] = {
     ".m": extract_objc,
     ".mm": extract_objc,
     ".jl": extract_julia,
+    # Both cases are listed, as for Fortran below: R sources are conventionally
+    # `.R`, and _DISPATCH.keys() is read as the supported-suffix set (a case-fold
+    # only at _get_extractor lookup would leave `.R` out of it).
+    ".r": extract_r,
+    ".R": extract_r,
     ".f": extract_fortran,
     ".F": extract_fortran,
     ".f90": extract_fortran,
@@ -4848,6 +4863,8 @@ _DISPATCH: dict[str, Any] = {
 # rather than falling back like Pascal does. Used by the #1745 warning in
 # extract() to tell the user which extra restores the language.
 _EXTRA_FOR_EXTENSION = {
+    ".r": "r",
+    ".R": "r",
     ".sql": "sql",
     ".tf": "terraform",
     ".tfvars": "terraform",
@@ -4862,7 +4879,7 @@ _EXTRA_FOR_EXTENSION = {
 # routes them to the CODE path via _shebang_interpreter; _get_extractor must
 # honor the same signal or these files are classified as code and then silently
 # dropped by extraction. Only interpreters with a real extractor are mapped —
-# detect's wider set (perl, fish, tcsh, Rscript) stays unmapped and skipped.
+# detect's wider set (perl, fish, tcsh) stays unmapped and skipped.
 _SHEBANG_DISPATCH: dict[str, Any] = {
     "python": extract_python,
     "python2": extract_python,
@@ -4878,6 +4895,7 @@ _SHEBANG_DISPATCH: dict[str, Any] = {
     "lua": extract_lua,
     "php": extract_php,
     "julia": extract_julia,
+    "Rscript": extract_r,
 }
 
 
@@ -5410,7 +5428,7 @@ def extract(
                 _failed_seen.add(_key)
 
     # #1689: a file counted as code (extension in CODE_EXTENSIONS) but with no AST
-    # extractor wired up (e.g. .r/.R — there is no tree-sitter-r dispatch) silently
+    # extractor wired up (e.g. .ejs/.ets — there is no dispatch for either) silently
     # contributes zero nodes. The #1666 warning above deliberately skips these (it
     # only fires when an extractor exists), so surface them explicitly, grouped by
     # extension, rather than reporting success as if the language were mapped.

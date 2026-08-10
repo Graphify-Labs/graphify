@@ -75,6 +75,11 @@ gemini = ["openai", "tiktoken"]
 openai = ["openai", "tiktoken"]
 chinese = ["jieba"]
 sql = ["tree-sitter-sql"]
+# The r-lib R grammar has no standalone PyPI wheel, so extract_r() sources it
+# from tree-sitter-language-pack (a ~2 MB platform wheel). Optional and hard-
+# failing like tree-sitter-sql below rather than a core dependency: R corpora are
+# the only thing that needs it.
+r = ["tree-sitter-language-pack"]
 # extract_pascal() uses tree-sitter-pascal for AST-quality extraction (more
 # accurate calls/inherits edges) and falls back to a regex extractor when it is
 # absent (#781), so this stays optional. Unlike tree-sitter-dm below, it ships
