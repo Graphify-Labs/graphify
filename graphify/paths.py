@@ -19,7 +19,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import stat
+import sys
 import tempfile
 from pathlib import Path, PurePosixPath
 
@@ -91,6 +93,51 @@ def write_json_atomic(path: "str | Path", obj, *, indent: "int | None" = None, e
     large graphs). ``ensure_ascii`` mirrors ``json.dump`` so callers that emit raw
     UTF-8 (non-ASCII labels/paths) keep byte-for-byte output. See :func:`_atomic_replace`."""
     _atomic_replace(path, lambda f: json.dump(obj, f, indent=indent, ensure_ascii=ensure_ascii))
+
+
+def clear_readonly(path: "str | Path") -> None:
+    """Drop the read-only bit from ``path`` (no-op when it is already writable).
+
+    Windows maps a missing owner-write bit to FILE_ATTRIBUTE_READONLY, and both
+    ``DeleteFile`` and ``RemoveDirectory`` refuse an entry that carries it.
+    OneDrive marks the directories it syncs read-only, so a package dir or an
+    output dir living under OneDrive hands that attribute to anything copied out
+    of it. Failures are swallowed: this only ever runs to make a later removal
+    succeed.
+    """
+    try:
+        os.chmod(path, os.stat(path).st_mode | stat.S_IWRITE)
+    except OSError:
+        pass
+
+
+def _on_rmtree_error(func, path, _exc) -> None:
+    """``rmtree`` error hook: clear the read-only bit and retry the failed call.
+
+    The signature is compatible with both the 3.12+ ``onexc`` hook and the older
+    ``onerror`` one, which pass the exception and the ``sys.exc_info()`` tuple
+    respectively; neither is used here.
+    """
+    clear_readonly(path)
+    func(path)
+
+
+def rmtree(path: "str | Path", *, ignore_errors: bool = False) -> None:
+    """``shutil.rmtree`` that survives read-only entries on Windows.
+
+    A tree copied out of a OneDrive-synced directory inherits its read-only
+    attribute (``copytree`` propagates it through ``copystat``), so removing it
+    later raised ``PermissionError: [WinError 5]`` on the final ``rmdir`` even
+    though every file inside had already been deleted.
+    """
+    try:
+        if sys.version_info >= (3, 12):
+            shutil.rmtree(path, onexc=_on_rmtree_error)
+        else:
+            shutil.rmtree(path, onerror=_on_rmtree_error)
+    except OSError:
+        if not ignore_errors:
+            raise
 
 # Directory segments that, when they appear as a whole path component, mark the
 # whole path as a test location. Matched against path *segments* (not raw

@@ -9,6 +9,7 @@ upgrading the package instead.
 """
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -58,3 +59,21 @@ def test_matching_version_is_silent(tmp_path, monkeypatch, capsys):
     skill_dst = _make_skill(tmp_path, "0.9.3")
     mainmod._check_skill_version(skill_dst)
     assert capsys.readouterr().err == ""
+
+
+def test_cli_survives_unresolvable_home(monkeypatch, capsys):
+    """The stamp check is advisory and must never take the CLI down.
+
+    Resolving each platform's skill destination needs a home directory. In an
+    environment without HOME/USERPROFILE (`env -i`, a bare CI container, a
+    service account) Path.home() raises RuntimeError, which used to propagate
+    out of the check and kill even `graphify --version` — a command that touches
+    no filesystem at all.
+    """
+    def _no_home():
+        raise RuntimeError("Could not determine home directory.")
+
+    monkeypatch.setattr("graphify.__main__.Path.home", _no_home)
+    monkeypatch.setattr(sys, "argv", ["graphify", "--version"])
+    mainmod._run_cli()
+    assert f"graphify {mainmod.__version__}" in capsys.readouterr().out
