@@ -7,6 +7,13 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
+
+# The Ollama backend rides on the optional `openai` extra (pyproject
+# `ollama = ["openai"]`); these tests monkeypatch openai.OpenAI, so without
+# the package they fail on import resolution, not on the behaviour under test.
+openai = pytest.importorskip("openai")
+
 import graphify.llm as llm
 
 

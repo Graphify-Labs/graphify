@@ -5369,13 +5369,63 @@ def extract(
     # #1666: surface any source file an extractor accepted but that produced zero
     # nodes (not even a file node). Such a file is silently absent from the graph,
     # so affected/explain are blind to and through it with no other signal.
+    def _is_non_graph_bearing(p: Path, res: dict) -> bool:
+        """True when producing zero nodes is the correct, permanent outcome.
+
+        Deliberately narrow. Only two shapes qualify:
+
+        * Xcode asset-catalogue metadata (``Contents.json`` inside a
+          ``.xcassets``/``.colorset``/``.imageset``/``.appiconset`` bundle) —
+          colour components and catalogue version stamps, no relationships.
+        * JSON the extractor itself classified as data rather than config, i.e.
+          a fixture or dataset. It already said so via ``skipped``; that is a
+          decision, not a failure.
+
+        An Icon Composer ``icon.json`` does NOT qualify — it names the assets its
+        layers draw, and is extracted.
+        """
+        _skipped = str(res.get("skipped") or "")
+        if _skipped.startswith("data json"):
+            return True
+        if p.name.casefold() == "contents.json":
+            return any(
+                parent.name.casefold().endswith(
+                    (".xcassets", ".colorset", ".imageset", ".appiconset",
+                     ".symbolset", ".dataset")
+                )
+                for parent in p.parents
+            )
+        return False
+
     _empty_sources: list[str] = []
+    _non_graph_bearing: list[str] = []
     for i, _p in enumerate(paths):
         _res = per_file[i] or {}
         if _res.get("nodes") or _res.get("error"):
             continue
-        if _get_extractor(_p) is not None:
+        if _get_extractor(_p) is None:
+            continue
+        # A file with no relationships to express is not a defect. Xcode asset
+        # metadata and data fixtures are intentionally non-graph-bearing: they
+        # will produce zero nodes on every run forever, so warning about them
+        # each time trains the reader to ignore a warning that does sometimes
+        # mean something. Report them separately, as information (#2311).
+        if _is_non_graph_bearing(_p, _res):
+            _non_graph_bearing.append(str(_p))
+        else:
             _empty_sources.append(str(_p))
+    if _non_graph_bearing:
+        _shown_ok = ", ".join(Path(x).name for x in _non_graph_bearing[:5])
+        _more_ok = (
+            f" (+{len(_non_graph_bearing) - 5} more)"
+            if len(_non_graph_bearing) > 5 else ""
+        )
+        print(
+            f"  note: {len(_non_graph_bearing)} intentionally non-graph-bearing "
+            f"file(s) produced no nodes: {_shown_ok}{_more_ok}. Expected — asset "
+            f"metadata and data fixtures carry no relationships (#2311).",
+            file=sys.stderr, flush=True,
+        )
     if _empty_sources:
         _shown = ", ".join(Path(x).name for x in _empty_sources[:5])
         _more = f" (+{len(_empty_sources) - 5} more)" if len(_empty_sources) > 5 else ""
@@ -6329,7 +6379,16 @@ def extract(
             # Promote to EXTRACTED when there's a direct import edge from the
             # caller's file pointing at either the callee symbol itself or the
             # file the callee lives in.
-            if has_import_evidence:
+            # A Swift `TypeName(...)` constructor names its type explicitly in
+            # source. Swift types in the same module need no per-file import, so a
+            # uniquely resolved type definition is source-backed evidence equal to
+            # an imported symbol call. Ambiguous candidates were already rejected
+            # above; the class-node guard prevents capitalized free functions from
+            # being promoted accidentally.
+            explicit_swift_constructor = (
+                rc.get("explicit_type_constructor") is True and tgt in class_nids
+            )
+            if has_import_evidence or explicit_swift_constructor:
                 confidence = "EXTRACTED"
                 confidence_score = 1.0
             else:

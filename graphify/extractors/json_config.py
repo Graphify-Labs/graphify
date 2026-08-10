@@ -21,6 +21,32 @@ _CONFIG_JSON_KEYS = frozenset({
     "extends", "$ref", "$schema", "compilerOptions",
 })
 
+def _json_pointer_parts(ref: str) -> list[str] | None:
+    """Decode an INTERNAL JSON Pointer `$ref` into its path components.
+
+    Returns the component list for a same-document pointer ("#/$defs/asset" ->
+    ["$defs", "asset"], "#" -> []), or None when ``ref`` is not an internal
+    pointer — an external file/URL reference ("common.json#/$defs/x"), or a bare
+    "#name" anchor, which is a plain-name anchor rather than a path and cannot
+    be resolved positionally.
+
+    Escapes are decoded per RFC 6901: ``~1`` before ``~0``, so a literal ``~1``
+    in a key survives a round trip instead of being mangled into ``/``.
+    """
+    if not ref.startswith("#"):
+        return None
+    pointer = ref[1:]
+    if not pointer:
+        return []
+    if not pointer.startswith("/"):
+        return None
+    return [
+        part.replace("~1", "/").replace("~0", "~")
+        for part in pointer.split("/")[1:]
+        if part
+    ]
+
+
 def _is_config_json(path: Path, obj_node, source: bytes) -> bool:
     """True if a .json file is a recognized config/manifest worth AST-extracting.
 
@@ -30,6 +56,12 @@ def _is_config_json(path: Path, obj_node, source: bytes) -> bool:
     is skipped by the structural pass (#1224)."""
     name = path.name.casefold()
     if name in _CONFIG_JSON_NAMES:
+        return True
+    # Xcode Icon Composer descriptor: `<AppIcon>.icon/icon.json`. It is a real
+    # manifest — it names the image assets each icon layer draws — but its
+    # top-level keys (fill/groups/supported-platforms) match no generic probe, so
+    # it was skipped as data JSON and the icon->asset edges were lost (#2311).
+    if name == "icon.json" and path.parent.name.casefold().endswith(".icon"):
         return True
     # Common compound config names: *.eslintrc.json, *.prettierrc.json, etc.
     if name.endswith((".eslintrc.json", ".prettierrc.json", ".babelrc.json",
@@ -84,6 +116,14 @@ def extract_json(path: Path) -> dict:
     nodes: list[dict] = []
     edges: list[dict] = []
     seen_ids: set[str] = set()
+    # Internal `$ref` bookkeeping (#2311): the full JSON path of every key node
+    # emitted, so a same-document pointer resolves to the exact node this walk
+    # produced; the deferred pointer edges; and the external refs, reported so
+    # diagnostics can classify them as expected outside references.
+    path_to_nid: dict[tuple[str, ...], str] = {}
+    pending_internal_refs: list[tuple[str, tuple[str, ...], int, str]] = []
+    external_refs: list[str] = []
+    unresolved_internal_refs: list[str] = []
 
     # Keys whose string values become imports (package.json dep blocks)
     _DEP_KEYS = frozenset({
@@ -129,7 +169,8 @@ def extract_json(path: Path) -> dict:
         return pair_node.child_by_field_name("value")
 
     def walk_object(obj_node, parent_nid: str, parent_key: str | None,
-                    depth: int, pair_count: list) -> None:
+                    depth: int, pair_count: list,
+                    parent_path: tuple[str, ...] = ()) -> None:
         if depth > 6:
             return
         for child in obj_node.children:
@@ -153,20 +194,33 @@ def extract_json(path: Path) -> dict:
             line = child.start_point[0] + 1
             add_node(key_nid, key, line)
             add_edge(parent_nid, key_nid, "contains", line)
+            # Record the full JSON path -> node id so an internal `$ref`
+            # ("#/$defs/asset") resolves to the node this walk already emitted,
+            # exactly rather than by reconstructing the id scheme (#2311).
+            cur_path = parent_path + (key,)
+            path_to_nid[cur_path] = key_nid
 
             val = _val_node(child)
             if val is None:
                 continue
 
             if val.type == "object":
-                walk_object(val, key_nid, key, depth + 1, pair_count)
+                walk_object(val, key_nid, key, depth + 1, pair_count, cur_path)
 
             elif val.type == "array":
                 # For "extends" arrays (tsconfig, eslint): each string element.
                 # Prefix with "ref_" so external refs don't collide with real
                 # code/file node IDs that share the same collapsed _make_id (J-4).
                 for item in val.children:
-                    if item.type == "string":
+                    if item.type == "object":
+                        # Objects nested in arrays were never walked, so any
+                        # structure below an array was invisible — e.g. an Icon
+                        # Composer's groups[].layers[].image-name (#2311). The
+                        # element shares its array key's path: array indices are
+                        # positional noise, not names worth minting ids from.
+                        walk_object(item, key_nid, key, depth + 1, pair_count,
+                                    cur_path)
+                    elif item.type == "string":
                         content = item.child_by_field_name("string_content")
                         ref = _read_text(content, source) if content else _read_text(item, source).strip('"\'')
                         if ref:
@@ -187,10 +241,40 @@ def extract_json(path: Path) -> dict:
                         add_edge(file_nid, ref_nid, "extends", line, context="import")
 
                 elif key == "$ref" and val_text:
-                    # Namespace $ref values to prevent edge hijacking into code nodes (J-4)
-                    ref_nid = _make_id("ref", val_text)
-                    if ref_nid:
-                        add_edge(parent_nid, ref_nid, "references", line)
+                    # A `$ref` is either INTERNAL ("#/$defs/asset" — a pointer at
+                    # another part of this same document) or EXTERNAL (another
+                    # file or a URL). The two need opposite treatment, and
+                    # conflating them is what left every `$ref` dangling: the
+                    # edge was emitted but no node ever was (#2311).
+                    pointer = _json_pointer_parts(val_text)
+                    if pointer is not None:
+                        # Internal: the target node is one this same walk emits.
+                        # Defer resolution — the pointer may name a key that has
+                        # not been reached yet — and drop it later if the pointer
+                        # resolves to nothing, rather than emitting a dangler.
+                        pending_internal_refs.append(
+                            (parent_nid, tuple(pointer), line, val_text)
+                        )
+                    else:
+                        # External: a genuine outside reference. Namespace it to
+                        # prevent edge hijacking into code nodes (J-4), and emit
+                        # the node so the edge resolves — matching what the
+                        # `extends` branches above already do.
+                        ref_nid = _make_id("ref", val_text)
+                        if ref_nid:
+                            add_node(ref_nid, val_text, line, file_type="concept")
+                            add_edge(parent_nid, ref_nid, "references", line,
+                                     context="import")
+                            external_refs.append(val_text)
+
+                elif key == "image-name" and val_text:
+                    # Icon Composer layer -> the asset file it draws. A real
+                    # dependency: renaming the asset breaks the icon.
+                    asset_nid = _make_id("asset", val_text)
+                    if asset_nid:
+                        add_node(asset_nid, val_text, line, file_type="concept")
+                        add_edge(parent_nid, asset_nid, "references", line,
+                                 context="asset")
 
                 elif parent_key in _DEP_KEYS and val_text:
                     dep_nid = _make_id(key)
@@ -208,9 +292,38 @@ def extract_json(path: Path) -> dict:
         # orphan key-nodes (#1224); it's left to the LLM semantic pass.
         if not _is_config_json(path, doc, source):
             return {"nodes": [], "edges": [], "skipped": "data json (not a config/manifest)"}
-        walk_object(doc, file_nid, None, 0, [0])
+        walk_object(doc, file_nid, None, 0, [0], ())
     else:
         # Top-level array or scalar => data JSON, never a config/manifest.
         return {"nodes": [], "edges": [], "skipped": "data json (non-object root)"}
 
-    return {"nodes": nodes, "edges": edges}
+    # Resolve deferred internal `$ref` pointers now that every key node exists
+    # (#2311). Sorted for determinism: the pending list follows document order,
+    # but the emitted edge order must not depend on it. A pointer at the document
+    # root ("#") targets the file node. A pointer that resolves to nothing —
+    # depth cap, pair cap, or a genuinely absent definition — is DROPPED rather
+    # than emitted as a dangling edge, and reported instead.
+    for parent_nid, pointer, line, ref_text in sorted(
+        pending_internal_refs, key=lambda r: (r[1], r[0], r[2])
+    ):
+        target_nid = file_nid if not pointer else path_to_nid.get(pointer)
+        if target_nid is None and any(part.isdigit() for part in pointer):
+            # Array-index pointer ("#/anyOf/0/x"). The walk deliberately gives
+            # array elements their array key's path — indices are positional
+            # noise — so resolve by dropping the numeric components to match the
+            # id scheme exactly. Only tried when the exact path missed.
+            target_nid = path_to_nid.get(
+                tuple(part for part in pointer if not part.isdigit())
+            )
+        if target_nid:
+            add_edge(parent_nid, target_nid, "references", line,
+                     context="schema_ref")
+        else:
+            unresolved_internal_refs.append(ref_text)
+
+    result: dict = {"nodes": nodes, "edges": edges}
+    if external_refs:
+        result["external_refs"] = sorted(set(external_refs))
+    if unresolved_internal_refs:
+        result["unresolved_internal_refs"] = sorted(set(unresolved_internal_refs))
+    return result

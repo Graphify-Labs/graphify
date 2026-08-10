@@ -4872,6 +4872,17 @@ def _extract_generic(
                         "source_location": f"L{node.start_point[0] + 1}",
                         "receiver": swift_receiver or member_receiver,
                     }
+                    # Swift modules expose their own types without per-file import
+                    # statements.  Preserve the direct syntactic evidence from an
+                    # uppercase `TypeName(...)` constructor call so the corpus-level
+                    # resolver can mark a unique type target EXTRACTED rather than
+                    # downgrading it merely because there is no import edge.
+                    if (
+                        config.ts_module == "tree_sitter_swift"
+                        and not is_member_call
+                        and _swift_constructor_type(node, source) == callee_name
+                    ):
+                        rc_entry["explicit_type_constructor"] = True
                     # Ruby: attach the receiver's inferred type from the method's
                     # local `var = Const.new` bindings, when unambiguously known.
                     if member_receiver and config.ts_module == "tree_sitter_ruby":

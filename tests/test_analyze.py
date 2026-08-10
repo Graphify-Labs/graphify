@@ -60,6 +60,66 @@ def test_surprising_connections_excludes_concept_nodes():
     assert "Abstract Concept" not in labels
 
 
+def test_architecture_analysis_excludes_saved_query_memory():
+    """Saved query-memory remains queryable but must not steer architecture advice."""
+    G = nx.Graph()
+    source_nodes = [
+        ("a", "SourceA", "src/a.py"),
+        ("b", "SourceB", "src/b.py"),
+        ("c", "SourceC", "src/c.py"),
+    ]
+    for nid, label, source_file in source_nodes:
+        G.add_node(nid, label=label, source_file=source_file, file_type="code")
+    G.add_edge("a", "b", relation="calls", confidence="AMBIGUOUS",
+               source_file="src/a.py", weight=1.0)
+    G.add_edge("b", "c", relation="calls", confidence="EXTRACTED",
+               source_file="src/b.py", weight=1.0)
+
+    memory_path = "graphify-out/memory/query-architecture.md"
+    G.add_node("memory", label="SavedQueryMemory", source_file=memory_path,
+               file_type="document")
+    for index in range(8):
+        nid = f"memory_{index}"
+        G.add_node(nid, label=f"MemoryConcept{index}", source_file=memory_path,
+                   file_type="document")
+        G.add_edge("memory", nid, relation="relates_to", confidence="AMBIGUOUS",
+                   source_file=memory_path, weight=1.0)
+    G.add_edge("memory", "a", relation="relates_to", confidence="AMBIGUOUS",
+               source_file=memory_path, weight=1.0)
+
+    communities = {0: ["a", "b"], 1: ["c"], 2: ["memory", *[f"memory_{i}" for i in range(8)]]}
+    labels = {0: "Application", 1: "Storage", 2: "Saved Queries"}
+
+    gods = god_nodes(G, top_n=10)
+    assert all(not item["label"].startswith(("SavedQuery", "MemoryConcept")) for item in gods)
+
+    surprises = surprising_connections(G, communities, top_n=10)
+    surprise_labels = {item["source"] for item in surprises} | {item["target"] for item in surprises}
+    assert "SavedQueryMemory" not in surprise_labels
+    assert {"SourceA", "SourceB"}.issubset(surprise_labels)
+
+    questions = suggest_questions(G, communities, labels, top_n=20)
+    rendered = " ".join(
+        f"{item.get('question') or ''} {item.get('why') or ''}" for item in questions
+    )
+    assert "SavedQueryMemory" not in rendered
+    assert "MemoryConcept" not in rendered
+    assert "SourceA" in rendered and "SourceB" in rendered
+
+
+def test_suggest_questions_tolerates_none_communities():
+    """communities=None must not crash (matches surprising_connections' contract).
+
+    No internal caller currently passes None here, but suggest_questions is a
+    public analyze.py function and its sibling surprising_connections already
+    accepts None with a default; the query-memory filter added to both must
+    not introduce an inconsistency between them.
+    """
+    G = make_graph()
+    questions = suggest_questions(G, None, {}, top_n=5)
+    assert isinstance(questions, list)
+
+
 def test_surprising_connections_single_file_uses_community_bridges():
     """Single-file graph: should return cross-community edges, not empty list."""
     G = nx.Graph()
