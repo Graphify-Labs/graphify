@@ -978,3 +978,115 @@ def test_crossfile_concept_merge_is_transitive():
     ]
     result_nodes, _ = deduplicate_entities(nodes, [], communities={})
     assert len(result_nodes) == 1
+
+
+# ── #2576: same-file labels differing by one content word ────────────────────
+
+def test_dedup_does_not_merge_samefile_sibling_pipeline_stages():
+    """Sibling sections of one document, named from a template, share both
+    affixes and differ in a single content word, so Jaro-Winkler's prefix bonus
+    clears the threshold on the same-file path (92.74 with the bonus, 87.90 on
+    plain Jaro). The absorbed node's edges are re-pointed at the survivor, so
+    the graph asserts relationships the document never states (#2576)."""
+    src = "docs/pipeline.md"
+    nodes = [
+        {"id": "pipeline_asset_contribution_flow", "label": "Asset Contribution Flow",
+         "file_type": "concept", "source_file": src},
+        {"id": "pipeline_asset_consumption_flow", "label": "Asset Consumption Flow",
+         "file_type": "concept", "source_file": src},
+        {"id": "pipeline_producer_personas", "label": "Producer Personas",
+         "file_type": "concept", "source_file": src},
+        {"id": "pipeline_asset_review_flow", "label": "Asset Review & Approval Flow",
+         "file_type": "concept", "source_file": src},
+    ]
+    edges = [
+        {"source": "pipeline_producer_personas",
+         "target": "pipeline_asset_contribution_flow", "relation": "references"},
+        {"source": "pipeline_asset_contribution_flow",
+         "target": "pipeline_asset_review_flow", "relation": "references"},
+    ]
+    result_nodes, result_edges = deduplicate_entities(nodes, edges, communities={})
+    assert len(result_nodes) == 4, (
+        "contribution and consumption are distinct pipeline stages"
+    )
+    assert {(e["source"], e["target"]) for e in result_edges} == {
+        ("pipeline_producer_personas", "pipeline_asset_contribution_flow"),
+        ("pipeline_asset_contribution_flow", "pipeline_asset_review_flow"),
+    }, "edges must stay on the nodes the document actually connects"
+
+
+def test_dedup_still_merges_samefile_stopword_insertion():
+    """The pair #1243 was scoped around: swapping a function word is how a
+    restatement of the same entity differs, so a stopword in either differing
+    position exempts the pair and the merge still happens (#2576)."""
+    nodes = [
+        {"id": "m1", "file_type": "concept", "source_file": "docs/metrics.md",
+         "label": "Counts-only metrics export, a read-only aggregation service"},
+        {"id": "m2", "file_type": "concept", "source_file": "docs/metrics.md",
+         "label": "Counts-only metrics export, the read-only aggregation service"},
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert len(result_nodes) == 1
+
+
+def test_dedup_still_merges_samefile_typo_in_one_token():
+    """A typo inside the differing token leaves it the same word: manager and
+    managr score 97.14 against each other, so the pair is not a content-word
+    swap and still merges (#2576)."""
+    nodes = [
+        {"id": "a1", "label": "Authentication Manager",
+         "file_type": "concept", "source_file": "docs/auth.md"},
+        {"id": "a2", "label": "Authentication Managr",
+         "file_type": "concept", "source_file": "docs/auth.md"},
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert len(result_nodes) == 1
+
+
+def test_dedup_does_not_merge_samefile_sibling_packages():
+    """#1243's own first example, with the source file its repro used: two
+    dependencies both come from one package.json, so the cross-file scoring
+    change never applied to them and they still merged (#2576)."""
+    nodes = [
+        {"id": "jest_native", "label": "@testing-library/jest-native",
+         "file_type": "concept", "source_file": "package.json"},
+        {"id": "react_native", "label": "@testing-library/react-native",
+         "file_type": "concept", "source_file": "package.json"},
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert len(result_nodes) == 2
+
+
+def test_dedup_does_not_merge_same_community_dated_doc_slugs():
+    """#1243's fourth example, with the communities its repro used: the pair is
+    cross-file and scores 87.68 on plain Jaro, but both nodes sit in one
+    community and the +5 boost lifts it back to 92.68. Comparing the differing
+    tokens (fe/mob) blocks it before the boost applies (#2576)."""
+    nodes = [
+        {"id": "fe_doc", "label": "2026-05-17-phase4-fe-api-integration.md",
+         "file_type": "concept", "source_file": "a.md"},
+        {"id": "mob_doc", "label": "2026-05-17-phase4-mob-api-integration.md",
+         "file_type": "concept", "source_file": "b.md"},
+    ]
+    result_nodes, _ = deduplicate_entities(
+        nodes, [], communities={"fe_doc": 1, "mob_doc": 1}
+    )
+    assert len(result_nodes) == 2
+
+
+def test_content_token_swap_helper():
+    """_content_token_swap fires only on a one-position swap of two distinct
+    content words (#2576)."""
+    from graphify.dedup import _content_token_swap
+    assert _content_token_swap("asset contribution flow", "asset consumption flow")
+    assert _content_token_swap("testing library jest native",
+                               "testing library react native")
+    # A function word is what a restatement swaps, so either side exempts.
+    assert not _content_token_swap("export a read only", "export the read only")
+    # A typo leaves the differing token the same word.
+    assert not _content_token_swap("graph extractor", "graph extractar")
+    # Two differing positions are not a single-token swap.
+    assert not _content_token_swap("alpha beta gamma", "alpha delta epsilon")
+    # Differing token counts belong to the prefix-extension guard.
+    assert not _content_token_swap("graph extractor", "graph extractor service")
+    assert not _content_token_swap("asset flow", "asset flow")

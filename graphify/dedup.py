@@ -114,6 +114,46 @@ def _numeric_tokens_differ(a: str, b: str) -> bool:
         sorted(t.lstrip("0") or "0" for t in _DIGIT_RUN.findall(b))
 
 
+# Function words. A restatement of one entity is what inserts or swaps these
+# ("export a read-only ..." vs "export the read-only ..."); a content word
+# carries the entity's identity and swapping one names something else.
+_STOPWORDS = frozenset({
+    "a", "an", "the", "and", "or", "of", "for", "to", "in", "on", "at", "by",
+    "with", "from", "as", "is", "are", "be", "this", "that", "its",
+})
+
+
+def _content_token_swap(a: str, b: str) -> bool:
+    """True when two labels differ in exactly one token and that token is a
+    swapped content word rather than a typo or a function word (#2576).
+
+    Whole-string scoring cannot separate a legit restatement from a
+    distinguishing-token swap: both edit one short run in the middle of a long
+    shared string, so both land in the same Jaro band (#1243). Which token
+    differs does separate them. Structured prose names sibling sections from a
+    template ("Asset Contribution Flow" / "Asset Consumption Flow", four
+    consecutive headings of one operations doc), and those siblings are densest
+    inside a single file -- exactly where Jaro-Winkler's prefix bonus still
+    applies, and where the shared affixes it rewards are boilerplate.
+
+    The two differing tokens are compared against each other on the same
+    threshold the labels are, so "manager"/"managr" (97.14) reads as one word
+    misspelt and merges, while "contribution"/"consumption" (82.94) and
+    "jest"/"react" (63.33) read as two words and are blocked. Pairs with
+    different token counts are left to the prefix-extension guard (#1201).
+    """
+    tokens_a, tokens_b = a.split(), b.split()
+    if len(tokens_a) != len(tokens_b):
+        return False
+    differing = [(x, y) for x, y in zip(tokens_a, tokens_b) if x != y]
+    if len(differing) != 1:
+        return False
+    token_a, token_b = differing[0]
+    if token_a in _STOPWORDS or token_b in _STOPWORDS:
+        return False
+    return JaroWinkler.normalized_similarity(token_a, token_b) * 100 < _MERGE_THRESHOLD
+
+
 # file_type values whose identity is anchored to their source location, not
 # their label text. Like code (#1205), these must not be label-merged across
 # files: rationale = module/class docstrings, document = headings/positional
@@ -614,6 +654,12 @@ def deduplicate_entities(
                 # regardless of score (#1284).
                 if _numeric_tokens_differ(norm_label, neighbor_norm):
                     continue
+                # Template-named siblings differing in one content word are
+                # distinct too, on either path: same-file pairs keep the prefix
+                # bonus, and a cross-file pair can still reach threshold on the
+                # community boost alone (#2576).
+                if _content_token_swap(norm_label, neighbor_norm):
+                    continue
                 if _crossfile_fileanchored_blocked(node, neighbor):
                     continue
 
@@ -778,8 +824,11 @@ def _llm_tiebreak(
             _lo, _hi = sorted((norm_i, norm_j), key=len)
             if _hi.startswith(_lo) and _hi != _lo:
                 continue
-            # Mirror pass 2: decisively-distinct pairs never reach the LLM (#1284).
+            # Mirror pass 2: decisively-distinct pairs never reach the LLM
+            # (#1284, #2576).
             if _numeric_tokens_differ(norm_i, norm_j):
+                continue
+            if _content_token_swap(norm_i, norm_j):
                 continue
             if _crossfile_fileanchored_blocked(node, neighbor):
                 continue
