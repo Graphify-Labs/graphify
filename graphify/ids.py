@@ -28,7 +28,7 @@ combining marks casefold introduces were never filtered: ``İslemYap`` produced
 ``i̇slemyap`` — an id containing U+0307, which is not a ``\\w`` character — and a
 second pass collapsed it to ``i_slemyap``, so the function was not idempotent
 and the builder's re-normalization disagreed with the extractor's ``make_id``
-for any Turkish identifier.
+for any Turkish identifier (#2614).
 """
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ def normalize_id(s: str) -> str:
     - The result contains only ``\w`` characters and ``_``.
 
     Casefolding before the ``[^\w]+`` filter is what makes both hold — see the
-    module docstring for why the reverse order silently broke them.
+    module docstring for why the reverse order silently broke them (#2614).
     """
     s = unicodedata.normalize("NFKC", s)
     # casefold can expand one character into a letter + combining mark, so it
