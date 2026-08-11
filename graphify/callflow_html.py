@@ -233,7 +233,16 @@ def _node_link_payload(data: dict) -> tuple[list, list] | None:
         # though the shape check above accepts "edges" (#2212).
         from graphify.paths import load_node_link_graph
 
-        graph = load_node_link_graph(data)
+        # Force directed/multigraph so the stored caller->callee direction and
+        # parallel edges survive the round-trip; mirrors affected.py,
+        # serve.py and cli.py (#1174) and the directed-view fix for
+        # path/shortest_path (#2487, #2309). graph.json is written with
+        # "directed": false for backward compatibility, so without this
+        # networkx returns an undirected Graph and edge orientation becomes
+        # arbitrary -- which silently swaps the Caller and Callee columns of
+        # the call table and drops parallel edges. The _src/_tgt override
+        # below still wins on legacy marker files.
+        graph = load_node_link_graph({**data, "directed": True, "multigraph": True})
     except Exception:
         return None
 
@@ -1207,19 +1216,38 @@ def format_node_refs(node_ids: set, node_by_id: dict, lang: str, empty_text: str
     return "<br>".join(parts)
 
 
-def generate_call_table_rows(nodes: list, section_edges: list, lang: str) -> str:
-    """Generate call table row scaffolding for a section's nodes."""
+def generate_call_table_rows(
+    nodes: list,
+    section_edges: list,
+    lang: str,
+    all_edges: list | None = None,
+    all_nodes: list | None = None,
+) -> str:
+    """Generate call table row scaffolding for a section's nodes.
+
+    The Caller/Callee columns make a claim about the whole graph ("External
+    entry / no inbound edge"), so they must be computed from the whole graph.
+    Built from ``section_edges`` alone they only see edges whose *both*
+    endpoints sit in this section, so a node called from anywhere else is
+    mislabelled an entry point. Section coverage makes that the common case
+    rather than a corner case: only ``max_sections`` communities are rendered,
+    so most callers are not in any rendered section at all.
+
+    ``all_edges``/``all_nodes`` are the full graph; ``all_nodes`` also lets
+    out-of-section callers render as labels instead of raw node ids. Both
+    default to None, preserving the previous behaviour for other callers.
+    """
     if not nodes:
         return ""
 
     # Build source/target lookup from edges
-    node_by_id = {n.get("id"): n for n in nodes}
+    node_by_id = {n.get("id"): n for n in (all_nodes or nodes)}
     callers = defaultdict(set)
     callees = defaultdict(set)
-    for e in section_edges:
+    for e in (all_edges if all_edges is not None else section_edges):
         src = e.get("source", "")
         tgt = e.get("target", "")
-        if e.get("relation") in ("calls", "imports", "imports_from", "uses", "method"):
+        if e.get("relation") in ("calls", "imports", "imports_from", "uses", "method", "indirect_call"):
             callers[tgt].add(src)
             callees[src].add(tgt)
 
@@ -1743,7 +1771,7 @@ def write_callflow_html(
   <th style="width:20%">{callee_header}</th>
   <th style="width:20%">{desc_header}</th>
 </tr>
-{generate_call_table_rows(sec_nodes, sec_edges, lang)}
+{generate_call_table_rows(sec_nodes, sec_edges, lang, edges, nodes)}
 </table>
 
 {generate_section_cards(sec, sec_nodes, sec_edges, lang)}

@@ -238,12 +238,14 @@ def test_origin_file_is_not_serialized_into_extract_output(tmp_path):
 
 
 def test_go_imported_type_stubs_do_not_collide_across_source_files(tmp_path):
-    """#1462 (dedicated extractors): the imported-type-stub disambiguation (the
-    ``origin_file`` key) landed only in the generic extractor, so the six dedicated
-    extractors (Go, Rust, Julia, Fortran, PowerShell, ObjC) still collapsed same-label
-    cross-file stubs into one conflated bare-id node — a false cross-package link.
-    They must stay distinct per file while keeping ``source_file`` empty so the #1402
-    rewire still collapses them onto a real definition when one exists."""
+    """Go external types use their import path as canonical identity.
+
+    #1462 kept unresolved bare stubs distinct per source file because Graphify
+    could not tell whether they named the same external package. The Go
+    import-aware resolver now has that evidence: two ``ext.Widget`` references
+    intentionally share one sourceless node without colliding with a local
+    ``Widget`` definition.
+    """
     first = tmp_path / "a/use_a.go"
     second = tmp_path / "b/use_b.go"
     first.parent.mkdir(parents=True)
@@ -252,11 +254,14 @@ def test_go_imported_type_stubs_do_not_collide_across_source_files(tmp_path):
     second.write_text('package b\n\nimport "ext"\n\nfunc UseB(w ext.Widget) {}\n', encoding="utf-8")
 
     result = extract([first, second], cache_root=tmp_path)
-    widget_nodes = [node for node in result["nodes"] if node["label"] == "Widget"]
+    widget_nodes = [node for node in result["nodes"] if node["label"] == "ext.Widget"]
 
-    assert len(widget_nodes) == 2
-    assert len({node["id"] for node in widget_nodes}) == 2
+    assert len(widget_nodes) == 1
     assert all(not node.get("source_file") for node in widget_nodes)
+    target = widget_nodes[0]["id"]
+    refs = [edge for edge in result["edges"] if edge.get("relation") == "references"]
+    assert len(refs) == 2
+    assert all(edge["target"] == target for edge in refs)
 
 
 def test_extract_updates_raw_call_callers_after_duplicate_id_disambiguation(tmp_path):
@@ -1136,13 +1141,15 @@ def test_python_relative_import_out_of_root_target_id_is_portable(tmp_path):
 
 def test_python_module_qualified_call_resolves_extracted(tmp_path):
     """`module.func()` where `module` is imported resolves to the callable that
-    module contains, with an EXTRACTED `calls` edge (#1883). A lowercase module
-    receiver was previously dropped alongside instance calls."""
+    module contains, with an EXTRACTED `calls` edge (#1883), even when the caller
+    file contains a same-named function that bare-name lookup could select."""
     mathlib = tmp_path / "mathlib.py"
     caller = tmp_path / "caller.py"
     mathlib.write_text("def compute(x):\n    return x * 2\n")
     caller.write_text(
         "import mathlib\n\n"
+        "def compute(x):\n"
+        "    return x + 1\n\n"
         "def use_qualified(n):\n"
         "    return mathlib.compute(n)\n"
     )
@@ -1153,9 +1160,9 @@ def test_python_module_qualified_call_resolves_extracted(tmp_path):
         if e["relation"] == "calls"
         and "use_qualified" in nodes[e["source"]]["label"]
         and "compute" in nodes[e["target"]]["label"]
-        and "mathlib.py" in (nodes[e["target"]].get("source_file") or "")
     ]
     assert len(edges) == 1, f"expected one use_qualified->compute edge, got {edges}"
+    assert "mathlib.py" in (nodes[edges[0]["target"]].get("source_file") or "")
     assert edges[0]["confidence"] == "EXTRACTED"
 
 
@@ -1464,6 +1471,127 @@ def test_python_instance_member_call_not_overconnected(tmp_path):
     assert bad == [], f"instance member call must not connect cross-file: {bad}"
 
 
+def test_python_unresolved_member_calls_do_not_bind_to_bare_function(tmp_path):
+    """#2417: unresolved attribute calls must not bind by bare method name.
+
+    ``d.get()`` and ``self.store.get()`` do not identify the module-level
+    ``get()`` definition, so only the direct ``get()`` call is a real edge.
+    The result must also survive a warm cache extraction.
+    """
+    fixture = tmp_path / "fixture.py"
+    fixture.write_text(
+        "def get(k):\n"
+        "    return k\n\n"
+        "class Store:\n"
+        "    def __init__(self):\n"
+        "        self.store = {}\n\n"
+        "    def read(self, k):\n"
+        "        return self.store.get(k)\n\n"
+        "def other(d):\n"
+        "    return d.get('x')\n\n"
+        "def real():\n"
+        "    return get('real')\n",
+        encoding="utf-8",
+    )
+
+    def _get_callers(result):
+        nodes = {node["id"]: node for node in result["nodes"]}
+        target_ids = {
+            node["id"] for node in result["nodes"]
+            if node.get("label") == "get()" and node.get("source_file")
+        }
+        return sorted(
+            nodes[edge["source"]]["label"]
+            for edge in result["edges"]
+            if edge.get("relation") == "calls" and edge.get("target") in target_ids
+        )
+
+    cold = extract([fixture], cache_root=tmp_path, root=tmp_path)
+    assert _get_callers(cold) == ["real()"]
+    warm = extract([fixture], cache_root=tmp_path, root=tmp_path)
+    assert _get_callers(warm) == ["real()"]
+
+
+def test_python_known_member_receivers_keep_local_call_edges(tmp_path):
+    """Preserve self/cls/super calls while deferring other call receivers."""
+    fixture = tmp_path / "known_receivers.py"
+    fixture.write_text(
+        "class Base:\n"
+        "    def inherited(self):\n"
+        "        return 1\n\n"
+        "class Worker(Base):\n"
+        "    def local(self):\n"
+        "        return 2\n\n"
+        "    @classmethod\n"
+        "    def class_local(cls):\n"
+        "        return 3\n\n"
+        "    def via_self(self):\n"
+        "        return self.local()\n\n"
+        "    @classmethod\n"
+        "    def via_cls(cls):\n"
+        "        return cls.class_local()\n\n"
+        "    def via_super(self):\n"
+        "        return super().inherited()\n\n"
+        "def via_factory(factory):\n"
+        "    return factory().local()\n",
+        encoding="utf-8",
+    )
+    result = extract([fixture], cache_root=tmp_path, root=tmp_path)
+    nodes = {node["id"]: node for node in result["nodes"]}
+    call_pairs = {
+        (nodes[edge["source"]]["label"], nodes[edge["target"]]["label"])
+        for edge in result["edges"]
+        if edge.get("relation") == "calls"
+    }
+
+    for caller, callee in (
+        ("via_self", "local"),
+        ("via_cls", "class_local"),
+        ("via_super", "inherited"),
+    ):
+        assert any(
+            caller in source_label and callee in target_label
+            for source_label, target_label in call_pairs
+        ), f"missing {caller} -> {callee} call edge: {call_pairs}"
+    assert not any(
+        "via_factory" in source_label and "local" in target_label
+        for source_label, target_label in call_pairs
+    ), f"unresolved factory() receiver must not bind by bare name: {call_pairs}"
+
+
+def test_python_unresolved_receiver_never_crosses_modules(tmp_path):
+    """#2417 cross-file guard: `client.fetch('x')` must not bind to `util.fetch`
+    just because the caller's file imports that name — the receiver `client`
+    supplies no evidence it is the `util` module. A plain `fetch('y')` call to
+    the imported name still resolves."""
+    util = tmp_path / "util.py"
+    caller = tmp_path / "app.py"
+    util.write_text("def fetch(url):\n    return url\n")
+    caller.write_text(
+        "from util import fetch\n\n"
+        "def via_receiver(client):\n"
+        "    return client.fetch('x')\n\n"
+        "def via_name():\n"
+        "    return fetch('y')\n"
+    )
+    result = extract([caller, util], cache_root=tmp_path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    fetch_edges = [
+        (nodes[e["source"]]["label"], e)
+        for e in result["edges"]
+        if e["relation"] == "calls"
+        and "fetch" in nodes[e["target"]]["label"]
+        and "util.py" in (nodes[e["target"]].get("source_file") or "")
+    ]
+    callers = sorted(label for label, _ in fetch_edges)
+    assert not any("via_receiver" in c for c in callers), (
+        f"unresolved receiver bound cross-module by bare name: {callers}"
+    )
+    assert any("via_name" in c for c in callers), (
+        f"imported-name call lost its edge: {callers}"
+    )
+
+
 def test_python_qualified_call_ambiguous_class_bails(tmp_path):
     """When the class name is defined in 2+ files, the qualified call must not
     resolve — single-definition god-node guard (#1446)."""
@@ -1648,6 +1776,255 @@ def test_extract_parallel_still_spawns_pool_for_multiple_workers(tmp_path, monke
 
     extract_mod._extract_parallel(uncached, per_file, tmp_path, None, len(uncached))
     assert spawned["count"] == 1, "multi-worker runs must still use the pool"
+
+
+def test_extract_falls_back_when_worker_future_breaks_pool(
+    tmp_path, monkeypatch, capsys
+):
+    """#2444: a BrokenProcessPool raised from future.result() (pool died while
+    results were being consumed) must trigger the sequential fallback, not be
+    swallowed per-future leaving empty per_file slots."""
+    from concurrent.futures.process import BrokenProcessPool
+    import concurrent.futures
+    from graphify import extract as extract_mod
+
+    class BrokenFuture:
+        def result(self):
+            raise BrokenProcessPool("simulated worker termination")
+
+    class FakePool:
+        def __init__(self, *a, **kw): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def submit(self, *a, **kw):
+            return BrokenFuture()
+
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", FakePool)
+    monkeypatch.setattr(
+        concurrent.futures, "as_completed", lambda futures: iter(futures)
+    )
+    # A 1-CPU runner resolves max_workers to 1 and never enters the pool (#2173).
+    monkeypatch.setenv("GRAPHIFY_MAX_WORKERS", "2")
+
+    sequential_calls = 0
+    real_sequential = extract_mod._extract_sequential
+
+    def wrapped_sequential(*args, **kwargs):
+        nonlocal sequential_calls
+        sequential_calls += 1
+        return real_sequential(*args, **kwargs)
+
+    monkeypatch.setattr(extract_mod, "_extract_sequential", wrapped_sequential)
+
+    files = [FIXTURES / "sample.py"] * 25  # >= _PARALLEL_THRESHOLD
+    result = extract_mod.extract(files, cache_root=tmp_path / "cache")
+
+    assert sequential_calls == 1, "sequential fallback should have run exactly once"
+    assert result["nodes"], "sequential fallback must recover AST nodes"
+    assert "BrokenProcessPool" in capsys.readouterr().out
+
+
+def test_extract_bpp_fallback_skips_already_completed_files(tmp_path, monkeypatch):
+    """#2444: when the pool breaks mid-run, the sequential fallback must
+    re-extract only the files whose futures never completed."""
+    from concurrent.futures.process import BrokenProcessPool
+    import concurrent.futures
+    from graphify import extract as extract_mod
+
+    completed_before_break = 5
+
+    class GoodFuture:
+        def __init__(self, value): self._value = value
+        def result(self): return self._value
+
+    class BrokenFuture:
+        def result(self):
+            raise BrokenProcessPool("simulated worker termination")
+
+    class FakePool:
+        def __init__(self, *a, **kw):
+            self._submitted = 0
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def submit(self, fn, item):
+            self._submitted += 1
+            if self._submitted <= completed_before_break:
+                return GoodFuture(fn(item))  # extract in-process, eagerly
+            return BrokenFuture()
+
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", FakePool)
+    monkeypatch.setattr(
+        concurrent.futures, "as_completed", lambda futures: iter(futures)
+    )
+    monkeypatch.setenv("GRAPHIFY_MAX_WORKERS", "2")
+
+    retried: list[list[int]] = []
+    real_sequential = extract_mod._extract_sequential
+
+    def wrapped_sequential(uncached_work, *args, **kwargs):
+        retried.append([idx for idx, _ in uncached_work])
+        return real_sequential(uncached_work, *args, **kwargs)
+
+    monkeypatch.setattr(extract_mod, "_extract_sequential", wrapped_sequential)
+
+    files = [FIXTURES / "sample.py"] * 25
+    result = extract_mod.extract(files, cache_root=tmp_path / "cache")
+
+    assert len(retried) == 1, "sequential fallback should have run exactly once"
+    assert sorted(retried[0]) == list(range(completed_before_break, 25)), (
+        "files whose futures completed before the pool broke must not be re-extracted"
+    )
+    assert result["nodes"]
+
+
+def test_extract_parallel_retries_failed_future_sequentially(
+    tmp_path, monkeypatch, capsys
+):
+    """#2445: a non-BPP per-future failure must be surfaced and retried
+    in-process, not silently replaced by a well-formed empty result."""
+    import concurrent.futures
+    from graphify import extract as extract_mod
+
+    class GoodFuture:
+        def __init__(self, value): self._value = value
+        def result(self): return self._value
+
+    class FailingFuture:
+        def result(self):
+            raise RuntimeError("simulated worker crash")
+
+    class FakePool:
+        def __init__(self, *a, **kw):
+            self._submitted = 0
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def submit(self, fn, item):
+            self._submitted += 1
+            if self._submitted == 1:
+                return FailingFuture()
+            return GoodFuture(fn(item))
+
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", FakePool)
+    monkeypatch.setattr(
+        concurrent.futures, "as_completed", lambda futures: iter(futures)
+    )
+    monkeypatch.setenv("GRAPHIFY_MAX_WORKERS", "2")
+
+    retried: list[list[int]] = []
+    real_sequential = extract_mod._extract_sequential
+
+    def wrapped_sequential(uncached_work, *args, **kwargs):
+        retried.append([idx for idx, _ in uncached_work])
+        return real_sequential(uncached_work, *args, **kwargs)
+
+    monkeypatch.setattr(extract_mod, "_extract_sequential", wrapped_sequential)
+
+    files = [FIXTURES / "sample.py"] * 25
+    result = extract_mod.extract(files, cache_root=tmp_path / "cache")
+
+    assert retried == [[0]], "only the failed file may be retried, exactly once"
+    assert result["nodes"]
+    err = capsys.readouterr().err
+    assert "worker failed" in err
+    assert "zero nodes" not in err, (
+        "a retried-and-recovered file must not trip the #1666 empty warning"
+    )
+
+
+def test_extract_twice_failing_file_carries_error_marker(tmp_path, monkeypatch):
+    """#2445: a file that fails in the pool AND on the sequential retry must
+    end up with an error-carrying result (via _safe_extract), not loop and not
+    masquerade as legitimately empty. Other files still complete."""
+    import concurrent.futures
+    from graphify import extract as extract_mod
+
+    bad_file = tmp_path / "boom.go"
+    bad_file.write_text("package main\n")
+
+    def _boom_extractor(path):
+        raise RuntimeError("extractor always crashes")
+
+    monkeypatch.setitem(extract_mod._DISPATCH, ".go", _boom_extractor)
+
+    class GoodFuture:
+        def __init__(self, value): self._value = value
+        def result(self): return self._value
+
+    class FailingFuture:
+        def result(self):
+            raise RuntimeError("simulated worker crash")
+
+    class FakePool:
+        def __init__(self, *a, **kw):
+            self._submitted = 0
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def submit(self, fn, item):
+            self._submitted += 1
+            if self._submitted == 1:  # boom.go is first in the batch
+                return FailingFuture()
+            return GoodFuture(fn(item))
+
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", FakePool)
+    monkeypatch.setattr(
+        concurrent.futures, "as_completed", lambda futures: iter(futures)
+    )
+    monkeypatch.setenv("GRAPHIFY_MAX_WORKERS", "2")
+
+    captured: dict = {"calls": 0}
+    real_sequential = extract_mod._extract_sequential
+
+    def wrapped_sequential(uncached_work, per_file, *args, **kwargs):
+        captured["calls"] += 1
+        captured["retry_indices"] = [idx for idx, _ in uncached_work]
+        real_sequential(uncached_work, per_file, *args, **kwargs)
+        captured["per_file"] = list(per_file)
+
+    monkeypatch.setattr(extract_mod, "_extract_sequential", wrapped_sequential)
+
+    files = [bad_file] + [FIXTURES / "sample.py"] * 24
+    result = extract_mod.extract(files, cache_root=tmp_path / "cache")
+
+    assert captured["calls"] == 1, "the retry must be bounded: one pass, no loop"
+    assert captured["retry_indices"] == [0]
+    assert "error" in captured["per_file"][0], (
+        "a twice-failing file must carry an error marker, not a clean empty"
+    )
+    assert result["nodes"], "the other files must still complete"
+
+
+def test_extract_legitimately_empty_result_keeps_no_error_marker(
+    tmp_path, monkeypatch, capsys
+):
+    """Guard for the #2445 error-marked None-fill: a file whose extractor
+    genuinely returns zero nodes gets a real (marker-free) result and still
+    trips the #1666 zero-nodes warning — behavior unchanged."""
+    from graphify import extract as extract_mod
+
+    empty_file = tmp_path / "empty.go"
+    empty_file.write_text("package main\n")
+
+    monkeypatch.setitem(
+        extract_mod._DISPATCH, ".go", lambda path: {"nodes": [], "edges": []}
+    )
+
+    captured: dict = {}
+    real_sequential = extract_mod._extract_sequential
+
+    def wrapped_sequential(uncached_work, per_file, *args, **kwargs):
+        real_sequential(uncached_work, per_file, *args, **kwargs)
+        captured["per_file"] = list(per_file)
+
+    monkeypatch.setattr(extract_mod, "_extract_sequential", wrapped_sequential)
+
+    extract_mod.extract([empty_file], cache_root=tmp_path / "cache")
+
+    assert "error" not in captured["per_file"][0], (
+        "a legitimately-empty extraction must not be error-marked"
+    )
+    assert "zero nodes" in capsys.readouterr().err, (
+        "the #1666 zero-nodes warning must still fire for a genuine empty"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2819,6 +3196,20 @@ def test_extract_warns_when_sql_extra_missing(tmp_path, capsys, monkeypatch):
     # the Python file still extracts normally
     labels = [n.get("label") for n in result["nodes"]]
     assert any(str(l).startswith("main") for l in labels)
+    # #2543: failed sql sources must be surfaced so the CLI can leave them
+    # unstamped in the incremental manifest.
+    failed = {Path(p).name for p in result.get("failed_sources", [])}
+    assert failed == {"schema.sql", "views.sql"}
+    assert "main.py" not in failed
+
+
+def test_extract_failed_sources_empty_when_sql_installed(tmp_path):
+    """#2543: successful extracts do not appear in failed_sources."""
+    pytest.importorskip("tree_sitter_sql")
+    s = tmp_path / "schema.sql"; s.write_text("CREATE TABLE users (id INT);\n")
+    py = tmp_path / "main.py"; py.write_text("def main():\n    return 1\n")
+    result = extract([s, py], cache_root=tmp_path)
+    assert result.get("failed_sources") == []
 
 
 def test_extract_no_missing_dep_warning_when_sql_installed(tmp_path, capsys):
