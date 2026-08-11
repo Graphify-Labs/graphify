@@ -39,7 +39,7 @@ CONTRACT_CASES = [
     "x_c1",                       # must NOT be treated as a chunk suffix here
     "__dunder__",                 # leading/trailing underscores stripped
     "tab\tnewline\nspace ",       # whitespace runs -> single underscore
-    # Casefolding these EXPANDS them into a base letter plus a combining
+    # #2614: casefolding these EXPANDS them into a base letter plus a combining
     # mark. With casefold last, the mark landed in the id after the [^\w] filter
     # had already run, so the id carried a non-word character and a second pass
     # changed it. Turkish identifiers are the common real-world case.
@@ -52,7 +52,7 @@ CONTRACT_CASES = [
 ]
 
 # Characters whose casefold expands or recomposes — the exact class that broke
-# the contract. Kept separate from CONTRACT_CASES because a few of them
+# the contract in #2614. Kept separate from CONTRACT_CASES because a few of them
 # (e.g. U+01F0) legitimately normalize to a precomposed character that is not
 # equal to its own casefold, which the lowercase assertion below would reject.
 CASE_EXPANDING_CHARS = [
@@ -110,7 +110,7 @@ def test_normalized_ids_are_safe_node_ids():
 
 @pytest.mark.parametrize("ch", CASE_EXPANDING_CHARS)
 def test_case_expanding_chars_yield_word_only_ids(ch):
-    """The postcondition the old recipe silently broke.
+    """#2614: the postcondition the old recipe silently broke.
 
     ``normalize_id`` must emit only ``\\w`` characters and ``_``. Casefolding
     last let the combining mark that ``İ``.casefold() produces slip past the
@@ -145,7 +145,7 @@ def test_case_expanding_chars_normalize_case_insensitively(ch):
 
 
 def test_turkish_identifier_ids_match_between_extractor_and_builder():
-    """End to end: the drift that split a Turkish symbol into ghost nodes.
+    """#2614 end to end: the drift that split a Turkish symbol into ghost nodes.
 
     ``make_id`` minted ``islem_i̇slemyap`` (with U+0307) while the builder's
     re-normalization produced ``islem_i_slemyap``, so ``_semantic_id_remap``'s
@@ -195,7 +195,7 @@ def test_property_normalize_id_idempotent(s):
     assert normalize_id(once) == once
 
 
-# The plain st.text() property above already existed when this bug shipped, and did
+# The plain st.text() property above already existed when #2614 shipped, and did
 # not catch it: the bug needs one specific codepoint (U+0130) out of ~1.1M, which
 # a uniform draw essentially never produces. These strategies bias the search
 # toward the characters that actually stress the recipe — case-expanding letters
@@ -216,7 +216,7 @@ def test_property_normalize_id_idempotent_under_case_stress(s):
 
 @given(_stress_text)
 def test_property_normalize_id_emits_only_word_chars(s):
-    """The postcondition the old recipe violated: only \\w and _ may survive."""
+    """The postcondition #2614 violated: only \\w and _ may survive."""
     out = normalize_id(s)
     assert not re.search(r"[^\w]", out.replace("_", "")), (
         f"normalize_id({s!r}) -> {out!r} leaked a non-word character"
