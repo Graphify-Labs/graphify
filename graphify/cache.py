@@ -524,8 +524,24 @@ def _relativize_source_files_in(payload: dict, root: Path) -> None:
     forward-slash relative paths from ``root``.
 
     Mirror of :func:`graphify.watch._relativize_source_files` so cached
-    extraction fragments persist in portable form (#777). Already-relative
-    fields and out-of-root paths pass through unchanged.
+    extraction fragments persist in portable form (#777). Out-of-root paths
+    pass through unchanged.
+
+    A CWD-relative field is re-anchored too. Extractors stamp ``source_file``
+    with the path string ``extract()`` was handed, so relative inputs yield a
+    CWD-relative stamp — but the stored format is root-relative, and
+    :func:`_absolutize_source_files_in` reads it back as such. When CWD is not
+    the inferred root the two disagree and a warm hit resurrects a path that
+    names no file (``<root>/src/pages/index.astro`` for an input of
+    ``src/pages/index.astro`` under root ``<root>``). Every source_file-GATED
+    remap in ``extract()`` then misses — the file-stem prefix pass looks up
+    ``Path(source_file).resolve()`` in ``prefix_remap`` — so a warm hit keeps
+    the raw-path symbol ids a cold run canonicalizes: symbols stop sharing
+    their file node's stem, and for absolute inputs the on-disk path survives
+    into the persisted id (#2630). Only rewritten when the CWD-relative
+    reading is a real file and the root-relative reading is a different path,
+    so a fragment that already stores root-relative (a semantic subagent's,
+    see :func:`_normalize_source_file_value`) is left alone.
 
     Only ``root`` is resolved — ``source_file`` itself is relativized
     symbolically so in-root symlinks keep their original name rather than
@@ -549,7 +565,15 @@ def _relativize_source_files_in(payload: dict, root: Path) -> None:
                 continue
             sp = Path(source)
             if not sp.is_absolute():
-                continue
+                # os.path.abspath is lexical (no symlink resolution), matching
+                # the symbolic relativization below.
+                cwd_form = Path(os.path.abspath(sp))
+                try:
+                    if cwd_form == root_resolved / sp or not cwd_form.exists():
+                        continue  # already root-relative, or a ghost path
+                except OSError:
+                    continue
+                sp = cwd_form
             try:
                 rel = os.path.relpath(sp, root_resolved)
             except (ValueError, OSError):
