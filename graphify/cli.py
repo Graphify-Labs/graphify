@@ -848,6 +848,25 @@ def _reenter_main() -> None:
     main()
 
 
+def _print_knowledge_validation(result: dict) -> None:
+    """Print one deterministic human-readable knowledge validation report."""
+    if result["valid"]:
+        print(
+            f"Knowledge lattice valid: {result['sections']} sections "
+            f"across {result['files']} files."
+        )
+        return
+    for error in result["errors"]:
+        print(
+            f"{error['file']}:{error['line']}: "
+            f"{error['code']}: {error['message']}"
+        )
+    print(
+        f"Knowledge lattice invalid: {len(result['errors'])} error(s).",
+        file=sys.stderr,
+    )
+
+
 def dispatch_command(cmd: str) -> None:
     if cmd == "provider":
         from graphify.llm import _custom_providers_path, BACKENDS
@@ -1728,21 +1747,7 @@ def dispatch_command(cmd: str) -> None:
         if "--json" in sys.argv:
             print(_json.dumps(result, indent=2, ensure_ascii=False))
         else:
-            if result["valid"]:
-                print(
-                    f"Knowledge lattice valid: {result['sections']} sections "
-                    f"across {result['files']} files."
-                )
-            else:
-                for error in result["errors"]:
-                    print(
-                        f"{error['file']}:{error['line']}: "
-                        f"{error['code']}: {error['message']}"
-                    )
-                print(
-                    f"Knowledge lattice invalid: {len(result['errors'])} error(s).",
-                    file=sys.stderr,
-                )
+            _print_knowledge_validation(result)
         if not result["valid"]:
             sys.exit(1)
 
@@ -2203,6 +2208,14 @@ def dispatch_command(cmd: str) -> None:
         ok = _rebuild_code(watch_path, force=force, no_cluster=no_cluster, block_on_lock=True)
         if ok:
             print("Code graph updated. For doc/paper/image changes run /graphify --update in your AI assistant.")
+            lattice_dir = watch_path.resolve() / "lat.md"
+            if lattice_dir.is_dir():
+                from graphify.lattice_ingest import validate_lattice
+
+                knowledge = validate_lattice(watch_path)
+                _print_knowledge_validation(knowledge)
+                if not knowledge["valid"]:
+                    sys.exit(1)
             if not (
                 os.environ.get("GEMINI_API_KEY")
                 or os.environ.get("GOOGLE_API_KEY")

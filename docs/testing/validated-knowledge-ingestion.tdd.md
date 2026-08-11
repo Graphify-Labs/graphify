@@ -33,6 +33,10 @@ knowledge plan. This document covers the first Graphify milestone: native
 | 12 | Source links cannot escape the project root | `test_source_reference_cannot_escape_project_root` | Security | PASS |
 | 13 | Code-mention validation honors Graphify ignore rules | `test_validation_respects_graphifyignore_when_scanning_code_mentions` | Integration | PASS |
 | 14 | Adjacent extraction, CLI, query, and security behavior remains intact | focused regression command below | Regression | PASS, 460 tests |
+| 15 | Removed or ambiguous knowledge targets in source comments are diagnosed | `test_validation_reports_stale_and_ambiguous_code_mentions` | Integrity | PASS |
+| 16 | `graphify update` returns exit code 1 after rebuilding an invalid lattice | `test_update_automatically_fails_after_rebuild_when_lattice_is_invalid` plus public scratch workflow | CLI acceptance | PASS, both wiki and code diagnostics emitted |
+| 17 | Projects without `lat.md/` keep their existing update behavior | `test_update_skips_knowledge_validation_for_projects_without_lattice` | Compatibility | PASS |
+| 18 | Valid knowledge passes automatically through the public update workflow | `python -m graphify update .../graphify-knowledge-update-valid-94 --no-cluster` | CLI acceptance | PASS, 2 sections across 1 file |
 
 ## RED evidence
 
@@ -46,6 +50,9 @@ knowledge plan. This document covers the first Graphify milestone: native
 4. Independent review added four regressions which initially failed: incremental
    `@lat` rediscovery, dotted lattice filenames, source-root containment, and
    ignore-aware validation scanning.
+5. The workflow milestone began with two expected failures: stale `@lat` comments
+   were silently ignored, and `graphify update` returned success for an invalid
+   knowledge lattice.
 
 Checkpoint commits:
 
@@ -57,6 +64,9 @@ Checkpoint commits:
 - `uv run pytest -q tests/test_lattice_ingest.py`: 11 passed.
 - `uv run pytest -q tests/test_lattice_ingest.py tests/test_manifest_ingest.py tests/test_languages.py tests/test_cli_export.py tests/test_query_cli.py tests/test_security.py`: 460 passed.
 - `env -u DEEPSEEK_API_KEY -u DEEPSEEK_BASE_URL uv run pytest -q --ignore=tests/test_falkordb_integration.py`: 4,157 passed, 1 skipped. The excluded integration requires a FalkorDB server with the `GRAPH.QUERY` module; the available localhost service was plain Redis.
+- Workflow milestone focused suite: 14 passed.
+- Workflow milestone adjacent suite including update/watch behavior: 577 passed.
+- Workflow milestone deterministic full suite: 4,160 passed, 1 skipped.
 - `uv run ruff check graphify/lattice_ingest.py graphify/extract.py graphify/serve.py graphify/cli.py graphify/__main__.py tests/test_lattice_ingest.py`: passed.
 - GREEN implementation checkpoint: `5dcee5a`.
 

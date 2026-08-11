@@ -6,7 +6,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from graphify.build import build_from_json
+from graphify.cli import dispatch_command
 from graphify.extract import extract
 from graphify.lattice_ingest import (
     extract_lattice_markdown,
@@ -194,6 +197,50 @@ def test_validation_respects_graphifyignore_when_scanning_code_mentions(tmp_path
 
     assert diagnostics["valid"] is False
     assert any(error["code"] == "missing-code-mention" for error in diagnostics["errors"])
+
+
+def test_validation_reports_stale_and_ambiguous_code_mentions(tmp_path):
+    _write(tmp_path / "lat.md" / "a" / "rules.md", "# Rules\n\nA rules summary.\n")
+    _write(tmp_path / "lat.md" / "b" / "rules.md", "# Rules\n\nB rules summary.\n")
+    _write(
+        tmp_path / "src" / "repository.py",
+        "# @lat: [[missing#Section]]\n# @lat: [[rules#Rules]]\ndef load():\n    return True\n",
+    )
+
+    diagnostics = validate_lattice(tmp_path)
+    codes = {error["code"] for error in diagnostics["errors"]}
+
+    assert "broken-code-reference" in codes
+    assert "ambiguous-code-reference" in codes
+
+
+def test_update_automatically_fails_after_rebuild_when_lattice_is_invalid(
+    tmp_path, monkeypatch, capsys
+):
+    _write(tmp_path / "lat.md" / "index.md", "# Index\n\nSee [[missing#Section]].\n")
+    monkeypatch.setattr("graphify.watch._rebuild_code", lambda *args, **kwargs: True)
+    monkeypatch.setattr(sys, "argv", ["graphify", "update", str(tmp_path)])
+
+    with pytest.raises(SystemExit) as exc:
+        dispatch_command("update")
+
+    captured = capsys.readouterr()
+    assert exc.value.code == 1
+    assert "Knowledge lattice invalid" in captured.err
+    assert "broken-reference" in captured.out
+
+
+def test_update_skips_knowledge_validation_for_projects_without_lattice(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setattr("graphify.watch._rebuild_code", lambda *args, **kwargs: True)
+    monkeypatch.setattr(sys, "argv", ["graphify", "update", str(tmp_path)])
+
+    dispatch_command("update")
+
+    captured = capsys.readouterr()
+    assert "Code graph updated" in captured.out
+    assert "Knowledge lattice" not in captured.out + captured.err
 
 
 def test_validate_lattice_reports_broken_ambiguous_and_unimplemented_required_sections(tmp_path):

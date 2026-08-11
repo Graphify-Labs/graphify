@@ -322,6 +322,29 @@ def extract_lattice_code_ref_edges(
         return []
     edges: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
+    for path, line_number, target in _iter_code_refs(paths):
+        resolved, ambiguous = _resolve_ref(target, knowledge_ids)
+        if resolved is None or ambiguous:
+            continue
+        key = (resolved, str(path))
+        if key in seen:
+            continue
+        seen.add(key)
+        edges.append(
+            _edge(
+                _knowledge_node_id(resolved),
+                _make_id(str(path)),
+                "implemented_by",
+                str(path),
+                line_number,
+                knowledge_id=resolved,
+            )
+        )
+    return edges
+
+
+def _iter_code_refs(paths: Iterable[Path]) -> Iterable[tuple[Path, int, str]]:
+    """Yield bounded ``@lat`` references from eligible source files."""
     for path in paths:
         if is_lattice_markdown_path(path) or path.suffix.lower() == ".md":
             continue
@@ -333,24 +356,7 @@ def extract_lattice_code_ref_edges(
             continue
         for line_number, line in enumerate(lines, start=1):
             for match in _CODE_REF_RE.finditer(line):
-                resolved, ambiguous = _resolve_ref(match.group(1).strip(), knowledge_ids)
-                if resolved is None or ambiguous:
-                    continue
-                key = (resolved, str(path))
-                if key in seen:
-                    continue
-                seen.add(key)
-                edges.append(
-                    _edge(
-                        _knowledge_node_id(resolved),
-                        _make_id(str(path)),
-                        "implemented_by",
-                        str(path),
-                        line_number,
-                        knowledge_id=resolved,
-                    )
-                )
-    return edges
+                yield path, line_number, match.group(1).strip()
 
 
 def _lattice_files(project_root: Path) -> list[Path]:
@@ -447,11 +453,33 @@ def validate_lattice(project_root: Path) -> dict[str, Any]:
                 )
 
     source_paths = project_source_paths(project_root)
-    implemented = {
-        str(edge["knowledge_id"])
-        for edge in extract_lattice_code_ref_edges(source_paths, nodes)
-        if edge.get("knowledge_id")
-    }
+    code_refs = list(_iter_code_refs(source_paths))
+    implemented: set[str] = set()
+    for source_path, line_number, target in code_refs:
+        resolved, ambiguous = _resolve_ref(target, knowledge_ids)
+        if ambiguous:
+            errors.append(
+                {
+                    "code": "ambiguous-code-reference",
+                    "file": str(source_path),
+                    "line": line_number,
+                    "target": target,
+                    "candidates": ambiguous,
+                    "message": f"ambiguous @lat reference [[{target}]]",
+                }
+            )
+        elif resolved is None:
+            errors.append(
+                {
+                    "code": "broken-code-reference",
+                    "file": str(source_path),
+                    "line": line_number,
+                    "target": target,
+                    "message": f"stale @lat reference [[{target}]]",
+                }
+            )
+        else:
+            implemented.add(resolved)
     for file_path in files:
         text = file_path.read_text(encoding="utf-8", errors="replace")
         if not _requires_code_mention(text):
