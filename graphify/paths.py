@@ -21,7 +21,7 @@ import os
 import re
 import stat
 import tempfile
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 GRAPHIFY_OUT = os.environ.get("GRAPHIFY_OUT", "graphify-out")
 
@@ -301,6 +301,41 @@ def default_graph_json() -> str:
     the path is passed explicitly (#1423).
     """
     return str(out_path("graph.json"))
+
+
+def is_absolute_any_platform(p: "str | Path | None") -> bool:
+    """Whether *p* is absolute under POSIX **or** Windows rules.
+
+    ``Path.is_absolute()`` and ``os.path.isabs()`` answer for the HOST os only,
+    which is the wrong question for a path that was *stored* — a ``source_file``
+    in ``graph.json``, a ``prune_sources`` entry, a cache key. Those travel
+    between machines (build in Docker/CI, update on a Windows workstation, or
+    the reverse), so the host's rules do not describe the string in hand:
+
+    - On Windows, ``WindowsPath("/home/ci/repo/docs/a.md").is_absolute()`` is
+      False — no drive letter — so a Linux-built graph's absolute paths read as
+      relative and get baked into node IDs or joined under the scan root (#2618).
+    - On POSIX, ``PosixPath("C:/Users/u/a.md").is_absolute()`` is False for the
+      mirror-image reason (#2197, #1789).
+
+    ``os.path.isabs`` is additionally not stable across supported interpreters:
+    Python 3.13 changed ``ntpath.isabs`` so a path starting with a single slash
+    is no longer absolute, where 3.10–3.12 said it was. The project supports
+    >=3.10, so a guard written on it silently means different things per version.
+
+    Answering for both platforms is the conservative choice for stored paths:
+    treating a path as absolute at worst declines to relativize it (the string is
+    kept as-is), whereas treating an absolute path as relative corrupts identity.
+    Covers drive-letter, UNC, and POSIX-root forms with either separator.
+
+    NOTE: this is for STORED/portable paths. Code resolving a path against the
+    real local filesystem (``cli``, ``detect``, ``hooks``) must keep using
+    ``Path.is_absolute()`` — there the host's rules are exactly right.
+    """
+    if not p:
+        return False
+    s = str(p)
+    return PurePosixPath(s).is_absolute() or PureWindowsPath(s).is_absolute()
 
 
 def nfc(s: str) -> str:
