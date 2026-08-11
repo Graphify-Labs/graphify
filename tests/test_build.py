@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 import networkx as nx
+import pytest
 from networkx.readwrite import json_graph
 from graphify.build import build_from_json, build, build_merge, edge_data, edge_datas, dedupe_edges, dedupe_nodes
 
@@ -1427,3 +1428,65 @@ def test_build_from_json_prunes_dangling_hyperedge_members(capsys):
     assert set(hes) == {"he_partial"}, "an all-dangling hyperedge must be dropped"
     assert hes["he_partial"]["nodes"] == ["alpha", "beta"]
     assert "he_all_ghost" in capsys.readouterr().err
+
+
+# --- foreign-absolute source_file must not leak into IDs --------------------
+# A graph.json is portable: built in Docker/Linux CI, updated on a Windows
+# workstation, or the reverse. Every guard that asks "is this stored path
+# absolute?" therefore has to answer for BOTH platforms. Host-only tests
+# (Path.is_absolute / os.path.isabs) silently call the other platform's
+# absolute paths relative, which bakes a build directory into node IDs (the
+# mirror of #2197, reported as #2618) or joins it under the scan root.
+#
+# os.path.isabs is doubly unsafe here: Python 3.13 changed ntpath.isabs so a
+# single leading slash is no longer absolute, where 3.10-3.12 said it was, so
+# the same guard meant different things across supported interpreters.
+
+FOREIGN_ABSOLUTE_SOURCE_FILES = [
+    "/home/ci/build/repo/docs/api/README.md",   # POSIX-absolute (Linux/Docker build)
+    "C:/Users/u/repo/docs/api/README.md",       # Windows-absolute, forward slashes
+]
+
+
+@pytest.mark.parametrize("sf", FOREIGN_ABSOLUTE_SOURCE_FILES)
+def test_semantic_rekey_skips_absolute_from_either_platform(sf):
+    """#2618: an absolute source_file is left alone whichever OS wrote it."""
+    from graphify.build import _semantic_id_remap
+    nodes = [{"id": "api_readme", "source_file": sf, "type": "document"}]
+    assert _semantic_id_remap(nodes, None) == {}, (
+        f"{sf!r} leaked its on-disk path into the node ID"
+    )
+
+
+@pytest.mark.parametrize("sf", FOREIGN_ABSOLUTE_SOURCE_FILES)
+def test_graph_has_legacy_ids_skips_absolute_from_either_platform(sf):
+    """The legacy-ID probe derives a stem from source_file, so it must skip an
+    absolute path rather than mint a stem out of the whole build directory."""
+    from graphify.build import graph_has_legacy_ids
+    nodes = [{"id": "api_readme", "source_file": sf,
+              "type": "document", "source_location": "L1"}]
+    assert graph_has_legacy_ids(nodes, root=None) is False
+
+
+def test_norm_source_file_relativizes_a_posix_absolute_path():
+    """A Linux-built graph's absolute source_file must relativize against the
+    matching root regardless of the host running the update."""
+    from graphify.build import _norm_source_file
+    assert _norm_source_file(
+        "/home/ci/build/repo/docs/api/README.md", "/home/ci/build/repo"
+    ) == "docs/api/README.md"
+
+
+def test_derive_prune_root_recovers_root_from_posix_absolute_prune_sources():
+    """The prune-root recovery skips any prune source it thinks is relative.
+
+    With a host-only absoluteness test, every POSIX-absolute prune source was
+    skipped on Windows, the root came back None, and prune/replace silently
+    no-opped — the failure mode of #1151 / #2446 / #2012, reached from the other
+    direction.
+    """
+    from graphify.build import _derive_prune_root
+    stored = {"docs/a.md", "/home/ci/build/repo/docs/b.md"}
+    assert _derive_prune_root(
+        ["/home/ci/build/repo/docs/a.md"], stored
+    ) == "/home/ci/build/repo"

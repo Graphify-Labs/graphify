@@ -12,7 +12,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from graphify._minhash import MinHash, MinHashLSH
-from rapidfuzz.distance import Jaro, JaroWinkler
+from rapidfuzz.distance import DamerauLevenshtein, Jaro, JaroWinkler
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -112,6 +112,81 @@ def _numeric_tokens_differ(a: str, b: str) -> bool:
         return False
     return sorted(t.lstrip("0") or "0" for t in _DIGIT_RUN.findall(a)) != \
         sorted(t.lstrip("0") or "0" for t in _DIGIT_RUN.findall(b))
+
+
+# Function words. A restatement of one entity is what inserts or swaps these
+# ("export a read-only ..." vs "export the read-only ..."); a content word
+# carries the entity's identity and swapping one names something else.
+_STOPWORDS = frozenset({
+    "a", "an", "the", "and", "or", "of", "for", "to", "in", "on", "at", "by",
+    "with", "from", "as", "is", "are", "be", "this", "that", "its",
+})
+
+
+def _same_word_variant(x: str, y: str) -> bool:
+    """True when tokens x and y read as one word misspelt, not two words (#2576).
+
+    A same-length pair within one substitution/transposition is a typo
+    ("manager"/"nanager") -- the same rationale _short_label_blocked applies
+    to whole short labels, and unlike Jaro-Winkler it holds at position 0,
+    where the prefix bonus gives no help (JW scores "manager"/"nanager" at
+    84.92, below threshold, yet it is as much a typo as "managr"). Below 6
+    chars JW cannot separate two words from a typo ("pane"/"plane" scores
+    94.0), so short length-differing pairs never read as variants. Longer
+    pairs fall back to Jaro-Winkler on the merge threshold, so
+    "manager"/"managr" (97.14) still reads as one word. Accepted trade, per
+    the never-merge-two-distinct-entities bar: "colour"/"color" (5 chars,
+    lengths differ) now reads as two words and stays unmerged -- a spelling
+    variant kept separate beats a fabricated merge.
+    """
+    if len(x) == len(y) and DamerauLevenshtein.distance(x, y) <= 1:
+        return True   # same-length 1-sub/transposition = typo, even at position 0
+    if min(len(x), len(y)) < 6:
+        return False  # short tokens: JW can't separate pane/plane (94.0) from a typo
+    return JaroWinkler.normalized_similarity(x, y) * 100 >= _MERGE_THRESHOLD
+
+
+def _content_token_swap(a: str, b: str) -> bool:
+    """True when two equal-token-count labels differ in at least one swapped
+    content word rather than only typos or function words (#2576, adopted
+    from @wilyan09007's PR #2587 and generalized from exactly-one to any
+    number of differing positions).
+
+    Whole-string scoring cannot separate a legit restatement from a
+    distinguishing-token swap: both edit one short run in the middle of a long
+    shared string, so both land in the same Jaro band (#1243). Which token
+    differs does separate them. Structured prose names sibling sections from a
+    template ("Asset Contribution Flow" / "Asset Consumption Flow", four
+    consecutive headings of one operations doc), and those siblings are densest
+    inside a single file -- exactly where Jaro-Winkler's prefix bonus still
+    applies, and where the shared affixes it rewards are boilerplate.
+
+    Each same-position differing pair is judged on its own: a function word on
+    either side is what a restatement swaps, a _same_word_variant pair is one
+    word misspelt, and anything else is a distinct content word naming a
+    different entity -- one such pair blocks the merge. A restatement differs
+    only in stopwords/typos at every position; a template sibling differs in
+    at least one distinct content word ("... Contribution Flow Handler" vs
+    "... Consumption Flows Handler" blocks on either position). Pairs with
+    different token counts are left to the prefix-extension guard (#1201) and
+    whole-label scoring. Known gap, out of scope here: fused camelCase labels
+    ("AssetContributionFlow" vs "AssetConsumptionFlow") normalize to single
+    tokens whose only differing "position" is the whole label, so this guard
+    reduces to whole-token _same_word_variant and long fused pairs can still
+    clear the JW fallback.
+    """
+    tokens_a, tokens_b = a.split(), b.split()
+    if len(tokens_a) != len(tokens_b):
+        return False
+    for x, y in zip(tokens_a, tokens_b):
+        if x == y:
+            continue
+        if x in _STOPWORDS or y in _STOPWORDS:
+            continue  # restatement: a function word swapped in or out
+        if _same_word_variant(x, y):
+            continue  # one word misspelt/inflected, not a different word
+        return True
+    return False
 
 
 # file_type values whose identity is anchored to their source location, not
@@ -614,6 +689,12 @@ def deduplicate_entities(
                 # regardless of score (#1284).
                 if _numeric_tokens_differ(norm_label, neighbor_norm):
                     continue
+                # Template-named siblings differing in a content word are
+                # distinct too, on either path: same-file pairs keep the prefix
+                # bonus, and a cross-file pair can still reach threshold on the
+                # community boost alone (#2576).
+                if _content_token_swap(norm_label, neighbor_norm):
+                    continue
                 if _crossfile_fileanchored_blocked(node, neighbor):
                     continue
 
@@ -778,8 +859,11 @@ def _llm_tiebreak(
             _lo, _hi = sorted((norm_i, norm_j), key=len)
             if _hi.startswith(_lo) and _hi != _lo:
                 continue
-            # Mirror pass 2: decisively-distinct pairs never reach the LLM (#1284).
+            # Mirror pass 2: decisively-distinct pairs never reach the LLM
+            # (#1284, #2576).
             if _numeric_tokens_differ(norm_i, norm_j):
+                continue
+            if _content_token_swap(norm_i, norm_j):
                 continue
             if _crossfile_fileanchored_blocked(node, neighbor):
                 continue
