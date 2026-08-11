@@ -3328,3 +3328,54 @@ def test_rewire_does_not_bind_supertype_stub_to_function():
               "source_file": "store.py", "weight": 1.0}]
     _rewire_unique_stub_nodes(nodes, edges)
     assert edges[0]["target"] == "BookStore"  # inherits stub not bound to function
+
+
+def test_extract_emits_posix_source_file_for_relative_inputs(tmp_path):
+    r"""source_file must be canonical POSIX on every node AND edge, whatever
+    separator the caller's input paths used.
+
+    Extractors build source_file from the Path handed to them, and only the
+    relativizing branch of extract()'s remap calls as_posix(), so a run given
+    relative inputs used to keep the native separator on Windows — mixing
+    `src\lib\content.ts` and `src/pages/index.astro` in one extraction.
+    source_file is compared as a string downstream (build keying, prune-root
+    derivation, dedup, analyze.find_import_cycles), so two spellings are two
+    different files (#683 / #2625).
+
+    Uses the relative-input form deliberately: passing an explicit ``root``
+    takes the branch that already normalized, and would make this vacuous.
+    """
+    (tmp_path / "src" / "lib").mkdir(parents=True)
+    (tmp_path / "src" / "pages").mkdir(parents=True)
+    (tmp_path / "src" / "lib" / "content.ts").write_text(
+        "export function getPosts() { return []; }\n", encoding="utf-8"
+    )
+    (tmp_path / "src" / "pages" / "index.astro").write_text(
+        "---\nimport { getPosts } from '../lib/content';\n"
+        "const posts = getPosts();\n---\n<h1>{posts.length}</h1>\n",
+        encoding="utf-8",
+    )
+
+    cwd = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        result = extract([Path("src/lib/content.ts"), Path("src/pages/index.astro")])
+    finally:
+        os.chdir(cwd)
+
+    carriers = [
+        (kind, item.get("source_file"))
+        for kind, items in (("node", result["nodes"]), ("edge", result["edges"]))
+        for item in items
+        if item.get("source_file")
+    ]
+    assert carriers, "fixture produced nothing with a source_file; test would be vacuous"
+
+    offenders = [(kind, sf) for kind, sf in carriers if "\\" in sf]
+    assert not offenders, f"native separator survived into source_file: {offenders}"
+
+    # ...and both files are present under one spelling each, so the graph sees
+    # two files rather than four.
+    assert {sf for _, sf in carriers} == {
+        "src/lib/content.ts", "src/pages/index.astro",
+    }
