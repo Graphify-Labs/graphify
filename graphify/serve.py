@@ -977,7 +977,8 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
     so the queried symbol always appears at the top of the output.
     """
     char_budget = token_budget * 3
-    lines = []
+    node_lines: list[str] = []
+    edge_lines: list[str] = []
     # Work-memory overlay (derived sidecar) stashed on the graph at load time.
     # Empty when no sidecar exists, so un-annotated output stays byte-identical.
     overlay = getattr(G, "graph", {}).get("_learning_overlay", {}) or {}
@@ -1032,7 +1033,7 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
             f"community={sanitize_label(str(d.get('community_name') or d.get('community', '')))}"
             f"{learning_suffix}]"
         )
-        lines.append(line)
+        node_lines.append(line)
     for u, v in edges:
         if u in nodes and v in nodes:
             raw = G[u][v]
@@ -1067,33 +1068,53 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
                 f"[{sanitize_label(str(d.get('confidence', '')))}{context_suffix}]--> "
                 f"{sanitize_label(G.nodes[tgt].get('label', tgt))}{at_suffix}"
             )
-            lines.append(line)
-    output = "\n".join(lines)
+            edge_lines.append(line)
+    output = "\n".join(node_lines + edge_lines)
     if len(output) > char_budget:
-        cut_at = output[:char_budget].rfind("\n")
-        cut_at = cut_at if cut_at > 0 else char_budget
-        # Never cut the seed nodes: they render first, so if the budget lands
-        # inside the seed block, extend the cut to cover it. The symbol the
-        # question named must always be in the answer (#BUG2). Seeds are bounded
-        # (_pick_seeds max_k + one per term), so the overshoot is a few lines.
-        if seed_hits:
-            seed_block_end = sum(len(lines[i]) + 1 for i in range(len(seed_hits))) - 1
-            cut_at = max(cut_at, min(seed_block_end, len(output)))
-        total_nodes = sum(1 for l in lines if l.startswith("NODE "))
-        shown_nodes = output[:cut_at].count("\nNODE ") + (1 if output.startswith("NODE ") else 0)
-        cut_count = total_nodes - shown_nodes
+        # EDGE lines are appended after every NODE line, so a single flat cut at
+        # char_budget spends the whole budget on nodes and drops the relations
+        # the traversal was run to find: a 61-node/60-edge subgraph rendered 61
+        # nodes and 26 edges, and a real 2-hop BFS (77 nodes, 84 edges) rendered
+        # zero. An answer with no EDGE lines is a bare node list, not a graph
+        # answer, so reserve half of whatever the seeds leave for edges (#BUG3).
+        def _take(src: list[str], budget: int) -> tuple[list[str], int]:
+            kept, used = [], 0
+            for line in src:
+                need = len(line) + (1 if kept else 0)
+                if used + need > budget:
+                    break
+                kept.append(line)
+                used += need
+            return kept, used
+
+        # Never cut the seed nodes: they render first, so they are charged to the
+        # budget before anything else. The symbol the question named must always
+        # be in the answer (#BUG2). Seeds are bounded (_pick_seeds max_k + one per
+        # term), so the overshoot when they alone exceed the budget is a few lines.
+        seed_lines = node_lines[:len(seed_hits)]
+        seed_chars = sum(len(l) + 1 for l in seed_lines)
+        remaining = max(char_budget - seed_chars, 0)
+        kept_edges, edge_chars = _take(edge_lines, remaining // 2 if edge_lines else 0)
+        kept_nodes, _ = _take(node_lines[len(seed_hits):], remaining - edge_chars)
+        shown_nodes = len(seed_lines) + len(kept_nodes)
+        cut_count = len(node_lines) - shown_nodes
+        cut_edges = len(edge_lines) - len(kept_edges)
         # Prominent notice at the TOP so a truncated answer can never be mistaken
-        # for a complete one — silence used to read as absence (#BUG2). The
+        # for a complete one — silence used to read as absence (#BUG2). Edges are
+        # counted too: the old notice only tallied nodes, so a result that kept
+        # every node while dropping most edges announced "0 cut" (#BUG3). The
         # notice + end marker sit OUTSIDE char_budget by design (two bounded
         # wrapper lines, like the existing end marker).
         output = (
-            f"[!] TRUNCATED: showing {shown_nodes} of {total_nodes} nodes "
+            f"[!] TRUNCATED: showing {shown_nodes} of {len(node_lines)} nodes and "
+            f"{len(kept_edges)} of {len(edge_lines)} edges "
             f"(~{token_budget}-token budget). The answer may be among the "
             f"{cut_count} cut nodes — raise the token budget (CLI: --budget) or "
             f"narrow the query (e.g. context_filter=['call'], or get_node for a "
             f"specific symbol).\n\n"
-            + output[:cut_at]
-            + f"\n... (truncated — {cut_count} more nodes cut by ~{token_budget}-token budget."
+            + "\n".join(seed_lines + kept_nodes + kept_edges)
+            + f"\n... (truncated — {cut_count} more nodes and {cut_edges} more edges"
+            f" cut by ~{token_budget}-token budget."
             f" Narrow with context_filter=['call'] or use get_node for a specific symbol)"
         )
     return output

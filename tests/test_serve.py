@@ -1496,6 +1496,55 @@ def test_subgraph_to_text_no_notice_when_under_budget():
     assert "TRUNCATED" not in text and "truncated" not in text
 
 
+# --- BUG3: edges must not be starved by the node block ------------------------
+
+def _wide_graph(n=80):
+    """One seed plus n neighbours, sized so NODE lines alone overrun the budget
+    and the pre-fix renderer emitted zero EDGE lines."""
+    G = nx.Graph()
+    G.add_node("seed", label="seed node", source_file="seed.md", source_location="L1", community=0)
+    for i in range(n):
+        G.add_node(f"n{i}", label=f"neighbour number {i}",
+                   source_file=f"docs/some/path/file{i}.md", source_location="L1", community=0)
+        G.add_edge("seed", f"n{i}", relation="references", confidence="EXTRACTED")
+    return G
+
+
+def test_subgraph_to_text_keeps_edges_when_nodes_overrun_budget():
+    """BUG3: NODE lines render before EDGE lines, so a flat cut spends the whole
+    budget on nodes and returns a bare node list. Relations must survive."""
+    G = _wide_graph()
+    text = _subgraph_to_text(G, set(G.nodes), list(G.edges()), token_budget=2000, seeds=["seed"])
+    assert "TRUNCATED" in text
+    edge_lines = [l for l in text.splitlines() if l.startswith("EDGE ")]
+    node_lines = [l for l in text.splitlines() if l.startswith("NODE ")]
+    assert edge_lines, "every edge was cut: the answer is a node list, not a graph"
+    # Neither block may be starved to make room for the other.
+    assert len(edge_lines) >= len(G.edges()) // 4
+    assert len(node_lines) >= 2
+    assert "seed node" in node_lines[0], "seed must still render first"
+
+
+def test_subgraph_to_text_truncation_notice_counts_cut_edges():
+    """BUG3: the notice tallied nodes only, so a cut that kept every node while
+    dropping most edges announced '0 cut' and read as complete."""
+    G = _wide_graph()
+    text = _subgraph_to_text(G, set(G.nodes), list(G.edges()), token_budget=2000, seeds=["seed"])
+    notice = text.splitlines()[0]
+    shown_e = len([l for l in text.splitlines() if l.startswith("EDGE ")])
+    assert f"{shown_e} of {len(G.edges())} edges" in notice, notice
+    assert "more edges" in text, "end marker must report cut edges too"
+
+
+def test_subgraph_to_text_under_budget_output_is_unchanged_by_edge_reserve():
+    """The reserve only applies past the budget: a fitting subgraph renders every
+    node then every edge, exactly as before."""
+    G = _make_graph()
+    text = _subgraph_to_text(G, {"n1", "n2"}, [("n1", "n2")], token_budget=2000)
+    lines = text.splitlines()
+    assert [l.split()[0] for l in lines] == ["NODE", "NODE", "EDGE"]
+
+
 def test_subgraph_to_text_order_is_deterministic():
     """Equal-degree nodes render in a stable order regardless of set iteration."""
     G = nx.Graph()
