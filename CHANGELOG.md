@@ -2,7 +2,22 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
-## 0.9.39 (unreleased)
+## 0.9.40 (unreleased)
+
+- Fix: the 0.9.37 partial-parse warning no longer fires on valid TypeScript/TSX (#2610, #2599, thanks @Sid-AutoWisdom and @atlasplatformu-ai). tree-sitter-typescript sets an error flag on tiny fully-recovered constructs (a `&` in a JSX string attribute, a semicolon-less `in_*` interface member) that still extract completely; the warning now fires only when recovery plausibly cost symbols (the file yielded at most the file node, or an error region spans multiple lines), so the genuine Kotlin one-line-body and Luau cases still warn.
+- Fix: `file_hash()`'s stat fastpath no longer serves a stale digest when a file is rewritten to the same size within one mtime tick (#2612, thanks @rajarshidattapy); a racily-clean guard falls back to a content hash for recently-modified files.
+- Fix: stored-path absoluteness is now detected cross-platform, so a POSIX-absolute `source_file` from a Linux/CI-built graph no longer leaks into node ids on Windows (#2618, thanks @rajarshidattapy).
+- Fix: `normalize_id()` is now idempotent for Turkish `İ` and similar codepoints by casefolding before the non-word filter; no ASCII identifier ids change (#2614, thanks @rajarshidattapy).
+- Fix: `graph.json` collection order is now deterministic across runs (#2582, thanks @hjotha).
+- Fix: `explain`/`_find_node` resolve node ids containing punctuation or non-ASCII characters (#2467, thanks @sean-soomgo).
+- Fix: `.graphifyignore` patterns match paths regardless of Unicode NFC/NFD normalization, so an accented ignore rule works on macOS (#2544, thanks @bruno-growthsales).
+- Fix: Obsidian vault metadata directories (`.obsidian`, `.smart-env`) are skipped during detection (#2493, thanks @rohit-jsfreaky).
+- Fix: a single unparenthesised arrow parameter (`x => f(x)`) is now shadowed, so it no longer fabricates an `indirect_call` edge to an unrelated same-named callable (thanks @imagineers-tyler); follows the 0.9.38 sibling-closure fix (#2568).
+- Fix: Python extraction no longer crashes resolving an over-deep relative import (`from ....x import y` above the package root) (#2605, thanks @SinghAman21).
+- Fix: a Go qualified type (`pkg.Type`) resolves by import path instead of losing the qualifier and binding by bare name to an unrelated same-named symbol (#2608, thanks @gnukeno).
+- Fix: `graph.html`'s document title no longer embeds the generator's absolute host path (#2598, thanks @michaelxer); it keeps the path from the output-dir marker onward.
+
+## 0.9.39 (2026-08-10)
 
 - Fix: `affected` now traverses a dynamic `import('…')` made inside a function or at module scope (#2584, thanks @phudayyy). The 0.9.38 dedupe keyed only on the target, so an in-function dynamic import (whose symbol-level edge is anchored on the enclosing function) suppressed the file-level edge `affected` follows; the dedupe now keys on the importing file, emitting one file-level `dynamic_import` edge per file/target while keeping the call-site edge.
 - Fix: a Python member call on an untyped receiver (`x.get(...)`) no longer binds by name alone to a same-named module-level function, fabricating a false high-confidence `calls` edge and a god node (#2417, #2586, thanks @EZZEASY). Such a call is now resolved only with receiver-type, import, or `self`/`cls`/`super` evidence, matching the TypeScript fix from 0.9.37; `super().method()` still resolves.
