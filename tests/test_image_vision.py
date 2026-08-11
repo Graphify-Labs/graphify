@@ -70,7 +70,7 @@ def test_non_pdf_still_read_as_plain_text(tmp_path):
     assert "# hello" in llm._file_to_text(md)
 
 
-def test_read_files_skips_out_of_root_symlink(tmp_path):
+def test_read_files_skips_out_of_root_symlink(requires_symlinks, tmp_path):
     root = tmp_path / "root"
     root.mkdir()
     outside = tmp_path / "outside"
@@ -104,7 +104,7 @@ def test_build_image_refs_sets_rel_media_and_bytes(tmp_path):
     assert ref.bedrock_format == "png"
 
 
-def test_build_image_refs_skips_out_of_root_symlink(tmp_path):
+def test_build_image_refs_skips_out_of_root_symlink(requires_symlinks, tmp_path):
     root = tmp_path / "root"
     root.mkdir()
     outside = tmp_path / "outside"

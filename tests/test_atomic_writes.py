@@ -55,7 +55,7 @@ def test_write_text_atomic_new_file_respects_umask(tmp_path):
     assert (os.stat(p).st_mode & 0o777) == (0o666 & ~umask)
 
 
-def test_write_text_atomic_writes_through_symlink(tmp_path):
+def test_write_text_atomic_writes_through_symlink(requires_symlinks, tmp_path):
     # Shared-output setups symlink graph.json to shared storage; the atomic write
     # must update the target and keep the link, not replace it with a real file.
     target = tmp_path / "real.json"
