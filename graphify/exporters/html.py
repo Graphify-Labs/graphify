@@ -327,10 +327,10 @@ def _html_document_title(output_path: str) -> str:
     """Return a portable label for the graph.html <title>.
 
     Tracked artifacts must not embed the generator host absolute path
-    (regression of #433; reported again as #2598 on Windows). Prefer a
-    path relative to the process cwd; otherwise keep from the configured
-    output-dir bare name (``graphify-out`` / ``GRAPHIFY_OUT`` basename)
-    onward; finally fall back to the filename only.
+    (regression of #433; reported again as #2598 on Windows). Keep from the
+    configured output-dir bare name (``graphify-out`` / ``GRAPHIFY_OUT``
+    basename) onward — portable in every case; otherwise fall back to a
+    cwd-relative label, and finally the filename only.
     """
     from graphify.paths import GRAPHIFY_OUT_NAME
 
@@ -340,6 +340,20 @@ def _html_document_title(output_path: str) -> str:
         raw = raw[2:]  # "/Users/..." style after drive strip
     p = Path(raw)
 
+    parts = list(Path(raw).parts)
+    # Path("C:/Users/..") on POSIX may keep "C:" as first part — strip it.
+    if parts and len(parts[0]) == 2 and parts[0][1] == ":" and parts[0][0].isalpha():
+        parts = parts[1:]
+    # Prefer keeping from the output-dir marker onward: portable in every
+    # case, whereas a cwd-relative path still leaks host/user segments when
+    # the graph is built from a directory ABOVE the project (#2598 follow-up).
+    marker = GRAPHIFY_OUT_NAME
+    for i, part in enumerate(parts):
+        if part == marker or part.startswith("graphify-out"):
+            return "/".join(parts[i:])
+
+    # No standard out-dir marker (fully custom output path): fall back to a
+    # cwd-relative label when the target is under cwd, else the bare filename.
     try:
         resolved = p if p.is_absolute() else (Path.cwd() / p)
         rel = resolved.resolve().relative_to(Path.cwd().resolve())
@@ -349,14 +363,6 @@ def _html_document_title(output_path: str) -> str:
     except (ValueError, OSError, RuntimeError):
         pass
 
-    parts = list(Path(raw).parts)
-    # Path("C:/Users/..") on POSIX may keep "C:" as first part — strip it.
-    if parts and len(parts[0]) == 2 and parts[0][1] == ":" and parts[0][0].isalpha():
-        parts = parts[1:]
-    marker = GRAPHIFY_OUT_NAME
-    for i, part in enumerate(parts):
-        if part == marker or part.startswith("graphify-out"):
-            return "/".join(parts[i:])
     name = p.name
     return name if name else "graph.html"
 
