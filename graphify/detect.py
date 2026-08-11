@@ -1189,7 +1189,14 @@ def _is_ignored(
             except ValueError:
                 continue  # target outside this pattern's anchor: cannot match
             if rel_anchor != ".":
-                matched = _matches(rel_anchor, p, path_relative=path_relative)
+                rel = rel_anchor
+                if not path_relative:
+                    try:
+                        if len(root.parts) > len(anchor.parts):
+                            rel = str(target.relative_to(root)).replace(os.sep, "/")
+                    except ValueError:
+                        pass
+                matched = _matches(rel, p, path_relative=path_relative)
                 if matched and directory_only and not target.is_dir():
                     matched = False
 
