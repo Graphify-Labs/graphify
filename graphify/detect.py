@@ -1193,7 +1193,7 @@ def _is_ignored(
                 if not path_relative:
                     try:
                         if len(root.parts) > len(anchor.parts):
-                            rel = str(target.relative_to(root)).replace(os.sep, "/")
+                            rel = _nfc(str(target.relative_to(root)).replace(os.sep, "/"))
                     except ValueError:
                         pass
                 matched = _matches(rel, p, path_relative=path_relative)
