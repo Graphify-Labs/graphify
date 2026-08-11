@@ -8,6 +8,10 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: `Cargo.toml` is now recognized as a package manifest (#2434, thanks @ousamabenyounes), minting one canonical package node by name plus `depends_on` edges (dependencies, plus target-specific deps; virtual-workspace roots and workspace-inherited versions are handled).
 - Fix: an explicitly-passed scan root is no longer excluded by an unanchored pattern in a parent-directory `.gitignore` that happens to match the root's own name (#2468, thanks @hopstreax); the match path is re-relativized to the scan root (and NFC-normalized) so a genuinely-ignored subdirectory is still skipped.
 - Fix: the API extraction prompt now instructs backends to capture the per-node `rationale` attribute (design intent / trade-offs), matching the skill path, so API-backed extraction no longer silently drops it (#2482, thanks @hopstreax). This invalidates cached semantic chunks, which re-extract on the next run.
+- Fix: `source_file` is canonicalized to POSIX separators, so a run given relative inputs on Windows no longer produces non-portable node ids with backslashes (#2627, thanks @rajarshidattapy).
+- Fix: a warm cache hit no longer re-anchors a CWD-relative `source_file` to a ghost path when the run's working directory differs from the graph root, keeping incremental and cold-build node ids identical (#2632, thanks @rajarshidattapy).
+- Fix: the wiki/obsidian audit trail counts each incident edge once instead of double-counting intra-community edges, so the confidence breakdown is accurate (#2635, thanks @rajarshidattapy).
+- Fix: C# members declared inside a `#if ... #endif` preprocessor block are now extracted and attached to their class instead of being dropped (#2634, thanks @rohit-jsfreaky).
 
 ## 0.9.40 (2026-08-11)
 
