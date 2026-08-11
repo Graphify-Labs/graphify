@@ -83,6 +83,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _decldef_class_stem,
     _disambiguate_colliding_node_ids,
     _find_workspace_root,
+    _go_import_path_for_file,
     _is_type_like_definition,
     _js_call_identifier,
     _js_default_export_name,
@@ -122,6 +123,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _resolve_cross_file_imports,
     _resolve_cross_file_java_imports,
     _resolve_export_target,
+    _resolve_go_type_references,
     _resolve_java_type_references,
     _resolve_php_type_references,
     _resolve_js_import_path,
@@ -6019,12 +6021,24 @@ def extract(
     # naming the first error line so the user can find the construct.
     _syntax_error_files: list[tuple[str, int | None]] = []
     for i, _p in enumerate(paths):
-        _pe = (per_file[i] or {}).get("parse_errors")
-        if _pe:
-            _syntax_error_files.append((str(_p), _pe.get("first_error_line")))
+        _res = per_file[i] or {}
+        _pe = _res.get("parse_errors")
+        if not _pe:
+            continue
+        # #2610/#2599: gate the #2551 warning on plausible symbol loss.
+        # tree-sitter-typescript sets has_error on tiny fully-recovered errors
+        # (a `&` in a JSX string attr; a semicolon-less `in_*` interface
+        # member) that extract completely — stay silent. Warn only when
+        # nothing beyond the file node extracted, or an ERROR region
+        # dissolved multiple lines (the genuine #2551 Kotlin one-line-body /
+        # #2520 Luau case). `multiline_error` is absent from pre-fix cached
+        # results, so those fall back to the file-node-only arm.
+        if len(_res.get("nodes", [])) <= 1 or _pe.get("multiline_error"):
+            _rel = os.path.relpath(str(_p), str(root)).replace("\\", "/")
+            _syntax_error_files.append((_rel, _pe.get("first_error_line")))
     if _syntax_error_files:
         _shown = ", ".join(
-            f"{Path(x).name} (first error at line {ln})" if ln else Path(x).name
+            f"{x} (first error at line {ln})" if ln else x
             for x, ln in _syntax_error_files[:5]
         )
         _more = (
@@ -6506,6 +6520,21 @@ def extract(
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("Java type-reference resolution failed, skipping: %s", exc)
+    # Resolve internal Go pkg.Type references exactly and park external ones
+    # before the generic bare-label stub rewire can manufacture a collision.
+    _go_sel = [(r, p) for r, p in zip(per_file, paths) if p.suffix == ".go"]
+    if _go_sel:
+        try:
+            _resolve_go_type_references(
+                [r for r, _ in _go_sel], [p for _, p in _go_sel],
+                all_nodes, all_edges, root,
+                resolution_context_nodes, resolution_context_edges,
+            )
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Go type-reference resolution failed, skipping: %s", exc
+            )
     _rewire_unique_stub_nodes(all_nodes, all_edges)
 
     # Add cross-file class-level edges (Python only - uses Python parser internally)
@@ -6751,6 +6780,7 @@ def extract(
     # file is real ONLY if the caller imported it. So a cross-file call from one
     # of these files with no import evidence is gated below (#1659).
     _JS_TS_CALL_SUFFIXES = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")
+    _go_module_cache: dict[Path, str | None] = {}
     for rc in all_raw_calls:
         callee = rc.get("callee", "")
         if not callee:
@@ -6837,6 +6867,20 @@ def extract(
             ]
             if not candidates:
                 continue
+        # Imported Go selectors carry exact package evidence. External package
+        # calls yield no internal candidate instead of binding by bare name.
+        go_exact_import = False
+        if rc.get("language") == "go" and rc.get("import_path"):
+            import_path = str(rc["import_path"])
+            candidates = [
+                candidate for candidate in candidates
+                if _go_import_path_for_file(
+                    nid_to_source_file.get(candidate, ""), root, _go_module_cache
+                ) == import_path
+            ]
+            if not candidates:
+                continue
+            go_exact_import = True
         caller = rc["caller_nid"]
         # Resolve the caller's file via the raw_call's own source_file string,
         # which is stable regardless of any caller_nid remap. An indirect
@@ -6863,7 +6907,7 @@ def extract(
 
         if len(candidates) == 1:
             tgt = candidates[0]
-            has_import_evidence = _has_import_evidence(tgt)
+            has_import_evidence = go_exact_import or _has_import_evidence(tgt)
         else:
             # Ambiguous name (defined in 2+ files). Don't bail outright (#1219):
             # if the caller has explicit import evidence pointing at exactly one
