@@ -110,8 +110,41 @@ What you get out of the box:
 | **Cross-file links** | `calls` / `imports` / `inherits` / `mixes_in` resolved across ~40 languages via tree-sitter AST |
 | **Query, path, explain** | Ask a question, trace the path between two things, or explain one concept, all against `graph.json` |
 | **Rationale + doc refs** | `# NOTE:` / `# WHY:` comments and ADR/RFC citations become first-class nodes linked to the code |
+| **Validated knowledge** | `lat.md/` sections, summaries, wiki links, source links, and `@lat` implementation references join the code graph deterministically |
 | **Beyond code** | Docs, PDFs, images, and video/audio all map into the same graph |
 | **Local-first** | Code is parsed locally with tree-sitter (no LLM, nothing leaves your machine); only the semantic pass over docs/media calls a backend, and only if you configure one |
+
+---
+
+## Validated knowledge with lat.md
+
+Graphify automatically recognizes Markdown files inside a project-level
+`lat.md/` directory. Each heading becomes a stable `knowledge_section` node,
+the first paragraph becomes its searchable summary, and wiki links connect the
+curated knowledge to other sections or source files. Explicit implementation
+comments connect knowledge back to code:
+
+```python
+# @lat: [[security#Security#Tenant isolation]]
+def load_orders(tenant_id):
+    ...
+```
+
+Run the normal update command to include the lattice in `graph.json`, then
+validate referential integrity separately when needed:
+
+```bash
+graphify update .
+graphify check-knowledge .
+graphify check-knowledge . --json
+graphify query "tenant isolation constraints"
+```
+
+`check-knowledge` reports broken or ambiguous wiki links, missing source files,
+and leaf sections marked `require-code-mention: true` that have no matching
+`@lat` reference. The supported format is compatible with the public lat.md
+heading, wiki-link, source-reference, and code-mention conventions while
+remaining fully local and deterministic.
 
 ---
 

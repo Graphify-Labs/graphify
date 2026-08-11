@@ -101,13 +101,11 @@ def test_full_extract_links_at_lat_comment_to_knowledge_section(tmp_path):
 def test_full_extract_resolves_cross_file_short_wiki_reference(tmp_path):
     overview = _write(
         tmp_path / "lat.md" / "overview.md",
-        "# Overview\n\nArchitecture overview.\n\n"
-        "## Runtime\n\nSee [[operations#Deployment]].\n",
+        "# Overview\n\nArchitecture overview.\n\n## Runtime\n\nSee [[operations#Deployment]].\n",
     )
     operations = _write(
         tmp_path / "lat.md" / "operations.md",
-        "# Operations\n\nOperations summary.\n\n"
-        "## Deployment\n\nDeployment constraints.\n",
+        "# Operations\n\nOperations summary.\n\n## Deployment\n\nDeployment constraints.\n",
     )
 
     result = extract([overview, operations], cache_root=tmp_path, root=tmp_path, parallel=False)

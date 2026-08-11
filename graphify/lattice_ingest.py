@@ -6,6 +6,7 @@ required: the supported interchange subset is headings, first-paragraph
 summaries, ``[[wiki links]]``, ``@lat`` code comments, and the
 ``require-code-mention`` frontmatter flag.
 """
+
 from __future__ import annotations
 
 import re
@@ -84,7 +85,9 @@ def _wiki_refs(lines: list[str], start: int, end: int) -> list[tuple[str, int]]:
         if in_fence:
             continue
         searchable = _INLINE_CODE_RE.sub("", line)
-        refs.extend((match.group(1).strip(), line_number) for match in _WIKI_RE.finditer(searchable))
+        refs.extend(
+            (match.group(1).strip(), line_number) for match in _WIKI_RE.finditer(searchable)
+        )
     return refs
 
 
@@ -248,8 +251,7 @@ def _resolve_ref(target: str, knowledge_ids: Iterable[str]) -> tuple[str | None,
     candidates = [
         item
         for item in ids
-        if item.lower().endswith("/" + target_lower)
-        or item.lower().endswith("#" + target_lower)
+        if item.lower().endswith("/" + target_lower) or item.lower().endswith("#" + target_lower)
     ]
     if not candidates and "#" in target:
         file_part, heading_part = target.split("#", 1)
@@ -344,7 +346,9 @@ def _lattice_files(project_root: Path) -> list[Path]:
 
 def _requires_code_mention(text: str) -> bool:
     frontmatter = re.match(r"^---\s*\n(.*?)\n---", text, flags=re.DOTALL)
-    return bool(frontmatter and re.search(r"require-code-mention:\s*true", frontmatter.group(1), re.I))
+    return bool(
+        frontmatter and re.search(r"require-code-mention:\s*true", frontmatter.group(1), re.I)
+    )
 
 
 def validate_lattice(project_root: Path) -> dict[str, Any]:
@@ -353,11 +357,7 @@ def validate_lattice(project_root: Path) -> dict[str, Any]:
     files = _lattice_files(project_root)
     extracted = [extract_lattice_markdown(path) for path in files]
     nodes = [node for result in extracted for node in result.get("nodes", [])]
-    knowledge_ids = {
-        str(node["knowledge_id"])
-        for node in nodes
-        if node.get("knowledge_id")
-    }
+    knowledge_ids = {str(node["knowledge_id"]) for node in nodes if node.get("knowledge_id")}
     errors: list[dict[str, Any]] = []
 
     for result in extracted:
