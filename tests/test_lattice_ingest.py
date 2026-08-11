@@ -49,6 +49,28 @@ def test_lattice_markdown_emits_stable_sections_summaries_and_wiki_edges(tmp_pat
     assert any(edge["relation"] == "contains" for edge in result["edges"])
 
 
+def test_lattice_ignores_example_links_and_emits_source_documentation_edges(tmp_path):
+    source = _write(tmp_path / "src" / "service.py", "def enforce():\n    return True\n")
+    spec = _write(
+        tmp_path / "lat.md" / "security.md",
+        "# Security\n\nDocuments [[src/service.py#enforce]].\n\n"
+        "## Syntax examples\n\nInline `[[not-a-reference]]` and fenced examples are ignored.\n\n"
+        "```md\n[[also-not-a-reference]]\n```\n",
+    )
+
+    result = extract([spec, source], cache_root=tmp_path, root=tmp_path, parallel=False)
+    graph = build_from_json(result, directed=True, root=tmp_path)
+
+    documented = [
+        (graph.nodes[src].get("knowledge_id"), graph.nodes[dst].get("source_file"))
+        for src, dst, data in graph.edges(data=True)
+        if data.get("relation") == "documents"
+    ]
+    assert ("security#Security", "src/service.py") in documented
+    diagnostics = validate_lattice(tmp_path)
+    assert diagnostics["valid"] is True, diagnostics["errors"]
+
+
 def test_full_extract_links_at_lat_comment_to_knowledge_section(tmp_path):
     spec = _write(
         tmp_path / "lat.md" / "security.md",

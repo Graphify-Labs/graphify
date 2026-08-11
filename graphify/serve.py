@@ -295,8 +295,9 @@ def _compute_idf(G: nx.Graph, terms: list[str]) -> dict[str, float]:
             norm_label = (
                 data.get("norm_label") or _strip_diacritics(data.get("label") or "")
             ).lower()
+            summary = _strip_diacritics(data.get("summary") or "").lower()
             for t in uncached:
-                if t in norm_label:
+                if t in norm_label or t in summary:
                     df[t] += 1
         for t in uncached:
             cache[t] = math.log(1 + N / (1 + df[t]))
@@ -339,7 +340,8 @@ def _node_search_text(data: dict, nid: str) -> str:
     source = (data.get("source_file") or "").lower()
     source_tokens = " ".join(_search_tokens(data.get("source_file") or ""))
     nid_text = str(nid).lower()
-    fields = (norm_label, label_tokens, nid_text, source, source_tokens)
+    summary = _strip_diacritics(data.get("summary") or "").lower()
+    fields = (norm_label, label_tokens, nid_text, source, source_tokens, summary)
     if not nid_text.isascii():
         nid_folded = _strip_diacritics(str(nid)).lower()
         if nid_folded != nid_text:
@@ -520,6 +522,7 @@ def _score_query(
         # driver".
         label_tokens = " ".join(_search_tokens(data.get("label") or ""))
         source = (data.get("source_file") or "").lower()
+        summary = _strip_diacritics(data.get("summary") or "").lower()
         # `nid_lower` is needed both by the full-query tier (`if joined`) and by
         # the per-token singleton tier (joined-singlet exact-match check). When
         # neither runs (`joined` empty AND not collecting seeds) skip the call;
@@ -566,19 +569,29 @@ def _score_query(
             tier_value = 0.0
             substr_value = 0.0
             source_value = 0.0
+            summary_value = 0.0
+            label_matched = False
             if t == norm_label or t == bare_label:
                 tier_value = _EXACT_MATCH_BONUS * w
                 matched += 1
+                label_matched = True
             elif norm_label.startswith(t) or bare_label.startswith(t):
                 tier_value = _PREFIX_MATCH_BONUS * w
                 matched += 1
+                label_matched = True
             elif t in norm_label:
                 substr_value = _SUBSTRING_MATCH_BONUS * w
                 score += substr_value
                 matched += 1
+                label_matched = True
             if t in source:
                 source_value = _SOURCE_MATCH_BONUS * w
                 score += source_value
+            if t in summary:
+                summary_value = _SUBSTRING_MATCH_BONUS * w
+                score += summary_value
+                if not label_matched:
+                    matched += 1
             tiered += tier_value
             if collect_per_term_seeds and best_by_term is not None:
                 # Singleton score for [t] on this node, mirroring
@@ -597,7 +610,7 @@ def _score_query(
                     singleton = _PREFIX_MATCH_BONUS * 10 * w
                 else:
                     singleton = 0.0
-                singleton += tier_value + substr_value + source_value
+                singleton += tier_value + substr_value + source_value + summary_value
                 if singleton > 0:
                     # Tie-break key mirrors the legacy sort+max(degree):
                     # (-singleton, -degree, label_len, nid) — the minimum
@@ -1032,6 +1045,9 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
             f"community={sanitize_label(str(d.get('community_name') or d.get('community', '')))}"
             f"{learning_suffix}]"
         )
+        summary = str(d.get("summary") or "").strip()
+        if summary:
+            line += f" summary={sanitize_label(summary[:500])}"
         lines.append(line)
     for u, v in edges:
         if u in nodes and v in nodes:

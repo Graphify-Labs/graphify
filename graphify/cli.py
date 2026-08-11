@@ -1712,6 +1712,40 @@ def dispatch_command(cmd: str) -> None:
         else:
             print(format_diagnostic_report(summary))
 
+    elif cmd == "check-knowledge":
+        import json as _json
+        from graphify.lattice_ingest import validate_lattice
+
+        check_path = Path(".")
+        for arg in sys.argv[2:]:
+            if not arg.startswith("--"):
+                check_path = Path(arg)
+                break
+        if not check_path.exists() or not check_path.is_dir():
+            print(f"error: path not found or not a directory: {check_path}", file=sys.stderr)
+            sys.exit(1)
+        result = validate_lattice(check_path)
+        if "--json" in sys.argv:
+            print(_json.dumps(result, indent=2, ensure_ascii=False))
+        else:
+            if result["valid"]:
+                print(
+                    f"Knowledge lattice valid: {result['sections']} sections "
+                    f"across {result['files']} files."
+                )
+            else:
+                for error in result["errors"]:
+                    print(
+                        f"{error['file']}:{error['line']}: "
+                        f"{error['code']}: {error['message']}"
+                    )
+                print(
+                    f"Knowledge lattice invalid: {len(result['errors'])} error(s).",
+                    file=sys.stderr,
+                )
+        if not result["valid"]:
+            sys.exit(1)
+
     elif cmd == "add":
         if len(sys.argv) < 3:
             print(

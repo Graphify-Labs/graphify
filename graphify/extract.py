@@ -16,6 +16,12 @@ from typing import Any, Callable
 from .cache import load_cached, save_cached
 from .mcp_ingest import extract_mcp_config, is_mcp_config_path
 from .manifest_ingest import extract_package_manifest, is_package_manifest_path
+from .lattice_ingest import (
+    extract_lattice_code_ref_edges,
+    extract_lattice_markdown,
+    is_lattice_markdown_path,
+    resolve_lattice_reference_edges,
+)
 from .resolver_registry import (
     LanguageResolver,
     register as register_language_resolver,
@@ -5087,6 +5093,11 @@ def _is_cpp_header(path: Path) -> bool:
 
 def _get_extractor(path: Path) -> Any | None:
     """Return the correct extractor function for a file, or None if unsupported."""
+    # A lat.md lattice is curated, validated knowledge rather than ordinary
+    # prose. Route it before generic Markdown so section ids, summaries and
+    # wiki-link edges remain compatible with lat.md's public format.
+    if is_lattice_markdown_path(path):
+        return extract_lattice_markdown
     if path.name.lower().endswith(".blade.php"):
         return extract_blade
     # MCP config files (.mcp.json, claude_desktop_config.json, ...) are routed
@@ -5644,6 +5655,12 @@ def extract(
         all_nodes.extend(result.get("nodes", []))
         all_edges.extend(result.get("edges", []))
         all_raw_calls.extend(result.get("raw_calls", []))
+    # Bind curated knowledge to implementation files through explicit
+    # `@lat: [[section]]` comments. The file endpoint uses the same pre-remap id
+    # recipe as every extractor, so the canonical path remap below updates it
+    # together with the file node.
+    resolve_lattice_reference_edges(all_edges, all_nodes)
+    all_edges.extend(extract_lattice_code_ref_edges(paths, all_nodes))
     # Function / method / class def ids for the cross-file indirect_call callable
     # guard. Built from the `_callable` node marker AFTER the id-remap / disambiguation
     # passes below (which rewrite node ids), so it can never go stale — see the
