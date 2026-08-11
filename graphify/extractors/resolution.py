@@ -1724,6 +1724,8 @@ def _probe_python_module_candidate(candidate: Path) -> Path | None:
             return init_path
     if candidate.is_file():
         return candidate
+    if not candidate.name:
+        return None
     py_candidate = candidate.with_suffix(".py")
     if py_candidate.is_file():
         return py_candidate
