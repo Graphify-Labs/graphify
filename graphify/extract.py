@@ -5471,12 +5471,24 @@ def extract(
     # naming the first error line so the user can find the construct.
     _syntax_error_files: list[tuple[str, int | None]] = []
     for i, _p in enumerate(paths):
-        _pe = (per_file[i] or {}).get("parse_errors")
-        if _pe:
-            _syntax_error_files.append((str(_p), _pe.get("first_error_line")))
+        _res = per_file[i] or {}
+        _pe = _res.get("parse_errors")
+        if not _pe:
+            continue
+        # #2610/#2599: gate the #2551 warning on plausible symbol loss.
+        # tree-sitter-typescript sets has_error on tiny fully-recovered errors
+        # (a `&` in a JSX string attr; a semicolon-less `in_*` interface
+        # member) that extract completely — stay silent. Warn only when
+        # nothing beyond the file node extracted, or an ERROR region
+        # dissolved multiple lines (the genuine #2551 Kotlin one-line-body /
+        # #2520 Luau case). `multiline_error` is absent from pre-fix cached
+        # results, so those fall back to the file-node-only arm.
+        if len(_res.get("nodes", [])) <= 1 or _pe.get("multiline_error"):
+            _rel = os.path.relpath(str(_p), str(root)).replace("\\", "/")
+            _syntax_error_files.append((_rel, _pe.get("first_error_line")))
     if _syntax_error_files:
         _shown = ", ".join(
-            f"{Path(x).name} (first error at line {ln})" if ln else Path(x).name
+            f"{x} (first error at line {ln})" if ln else x
             for x, ln in _syntax_error_files[:5]
         )
         _more = (

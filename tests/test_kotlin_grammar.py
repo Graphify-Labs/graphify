@@ -15,9 +15,12 @@ older forks the extractor was written against:
   all-identifier chains into a `qualified_prefix` resolved against the
   declared packages (exactly-one-candidate guarded).
 * #2551 — the grammar rejects one-line `class C { val x }` bodies; consecutive
-  one-liners can dissolve the whole file's parse. Graphify now warns on any
-  file extracted through ERROR recovery (language-agnostic, also #2520) and
-  keeps class linkage for declarations recovered inside an ERROR span.
+  one-liners can dissolve the whole file's parse. Graphify warns on a file
+  extracted through ERROR recovery (language-agnostic, also #2520) and keeps
+  class linkage for declarations recovered inside an ERROR span. Since
+  #2610/#2599 the warning fires only on PLAUSIBLE symbol loss (file-node-only
+  result or a multiline ERROR region) — tiny fully-recovered errors that
+  extract completely stay silent.
 """
 from __future__ import annotations
 
@@ -272,7 +275,10 @@ def test_kotlin_partial_parse_warns_with_file_and_line(tmp_path, capsys):
 
 def test_kotlin_one_line_class_with_fun_still_extracts(tmp_path, capsys):
     # `class VM { fun f() = 1 }` trips has_error but recovers structurally:
-    # everything must extract, and the warning names the file.
+    # everything must extract. #2610: since the recovery is zero-width and
+    # every symbol is present, the corrected gate (warn only on plausible
+    # symbol loss — file-node-only or a multiline ERROR region) stays SILENT;
+    # the old has_error-gated warning here was a false positive.
     r = _extract(tmp_path, {
         "VM.kt": (
             "class VM { fun f() = 1 }\n"
@@ -283,7 +289,7 @@ def test_kotlin_one_line_class_with_fun_still_extracts(tmp_path, capsys):
     f = _find(r, ".f()")
     _find(r, "After()")  # present
     assert (vm, f) in _edges(r, "method")
-    assert "VM.kt" in capsys.readouterr().err
+    assert "VM.kt" not in capsys.readouterr().err
 
 
 def test_kotlin_one_line_class_keeps_field_reference(tmp_path):

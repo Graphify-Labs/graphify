@@ -2344,6 +2344,19 @@ def _first_parse_error_line(root) -> int:
         node = child
 
 
+def _has_multiline_error(root) -> bool:
+    """True if any materialized ERROR node spans more than one line (a
+    recovery region large enough to plausibly drop symbols, vs a tiny
+    single-line recovery that extracts completely)."""
+    stack = [root]
+    while stack:
+        n = stack.pop()
+        if n.type == "ERROR" and n.end_point[0] > n.start_point[0]:
+            return True
+        stack.extend(c for c in n.children if c.has_error)
+    return False
+
+
 def _read_csharp_type_name(node, source: bytes) -> tuple[str, bool, str] | None:
     """Resolve a C# type name, whether it was qualified, and its qualifier prefix."""
     if node is None:
@@ -5255,7 +5268,10 @@ def _extract_generic(
     # error's line so extract() can warn instead of reporting silent success.
     # Rides on the result dict, so it survives the per-file AST cache.
     if root.has_error:
-        result["parse_errors"] = {"first_error_line": _first_parse_error_line(root)}
+        result["parse_errors"] = {
+            "first_error_line": _first_parse_error_line(root),
+            "multiline_error": _has_multiline_error(root),
+        }
     # Kotlin (#2526/#2550): the declared package qualifies every node in the
     # file; the import-target and qualified-call resolvers key their per-package
     # symbol indexes off it.
