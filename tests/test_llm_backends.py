@@ -92,8 +92,14 @@ def test_minimax_backend_capabilities_are_model_specific():
 
 
 def test_minimax_model_pricing(monkeypatch):
-    monkeypatch.setenv("GRAPHIFY_MINIMAX_MODEL", "MiniMax-M2.7")
+    assert llm.estimate_cost(
+        "minimax", 1_000_000, 500_000, model="MiniMax-M2.7"
+    ) == pytest.approx(0.90)
+    assert llm.estimate_cost(
+        "minimax", 1_000_000, 500_000, model="MiniMax-M3"
+    ) == pytest.approx(1.80)
 
+    monkeypatch.setenv("GRAPHIFY_MINIMAX_MODEL", "MiniMax-M2.7")
     assert llm.estimate_cost("minimax", 1_000_000, 500_000) == pytest.approx(0.90)
 
 
@@ -677,6 +683,16 @@ def test_minimax_m27_thinking_cannot_be_disabled(monkeypatch):
         "https://api.minimax.io/v1", "sk", "MiniMax-M2.7",
         "u", temperature=0, max_completion_tokens=8192, backend="minimax",
     )
+
+    assert "extra_body" not in captured
+
+
+def test_minimax_m27_call_llm_thinking_cannot_be_disabled(monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_DISABLE_THINKING", "1")
+    monkeypatch.setattr(llm, "_get_backend_api_key", lambda _backend: "sk")
+    captured = _install_capturing_openai(monkeypatch)
+
+    llm._call_llm("u", backend="minimax", model="MiniMax-M2.7")
 
     assert "extra_body" not in captured
 

@@ -2656,6 +2656,9 @@ def _call_llm(
         kwargs["extra_body"] = cfg["extra_body"]
     elif "moonshot" in cfg["base_url"]:
         kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+    # MiniMax-M2.7 always reasons, so the global opt-out must not disable it.
+    elif backend == "minimax" and mdl == "MiniMax-M2.7":
+        pass
     elif _thinking_disabled_via_env():
         kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
     resp = client.chat.completions.create(**kwargs)
@@ -2667,13 +2670,19 @@ def _call_llm(
     return resp.choices[0].message.content or ""
 
 
-def estimate_cost(backend: str, input_tokens: int, output_tokens: int) -> float:
+def estimate_cost(
+    backend: str,
+    input_tokens: int,
+    output_tokens: int,
+    model: str | None = None,
+) -> float:
     """Estimate USD cost for a given token count using published pricing."""
     if backend not in BACKENDS:
         return 0.0
     cfg = BACKENDS[backend]
     model_pricing = cfg.get("model_pricing", {})
-    p = model_pricing.get(_default_model_for_backend(backend), cfg["pricing"])
+    selected_model = model or _default_model_for_backend(backend)
+    p = model_pricing.get(selected_model, cfg["pricing"])
     return (input_tokens * p["input"] + output_tokens * p["output"]) / 1_000_000
 
 

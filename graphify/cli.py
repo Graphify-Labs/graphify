@@ -3321,7 +3321,7 @@ def dispatch_command(cmd: str) -> None:
                 pass
             stages.mark("write")
             cost = _estimate_cost(
-                backend, merged["input_tokens"], merged["output_tokens"]
+                backend, merged["input_tokens"], merged["output_tokens"], model=model
             )
             print(
                 f"[graphify extract] wrote {graph_json_path} — "
@@ -3488,7 +3488,9 @@ def dispatch_command(cmd: str) -> None:
         except Exception as exc:
             print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
 
-        cost = _estimate_cost(backend, merged["input_tokens"], merged["output_tokens"])
+        cost = _estimate_cost(
+            backend, merged["input_tokens"], merged["output_tokens"], model=model
+        )
         print(
             f"[graphify extract] wrote {graph_json_path}: "
             f"{G.number_of_nodes()} nodes, {G.number_of_edges()} edges, "
