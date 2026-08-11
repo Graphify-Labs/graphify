@@ -20,6 +20,7 @@ from .lattice_ingest import (
     extract_lattice_code_ref_edges,
     extract_lattice_markdown,
     is_lattice_markdown_path,
+    project_source_paths,
     resolve_lattice_reference_edges,
 )
 from .resolver_registry import (
@@ -5660,7 +5661,42 @@ def extract(
     # recipe as every extractor, so the canonical path remap below updates it
     # together with the file node.
     resolve_lattice_reference_edges(all_edges, all_nodes)
-    all_edges.extend(extract_lattice_code_ref_edges(paths, all_nodes))
+    lattice_changed = any(is_lattice_markdown_path(path) for path in paths)
+    if lattice_changed:
+        # Incremental updates often contain only the changed lat.md file. Rescan
+        # unchanged, ignore-filtered source files so newly-added section ids can
+        # bind to existing @lat comments in the merged graph.
+        code_ref_paths = project_source_paths(root)
+    else:
+        code_ref_paths = paths
+    lattice_code_edges = extract_lattice_code_ref_edges(code_ref_paths, all_nodes)
+    if lattice_changed:
+        # The incremental extraction result must retain these edges until it is
+        # merged with the previous graph. Add minimal file endpoints for unchanged
+        # mentioned sources, otherwise the normal dangling-edge cleanup would
+        # discard the relationship before the merge can reconnect it.
+        existing_ids = {str(node.get("id")) for node in all_nodes}
+        mentioned_paths = {
+            Path(str(edge["source_file"]))
+            for edge in lattice_code_edges
+            if edge.get("source_file")
+        }
+        for mentioned_path in sorted(mentioned_paths):
+            file_id = _file_node_id(mentioned_path)
+            if file_id in existing_ids:
+                continue
+            existing_ids.add(file_id)
+            all_nodes.append(
+                {
+                    "id": file_id,
+                    "label": mentioned_path.name,
+                    "type": "file",
+                    "file_type": "code",
+                    "source_file": str(mentioned_path),
+                    "source_location": "L1",
+                }
+            )
+    all_edges.extend(lattice_code_edges)
     # Function / method / class def ids for the cross-file indirect_call callable
     # guard. Built from the `_callable` node marker AFTER the id-remap / disambiguation
     # passes below (which rewrite node ids), so it can never go stale — see the

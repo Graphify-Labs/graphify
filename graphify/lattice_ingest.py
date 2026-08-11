@@ -19,6 +19,7 @@ __all__ = [
     "extract_lattice_markdown",
     "extract_lattice_code_ref_edges",
     "is_lattice_markdown_path",
+    "project_source_paths",
     "resolve_lattice_reference_edges",
     "validate_lattice",
 ]
@@ -91,12 +92,20 @@ def _wiki_refs(lines: list[str], start: int, end: int) -> list[tuple[str, int]]:
     return refs
 
 
-def _source_target(target: str, project_root: Path) -> Path | None:
+def _source_target(target: str, project_root: Path) -> tuple[Path | None, str | None]:
     file_part = target.split("#", 1)[0]
-    if not Path(file_part).suffix:
-        return None
     candidate = project_root / file_part
-    return candidate
+    # A dot is legal in a lattice filename (for example operations.v2.md), so a
+    # suffix alone cannot distinguish knowledge from code. Existing files and
+    # explicit relative paths such as src/service.py are source references.
+    if not candidate.is_file() and "/" not in file_part.replace("\\", "/"):
+        return None, None
+    try:
+        resolved = candidate.resolve()
+        resolved.relative_to(project_root.resolve())
+    except (OSError, RuntimeError, ValueError):
+        return None, "source reference escapes project root"
+    return resolved, None
 
 
 def extract_lattice_markdown(path: Path) -> dict[str, Any]:
@@ -189,17 +198,24 @@ def extract_lattice_markdown(path: Path) -> dict[str, Any]:
         for target, reference_line in _wiki_refs(lines, start, end):
             if target.startswith("#"):
                 target = f"{file_key}{target}"
-            source_target = _source_target(target, lattice_dir.parent)
-            if source_target is not None:
+            source_target, source_error = _source_target(target, lattice_dir.parent)
+            if source_target is not None or source_error is not None:
                 edges.append(
                     _edge(
                         node_id,
-                        _make_id(str(source_target)),
+                        _make_id(str(source_target))
+                        if source_target is not None
+                        else "invalid_source",
                         "documents",
                         source_file,
                         reference_line,
                         source_target=target,
-                        target_file=str(source_target) if source_target.is_file() else None,
+                        target_file=(
+                            str(source_target)
+                            if source_target is not None and source_target.is_file()
+                            else None
+                        ),
+                        source_reference_error=source_error,
                     )
                 )
             else:
@@ -344,6 +360,23 @@ def _lattice_files(project_root: Path) -> list[Path]:
     return sorted(path for path in lattice_dir.rglob("*.md") if path.is_file())
 
 
+def project_source_paths(project_root: Path) -> list[Path]:
+    """Return ignore-aware, in-root files eligible for ``@lat`` scanning."""
+    from graphify.detect import ignored_predicate
+
+    ignored = ignored_predicate(project_root)
+    paths: list[Path] = []
+    for path in project_root.rglob("*"):
+        if not path.is_file() or is_lattice_markdown_path(path) or ignored(path):
+            continue
+        try:
+            path.resolve().relative_to(project_root)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        paths.append(path)
+    return paths
+
+
 def _requires_code_mention(text: str) -> bool:
     frontmatter = re.match(r"^---\s*\n(.*?)\n---", text, flags=re.DOTALL)
     return bool(
@@ -364,7 +397,18 @@ def validate_lattice(project_root: Path) -> dict[str, Any]:
         for edge in result.get("edges", []):
             if edge.get("relation") == "documents":
                 target = str(edge.get("source_target", ""))
-                target_path = project_root / target.split("#", 1)[0]
+                if edge.get("source_reference_error"):
+                    errors.append(
+                        {
+                            "code": "unsafe-source-reference",
+                            "file": edge["source_file"],
+                            "line": int(str(edge["source_location"])[1:]),
+                            "target": target,
+                            "message": f"unsafe source reference [[{target}]]",
+                        }
+                    )
+                    continue
+                target_path = Path(str(edge.get("target_file") or ""))
                 if not target_path.is_file():
                     errors.append(
                         {
@@ -402,14 +446,7 @@ def validate_lattice(project_root: Path) -> dict[str, Any]:
                     }
                 )
 
-    source_paths = [
-        path
-        for path in project_root.rglob("*")
-        if path.is_file()
-        and "lat.md" not in path.parts
-        and ".git" not in path.parts
-        and "graphify-out" not in path.parts
-    ]
+    source_paths = project_source_paths(project_root)
     implemented = {
         str(edge["knowledge_id"])
         for edge in extract_lattice_code_ref_edges(source_paths, nodes)

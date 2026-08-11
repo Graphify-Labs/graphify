@@ -28,7 +28,11 @@ knowledge plan. This document covers the first Graphify milestone: native
 | 7 | Query scoring searches summaries and returns the summary in bounded output | `test_query_retrieves_lattice_summary_after_normal_extraction` | Public retrieval | PASS |
 | 8 | A real valid lattice is accepted through the public CLI | `uv run python -m graphify check-knowledge /home/sergey/.jcode/scratch/graphify-lattice-valid --json` | CLI acceptance | PASS, 2 sections, 0 errors |
 | 9 | The implementation is compatible with the official lat.md repository | `validate_lattice(Path('/home/sergey/.jcode/scratch/lat.md-official'))` | Real integration | PASS, 24 files, 192 sections, 0 errors |
-| 10 | Adjacent extraction, CLI, query, and security behavior remains intact | focused regression command below | Regression | PASS, 455 tests |
+| 10 | Dotted lattice filenames remain knowledge references rather than source paths | `test_dotted_lattice_file_reference_is_not_misclassified_as_source` | Integration | PASS |
+| 11 | Incremental lattice updates rediscover mentions in unchanged source files | `test_lattice_change_rescans_unchanged_source_mentions` | Incremental integration | PASS |
+| 12 | Source links cannot escape the project root | `test_source_reference_cannot_escape_project_root` | Security | PASS |
+| 13 | Code-mention validation honors Graphify ignore rules | `test_validation_respects_graphifyignore_when_scanning_code_mentions` | Integration | PASS |
+| 14 | Adjacent extraction, CLI, query, and security behavior remains intact | focused regression command below | Regression | PASS, 460 tests |
 
 ## RED evidence
 
@@ -39,6 +43,9 @@ knowledge plan. This document covers the first Graphify milestone: native
    `No matching nodes found.`
 3. The source-link compatibility test failed because no `documents` edge was
    emitted before Markdown-aware parsing was implemented.
+4. Independent review added four regressions which initially failed: incremental
+   `@lat` rediscovery, dotted lattice filenames, source-root containment, and
+   ignore-aware validation scanning.
 
 Checkpoint commits:
 
@@ -47,9 +54,9 @@ Checkpoint commits:
 
 ## GREEN evidence
 
-- `uv run pytest -q tests/test_lattice_ingest.py`: 7 passed.
-- `uv run pytest -q tests/test_lattice_ingest.py tests/test_manifest_ingest.py tests/test_languages.py tests/test_cli_export.py tests/test_query_cli.py tests/test_security.py`: 455 passed.
-- `env -u DEEPSEEK_API_KEY -u DEEPSEEK_BASE_URL uv run pytest -q --ignore=tests/test_falkordb_integration.py`: 4,153 passed, 1 skipped. The excluded integration requires a FalkorDB server with the `GRAPH.QUERY` module; the available localhost service was plain Redis.
+- `uv run pytest -q tests/test_lattice_ingest.py`: 11 passed.
+- `uv run pytest -q tests/test_lattice_ingest.py tests/test_manifest_ingest.py tests/test_languages.py tests/test_cli_export.py tests/test_query_cli.py tests/test_security.py`: 460 passed.
+- `env -u DEEPSEEK_API_KEY -u DEEPSEEK_BASE_URL uv run pytest -q --ignore=tests/test_falkordb_integration.py`: 4,157 passed, 1 skipped. The excluded integration requires a FalkorDB server with the `GRAPH.QUERY` module; the available localhost service was plain Redis.
 - `uv run ruff check graphify/lattice_ingest.py graphify/extract.py graphify/serve.py graphify/cli.py graphify/__main__.py tests/test_lattice_ingest.py`: passed.
 - GREEN implementation checkpoint: `5dcee5a`.
 
@@ -57,7 +64,9 @@ Checkpoint commits:
 
 `uv run pytest -q tests/test_lattice_ingest.py --cov=graphify.lattice_ingest --cov-report=term-missing --cov-fail-under=80`
 
-Result: 7 tests passed and the new module reached 89% statement coverage.
+The initial seven-test milestone reached 89% statement coverage. The final
+eleven-test suite adds independent-review coverage for incremental, security,
+ignore, and dotted-filename edge cases.
 
 ## Known boundaries
 

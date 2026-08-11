@@ -122,6 +122,80 @@ def test_full_extract_resolves_cross_file_short_wiki_reference(tmp_path):
     ) in reference_edges
 
 
+def test_dotted_lattice_file_reference_is_not_misclassified_as_source(tmp_path):
+    overview = _write(
+        tmp_path / "lat.md" / "overview.md",
+        "# Overview\n\nSee [[operations.v2#Deployment]].\n",
+    )
+    operations = _write(
+        tmp_path / "lat.md" / "operations.v2.md",
+        "# Operations\n\n## Deployment\n\nDeployment constraints.\n",
+    )
+
+    result = extract([overview, operations], cache_root=tmp_path, root=tmp_path, parallel=False)
+    graph = build_from_json(result, directed=True, root=tmp_path)
+
+    assert any(
+        data.get("relation") == "references"
+        and graph.nodes[dst].get("knowledge_id") == "operations.v2#Operations#Deployment"
+        for _, dst, data in graph.edges(data=True)
+    )
+
+
+def test_lattice_change_rescans_unchanged_source_mentions(tmp_path):
+    _write(
+        tmp_path / "src" / "repository.py",
+        "# @lat: [[security#Security#Tenant isolation]]\ndef load():\n    return True\n",
+    )
+    spec = _write(
+        tmp_path / "lat.md" / "security.md",
+        "# Security\n\n## Tenant isolation\n\nAll reads require tenant_id.\n",
+    )
+
+    # An incremental update may pass only the changed lattice file. Graphify must
+    # still rediscover @lat mentions in unchanged source files.
+    result = extract([spec], cache_root=tmp_path, root=tmp_path, parallel=False)
+
+    assert any(
+        edge.get("relation") == "implemented_by"
+        and edge.get("knowledge_id") == "security#Security#Tenant isolation"
+        and edge["source_file"] == "src/repository.py"
+        for edge in result["edges"]
+    )
+
+
+def test_source_reference_cannot_escape_project_root(tmp_path):
+    outside = _write(tmp_path.parent / "outside.py", "SECRET = True\n")
+    _write(
+        tmp_path / "lat.md" / "security.md",
+        "# Security\n\nNever index [[../outside.py#SECRET]].\n",
+    )
+
+    diagnostics = validate_lattice(tmp_path)
+
+    assert diagnostics["valid"] is False
+    assert any(error["code"] == "unsafe-source-reference" for error in diagnostics["errors"])
+    assert str(outside.resolve()) not in json.dumps(diagnostics)
+
+
+def test_validation_respects_graphifyignore_when_scanning_code_mentions(tmp_path):
+    _write(tmp_path / ".graphifyignore", "ignored/\n")
+    _write(
+        tmp_path / "lat.md" / "security.md",
+        "---\nlat:\n  require-code-mention: true\n---\n"
+        "# Security\n\n## Tenant isolation\n\nAll reads require tenant_id.\n",
+    )
+    _write(
+        tmp_path / "ignored" / "fake.py",
+        "# @lat: [[security#Security#Tenant isolation]]\n",
+    )
+
+    diagnostics = validate_lattice(tmp_path)
+
+    assert diagnostics["valid"] is False
+    assert any(error["code"] == "missing-code-mention" for error in diagnostics["errors"])
+
+
 def test_validate_lattice_reports_broken_ambiguous_and_unimplemented_required_sections(tmp_path):
     _write(tmp_path / "lat.md" / "a" / "rules.md", "# Rules\n\nA rules summary.\n")
     _write(tmp_path / "lat.md" / "b" / "rules.md", "# Rules\n\nB rules summary.\n")
