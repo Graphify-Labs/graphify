@@ -490,6 +490,75 @@ def test_relative_root_does_not_reanchor_an_already_canonical_id(tmp_path, monke
     assert loaded["nodes"][0]["id"] == "src_utils_foo"
 
 
+def test_warm_hit_with_relative_inputs_from_above_the_root(tmp_path, monkeypatch):
+    """#2630: relative inputs handed to extract() from a CWD above the root.
+
+    Extractors stamp ``source_file`` with the path STRING they were handed, so
+    a relative input yields a CWD-relative stamp — but the stored format is
+    root-relative and ``load_cached`` re-anchors it as such. When CWD is not
+    the inferred root the two disagree and a warm hit resurrects a path naming
+    no file (``<root>/src/pages/index.astro``). Every source_file-GATED remap
+    in extract() then misses, so the warm hit keeps the raw-path symbol ids a
+    cold run canonicalizes: the astro frontmatter variable came back as
+    ``src_pages_index_posts``, no longer under its ``pages_index`` file node's
+    stem — the prefix ``build.py`` reconciles symbols to files by.
+
+    Astro is the fixture because ``.astro`` is cached while every other
+    JS-family suffix is in ``_JS_CACHE_BYPASS_SUFFIXES``; the defect itself is
+    language-agnostic (the gate is shared).
+    """
+    import graphify.extract as ex
+
+    project = tmp_path / "project"
+    (project / "src" / "pages").mkdir(parents=True)
+    (project / "src" / "lib").mkdir(parents=True)
+    (project / "src" / "lib" / "content.ts").write_text(
+        "export function getPosts() { return []; }\n"
+    )
+    (project / "src" / "pages" / "index.astro").write_text(
+        "---\n"
+        "import { getPosts } from '../lib/content';\n"
+        "const posts = getPosts();\n"
+        "---\n"
+        "<h1>{posts.length}</h1>\n"
+    )
+    # CWD is the project; the root extract() infers is the common parent `src/`.
+    monkeypatch.chdir(project)
+    rel_paths = [Path("src/lib/content.ts"), Path("src/pages/index.astro")]
+
+    _reset_stat_index()
+    cold = ex.extract(rel_paths, parallel=False)
+
+    # Warmth probe (see test_warm_cache_from_another_root...): a silent
+    # re-extraction would make the assertions below pass vacuously. Only the
+    # .astro file is cached, so it is the one that must not be re-extracted.
+    misses: list[str] = []
+    real_extract = ex._safe_extract_with_xaml_root
+
+    def _counting(extractor, path, root):
+        misses.append(str(path))
+        return real_extract(extractor, path, root)
+
+    monkeypatch.setattr(ex, "_safe_extract_with_xaml_root", _counting)
+    _reset_stat_index()
+    warm = ex.extract(rel_paths, parallel=False)
+    assert not [m for m in misses if m.endswith(".astro")], (
+        f"the .astro file must be served from the cache, re-extracted: {misses}"
+    )
+
+    assert _graph_ids(cold) == _graph_ids(warm), (
+        "a warm cache hit must reproduce the cold extraction's ids exactly"
+    )
+    for label, graph in (("cold", cold), ("warm", warm)):
+        ids = {str(n["id"]) for n in graph["nodes"]}
+        assert {"pages_index", "pages_index_posts"} <= ids, (label, sorted(ids))
+        # The stem the frontmatter variable must NOT keep: `src_`-prefixed is
+        # the pre-remap form derived from the raw input path.
+        assert not [i for i in ids if i.startswith("src_pages_index")], (
+            label, sorted(ids)
+        )
+
+
 # --- AST cache versioning ----------------------------------------------------
 # AST cache entries are the output of graphify's own extractor code, so they
 # are only valid for the graphify version that wrote them. Keying purely on
