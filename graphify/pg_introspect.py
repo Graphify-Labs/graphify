@@ -1,5 +1,5 @@
 from __future__ import annotations
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 from graphify.extract import extract_sql
 
 

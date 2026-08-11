@@ -1,15 +1,12 @@
 """Deterministic structural extraction from source code using tree-sitter. Outputs nodes+edges dicts."""
 from __future__ import annotations
 
-import hashlib
-import importlib
 import json
 import os
 import re
 import sys
 import textwrap
 from collections import Counter
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
@@ -291,23 +288,6 @@ SEMANTIC_RELATIONS = frozenset({
 
 
 # ── C / C++ type-ref helpers ─────────────────────────────────────────────────
-
-
-# ── Scala type-ref helpers ───────────────────────────────────────────────────
-
-
-def _resolve_name(node, source: bytes, config: LanguageConfig) -> str | None:
-    """Get the name from a node using config.name_field, falling back to child types."""
-    if config.resolve_function_name_fn is not None:
-        # For C/C++ where the name is inside a declarator
-        return None  # caller handles this separately
-    n = node.child_by_field_name(config.name_field)
-    if n:
-        return _read_text(n, source)
-    for child in node.children:
-        if child.type in config.name_fallback_child_types:
-            return _read_text(child, source)
-    return None
 
 
 # ── Import handlers ───────────────────────────────────────────────────────────
@@ -2148,18 +2128,6 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
     referenced = {x for e in edges for x in (e.get("source"), e.get("target"))}
     drop_ids = {stub_id for stub_id in remap if stub_id not in referenced}
     nodes[:] = [node for node in nodes if node.get("id") not in drop_ids]
-
-
-def _augment_js_reexport_edges(
-    paths: list[Path],
-    nodes: list[dict],
-    edges: list[dict],
-    root: Path,
-) -> None:
-    """Compatibility wrapper for the JS/TS symbol-resolution post-pass."""
-    facts = _SymbolResolutionFacts()
-    _collect_js_symbol_resolution_facts(paths, facts)
-    _apply_symbol_resolution_facts(paths, nodes, edges, root, facts)
 
 
 # Header / implementation file-extension pairing for the decl/def class merge.

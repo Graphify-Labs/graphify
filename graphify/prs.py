@@ -48,7 +48,6 @@ def yellow(t: str) -> str:  return _c("33", t)
 def cyan(t: str) -> str:    return _c("36", t)
 def bold(t: str) -> str:    return _c("1",  t)
 def dim(t: str) -> str:     return _c("2",  t)
-def magenta(t: str) -> str: return _c("35", t)
 
 _ANSI_RE = re.compile(r"\033\[[0-9;]*m")
 

@@ -908,11 +908,6 @@ def build_section_node_map(sections: list, comm_idx: dict) -> dict:
     return section_nodes
 
 
-def node_in_section(node_id: str, section_node_ids: set) -> bool:
-    """Check if a node belongs to a section."""
-    return node_id in section_node_ids
-
-
 # ──────────────────────────────────────────────
 # 5. Edge analysis
 # ──────────────────────────────────────────────

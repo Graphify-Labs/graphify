@@ -1,7 +1,7 @@
 """models — moved verbatim from graphify/extract.py."""
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Callable
 from pathlib import Path
 from dataclasses import dataclass, field
 

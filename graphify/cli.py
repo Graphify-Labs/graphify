@@ -945,7 +945,6 @@ def dispatch_command(cmd: str) -> None:
             print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--budget N] [--graph path]", file=sys.stderr)
             sys.exit(1)
         from graphify.serve import _query_graph_text
-        from graphify.security import sanitize_label
         from networkx.readwrite import json_graph
         from graphify import querylog
 
@@ -2571,7 +2570,6 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(0)
 
         from networkx.readwrite import json_graph as _jg
-        from graphify.build import build_from_json as _bfj
         from graphify.security import check_graph_file_size_cap as _check_cap
 
         # Solution 3 (#1019): for the HTML view, an oversized graph.json should
@@ -3854,7 +3852,6 @@ def dispatch_command(cmd: str) -> None:
         # Build graph + cluster + score + write.
         from graphify.build import (
             build as _build,
-            build_from_json as _build_from_json,
             build_merge as _build_merge,
         )
         from graphify.cluster import cluster as _cluster, score_all as _score_all

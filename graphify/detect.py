@@ -549,7 +549,6 @@ def docx_to_markdown(path: Path) -> str:
         return ""
     try:
         from docx import Document
-        from docx.oxml.ns import qn
         doc = Document(str(path))
         lines = []
         for para in doc.paragraphs:

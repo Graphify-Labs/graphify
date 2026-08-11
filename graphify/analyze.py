@@ -181,7 +181,7 @@ def _is_concept_node(G: nx.Graph, node_id: str) -> bool:
     return False
 
 
-from graphify.detect import CODE_EXTENSIONS, DOC_EXTENSIONS, PAPER_EXTENSIONS, IMAGE_EXTENSIONS
+from graphify.detect import CODE_EXTENSIONS, PAPER_EXTENSIONS, IMAGE_EXTENSIONS
 
 
 def _file_category(path: str) -> str:

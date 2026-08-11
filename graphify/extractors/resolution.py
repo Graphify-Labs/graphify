@@ -1,7 +1,7 @@
 """resolution — moved verbatim from graphify/extract.py."""
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any
 from pathlib import Path
 from graphify.extractors.models import LanguageConfig, _JS_CACHE_BYPASS_SUFFIXES, _NamespaceExportFact, _StarExportFact, _SymbolAliasFact, _SymbolDeclarationFact, _SymbolExportFact, _SymbolImportFact, _SymbolResolutionFacts, _SymbolUseFact, _WORKSPACE_PACKAGE_CACHE  # noqa: E402,F401
 from graphify.extractors.base import (  # noqa: F401
@@ -1385,7 +1385,7 @@ def _ts_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[st
 def _ts_walk_class_members(class_node, source: bytes, path: Path, class_nid: str,
                             facts: _SymbolResolutionFacts) -> None:
     """Emit type-relation and type-reference use facts for a class declaration node."""
-    line = class_node.start_point[0] + 1
+    class_node.start_point[0] + 1
     for child in class_node.children:
         if child.type == "class_heritage":
             for clause in child.children:
@@ -1937,7 +1937,7 @@ def _resolve_cross_file_imports(
 
     # Pass 2: for each file, find `from .X import A, B, C` and resolve
     new_edges: list[dict] = []
-    stem_to_path: dict[str, Path] = {_file_stem(p): p for p in paths}
+    {_file_stem(p): p for p in paths}
 
     for file_result, path in zip(per_file, paths):
         stem = _file_stem(path)

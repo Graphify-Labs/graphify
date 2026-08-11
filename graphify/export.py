@@ -1,7 +1,6 @@
 # write graph to HTML, JSON, SVG, GraphML, Obsidian vault, and Neo4j Cypher
 from __future__ import annotations
 import hashlib
-import html as _html
 import json
 import math
 import os
@@ -13,7 +12,6 @@ from datetime import date
 from pathlib import Path
 import networkx as nx
 from networkx.readwrite import json_graph
-from graphify.security import sanitize_label
 from graphify.analyze import _node_community_map
 from graphify.build import edge_data
 
@@ -873,8 +871,6 @@ def to_canvas(
 
     # Lay out communities in a grid
     gap = 80
-    group_x_offsets: list[int] = []
-    group_y_offsets: list[int] = []
 
     # Precompute group sizes so we can calculate offsets.
     # inner_cols is the per-community grid width; the box dimensions AND the node
