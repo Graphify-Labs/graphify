@@ -1325,3 +1325,64 @@ def test_prompt_file_reflects_edited_spec(tmp_path):
     _os.utime(spec, ns=(0, 0))  # force a distinct stat signature
     _, _, _, uncached = check_semantic_cache([str(f)], root=tmp_path, prompt_file=str(spec))
     assert uncached == [str(f)], "an edited spec must invalidate, not reuse the memo"
+
+
+# --- stat-fastpath racily-clean guard ---------------------------------------
+# (size, mtime_ns) alone cannot prove a file is unchanged: NTFS advances mtime
+# on a ~15.6 ms tick, so a same-length rewrite inside one tick leaves the
+# signature identical and the memo used to return the PREVIOUS content's
+# digest. These two tests pin both halves of the fix — the hole is closed, and
+# the fastpath still actually fires for files whose mtime tick has closed.
+
+def test_file_hash_detects_same_size_rewrite_within_one_mtime_tick(tmp_path):
+    """A same-length edit must change the digest even when the filesystem
+    reports an identical (size, mtime_ns) for both writes.
+
+    The collision is forced with utime rather than raced for: on a filesystem
+    with fine-grained timestamps the two writes would land in different ticks
+    and the memo would never be consulted, making the test vacuous. Pinning
+    both writes to one mtime models the coarse-granularity filesystem (NTFS,
+    FAT, NFS) on every host.
+    """
+    import os as _os
+
+    _reset_stat_index()
+    f = tmp_path / "mod.py"
+
+    f.write_text("x = 1  # aaa\n", encoding="utf-8")
+    st = f.stat()
+    h1 = file_hash(f, tmp_path)
+
+    f.write_text("x = 2  # bbb\n", encoding="utf-8")   # same length, new content
+    _os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns))  # ...inside the same tick
+
+    assert f.stat().st_size == st.st_size and f.stat().st_mtime_ns == st.st_mtime_ns, (
+        "test setup failed to reproduce an identical stat signature"
+    )
+
+    h2 = file_hash(f, tmp_path)
+    assert h1 != h2, "same-size rewrite returned the previous content's digest"
+
+
+def test_file_hash_fastpath_still_serves_a_settled_file(tmp_path, monkeypatch):
+    """The guard must not disable the cache: once a file's mtime tick has
+    closed, the digest is served from the index without re-reading."""
+    _reset_stat_index()
+    f = tmp_path / "mod.py"
+    f.write_text("x = 1\n", encoding="utf-8")
+
+    # Backdate well past the granularity window so the entry is provably clean.
+    import os as _os
+    old_ns = f.stat().st_mtime_ns - 60 * 1_000_000_000
+    _os.utime(f, ns=(old_ns, old_ns))
+
+    first = file_hash(f, tmp_path)
+
+    reads = []
+    real_read_bytes = Path.read_bytes
+    monkeypatch.setattr(Path, "read_bytes",
+                        lambda self: (reads.append(self), real_read_bytes(self))[1])
+
+    second = file_hash(f, tmp_path)
+    assert second == first
+    assert reads == [], "settled file was re-read; the stat fastpath is dead"

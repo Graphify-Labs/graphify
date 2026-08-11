@@ -76,6 +76,25 @@ def test_detect_skips_noise_dot_dirs():
                 assert noise not in f
 
 
+def test_detect_skips_obsidian_vault_metadata_dirs(tmp_path):
+    """Obsidian metadata and plugin caches are not part of the source corpus (#2493)."""
+    for directory in (".obsidian", ".smart-env"):
+        metadata_dir = tmp_path / directory
+        metadata_dir.mkdir()
+        (metadata_dir / "state.json").write_text("{}")
+    trash_dir = tmp_path / ".trash"
+    trash_dir.mkdir()
+    (trash_dir / "state.json").write_text("{}")
+    (tmp_path / "project.json").write_text("{}")
+
+    result = detect(tmp_path)
+
+    assert result["files"]["code"] == [
+        str(trash_dir / "state.json"),
+        str(tmp_path / "project.json"),
+    ]
+
+
 def test_classify_md_paper_by_signals(tmp_path):
     """A .md file with enough paper signals should classify as PAPER."""
     paper = tmp_path / "paper.md"
@@ -117,6 +136,61 @@ def test_graphifyignore_excludes_file(tmp_path):
     assert not any("vendor" in f for f in file_list)
     assert not any("generated" in f for f in file_list)
     assert result["graphifyignore_patterns"] == 2
+
+
+def test_graphifyignore_matches_nfd_path_with_nfc_pattern(tmp_path):
+    """An accented pattern excludes its directory even when the FS stores NFD.
+
+    macOS returns filenames in NFD ("c" + U+0327) while editors write ignore
+    files in NFC (U+00E7). Without normalization the two compare unequal and
+    the rule silently does nothing — the files get scanned, and docs/PDFs are
+    sent to an LLM despite an explicit exclusion.
+    """
+    nfc_name = unicodedata.normalize("NFC", "Or\u00e7amento")
+    nfd_name = unicodedata.normalize("NFD", nfc_name)
+    assert nfc_name != nfd_name  # guard: the two forms really do differ
+
+    (tmp_path / ".graphifyignore").write_text(f"{nfc_name}/\n")
+    secret_dir = tmp_path / nfd_name
+    secret_dir.mkdir()
+    (secret_dir / "contrato.py").write_text("x = 1")
+    (tmp_path / "main.py").write_text("print('hi')")
+
+    result = detect(tmp_path)
+    file_list = result["files"]["code"]
+    assert any("main.py" in f for f in file_list)
+    assert not any("contrato.py" in f for f in file_list)
+
+
+def test_graphifyignore_matches_nfc_path_with_nfd_pattern(tmp_path):
+    """The reverse direction also holds: NFD pattern, NFC path on disk."""
+    nfc_name = unicodedata.normalize("NFC", "Or\u00e7amento")
+    nfd_name = unicodedata.normalize("NFD", nfc_name)
+
+    (tmp_path / ".graphifyignore").write_text(f"{nfd_name}/\n")
+    d = tmp_path / nfc_name
+    d.mkdir()
+    (d / "contrato.py").write_text("x = 1")
+    (tmp_path / "main.py").write_text("print('hi')")
+
+    result = detect(tmp_path)
+    file_list = result["files"]["code"]
+    assert any("main.py" in f for f in file_list)
+    assert not any("contrato.py" in f for f in file_list)
+
+
+def test_graphifyignore_ascii_patterns_unaffected(tmp_path):
+    """Normalization is a no-op for ASCII patterns — no regression."""
+    (tmp_path / ".graphifyignore").write_text("vendor/\n")
+    v = tmp_path / "vendor"
+    v.mkdir()
+    (v / "lib.py").write_text("x = 1")
+    (tmp_path / "main.py").write_text("x = 1")
+
+    result = detect(tmp_path)
+    file_list = result["files"]["code"]
+    assert any("main.py" in f for f in file_list)
+    assert not any("vendor" in f for f in file_list)
 
 
 def test_graphifyignore_missing_is_fine(tmp_path):

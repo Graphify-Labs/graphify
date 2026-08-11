@@ -1,17 +1,42 @@
 # Changelog
 
-Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
+Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
 ## 0.9.32 (unreleased)
 ## 0.9.35 (unreleased)
 ## 0.9.36 (unreleased)
 ## 0.9.38 (unreleased)
+## 0.9.40 (unreleased)
+
+- Fix: the 0.9.37 partial-parse warning no longer fires on valid TypeScript/TSX (#2610, #2599, thanks @Sid-AutoWisdom and @atlasplatformu-ai). tree-sitter-typescript sets an error flag on tiny fully-recovered constructs (a `&` in a JSX string attribute, a semicolon-less `in_*` interface member) that still extract completely; the warning now fires only when recovery plausibly cost symbols (the file yielded at most the file node, or an error region spans multiple lines), so the genuine Kotlin one-line-body and Luau cases still warn.
+- Fix: `file_hash()`'s stat fastpath no longer serves a stale digest when a file is rewritten to the same size within one mtime tick (#2612, thanks @rajarshidattapy); a racily-clean guard falls back to a content hash for recently-modified files.
+- Fix: stored-path absoluteness is now detected cross-platform, so a POSIX-absolute `source_file` from a Linux/CI-built graph no longer leaks into node ids on Windows (#2618, thanks @rajarshidattapy).
+- Fix: `normalize_id()` is now idempotent for Turkish `İ` and similar codepoints by casefolding before the non-word filter; no ASCII identifier ids change (#2614, thanks @rajarshidattapy).
+- Fix: `graph.json` collection order is now deterministic across runs (#2582, thanks @hjotha).
+- Fix: `explain`/`_find_node` resolve node ids containing punctuation or non-ASCII characters (#2467, thanks @sean-soomgo).
+- Fix: `.graphifyignore` patterns match paths regardless of Unicode NFC/NFD normalization, so an accented ignore rule works on macOS (#2544, thanks @bruno-growthsales).
+- Fix: Obsidian vault metadata directories (`.obsidian`, `.smart-env`) are skipped during detection (#2493, thanks @rohit-jsfreaky).
+- Fix: a single unparenthesised arrow parameter (`x => f(x)`) is now shadowed, so it no longer fabricates an `indirect_call` edge to an unrelated same-named callable (thanks @imagineers-tyler); follows the 0.9.38 sibling-closure fix (#2568).
+- Fix: Python extraction no longer crashes resolving an over-deep relative import (`from ....x import y` above the package root) (#2605, thanks @SinghAman21).
+- Fix: a Go qualified type (`pkg.Type`) resolves by import path instead of losing the qualifier and binding by bare name to an unrelated same-named symbol (#2608, thanks @gnukeno).
+- Fix: `graph.html`'s document title no longer embeds the generator's absolute host path (#2598, thanks @michaelxer); it keeps the path from the output-dir marker onward.
+
+## 0.9.39 (2026-08-10)
+
+- Fix: `affected` now traverses a dynamic `import('…')` made inside a function or at module scope (#2584, thanks @phudayyy). The 0.9.38 dedupe keyed only on the target, so an in-function dynamic import (whose symbol-level edge is anchored on the enclosing function) suppressed the file-level edge `affected` follows; the dedupe now keys on the importing file, emitting one file-level `dynamic_import` edge per file/target while keeping the call-site edge.
+- Fix: a Python member call on an untyped receiver (`x.get(...)`) no longer binds by name alone to a same-named module-level function, fabricating a false high-confidence `calls` edge and a god node (#2417, #2586, thanks @EZZEASY). Such a call is now resolved only with receiver-type, import, or `self`/`cls`/`super` evidence, matching the TypeScript fix from 0.9.37; `super().method()` still resolves.
+- Fix: fuzzy dedup no longer over-merges two distinct entities in the same file whose long labels differ by a content word (#2576, thanks @wilyan09007). A one-token difference is judged on the differing tokens rather than the prefix-weighted whole-label similarity, so `asset contribution flow` and `asset consumption flow` stay separate while genuine typo and whitespace/case variants still collapse.
+- Fix: `graphify watch` now rebuilds on a documentation-only deletion batch instead of only flagging it (#2580, thanks @angmeng), so a deleted doc's nodes are evicted immediately rather than waiting for the next code-file event. (The general deleted-file leak was already fixed in 0.9.10; this closes the live-watcher residual.)
+- Fix: Objective-C member-call resolution (#2589, #2590, #2591, thanks @xiongjianxu). A `@protocol` declaration is no longer treated as a receiver type (it collided with a same-named class); a category or class-extension interface (`@interface Foo (Bar)`) now folds into the base class instead of minting a duplicate node; and a message send to a `@property` or ivar receiver (`[self.svc run]`, `[_svc run]`) now resolves through the property/ivar's declared type.
+
+## 0.9.38 (2026-08-09)
 
 - Fix: the 0.9.37 callback-body fix (#2552) no longer lets a local declared in one callback suppress a call in a sibling callback (#2568, thanks @imagineers-tyler). Each callback body's local names are now scoped to that body instead of unioned under the shared declaration, so a real `indirect_call` in one sibling closure is no longer dropped because another sibling declared a same-named local. This can only restore dropped edges, never fabricate.
 - Fix: Kotlin calls in a property initializer are now collected (#2565, thanks @kskchaitanya1993). A class property (`val repo = createRepo()`), a `by lazy { ... }` delegate, a companion-object property, and a top-level property initializer now produce `calls` edges attributed to the enclosing class (or file), including fully-qualified calls. A plain literal initializer produces no edge.
 - Fix: Swift receiver-type inference now handles `@Environment(Store.self)` properties and factory-initialised bindings (#2561, thanks @fakewaffle). A member call on a receiver typed only through an `@Environment(Type.self)` attribute, or bound to an in-corpus factory whose return type is known (`let x = ServiceFactory.make()`), now resolves. Ambiguous or non-concrete returns (opaque `some P`, arrays, out-of-corpus) stay unresolved rather than guessing.
 - Fix: the SQL extractor no longer emits a `reads_from` edge to a CTE name (#2577, thanks @wilyan09007). A `WITH cte AS (...)` name is scoped to its query and is no longer treated as a table, so it no longer mints a bare stub that could bind to an unrelated same-named symbol; an outer real table sharing a subquery-CTE's name still resolves.
 - Fix: a dynamic `await import('…')` inside a nested function or at module scope now produces an edge (#2575, thanks @phudayyy), and `dynamic_import` edges are now included in `affected`. Calls inside a nested named function are also collected now. A dynamic import already captured as a deferred `imports_from` is not double-counted.
+- Fix: `explain` resolves node ids that contain punctuation or non-ASCII text (#2467). An id was only ever compared against the `\w+`-tokenized query, so `concept:domain:x`, every `merge-graphs` `<repo>::` id, and every Hangul id failed to resolve; the id printed by `explain` could not be fed back into `explain`, and the ambiguity hint "Retry with […] the full node id" named a remedy that could not work. The exact tier now also compares the diacritic-folded id, and the trigram index carries the folded form so a non-ASCII id survives the prefilter. Only ids that previously failed to resolve can now resolve — label queries are unchanged, and an all-ASCII graph indexes byte-identically to before.
 
 ## 0.9.37 (2026-08-08)
 

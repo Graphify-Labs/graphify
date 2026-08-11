@@ -52,8 +52,10 @@ def _go_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[st
             out.append((text, "generic_arg" if generic else "type"))
         return
     if t == "qualified_type":
-        text = _read_text(node, source).rsplit(".", 1)[-1]
-        if text and text not in _GO_PREDECLARED_TYPES:
+        # Keep the package qualifier so the generic stub rewire cannot attach
+        # `testing.T` to an unrelated local type or function named T.
+        text = _read_text(node, source)
+        if text:
             out.append((text, "generic_arg" if generic else "type"))
         return
     if t == "generic_type":
@@ -105,7 +107,8 @@ def extract_go(path: Path) -> dict:
     edges: list[dict] = []
     seen_ids: set[str] = set()
     function_bodies: list[tuple[str, object]] = []
-    go_imported_pkgs: set[str] = set()  # local names of imported packages
+    # local package name (including aliases) -> written Go import path
+    go_imported_pkgs: dict[str, str] = {}
 
     def add_node(nid: str, label: str, line: int) -> None:
         if nid not in seen_ids:
@@ -338,7 +341,7 @@ def extract_go(path: Path) -> dict:
                                 alias = spec.child_by_field_name("name")
                                 local_name = _read_text(alias, source) if alias else raw.split("/")[-1]
                                 if local_name and local_name != "_" and local_name != ".":
-                                    go_imported_pkgs.add(local_name)
+                                    go_imported_pkgs[local_name] = raw
                 elif child.type == "import_spec":
                     path_node = child.child_by_field_name("path")
                     if path_node:
@@ -348,7 +351,7 @@ def extract_go(path: Path) -> dict:
                         alias = child.child_by_field_name("name")
                         local_name = _read_text(alias, source) if alias else raw.split("/")[-1]
                         if local_name and local_name != "_" and local_name != ".":
-                            go_imported_pkgs.add(local_name)
+                            go_imported_pkgs[local_name] = raw
             return
 
         for child in node.children:
@@ -373,6 +376,8 @@ def extract_go(path: Path) -> dict:
             callee_name: str | None = None
             is_member_call: bool = False
             is_bare_identifier: bool = False
+            package_receiver: str | None = None
+            import_path: str | None = None
             if func_node:
                 if func_node.type == "identifier":
                     is_bare_identifier = True
@@ -384,6 +389,9 @@ def extract_go(path: Path) -> dict:
                     # Package-qualified call (e.g. fmt.Println) → allow cross-file resolution.
                     # Receiver method call (e.g. s.logger.Log) → skip, no import evidence.
                     is_member_call = receiver_name not in go_imported_pkgs
+                    if not is_member_call:
+                        package_receiver = receiver_name
+                        import_path = go_imported_pkgs[receiver_name]
                     if field:
                         callee_name = _read_text(field, source)
             if is_bare_identifier and callee_name in _GO_PREDECLARED_FUNCS:
@@ -393,7 +401,8 @@ def extract_go(path: Path) -> dict:
                 # of raw_calls, so the cross-file pass cannot bind it either.
                 callee_name = None
             if callee_name and callee_name not in _LANGUAGE_BUILTIN_GLOBALS:
-                tgt_nid = label_to_nid.get(callee_name)
+                # Never resolve an imported selector through a bare local name.
+                tgt_nid = None if import_path else label_to_nid.get(callee_name)
                 if tgt_nid and tgt_nid != caller_nid:
                     pair = (caller_nid, tgt_nid)
                     if pair not in seen_call_pairs:
@@ -415,6 +424,8 @@ def extract_go(path: Path) -> dict:
                         "callee": callee_name,
                         "is_member_call": is_member_call,
                         "language": "go",
+                        "receiver": package_receiver,
+                        "import_path": import_path,
                         "source_file": str_path,
                         "source_location": f"L{node.start_point[0] + 1}",
                     })
@@ -431,4 +442,9 @@ def extract_go(path: Path) -> dict:
         if src in valid_ids and (tgt in valid_ids or edge["relation"] in ("imports", "imports_from")):
             clean_edges.append(edge)
 
-    return {"nodes": nodes, "edges": clean_edges, "raw_calls": raw_calls}
+    return {
+        "nodes": nodes,
+        "edges": clean_edges,
+        "raw_calls": raw_calls,
+        "go_imports": dict(go_imported_pkgs),
+    }

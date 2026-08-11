@@ -31,6 +31,7 @@ from pathlib import Path
 import networkx as nx
 from .ids import make_id, normalize_id as _normalize_id
 from .paths import default_graph_json as _default_graph_json
+from .paths import is_absolute_any_platform as _is_abs
 from .validate import validate_extraction
 
 
@@ -282,7 +283,7 @@ def _norm_source_file(p: str | None, root: str | None = None) -> str | None:
     if not p:
         return p
     p = p.replace("\\", "/")
-    if root and os.path.isabs(p):
+    if root and _is_abs(p):
         try:
             p = Path(p).relative_to(root).as_posix()
         except ValueError:
@@ -314,7 +315,7 @@ def _abs_identity(p: str | None, root: str | None = None) -> str | None:
         return None
     q = p.replace("\\", "/")
     pp = Path(q)
-    if not pp.is_absolute() and root:
+    if not _is_abs(q) and root:
         pp = Path(root) / q
     try:
         return pp.resolve().as_posix()
@@ -486,7 +487,7 @@ def _derive_prune_root(prune_sources: "list[str]", stored_sfs: "set[str]") -> "s
     rel_sfs = [
         sf.replace("\\", "/")
         for sf in stored_sfs
-        if sf and isinstance(sf, str) and not os.path.isabs(sf.replace("\\", "/"))
+        if sf and isinstance(sf, str) and not _is_abs(sf.replace("\\", "/"))
     ]
     if not rel_sfs:
         return None
@@ -495,7 +496,7 @@ def _derive_prune_root(prune_sources: "list[str]", stored_sfs: "set[str]") -> "s
         if not p or not isinstance(p, str):
             continue
         q = p.replace("\\", "/")
-        if not os.path.isabs(q):
+        if not _is_abs(q):
             continue
         hits = {q[: -len(s) - 1] for s in rel_sfs if q.endswith("/" + s)}
         if len(hits) > 1:
@@ -608,8 +609,13 @@ def _semantic_id_remap(nodes: list, root: str | None) -> dict:
             continue
         sf_norm = _norm_source_file(str(sf), root) or str(sf)
         rel = Path(sf_norm)
-        if rel.is_absolute():
-            continue  # can't relativize (no/failed root) — leave id untouched
+        if _is_abs(sf_norm):
+            # Can't relativize (no/failed root) — leave the id untouched rather
+            # than bake an on-disk path into it. Tested for BOTH platforms: a
+            # graph built on Linux/CI carries POSIX-absolute source_files that
+            # WindowsPath.is_absolute() calls relative, which leaked the whole
+            # build directory into node IDs when updated on Windows (#2618).
+            continue
         if not rel.name:
             # source_file equals the scan root, so _norm_source_file relativized it
             # to Path('.') — a project-level node with no per-file identity to remap.
@@ -642,7 +648,7 @@ def _semantic_id_remap(nodes: list, root: str | None) -> dict:
         # id registration. It is the longest form, so it goes first (greedy
         # prefix stripping, same ordering rule as _old_file_stems).
         sf_raw = str(sf).replace("\\", "/")
-        if sf_raw != sf_norm and os.path.isabs(sf_raw):
+        if sf_raw != sf_norm and _is_abs(sf_raw):
             abs_stem = make_id(_file_stem(Path(sf_raw)))
             if abs_stem and abs_stem != new_stem and abs_stem not in old_forms:
                 old_forms.insert(0, abs_stem)
@@ -685,8 +691,9 @@ def graph_has_legacy_ids(nodes: list, root: str | Path | None = None, sample: in
         sf = node.get("source_file")
         if not nid or not isinstance(nid, str) or not sf:
             continue
-        rel = Path(_norm_source_file(str(sf), _r) or str(sf))
-        if rel.is_absolute():
+        sf_norm = _norm_source_file(str(sf), _r) or str(sf)
+        rel = Path(sf_norm)
+        if _is_abs(sf_norm):
             continue
         if not rel.name:
             continue  # source_file == scan root -> Path('.'), no file stem (#1618)
@@ -1047,7 +1054,7 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         if not sf:
             continue
         rel = Path(str(sf))
-        if rel.is_absolute():
+        if _is_abs(str(sf)):
             continue
         new_stem = make_id(_fs(rel))
         if str(attrs.get("label", "")) == rel.name:

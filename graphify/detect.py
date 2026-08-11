@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shlex
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
 from functools import lru_cache
@@ -807,6 +808,7 @@ _SKIP_DIRS = {
     ".next", ".nuxt", ".turbo", ".angular",
     ".idea", ".cache", ".parcel-cache", ".svelte-kit", ".terraform", ".serverless",
     ".graphify",  # graphify's own extraction cache — never index self-generated data
+    ".obsidian", ".smart-env",  # Obsidian vault metadata and plugin caches (#2493)
     ".worktrees",  # git worktree convention (#947) — sibling checkouts, always redundant
 }
 
@@ -928,6 +930,23 @@ def _is_noise_dir(part: str, parent: "Path | None" = None) -> bool:
 _VCS_MARKERS = (".git", ".hg", ".svn", "_darcs", ".fossil")
 
 
+def _nfc(text: str) -> str:
+    """Normalize text to NFC so ignore matching survives Unicode form drift.
+
+    macOS (APFS/HFS+) returns filenames in NFD: "ç" comes back as "c" +
+    U+0327 COMBINING CEDILLA. Editors write ignore files in NFC, where the
+    same "ç" is the single codepoint U+00E7. The two render identically and
+    compare unequal, so a pattern like `Orçamento/` silently fails to exclude
+    the directory it names — the files are scanned and, for docs/PDFs, sent
+    to an LLM despite an explicit rule against it.
+
+    Both sides are normalized to NFC before any fnmatch call. NFC is the form
+    Linux and Windows already use, so this is a no-op there and only repairs
+    the macOS mismatch.
+    """
+    return unicodedata.normalize("NFC", text)
+
+
 def _parse_gitignore_line(raw: str) -> str:
     """Parse one raw line from a .graphifyignore file per gitignore spec.
 
@@ -949,7 +968,7 @@ def _parse_gitignore_line(raw: str) -> str:
     line = line.replace("\\#", "#")
     # Remove unescaped trailing spaces (per gitignore spec)
     line = re.sub(r"(?<!\\) +$", "", line)
-    return line
+    return _nfc(line)
 
 
 def _find_vcs_root(start: Path) -> Path | None:
@@ -1140,7 +1159,7 @@ def _is_ignored(
             parts = rel.split("/")
             if fnmatch.fnmatch(rel, p):
                 return True
-            if fnmatch.fnmatch(target.name, p):
+            if fnmatch.fnmatch(_nfc(target.name), p):
                 return True
             for i, part in enumerate(parts):
                 if fnmatch.fnmatch(part, p):
@@ -1166,7 +1185,7 @@ def _is_ignored(
             # ignore file governs its directory's contents, not the directory.
             matched = False
             try:
-                rel_anchor = str(target.relative_to(anchor)).replace(os.sep, "/")
+                rel_anchor = _nfc(str(target.relative_to(anchor)).replace(os.sep, "/"))
             except ValueError:
                 continue  # target outside this pattern's anchor: cannot match
             if rel_anchor != ".":

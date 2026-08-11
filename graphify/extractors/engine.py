@@ -1230,6 +1230,13 @@ def _js_local_bound_names(func_node, source: bytes) -> set[str]:
     params = func_node.child_by_field_name("parameters")
     if params is not None:
         _js_collect_pattern_idents(params, source, bound)
+    # An arrow with ONE unparenthesised parameter exposes it as `parameter`
+    # (singular) — there is no `parameters` list node — so `x => f(x)` bound
+    # nothing at all and `x` read as a by-name reference to any same-named
+    # callable in the corpus. Same singular/plural trap as `catch_clause`.
+    solo = func_node.child_by_field_name("parameter")
+    if solo is not None:
+        _js_collect_pattern_idents(solo, source, bound)
 
     def walk(n) -> None:
         for c in n.children:
@@ -2348,6 +2355,19 @@ def _first_parse_error_line(root) -> int:
         if child is None:
             return node.start_point[0] + 1
         node = child
+
+
+def _has_multiline_error(root) -> bool:
+    """True if any materialized ERROR node spans more than one line (a
+    recovery region large enough to plausibly drop symbols, vs a tiny
+    single-line recovery that extracts completely)."""
+    stack = [root]
+    while stack:
+        n = stack.pop()
+        if n.type == "ERROR" and n.end_point[0] > n.start_point[0]:
+            return True
+        stack.extend(c for c in n.children if c.has_error)
+    return False
 
 
 def _read_csharp_type_name(node, source: bytes) -> tuple[str, bool, str] | None:
@@ -4784,6 +4804,21 @@ def _extract_generic(
                             obj = func_node.child_by_field_name(config.call_accessor_object_field)
                             if obj is not None and obj.type == "identifier":
                                 member_receiver = _read_text(obj, source)
+                            elif (
+                                config.ts_module == "tree_sitter_python"
+                                and obj is not None
+                                and obj.type == "call"
+                            ):
+                                # ``super().method()`` has a call node as its
+                                # receiver. Preserve it as a known intra-class
+                                # receiver instead of treating it as unresolved.
+                                receiver_func = obj.child_by_field_name("function")
+                                if (
+                                    receiver_func is not None
+                                    and receiver_func.type == "identifier"
+                                    and _read_text(receiver_func, source) == "super"
+                                ):
+                                    member_receiver = "super"
                             elif (obj is not None
                                   and obj.type in config.call_accessor_node_types
                                   and config.call_accessor_object_field):
@@ -4798,12 +4833,17 @@ def _extract_generic(
                         callee_name = _read_text(func_node, source)
 
             if callee_name and callee_name not in _LANGUAGE_BUILTIN_GLOBALS:
-                # A capitalized-receiver member call (`ClassName.method()`) must defer
-                # to receiver-based cross-file resolution: the bare method name can
-                # collide with an in-file node — even the calling method itself, when a
-                # viewset action delegates to a same-named service action — which would
-                # match `tgt_nid == caller_nid` and silently drop the call (#1446). The
-                # captured receiver is resolved later in _resolve_python_member_calls.
+                # Python member calls defer to receiver-based resolution unless the
+                # receiver is known to stay in the current class. Falling back to a
+                # bare method name for an unresolved/lowercase receiver (`d.get()` or
+                # `self.store.get()`) can bind to an unrelated module function and
+                # inflate it into a god node (#2417). Qualified class/module calls are
+                # recovered later by _resolve_python_member_calls when the receiver
+                # supplies enough evidence (#1446/#1883). Known recall trade (#2586):
+                # a same-file `x = Thing(); x.method()` no longer gets an edge — it
+                # came from the same evidence-free bare-name map and could bind wrong
+                # under label collision; local-instantiation receiver typing is a
+                # separate follow-up.
                 # C#: ANY member call with a captured receiver defers to the
                 # receiver-typed resolver — a bare method-name match ignores the
                 # receiver's declared type and mis-binds to an unrelated same-named
@@ -4813,10 +4853,15 @@ def _extract_generic(
                     config.ts_module == "tree_sitter_c_sharp"
                     and is_member_call and member_receiver
                 )
+                _python_defer = (
+                    config.ts_module == "tree_sitter_python"
+                    and is_member_call
+                    and member_receiver not in {"self", "cls", "super"}
+                )
                 _java_defer = (
                     config.ts_module == "tree_sitter_java" and is_member_call
                 )
-                if _java_defer or (
+                if _python_defer or _java_defer or (
                     is_member_call
                     and member_receiver
                     and (
@@ -5236,7 +5281,10 @@ def _extract_generic(
     # error's line so extract() can warn instead of reporting silent success.
     # Rides on the result dict, so it survives the per-file AST cache.
     if root.has_error:
-        result["parse_errors"] = {"first_error_line": _first_parse_error_line(root)}
+        result["parse_errors"] = {
+            "first_error_line": _first_parse_error_line(root),
+            "multiline_error": _has_multiline_error(root),
+        }
     # Kotlin (#2526/#2550): the declared package qualifies every node in the
     # file; the import-target and qualified-call resolvers key their per-package
     # symbol indexes off it.
