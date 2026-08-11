@@ -80,6 +80,30 @@ def test_object_literal_implements_supertype(tmp_path):
         "object : EventListener must implement the in-corpus interface"
 
 
+def test_object_literal_keeps_an_unresolved_supertype_stub(tmp_path):
+    """#2374: rewiring an anonymous object onto its own base makes a false loop."""
+    r = _extract(tmp_path, {
+        "Anonymous.kt": (
+            "package demo\n"
+            "\n"
+            "import library.ExternalBase\n"
+            "\n"
+            "class Factory {\n"
+            "    fun make() = object : ExternalBase() {}\n"
+            "}\n"
+        ),
+    })
+    obj_nid = _find(r, "ExternalBase", "object")
+    stub = next(
+        node["id"]
+        for node in r["nodes"]
+        if node["label"] == "ExternalBase" and not node.get("source_file")
+    )
+
+    assert (obj_nid, stub) in _edges(r, "inherits")
+    assert all(edge["source"] != edge["target"] for edge in r["edges"])
+
+
 def test_object_literal_member_calls_sibling_member(tmp_path):
     r = _extract(tmp_path, _REGISTRY)
     process = _find(r, ".process()", "object")

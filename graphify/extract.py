@@ -2076,9 +2076,16 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
     # a unique Go `get_db()` (mirrors the #1718/#1749 interop guard).
     stub_ids = {str(s.get("id")) for s in stubs if s.get("id")}
     stub_families: dict[str, set] = {}
+    stub_neighbors: dict[str, set[str]] = {}
     supertype_stub_ids: set[str] = set()  # stubs used as a base type — never a function
     _SUPERTYPE_RELATIONS = {"inherits", "implements", "extends"}
     for edge in edges:
+        source = edge.get("source")
+        target = edge.get("target")
+        if isinstance(source, str) and source in stub_ids and isinstance(target, str):
+            stub_neighbors.setdefault(source, set()).add(target)
+        if isinstance(target, str) and target in stub_ids and isinstance(source, str):
+            stub_neighbors.setdefault(target, set()).add(source)
         rel = edge.get("relation")
         for endpoint in ("source", "target"):
             nid = edge.get(endpoint)
@@ -2115,7 +2122,14 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
         if len(candidates) != 1:
             continue
         target_id = candidates[0].get("id")
-        if isinstance(target_id, str) and target_id and target_id != stub_id:
+        # Resolving a stub onto the other endpoint of one of its own edges
+        # would turn that relationship into a false self-loop (#2374).
+        if (
+            isinstance(target_id, str)
+            and target_id
+            and target_id != stub_id
+            and target_id not in stub_neighbors.get(stub_id, set())
+        ):
             remap[stub_id] = target_id
 
     if not remap:

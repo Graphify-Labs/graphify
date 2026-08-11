@@ -3328,3 +3328,33 @@ def test_rewire_does_not_bind_supertype_stub_to_function():
               "source_file": "store.py", "weight": 1.0}]
     _rewire_unique_stub_nodes(nodes, edges)
     assert edges[0]["target"] == "BookStore"  # inherits stub not bound to function
+
+
+def test_rewire_keeps_incident_stub_when_unique_match_would_make_a_self_loop():
+    """#2374: never resolve a stub onto the other end of its own edge."""
+    from graphify.extract import _rewire_unique_stub_nodes
+
+    nodes = [
+        {
+            "id": "decorated_list_tools",
+            "label": "list_tools()",
+            "file_type": "code",
+            "source_file": "decorated.py",
+            "source_location": "L5",
+        },
+        {"id": "list_tools", "label": "list_tools", "file_type": "code", "source_file": ""},
+    ]
+    edges = [
+        {
+            "source": "decorated_list_tools",
+            "target": "list_tools",
+            "relation": "references",
+            "source_file": "decorated.py",
+            "context": "decorator",
+        }
+    ]
+
+    _rewire_unique_stub_nodes(nodes, edges)
+
+    assert edges[0]["target"] == "list_tools"
+    assert "list_tools" in {node["id"] for node in nodes}
