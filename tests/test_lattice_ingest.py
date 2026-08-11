@@ -13,6 +13,7 @@ from graphify.lattice_ingest import (
     is_lattice_markdown_path,
     validate_lattice,
 )
+from graphify.serve import _query_graph_text
 
 
 def _write(path: Path, content: str) -> Path:
@@ -75,6 +76,32 @@ def test_full_extract_links_at_lat_comment_to_knowledge_section(tmp_path):
     assert data["source_location"] == "L1"
 
 
+def test_full_extract_resolves_cross_file_short_wiki_reference(tmp_path):
+    overview = _write(
+        tmp_path / "lat.md" / "overview.md",
+        "# Overview\n\nArchitecture overview.\n\n"
+        "## Runtime\n\nSee [[operations#Deployment]].\n",
+    )
+    operations = _write(
+        tmp_path / "lat.md" / "operations.md",
+        "# Operations\n\nOperations summary.\n\n"
+        "## Deployment\n\nDeployment constraints.\n",
+    )
+
+    result = extract([overview, operations], cache_root=tmp_path, root=tmp_path, parallel=False)
+    graph = build_from_json(result, directed=True, root=tmp_path)
+
+    reference_edges = [
+        (graph.nodes[src].get("knowledge_id"), graph.nodes[dst].get("knowledge_id"))
+        for src, dst, data in graph.edges(data=True)
+        if data.get("relation") == "references"
+    ]
+    assert (
+        "overview#Overview#Runtime",
+        "operations#Operations#Deployment",
+    ) in reference_edges
+
+
 def test_validate_lattice_reports_broken_ambiguous_and_unimplemented_required_sections(tmp_path):
     _write(tmp_path / "lat.md" / "a" / "rules.md", "# Rules\n\nA rules summary.\n")
     _write(tmp_path / "lat.md" / "b" / "rules.md", "# Rules\n\nB rules summary.\n")
@@ -122,9 +149,7 @@ def test_query_retrieves_lattice_summary_after_normal_extraction(tmp_path):
     result = extract([spec], cache_root=tmp_path, root=tmp_path, parallel=False)
     graph = build_from_json(result, directed=True, root=tmp_path)
 
-    matches = [
-        data
-        for _, data in graph.nodes(data=True)
-        if data.get("knowledge_id") == "security#Security#Tenant isolation"
-    ]
-    assert matches and "tenant_id" in matches[0]["summary"]
+    output = _query_graph_text(graph, "tenant_id database query", token_budget=500)
+
+    assert "Tenant isolation" in output
+    assert "Every database query must include tenant_id." in output
