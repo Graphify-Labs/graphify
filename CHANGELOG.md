@@ -2,7 +2,14 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
-## 0.9.40 (unreleased)
+## 0.9.41 (unreleased)
+
+- Fix: a JS/TS `catch` binding passed as a call argument (`catch (handler) { pool.submit(handler) }`) no longer fabricates an `indirect_call` edge to an unrelated same-named callable (thanks @imagineers-tyler); the catch binding is now shadowed within its clause, completing the 0.9.38/0.9.40 arrow-parameter fixes (#2568).
+- Fix: `Cargo.toml` is now recognized as a package manifest (#2434, thanks @ousamabenyounes), minting one canonical package node by name plus `depends_on` edges (dependencies, plus target-specific deps; virtual-workspace roots and workspace-inherited versions are handled).
+- Fix: an explicitly-passed scan root is no longer excluded by an unanchored pattern in a parent-directory `.gitignore` that happens to match the root's own name (#2468, thanks @hopstreax); the match path is re-relativized to the scan root (and NFC-normalized) so a genuinely-ignored subdirectory is still skipped.
+- Fix: the API extraction prompt now instructs backends to capture the per-node `rationale` attribute (design intent / trade-offs), matching the skill path, so API-backed extraction no longer silently drops it (#2482, thanks @hopstreax). This invalidates cached semantic chunks, which re-extract on the next run.
+
+## 0.9.40 (2026-08-11)
 
 - Fix: the 0.9.37 partial-parse warning no longer fires on valid TypeScript/TSX (#2610, #2599, thanks @Sid-AutoWisdom and @atlasplatformu-ai). tree-sitter-typescript sets an error flag on tiny fully-recovered constructs (a `&` in a JSX string attribute, a semicolon-less `in_*` interface member) that still extract completely; the warning now fires only when recovery plausibly cost symbols (the file yielded at most the file node, or an error region spans multiple lines), so the genuine Kotlin one-line-body and Luau cases still warn.
 - Fix: `file_hash()`'s stat fastpath no longer serves a stale digest when a file is rewritten to the same size within one mtime tick (#2612, thanks @rajarshidattapy); a racily-clean guard falls back to a content hash for recently-modified files.
