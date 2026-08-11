@@ -1039,7 +1039,10 @@ def _rebuild_code(
     # persisted graph rehomes source_file across invocation styles against it
     # (tests/test_watch.py:1389, :1428). The manifest is a different artifact
     # with a different anchor — see the save_manifest calls below.
-    project_root = Path.cwd().resolve() if not watch_path.is_absolute() else watch_root
+    cwd = Path.cwd().resolve()
+    project_root = cwd if (
+        not watch_path.is_absolute() or _is_relative_to(watch_root, cwd)
+    ) else watch_root
     report_root = _report_root_label(watch_path)
     try:
         from graphify.extract import extract, _get_extractor
