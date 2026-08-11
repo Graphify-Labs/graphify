@@ -1802,6 +1802,8 @@ def dispatch_command(cmd: str) -> None:
             print(f"error: --viz must be one of {', '.join(_VIZ_MODES)} (got {viz_mode!r})",
                   file=sys.stderr)
             sys.exit(1)
+        if viz_mode is not None:
+            viz_mode = viz_mode.strip().lower()
         graph_json = graph_override if graph_override is not None else watch_path / _GRAPHIFY_OUT / "graph.json"
         if not graph_json.exists():
             print(
@@ -2686,6 +2688,8 @@ def dispatch_command(cmd: str) -> None:
                 print(f"error: --viz must be one of {', '.join(_VIZ_MODES)} (got {export_viz_mode!r})",
                       file=sys.stderr)
                 sys.exit(1)
+            if export_viz_mode is not None:
+                export_viz_mode = export_viz_mode.strip().lower()
             if no_viz:
                 html_target = out_dir / "graph.html"
                 if html_target.exists():

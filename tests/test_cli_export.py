@@ -70,9 +70,10 @@ def test_export_html_creates_file(tmp_path):
     assert html.stat().st_size > 0
 
 
-def test_export_html_3d_creates_a_fully_offline_file(tmp_path):
+@pytest.mark.parametrize("viz_mode", ["3d", " 3D "])
+def test_export_html_3d_creates_a_fully_offline_file(tmp_path, viz_mode):
     _make_graph(tmp_path)
-    result = _run(["export", "html", "--viz", "3d"], tmp_path)
+    result = _run(["export", "html", "--viz", viz_mode], tmp_path)
     assert result.returncode == 0, result.stderr
     content = (tmp_path / "graphify-out" / "graph.html").read_text()
     assert "ForceGraph3D" in content
@@ -712,6 +713,16 @@ def test_cluster_only_happy_path_exits_zero(tmp_path):
     assert r.returncode == 0, r.stderr
     assert "Done -" in r.stdout, r.stdout
     assert "communities" in r.stdout
+
+
+def test_cluster_only_normalizes_3d_viz_mode(tmp_path):
+    _make_graph(tmp_path)
+    result = _run(["cluster-only", ".", "--no-label", "--viz", " 3D "], tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    content = (tmp_path / "graphify-out" / "graph.html").read_text()
+    assert "ForceGraph3D" in content
+    assert "<script src=" not in content
 
 
 def test_cluster_only_warns_when_labeling_flags_are_ignored(tmp_path):
