@@ -1,0 +1,1 @@
+tests: add docs presence smoke test for 3D viz docs

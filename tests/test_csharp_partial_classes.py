@@ -4,6 +4,8 @@
 carries the per-file stem), so the type's members split across the halves and
 every receiver-typed lookup on `Foo` bailed as ambiguous — cross-half calls
 never resolved. `_merge_csharp_partial_class_nodes` collapses the halves onto
+one canonical node, keyed by (namespace, label); same-named types in other
+namespaces, non-partial declarations, and nested partial types are left alone.
 one canonical node, keyed by (assembly, namespace, label); same-named types in
 other namespaces, non-partial declarations, and nested partial types are left
 alone. The assembly key is the nearest ancestor dir holding a `*.csproj`/
