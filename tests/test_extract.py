@@ -238,12 +238,14 @@ def test_origin_file_is_not_serialized_into_extract_output(tmp_path):
 
 
 def test_go_imported_type_stubs_do_not_collide_across_source_files(tmp_path):
-    """#1462 (dedicated extractors): the imported-type-stub disambiguation (the
-    ``origin_file`` key) landed only in the generic extractor, so the six dedicated
-    extractors (Go, Rust, Julia, Fortran, PowerShell, ObjC) still collapsed same-label
-    cross-file stubs into one conflated bare-id node — a false cross-package link.
-    They must stay distinct per file while keeping ``source_file`` empty so the #1402
-    rewire still collapses them onto a real definition when one exists."""
+    """Go external types use their import path as canonical identity.
+
+    #1462 kept unresolved bare stubs distinct per source file because Graphify
+    could not tell whether they named the same external package. The Go
+    import-aware resolver now has that evidence: two ``ext.Widget`` references
+    intentionally share one sourceless node without colliding with a local
+    ``Widget`` definition.
+    """
     first = tmp_path / "a/use_a.go"
     second = tmp_path / "b/use_b.go"
     first.parent.mkdir(parents=True)
@@ -252,11 +254,14 @@ def test_go_imported_type_stubs_do_not_collide_across_source_files(tmp_path):
     second.write_text('package b\n\nimport "ext"\n\nfunc UseB(w ext.Widget) {}\n', encoding="utf-8")
 
     result = extract([first, second], cache_root=tmp_path)
-    widget_nodes = [node for node in result["nodes"] if node["label"] == "Widget"]
+    widget_nodes = [node for node in result["nodes"] if node["label"] == "ext.Widget"]
 
-    assert len(widget_nodes) == 2
-    assert len({node["id"] for node in widget_nodes}) == 2
+    assert len(widget_nodes) == 1
     assert all(not node.get("source_file") for node in widget_nodes)
+    target = widget_nodes[0]["id"]
+    refs = [edge for edge in result["edges"] if edge.get("relation") == "references"]
+    assert len(refs) == 2
+    assert all(edge["target"] == target for edge in refs)
 
 
 def test_extract_updates_raw_call_callers_after_duplicate_id_disambiguation(tmp_path):
