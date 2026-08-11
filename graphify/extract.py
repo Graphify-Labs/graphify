@@ -79,6 +79,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _decldef_class_stem,
     _disambiguate_colliding_node_ids,
     _find_workspace_root,
+    _go_import_path_for_file,
     _is_type_like_definition,
     _js_call_identifier,
     _js_default_export_name,
@@ -116,6 +117,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _resolve_cross_file_imports,
     _resolve_cross_file_java_imports,
     _resolve_export_target,
+    _resolve_go_type_references,
     _resolve_java_type_references,
     _resolve_php_type_references,
     _resolve_js_import_path,
@@ -5951,6 +5953,21 @@ def extract(
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("Java type-reference resolution failed, skipping: %s", exc)
+    # Resolve internal Go pkg.Type references exactly and park external ones
+    # before the generic bare-label stub rewire can manufacture a collision.
+    _go_sel = [(r, p) for r, p in zip(per_file, paths) if p.suffix == ".go"]
+    if _go_sel:
+        try:
+            _resolve_go_type_references(
+                [r for r, _ in _go_sel], [p for _, p in _go_sel],
+                all_nodes, all_edges, root,
+                resolution_context_nodes, resolution_context_edges,
+            )
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Go type-reference resolution failed, skipping: %s", exc
+            )
     _rewire_unique_stub_nodes(all_nodes, all_edges)
 
     # Add cross-file class-level edges (Python only - uses Python parser internally)
@@ -6168,6 +6185,7 @@ def extract(
     # file is real ONLY if the caller imported it. So a cross-file call from one
     # of these files with no import evidence is gated below (#1659).
     _JS_TS_CALL_SUFFIXES = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")
+    _go_module_cache: dict[Path, str | None] = {}
     for rc in all_raw_calls:
         callee = rc.get("callee", "")
         if not callee:
@@ -6225,6 +6243,20 @@ def extract(
             ]
             if not candidates:
                 continue
+        # Imported Go selectors carry exact package evidence. External package
+        # calls yield no internal candidate instead of binding by bare name.
+        go_exact_import = False
+        if rc.get("language") == "go" and rc.get("import_path"):
+            import_path = str(rc["import_path"])
+            candidates = [
+                candidate for candidate in candidates
+                if _go_import_path_for_file(
+                    nid_to_source_file.get(candidate, ""), root, _go_module_cache
+                ) == import_path
+            ]
+            if not candidates:
+                continue
+            go_exact_import = True
         caller = rc["caller_nid"]
         # Resolve the caller's file via the raw_call's own source_file string,
         # which is stable regardless of any caller_nid remap. An indirect
@@ -6251,7 +6283,7 @@ def extract(
 
         if len(candidates) == 1:
             tgt = candidates[0]
-            has_import_evidence = _has_import_evidence(tgt)
+            has_import_evidence = go_exact_import or _has_import_evidence(tgt)
         else:
             # Ambiguous name (defined in 2+ files). Don't bail outright (#1219):
             # if the caller has explicit import evidence pointing at exactly one
