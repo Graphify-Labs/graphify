@@ -238,12 +238,14 @@ def test_origin_file_is_not_serialized_into_extract_output(tmp_path):
 
 
 def test_go_imported_type_stubs_do_not_collide_across_source_files(tmp_path):
-    """#1462 (dedicated extractors): the imported-type-stub disambiguation (the
-    ``origin_file`` key) landed only in the generic extractor, so the six dedicated
-    extractors (Go, Rust, Julia, Fortran, PowerShell, ObjC) still collapsed same-label
-    cross-file stubs into one conflated bare-id node — a false cross-package link.
-    They must stay distinct per file while keeping ``source_file`` empty so the #1402
-    rewire still collapses them onto a real definition when one exists."""
+    """Go external types use their import path as canonical identity.
+
+    #1462 kept unresolved bare stubs distinct per source file because Graphify
+    could not tell whether they named the same external package. The Go
+    import-aware resolver now has that evidence: two ``ext.Widget`` references
+    intentionally share one sourceless node without colliding with a local
+    ``Widget`` definition.
+    """
     first = tmp_path / "a/use_a.go"
     second = tmp_path / "b/use_b.go"
     first.parent.mkdir(parents=True)
@@ -252,11 +254,14 @@ def test_go_imported_type_stubs_do_not_collide_across_source_files(tmp_path):
     second.write_text('package b\n\nimport "ext"\n\nfunc UseB(w ext.Widget) {}\n', encoding="utf-8")
 
     result = extract([first, second], cache_root=tmp_path)
-    widget_nodes = [node for node in result["nodes"] if node["label"] == "Widget"]
+    widget_nodes = [node for node in result["nodes"] if node["label"] == "ext.Widget"]
 
-    assert len(widget_nodes) == 2
-    assert len({node["id"] for node in widget_nodes}) == 2
+    assert len(widget_nodes) == 1
     assert all(not node.get("source_file") for node in widget_nodes)
+    target = widget_nodes[0]["id"]
+    refs = [edge for edge in result["edges"] if edge.get("relation") == "references"]
+    assert len(refs) == 2
+    assert all(edge["target"] == target for edge in refs)
 
 
 def test_extract_updates_raw_call_callers_after_duplicate_id_disambiguation(tmp_path):
@@ -1136,13 +1141,15 @@ def test_python_relative_import_out_of_root_target_id_is_portable(tmp_path):
 
 def test_python_module_qualified_call_resolves_extracted(tmp_path):
     """`module.func()` where `module` is imported resolves to the callable that
-    module contains, with an EXTRACTED `calls` edge (#1883). A lowercase module
-    receiver was previously dropped alongside instance calls."""
+    module contains, with an EXTRACTED `calls` edge (#1883), even when the caller
+    file contains a same-named function that bare-name lookup could select."""
     mathlib = tmp_path / "mathlib.py"
     caller = tmp_path / "caller.py"
     mathlib.write_text("def compute(x):\n    return x * 2\n")
     caller.write_text(
         "import mathlib\n\n"
+        "def compute(x):\n"
+        "    return x + 1\n\n"
         "def use_qualified(n):\n"
         "    return mathlib.compute(n)\n"
     )
@@ -1153,9 +1160,9 @@ def test_python_module_qualified_call_resolves_extracted(tmp_path):
         if e["relation"] == "calls"
         and "use_qualified" in nodes[e["source"]]["label"]
         and "compute" in nodes[e["target"]]["label"]
-        and "mathlib.py" in (nodes[e["target"]].get("source_file") or "")
     ]
     assert len(edges) == 1, f"expected one use_qualified->compute edge, got {edges}"
+    assert "mathlib.py" in (nodes[edges[0]["target"]].get("source_file") or "")
     assert edges[0]["confidence"] == "EXTRACTED"
 
 
@@ -1462,6 +1469,127 @@ def test_python_instance_member_call_not_overconnected(tmp_path):
         and "run" in nodes[e["target"]]["label"]
     ]
     assert bad == [], f"instance member call must not connect cross-file: {bad}"
+
+
+def test_python_unresolved_member_calls_do_not_bind_to_bare_function(tmp_path):
+    """#2417: unresolved attribute calls must not bind by bare method name.
+
+    ``d.get()`` and ``self.store.get()`` do not identify the module-level
+    ``get()`` definition, so only the direct ``get()`` call is a real edge.
+    The result must also survive a warm cache extraction.
+    """
+    fixture = tmp_path / "fixture.py"
+    fixture.write_text(
+        "def get(k):\n"
+        "    return k\n\n"
+        "class Store:\n"
+        "    def __init__(self):\n"
+        "        self.store = {}\n\n"
+        "    def read(self, k):\n"
+        "        return self.store.get(k)\n\n"
+        "def other(d):\n"
+        "    return d.get('x')\n\n"
+        "def real():\n"
+        "    return get('real')\n",
+        encoding="utf-8",
+    )
+
+    def _get_callers(result):
+        nodes = {node["id"]: node for node in result["nodes"]}
+        target_ids = {
+            node["id"] for node in result["nodes"]
+            if node.get("label") == "get()" and node.get("source_file")
+        }
+        return sorted(
+            nodes[edge["source"]]["label"]
+            for edge in result["edges"]
+            if edge.get("relation") == "calls" and edge.get("target") in target_ids
+        )
+
+    cold = extract([fixture], cache_root=tmp_path, root=tmp_path)
+    assert _get_callers(cold) == ["real()"]
+    warm = extract([fixture], cache_root=tmp_path, root=tmp_path)
+    assert _get_callers(warm) == ["real()"]
+
+
+def test_python_known_member_receivers_keep_local_call_edges(tmp_path):
+    """Preserve self/cls/super calls while deferring other call receivers."""
+    fixture = tmp_path / "known_receivers.py"
+    fixture.write_text(
+        "class Base:\n"
+        "    def inherited(self):\n"
+        "        return 1\n\n"
+        "class Worker(Base):\n"
+        "    def local(self):\n"
+        "        return 2\n\n"
+        "    @classmethod\n"
+        "    def class_local(cls):\n"
+        "        return 3\n\n"
+        "    def via_self(self):\n"
+        "        return self.local()\n\n"
+        "    @classmethod\n"
+        "    def via_cls(cls):\n"
+        "        return cls.class_local()\n\n"
+        "    def via_super(self):\n"
+        "        return super().inherited()\n\n"
+        "def via_factory(factory):\n"
+        "    return factory().local()\n",
+        encoding="utf-8",
+    )
+    result = extract([fixture], cache_root=tmp_path, root=tmp_path)
+    nodes = {node["id"]: node for node in result["nodes"]}
+    call_pairs = {
+        (nodes[edge["source"]]["label"], nodes[edge["target"]]["label"])
+        for edge in result["edges"]
+        if edge.get("relation") == "calls"
+    }
+
+    for caller, callee in (
+        ("via_self", "local"),
+        ("via_cls", "class_local"),
+        ("via_super", "inherited"),
+    ):
+        assert any(
+            caller in source_label and callee in target_label
+            for source_label, target_label in call_pairs
+        ), f"missing {caller} -> {callee} call edge: {call_pairs}"
+    assert not any(
+        "via_factory" in source_label and "local" in target_label
+        for source_label, target_label in call_pairs
+    ), f"unresolved factory() receiver must not bind by bare name: {call_pairs}"
+
+
+def test_python_unresolved_receiver_never_crosses_modules(tmp_path):
+    """#2417 cross-file guard: `client.fetch('x')` must not bind to `util.fetch`
+    just because the caller's file imports that name — the receiver `client`
+    supplies no evidence it is the `util` module. A plain `fetch('y')` call to
+    the imported name still resolves."""
+    util = tmp_path / "util.py"
+    caller = tmp_path / "app.py"
+    util.write_text("def fetch(url):\n    return url\n")
+    caller.write_text(
+        "from util import fetch\n\n"
+        "def via_receiver(client):\n"
+        "    return client.fetch('x')\n\n"
+        "def via_name():\n"
+        "    return fetch('y')\n"
+    )
+    result = extract([caller, util], cache_root=tmp_path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    fetch_edges = [
+        (nodes[e["source"]]["label"], e)
+        for e in result["edges"]
+        if e["relation"] == "calls"
+        and "fetch" in nodes[e["target"]]["label"]
+        and "util.py" in (nodes[e["target"]].get("source_file") or "")
+    ]
+    callers = sorted(label for label, _ in fetch_edges)
+    assert not any("via_receiver" in c for c in callers), (
+        f"unresolved receiver bound cross-module by bare name: {callers}"
+    )
+    assert any("via_name" in c for c in callers), (
+        f"imported-name call lost its edge: {callers}"
+    )
 
 
 def test_python_qualified_call_ambiguous_class_bails(tmp_path):
@@ -3068,6 +3196,20 @@ def test_extract_warns_when_sql_extra_missing(tmp_path, capsys, monkeypatch):
     # the Python file still extracts normally
     labels = [n.get("label") for n in result["nodes"]]
     assert any(str(l).startswith("main") for l in labels)
+    # #2543: failed sql sources must be surfaced so the CLI can leave them
+    # unstamped in the incremental manifest.
+    failed = {Path(p).name for p in result.get("failed_sources", [])}
+    assert failed == {"schema.sql", "views.sql"}
+    assert "main.py" not in failed
+
+
+def test_extract_failed_sources_empty_when_sql_installed(tmp_path):
+    """#2543: successful extracts do not appear in failed_sources."""
+    pytest.importorskip("tree_sitter_sql")
+    s = tmp_path / "schema.sql"; s.write_text("CREATE TABLE users (id INT);\n")
+    py = tmp_path / "main.py"; py.write_text("def main():\n    return 1\n")
+    result = extract([s, py], cache_root=tmp_path)
+    assert result.get("failed_sources") == []
 
 
 def test_extract_no_missing_dep_warning_when_sql_installed(tmp_path, capsys):
@@ -3186,3 +3328,54 @@ def test_rewire_does_not_bind_supertype_stub_to_function():
               "source_file": "store.py", "weight": 1.0}]
     _rewire_unique_stub_nodes(nodes, edges)
     assert edges[0]["target"] == "BookStore"  # inherits stub not bound to function
+
+
+def test_extract_emits_posix_source_file_for_relative_inputs(tmp_path):
+    r"""source_file must be canonical POSIX on every node AND edge, whatever
+    separator the caller's input paths used.
+
+    Extractors build source_file from the Path handed to them, and only the
+    relativizing branch of extract()'s remap calls as_posix(), so a run given
+    relative inputs used to keep the native separator on Windows — mixing
+    `src\lib\content.ts` and `src/pages/index.astro` in one extraction.
+    source_file is compared as a string downstream (build keying, prune-root
+    derivation, dedup, analyze.find_import_cycles), so two spellings are two
+    different files (#683 / #2625).
+
+    Uses the relative-input form deliberately: passing an explicit ``root``
+    takes the branch that already normalized, and would make this vacuous.
+    """
+    (tmp_path / "src" / "lib").mkdir(parents=True)
+    (tmp_path / "src" / "pages").mkdir(parents=True)
+    (tmp_path / "src" / "lib" / "content.ts").write_text(
+        "export function getPosts() { return []; }\n", encoding="utf-8"
+    )
+    (tmp_path / "src" / "pages" / "index.astro").write_text(
+        "---\nimport { getPosts } from '../lib/content';\n"
+        "const posts = getPosts();\n---\n<h1>{posts.length}</h1>\n",
+        encoding="utf-8",
+    )
+
+    cwd = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        result = extract([Path("src/lib/content.ts"), Path("src/pages/index.astro")])
+    finally:
+        os.chdir(cwd)
+
+    carriers = [
+        (kind, item.get("source_file"))
+        for kind, items in (("node", result["nodes"]), ("edge", result["edges"]))
+        for item in items
+        if item.get("source_file")
+    ]
+    assert carriers, "fixture produced nothing with a source_file; test would be vacuous"
+
+    offenders = [(kind, sf) for kind, sf in carriers if "\\" in sf]
+    assert not offenders, f"native separator survived into source_file: {offenders}"
+
+    # ...and both files are present under one spelling each, so the graph sees
+    # two files rather than four.
+    assert {sf for _, sf in carriers} == {
+        "src/lib/content.ts", "src/pages/index.astro",
+    }

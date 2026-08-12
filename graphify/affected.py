@@ -15,6 +15,12 @@ DEFAULT_AFFECTED_RELATIONS = (
     "references",
     "imports",
     "imports_from",
+    # `import('…')` — emitted by the Svelte/Astro/Vue rescue passes and (since
+    # #2575) by plain JS/TS too. Omitting it made every dynamic import
+    # invisible to blast-radius traversal even where the edge WAS in the
+    # graph, and dynamic import is precisely how codebases break require
+    # cycles, so the missing edges sat under the most load-bearing modules.
+    "dynamic_import",
     "re_exports",
     "inherits",
     "extends",

@@ -860,6 +860,7 @@ def _check_shrink(
     *,
     had_explicit_deletions: bool = False,
     rebuilt_sources: "set[str] | None" = None,
+    failed_sources: "set[str] | None" = None,
 ) -> bool:
     """Return True (ok to proceed) or False (shrink refused).
 
@@ -879,6 +880,8 @@ def _check_shrink(
     NOT touch — e.g. a dropped semantic/doc node) refuses the write. This lets a
     plain ``graphify update`` after deleting a function refresh the graph without
     ``--force`` (#1116 left stale nodes write-blocked even though build dropped them).
+    Files in ``failed_sources`` never account for lost nodes: extraction did not
+    complete, so their disappearance is the silent shrink this guard protects.
     """
     if force or not existing_data:
         return True
@@ -903,6 +906,8 @@ def _check_shrink(
 
         def _accounted(n: dict) -> bool:
             sf = n.get("source_file")
+            if sf and failed_sources and _norm_source_file(sf) in failed_sources:
+                return False
             return (not sf
                     or sf in rebuilt_sources
                     or _norm_source_file(sf) in rebuilt_sources)
@@ -1470,6 +1475,7 @@ def _rebuild_code(
                     force, existing_graph_data, candidate_graph_data,
                     had_explicit_deletions=bool(deleted_paths),
                     rebuilt_sources=rebuilt_sources,
+                    failed_sources=failed_sources,
                 ):
                     return False
                 from graphify.export import backup_if_protected as _backup
@@ -1674,6 +1680,7 @@ def _rebuild_code(
                 tmp=graph_tmp,
                 had_explicit_deletions=bool(deleted_paths),
                 rebuilt_sources=rebuilt_sources,
+                failed_sources=failed_sources,
             ):
                 return False
             from graphify.export import backup_if_protected as _backup

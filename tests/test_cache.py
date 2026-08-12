@@ -490,6 +490,75 @@ def test_relative_root_does_not_reanchor_an_already_canonical_id(tmp_path, monke
     assert loaded["nodes"][0]["id"] == "src_utils_foo"
 
 
+def test_warm_hit_with_relative_inputs_from_above_the_root(tmp_path, monkeypatch):
+    """#2630: relative inputs handed to extract() from a CWD above the root.
+
+    Extractors stamp ``source_file`` with the path STRING they were handed, so
+    a relative input yields a CWD-relative stamp — but the stored format is
+    root-relative and ``load_cached`` re-anchors it as such. When CWD is not
+    the inferred root the two disagree and a warm hit resurrects a path naming
+    no file (``<root>/src/pages/index.astro``). Every source_file-GATED remap
+    in extract() then misses, so the warm hit keeps the raw-path symbol ids a
+    cold run canonicalizes: the astro frontmatter variable came back as
+    ``src_pages_index_posts``, no longer under its ``pages_index`` file node's
+    stem — the prefix ``build.py`` reconciles symbols to files by.
+
+    Astro is the fixture because ``.astro`` is cached while every other
+    JS-family suffix is in ``_JS_CACHE_BYPASS_SUFFIXES``; the defect itself is
+    language-agnostic (the gate is shared).
+    """
+    import graphify.extract as ex
+
+    project = tmp_path / "project"
+    (project / "src" / "pages").mkdir(parents=True)
+    (project / "src" / "lib").mkdir(parents=True)
+    (project / "src" / "lib" / "content.ts").write_text(
+        "export function getPosts() { return []; }\n"
+    )
+    (project / "src" / "pages" / "index.astro").write_text(
+        "---\n"
+        "import { getPosts } from '../lib/content';\n"
+        "const posts = getPosts();\n"
+        "---\n"
+        "<h1>{posts.length}</h1>\n"
+    )
+    # CWD is the project; the root extract() infers is the common parent `src/`.
+    monkeypatch.chdir(project)
+    rel_paths = [Path("src/lib/content.ts"), Path("src/pages/index.astro")]
+
+    _reset_stat_index()
+    cold = ex.extract(rel_paths, parallel=False)
+
+    # Warmth probe (see test_warm_cache_from_another_root...): a silent
+    # re-extraction would make the assertions below pass vacuously. Only the
+    # .astro file is cached, so it is the one that must not be re-extracted.
+    misses: list[str] = []
+    real_extract = ex._safe_extract_with_xaml_root
+
+    def _counting(extractor, path, root):
+        misses.append(str(path))
+        return real_extract(extractor, path, root)
+
+    monkeypatch.setattr(ex, "_safe_extract_with_xaml_root", _counting)
+    _reset_stat_index()
+    warm = ex.extract(rel_paths, parallel=False)
+    assert not [m for m in misses if m.endswith(".astro")], (
+        f"the .astro file must be served from the cache, re-extracted: {misses}"
+    )
+
+    assert _graph_ids(cold) == _graph_ids(warm), (
+        "a warm cache hit must reproduce the cold extraction's ids exactly"
+    )
+    for label, graph in (("cold", cold), ("warm", warm)):
+        ids = {str(n["id"]) for n in graph["nodes"]}
+        assert {"pages_index", "pages_index_posts"} <= ids, (label, sorted(ids))
+        # The stem the frontmatter variable must NOT keep: `src_`-prefixed is
+        # the pre-remap form derived from the raw input path.
+        assert not [i for i in ids if i.startswith("src_pages_index")], (
+            label, sorted(ids)
+        )
+
+
 # --- AST cache versioning ----------------------------------------------------
 # AST cache entries are the output of graphify's own extractor code, so they
 # are only valid for the graphify version that wrote them. Keying purely on
@@ -1325,3 +1394,64 @@ def test_prompt_file_reflects_edited_spec(tmp_path):
     _os.utime(spec, ns=(0, 0))  # force a distinct stat signature
     _, _, _, uncached = check_semantic_cache([str(f)], root=tmp_path, prompt_file=str(spec))
     assert uncached == [str(f)], "an edited spec must invalidate, not reuse the memo"
+
+
+# --- stat-fastpath racily-clean guard ---------------------------------------
+# (size, mtime_ns) alone cannot prove a file is unchanged: NTFS advances mtime
+# on a ~15.6 ms tick, so a same-length rewrite inside one tick leaves the
+# signature identical and the memo used to return the PREVIOUS content's
+# digest. These two tests pin both halves of the fix — the hole is closed, and
+# the fastpath still actually fires for files whose mtime tick has closed.
+
+def test_file_hash_detects_same_size_rewrite_within_one_mtime_tick(tmp_path):
+    """A same-length edit must change the digest even when the filesystem
+    reports an identical (size, mtime_ns) for both writes.
+
+    The collision is forced with utime rather than raced for: on a filesystem
+    with fine-grained timestamps the two writes would land in different ticks
+    and the memo would never be consulted, making the test vacuous. Pinning
+    both writes to one mtime models the coarse-granularity filesystem (NTFS,
+    FAT, NFS) on every host.
+    """
+    import os as _os
+
+    _reset_stat_index()
+    f = tmp_path / "mod.py"
+
+    f.write_text("x = 1  # aaa\n", encoding="utf-8")
+    st = f.stat()
+    h1 = file_hash(f, tmp_path)
+
+    f.write_text("x = 2  # bbb\n", encoding="utf-8")   # same length, new content
+    _os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns))  # ...inside the same tick
+
+    assert f.stat().st_size == st.st_size and f.stat().st_mtime_ns == st.st_mtime_ns, (
+        "test setup failed to reproduce an identical stat signature"
+    )
+
+    h2 = file_hash(f, tmp_path)
+    assert h1 != h2, "same-size rewrite returned the previous content's digest"
+
+
+def test_file_hash_fastpath_still_serves_a_settled_file(tmp_path, monkeypatch):
+    """The guard must not disable the cache: once a file's mtime tick has
+    closed, the digest is served from the index without re-reading."""
+    _reset_stat_index()
+    f = tmp_path / "mod.py"
+    f.write_text("x = 1\n", encoding="utf-8")
+
+    # Backdate well past the granularity window so the entry is provably clean.
+    import os as _os
+    old_ns = f.stat().st_mtime_ns - 60 * 1_000_000_000
+    _os.utime(f, ns=(old_ns, old_ns))
+
+    first = file_hash(f, tmp_path)
+
+    reads = []
+    real_read_bytes = Path.read_bytes
+    monkeypatch.setattr(Path, "read_bytes",
+                        lambda self: (reads.append(self), real_read_bytes(self))[1])
+
+    second = file_hash(f, tmp_path)
+    assert second == first
+    assert reads == [], "settled file was re-read; the stat fastpath is dead"

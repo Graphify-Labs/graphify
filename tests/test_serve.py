@@ -1,10 +1,13 @@
 """Tests for serve.py - MCP graph query helpers (no mcp package required)."""
 import json
+import unicodedata
+
 import pytest
 import networkx as nx
 from networkx.readwrite import json_graph
 
 from graphify.serve import (
+    _strip_diacritics,
     _communities_from_graph,
     _score_nodes,
     _score_query,
@@ -29,6 +32,7 @@ from graphify.serve import (
     _load_graph,
     _community_header,
     _search_tokens,
+    _shortest_path_text,
 )
 
 
@@ -224,6 +228,32 @@ def test_find_node_resolves_when_label_and_norm_label_diverge():
     assert _find_node(G, "blockStream.ts") == ["n1"]
 
 
+def test_find_node_matches_punctuated_node_id_exactly():
+    # #2467: the id is only ever compared against `term`, which tokenizes on \w+
+    # ("concept:domain:widget" -> "concept domain widget"), so no id carrying
+    # punctuation could equal it. Only the symmetric `norm_query == nid_norm`
+    # match resolves an exactly-typed node id.
+    G = nx.Graph()
+    G.add_node("concept:domain:widget", label="Widget", norm_label="widget",
+               source_file="docs/domain.md", source_location="L1")
+    G.add_node("plain_node_id", label="Plain", norm_label="plain",
+               source_file="docs/plain.md", source_location="L1")
+    assert _find_node(G, "concept:domain:widget") == ["concept:domain:widget"]
+    assert _find_node(G, "plain_node_id") == ["plain_node_id"]   # unpunctuated ids as before
+    assert _find_node(G, "Widget") == ["concept:domain:widget"]  # label lookup as before
+
+
+def test_find_node_matches_merge_graphs_namespaced_node_id():
+    # #2467: `prefix_graph_for_global` namespaces every id with "<repo>::", so on a
+    # merged graph no node at all resolved by id — including the id that `explain`
+    # itself had just printed.
+    G = nx.Graph()
+    G.add_node("backend::src_server_router_go", label="Router()",
+               norm_label="router()", source_file="src/server/router.go",
+               source_location="L12")
+    assert _find_node(G, "backend::src_server_router_go") == ["backend::src_server_router_go"]
+
+
 # --- trigram candidate prefilter (the trigram index that shrinks the O(N) scan) ---
 
 
@@ -245,6 +275,23 @@ def _make_big_graph(n: int = 150) -> nx.Graph:
     return G
 
 
+def _make_non_ascii_id_graph(n: int = 40) -> nx.Graph:
+    """A graph whose ids carry Hangul, large enough that the prefilter really runs.
+
+    The filler nodes are load-bearing: `_trigram_candidates` bails out to a full
+    scan when `min(present) > int(n * 0.10)`, so on a two-node graph any present
+    trigram trips the guard and the index path — where #2467's second defect lives —
+    is never exercised at all."""
+    G = nx.Graph()
+    for i in range(n):
+        G.add_node(f"id{i}", label=f"item node {i}", source_file=f"pkg/item_{i}.py")
+    G.add_node("concept:domain:한글", label="Hangul domain",
+               source_file="docs/한글.md", source_location="L1")
+    G.add_node("문서_목록", label="DocumentList",
+               source_file="src/문서_목록.py", source_location="L1")
+    return G
+
+
 def test_trigrams_basic():
     assert _trigrams("foobar") == {"foo", "oob", "oba", "bar"}
     assert _trigrams("ab") == {"ab"}        # <3 chars -> whole string is the key
@@ -262,6 +309,19 @@ def test_node_search_text_includes_all_matched_fields():
     assert parts[2] == "punct"                # nid
     assert parts[3] == "pkg/foobar.py"        # source_file
     assert parts[4] == "pkg foobar py"        # source_file tokens
+    assert len(parts) == 5                    # no folded-id field for an ASCII id (#2467)
+
+
+def test_node_search_text_appends_folded_non_ascii_node_id():
+    # #2467: for a Hangul id the raw and folded forms differ — precomposed syllables
+    # against conjoining jamo. Queries are trigrammed from the folded form, so the
+    # index has to carry it too, appended so the other field positions do not move.
+    G = _make_non_ascii_id_graph()
+    nid = "concept:domain:한글"
+    parts = _node_search_text(G.nodes[nid], nid).split("\x00")
+    assert parts[2] == nid
+    assert parts[5] == _strip_diacritics(nid).lower()
+    assert parts[5] != parts[2]
 
 
 def test_trigram_candidates_fast_path_fires_for_rare_term():
@@ -302,6 +362,35 @@ def test_find_node_prefilter_is_identical_to_full_scan(monkeypatch):
     # includes the punctuated label, exercised via its tokenized (label_tokens) form
     for label in ["ZebraQuokkaWidget", "MarmosetGadget handler", "Foo Bar Baz",
                   "item node 7", "missing"]:
+        fast = _find_node(G, label)
+        _force_full_scan(monkeypatch)
+        full = _find_node(G, label)
+        monkeypatch.undo()
+        assert fast == full, f"_find_node prefilter diverged (order!) for {label!r}"
+
+
+def test_find_node_matches_non_ascii_node_id_through_prefilter():
+    # #2467: `_node_search_text` indexed the id raw while every query folds through
+    # `_strip_diacritics`. NFKD decomposes a Hangul syllable into conjoining jamo,
+    # which have combining class 0 and so survive the combining-character filter —
+    # the needle's trigrams and the posting's trigrams were disjoint and the node
+    # was dropped from the candidate list before any predicate could see it.
+    G = _make_non_ascii_id_graph()
+    for nid in ("concept:domain:한글", "문서_목록"):
+        assert unicodedata.normalize("NFKD", nid) != nid   # fixture must stay NFKD-sensitive
+        needles = [" ".join(_search_tokens(nid)), _strip_diacritics(nid).lower()]
+        candidates = _trigram_candidates(G, needles)
+        assert candidates is not None                      # index path, not the full-scan fallback
+        assert nid in candidates
+        assert _find_node(G, nid) == [nid]
+
+
+def test_find_node_node_id_prefilter_is_identical_to_full_scan(monkeypatch):
+    # #2467: an id must resolve the same way whether the candidates came from the
+    # trigram index or from the full scan.
+    G = _make_non_ascii_id_graph()
+    for label in ["concept:domain:한글", "문서_목록", "id7", "item node 7",
+                  "DocumentList", "missing"]:
         fast = _find_node(G, label)
         _force_full_scan(monkeypatch)
         full = _find_node(G, label)
@@ -920,6 +1009,86 @@ def test_query_seeds_from_identifier_not_noise():
     assert "ServiceClient" in text
 
 
+# --- relational-intent verbs must not seat decoy seeds (#2507) ---
+
+def _make_callers_graph() -> nx.Graph:
+    """A service, three callers wired via context='call' edges, and a decoy
+    whose tokenized label ('callstorewithamount') prefix-matches the intent
+    verb 'calls' — the #2507 pollution vector."""
+    G = nx.Graph()
+    G.add_node("svc", label="ChargeCustomerService", source_file="billing/charge.py")
+    G.add_node("c1", label="BillingJob", source_file="billing/job.py")
+    G.add_node("c2", label="CheckoutFlow", source_file="checkout/flow.py")
+    G.add_node("c3", label="RetryWorker", source_file="workers/retry.py")
+    for caller in ("c1", "c2", "c3"):
+        G.add_edge(caller, "svc", relation="calls", context="call")
+    G.add_node("decoy", label=".callStoreWithAmount()", source_file="store/amount.py")
+    return G
+
+
+def test_relational_verb_does_not_seat_decoy_seed():
+    """'Who calls X?' must seed on X, not on a decoy that merely prefix-matches
+    the intent verb 'calls' via its tokenized label (#2507). The gap window
+    already excludes the decoy; the per-term guarantee must not re-seat it."""
+    G = _make_callers_graph()
+    # Sanity-check the pollution premise: the decoy IS the singleton winner for
+    # 'calls', so pre-fix the guarantee loop would have seated it as a BFS root.
+    qs = _score_query(G, _query_terms("Who calls ChargeCustomerService?"), collect_per_term_seeds=True)
+    assert qs.best_seed_by_term.get("calls") == "decoy"
+
+    text = _query_graph_text(G, "Who calls ChargeCustomerService?", mode="bfs", depth=2)
+    header = text.splitlines()[0]
+    assert "ChargeCustomerService" in header.split("Start:")[1]
+    assert ".callStoreWithAmount()" not in header
+    for caller in ("BillingJob", "CheckoutFlow", "RetryWorker"):
+        assert caller in text
+
+
+def test_relational_verb_as_bare_query_still_seeds_symbol():
+    """All-intent fallback: a query that is ONLY intent words keeps the seed
+    guarantee, so a corpus-legit identifier literally named 'calls' stays
+    reachable via the bare query 'calls' (#2507, preserving #1597's intent)."""
+    G = nx.Graph()
+    G.add_node("calls_fn", label="calls", source_file="src/calls.py")
+    G.add_node("other", label="unrelated_helper", source_file="src/other.py")
+    text = _query_graph_text(G, "calls", mode="bfs", depth=1)
+    assert "No matching nodes found." not in text
+    assert "calls" in text.splitlines()[0].split("Start:")[1]
+
+
+def test_relational_verb_symbol_still_wins_seat_on_merit():
+    """Demotion only strips the GUARANTEE: a node literally named 'calls' whose
+    score sits within the gap window is still seeded alongside the other term's
+    node on a multi-term query (#2507)."""
+    G = nx.Graph()
+    G.add_node("calls_fn", label="calls", source_file="src/calls.py")
+    G.add_node("ext", label="extract", source_file="src/extract.py")
+    text = _query_graph_text(G, "calls extract", mode="bfs", depth=1)
+    start = text.splitlines()[0].split("Start:")[1]
+    assert "calls" in start
+    assert "extract" in start
+
+
+def test_uses_phrasing_does_not_seat_decoy_seed():
+    """'what uses X' must not seat a decoy that prefix-matches the intent verb
+    'uses' (#2507). 'uses' is deliberately NOT a _CONTEXT_HINTS alias (its
+    relation is ambiguous); the demotion set alone handles it."""
+    G = nx.Graph()
+    G.add_node("svc", label="ChargeCustomerService", source_file="billing/charge.py")
+    G.add_node("c1", label="BillingJob", source_file="billing/job.py")
+    G.add_edge("c1", "svc", relation="uses", context="call")
+    G.add_node("decoy", label="usesDiscountCode()", source_file="promo/discount.py")
+    text = _query_graph_text(G, "what uses ChargeCustomerService?", mode="bfs", depth=2)
+    header = text.splitlines()[0]
+    assert "ChargeCustomerService" in header.split("Start:")[1]
+    assert "usesDiscountCode()" not in header
+
+
+def test_infer_context_filters_for_callers_question():
+    """'callers of X' phrasing infers the call context (#2507 companion)."""
+    assert _infer_context_filters("callers of ChargeCustomerService") == ["call"]
+
+
 def test_query_graph_text_parameter_type_context_filter_changes_traversal():
     import networkx as nx
     from graphify.serve import _query_graph_text
@@ -1327,6 +1496,33 @@ def test_subgraph_to_text_no_notice_when_under_budget():
     assert "TRUNCATED" not in text and "truncated" not in text
 
 
+def test_subgraph_to_text_no_banner_when_only_edges_overflow():
+    """#2601: nodes render before edges, so a budget overflow that only trims
+    trailing edges cuts zero whole nodes. The banner must not fire with a
+    misleading "showing N of N nodes … among the 0 cut nodes" — that pushes an
+    agent to distrust a complete answer and issue pointless narrowing calls."""
+    import itertools
+
+    G = nx.Graph()
+    labels = [f"n{i}" for i in range(4)]
+    for lbl in labels:
+        G.add_node(lbl, label=lbl, source_file="f.py", source_location="L1", community="c")
+    edges = list(itertools.combinations(labels, 2))
+    for u, v in edges:
+        G.add_edge(u, v, relation="calls", confidence="high")
+    # Budget large enough for every NODE line but not the trailing EDGE lines.
+    text = _subgraph_to_text(G, set(G.nodes), edges, token_budget=60)
+    node_lines = [l for l in text.splitlines() if l.startswith("NODE ")]
+    edge_lines = [l for l in text.splitlines() if l.startswith("EDGE ")]
+    assert len(node_lines) == len(labels), "every node must still be shown"
+    assert "TRUNCATED" not in text and "truncated" not in text
+    assert "cut nodes" not in text
+    # A complete answer renders the whole subgraph: suppressing the banner must
+    # not silently truncate the trailing edges either (a `return output[:cut_at]`
+    # would drop them and still pass the assertions above).
+    assert len(edge_lines) == len(edges), "all edges must survive a complete answer"
+
+
 def test_subgraph_to_text_order_is_deterministic():
     """Equal-degree nodes render in a stable order regardless of set iteration."""
     G = nx.Graph()
@@ -1386,3 +1582,42 @@ def test_subgraph_to_text_honors_valid_src_tgt_direction():
     out = _subgraph_to_text(G, {"caller", "callee"}, [("callee", "caller")])
     edge_line = next(l for l in out.splitlines() if l.startswith("EDGE"))
     assert "caller --calls" in edge_line and "--> callee" in edge_line
+
+
+# --- _shortest_path_text direction (#2487) ---
+
+def _directed_chain() -> nx.DiGraph:
+    """alpha --calls--> beta --calls--> gamma, as _load_graph would load it
+    (directed storage, arc order = true direction on post-#563 files)."""
+    G = nx.DiGraph()
+    for n in ("alpha", "beta", "gamma"):
+        G.add_node(n, label=n)
+    G.add_edge("alpha", "beta", relation="calls")
+    G.add_edge("beta", "gamma", relation="calls")
+    return G
+
+
+def test_shortest_path_tool_directed_respects_direction():
+    out = _shortest_path_text(_directed_chain(), {"source": "alpha", "target": "gamma"})
+    assert "Shortest path (2 hops)" in out
+    assert out.count("-->") == 2
+    assert "<--" not in out
+
+
+def test_shortest_path_tool_directed_backwards_is_no_path():
+    # Directed is the default (#2487): walking the chain backwards must report
+    # no directed path, with the undirected opt-out hint, not a reversed path.
+    out = _shortest_path_text(_directed_chain(), {"source": "gamma", "target": "alpha"})
+    assert "No directed path found" in out
+    assert "undirected=true" in out
+    assert "-->" not in out
+    assert "<--" not in out
+
+
+def test_shortest_path_tool_undirected_opt_in():
+    out = _shortest_path_text(
+        _directed_chain(), {"source": "gamma", "target": "alpha", "undirected": True}
+    )
+    assert "Shortest path (2 hops)" in out
+    assert out.count("<--calls--") == 2
+    assert "-->" not in out

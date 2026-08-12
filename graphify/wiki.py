@@ -73,12 +73,23 @@ def _community_article(
     top_nodes = sorted(nodes, key=lambda n: G.degree(n), reverse=True)[:25]
     cross = _cross_community_links(G, nodes, cid, labels, node_community or {})
 
-    # Edge confidence breakdown
-    conf_counts: Counter = Counter()
-    for nid in nodes:
-        for neighbor in G.neighbors(nid):
-            ed = edge_data(G, nid, neighbor)
-            conf_counts[ed.get("confidence", "EXTRACTED")] += 1
+    # Edge confidence breakdown, over every edge INCIDENT to the community (the
+    # cross-community ones included — those are disproportionately the uncertain
+    # edges, and AMBIGUOUS is what ARCHITECTURE.md flags for human review).
+    #
+    # ``G.edges(nbunch)`` reports each incident edge exactly once. Walking
+    # ``nodes x G.neighbors`` instead visited an edge once per endpoint inside
+    # the community, so an intra-community edge was counted TWICE while a
+    # crossing one was counted once. Intra-community edges are overwhelmingly
+    # the high-confidence EXTRACTED ones — that is what makes a community — so
+    # the split was biased towards confidence and understated the review
+    # burden. On a MultiGraph this also counts parallel edges individually
+    # rather than collapsing them to the first (``edge_data``), which is the
+    # same understatement: an AMBIGUOUS edge parallel to an EXTRACTED one used
+    # to be invisible here.
+    conf_counts: Counter = Counter(
+        d.get("confidence", "EXTRACTED") for *_, d in G.edges(nodes, data=True)
+    )
     total_edges = sum(conf_counts.values()) or 1
 
     sources = sorted({G.nodes[n].get("source_file") or "" for n in nodes} - {""})

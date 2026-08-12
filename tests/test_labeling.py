@@ -4,6 +4,7 @@ Backend calls are mocked - no network. Covers the happy path, partial replies,
 malformed replies, and the no-backend fallback.
 """
 import json
+import re
 import sys
 
 import networkx as nx
@@ -265,8 +266,10 @@ def test_label_communities_batches_when_over_batch_size(monkeypatch):
 
     def fake_call(prompt, *, backend, max_tokens=200):
         # The fake reads which cids the prompt asks about and answers all of them.
-        cids = [int(line.split(":", 1)[0].removeprefix("Community ").strip())
-                for line in prompt.splitlines() if line.startswith("Community ")]
+        # #2534: prompt lines are now "<cid>: <names>" — the old "Community {cid}:"
+        # key collided with the placeholder sentinel and echoed keys were dropped.
+        cids = [int(m.group(1)) for m in
+                (re.match(r"^(\d+): ", line) for line in prompt.splitlines()) if m]
         calls.append(len(cids))
         return "{" + ", ".join(f'"{c}": "Cluster {c}"' for c in cids) + "}"
 
@@ -287,8 +290,10 @@ def test_label_communities_partial_batch_failure_keeps_successful_batches(monkey
 
     def fake_call(prompt, *, backend, max_tokens=200):
         n_calls[0] += 1
-        cids = [int(line.split(":", 1)[0].removeprefix("Community ").strip())
-                for line in prompt.splitlines() if line.startswith("Community ")]
+        # #2534: prompt lines are now "<cid>: <names>" — the old "Community {cid}:"
+        # key collided with the placeholder sentinel and echoed keys were dropped.
+        cids = [int(m.group(1)) for m in
+                (re.match(r"^(\d+): ", line) for line in prompt.splitlines()) if m]
         if n_calls[0] == 2:
             raise RuntimeError("simulated transient backend failure")
         return "{" + ", ".join(f'"{c}": "Named {c}"' for c in cids) + "}"
@@ -323,8 +328,10 @@ def test_label_communities_max_communities_caps_total(monkeypatch):
     captured_cids = []
 
     def fake_call(prompt, *, backend, max_tokens=200):
-        cids = [int(line.split(":", 1)[0].removeprefix("Community ").strip())
-                for line in prompt.splitlines() if line.startswith("Community ")]
+        # #2534: prompt lines are now "<cid>: <names>" — the old "Community {cid}:"
+        # key collided with the placeholder sentinel and echoed keys were dropped.
+        cids = [int(m.group(1)) for m in
+                (re.match(r"^(\d+): ", line) for line in prompt.splitlines()) if m]
         captured_cids.extend(cids)
         return "{" + ", ".join(f'"{c}": "X{c}"' for c in cids) + "}"
 
@@ -550,3 +557,60 @@ def test_cluster_only_heals_persisted_placeholder_but_reuses_genuine(tmp_path, m
     saved = json.loads(labels_path.read_text(encoding="utf-8"))
     assert saved["0"] != "Community 0", "stuck placeholder was not healed (#2073)"
     assert saved["1"] == "Payment Flow", "genuine label was not reused"
+
+
+# ── #2534 case 2: prompt key must not collide with the placeholder sentinel ──
+
+
+def test_label_prompt_lines_use_bare_cid_keys():
+    """The prompt line used to read "Community {cid}: ..." — the exact string of
+    the no-backend placeholder sentinel. A model that echoed the key back as the
+    name produced a reply indistinguishable from the fallback, so the caller's
+    sentinel filter silently dropped it (#2534). The key must be the bare id."""
+    from graphify.llm import _community_label_lines
+
+    G, communities = _graph()
+    lines, labeled_cids = _community_label_lines(G, communities, None, 10, 12)
+    assert sorted(labeled_cids) == [0, 1]
+    for line in lines:
+        assert re.match(r"^\d+: ", line), f"prompt line key is not a bare id: {line!r}"
+        assert not line.startswith("Community "), f"sentinel-colliding key: {line!r}"
+
+
+def test_label_cli_drops_sentinel_and_bare_key_echoes(tmp_path, monkeypatch):
+    """#2534 case 2, cli side: an LLM reply that echoes the sentinel
+    ("Community 5") or the bare prompt key ("7") must not survive the filter —
+    the deterministic hub labels win — while a real name still overrides."""
+    import graphify.__main__ as cli
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    graph = {
+        "directed": False,
+        "multigraph": False,
+        "nodes": [
+            {"id": "orders", "label": "OrderService", "community": 0},
+            {"id": "pay", "label": "PaymentService", "community": 5},
+            {"id": "ship", "label": "ShippingService", "community": 7},
+        ],
+        "links": [],
+    }
+    (out / "graph.json").write_text(json.dumps(graph), encoding="utf-8")
+
+    def fake_generate(G, communities, *, backend=None, model=None, gods=None,
+                      quiet=False, max_concurrency=4, batch_size=100, usage_out=None):
+        return {0: "Order Management", 5: "Community 5", 7: "7"}, "llm"
+
+    monkeypatch.setattr("graphify.llm.generate_community_labels", fake_generate)
+    monkeypatch.setattr("graphify.export.to_html", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        sys, "argv",
+        ["graphify", "label", str(tmp_path), "--backend", "gemini", "--no-viz"],
+    )
+
+    cli.main()
+
+    labels = json.loads((out / ".graphify_labels.json").read_text(encoding="utf-8"))
+    assert labels["0"] == "Order Management"            # real name survives
+    assert labels["5"] == "PaymentService"              # sentinel echo dropped -> hub label
+    assert labels["7"] == "ShippingService"             # bare-key echo dropped -> hub label

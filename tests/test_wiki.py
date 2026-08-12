@@ -96,11 +96,42 @@ def test_community_article_shows_cohesion(tmp_path):
 
 
 def test_community_article_has_audit_trail(tmp_path):
+    """Each incident edge is counted exactly ONCE (#2633).
+
+    The Parsing Layer (n1, n2) touches two edges: n1-n2 (EXTRACTED, both
+    endpoints inside) and n1-n3 (INFERRED, crossing out). Counting
+    ``nodes x G.neighbors`` visited the intra-community edge from both ends and
+    the crossing one from only one, reporting EXTRACTED 2 (67%) / INFERRED 1
+    (33%) — biased towards confidence, which understates the AMBIGUOUS review
+    burden the section exists to surface.
+    """
     G = _make_graph()
     to_wiki(G, COMMUNITIES, tmp_path, community_labels=LABELS)
     parsing = (tmp_path / "Parsing_Layer.md").read_text()
-    assert "EXTRACTED" in parsing
-    assert "INFERRED" in parsing
+    audit = parsing[parsing.index("## Audit Trail"):]
+    assert "- EXTRACTED: 1 (50%)" in audit, audit
+    assert "- INFERRED: 1 (50%)" in audit, audit
+    assert "- AMBIGUOUS: 0 (0%)" in audit, audit
+
+
+def test_audit_trail_counts_parallel_edges_individually(tmp_path):
+    """On a MultiGraph each parallel edge is its own row in the split (#2633).
+
+    Collapsing them to the first (``edge_data``) hid an AMBIGUOUS edge behind an
+    EXTRACTED one running between the same pair — the same understatement as the
+    double-count above.
+    """
+    G = nx.MultiGraph()
+    G.add_node("n1", label="parse", file_type="code", source_file="parser.py")
+    G.add_node("n2", label="validate", file_type="code", source_file="parser.py")
+    G.add_edge("n1", "n2", relation="calls", confidence="EXTRACTED", weight=1.0)
+    G.add_edge("n1", "n2", relation="references", confidence="AMBIGUOUS", weight=1.0)
+
+    to_wiki(G, {0: ["n1", "n2"]}, tmp_path, community_labels={0: "Parsing Layer"})
+    audit = (tmp_path / "Parsing_Layer.md").read_text()
+    audit = audit[audit.index("## Audit Trail"):]
+    assert "- EXTRACTED: 1 (50%)" in audit, audit
+    assert "- AMBIGUOUS: 1 (50%)" in audit, audit
 
 
 def test_god_node_article_has_connections(tmp_path):
