@@ -1167,3 +1167,48 @@ def test_rebuild_bodies_tolerate_a_bom_in_graphify_root(name, body):
     assert "encoding='utf-8')" not in body, (
         f"{name} rebuild body still has a BOM-intolerant read"
     )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shebang probe")
+def test_hook_probe_resolves_pipx_shebang_with_argument(tmp_path):
+    """#2629: pipx writes `#!/.../python -E` — a shebang *with an argument*.
+
+    The interpreter probe must strip that argument before using the shebang as a
+    path; otherwise the space trips the character allowlist, the valid pipx
+    interpreter is discarded, and the hook silently falls back to a `python3`
+    that has no graphify (printing 'could not locate a Python with graphify').
+    """
+    import sys
+    from graphify.hooks import _PYTHON_DETECT
+
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    launcher = bindir / "graphify"
+    # pipx-style launcher: shebang carries the `-E` argument.
+    launcher.write_text(f"#!{sys.executable} -E\nimport graphify\n", encoding="utf-8")
+    launcher.chmod(0o755)
+
+    script = _PYTHON_DETECT + '\nprintf "%s" "$GRAPHIFY_PYTHON"\n'
+    env = dict(os.environ, PATH=f"{bindir}{os.pathsep}{os.environ['PATH']}")
+    resolved = subprocess.run(
+        ["bash", "-c", script],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    assert resolved == sys.executable, (
+        f"probe did not resolve the pipx interpreter from a shebang with an "
+        f"argument; got {resolved!r}, expected {sys.executable!r}"
+    )
+
+
+def test_generated_skill_probes_strip_shebang_argument():
+    """#2629: both POSIX probe sites in the rendered skill (step-1 install and the
+    subcommand interpreter guard) must strip a shebang argument, so pipx
+    `#!/.../python -E` launchers resolve instead of silently reverting to python3."""
+    skill = (Path(__file__).resolve().parent.parent / "graphify" / "skill.md").read_text()
+    # Both sites keep only the leading word of the shebang.
+    assert skill.count('_SHEBANG="${_SHEBANG%% *}"') >= 1, "step-1 probe does not strip shebang argument"
+    assert 'PYTHON="${PYTHON%% *}"' in skill, "interpreter guard does not strip shebang argument"
