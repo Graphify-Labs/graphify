@@ -17,6 +17,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: a PHP `use` import written with a leading-backslash / fully-qualified prefix now resolves to its target definition instead of being dropped (#2661, thanks @ousamabenyounes).
 - Fix: an unresolved local JS/TS import (to a file absent from the scan) now emits a stable, portable `ref` target id instead of leaking a per-checkout absolute-path slug (#2457, thanks @rohit-jsfreaky).
 - Fix: `graphify benchmark` no longer crashes on a node whose label is `None` (#2674, thanks @Arthuro0103).
+- Fix: a cross-file INFERRED `uses` edge is now attributed to the symbol that actually references the import — a module-level function is a valid source, and a co-located class that never touches the import gets no edge (#2652, thanks @larya-dot-eu); the edge is anchored at the real reference line instead of the import statement.
 
 ## 0.9.40 (2026-08-11)
 

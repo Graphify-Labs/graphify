@@ -3379,3 +3379,63 @@ def test_extract_emits_posix_source_file_for_relative_inputs(tmp_path):
     assert {sf for _, sf in carriers} == {
         "src/lib/content.ts", "src/pages/index.astro",
     }
+
+
+def _inferred_uses(result):
+    """(source, target) pairs of every INFERRED cross-file `uses` edge."""
+    return {
+        (e["source"], e["target"])
+        for e in result["edges"]
+        if e.get("relation") == "uses" and e.get("confidence") == "INFERRED"
+    }
+
+
+def test_inferred_uses_edge_attributes_to_the_referencing_symbol(tmp_path):
+    """A cross-file INFERRED `uses` edge binds to the symbol that actually
+    references the import — a function is a valid source and a co-located class
+    that never touches the import gets no edge (#2652)."""
+    (tmp_path / "helpers.py").write_text("class Helper:\n    pass\n", encoding="utf-8")
+    (tmp_path / "api.py").write_text(
+        "from helpers import Helper\n\n\n"
+        "class Request:\n    x: int = 0\n\n\n"
+        "def handler(req):\n    return Helper()\n",
+        encoding="utf-8",
+    )
+
+    result = extract([tmp_path / "api.py", tmp_path / "helpers.py"], cache_root=tmp_path)
+    uses = _inferred_uses(result)
+
+    # handler() references Helper -> it is the source.
+    assert ("api_handler", "helpers_helper") in uses
+    # Request never references Helper -> no false edge from the co-located class.
+    assert ("api_request", "helpers_helper") not in uses
+
+
+def test_inferred_uses_edge_kept_when_the_class_body_references_the_import(tmp_path):
+    """Positive control: a class that genuinely uses the imported symbol still
+    gets its class-level INFERRED `uses` edge (the DigestAuth->Response case)."""
+    (tmp_path / "models.py").write_text("class Response:\n    pass\n", encoding="utf-8")
+    (tmp_path / "auth.py").write_text(
+        "from models import Response\n\n\n"
+        "class DigestAuth:\n    def build(self):\n        return Response()\n",
+        encoding="utf-8",
+    )
+
+    result = extract([tmp_path / "auth.py", tmp_path / "models.py"], cache_root=tmp_path)
+
+    assert ("auth_digestauth", "models_response") in _inferred_uses(result)
+
+
+def test_inferred_uses_edge_follows_an_import_alias(tmp_path):
+    """`from helpers import Helper as H` attributes via the local alias `H`, so a
+    body that only ever names `H` still resolves to the imported target (#2652)."""
+    (tmp_path / "helpers.py").write_text("class Helper:\n    pass\n", encoding="utf-8")
+    (tmp_path / "api.py").write_text(
+        "from helpers import Helper as H\n\n\n"
+        "def handler(req):\n    return H()\n",
+        encoding="utf-8",
+    )
+
+    result = extract([tmp_path / "api.py", tmp_path / "helpers.py"], cache_root=tmp_path)
+
+    assert ("api_handler", "helpers_helper") in _inferred_uses(result)
