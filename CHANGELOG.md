@@ -4,6 +4,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.40 (unreleased)
 
+- Fix: full rebuilds now refuse to overwrite a larger graph when an extractor failed for a rebuilt source, instead of treating that source's lost nodes as an expected symbol deletion (#2660).
 - Fix: the 0.9.37 partial-parse warning no longer fires on valid TypeScript/TSX (#2610, #2599, thanks @Sid-AutoWisdom and @atlasplatformu-ai). tree-sitter-typescript sets an error flag on tiny fully-recovered constructs (a `&` in a JSX string attribute, a semicolon-less `in_*` interface member) that still extract completely; the warning now fires only when recovery plausibly cost symbols (the file yielded at most the file node, or an error region spans multiple lines), so the genuine Kotlin one-line-body and Luau cases still warn.
 - Fix: `file_hash()`'s stat fastpath no longer serves a stale digest when a file is rewritten to the same size within one mtime tick (#2612, thanks @rajarshidattapy); a racily-clean guard falls back to a content hash for recently-modified files.
 - Fix: stored-path absoluteness is now detected cross-platform, so a POSIX-absolute `source_file` from a Linux/CI-built graph no longer leaks into node ids on Windows (#2618, thanks @rajarshidattapy).
