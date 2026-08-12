@@ -124,6 +124,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _resolve_js_import_target,
     _resolve_js_module_path,
     _resolve_lua_import_target,
+    _probe_python_module_candidate,
     _resolve_python_module_path,
     _resolve_tsconfig_alias,
     _resolve_workspace_import,
@@ -350,8 +351,20 @@ def _import_python(node, source: bytes, file_nid: str, stem: str, edges: list, s
                 base = Path(str_path).parent
                 for _ in range(dots - 1):
                     base = base.parent
-                rel = (module_name.replace(".", "/") + ".py") if module_name else "__init__.py"
-                target_path = base / rel
+                # A relative import can name a subpackage (a directory with an
+                # __init__.py), not a module file. Probing the candidate on disk
+                # (mirroring the companion `imports` edge's
+                # _resolve_python_module_path) resolves `graphs` -> graphs/__init__.py
+                # instead of a nonexistent graphs.py: without it the target keeps an
+                # absolute-path-derived slug that the target_file stamp below can't
+                # heal, so it dangles per-checkout (#2455).
+                candidate = base / module_name.replace(".", "/") if module_name else base
+                resolved = _probe_python_module_candidate(candidate)
+                if resolved is not None:
+                    target_path = resolved
+                else:
+                    rel = (module_name.replace(".", "/") + ".py") if module_name else "__init__.py"
+                    target_path = base / rel
                 tgt_nid = _make_id(str(target_path))
             else:
                 tgt_nid = _make_id(raw)

@@ -16,6 +16,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: `query` no longer prints the truncation banner when no nodes were actually cut (only trailing edges overflowed the budget) (#2601, thanks @ousamabenyounes); a genuine node truncation still warns.
 - Fix: a PHP `use` import written with a leading-backslash / fully-qualified prefix now resolves to its target definition instead of being dropped (#2661, thanks @ousamabenyounes).
 - Fix: an unresolved local JS/TS import (to a file absent from the scan) now emits a stable, portable `ref` target id instead of leaking a per-checkout absolute-path slug (#2457, thanks @rohit-jsfreaky).
+- Fix: a Python relative import of a sibling subpackage (`from ...graphs import x`, where `graphs/` is a package) now resolves its `imports_from` edge to the package's `__init__.py` file node, matching the companion `imports` edge, instead of leaking a per-checkout absolute-path slug for a nonexistent `graphs.py` (#2455, thanks @vanjos).
 - Fix: `graphify benchmark` no longer crashes on a node whose label is `None` (#2674, thanks @Arthuro0103).
 
 ## 0.9.40 (2026-08-11)

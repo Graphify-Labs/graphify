@@ -60,6 +60,42 @@ def test_ordinary_relative_import_still_resolves(tmp_path: Path):
     assert _has_edge(result, source_file, target_symbol, "imports")
 
 
+def test_relative_subpackage_import_from_targets_package_init(tmp_path: Path):
+    # `from ...graphs import build_graph` where `graphs/` is a package (a dir
+    # with __init__.py, not a graphs.py module). The imports_from edge must
+    # target the package's __init__.py file node, matching the companion
+    # `imports` edge — not an absolute-scan-path slug for a nonexistent
+    # graphs.py that dangles per-checkout (#2455).
+    init = _write(tmp_path / "src/mypkg/__init__.py", "")
+    api_init = _write(tmp_path / "src/mypkg/api/__init__.py", "")
+    routes_init = _write(tmp_path / "src/mypkg/api/routes/__init__.py", "")
+    graphs_init = _write(
+        tmp_path / "src/mypkg/graphs/__init__.py",
+        "def build_graph():\n    return {}\n",
+    )
+    health = _write(
+        tmp_path / "src/mypkg/api/routes/health.py",
+        "from ...graphs import build_graph\n",
+    )
+
+    result = extract(
+        [init, api_init, routes_init, graphs_init, health], cache_root=tmp_path
+    )
+
+    health_file = _node_id(result, "health.py", "src/mypkg/api/routes/health.py")
+    graphs_pkg = _node_id(result, "__init__.py", "src/mypkg/graphs/__init__.py")
+
+    assert _has_edge(result, health_file, graphs_pkg, "imports_from")
+    # No imports_from edge out of health may carry an unresolved absolute-path
+    # slug (the pre-fix `<scan>_src_mypkg_graphs_py` target).
+    health_targets = [
+        e["target"]
+        for e in result["edges"]
+        if e["source"] == health_file and e["relation"] == "imports_from"
+    ]
+    assert all(t.endswith("graphs_init") for t in health_targets), health_targets
+
+
 def test_python_package_reexport_resolves_import_and_call_to_origin_symbol(tmp_path: Path):
     origin = _write(tmp_path / "pkg/foo.py", "def Foo():\n    return 1\n")
     barrel = _write(tmp_path / "pkg/__init__.py", "from .foo import Foo as PublicFoo\n")
