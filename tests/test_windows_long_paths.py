@@ -237,3 +237,60 @@ def test_deep_python_path_full_extraction(tmp_path: Path) -> None:
             assert "\\\\?\\" not in read_text(cache_file, encoding="utf-8")
     finally:
         _remove_tree(root)
+
+
+def test_static_js_import_existence_check_uses_filesystem_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """0.9.41's local-import guard must not call ``Path.is_file`` directly."""
+    import graphify.extract as extract_module
+
+    class _Node:
+        def __init__(
+            self,
+            node_type: str,
+            *,
+            start: int = 0,
+            end: int = 0,
+            children: tuple["_Node", ...] = (),
+        ) -> None:
+            self.type = node_type
+            self.start_byte = start
+            self.end_byte = end
+            self.start_point = (0, 0)
+            self.children = list(children)
+
+        def child_by_field_name(self, _name: str) -> None:
+            return None
+
+    source = b"import './dep.js'"
+    string_start = source.index(b"'")
+    string_node = _Node("string", start=string_start, end=len(source))
+    import_node = _Node("import_statement", children=(string_node,))
+    target = Path(r"C:\very\deep\dep.js")
+    calls: list[Path] = []
+
+    monkeypatch.setattr(
+        extract_module,
+        "_resolve_js_import_target",
+        lambda _raw, _source: ("dep_file", target),
+    )
+    monkeypatch.setattr(
+        extract_module,
+        "_path_is_file",
+        lambda path: calls.append(Path(path)) or True,
+    )
+
+    edges: list[dict] = []
+    extract_module._import_js(
+        import_node,
+        source,
+        "main_file",
+        "main",
+        edges,
+        "main.js",
+    )
+
+    assert calls == [target]
+    assert edges[0]["target"] == "dep_file"
+    assert edges[0]["target_file"] == str(target)

@@ -47,3 +47,29 @@ def test_hashing_still_works_and_stabilizes(tmp_path):
     assert stat_and_hash is not None
     assert stat_and_hash[0] == str(source)
     assert stat_and_hash[2] == first
+
+
+def test_cache_relative_source_probe_uses_filesystem_boundary(tmp_path, monkeypatch):
+    """0.9.41's CWD-relative cache repair must not bypass long-path I/O."""
+    import graphify.cache as cache
+
+    project = tmp_path / "project"
+    root = project / "src"
+    source = root / "module.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("x = 1\n", encoding="utf-8")
+    monkeypatch.chdir(project)
+
+    calls: list[Path] = []
+
+    def _exists(path: str | Path) -> bool:
+        calls.append(Path(path))
+        return True
+
+    monkeypatch.setattr(cache, "_path_exists", _exists)
+    payload = {"nodes": [{"id": "n", "source_file": "src/module.py"}]}
+
+    cache._relativize_source_files_in(payload, root)
+
+    assert calls == [source]
+    assert payload["nodes"][0]["source_file"] == "module.py"
