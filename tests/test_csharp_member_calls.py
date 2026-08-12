@@ -776,3 +776,101 @@ def test_struct_primary_constructor_parameter_emits_references_edge(tmp_path):
     idep = _find(r, "IDep", "idep")
     assert (holder, idep) in _refs(r), \
         "a struct primary-constructor parameter type must produce a references edge"
+
+
+# --- #2624: explicit type arguments at the call site -------------------------
+# `X.M<T>(...)` spells a type-argument list, which tree-sitter wraps in a
+# `generic_name`. Declarations are stored bare (`.Fetch()`, `Bag`), so reading the
+# node verbatim gave `Fetch<Payload>` and the lookup never matched — the edge
+# silently vanished. Type inference at the call site (`Registry.Pick(item)`) was
+# unaffected, which is why only the explicit form broke.
+
+_GENERIC = (
+    "public class Payload { public int Size; }\n"
+    "public static class Registry {\n"
+    "    public static bool Fetch<TItem>(string key) { return true; }\n"
+    "    public static bool Has(string key) { return true; }\n"
+    "}\n"
+    "public class Box { public bool Read<TItem>(string key) { return true; } }\n"
+    "public static class Bag<TItem> { public static bool Make(string key) { return true; } }\n"
+)
+
+
+def test_explicit_type_argument_on_type_receiver_call(tmp_path):
+    """`Type.M<T>()` binds like `Type.M()` — type arguments are not part of the
+    method name, and the non-generic control must keep working (#2624)."""
+    calls, r = _calls(tmp_path, {"S.cs": _GENERIC + (
+        "public class Consumer {\n"
+        "    public bool A() { return Registry.Fetch<Payload>(\"k\"); }\n"
+        "    public bool C() { return Registry.Has(\"k\"); }\n"
+        "}\n"
+    )})
+    a, c = _find(r, ".A()", "consumer"), _find(r, ".C()", "consumer")
+    assert (a, _find(r, ".Fetch()", "registry")) in calls, \
+        "explicit type arguments must not drop the calls edge"
+    assert (c, _find(r, ".Has()", "registry")) in calls, "control: non-generic call"
+
+
+def test_explicit_type_argument_on_typed_local_receiver(tmp_path):
+    """A receiver typed through the method-scoped table still resolves when the
+    call carries explicit type arguments (#2624)."""
+    calls, r = _calls(tmp_path, {"S.cs": _GENERIC + (
+        "public class Consumer {\n"
+        "    public bool B() { Box box = new Box(); return box.Read<Payload>(\"k\"); }\n"
+        "}\n"
+    )})
+    b = _find(r, ".B()", "consumer")
+    assert (b, _find(r, ".Read()", "box")) in calls
+
+
+def test_constructed_generic_type_as_receiver(tmp_path):
+    """`Bag<Payload>.Make()` — the RECEIVER carries the type arguments. Type nodes
+    are stored under the bare name, so it must bind like any `Type.M()` (#2624).
+
+    Split across two files on purpose: in a single file the callee resolves by a
+    plain in-file label match and never reaches receiver typing, so a same-file
+    version of this test passes even with the receiver dropped.
+    """
+    calls, r = _calls(tmp_path, {
+        "Lib.cs": _GENERIC,
+        "Consumer.cs": (
+            "public class Consumer {\n"
+            "    public bool E() { return Bag<Payload>.Make(\"k\"); }\n"
+            "}\n"
+        ),
+    })
+    e = _find(r, ".E()", "consumer")
+    assert (e, _find(r, ".Make()", "bag")) in calls
+
+
+def test_unqualified_generic_call_and_this_receiver(tmp_path):
+    """`Local<T>()` and `this.Local<T>()` — the same defect reached calls with no
+    receiver at all, which fell through to the raw-text scan and kept the `<...>`."""
+    calls, r = _calls(tmp_path, {"S.cs": _GENERIC + (
+        "public class Consumer {\n"
+        "    public bool Local<TItem>(string k) { return true; }\n"
+        "    public bool F() { return Local<Payload>(\"k\"); }\n"
+        "    public bool H() { return this.Local<Payload>(\"k\"); }\n"
+        "}\n"
+    )})
+    local = _find(r, ".Local()", "consumer")
+    assert (_find(r, ".F()", "consumer"), local) in calls
+    assert (_find(r, ".H()", "consumer"), local) in calls
+
+
+def test_type_arguments_do_not_bypass_receiver_typing(tmp_path):
+    """Stripping the type-argument list must not weaken resolution: a generic call
+    on a typed field still binds to that field's type, never a same-named method on
+    an unrelated class (the #1609 guard, now exercised through a generic call)."""
+    calls, r = _calls(tmp_path, {"S.cs": (
+        "public class Server { public bool Save<T>() => true; }\n"
+        "public class Cache  { public bool Save<T>() => false; }\n"
+        "public class Repo {\n"
+        "    private Server _server = new Server();\n"
+        "    public bool Commit() { return _server.Save<int>(); }\n"
+        "}\n"
+    )})
+    commit = _find(r, ".Commit()", "commit")
+    assert (commit, _find(r, ".Save()", "server")) in calls
+    assert (commit, _find(r, ".Save()", "cache")) not in calls, \
+        "a generic call must not mis-bind to an unrelated same-named method"

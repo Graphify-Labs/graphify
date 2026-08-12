@@ -2594,6 +2594,37 @@ def _has_multiline_error(root) -> bool:
     return False
 
 
+def _csharp_name_without_type_args(node, source: bytes) -> str | None:
+    """The bare name of a C# call-site name node, with any type-argument list off.
+
+    A call site may spell explicit type arguments -- ``Registry.Fetch<Payload>(...)``,
+    ``Bag<Payload>.Make(...)``, ``Local<Payload>(...)`` -- and tree-sitter wraps those
+    in a ``generic_name``. Declarations store the bare name (``.Fetch()``, ``Bag``),
+    so reading the node verbatim yields ``Fetch<Payload>``, which never matches its
+    declaration and silently drops the ``calls`` edge (#2624). Type inference at the
+    call site was unaffected, which is why only the explicit form broke.
+
+    The grammar exposes no ``name`` field on ``generic_name``, so fall back to the
+    first ``identifier`` child -- the same order ``_csharp_collect_type_refs`` uses.
+    """
+    if node is None:
+        return None
+    if node.type != "generic_name":
+        return _read_text(node, source)
+    name_child = node.child_by_field_name("name")
+    if name_child is None:
+        for sub in node.children:
+            if sub.type == "identifier":
+                name_child = sub
+                break
+    if name_child is not None:
+        return _read_text(name_child, source)
+    # A qualified generic (`Demo.Bag<Payload>`) has no bare `identifier` child. Keep
+    # the text and drop only the type-argument list, so such a call is still recorded
+    # under the name it had before rather than disappearing.
+    return _read_text(node, source).split("<", 1)[0] or None
+
+
 def _read_csharp_type_name(node, source: bytes) -> tuple[str, bool, str] | None:
     """Resolve a C# type name, whether it was qualified, and its qualifier prefix."""
     if node is None:
@@ -5095,10 +5126,16 @@ def _extract_generic(
                     mname = fn_node.child_by_field_name("name")
                     recv = fn_node.child_by_field_name("expression")
                     if mname is not None:
-                        callee_name = _read_text(mname, source)
+                        # `name` is a generic_name when the call site spells explicit
+                        # type arguments (`recv.Read<Payload>()`); the declaration is
+                        # stored bare, so strip the type-argument list (#2624).
+                        callee_name = _csharp_name_without_type_args(mname, source)
                         is_member_call = True
-                        if recv is not None and recv.type == "identifier":
-                            member_receiver = _read_text(recv, source)
+                        if recv is not None and recv.type in ("identifier", "generic_name"):
+                            # generic_name: a constructed generic type as the receiver
+                            # (`Bag<Payload>.Make()`). Type nodes are stored under the
+                            # bare name, so this binds like any `Type.M()` (#2624).
+                            member_receiver = _csharp_name_without_type_args(recv, source)
                         elif recv is not None and recv.type in ("this", "this_expression"):
                             member_receiver = "this"
                         elif recv is not None and recv.type in ("base", "base_expression"):
@@ -5119,8 +5156,11 @@ def _extract_generic(
                                 and fname.type == "identifier"
                             ):
                                 member_receiver = _read_text(fname, source)
-                elif fn_node is not None and fn_node.type == "identifier":
-                    callee_name = _read_text(fn_node, source)
+                elif fn_node is not None and fn_node.type in ("identifier", "generic_name"):
+                    # generic_name: an unqualified call carrying explicit type
+                    # arguments (`Local<Payload>()`), which otherwise fell through to
+                    # the raw-text fallback below and kept the `<...>` (#2624).
+                    callee_name = _csharp_name_without_type_args(fn_node, source)
                 else:
                     # Fallback: original name-field / first-named-child scan.
                     name_node = node.child_by_field_name("name")
