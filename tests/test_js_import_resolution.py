@@ -1017,6 +1017,29 @@ def test_tsconfig_alias_none_exist_creates_no_false_edge(tmp_path: Path):
     assert not _has_edge(result, "src/routes/page.ts", "src/lib/utils.ts")
 
 
+def test_unresolved_relative_import_uses_stable_ref_target(tmp_path: Path):
+    """A missing local module must not leak the checkout path into graph IDs (#2457)."""
+    importer = _write(
+        tmp_path / "src/consumer.ts",
+        "import { getFoo } from './generated/api'\n"
+        "export function run(): number { return getFoo() }\n",
+    )
+
+    result = _extract_for([importer], tmp_path)
+    source = _file_node_id(Path("src/consumer.ts"))
+    imports_from = [
+        edge["target"]
+        for edge in result["edges"]
+        if edge["source"] == source and edge["relation"] == "imports_from"
+    ]
+
+    assert imports_from == [_make_id("ref", "./generated/api")]
+    assert not any(
+        edge["source"] == source and edge["relation"] == "imports"
+        for edge in result["edges"]
+    )
+
+
 # ── #927: wildcard tsconfig path patterns ────────────────────────────────────
 
 
