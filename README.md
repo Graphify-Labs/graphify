@@ -842,6 +842,16 @@ uv run pytest tests/ -q -k "python"    # filter by name
 
 > macOS note: the test suite includes both `sample.f90` and `sample.F90` fixtures. These collide on case-insensitive HFS+ / APFS file systems. Run on Linux or in a Docker container if you need to test both Fortran variants simultaneously.
 
+> Windows note: the native Windows test suite exercises symbolic links, long
+> paths, POSIX permissions, path separators, and UTF-8 filesystem behavior.
+> Enable Windows Developer Mode to allow unprivileged symbolic-link creation, or
+> run the tests from an elevated shell. Enable the Windows `LongPathsEnabled`
+> policy before relying on long-path tests. Restart affected shells or applications
+> after changing either setting. For exact parity with the blocking GitHub Actions
+> test matrix, run the suite in WSL or Linux; CI currently runs on Ubuntu with
+> Python 3.10 and 3.12. Pyright is available as a local advisory check, but it is
+> not currently a blocking CI job.
+
 ### Git workflow
 
 - Active development happens on the `v8` branch.
