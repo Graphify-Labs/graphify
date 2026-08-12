@@ -286,3 +286,44 @@ def test_label_cli_tokens_prints_run_total(tmp_path, monkeypatch, capsys):
     err = capsys.readouterr().err
     assert "label run total: 100 in · 42 out" in err
     assert "~$0.0009 @ claude" in err
+
+
+def test_label_cli_env_tokens_prints_run_total(tmp_path, monkeypatch, capsys):
+    """GRAPHIFY_LLM_TOKENS=1 with NO --tokens flag must still print the run
+    total: the per-call hook reads the env var, so gating the total on the CLI
+    flags alone would silently drop it on the env-only path."""
+    import graphify.__main__ as cli
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    graph = {
+        "directed": False,
+        "multigraph": False,
+        "nodes": [{"id": "n1", "label": "OrderService", "community": 0}],
+        "links": [],
+    }
+    (out / "graph.json").write_text(json.dumps(graph), encoding="utf-8")
+
+    def fake_generate(G, communities, *, backend=None, model=None, gods=None,
+                      quiet=False, max_concurrency=4, batch_size=100, usage_out=None):
+        if usage_out is not None:
+            usage_out["input"] = 100
+            usage_out["output"] = 42
+        return {0: "Orders"}, "llm"
+
+    monkeypatch.setattr("graphify.llm.generate_community_labels", fake_generate)
+    monkeypatch.setattr("graphify.export.to_html", lambda *args, **kwargs: None)
+    monkeypatch.setattr(llm, "_LLM_TOKENS", False)
+    monkeypatch.setattr(llm, "_LLM_VERBOSE", False)
+    monkeypatch.setenv("GRAPHIFY_LLM_TOKENS", "1")
+    monkeypatch.delenv("GRAPHIFY_LLM_VERBOSE", raising=False)
+    monkeypatch.setattr(
+        sys, "argv",
+        ["graphify", "label", str(tmp_path), "--backend", "claude", "--no-viz"],
+    )
+
+    cli.main()
+
+    err = capsys.readouterr().err
+    assert "label run total: 100 in · 42 out" in err
+    assert "~$0.0009 @ claude" in err

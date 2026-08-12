@@ -2006,7 +2006,12 @@ def dispatch_command(cmd: str) -> None:
                 if v and v != f"Community {cid}" and v != str(cid)
             })
         stages.mark("label")
-        if (co_verbose or co_tokens) and (label_token_usage["input"] or label_token_usage["output"]):
+        # Gate on the EFFECTIVE tracing state, not just the CLI flags: with
+        # GRAPHIFY_LLM_VERBOSE/GRAPHIFY_LLM_TOKENS set in the env but no flag,
+        # every per-call line prints yet this run total used to be skipped.
+        # The flags imply the effective state via set_llm_verbose/set_llm_tokens.
+        from graphify.llm import _llm_tokens as _tracing_on_tokens, _llm_verbose as _tracing_on_verbose
+        if (_tracing_on_verbose() or _tracing_on_tokens()) and (label_token_usage["input"] or label_token_usage["output"]):
             # Run-level token accountability: per-call numbers were already
             # traced by llm.py's verbose/tokens hook; this is the spendable
             # total, with a cost estimate when the backend's pricing is known.
