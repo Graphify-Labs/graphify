@@ -17,6 +17,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: a PHP `use` import written with a leading-backslash / fully-qualified prefix now resolves to its target definition instead of being dropped (#2661, thanks @ousamabenyounes).
 - Fix: an unresolved local JS/TS import (to a file absent from the scan) now emits a stable, portable `ref` target id instead of leaking a per-checkout absolute-path slug (#2457, thanks @rohit-jsfreaky).
 - Fix: `graphify benchmark` no longer crashes on a node whose label is `None` (#2674, thanks @Arthuro0103).
+- Fix: a JS/TS `for...of` / `for...in` loop binding (`for (const entry of xs)`) used as a value — e.g. in an object-shorthand argument `push({ entry })` — no longer fabricates an `indirect_call` edge to an unrelated same-named module callable (#2606, thanks @ousamabenyounes); the loop binding is now shadowed like parameters and `const`/`let` declarators, completing the arrow-parameter and catch-binding shadow fixes.
 
 ## 0.9.40 (2026-08-11)
 
