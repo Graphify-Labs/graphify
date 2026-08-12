@@ -143,29 +143,43 @@ def _parse_apm(text: str) -> dict | None:
 
 
 def _parse_apm_fallback(text: str) -> dict | None:
-    """Minimal line parser for apm.yml when PyYAML is unavailable: a top-level
-    ``name:`` plus a simple ``dependencies:`` block (list items or a name map)."""
+    """Minimal line parser for apm.yml when PyYAML is unavailable."""
     name = None
+    version = None
     deps: list[str] = []
     in_deps = False
+
     for line in text.splitlines():
         if not in_deps:
             m = re.match(r'^name:\s*["\']?([^"\'\s#]+)', line)
             if m:
                 name = m.group(1)
                 continue
-        if re.match(r'^dependencies:\s*$', line):
-            in_deps = True
-            continue
-        if in_deps:
-            dm = (re.match(r'^\s*-\s*["\']?([^"\'\s#:]+)', line)
-                  or re.match(r'^\s{2,}([A-Za-z0-9._/@-]+)\s*:', line))
+
+            m = re.match(r'^version:\s*["\']?([^"\'\s#]+)', line)
+            if m:
+                version = m.group(1)
+                continue
+
+            if re.match(r'^dependencies:\s*$', line):
+                in_deps = True
+                continue
+
+        else:
+            dm = (
+                re.match(r'^\s*-\s*["\']?([^"\'\s#:]+)', line)
+                or re.match(r'^\s{2,}([A-Za-z0-9.*/@-]+)\s*:', line)
+            )
             if dm:
                 deps.append(dm.group(1))
-            elif re.match(r'^\S', line):  # next top-level key ends the block
+            elif re.match(r'^\S', line):
                 in_deps = False
-    return {"name": name, "version": None, "deps": deps} if name else None
 
+    return {
+        "name": name,
+        "version": version,
+        "deps": deps,
+    } if name else None
 
 def _pep508_name(spec: str) -> str:
     """`requests>=2.0` -> `requests`; `pkg[extra]==1; python_version<'3.9'` -> `pkg`."""
