@@ -232,6 +232,7 @@ for example `graphify claude install --project` or `graphify codex install --pro
 | Cursor | `graphify cursor install` |
 | Devin CLI | `graphify devin install` |
 | Google Antigravity | `graphify antigravity install` |
+| Mistral Vibe | `graphify install --platform vibe` |
 
 Codex users also need `multi_agent = true` under `[features]` in `~/.codex/config.toml` for parallel extraction. CodeBuddy uses the same Agent tool and PreToolUse hook mechanism as Claude Code. Factory Droid uses the `Task` tool for parallel subagent dispatch. OpenClaw and Aider use sequential extraction (parallel agent support is still early on those platforms). Trae uses the Agent tool for parallel subagent dispatch and does **not** support `PreToolUse` hooks, so AGENTS.md is the always-on mechanism.
 
@@ -301,6 +302,7 @@ Run this once in your project after building a graph:
 | Pi coding agent | `graphify pi install` |
 | Devin CLI | `graphify devin install` |
 | Google Antigravity | `graphify antigravity install` |
+| Mistral Vibe | `graphify vibe install` |
 
 This writes a small config file that tells your assistant to consult the knowledge graph for codebase questions, preferring scoped queries like `graphify query "<question>"` over reading the full report or grepping raw files.
 
@@ -718,6 +720,10 @@ graphify devin install             # skill file + .windsurf/rules/graphify.md (D
 graphify devin uninstall
 graphify antigravity install       # .agents/rules + .agents/workflows (Google Antigravity)
 graphify antigravity uninstall
+graphify vibe install              # ~/.vibe/skills + AGENTS.md + hooks.toml pre_tool guards (Mistral Vibe)
+graphify vibe install --project    # project-scoped: .vibe/skills + AGENTS.md + .vibe/hooks.toml
+graphify vibe install --strict     # block first raw read per session (matches claude --strict)
+graphify vibe uninstall
 
 graphify extract ./docs                        # headless LLM extraction for CI (no IDE needed)
 graphify extract ./docs --backend gemini       # explicit backend: gemini, kimi, claude, openai, deepseek, ollama, bedrock, or claude-cli

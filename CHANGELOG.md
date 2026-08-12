@@ -17,6 +17,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: a PHP `use` import written with a leading-backslash / fully-qualified prefix now resolves to its target definition instead of being dropped (#2661, thanks @ousamabenyounes).
 - Fix: an unresolved local JS/TS import (to a file absent from the scan) now emits a stable, portable `ref` target id instead of leaking a per-checkout absolute-path slug (#2457, thanks @rohit-jsfreaky).
 - Fix: `graphify benchmark` no longer crashes on a node whose label is `None` (#2674, thanks @Arthuro0103).
+- Feat: `graphify vibe install` adds full-parity Mistral Vibe (mistralai/mistral-vibe) support — skill file with `user-invocable: true` frontmatter (exposes `/graphify` as a native slash command in vibe's autocomplete), `AGENTS.md` always-on section, and two `pre_tool` hooks in `.vibe/hooks.toml` (matchers `grep` and `read_file` — vibe's snake-cased tool names per `vibe/core/tools/base.py:get_name`) that nudge toward `graphify query` for search/read operations. Global scope honors `VIBE_HOME`, hook ownership is `name`-based (never touches user-authored hooks that happen to shell out to graphify), and `hooks.toml` merges preserve hand-authored comments via `tomlkit`. Verified end-to-end against vibe 2.24.0.
 
 ## 0.9.40 (2026-08-11)
 

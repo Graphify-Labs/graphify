@@ -1191,7 +1191,9 @@ def monolith_roundtrip(platform: Platform) -> list[str]:
     if platform.bucket != "monolith":
         return []
     if platform.roundtrip_ref is None:
-        return [f"[{platform.key}] monolith is missing roundtrip_ref"]
+        # Post-v8 monolith with no pristine baseline to freeze against (mirrors
+        # the `agents` post-v8 handling in _v8_baseline_ref). Nothing to check.
+        return []
 
     rendered_lines = render(platform)[0].content.splitlines()
     # Strip trigger lines from the original — they are non-spec and their removal

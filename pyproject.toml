@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "graphifyy"
 version = "0.9.41"
-description = "AI coding assistant skill (Claude Code, CodeBuddy, Codex, OpenCode, Kilo Code, Cursor, Gemini CLI, Aider, OpenClaw, Factory Droid, Trae, Hermes, Kiro, Pi, Devin CLI, Google Antigravity) - turn any folder of code, docs, papers, images, or videos into a queryable knowledge graph"
+description = "AI coding assistant skill (Claude Code, CodeBuddy, Codex, OpenCode, Kilo Code, Cursor, Gemini CLI, Aider, OpenClaw, Factory Droid, Trae, Hermes, Kiro, Pi, Devin CLI, Google Antigravity, Mistral Vibe) - turn any folder of code, docs, papers, images, or videos into a queryable knowledge graph"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE", "LICENSE-MIT", "NOTICE"]
@@ -41,6 +41,12 @@ dependencies = [
     "tree-sitter-fortran>=0.6,<0.8",
     "tree-sitter-bash>=0.23,<0.27",
     "tree-sitter-json>=0.23,<0.26",
+    # tomlkit is a comment/format-preserving TOML round-tripper. `graphify vibe
+    # install` merges graphify pre_tool entries into the user's .vibe/hooks.toml
+    # (which may have hand-authored comments and other hooks), and stdlib alone
+    # cannot do this: tomllib is read-only, and it's only in 3.11+ while
+    # requires-python is 3.10. Pure Python, no C ext, tiny footprint.
+    "tomlkit>=0.13",
 ]
 
 [project.urls]
@@ -125,7 +131,7 @@ include-package-data = false
 # under graphify/skills/<host>/references/, and the always-on injection blocks
 # under graphify/always_on/. There is no graphify/skills/<host>/SKILL.md in the
 # repo, so no SKILL.md glob is needed here.
-graphify = ["skill.md", "skill-codex.md", "skill-opencode.md", "skill-kilo.md", "command-kilo.md", "skill-aider.md", "skill-amp.md", "skill-agents.md", "skill-copilot.md", "skill-claw.md", "skill-windows.md", "skill-droid.md", "skill-trae.md", "skill-kiro.md", "skill-vscode.md", "skill-pi.md", "skill-devin.md", "skills/*/references/*.md", "always_on/*.md"]
+graphify = ["skill.md", "skill-codex.md", "skill-opencode.md", "skill-kilo.md", "command-kilo.md", "skill-aider.md", "skill-amp.md", "skill-agents.md", "skill-copilot.md", "skill-claw.md", "skill-windows.md", "skill-droid.md", "skill-trae.md", "skill-kiro.md", "skill-vscode.md", "skill-pi.md", "skill-devin.md", "skill-vibe.md", "skills/*/references/*.md", "always_on/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
