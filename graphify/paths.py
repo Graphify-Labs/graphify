@@ -76,7 +76,15 @@ def _atomic_replace(path: "str | Path", write_fn) -> None:
         try:
             os.unlink(tmp)
         except OSError:
-            pass
+            # The temp was chmod'd to match the destination above, so when the
+            # destination is read-only the temp is too — and Windows refuses to
+            # unlink a read-only file. Clear the bit and retry, or every failed
+            # write leaks a `.graph.json.*.tmp` into the output directory.
+            try:
+                os.chmod(tmp, stat.S_IWRITE)
+                os.unlink(tmp)
+            except OSError:
+                pass
         raise
 
 
