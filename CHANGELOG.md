@@ -2,6 +2,17 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## 0.9.20 (2026-08-12)
+
+- Feat: add `graphify export memoryguard-metadata ROOT [PATH ...]` for
+  MemoryGuard CodeGraph V2. The `memoryguard-graphify-metadata-v1` export is
+  body-free and repository-relative, includes content hashes, structural
+  symbols/edges, source role/provenance, source maps, and bounded diagnostics,
+  and rejects source bodies, absolute paths, credentials, and unsafe extractor
+  text. `--incremental` and `--no-parallel` support controlled ingestion.
+- Test: add focused export coverage for body-free output, provenance, CLI help,
+  selected paths, and a complete repository smoke export.
+
 ## 0.9.19 (2026-07-18)
 
 - Feat: opt-in strict PreToolUse hook that actually makes agents use the graph. The installed Claude Code hook has always *nudged* the agent to run `graphify query` before reading raw files, but a nudge is advisory `additionalContext` the model routinely walks past mid-task. `graphify install --project --strict` (or `graphify claude install --strict`) now installs a hook that *blocks* the first raw source read of a session (`permissionDecision: "deny"`) with a redirect to `graphify query`, then downgrades to the soft nudge — so it fires at most once per session and can never strand the agent (the next read proceeds even if no query ran, or if `graphify query` itself failed). Running any `graphify query`/`explain`/`path` refreshes a short-lived "recently oriented" stamp that suppresses the block. Strict mode is Claude Code only (Bash-grep and Glob stay nudge-only; Gemini/Codex/OpenCode can't hard-block and are unchanged); `GRAPHIFY_HOOK_STRICT=1`/`0` toggles it at runtime without a reinstall. Default installs are unchanged (soft nudge).

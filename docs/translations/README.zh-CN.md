@@ -31,6 +31,20 @@ graphify 分两轮执行。第一轮是确定性的 AST 提取，对代码文件
 
 每条关系都会被标记为 `EXTRACTED`（直接在源材料中找到）、`INFERRED`（合理推断，并附带置信度分数）或 `AMBIGUOUS`（有歧义，需要复核）。所以你始终知道哪些是实际发现的，哪些是模型猜出来的。
 
+## MemoryGuard 元数据导出
+
+Graphify 也可以为 [MemoryGuard](https://github.com/irisxc4/memoryguard) 的
+CodeGraph V2 导出完整但不含正文的结构投影：
+
+```bash
+graphify export memoryguard-metadata /path/to/repository
+```
+
+`memoryguard-graphify-metadata-v1` 只包含仓库相对路径、内容哈希、结构化
+符号和边、source role/provenance、source map 以及有界诊断信息；不会导出
+源码正文、绝对路径、凭据或任意提取器文本。根目录后可继续指定文件做范围
+受限导出，也可使用 `--incremental` 和 `--no-parallel` 接入受控导入流水线。
+
 ## 安装
 
 **要求：** Python 3.10+，并且使用以下平台之一：[Claude Code](https://claude.ai/code)、[CodeBuddy](https://codebuddy.ai)、[Codex](https://openai.com/codex)、[OpenCode](https://opencode.ai)、[OpenClaw](https://openclaw.ai)、[Factory Droid](https://factory.ai) 或 [Trae](https://trae.ai)

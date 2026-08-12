@@ -106,6 +106,22 @@ What you get out of the box:
 | **Beyond code** | Docs, PDFs, images, and video/audio all map into the same graph |
 | **Local-first** | Code is parsed locally with tree-sitter (no LLM, nothing leaves your machine); only the semantic pass over docs/media calls a backend, and only if you configure one |
 
+### MemoryGuard metadata export
+
+Graphify can export a complete, body-free structural projection for
+[MemoryGuard](https://github.com/irisxc4/memoryguard)'s CodeGraph V2:
+
+```bash
+graphify export memoryguard-metadata /path/to/repository
+```
+
+The `memoryguard-graphify-metadata-v1` payload contains repository-relative
+paths, content hashes, structural symbols and edges, source role/provenance,
+source maps, and bounded diagnostics. It deliberately excludes source bodies,
+absolute paths, credentials, and arbitrary extractor text. Pass selected files
+after the root for a bounded export, or use `--incremental` and
+`--no-parallel` when integrating it into a controlled ingestion pipeline.
+
 ---
 
 ## Benchmarks

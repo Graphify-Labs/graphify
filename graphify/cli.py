@@ -1936,20 +1936,64 @@ def dispatch_command(cmd: str) -> None:
 
     elif cmd == "export":
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
-        if subcmd not in ("html", "callflow-html", "obsidian", "wiki", "svg", "graphml", "neo4j", "falkordb"):
-            print("Usage: graphify export <format>", file=sys.stderr)
-            print("  html      [--graph PATH] [--labels PATH] [--node-limit N] [--no-viz]", file=sys.stderr)
-            print("  callflow-html [GRAPH|DIR] [--graph PATH] [--labels PATH] [--report PATH] [--sections PATH] [--output HTML]", file=sys.stderr)
-            print("            [--lang auto|zh-CN|en] [--max-sections N] [--diagram-scale N]", file=sys.stderr)
-            print("  obsidian  [--graph PATH] [--labels PATH] [--dir PATH]", file=sys.stderr)
-            print("  wiki      [--graph PATH] [--labels PATH]", file=sys.stderr)
-            print("  svg       [--graph PATH] [--labels PATH]", file=sys.stderr)
-            print("  graphml   [--graph PATH]", file=sys.stderr)
-            print("  neo4j     [--graph PATH] [--push URI] [--user U] [--password P]", file=sys.stderr)
-            print("            (or set NEO4J_PASSWORD instead of --password to keep it off argv)", file=sys.stderr)
-            print("  falkordb  [--graph PATH] [--push URI] [--user U] [--password P]", file=sys.stderr)
-            print("            (or set FALKORDB_PASSWORD instead of --password to keep it off argv)", file=sys.stderr)
+        export_help = subcmd in ("-h", "--help", "-?")
+        if export_help or subcmd not in ("html", "callflow-html", "obsidian", "wiki", "svg", "graphml", "neo4j", "falkordb", "memoryguard-metadata"):
+            stream = sys.stdout if export_help else sys.stderr
+            print("Usage: graphify export <format>", file=stream)
+            print("  html      [--graph PATH] [--labels PATH] [--node-limit N] [--no-viz]", file=stream)
+            print("  callflow-html [GRAPH|DIR] [--graph PATH] [--labels PATH] [--report PATH] [--sections PATH] [--output HTML]", file=stream)
+            print("            [--lang auto|zh-CN|en] [--max-sections N] [--diagram-scale N]", file=stream)
+            print("  obsidian  [--graph PATH] [--labels PATH] [--dir PATH]", file=stream)
+            print("  wiki      [--graph PATH] [--labels PATH]", file=stream)
+            print("  svg       [--graph PATH] [--labels PATH]", file=stream)
+            print("  graphml   [--graph PATH]", file=stream)
+            print("  neo4j     [--graph PATH] [--push URI] [--user U] [--password P]", file=stream)
+            print("            (or set NEO4J_PASSWORD instead of --password to keep it off argv)", file=stream)
+            print("  falkordb  [--graph PATH] [--push URI] [--user U] [--password P]", file=stream)
+            print("            (or set FALKORDB_PASSWORD instead of --password to keep it off argv)", file=stream)
+            print("  memoryguard-metadata ROOT [PATH ...] [--incremental] [--no-parallel]", file=stream)
+            print("            emits memoryguard-graphify-metadata-v1 body-free metadata JSON", file=stream)
+            if export_help:
+                return
             sys.exit(1)
+
+        if subcmd == "memoryguard-metadata":
+            from graphify.memoryguard_export import export_repository
+
+            args = sys.argv[3:]
+            if not args or any(value in ("-h", "--help", "-?") for value in args):
+                print("Usage: graphify export memoryguard-metadata ROOT [PATH ...] [--incremental] [--no-parallel]")
+                print("  Emits memoryguard-graphify-metadata-v1 body-free metadata JSON.")
+                print("  PATH values are repository-relative files; omit them for a complete repository export.")
+                if not args:
+                    sys.exit(1)
+                return
+            root = args[0]
+            paths: list[str] = []
+            complete = True
+            parallel = True
+            for value in args[1:]:
+                if value == "--incremental":
+                    complete = False
+                elif value == "--no-parallel":
+                    parallel = False
+                elif value.startswith("-"):
+                    print(f"error: unknown memoryguard-metadata option: {value}", file=sys.stderr)
+                    sys.exit(1)
+                else:
+                    paths.append(value)
+            try:
+                payload = export_repository(
+                    root,
+                    paths=paths or None,
+                    complete=complete,
+                    parallel=parallel,
+                )
+            except Exception as exc:
+                print(f"error: memoryguard metadata export failed: {exc}", file=sys.stderr)
+                sys.exit(1)
+            print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+            return
 
         # Parse shared args
         args = sys.argv[3:]
