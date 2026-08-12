@@ -10,6 +10,11 @@ fi
 # 2. Read shebang from graphify binary (pipx and direct pip installs)
 if [ -z "$PYTHON" ] && [ -n "$GRAPHIFY_BIN" ]; then
     _SHEBANG=$(head -1 "$GRAPHIFY_BIN" | tr -d '#!')
+    # Resolve `/usr/bin/env python` to the interpreter, then strip any argument
+    # (pipx writes `.../python -E`) so a shebang argument is not mistaken for the
+    # path and rejected by the allowlist below (silent python3 fallback, #2629).
+    case "$_SHEBANG" in */env\ *) _SHEBANG="${_SHEBANG#*/env }" ;; esac
+    _SHEBANG="${_SHEBANG%% *}"
     case "$_SHEBANG" in
         *[!a-zA-Z0-9/_.@-]*) ;;
         *) "$_SHEBANG" -c "import graphify" 2>/dev/null && PYTHON="$_SHEBANG" ;;
