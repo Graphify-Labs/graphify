@@ -831,7 +831,16 @@ def _llm_tiebreak(
         if backend not in BACKENDS:
             print(f"[graphify] --dedup-llm: unknown backend {backend!r}, skipping LLM tiebreaker.", flush=True)
             return
-        if not _get_backend_api_key(backend):
+        # Bedrock and CLI-backed providers authenticate outside Graphify's API
+        # key environment-variable path.  Let the shared dispatcher validate
+        # their own credential/runtime requirements instead of silently
+        # skipping the tiebreaker.
+        if not _get_backend_api_key(backend) and backend not in (
+            "bedrock",
+            "claude-cli",
+            "copilot-cli",
+            "copilot-sdk",
+        ):
             env_keys = _format_backend_env_keys(backend)
             print(f"[graphify] --dedup-llm: {env_keys} not set, skipping LLM tiebreaker.", flush=True)
             return

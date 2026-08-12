@@ -2811,7 +2811,7 @@ def dispatch_command(cmd: str) -> None:
         # has an API key set.
         if len(sys.argv) < 3:
             print(
-                "Usage: graphify extract <path> [--backend gemini|kimi|claude|openai|deepseek|ollama] "
+                "Usage: graphify extract <path> [--backend gemini|kimi|claude|openai|deepseek|ollama|bedrock|azure|claude-cli|copilot-sdk|copilot-cli] "
                 "[--model M] [--mode deep] [--out DIR|--output DIR] [--google-workspace] [--no-cluster] "
                 "[--no-gitignore] [--code-only] "
                 "[--max-workers N] [--token-budget N] [--max-concurrency N] "
@@ -3239,7 +3239,8 @@ def dispatch_command(cmd: str) -> None:
                     "error: no LLM API key found (" + "; ".join(reasons) + "). "
                     "Set GEMINI_API_KEY or GOOGLE_API_KEY (gemini), MOONSHOT_API_KEY "
                     "(kimi), ANTHROPIC_API_KEY (claude), OPENAI_API_KEY (openai), "
-                    "DEEPSEEK_API_KEY (deepseek), or pass --backend. A code-only "
+                    "DEEPSEEK_API_KEY (deepseek), or pass --backend (including "
+                    "claude-cli, copilot-sdk, or copilot-cli). A code-only "
                     "corpus needs no key." + hint,
                     file=sys.stderr,
                 )
@@ -3285,6 +3286,35 @@ def dispatch_command(cmd: str) -> None:
                             file=sys.stderr,
                         )
                         sys.exit(1)
+                elif backend == "copilot-cli":
+                    from graphify.llm import _resolve_copilot_cli_command
+                    try:
+                        _resolve_copilot_cli_command()
+                    except RuntimeError as exc:
+                        print(f"error: {exc}", file=sys.stderr)
+                        sys.exit(1)
+                    allow_no_key = True
+                elif backend == "copilot-sdk":
+                    from graphify.llm import (
+                        _env_enabled,
+                        _resolve_copilot_cli_command,
+                        _resolve_copilot_sdk_cli_command,
+                    )
+                    try:
+                        if _env_enabled("GRAPHIFY_COPILOT_SDK_USE_BUNDLED_CLI"):
+                            # Bundled runtime is an explicit opt-in. The SDK
+                            # import itself is lazy; if absent, retain CLI as a
+                            # usable fallback when it is installed.
+                            try:
+                                import copilot as _copilot_sdk  # noqa: F401
+                            except ImportError:
+                                _resolve_copilot_cli_command()
+                        else:
+                            _resolve_copilot_sdk_cli_command()
+                    except RuntimeError as exc:
+                        print(f"error: {exc}", file=sys.stderr)
+                        sys.exit(1)
+                    allow_no_key = True
                 if not allow_no_key:
                     print(
                         f"error: backend '{backend}' requires {_format_backend_env_keys(backend)} to be set.",

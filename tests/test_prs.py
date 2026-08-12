@@ -21,6 +21,8 @@ from graphify.prs import (
     fetch_worktrees,
     format_prs_text,
     _detect_default_branch,
+    _resolve_triage_backend,
+    triage_with_opus,
 )
 
 
@@ -404,6 +406,78 @@ class TestBuildCommunityLabels:
     def test_empty_nodes(self):
         assert build_community_labels({}) == {}
         assert build_community_labels({"nodes": []}) == {}
+
+
+# ── Copilot CLI triage backend ───────────────────────────────────────────────
+
+class TestCopilotCliTriage:
+    def test_explicit_backend_uses_copilot_default_model(self, monkeypatch):
+        monkeypatch.setenv("GRAPHIFY_TRIAGE_BACKEND", "copilot-cli")
+        monkeypatch.delenv("GRAPHIFY_TRIAGE_MODEL", raising=False)
+        monkeypatch.delenv("GRAPHIFY_COPILOT_CLI_MODEL", raising=False)
+        monkeypatch.delenv("COPILOT_MODEL", raising=False)
+
+        assert _resolve_triage_backend() == ("copilot-cli", "auto")
+
+    def test_explicit_triage_model_takes_precedence(self, monkeypatch):
+        monkeypatch.setenv("GRAPHIFY_TRIAGE_BACKEND", "copilot-cli")
+        monkeypatch.setenv("GRAPHIFY_TRIAGE_MODEL", "gpt-5-mini")
+        monkeypatch.setenv("GRAPHIFY_COPILOT_CLI_MODEL", "ignored-model")
+
+        assert _resolve_triage_backend() == ("copilot-cli", "gpt-5-mini")
+
+    def test_triage_routes_through_shared_copilot_completion(self, capsys):
+        pr = make_pr(number=42, title="Harden auth flow")
+
+        with patch(
+            "graphify.prs._resolve_triage_backend",
+            return_value=("copilot-cli", "auto"),
+        ), patch(
+            "graphify.llm._call_llm",
+            return_value="#42 — Review authentication changes first.",
+        ) as call:
+            triage_with_opus([pr], base="v8")
+
+        prompt = call.call_args.args[0]
+        assert "PR #42" in prompt
+        assert call.call_args.kwargs == {
+            "backend": "copilot-cli",
+            "model": "auto",
+            "max_tokens": 1024,
+        }
+        assert "Review authentication changes first" in capsys.readouterr().out
+
+
+class TestCopilotSdkTriage:
+    def test_explicit_backend_uses_sdk_default_model(self, monkeypatch):
+        monkeypatch.setenv("GRAPHIFY_TRIAGE_BACKEND", "copilot-sdk")
+        monkeypatch.delenv("GRAPHIFY_TRIAGE_MODEL", raising=False)
+        monkeypatch.delenv("GRAPHIFY_COPILOT_SDK_MODEL", raising=False)
+        monkeypatch.delenv("GRAPHIFY_COPILOT_MODEL", raising=False)
+        monkeypatch.delenv("COPILOT_MODEL", raising=False)
+
+        assert _resolve_triage_backend() == ("copilot-sdk", "auto")
+
+    def test_triage_routes_through_sdk_with_cli_fallback(self, capsys):
+        pr = make_pr(number=43, title="Validate enterprise SSO")
+
+        with patch(
+            "graphify.prs._resolve_triage_backend",
+            return_value=("copilot-sdk", "auto"),
+        ), patch(
+            "graphify.llm._call_llm",
+            return_value="#43 — Validate the enterprise authentication path.",
+        ) as call:
+            triage_with_opus([pr], base="v8")
+
+        prompt = call.call_args.args[0]
+        assert "PR #43" in prompt
+        assert call.call_args.kwargs == {
+            "backend": "copilot-sdk",
+            "model": "auto",
+            "max_tokens": 1024,
+        }
+        assert "Validate the enterprise authentication path" in capsys.readouterr().out
 
 
 # ── Windows cp1252 subprocess-decode hardening (decode-side sibling of #1505) ──

@@ -1133,6 +1133,7 @@ all = [
     { name = "falkordb" },
     { name = "faster-whisper", marker = "python_full_version >= '3.11'" },
     { name = "graspologic", marker = "python_full_version < '3.13'" },
+    { name = "github-copilot-sdk", marker = "python_full_version >= '3.11'" },
     { name = "jieba" },
     { name = "markdownify" },
     { name = "matplotlib" },
@@ -1160,6 +1161,9 @@ bedrock = [
 ]
 chinese = [
     { name = "jieba" },
+]
+copilot = [
+    { name = "github-copilot-sdk", marker = "python_full_version >= '3.11'" },
 ]
 dm = [
     { name = "tree-sitter-dm" },
@@ -1258,6 +1262,8 @@ requires-dist = [
     { name = "faster-whisper", marker = "python_full_version >= '3.11' and extra == 'video'" },
     { name = "graspologic", marker = "python_full_version < '3.13' and extra == 'all'" },
     { name = "graspologic", marker = "python_full_version < '3.13' and extra == 'leiden'" },
+    { name = "github-copilot-sdk", marker = "python_full_version >= '3.11' and extra == 'all'", specifier = ">=1.0.7,<2" },
+    { name = "github-copilot-sdk", marker = "python_full_version >= '3.11' and extra == 'copilot'", specifier = ">=1.0.7,<2" },
     { name = "jieba", marker = "extra == 'all'" },
     { name = "jieba", marker = "extra == 'chinese'" },
     { name = "markdownify", marker = "extra == 'all'" },
@@ -1331,7 +1337,7 @@ requires-dist = [
     { name = "yt-dlp", marker = "extra == 'all'", specifier = ">=2026.6.9" },
     { name = "yt-dlp", marker = "extra == 'video'", specifier = ">=2026.6.9" },
 ]
-provides-extras = ["mcp", "neo4j", "falkordb", "pdf", "watch", "svg", "leiden", "office", "google", "postgres", "video", "kimi", "ollama", "bedrock", "anthropic", "gemini", "openai", "chinese", "sql", "pascal", "dm", "terraform", "all"]
+provides-extras = ["mcp", "neo4j", "falkordb", "pdf", "watch", "svg", "leiden", "office", "google", "postgres", "video", "kimi", "ollama", "bedrock", "anthropic", "gemini", "openai", "copilot", "chinese", "sql", "pascal", "dm", "terraform", "all"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1393,6 +1399,19 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/42/cc/b75ea35755340bedda29727e5388390c639ea533f55b9249f5ac3003f656/graspologic_native-1.2.5-cp38-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:4a7fff06ed49c3875cf351bb09a92ae7cbc169ce92dcc4c3439e28e801f822ae", size = 352044, upload-time = "2025-04-02T19:34:18.153Z" },
     { url = "https://files.pythonhosted.org/packages/8e/55/15e6e4f18bf249b529ac4cd1522b03f5c9ef9284a2f7bfaa1fd1f96464fe/graspologic_native-1.2.5-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:53e7e993e7d70fe0d860773fc62812fbb8cb4ef2d11d8661a1f06f8772593915", size = 364644, upload-time = "2025-04-02T19:34:19.486Z" },
     { url = "https://files.pythonhosted.org/packages/3b/51/21097af79f3d68626539ab829bdbf6cc42933f020e161972927d916e394c/graspologic_native-1.2.5-cp38-abi3-win_amd64.whl", hash = "sha256:c3ef2172d774083d7e2c8e77daccd218571ddeebeb2c1703cebb1a2cc4c56e07", size = 210438, upload-time = "2025-04-02T19:34:21.139Z" },
+]
+
+[[package]]
+name = "github-copilot-sdk"
+version = "1.0.7"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "python-dateutil" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/67/ec/734b0d28abbf7d26eb1a60810deedbcc0719910d64f018477010baf3e3f3/github_copilot_sdk-1.0.7-py3-none-any.whl", hash = "sha256:6f3e74e1779a4508dd6636e06fd0aa55eb6244805a66d61a4f21b30c958e2985" },
 ]
 
 [[package]]
