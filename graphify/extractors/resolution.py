@@ -1747,6 +1747,20 @@ def _resolve_python_module_path(module_name: str, current_path: Path, root: Path
     # src/pkg/mod.py whether the scan root is the repo or src/ (#2072). Mirrors
     # the upward walk already used for Lua (_resolve_lua_import_target, #1075).
     rel = module_name.replace(".", "/")
+    # When the scan root is itself a package, its directory name is part of an
+    # absolute module path but not part of paths relative to the scan root.
+    # Strip that one proven package prefix before probing inside the root.
+    module_parts = module_name.split(".")
+    if (
+        (root / "__init__.py").is_file()
+        and module_parts
+        and module_parts[0] == root.name
+    ):
+        root_package_hit = _probe_python_module_candidate(
+            root / "/".join(module_parts[1:])
+        )
+        if root_package_hit is not None:
+            return root_package_hit
     hit = _probe_python_module_candidate(root / rel)
     if hit is not None:
         return hit

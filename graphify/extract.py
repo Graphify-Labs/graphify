@@ -186,76 +186,70 @@ def _file_node_id(rel_path: Path) -> str:
     return _make_id(_file_stem(rel_path))
 
 
-def _repoint_python_package_imports(paths, all_nodes, all_edges, root) -> None:
-    """Repoint Python absolute-import edges to the real file node under a nested
-    (e.g. ``src/``) package root (#2072).
-
-    Absolute imports target an id derived from the dotted module path
-    (``_make_id('pkg.mod')`` -> ``pkg_mod``), but file-node ids are
-    scan-root-relative (``src_pkg_mod`` when the code lives under ``src/``), so
-    the edge dangles and is silently dropped — the graph loses most ``imports``
-    edges purely because of where the scan started. Build an alias map from the
-    dotted-module id to the real file-node id by detecting each ``.py`` file's
-    package root (the contiguous run of ancestor dirs carrying ``__init__.py``)
-    and rewrite matching ``imports``/``imports_from`` edge targets. Guards: never
-    shadow an existing node id, and drop an alias claimed by more than one file
-    (ambiguous -> leave dangling, as before). Files whose package root IS the
-    scan root are skipped (ids already coincide)."""
+def _python_package_import_aliases(paths, root) -> dict[str, set[str]]:
+    """Map absolute Python package import ids to scanned file-node ids."""
     try:
         root = Path(root).resolve()
     except OSError:
         root = Path(root)
-    node_ids = {n.get("id") for n in all_nodes if isinstance(n, dict)}
     alias_to_files: dict[str, set[str]] = {}
-    for p in paths:
-        if p.suffix.lower() not in (".py", ".pyi"):
+    for path in paths:
+        if path.suffix.lower() not in (".py", ".pyi"):
             continue
         try:
-            rel = Path(p).resolve().relative_to(root)
+            resolved = Path(path).resolve()
+            rel = resolved.relative_to(root)
         except (ValueError, OSError):
             continue
-        parts = rel.parts
-        if len(parts) < 2:
-            continue  # top-level file: scan-root-relative id already matches
-        d = Path(p).resolve().parent
-        levels = 0
-        # Bounded by the number of dirs between the file and the scan root, so a
-        # pathological `/__init__.py` chain can't loop forever.
-        while levels < len(parts) - 1 and (d / "__init__.py").is_file():
-            levels += 1
-            d = d.parent
-        if levels == 0:
-            continue  # not inside a package (namespace pkg / loose module)
-        mod_parts = parts[-(levels + 1):]  # package dirs + the file itself
-        if len(mod_parts) == len(parts):
-            continue  # package root == scan root: file-node id already coincides
-        file_node = _file_node_id(rel)
-        alias = _make_id(str(Path(*mod_parts).with_suffix("")))
-        alias_to_files.setdefault(alias, set()).add(file_node)
-        if p.name in ("__init__.py", "__init__.pyi") and len(mod_parts) > 1:
-            # `import pkg` / `from pkg import x` targets the package-dir id.
-            pkg_alias = _make_id(str(Path(*mod_parts[:-1])))
-            alias_to_files.setdefault(pkg_alias, set()).add(file_node)
+
+        package_parts: list[str] = []
+        directory = resolved.parent
+        while directory == root or root in directory.parents:
+            if not (directory / "__init__.py").is_file():
+                break
+            package_parts.append(directory.name)
+            if directory == root:
+                break
+            directory = directory.parent
+        if not package_parts:
+            continue
+        package_parts.reverse()
+        if path.name not in ("__init__.py", "__init__.pyi"):
+            package_parts.append(path.stem)
+
+        alias = _make_id(".".join(package_parts))
+        alias_to_files.setdefault(alias, set()).add(_file_node_id(rel))
+    return alias_to_files
+
+
+def _repoint_python_package_imports(paths, all_nodes, all_edges, root) -> None:
+    """Repoint absolute Python package imports to their scanned file nodes.
+
+    File-node ids are scan-root-relative, while absolute imports include the
+    package name. Build an alias map from each dotted package module to its
+    actual file node, including when the scan root is itself the package.
+    Ambiguous aliases and aliases shadowing real node ids remain unresolved.
+    """
+    node_ids = {n.get("id") for n in all_nodes if isinstance(n, dict)}
+    alias_to_files = _python_package_import_aliases(paths, root)
     alias_map = {
-        a: next(iter(fs))
-        for a, fs in alias_to_files.items()
-        if len(fs) == 1 and a not in node_ids
+        alias: next(iter(files))
+        for alias, files in alias_to_files.items()
+        if len(files) == 1 and alias not in node_ids
     }
     if not alias_map:
         return
-    for e in all_edges:
+    for edge in all_edges:
         # Only repoint edges emitted from a Python file: a non-Python import edge
-        # (e.g. C# `using Pkg.Mod;`, Java/Go dotted imports) can have a dangling
-        # target string that coincides with a Python alias, and repointing it
-        # would fabricate a cross-language import edge (#2072 review).
+        # can have a target string that coincides with a Python package alias.
         if (
-            isinstance(e, dict)
-            and e.get("relation") in ("imports", "imports_from")
-            and str(e.get("source_file", "")).lower().endswith((".py", ".pyi"))
+            isinstance(edge, dict)
+            and edge.get("relation") in ("imports", "imports_from")
+            and str(edge.get("source_file", "")).lower().endswith((".py", ".pyi"))
         ):
-            tgt = e.get("target")
-            if tgt in alias_map:
-                e["target"] = alias_map[tgt]
+            target = edge.get("target")
+            if target in alias_map:
+                edge["target"] = alias_map[target]
 
 
 SEMANTIC_RELATIONS = frozenset({
@@ -5514,6 +5508,27 @@ def extract(
         all_nodes.extend(result.get("nodes", []))
         all_edges.extend(result.get("edges", []))
         all_raw_calls.extend(result.get("raw_calls", []))
+
+    # Retain the per-file import population before cross-file augmentation adds
+    # derived symbol edges. This lets callers reconcile internal, external, and
+    # unresolved-internal imports without counting derived edges twice.
+    _python_internal_aliases = set(_python_package_import_aliases(paths, root))
+    _scanned_paths = {path.resolve() for path in paths}
+    _raw_imports: list[tuple[dict, bool]] = []
+    for result in per_file:
+        for edge in result.get("edges", []):
+            if edge.get("relation") not in ("imports", "imports_from", "re_exports"):
+                continue
+            target_file = edge.get("target_file")
+            target_is_scanned = False
+            if target_file:
+                try:
+                    target_is_scanned = Path(target_file).resolve() in _scanned_paths
+                except OSError:
+                    pass
+            _raw_imports.append(
+                (edge, target_is_scanned or edge.get("target") in _python_internal_aliases)
+            )
     # Function / method / class def ids for the cross-file indirect_call callable
     # guard. Built from the `_callable` node marker AFTER the id-remap / disambiguation
     # passes below (which rewrite node ids), so it can never go stale — see the
@@ -6605,6 +6620,24 @@ def extract(
         if _sf and "\\" in str(_sf):
             _item["source_file"] = PurePath(_sf).as_posix()
 
+    _final_node_ids = {node.get("id") for node in all_nodes}
+    _internal_resolved = sum(
+        1 for edge, _ in _raw_imports if edge.get("target") in _final_node_ids
+    )
+    _internal_unresolved = sum(
+        1
+        for edge, intended_internal in _raw_imports
+        if intended_internal and edge.get("target") not in _final_node_ids
+    )
+    _external_imports = len(_raw_imports) - _internal_resolved - _internal_unresolved
+    _import_accounting = {
+        "total": len(_raw_imports),
+        "internal": _internal_resolved + _internal_unresolved,
+        "internal_resolved": _internal_resolved,
+        "internal_unresolved": _internal_unresolved,
+        "external": _external_imports,
+    }
+
     return {
         "nodes": all_nodes,
         "edges": all_edges,
@@ -6614,6 +6647,7 @@ def extract(
         # manifest does not freeze them as processed (#2543). Callers that
         # only read nodes/edges ignore this key.
         "failed_sources": _failed_sources,
+        "import_accounting": _import_accounting,
     }
 
 
