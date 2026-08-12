@@ -34,6 +34,7 @@ from graphify.extractors.base import (  # noqa: F401
 from graphify.extractors.apex import extract_apex  # noqa: F401
 from graphify.extractors.bash import extract_bash  # noqa: F401
 from graphify.extractors.blade import extract_blade  # noqa: F401
+from graphify.extractors.twig import extract_twig  # noqa: F401
 from graphify.extractors.csharp import (
     CsharpNameResolver,
     _resolve_cross_file_csharp_imports,
@@ -4966,6 +4967,8 @@ def _get_extractor(path: Path) -> Any | None:
     """Return the correct extractor function for a file, or None if unsupported."""
     if path.name.lower().endswith(".blade.php"):
         return extract_blade
+    if path.name.lower().endswith(".twig"):
+        return extract_twig
     # MCP config files (.mcp.json, claude_desktop_config.json, ...) are routed
     # by filename before generic .json dispatch so they get MCP-aware nodes
     # (servers, commands, packages, env vars) instead of opaque JSON keys.
