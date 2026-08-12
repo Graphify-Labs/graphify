@@ -17,6 +17,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: a PHP `use` import written with a leading-backslash / fully-qualified prefix now resolves to its target definition instead of being dropped (#2661, thanks @ousamabenyounes).
 - Fix: an unresolved local JS/TS import (to a file absent from the scan) now emits a stable, portable `ref` target id instead of leaking a per-checkout absolute-path slug (#2457, thanks @rohit-jsfreaky).
 - Fix: `graphify benchmark` no longer crashes on a node whose label is `None` (#2674, thanks @Arthuro0103).
+- Fix: a corrupt (invalid-JSON) semantic cache entry is no longer swallowed as a silent miss; `check_semantic_cache` now emits one aggregate warning naming how many entries failed to parse, so a cache that fails on every run (silently re-billing the extraction) is diagnosable instead of invisible (#2405, thanks @jorgefusterr).
 
 ## 0.9.40 (2026-08-11)
 
