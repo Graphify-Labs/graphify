@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shlex
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
 from functools import lru_cache
@@ -807,6 +808,7 @@ _SKIP_DIRS = {
     ".next", ".nuxt", ".turbo", ".angular",
     ".idea", ".cache", ".parcel-cache", ".svelte-kit", ".terraform", ".serverless",
     ".graphify",  # graphify's own extraction cache — never index self-generated data
+    ".obsidian", ".smart-env",  # Obsidian vault metadata and plugin caches (#2493)
     ".worktrees",  # git worktree convention (#947) — sibling checkouts, always redundant
 }
 
@@ -928,6 +930,23 @@ def _is_noise_dir(part: str, parent: "Path | None" = None) -> bool:
 _VCS_MARKERS = (".git", ".hg", ".svn", "_darcs", ".fossil")
 
 
+def _nfc(text: str) -> str:
+    """Normalize text to NFC so ignore matching survives Unicode form drift.
+
+    macOS (APFS/HFS+) returns filenames in NFD: "ç" comes back as "c" +
+    U+0327 COMBINING CEDILLA. Editors write ignore files in NFC, where the
+    same "ç" is the single codepoint U+00E7. The two render identically and
+    compare unequal, so a pattern like `Orçamento/` silently fails to exclude
+    the directory it names — the files are scanned and, for docs/PDFs, sent
+    to an LLM despite an explicit rule against it.
+
+    Both sides are normalized to NFC before any fnmatch call. NFC is the form
+    Linux and Windows already use, so this is a no-op there and only repairs
+    the macOS mismatch.
+    """
+    return unicodedata.normalize("NFC", text)
+
+
 def _parse_gitignore_line(raw: str) -> str:
     """Parse one raw line from a .graphifyignore file per gitignore spec.
 
@@ -949,7 +968,7 @@ def _parse_gitignore_line(raw: str) -> str:
     line = line.replace("\\#", "#")
     # Remove unescaped trailing spaces (per gitignore spec)
     line = re.sub(r"(?<!\\) +$", "", line)
-    return line
+    return _nfc(line)
 
 
 def _find_vcs_root(start: Path) -> Path | None:
@@ -1140,7 +1159,7 @@ def _is_ignored(
             parts = rel.split("/")
             if fnmatch.fnmatch(rel, p):
                 return True
-            if fnmatch.fnmatch(target.name, p):
+            if fnmatch.fnmatch(_nfc(target.name), p):
                 return True
             for i, part in enumerate(parts):
                 if fnmatch.fnmatch(part, p):
@@ -1166,7 +1185,7 @@ def _is_ignored(
             # ignore file governs its directory's contents, not the directory.
             matched = False
             try:
-                rel_anchor = str(target.relative_to(anchor)).replace(os.sep, "/")
+                rel_anchor = _nfc(str(target.relative_to(anchor)).replace(os.sep, "/"))
             except ValueError:
                 continue  # target outside this pattern's anchor: cannot match
             if rel_anchor != ".":
@@ -1699,6 +1718,7 @@ def save_manifest(
     root: Path | None = None,
     scan_corpus: set[str] | list[str] | None = None,
     clear_semantic: set[str] | list[str] | None = None,
+    clear_ast: set[str] | list[str] | None = None,
 ) -> None:
     """Save current file mtimes + content hashes for change detection.
 
@@ -1733,6 +1753,12 @@ def save_manifest(
     and making detect_incremental(kind="semantic") report them unchanged.
     Pass the set of such files (any path form ``scan_corpus`` accepts) to
     force their seeded semantic_hash to "" instead of inheriting it.
+
+    ``clear_ast`` (#2543): same idea for AST failures (missing optional extra,
+    zero-node anomalous extract). Blanks BOTH ``ast_hash`` and
+    ``semantic_hash`` on the seeded row so either detect_incremental kind
+    re-queues the file after the failure is fixed, without deleting
+    graphify-out/.
     """
     existing = load_manifest(manifest_path, root=root)
 
@@ -1749,6 +1775,7 @@ def save_manifest(
 
     scan_set = _path_index(scan_corpus)
     clear_set = _path_index(clear_semantic)
+    clear_ast_set = _path_index(clear_ast)
     try:
         root_res: Path | None = Path(root).resolve() if root is not None else None
     except (OSError, RuntimeError):
@@ -1764,11 +1791,24 @@ def save_manifest(
             return False
 
     def _in_clear(path_str: str) -> bool:
+        if clear_set is None:
+            return False
         if path_str in clear_set or _nfc(path_str) in clear_set:
             return True
         try:
             resolved = str(Path(path_str).resolve())
             return resolved in clear_set or _nfc(resolved) in clear_set
+        except (OSError, RuntimeError):
+            return False
+
+    def _in_clear_ast(path_str: str) -> bool:
+        if clear_ast_set is None:
+            return False
+        if path_str in clear_ast_set or _nfc(path_str) in clear_ast_set:
+            return True
+        try:
+            resolved = str(Path(path_str).resolve())
+            return resolved in clear_ast_set or _nfc(resolved) in clear_ast_set
         except (OSError, RuntimeError):
             return False
 
@@ -1817,7 +1857,11 @@ def save_manifest(
             continue
         if scan_set is not None and not _in_scan(f) and _in_root(f):
             continue  # excluded-but-alive: drop the stale row (#1908)
-        if clear_set is not None and _in_clear(f):
+        if clear_ast_set is not None and _in_clear_ast(f):
+            # AST failure this run (missing extra / zero nodes, #2543): blank
+            # both hashes so either detect_incremental kind re-queues.
+            normalised = {**normalised, "ast_hash": "", "semantic_hash": ""}
+        elif clear_set is not None and _in_clear(f):
             # Dispatched-but-omitted this run: don't inherit the stale
             # semantic_hash, or detect_incremental would call it unchanged (#1948).
             normalised = {**normalised, "semantic_hash": ""}

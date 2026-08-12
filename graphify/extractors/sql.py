@@ -284,6 +284,15 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                     "select", "where", "set", "dual", "null", "true", "false",
                     "first", "skip", "rows", "next", "only", "lateral",
                 }
+                # Same CTE-blindness as the AST path (#2577): a `WITH <name> AS (`
+                # binding is statement-local, not a table, so its name must not
+                # become a reads_from stub. The regex has no scope tree, so the
+                # skip is body-wide — the right trade for a recovery path.
+                for cm in re.finditer(
+                    r"(?:\bWITH\s+(?:RECURSIVE\s+)?|,\s*)([\w$]+)\s*(?:\([^()]*\))?\s+AS\s*\(",
+                    text, re.IGNORECASE,
+                ):
+                    _NON_TABLES.add(_norm_ident(cm.group(1)))
                 seen_tbls: set[str] = set()
                 for rm in re.finditer(r"\b(?:FROM|JOIN|INTO)\s+([\w$]+)", text, re.IGNORECASE):
                     tbl = rm.group(1)
@@ -301,19 +310,51 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         for child in node.children:
             walk(child)
 
-    def _walk_from_refs(node, caller_nid: str, line: int) -> None:
-        """Recursively find FROM/JOIN table references inside a node."""
+    def _walk_from_refs(node, caller_nid: str, line: int,
+                        cte_names: frozenset[str] = frozenset()) -> None:
+        """Recursively find FROM/JOIN table references inside a node, skipping CTEs.
+
+        A name bound by `WITH <name> AS (...)` is not a table: emitting it as a
+        `reads_from` target minted a bare `_ref_stub`, and because that stub is
+        intentionally sourceless (see `_ref_stub`) it carried no schema, file, or
+        language namespace, so a CTE named `levels` or `slug` collided with any
+        same-named node from another language during the build (#2577).
+
+        Scoping matters: a CTE is visible only inside the query that declares it,
+        and a `WITH` inside a subquery is scoped to that subquery alone. So the
+        active set is extended PER SUBTREE — each node's directly-owned `cte`
+        children (`create_query` for a statement-level WITH, `subquery` for a
+        nested one) join the set passed down into that node's recursion only. A
+        single statement-wide pre-collect would also suppress an OUTER reference
+        to a real table that merely shares a subquery-CTE's name
+        (`... FROM t2 JOIN (WITH t2 AS (...) SELECT ...) sub`), dropping the
+        real `-> t2` edge.
+        """
+        own: set[str] = set()
+        for c in node.children:
+            if c.type != "cte":
+                continue
+            # First identifier is the CTE's name; later ones are its column
+            # list (`WITH levels(a, b) AS (...)`), which must not be skipped.
+            for cc in c.children:
+                if cc.type in ("identifier", "object_reference"):
+                    own.add(_norm_ident(_read(cc)))
+                    break
+        if own:
+            cte_names = frozenset(cte_names | own)
         if node.type in ("from", "join"):
             for c in node.children:
                 if c.type == "relation":
                     for cc in c.children:
                         if cc.type == "object_reference":
                             tbl = _read(cc)
+                            if _norm_ident(tbl) in cte_names:
+                                continue
                             tbl_nid = table_nids.get(_norm_ident(tbl)) or _ref_stub(tbl)
                             _add_edge(caller_nid, tbl_nid, "reads_from",
                                       c.start_point[0] + 1)
         for child in node.children:
-            _walk_from_refs(child, caller_nid, line)
+            _walk_from_refs(child, caller_nid, line, cte_names)
 
     # Pre-pass: register every table/view DEFINED in this file before walking,
     # so forward references (a FK to a table created later in the same file)

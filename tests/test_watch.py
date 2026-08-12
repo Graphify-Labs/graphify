@@ -7,7 +7,14 @@ import time
 from pathlib import Path
 import pytest
 
-from graphify.watch import _notify_only, _WATCHED_EXTENSIONS, _rebuild_lock, _check_shrink
+from graphify.watch import (
+    _notify_only,
+    _WATCHED_EXTENSIONS,
+    _rebuild_lock,
+    _check_shrink,
+    _batch_triggers_rebuild,
+    _batch_needs_llm_flag,
+)
 
 
 # --- _notify_only ---
@@ -54,6 +61,75 @@ def test_watched_extensions_excludes_noise():
     assert ".sh" in _WATCHED_EXTENSIONS
     assert ".pyc" not in _WATCHED_EXTENSIONS
     assert ".log" not in _WATCHED_EXTENSIONS
+
+
+# --- _batch_triggers_rebuild / _batch_needs_llm_flag: watch dispatch gating ---
+
+def test_batch_doc_only_deletion_triggers_rebuild(tmp_path):
+    """#2580: deleting ONLY doc files while `graphify watch` runs must trigger
+    an immediate full rebuild (eviction needs no LLM), not just the
+    needs_update flag deferred to the next code event."""
+    gone = tmp_path / "docs" / "x.md"
+    assert not gone.exists()
+    assert _batch_triggers_rebuild([gone]) is True
+
+def test_batch_doc_only_deletion_skips_llm_flag(tmp_path):
+    """A pure-deletion batch has nothing left needing LLM re-extraction —
+    the reconcile sweep inside the rebuild evicts it, so no needs_update flag."""
+    gone = tmp_path / "docs" / "x.md"
+    assert not gone.exists()
+    assert _batch_needs_llm_flag([gone]) is False
+
+def test_batch_modified_doc_only_does_not_rebuild(tmp_path):
+    """A doc that still exists needs LLM re-extraction, not an AST rebuild:
+    stays on the _notify_only path."""
+    doc = tmp_path / "docs" / "x.md"
+    doc.parent.mkdir()
+    doc.write_text("# heading\n", encoding="utf-8")
+    assert _batch_triggers_rebuild([doc]) is False
+    assert _batch_needs_llm_flag([doc]) is True
+
+def test_batch_code_file_still_triggers_rebuild(tmp_path):
+    """Regression: existing code-file batches keep rebuilding as before."""
+    code = tmp_path / "app.py"
+    code.write_text("x = 1\n", encoding="utf-8")
+    assert _batch_triggers_rebuild([code]) is True
+    assert _batch_needs_llm_flag([code]) is False
+
+def test_batch_mixed_deletion_and_modified_doc(tmp_path):
+    """Deleted doc + still-existing modified doc in one debounce window:
+    rebuild fires for the eviction AND the flag is kept for the survivor."""
+    survivor = tmp_path / "docs" / "kept.md"
+    survivor.parent.mkdir()
+    survivor.write_text("# kept\n", encoding="utf-8")
+    gone = tmp_path / "docs" / "gone.md"
+    batch = [survivor, gone]
+    assert _batch_triggers_rebuild(batch) is True
+    assert _batch_needs_llm_flag(batch) is True
+
+def test_doc_only_deletion_full_rebuild_evicts_md_nodes(tmp_path):
+    """End-to-end pin for #2580: the full rebuild the watcher now triggers on
+    a doc-only deletion actually evicts the deleted .md's nodes."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "app.py").write_text("def run(): pass\n", encoding="utf-8")
+    doc = corpus / "notes.md"
+    doc.write_text("# Notes\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    labels = {n["label"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+    assert "notes.md" in labels
+
+    doc.unlink()
+    batch = [doc]
+    assert _batch_triggers_rebuild(batch) is True
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+    labels = {n["label"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+    assert "notes.md" not in labels, "deleted doc's nodes must be evicted by the watch-triggered rebuild"
+    assert "run()" in labels
 
 
 # --- watch() import error without watchdog ---

@@ -292,6 +292,10 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
         data = json_graph.node_link_data(G, edges="links")
     except TypeError:
         data = json_graph.node_link_data(G)
+
+    def _json_sort_key(item: dict) -> str:
+        return json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
     for node in data["nodes"]:
         cid = node_community.get(node["id"])
         node["community"] = cid
@@ -311,6 +315,8 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
         if true_src is not None and true_tgt is not None:
             link["source"] = true_src
             link["target"] = true_tgt
+    data["nodes"].sort(key=_json_sort_key)
+    data["links"].sort(key=_json_sort_key)
     if "hyperedges" not in getattr(G, "graph", {}):
         # Hardening (#2485): a graph with NO hyperedges key at all was built by
         # a path that never engaged hyperedge metadata — distinct from an
@@ -339,7 +345,10 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
                 f"extraction if this is unexpected.",
                 file=sys.stderr,
             )
-    data["hyperedges"] = getattr(G, "graph", {}).get("hyperedges", [])
+    hyperedges = sorted(getattr(G, "graph", {}).get("hyperedges", []), key=_json_sort_key)
+    if isinstance(data.get("graph"), dict) and "hyperedges" in data["graph"]:
+        data["graph"]["hyperedges"] = hyperedges
+    data["hyperedges"] = hyperedges
     commit = built_at_commit if built_at_commit is not None else _git_head()
     if commit:
         data["built_at_commit"] = commit
