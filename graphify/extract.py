@@ -31,8 +31,10 @@ from graphify.extractors.base import (  # noqa: F401
     _make_id,
     _read_text,
 )
+from graphify.extractors.abl import extract_abl  # noqa: F401
 from graphify.extractors.apex import extract_apex  # noqa: F401
 from graphify.extractors.bash import extract_bash  # noqa: F401
+from graphify.extractors.df import extract_df  # noqa: F401
 from graphify.extractors.blade import extract_blade  # noqa: F401
 from graphify.extractors.csharp import (
     CsharpNameResolver,
@@ -4848,6 +4850,13 @@ _DISPATCH: dict[str, Any] = {
     ".cshtml": extract_razor,
     ".cls": extract_apex,
     ".trigger": extract_apex,
+    # OpenEdge ABL / Progress 4GL (tree-sitter-abl). `.cls` is shared with Apex;
+    # a content sniff (_is_abl_class) routes ABL classes to extract_abl below.
+    ".p": extract_abl,
+    ".w": extract_abl,
+    ".i": extract_abl,
+    # OpenEdge Data Definitions — DB schema dumps (tree-sitter-df).
+    ".df": extract_df,
 }
 
 
@@ -4962,6 +4971,23 @@ def _is_cpp_header(path: Path) -> bool:
     return any(marker in head for marker in _CPP_HEADER_MARKERS)
 
 
+# OpenEdge ABL-only tokens. None are valid Salesforce Apex, so finding one in a
+# `.cls` is a high-confidence signal the class is ABL, not Apex (both use `.cls`).
+_ABL_CLASS_MARKERS = (
+    b"NO-UNDO", b"FROM PROPATH", b"BLOCK-LEVEL", b"DEFINE VARIABLE",
+    b"USING Progress.", b"METHOD PUBLIC", b"METHOD PRIVATE", b"METHOD PROTECTED",
+)
+
+
+def _is_abl_class(path: Path) -> bool:
+    """Whether a `.cls` file is OpenEdge ABL rather than Salesforce Apex."""
+    try:
+        head = path.read_bytes()[:256 * 1024].upper()
+    except OSError:
+        return False
+    return any(marker.upper() in head for marker in _ABL_CLASS_MARKERS)
+
+
 def _get_extractor(path: Path) -> Any | None:
     """Return the correct extractor function for a file, or None if unsupported."""
     if path.name.lower().endswith(".blade.php"):
@@ -4997,6 +5023,10 @@ def _get_extractor(path: Path) -> Any | None:
     # mis-parsed. `.mm` is unambiguously Objective-C++ and stays on extract_objc.
     if suffix == ".m" and not _is_objc_source(path):
         return None
+    # `.cls` is shared by Salesforce Apex and OpenEdge ABL. The suffix map sends it
+    # to extract_apex; reroute to extract_abl when the file looks like ABL (#OpenEdge).
+    if suffix == ".cls" and _is_abl_class(path):
+        return extract_abl
     # Extensionless files: resolve by shebang, mirroring detect.classify_file.
     # Without this, detect labels e.g. `#!/usr/bin/env bash` CLIs as code but
     # extraction returns no extractor and the file silently contributes nothing.

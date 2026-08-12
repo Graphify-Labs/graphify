@@ -10,10 +10,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
+from graphify.extractors.abl import extract_abl
 from graphify.extractors.apex import extract_apex
 from graphify.extractors.bash import extract_bash
 from graphify.extractors.blade import extract_blade
 from graphify.extractors.dart import extract_dart
+from graphify.extractors.df import extract_df
 from graphify.extractors.dm import extract_dm, extract_dmf, extract_dmi, extract_dmm
 from graphify.extractors.elixir import extract_elixir
 from graphify.extractors.fortran import extract_fortran
@@ -34,10 +36,12 @@ from graphify.extractors.verilog import extract_verilog
 from graphify.extractors.zig import extract_zig
 
 LANGUAGE_EXTRACTORS: dict[str, Callable[[Path], dict]] = {
+    "abl": extract_abl,
     "apex": extract_apex,
     "bash": extract_bash,
     "blade": extract_blade,
     "dart": extract_dart,
+    "df": extract_df,
     "delphi_form": extract_delphi_form,
     "dm": extract_dm,
     "dmf": extract_dmf,
