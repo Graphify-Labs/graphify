@@ -29,7 +29,9 @@ def _cpp_preprocess(path: Path) -> bytes:
     try:
         # Pass an absolute path so a corpus file named like "-I/etc/x.F90" cannot
         # be parsed by cpp as an option (cpp does not accept a "--" end-of-options
-        # terminator). An absolute path always begins with "/".
+        # terminator). What matters is that an absolute path cannot begin with
+        # "-" — not that it begins with "/", which only holds on POSIX (a Windows
+        # absolute path starts with a drive letter, and is equally safe).
         result = subprocess.run(
             ["cpp", "-w", "-P", "-nostdinc", "-I", "/dev/null", str(path.resolve())],
             capture_output=True,

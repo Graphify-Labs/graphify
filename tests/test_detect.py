@@ -7,6 +7,18 @@ from graphify import detect as detect_mod
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
+
+def as_posix_list(paths) -> list[str]:
+    """Normalize detect() output to forward slashes before matching on it.
+
+    detect() returns native absolute paths, so a literal like
+    ``"vendor/sub/important.py"`` never matches on Windows. That breaks positive
+    assertions outright, and — worse — makes NEGATIVE ones
+    (``not any(... in ...)``) pass unconditionally, so the property the test
+    exists to guard is never actually checked.
+    """
+    return [Path(p).as_posix() for p in paths]
+
 def test_classify_python():
     assert classify_file(Path("foo.py")) == FileType.CODE
 
@@ -445,9 +457,9 @@ def test_gitignore_nested_negation_overrides_broader_root_rule(tmp_path):
     (sub / "other.py").write_text("c = 1")
 
     result = detect(tmp_path)
-    code = result["files"]["code"]
+    code = as_posix_list(result["files"]["code"])
     # nested `!important.py` re-includes it despite the root `*.py` exclude...
-    assert any("vendor/sub/important.py" in f for f in code)
+    assert any(f.endswith("vendor/sub/important.py") for f in code)
     # ...while the root-excluded and non-re-included files stay out
     assert not any(f.endswith("root.py") for f in code)
     assert not any(f.endswith("other.py") for f in code)
@@ -467,8 +479,8 @@ def test_nested_ignore_overrides_git_info_exclude_and_root(tmp_path):
     (tmp_path / "drop.py").write_text("y = 1")                  # only info/exclude -> excluded
 
     result = detect(tmp_path)
-    code = result["files"]["code"]
-    assert any("a/b/keep.py" in f for f in code), "nested ! must beat root + info/exclude"
+    code = as_posix_list(result["files"]["code"])
+    assert any(f.endswith("a/b/keep.py") for f in code), "nested ! must beat root + info/exclude"
     assert not any(f.endswith("drop.py") for f in code)
 
 
@@ -1016,9 +1028,18 @@ def test_path_pattern_single_star_does_not_cross_segment(tmp_path):
     for pattern in ("/src/*.py", "src/*.py"):
         (tmp_path / ".graphifyignore").write_text(f"{pattern}\n")
         result = detect(tmp_path)
-        files = [path for paths in result["files"].values() for path in paths]
-        assert not any(path.endswith("src/main.py") for path in files)
-        assert any(path.endswith("src/app/main.py") for path in files)
+        files = as_posix_list(
+            path for paths in result["files"].values() for path in paths
+        )
+        # This negative is the actual subject of the test — that `*` did NOT
+        # cross a separator. Without the posix normalization it matched nothing
+        # on Windows and passed no matter what the matcher did.
+        assert not any(path.endswith("src/main.py") for path in files), (
+            f"`{pattern}` failed to exclude the direct child: {files}"
+        )
+        assert any(path.endswith("src/app/main.py") for path in files), (
+            f"`{pattern}` crossed a path segment and excluded the nested file: {files}"
+        )
 
 
 def test_directory_only_negation_does_not_reinclude_file(tmp_path):
