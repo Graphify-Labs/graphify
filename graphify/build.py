@@ -68,6 +68,7 @@ _EDGE_LANG_FAMILY: dict[str, str] = {
     ".c": "c", ".h": "c", ".cc": "c", ".cpp": "c", ".hpp": "c",
     ".cxx": "c", ".hh": "c", ".hxx": "c",
     ".cu": "c", ".cuh": "c", ".metal": "c", ".m": "c", ".mm": "c",
+    ".mq5": "c", ".mqh": "c",
     ".rb": "rb", ".rake": "rb", ".php": "php", ".cs": "cs", ".swift": "swift", ".lua": "lua",
 }
 
