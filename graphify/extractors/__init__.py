@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
+from graphify.extractors.actionscript import extract_actionscript
 from graphify.extractors.apex import extract_apex
 from graphify.extractors.bash import extract_bash
 from graphify.extractors.blade import extract_blade
@@ -21,6 +22,7 @@ from graphify.extractors.go import extract_go
 from graphify.extractors.json_config import extract_json
 from graphify.extractors.julia import extract_julia
 from graphify.extractors.markdown import extract_markdown
+from graphify.extractors.mxml import extract_mxml
 from graphify.extractors.objc import extract_objc
 from graphify.extractors.pascal import extract_pascal
 from graphify.extractors.pascal_forms import extract_delphi_form, extract_lazarus_form
@@ -34,6 +36,7 @@ from graphify.extractors.verilog import extract_verilog
 from graphify.extractors.zig import extract_zig
 
 LANGUAGE_EXTRACTORS: dict[str, Callable[[Path], dict]] = {
+    "actionscript": extract_actionscript,
     "apex": extract_apex,
     "bash": extract_bash,
     "blade": extract_blade,
@@ -50,6 +53,7 @@ LANGUAGE_EXTRACTORS: dict[str, Callable[[Path], dict]] = {
     "julia": extract_julia,
     "lazarus_form": extract_lazarus_form,
     "markdown": extract_markdown,
+    "mxml": extract_mxml,
     "objc": extract_objc,
     "pascal": extract_pascal,
     "powershell": extract_powershell,
