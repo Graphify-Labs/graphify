@@ -9,6 +9,7 @@ from graphify.extractors.base import (  # noqa: F401
     _file_stem,
     _make_id,
     _read_text,
+    _symbol_safe_name,
 )
 import hashlib
 import json
@@ -2998,3 +2999,43 @@ def _pascal_resolve_class(from_path: Path, class_name: str) -> str | None:
     if file_stem:
         return _make_id(file_stem, class_name)
     return None
+
+
+def _resolve_r_bare_calls(all_nodes: list[dict], all_edges: list[dict]) -> None:
+    """Repoint dangling R `calls` edges at their unique same-name definition
+    elsewhere in the corpus, then strip the internal `_bare_target` hint.
+
+    R has one flat namespace once every file is `source()`'d into
+    `.GlobalEnv`, so `extract_r` (extractors/r.py) cannot tell — from a single
+    file — whether an unresolved call is a typo, a base-R/package function, or
+    a function defined in a sibling file. It resolves same-file calls and
+    stashes a `_bare_target` hint on everything else; this corpus-level pass
+    (called from extract() once every file's results are merged, mirroring
+    `_resolve_cross_file_imports` above) does the file-independent lookup.
+
+    Mutates `all_edges` in place. An edge whose bare name matches more than
+    one definition is left dangling (pruned at build) rather than guessed —
+    the same rule the JS barrel resolver above uses for an ambiguous
+    re-export: never invent an edge.
+    """
+    node_ids = {n["id"] for n in all_nodes}
+
+    def_by_bare: dict[str, list[str]] = {}
+    for n in all_nodes:
+        sf = str(n.get("source_file", ""))
+        label = str(n.get("label", ""))
+        if sf.lower().endswith(".r") and label.endswith("()"):
+            bare = _make_id(_symbol_safe_name(label[:-2]))
+            def_by_bare.setdefault(bare, []).append(n["id"])
+
+    for e in all_edges:
+        bare = e.pop("_bare_target", None)
+        if bare is None or e.get("relation") != "calls":
+            continue
+        if e.get("target") in node_ids:
+            continue  # same-file guess already resolved; leave it alone
+        candidates = def_by_bare.get(bare, [])
+        if len(candidates) == 1:
+            e["target"] = candidates[0]
+        # 0 candidates (external/base-R call) or >1 (ambiguous): leave as the
+        # dangling same-file guess; build's dangling-edge prune drops it.
