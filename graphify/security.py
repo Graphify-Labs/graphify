@@ -15,7 +15,13 @@ from typing import Any
 import ipaddress
 import socket
 
-from graphify.paths import GRAPHIFY_OUT, GRAPHIFY_OUT_NAME
+from graphify.paths import (
+    GRAPHIFY_OUT,
+    GRAPHIFY_OUT_NAME,
+    path_exists,
+    path_stat,
+    resolve_path,
+)
 
 _ALLOWED_SCHEMES = {"http", "https"}
 _MAX_FETCH_BYTES = 52_428_800   # 50 MB hard cap for binary downloads
@@ -324,22 +330,22 @@ def validate_graph_path(path: str | Path, base: Path | None = None) -> Path:
         FileNotFoundError - resolved path does not exist
     """
     if base is None:
-        resolved_hint = Path(path).resolve()
+        resolved_hint = resolve_path(path)
         for candidate in [resolved_hint, *resolved_hint.parents]:
             if candidate.name == GRAPHIFY_OUT_NAME:
                 base = candidate
                 break
         if base is None:
-            base = Path(GRAPHIFY_OUT).resolve()
+            base = resolve_path(GRAPHIFY_OUT)
 
-    base = base.resolve()
-    if not base.exists():
+    base = resolve_path(base)
+    if not path_exists(base):
         raise ValueError(
             f"Graph base directory does not exist: {base}. "
             "Run /graphify first to build the graph."
         )
 
-    resolved = Path(path).resolve()
+    resolved = resolve_path(path)
     try:
         resolved.relative_to(base)
     except ValueError:
@@ -348,7 +354,7 @@ def validate_graph_path(path: str | Path, base: Path | None = None) -> Path:
             "Only paths inside graphify-out/ are permitted."
         )
 
-    if not resolved.exists():
+    if not path_exists(resolved):
         raise FileNotFoundError(f"Graph file not found: {resolved}")
 
     return resolved
@@ -372,7 +378,7 @@ def check_graph_file_size_cap(path: Path) -> None:
     """
     cap = _max_graph_file_bytes()
     try:
-        size = path.stat().st_size
+        size = path_stat(path).st_size
     except OSError:
         return
     if size > cap:

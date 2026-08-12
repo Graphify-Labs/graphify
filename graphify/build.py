@@ -30,8 +30,13 @@ import unicodedata
 from pathlib import Path
 import networkx as nx
 from .ids import make_id, normalize_id as _normalize_id
-from .paths import default_graph_json as _default_graph_json
-from .paths import is_absolute_any_platform as _is_abs
+from .paths import (
+    default_graph_json as _default_graph_json,
+    is_absolute_any_platform as _is_abs,
+    path_exists as _path_exists,
+    read_text as _read_text,
+    resolve_path as _resolve_path,
+)
 from .validate import validate_extraction
 
 
@@ -294,7 +299,7 @@ def _norm_source_file(p: str | None, root: str | None = None) -> str | None:
             # matching. Only the slow path resolves, so the common lexical match
             # stays filesystem-free.
             try:
-                p = Path(p).resolve().relative_to(Path(root).resolve()).as_posix()
+                p = _resolve_path(p).relative_to(_resolve_path(root)).as_posix()
             except (ValueError, OSError):
                 pass
     return p
@@ -318,7 +323,7 @@ def _abs_identity(p: str | None, root: str | None = None) -> str | None:
     if not _is_abs(q) and root:
         pp = Path(root) / q
     try:
-        return pp.resolve().as_posix()
+        return _resolve_path(pp).as_posix()
     except OSError:
         return pp.as_posix()
 
@@ -414,20 +419,20 @@ def _infer_merge_root(graph_path: Path) -> str | None:
     parent = graph_path.parent
     try:
         marker = parent / ".graphify_root"
-        if marker.exists():
-            recorded = marker.read_text(encoding="utf-8").strip()
+        if _path_exists(marker):
+            recorded = _read_text(marker, encoding="utf-8").strip()
             if recorded:
-                return str(Path(recorded).resolve())
+                return str(_resolve_path(recorded))
     except OSError:
         pass
     from .paths import GRAPHIFY_OUT
     try:
         if (
             parent.name == Path(GRAPHIFY_OUT).name
-            or (parent / ".graphify_root").exists()
-            or (parent / "manifest.json").exists()
+            or _path_exists(parent / ".graphify_root")
+            or _path_exists(parent / "manifest.json")
         ):
-            return str(parent.parent.resolve())
+            return str(_resolve_path(parent.parent))
     except Exception:
         pass
     return None
@@ -753,7 +758,7 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     root: if given, absolute source_file paths from semantic subagents are made
         relative to root so all nodes share a consistent path key (#932).
     """
-    _root = str(Path(root).resolve()) if root else None
+    _root = str(_resolve_path(root)) if root else None
     # NetworkX <= 3.1 serialised edges as "links"; remap to "edges" for compatibility.
     if "edges" not in extraction and "links" in extraction:
         extraction = dict(extraction, edges=extraction["links"])
@@ -1396,12 +1401,12 @@ def _load_existing_graph(graph_path: Path) -> "tuple[list, list, list, bool] | N
     exists but cannot be parsed — callers must refuse to overwrite rather
     than silently replace a possibly-recoverable graph.
     """
-    if not graph_path.exists():
+    if not _path_exists(graph_path):
         return None
     from graphify.security import check_graph_file_size_cap
     check_graph_file_size_cap(graph_path)
     try:
-        data = json.loads(graph_path.read_text(encoding="utf-8"))
+        data = json.loads(_read_text(graph_path, encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as exc:
         raise RuntimeError(
             f"Cannot read {graph_path} for incremental merge: {exc}. "
@@ -1469,7 +1474,7 @@ def merge_raw_extraction(
     existing_nodes, existing_edges, existing_hyperedges, _ = loaded
 
     _eff_root = (
-        str(Path(root).resolve()) if root is not None
+        str(_resolve_path(root)) if root is not None
         else _infer_merge_root(graph_path)
     )
 
@@ -1599,7 +1604,7 @@ def build_merge(
     # absolute deleted-file paths never matched the relative node keys and their
     # nodes survived as ghosts).
     _eff_root = (
-        str(Path(root).resolve()) if root is not None
+        str(_resolve_path(root)) if root is not None
         else _infer_merge_root(graph_path)
     )
 

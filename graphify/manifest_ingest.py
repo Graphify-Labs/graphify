@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from graphify.ids import make_id
+from graphify.paths import path_stat as _path_stat, read_text as _read_file_text
 
 __all__ = ["is_package_manifest_path", "extract_package_manifest", "PACKAGE_MANIFEST_NAMES"]
 
@@ -52,9 +53,9 @@ def _pkg_id(name: str) -> str:
 def extract_package_manifest(path: Path) -> dict[str, Any]:
     """Parse a package manifest into a canonical package node + ``depends_on`` edges."""
     try:
-        if path.stat().st_size > _MAX_MANIFEST_BYTES:
+        if _path_stat(path).st_size > _MAX_MANIFEST_BYTES:
             return {"nodes": [], "edges": [], "error": "manifest too large to index"}
-        text = path.read_text(encoding="utf-8", errors="replace")
+        text = _read_file_text(path, encoding="utf-8", errors="replace")
     except OSError as exc:
         return {"nodes": [], "edges": [], "error": f"manifest read error: {exc}"}
 

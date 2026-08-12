@@ -1,29 +1,288 @@
-"""Single source of truth for the graphify output-directory name.
+r"""Cross-platform filesystem boundaries and Graphify output paths.
+
+Graphify stores ordinary, user-facing paths in graph IDs, manifests, cache keys,
+and diagnostics.  On Windows, direct filesystem calls additionally need the
+extended-length namespace (``\\?\`` for local paths and ``\\?\UNC\`` for
+UNC paths) to reach deeply nested corpus files without depending on machine-wide
+policy.  The helpers in this module keep that transport-only spelling at the I/O
+boundary so Linux and macOS remain no-ops and Windows paths retain one stable
+logical identity.
 
 The output directory is ``graphify-out`` by default and overridable with the
-``GRAPHIFY_OUT`` env var (worktrees or shared-output setups, #686). It accepts a
-relative name (``"graphify-out-feature"``) or an absolute path
+``GRAPHIFY_OUT`` environment variable (worktrees or shared-output setups, #686).
+It accepts a relative name (``"graphify-out-feature"``) or an absolute path
 (``"/shared/graphify-out"``).
 
 This used to be duplicated as an identical ``_GRAPHIFY_OUT`` constant in
 ``__main__``, ``cache``, and ``watch``, while ``security`` and ``callflow_html``
 hardcoded the literal ``"graphify-out"`` and silently ignored the override
 (#1423). Centralising it here keeps the name in one place. The value is read
-once at import time, matching the previous per-module constants — set
-``GRAPHIFY_OUT`` before the process starts (the normal worktree/shared-output
-flow) and every reader honours it.
+once at import time, matching the previous per-module constants; set
+``GRAPHIFY_OUT`` before the process starts and every reader honours it.
 """
 
 from __future__ import annotations
 
 import json
+import ntpath
 import os
 import re
 import stat
+import sys
 import tempfile
+from collections.abc import Callable, Iterator
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import Any
 
 GRAPHIFY_OUT = os.environ.get("GRAPHIFY_OUT", "graphify-out")
+
+
+PathLike = str | os.PathLike[str]
+
+
+def io_path(path: PathLike) -> str:
+    r"""Return a path string suitable for Windows file-system I/O.
+
+    Windows' legacy Win32 namespace rejects paths near ``MAX_PATH`` unless the
+    machine-wide long-path policy is enabled.  The extended-length path syntax
+    does not depend on that policy: local paths use ``\\?\C:\...``
+    and UNC paths use ``\\?\UNC\server\share\...``.
+
+    Keep this conversion at the I/O boundary only.  Graph IDs, manifests,
+    diagnostics, ignore matching, and user-visible paths should retain their
+    ordinary spelling, because the extended prefix is an API transport detail.
+    """
+    value = os.fspath(path)
+    if sys.platform != "win32":
+        return value
+    if value.startswith(("\\\\?\\", "\\\\.\\")):
+        return value
+
+    # Extended-length paths must be absolute and use backslashes.  ntpath is
+    # used explicitly so this helper is unit-testable from non-Windows CI.
+    value = ntpath.abspath(value)
+    if value.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + value[2:]
+    return "\\\\?\\" + value
+
+
+def logical_path(path: PathLike) -> str:
+    r"""Remove a Windows extended-length prefix from a path string.
+
+    ``os.walk(io_path(root))`` yields prefixed directory names.  Strip the
+    transport prefix before paths enter graphify's matching/storage logic so a
+    long path does not acquire a second identity merely because it was opened
+    through the Windows extended namespace.
+    """
+    value = os.fspath(path)
+    if value.upper().startswith("\\\\?\\UNC\\"):
+        return "\\\\" + value[8:]
+    if value.startswith("\\\\?\\"):
+        return value[4:]
+    return value
+
+
+def resolve_path(path: PathLike) -> Path:
+    """Resolve ``path`` through the I/O namespace and return ordinary spelling.
+
+    This mirrors ``Path.resolve(strict=False)`` while ensuring the operation can
+    reach a long Windows path even when the host's global long-path policy is
+    disabled.  The returned ``Path`` intentionally has no extended prefix.
+    """
+    return Path(logical_path(os.path.realpath(io_path(path))))
+
+
+def path_exists(path: PathLike) -> bool:
+    """Return whether ``path`` exists, using Windows-safe path spelling."""
+    return os.path.exists(io_path(path))
+
+
+def path_is_file(path: PathLike) -> bool:
+    """Return whether ``path`` is a regular file, using Windows-safe spelling."""
+    return os.path.isfile(io_path(path))
+
+
+def path_is_dir(path: PathLike) -> bool:
+    """Return whether ``path`` is a directory, using Windows-safe spelling."""
+    return os.path.isdir(io_path(path))
+
+
+def path_is_symlink(path: PathLike) -> bool:
+    """Return whether ``path`` is a symbolic link, using Windows-safe spelling."""
+    return os.path.islink(io_path(path))
+
+
+def path_stat(path: PathLike, *, follow_symlinks: bool = True) -> os.stat_result:
+    """Stat ``path`` through the Windows-safe I/O namespace."""
+    return os.stat(io_path(path), follow_symlinks=follow_symlinks)
+
+
+def make_dirs(
+    path: PathLike,
+    mode: int = 0o777,
+    *,
+    exist_ok: bool = False,
+) -> None:
+    """Create a directory tree through the Windows-safe I/O namespace."""
+    os.makedirs(io_path(path), mode=mode, exist_ok=exist_ok)
+
+
+def scandir_path(path: PathLike) -> os.ScandirIterator[str]:
+    """Return ``os.scandir`` for ``path`` using Windows-safe spelling."""
+    return os.scandir(io_path(path))
+
+
+def iterdir_path(path: PathLike) -> Iterator[Path]:
+    r"""Yield direct children while preserving the caller's path spelling.
+
+    ``DirEntry.path`` inherits the extended absolute root supplied to
+    :func:`os.scandir`. Rebuild each child from the logical input root and the
+    entry name so a relative input remains relative and ``\\?\`` never escapes.
+    """
+    logical_root = Path(logical_path(path))
+    with scandir_path(path) as entries:
+        for entry in entries:
+            yield logical_root / entry.name
+
+
+def glob_paths(path: PathLike, pattern: str) -> Iterator[Path]:
+    """Yield glob matches below ``path`` while retaining logical spelling.
+
+    Prefix the root before delegating to :meth:`Path.glob`; this preserves
+    pathlib's matching behavior (including dotfiles) while every recursive
+    ``scandir`` stays in the extended Windows namespace. Matches are then
+    reconstructed relative to the caller's root, avoiding an accidental
+    relative-to-absolute API change on Windows.
+    """
+    logical_root = Path(logical_path(path))
+    filesystem_root = Path(io_path(path))
+    for match in filesystem_root.glob(pattern):
+        try:
+            relative = match.relative_to(filesystem_root)
+        except ValueError:
+            # Defensive fallback for an unusual pathlib implementation; glob
+            # matches should ordinarily remain below their root.
+            yield Path(logical_path(match))
+        else:
+            yield logical_root / relative
+
+
+def unlink_path(path: PathLike, *, missing_ok: bool = False) -> None:
+    """Remove a file or symlink through the Windows-safe namespace."""
+    try:
+        os.unlink(io_path(path))
+    except FileNotFoundError:
+        if not missing_ok:
+            raise
+
+
+def replace_path(source: PathLike, destination: PathLike) -> None:
+    """Atomically replace ``destination`` using Windows-safe path spellings."""
+    os.replace(io_path(source), io_path(destination))
+
+
+def walk_path(
+    path: PathLike,
+    *,
+    topdown: bool = True,
+    onerror: Callable[[OSError], Any] | None = None,
+    followlinks: bool = False,
+) -> Iterator[tuple[str, list[str], list[str]]]:
+    """Walk ``path`` safely and yield ordinary, user-facing path spellings.
+
+    ``os.walk`` must receive the extended Windows form at the traversal root;
+    otherwise a later ``scandir`` fails as soon as a descendant crosses the
+    legacy ``MAX_PATH`` boundary. The extended prefix is stripped from every
+    yielded directory and from errors before control returns to callers. A
+    relative input remains relative even though the Windows I/O root must be
+    absolute before it can use the extended namespace.
+    """
+    logical_root = logical_path(path)
+    filesystem_root = io_path(path)
+    ordinary_filesystem_root = logical_path(filesystem_root)
+
+    def _from_filesystem_path(value: PathLike) -> str:
+        ordinary = logical_path(value)
+        if sys.platform != "win32":
+            return ordinary
+        try:
+            relative = ntpath.relpath(ordinary, ordinary_filesystem_root)
+        except ValueError:
+            # Different UNC shares/drives cannot be relativized; stripping the
+            # transport prefix is still the safest public representation.
+            return ordinary
+        if relative == ".":
+            return logical_root
+        return ntpath.join(logical_root, relative)
+
+    def _onerror(error: OSError) -> None:
+        filename = getattr(error, "filename", None)
+        if filename is not None:
+            try:
+                error.filename = _from_filesystem_path(filename)
+            except (AttributeError, TypeError):
+                pass
+        if onerror is not None:
+            onerror(error)
+
+    handler = _onerror if onerror is not None else None
+    for dirpath, dirnames, filenames in os.walk(
+        filesystem_root,
+        topdown=topdown,
+        onerror=handler,
+        followlinks=followlinks,
+    ):
+        yield _from_filesystem_path(dirpath), dirnames, filenames
+
+
+def read_bytes(path: PathLike, *, limit: int | None = None) -> bytes:
+    """Read bytes through the Windows-safe I/O spelling of ``path``.
+
+    ``limit`` mirrors ``file.read(limit)`` and supports bounded probes without a
+    separate, long-path-unsafe ``Path.open`` call.
+    """
+    with open(io_path(path), "rb") as fh:
+        return fh.read() if limit is None else fh.read(limit)
+
+
+def read_text(
+    path: PathLike,
+    *,
+    encoding: str | None = None,
+    errors: str | None = None,
+) -> str:
+    """Read text through the Windows-safe I/O spelling of ``path``.
+
+    The default encoding intentionally mirrors :meth:`Path.read_text` and the
+    built-in :func:`open`; corpus readers that require UTF-8 pass it explicitly.
+    """
+    with open(io_path(path), "r", encoding=encoding, errors=errors) as fh:
+        return fh.read()
+
+
+def write_text(
+    path: PathLike,
+    text: str,
+    *,
+    encoding: str | None = None,
+    errors: str | None = None,
+    newline: str | None = None,
+) -> int:
+    """Write text through the Windows-safe I/O spelling of ``path``."""
+    with open(
+        io_path(path),
+        "w",
+        encoding=encoding,
+        errors=errors,
+        newline=newline,
+    ) as fh:
+        return fh.write(text)
+
+
+def write_bytes(path: PathLike, data: bytes) -> int:
+    """Write bytes through the Windows-safe I/O spelling of ``path``."""
+    with open(io_path(path), "wb") as fh:
+        return fh.write(data)
 
 
 def _atomic_replace(path: "str | Path", write_fn) -> None:
@@ -43,9 +302,13 @@ def _atomic_replace(path: "str | Path", write_fn) -> None:
     """
     # Resolve symlinks so the temp lands on the target's filesystem (same-fs
     # atomic rename) and the replace writes through the link, not over it.
-    real = Path(os.path.realpath(str(path)))
-    real.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(real.parent), prefix=f".{real.name}.", suffix=".tmp")
+    real = resolve_path(path)
+    make_dirs(real.parent, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(
+        dir=io_path(real.parent),
+        prefix=f".{real.name}.",
+        suffix=".tmp",
+    )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             write_fn(f)
@@ -54,7 +317,7 @@ def _atomic_replace(path: "str | Path", write_fn) -> None:
         # silently tightens a previously group/world-readable output to
         # owner-only. Best-effort — a chmod failure must not fail the write.
         try:
-            mode = stat.S_IMODE(os.stat(real).st_mode)
+            mode = stat.S_IMODE(path_stat(real).st_mode)
         except OSError:
             umask = os.umask(0)
             os.umask(umask)
@@ -64,13 +327,13 @@ def _atomic_replace(path: "str | Path", write_fn) -> None:
         except OSError:
             pass
         try:
-            os.replace(tmp, str(real))
+            os.replace(tmp, io_path(real))
         except PermissionError:
             # Windows: os.replace fails (WinError 5/32) when the destination is
             # briefly locked by another handle (antivirus, an open reader). Fall
             # back to copy-then-delete, matching graphify.cache's atomic writer.
             import shutil
-            shutil.copy2(tmp, str(real))
+            shutil.copy2(tmp, io_path(real))
             os.unlink(tmp)
     except BaseException:
         try:
@@ -370,7 +633,7 @@ def load_node_link_graph(path_or_data):
         p = Path(data)
         from graphify.security import check_graph_file_size_cap  # lazy: security imports paths
         check_graph_file_size_cap(p)
-        data = json.loads(p.read_text(encoding="utf-8"))
+        data = json.loads(read_text(p, encoding="utf-8"))
     if isinstance(data, dict) and "links" not in data and "edges" in data:
         data = dict(data, links=data["edges"])
     try:

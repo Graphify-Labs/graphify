@@ -6,6 +6,12 @@ from pathlib import Path
 from typing import Any
 
 from graphify.extractors.base import _file_stem, _make_id, _read_text
+from graphify.paths import (
+    path_exists as _path_exists,
+    path_is_file as _path_is_file,
+    read_bytes as _read_file_bytes,
+    resolve_path as _resolve_path,
+)
 
 
 # Leading `${VAR}` / `$VAR` expansion segment(s) of a `source` path argument. The
@@ -79,7 +85,7 @@ def extract_bash(path: Path) -> dict:
     try:
         language = Language(tsbash.language())
         parser = Parser(language)
-        source = path.read_bytes()
+        source = _read_file_bytes(path)
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:
@@ -266,12 +272,12 @@ def extract_bash(path: Path) -> dict:
                         raw = _read_text(args[0], source).strip().strip("'\"")
                         line = node.start_point[0] + 1
                         if raw.startswith((".", "/")):
-                            resolved = (path.parent / raw).resolve()
+                            resolved = _resolve_path(path.parent / raw)
                             # Only emit the edge if the target actually exists on
                             # disk — prevents graph pollution from crafted paths
                             # like `source ../../etc/passwd` that traverse outside
                             # the project tree (B-1).
-                            if resolved.exists():
+                            if _path_exists(resolved):
                                 tgt_nid = _make_id(str(resolved))
                                 add_edge(file_nid, tgt_nid, "imports_from", line,
                                          context="import",
@@ -306,8 +312,8 @@ def extract_bash(path: Path) -> dict:
                                     var_name = var_match.group(1) or var_match.group(2)
                                     if var_name in var_bases:
                                         base = var_bases[var_name]
-                                resolved = (base / suffix).resolve()
-                                if resolved.is_file():
+                                resolved = _resolve_path(base / suffix)
+                                if _path_is_file(resolved):
                                     add_edge(file_nid, _make_id(str(resolved)),
                                              "imports_from", line,
                                              confidence="INFERRED", context="import",
@@ -335,8 +341,8 @@ def extract_bash(path: Path) -> dict:
                             if raw:
                                 try:
                                     candidate = path.parent / raw
-                                    if candidate.is_file():
-                                        sibling = candidate.resolve()
+                                    if _path_is_file(candidate):
+                                        sibling = _resolve_path(candidate)
                                 except OSError:
                                     sibling = None
                             if sibling is not None:
@@ -362,12 +368,12 @@ def extract_bash(path: Path) -> dict:
                     if cmd in _BASH_SCRIPT_RUNNERS and args:
                         raw = literal(args[0])
                     if raw and raw.endswith(".sh"):
-                        resolved = (path.parent / raw).resolve()
-                        if resolved.is_file():
+                        resolved = _resolve_path(path.parent / raw)
+                        if _path_is_file(resolved):
                             target_path = resolved
                             if not path.is_absolute():
                                 try:
-                                    target_path = resolved.relative_to(Path.cwd().resolve())
+                                    target_path = resolved.relative_to(_resolve_path(Path.cwd()))
                                 except ValueError:
                                     pass
                             caller_nid = entry_nid if parent_nid == file_nid else parent_nid

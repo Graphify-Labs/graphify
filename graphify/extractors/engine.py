@@ -9,6 +9,7 @@ from graphify.extractors.models import LanguageConfig
 from graphify.extractors.resolution import _resolve_js_import_target
 from graphify.security import sanitize_metadata
 from pathlib import Path
+from graphify.paths import read_bytes as _read_file_bytes
 
 
 def _csharp_namespace_id(dotted_name: str) -> str:
@@ -2585,7 +2586,7 @@ def _extract_generic(
 
     try:
         parser = Parser(language)
-        source = path.read_bytes() if source_override is None else source_override
+        source = _read_file_bytes(path) if source_override is None else source_override
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:

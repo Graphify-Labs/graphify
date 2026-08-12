@@ -12,6 +12,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from graphify._minhash import MinHash, MinHashLSH
+from graphify.paths import resolve_path as _resolve_path
 from rapidfuzz.distance import DamerauLevenshtein, Jaro, JaroWinkler
 
 
@@ -356,7 +357,7 @@ def _rank_path(source_file: str, root: Path | None) -> str:
     normalized = source_file.replace("\\", "/")
     if root is not None and normalized:
         try:
-            return Path(normalized).resolve().relative_to(root).as_posix()
+            return _resolve_path(normalized).relative_to(root).as_posix()
         except Exception:
             pass
     return normalized
@@ -499,7 +500,7 @@ def deduplicate_entities(
     # identically and lifecycle markers in the checkout location's own segments
     # cannot flip the survivor (#2532).
     try:
-        root_resolved: Path | None = Path(root).resolve() if root else None
+        root_resolved: Path | None = _resolve_path(root) if root else None
     except Exception:
         root_resolved = None
 

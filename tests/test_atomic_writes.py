@@ -6,6 +6,7 @@ directory then `os.replace`s it into place; on failure the original is untouched
 """
 import json
 import os
+import stat
 
 import pytest
 
@@ -41,18 +42,26 @@ def test_write_text_atomic_preserves_existing_mode(tmp_path):
     p = tmp_path / "graph.json"
     p.write_text("{}", encoding="utf-8")
     os.chmod(p, 0o644)
+    # Windows exposes a synthetic permission mask (typically 0666 for a
+    # writable file) rather than preserving POSIX owner/group distinctions.
+    # Compare with the mode the platform actually reports after chmod instead
+    # of assuming that every OS can represent 0644 exactly.
+    expected_mode = stat.S_IMODE(os.stat(p).st_mode)
     write_text_atomic(p, '{"x": 1}')
-    assert (os.stat(p).st_mode & 0o777) == 0o644
+    assert stat.S_IMODE(os.stat(p).st_mode) == expected_mode
 
 
-def test_write_text_atomic_new_file_respects_umask(tmp_path):
-    # A brand-new file must land at the umask default (e.g. 0644), NOT mkstemp's
-    # 0600 — otherwise every fresh graph.json would be owner-only.
+def test_write_text_atomic_new_file_matches_platform_default_mode(tmp_path):
+    # A brand-new atomic file should have the same mode as an ordinary new file
+    # on this platform, NOT mkstemp's owner-only default.  This also avoids
+    # assuming Windows can represent a POSIX umask-derived mode exactly.
+    reference = tmp_path / "reference.json"
+    reference.write_text("{}", encoding="utf-8")
+    expected_mode = stat.S_IMODE(os.stat(reference).st_mode)
+
     p = tmp_path / "new.json"
     write_text_atomic(p, "{}")
-    umask = os.umask(0)
-    os.umask(umask)
-    assert (os.stat(p).st_mode & 0o777) == (0o666 & ~umask)
+    assert stat.S_IMODE(os.stat(p).st_mode) == expected_mode
 
 
 def test_write_text_atomic_writes_through_symlink(tmp_path):
@@ -61,7 +70,15 @@ def test_write_text_atomic_writes_through_symlink(tmp_path):
     target = tmp_path / "real.json"
     target.write_text("old", encoding="utf-8")
     link = tmp_path / "link.json"
-    link.symlink_to(target)
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        if os.name == "nt" and getattr(exc, "winerror", None) == 1314:
+            pytest.skip(
+                "Windows symlink creation requires Developer Mode, "
+                "administrator rights, or SeCreateSymbolicLinkPrivilege"
+            )
+        raise
     write_text_atomic(link, "new")
     assert link.is_symlink()
     assert target.read_text() == "new"

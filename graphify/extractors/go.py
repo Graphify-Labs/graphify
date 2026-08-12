@@ -3,6 +3,7 @@ from __future__ import annotations
 
 
 from pathlib import Path
+from graphify.paths import read_bytes as _read_file_bytes
 from graphify.extractors.base import _LANGUAGE_BUILTIN_GLOBALS, _file_stem, _make_id, _read_text
 
 
@@ -92,7 +93,7 @@ def extract_go(path: Path) -> dict:
     try:
         language = Language(tsgo.language())
         parser = Parser(language)
-        source = path.read_bytes()
+        source = _read_file_bytes(path)
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:

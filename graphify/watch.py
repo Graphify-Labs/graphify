@@ -11,7 +11,20 @@ from pathlib import Path
 from typing import Callable
 
 # Single source of truth in graphify.paths (#1423); re-exported as _GRAPHIFY_OUT.
-from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
+from graphify.paths import (
+    GRAPHIFY_OUT as _GRAPHIFY_OUT,
+    glob_paths as _glob_paths,
+    io_path as _io_path,
+    make_dirs as _make_dirs,
+    path_exists as _path_exists,
+    path_is_dir as _path_is_dir,
+    path_is_file as _path_is_file,
+    read_text as _read_text,
+    replace_path as _replace_path,
+    resolve_path as _resolve_path,
+    unlink_path as _unlink_path,
+    write_text as _write_text,
+)
 _PENDING_FILENAME = ".pending_changes"
 _PENDING_DRAIN_MAX_PASSES = 20
 
@@ -31,10 +44,10 @@ def _queue_pending(out_dir: Path, changed_paths: list[Path]) -> None:
     """
     if not changed_paths:
         return
-    out_dir.mkdir(parents=True, exist_ok=True)
+    _make_dirs(out_dir, exist_ok=True)
     pending = out_dir / _PENDING_FILENAME
     payload = "".join(f"{os.fspath(p)}\n" for p in changed_paths)
-    with open(pending, "a", encoding="utf-8") as fh:
+    with open(_io_path(pending), "a", encoding="utf-8") as fh:
         fh.write(payload)
 
 
@@ -46,10 +59,10 @@ def _drain_pending(out_dir: Path) -> list[Path]:
     fragment cannot poison the merge.
     """
     pending = out_dir / _PENDING_FILENAME
-    if not pending.exists():
+    if not _path_exists(pending):
         return []
     try:
-        raw = pending.read_text(encoding="utf-8")
+        raw = _read_text(pending, encoding="utf-8")
     except OSError:
         return []
     # Unlink BEFORE returning so a crash between read and process retains the
@@ -58,7 +71,7 @@ def _drain_pending(out_dir: Path) -> list[Path]:
     # bug. Use missing_ok to tolerate a racing drain on platforms where
     # rename/unlink may interleave.
     with contextlib.suppress(FileNotFoundError):
-        pending.unlink()
+        _unlink_path(pending)
     seen: set[str] = set()
     out: list[Path] = []
     for line in raw.splitlines():
@@ -90,10 +103,10 @@ def _write_build_config(
     if not excludes and gitignore is None:
         return
     try:
-        out_dir.mkdir(parents=True, exist_ok=True)
+        _make_dirs(out_dir, exist_ok=True)
         path = out_dir / _BUILD_CONFIG_FILENAME
         try:
-            config = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+            config = json.loads(_read_text(path, encoding="utf-8")) if _path_is_file(path) else {}
         except (OSError, json.JSONDecodeError):
             config = {}
         if not isinstance(config, dict):
@@ -102,7 +115,7 @@ def _write_build_config(
             config["excludes"] = list(excludes)
         if gitignore is not None:
             config["gitignore"] = gitignore
-        path.write_text(json.dumps(config), encoding="utf-8")
+        _write_text(path, json.dumps(config), encoding="utf-8")
     except OSError:
         pass
 
@@ -111,8 +124,8 @@ def _read_build_excludes(out_dir: Path) -> list[str]:
     """Return the persisted ``--exclude`` patterns for this graph, or []."""
     try:
         path = out_dir / _BUILD_CONFIG_FILENAME
-        if path.is_file():
-            cfg = json.loads(path.read_text(encoding="utf-8"))
+        if _path_is_file(path):
+            cfg = json.loads(_read_text(path, encoding="utf-8"))
             ex = cfg.get("excludes") if isinstance(cfg, dict) else None
             if isinstance(ex, list):
                 return [str(x) for x in ex if isinstance(x, str) and x]
@@ -125,8 +138,8 @@ def _read_build_gitignore(out_dir: Path) -> bool:
     """Return whether rebuilds should honor VCS ignore files (default True)."""
     try:
         path = out_dir / _BUILD_CONFIG_FILENAME
-        if path.is_file():
-            cfg = json.loads(path.read_text(encoding="utf-8"))
+        if _path_is_file(path):
+            cfg = json.loads(_read_text(path, encoding="utf-8"))
             if isinstance(cfg, dict) and isinstance(cfg.get("gitignore"), bool):
                 return cfg["gitignore"]
     except (OSError, json.JSONDecodeError):
@@ -176,12 +189,12 @@ def _rebuild_lock(out_dir: Path, *, blocking: bool = False):
         yield True
         return
 
-    out_dir.mkdir(parents=True, exist_ok=True)
+    _make_dirs(out_dir, exist_ok=True)
     lock_path = out_dir / ".rebuild.lock"
     # "a+" creates the file if missing without truncating an existing holder's
     # PID payload — important because another process may have already written
     # its PID before we attempt the flock.
-    fh = open(lock_path, "a+", encoding="utf-8")
+    fh = open(_io_path(lock_path), "a+", encoding="utf-8")
     acquired = False
     try:
         flags = fcntl.LOCK_EX if blocking else (fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -212,7 +225,7 @@ def _rebuild_lock(out_dir: Path, *, blocking: bool = False):
         # unlinks; a non-acquiring caller leaves the existing lock in place.
         if acquired:
             with contextlib.suppress(OSError):
-                lock_path.unlink()
+                _unlink_path(lock_path)
 
 
 def _apply_resource_limits() -> None:
@@ -299,14 +312,14 @@ def _changed_path_candidates(raw: Path, *, change_root: Path, watch_root: Path) 
     """
     if raw.is_absolute():
         lexical = Path(os.path.abspath(raw))
-        resolved = raw.resolve()
+        resolved = _resolve_path(raw)
         return [lexical] if lexical == resolved else [lexical, resolved]
 
     candidates: list[Path] = []
     seen: set[str] = set()
     for base in (change_root, watch_root):
         lexical = Path(os.path.abspath(base / raw))
-        for cand in (lexical, lexical.resolve()):
+        for cand in (lexical, _resolve_path(lexical)):
             key = os.fspath(cand)
             if key in seen:
                 continue
@@ -325,7 +338,7 @@ def _relativize_source_files(payload: dict, root: Path, *, scope: Path | None = 
             if not source_path.is_absolute():
                 continue
             try:
-                resolved = source_path.resolve()
+                resolved = _resolve_path(source_path)
                 if scope is not None and not _is_relative_to(resolved, scope):
                     continue
                 item["source_file"] = resolved.relative_to(root).as_posix()
@@ -367,14 +380,14 @@ class _StoredSourcePaths:
         relative_marker_prefix: str | None = None
 
         root_marker = out / ".graphify_root"
-        if root_marker.exists():
+        if _path_exists(root_marker):
             try:
-                saved_root = Path(root_marker.read_text(encoding="utf-8").strip())
+                saved_root = Path(_read_text(root_marker, encoding="utf-8").strip())
                 if saved_root.is_absolute():
-                    self.existing_source_root = saved_root.resolve()
+                    self.existing_source_root = _resolve_path(saved_root)
                 else:
-                    invocation_root = Path.cwd().resolve()
-                    if (invocation_root / saved_root).resolve() == watch_root:
+                    invocation_root = _resolve_path(Path.cwd())
+                    if _resolve_path(invocation_root / saved_root) == watch_root:
                         self.existing_source_root = invocation_root
                         relative_marker_prefix = posixpath.normpath(saved_root.as_posix())
             except (OSError, ValueError):
@@ -483,7 +496,7 @@ def _reconcile_existing_graph(
     deliberately-graphed .gitignore'd tree (#1795).
     """
     existing_graph_data: dict = {}
-    if not existing_graph.exists():
+    if not _path_exists(existing_graph):
         return result, existing_graph_data
 
     # Fail-closed load (#2251): reuse build._load_existing_graph, which raises
@@ -501,7 +514,7 @@ def _reconcile_existing_graph(
     # topology compare) the (nodes, edges, hyperedges) tuple does not carry.
     # A failure here (e.g. a race rewriting the file) still propagates,
     # staying fail-closed.
-    existing = json.loads(existing_graph.read_text(encoding="utf-8"))
+    existing = json.loads(_read_text(existing_graph, encoding="utf-8"))
     existing_graph_data = existing
 
     # Backfill tier provenance on legacy items (#2334), mirroring
@@ -598,7 +611,7 @@ def _reconcile_existing_graph(
                 if identity:
                     alive = _alive_cache.get(identity)
                     if alive is None:
-                        alive = Path(identity).exists()
+                        alive = _path_exists(identity)
                         _alive_cache[identity] = alive
                     ignored = alive and _ignored_now(identity)
                     if ignored:
@@ -616,7 +629,7 @@ def _reconcile_existing_graph(
                 if identity:
                     alive = _alive_cache.get(identity)
                     if alive is None:
-                        alive = Path(identity).exists()
+                        alive = _path_exists(identity)
                         _alive_cache[identity] = alive
                     if alive:
                         if _ignored_now(identity):
@@ -901,7 +914,7 @@ def _check_shrink(
         if all(_accounted(n) for n in lost):
             return True
     if tmp is not None:
-        tmp.unlink(missing_ok=True)
+        _unlink_path(tmp, missing_ok=True)
     print(
         f"[graphify] WARNING: new graph has {len(new_nodes)} nodes but existing "
         f"graph.json has {len(existing_nodes)}. Refusing to overwrite — you may be "
@@ -933,7 +946,7 @@ def _stabilize_rebuild_cwd(watch_path: Path) -> bool:
         return True
 
     repo_root = os.environ.get("GRAPHIFY_REPO_ROOT", "").strip()
-    if repo_root and Path(repo_root).is_dir():
+    if repo_root and _path_is_dir(repo_root):
         try:
             os.chdir(repo_root)
             return True
@@ -1000,7 +1013,7 @@ def _rebuild_code(
         with _rebuild_lock(out, blocking=block_on_lock) as got:
             if not got:
                 print("[graphify watch] Rebuild already in progress for "
-                      f"{watch_path.resolve()} - changes queued.")
+                      f"{_resolve_path(watch_path)} - changes queued.")
                 return False
             # Lock acquired. Drain anything queued by earlier contenders
             # (including, importantly, the paths we just queued ourselves)
@@ -1039,12 +1052,12 @@ def _rebuild_code(
                     ) and ok
             return ok
 
-    watch_root = watch_path.resolve()
+    watch_root = _resolve_path(watch_path)
     # project_root stays CWD-anchored for a relative invocation on purpose: the
     # persisted graph rehomes source_file across invocation styles against it
     # (tests/test_watch.py:1389, :1428). The manifest is a different artifact
     # with a different anchor — see the save_manifest calls below.
-    project_root = Path.cwd().resolve() if not watch_path.is_absolute() else watch_root
+    project_root = _resolve_path(Path.cwd()) if not watch_path.is_absolute() else watch_root
     report_root = _report_root_label(watch_path)
     try:
         from graphify.extract import extract, _get_extractor
@@ -1093,7 +1106,7 @@ def _rebuild_code(
                 ast_doc_files.append(p)
 
         existing_graph = out / "graph.json"
-        if not code_files and not existing_graph.exists():
+        if not code_files and not _path_exists(existing_graph):
             print("[graphify watch] No code files found - nothing to rebuild.")
             return False
 
@@ -1112,10 +1125,10 @@ def _rebuild_code(
         # graph must be allowed to self-heal on a full rebuild without the
         # shrink-guard refusing the smaller write.
         semantic_doc_files: set[Path] = set()
-        if ast_doc_files and existing_graph.exists():
+        if ast_doc_files and _path_exists(existing_graph):
             try:
                 check_graph_file_size_cap(existing_graph)
-                prior = json.loads(existing_graph.read_text(encoding="utf-8"))
+                prior = json.loads(_read_text(existing_graph, encoding="utf-8"))
                 prior_paths = _StoredSourcePaths(
                     prior,
                     out=out,
@@ -1180,14 +1193,17 @@ def _rebuild_code(
             # an incremental rebuild, or their semantic nodes would be wiped.
             semantic_doc_set = {Path(os.path.abspath(p)) for p in semantic_doc_files}
             wanted: list[Path] = []
-            change_root = Path.cwd().resolve()
+            change_root = _resolve_path(Path.cwd())
             for raw in changed_paths:
                 candidates = _changed_path_candidates(
                     raw,
                     change_root=change_root,
                     watch_root=watch_root,
                 )
-                tracked = next((cand for cand in candidates if cand.exists() and cand in code_set), None)
+                tracked = next(
+                    (cand for cand in candidates if _path_exists(cand) and cand in code_set),
+                    None,
+                )
                 if tracked is not None:
                     if tracked not in wanted and tracked not in semantic_doc_set:
                         wanted.append(tracked)
@@ -1196,7 +1212,7 @@ def _rebuild_code(
                 existing_in_root = next(
                     (
                         cand for cand in candidates
-                        if cand.exists() and _is_relative_to(cand, watch_root)
+                        if _path_exists(cand) and _is_relative_to(cand, watch_root)
                     ),
                     None,
                 )
@@ -1255,10 +1271,10 @@ def _rebuild_code(
         # is parsed, mutated, or emitted from them (see extract()'s docstring).
         resolution_context_nodes: list[dict] = []
         resolution_context_edges: list[dict] = []
-        if changed_paths is not None and existing_graph.exists():
+        if changed_paths is not None and _path_exists(existing_graph):
             try:
                 check_graph_file_size_cap(existing_graph)
-                ctx_graph = json.loads(existing_graph.read_text(encoding="utf-8"))
+                ctx_graph = json.loads(_read_text(existing_graph, encoding="utf-8"))
                 ctx_paths = _StoredSourcePaths(
                     ctx_graph,
                     out=out,
@@ -1348,7 +1364,7 @@ def _rebuild_code(
             failed_res = set(_failed_ast_sources)
             for p in _failed_ast_sources:
                 try:
-                    failed_res.add(str(Path(p).resolve()))
+                    failed_res.add(str(_resolve_path(p)))
                 except (OSError, RuntimeError):
                     pass
 
@@ -1356,7 +1372,7 @@ def _rebuild_code(
                 if f in failed_res:
                     return True
                 try:
-                    return str(Path(f).resolve()) in failed_res
+                    return str(_resolve_path(f)) in failed_res
                 except (OSError, RuntimeError):
                     return False
 
@@ -1416,7 +1432,7 @@ def _rebuild_code(
             _nsf(source, _rebuilt_root) or source
             for source in _failed_ast_sources
         }
-        out.mkdir(exist_ok=True)
+        _make_dirs(out, exist_ok=True)
 
         if no_cluster:
             # Normalise to "links" key so schema is consistent with the full clustered path.
@@ -1435,10 +1451,10 @@ def _rebuild_code(
             }
             candidate_graph_text = _json_text(candidate_graph_data)
             same_graph = False
-            if existing_graph.exists():
+            if _path_exists(existing_graph):
                 try:
                     check_graph_file_size_cap(existing_graph)
-                    existing_payload = json.loads(existing_graph.read_text(encoding="utf-8"))
+                    existing_payload = json.loads(_read_text(existing_graph, encoding="utf-8"))
                 except Exception as exc:
                     # A load failure is NOT "graph changed" (#2251): refuse to
                     # overwrite a graph we merely failed to read. Normally
@@ -1471,12 +1487,12 @@ def _rebuild_code(
                 # Atomic replace via tmp file, matching the clustered path: a
                 # crash mid-write must not leave a truncated graph.json.
                 graph_tmp = out / ".graph.tmp.json"
-                graph_tmp.write_text(candidate_graph_text, encoding="utf-8")
-                graph_tmp.replace(existing_graph)
+                _write_text(graph_tmp, candidate_graph_text, encoding="utf-8")
+                _replace_path(graph_tmp, existing_graph)
 
             # Write the user-supplied path only after the candidate graph is
             # accepted, so a refused shrink cannot mismatch graph and marker.
-            (out / ".graphify_root").write_text(str(watch_path), encoding="utf-8")
+            _write_text(out / ".graphify_root", str(watch_path), encoding="utf-8")
 
             try:
                 from graphify.detect import save_manifest
@@ -1497,8 +1513,8 @@ def _rebuild_code(
 
             # clear stale needs_update flag if present
             flag = out / "needs_update"
-            if flag.exists():
-                flag.unlink()
+            if _path_exists(flag):
+                _unlink_path(flag)
 
             if same_graph:
                 print("[graphify watch] No code-graph changes detected (--no-cluster); outputs left untouched.")
@@ -1544,8 +1560,8 @@ def _rebuild_code(
                 except Exception:
                     pass
                 flag = out / "needs_update"
-                if flag.exists():
-                    flag.unlink()
+                if _path_exists(flag):
+                    _unlink_path(flag)
                 print("[graphify watch] No code-graph topology changes detected; outputs left untouched.")
                 return True
 
@@ -1559,7 +1575,11 @@ def _rebuild_code(
         labels_file = out / ".graphify_labels.json"
         sig_file = out / (".graphify_labels.json" + ".sig")
         try:
-            raw = json.loads(labels_file.read_text(encoding="utf-8")) if labels_file.exists() else {}
+            raw = (
+                json.loads(_read_text(labels_file, encoding="utf-8"))
+                if _path_exists(labels_file)
+                else {}
+            )
             # Skip persisted "Community N" placeholders so the hub-fill below
             # replaces them instead of perpetuating them on every rebuild (#2073).
             labels = {
@@ -1580,11 +1600,11 @@ def _rebuild_code(
         from graphify.cluster import community_member_sigs
         cur_sigs = community_member_sigs(communities)
         saved_sigs: dict[int, str] = {}
-        if sig_file.exists():
+        if _path_exists(sig_file):
             try:
                 saved_sigs = {
                     int(k): v for k, v in
-                    json.loads(sig_file.read_text(encoding="utf-8")).items()
+                    json.loads(_read_text(sig_file, encoding="utf-8")).items()
                     if isinstance(v, str)
                 }
             except Exception:
@@ -1624,19 +1644,19 @@ def _rebuild_code(
         json_written = to_json(G, communities, str(graph_tmp), force=True, built_at_commit=commit, community_labels=labels)
         if not json_written:
             return False
-        candidate_graph_data = json.loads(graph_tmp.read_text(encoding="utf-8"))
+        candidate_graph_data = json.loads(_read_text(graph_tmp, encoding="utf-8"))
         same_graph = False
         same_report = False
-        if existing_graph.exists():
+        if _path_exists(existing_graph):
             try:
                 check_graph_file_size_cap(existing_graph)
-                existing_payload = json.loads(existing_graph.read_text(encoding="utf-8"))
+                existing_payload = json.loads(_read_text(existing_graph, encoding="utf-8"))
             except Exception as exc:
                 # A load failure is NOT "graph changed" (#2251): refuse to
                 # overwrite a graph we merely failed to read. Normally
                 # unreachable — the reconcile load above already failed
                 # closed — but a race rewriting the file can land here.
-                graph_tmp.unlink(missing_ok=True)
+                _unlink_path(graph_tmp, missing_ok=True)
                 print(
                     f"error: Cannot read {existing_graph}: {exc}. "
                     "Refusing to overwrite; delete the file and run a "
@@ -1651,12 +1671,12 @@ def _rebuild_code(
                 )
             except Exception:
                 same_graph = False
-        if report_path.exists():
-            old_report = report_path.read_text(encoding="utf-8")
+        if _path_exists(report_path):
+            old_report = _read_text(report_path, encoding="utf-8")
             same_report = _report_for_compare(old_report) == _report_for_compare(report)
         no_change = same_graph and same_report
         if no_change:
-            graph_tmp.unlink(missing_ok=True)
+            _unlink_path(graph_tmp, missing_ok=True)
             print("[graphify watch] No code-graph changes detected; graph.json/GRAPH_REPORT.md left untouched.")
         else:
             if not _check_shrink(
@@ -1669,17 +1689,20 @@ def _rebuild_code(
                 return False
             from graphify.export import backup_if_protected as _backup
             _backup(out)
-            graph_tmp.replace(existing_graph)
-            report_path.write_text(report, encoding="utf-8")
-            labels_file.write_text(labels_json, encoding="utf-8")
+            _replace_path(graph_tmp, existing_graph)
+            _write_text(report_path, report, encoding="utf-8")
+            _write_text(labels_file, labels_json, encoding="utf-8")
             # Keep the membership signatures in step with the labels we just wrote.
             # Skipping this was the other half of the stale-label bug: labels.json
             # advanced every rebuild while the sidecar kept describing an older
             # clustering, so the guard above had nothing accurate to check against.
-            sig_file.write_text(
-                json.dumps({str(k): v for k, v in cur_sigs.items()}), encoding="utf-8")
+            _write_text(
+                sig_file,
+                json.dumps({str(k): v for k, v in cur_sigs.items()}),
+                encoding="utf-8",
+            )
 
-        (out / ".graphify_root").write_text(str(watch_path), encoding="utf-8")
+        _write_text(out / ".graphify_root", str(watch_path), encoding="utf-8")
 
         try:
             from graphify.detect import save_manifest
@@ -1711,8 +1734,8 @@ def _rebuild_code(
                 # the community-aggregation view in exactly this case, so do
                 # the same here: current AND present beats current OR present.
                 from graphify.exporters.html import _viz_node_limit
-                if html_target.exists():
-                    html_target.unlink()
+                if _path_exists(html_target):
+                    _unlink_path(html_target)
                 limit = _viz_node_limit()
                 if limit <= 0:
                     # GRAPHIFY_VIZ_NODE_LIMIT=0 means "no HTML viz" (CI runners),
@@ -1724,14 +1747,14 @@ def _rebuild_code(
                                 community_labels=labels or None, node_limit=limit)
                         # The aggregator declines to write a single-community
                         # graph, so trust the file rather than the call.
-                        html_written = html_target.exists()
+                        html_written = _path_exists(html_target)
                     except Exception as fallback_err:
                         print(f"[graphify watch] Skipped graph.html: {viz_err} "
                               f"(aggregated view also failed: {fallback_err})")
 
         # Regenerate callflow HTML if the user previously generated one —
         # opt-in by existence so users who never ran callflow-html aren't affected.
-        callflow_files = list(out.glob("*-callflow.html"))
+        callflow_files = list(_glob_paths(out, "*-callflow.html"))
         if callflow_files and not no_change:
             try:
                 from graphify.callflow_html import write_callflow_html
@@ -1748,8 +1771,8 @@ def _rebuild_code(
 
         # clear stale needs_update flag if present
         flag = out / "needs_update"
-        if flag.exists():
-            flag.unlink()
+        if _path_exists(flag):
+            _unlink_path(flag)
 
         if not no_change:
             print(f"[graphify watch] Rebuilt: {G.number_of_nodes()} nodes, "
@@ -1774,7 +1797,7 @@ def check_update(watch_path: Path) -> bool:
     that the update is needed.
     """
     flag = Path(watch_path) / _GRAPHIFY_OUT / "needs_update"
-    if flag.exists():
+    if _path_exists(flag):
         print(f"[graphify check-update] Pending non-code changes in {watch_path}.")
         print("[graphify check-update] Run `/graphify --update` to apply semantic re-extraction.")
     return True
@@ -1783,8 +1806,8 @@ def check_update(watch_path: Path) -> bool:
 def _notify_only(watch_path: Path) -> None:
     """Write a flag file and print a notification (fallback for non-code-only corpora)."""
     flag = watch_path / _GRAPHIFY_OUT / "needs_update"
-    flag.parent.mkdir(parents=True, exist_ok=True)
-    flag.write_text("1", encoding="utf-8")
+    _make_dirs(flag.parent, exist_ok=True)
+    _write_text(flag, "1", encoding="utf-8")
     print(f"\n[graphify watch] New or changed files detected in {watch_path}")
     print("[graphify watch] Non-code files changed - semantic re-extraction requires LLM.")
     print("[graphify watch] Run `/graphify --update` in Claude Code to update the graph.")
@@ -1805,7 +1828,7 @@ def _batch_triggers_rebuild(batch: list[Path]) -> bool:
     until the next code event or a manual `graphify update` (#2580).
     """
     has_code = any(p.suffix.lower() in _CODE_EXTENSIONS for p in batch)
-    has_deletion = any(not p.exists() for p in batch)
+    has_deletion = any(not _path_exists(p) for p in batch)
     return has_code or has_deletion
 
 
@@ -1816,7 +1839,7 @@ def _batch_needs_llm_flag(batch: list[Path]) -> bool:
     re-extraction); deleted ones are already handled by the rebuild's
     reconcile sweep, so a pure-deletion batch must not leave a stale flag.
     """
-    return _has_non_code([p for p in batch if p.exists()])
+    return _has_non_code([p for p in batch if _path_exists(p)])
 
 
 def watch(watch_path: Path, debounce: float = 3.0) -> None:
@@ -1847,7 +1870,7 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
     # (Time Machine writes, Docker/Colima VM I/O, Spotlight indexing, …) —
     # without this short-circuit a busy volume can saturate a CPU core
     # discarding events one extension at a time. (gh-928)
-    watch_root_for_ignore = watch_path.resolve()
+    watch_root_for_ignore = _resolve_path(watch_path)
     ignore_patterns = _load_graphifyignore(
         watch_root_for_ignore,
         gitignore=_read_build_gitignore(watch_path / _GRAPHIFY_OUT),
@@ -1886,7 +1909,7 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
     observer.schedule(handler, str(watch_path), recursive=True)
     observer.start()
 
-    print(f"[graphify watch] Watching {watch_path.resolve()} - press Ctrl+C to stop")
+    print(f"[graphify watch] Watching {_resolve_path(watch_path)} - press Ctrl+C to stop")
     print(f"[graphify watch] Code changes rebuild graph automatically. "
           f"Doc/image changes require /graphify --update.")
     print(f"[graphify watch] Debounce: {debounce}s")

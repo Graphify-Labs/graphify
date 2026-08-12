@@ -22,6 +22,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from graphify.paths import read_text as _read_file_text
+
 # Plain-text document types where boundary-based slicing is meaningful and where
 # `_file_to_text` is a straight ``read_text`` (so a char range matches the bytes
 # the model is shown). Deliberately excludes code (.py, .ts, ...) and binary
@@ -119,7 +121,7 @@ def expand_oversized_files(
             out.append(f)
             continue
         try:
-            text = f.read_text(encoding="utf-8", errors="replace")
+            text = _read_file_text(f, encoding="utf-8", errors="replace")
         except OSError:
             out.append(f)
             continue
@@ -135,7 +137,7 @@ def expand_oversized_files(
 
 def read_slice_text(fs: FileSlice) -> str:
     """Read just this slice's characters from its parent file."""
-    text = fs.path.read_text(encoding="utf-8", errors="replace")
+    text = _read_file_text(fs.path, encoding="utf-8", errors="replace")
     return text[fs.start:fs.end]
 
 
@@ -149,7 +151,7 @@ def bisect_slice(fs: FileSlice) -> tuple[FileSlice, FileSlice] | None:
     if fs.end - fs.start <= 1:
         return None
     try:
-        text = fs.path.read_text(encoding="utf-8", errors="replace")
+        text = _read_file_text(fs.path, encoding="utf-8", errors="replace")
     except OSError:
         return None
     mid = (fs.start + fs.end) // 2

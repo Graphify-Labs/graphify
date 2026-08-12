@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from graphify.paths import read_bytes as _read_file_bytes
 from typing import Any
 
 from graphify.extractors.base import _file_stem, _make_id, _read_text
@@ -18,7 +19,7 @@ def extract_zig(path: Path) -> dict:
     try:
         language = Language(tszig.language())
         parser = Parser(language)
-        source = path.read_bytes()
+        source = _read_file_bytes(path)
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:

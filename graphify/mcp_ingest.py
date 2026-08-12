@@ -64,6 +64,7 @@ from pathlib import Path
 from typing import Any
 
 from graphify.ids import make_id as _shared_make_id
+from graphify.paths import read_bytes as _read_file_bytes
 from graphify.security import sanitize_label
 
 
@@ -92,8 +93,7 @@ def extract_mcp_config(path: Path) -> dict[str, Any]:
         failure, oversize file, or missing ``mcpServers`` map
     """
     try:
-        with path.open("rb") as fh:
-            raw = fh.read(_MAX_BYTES + 1)
+        raw = _read_file_bytes(path, limit=_MAX_BYTES + 1)
     except OSError as exc:
         return {"nodes": [], "edges": [], "error": f"mcp_ingest read error: {exc}"}
 

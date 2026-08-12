@@ -56,7 +56,17 @@ from graphify.extractors.terraform import extract_terraform  # noqa: F401
 from graphify.extractors.verilog import extract_verilog  # noqa: F401
 from graphify.extractors.zig import extract_zig  # noqa: F401
 from graphify.security import sanitize_metadata
-from graphify.paths import disambiguate_ambiguous_candidates
+from graphify.paths import (
+    disambiguate_ambiguous_candidates,
+    iterdir_path as _iterdir_path,
+    path_exists as _path_exists,
+    path_is_file as _path_is_file,
+    path_is_symlink as _path_is_symlink,
+    read_bytes as _read_file_bytes,
+    read_text as _read_file_text,
+    resolve_path as _resolve_path,
+    walk_path as _walk_path,
+)
 
 from graphify.extractors.models import LanguageConfig, _JS_CACHE_BYPASS_SUFFIXES, _NamespaceExportFact, _StarExportFact, _SymbolAliasFact, _SymbolDeclarationFact, _SymbolExportFact, _SymbolImportFact, _SymbolResolutionFacts, _SymbolUseFact, _WORKSPACE_PACKAGE_CACHE  # noqa: E402,F401
 
@@ -202,7 +212,7 @@ def _repoint_python_package_imports(paths, all_nodes, all_edges, root) -> None:
     (ambiguous -> leave dangling, as before). Files whose package root IS the
     scan root are skipped (ids already coincide)."""
     try:
-        root = Path(root).resolve()
+        root = _resolve_path(root)
     except OSError:
         root = Path(root)
     node_ids = {n.get("id") for n in all_nodes if isinstance(n, dict)}
@@ -211,17 +221,17 @@ def _repoint_python_package_imports(paths, all_nodes, all_edges, root) -> None:
         if p.suffix.lower() not in (".py", ".pyi"):
             continue
         try:
-            rel = Path(p).resolve().relative_to(root)
+            rel = _resolve_path(p).relative_to(root)
         except (ValueError, OSError):
             continue
         parts = rel.parts
         if len(parts) < 2:
             continue  # top-level file: scan-root-relative id already matches
-        d = Path(p).resolve().parent
+        d = _resolve_path(p).parent
         levels = 0
         # Bounded by the number of dirs between the file and the scan root, so a
         # pathological `/__init__.py` chain can't loop forever.
-        while levels < len(parts) - 1 and (d / "__init__.py").is_file():
+        while levels < len(parts) - 1 and _path_is_file(d / "__init__.py"):
             levels += 1
             d = d.parent
         if levels == 0:
@@ -375,7 +385,7 @@ def _import_python(node, source: bytes, file_nid: str, stem: str, edges: list, s
             # and popped before graph.json ships.
             if target_path is not None:
                 try:
-                    if target_path.is_file():
+                    if _path_is_file(target_path):
                         edge["target_file"] = str(target_path)
                 except OSError:
                     pass
@@ -416,7 +426,7 @@ def _import_js(node, source: bytes, file_nid: str, stem: str, edges: list, str_p
             # `_resolve_js_import_path` returns the attempted path when no
             # local file exists. Static ES imports must treat that as unresolved
             # rather than minting a checkout-specific target ID (#2457).
-            if resolved_path is not None and not resolved_path.is_file():
+            if resolved_path is not None and not _path_is_file(resolved_path):
                 tgt_nid = _make_id("ref", raw)
                 resolved_path = None
             edge = {
@@ -1118,7 +1128,7 @@ def _extract_python_rationale(path: Path, result: dict) -> None:
         from tree_sitter import Language, Parser
         language = Language(tspython.language())
         parser = Parser(language)
-        source = path.read_bytes()
+        source = _read_file_bytes(path)
         tree = parser.parse(source)
         root = tree.root_node
     except Exception:
@@ -1270,7 +1280,7 @@ def _rescue_js_dynamic_imports(path: Path, result: dict) -> None:
     """
     try:
         import re as _re
-        src = path.read_text(encoding="utf-8", errors="replace")
+        src = _read_file_text(path, encoding="utf-8", errors="replace")
         if "import(" not in src:  # cheap bail — most files have none
             return
         existing_ids = {n["id"] for n in result.get("nodes", [])}
@@ -1305,8 +1315,8 @@ def _rescue_js_dynamic_imports(path: Path, result: dict) -> None:
                 tf = e.get("target_file")
                 if tf:
                     try:
-                        deferred_files.add(str(Path(tf).resolve()))
-                    except OSError:
+                        deferred_files.add(str(_resolve_path(tf)))
+                    except (OSError, RuntimeError):
                         deferred_files.add(str(tf))
         # `(?<!\w)` so `fooimport('x')` and `_import('x')` do not match. The
         # backtick alternative mirrors _dynamic_import_js's template-string
@@ -1332,9 +1342,9 @@ def _rescue_js_dynamic_imports(path: Path, result: dict) -> None:
                 continue
             if resolved_file is not None:
                 try:
-                    if str(resolved_file.resolve()) in deferred_files:
+                    if str(_resolve_path(resolved_file)) in deferred_files:
                         continue
-                except OSError:
+                except (OSError, RuntimeError):
                     pass
             # One file depending on one module is one file-level fact, however many
             # call sites defer it. Pre-existing (two module-scope `import('./x')` in one
@@ -1342,7 +1352,7 @@ def _rescue_js_dynamic_imports(path: Path, result: dict) -> None:
             # in-function dynamic import through here too, which would turn an edge case
             # into the common one — a hub module deferred from eight functions of the same
             # file would carry eight identical arrows.
-            emit_key = str(resolved_file.resolve()) if resolved_file is not None else raw
+            emit_key = str(_resolve_path(resolved_file)) if resolved_file is not None else raw
             if emit_key in rescued_targets:
                 continue
             rescued_targets.add(emit_key)
@@ -1386,7 +1396,7 @@ def _extract_js_rationale(path: Path, result: dict) -> None:
     Mutates result in-place by appending to result['nodes'] and result['edges'].
     """
     try:
-        source_text = path.read_text(encoding="utf-8", errors="replace")
+        source_text = _read_file_text(path, encoding="utf-8", errors="replace")
     except Exception:
         return
 
@@ -1482,7 +1492,7 @@ def _resolve_rescued_specifier(
         resolved = _resolve_js_module_path(
             Path(os.path.normpath(path.parent / raw))
         )
-        resolved_file = resolved if resolved is not None and resolved.is_file() else None
+        resolved_file = resolved if resolved is not None and _path_is_file(resolved) else None
         return _make_id(str(resolved)), str(resolved), resolved_file
     # Check tsconfig.json path aliases (e.g. "$lib/" -> "src/lib/",
     # "@/" -> "src/") before treating as external. Mirrors _import_js
@@ -1492,7 +1502,7 @@ def _resolve_rescued_specifier(
     if resolved_alias is not None:
         resolved_alias = _resolve_js_module_path(resolved_alias)
         resolved_file = (resolved_alias if resolved_alias is not None
-                         and resolved_alias.is_file() else None)
+                         and _path_is_file(resolved_alias) else None)
         return _make_id(str(resolved_alias)), str(resolved_alias), resolved_file
     # Bare/scoped import (node_modules) - use last segment;
     # build_from_json drops as external if no matching node exists.
@@ -1567,7 +1577,7 @@ def extract_svelte(path: Path) -> dict:
     result = _extract_generic(path, _JS_CONFIG)
     try:
         import re as _re
-        src = path.read_text(encoding="utf-8", errors="replace")
+        src = _read_file_text(path, encoding="utf-8", errors="replace")
         existing_ids = {n["id"] for n in result.get("nodes", [])}
         # Source file node ID must match the one _extract_generic creates:
         # _make_id(str(path)) - single arg, no stem prefix. Otherwise the source
@@ -1629,7 +1639,7 @@ def extract_astro(path: Path) -> dict:
     result = _extract_generic(path, _JS_CONFIG)
     try:
         import re as _re
-        src = path.read_text(encoding="utf-8", errors="replace")
+        src = _read_file_text(path, encoding="utf-8", errors="replace")
         existing_ids = {n["id"] for n in result.get("nodes", [])}
         file_node_id = _make_id(str(path))
         aliases = _load_tsconfig_aliases(path.parent)
@@ -1690,7 +1700,7 @@ def extract_vue(path: Path) -> dict:
     ``import('…')`` dynamic imports the AST does not edge.
     """
     try:
-        src = path.read_text(encoding="utf-8", errors="replace")
+        src = _read_file_text(path, encoding="utf-8", errors="replace")
     except OSError:
         return {"nodes": [], "edges": []}
 
@@ -1735,7 +1745,7 @@ def _is_spock_file(path: Path, ts_result: dict) -> bool:
     import re as _re
     _SPOCK_FEATURE_RE = _re.compile(r"""^\s*def\s+[\"']""", _re.MULTILINE)
     try:
-        return bool(_SPOCK_FEATURE_RE.search(path.read_text(errors="replace")))
+        return bool(_SPOCK_FEATURE_RE.search(_read_file_text(path, errors="replace")))
     except OSError:
         return False
 
@@ -1746,7 +1756,7 @@ def _extract_spock_fallback(path: Path, ts_result: dict) -> dict:
     (which survive reliably) with class and feature-method nodes extracted via regex.
     """
     import re as _re
-    source = path.read_text(errors="replace")
+    source = _read_file_text(path, errors="replace")
     str_path = str(path)
     stem = _file_stem(path)
 
@@ -2336,12 +2346,12 @@ def _merge_csharp_partial_class_nodes(
     for p in paths:
         if p.suffix.lower() in proj_exts:
             try:
-                project_dirs.add(p.resolve().parent)
-            except OSError:
+                project_dirs.add(_resolve_path(p).parent)
+            except (OSError, RuntimeError):
                 pass
     try:
-        stop = root.resolve()
-    except OSError:
+        stop = _resolve_path(root)
+    except (OSError, RuntimeError):
         stop = root
     dir_assembly: dict[Path, str] = {}
 
@@ -2361,7 +2371,7 @@ def _merge_csharp_partial_class_nodes(
                 break
             try:
                 has_project = any(
-                    c.suffix.lower() in proj_exts for c in d.iterdir()
+                    c.suffix.lower() in proj_exts for c in _iterdir_path(d)
                 )
             except OSError:
                 has_project = False
@@ -2380,8 +2390,8 @@ def _merge_csharp_partial_class_nodes(
         if path is None:
             return ""
         try:
-            d = path.resolve().parent
-        except OSError:
+            d = _resolve_path(path).parent
+        except (OSError, RuntimeError):
             return ""
         return _assembly_of_dir(d)
 
@@ -3802,7 +3812,7 @@ def extract_lazarus_package(path: Path) -> dict:
     """
     try:
         import xml.etree.ElementTree as ET
-        src = path.read_bytes()
+        src = _read_file_bytes(path)
     except OSError as e:
         return {"nodes": [], "edges": [], "error": str(e)}
 
@@ -3909,7 +3919,7 @@ def extract_slnx(path: Path) -> dict:
     import xml.etree.ElementTree as ET
 
     try:
-        src = path.read_bytes()
+        src = _read_file_bytes(path)
     except OSError:
         return {"nodes": [], "edges": [], "error": f"cannot read {path}"}
 
@@ -3939,7 +3949,7 @@ def extract_slnx(path: Path) -> dict:
     def _resolve(proj_path: str) -> str:
         proj_path = proj_path.replace("\\", "/")
         try:
-            return str((path.parent / proj_path).resolve())
+            return str(_resolve_path(path.parent / proj_path))
         except Exception:
             return proj_path
 
@@ -3988,7 +3998,7 @@ def extract_csproj(path: Path) -> dict:
     import xml.etree.ElementTree as ET
 
     try:
-        src = path.read_bytes()
+        src = _read_file_bytes(path)
     except OSError:
         return {"nodes": [], "edges": [], "error": f"cannot read {path}"}
 
@@ -4068,7 +4078,7 @@ def extract_csproj(path: Path) -> dict:
             continue
         ref_path_norm = ref_path.replace("\\", "/")
         try:
-            abs_ref = str((path.parent / ref_path_norm).resolve())
+            abs_ref = str(_resolve_path(path.parent / ref_path_norm))
         except Exception:
             abs_ref = ref_path_norm
         proj_nid = _make_id(abs_ref)
@@ -4203,10 +4213,10 @@ def _xaml_binding_refs(value: str) -> tuple[str | None, str | None]:
 
 def _xaml_codebehind_path(path: Path) -> Path | None:
     expected = path.with_suffix(path.suffix + ".cs")
-    if expected.exists():
+    if _path_exists(expected):
         return expected
     try:
-        for sibling in path.parent.iterdir():
+        for sibling in _iterdir_path(path.parent):
             if sibling.name.casefold() == expected.name.casefold():
                 return sibling
     except OSError:
@@ -4249,7 +4259,7 @@ def _xaml_codebehind_symbols(
     # parameter list on method nodes, so we read it from the code-behind source
     # at the method's recorded line.
     try:
-        cb_lines = codebehind.read_text(encoding="utf-8", errors="replace").splitlines()
+        cb_lines = _read_file_text(codebehind, encoding="utf-8", errors="replace").splitlines()
     except OSError:
         cb_lines = []
 
@@ -4347,16 +4357,16 @@ def _xaml_project_root(path: Path) -> Path:
     root = path.parent
     for directory in (path.parent, *path.parent.parents):
         try:
-            if any(child.suffix in project_markers for child in directory.iterdir()):
+            if any(child.suffix in project_markers for child in _iterdir_path(directory)):
                 root = directory
                 break
         except OSError:
             continue
     if _XAML_ACTIVE_EXTRACT_ROOT is None:
         return root
-    boundary = _XAML_ACTIVE_EXTRACT_ROOT.resolve()
+    boundary = _resolve_path(_XAML_ACTIVE_EXTRACT_ROOT)
     try:
-        root.resolve().relative_to(boundary)
+        _resolve_path(root).relative_to(boundary)
         return root
     except ValueError:
         return boundary
@@ -4365,7 +4375,7 @@ def _xaml_project_root(path: Path) -> Path:
 def _xaml_csharp_class_nodes(path: Path) -> dict[str, list[dict]]:
     from graphify.detect import _is_ignored, _is_noise_dir, _load_graphifyignore
     root = _xaml_project_root(path)
-    cache_key = str(root.resolve()) if _XAML_ACTIVE_EXTRACT_ROOT is not None else None
+    cache_key = str(_resolve_path(root)) if _XAML_ACTIVE_EXTRACT_ROOT is not None else None
     if cache_key and cache_key in _XAML_CSHARP_CLASS_CACHE:
         return _XAML_CSHARP_CLASS_CACHE[cache_key]
     classes: dict[str, list[dict]] = {}
@@ -4379,12 +4389,11 @@ def _xaml_csharp_class_nodes(path: Path) -> dict[str, list[dict]]:
     # scanned millions of paths and effectively hung. A real .NET project sits
     # well under the cap; a runaway root is bounded to a fast, partial scan
     # instead of hanging.
-    import os as _os
     _DIR_CAP = 20000
     cs_files: list[Path] = []
     visited = 0
     try:
-        for dirpath, dirnames, filenames in _os.walk(root):
+        for dirpath, dirnames, filenames in _walk_path(root):
             dirnames[:] = [
                 d for d in dirnames if not d.startswith(".") and not _is_noise_dir(d)
             ]
@@ -4435,7 +4444,7 @@ def _xaml_communitytoolkit_members(vm_node: dict) -> tuple[dict[str, dict], list
     try:
         # errors="replace" so a non-UTF8 code-behind can't raise UnicodeDecodeError
         # and abort the whole extract_xaml (matches every other reader here).
-        lines = Path(source_file).read_text(encoding="utf-8", errors="replace").splitlines()
+        lines = _read_file_text(Path(source_file), encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return {}, []
 
@@ -4499,7 +4508,7 @@ def extract_xaml(path: Path) -> dict:
     import xml.etree.ElementTree as ET
 
     try:
-        src = path.read_bytes()
+        src = _read_file_bytes(path)
     except OSError:
         return {"nodes": [], "edges": [], "error": f"cannot read {path}"}
 
@@ -4913,7 +4922,7 @@ def _is_objc_header(path: Path) -> bool:
     extract_objc while leaving every C/C++ header on its existing extractor.
     """
     try:
-        head = path.read_bytes()[:256 * 1024]
+        head = _read_file_bytes(path, limit=256 * 1024)
     except OSError:
         return False
     return any(marker in head for marker in _OBJC_HEADER_MARKERS)
@@ -4956,7 +4965,7 @@ def _is_cpp_header(path: Path) -> bool:
     here and keeps its existing extract_c routing.
     """
     try:
-        head = path.read_bytes()[:256 * 1024]
+        head = _read_file_bytes(path, limit=256 * 1024)
     except OSError:
         return False
     return any(marker in head for marker in _CPP_HEADER_MARKERS)
@@ -5011,7 +5020,7 @@ def _get_extractor(path: Path) -> Any | None:
 def _safe_extract_with_xaml_root(extractor, path: Path, root: Path) -> dict:
     global _XAML_ACTIVE_EXTRACT_ROOT
     previous_root = _XAML_ACTIVE_EXTRACT_ROOT
-    _XAML_ACTIVE_EXTRACT_ROOT = root.resolve()
+    _XAML_ACTIVE_EXTRACT_ROOT = _resolve_path(root)
     try:
         return _safe_extract(extractor, path)
     finally:
@@ -5320,7 +5329,7 @@ def extract(
         root = anchor_root
     elif cache_root is not None:
         root = cache_root
-    root = root.resolve()
+    root = _resolve_path(root)
 
     # #1774: the cache is an OUTPUT, so when no explicit cache_root is given it is
     # written under the current working directory — never `root` (the inferred
@@ -5328,7 +5337,7 @@ def extract(
     # read-only or foreign corpus. `root` still anchors the content-hash keys,
     # node ids, symbol resolution, and the XAML project-scan boundary; only the
     # cache directory's location diverges from it.
-    cache_location = (cache_root if cache_root is not None else Path(".")).resolve()
+    cache_location = _resolve_path(cache_root if cache_root is not None else Path("."))
     total = len(paths)
 
     # Phase 1: separate cached hits from uncached work
@@ -5592,7 +5601,7 @@ def extract(
     _remap_seen: set[Path] = set()
     for _p in paths:
         try:
-            _remap_seen.add(_p.resolve())
+            _remap_seen.add(_resolve_path(_p))
         except (OSError, RuntimeError):
             pass
     for _e in all_edges:
@@ -5601,7 +5610,7 @@ def extract(
             continue
         _raw_tp = Path(_tf)
         try:
-            _tp = _raw_tp.resolve()
+            _tp = _resolve_path(_raw_tp)
         except (OSError, RuntimeError):
             continue
         if _tp in _remap_seen:
@@ -5627,7 +5636,7 @@ def extract(
             # target that does not actually exist on disk stays dangling,
             # exactly as before.
             try:
-                if _tp.is_file():
+                if _path_is_file(_tp):
                     ext_new_id = _make_id("ext", _portable_out_of_root_sf(_tp))
                     id_remap[_make_id(str(_tp))] = ext_new_id
                     if _raw_tp != _tp:
@@ -5647,7 +5656,7 @@ def extract(
                 pass
             continue
         try:
-            if not _tp.is_file():
+            if not _path_is_file(_tp):
                 # Speculatively-resolved target that doesn't exist (e.g. an
                 # import of a not-yet-created sibling): keep its raw id
                 # dangling, exactly as before, so no false canonical edge is
@@ -5672,7 +5681,7 @@ def extract(
             rel = path.relative_to(root)
         except ValueError:
             try:
-                rel = path.resolve().relative_to(root)
+                rel = _resolve_path(path).relative_to(root)
             except ValueError:
                 continue
         new_id = _file_node_id(rel)
@@ -5681,14 +5690,14 @@ def extract(
         # Also register the absolute-resolved form of the file-level id so
         # alias/workspace import targets (resolved via .resolve()) remap to
         # canonical instead of orphaning (#1529).
-        old_id_abs = _make_id(str(path.resolve()))
+        old_id_abs = _make_id(str(_resolve_path(path)))
         if old_id_abs != new_id:
             id_remap[old_id_abs] = new_id
         old_prefs: list[tuple[str, str]] = []
         old_pref = _file_node_id(path)
         if old_pref != new_id:
             old_prefs.append((old_pref, new_id))
-        old_pref_abs = _file_node_id(path.resolve())
+        old_pref_abs = _file_node_id(_resolve_path(path))
         if old_pref_abs != new_id and old_pref_abs != old_pref:
             old_prefs.append((old_pref_abs, new_id))
         # Bash entrypoint node ids append "__entry" to the file-level id
@@ -5707,10 +5716,10 @@ def extract(
             if _entry_old != _entry_new:
                 id_remap.setdefault(_entry_old, _entry_new)
         if old_prefs:
-            prefix_remap[path.resolve()] = old_prefs
+            prefix_remap[_resolve_path(path)] = old_prefs
         # Absolute form first: it is the longest, so prefix decomposition can
         # try forms in order without a shorter form shadowing it.
-        stem_forms[path.resolve()] = (
+        stem_forms[_resolve_path(path)] = (
             new_id, [old_pref_abs, old_pref, new_id]
         )
     if id_remap:
@@ -5759,7 +5768,7 @@ def extract(
             if n.get("type") == "package":
                 continue
             try:
-                entry = prefix_remap.get(Path(sf).resolve())
+                entry = prefix_remap.get(_resolve_path(sf))
             except Exception:
                 continue
             if entry is None:
@@ -5864,7 +5873,7 @@ def extract(
 
         def _decompose(target: str, tf: str) -> "tuple[str, str] | None":
             try:
-                forms = stem_forms.get(Path(tf).resolve())
+                forms = stem_forms.get(_resolve_path(tf))
             except (OSError, RuntimeError):
                 return None
             if not forms:
@@ -6464,7 +6473,7 @@ def extract(
             canonical_id = _file_node_id(rel)
             new_sf = rel.as_posix()
         try:
-            sf_resolved = sf_path.resolve()
+            sf_resolved = _resolve_path(sf_path)
         except (OSError, RuntimeError):
             sf_resolved = sf_path
         # Learn the STEM (extension-dropped) forms too: symbol producers mint
@@ -6620,7 +6629,7 @@ def extract(
 def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | None = None) -> list[Path]:
     containment_root = root if root is not None else target
     from graphify.detect import _resolves_under_root
-    if target.is_file():
+    if _path_is_file(target):
         return [target] if _resolves_under_root(target, containment_root) else []
     _EXTENSIONS = set(_DISPATCH.keys())
     from graphify.detect import _is_ignored, _is_noise_dir, _load_graphifyignore
@@ -6643,7 +6652,7 @@ def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | N
         # conservatism as detect's scan walk).
         has_negation = any(pat.startswith("!") for _, pat in patterns)
         results: list[Path] = []
-        for dirpath, dirnames, filenames in os.walk(target):
+        for dirpath, dirnames, filenames in _walk_path(target):
             dp = Path(dirpath)
             dirnames[:] = [
                 d for d in dirnames
@@ -6658,10 +6667,10 @@ def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | N
         return sorted(results)
     # Walk with symlink following + cycle detection
     results = []
-    for dirpath, dirnames, filenames in os.walk(target, followlinks=True):
-        if os.path.islink(dirpath):
-            real = os.path.realpath(dirpath)
-            parent_real = os.path.realpath(os.path.dirname(dirpath))
+    for dirpath, dirnames, filenames in _walk_path(target, followlinks=True):
+        if _path_is_symlink(dirpath):
+            real = str(_resolve_path(dirpath))
+            parent_real = str(_resolve_path(Path(dirpath).parent))
             if parent_real == real or parent_real.startswith(real + os.sep):
                 dirnames.clear()
                 continue
@@ -6669,7 +6678,7 @@ def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | N
         dirnames[:] = [
             d for d in dirnames
             if not _is_noise_dir(d, dp)  # pass parent so "env"/"*_env" is marker-gated (#2058)
-            and (not (dp / d).is_symlink() or _resolves_under_root(dp / d, containment_root))
+            and (not _path_is_symlink(dp / d) or _resolves_under_root(dp / d, containment_root))
         ]
         for fname in filenames:
             p = dp / fname

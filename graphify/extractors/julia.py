@@ -4,6 +4,7 @@ from __future__ import annotations
 from graphify.extractors.base import _file_stem, _make_id, _read_text
 from graphify.extractors.engine import _semantic_reference_edge
 from pathlib import Path
+from graphify.paths import read_bytes as _read_file_bytes
 
 
 def extract_julia(path: Path) -> dict:
@@ -17,7 +18,7 @@ def extract_julia(path: Path) -> dict:
     try:
         language = Language(tsjulia.language())
         parser = Parser(language)
-        source = path.read_bytes()
+        source = _read_file_bytes(path)
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:

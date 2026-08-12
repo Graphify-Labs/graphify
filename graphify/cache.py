@@ -16,7 +16,22 @@ from pathlib import Path
 # shared-output setups. Accepts a relative name ("graphify-out-feature") or an
 # absolute path ("/shared/graphify-out"). Single source of truth in graphify.paths
 # (#1423); re-exported here as _GRAPHIFY_OUT for the existing call sites.
-from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
+from graphify.paths import (
+    GRAPHIFY_OUT as _GRAPHIFY_OUT,
+    glob_paths as _glob_paths,
+    io_path as _io_path,
+    iterdir_path as _iterdir_path,
+    logical_path as _logical_path,
+    make_dirs as _make_dirs,
+    path_exists as _path_exists,
+    path_is_dir as _path_is_dir,
+    path_is_file as _path_is_file,
+    path_stat as _path_stat,
+    read_bytes as _read_bytes,
+    read_text as _read_text,
+    resolve_path as _resolve_path,
+    unlink_path as _unlink_path,
+)
 
 # AST cache entries are the output of graphify's own extractor code, so they
 # are only valid for the version that wrote them: keying purely on file
@@ -48,18 +63,18 @@ def _cleanup_stale_ast_entries(ast_base: Path, current_dir: Path) -> None:
     if key in _cleaned_ast_dirs:
         return
     _cleaned_ast_dirs.add(key)
-    if not ast_base.is_dir():
+    if not _path_is_dir(ast_base):
         return
     import shutil
 
-    for child in ast_base.iterdir():
+    for child in _iterdir_path(ast_base):
         if child == current_dir:
             continue
         try:
-            if child.is_dir() and child.name.startswith("v"):
-                shutil.rmtree(child, ignore_errors=True)
+            if _path_is_dir(child) and child.name.startswith("v"):
+                shutil.rmtree(_io_path(child), ignore_errors=True)
             elif child.suffix == ".json":
-                child.unlink()
+                _unlink_path(child)
         except OSError:
             pass
 
@@ -101,7 +116,7 @@ def prompt_fingerprint(prompt: "str | Path") -> str:
     like a prompt change and re-bill extraction.
     """
     if isinstance(prompt, Path):
-        text = prompt.read_text(encoding="utf-8", errors="replace")
+        text = _read_text(prompt, encoding="utf-8", errors="replace")
     else:
         text = prompt
     normalized = "\n".join(
@@ -132,7 +147,7 @@ def _resolve_prompt_fp(prompt: "str | Path | None" = None,
     if prompt_file is not None:
         prompt = Path(prompt_file)
         try:
-            st = prompt.stat()
+            st = _path_stat(prompt)
             memo_key = (str(prompt), st.st_size, st.st_mtime_ns)
             if memo_key in _prompt_fp_cache:
                 return _prompt_fp_cache[memo_key]
@@ -311,7 +326,7 @@ def _stat_key_to_absolute(key: str, anchor: Path) -> str:
 
 def _stat_index_file(root: Path) -> Path:
     _out = Path(_GRAPHIFY_OUT)
-    base = _out if _out.is_absolute() else Path(root).resolve() / _out
+    base = _out if _out.is_absolute() else _resolve_path(root) / _out
     return base / "cache" / "stat-index.json"
 
 
@@ -326,13 +341,13 @@ def _ensure_stat_index(root: Path, cache_root: "Path | None" = None) -> None:
     # in-memory keys stay absolute, but the on-disk index stores in-anchor keys
     # relative so a moved/cloned corpus still hits (#2199) — same load/save
     # re-anchoring the detect manifest uses.
-    _stat_index_root = Path(cache_root if cache_root is not None else root).resolve()
-    _stat_index_anchor = Path(root).resolve()
+    _stat_index_root = _resolve_path(cache_root if cache_root is not None else root)
+    _stat_index_anchor = _resolve_path(root)
     p = _stat_index_file(_stat_index_root)
     _stat_index = {}
-    if p.exists():
+    if _path_exists(p):
         try:
-            raw = json.loads(p.read_text(encoding="utf-8"))
+            raw = json.loads(_read_text(p, encoding="utf-8"))
             if isinstance(raw, dict):
                 for k, v in raw.items():
                     if not isinstance(k, str):
@@ -363,19 +378,23 @@ def _flush_stat_index() -> None:
     on_disk: dict[str, dict] = {}
     for k, v in _stat_index.items():
         try:
-            if not os.path.exists(k):
+            if not _path_exists(k):
                 continue
         except OSError:
             continue
         dk = _stat_key_to_relative(k, _stat_index_anchor) if _stat_index_anchor is not None else k
         on_disk[dk] = v
     try:
-        p.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=p.parent, prefix="stat-index.", suffix=".tmp")
+        _make_dirs(p.parent, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(
+            dir=_io_path(p.parent),
+            prefix="stat-index.",
+            suffix=".tmp",
+        )
         try:
             os.write(fd, json.dumps(on_disk, separators=(",", ":")).encode())
             os.close(fd)
-            os.replace(tmp, p)
+            os.replace(tmp, _io_path(p))
         except Exception:
             try:
                 os.close(fd)
@@ -395,9 +414,7 @@ def _normalize_path(path: Path) -> Path:
     import sys
     if sys.platform != "win32":
         return path
-    s = str(path)
-    if s.startswith("\\\\?\\"):
-        s = s[4:]  # strip extended-length prefix \\?\
+    s = _logical_path(path)
     return Path(os.path.normcase(s))
 
 
@@ -420,7 +437,7 @@ def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = No
     global _stat_index_dirty
     p = _normalize_path(Path(path))
     root = _normalize_path(Path(root))
-    if not p.is_file():
+    if not _path_is_file(p):
         raise IsADirectoryError(f"file_hash requires a file, got: {p}")
 
     # The stat index is a cache artifact, so it must follow the cache location
@@ -428,7 +445,7 @@ def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = No
     # graphify-out/cache/stat-index.json inside the analyzed source tree even when
     # the AST cache itself is redirected to CWD (#1774 completion).
     _ensure_stat_index(root, cache_root=cache_root)
-    resolved = p.resolve()
+    resolved = _resolve_path(p)
     abs_key = str(resolved)
     # The salt is the path component that enters the digest (relative to root, or
     # the absolute-path fallback). The stat-index memo MUST be keyed by it too:
@@ -438,13 +455,13 @@ def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = No
     # and poisoning the persisted stat-index across runs (#1989). Store one digest
     # per salt so alternating roots don't force re-reads.
     try:
-        salt = resolved.relative_to(Path(root).resolve()).as_posix().lower()
+        salt = resolved.relative_to(_resolve_path(root)).as_posix().lower()
     except ValueError:
         salt = resolved.as_posix().lower()
 
     st: "os.stat_result | None" = None
     try:
-        st = p.stat()
+        st = _path_stat(p)
         if _stat_sig_fresh(_stat_index.get(abs_key), st):
             hashes = _stat_index[abs_key].get("hashes")
             if isinstance(hashes, dict):
@@ -459,7 +476,7 @@ def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = No
     # Captured BEFORE the read so the stamp can never post-date content that
     # changed while we were reading it (see _stat_sig_fresh).
     observed_at_ns = time.time_ns()
-    raw = p.read_bytes()
+    raw = _read_bytes(p)
     content = _body_content(raw) if p.suffix.lower() == ".md" else raw
     h = hashlib.sha256()
     h.update(content)
@@ -497,10 +514,10 @@ def cached_word_count(path: Path, root: Path, compute, cache_root: "Path | None"
     p = _normalize_path(Path(path))
     root = _normalize_path(Path(root))
     _ensure_stat_index(root, cache_root=cache_root)
-    abs_key = str(p.resolve())
+    abs_key = str(_resolve_path(p))
     st: "os.stat_result | None" = None
     try:
-        st = p.stat()
+        st = _path_stat(p)
         entry = _stat_index.get(abs_key)
         if _stat_sig_fresh(entry, st) and "word_count" in entry:
             return entry["word_count"]
@@ -549,7 +566,7 @@ def _relativize_source_files_in(payload: dict, root: Path) -> None:
     :func:`graphify.detect._to_relative_for_storage`.
     """
     try:
-        root_resolved = Path(root).resolve()
+        root_resolved = _resolve_path(root)
     except OSError:
         return
     # raw_calls (#: Pascal/Delphi cross-file inherited-call resolution) carries
@@ -569,7 +586,7 @@ def _relativize_source_files_in(payload: dict, root: Path) -> None:
                 # the symbolic relativization below.
                 cwd_form = Path(os.path.abspath(sp))
                 try:
-                    if cwd_form == root_resolved / sp or not cwd_form.exists():
+                    if cwd_form == root_resolved / sp or not _path_exists(cwd_form):
                         continue  # already root-relative, or a ghost path
                 except OSError:
                     continue
@@ -671,11 +688,11 @@ def _portability_anchors(path: "str | Path", root: "str | Path") -> tuple[list[s
     from graphify.ids import normalize_id
 
     try:
-        root_resolved = Path(root).resolve()
+        root_resolved = _resolve_path(root)
     except OSError:
         return [], "", [], ""
     try:
-        path_resolved = Path(path).resolve()
+        path_resolved = _resolve_path(path)
     except (OSError, RuntimeError):
         path_resolved = Path(path)
     try:
@@ -811,7 +828,7 @@ def _absolutize_source_files_in(payload: dict, root: Path) -> None:
     absolute ``source_file`` values pass through unchanged.
     """
     try:
-        root_resolved = Path(root).resolve()
+        root_resolved = _resolve_path(root)
     except OSError:
         return
     for bucket in ("nodes", "edges", "hyperedges", "raw_calls"):
@@ -850,14 +867,14 @@ def cache_dir(root: Path = Path("."), kind: str = "ast",
     vintage live.
     """
     _out = Path(_GRAPHIFY_OUT)
-    base = _out if _out.is_absolute() else Path(root).resolve() / _out
+    base = _out if _out.is_absolute() else _resolve_path(root) / _out
     d = base / "cache" / kind
     if kind == "ast":
         d = d / f"v{_EXTRACTOR_VERSION}"
         _cleanup_stale_ast_entries(d.parent, d)
     elif prompt_fp:
         d = d / f"p{prompt_fp}"
-    d.mkdir(parents=True, exist_ok=True)
+    _make_dirs(d, exist_ok=True)
     return d
 
 
@@ -905,13 +922,13 @@ def load_cached(path: Path, root: Path = Path("."), kind: str = "ast",
     prompt_fp = _resolve_prompt_fp(prompt, prompt_file)
     entry = cache_dir(location, kind, prompt_fp) / f"{h}.json"
     legacy_hit = False
-    if prompt_fp and not entry.exists() and allow_legacy:
+    if prompt_fp and not _path_exists(entry) and allow_legacy:
         legacy = cache_dir(location, kind) / f"{h}.json"
-        if legacy.exists():
+        if _path_exists(legacy):
             entry, legacy_hit = legacy, True
-    if entry.exists():
+    if _path_exists(entry):
         try:
-            result = json.loads(entry.read_text(encoding="utf-8"))
+            result = json.loads(_read_text(entry, encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return None
         # A ``partial`` entry was produced from a truncated LLM response and
@@ -966,7 +983,7 @@ def save_cached(path: Path, result: dict, root: Path = Path("."), kind: str = "a
     IsADirectoryError from aborting the whole batch.
     """
     p = Path(path)
-    if not p.is_file():
+    if not _path_is_file(p):
         return
     # Relativize source_file fields against ``root`` before write so the
     # cache file on disk is portable across machines and checkout
@@ -997,17 +1014,21 @@ def save_cached(path: Path, result: dict, root: Path = Path("."), kind: str = "a
     location = cache_root if cache_root is not None else root
     target_dir = cache_dir(location, kind, _resolve_prompt_fp(prompt, prompt_file))
     entry = target_dir / f"{h}.json"
-    fd, tmp_path = tempfile.mkstemp(dir=target_dir, prefix=f"{h}.", suffix=".tmp")
+    fd, tmp_path = tempfile.mkstemp(
+        dir=_io_path(target_dir),
+        prefix=f"{h}.",
+        suffix=".tmp",
+    )
     try:
         os.write(fd, json.dumps(on_disk).encode())
         os.close(fd)
         try:
-            os.replace(tmp_path, entry)
+            os.replace(tmp_path, _io_path(entry))
         except PermissionError:
             # Windows: os.replace can fail with WinError 5 if the target is
             # briefly locked. Fall back to copy-then-delete.
             import shutil
-            shutil.copy2(tmp_path, entry)
+            shutil.copy2(tmp_path, _io_path(entry))
             os.unlink(tmp_path)
     except Exception:
         try:
@@ -1023,38 +1044,38 @@ def save_cached(path: Path, result: dict, root: Path = Path("."), kind: str = "a
 
 def cached_files(root: Path = Path(".")) -> set[str]:
     """Return set of file hashes that have a valid cache entry (any kind)."""
-    base = Path(root).resolve() / _GRAPHIFY_OUT / "cache"
+    base = _resolve_path(root) / _GRAPHIFY_OUT / "cache"
     hashes: set[str] = set()
     # Legacy flat entries
-    if base.is_dir():
-        hashes.update(p.stem for p in base.glob("*.json"))
+    if _path_is_dir(base):
+        hashes.update(p.stem for p in _glob_paths(base, "*.json"))
     # Namespaced entries, all globbed recursively: ast/ has per-version subdirs,
     # semantic-deep/ holds --mode deep entries (#1894), and both semantic kinds
     # have per-prompt-fingerprint subdirs alongside pre-fingerprint flat entries
     # (#1939).
     for kind in ("ast", "semantic", "semantic-deep"):
         d = base / kind
-        if d.is_dir():
-            hashes.update(p.stem for p in d.glob("**/*.json"))
+        if _path_is_dir(d):
+            hashes.update(p.stem for p in _glob_paths(d, "**/*.json"))
     return hashes
 
 
 def clear_cache(root: Path = Path(".")) -> None:
     """Delete all cache entries (ast/, semantic/, semantic-deep/, and legacy
     flat entries)."""
-    base = Path(root).resolve() / _GRAPHIFY_OUT / "cache"
+    base = _resolve_path(root) / _GRAPHIFY_OUT / "cache"
     # Legacy flat entries
-    if base.is_dir():
-        for f in base.glob("*.json"):
-            f.unlink()
+    if _path_is_dir(base):
+        for f in _glob_paths(base, "*.json"):
+            _unlink_path(f)
     # Namespaced entries, all globbed recursively: ast/ has per-version subdirs,
     # semantic-deep/ holds --mode deep entries (#1894), and both semantic kinds
     # have per-prompt-fingerprint subdirs (#1939).
     for kind in ("ast", "semantic", "semantic-deep"):
         d = base / kind
-        if d.is_dir():
-            for f in d.glob("**/*.json"):
-                f.unlink()
+        if _path_is_dir(d):
+            for f in _glob_paths(d, "**/*.json"):
+                _unlink_path(f)
 
 
 def prune_semantic_cache(root: Path, live_hashes: set[str]) -> int:
@@ -1094,17 +1115,17 @@ def prune_semantic_cache(root: Path, live_hashes: set[str]) -> int:
     one doc on a future run, never incorrect output.
     """
     _out = Path(_GRAPHIFY_OUT)
-    base = _out if _out.is_absolute() else Path(root).resolve() / _out
+    base = _out if _out.is_absolute() else _resolve_path(root) / _out
     pruned = 0
     for kind in ("semantic", "semantic-deep"):
         semantic_dir = base / "cache" / kind
-        if not semantic_dir.is_dir():
+        if not _path_is_dir(semantic_dir):
             continue
-        for entry in semantic_dir.glob("**/*.json"):
+        for entry in _glob_paths(semantic_dir, "**/*.json"):
             if entry.stem in live_hashes:
                 continue
             try:
-                entry.unlink()
+                _unlink_path(entry)
                 pruned += 1
             except OSError:
                 pass
@@ -1264,7 +1285,7 @@ def save_semantic_cache(
     from collections import defaultdict
 
     kind = "semantic" if mode is None else f"semantic-{mode}"
-    root_path = Path(root).resolve()
+    root_path = _resolve_path(root)
 
     def _normalized(item: dict) -> dict:
         """Copy of ``item`` with a portable ``source_file`` (#2197).
@@ -1306,7 +1327,7 @@ def save_semantic_cache(
         if not path.is_absolute():
             path = root_path / path
         try:
-            return path.resolve()
+            return _resolve_path(path)
         except (OSError, RuntimeError):
             # Keep the cache write best-effort for inaccessible paths or a
             # symlink loop emitted by an untrusted semantic result.
@@ -1333,7 +1354,9 @@ def save_semantic_cache(
     def group_skipped(fpath: str) -> bool:
         """Mirror the write-loop skip condition for one source_file group."""
         p = resolved_source_path(fpath)
-        return not p.is_file() or (allowed_paths is not None and p not in allowed_paths)
+        return not _path_is_file(p) or (
+            allowed_paths is not None and p not in allowed_paths
+        )
 
     # Dangling-reference pruning (#1916). A node group is skipped by the write
     # loop below when its source_file is not a real file (ghost path) or is
@@ -1390,7 +1413,7 @@ def save_semantic_cache(
     skipped_not_file = 0
     for fpath, result in by_file.items():
         p = resolved_source_path(fpath)
-        if p.is_file():
+        if _path_is_file(p):
             if allowed_paths is not None and p not in allowed_paths:
                 warnings.warn(
                     "semantic cache skipped out-of-scope source_file "

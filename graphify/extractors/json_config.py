@@ -3,6 +3,7 @@ from __future__ import annotations
 
 
 from pathlib import Path
+from graphify.paths import read_bytes as _read_file_bytes
 from graphify.extractors.base import _file_stem, _make_id, _read_text
 from graphify.ids import normalize_id
 
@@ -68,8 +69,7 @@ def extract_json(path: Path) -> dict:
         # Bounded read instead of stat()+read() to eliminate TOCTOU (J-1):
         # read one byte beyond the limit so we can detect oversized files even
         # if the file grows between stat and read.
-        with path.open("rb") as _f:
-            source = _f.read(_JSON_MAX_BYTES + 1)
+        source = _read_file_bytes(path, limit=_JSON_MAX_BYTES + 1)
         if len(source) > _JSON_MAX_BYTES:
             return {"nodes": [], "edges": [], "error": "json file too large to index"}
         language = Language(tsjson.language())

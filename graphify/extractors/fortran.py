@@ -1,9 +1,13 @@
 """Fortran extractor. Moved verbatim from graphify/extract.py."""
 from __future__ import annotations
 
-
 from pathlib import Path
+
 from graphify.extractors.base import _file_stem, _make_id, _read_text
+from graphify.paths import (
+    read_bytes as _read_file_bytes,
+    resolve_path as _resolve_path,
+)
 
 
 _FORTRAN_CPP_EXTS = {".F", ".F90", ".F95", ".F03", ".F08"}
@@ -25,13 +29,21 @@ def _cpp_preprocess(path: Path) -> bytes:
     import shutil
     import subprocess
     if not shutil.which("cpp"):
-        return path.read_bytes()
+        return _read_file_bytes(path)
     try:
         # Pass an absolute path so a corpus file named like "-I/etc/x.F90" cannot
         # be parsed by cpp as an option (cpp does not accept a "--" end-of-options
         # terminator). An absolute path always begins with "/".
         result = subprocess.run(
-            ["cpp", "-w", "-P", "-nostdinc", "-I", "/dev/null", str(path.resolve())],
+            [
+                "cpp",
+                "-w",
+                "-P",
+                "-nostdinc",
+                "-I",
+                "/dev/null",
+                str(_resolve_path(path)),
+            ],
             capture_output=True,
             timeout=30,
         )
@@ -39,7 +51,7 @@ def _cpp_preprocess(path: Path) -> bytes:
             return result.stdout
     except Exception:
         pass
-    return path.read_bytes()
+    return _read_file_bytes(path)
 
 def extract_fortran(path: Path) -> dict:
     """Extract programs, modules, subroutines, functions, use statements, and calls from Fortran files.
@@ -56,7 +68,11 @@ def extract_fortran(path: Path) -> dict:
     try:
         language = Language(tsfortran.language())
         parser = Parser(language)
-        source = _cpp_preprocess(path) if path.suffix in _FORTRAN_CPP_EXTS else path.read_bytes()
+        source = (
+            _cpp_preprocess(path)
+            if path.suffix in _FORTRAN_CPP_EXTS
+            else _read_file_bytes(path)
+        )
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:

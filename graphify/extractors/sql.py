@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 
 from pathlib import Path
+from graphify.paths import read_bytes as _read_file_bytes
 from graphify.extractors.base import _file_stem, _make_id
 
 
@@ -41,7 +42,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         source = (
             content.encode("utf-8") if isinstance(content, str)
             else content if content is not None
-            else path.read_bytes()
+            else _read_file_bytes(path)
         )
         tree = parser.parse(source)
         root = tree.root_node
