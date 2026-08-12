@@ -4864,6 +4864,13 @@ _EXTRA_FOR_EXTENSION = {
     ".dme": "dm",
 }
 
+# Substrings an extractor's error carries to classify why a dependency-backed
+# file contributed nothing, used by the #1745 warning in extract(). A grammar
+# that is present but fails to load (#2602) must not be reported as missing —
+# the "install the extra" hint would be a no-op.
+_DEP_MISSING_MARKER = "not installed"
+_DEP_LOAD_FAILED_MARKER = "failed to load"
+
 
 # Extensionless executables (CLI entry points like `devctl` or `manage`) carry
 # their language in the shebang, not the suffix. detect.classify_file already
@@ -5451,21 +5458,28 @@ def extract(
     _missing_dep_error: dict[str, str] = {}
     for i, _p in enumerate(paths):
         _err = (per_file[i] or {}).get("error") or ""
-        if "not installed" in _err:
+        if _DEP_MISSING_MARKER in _err or _DEP_LOAD_FAILED_MARKER in _err:
             _ext = _p.suffix.lower()
             _missing_dep_count[_ext] = _missing_dep_count.get(_ext, 0) + 1
             _missing_dep_error.setdefault(_ext, _err)
     for _ext, _n in sorted(_missing_dep_count.items(), key=lambda kv: (-kv[1], kv[0])):
         _extra = _EXTRA_FOR_EXTENSION.get(_ext)
-        if _extra:
-            _reason = _missing_dep_error[_ext].split(". ")[0]
+        _err_text = _missing_dep_error[_ext]
+        if _extra and _DEP_MISSING_MARKER in _err_text:
+            # Genuinely absent optional extra — point the user at the install.
+            _reason = _err_text.split(". ")[0]
             _hint = f' Install it with: pip install "graphifyy[{_extra}]"'
+            _cause = "a dependency is missing"
         else:
-            _reason = _missing_dep_error[_ext]
+            # Either no known extra, or the grammar is present but failed to
+            # load (#2602): surface the real error and never suggest reinstall.
+            _reason = _err_text
             _hint = ""
+            _cause = ("a dependency is missing" if _DEP_MISSING_MARKER in _err_text
+                      else "a dependency failed to load")
         print(
             f"  warning: {_n} {_ext} file(s) contributed nothing to the graph "
-            f"because a dependency is missing: {_reason}.{_hint} (#1745)",
+            f"because {_cause}: {_reason}.{_hint} (#1745)",
             file=sys.stderr, flush=True,
         )
 

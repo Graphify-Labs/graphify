@@ -17,6 +17,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: a PHP `use` import written with a leading-backslash / fully-qualified prefix now resolves to its target definition instead of being dropped (#2661, thanks @ousamabenyounes).
 - Fix: an unresolved local JS/TS import (to a file absent from the scan) now emits a stable, portable `ref` target id instead of leaking a per-checkout absolute-path slug (#2457, thanks @rohit-jsfreaky).
 - Fix: `graphify benchmark` no longer crashes on a node whose label is `None` (#2674, thanks @Arthuro0103).
+- Fix: a `.sql` file whose `tree-sitter-sql` grammar is installed but fails to load (e.g. a wheel built for a different Python ABI) no longer reports the misleading "tree_sitter_sql not installed. pip install …" no-op; the extractor distinguishes a genuinely-absent module from a broken one, and the `#1745` warning surfaces the real load exception instead of suggesting a reinstall (#2602, thanks @ousamabenyounes).
 
 ## 0.9.40 (2026-08-11)
 
