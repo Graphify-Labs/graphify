@@ -12,6 +12,11 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: a warm cache hit no longer re-anchors a CWD-relative `source_file` to a ghost path when the run's working directory differs from the graph root, keeping incremental and cold-build node ids identical (#2632, thanks @rajarshidattapy).
 - Fix: the wiki/obsidian audit trail counts each incident edge once instead of double-counting intra-community edges, so the confidence breakdown is accurate (#2635, thanks @rajarshidattapy).
 - Fix: C# members declared inside a `#if ... #endif` preprocessor block are now extracted and attached to their class instead of being dropped (#2634, thanks @rohit-jsfreaky).
+- Fix: `graphify update` refuses to overwrite the graph with a shrunken one when the shrink was caused by an extractor failure this run, instead of silently replacing good data (#2663, thanks @ousamabenyounes); a genuine deletion still shrinks the graph.
+- Fix: `query` no longer prints the truncation banner when no nodes were actually cut (only trailing edges overflowed the budget) (#2601, thanks @ousamabenyounes); a genuine node truncation still warns.
+- Fix: a PHP `use` import written with a leading-backslash / fully-qualified prefix now resolves to its target definition instead of being dropped (#2661, thanks @ousamabenyounes).
+- Fix: an unresolved local JS/TS import (to a file absent from the scan) now emits a stable, portable `ref` target id instead of leaking a per-checkout absolute-path slug (#2457, thanks @rohit-jsfreaky).
+- Fix: `graphify benchmark` no longer crashes on a node whose label is `None` (#2674, thanks @Arthuro0103).
 
 ## 0.9.40 (2026-08-11)
 
