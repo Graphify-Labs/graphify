@@ -2162,7 +2162,7 @@ def _csharp_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: 
                        nodes: list, edges: list, seen_ids: set, function_bodies: list,
                        parent_class_nid: str | None, add_node_fn, add_edge_fn,
                        walk_fn, namespace_stack: list[str], scope_stack: list[str]) -> bool:
-    """Handle namespace declarations for C#. Returns True if handled."""
+    """Handle C# namespaces and transparent class-member wrappers."""
     if node.type == "namespace_declaration":
         ns_name = _csharp_namespace_name(node, source)
         pushed = False
@@ -2198,6 +2198,13 @@ def _csharp_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: 
             line = node.start_point[0] + 1
             add_node_fn(ns_nid, ns_label, line, node_type="namespace", metadata={"kind": "csharp_namespace"})
             add_edge_fn(file_nid, ns_nid, "contains", line)
+        return True
+    if parent_class_nid and node.type.startswith("preproc_"):
+        # tree-sitter wraps members in #if/#else/#elif directives in preproc_*
+        # nodes. They are conditional containers, not ownership scopes: dropping
+        # parent_class_nid here makes guarded methods look file-level (#2631).
+        for child in node.children:
+            walk_fn(child, parent_class_nid)
         return True
     return False
 
@@ -5131,6 +5138,23 @@ def _extract_generic(
             value = next((c for c in node.children if c.is_named), None)
             for ident in _python_ref_value_idents(value):
                 _emit_indirect_ref(ident, caller_nid, enclosing_locals, "return")
+
+        # `catch (e)` binds through the clause's own `parameter` field, never a
+        # variable_declarator, so `_js_local_bound_names` never sees it: a one-letter
+        # binding passed on as a call argument in the handler read as a by-name
+        # reference to a same-named callable elsewhere in the corpus (minified bundles
+        # supply one for nearly every letter). The binding is scoped to the clause, so
+        # fold it into extra_locals for that subtree only — same shape as the untracked
+        # closure fold above (#2241) — leaving references outside the block resolvable.
+        if (
+            config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript")
+            and node.type == "catch_clause"
+        ):
+            param = node.child_by_field_name("parameter")  # absent for ES2019 `catch {}`
+            if param is not None:
+                caught: set[str] = set()
+                _js_collect_pattern_idents(param, source, caught)
+                extra_locals = extra_locals | frozenset(caught)
 
         for child in node.children:
             walk_calls(child, caller_nid, receiver_types, extra_locals)

@@ -490,7 +490,7 @@ def _shebang_file_type(path: Path) -> FileType | None:
 
 
 def classify_file(path: Path) -> FileType | None:
-    # Package manifests (apm.yml, pyproject.toml, go.mod, pom.xml) are parsed
+    # Package manifests (apm.yml, pyproject.toml, Cargo.toml, go.mod, pom.xml) are parsed
     # deterministically, so route them to the AST path (CODE) rather than the LLM
     # document path — otherwise apm.yml (a .yml "document") would be LLM-extracted
     # and a package would split into duplicate file-anchored nodes (#1377).
@@ -1189,7 +1189,14 @@ def _is_ignored(
             except ValueError:
                 continue  # target outside this pattern's anchor: cannot match
             if rel_anchor != ".":
-                matched = _matches(rel_anchor, p, path_relative=path_relative)
+                rel = rel_anchor
+                if not path_relative:
+                    try:
+                        if len(root.parts) > len(anchor.parts):
+                            rel = _nfc(str(target.relative_to(root)).replace(os.sep, "/"))
+                    except ValueError:
+                        pass
+                matched = _matches(rel, p, path_relative=path_relative)
                 if matched and directory_only and not target.is_dir():
                     matched = False
 

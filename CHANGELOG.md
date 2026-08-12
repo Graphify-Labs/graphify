@@ -2,7 +2,23 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
-## 0.9.40 (unreleased)
+## 0.9.41 (unreleased)
+
+- Fix: a JS/TS `catch` binding passed as a call argument (`catch (handler) { pool.submit(handler) }`) no longer fabricates an `indirect_call` edge to an unrelated same-named callable (thanks @imagineers-tyler); the catch binding is now shadowed within its clause, completing the 0.9.38/0.9.40 arrow-parameter fixes (#2568).
+- Fix: `Cargo.toml` is now recognized as a package manifest (#2434, thanks @ousamabenyounes), minting one canonical package node by name plus `depends_on` edges (dependencies, plus target-specific deps; virtual-workspace roots and workspace-inherited versions are handled).
+- Fix: an explicitly-passed scan root is no longer excluded by an unanchored pattern in a parent-directory `.gitignore` that happens to match the root's own name (#2468, thanks @hopstreax); the match path is re-relativized to the scan root (and NFC-normalized) so a genuinely-ignored subdirectory is still skipped.
+- Fix: the API extraction prompt now instructs backends to capture the per-node `rationale` attribute (design intent / trade-offs), matching the skill path, so API-backed extraction no longer silently drops it (#2482, thanks @hopstreax). This invalidates cached semantic chunks, which re-extract on the next run.
+- Fix: `source_file` is canonicalized to POSIX separators, so a run given relative inputs on Windows no longer produces non-portable node ids with backslashes (#2627, thanks @rajarshidattapy).
+- Fix: a warm cache hit no longer re-anchors a CWD-relative `source_file` to a ghost path when the run's working directory differs from the graph root, keeping incremental and cold-build node ids identical (#2632, thanks @rajarshidattapy).
+- Fix: the wiki/obsidian audit trail counts each incident edge once instead of double-counting intra-community edges, so the confidence breakdown is accurate (#2635, thanks @rajarshidattapy).
+- Fix: C# members declared inside a `#if ... #endif` preprocessor block are now extracted and attached to their class instead of being dropped (#2634, thanks @rohit-jsfreaky).
+- Fix: `graphify update` refuses to overwrite the graph with a shrunken one when the shrink was caused by an extractor failure this run, instead of silently replacing good data (#2663, thanks @ousamabenyounes); a genuine deletion still shrinks the graph.
+- Fix: `query` no longer prints the truncation banner when no nodes were actually cut (only trailing edges overflowed the budget) (#2601, thanks @ousamabenyounes); a genuine node truncation still warns.
+- Fix: a PHP `use` import written with a leading-backslash / fully-qualified prefix now resolves to its target definition instead of being dropped (#2661, thanks @ousamabenyounes).
+- Fix: an unresolved local JS/TS import (to a file absent from the scan) now emits a stable, portable `ref` target id instead of leaking a per-checkout absolute-path slug (#2457, thanks @rohit-jsfreaky).
+- Fix: `graphify benchmark` no longer crashes on a node whose label is `None` (#2674, thanks @Arthuro0103).
+
+## 0.9.40 (2026-08-11)
 
 - Fix: the 0.9.37 partial-parse warning no longer fires on valid TypeScript/TSX (#2610, #2599, thanks @Sid-AutoWisdom and @atlasplatformu-ai). tree-sitter-typescript sets an error flag on tiny fully-recovered constructs (a `&` in a JSX string attribute, a semicolon-less `in_*` interface member) that still extract completely; the warning now fires only when recovery plausibly cost symbols (the file yielded at most the file node, or an error region spans multiple lines), so the genuine Kotlin one-line-body and Luau cases still warn.
 - Fix: `file_hash()`'s stat fastpath no longer serves a stale digest when a file is rewritten to the same size within one mtime tick (#2612, thanks @rajarshidattapy); a racily-clean guard falls back to a content hash for recently-modified files.

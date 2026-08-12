@@ -1017,6 +1017,29 @@ def test_tsconfig_alias_none_exist_creates_no_false_edge(tmp_path: Path):
     assert not _has_edge(result, "src/routes/page.ts", "src/lib/utils.ts")
 
 
+def test_unresolved_relative_import_uses_stable_ref_target(tmp_path: Path):
+    """A missing local module must not leak the checkout path into graph IDs (#2457)."""
+    importer = _write(
+        tmp_path / "src/consumer.ts",
+        "import { getFoo } from './generated/api'\n"
+        "export function run(): number { return getFoo() }\n",
+    )
+
+    result = _extract_for([importer], tmp_path)
+    source = _file_node_id(Path("src/consumer.ts"))
+    imports_from = [
+        edge["target"]
+        for edge in result["edges"]
+        if edge["source"] == source and edge["relation"] == "imports_from"
+    ]
+
+    assert imports_from == [_make_id("ref", "./generated/api")]
+    assert not any(
+        edge["source"] == source and edge["relation"] == "imports"
+        for edge in result["edges"]
+    )
+
+
 # ── #927: wildcard tsconfig path patterns ────────────────────────────────────
 
 
@@ -1407,8 +1430,11 @@ def test_alias_import_does_not_remap_an_owned_symbol_id(tmp_path, monkeypatch):
     }
     target_symbol = _make_id(_file_stem(target), "formatDate")
     mirror_symbol = _make_id(_file_stem(mirror), "formatDate")
-    assert symbols[str(target)] == target_symbol
-    assert symbols[str(mirror)] == mirror_symbol
+    # as_posix, not str: source_file is canonical POSIX in extract() output
+    # (#2625), while str(Path(...)) is the native spelling and so only matched
+    # on POSIX hosts.
+    assert symbols[target.as_posix()] == target_symbol
+    assert symbols[mirror.as_posix()] == mirror_symbol
 
     imports = [
         edge
@@ -1418,8 +1444,8 @@ def test_alias_import_does_not_remap_an_owned_symbol_id(tmp_path, monkeypatch):
     by_source: dict[str, list[str]] = {}
     for edge in imports:
         by_source.setdefault(edge["source_file"], []).append(edge["target"])
-    assert by_source[str(button)] == [target_symbol]
-    assert by_source[str(mirror_user)] == [mirror_symbol]
+    assert by_source[button.as_posix()] == [target_symbol]
+    assert by_source[mirror_user.as_posix()] == [mirror_symbol]
     assert all(edge["source"] in node_ids and edge["target"] in node_ids for edge in imports)
 
 

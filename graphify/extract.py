@@ -10,7 +10,7 @@ import sys
 import textwrap
 from collections import Counter
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any, Callable
 
 from .cache import load_cached, save_cached
@@ -413,6 +413,12 @@ def _import_js(node, source: bytes, file_nid: str, stem: str, edges: list, str_p
         resolved = _resolve_js_import_target(raw, str_path)
         if resolved is not None:
             tgt_nid, resolved_path = resolved
+            # `_resolve_js_import_path` returns the attempted path when no
+            # local file exists. Static ES imports must treat that as unresolved
+            # rather than minting a checkout-specific target ID (#2457).
+            if resolved_path is not None and not resolved_path.is_file():
+                tgt_nid = _make_id("ref", raw)
+                resolved_path = None
             edge = {
                 "source": file_nid,
                 "target": tgt_nid,
@@ -6573,6 +6579,31 @@ def extract(
         n["_origin"] = "ast"
     for e in all_edges:
         e["_origin"] = "ast"
+
+    # Canonicalize source_file to POSIX on every node AND edge (#2625).
+    #
+    # Extractors build source_file from the Path they were handed, so a run
+    # given RELATIVE inputs keeps the native separator on Windows. Only the
+    # relativizing branch of _sf_entry above ever calls as_posix(), so a single
+    # extraction could emit `src\lib\content.ts` and `src/pages/index.astro`
+    # side by side. source_file is compared as a STRING downstream
+    # (build._norm_source_file keying, _derive_prune_root, dedup, and
+    # analyze.find_import_cycles, which matches an edge's source_file against a
+    # node's by equality), so two spellings are two different files — the
+    # fragmentation of #683, and the reason the CLI path (which passes an
+    # explicit root) looked correct while the library entry point did not.
+    #
+    # Safe as a final pass: ids are minted through make_id, which collapses
+    # every non-word character — `\` and `/` alike — to `_`, so canonicalizing
+    # the separator here cannot desync an id from its source_file.
+    #
+    # PurePath is the NATIVE flavour on purpose: on POSIX a backslash is a legal
+    # filename character and must be left alone, so this only rewrites paths on
+    # the platform where `\` is actually a separator.
+    for _item in (*all_nodes, *all_edges):
+        _sf = _item.get("source_file")
+        if _sf and "\\" in str(_sf):
+            _item["source_file"] = PurePath(_sf).as_posix()
 
     return {
         "nodes": all_nodes,
