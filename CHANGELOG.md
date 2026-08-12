@@ -17,6 +17,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: a PHP `use` import written with a leading-backslash / fully-qualified prefix now resolves to its target definition instead of being dropped (#2661, thanks @ousamabenyounes).
 - Fix: an unresolved local JS/TS import (to a file absent from the scan) now emits a stable, portable `ref` target id instead of leaking a per-checkout absolute-path slug (#2457, thanks @rohit-jsfreaky).
 - Fix: `graphify benchmark` no longer crashes on a node whose label is `None` (#2674, thanks @Arthuro0103).
+- Fix: `GRAPH_REPORT.md`'s header no longer embeds the generator's absolute host path (#2628, thanks @AirRocker); it labels the report with the project directory basename, so the same graph produces the same bytes on any machine (same class as the 0.9.40 `graph.html` title fix, #2598).
 
 ## 0.9.40 (2026-08-11)
 
