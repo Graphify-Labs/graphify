@@ -2597,14 +2597,24 @@ def test_detect_reports_walk_errors_key():
     assert res["walk_errors"] == []
 
 
+@pytest.mark.skipif(
+    not hasattr(os, "geteuid"),
+    reason="POSIX-only: needs geteuid() and chmod 000 to actually block scandir",
+)
 def test_detect_surfaces_unreadable_dir_instead_of_silent_skip(tmp_path, capsys):
     """os.walk silently skips a subtree whose scandir raises (permissions, or a
     dir deleted mid-walk); that under-enumeration used to be invisible and could
     yield a silently partial graph. detect() now records it in walk_errors and
-    warns, while still enumerating the rest of the tree."""
-    import os
+    warns, while still enumerating the rest of the tree.
+
+    Guarded on the capability, not the platform: `os.geteuid` is Unix-only, so on
+    Windows the root check below raises AttributeError before the test can decide
+    anything. Shimming geteuid would not help — Windows ignores POSIX mode bits,
+    so `chmod 000` leaves the directory readable and the test fails on its real
+    assertion instead. Both reasons say the same thing: this test cannot run here
+    (#2643).
+    """
     if os.geteuid() == 0:
-        import pytest
         pytest.skip("running as root: chmod 000 does not block scandir")
     (tmp_path / "a.py").write_text("def f(): pass\n")
     locked = tmp_path / "locked"
