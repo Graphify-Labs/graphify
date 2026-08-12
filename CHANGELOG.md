@@ -2,6 +2,17 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## 0.9.41 (2026-08-12)
+
+- Feat: add `graphify export memoryguard-metadata ROOT [PATH ...]` for
+  MemoryGuard CodeGraph V2. The `memoryguard-graphify-metadata-v1` export is
+  body-free and repository-relative, includes content hashes, structural
+  symbols/edges, source role/provenance, source maps, and bounded diagnostics,
+  and rejects source bodies, absolute paths, credentials, and unsafe extractor
+  text. `--incremental` and `--no-parallel` support controlled ingestion.
+- Test: add focused export coverage for body-free output, provenance, CLI help,
+  selected paths, and a complete repository smoke export.
+
 ## 0.9.40 (unreleased)
 
 - Fix: the 0.9.37 partial-parse warning no longer fires on valid TypeScript/TSX (#2610, #2599, thanks @Sid-AutoWisdom and @atlasplatformu-ai). tree-sitter-typescript sets an error flag on tiny fully-recovered constructs (a `&` in a JSX string attribute, a semicolon-less `in_*` interface member) that still extract completely; the warning now fires only when recovery plausibly cost symbols (the file yielded at most the file node, or an error region spans multiple lines), so the genuine Kotlin one-line-body and Luau cases still warn.
@@ -219,7 +230,6 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: installed hook commands now use forward slashes in the graphify exe path so Git Bash doesn't strip them (#1987, thanks @varuntej07). On Windows the resolved exe path had backslashes, which Git Bash (how Claude Code shells hooks) treats as escapes and drops, breaking the hook with "command not found". `_resolve_graphify_exe` now normalizes `\` to `/` at the single choke point, covering every emitter (Claude/CodeBuddy PreToolUse, Gemini BeforeTool, Codex); quoting and the `--strict` suffix are preserved and POSIX is unaffected.
 - Fix: with `--out`, semantic-cache writes now anchor correctly so the cache round-trips (#1990, #1991, thanks @mdshzb04). The final semantic-cache save resolved a relative `source_file` against the output dir and wrote 0 entries, and per-chunk recovery checkpoints landed in the wrong directory (under the corpus instead of `--out`). Cache entries now key on the scan root (portable, matching #1989) while the cache directory sits at the output root, so `check`/`save`/checkpoint/prune all agree; composes with the #1989 salt-keying and #1939 prompt-fingerprint namespacing.
 - Fix: alias-based named re-exports no longer emit dangling absolute-path symbol targets (#1983, thanks @oleksii-tumanov). `export { X as Y } from './mod'` produced a `re_exports` edge whose symbol target was an absolute-path-prefixed id with no matching node — the symbol-level residual left by #1967 (imports-only) and #1976 (file-level). The aliased re-export target is now rewritten to the canonical symbol node when unambiguous; external re-exports and owned ids are left untouched, so no real edge is dropped.
-
 ## 0.9.19 (2026-07-18)
 
 - Feat: opt-in strict PreToolUse hook that actually makes agents use the graph. The installed Claude Code hook has always *nudged* the agent to run `graphify query` before reading raw files, but a nudge is advisory `additionalContext` the model routinely walks past mid-task. `graphify install --project --strict` (or `graphify claude install --strict`) now installs a hook that *blocks* the first raw source read of a session (`permissionDecision: "deny"`) with a redirect to `graphify query`, then downgrades to the soft nudge — so it fires at most once per session and can never strand the agent (the next read proceeds even if no query ran, or if `graphify query` itself failed). Running any `graphify query`/`explain`/`path` refreshes a short-lived "recently oriented" stamp that suppresses the block. Strict mode is Claude Code only (Bash-grep and Glob stay nudge-only; Gemini/Codex/OpenCode can't hard-block and are unchanged); `GRAPHIFY_HOOK_STRICT=1`/`0` toggles it at runtime without a reinstall. Default installs are unchanged (soft nudge).

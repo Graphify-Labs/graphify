@@ -1214,10 +1214,22 @@ def _extract_python_rationale(path: Path, result: dict) -> None:
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def extract_python(path: Path) -> dict:
-    """Extract classes, functions, and imports from a .py file via tree-sitter AST."""
+    """Extract Python structure plus embedded HTML/JS GUI semantics."""
     result = _extract_generic(path, _PYTHON_CONFIG)
     if "error" not in result:
         _extract_python_rationale(path, result)
+        try:
+            from .extractors.embedded import extract_embedded_python, merge_embedded_result
+
+            embedded = extract_embedded_python(path)
+            merge_embedded_result(result, embedded, path)
+        except Exception as exc:
+            # Embedded extraction is additive; malformed virtual documents must
+            # not erase ordinary Graphify AST output.
+            result.setdefault("diagnostics", []).append({
+                "code": "embedded_extraction_failed",
+                "error_type": type(exc).__name__,
+            })
     return result
 
 
@@ -6561,6 +6573,24 @@ def extract(
     # so it cannot be popped at that earlier point without breaking the fix.
     for e in all_edges:
         e.pop("local_alias", None)
+
+    # Stamp source-role provenance after cross-file resolution so resolver
+    # identity remains independent of this export-only metadata.
+    from .extractors.embedded import provenance_for_path
+
+    node_provenance: dict[str, str] = {}
+    for n in all_nodes:
+        source_file = str(n.get("source_file") or "")
+        provenance = str(n.get("provenance") or "") or provenance_for_path(source_file)
+        n["provenance"] = provenance
+        node_id = str(n.get("id") or "")
+        if node_id:
+            node_provenance[node_id] = provenance
+    for e in all_edges:
+        if e.get("provenance"):
+            continue
+        source_file = str(e.get("source_file") or "")
+        e["provenance"] = provenance_for_path(source_file) if source_file else node_provenance.get(str(e.get("source") or ""), "unknown")
 
     # Tag AST provenance so the incremental watch rebuild can distinguish
     # AST-extracted nodes from semantic/LLM nodes. On a full re-extraction

@@ -548,21 +548,14 @@ def dedupe_nodes(nodes: list[dict]) -> list[dict]:
 
 
 def dedupe_edges(edges: list[dict]) -> list[dict]:
-    """Collapse exact parallel edges by ``(source, target, relation)``, keeping the
-    first occurrence.
-
-    The clustered build path runs edges through a NetworkX ``DiGraph``, which
-    collapses parallel edges automatically. The ``--no-cluster`` and incremental
-    ``update`` write paths bypass NetworkX and concatenate edge lists raw, so
-    duplicates accumulate and edge counts become non-deterministic across build
-    modes / repeated updates (#1317). Deduping on the connectivity identity is
-    zero-signal-loss and restores idempotency. Callers that intentionally keep
-    parallel edges (multigraph output) must not use this.
-    """
+    """Collapse only semantically identical parallel edges."""
     seen: set[tuple] = set()
     out: list[dict] = []
     for e in edges:
-        key = (e.get("source"), e.get("target"), e.get("relation"))
+        key = (
+            e.get("source"), e.get("target"), e.get("relation"),
+            e.get("context"), e.get("provenance"), e.get("source_location"),
+        )
         if key in seen:
             continue
         seen.add(key)

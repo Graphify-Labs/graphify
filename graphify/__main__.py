@@ -625,6 +625,7 @@ def _run_cli() -> None:
         print("  global path              print path to the global graph file")
         print("  benchmark [graph.json]  measure token reduction vs naive full-corpus approach")
         print("  export callflow-html    emit Mermaid-based architecture/call-flow HTML")
+        print("  export memoryguard-metadata ROOT  emit memoryguard-graphify-metadata-v1")
         print("  hook install            install post-commit/post-checkout git hooks (all platforms)")
         print("  hook uninstall          remove git hooks")
         print("  hook status             check if git hooks are installed")
@@ -703,7 +704,8 @@ def _run_cli() -> None:
     # Exempt: free-text commands (user string may contain these tokens), and
     # "install"/"uninstall" which have their own per-subcommand help handlers.
     _FREE_TEXT_CMDS = {"query", "explain", "path", "save-result", "install", "uninstall"}
-    if cmd not in _FREE_TEXT_CMDS and any(a in {"-h", "--help", "-?"} for a in sys.argv[2:]):
+    _export_top_help = cmd == "export" and sys.argv[2:] in (["-h"], ["--help"], ["-?"])
+    if not _export_top_help and cmd not in _FREE_TEXT_CMDS and any(a in {"-h", "--help", "-?"} for a in sys.argv[2:]):
         print(f"Run 'graphify --help' for full usage.")
         return
 
