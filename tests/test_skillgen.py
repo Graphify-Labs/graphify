@@ -454,8 +454,8 @@ def test_powershell_translator_rejects_unknown_bash():
     with pytest.raises(ValueError, match="cannot translate rm -f operand"):
         gen._rm_to_remove_item("rm -f $HOME/danger")
     # And the sanctioned pieces translate exactly.
-    assert gen._rm_to_remove_item("rm -f graphify-out/.needs_update 2>/dev/null || true") == (
-        "Remove-Item -Force -ErrorAction SilentlyContinue graphify-out\\.needs_update"
+    assert gen._rm_to_remove_item("rm -f graphify-out/needs_update 2>/dev/null || true") == (
+        "Remove-Item -Force -ErrorAction SilentlyContinue graphify-out\\needs_update"
     )
     assert gen._translate_bash_block([gen._FIND_CHUNKS_POSIX]) == [gen._FIND_CHUNKS_PS]
 
@@ -1093,3 +1093,35 @@ def test_semantic_cache_calls_pass_prompt_file_for_every_split_host():
             )
         # The placeholder is inert unless the body tells the agent what to substitute.
         assert "SPEC_PATH below is the **absolute** path" in a.content, a.path
+
+
+def test_skill_cleanup_targets_the_flag_the_code_actually_writes():
+    """The rebuild cleanup must name the same flag file the code writes.
+
+    skillgen rendered ``graphify-out/.needs_update`` (leading dot, picked up from
+    the dotted temp files cleaned on the line above) while ``watch.py`` writes and
+    ``cli.py`` reads ``graphify-out/needs_update``. A full rebuild through the
+    skill therefore never cleared a flag set by ``--watch``, so the read hook kept
+    emitting the stale nudge after a complete, successful rebuild — the documented
+    escape hatch silently did nothing (#2440).
+    """
+    flag = "needs_update"
+
+    # Code side: the writer and the reader agree on the undotted name.
+    for module in ("watch.py", "cli.py"):
+        src = (REPO_ROOT / "graphify" / module).read_text(encoding="utf-8")
+        assert f'"{flag}"' in src, f"{module} no longer names the flag {flag!r}"
+        assert f'".{flag}"' not in src, (
+            f"{module} uses a dotted flag name; the skills clean up the undotted one"
+        )
+
+    # Skill side: every rendered artifact must clean up that exact file.
+    platforms = gen.load_platforms()
+    referencing = 0
+    for art in gen.render_all(platforms):
+        assert f".{flag}" not in art.content, (
+            f"{art.path} cleans up '.{flag}', which nothing ever writes"
+        )
+        if flag in art.content:
+            referencing += 1
+    assert referencing, "no rendered artifact references the staleness flag at all"
