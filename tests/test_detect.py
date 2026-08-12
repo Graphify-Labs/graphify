@@ -308,7 +308,7 @@ def test_git_info_exclude_utf8_bom(tmp_path):
     assert any("real.py" in f for f in all_files)
 
 
-def test_detect_follows_symlinked_directory(tmp_path):
+def test_detect_follows_symlinked_directory(requires_symlinks, tmp_path):
     real_dir = tmp_path / "real_lib"
     real_dir.mkdir()
     (real_dir / "util.py").write_text("x = 1")
@@ -322,7 +322,7 @@ def test_detect_follows_symlinked_directory(tmp_path):
     assert any("linked_lib" in f for f in result_yes["files"]["code"])
 
 
-def test_detect_follows_symlinked_file(tmp_path):
+def test_detect_follows_symlinked_file(requires_symlinks, tmp_path):
     (tmp_path / "real.py").write_text("x = 1")
     (tmp_path / "link.py").symlink_to(tmp_path / "real.py")
 
@@ -484,7 +484,7 @@ def test_nested_ignore_overrides_git_info_exclude_and_root(tmp_path):
     assert not any(f.endswith("drop.py") for f in code)
 
 
-def test_detect_handles_circular_symlinks(tmp_path):
+def test_detect_handles_circular_symlinks(requires_symlinks, tmp_path):
     sub = tmp_path / "a"
     sub.mkdir()
     (sub / "main.py").write_text("x = 1")
@@ -494,7 +494,7 @@ def test_detect_handles_circular_symlinks(tmp_path):
     assert any("main.py" in f for f in result["files"]["code"])
 
 
-def test_detect_default_does_not_auto_follow_direct_symlink_child(tmp_path):
+def test_detect_default_does_not_auto_follow_direct_symlink_child(requires_symlinks, tmp_path):
     """Symlink directory following is explicit opt-in."""
     real_dir = tmp_path / "real_lib"
     real_dir.mkdir()
@@ -518,7 +518,7 @@ def test_detect_default_does_not_follow_when_no_symlinks(tmp_path):
     assert any("other.py" in f for f in result["files"]["code"])
 
 
-def test_detect_explicit_false_overrides_auto_detect(tmp_path):
+def test_detect_explicit_false_overrides_auto_detect(requires_symlinks, tmp_path):
     """An explicit follow_symlinks=False skips symlinked directories."""
     real_dir = tmp_path / "real_lib"
     real_dir.mkdir()
@@ -530,7 +530,7 @@ def test_detect_explicit_false_overrides_auto_detect(tmp_path):
     assert not any("linked_lib" in f for f in result["files"]["code"])
 
 
-def test_detect_skips_out_of_root_symlinked_directory_even_when_following(tmp_path):
+def test_detect_skips_out_of_root_symlinked_directory_even_when_following(requires_symlinks, tmp_path):
     root = tmp_path / "root"
     root.mkdir()
     outside = tmp_path / "outside"
@@ -544,7 +544,7 @@ def test_detect_skips_out_of_root_symlinked_directory_even_when_following(tmp_pa
     assert any("symlink target outside scan root" in item for item in result["skipped_sensitive"])
 
 
-def test_detect_skips_out_of_root_symlinked_file_by_default(tmp_path):
+def test_detect_skips_out_of_root_symlinked_file_by_default(requires_symlinks, tmp_path):
     root = tmp_path / "root"
     root.mkdir()
     outside = tmp_path / "outside"
@@ -558,7 +558,7 @@ def test_detect_skips_out_of_root_symlinked_file_by_default(tmp_path):
     assert any("symlink target outside scan root" in item for item in result["skipped_sensitive"])
 
 
-def test_detect_incremental_propagates_follow_symlinks(tmp_path, monkeypatch):
+def test_detect_incremental_propagates_follow_symlinks(requires_symlinks, tmp_path, monkeypatch):
     """detect_incremental must forward follow_symlinks so symlinked sub-trees
     appear in incremental scans the same way they appear in full scans."""
     monkeypatch.chdir(tmp_path)
