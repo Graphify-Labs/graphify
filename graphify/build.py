@@ -903,6 +903,9 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 ]
 
     G: nx.Graph = nx.DiGraph() if directed else nx.Graph()
+    import_accounting = extraction.get("import_accounting")
+    if isinstance(import_accounting, dict):
+        G.graph["import_accounting"] = dict(import_accounting)
     for node in extraction.get("nodes", []):
         # Skip dict nodes with a missing or non-hashable id (e.g. a list emitted
         # by a buggy LLM extraction) so NetworkX add_node never raises
@@ -1293,12 +1296,35 @@ def build(
     """
     from graphify.dedup import deduplicate_entities
     combined: dict = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0}
+    import_accounting: list[dict] = []
     for ext in extractions:
         combined["nodes"].extend(ext.get("nodes", []))
         combined["edges"].extend(ext.get("edges", []))
         combined["hyperedges"].extend(ext.get("hyperedges", []))
         combined["input_tokens"] += ext.get("input_tokens", 0)
         combined["output_tokens"] += ext.get("output_tokens", 0)
+        accounting = ext.get("import_accounting")
+        if isinstance(accounting, dict):
+            import_accounting.append(accounting)
+    if import_accounting:
+        combined["import_accounting"] = {
+            key: sum(
+                accounting.get(key, 0)
+                for accounting in import_accounting
+                if isinstance(accounting.get(key, 0), int)
+            )
+            for key in (
+                "total",
+                "internal",
+                "internal_resolved",
+                "internal_unresolved",
+                "external",
+            )
+        }
+        if all("complete" in accounting for accounting in import_accounting):
+            combined["import_accounting"]["complete"] = all(
+                accounting["complete"] is True for accounting in import_accounting
+            )
     if dedup and combined["nodes"]:
         # Numeric ids must be str before dedup, which keys on them and would
         # raise TypeError in _pick_winner's regex search (#2326). build_from_json

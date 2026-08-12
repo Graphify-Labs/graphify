@@ -349,6 +349,11 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
     if isinstance(data.get("graph"), dict) and "hyperedges" in data["graph"]:
         data["graph"]["hyperedges"] = hyperedges
     data["hyperedges"] = hyperedges
+    import_accounting = getattr(G, "graph", {}).get("import_accounting")
+    if isinstance(import_accounting, dict):
+        data["import_accounting"] = dict(import_accounting)
+        if isinstance(data.get("graph"), dict):
+            data["graph"]["import_accounting"] = dict(import_accounting)
     commit = built_at_commit if built_at_commit is not None else _git_head()
     if commit:
         data["built_at_commit"] = commit

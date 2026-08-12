@@ -3619,10 +3619,14 @@ def dispatch_command(cmd: str) -> None:
         # first means semantic node attributes win on collision (richer labels
         # for symbols also referenced in docs). Hyperedges only come from the
         # semantic side.
+        _import_accounting = dict(ast_result.get("import_accounting") or {})
+        if _import_accounting:
+            _import_accounting["complete"] = not incremental_mode
         merged: dict = {
             "nodes": list(ast_result.get("nodes", [])) + list(sem_result.get("nodes", [])) + list(pg_result.get("nodes", [])) + list(cargo_result.get("nodes", [])),
             "edges": list(ast_result.get("edges", [])) + list(sem_result.get("edges", [])) + list(pg_result.get("edges", [])) + list(cargo_result.get("edges", [])),
             "hyperedges": list(sem_result.get("hyperedges", [])),
+            "import_accounting": _import_accounting,
             "input_tokens": ast_result.get("input_tokens", 0) + sem_result.get("input_tokens", 0),
             "output_tokens": ast_result.get("output_tokens", 0) + sem_result.get("output_tokens", 0),
         }

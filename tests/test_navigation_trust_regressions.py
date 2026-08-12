@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from graphify.build import build
+from graphify.export import to_json
 from graphify.extract import extract
 
 
@@ -81,6 +83,29 @@ def test_import_accounting_separates_internal_and_external_edges(tmp_path: Path)
         "internal_resolved": 1,
         "internal_unresolved": 0,
         "external": 1,
+    }
+
+
+def test_import_accounting_survives_graph_export(tmp_path: Path):
+    model = _write(tmp_path / "model.py", "class Payload:\n    pass\n")
+    consumer = _write(tmp_path / "consumer.py", "from model import Payload\n")
+    result = extract([model, consumer], root=tmp_path, cache_root=tmp_path, parallel=False)
+    result["import_accounting"]["complete"] = True
+    graph = build([result], root=tmp_path)
+    output = tmp_path / "graph.json"
+
+    assert to_json(graph, {}, str(output), force=True)
+
+    import json
+
+    exported = json.loads(output.read_text(encoding="utf-8"))
+    assert exported["import_accounting"] == {
+        "total": 1,
+        "internal": 1,
+        "internal_resolved": 1,
+        "internal_unresolved": 0,
+        "external": 0,
+        "complete": True,
     }
 
 
