@@ -586,7 +586,7 @@ def _relativize_source_files_in(payload: dict, root: Path) -> None:
                 # the symbolic relativization below.
                 cwd_form = Path(os.path.abspath(sp))
                 try:
-                    if cwd_form == root_resolved / sp or not cwd_form.exists():
+                    if cwd_form == root_resolved / sp or not _path_exists(cwd_form):
                         continue  # already root-relative, or a ghost path
                 except OSError:
                     continue

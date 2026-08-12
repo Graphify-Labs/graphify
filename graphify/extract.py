@@ -426,7 +426,7 @@ def _import_js(node, source: bytes, file_nid: str, stem: str, edges: list, str_p
             # `_resolve_js_import_path` returns the attempted path when no
             # local file exists. Static ES imports must treat that as unresolved
             # rather than minting a checkout-specific target ID (#2457).
-            if resolved_path is not None and not resolved_path.is_file():
+            if resolved_path is not None and not _path_is_file(resolved_path):
                 tgt_nid = _make_id("ref", raw)
                 resolved_path = None
             edge = {
