@@ -109,6 +109,16 @@ def test_python_inferred_uses_belong_to_narrowest_lexical_owner(tmp_path: Path):
     assert ("PacPiInterpreter", "ExecutionTiming") in uses
     assert ("_PiRpcConnection", "InputKind") not in uses
     assert ("_PiRpcConnection", "ExecutionTiming") not in uses
+    labels = {node["id"]: node["label"] for node in result["nodes"]}
+    attributed = [
+        edge
+        for edge in result["edges"]
+        if edge.get("relation") == "uses"
+        and labels.get(edge["source"]) == "PacPiInterpreter"
+        and labels.get(edge["target"]) in {"InputKind", "ExecutionTiming"}
+    ]
+    assert attributed
+    assert all(edge["confidence"] == "INFERRED" for edge in attributed)
 
 
 def test_unused_import_does_not_create_construct_level_use(tmp_path: Path):

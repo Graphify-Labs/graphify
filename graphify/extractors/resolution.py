@@ -873,7 +873,7 @@ def _apply_symbol_resolution_facts(
         for edge in edges
     }
 
-    def add_edge(source: str, target: str, relation: str, context: str, line: int, source_path: Path, target_file: str | None = None, local_alias: str | None = None) -> None:
+    def add_edge(source: str, target: str, relation: str, context: str, line: int, source_path: Path, target_file: str | None = None, local_alias: str | None = None, confidence: str = "EXTRACTED") -> None:
         key = (source, target, relation, context or "")
         if key in existing_edges:
             return
@@ -883,7 +883,7 @@ def _apply_symbol_resolution_facts(
             "target": target,
             "relation": relation,
             "context": context,
-            "confidence": "EXTRACTED",
+            "confidence": confidence,
             "source_file": str(source_path),
             "source_location": f"L{line}",
             "weight": 1.0,
@@ -1096,6 +1096,7 @@ def _apply_symbol_resolution_facts(
             use_fact.context,
             use_fact.line,
             use_fact.file_path,
+            confidence="INFERRED" if use_fact.relation == "uses" else "EXTRACTED",
         )
 
 def _parse_js_tree(path: Path):
@@ -1784,6 +1785,33 @@ def _resolve_python_module_path(module_name: str, current_path: Path, root: Path
             return cand
     return None
 
+
+def _python_class_bodies(path: Path, root_node, source: bytes) -> list[tuple[str, object]]:
+    """Return class bodies with the ids emitted by the AST extractor."""
+    bodies: list[tuple[str, object]] = []
+    stem = _file_stem(path)
+    for node in _walk_python_tree(root_node):
+        if node.type != "class_definition":
+            continue
+        name_node = node.child_by_field_name("name")
+        body = node.child_by_field_name("body")
+        if name_node is not None and body is not None:
+            bodies.append((_make_id(stem, _read_text(name_node, source)), body))
+    return bodies
+
+
+def _walk_python_class_scope(node):
+    """Walk a class body without attributing nested-class references outward."""
+    for child in node.children:
+        if child.type == "class_definition":
+            continue
+        if child.type == "decorated_definition":
+            definition = child.child_by_field_name("definition")
+            if definition is not None and definition.type == "class_definition":
+                continue
+        yield child
+        yield from _walk_python_class_scope(child)
+
 def _python_top_level_function_bodies(path: Path, root_node, source: bytes) -> list[tuple[str, object]]:
     bodies: list[tuple[str, object]] = []
     stem = _file_stem(path)
@@ -1879,6 +1907,20 @@ def _collect_python_symbol_resolution_facts(
                         node.start_point[0] + 1,
                     )
                 )
+        for source_id, body in _python_class_bodies(path, root_node, source):
+            for node in _walk_python_class_scope(body):
+                if node.type != "identifier":
+                    continue
+                facts.uses.append(
+                    _SymbolUseFact(
+                        path,
+                        source_id,
+                        _read_text(node, source),
+                        "uses",
+                        "reference",
+                        node.start_point[0] + 1,
+                    )
+                )
 
 def _augment_symbol_resolution_edges(
     paths: list[Path],
@@ -1891,163 +1933,6 @@ def _augment_symbol_resolution_edges(
     _collect_python_symbol_resolution_facts(paths, root, facts)
     _apply_symbol_resolution_facts(paths, nodes, edges, root, facts)
 
-def _resolve_cross_file_imports(
-    per_file: list[dict],
-    paths: list[Path],
-) -> list[dict]:
-    """
-    Two-pass import resolution: turn file-level imports into class-level edges.
-
-    Pass 1 - build a global map: class/function name → node_id, per stem.
-    Pass 2 - for each `from .module import Name`, look up Name in the global
-              map and add a direct INFERRED edge from each class in the
-              importing file to the imported entity.
-
-    This turns:
-        auth.py --imports_from--> models.py          (obvious, filtered out)
-    Into:
-        DigestAuth --uses--> Response  [INFERRED]    (cross-file, interesting!)
-        BasicAuth  --uses--> Request   [INFERRED]
-    """
-    try:
-        import tree_sitter_python as tspython
-        from tree_sitter import Language, Parser
-    except ImportError:
-        return []
-
-    language = Language(tspython.language())
-    parser = Parser(language)
-
-    # Pass 1: _file_stem(path) → {ClassName: node_id}
-    # Keyed by directory-qualified stem (e.g. "auth_models") to avoid collisions
-    # when multiple files share the same filename in different directories.
-    # A secondary bare-stem index handles absolute imports where only the module
-    # name is known — first writer wins when names collide (inherently ambiguous).
-    stem_to_entities: dict[str, dict[str, str]] = {}
-    bare_to_qualified: dict[str, str] = {}
-    for file_result in per_file:
-        for node in file_result.get("nodes", []):
-            src = node.get("source_file", "")
-            if not src:
-                continue
-            src_path = Path(src)
-            fq_stem = _file_stem(src_path)
-            label = node.get("label", "")
-            nid = node.get("id", "")
-            # Index class-level entities only. Function/method labels end in "()"
-            # so are excluded by the `endswith(")")` filter; file nodes end in ".py";
-            # private/internal labels start with "_"; rationale nodes carry
-            # file_type=="rationale" and must never participate in cross-file
-            # import resolution (#563).
-            if (
-                label
-                and not label.endswith((")", ".py"))
-                and "_" not in label[:1]
-                and node.get("file_type") != "rationale"
-            ):
-                stem_to_entities.setdefault(fq_stem, {})[label] = nid
-                if src_path.stem not in bare_to_qualified:
-                    bare_to_qualified[src_path.stem] = fq_stem
-
-    # Pass 2: for each file, find `from .X import A, B, C` and resolve
-    new_edges: list[dict] = []
-    stem_to_path: dict[str, Path] = {_file_stem(p): p for p in paths}
-
-    for file_result, path in zip(per_file, paths):
-        stem = _file_stem(path)
-        str_path = str(path)
-
-        # Find all classes defined in this file (the importers).
-        # Excludes rationale nodes whose labels happen not to end in ")" or ".py"
-        # but which must never be treated as importing entities (#563).
-        local_classes = [
-            n["id"] for n in file_result.get("nodes", [])
-            if n.get("source_file") == str_path
-            and not n["label"].endswith((")", ".py"))
-            and n["id"] != _make_id(stem)  # exclude file-level node
-            and n.get("file_type") != "rationale"
-        ]
-        if not local_classes:
-            continue
-
-        # Parse imports from this file
-        try:
-            source = path.read_bytes()
-            tree = parser.parse(source)
-        except Exception:
-            continue
-
-        def walk_imports(node) -> None:
-            if node.type == "import_from_statement":
-                # Find the module name - handles both absolute and relative imports.
-                # Relative: `from .models import X` → relative_import → dotted_name
-                # Absolute: `from models import X`  → module_name field
-                # target_fq is the directory-qualified stem used as the key in
-                # stem_to_entities. Relative imports are resolved exactly via the
-                # importing file's directory; absolute imports fall back to the
-                # bare-stem secondary index (first-writer-wins when names collide).
-                target_fq: str | None = None
-                for child in node.children:
-                    if child.type == "relative_import":
-                        for sub in child.children:
-                            if sub.type == "dotted_name":
-                                raw = source[sub.start_byte:sub.end_byte].decode("utf-8", errors="replace")
-                                bare = raw.split(".")[-1]
-                                # Resolve relative import to exact qualified stem.
-                                candidate = path.parent / f"{bare}.py"
-                                target_fq = _file_stem(candidate)
-                                break
-                        break
-                    if child.type == "dotted_name" and target_fq is None:
-                        raw = source[child.start_byte:child.end_byte].decode("utf-8", errors="replace")
-                        bare = raw.split(".")[-1]
-                        target_fq = bare_to_qualified.get(bare)
-
-                if not target_fq or target_fq not in stem_to_entities:
-                    return
-
-                # Collect imported names: dotted_name children of import_from_statement
-                # that come AFTER the 'import' keyword token.
-                imported_names: list[str] = []
-                past_import_kw = False
-                for child in node.children:
-                    if child.type == "import":
-                        past_import_kw = True
-                        continue
-                    if not past_import_kw:
-                        continue
-                    if child.type == "dotted_name":
-                        imported_names.append(
-                            source[child.start_byte:child.end_byte].decode("utf-8", errors="replace")
-                        )
-                    elif child.type == "aliased_import":
-                        # `import X as Y` - take the original name
-                        name_node = child.child_by_field_name("name")
-                        if name_node:
-                            imported_names.append(
-                                source[name_node.start_byte:name_node.end_byte].decode("utf-8", errors="replace")
-                            )
-
-                line = node.start_point[0] + 1
-                for name in imported_names:
-                    tgt_nid = stem_to_entities[target_fq].get(name)
-                    if tgt_nid:
-                        for src_class_nid in local_classes:
-                            new_edges.append({
-                                "source": src_class_nid,
-                                "target": tgt_nid,
-                                "relation": "uses",
-                                "confidence": "INFERRED",
-                                "source_file": str_path,
-                                "source_location": f"L{line}",
-                                "weight": 0.8,
-                            })
-            for child in node.children:
-                walk_imports(child)
-
-        walk_imports(tree.root_node)
-
-    return new_edges
 
 _DECLDEF_HEADER_SUFFIXES = frozenset({".h", ".hpp", ".hh", ".hxx"})
 

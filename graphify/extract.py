@@ -114,7 +114,6 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _python_top_level_function_bodies,
     _read_tsconfig_aliases,
     _resolve_c_include_path,
-    _resolve_cross_file_imports,
     _resolve_cross_file_java_imports,
     _resolve_export_target,
     _resolve_go_type_references,
@@ -6003,16 +6002,6 @@ def extract(
             )
     _rewire_unique_stub_nodes(all_nodes, all_edges)
 
-    # Add cross-file class-level edges (Python only - uses Python parser internally)
-    py_paths = [p for p in paths if p.suffix == ".py"]
-    if py_paths:
-        py_results = [r for r, p in zip(per_file, paths) if p.suffix == ".py"]
-        try:
-            cross_file_edges = _resolve_cross_file_imports(py_results, py_paths)
-            all_edges.extend(cross_file_edges)
-        except Exception as exc:
-            import logging
-            logging.getLogger(__name__).warning("Cross-file import resolution failed, skipping: %s", exc)
 
     # Cross-file Java import resolution
     java_paths = [p for p in paths if p.suffix == ".java"]
