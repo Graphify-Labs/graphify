@@ -1716,6 +1716,8 @@ def dispatch_command(cmd: str) -> None:
         no_label = "--no-label" in sys.argv
         missing_only = "--missing-only" in sys.argv
         co_timing = "--timing" in sys.argv
+        co_verbose = "--verbose" in sys.argv
+        co_tokens = "--tokens" in sys.argv
         _backend_arg = next((a for a in sys.argv if a.startswith("--backend=")), None)
         label_backend = _backend_arg.split("=", 1)[1] if _backend_arg else None
         _model_arg = next((a for a in sys.argv if a.startswith("--model=")), None)
@@ -1764,7 +1766,7 @@ def dispatch_command(cmd: str) -> None:
                 label_batch_size = int(args[i_arg + 1]); label_batch_size_explicit = True; i_arg += 2
             elif a.startswith("--batch-size="):
                 label_batch_size = int(a.split("=", 1)[1]); label_batch_size_explicit = True; i_arg += 1
-            elif a in ("--no-viz", "--missing-only") or a.startswith("--min-community-size="):
+            elif a in ("--no-viz", "--missing-only", "--verbose", "--tokens") or a.startswith("--min-community-size="):
                 i_arg += 1
             elif a.startswith("--"):
                 i_arg += 1
@@ -1774,6 +1776,20 @@ def dispatch_command(cmd: str) -> None:
                 i_arg += 1
         if watch_path is None:
             watch_path = Path(".")
+        if co_verbose:
+            # Trace every labeling LLM exchange (prompt, thinking, reply,
+            # per-call tokens) to stderr. Env-var equivalent:
+            # GRAPHIFY_LLM_VERBOSE=1, which also covers paths with no flag
+            # parsing (watch, update, dedup tiebreaker).
+            from graphify.llm import set_llm_verbose
+            set_llm_verbose(True)
+        if co_tokens:
+            # Token-economics-only: per-call token lines plus the run total,
+            # without prompt/thinking/response dumps and without verbose's
+            # call-shaping side effects (extended thinking, stream-json).
+            # Env-var equivalent: GRAPHIFY_LLM_TOKENS=1.
+            from graphify.llm import set_llm_tokens
+            set_llm_tokens(True)
         graph_json = graph_override if graph_override is not None else watch_path / _GRAPHIFY_OUT / "graph.json"
         if not graph_json.exists():
             print(
@@ -1879,6 +1895,8 @@ def dispatch_command(cmd: str) -> None:
                 ("--model", label_model is not None),
                 ("--batch-size", label_batch_size_explicit),
                 ("--max-concurrency", label_max_concurrency_explicit),
+                ("--verbose", co_verbose),
+                ("--tokens", co_tokens),
             ) if given]
             if _ignored_label_flags:
                 print(
@@ -1988,6 +2006,27 @@ def dispatch_command(cmd: str) -> None:
                 if v and v != f"Community {cid}" and v != str(cid)
             })
         stages.mark("label")
+        if (co_verbose or co_tokens) and (label_token_usage["input"] or label_token_usage["output"]):
+            # Run-level token accountability: per-call numbers were already
+            # traced by llm.py's verbose/tokens hook; this is the spendable
+            # total, with a cost estimate when the backend's pricing is known.
+            from graphify.llm import detect_backend as _detect_backend, estimate_cost as _est_cost
+            _cost_backend = label_backend
+            if _cost_backend is None:
+                try:
+                    _cost_backend = _detect_backend()
+                except Exception:
+                    _cost_backend = None
+            _cost = (
+                _est_cost(_cost_backend, label_token_usage["input"], label_token_usage["output"])
+                if _cost_backend else 0.0
+            )
+            print(
+                f"[graphify llm] label run total: {label_token_usage['input']:,} in · "
+                f"{label_token_usage['output']:,} out "
+                f"(~${_cost:.4f} @ {_cost_backend or 'unknown backend'})",
+                file=sys.stderr,
+            )
         questions = suggest_questions(G, communities, labels)
         # cluster-only re-clusters an EXISTING graph: the code content is exactly
         # what extract saw, so keep the extract-time commit stamp instead of

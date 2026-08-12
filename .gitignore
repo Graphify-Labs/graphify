@@ -29,6 +29,7 @@ skills/
 !tools/skillgen/fragments/core/**
 docs/superpowers/
 .vscode/
+.idea/
 .kilo
 openspec/
 # Local benchmark scripts — never commit
