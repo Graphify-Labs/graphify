@@ -1,5 +1,6 @@
 """Graph analysis: god nodes (most connected), surprising connections (cross-community), suggested questions."""
 from __future__ import annotations
+import re
 from pathlib import Path
 import networkx as nx
 
@@ -473,9 +474,19 @@ def suggest_questions(
             neighbor_comms = {node_community.get(n) for n in neighbors if node_community.get(n) != cid}
             if neighbor_comms:
                 other_labels = [community_labels.get(c, f"Community {c}") for c in neighbor_comms]
+                others = ', '.join(f'`{l}`' for l in other_labels)
+                # A bridge node's own community is sometimes a singleton auto-named
+                # after that same node (an extreme hub gets isolated into its own
+                # community by Louvain), which read as "Why does `X` connect `X`
+                # to ...?" - restating the node's own name as a distinct target.
+                _norm = lambda s: re.sub(r"[^a-z0-9]", "", str(s).lower())
+                if _norm(comm_label) == _norm(label):
+                    question_text = f"Why does `{label}` bridge {others}?"
+                else:
+                    question_text = f"Why does `{label}` connect `{comm_label}` to {others}?"
                 questions.append({
                     "type": "bridge_node",
-                    "question": f"Why does `{label}` connect `{comm_label}` to {', '.join(f'`{l}`' for l in other_labels)}?",
+                    "question": question_text,
                     "why": f"High betweenness centrality ({score:.3f}) - this node is a cross-community bridge.",
                 })
 
