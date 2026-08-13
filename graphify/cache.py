@@ -7,6 +7,7 @@ import json
 import os
 import re
 import tempfile
+import time
 import warnings
 from collections.abc import Iterable
 from pathlib import Path
@@ -178,11 +179,12 @@ def _body_content(content: bytes) -> bytes:
     return text[closer.start() + 3:].encode()
 
 
-# Stat-based index: maps absolute path → {size, mtime_ns, hash}.
+# Stat-based index: maps absolute path → {size, mtime_ns, indexed_at_ns, ...}.
 # Loaded once per process, flushed via atexit. Skips full file reads when
 # size+mtime_ns are unchanged — same trade-off as make(1).
-# Correctness risks: `touch` causes a harmless extra re-hash; same-size edits
-# within NFS second-resolution mtime have a 1-second window (same as make).
+# Correctness risks: `touch` causes a harmless extra re-hash. Same-size edits
+# inside one mtime tick used to return the PREVIOUS content's digest; the
+# racily-clean guard below closes that hole (see _stat_sig_fresh).
 # `graphify extract --force` / `graphify update --force` (or GRAPHIFY_FORCE=1)
 # skip the cache reads and re-dispatch everything when needed (#1894).
 _stat_index: dict[str, dict] = {}
@@ -192,6 +194,84 @@ _stat_index_root: Path | None = None
 # (cache_root, #1774) — the two differ under --out and must not be conflated.
 _stat_index_anchor: Path | None = None
 _stat_index_dirty: bool = False
+
+
+# Filesystem mtime granularity, in nanoseconds. A stat signature only proves a
+# file is unchanged when the clock that stamped its mtime is finer-grained than
+# the interval between two writes — which is false almost everywhere: NTFS
+# advances mtime on the ~15.6 ms system tick, FAT/exFAT on 2 s, and Linux
+# stamps from the coarse (jiffies) clock even though ext4 stores nanoseconds.
+# 2 s is the conservative default that covers all of them. It costs nothing in
+# practice: only files modified within the last 2 s lose the fastpath, and in a
+# real corpus those are exactly the handful of files that changed and have to be
+# read anyway. Override with GRAPHIFY_MTIME_GRANULARITY_MS (0 disables the
+# guard and restores the pre-fix behaviour).
+_MTIME_GRANULARITY_NS = 2_000_000_000
+
+
+def _mtime_granularity_ns() -> int:
+    """Return the assumed filesystem mtime granularity in nanoseconds.
+
+    Read fresh on every call so the env var can be set after import (and so
+    tests can flip it without reloading the module).
+    """
+    raw = os.environ.get("GRAPHIFY_MTIME_GRANULARITY_MS", "").strip()
+    if raw:
+        try:
+            ms = float(raw)
+        except ValueError:
+            return _MTIME_GRANULARITY_NS
+        if ms >= 0:
+            return int(ms * 1_000_000)
+    return _MTIME_GRANULARITY_NS
+
+
+def _stat_sig_fresh(entry: object, st: "os.stat_result") -> bool:
+    """True if ``entry`` provably describes the file's CURRENT content.
+
+    Beyond matching (size, mtime_ns), the entry must be *racily clean* in git's
+    sense: we must have read the content strictly after the file's mtime tick
+    had already closed. Otherwise a write that landed between our read and the
+    end of that tick would have left mtime (and, for a same-length edit, size)
+    untouched, and the stored digest would describe content that is no longer
+    on disk.
+
+    ``indexed_at_ns`` is the wall clock captured immediately BEFORE the content
+    was read. Requiring ``mtime + granularity <= indexed_at`` means any later
+    write necessarily lands in a new tick and so changes mtime, making it
+    visible to the next signature comparison.
+
+    Entries written by an older graphify carry no ``indexed_at_ns``; they are
+    treated as untrusted (one re-read each), and gain the field when rewritten.
+    """
+    if not isinstance(entry, dict):
+        return False
+    if entry.get("size") != st.st_size or entry.get("mtime_ns") != st.st_mtime_ns:
+        return False
+    indexed_at = entry.get("indexed_at_ns")
+    if not isinstance(indexed_at, int):
+        return False
+    return st.st_mtime_ns + _mtime_granularity_ns() <= indexed_at
+
+
+def _stat_entry_for(abs_key: str, st: "os.stat_result", observed_at_ns: int) -> dict:
+    """Get-or-reset the index entry for ``abs_key`` and stamp when it was read.
+
+    Reuses the existing dict when the stat signature still matches, so
+    co-located values (other salts' digests, ``word_count``) survive; resets it
+    otherwise, so a stale ``word_count`` cannot outlive the content it counted.
+
+    ``observed_at_ns`` must be the clock reading taken *before* the content was
+    read — see :func:`_stat_sig_fresh` for why the ordering matters.
+    """
+    entry = _stat_index.get(abs_key)
+    if (not isinstance(entry, dict)
+            or entry.get("size") != st.st_size
+            or entry.get("mtime_ns") != st.st_mtime_ns):
+        entry = {"size": st.st_size, "mtime_ns": st.st_mtime_ns}
+        _stat_index[abs_key] = entry
+    entry["indexed_at_ns"] = observed_at_ns
+    return entry
 
 
 def _stat_key_to_relative(key: str, anchor: Path) -> str:
@@ -325,8 +405,10 @@ def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = No
     """SHA256 of file contents + path relative to root.
 
     Uses a stat-based fastpath (size + mtime_ns) to skip full reads when the
-    file hasn't changed. Falls through to full SHA256 on first encounter or
-    when stat changes. Index is flushed atomically at process exit.
+    file hasn't changed. Falls through to full SHA256 on first encounter, when
+    stat changes, and when the recorded signature is not yet provably stable
+    (see :func:`_stat_sig_fresh`) — so two different contents can never share a
+    digest. Index is flushed atomically at process exit.
 
     Using a relative path (not absolute) makes cache entries portable across
     machines and checkout directories, so shared caches and CI work correctly.
@@ -363,11 +445,8 @@ def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = No
     st: "os.stat_result | None" = None
     try:
         st = p.stat()
-        entry = _stat_index.get(abs_key)
-        if (isinstance(entry, dict)
-                and entry.get("size") == st.st_size
-                and entry.get("mtime_ns") == st.st_mtime_ns):
-            hashes = entry.get("hashes")
+        if _stat_sig_fresh(_stat_index.get(abs_key), st):
+            hashes = _stat_index[abs_key].get("hashes")
             if isinstance(hashes, dict):
                 cached = hashes.get(salt)
                 if isinstance(cached, str):
@@ -377,6 +456,9 @@ def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = No
     except OSError:
         pass
 
+    # Captured BEFORE the read so the stamp can never post-date content that
+    # changed while we were reading it (see _stat_sig_fresh).
+    observed_at_ns = time.time_ns()
     raw = p.read_bytes()
     content = _body_content(raw) if p.suffix.lower() == ".md" else raw
     h = hashlib.sha256()
@@ -386,19 +468,13 @@ def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = No
     digest = h.hexdigest()
 
     if st is not None:
-        entry = _stat_index.get(abs_key)
-        if (isinstance(entry, dict)
-                and entry.get("size") == st.st_size
-                and entry.get("mtime_ns") == st.st_mtime_ns):
-            hashes = entry.get("hashes")
-            if not isinstance(hashes, dict):
-                hashes = {}
-                entry["hashes"] = hashes
-            hashes[salt] = digest       # preserve a co-located word_count / other salts
-            entry.pop("hash", None)     # retire the un-salted legacy digest
-        else:
-            _stat_index[abs_key] = {"size": st.st_size, "mtime_ns": st.st_mtime_ns,
-                                    "hashes": {salt: digest}}
+        entry = _stat_entry_for(abs_key, st, observed_at_ns)
+        hashes = entry.get("hashes")
+        if not isinstance(hashes, dict):
+            hashes = {}
+            entry["hashes"] = hashes
+        hashes[salt] = digest       # preserve a co-located word_count / other salts
+        entry.pop("hash", None)     # retire the un-salted legacy digest
         _stat_index_dirty = True
 
     return digest
@@ -426,26 +502,18 @@ def cached_word_count(path: Path, root: Path, compute, cache_root: "Path | None"
     try:
         st = p.stat()
         entry = _stat_index.get(abs_key)
-        if (entry
-                and entry.get("size") == st.st_size
-                and entry.get("mtime_ns") == st.st_mtime_ns
-                and "word_count" in entry):
+        if _stat_sig_fresh(entry, st) and "word_count" in entry:
             return entry["word_count"]
     except OSError:
         pass
 
+    # Captured BEFORE compute() reads the file, for the same reason file_hash
+    # stamps before its read (see _stat_sig_fresh).
+    observed_at_ns = time.time_ns()
     wc = compute(Path(path))
 
     if st is not None:
-        entry = _stat_index.get(abs_key)
-        if (entry
-                and entry.get("size") == st.st_size
-                and entry.get("mtime_ns") == st.st_mtime_ns):
-            entry["word_count"] = wc  # augment the existing hash entry in place
-        else:
-            _stat_index[abs_key] = {
-                "size": st.st_size, "mtime_ns": st.st_mtime_ns, "word_count": wc,
-            }
+        _stat_entry_for(abs_key, st, observed_at_ns)["word_count"] = wc
         _stat_index_dirty = True
 
     return wc
@@ -456,8 +524,24 @@ def _relativize_source_files_in(payload: dict, root: Path) -> None:
     forward-slash relative paths from ``root``.
 
     Mirror of :func:`graphify.watch._relativize_source_files` so cached
-    extraction fragments persist in portable form (#777). Already-relative
-    fields and out-of-root paths pass through unchanged.
+    extraction fragments persist in portable form (#777). Out-of-root paths
+    pass through unchanged.
+
+    A CWD-relative field is re-anchored too. Extractors stamp ``source_file``
+    with the path string ``extract()`` was handed, so relative inputs yield a
+    CWD-relative stamp — but the stored format is root-relative, and
+    :func:`_absolutize_source_files_in` reads it back as such. When CWD is not
+    the inferred root the two disagree and a warm hit resurrects a path that
+    names no file (``<root>/src/pages/index.astro`` for an input of
+    ``src/pages/index.astro`` under root ``<root>``). Every source_file-GATED
+    remap in ``extract()`` then misses — the file-stem prefix pass looks up
+    ``Path(source_file).resolve()`` in ``prefix_remap`` — so a warm hit keeps
+    the raw-path symbol ids a cold run canonicalizes: symbols stop sharing
+    their file node's stem, and for absolute inputs the on-disk path survives
+    into the persisted id (#2630). Only rewritten when the CWD-relative
+    reading is a real file and the root-relative reading is a different path,
+    so a fragment that already stores root-relative (a semantic subagent's,
+    see :func:`_normalize_source_file_value`) is left alone.
 
     Only ``root`` is resolved — ``source_file`` itself is relativized
     symbolically so in-root symlinks keep their original name rather than
@@ -481,7 +565,15 @@ def _relativize_source_files_in(payload: dict, root: Path) -> None:
                 continue
             sp = Path(source)
             if not sp.is_absolute():
-                continue
+                # os.path.abspath is lexical (no symlink resolution), matching
+                # the symbolic relativization below.
+                cwd_form = Path(os.path.abspath(sp))
+                try:
+                    if cwd_form == root_resolved / sp or not cwd_form.exists():
+                        continue  # already root-relative, or a ghost path
+                except OSError:
+                    continue
+                sp = cwd_form
             try:
                 rel = os.path.relpath(sp, root_resolved)
             except (ValueError, OSError):

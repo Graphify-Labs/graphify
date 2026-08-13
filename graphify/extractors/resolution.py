@@ -1724,6 +1724,8 @@ def _probe_python_module_candidate(candidate: Path) -> Path | None:
             return init_path
     if candidate.is_file():
         return candidate
+    if not candidate.name:
+        return None
     py_candidate = candidate.with_suffix(".py")
     if py_candidate.is_file():
         return py_candidate
@@ -2056,6 +2058,11 @@ def _decldef_class_stem(source_file: str) -> tuple[str, str] | None:
         return None
     return (str(p.parent), stem)
 
+def _source_stem(node: dict) -> str:
+    """Filename stem of a node's ``source_file`` (``""`` when it has none)."""
+    return Path(str(node.get("source_file", ""))).stem
+
+
 def _merge_decl_def_classes(
     all_nodes: list[dict],
     all_edges: list[dict],
@@ -2137,10 +2144,22 @@ def _merge_decl_def_classes(
                 headers.append(node)
         if not ok:
             continue
-        # All from one (dir, base_stem) sibling family, with a UNIQUE header.
-        if len(sibling_keys) != 1 or len(headers) != 1:
+        # All from one (dir, base_stem) sibling family. Pick the declaring header.
+        # Usually there is exactly one. An ObjC class whose members are split across
+        # categories has several (`Foo.h`, `Foo+Cat.h`) — fold those too, keeping the
+        # BASE header (the stem with no `+`), or the lowest-sorting category header
+        # when the base class lives outside the corpus (`NSString+Trim.h`). Two
+        # NON-category headers still bail to disambiguation, as before, so an
+        # unrelated `Foo.h` / `Foo.hpp` pair is untouched.
+        if len(sibling_keys) != 1 or not headers:
             continue
-        keeper = headers[0]
+        if len(headers) == 1:
+            keeper = headers[0]
+        else:
+            base_headers = [h for h in headers if "+" not in _source_stem(h)]
+            if len(base_headers) > 1:
+                continue
+            keeper = base_headers[0] if base_headers else min(headers, key=_source_stem)
         for node in group:
             if node is not keeper:
                 drop_objs.add(id(node))
@@ -2174,9 +2193,14 @@ def _resolve_cross_file_java_imports(
 ) -> list[dict]:
     """Two-pass Java import resolution.
 
-    Pass 1: build a global index {ClassName: [node_id, ...]} across all Java nodes.
+    Pass 1: build a global index {ClassName: [(node_id, package), ...]} across
+    all Java nodes (packages come from a re-parse; node metadata doesn't carry
+    them).
     Pass 2: re-parse each Java file; for every `import a.b.C;`, resolve C against
-    the index. Wildcard and stdlib imports produce no edge.
+    the index, skipping candidates whose defining file declares a different
+    package — an external `org.springframework.stereotype.Component` must not
+    link to a local `com.example.model.Component` (#2504). Wildcard and stdlib
+    imports produce no edge.
     """
     try:
         import tree_sitter_java as tsjava
@@ -2187,8 +2211,45 @@ def _resolve_cross_file_java_imports(
     language = Language(tsjava.language())
     parser = Parser(language)
 
-    # Pass 1: class-name → node_id index (only internal, uppercase-starting names)
-    name_to_ids: dict[str, list[str]] = {}
+    # Pre-pass: declared package per source_file string (and parsed trees for
+    # pass 2, so each file is only parsed once).
+    parsed: dict[str, tuple[bytes, object]] = {}
+    pkg_by_src: dict[str, str] = {}
+    for path, file_result in zip(paths, per_file):
+        try:
+            source = path.read_bytes()
+            tree = parser.parse(source)
+        except Exception:
+            continue
+        parsed[str(path)] = (source, tree)
+        pkg = ""
+        for child in tree.root_node.children:
+            if child.type == "package_declaration":
+                pkg = _read_text(child, source).strip()[len("package"):].strip().rstrip(";").strip()
+                break
+        pkg_by_src[str(path)] = pkg
+        for node in file_result.get("nodes", []):
+            src = node.get("source_file")
+            if src:
+                pkg_by_src.setdefault(src, pkg)
+
+    def _pkg_matches(imp_pkg: str, tgt_pkg: str) -> bool:
+        if imp_pkg == tgt_pkg:
+            return True
+        # `import p.Outer.Inner` against a nested type defined in package p:
+        # the leftover segments must all be type-like (uppercase-first), which
+        # conventional lowercase external packages can never satisfy.
+        if tgt_pkg:
+            if not imp_pkg.startswith(tgt_pkg + "."):
+                return False
+            rest = imp_pkg[len(tgt_pkg) + 1:]
+        else:
+            rest = imp_pkg
+        return bool(rest) and all(seg[:1].isupper() for seg in rest.split("."))
+
+    # Pass 1: class-name → (node_id, package) index (only internal,
+    # uppercase-starting names)
+    name_to_ids: dict[str, list[tuple[str, str]]] = {}
     for file_result in per_file:
         for node in file_result.get("nodes", []):
             label = node.get("label", "")
@@ -2200,18 +2261,17 @@ def _resolve_cross_file_java_imports(
                 continue
             if not label[0].isalpha() or not label[0].isupper():
                 continue
-            name_to_ids.setdefault(label, []).append(nid)
+            name_to_ids.setdefault(label, []).append((nid, pkg_by_src.get(src, "")))
 
     # Pass 2: resolve imports to real node IDs
     new_edges: list[dict] = []
     seen_pairs: set[tuple[str, str]] = set()
     for path in paths:
         file_nid = _make_id(str(path))
-        try:
-            source = path.read_bytes()
-            tree = parser.parse(source)
-        except Exception:
+        entry = parsed.get(str(path))
+        if entry is None:
             continue
+        source, tree = entry
 
         def walk(n) -> None:
             if n.type == "import_declaration":
@@ -2225,11 +2285,15 @@ def _resolve_cross_file_java_imports(
                 if not parts:
                     return
                 last = parts[-1]
+                imp_pkg = ".".join(parts[:-1])
                 if last and last[0].islower() and len(parts) >= 2:
                     last = parts[-2]
+                    imp_pkg = ".".join(parts[:-2])
                 at_line = n.start_point[0] + 1
-                for tgt_nid in name_to_ids.get(last, []):
+                for tgt_nid, tgt_pkg in name_to_ids.get(last, []):
                     if tgt_nid == file_nid:
+                        continue
+                    if not _pkg_matches(imp_pkg, tgt_pkg):
                         continue
                     key = (file_nid, tgt_nid)
                     if key in seen_pairs:
@@ -2252,6 +2316,157 @@ def _resolve_cross_file_java_imports(
 
     return new_edges
 
+
+def _go_import_path_for_file(
+    source_file: str | Path,
+    root: Path,
+    module_cache: dict[Path, str | None] | None = None,
+) -> str | None:
+    """Return the canonical Go import path for a source file inside a module."""
+    cache = module_cache if module_cache is not None else {}
+    path = Path(source_file)
+    if not path.is_absolute():
+        path = root / path
+    try:
+        directory = path.resolve().parent
+    except OSError:
+        directory = path.absolute().parent
+
+    module_dir: Path | None = None
+    module_path: str | None = None
+    for candidate in (directory, *directory.parents):
+        if candidate in cache:
+            cached = cache[candidate]
+            if cached:
+                module_dir, module_path = candidate, cached
+            break
+        go_mod = candidate / "go.mod"
+        if not go_mod.is_file():
+            continue
+        try:
+            match = re.search(
+                r"(?m)^\s*module\s+([^\s]+)",
+                go_mod.read_text(encoding="utf-8"),
+            )
+        except (OSError, UnicodeError):
+            match = None
+        module_dir = candidate
+        module_path = match.group(1) if match else None
+        cache[candidate] = module_path
+        break
+
+    if not module_dir or not module_path:
+        return None
+    try:
+        relative_dir = directory.relative_to(module_dir)
+    except ValueError:
+        return None
+    suffix = relative_dir.as_posix()
+    return module_path if suffix == "." else f"{module_path}/{suffix}"
+
+
+def _resolve_go_type_references(
+    per_file: list[dict],
+    paths: list[Path],
+    all_nodes: list[dict],
+    all_edges: list[dict],
+    root: Path,
+    resolution_context_nodes: list[dict] | None = None,
+    resolution_context_edges: list[dict] | None = None,
+) -> None:
+    """Resolve qualified Go types through aliases and exact module paths."""
+    imports_by_file: dict[str, dict[str, str]] = {}
+    actual_path_by_file: dict[str, Path] = {}
+    for path, result in zip(paths, per_file):
+        imports = result.get("go_imports") or {}
+        for node in result.get("nodes", []):
+            source_file = node.get("source_file")
+            if source_file:
+                imports_by_file[str(source_file)] = imports
+                actual_path_by_file[str(source_file)] = path
+
+    if not imports_by_file:
+        return
+
+    definition_nodes = all_nodes + (resolution_context_nodes or [])
+    definition_edges = all_edges + (resolution_context_edges or [])
+    contained = {edge.get("target") for edge in definition_edges
+                 if edge.get("relation") == "contains"}
+    module_cache: dict[Path, str | None] = {}
+    fqn_to_ids: dict[str, list[str]] = {}
+    for node in definition_nodes:
+        source_file = str(node.get("source_file") or "")
+        label = str(node.get("label") or "")
+        nid = node.get("id")
+        if (not source_file or not label or not nid or nid not in contained
+                or not _is_type_like_definition(node)):
+            continue
+        actual_path = actual_path_by_file.get(source_file, Path(source_file))
+        package_path = _go_import_path_for_file(actual_path, root, module_cache)
+        if package_path:
+            fqn_to_ids.setdefault(f"{package_path}.{label}", []).append(nid)
+
+    qualified_stubs = {
+        node["id"]: str(node.get("label") or "")
+        for node in all_nodes
+        if node.get("id") and not node.get("source_file")
+        and "." in str(node.get("label") or "")
+    }
+    if not qualified_stubs:
+        return
+
+    node_ids = {node.get("id") for node in all_nodes if node.get("id")}
+    external_stub_ids: dict[str, str] = {}
+    new_nodes: list[dict] = []
+
+    def external_stub(fqn: str) -> str:
+        existing = external_stub_ids.get(fqn)
+        if existing:
+            return existing
+        nid = _make_id("go", "type", fqn)
+        if nid not in node_ids:
+            new_nodes.append({
+                "id": nid,
+                "label": fqn,
+                "file_type": "code",
+                "source_file": "",
+                "source_location": "",
+            })
+            node_ids.add(nid)
+        external_stub_ids[fqn] = nid
+        return nid
+
+    repointed_from: set[str] = set()
+    for edge in all_edges:
+        if edge.get("relation") not in {"references", "embeds"}:
+            continue
+        target = edge.get("target")
+        qualified = qualified_stubs.get(target)
+        if not qualified:
+            continue
+        alias, _, type_name = qualified.rpartition(".")
+        import_path = imports_by_file.get(
+            str(edge.get("source_file") or ""), {}
+        ).get(alias)
+        if not import_path or not type_name:
+            continue
+        fqn = f"{import_path}.{type_name}"
+        candidates = fqn_to_ids.get(fqn, [])
+        edge["target"] = candidates[0] if len(candidates) == 1 else external_stub(fqn)
+        repointed_from.add(str(target))
+
+    if new_nodes:
+        all_nodes.extend(new_nodes)
+    if not repointed_from:
+        return
+    referenced = {endpoint for edge in all_edges
+                  for endpoint in (edge.get("source"), edge.get("target"))}
+    all_nodes[:] = [
+        node for node in all_nodes
+        if node.get("id") not in repointed_from or node.get("id") in referenced
+    ]
+
+
 def _resolve_java_type_references(
     per_file: list[dict],
     paths: list[Path],
@@ -2270,8 +2485,14 @@ def _resolve_java_type_references(
     names the exact package, so it disambiguates where bare-name matching cannot.
 
     Mutates ``all_nodes``/``all_edges`` in place. Runs after id-disambiguation so
-    target ids are final, and after ``_rewire_unique_stub_nodes`` so it only has
-    to handle the ambiguous remainder.
+    target ids are final, but BEFORE ``_rewire_unique_stub_nodes`` (#2504): the
+    rewire itself manufactures a false merge when the bare stub for an EXTERNAL
+    import (``org.springframework.stereotype.Component``) collapses onto the
+    only internal class with that simple name. References proven external by an
+    explicit import are re-pointed to an FQN-labeled sourceless stub the
+    bare-label rewire cannot collapse; references with no import/package facts
+    are left untouched so the legacy unique-label rewire keeps handling plain
+    same-package/default-package corpora (mirrors the PHP #1923 fix).
     """
     try:
         import tree_sitter_java as tsjava
@@ -2332,11 +2553,15 @@ def _resolve_java_type_references(
         pkg = pkg_by_file[src]
         fqn_to_id.setdefault(f"{pkg}.{label}" if pkg else label, nid)
 
-    # Bare shadow stubs: no source_file, type-like label.
+    # Shadow stubs: no source_file, type-like label. Dotted labels are included
+    # for qualified inline annotations (`@com.example.anno.Loggable`), which the
+    # engine mints with their full dotted name so a same-named local class can't
+    # absorb them (#2504).
     stub_label: dict[str, str] = {
         node["id"]: node.get("label", "")
         for node in all_nodes
-        if node.get("id") and not node.get("source_file") and node.get("label", "")[:1].isupper()
+        if node.get("id") and not node.get("source_file")
+        and (node.get("label", "")[:1].isupper() or "." in node.get("label", ""))
     }
     if not stub_label:
         return
@@ -2351,6 +2576,28 @@ def _resolve_java_type_references(
     # the reference must point at the RIGHT one (#1744). Mirrors the C# resolver,
     # whose REPOINT set already covers `references`.
     REPOINT_RELATIONS = {"implements", "inherits", "extends", "imports", "references"}
+
+    node_ids = {n.get("id") for n in all_nodes if n.get("id")}
+    external_stub_ids: dict[str, str] = {}
+    new_nodes: list[dict] = []
+
+    def _external_stub(fqn: str) -> str:
+        nid = external_stub_ids.get(fqn)
+        if nid:
+            return nid
+        nid = _make_id(fqn)
+        if nid not in node_ids:
+            new_nodes.append({
+                "id": nid,
+                "label": fqn,
+                "file_type": "code",
+                "source_file": "",
+                "source_location": "",
+            })
+            node_ids.add(nid)
+        external_stub_ids[fqn] = nid
+        return nid
+
     repointed_from: set[str] = set()
     for edge in all_edges:
         if edge.get("relation") not in REPOINT_RELATIONS:
@@ -2360,17 +2607,41 @@ def _resolve_java_type_references(
         if not label:
             continue
         ref_file = edge.get("source_file", "")
-        resolved = None
+        if "." in label:
+            # FQN-labeled stub (qualified inline annotation): resolve it against
+            # the internal definitions; an external FQN stays parked as-is.
+            resolved = fqn_to_id.get(label)
+            if resolved and resolved != tgt:
+                edge["target"] = resolved
+                repointed_from.add(tgt)
+            continue
         fqn = imports_by_file.get(ref_file, {}).get(label)
         if fqn:
             resolved = fqn_to_id.get(fqn)
-        if resolved is None:  # same-package reference (no explicit import)
+            if resolved is None:
+                # `import p.Outer.Inner`: strip trailing type-like segments to
+                # find the defining package of an internal nested type.
+                head = fqn.split(".")[:-1]
+                while resolved is None and head and head[-1][:1].isupper():
+                    head.pop()
+                    resolved = fqn_to_id.get(".".join(head + [label]))
+            if resolved is None:
+                # Explicit import with no internal definition: proven EXTERNAL.
+                # Park the edge on an FQN-labeled stub the bare-name rewire
+                # cannot collapse onto a same-named local class (#2504 — this
+                # is the Java counterpart of the PHP #1923 fix).
+                edge["target"] = _external_stub(fqn)
+                repointed_from.add(tgt)
+                continue
+        else:  # same-package reference (no explicit import)
             pkg = pkg_by_file.get(ref_file, "")
             resolved = fqn_to_id.get(f"{pkg}.{label}" if pkg else label)
         if resolved and resolved != tgt:
             edge["target"] = resolved
             repointed_from.add(tgt)
 
+    if new_nodes:
+        all_nodes.extend(new_nodes)
     if not repointed_from:
         return
 
@@ -2600,11 +2871,13 @@ def _resolve_php_type_references(
             continue
         tgt = edge.get("target")
         label = stub_label.get(tgt)
+        uses = uses_by_file.get(ref_file, {})
+        if not label and relation == "imports":
+            label = next((alias for alias in uses if _make_id(alias) == tgt), "")
         if not label:
             continue
         bare = label.strip().lower()
         ns = ns_by_file[ref_file]
-        uses = uses_by_file.get(ref_file, {})
 
         raw = None
         if relation in _PHP_SUPERTYPE_RELATIONS:

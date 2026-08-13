@@ -19,6 +19,96 @@ def _make_corpus(tmp_path):
     return tmp_path
 
 
+def test_extract_exits_nonzero_when_ast_extraction_raises(
+    monkeypatch, tmp_path, capsys
+):
+    """#2445: an AST-pass failure on a fresh build must not be presented as a
+    successful empty corpus (exit 0 + 0-node graph.json)."""
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "main.go").write_text("package main\nfunc main() {}\n")
+    out_dir = tmp_path / "out"
+
+    import graphify.extract as extractmod
+
+    def _ast_failed(paths, **kwargs):
+        raise RuntimeError("worker pool failed")
+
+    monkeypatch.setattr(extractmod, "extract", _ast_failed)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "extract", str(corpus), "--code-only",
+         "--out", str(out_dir)],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        mainmod.main()
+
+    assert exc_info.value.code == 1
+    assert (
+        "[graphify extract] AST extraction failed: worker pool failed"
+        in capsys.readouterr().err
+    )
+    assert not (out_dir / "graphify-out" / "graph.json").exists(), (
+        "graph.json must not be written when the whole AST pass is lost"
+    )
+
+
+def test_extract_allow_partial_continues_past_ast_failure(
+    monkeypatch, tmp_path, capsys
+):
+    """#2445 complement: --allow-partial opts back into the best-effort path —
+    the run continues, and a graph built from the surviving (semantic) pass is
+    written with exit 0."""
+    corpus = _make_corpus(tmp_path)  # main.go + README.md
+    out_dir = tmp_path / "out"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-fake-key")
+
+    import graphify.extract as extractmod
+
+    def _ast_failed(paths, **kwargs):
+        raise RuntimeError("worker pool failed")
+
+    monkeypatch.setattr(extractmod, "extract", _ast_failed)
+
+    def _one_chunk_succeeded(paths, **kwargs):
+        chunk = {
+            "nodes": [
+                {"id": "concept_main_entry", "label": "main entry point",
+                 "type": "concept", "source_file": "README.md"},
+            ],
+            "edges": [],
+            "hyperedges": [],
+        }
+        on_chunk = kwargs.get("on_chunk_done")
+        if on_chunk:
+            on_chunk(0, 1, chunk)
+        return {**chunk, "input_tokens": 100, "output_tokens": 50}
+
+    monkeypatch.setattr(
+        "graphify.llm.extract_corpus_parallel", _one_chunk_succeeded
+    )
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "extract", str(corpus), "--backend", "claude",
+         "--allow-partial", "--out", str(out_dir)],
+    )
+
+    try:
+        mainmod.main()
+    except SystemExit as exc:
+        assert exc.code in (None, 0), f"unexpected exit code {exc.code}"
+
+    assert "AST extraction failed" in capsys.readouterr().err
+    assert (out_dir / "graphify-out" / "graph.json").exists(), (
+        "--allow-partial must still write the best-effort graph"
+    )
+
+
 def test_extract_exits_nonzero_when_all_semantic_chunks_fail(
     monkeypatch, tmp_path, capsys
 ):
@@ -1064,6 +1154,194 @@ def test_no_cluster_incremental_prunes_newly_excluded_file(
         f"--no-cluster early exit must prune excluded sources, still see {sources}"
     )
     assert any("keep.py" in s for s in sources)
+
+
+# ---------------------------------------------------------------------------
+# #2543: a code file whose AST extraction FAILED (error result — e.g. missing
+# optional extra — or extractor-present zero nodes) must not be stamped in the
+# incremental manifest, or detect_incremental reports it unchanged forever and
+# only `rm -rf graphify-out` recovers. The extractor is swapped through
+# extract._DISPATCH so the tests run without tree-sitter-sql installed.
+# ---------------------------------------------------------------------------
+
+def _sql_failure_corpus(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "keep.py").write_text(
+        "def kept():\n    return still_here()\n\n"
+        "def still_here():\n    return 1\n"
+    )
+    (project / "schema.sql").write_text("CREATE TABLE users (id INT);\n")
+    return project
+
+
+def _failing_sql(path):
+    # Mirrors extractors/sql.py's missing-extra result (#1745).
+    return {"nodes": [], "edges": [],
+            "error": "tree_sitter_sql not installed. Run: pip install tree-sitter-sql"}
+
+
+def _ok_sql(path):
+    return {
+        "nodes": [{"id": "sql_schema_users", "label": path.name, "file_type": "code",
+                   "source_file": str(path), "source_location": None}],
+        "edges": [],
+    }
+
+
+def _manifest_row(manifest_path, name):
+    import json
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    for key, entry in manifest.items():
+        if name in key:
+            return entry
+    return None
+
+
+def test_failed_extra_is_retried_and_recovers(monkeypatch, tmp_path, capsys):
+    """Run 1 fails on schema.sql (missing extra) -> no live manifest hash;
+    run 2 with the extra 'installed' re-queues it and the graph gains its
+    nodes; run 3 settles at 0 re-extracted (no requeue loop)."""
+    import graphify.extract as extractmod
+
+    project = _sql_failure_corpus(tmp_path)
+    out_dir = tmp_path / "out"
+    _clear_backend_keys(monkeypatch)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    graph_path = out_dir / "graphify-out" / "graph.json"
+    manifest_path = out_dir / "graphify-out" / "manifest.json"
+    argv = ["graphify", "extract", str(project), "--out", str(out_dir)]
+
+    # Run 1: extraction of schema.sql fails.
+    failing = pytest.MonkeyPatch()
+    failing.setitem(extractmod._DISPATCH, ".sql", _failing_sql)
+    try:
+        _run_extract(monkeypatch, argv)
+    finally:
+        failing.undo()
+    capsys.readouterr()
+    assert not any("schema.sql" in s for s in _node_sources(graph_path))
+    row = _manifest_row(manifest_path, "schema.sql")
+    assert row is None or (not row.get("ast_hash") and not row.get("semantic_hash")), (
+        f"failed schema.sql must carry no live hash in the manifest, got {row}"
+    )
+    assert _manifest_row(manifest_path, "keep.py")["ast_hash"] != ""
+
+    # Run 2: the extra is now 'installed' — the file must be re-queued.
+    monkeypatch.setitem(extractmod._DISPATCH, ".sql", _ok_sql)
+    _run_extract(monkeypatch, argv)
+    out_text = capsys.readouterr().out
+    assert "1 code" in out_text, f"schema.sql must be in the changed set: {out_text}"
+    assert any("schema.sql" in s for s in _node_sources(graph_path)), (
+        "recovered schema.sql must contribute nodes to graph.json"
+    )
+    assert _manifest_row(manifest_path, "schema.sql")["ast_hash"] != "", (
+        "recovered schema.sql must be stamped up-to-date"
+    )
+
+    # Run 3: steady state — nothing re-extracted, no heal/requeue loop.
+    _run_extract(monkeypatch, argv)
+    out_text = capsys.readouterr().out
+    assert "0 re-extracted" in out_text, f"run 3 must be a no-op: {out_text}"
+    assert "re-queuing" not in out_text
+    assert any("schema.sql" in s for s in _node_sources(graph_path))
+
+
+def test_permanent_failure_does_not_wedge(monkeypatch, tmp_path, capsys):
+    """A file that keeps failing is retried on every run (exactly 1 file), the
+    runs complete, and the rest of the graph stays stable — no wedge, no loop."""
+    import graphify.extract as extractmod
+
+    project = _sql_failure_corpus(tmp_path)
+    out_dir = tmp_path / "out"
+    _clear_backend_keys(monkeypatch)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setitem(extractmod._DISPATCH, ".sql", _failing_sql)
+    graph_path = out_dir / "graphify-out" / "graph.json"
+    manifest_path = out_dir / "graphify-out" / "manifest.json"
+    argv = ["graphify", "extract", str(project), "--out", str(out_dir)]
+
+    _run_extract(monkeypatch, argv)  # seed (full scan)
+    capsys.readouterr()
+
+    for run in (2, 3):
+        _run_extract(monkeypatch, argv)
+        out_text = capsys.readouterr().out
+        assert "1 code" in out_text, (
+            f"run {run}: the failed file must be retried, not frozen: {out_text}"
+        )
+        assert "1 re-extracted" in out_text, f"run {run}: {out_text}"
+        sources = _node_sources(graph_path)
+        assert any("keep.py" in s for s in sources), f"run {run}: graph must stay stable"
+        assert not any("schema.sql" in s for s in sources)
+        row = _manifest_row(manifest_path, "schema.sql")
+        assert row is None or (not row.get("ast_hash") and not row.get("semantic_hash")), (
+            f"run {run}: still-failing schema.sql must never gain a live hash, got {row}"
+        )
+
+
+def test_success_and_unchanged_unaffected(monkeypatch, tmp_path, capsys):
+    """Healthy corpus: second run re-extracts nothing and hashes stay live."""
+    project = _two_file_corpus(tmp_path)
+    out_dir = tmp_path / "out"
+    _clear_backend_keys(monkeypatch)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    manifest_path = out_dir / "graphify-out" / "manifest.json"
+    argv = ["graphify", "extract", str(project), "--out", str(out_dir)]
+
+    _run_extract(monkeypatch, argv)
+    capsys.readouterr()
+    _run_extract(monkeypatch, argv)
+    out_text = capsys.readouterr().out
+    assert "0 re-extracted" in out_text, f"warm healthy run must be a no-op: {out_text}"
+    for name in ("x.py", "keep.py"):
+        assert _manifest_row(manifest_path, name)["ast_hash"] != "", (
+            f"{name} must keep its live stamp on a no-op run"
+        )
+
+
+def test_poisoned_manifest_is_healed(monkeypatch, tmp_path, capsys):
+    """A manifest poisoned BEFORE the #2543 fix (live hash stamped, file absent
+    from graph.json) must be re-queued and healed by the next run."""
+    import json
+    import graphify.extract as extractmod
+    from graphify.detect import save_manifest
+
+    project = _sql_failure_corpus(tmp_path)
+    out_dir = tmp_path / "out"
+    _clear_backend_keys(monkeypatch)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setitem(extractmod._DISPATCH, ".sql", _ok_sql)
+    graph_path = out_dir / "graphify-out" / "graph.json"
+    manifest_path = out_dir / "graphify-out" / "manifest.json"
+    argv = ["graphify", "extract", str(project), "--out", str(out_dir)]
+
+    _run_extract(monkeypatch, argv)  # healthy seed: schema.sql stamped + in graph
+    capsys.readouterr()
+    assert any("schema.sql" in s for s in _node_sources(graph_path))
+
+    # Poison: pre-fix state — manifest keeps the live hash while the graph has
+    # no nodes for the file (the old stamping path never saw the failure).
+    graph = json.loads(graph_path.read_text(encoding="utf-8"))
+    graph["nodes"] = [n for n in graph["nodes"] if "schema.sql" not in n.get("source_file", "")]
+    for key in ("links", "edges"):
+        if key in graph:
+            graph[key] = [e for e in graph[key] if "schema.sql" not in e.get("source_file", "")]
+    graph_path.write_text(json.dumps(graph), encoding="utf-8")
+    save_manifest(
+        {"code": [str(project / "schema.sql")]},
+        manifest_path=str(manifest_path), kind="both", root=project,
+    )
+    assert _manifest_row(manifest_path, "schema.sql")["ast_hash"] != ""
+
+    _run_extract(monkeypatch, argv)
+    out_text = capsys.readouterr().out
+    assert "re-queuing 1" in out_text, (
+        f"poisoned stamped file must be healed via re-queue (#2543): {out_text}"
+    )
+    assert any("schema.sql" in s for s in _node_sources(graph_path)), (
+        "healed schema.sql must be back in graph.json"
+    )
 
 
 def test_cache_check_prompt_file_scopes_hits_to_that_prompt(monkeypatch, tmp_path, capsys):

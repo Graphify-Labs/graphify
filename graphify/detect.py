@@ -5,10 +5,12 @@ import json
 import os
 import re
 import shlex
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
 from functools import lru_cache
 from pathlib import Path
+from typing import Callable
 
 from graphify.google_workspace import (
     GOOGLE_WORKSPACE_EXTENSIONS,
@@ -488,7 +490,7 @@ def _shebang_file_type(path: Path) -> FileType | None:
 
 
 def classify_file(path: Path) -> FileType | None:
-    # Package manifests (apm.yml, pyproject.toml, go.mod, pom.xml) are parsed
+    # Package manifests (apm.yml, pyproject.toml, Cargo.toml, go.mod, pom.xml) are parsed
     # deterministically, so route them to the AST path (CODE) rather than the LLM
     # document path — otherwise apm.yml (a .yml "document") would be LLM-extracted
     # and a package would split into duplicate file-anchored nodes (#1377).
@@ -806,6 +808,7 @@ _SKIP_DIRS = {
     ".next", ".nuxt", ".turbo", ".angular",
     ".idea", ".cache", ".parcel-cache", ".svelte-kit", ".terraform", ".serverless",
     ".graphify",  # graphify's own extraction cache — never index self-generated data
+    ".obsidian", ".smart-env",  # Obsidian vault metadata and plugin caches (#2493)
     ".worktrees",  # git worktree convention (#947) — sibling checkouts, always redundant
 }
 
@@ -927,6 +930,23 @@ def _is_noise_dir(part: str, parent: "Path | None" = None) -> bool:
 _VCS_MARKERS = (".git", ".hg", ".svn", "_darcs", ".fossil")
 
 
+def _nfc(text: str) -> str:
+    """Normalize text to NFC so ignore matching survives Unicode form drift.
+
+    macOS (APFS/HFS+) returns filenames in NFD: "ç" comes back as "c" +
+    U+0327 COMBINING CEDILLA. Editors write ignore files in NFC, where the
+    same "ç" is the single codepoint U+00E7. The two render identically and
+    compare unequal, so a pattern like `Orçamento/` silently fails to exclude
+    the directory it names — the files are scanned and, for docs/PDFs, sent
+    to an LLM despite an explicit rule against it.
+
+    Both sides are normalized to NFC before any fnmatch call. NFC is the form
+    Linux and Windows already use, so this is a no-op there and only repairs
+    the macOS mismatch.
+    """
+    return unicodedata.normalize("NFC", text)
+
+
 def _parse_gitignore_line(raw: str) -> str:
     """Parse one raw line from a .graphifyignore file per gitignore spec.
 
@@ -948,7 +968,7 @@ def _parse_gitignore_line(raw: str) -> str:
     line = line.replace("\\#", "#")
     # Remove unescaped trailing spaces (per gitignore spec)
     line = re.sub(r"(?<!\\) +$", "", line)
-    return line
+    return _nfc(line)
 
 
 def _find_vcs_root(start: Path) -> Path | None:
@@ -1139,7 +1159,7 @@ def _is_ignored(
             parts = rel.split("/")
             if fnmatch.fnmatch(rel, p):
                 return True
-            if fnmatch.fnmatch(target.name, p):
+            if fnmatch.fnmatch(_nfc(target.name), p):
                 return True
             for i, part in enumerate(parts):
                 if fnmatch.fnmatch(part, p):
@@ -1165,11 +1185,18 @@ def _is_ignored(
             # ignore file governs its directory's contents, not the directory.
             matched = False
             try:
-                rel_anchor = str(target.relative_to(anchor)).replace(os.sep, "/")
+                rel_anchor = _nfc(str(target.relative_to(anchor)).replace(os.sep, "/"))
             except ValueError:
                 continue  # target outside this pattern's anchor: cannot match
             if rel_anchor != ".":
-                matched = _matches(rel_anchor, p, path_relative=path_relative)
+                rel = rel_anchor
+                if not path_relative:
+                    try:
+                        if len(root.parts) > len(anchor.parts):
+                            rel = _nfc(str(target.relative_to(root)).replace(os.sep, "/"))
+                    except ValueError:
+                        pass
+                matched = _matches(rel, p, path_relative=path_relative)
                 if matched and directory_only and not target.is_dir():
                     matched = False
 
@@ -1194,6 +1221,69 @@ def _is_ignored(
         if _eval(ancestor):
             return True
     return _eval(path)
+
+
+def ignored_predicate(
+    root: Path,
+    *,
+    extra_excludes: list[str] | None = None,
+    gitignore: bool = True,
+) -> Callable[[Path], bool]:
+    """Build a per-path predicate answering "would detect() exclude this path?".
+
+    Mirrors detect()'s ignore decisions for a single existing path WITHOUT
+    re-walking the corpus, from the same machinery detect() uses: the ancestor
+    .graphifyignore/.gitignore chain (_load_graphifyignore), CLI/persisted
+    ``--exclude`` patterns appended last at the root anchor (#947), nested
+    per-directory ignore files along the path's own lineage (#1206), the
+    _is_noise_dir directory pruning, and _SKIP_FILES. The sensitive-file
+    heuristic (_is_sensitive) is deliberately NOT included: callers use this
+    predicate as positive evidence of a live ignore RULE (#2495), and a
+    heuristic match is not user intent.
+
+    Nested patterns are loaded lazily, once per directory, into one shared
+    pattern list. That accumulation cannot cross-contaminate results — a
+    pattern only ever matches paths under its anchor directory, so patterns
+    from a sibling subtree are inert — which is the same invariant detect()'s
+    live os.walk relies on, and it keeps the shared _is_ignored cache valid.
+    """
+    root = root.resolve()
+    patterns = _load_graphifyignore(root, gitignore=gitignore)
+    if extra_excludes:
+        for pat in extra_excludes:
+            line = _parse_gitignore_line(pat)
+            if line:
+                patterns.append((root, line))
+    cache: dict[Path, bool] = {}
+    # root's own ignore file is the last entry of _load_graphifyignore's chain.
+    loaded_dirs: set[Path] = {root}
+
+    def _ignored(path: Path) -> bool:
+        path = Path(os.path.abspath(path))
+        try:
+            rel_parts = path.relative_to(root).parts
+        except ValueError:
+            return False  # outside the scan root: detect() never considered it
+        if path.name in _SKIP_FILES:
+            return True
+        # Noise-dir pruning: os.walk never descends these, so anything beneath
+        # one is excluded from the corpus regardless of ignore patterns.
+        parent = root
+        for part in rel_parts[:-1]:
+            if _is_noise_dir(part, parent):
+                return True
+            parent = parent / part
+        # Load ignore files along this path's own lineage — detect()'s walk
+        # would have loaded exactly these before reaching the file (#1206).
+        ancestor = root
+        for part in rel_parts[:-1]:
+            ancestor = ancestor / part
+            if ancestor not in loaded_dirs:
+                loaded_dirs.add(ancestor)
+                patterns.extend(_load_dir_own_ignore(ancestor, gitignore=gitignore))
+        return _is_ignored(path, root, patterns, _cache=cache)
+
+    return _ignored
 
 
 def _auto_follow_symlinks(root: Path) -> bool:
@@ -1635,6 +1725,7 @@ def save_manifest(
     root: Path | None = None,
     scan_corpus: set[str] | list[str] | None = None,
     clear_semantic: set[str] | list[str] | None = None,
+    clear_ast: set[str] | list[str] | None = None,
 ) -> None:
     """Save current file mtimes + content hashes for change detection.
 
@@ -1669,6 +1760,12 @@ def save_manifest(
     and making detect_incremental(kind="semantic") report them unchanged.
     Pass the set of such files (any path form ``scan_corpus`` accepts) to
     force their seeded semantic_hash to "" instead of inheriting it.
+
+    ``clear_ast`` (#2543): same idea for AST failures (missing optional extra,
+    zero-node anomalous extract). Blanks BOTH ``ast_hash`` and
+    ``semantic_hash`` on the seeded row so either detect_incremental kind
+    re-queues the file after the failure is fixed, without deleting
+    graphify-out/.
     """
     existing = load_manifest(manifest_path, root=root)
 
@@ -1685,6 +1782,7 @@ def save_manifest(
 
     scan_set = _path_index(scan_corpus)
     clear_set = _path_index(clear_semantic)
+    clear_ast_set = _path_index(clear_ast)
     try:
         root_res: Path | None = Path(root).resolve() if root is not None else None
     except (OSError, RuntimeError):
@@ -1700,11 +1798,24 @@ def save_manifest(
             return False
 
     def _in_clear(path_str: str) -> bool:
+        if clear_set is None:
+            return False
         if path_str in clear_set or _nfc(path_str) in clear_set:
             return True
         try:
             resolved = str(Path(path_str).resolve())
             return resolved in clear_set or _nfc(resolved) in clear_set
+        except (OSError, RuntimeError):
+            return False
+
+    def _in_clear_ast(path_str: str) -> bool:
+        if clear_ast_set is None:
+            return False
+        if path_str in clear_ast_set or _nfc(path_str) in clear_ast_set:
+            return True
+        try:
+            resolved = str(Path(path_str).resolve())
+            return resolved in clear_ast_set or _nfc(resolved) in clear_ast_set
         except (OSError, RuntimeError):
             return False
 
@@ -1753,7 +1864,11 @@ def save_manifest(
             continue
         if scan_set is not None and not _in_scan(f) and _in_root(f):
             continue  # excluded-but-alive: drop the stale row (#1908)
-        if clear_set is not None and _in_clear(f):
+        if clear_ast_set is not None and _in_clear_ast(f):
+            # AST failure this run (missing extra / zero nodes, #2543): blank
+            # both hashes so either detect_incremental kind re-queues.
+            normalised = {**normalised, "ast_hash": "", "semantic_hash": ""}
+        elif clear_set is not None and _in_clear(f):
             # Dispatched-but-omitted this run: don't inherit the stale
             # semantic_hash, or detect_incremental would call it unchanged (#1948).
             normalised = {**normalised, "semantic_hash": ""}
