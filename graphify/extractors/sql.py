@@ -17,10 +17,16 @@ def _norm_ident(name: str) -> str:
     `table_nids` keys and lookups — node ids and display labels keep the
     original text.
     """
+    if not name:
+        return name
+    # 2712: tree-sitter AST drops the opening bracket on syntax errors but retains the
+    # closing bracket (e.g. `dbo].[Customer]`). We must strip all leading/trailing
+    # delimiter characters regardless of whether they are balanced, otherwise references break.
     parts = []
     for part in name.split("."):
         p = part.strip()
-        p = re.sub(r'^["`\[]+|["`\]]+$', '', p)
+        p = re.sub(r'^["`\[]', '', p)
+        p = re.sub(r'["`\]]$', '', p)
         parts.append(p.lower())
     return ".".join(parts)
 
