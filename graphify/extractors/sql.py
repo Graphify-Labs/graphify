@@ -6,6 +6,12 @@ import re
 from pathlib import Path
 from graphify.extractors.base import _file_stem, _make_id
 
+# One dot-separated part of a table/view/routine name recovered from an ERROR
+# node's raw text: backtick-quoted (also matches a debracketed T-SQL name,
+# #2718), double-quoted (Postgres/ANSI, #2180), or bare. Shared by the
+# regex-fallback sites below so they can't drift apart.
+_SQL_NAME_PART = r'(?:`[^`\n]+`|"[^"\n]+"|[\w$]+)'
+
 
 def _norm_ident(name: str) -> str:
     """Normalize a SQL identifier for name-based reference resolution.
@@ -378,19 +384,24 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
             # do not scan the body for FROM/JOIN references: PL/pgSQL loop
             # variables and locals would produce junk reads_from targets.
             #
-            # Each name part is either a bare identifier or a double-quoted
-            # (delimited) one, so schema-qualified generated DDL such as
-            # CREATE OR REPLACE FUNCTION "public"."fn"(...) is recovered too.
-            # A bare [\w$.]+ stops dead at the leading quote, which silently
-            # dropped every quoted PL/pgSQL routine (#2180).
+            # Each name part is a bare identifier, a double-quoted (delimited)
+            # one, or a backtick-quoted one, so schema-qualified generated DDL
+            # such as CREATE OR REPLACE FUNCTION "public"."fn"(...) is
+            # recovered too. A bare [\w$.]+ stops dead at the leading quote,
+            # which silently dropped every quoted PL/pgSQL routine (#2180).
+            # The backtick alternative also recovers a bracket-quoted T-SQL
+            # name after `_debracket_tsql` has rewritten it (#2718) — this
+            # ERROR-node fallback is the ONLY path that ever sees a T-SQL
+            # CREATE PROCEDURE/FUNCTION, since this grammar has no rule at all
+            # for its `AS BEGIN ... END` body, bracketed name or not.
             text = _read(node)
             for m in re.finditer(
                 r"CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE)\s+"
                 r"(?:IF\s+NOT\s+EXISTS\s+)?"
-                r"((?:\"[^\"\n]+\"|[\w$]+)(?:\s*\.\s*(?:\"[^\"\n]+\"|[\w$]+))*)",
+                rf"({_SQL_NAME_PART}(?:\s*\.\s*{_SQL_NAME_PART})*)",
                 text, re.IGNORECASE,
             ):
-                name = m.group(1)
+                name = _clean_name(m.group(1))
                 m_line = line + text[: m.start()].count("\n")
                 nid = _make_id(stem, name)
                 _add_node(nid, f"{name}()", m_line)
@@ -568,10 +579,10 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         for m in re.finditer(
             r"CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE)\s+"
             r"(?:IF\s+NOT\s+EXISTS\s+)?"
-            r"((?:\"[^\"\n]+\"|[\w$]+)(?:\s*\.\s*(?:\"[^\"\n]+\"|[\w$]+))*)",
+            rf"({_SQL_NAME_PART}(?:\s*\.\s*{_SQL_NAME_PART})*)",
             src_text, re.IGNORECASE,
         ):
-            fn_name = m.group(1)
+            fn_name = _clean_name(m.group(1))
             fn_line = src_text[: m.start()].count("\n") + 1
             _add_node(_make_id(stem, fn_name), f"{fn_name}()", fn_line)
 

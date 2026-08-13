@@ -773,6 +773,56 @@ def test_sql_tsql_bracketed_fk_does_not_drop_child_table_or_fabricate_self_loop(
         f"expected Invoice -> Customer reference edge, got {refs}"
     )
 
+def test_sql_tsql_bracketed_procedure_and_function_names_are_extracted(tmp_path):
+    """#2718: a CREATE PROCEDURE/FUNCTION whose NAME is bracket-quoted used to
+    produce no node at all (0 of 845 procedures on a real SSMS-scripted dump).
+    This grammar has no rule for T-SQL's `AS BEGIN ... END` routine body at
+    all — bracketed name or not — so recovery always goes through the
+    ERROR-node regex fallback; that fallback matched a bare or double-quoted
+    name but not a bracket-quoted one, so it silently dropped every bracketed
+    routine with no warning and exit 0."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text(
+        "CREATE TABLE dbo.Customer (Id INT NOT NULL PRIMARY KEY);\n"
+        "GO\n"
+        "CREATE PROCEDURE [dbo].[GetCustomer] @Id INT\n"
+        "AS\n"
+        "BEGIN\n"
+        "    SELECT Id FROM dbo.Customer WHERE Id = @Id;\n"
+        "END\n"
+        "GO\n"
+        "CREATE FUNCTION [dbo].[CustomerName] (@Id INT)\n"
+        "RETURNS INT\n"
+        "AS\n"
+        "BEGIN\n"
+        "    RETURN (SELECT Id FROM dbo.Customer WHERE Id = @Id);\n"
+        "END\n"
+        "GO\n"
+    )
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"]]
+    assert "dbo.GetCustomer()" in labels, f"bracketed procedure dropped: {labels}"
+    assert "dbo.CustomerName()" in labels, f"bracketed function dropped: {labels}"
+
+def test_sql_tsql_bracketed_procedure_no_schema_is_extracted(tmp_path):
+    """#2718: a schema-less bracketed name ([GetCustomer], no `].[`) must also
+    recover — the defect was the bracket quoting on the callable's own name,
+    independent of the #2712 `].[ ` label-mangling trigger."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text(
+        "CREATE PROCEDURE [GetCustomer] @Id INT\n"
+        "AS\n"
+        "BEGIN\n"
+        "    SELECT 1;\n"
+        "END\n"
+        "GO\n"
+    )
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"]]
+    assert "GetCustomer()" in labels, f"got {labels}"
+
 def test_sql_plpgsql_functions_survive_parse_errors():
     """PL/pgSQL bodies make tree-sitter-sql emit ERROR nodes; the functions
     must still be extracted (#1910), without cascading into later statements."""
