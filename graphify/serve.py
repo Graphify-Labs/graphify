@@ -1513,8 +1513,15 @@ def _build_server(graph_path: str):
 
     # NOTE: no decorators here — the handlers below are plain coroutines,
     # bound to the Server at the END of this function in a version-aware way:
-    # mcp 1.x exposes the @server.list_tools()/... decorator API, mcp 2.x
-    # replaced it with on_list_tools=/... constructor callbacks.
+    #   - mcp 1.x exposes @server.list_tools()/call_tool()/... decorators.
+    #     The SDK automatically wraps handler returns (str -> TextContent,
+    #     list[TextContent] -> CallToolResult, etc).
+    #   - mcp 2.x replaced decorators with on_list_tools=/on_call_tool=/... 
+    #     constructor callbacks using the (ctx, params) -> Result contract.
+    #     Handlers must construct and return result objects directly.
+    # The version check uses hasattr(Server, "list_tools") to detect which
+    # API is available at runtime, allowing a single codebase to support both.
+    # See lines 1995 (1.x) and 2003 (2.x) for the registration branches.
     async def list_tools() -> list[types.Tool]:
         _tools = [
             types.Tool(
@@ -1973,6 +1980,9 @@ def _build_server(graph_path: str):
         raise ValueError(f"Unknown resource: {uri_str}")
 
     async def call_tool(name: str, arguments: dict) -> types.CallToolResult:
+        # Both mcp 1.x and 2.x define CallToolResult, so isError=True
+        # can be set regardless of version. This unified approach avoids
+        # per-version branching in the implementation.
         arguments = dict(arguments or {})
         project_path = arguments.pop("project_path", None)
         handler = _handlers.get(name)
