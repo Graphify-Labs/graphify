@@ -1,6 +1,7 @@
 """Deterministic structural extraction from source code using tree-sitter. Outputs nodes+edges dicts."""
 from __future__ import annotations
 
+import functools
 import hashlib
 import importlib
 import json
@@ -8,6 +9,7 @@ import os
 import re
 import sys
 import textwrap
+import time
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1968,11 +1970,16 @@ _CASE_INSENSITIVE_EXTS = frozenset({
 })
 
 
+@functools.lru_cache(maxsize=None)
+def _lang_is_case_insensitive_str(source_file: str) -> bool:
+    return Path(source_file).suffix.lower() in _CASE_INSENSITIVE_EXTS
+
+
 def _lang_is_case_insensitive(source_file: object) -> bool:
     """True when the file's language resolves identifiers case-insensitively (#1581)."""
     if not source_file:
         return False
-    return Path(str(source_file)).suffix.lower() in _CASE_INSENSITIVE_EXTS
+    return _lang_is_case_insensitive_str(str(source_file))
 
 
 # Language interop families for cross-file call resolution. A call in one language
@@ -2014,11 +2021,16 @@ _LANG_FAMILY_BY_EXT: dict[str, str] = {
 }
 
 
+@functools.lru_cache(maxsize=None)
+def _lang_family_str(source_file: str) -> str | None:
+    return _LANG_FAMILY_BY_EXT.get(Path(source_file).suffix.lower())
+
+
 def _lang_family(source_file: object) -> str | None:
     """Interop family of the file's language, or None when unknown/not code."""
     if not source_file:
         return None
-    return _LANG_FAMILY_BY_EXT.get(Path(str(source_file)).suffix.lower())
+    return _lang_family_str(str(source_file))
 
 
 def _node_label_key(node: dict, fold: bool = False) -> str:
@@ -5522,7 +5534,9 @@ def extract(
     # still carry the raw file-stem prefix; the per-file prefix remap then diverges
     # them (foo_h vs foo_cpp), so the collapse must happen first. Collapsing here
     # also means disambiguation sees one source_file per id and won't split them.
+    _t0 = time.perf_counter()
     _merge_decl_def_classes(all_nodes, all_edges)
+    print(f"  resolving merge_decl_def_classes: done ({time.perf_counter() - _t0:.1f}s)", flush=True)
 
     # Remap file node IDs from absolute-path-derived to the canonical
     # {parent_dir}_{stem} spec form so (a) graph.json edge endpoints are stable
@@ -5943,6 +5957,7 @@ def extract(
         if p.suffix.lower() in _php_exts and not p.name.lower().endswith(".blade.php")
     ]
     if _php_sel:
+        _t0 = time.perf_counter()
         try:
             _resolve_php_type_references(
                 [r for r, _ in _php_sel], [p for _, p in _php_sel], all_nodes, all_edges
@@ -5950,6 +5965,7 @@ def extract(
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("PHP type-reference resolution failed, skipping: %s", exc)
+        print(f"  resolving php_type_references: {len(_php_sel)} files ({time.perf_counter() - _t0:.1f}s)", flush=True)
     # Java package/import disambiguation must likewise run BEFORE the rewire
     # (#2504): an EXTERNAL import (`org.springframework.stereotype.Component`)
     # leaves a bare `Component` stub that the rewire would collapse onto the only
@@ -5958,6 +5974,7 @@ def extract(
     # import-exact resolution of internal references (#1318/#1744) still applies.
     _java_sel = [(r, p) for r, p in zip(per_file, paths) if p.suffix == ".java"]
     if _java_sel:
+        _t0 = time.perf_counter()
         try:
             _resolve_java_type_references(
                 [r for r, _ in _java_sel], [p for _, p in _java_sel], all_nodes, all_edges
@@ -5965,10 +5982,12 @@ def extract(
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("Java type-reference resolution failed, skipping: %s", exc)
+        print(f"  resolving java_type_references: {len(_java_sel)} files ({time.perf_counter() - _t0:.1f}s)", flush=True)
     # Resolve internal Go pkg.Type references exactly and park external ones
     # before the generic bare-label stub rewire can manufacture a collision.
     _go_sel = [(r, p) for r, p in zip(per_file, paths) if p.suffix == ".go"]
     if _go_sel:
+        _t0 = time.perf_counter()
         try:
             _resolve_go_type_references(
                 [r for r, _ in _go_sel], [p for _, p in _go_sel],
@@ -5980,11 +5999,15 @@ def extract(
             logging.getLogger(__name__).warning(
                 "Go type-reference resolution failed, skipping: %s", exc
             )
+        print(f"  resolving go_type_references: {len(_go_sel)} files ({time.perf_counter() - _t0:.1f}s)", flush=True)
+    _t0 = time.perf_counter()
     _rewire_unique_stub_nodes(all_nodes, all_edges)
+    print(f"  resolving rewire_unique_stub_nodes: done ({time.perf_counter() - _t0:.1f}s)", flush=True)
 
     # Add cross-file class-level edges (Python only - uses Python parser internally)
     py_paths = [p for p in paths if p.suffix == ".py"]
     if py_paths:
+        _t0 = time.perf_counter()
         py_results = [r for r, p in zip(per_file, paths) if p.suffix == ".py"]
         try:
             cross_file_edges = _resolve_cross_file_imports(py_results, py_paths)
@@ -5992,16 +6015,19 @@ def extract(
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("Cross-file import resolution failed, skipping: %s", exc)
+        print(f"  resolving cross_file_imports (python): {len(py_paths)} files ({time.perf_counter() - _t0:.1f}s)", flush=True)
 
     # Cross-file Java import resolution
     java_paths = [p for p in paths if p.suffix == ".java"]
     if java_paths:
+        _t0 = time.perf_counter()
         java_results = [r for r, p in zip(per_file, paths) if p.suffix == ".java"]
         try:
             all_edges.extend(_resolve_cross_file_java_imports(java_results, java_paths))
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("Java cross-file import resolution failed, skipping: %s", exc)
+        print(f"  resolving cross_file_java_imports: {len(java_paths)} files ({time.perf_counter() - _t0:.1f}s)", flush=True)
 
     # Cross-file C# type-reference resolution: re-point dangling inherits/implements/
     # references edges left on shadow stubs, disambiguating same-named types by the
@@ -6009,16 +6035,20 @@ def extract(
     cs_paths = [p for p in paths if p.suffix == ".cs"]
     if cs_paths:
         cs_results = [r for r, p in zip(per_file, paths) if p.suffix == ".cs"]
+        _t0 = time.perf_counter()
         try:
             _resolve_csharp_type_references(cs_results, cs_paths, all_nodes, all_edges)
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("C# type-reference resolution failed, skipping: %s", exc)
+        print(f"  resolving csharp_type_references: {len(cs_paths)} files ({time.perf_counter() - _t0:.1f}s)", flush=True)
+        _t0 = time.perf_counter()
         try:
             _resolve_cross_file_csharp_imports(cs_results, cs_paths, all_nodes, all_edges)
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("C# cross-file import resolution failed, skipping: %s", exc)
+        print(f"  resolving cross_file_csharp_imports: {len(cs_paths)} files ({time.perf_counter() - _t0:.1f}s)", flush=True)
 
     # Cross-file Bash source-backed call resolution: a call to a function defined
     # in a file this one `source`s is left unresolved by the per-file extractor
@@ -6054,6 +6084,7 @@ def extract(
         if p.suffix in (".sh", ".bash") or _looks_like_bash(r)
     ]
     if sh_pairs:
+        _t0 = time.perf_counter()
         sh_results = [r for r, _ in sh_pairs]
         sh_paths = [p for _, p in sh_pairs]
         try:
@@ -6063,6 +6094,7 @@ def extract(
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("Bash cross-file call resolution failed, skipping: %s", exc)
+        print(f"  resolving bash_source_edges: {len(sh_pairs)} files ({time.perf_counter() - _t0:.1f}s)", flush=True)
 
     # Cross-file call resolution for all languages
     # Each extractor saved unresolved calls in raw_calls. Now that we have all
@@ -6198,7 +6230,20 @@ def extract(
     # of these files with no import evidence is gated below (#1659).
     _JS_TS_CALL_SUFFIXES = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")
     _go_module_cache: dict[Path, str | None] = {}
-    for rc in all_raw_calls:
+    _RAW_CALL_PROGRESS_INTERVAL = 5000
+    _raw_call_total = len(all_raw_calls)
+    _raw_call_t0 = time.perf_counter()
+    for _rc_idx, rc in enumerate(all_raw_calls):
+        if (
+            _raw_call_total >= _RAW_CALL_PROGRESS_INTERVAL
+            and _rc_idx % _RAW_CALL_PROGRESS_INTERVAL == 0
+            and _rc_idx > 0
+        ):
+            print(
+                f"  resolving cross-file calls: {_rc_idx}/{_raw_call_total} raw calls "
+                f"({_rc_idx * 100 // _raw_call_total}%, {time.perf_counter() - _raw_call_t0:.1f}s)",
+                flush=True,
+            )
         callee = rc.get("callee", "")
         if not callee:
             continue
@@ -6390,6 +6435,12 @@ def extract(
                 "source_location": rc.get("source_location"),
                 "weight": 1.0,
             })
+    if _raw_call_total >= _RAW_CALL_PROGRESS_INTERVAL:
+        print(
+            f"  resolving cross-file calls: {_raw_call_total}/{_raw_call_total} raw calls "
+            f"(100%, {time.perf_counter() - _raw_call_t0:.1f}s)",
+            flush=True,
+        )
 
     # Cross-file, language-specific member-call resolution. Runs after the shared
     # call pass so node ids/caller_nids are final; each pass is additive (only the
@@ -6405,6 +6456,7 @@ def extract(
     # results: raw_calls come solely from `paths`, so nothing sourced by an
     # unchanged file is ever emitted, and the ambiguity guards count the same
     # candidates a full build would (the context is the whole unchanged corpus).
+    _t0 = time.perf_counter()
     if resolution_context_nodes or resolution_context_edges:
         _rl_nodes = list(resolution_nodes)
         _rl_edges = all_edges + list(resolution_context_edges or [])
@@ -6414,6 +6466,7 @@ def extract(
         all_edges.extend(_rl_edges[_e0:])
     else:
         run_language_resolvers(paths, per_file, all_nodes, all_edges)
+    print(f"  resolving language_resolvers (member calls): done ({time.perf_counter() - _t0:.1f}s)", flush=True)
 
     # Relativize source_file fields so paths are portable across machines (#555).
     # When the node's id was itself minted from the absolute path, remap it to a
