@@ -27,6 +27,62 @@ def _viz_node_limit() -> int:
     except ValueError:
         return MAX_NODES_FOR_VIZ
 
+_VIS_NETWORK_CDN = "https://unpkg.com/vis-network@9.1.6/standalone/umd/vis-network.min.js"
+_VIS_NETWORK_SRI = "sha384-Ux6phic9PEHJ38YtrijhkzyJ8yQlH8i/+buBR8s3mAZOJrP1gwyvAcIYl3GWtpX1"
+_VIS_NETWORK_VENDOR_NAME = "vis-network.min.js"
+
+
+def _vis_network_script_tag(output_path: str) -> str:
+    """Return the <script> tag that loads vis-network.
+
+    Default: the SRI-pinned CDN tag (integrity + crossorigin), so a tampered
+    unpkg payload is rejected by the browser.
+
+    Offline/air-gapped: when GRAPHIFY_VIZ_OFFLINE=1, reference a locally-vendored
+    ``vis-network.min.js`` written next to graph.html instead of the CDN. The
+    vendored file must already exist beside the output (e.g. copied in by the
+    packager, or from a prior online run) or be resolvable from a bundled copy —
+    this environment has no network access to fetch it on demand. If the local
+    asset can't be produced, degrade gracefully: fall back to the SRI-pinned CDN
+    tag and print a note so the "offline" intent is not silently violated.
+
+    NOTE (deferred): fully self-vendoring the JS by downloading + hashing at
+    export time, and externalizing the graph payload into a separate fetch()'d
+    file / WebGL renderer, are larger changes left to a later pass.
+    """
+    import os
+    import shutil
+
+    cdn_tag = (
+        f'<script src="{_VIS_NETWORK_CDN}"\n'
+        f'        integrity="{_VIS_NETWORK_SRI}"\n'
+        f'        crossorigin="anonymous"></script>'
+    )
+    if os.environ.get("GRAPHIFY_VIZ_OFFLINE") != "1":
+        return cdn_tag
+
+    out = Path(output_path)
+    vendored = out.parent / _VIS_NETWORK_VENDOR_NAME
+    try:
+        if not vendored.exists():
+            # Try a copy bundled inside the package (vendored offline asset).
+            bundled = Path(__file__).resolve().parent / _VIS_NETWORK_VENDOR_NAME
+            if bundled.exists():
+                out.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(bundled, vendored)
+        if vendored.exists():
+            # Local reference — relative so the report stays portable.
+            return f'<script src="{_VIS_NETWORK_VENDOR_NAME}"></script>'
+    except OSError:
+        pass
+    print(
+        "[graphify] GRAPHIFY_VIZ_OFFLINE=1 but no local "
+        f"{_VIS_NETWORK_VENDOR_NAME} could be produced next to {out.name}; "
+        "falling back to the SRI-pinned CDN (requires network to view).",
+    )
+    return cdn_tag
+
+
 def _html_styles() -> str:
     return """<style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -437,13 +493,23 @@ def to_html(
                 meta.graph["hyperedges"] = remapped
             to_html(meta, meta_communities, output_path,
                     community_labels=community_labels, member_counts=mc)
+            # Make the aggregation explicit so users don't mistake the meta-graph
+            # for a full node-level render.
+            print(
+                f"NOTE: graph.html shows an AGGREGATED view — "
+                f"{meta.number_of_nodes()} communities shown instead of "
+                f"{G.number_of_nodes()} nodes (not every node is displayed)."
+            )
             print(f"graph.html written (aggregated: {meta.number_of_nodes()} community nodes, {meta.number_of_edges()} cross-community edges)")
             print("Tip: run with --obsidian for full node-level detail.")
             return
         raise ValueError(
             f"Graph has {G.number_of_nodes()} nodes - too large for HTML viz "
-            f"(limit: {limit}). Use --no-viz, raise GRAPHIFY_VIZ_NODE_LIMIT, "
-            f"or reduce input size."
+            f"(limit: {limit}). Options: pass --no-viz to skip the interactive "
+            f"HTML; raise the limit via GRAPHIFY_VIZ_NODE_LIMIT (e.g. "
+            f"GRAPHIFY_VIZ_NODE_LIMIT={G.number_of_nodes()}); or use the "
+            f"aggregated community meta-graph (node_limit=), which renders one "
+            f"node per community instead of every node."
         )
 
     node_community = _node_community_map(communities)
@@ -565,15 +631,14 @@ def to_html(
     hyperedges_json = _js_safe(getattr(G, "graph", {}).get("hyperedges", []))
     title = _html.escape(sanitize_label(_html_document_title(output_path)))
     stats = f"{G.number_of_nodes()} nodes &middot; {G.number_of_edges()} edges &middot; {len(communities)} communities"
+    vis_script_tag = _vis_network_script_tag(output_path)
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <title>graphify - {title}</title>
-<script src="https://unpkg.com/vis-network@9.1.6/standalone/umd/vis-network.min.js"
-        integrity="sha384-Ux6phic9PEHJ38YtrijhkzyJ8yQlH8i/+buBR8s3mAZOJrP1gwyvAcIYl3GWtpX1"
-        crossorigin="anonymous"></script>
+{vis_script_tag}
 {_html_styles()}
 </head>
 <body>
