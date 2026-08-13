@@ -406,6 +406,27 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                 nid = _make_id(stem, name)
                 _add_node(nid, f"{name}()", m_line)
 
+            # A CREATE FUNCTION/PROCEDURE whose body this grammar cannot parse
+            # (see above) does not just lose itself — its trailing ERROR span
+            # can absorb the NEXT statement too, e.g. a CREATE VIEW right
+            # after it, with no diagnostic (#2719). Recover at least a node
+            # for a swallowed CREATE VIEW/TABLE the same way; register it in
+            # table_nids so a later reference in this file resolves onto it
+            # instead of a same-name stub. Deliberately name-only, mirroring
+            # the routine recovery above: a table/view buried in a broken
+            # ERROR blob has no reliable column/FK structure to regex out.
+            for m in re.finditer(
+                r"CREATE\s+(?:OR\s+REPLACE\s+)?(VIEW|TABLE)\s+"
+                r"(?:IF\s+NOT\s+EXISTS\s+)?"
+                rf"({_SQL_NAME_PART}(?:\s*\.\s*{_SQL_NAME_PART})*)",
+                text, re.IGNORECASE,
+            ):
+                name = _clean_name(m.group(2))
+                m_line = line + text[: m.start()].count("\n")
+                nid = _make_id(stem, name)
+                _add_node(nid, name, m_line)
+                table_nids.setdefault(_norm_ident(name), nid)
+
         elif t == "fb_proc_or_trigger":
             text = _read(node)
             m = re.match(

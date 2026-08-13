@@ -823,6 +823,59 @@ def test_sql_tsql_bracketed_procedure_no_schema_is_extracted(tmp_path):
     labels = [n["label"] for n in r["nodes"]]
     assert "GetCustomer()" in labels, f"got {labels}"
 
+def test_sql_create_function_does_not_swallow_the_next_declaration(tmp_path):
+    """#2719: a CREATE FUNCTION consumes the declaration that follows it. This
+    grammar has no rule for the AS BEGIN...END body, so the broken body lands
+    in an ERROR node — but that ERROR span can absorb the NEXT statement too
+    (here, CREATE VIEW dbo.CustomerList), and there was no recovery path for
+    a table/view swallowed that way, only for routines. Reproduces with bare
+    (non-bracketed) identifiers, independent of the #2712/#2713/#2718 bracket
+    defects."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text(
+        "CREATE TABLE dbo.Customer (Id INT NOT NULL PRIMARY KEY);\n"
+        "GO\n"
+        "CREATE FUNCTION dbo.CustomerName (@Id INT)\n"
+        "RETURNS INT\n"
+        "AS\n"
+        "BEGIN\n"
+        "    RETURN (SELECT Id FROM dbo.Customer WHERE Id = @Id);\n"
+        "END\n"
+        "GO\n"
+        "CREATE VIEW dbo.CustomerList\n"
+        "AS\n"
+        "    SELECT Id FROM dbo.Customer;\n"
+        "GO\n"
+    )
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"]]
+    assert "dbo.CustomerName()" in labels, f"got {labels}"
+    assert "dbo.CustomerList" in labels, f"view swallowed by the preceding function: {labels}"
+
+def test_sql_create_procedure_does_not_swallow_the_next_declaration(tmp_path):
+    """#2719: same swallow, but with CREATE PROCEDURE ahead of the view."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text(
+        "CREATE TABLE dbo.Customer (Id INT NOT NULL PRIMARY KEY);\n"
+        "GO\n"
+        "CREATE PROCEDURE dbo.GetCustomer @Id INT\n"
+        "AS\n"
+        "BEGIN\n"
+        "    SELECT Id FROM dbo.Customer WHERE Id = @Id;\n"
+        "END\n"
+        "GO\n"
+        "CREATE VIEW dbo.CustomerList\n"
+        "AS\n"
+        "    SELECT Id FROM dbo.Customer;\n"
+        "GO\n"
+    )
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"]]
+    assert "dbo.GetCustomer()" in labels, f"got {labels}"
+    assert "dbo.CustomerList" in labels, f"view swallowed by the preceding procedure: {labels}"
+
 def test_sql_plpgsql_functions_survive_parse_errors():
     """PL/pgSQL bodies make tree-sitter-sql emit ERROR nodes; the functions
     must still be extracted (#1910), without cascading into later statements."""
