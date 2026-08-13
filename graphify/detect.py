@@ -35,7 +35,9 @@ _MANIFEST_PATH = str(out_path("manifest.json"))
 #: Window in which a manifest row's own timestamp is too close to the file's
 #: mtime for "mtime unchanged" to prove the content is unchanged. Coarse for
 #: filesystems that round mtime to whole seconds; tight when real sub-second
-#: precision is reported.
+#: precision is reported. Mirrors cache.py's `_MTIME_GRANULARITY_NS` (2s) —
+#: the same racily-clean assumption at the hash-cache layer (#2466 / #2612);
+#: keep the two in sync.
 _MTIME_COARSE_S = 2.0
 _MTIME_SUBSECOND_S = 0.05
 
