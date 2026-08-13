@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shlex
+import stat
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
@@ -781,10 +782,35 @@ def count_words(path: Path) -> int:
             return len(docx_to_markdown(path).split())
         if ext == ".xlsx":
             return len(xlsx_to_markdown(path).split())
+        # Only regular files may be opened. A repository can contain named
+        # pipes, sockets and device nodes, and `clone <github-url>` exists to
+        # point the scan at trees the operator did not write. open() on a FIFO
+        # with no writer BLOCKS FOREVER — it never raises, so the except below
+        # cannot help, and `graphify update` hangs with no output. os.stat
+        # follows symlinks on purpose: a link pointing at a FIFO blocks exactly
+        # like the FIFO itself.
+        if not stat.S_ISREG(os.stat(_os_path(path)).st_mode):
+            return 0
         with open(_os_path(path), encoding="utf-8", errors="ignore") as f:
             return len(f.read().split())
     except Exception:
         return 0
+
+
+def _is_regular_file(path: Path) -> bool:
+    """True only for regular files (symlinks followed).
+
+    Named pipes, sockets and device nodes must never reach a reader:
+    ``open()`` on a FIFO with no writer blocks forever and never raises, so a
+    single ``pipe.py`` in a scanned repository hangs the run with no output.
+    A symlink is resolved deliberately — a link pointing at a FIFO blocks
+    exactly like the FIFO itself. A path that cannot be stat'ed is treated as
+    not readable rather than raising.
+    """
+    try:
+        return stat.S_ISREG(os.stat(path).st_mode)
+    except OSError:
+        return False
 
 
 # Directory names to always skip - venvs, caches, build artifacts, deps
@@ -1487,6 +1513,18 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
             continue
         if not _resolves_under_root(p, root):
             skipped_sensitive.append(str(p) + " [symlink target outside scan root]")
+            continue
+        if not _is_regular_file(p):
+            # A repository may contain named pipes, sockets and device nodes,
+            # and `clone <github-url>` exists precisely to point the scan at
+            # trees the operator did not write.
+            #
+            # This has to be caught HERE, at the one place where a path is
+            # admitted to the corpus, rather than at each read: the readers
+            # number in the hundreds across the extractors, and open() on a
+            # FIFO with no writer BLOCKS FOREVER — it never raises, so their
+            # try/except cannot help and the whole run hangs with no output.
+            skipped_sensitive.append(str(p) + " [not a regular file]")
             continue
         if _is_sensitive(p):
             skipped_sensitive.append(str(p))
