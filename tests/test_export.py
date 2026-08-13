@@ -72,6 +72,43 @@ def test_to_json_sorts_graph_collections_across_insertion_order(tmp_path):
 
     assert outputs[0].read_bytes() == outputs[1].read_bytes()
 
+
+def test_to_json_commit_fallback_uses_output_repo_not_cwd(tmp_path, monkeypatch):
+    # Without an explicit built_at_commit, provenance must come from the repo
+    # the graph is written into, not from whatever repo the shell happens to
+    # be in — running `graphify extract <target>` from another repo's root
+    # used to stamp the invoker's HEAD into the target's graph.json.
+    import subprocess
+    import networkx as nx
+
+    def git(cwd, *args):
+        subprocess.run(
+            ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+            cwd=cwd, check=True, capture_output=True,
+        )
+
+    target = tmp_path / "target"
+    (target / "graphify-out").mkdir(parents=True)
+    git(target, "init")
+    git(target, "commit", "--allow-empty", "-m", "target")
+    target_head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=target, check=True,
+        capture_output=True, text=True,
+    ).stdout.strip()
+
+    invoker = tmp_path / "invoker"
+    invoker.mkdir()
+    git(invoker, "init")
+    git(invoker, "commit", "--allow-empty", "-m", "invoker")
+    monkeypatch.chdir(invoker)
+
+    G = nx.Graph()
+    G.add_node("n1", label="n1")
+    out = target / "graphify-out" / "graph.json"
+    assert to_json(G, {0: ["n1"]}, str(out), force=True)
+    assert json.loads(out.read_text())["built_at_commit"] == target_head
+
+
 def test_to_cypher_creates_file():
     G = make_graph()
     with tempfile.TemporaryDirectory() as tmp:
