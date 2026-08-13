@@ -2,7 +2,20 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
-## 0.9.41 (unreleased)
+## 0.9.42 (unreleased)
+
+- Fix: a JS/TS `for...of` / `for...in` loop binding is now shadowed, so passing it as a call argument no longer fabricates an `indirect_call` edge to an unrelated same-named callable (#2685, thanks @ousamabenyounes); completes the loop/closure/catch shadow family (#2568/#2569/#2517).
+- Fix: graph provenance (`built_at_commit`) is stamped from the analysed repository rather than the shell's working directory, so `graphify extract` run from elsewhere records the target's commit, not the caller's (#2534 family; #2699, thanks @C0KERNEL).
+- Fix: `affected` resolves a seed passed as a `./`-relative path (or an absolute path when run from the repo root) instead of silently returning nothing (#2707, thanks @phudayyy). Note: an absolute-path seed still requires the working directory to be the analysed repo root.
+- Fix: a Python relative import of a subpackage (`from ..pkg.sub import x`) now resolves to the package's `__init__` instead of a nonexistent `.py` slug (#2688, thanks @ousamabenyounes).
+- Fix: a `.sql` file that fails to parse because tree-sitter-sql is installed but broken (e.g. an ABI mismatch) now reports the real load failure instead of the misleading "not installed" message (#2602, thanks @ousamabenyounes).
+- Fix: a corrupt semantic-cache entry is now surfaced with a warning and re-extracted, instead of being a silent cache miss that re-bills the LLM every run; a valid cache is not discarded (#2683, thanks @ousamabenyounes).
+- Fix: the `GRAPH_REPORT.md` header uses a portable basename instead of embedding the generator's absolute host path (#2682, thanks @ousamabenyounes).
+- Fix: `graphify update` / `_read_files` hand the model a POSIX `source_file`, and several path/atomic-write behaviors are hardened for Windows (#2620/#2622, thanks @rajarshidattapy).
+- Fix: a failed atomic write no longer leaks a read-only `.tmp` file in the output directory on Windows (#2622, thanks @rajarshidattapy).
+- Test/docs: Windows-portability test fixes (probe-and-skip symlink tests, separator-agnostic path assertions, shell-arg verdict test), a refreshed `ARCHITECTURE.md` module table with a doc-parity test, and README notes on CI parity checks and Windows test prerequisites (#2620/#2622/#2126/#2642/#2646/#2647/#2648/#2651, thanks @rajarshidattapy, @redzwanmutalib, @nelsondeleonc-source).
+
+## 0.9.41 (2026-08-12)
 
 - Fix: a JS/TS `catch` binding passed as a call argument (`catch (handler) { pool.submit(handler) }`) no longer fabricates an `indirect_call` edge to an unrelated same-named callable (thanks @imagineers-tyler); the catch binding is now shadowed within its clause, completing the 0.9.38/0.9.40 arrow-parameter fixes (#2568).
 - Fix: `Cargo.toml` is now recognized as a package manifest (#2434, thanks @ousamabenyounes), minting one canonical package node by name plus `depends_on` edges (dependencies, plus target-specific deps; virtual-workspace roots and workspace-inherited versions are handled).
