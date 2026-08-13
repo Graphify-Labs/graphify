@@ -4828,6 +4828,7 @@ _DISPATCH: dict[str, Any] = {
     ".svh": extract_verilog,
     ".sql": extract_sql,
     ".md": extract_markdown,
+    ".markdown": extract_markdown,
     ".mdx": extract_markdown,
     ".qmd": extract_markdown,
     ".skill": extract_markdown,
