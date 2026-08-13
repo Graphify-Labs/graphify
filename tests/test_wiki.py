@@ -420,3 +420,58 @@ def test_wiki_links_use_collision_suffixed_slug(tmp_path):
     assert "parser_2.md" in index_targets  # link points at the suffixed file...
     for t in index_targets:
         assert (tmp_path / t).exists(), t  # ...and every target is a real file
+
+
+# Custom-page preservation - to_wiki must not delete hand-authored pages it never
+# generated, and must surface them from the index so they stay reachable.
+
+def test_to_wiki_preserves_custom_pages(tmp_path):
+    """A hand-authored .md that to_wiki did not generate must survive re-export
+    (previously every *.md was deleted at the start of each run)."""
+    custom = tmp_path / "my-analysis.md"
+    custom.write_text("# My Analysis\n\nHand-written.\n", encoding="utf-8")
+    to_wiki(_make_graph(), COMMUNITIES, tmp_path, community_labels=LABELS)
+    assert custom.exists()
+    assert custom.read_text(encoding="utf-8").startswith("# My Analysis")
+
+
+def test_index_lists_custom_pages_by_h1(tmp_path):
+    """Preserved custom pages are linked from index.md under a Custom Pages
+    section, titled by their first markdown H1."""
+    (tmp_path / "my-analysis.md").write_text("# Deep Dive\n\nx\n", encoding="utf-8")
+    to_wiki(_make_graph(), COMMUNITIES, tmp_path, community_labels=LABELS)
+    index = (tmp_path / "index.md").read_text(encoding="utf-8")
+    assert "## Custom Pages" in index
+    assert "[Deep Dive](my-analysis.md)" in index
+
+
+def test_to_wiki_removes_only_its_own_orphans(tmp_path):
+    """Re-export after a community is relabeled deletes the old (orphaned)
+    generated article, but leaves a custom page untouched."""
+    (tmp_path / "keep-me.md").write_text("# Keep Me\n", encoding="utf-8")
+    to_wiki(_make_graph(), {0: ["n1", "n2"]}, tmp_path, community_labels={0: "Alpha"})
+    assert (tmp_path / "Alpha.md").exists()
+    # relabel the same community - Alpha.md is now an orphan of our own making
+    to_wiki(_make_graph(), {0: ["n1", "n2"]}, tmp_path, community_labels={0: "Beta"})
+    assert (tmp_path / "Beta.md").exists()
+    assert not (tmp_path / "Alpha.md").exists()   # our orphan cleaned up
+    assert (tmp_path / "keep-me.md").exists()      # custom page preserved
+
+
+def test_to_wiki_writes_manifest(tmp_path):
+    """to_wiki records the files it generated so the next run can scope cleanup."""
+    to_wiki(_make_graph(), COMMUNITIES, tmp_path, community_labels=LABELS, god_nodes_data=GOD_NODES)
+    manifest = tmp_path / ".graphify_wiki_files.json"
+    assert manifest.exists()
+    import json
+    names = set(json.loads(manifest.read_text(encoding="utf-8")))
+    assert "index.md" in names
+    assert "Parsing_Layer.md" in names
+
+
+def test_custom_page_without_h1_falls_back_to_filename(tmp_path):
+    """A custom page with no H1 is still linked, titled by a de-slugged filename."""
+    (tmp_path / "raw_notes.md").write_text("just text, no heading\n", encoding="utf-8")
+    to_wiki(_make_graph(), COMMUNITIES, tmp_path, community_labels=LABELS)
+    index = (tmp_path / "index.md").read_text(encoding="utf-8")
+    assert "[Raw Notes](raw_notes.md)" in index

@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections import Counter
 from pathlib import Path
 from urllib.parse import quote
+import json
 import networkx as nx
 
 from graphify.build import edge_data
@@ -177,6 +178,18 @@ def _god_node_article(G: nx.Graph, nid: str, labels: dict[int, str], node_commun
     return "\n".join(lines)
 
 
+def _custom_title(path: Path) -> str:
+    """Link title for a preserved custom page: its first markdown H1, else a
+    de-slugged filename."""
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.startswith("# "):
+                return line[2:].strip()
+    except Exception:
+        pass
+    return path.stem.replace("-", " ").replace("_", " ").title()
+
+
 def _index_md(
     communities: dict[int, list[str]],
     labels: dict[int, str],
@@ -184,6 +197,7 @@ def _index_md(
     total_nodes: int,
     total_edges: int,
     resolver: dict[str, str] | None = None,
+    custom_pages: list[tuple[str, str]] | None = None,
 ) -> str:
     resolver = resolver or {}
     lines: list[str] = [
@@ -209,6 +223,12 @@ def _index_md(
         lines += ["## God Nodes", "(most connected concepts — the load-bearing abstractions)", ""]
         for node in god_nodes_data:
             lines.append(f"- {_md_link(node['label'], resolver)} — {node['degree']} connections")
+        lines.append("")
+
+    if custom_pages:
+        lines += ["## Custom Pages", "(hand-authored — preserved across `graphify export wiki`)", ""]
+        for title, fname in custom_pages:
+            lines.append(f"- [{title}]({fname})")
         lines.append("")
 
     lines += [
@@ -268,14 +288,9 @@ def to_wiki(
             "Re-run `graphify extract .` to regenerate .graphify_analysis.json."
         )
 
-    # Clear stale .md files from previous runs to prevent orphan accumulation.
-    # Community labels are LLM-generated (per skill.md Step 5) and non-deterministic
-    # across runs — the same conceptual community may be named differently each time
-    # (e.g. "AutoAgent Skills" → "AutoAgent Methodology"), leaving the previous file
-    # as an orphan. Since to_wiki() owns wiki/ entirely (always writes the full set),
-    # it can safely clear .md files at the start of each call.
-    for old_article in out.glob("*.md"):
-        old_article.unlink()
+    # Orphan cleanup happens AFTER slug computation (see below), via a manifest of
+    # our own prior output — so hand-authored custom pages graphify never wrote are
+    # preserved across re-export instead of being deleted every run.
 
     labels = community_labels or {cid: f"Community {cid}" for cid in communities}
     cohesion = cohesion or {}
@@ -327,6 +342,34 @@ def to_wiki(
             god_articles.append((nid, slug))
             resolver.setdefault(node_data['label'], slug)
 
+    # Clean up only OUR OWN prior output; preserve hand-authored custom pages.
+    # to_wiki historically nuked every *.md, deleting user-added pages. Instead we
+    # track what we generate in a manifest and delete only orphaned past output
+    # (files we generated last run but not this run — e.g. renamed communities).
+    # Any file graphify never wrote (custom analysis pages) is left untouched.
+    generated = {f"{s}.md" for s in community_slugs.values()}
+    generated |= {f"{slug}.md" for _nid, slug in god_articles}
+    generated.add("index.md")
+    _manifest = out / ".graphify_wiki_files.json"
+    _prev: set[str] = set()
+    if _manifest.exists():
+        try:
+            _prev = set(json.loads(_manifest.read_text(encoding="utf-8")))
+        except Exception:
+            _prev = set()
+    # No manifest yet (first run after this feature landed): delete nothing so
+    # existing custom pages survive the migration. Orphans self-heal next run.
+    for _stale in _prev - generated:
+        _p = out / _stale
+        if _p.exists():
+            _p.unlink()
+    # Custom pages = whatever remains on disk that we neither generate nor tracked.
+    custom_pages: list[tuple[str, str]] = []
+    for _p in sorted(out.glob("*.md")):
+        if _p.name in generated:
+            continue
+        custom_pages.append((_custom_title(_p), _p.name))
+
     # Second pass: render and write each article with the full resolver in hand.
     for cid, nodes in communities.items():
         label = labels.get(cid, f"Community {cid}")
@@ -341,8 +384,11 @@ def to_wiki(
 
     # Index
     (out / "index.md").write_text(
-        _index_md(communities, labels, god_nodes_data, G.number_of_nodes(), G.number_of_edges(), resolver),
+        _index_md(communities, labels, god_nodes_data, G.number_of_nodes(), G.number_of_edges(), resolver, custom_pages),
         encoding="utf-8",
     )
+
+    # Record what we generated so the next run cleans up only its own orphans.
+    _manifest.write_text(json.dumps(sorted(generated)), encoding="utf-8")
 
     return count
