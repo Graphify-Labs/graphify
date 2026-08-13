@@ -1154,6 +1154,106 @@ def _backend_pkg_hint(pkg: str, extra: str) -> str:
     )
 
 
+class BackendConfigError(Exception):
+    """A backend cannot run because of missing config or a missing SDK.
+
+    Distinct from the recoverable network/API/JSON-parse failures that the
+    labeling and extraction paths retry or degrade past: a config/dependency
+    error will fail *every* call identically, so it is surfaced loudly (even
+    when quiet) and never swallowed into placeholder labels (F-002 addendum).
+    """
+
+
+# Which optional SDK each backend imports at call time, as (pkg, extra) for
+# _backend_pkg_hint. Ollama/OpenAI/Kimi/Gemini/DeepSeek/Azure go through the
+# OpenAI-compatible client, so they all need `openai`; claude needs `anthropic`;
+# bedrock needs `boto3`. Backends with no importable SDK (claude-cli) map to None.
+_BACKEND_SDK: dict[str, tuple[str, str]] = {
+    "claude": ("anthropic", "anthropic"),
+    "kimi": ("openai", "kimi"),
+    "ollama": ("openai", "ollama"),
+    "gemini": ("openai", "gemini"),
+    "openai": ("openai", "openai"),
+    "deepseek": ("openai", "openai"),
+    "azure": ("openai", "openai"),
+    "bedrock": ("boto3", "bedrock"),
+}
+
+# Local/self-hosted backends whose traffic never leaves the user's machine (or
+# their own configured host). Everything else in BACKENDS is treated as a cloud
+# backend for the privacy notice in detect_backend().
+_LOCAL_BACKENDS = frozenset({"ollama", "claude-cli"})
+
+
+def _backend_sdk_requirement(backend: str) -> tuple[str, str] | None:
+    """Return (pkg, extra) for the SDK ``backend`` imports, or None if it needs none.
+
+    Custom providers (not in the built-in map) route through the
+    OpenAI-compatible client, so they require `openai` too.
+    """
+    if backend in _BACKEND_SDK:
+        return _BACKEND_SDK[backend]
+    if backend in BACKENDS and backend != "claude-cli":
+        return ("openai", "openai")
+    return None
+
+
+def _call_path_is_real() -> bool:
+    """True unless a caller (tests, an embedder) has replaced the LLM transport.
+
+    The SDK import in :func:`preflight_backend` is a fast-fail optimization; it
+    must not fire when the real ``_call_llm`` / ``_call_openai_compat`` has been
+    monkeypatched, since then the vendored SDK is never imported. Originals are
+    captured once the functions are defined (``_capture_original_call_path``);
+    before that (import-time), assume the real path.
+    """
+    orig_llm = globals().get("_ORIG_CALL_LLM")
+    if orig_llm is not None and globals().get("_call_llm") is not orig_llm:
+        return False
+    orig_compat = globals().get("_ORIG_CALL_OPENAI_COMPAT")
+    if orig_compat is not None and globals().get("_call_openai_compat") is not orig_compat:
+        return False
+    return True
+
+
+def preflight_backend(backend: str, *, api_key: str | None = None) -> None:
+    """Fail fast if ``backend``'s SDK is missing or its key/config is absent.
+
+    Called at the start of the labeling/extraction entry points so a
+    missing-dependency or missing-key error is raised *before* any work is done,
+    with the actionable install/config message rather than after processing.
+    Raises :class:`BackendConfigError`; never returns a value.
+    """
+    if backend not in BACKENDS:
+        raise BackendConfigError(f"Unknown backend {backend!r}. Available: {sorted(BACKENDS)}")
+    # The SDK + key checks only apply when the real LLM transport is in use. If a
+    # caller has swapped out `_call_llm`/`_call_openai_compat` (tests, or an
+    # embedder that supplies its own transport), neither the vendored SDK nor the
+    # env key is actually needed — and a real missing SDK/key still surfaces
+    # loudly via the call path (caught as a config/dependency error in
+    # generate_community_labels). Skipping here just avoids a false fast-fail.
+    if not _call_path_is_real():
+        return
+    req = _backend_sdk_requirement(backend)
+    if req is not None:
+        pkg, extra = req
+        try:
+            __import__(pkg)
+        except ImportError as exc:
+            raise BackendConfigError(
+                f"labeling disabled: {_backend_pkg_hint(pkg, extra)}"
+            ) from exc
+    # Key/config presence. Ollama authenticates with a placeholder; bedrock and
+    # claude-cli use ambient credentials/subscription rather than an env key.
+    if backend in ("ollama", "bedrock", "claude-cli"):
+        return
+    if not (api_key or _get_backend_api_key(backend)):
+        raise BackendConfigError(
+            f"labeling disabled: no API key for backend '{backend}'. "
+            f"Set {_format_backend_env_keys(backend)} or pass api_key=."
+        )
+
+
 def _call_openai_compat(
     base_url: str,
     api_key: str,
@@ -2767,6 +2867,12 @@ def _ollama_host_is_link_local_or_metadata(host: str) -> bool:
     return False
 
 
+# Capture the real LLM transport once both are defined, so preflight_backend can
+# tell whether a caller has monkeypatched it (see _call_path_is_real).
+_ORIG_CALL_LLM = _call_llm
+_ORIG_CALL_OPENAI_COMPAT = _call_openai_compat
+
+
 def _validate_ollama_base_url(url: str, *, warn: bool = True) -> None:
     """Warn if OLLAMA_BASE_URL looks unsafe; hard-block link-local/metadata (F3).
 
@@ -2814,6 +2920,46 @@ def _validate_ollama_base_url(url: str, *, warn: bool = True) -> None:
         )
 
 
+# Set once a cloud-backend privacy notice has been printed, so the "identifiers
+# will be sent to <backend>" line appears at most once per run no matter how many
+# times detect_backend() is called (labeling + extraction both call it).
+_cloud_backend_notified = False
+
+
+def _resolve_backend_base_url(backend: str) -> str:
+    """Best-effort base_url for a backend, for the privacy notice. Never raises."""
+    cfg = BACKENDS.get(backend, {})
+    url = str(cfg.get("base_url", "") or "")
+    if not url and backend == "azure":
+        url = str(os.environ.get("AZURE_OPENAI_ENDPOINT", "") or "")
+    if not url and backend == "bedrock":
+        url = f"AWS ({os.environ.get('AWS_REGION') or os.environ.get('AWS_DEFAULT_REGION') or 'default region'})"
+    return url or "the provider's API"
+
+
+def _notify_cloud_backend_selected(backend: str, *, auto: bool) -> None:
+    """Print a one-time, always-visible privacy notice when a CLOUD backend is
+    selected — labeling ships code identifiers and extraction ships file contents
+    to it, so a stray key silently routing private symbols to the cloud (e.g. an
+    incidental GEMINI_API_KEY) is made visible. Never printed for ollama/local
+    (traffic stays on the user's own host). Mirrors the Ollama corpus warning.
+    """
+    global _cloud_backend_notified
+    if backend in _LOCAL_BACKENDS or _cloud_backend_notified:
+        return
+    _cloud_backend_notified = True
+    model = _default_model_for_backend(backend)
+    url = _resolve_backend_base_url(backend)
+    if auto:
+        print(
+            f"graphify: using {backend} ({model}) at {url} — "
+            "code identifiers/content will be sent there.",
+            file=sys.stderr,
+        )
+    else:
+        print(f"graphify: using {backend} ({model}) at {url}.", file=sys.stderr)
+
+
 def detect_backend() -> str | None:
     """Return the name of whichever backend has an API key set, or None.
 
@@ -2827,10 +2973,13 @@ def detect_backend() -> str | None:
     """
     for backend in ("gemini", "kimi", "claude", "openai", "deepseek"):
         if _get_backend_api_key(backend):
+            _notify_cloud_backend_selected(backend, auto=True)
             return backend
     if _get_backend_api_key("azure") and os.environ.get("AZURE_OPENAI_ENDPOINT"):
+        _notify_cloud_backend_selected("azure", auto=True)
         return "azure"
     if os.environ.get("AWS_PROFILE") or os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION"):
+        _notify_cloud_backend_selected("bedrock", auto=True)
         return "bedrock"
     # Honor Ollama's own OLLAMA_HOST here too, not just OLLAMA_BASE_URL (#1940) —
     # otherwise a user who set the standard Ollama var but no --backend still
@@ -2843,6 +2992,7 @@ def detect_backend() -> str | None:
     for name in BACKENDS:
         if name not in ("gemini", "kimi", "claude", "openai", "deepseek", "azure", "bedrock", "ollama", "claude-cli"):
             if _get_backend_api_key(name):
+                _notify_cloud_backend_selected(name, auto=True)
                 return name
     return None
 
@@ -3133,8 +3283,11 @@ def generate_community_labels(
 ) -> tuple[dict[int, str], str]:
     """CLI entry point: resolve a backend, name communities, and degrade to
     ``Community N`` placeholders on any failure (no backend, API error, malformed
-    reply). Returns ``(labels, source)`` where source is ``"llm"`` or
-    ``"placeholder"``. Never raises."""
+    reply). Returns ``(labels, source)`` where source is ``"llm"``,
+    ``"placeholder"`` (recoverable failure — a few batches degraded), or
+    ``"disabled"`` (a CONFIG/DEPENDENCY error: the backend's SDK is missing or its
+    key/config is absent; reported loudly even when ``quiet=True``, since it would
+    fail every call identically). Never raises."""
     if backend is None:
         try:
             backend = detect_backend()
@@ -3148,14 +3301,28 @@ def generate_community_labels(
                 file=sys.stderr,
             )
         return _placeholder_community_labels(communities), "placeholder"
+    # Preflight the SDK + key BEFORE labeling any community, so a missing
+    # dependency / missing key fails fast with the actionable message instead of
+    # after processing (FIX 2). A config/dependency error is not recoverable and
+    # would fail every batch identically, so it is surfaced loudly even when
+    # quiet — never swallowed into placeholders like a transient API failure.
     try:
+        preflight_backend(backend)
         labels = label_communities(
             G, communities, backend=backend, model=model, gods=gods,
             max_concurrency=max_concurrency, batch_size=batch_size,
             usage_out=usage_out,
         )
         return labels, "llm"
-    except Exception as exc:
+    except (BackendConfigError, ImportError) as exc:
+        # CONFIG/DEPENDENCY error: always visible (even with quiet=True) and
+        # tagged as "disabled" so the caller can distinguish it from a
+        # partially-labeled run that degraded on a few transient failures.
+        print(f"[graphify label] {exc}", file=sys.stderr)
+        return _placeholder_community_labels(communities), "disabled"
+    except (json.JSONDecodeError, ValueError, OSError, RuntimeError) as exc:
+        # Recoverable network / API / JSON-parse failure only — degrade to
+        # placeholders. Programming/config errors are handled above or propagate.
         if not quiet:
             print(
                 f"[graphify label] warning: community labeling failed ({exc}); "

@@ -17,6 +17,7 @@ its own, separate from the multi-thousand-line ``extract`` module.
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -79,7 +80,12 @@ def run_language_resolvers(
     for resolver in active:
         if not (resolver.suffixes & suffixes_present):
             continue
+        start = time.perf_counter()
         try:
             resolver.resolve(per_file, all_nodes, all_edges)
         except Exception as exc:
             _LOG.warning("%s resolution failed, skipping: %s", resolver.name, exc)
+        print(
+            f"  resolving {resolver.name}: done ({time.perf_counter() - start:.1f}s)",
+            flush=True,
+        )

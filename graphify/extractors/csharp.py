@@ -366,19 +366,24 @@ def _resolve_csharp_type_references(
                 return alias
         return stem or None
 
+    # Index placeholder nodes by label once (was a full all_nodes scan per edge on
+    # the common unresolved path, giving O(cs_edges * all_nodes)). Keeps the first
+    # placeholder seen per label, matching the prior first-match-wins order; stubs
+    # created below are registered so later edges reuse them.
+    placeholder_stub_by_label: dict[str, str] = {}
+    for node in all_nodes:
+        nid = node.get("id")
+        if isinstance(nid, str) and _is_placeholder(node):
+            placeholder_stub_by_label.setdefault(node.get("label"), nid)
+
     def _dangling_stub_id(label: str, current_target: object) -> str:
         current = node_by_id.get(current_target)
         if _is_placeholder(current) and current.get("label") == label:
             return str(current_target)
 
-        for node in all_nodes:
-            nid = node.get("id")
-            if (
-                isinstance(nid, str)
-                and node.get("label") == label
-                and _is_placeholder(node)
-            ):
-                return nid
+        existing = placeholder_stub_by_label.get(label)
+        if existing is not None:
+            return existing
 
         stem = _make_id(label)
         stub_id = stem
@@ -397,6 +402,7 @@ def _resolve_csharp_type_references(
         }
         all_nodes.append(node)
         node_by_id[stub_id] = node
+        placeholder_stub_by_label.setdefault(label, stub_id)
         return stub_id
 
     REPOINT_RELATIONS = {"implements", "inherits", "references"}

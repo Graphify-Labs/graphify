@@ -315,8 +315,23 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
         if true_src is not None and true_tgt is not None:
             link["source"] = true_src
             link["target"] = true_tgt
-    data["nodes"].sort(key=_json_sort_key)
-    data["links"].sort(key=_json_sort_key)
+    # Deterministic ordering keyed on stable identity fields only. Avoid a full
+    # json.dumps of every element (#: at ~844k edges that re-serializes the whole
+    # graph an extra time). Nodes are keyed by id; links by their endpoint +
+    # relation identity. Total and stable across runs — need not byte-match the
+    # old json-dump ordering.
+    def _node_sort_key(node: dict):
+        return str(node.get("id"))
+
+    def _link_sort_key(link: dict):
+        return (
+            str(link.get("source")),
+            str(link.get("target")),
+            str(link.get("relation") or link.get("key") or ""),
+        )
+
+    data["nodes"].sort(key=_node_sort_key)
+    data["links"].sort(key=_link_sort_key)
     if "hyperedges" not in getattr(G, "graph", {}):
         # Hardening (#2485): a graph with NO hyperedges key at all was built by
         # a path that never engaged hyperedge metadata — distinct from an
