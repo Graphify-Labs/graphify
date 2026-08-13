@@ -245,6 +245,62 @@ end
     assert edge["confidence"] == "EXTRACTED"
 
 
+def test_stdlib_receiver_never_hits_last_segment_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`Application.get_env()` is Elixir's stdlib `Application`, never the app's
+    own `MyApp.Application` — Elixir has no relative module resolution, so a
+    bare stdlib receiver must not be guessed onto a same-suffixed app module.
+
+    Measured on a 306-file Phoenix corpus: 112 of 1726 resolved edges were this
+    exact mistake (`Application.get_env`, `Base.encode16`,
+    `Supervisor.start_link`), and they all landed on hub modules.
+    """
+    monkeypatch.setenv("GRAPHIFY_ELIXIR_REMOTE_CALLS", "1")
+    _write(tmp_path, "application.ex", """\
+defmodule ChatServer.Application do
+  def get_env(app, key), do: {app, key}
+end
+""")
+    caller = _write(tmp_path, "endpoint.ex", """\
+defmodule ChatServer.Endpoint do
+  def origins do
+    Application.get_env(:chat_server, :cors_origins, [])
+  end
+end
+""")
+    graph = extract([caller, tmp_path / "application.ex"], cache_root=tmp_path, parallel=False)
+    assert _has_call_edge(graph, "origins", "get_env") is None
+    assert _has_call_edge(graph, "origins", "ChatServer.Application") is None
+
+
+def test_stdlib_named_module_still_resolves_when_aliased(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The guard is scoped to the *fallback*: an explicit `alias` (or a fully
+    qualified call) to an app module whose last segment is a stdlib name still
+    resolves, because that binding is stated in source."""
+    monkeypatch.setenv("GRAPHIFY_ELIXIR_REMOTE_CALLS", "1")
+    _write(tmp_path, "base.ex", """\
+defmodule ChatServer.Telegram.Base do
+  def encode(payload), do: payload
+end
+""")
+    caller = _write(tmp_path, "client.ex", """\
+defmodule ChatServer.Client do
+  alias ChatServer.Telegram.Base
+
+  def send(payload) do
+    Base.encode(payload)
+  end
+end
+""")
+    graph = extract([caller, tmp_path / "base.ex"], cache_root=tmp_path, parallel=False)
+    edge = _has_call_edge(graph, "send", "encode")
+    assert edge is not None, "an explicit alias must still win over the stdlib guard"
+    assert edge["confidence"] == "EXTRACTED"
+
+
 def test_unknown_function_falls_back_to_module_node(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A call to a function not in the corpus (macro, dynamic name) links to
     the module itself, so blast-radius queries still find the dependency."""
