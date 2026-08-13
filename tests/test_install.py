@@ -773,42 +773,72 @@ def test_opencode_plugin_uses_semicolon_not_ampersand(tmp_path):
     assert '" && \' +' not in body, "'&&' breaks PowerShell 5.1 (#1646)"
 
 
-def test_opencode_agents_install_registers_plugin_in_config(tmp_path):
-    """opencode install registers the plugin in .opencode/opencode.json."""
+def test_opencode_agents_install_does_not_register_plugin_in_config(tmp_path):
+    """#2709: OpenCode auto-loads every plugin file under .opencode/plugins/ at
+    startup, so registering it in opencode.json's "plugin" array is redundant
+    — and for a global install the entry was a project-relative path written
+    into a project-relative opencode.json, never the global one, leaving a
+    dead config entry. Install must not create/touch opencode.json at all."""
     _agents_install(tmp_path, "opencode")
     config_file = tmp_path / ".opencode" / "opencode.json"
-    assert config_file.exists()
-    import json as _json
-
-    config = _json.loads(config_file.read_text())
-    assert any("graphify.js" in p for p in config.get("plugin", []))
+    assert not config_file.exists()
 
 
-def test_opencode_agents_install_merges_existing_config(tmp_path):
-    """opencode install preserves existing .opencode/opencode.json keys."""
+def test_opencode_agents_install_does_not_touch_existing_config(tmp_path):
+    """#2709: an existing .opencode/opencode.json (and its own "plugin" array)
+    must be left byte-for-byte untouched — the plugin file's presence under
+    .opencode/plugins/ is what OpenCode actually auto-loads from."""
     import json as _json
 
     config_file = tmp_path / ".opencode" / "opencode.json"
     config_file.parent.mkdir(parents=True, exist_ok=True)
-    config_file.write_text(_json.dumps({"model": "claude-opus-4-5", "plugin": []}))
+    original = _json.dumps({"model": "claude-opus-4-5", "plugin": ["some-other-plugin"]})
+    config_file.write_text(original)
     _agents_install(tmp_path, "opencode")
-    config = _json.loads(config_file.read_text())
-    assert config["model"] == "claude-opus-4-5"
-    assert any("graphify.js" in p for p in config["plugin"])
+    assert config_file.read_text() == original
 
 
 def test_opencode_agents_uninstall_removes_plugin(tmp_path):
-    """opencode uninstall removes the plugin file and deregisters from opencode.json."""
+    """opencode uninstall removes the plugin file. It must not touch
+    opencode.json — install no longer writes to it either (#2709)."""
     import json as _json
+
+    config_file = tmp_path / ".opencode" / "opencode.json"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    original = _json.dumps({"plugin": ["some-other-plugin"]})
+    config_file.write_text(original)
 
     _agents_install(tmp_path, "opencode")
     _agents_uninstall(tmp_path, platform="opencode")
     plugin = tmp_path / ".opencode" / "plugins" / "graphify.js"
     assert not plugin.exists()
-    config_file = tmp_path / ".opencode" / "opencode.json"
-    if config_file.exists():
-        config = _json.loads(config_file.read_text())
-        assert not any("graphify.js" in p for p in config.get("plugin", []))
+    assert config_file.read_text() == original
+
+
+def test_opencode_install_writes_native_slash_command(tmp_path):
+    """#2709: OpenCode skills are not slash commands — only a markdown file
+    under .opencode/commands/ (or ~/.config/opencode/commands/ globally)
+    becomes a `/`-menu entry. Installing only the skill + reminder plugin (as
+    before) left /graphify absent from the TUI command menu."""
+    _agents_install(tmp_path, "opencode")
+    command_file = tmp_path / ".opencode" / "commands" / "graphify.md"
+    assert command_file.exists()
+    body = command_file.read_text()
+    assert "$ARGUMENTS" in body
+
+
+def test_opencode_uninstall_removes_native_slash_command(tmp_path):
+    _agents_install(tmp_path, "opencode")
+    _agents_uninstall(tmp_path, platform="opencode")
+    command_file = tmp_path / ".opencode" / "commands" / "graphify.md"
+    assert not command_file.exists()
+
+
+def test_opencode_command_file_exists_in_package():
+    import graphify
+
+    pkg = Path(graphify.__file__).parent
+    assert (pkg / "command-opencode.md").exists()
 
 
 def test_kilo_agents_install_writes_agents_md(tmp_path):
