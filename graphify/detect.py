@@ -812,6 +812,56 @@ _SKIP_DIRS = {
     ".worktrees",  # git worktree convention (#947) — sibling checkouts, always redundant
 }
 
+# Absolute paths never worth descending: kernel virtual filesystems. A high-root
+# scan (e.g. `graphify extract /`) that walks /proc alone ingests a per-PID tree
+# that changes under the scanner and is architecturally meaningless; /sys, /dev
+# and /run are the same class. Matched by the directory's resolved absolute path,
+# not its basename, so an unrelated project dir named "proc" is never pruned.
+# Disable with GRAPHIFY_NO_DEFAULT_EXCLUDES=1 (mirrors the vendored-cache gate).
+_SKIP_ABS_PATHS = frozenset({
+    "/proc", "/sys", "/dev", "/run",
+})
+
+# Well-known vendored dependency caches. These hold thousands-to-millions of
+# extracted upstream sources that are never this project's code — the Go module
+# cache under `go/pkg/mod` alone ingested 1.18M refs on a `/` scan (#root-cause).
+# Basenames like `.cargo`/`.m2` are unambiguous enough to prune by name, but
+# `pkg`/`mod` are common real directory names, so the Go cache is gated on the
+# `.../go/pkg/mod` path shape below in `_is_vendored_cache_dir` rather than a
+# bare basename. Disable all of these with GRAPHIFY_NO_DEFAULT_EXCLUDES=1.
+_SKIP_VENDORED_CACHE_DIRS = frozenset({
+    ".cargo", ".rustup", ".m2", ".gradle", ".pnpm-store",
+})
+
+
+def _default_excludes_enabled() -> bool:
+    """False when the user opted out of the built-in high-root protections.
+
+    GRAPHIFY_NO_DEFAULT_EXCLUDES=1 disables the virtual-filesystem and
+    vendored-cache pruning added for whole-machine scans, for the rare case a
+    user really does want to index one of those trees. Explicit ``--exclude`` /
+    ``.graphifyignore`` ``!`` negations still take precedence regardless.
+    """
+    return os.environ.get("GRAPHIFY_NO_DEFAULT_EXCLUDES", "").lower() not in ("1", "true", "yes")
+
+
+def _is_vendored_cache_dir(name: str, parent: "Path | None") -> bool:
+    """True when *name* under *parent* is a well-known vendored dependency cache.
+
+    Basename caches (`.cargo`, `.rustup`, `.m2`, `.gradle`, `.pnpm-store`) match
+    directly. The Go module cache is gated on the `.../go/pkg/mod` path structure
+    — pruning a bare `mod`/`pkg` by name would drop legitimate source — so it
+    matches only when the directory is `mod` whose parent is `pkg` whose parent
+    is `go`.
+    """
+    if name in _SKIP_VENDORED_CACHE_DIRS:
+        return True
+    # Go module cache: <GOPATH>/pkg/mod  (parent basename "pkg", grandparent "go").
+    if name == "mod" and parent is not None and parent.name == "pkg" and parent.parent.name == "go":
+        return True
+    return False
+
+
 # Large generated files that are never useful to extract
 _SKIP_FILES = {
     "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
@@ -1216,6 +1266,43 @@ def _is_ignored(
     return _eval(path)
 
 
+def _explicitly_reincluded(path: Path, patterns: list[tuple[Path, str]]) -> bool:
+    """True when a user ``!`` negation pattern explicitly matches *path*.
+
+    Lets an explicit ``--exclude '!go/pkg/mod'`` / ``.graphifyignore`` negation
+    re-include a directory the built-in default excludes (virtual filesystems,
+    vendored caches) would otherwise prune (#root-cause). Only negation patterns
+    are considered — a plain include has no bearing on default-exclude pruning.
+    """
+    for anchor, pattern in patterns:
+        if not pattern.startswith("!"):
+            continue
+        raw = pattern[1:]
+        directory_only = raw.endswith("/")
+        path_relative = "/" in raw.rstrip("/")
+        p = raw.strip("/")
+        if not p:
+            continue
+        try:
+            rel = _nfc(str(path.relative_to(anchor)).replace(os.sep, "/"))
+        except ValueError:
+            continue
+        if rel == ".":
+            continue
+        if directory_only and not path.is_dir():
+            continue
+        if path_relative:
+            if _match_anchored_ignore_pattern(rel, p):
+                return True
+        else:
+            if fnmatch.fnmatch(_nfc(path.name), p) or fnmatch.fnmatch(rel, p):
+                return True
+            for part in rel.split("/"):
+                if fnmatch.fnmatch(part, p):
+                    return True
+    return False
+
+
 def ignored_predicate(
     root: Path,
     *,
@@ -1304,8 +1391,23 @@ def _resolves_under_root(path: Path, root: Path) -> bool:
     return True
 
 
-def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace: bool | None = None, extra_excludes: list[str] | None = None, cache_root: Path | None = None, gitignore: bool = True) -> dict:
+def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace: bool | None = None, extra_excludes: list[str] | None = None, cache_root: Path | None = None, gitignore: bool = True, one_file_system: bool | None = None) -> dict:
     root = root.resolve()
+    # --one-file-system / GRAPHIFY_ONE_FILE_SYSTEM=1 (find -xdev): capture the
+    # root's device now and prune any child dir on a different filesystem so a
+    # high-root scan never crosses a mount point (network shares, bind mounts,
+    # /proc, external disks). Auto-enabled by the CLI for `/` and $HOME (#root).
+    if one_file_system is None:
+        one_file_system = os.environ.get("GRAPHIFY_ONE_FILE_SYSTEM", "").lower() in ("1", "true", "yes")
+    root_dev: int | None = None
+    if one_file_system:
+        try:
+            root_dev = os.stat(_os_path(root)).st_dev
+        except OSError:
+            root_dev = None
+    # Built-in high-root protections: virtual filesystems + vendored dep caches.
+    # Escapable via GRAPHIFY_NO_DEFAULT_EXCLUDES=1 (#root-cause).
+    default_excludes = _default_excludes_enabled()
     configured_out_dir = root / GRAPHIFY_OUT
     configured_out_names = {configured_out_dir.name}
     try:
@@ -1436,6 +1538,29 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                     if is_configured_out:
                         pruned_noise.append(str(child) + os.sep)
                         continue
+                    # Built-in high-root protections (#root-cause). An explicit
+                    # user `!` negation re-includes and takes precedence, so a
+                    # user who really wants to index /proc or the Go cache can.
+                    if default_excludes and not _explicitly_reincluded(child, ignore_patterns):
+                        try:
+                            child_abs = os.path.realpath(_os_path(child))
+                        except OSError:
+                            child_abs = str(child)
+                        if child_abs in _SKIP_ABS_PATHS:
+                            pruned_noise.append(str(child) + os.sep + " [virtual filesystem]")
+                            continue
+                        if _is_vendored_cache_dir(d, dp):
+                            pruned_noise.append(str(child) + os.sep + " [vendored dependency cache]")
+                            continue
+                    # --one-file-system: never cross a mount point (#root).
+                    if root_dev is not None and not _explicitly_reincluded(child, ignore_patterns):
+                        try:
+                            child_dev = os.stat(_os_path(child)).st_dev
+                        except OSError:
+                            child_dev = root_dev
+                        if child_dev != root_dev:
+                            pruned_noise.append(str(child) + os.sep + " [different filesystem (--one-file-system)]")
+                            continue
                     if _is_noise_dir(d, dp):
                         # Record pruned-as-noise dirs so a wrongly-pruned real
                         # source dir is at least traceable in the output rather
@@ -1916,6 +2041,7 @@ def detect_incremental(
     kind: str = "semantic",
     extra_excludes: list[str] | None = None,
     gitignore: bool = True,
+    one_file_system: bool | None = None,
 ) -> dict:
     """Like detect(), but returns only new or modified files since the last run.
 
@@ -1945,6 +2071,7 @@ def detect_incremental(
         google_workspace=google_workspace,
         extra_excludes=extra_excludes,
         gitignore=gitignore,
+        one_file_system=one_file_system,
     )
     # Pass ``root`` so a manifest written with relative keys (post-#777) is
     # re-anchored to the absolute form the rest of this function compares

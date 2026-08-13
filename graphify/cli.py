@@ -6,6 +6,7 @@ module. The path-redirect (`graphify <path>` -> extract) re-enters via a lazy
 import of main to avoid a cli<->__main__ import cycle.
 """
 from __future__ import annotations
+import functools
 import json
 import os
 import re
@@ -800,6 +801,70 @@ def _clone_repo(
 def _reenter_main() -> None:
     from graphify.__main__ import main
     main()
+
+
+def _is_high_scan_root(root: Path) -> str | None:
+    """Return a human label when *root* is a dangerously high scan root, else None.
+
+    A whole-machine scan of a filesystem root (`/`, or a drive root on Windows)
+    or the user's `$HOME` walks vendored caches, virtual filesystems and other
+    machines' mounts — the root cause of a 2-hour `/` scan that ingested 1.18M
+    refs from the Go module cache. The extract/update paths use this to auto-arm
+    protections and warn (FIX 2/FIX 3).
+    """
+    try:
+        resolved = root.resolve()
+    except (OSError, RuntimeError):
+        resolved = root
+    if resolved == Path(resolved.anchor) and resolved.anchor:
+        return "filesystem root"
+    home = Path(os.path.expanduser("~"))
+    try:
+        if home and resolved == home.resolve():
+            return "home directory ($HOME)"
+    except (OSError, RuntimeError):
+        pass
+    return None
+
+
+def _warn_high_root_scan(root: Path, label: str, cli_excludes: list[str], one_file_system: bool) -> None:
+    """Print a loud, unmissable warning before a whole-machine scan (FIX 3).
+
+    Only fired when the user passed no ``--exclude`` and there is no
+    ``.graphifyignore`` at the root, i.e. nothing scoping the scan. Never blocks
+    (kept scriptable) — it just makes the active protections visible.
+    """
+    if cli_excludes:
+        return
+    try:
+        if (root / ".graphifyignore").is_file():
+            return
+    except OSError:
+        return
+    print(
+        f"[graphify] WARNING: starting a whole-machine scan of {root} ({label}).",
+        file=sys.stderr,
+    )
+    print(
+        "[graphify]   This can take hours and ingest vendored caches / other "
+        "mounts. Active protections:",
+        file=sys.stderr,
+    )
+    print(
+        "[graphify]     - default excludes: /proc /sys /dev /run + Go/.cargo/"
+        ".rustup/.m2/.gradle/.pnpm-store caches (disable: GRAPHIFY_NO_DEFAULT_EXCLUDES=1)",
+        file=sys.stderr,
+    )
+    print(
+        f"[graphify]     - one-file-system: {'ON' if one_file_system else 'OFF'} "
+        "(mount points not crossed when ON)",
+        file=sys.stderr,
+    )
+    print(
+        "[graphify]   Scope it with --exclude PATTERN or a .graphifyignore file "
+        "to scan faster.",
+        file=sys.stderr,
+    )
 
 
 def dispatch_command(cmd: str) -> None:
@@ -2077,6 +2142,10 @@ def dispatch_command(cmd: str) -> None:
     elif cmd == "update":
         force = os.environ.get("GRAPHIFY_FORCE", "").lower() in ("1", "true", "yes")
         no_cluster = False
+        # --one-file-system (find -xdev). update re-runs detect() via watch's
+        # _rebuild_code, which has no kwarg for this, so it is plumbed through the
+        # GRAPHIFY_ONE_FILE_SYSTEM env var that detect() already honours (FIX 2).
+        one_file_system: bool | None = None
         args = sys.argv[2:]
         watch_arg: str | None = None
         for a in args:
@@ -2085,6 +2154,9 @@ def dispatch_command(cmd: str) -> None:
                 continue
             if a == "--no-cluster":
                 no_cluster = True
+                continue
+            if a in ("--one-file-system", "--xdev"):
+                one_file_system = True
                 continue
             if a.startswith("-"):
                 print(f"error: unknown update option: {a}", file=sys.stderr)
@@ -2106,6 +2178,24 @@ def dispatch_command(cmd: str) -> None:
         if not watch_path.exists():
             print(f"error: path not found: {watch_path}", file=sys.stderr)
             sys.exit(1)
+
+        # FIX 2/FIX 3: high-root guardrails (see the extract path). Auto-enable
+        # --one-file-system for a `/` or $HOME scan root, then warn loudly if
+        # nothing scopes a whole-machine scan.
+        _high_root_label = _is_high_scan_root(watch_path)
+        if _high_root_label is not None:
+            if one_file_system is None:
+                one_file_system = True
+                print(
+                    f"[graphify update] {_high_root_label} scan root: "
+                    f"auto-enabling --one-file-system (won't cross mount points)"
+                )
+            _warn_high_root_scan(
+                watch_path.resolve(), _high_root_label, [], bool(one_file_system)
+            )
+        if one_file_system:
+            os.environ["GRAPHIFY_ONE_FILE_SYSTEM"] = "1"
+
         from graphify.watch import _rebuild_code
 
         print(f"Re-extracting code files in {watch_path} (no LLM needed)...")
@@ -2155,6 +2245,87 @@ def dispatch_command(cmd: str) -> None:
 
         check_update(Path(sys.argv[2]).resolve())
         sys.exit(0)
+    elif cmd == "serve-html":
+        # Serve graphify-out/ over HTTP so headless hosts (no browser, remote
+        # boxes) can open graph.html in a local browser (#headless). Uses only
+        # the stdlib http.server — no extra deps.
+        import http.server
+
+        host = "127.0.0.1"
+        port = 8899
+        serve_dir = Path(_GRAPHIFY_OUT)
+        args = sys.argv[2:]
+        i_arg = 0
+        while i_arg < len(args):
+            a = args[i_arg]
+            if a == "--host" and i_arg + 1 < len(args):
+                host = args[i_arg + 1]; i_arg += 2
+            elif a.startswith("--host="):
+                host = a.split("=", 1)[1]; i_arg += 1
+            elif a == "--port" and i_arg + 1 < len(args):
+                port = int(args[i_arg + 1]); i_arg += 2
+            elif a.startswith("--port="):
+                port = int(a.split("=", 1)[1]); i_arg += 1
+            elif a == "--dir" and i_arg + 1 < len(args):
+                serve_dir = Path(args[i_arg + 1]); i_arg += 2
+            elif a.startswith("--dir="):
+                serve_dir = Path(a.split("=", 1)[1]); i_arg += 1
+            elif a in ("-h", "--help"):
+                print("Usage: graphify serve-html [--host H] [--port N] [--dir DIR]")
+                print("  --host H    interface to bind (default 127.0.0.1; use 0.0.0.0 to expose on the network)")
+                print("  --port N    port to listen on (default 8899)")
+                print("  --dir DIR   directory to serve (default graphify-out)")
+                return
+            else:
+                print(f"error: unknown serve-html option: {a}", file=sys.stderr)
+                sys.exit(2)
+
+        serve_dir = serve_dir.resolve()
+        if not serve_dir.is_dir():
+            print(f"error: directory not found: {serve_dir}", file=sys.stderr)
+            print("Run `graphify extract <path>` first to generate graphify-out/.", file=sys.stderr)
+            sys.exit(1)
+
+        # Serve serve_dir as the document root regardless of CWD (Python 3.7+
+        # SimpleHTTPRequestHandler honours the `directory` kwarg).
+        handler = functools.partial(
+            http.server.SimpleHTTPRequestHandler, directory=str(serve_dir)
+        )
+
+        # ThreadingHTTPServer keeps the browser responsive when it opens several
+        # requests (HTML + JSON + assets) at once.
+        http.server.ThreadingHTTPServer.allow_reuse_address = True
+        try:
+            httpd = http.server.ThreadingHTTPServer((host, port), handler)
+        except OSError as exc:
+            print(f"error: could not bind {host}:{port} ({exc})", file=sys.stderr)
+            sys.exit(1)
+
+        # 0.0.0.0/:: binds every interface — surface that it is reachable off-box.
+        display_host = "localhost" if host in ("127.0.0.1", "0.0.0.0", "::") else host
+        graph_html = serve_dir / "graph.html"
+        print(f"Serving {serve_dir} at http://{display_host}:{port}/")
+        if graph_html.is_file():
+            print(f"Open the graph: http://{display_host}:{port}/graph.html")
+        else:
+            print(
+                f"note: graph.html not found in {serve_dir} "
+                "(run `graphify extract <path>` to generate it)"
+            )
+        if host in ("0.0.0.0", "::"):
+            print(
+                f"warning: bound to {host} — this exposes the server to your "
+                "network, not just this machine.",
+                file=sys.stderr,
+            )
+        print("Press Ctrl+C to stop.")
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            print("\nStopping server.")
+        finally:
+            httpd.server_close()
+        return
     elif cmd == "tree":
         # Emit a D3 v7 collapsible-tree HTML view of graph.json:
         # expand-all / collapse-all / reset-view buttons, multi-line
@@ -2854,6 +3025,9 @@ def dispatch_command(cmd: str) -> None:
         cli_exclude_hubs: float | None = None
         cli_excludes: list[str] = []
         cli_timing: bool = False
+        # --one-file-system (find -xdev): prune child dirs on a different mount.
+        # Auto-enabled below for a `/` or $HOME scan root. None -> library default.
+        cli_one_file_system: bool | None = None
         # --force parity with `graphify update`: the flag or GRAPHIFY_FORCE=1
         # disables the incremental gate and skips semantic-cache reads (#1894).
         force = os.environ.get("GRAPHIFY_FORCE", "").lower() in ("1", "true", "yes")
@@ -2945,6 +3119,8 @@ def dispatch_command(cmd: str) -> None:
                 cli_excludes.append(args[i + 1]); i += 2
             elif a.startswith("--exclude="):
                 cli_excludes.append(a.split("=", 1)[1]); i += 1
+            elif a in ("--one-file-system", "--xdev"):
+                cli_one_file_system = True; i += 1
             elif a == "--postgres" and i + 1 < len(args):
                 cli_postgres_dsn = args[i + 1]; i += 2
             elif a.startswith("--postgres="):
@@ -2976,6 +3152,22 @@ def dispatch_command(cmd: str) -> None:
         deep_mode = extract_mode == "deep"
         if deep_mode:
             print("[graphify extract] deep mode enabled: richer semantic extraction")
+
+        # FIX 2/FIX 3: high-root guardrails. Auto-enable --one-file-system for a
+        # `/` or $HOME scan root (with a notice), then warn loudly if nothing is
+        # scoping a whole-machine scan.
+        if has_path:
+            _high_root_label = _is_high_scan_root(target)
+            if _high_root_label is not None:
+                if cli_one_file_system is None:
+                    cli_one_file_system = True
+                    print(
+                        f"[graphify extract] {_high_root_label} scan root: "
+                        f"auto-enabling --one-file-system (won't cross mount points)"
+                    )
+                _warn_high_root_scan(
+                    target, _high_root_label, cli_excludes, bool(cli_one_file_system)
+                )
 
         # CLI flag wins over env var. Setting GRAPHIFY_API_TIMEOUT here so
         # _call_openai_compat picks it up without needing a new kwarg path.
@@ -3062,6 +3254,7 @@ def dispatch_command(cmd: str) -> None:
                 google_workspace=google_workspace or None,
                 extra_excludes=_effective_excludes or None,
                 gitignore=_effective_gitignore,
+                one_file_system=cli_one_file_system,
             )
             files_by_type = detection.get("files", {})
             new_by_type = detection.get("new_files", {})
@@ -3108,6 +3301,7 @@ def dispatch_command(cmd: str) -> None:
                 extra_excludes=_effective_excludes or None,
                 cache_root=out_root,
                 gitignore=_effective_gitignore,
+                one_file_system=cli_one_file_system,
             )
             files_by_type = detection.get("files", {})
             code_files = [Path(p) for p in files_by_type.get("code", [])]
