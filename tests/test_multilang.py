@@ -733,6 +733,46 @@ def test_sql_tsql_bracket_debracketing_does_not_corrupt_array_types(tmp_path):
     for l in labels:
         assert "`" not in l, f"a synthetic backtick leaked into a label: {labels}"
 
+def test_sql_tsql_bracketed_fk_does_not_drop_child_table_or_fabricate_self_loop(tmp_path):
+    """#2713: a bracket-quoted FOREIGN KEY ... REFERENCES clause used to confuse
+    the parser badly enough that the whole child table (Invoice) — FK
+    constraint included — landed as bogus nested content inside the PARENT
+    table's (Customer) own subtree. That dropped Invoice from the graph
+    entirely and fabricated a Customer -> Customer self-referencing edge
+    tagged EXTRACTED (highest confidence) where no such reference exists in
+    the source. Fixed as a side effect of #2712's debracketing: with clean
+    identifier tokens the two CREATE TABLE statements parse as separate
+    top-level statements again."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "s.sql"
+    p.write_text(
+        "CREATE TABLE [dbo].[Customer] (\n"
+        "    [CustomerId] INT NOT NULL PRIMARY KEY,\n"
+        "    [Name]       NVARCHAR(100) NULL\n"
+        ");\n"
+        "GO\n"
+        "\n"
+        "CREATE TABLE [dbo].[Invoice] (\n"
+        "    [InvoiceId]  INT NOT NULL PRIMARY KEY,\n"
+        "    [CustomerId] INT NOT NULL,\n"
+        "    CONSTRAINT [FK_Invoice_Customer] FOREIGN KEY ([CustomerId])\n"
+        "        REFERENCES [dbo].[Customer] ([CustomerId])\n"
+        ");\n"
+        "GO\n"
+    )
+    r = extract_sql(p)
+    nid = {n["label"]: n["id"] for n in r["nodes"]}
+    assert "dbo.Customer" in nid, "Customer table missing from the graph"
+    assert "dbo.Invoice" in nid, "Invoice table was dropped from the graph (#2713)"
+
+    refs = {(e["source"], e["target"]) for e in r["edges"] if e["relation"] == "references"}
+    assert (nid["dbo.Customer"], nid["dbo.Customer"]) not in refs, (
+        "fabricated Customer -> Customer self-loop present (#2713)"
+    )
+    assert (nid["dbo.Invoice"], nid["dbo.Customer"]) in refs, (
+        f"expected Invoice -> Customer reference edge, got {refs}"
+    )
+
 def test_sql_plpgsql_functions_survive_parse_errors():
     """PL/pgSQL bodies make tree-sitter-sql emit ERROR nodes; the functions
     must still be extracted (#1910), without cascading into later statements."""
