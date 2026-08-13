@@ -20,11 +20,12 @@ def _norm_ident(name: str) -> str:
     parts = []
     for part in name.split("."):
         p = part.strip()
-        if len(p) >= 2 and ((p[0] == p[-1] and p[0] in ('"', "`"))
-                            or (p[0] == "[" and p[-1] == "]")):
-            p = p[1:-1]
+        p = re.sub(r'^["`\[]+|["`\]]+$', '', p)
         parts.append(p.lower())
     return ".".join(parts)
+
+
+_IDENT_PATTERN = r'(?:\"[^\"\n]+\"|\[[^\]\n]+\]|`[^`\n]+`|[\w$]+)(?:\s*\.\s*(?:\"[^\"\n]+\"|\[[^\]\n]+\]|`[^`\n]+`|[\w$]+))*'
 
 
 def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
@@ -72,6 +73,10 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         return source[n.start_byte:n.end_byte].decode("utf-8", errors="replace")
 
     def _obj_name(n) -> str | None:
+        text = _read(n)
+        m = re.search(rf"(?:CREATE|ALTER)\s+(?:OR\s+(?:REPLACE|ALTER)\s+)?(?:TABLE|VIEW|FUNCTION|PROCEDURE)\s+(?:IF\s+NOT\s+EXISTS\s+)?({_IDENT_PATTERN})", text, re.IGNORECASE)
+        if m:
+            return m.group(1)
         for c in n.children:
             if c.type == "object_reference":
                 return _read(c)
@@ -263,7 +268,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
             for m in re.finditer(
                 r"CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE)\s+"
                 r"(?:IF\s+NOT\s+EXISTS\s+)?"
-                r"((?:\"[^\"\n]+\"|[\w$]+)(?:\s*\.\s*(?:\"[^\"\n]+\"|[\w$]+))*)",
+                rf"({_IDENT_PATTERN})",
                 text, re.IGNORECASE,
             ):
                 name = m.group(1)
@@ -379,6 +384,14 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
 
     _collect_defined_names(root)
 
+    src_text = source.decode("utf-8", errors="replace")
+    if root.has_error:
+        for m in re.finditer(rf"CREATE\s+(?:TABLE|VIEW)\s+({_IDENT_PATTERN})", src_text, re.IGNORECASE):
+            name = m.group(1)
+            norm = _norm_ident(name)
+            if norm not in table_nids:
+                table_nids[norm] = _make_id(stem, name)
+
     # Secondary bare-name aliases: a reference written without a schema
     # (`REFERENCES users`) should resolve to a schema-qualified definition
     # (`public.users`) when that is unambiguous. Never shadow an explicit
@@ -405,8 +418,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
     # (e.g. Firebird COMPUTED BY columns push constraints out of the tree entirely).
     # Snapshot after tree walk so we don't re-emit edges already captured above.
     emitted = {(e["source"], e["target"]) for e in edges if e["relation"] == "references"}
-    src_text = source.decode("utf-8", errors="replace")
-    for m in re.finditer(r"CREATE\s+TABLE\s+([\w$]+)\s*\(", src_text, re.IGNORECASE):
+    for m in re.finditer(rf"CREATE\s+TABLE\s+({_IDENT_PATTERN})\s*\(", src_text, re.IGNORECASE):
         tbl_name = m.group(1)
         tbl_nid = table_nids.get(_norm_ident(tbl_name))
         if tbl_nid is None:
@@ -415,7 +427,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         tail = src_text[m.start():]
         end = re.search(r"(?:^|\n)(?:CREATE|SET\s+TERM|ALTER)\s", tail[1:], re.IGNORECASE)
         block = tail[: end.start() + 1] if end else tail
-        for rm in re.finditer(r"\bREFERENCES\s+([\w$]+)", block, re.IGNORECASE):
+        for rm in re.finditer(rf"\bREFERENCES\s+({_IDENT_PATTERN})", block, re.IGNORECASE):
             ref_name = rm.group(1)
             ref_nid = table_nids.get(_norm_ident(ref_name)) or _ref_stub(ref_name)
             if (tbl_nid, ref_nid) not in emitted:
@@ -441,10 +453,15 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
     # observed drop shape leaves an ERROR node in the tree, so has_error loses
     # nothing while protecting clean corpora (#2180 follow-up).
     if root.has_error:
+        for m in re.finditer(rf"CREATE\s+(?:TABLE|VIEW)\s+({_IDENT_PATTERN})", src_text, re.IGNORECASE):
+            name = m.group(1)
+            m_line = src_text[: m.start()].count("\n") + 1
+            _add_node(_make_id(stem, name), name, m_line)
+
         for m in re.finditer(
             r"CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE)\s+"
             r"(?:IF\s+NOT\s+EXISTS\s+)?"
-            r"((?:\"[^\"\n]+\"|[\w$]+)(?:\s*\.\s*(?:\"[^\"\n]+\"|[\w$]+))*)",
+            rf"({_IDENT_PATTERN})",
             src_text, re.IGNORECASE,
         ):
             fn_name = m.group(1)
