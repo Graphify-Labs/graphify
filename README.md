@@ -801,6 +801,7 @@ graphify label ./my-project --backend=openai --model gpt-4o   # force a specific
 - [How it works](docs/how-it-works.md) — the extraction pipeline, community detection, confidence scoring, benchmarks
 - [ARCHITECTURE.md](ARCHITECTURE.md) — module breakdown, how to add a language
 - [Optional integrations](docs/docker-mcp-sqlite.md) — Docker MCP Toolkit + SQLite
+- [Graph bundle metadata](docs/graph-bundle-metadata.md) — schema for `metadata.json` when a `graphify --update` output is published for other machines/CI to pull
 - [The Memory Layer](https://safishamsi.gumroad.com/l/qetvlo) — the book on the ideas behind graphify, the architecture end to end
 
 ---

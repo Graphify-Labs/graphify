@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Graphify-Labs/graphify/blob/v8/docs/graph-bundle-metadata.schema.json",
+  "title": "graphify knowledge-graph bundle metadata",
+  "description": "Schema for metadata.json, the small manifest bundled alongside graph.json/GRAPH_REPORT.md/manifest.json when a graphify --update output is published as a release/OCI artifact. Written by the CI job that runs `graphify --update` and publishes the bundle; read by the fetch script that pulls the bundle down before graphify's CLAUDE.md directive/PreToolUse hook consult it. This is the single canonical definition both sides validate against, so the writer and reader can't drift independently -- one typically lives in a scheduled graph-refresh workflow, the other in a SessionStart fetch script, both consuming repos using the same published schema.",
+  "type": "object",
+  "required": ["schema_version", "source_sha", "graphify_version", "generated_at", "bundle"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Version of this metadata.json schema itself, not of graphify or the bundle contents. Bump on any breaking change to this file's shape so a reader can refuse an unrecognized version cleanly instead of guessing at missing/renamed fields."
+    },
+    "source_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$",
+      "description": "Full git commit SHA of the source repository HEAD that graphify --update was run against. The staleness check compares this against a consumer's local HEAD (via `git merge-base --is-ancestor`, used purely as a freshness signal, not a publish-time race guard)."
+    },
+    "graphify_version": {
+      "type": "string",
+      "description": "Output of `graphify --version` for the graphify install that generated this bundle (e.g. \"0.9.41\"). The fetch script refuses to load a bundle whose graphify_version doesn't match the locally installed `graphify --version`, printing the exact upgrade command, rather than silently loading a graph shaped by a different schema/format version."
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 UTC timestamp of when this bundle was published. Backs the TTL fallback staleness check (e.g. treat the bundle as stale if generated_at is >24h old) for the case where source_sha ancestry comparison isn't possible (e.g. consumer's local HEAD is on an unrelated branch/fork)."
+    },
+    "bundle": {
+      "type": "object",
+      "required": ["graph", "report", "manifest"],
+      "additionalProperties": false,
+      "description": "Paths, relative to the archive root, of the other files published alongside this metadata.json in the same atomic bundle (a single archive, so a consumer either gets the whole matched set or a clean 404/missing-bundle, never a mismatched pair from two different publishes).",
+      "properties": {
+        "graph": {
+          "type": "string",
+          "description": "Path to graph.json -- the queryable knowledge graph itself. What ordinary consumers (graphify's PreToolUse hook, ci-select) actually load."
+        },
+        "report": {
+          "type": "string",
+          "description": "Path to GRAPH_REPORT.md -- the human-readable summary of the graph."
+        },
+        "manifest": {
+          "type": "string",
+          "description": "Path to manifest.json -- graphify's own incremental-extraction state. Only needed by the generation workflow itself to restore continuity before its next `graphify --update` run (see the artifact-re-pull fallback for actions/cache eviction); ordinary consumers querying the graph never need to open it."
+        }
+      }
+    }
+  }
+}
