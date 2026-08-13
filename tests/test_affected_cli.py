@@ -311,3 +311,29 @@ def test_affected_falls_back_to_def_line_when_edge_has_no_location(monkeypatch, 
     monkeypatch.setattr(mainmod.sys, "argv", ["graphify", "affected", "target", "--graph", str(gp)])
     mainmod.main()
     assert "a.py:L90" in capsys.readouterr().out
+
+
+def test_affected_resolves_equivalent_path_forms(tmp_path, monkeypatch):
+    """`./x.py`, an absolute path and `x.py` name one file and must resolve alike.
+
+    The graph stores repo-relative `source_file`, and `resolve_seed` compared the
+    query to it as a plain string. `./pkg/foo.py` and `/abs/repo/pkg/foo.py`
+    therefore matched nothing, `affected` printed an empty list and exited 0 — a
+    blast-radius tool reporting "nothing depends on this" about a file with three
+    dependents, and indistinguishable both from a genuine zero and from a typo.
+    """
+    from graphify.affected import resolve_seed
+
+    graph = nx.DiGraph()
+    graph.add_node("target", label="Foo", source_file="pkg/foo.py", source_location="L1")
+    graph.add_node("caller", label="X()", source_file="app.py", source_location="L4")
+    graph.add_edge("caller", "target", relation="calls")
+
+    monkeypatch.chdir(tmp_path)
+    for query in (
+        "pkg/foo.py",
+        "./pkg/foo.py",
+        str(tmp_path / "pkg" / "foo.py"),
+    ):
+        assert resolve_seed(graph, query) == "target", query
+
