@@ -4101,6 +4101,44 @@ def _extract_generic(
                 if config.ts_module == "tree_sitter_c_sharp" and parent_class_nid:
                     csharp_method_scopes[id(body)] = (node, parent_class_nid)
                 function_bodies.append((func_nid, body))
+                if config.ts_module in (
+                    "tree_sitter_javascript", "tree_sitter_typescript"
+                ):
+                    def _scan_js_nested_functions(parent_nid: str, container_node) -> None:
+                        if container_node is None:
+                            return
+                        for child in container_node.children:
+                            if child.type in (
+                                "function_declaration",
+                                "generator_function_declaration",
+                            ):
+                                name_node = child.child_by_field_name(config.name_field)
+                                if name_node is None:
+                                    for c in child.children:
+                                        if c.type in config.name_fallback_child_types:
+                                            name_node = c
+                                            break
+                                func_name = _read_text(name_node, source) if name_node else None
+                                if func_name and normalize_id(func_name):
+                                    line = child.start_point[0] + 1
+                                    nested_nid = _make_id(parent_nid, func_name)
+                                    add_node(nested_nid, f"{func_name}()", line)
+                                    add_edge(parent_nid, nested_nid, "contains", line)
+                                    callable_def_nids.add(nested_nid)
+                                    if local_bound_names is not None:
+                                        local_bound_names[nested_nid] = _js_local_bound_names(
+                                            child, source
+                                        )
+                                    nested_body = _find_body(child, config)
+                                    if nested_body:
+                                        function_bodies.append((nested_nid, nested_body))
+                                        _scan_js_nested_functions(nested_nid, nested_body)
+                            elif child.type in _JS_FUNCTION_VALUE_TYPES:
+                                continue
+                            else:
+                                _scan_js_nested_functions(parent_nid, child)
+
+                    _scan_js_nested_functions(func_nid, body)
                 if config.ts_module == "tree_sitter_kotlin":
                     # #2347: Kotlin anonymous objects (`object : Foo { … }`,
                     # node type `object_literal`). The function branch never
@@ -4508,7 +4546,7 @@ def _extract_generic(
             return None
         return _read_text(scope, source)
 
-    _tracked_body_ids: set[int] = set()
+    _tracked_body_ids: set[object] = set()
     _JS_CLOSURE_TYPES = ("arrow_function", "function_expression")
     # #2575: nested NAMED functions get the same descent as closures. walk()
     # appends only the OUTER declaration's body to function_bodies and never
@@ -4538,7 +4576,7 @@ def _extract_generic(
             if (config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript")
                     and node.type in _JS_DESCEND_TYPES):
                 body = node.child_by_field_name("body")
-                if body is not None and id(body) not in _tracked_body_ids:
+                if body is not None and body not in _tracked_body_ids:
                     # This closure's own params/locals (`(r) => c.get(r)`) are
                     # scoped to it, not to the enclosing caller_nid — but its
                     # calls ARE attributed to caller_nid right here, so a bare
@@ -5185,7 +5223,7 @@ def _extract_generic(
     # skipped at the arrow boundary in walk_calls, losing its calls — so let
     # walk_calls descend into such untracked closures with the enclosing caller
     # (#1630 Pattern B). Guarding on the tracked set prevents double-walking.
-    _tracked_body_ids.update(id(b) for _, b in function_bodies)
+    _tracked_body_ids.update(b for _, b in function_bodies)
 
     # Body ids are unique (one language per file), so the Java (flat) and C#
     # (scoped, #2472) per-method receiver tables merge without collision — the

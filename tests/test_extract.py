@@ -888,6 +888,88 @@ def test_extract_js_arbitrary_member_assignment_not_captured(tmp_path):
     assert ".whatever()" not in labels
 
 
+def test_extract_js_nested_function_declarations(tmp_path):
+    """#2653: function declarations nested inside another function emit nodes,
+    source contains edges from the enclosing function, and attribute call edges correctly."""
+    from graphify.extract import extract
+    f = tmp_path / "Panel.tsx"
+    f.write_text(
+        "function doThing() {}\n"
+        "export function Panel() {\n"
+        "  function handleClick() {\n"
+        "    doThing()\n"
+        "  }\n"
+        "  return <button onClick={handleClick} />\n"
+        "}\n"
+    )
+    result = extract([f], root=tmp_path)
+    by_label = {n["label"]: n for n in result["nodes"]}
+
+    assert "handleClick()" in by_label
+    assert by_label["handleClick()"]["id"] == "panel_panel_handleclick"
+
+    edges = [(e["source"], e["target"], e["relation"]) for e in result["edges"]]
+
+    panel_id = by_label["Panel()"]["id"]
+    handle_id = by_label["handleClick()"]["id"]
+    dothing_id = by_label["doThing()"]["id"]
+
+    assert (panel_id, handle_id, "contains") in edges
+    assert (handle_id, dothing_id, "calls") in edges
+    assert (panel_id, dothing_id, "calls") not in edges
+
+
+def test_extract_js_deeply_nested_function_declarations(tmp_path):
+    """#2653: arbitrary depth nested named function declarations establish hierarchical containment and correct call attribution."""
+    from graphify.extract import extract
+    f = tmp_path / "Deep.ts"
+    f.write_text(
+        "function doThing() {}\n"
+        "function Panel() {\n"
+        "  function outer() {\n"
+        "    function inner() {\n"
+        "      doThing()\n"
+        "    }\n"
+        "  }\n"
+        "}\n"
+    )
+    result = extract([f], root=tmp_path)
+    by_label = {n["label"]: n for n in result["nodes"]}
+
+    panel_id = by_label["Panel()"]["id"]
+    outer_id = by_label["outer()"]["id"]
+    inner_id = by_label["inner()"]["id"]
+    dothing_id = by_label["doThing()"]["id"]
+
+    edges = [(e["source"], e["target"], e["relation"]) for e in result["edges"]]
+
+    assert (panel_id, outer_id, "contains") in edges
+    assert (outer_id, inner_id, "contains") in edges
+    assert (inner_id, dothing_id, "calls") in edges
+    assert (panel_id, dothing_id, "calls") not in edges
+    assert (outer_id, dothing_id, "calls") not in edges
+
+
+def test_extract_js_nested_function_local_variable_preservation(tmp_path):
+    """#2653 / #1077: extracting nested named functions must preserve local variable suppression."""
+    from graphify.extract import extract_js
+    f = tmp_path / "LocalVar.ts"
+    f.write_text(
+        "function doThing() {}\n"
+        "function Panel() {\n"
+        "  const localValue = 123;\n"
+        "  function handleClick() {\n"
+        "    doThing();\n"
+        "  }\n"
+        "}\n"
+    )
+    res = extract_js(f)
+    labels = [n["label"] for n in res["nodes"]]
+    assert "handleClick()" in labels
+    assert "localValue" not in labels
+
+
+
 def by_label_by_id(result, node_id):
     for n in result["nodes"]:
         if n["id"] == node_id:
