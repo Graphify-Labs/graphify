@@ -170,11 +170,21 @@ def attach_hyperedges(G: nx.Graph, hyperedges: list) -> None:
     G.graph["hyperedges"] = existing
 
 
-def _git_head() -> str | None:
-    """Return the current git HEAD commit hash, or None if not in a git repo."""
+def _git_head(cwd: "str | Path | None" = None) -> str | None:
+    """Return git HEAD for the repo containing ``cwd``, or None outside a repo.
+
+    ``cwd`` selects the repository to ask, exactly as in watch._git_head
+    (#2316). Without it the command inherits the caller's working directory,
+    which stamps the *invoking* repo's commit when the graph being written
+    describes a different repo — provenance must come from the repo the graph
+    describes, so callers pass the graph's own location.
+    """
     import subprocess as _sp
     try:
-        r = _sp.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=3)
+        r = _sp.run(
+            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=3,
+            cwd=str(cwd) if cwd is not None else None,
+        )
         return r.stdout.strip() if r.returncode == 0 else None
     except Exception:
         return None
@@ -349,7 +359,10 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
     if isinstance(data.get("graph"), dict) and "hyperedges" in data["graph"]:
         data["graph"]["hyperedges"] = hyperedges
     data["hyperedges"] = hyperedges
-    commit = built_at_commit if built_at_commit is not None else _git_head()
+    # Fallback provenance comes from the repo the graph is being written INTO
+    # (output_path lives in <target>/graphify-out/), never the shell's cwd —
+    # the same cwd-anchoring mistake #2316 fixed for `update`.
+    commit = built_at_commit if built_at_commit is not None else _git_head(Path(output_path).resolve().parent)
     if commit:
         data["built_at_commit"] = commit
     from graphify.paths import write_json_atomic
