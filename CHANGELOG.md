@@ -14,6 +14,12 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: `graphify update` / `_read_files` hand the model a POSIX `source_file`, and several path/atomic-write behaviors are hardened for Windows (#2620/#2622, thanks @rajarshidattapy).
 - Fix: a failed atomic write no longer leaks a read-only `.tmp` file in the output directory on Windows (#2622, thanks @rajarshidattapy).
 - Test/docs: Windows-portability test fixes (probe-and-skip symlink tests, separator-agnostic path assertions, shell-arg verdict test), a refreshed `ARCHITECTURE.md` module table with a doc-parity test, and README notes on CI parity checks and Windows test prerequisites (#2620/#2622/#2126/#2642/#2646/#2647/#2648/#2651, thanks @rajarshidattapy, @redzwanmutalib, @nelsondeleonc-source).
+- Fix: a non-regular file (FIFO/named pipe, device) in the scanned tree no longer hangs extraction on a blocking read; non-regular files are skipped during collection (#2463, thanks @itskaism).
+- Fix: an incremental run now re-queues a file rewritten to the same length within one mtime tick, instead of skipping it as unchanged (#2466, thanks @itskaism); complements the 0.9.40 file-hash guard (#2612).
+- Fix: the `apm.yml` fallback parser (used when PyYAML is absent) now captures the package version instead of dropping it (#2465, thanks @itskaism).
+- Fix: `graphify install` no longer fails when the packaged bundle is read-only (e.g. a Nix store or root-owned site-packages); the staged skill references are made writable before the atomic rename (#2453, thanks @bensleveritt).
+- Fix: hyperedge regions in `graph.html` are traced in convex-hull order instead of member-array order, so the shaded polygon no longer self-intersects (#2449, thanks @ysys143).
+- Fix: `graph_has_legacy_ids` no longer false-positives on a global MCP node id (e.g. from a nested `.mcp.json`), which wrongly flagged a modern graph as legacy (#2408, thanks @aryanbonigala).
 
 ## 0.9.41 (2026-08-12)
 
