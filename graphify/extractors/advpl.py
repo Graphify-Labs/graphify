@@ -250,6 +250,7 @@ def extract_advpl(path: Path) -> dict:
                 raw_calls.append({
                     "callee": callee_key,
                     "caller_nid": caller_nid,
+                    "language": "advpl",
                     "source_file": str_path,
                     "source_location": f"L{line}",
                     "is_member_call": False,
