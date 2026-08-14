@@ -950,6 +950,67 @@ def test_extract_js_deeply_nested_function_declarations(tmp_path):
     assert (outer_id, dothing_id, "calls") not in edges
 
 
+def test_extract_js_function_nested_in_arrow_component(tmp_path):
+    """#2653 (the motivating React idiom): a named function declared inside an
+    ARROW-defined component `const Panel = () => { function handleRegen(){…} }`
+    is noded, contained by the component, and its calls resolve — the main walk
+    never recurses into arrow bodies, so this must be scanned explicitly."""
+    from graphify.extract import extract
+    f = tmp_path / "Panel.jsx"
+    f.write_text(
+        "function doThing() {}\n"
+        "const Panel = () => {\n"
+        "  function handleRegen() {\n"
+        "    doThing()\n"
+        "  }\n"
+        "  return handleRegen\n"
+        "}\n"
+    )
+    result = extract([f], root=tmp_path)
+    by_label = {n["label"]: n for n in result["nodes"]}
+
+    assert "handleRegen()" in by_label
+    edges = [(e["source"], e["target"], e["relation"]) for e in result["edges"]]
+    panel_id = by_label["Panel()"]["id"]
+    handle_id = by_label["handleRegen()"]["id"]
+    dothing_id = by_label["doThing()"]["id"]
+
+    assert (panel_id, handle_id, "contains") in edges
+    assert (handle_id, dothing_id, "calls") in edges
+    assert (panel_id, dothing_id, "calls") not in edges
+
+
+def test_extract_js_function_nested_in_arrow_callback(tmp_path):
+    """#2653: a named function declared inside an arrow CALLBACK nested in a
+    function (`function Panel(){ useEffect(() => { function h(){…} }) }`) is
+    attributed to the nearest enclosing named scope (the anonymous arrow is not
+    a node), and its calls resolve instead of dangling."""
+    from graphify.extract import extract
+    f = tmp_path / "Effect.jsx"
+    f.write_text(
+        "function doThing() {}\n"
+        "function Panel() {\n"
+        "  useEffect(() => {\n"
+        "    function h() {\n"
+        "      doThing()\n"
+        "    }\n"
+        "  })\n"
+        "}\n"
+    )
+    result = extract([f], root=tmp_path)
+    by_label = {n["label"]: n for n in result["nodes"]}
+
+    assert "h()" in by_label
+    edges = [(e["source"], e["target"], e["relation"]) for e in result["edges"]]
+    panel_id = by_label["Panel()"]["id"]
+    h_id = by_label["h()"]["id"]
+    dothing_id = by_label["doThing()"]["id"]
+
+    # the anonymous arrow is not noded, so h is contained directly by Panel
+    assert (panel_id, h_id, "contains") in edges
+    assert (h_id, dothing_id, "calls") in edges
+
+
 def test_extract_js_nested_function_local_variable_preservation(tmp_path):
     """#2653 / #1077: extracting nested named functions must preserve local variable suppression."""
     from graphify.extract import extract_js
