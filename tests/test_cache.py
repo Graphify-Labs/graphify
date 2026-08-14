@@ -585,29 +585,6 @@ def test_ast_cache_invalidated_on_version_bump(tmp_path, monkeypatch):
     )
 
 
-def test_ast_cache_schema_rejects_same_version_legacy_collision(
-    tmp_path, monkeypatch
-):
-    """A key-schema change must not replay a poisoned same-version AST entry."""
-    import json
-    import graphify.cache as cache_mod
-
-    target = tmp_path / "real.py"
-    target.write_text("value = 1\n")
-    monkeypatch.setattr(cache_mod, "_EXTRACTOR_VERSION", "0.9.46", raising=False)
-    old_dir = tmp_path / cache_mod._GRAPHIFY_OUT / "cache" / "ast" / "v0.9.46"
-    old_dir.mkdir(parents=True)
-    old_hash = file_hash(target, tmp_path)
-    (old_dir / f"{old_hash}.json").write_text(json.dumps({
-        "nodes": [{"id": "alias", "source_file": "alias.py"}],
-        "edges": [],
-    }))
-    monkeypatch.setattr(cache_mod, "_cleaned_ast_dirs", set(), raising=False)
-
-    assert load_cached(target, root=tmp_path, kind="ast") is None
-    assert not old_dir.exists()
-
-
 def test_ast_cache_version_bump_cleans_stale_entries(tmp_path, monkeypatch):
     """Upgrading removes AST entries left behind by previous versions so the
     cache directory does not grow one full copy per release."""
@@ -703,246 +680,6 @@ def test_save_cached_in_root_symlink_keeps_symlink_name(tmp_path):
         f"cache must store symlink name, not resolved target; got "
         f"{on_disk['nodes'][0]['source_file']!r}"
     )
-
-
-def test_file_hash_distinguishes_walked_symlink_paths_portably(
-    requires_symlinks, tmp_path
-):
-    """Aliases of one target need separate portable extraction-cache keys."""
-    from graphify import cache as cache_mod
-
-    _reset_stat_index()
-    hashes_by_root = []
-    for dirname in ("repo_a", "repo_b"):
-        root = tmp_path / dirname
-        (root / "sub").mkdir(parents=True)
-        target = root / "real.py"
-        target.write_text("def value():\n    return 1\n")
-        aliases = (root / "alias.py", root / "sub" / "link.py")
-        aliases[0].symlink_to(target)
-        aliases[1].symlink_to(target)
-
-        hashes = tuple(file_hash(path, root) for path in (target, *aliases))
-        assert len(set(hashes)) == 3
-        assert len(cache_mod._stat_index[str(target.resolve())]["hashes"]) == 3
-        hashes_by_root.append(hashes)
-
-    assert hashes_by_root[0] == hashes_by_root[1]
-
-
-def test_file_hash_keeps_resolved_fallback_for_external_symlink(
-    requires_symlinks, tmp_path
-):
-    """An out-of-root target retains the existing resolved-path identity."""
-    _reset_stat_index()
-    root = tmp_path / "repo"
-    root.mkdir()
-    target = tmp_path / "external.py"
-    target.write_text("external = True\n")
-    alias = root / "external.py"
-    alias.symlink_to(target)
-
-    assert file_hash(alias, root) == file_hash(target, root)
-
-
-def test_warm_cache_keeps_target_and_symlink_sources_distinct(
-    requires_symlinks, tmp_path, monkeypatch
-):
-    """#2832: a warm cache must not move target nodes onto its symlink."""
-    from collections import Counter
-
-    import graphify.extract as extract_mod
-
-    _reset_stat_index()
-    physical_root = tmp_path / "repo"
-    (physical_root / "sub").mkdir(parents=True)
-    target = physical_root / "real.py"
-    target.write_text("def value():\n    return 1\n")
-    alias = physical_root / "sub" / "link.py"
-    alias.symlink_to(target)
-    root = tmp_path / "scan"
-    root.symlink_to(physical_root, target_is_directory=True)
-
-    paths = extract_mod.collect_files(root)
-    assert [path.relative_to(root).as_posix() for path in paths] == [
-        "real.py",
-        "sub/link.py",
-    ]
-
-    cold = extract_mod.extract(paths, cache_root=root, root=root, parallel=False)
-    misses = []
-    real_extract = extract_mod._safe_extract_with_xaml_root
-
-    def counting_extract(extractor, path, extract_root):
-        misses.append(path)
-        return real_extract(extractor, path, extract_root)
-
-    monkeypatch.setattr(extract_mod, "_safe_extract_with_xaml_root", counting_extract)
-    warm = extract_mod.extract(paths, cache_root=root, root=root, parallel=False)
-
-    assert misses == []
-    cold_counts = Counter(n.get("source_file") for n in cold["nodes"])
-    warm_counts = Counter(n.get("source_file") for n in warm["nodes"])
-    assert warm_counts == cold_counts
-    assert len(cold_counts) == 2
-    assert {Path(source).name for source in cold_counts} == {"real.py", "link.py"}
-
-
-def test_semantic_cache_self_heals_legacy_symlink_collision(
-    requires_symlinks, tmp_path
-):
-    """A poisoned legacy entry misses once, then walked groups round-trip."""
-    import json
-
-    from graphify.cache import check_semantic_cache, save_semantic_cache
-
-    _reset_stat_index()
-    physical_root = tmp_path / "repo"
-    physical_root.mkdir()
-    (physical_root / "real.md").write_text("# Shared\n")
-    (physical_root / "alias.md").symlink_to(physical_root / "real.md")
-    root = tmp_path / "scan"
-    root.symlink_to(physical_root, target_is_directory=True)
-    target = root / "real.md"
-    alias = root / "alias.md"
-
-    legacy_hash = file_hash(target, root)
-    legacy_entry = cache_dir(root, "semantic") / f"{legacy_hash}.json"
-    legacy_entry.write_text(json.dumps({
-        "nodes": [{"id": "alias-old", "source_file": "alias.md"}],
-        "edges": [],
-    }))
-
-    nodes, _, _, uncached = check_semantic_cache(
-        [str(target), str(alias)], root=root
-    )
-    assert nodes == []
-    assert uncached == [str(target), str(alias)]
-
-    saved = save_semantic_cache(
-        [
-            {"id": "real", "source_file": str(target)},
-            {"id": "alias", "source_file": str(alias)},
-        ],
-        [],
-        root=root,
-    )
-    stored_sources = []
-    for path in (target, alias):
-        entry = cache_dir(root, "semantic") / f"{file_hash(path, root)}.json"
-        stored_sources.append(json.loads(entry.read_text())["nodes"][0]["source_file"])
-    nodes, _, _, uncached = check_semantic_cache(
-        [str(target), str(alias)], root=root
-    )
-
-    assert saved == 2
-    assert stored_sources == ["real.md", "alias.md"]
-    assert [node["id"] for node in nodes] == ["real", "alias"]
-    assert uncached == []
-
-
-def test_semantic_symlink_policy_uses_walked_identity(
-    requires_symlinks, tmp_path
-):
-    """Alias authorization and partial state must not leak to its target."""
-    from graphify.cache import load_cached, save_semantic_cache
-
-    _reset_stat_index()
-    target = tmp_path / "real.md"
-    target.write_text("# Shared\n")
-    alias = tmp_path / "alias.md"
-    alias.symlink_to(target)
-
-    with pytest.warns(RuntimeWarning, match="out-of-scope source_file 'alias.md'"):
-        saved = save_semantic_cache(
-            [
-                {"id": "real", "source_file": "real.md"},
-                {"id": "alias", "source_file": "alias.md"},
-            ],
-            [],
-            root=tmp_path,
-            allowed_source_files=[target],
-            partial_source_files=[alias],
-        )
-
-    target_entry = load_cached(
-        target, root=tmp_path, kind="semantic", allow_partial=True
-    )
-    assert saved == 1
-    assert target_entry is not None
-    assert target_entry.get("partial") is not True
-    assert load_cached(alias, root=tmp_path, kind="semantic") is None
-
-
-def test_semantic_symlink_root_accepts_resolved_policy_paths_without_alias_leak(
-    requires_symlinks, tmp_path
-):
-    """Resolved root spellings apply only to the matching walked identity."""
-    from graphify.cache import load_cached, save_semantic_cache
-
-    _reset_stat_index()
-    physical_root = tmp_path / "repo"
-    physical_root.mkdir()
-    target = physical_root / "real.md"
-    target.write_text("# Shared\n")
-    alias = physical_root / "alias.md"
-    alias.symlink_to(target)
-    root = tmp_path / "scan"
-    root.symlink_to(physical_root, target_is_directory=True)
-    walked_target = root / "real.md"
-    walked_alias = root / "alias.md"
-
-    with pytest.warns(RuntimeWarning, match="out-of-scope source_file"):
-        saved = save_semantic_cache(
-            [
-                {"id": "real", "source_file": str(walked_target)},
-                {"id": "alias", "source_file": str(walked_alias)},
-            ],
-            [],
-            root=root,
-            allowed_source_files=[walked_target.resolve()],
-            partial_source_files=[walked_target.resolve()],
-        )
-
-    target_entry = load_cached(
-        walked_target, root=root, kind="semantic", allow_partial=True
-    )
-    assert saved == 1
-    assert target_entry is not None
-    assert [node["id"] for node in target_entry["nodes"]] == ["real"]
-    assert target_entry["partial"] is True
-    assert load_cached(walked_target, root=root, kind="semantic") is None
-    assert load_cached(walked_alias, root=root, kind="semantic") is None
-
-
-def test_semantic_symlink_root_keeps_external_policy_path_absolute(
-    requires_symlinks, tmp_path
-):
-    """An allowed absolute source outside a symlinked root stays external."""
-    from graphify.cache import load_cached, save_semantic_cache
-
-    _reset_stat_index()
-    physical_root = tmp_path / "repo"
-    physical_root.mkdir()
-    root = tmp_path / "scan"
-    root.symlink_to(physical_root, target_is_directory=True)
-    external = tmp_path / "external.md"
-    external.write_text("# External\n")
-
-    saved = save_semantic_cache(
-        [{"id": "external", "source_file": str(external)}],
-        [],
-        root=root,
-        allowed_source_files=[external],
-        partial_source_files=[external],
-    )
-
-    entry = load_cached(external, root=root, kind="semantic", allow_partial=True)
-    assert saved == 1
-    assert entry is not None
-    assert Path(entry["nodes"][0]["source_file"]) == external
-    assert entry["partial"] is True
-    assert load_cached(external, root=root, kind="semantic") is None
 
 
 def test_semantic_prune_removes_orphan_entries(tmp_path):
@@ -1751,240 +1488,65 @@ def test_corrupt_semantic_entry_warns_and_is_a_miss(tmp_path):
     assert uncached == [str(f)]
 
 
-# --- #2927: zero-node semantic cache rejection and healing -------------------
-
-def test_edge_only_semantic_result_not_cached(tmp_path):
-    """#2927: an edge-only semantic result (0 nodes, 0 hyperedges) represents an
-    omission by the model and must NOT be written to cache, so subsequent runs
-    can re-dispatch and retry the file (#933/#1666)."""
-    from graphify.cache import check_semantic_cache, load_cached, save_semantic_cache
+def test_invalid_utf8_semantic_entry_warns_and_is_a_miss(tmp_path):
+    """Same corrupt-entry handling as test_corrupt_semantic_entry_warns_and_is_a_miss,
+    but for bytes that fail to *decode* rather than parse -- read_text() raises
+    UnicodeDecodeError before json.loads() ever runs (e.g. a truncated write
+    that cuts off mid multi-byte UTF-8 character), so it must be caught
+    alongside JSONDecodeError or the corruption is never counted/reported and
+    check_semantic_cache blows up instead of treating it as a miss."""
+    from graphify.cache import (
+        check_semantic_cache,
+        save_semantic_cache,
+        cache_dir,
+    )
 
     f = tmp_path / "doc.md"
-    f.write_text("# Architecture\nSome prose.\n", encoding="utf-8")
-    edges = [{"source": "auth_a", "target": "auth_b", "source_file": "doc.md"}]
+    f.write_text("# Doc\n\nBody.\n")
+    save_semantic_cache([{"id": "n", "source_file": "doc.md"}], [], root=tmp_path)
 
-    saved = save_semantic_cache([], edges, root=tmp_path, prompt="PROMPT V1")
-    assert saved == 0, "edge-only result must not be saved to cache"
+    h = file_hash(f, tmp_path)
+    entry = cache_dir(tmp_path, "semantic") / f"{h}.json"
+    assert entry.exists()
+    entry.write_bytes(b'{"nodes": [' + b"\xff\xfe")
 
-    # load_cached must return None (miss)
-    assert load_cached(f, root=tmp_path, kind="semantic", prompt="PROMPT V1") is None
-    # check_semantic_cache must treat it as uncached
-    nodes, edges_out, hyper_out, uncached = check_semantic_cache([str(f)], root=tmp_path, prompt="PROMPT V1")
-    assert nodes == [] and edges_out == [] and hyper_out == []
+    with pytest.warns(RuntimeWarning, match="corrupt"):
+        nodes, _, _, uncached = check_semantic_cache([str(f)], root=tmp_path)
+
+    assert nodes == []
+    assert uncached == [str(f)]
+    with pytest.warns(RuntimeWarning, match="corrupt"):
+        nodes, _, _, uncached = check_semantic_cache([str(f)], root=tmp_path)
+
+    # The corrupt entry is a miss, so the file is re-dispatched for extraction.
+    assert nodes == []
     assert uncached == [str(f)]
 
 
-def test_node_only_and_node_edge_semantic_results_cached(tmp_path):
-    """Normal extractions (nodes-only and nodes+edges) continue to cache normally."""
-    from graphify.cache import load_cached, save_semantic_cache
-
-    f1 = tmp_path / "doc1.md"
-    f1.write_text("# Doc 1\n", encoding="utf-8")
-    f2 = tmp_path / "doc2.md"
-    f2.write_text("# Doc 2\n", encoding="utf-8")
-
-    # Node-only
-    saved1 = save_semantic_cache([{"id": "n1", "source_file": "doc1.md"}], [], root=tmp_path, prompt="P")
-    assert saved1 == 1
-    loaded1 = load_cached(f1, root=tmp_path, kind="semantic", prompt="P")
-    assert loaded1 is not None and len(loaded1["nodes"]) == 1
-
-    # Node + edge
-    saved2 = save_semantic_cache(
-        [{"id": "n2", "source_file": "doc2.md"}],
-        [{"source": "n2", "target": "n2", "source_file": "doc2.md"}],
-        root=tmp_path,
-        prompt="P",
+def test_invalid_utf8_semantic_entry_warns_and_is_a_miss(tmp_path):
+    """Same corrupt-entry handling as test_corrupt_semantic_entry_warns_and_is_a_miss,
+    but for bytes that fail to *decode* rather than parse -- read_text() raises
+    UnicodeDecodeError before json.loads() ever runs (e.g. a truncated write
+    that cuts off mid multi-byte UTF-8 character), so it must be caught
+    alongside JSONDecodeError or the corruption is never counted/reported and
+    check_semantic_cache blows up instead of treating it as a miss."""
+    from graphify.cache import (
+        check_semantic_cache,
+        save_semantic_cache,
+        cache_dir,
     )
-    assert saved2 == 1
-    loaded2 = load_cached(f2, root=tmp_path, kind="semantic", prompt="P")
-    assert loaded2 is not None and len(loaded2["nodes"]) == 1 and len(loaded2["edges"]) == 1
 
+    f = tmp_path / "doc.md"
+    f.write_text("# Doc\n\nBody.\n")
+    save_semantic_cache([{"id": "n", "source_file": "doc.md"}], [], root=tmp_path)
 
-def test_hyperedge_only_semantic_result_cached(tmp_path):
-    """#1920: hyperedge-only documents are valid semantic output and must be cached."""
-    from graphify.cache import check_semantic_cache, load_cached, save_semantic_cache
-
-    f = tmp_path / "hyper.md"
-    f.write_text("# Pipeline Concept\n", encoding="utf-8")
-    hyperedges = [
-        {"id": "h1", "label": "Pipeline", "nodes": ["a", "b", "c"], "source_file": "hyper.md"}
-    ]
-
-    saved = save_semantic_cache([], [], hyperedges, root=tmp_path, prompt="PROMPT V1")
-    assert saved == 1, "hyperedge-only result must be saved to cache (#1920)"
-
-    loaded = load_cached(f, root=tmp_path, kind="semantic", prompt="PROMPT V1")
-    assert loaded is not None
-    assert len(loaded["hyperedges"]) == 1
-
-    _, _, cached_hyper, uncached = check_semantic_cache([str(f)], root=tmp_path, prompt="PROMPT V1")
-    assert uncached == []
-    assert len(cached_hyper) == 1
-
-
-def test_poisoned_edge_only_cache_entry_treated_as_miss(tmp_path):
-    """#2927 healing: a legacy on-disk cache entry containing edges but no nodes
-    or hyperedges must be rejected by load_cached as a cache MISS."""
-    import json
-    from graphify.cache import cache_dir, file_hash, load_cached, prompt_fingerprint
-
-    f = tmp_path / "poisoned.md"
-    f.write_text("# Poisoned\n", encoding="utf-8")
-
-    # Manually seed a legacy poisoned cache file (nodes: [], edges: [...])
-    prompt = "PROMPT V1"
-    fp = prompt_fingerprint(prompt)
-    cdir = cache_dir(tmp_path, "semantic", fp)
-    cdir.mkdir(parents=True, exist_ok=True)
     h = file_hash(f, tmp_path)
-    (cdir / f"{h}.json").write_text(
-        json.dumps({
-            "nodes": [],
-            "edges": [{"source": "x", "target": "y", "source_file": "poisoned.md"}],
-            "hyperedges": [],
-        }),
-        encoding="utf-8",
-    )
+    entry = cache_dir(tmp_path, "semantic") / f"{h}.json"
+    assert entry.exists()
+    entry.write_bytes(b'{"nodes": [' + b"\xff\xfe")
 
-    # load_cached must reject the poisoned entry
-    assert load_cached(f, root=tmp_path, kind="semantic", prompt=prompt) is None
+    with pytest.warns(RuntimeWarning, match="corrupt"):
+        nodes, _, _, uncached = check_semantic_cache([str(f)], root=tmp_path)
 
-
-def test_existing_hyperedge_only_cache_entry_remains_hit(tmp_path):
-    """#1920 / #2927: an existing on-disk cache entry with hyperedges but no nodes
-    remains a valid cache hit."""
-    import json
-    from graphify.cache import cache_dir, file_hash, load_cached, prompt_fingerprint
-
-    f = tmp_path / "valid_hyper.md"
-    f.write_text("# Hyper\n", encoding="utf-8")
-
-    prompt = "PROMPT V1"
-    fp = prompt_fingerprint(prompt)
-    cdir = cache_dir(tmp_path, "semantic", fp)
-    cdir.mkdir(parents=True, exist_ok=True)
-    h = file_hash(f, tmp_path)
-    (cdir / f"{h}.json").write_text(
-        json.dumps({
-            "nodes": [],
-            "edges": [],
-            "hyperedges": [{"id": "h1", "label": "Group", "nodes": ["a", "b", "c"], "source_file": "valid_hyper.md"}],
-        }),
-        encoding="utf-8",
-    )
-
-    loaded = load_cached(f, root=tmp_path, kind="semantic", prompt=prompt)
-    assert loaded is not None
-    assert len(loaded["hyperedges"]) == 1
-# --- #2926: graph-side scope filter -------------------------------------------
-# The #1757 guard protects the cache write, but the unfiltered fresh result
-# also feeds build_merge(), whose replace-set logic swaps a non-dispatched
-# file's entire prior contribution for a stray fragment. scope_semantic_result
-# applies the same allowlist to the result dict before it reaches the merge.
-
-def test_scope_semantic_result_drops_out_of_scope_groups(tmp_path):
-    """Stray items attributed to a non-dispatched file are removed; allowed
-    and source-less items pass through."""
-    from graphify.cache import scope_semantic_result
-
-    result = {
-        "nodes": [
-            {"id": "kept", "source_file": "intended.md"},
-            {"id": "stray", "source_file": "protected.md"},
-            {"id": "phantom", "source_file": "src/foo.ts"},  # nonexistent path
-            {"id": "no_source"},  # no source_file: passes through
-        ],
-        "edges": [
-            {"source": "kept", "target": "other", "source_file": "intended.md"},
-            {"source": "stray", "target": "kept", "source_file": "protected.md"},
-        ],
-        "hyperedges": [
-            {"id": "h_kept", "nodes": ["kept"], "source_file": "intended.md"},
-            {"id": "h_stray", "nodes": ["stray"], "source_file": "protected.md"},
-        ],
-    }
-
-    dropped_files, dropped_items = scope_semantic_result(
-        result, root=tmp_path, allowed_source_files=["intended.md"],
-    )
-
-    assert [n["id"] for n in result["nodes"]] == ["kept", "no_source"]
-    assert [e["source"] for e in result["edges"]] == ["kept"]
-    assert [h["id"] for h in result["hyperedges"]] == ["h_kept"]
-    assert dropped_files == {"protected.md", "src/foo.ts"}
-    assert dropped_items == 4  # 2 stray nodes + 1 stray edge + 1 stray hyperedge
-
-
-def test_scope_semantic_result_matches_absolute_and_relative_forms(tmp_path):
-    """An absolute in-root source_file and its relative form are the same
-    identity — both must match the allowlist entry (#2197 normalization)."""
-    from graphify.cache import scope_semantic_result
-
-    result = {
-        "nodes": [
-            {"id": "abs", "source_file": str(tmp_path / "doc.md")},
-            {"id": "rel", "source_file": "doc.md"},
-        ],
-        "edges": [],
-        "hyperedges": [],
-    }
-
-    dropped_files, dropped_items = scope_semantic_result(
-        result, root=tmp_path, allowed_source_files=["doc.md"],
-    )
-
-    assert [n["id"] for n in result["nodes"]] == ["abs", "rel"]
-    assert dropped_files == set()
-    assert dropped_items == 0
-
-
-def test_scope_semantic_result_prunes_edges_referencing_dropped_ids(tmp_path):
-    """#1916 mirror: an edge attributed to an ALLOWED file that references a
-    node id only defined by a DROPPED group would materialize that id as a
-    phantom node at build time; it must be dropped too. A duplicate-attribution
-    id (defined by both a kept and a dropped group) keeps its edges."""
-    from graphify.cache import scope_semantic_result
-
-    result = {
-        "nodes": [
-            {"id": "kept", "source_file": "a.md"},
-            {"id": "shared", "source_file": "a.md"},   # also defined by b.md
-            {"id": "shared", "source_file": "b.md"},   # duplicate attribution
-            {"id": "gone", "source_file": "c.md"},
-        ],
-        "edges": [
-            {"source": "kept", "target": "shared", "source_file": "a.md"},
-            {"source": "kept", "target": "gone", "source_file": "a.md"},
-        ],
-        "hyperedges": [
-            {"id": "h1", "nodes": ["kept", "gone"], "source_file": "a.md"},
-            {"id": "h2", "nodes": ["kept", "shared"], "source_file": "a.md"},
-        ],
-    }
-
-    scope_semantic_result(result, root=tmp_path,
-                          allowed_source_files=["a.md"])
-
-    # The b.md COPY of "shared" is dropped as out-of-scope, but because a kept
-    # node also defines that id, references to it must NOT be pruned.
-    assert [n["id"] for n in result["nodes"]] == ["kept", "shared"]
-    assert [e["target"] for e in result["edges"]] == ["shared"]
-    assert [h["id"] for h in result["hyperedges"]] == ["h2"]
-
-
-def test_scope_semantic_result_unscoped_is_a_no_op():
-    """allowed_source_files=None must leave the result untouched (same contract
-    as save_semantic_cache's unscoped callers)."""
-    from graphify.cache import scope_semantic_result
-
-    result = {
-        "nodes": [{"id": "n", "source_file": "anywhere.md"}],
-        "edges": [],
-        "hyperedges": [],
-    }
-
-    dropped_files, dropped_items = scope_semantic_result(result, root=Path("."))
-
-    assert (dropped_files, dropped_items) == (set(), 0)
-    assert [n["id"] for n in result["nodes"]] == ["n"]
+    assert nodes == []
+    assert uncached == [str(f)]

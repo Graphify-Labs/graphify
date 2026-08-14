@@ -544,5 +544,9 @@ def test_install_from_read_only_package_dir(tmp_path, fake_bundle):
     assert (refs / "query.md").read_text() == "# query fragment\n"
     assert not (skill_dir / "references.tmp").exists()
     # The installed sidecar must stay writable, or the next install cannot
-    # rmtree it to swap in a new one.
-    assert os.access(refs, os.W_OK)
+    # rmtree it to swap in a new one. os.access(refs, os.W_OK) would pass
+    # this even on a read-only directory when running as root (uid 0 bypasses
+    # the permission bits it inspects), so probe with an actual write instead.
+    probe = refs / ".write-probe"
+    probe.write_text("", encoding="utf-8")
+    probe.unlink()

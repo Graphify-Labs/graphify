@@ -8,7 +8,7 @@ graphify is a Claude Code skill backed by a Python library. The skill orchestrat
 detect()  →  extract()  →  build()  →  cluster()  →  analyze helpers  →  report.generate()  →  export.to_*()
 ```
 
-Each stage lives in its own module and they communicate through plain Python dicts and NetworkX graphs - no shared state, no side effects outside `graphify-out/`. Most stages are a single function; `analyze.py` and `export.py` are sets of sibling functions rather than one entry point.
+Each stage lives in its own module; the public contract between them is plain Python dicts and NetworkX graphs, not shared in-process state. `extract()` does have process-level side effects of its own -- it raises the recursion limit, clears its own module-level caches on each call, and can emit warnings to stderr -- but nothing it does is visible to another stage except through the dict/graph it returns. Most stages are a single function; `analyze.py` and `export.py` are sets of sibling functions rather than one entry point.
 
 ## Module responsibilities
 

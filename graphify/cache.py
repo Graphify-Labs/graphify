@@ -972,11 +972,15 @@ def load_cached(path: Path, root: Path = Path("."), kind: str = "ast",
     if entry.exists():
         try:
             result = json.loads(entry.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             # Corrupt entry, not a miss: a truncated write or a bad producer
             # (e.g. unescaped Windows backslashes in source_file) leaves JSON
             # that fails to parse on every future run, so the file is silently
             # re-extracted forever. Count it so the run can report it (#2405).
+            # UnicodeDecodeError included: read_text() can raise it before
+            # json.loads() ever runs, e.g. a truncated write that cuts off
+            # mid multi-byte UTF-8 character -- the same "corrupt, not a
+            # miss" case, just caught one call earlier.
             _corrupt_cache_entries += 1
             return None
         except OSError:
