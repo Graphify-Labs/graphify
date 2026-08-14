@@ -9,6 +9,7 @@ import pytest
 
 from graphify.watch import (
     _notify_only,
+    _rebuild_code,
     _WATCHED_EXTENSIONS,
     _rebuild_lock,
     _check_shrink,
@@ -1256,6 +1257,61 @@ def test_check_shrink_blocks_shrink_outside_rebuilt_sources(capsys):
     assert "Refusing to overwrite" in capsys.readouterr().err
 
 
+def test_check_shrink_blocks_loss_from_failed_rebuilt_source(capsys):
+    """A failed extractor must not account for nodes it dropped during rebuild."""
+    existing = {"nodes": [
+        {"id": "app", "source_file": "app.py"},
+        {"id": "table", "source_file": "schema.sql"},
+    ], "links": []}
+    new = {"nodes": [{"id": "app", "source_file": "app.py"}], "links": []}
+
+    ok = _check_shrink(
+        False,
+        existing,
+        new,
+        rebuilt_sources={"app.py", "schema.sql"},
+        failed_sources={"schema.sql"},
+    )
+
+    assert ok is False
+    assert "Refusing to overwrite" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("no_cluster", [False, True])
+def test_rebuild_refuses_loss_from_failed_source(tmp_path, monkeypatch, no_cluster):
+    """A failed AST extractor must not overwrite its last good graph."""
+    previous_sql_node_count = 10
+    (tmp_path / "app.py").write_text(
+        "def alpha(): return beta()\ndef beta(): return 1\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "schema.sql").write_text(
+        "create table cliente (id int primary key);\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    graph_path = out / "graph.json"
+    existing_nodes = [
+        {"id": "app.py", "label": "app.py", "source_file": "app.py", "type": "file", "_origin": "ast"},
+        {"id": "app.py:alpha", "label": "alpha", "source_file": "app.py", "type": "function", "_origin": "ast"},
+        {"id": "app.py:beta", "label": "beta", "source_file": "app.py", "type": "function", "_origin": "ast"},
+        {"id": "schema.sql", "label": "schema.sql", "source_file": "schema.sql", "type": "file", "_origin": "ast"},
+    ]
+    existing_nodes.extend(
+        {"id": f"sql:table_{index}", "label": f"table_{index}", "source_file": "schema.sql", "type": "table", "_origin": "ast"}
+        for index in range(previous_sql_node_count)
+    )
+    existing = {"nodes": existing_nodes, "links": []}
+    graph_path.write_text(json.dumps(existing), encoding="utf-8")
+    monkeypatch.setitem(sys.modules, "tree_sitter_sql", None)
+
+    ok = _rebuild_code(tmp_path, force=False, no_cluster=no_cluster)
+
+    assert ok is False
+    assert json.loads(graph_path.read_text(encoding="utf-8")) == existing
+
+
 def test_check_shrink_allows_growth():
     """new > existing is always fine."""
     ok = _check_shrink(
@@ -1627,10 +1683,12 @@ def test_queue_and_drain_pending_round_trip(tmp_path):
 
     pending_file = out / _PENDING_FILENAME
     assert pending_file.exists()
-    # Each path written on its own line.
-    assert pending_file.read_text(encoding="utf-8").splitlines() == [
-        "a.py", "sub/b.py", "c.md",
-    ]
+    # Each path written on its own line. Compared as Paths, not as strings: the
+    # documented contract is "one path per line" (see _queue_pending), not a
+    # separator convention, and os.fspath emits the native one — so a literal
+    # "sub/b.py" fails on Windows without any real defect.
+    lines = pending_file.read_text(encoding="utf-8").splitlines()
+    assert [Path(line) for line in lines] == paths
 
     drained = _drain_pending(out)
     assert drained == paths

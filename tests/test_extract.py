@@ -390,7 +390,7 @@ def test_collect_files_skips_hidden():
         assert not any(part.startswith(".") for part in f.parts)
 
 
-def test_collect_files_follows_symlinked_directory(tmp_path):
+def test_collect_files_follows_symlinked_directory(requires_symlinks, tmp_path):
     real_dir = tmp_path / "real_src"
     real_dir.mkdir()
     (real_dir / "lib.py").write_text("x = 1")
@@ -403,7 +403,7 @@ def test_collect_files_follows_symlinked_directory(tmp_path):
     assert [f.name for f in files_yes].count("lib.py") == 2
 
 
-def test_collect_files_skips_out_of_root_symlinked_directory(tmp_path):
+def test_collect_files_skips_out_of_root_symlinked_directory(requires_symlinks, tmp_path):
     root = tmp_path / "root"
     root.mkdir()
     outside = tmp_path / "outside"
@@ -416,7 +416,7 @@ def test_collect_files_skips_out_of_root_symlinked_directory(tmp_path):
     assert not any("linked_secret" in str(f) for f in files)
 
 
-def test_collect_files_skips_out_of_root_symlinked_file_by_default(tmp_path):
+def test_collect_files_skips_out_of_root_symlinked_file_by_default(requires_symlinks, tmp_path):
     root = tmp_path / "root"
     root.mkdir()
     outside = tmp_path / "outside"
@@ -429,7 +429,7 @@ def test_collect_files_skips_out_of_root_symlinked_file_by_default(tmp_path):
     assert not any(f.name == "secret_link.py" for f in files)
 
 
-def test_collect_files_handles_circular_symlinks(tmp_path):
+def test_collect_files_handles_circular_symlinks(requires_symlinks, tmp_path):
     sub = tmp_path / "pkg"
     sub.mkdir()
     (sub / "mod.py").write_text("x = 1")
@@ -3220,6 +3220,61 @@ def test_extract_no_missing_dep_warning_when_sql_installed(tmp_path, capsys):
     assert "#1745" not in err
 
 
+def test_extract_sql_reports_load_failure_not_missing(tmp_path, monkeypatch):
+    # #2602: an installed-but-broken grammar (e.g. a wheel built for a different
+    # Python ABI) raises ImportError at import time just like an absent one. The
+    # extractor must NOT claim "not installed" — that sends the user to a no-op
+    # `pip install` — but surface the real load exception instead.
+    import builtins
+    from graphify.extractors.sql import extract_sql
+    pytest.importorskip("tree_sitter_sql")  # find_spec must see it as installed
+
+    _orig_import = builtins.__import__
+
+    def _broken_import(name, *args, **kwargs):
+        if name == "tree_sitter_sql":
+            raise ImportError("dynamic module does not define module export function")
+        return _orig_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _broken_import)
+    err = extract_sql(tmp_path / "schema.sql", "SELECT 1;").get("error") or ""
+    assert "failed to load" in err
+    assert "dynamic module does not define module export function" in err
+    assert "pip install" not in err
+
+
+def test_extract_warns_sql_grammar_failed_to_load(tmp_path, capsys, monkeypatch):
+    # #2602: the aggregated #1745 warning must surface a present-but-broken
+    # grammar with the real cause and WITHOUT the misleading "install the extra"
+    # hint, so the files are neither silently dropped nor sent to a no-op fix.
+    import builtins
+    pytest.importorskip("tree_sitter_sql")
+
+    _orig_import = builtins.__import__
+
+    def _broken_import(name, *args, **kwargs):
+        if name == "tree_sitter_sql":
+            raise ImportError("dynamic module does not define module export function")
+        return _orig_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _broken_import)
+    s1 = tmp_path / "schema.sql"; s1.write_text("CREATE TABLE users (id INT);\n")
+    s2 = tmp_path / "views.sql"; s2.write_text("CREATE VIEW v AS SELECT * FROM users;\n")
+
+    result = extract([s1, s2], cache_root=tmp_path)
+    err = capsys.readouterr().err
+
+    assert "2 .sql file(s)" in err
+    assert "failed to load" in err
+    assert "#1745" in err
+    # the no-op fix must NOT be suggested for a present-but-broken grammar
+    assert "graphifyy[sql]" not in err
+    assert "pip install" not in err
+    # #2543: still surfaced as failed so the incremental manifest retries them
+    failed = {Path(p).name for p in result.get("failed_sources", [])}
+    assert failed == {"schema.sql", "views.sql"}
+
+
 def test_extract_progress_final_line_uses_consistent_denominator(tmp_path, capsys):
     # #1693: intermediate progress lines count against uncached_work; the final
     # "100%" line must NOT switch to total_files (which includes cached hits and
@@ -3328,3 +3383,54 @@ def test_rewire_does_not_bind_supertype_stub_to_function():
               "source_file": "store.py", "weight": 1.0}]
     _rewire_unique_stub_nodes(nodes, edges)
     assert edges[0]["target"] == "BookStore"  # inherits stub not bound to function
+
+
+def test_extract_emits_posix_source_file_for_relative_inputs(tmp_path):
+    r"""source_file must be canonical POSIX on every node AND edge, whatever
+    separator the caller's input paths used.
+
+    Extractors build source_file from the Path handed to them, and only the
+    relativizing branch of extract()'s remap calls as_posix(), so a run given
+    relative inputs used to keep the native separator on Windows — mixing
+    `src\lib\content.ts` and `src/pages/index.astro` in one extraction.
+    source_file is compared as a string downstream (build keying, prune-root
+    derivation, dedup, analyze.find_import_cycles), so two spellings are two
+    different files (#683 / #2625).
+
+    Uses the relative-input form deliberately: passing an explicit ``root``
+    takes the branch that already normalized, and would make this vacuous.
+    """
+    (tmp_path / "src" / "lib").mkdir(parents=True)
+    (tmp_path / "src" / "pages").mkdir(parents=True)
+    (tmp_path / "src" / "lib" / "content.ts").write_text(
+        "export function getPosts() { return []; }\n", encoding="utf-8"
+    )
+    (tmp_path / "src" / "pages" / "index.astro").write_text(
+        "---\nimport { getPosts } from '../lib/content';\n"
+        "const posts = getPosts();\n---\n<h1>{posts.length}</h1>\n",
+        encoding="utf-8",
+    )
+
+    cwd = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        result = extract([Path("src/lib/content.ts"), Path("src/pages/index.astro")])
+    finally:
+        os.chdir(cwd)
+
+    carriers = [
+        (kind, item.get("source_file"))
+        for kind, items in (("node", result["nodes"]), ("edge", result["edges"]))
+        for item in items
+        if item.get("source_file")
+    ]
+    assert carriers, "fixture produced nothing with a source_file; test would be vacuous"
+
+    offenders = [(kind, sf) for kind, sf in carriers if "\\" in sf]
+    assert not offenders, f"native separator survived into source_file: {offenders}"
+
+    # ...and both files are present under one spelling each, so the graph sees
+    # two files rather than four.
+    assert {sf for _, sf in carriers} == {
+        "src/lib/content.ts", "src/pages/index.astro",
+    }

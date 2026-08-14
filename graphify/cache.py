@@ -80,6 +80,12 @@ _PROMPT_FP_LEN = 12
 # check_semantic_cache can report N to the user (#1939).
 _legacy_semantic_hits = 0
 
+# Count of cache entries that failed to parse as JSON this process. A corrupt
+# entry is not a miss: left in place it fails on every future run, silently
+# re-extracting (and, for semantic kinds, re-billing) the file forever. The
+# counter lets check_semantic_cache surface one aggregate warning (#2405).
+_corrupt_cache_entries = 0
+
 # Prompt-file fingerprints already computed, keyed by (path, size, mtime_ns) —
 # the same stat signature the hash index uses. check_semantic_cache resolves the
 # prompt once per FILE in the corpus, so without this a 500-doc run re-reads and
@@ -524,8 +530,24 @@ def _relativize_source_files_in(payload: dict, root: Path) -> None:
     forward-slash relative paths from ``root``.
 
     Mirror of :func:`graphify.watch._relativize_source_files` so cached
-    extraction fragments persist in portable form (#777). Already-relative
-    fields and out-of-root paths pass through unchanged.
+    extraction fragments persist in portable form (#777). Out-of-root paths
+    pass through unchanged.
+
+    A CWD-relative field is re-anchored too. Extractors stamp ``source_file``
+    with the path string ``extract()`` was handed, so relative inputs yield a
+    CWD-relative stamp — but the stored format is root-relative, and
+    :func:`_absolutize_source_files_in` reads it back as such. When CWD is not
+    the inferred root the two disagree and a warm hit resurrects a path that
+    names no file (``<root>/src/pages/index.astro`` for an input of
+    ``src/pages/index.astro`` under root ``<root>``). Every source_file-GATED
+    remap in ``extract()`` then misses — the file-stem prefix pass looks up
+    ``Path(source_file).resolve()`` in ``prefix_remap`` — so a warm hit keeps
+    the raw-path symbol ids a cold run canonicalizes: symbols stop sharing
+    their file node's stem, and for absolute inputs the on-disk path survives
+    into the persisted id (#2630). Only rewritten when the CWD-relative
+    reading is a real file and the root-relative reading is a different path,
+    so a fragment that already stores root-relative (a semantic subagent's,
+    see :func:`_normalize_source_file_value`) is left alone.
 
     Only ``root`` is resolved — ``source_file`` itself is relativized
     symbolically so in-root symlinks keep their original name rather than
@@ -549,7 +571,15 @@ def _relativize_source_files_in(payload: dict, root: Path) -> None:
                 continue
             sp = Path(source)
             if not sp.is_absolute():
-                continue
+                # os.path.abspath is lexical (no symlink resolution), matching
+                # the symbolic relativization below.
+                cwd_form = Path(os.path.abspath(sp))
+                try:
+                    if cwd_form == root_resolved / sp or not cwd_form.exists():
+                        continue  # already root-relative, or a ghost path
+                except OSError:
+                    continue
+                sp = cwd_form
             try:
                 rel = os.path.relpath(sp, root_resolved)
             except (ValueError, OSError):
@@ -872,7 +902,7 @@ def load_cached(path: Path, root: Path = Path("."), kind: str = "ast",
     ``merge_existing``) pass allow_legacy=False.
     Returns None if no cache entry or file has changed.
     """
-    global _legacy_semantic_hits
+    global _legacy_semantic_hits, _corrupt_cache_entries
     location = cache_root if cache_root is not None else root
     try:
         h = file_hash(path, root, cache_root=cache_root)
@@ -888,7 +918,14 @@ def load_cached(path: Path, root: Path = Path("."), kind: str = "ast",
     if entry.exists():
         try:
             result = json.loads(entry.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+        except json.JSONDecodeError:
+            # Corrupt entry, not a miss: a truncated write or a bad producer
+            # (e.g. unescaped Windows backslashes in source_file) leaves JSON
+            # that fails to parse on every future run, so the file is silently
+            # re-extracted forever. Count it so the run can report it (#2405).
+            _corrupt_cache_entries += 1
+            return None
+        except OSError:
             return None
         # A ``partial`` entry was produced from a truncated LLM response and
         # covers only part of the file's symbols. Serving it as authoritative
@@ -1130,6 +1167,7 @@ def check_semantic_cache(
     cached_hyperedges: list[dict] = []
     uncached: list[str] = []
     legacy_before = _legacy_semantic_hits
+    corrupt_before = _corrupt_cache_entries
 
     for fpath in files:
         p = Path(fpath)
@@ -1152,6 +1190,18 @@ def check_semantic_cache(
             "version; they were replayed as-is, so this graph may mix extraction "
             "vintages. Re-run with --force (or GRAPHIFY_FORCE=1) to re-extract them "
             "with the current prompt (#1939).",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
+    corrupt = _corrupt_cache_entries - corrupt_before
+    if corrupt:
+        warnings.warn(
+            f"{corrupt} semantic cache entr{'y' if corrupt == 1 else 'ies'} could "
+            "not be parsed as JSON and were treated as misses, so those files were "
+            "re-extracted. A corrupt entry stays on disk and fails again every run; "
+            "run with --force (or GRAPHIFY_FORCE=1) to rewrite them, or clear the "
+            "cache to stop paying for the re-extraction (#2405).",
             RuntimeWarning,
             stacklevel=2,
         )

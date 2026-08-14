@@ -5,6 +5,8 @@ import json
 import os
 import re
 import shlex
+import stat
+import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
@@ -29,6 +31,15 @@ class FileType(str, Enum):
 
 
 _MANIFEST_PATH = str(out_path("manifest.json"))
+
+#: Window in which a manifest row's own timestamp is too close to the file's
+#: mtime for "mtime unchanged" to prove the content is unchanged. Coarse for
+#: filesystems that round mtime to whole seconds; tight when real sub-second
+#: precision is reported. Mirrors cache.py's `_MTIME_GRANULARITY_NS` (2s) —
+#: the same racily-clean assumption at the hash-cache layer (#2466 / #2612);
+#: keep the two in sync.
+_MTIME_COARSE_S = 2.0
+_MTIME_SUBSECOND_S = 0.05
 
 CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.ejs', '.ets', '.go', '.rs', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.cu', '.cuh', '.metal', '.rb', '.rake', '.swift', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.psm1', '.psd1', '.ex', '.exs', '.m', '.mm', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.tf', '.tfvars', '.hcl', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.slnx', '.csproj', '.fsproj', '.vbproj', '.xaml', '.razor', '.cshtml', '.cls', '.trigger'}
 DOC_EXTENSIONS = {'.md', '.mdx', '.qmd', '.skill', '.txt', '.rst', '.html', '.yaml', '.yml'}
@@ -490,7 +501,7 @@ def _shebang_file_type(path: Path) -> FileType | None:
 
 
 def classify_file(path: Path) -> FileType | None:
-    # Package manifests (apm.yml, pyproject.toml, go.mod, pom.xml) are parsed
+    # Package manifests (apm.yml, pyproject.toml, Cargo.toml, go.mod, pom.xml) are parsed
     # deterministically, so route them to the AST path (CODE) rather than the LLM
     # document path — otherwise apm.yml (a .yml "document") would be LLM-extracted
     # and a package would split into duplicate file-anchored nodes (#1377).
@@ -781,10 +792,35 @@ def count_words(path: Path) -> int:
             return len(docx_to_markdown(path).split())
         if ext == ".xlsx":
             return len(xlsx_to_markdown(path).split())
+        # Only regular files may be opened. A repository can contain named
+        # pipes, sockets and device nodes, and `clone <github-url>` exists to
+        # point the scan at trees the operator did not write. open() on a FIFO
+        # with no writer BLOCKS FOREVER — it never raises, so the except below
+        # cannot help, and `graphify update` hangs with no output. os.stat
+        # follows symlinks on purpose: a link pointing at a FIFO blocks exactly
+        # like the FIFO itself.
+        if not stat.S_ISREG(os.stat(_os_path(path)).st_mode):
+            return 0
         with open(_os_path(path), encoding="utf-8", errors="ignore") as f:
             return len(f.read().split())
     except Exception:
         return 0
+
+
+def _is_regular_file(path: Path) -> bool:
+    """True only for regular files (symlinks followed).
+
+    Named pipes, sockets and device nodes must never reach a reader:
+    ``open()`` on a FIFO with no writer blocks forever and never raises, so a
+    single ``pipe.py`` in a scanned repository hangs the run with no output.
+    A symlink is resolved deliberately — a link pointing at a FIFO blocks
+    exactly like the FIFO itself. A path that cannot be stat'ed is treated as
+    not readable rather than raising.
+    """
+    try:
+        return stat.S_ISREG(os.stat(path).st_mode)
+    except OSError:
+        return False
 
 
 # Directory names to always skip - venvs, caches, build artifacts, deps
@@ -1189,7 +1225,14 @@ def _is_ignored(
             except ValueError:
                 continue  # target outside this pattern's anchor: cannot match
             if rel_anchor != ".":
-                matched = _matches(rel_anchor, p, path_relative=path_relative)
+                rel = rel_anchor
+                if not path_relative:
+                    try:
+                        if len(root.parts) > len(anchor.parts):
+                            rel = _nfc(str(target.relative_to(root)).replace(os.sep, "/"))
+                    except ValueError:
+                        pass
+                matched = _matches(rel, p, path_relative=path_relative)
                 if matched and directory_only and not target.is_dir():
                     matched = False
 
@@ -1480,6 +1523,18 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
             continue
         if not _resolves_under_root(p, root):
             skipped_sensitive.append(str(p) + " [symlink target outside scan root]")
+            continue
+        if not _is_regular_file(p):
+            # A repository may contain named pipes, sockets and device nodes,
+            # and `clone <github-url>` exists precisely to point the scan at
+            # trees the operator did not write.
+            #
+            # This has to be caught HERE, at the one place where a path is
+            # admitted to the corpus, rather than at each read: the readers
+            # number in the hundreds across the extractors, and open() on a
+            # FIFO with no writer BLOCKS FOREVER — it never raises, so their
+            # try/except cannot help and the whole run hangs with no output.
+            skipped_sensitive.append(str(p) + " [not a regular file]")
             continue
         if _is_sensitive(p):
             skipped_sensitive.append(str(p))
@@ -1880,7 +1935,11 @@ def save_manifest(
         mtime, h = hashed[f]
         key = _nfc(f)
         prev = _normalise_entry(existing.get(key, {})) or {}
-        entry: dict = {"mtime": mtime}
+        # seen: when this row was written. If the file's mtime sits inside the
+        # same filesystem tick, a later same-length edit can land in that tick
+        # without moving mtime, so the mtime-unchanged fastpath cannot prove
+        # the content is still current and detect_incremental re-hashes.
+        entry: dict = {"mtime": mtime, "seen": time.time()}
         if kind in ("ast", "both"):
             entry["ast_hash"] = h
         else:
@@ -1905,6 +1964,35 @@ def save_manifest(
     # Atomic write: a crash mid-write must not leave a truncated manifest that
     # detect_incremental then fails to parse.
     write_json_atomic(manifest_path, manifest, indent=2)
+
+
+def _mtime_may_hide_a_rewrite(current_mtime: float, stored: dict) -> bool:
+    """Was this manifest row written in the same tick as the file it describes?
+
+    The incremental gate treats "mtime unchanged" as proof the content is
+    unchanged. That is only true while the filesystem can distinguish the two
+    writes: an edit keeping the file the same length and landing in the same
+    timestamp tick moves neither size nor mtime, so the file silently skips
+    re-extraction and the graph keeps serving the old content.
+
+    ``seen`` records when the row was stamped. If the file's mtime falls inside
+    the same tick, this row cannot prove currency and the caller pays for one
+    MD5. Every other row — the whole settled corpus, and any manifest written
+    by an earlier run — keeps the free stat-only fastpath.
+
+    Rows predating ``seen`` are treated as safe: they necessarily come from an
+    earlier process, where a later write would have had to move mtime.
+    """
+    seen = stored.get("seen")
+    if not isinstance(seen, (int, float)):
+        return False
+    delta = float(seen) - float(current_mtime)
+    if delta < 0:
+        return False  # file is newer than the row; the mtime check already fired
+    # Derive granularity from the timestamp: a whole-second mtime means the
+    # filesystem cannot separate writes inside that second.
+    coarse = float(current_mtime).is_integer()
+    return delta < (_MTIME_COARSE_S if coarse else _MTIME_SUBSECOND_S)
 
 
 def detect_incremental(
@@ -2001,6 +2089,14 @@ def detect_incremental(
                         stored_mtime = None
                     if stored_mtime is None or current_mtime != stored_mtime:
                         # mtime bumped — verify with content hash before re-extracting
+                        changed = _md5_file(Path(f)) != stored_hash
+                    elif _mtime_may_hide_a_rewrite(current_mtime, stored):
+                        # mtime is unchanged, but it was recorded in the same
+                        # filesystem tick the file was written in — a later
+                        # same-length edit lands in that tick without moving
+                        # mtime, and the file silently skips re-extraction
+                        # while the graph keeps serving the old content.
+                        # Only this narrow window pays for a content hash.
                         changed = _md5_file(Path(f)) != stored_hash
                     else:
                         changed = False

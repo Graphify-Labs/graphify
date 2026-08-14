@@ -2971,6 +2971,10 @@ def _resolve_php_type_references(
             fqn, explicit = import_fqn, True
         else:
             label = stub_label.get(tgt)
+            if not label and relation == "imports":
+                # Prefixed use-imports mint no stub whose id matches the edge
+                # target, so recover the label from the alias map (#2661).
+                label = next((alias for alias in uses if _make_id(alias) == tgt), "")
             if not label:
                 continue
             bare = label.strip().lower()
