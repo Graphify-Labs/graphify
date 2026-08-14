@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Hashable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Iterable, cast
@@ -96,7 +97,7 @@ def _as_repo_relative(query: str) -> str:
 
 def _prefer_file_node(
     graph: nx.Graph,
-    node_ids: list[str],
+    node_ids: list[Hashable],
     query: str,
 ) -> str | None:
     """Return the file-level node when a source_file query matches many nodes."""
@@ -108,7 +109,7 @@ def _prefer_file_node(
         and _normalize_label(str(graph.nodes[node_id].get("label", ""))) == query_basename
     ]
     if len(exact_file_nodes) == 1:
-        return exact_file_nodes[0]
+        return str(exact_file_nodes[0])
 
     l1_nodes = [
         node_id
@@ -116,7 +117,7 @@ def _prefer_file_node(
         if str(graph.nodes[node_id].get("source_location", "")) == "L1"
     ]
     if len(l1_nodes) == 1:
-        return l1_nodes[0]
+        return str(l1_nodes[0])
 
     basename_nodes = [
         node_id
@@ -124,7 +125,7 @@ def _prefer_file_node(
         if _normalize_label(str(graph.nodes[node_id].get("label", ""))) == query_basename
     ]
     if len(basename_nodes) == 1:
-        return basename_nodes[0]
+        return str(basename_nodes[0])
 
     return None
 
@@ -148,25 +149,27 @@ def _is_production_source(path: str) -> bool:
     return not any(segment in _NON_PRODUCTION_DIR_SEGMENTS for segment in segments)
 
 
-def _unique_or_production_match(graph: nx.Graph, node_ids: list[str]) -> str | None:
+def _unique_or_production_match(
+    graph: nx.Graph, node_ids: list[Hashable]
+) -> str | None:
     """Resolve uniquely, preferring one proven production node."""
     if len(node_ids) == 1:
-        return node_ids[0]
+        return str(node_ids[0])
     production_nodes = [
         node_id
         for node_id in node_ids
         if _is_production_source(str(graph.nodes[node_id].get("source_file", "")))
     ]
     if len(production_nodes) == 1:
-        return production_nodes[0]
+        return str(production_nodes[0])
     return None
 
 
-def _label_matches(graph: nx.Graph, query: str, *, bare: bool) -> list[str]:
+def _label_matches(graph: nx.Graph, query: str, *, bare: bool) -> list[Hashable]:
     normalize = _bare_name if bare else _normalize_label
     normalized_query = normalize(query)
     return [
-        str(node_id)
+        node_id
         for node_id, data in graph.nodes(data=True)
         if normalize(str(data.get("label", ""))) == normalized_query
     ]
@@ -176,12 +179,12 @@ def _resolve_source_match(graph: nx.Graph, query: str, query_lower: str) -> str 
     repo_relative_query = _as_repo_relative(query)
     query_path = _normalize_label(repo_relative_query)
     matches = [
-        str(node_id)
+        node_id
         for node_id, data in graph.nodes(data=True)
         if _normalize_label(str(data.get("source_file", ""))) in (query_lower, query_path)
     ]
     if len(matches) == 1:
-        return matches[0]
+        return str(matches[0])
     return _prefer_file_node(graph, matches, repo_relative_query) if matches else None
 
 

@@ -50,6 +50,17 @@ def test_resolve_seed_does_not_treat_unknown_source_as_production() -> None:
     assert resolve_seed(graph, "readDocStrict") is None
 
 
+def test_resolve_seed_keeps_non_string_ids_ambiguous_without_error() -> None:
+    graph = nx.DiGraph()
+    graph.add_node(1, label="readDocStrict()")
+    graph.add_node(2, label="readDocStrict()")
+
+    assert resolve_seed(graph, "readDocStrict") is None
+    assert format_affected(graph, "readDocStrict") == (
+        "No unique node match for readDocStrict"
+    )
+
+
 def test_resolve_seed_does_not_treat_docs_as_production() -> None:
     graph = nx.DiGraph()
     _add_node(graph, "docs", "docs/example.ts", label="readDocStrict()")
