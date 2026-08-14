@@ -345,6 +345,11 @@ def format_affected(
         f"Affected nodes for {_node_label(graph, seed)}",
         f"Relations: {', '.join(relation_list)}",
         f"Depth: {depth}",
+        (
+            "Scope: production only (tests, eval, docs excluded)"
+            if production_only
+            else "Scope: all graph nodes"
+        ),
     ]
     if not hits:
         lines.append("No affected nodes found.")
