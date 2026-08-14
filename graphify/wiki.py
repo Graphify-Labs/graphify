@@ -7,7 +7,11 @@ import re
 import networkx as nx
 
 from graphify.build import edge_data
+from graphify.paths import stem_filename_budget
 
+# Room _unique_slug needs for the collision suffix ("_2" … "_999") it appends
+# after _safe_filename has already capped the slug.
+_SLUG_SUFFIX_RESERVE = 4
 
 # Characters a slug may not contain, because the article's LINK and its ON-DISK
 # NAME have to be the same string (#2597). Anything left here must be legal,
@@ -24,15 +28,17 @@ from graphify.build import edge_data
 _UNSAFE_SLUG_CHARS = re.compile(r'[<>:"/\\|?*#%\x00-\x1f\x7f]')
 
 
-def _safe_filename(name: str) -> str:
+def _safe_filename(name: str, limit: int = 200) -> str:
     """Make a label safe for use as a filename across platforms AND as a
     markdown link destination.
 
     Substitutes characters that Windows reserves in filenames
     (< > : " / \\ | ? *) plus the ones that would make the emitted link stop
     matching the file on disk, and strips trailing dots/spaces, also reserved.
-    Falls back to 'unnamed' for empty results and caps length at 200
-    chars to stay well under common filesystem limits.
+    Falls back to 'unnamed' for empty results and caps length at ``limit``
+    chars (default 200) to stay well under common filesystem limits; ``to_wiki``
+    lowers ``limit`` when the wiki directory leaves less than that inside
+    Windows' MAX_PATH window (#2655).
 
     Parentheses are DROPPED rather than substituted: every callable node is
     labelled ``foo()``, and substituting would leave a trailing ``foo__`` on
@@ -45,7 +51,7 @@ def _safe_filename(name: str) -> str:
     s = s.replace("(", "").replace(")", "")
     s = _UNSAFE_SLUG_CHARS.sub('_', s)
     s = s.strip('. ')
-    return s[:200] if s else 'unnamed'
+    return s[:limit] if s else 'unnamed'
 
 
 def _md_link(label: str, resolver: dict[str, str]) -> str:
@@ -322,6 +328,12 @@ def to_wiki(
     count = 0
     used_slugs: set[str] = set()
 
+    # Articles are capped against THIS wiki directory, not just NAME_MAX: on
+    # Windows a 200-char slug under an ordinary graphify-out/wiki/ overruns
+    # MAX_PATH and write_text raises FileNotFoundError partway through the
+    # export (#2655). No-op on POSIX.
+    _slug_limit = stem_filename_budget(out, reserve=_SLUG_SUFFIX_RESERVE)
+
     def _unique_slug(base: str) -> str:
         # Fold case in the collision check: two labels differing only by case
         # (e.g. "Parser" vs "parser") resolve to one path on case-insensitive
@@ -349,7 +361,7 @@ def to_wiki(
     community_slugs: dict[int, str] = {}
     for cid in communities:
         label = labels.get(cid, f"Community {cid}")
-        slug = _unique_slug(_safe_filename(label))
+        slug = _unique_slug(_safe_filename(label, _slug_limit))
         community_slugs[cid] = slug
         resolver.setdefault(label, slug)
 
@@ -357,7 +369,7 @@ def to_wiki(
     for node_data in god_nodes_data:
         nid = node_data.get("id")
         if nid and nid in G:
-            slug = _unique_slug(_safe_filename(node_data['label']))
+            slug = _unique_slug(_safe_filename(node_data['label'], _slug_limit))
             god_articles.append((nid, slug))
             resolver.setdefault(node_data['label'], slug)
 
