@@ -554,9 +554,20 @@ def render_pr_detail(pr: PRInfo, repo: str | None = None) -> None:
 _TRIAGE_MODEL_DEFAULTS: dict[str, str] = {
     "claude": "claude-opus-4-7",
     "kimi":   "kimi-k2.6",
-    "openai": "gpt-4.1-mini",
     "gemini": "gemini-3-flash-preview",
 }
+
+
+def _triage_model(backend: str) -> str:
+    """Resolve triage model, respecting configured OpenAI-compatible routing."""
+    from graphify.llm import _default_model_for_backend
+
+    explicit = os.environ.get("GRAPHIFY_TRIAGE_MODEL", "").strip()
+    if explicit:
+        return explicit
+    if backend == "openai":
+        return _default_model_for_backend(backend)
+    return _TRIAGE_MODEL_DEFAULTS.get(backend) or _default_model_for_backend(backend)
 
 
 def _resolve_triage_backend() -> tuple[str, str]:
@@ -565,17 +576,11 @@ def _resolve_triage_backend() -> tuple[str, str]:
 
     explicit = os.environ.get("GRAPHIFY_TRIAGE_BACKEND", "").strip()
     if explicit in BACKENDS:
-        model = (os.environ.get("GRAPHIFY_TRIAGE_MODEL")
-                 or _TRIAGE_MODEL_DEFAULTS.get(explicit)
-                 or _default_model_for_backend(explicit))
-        return explicit, model
+        return explicit, _triage_model(explicit)
 
     for b in ("claude", "kimi", "openai", "gemini"):
         if _get_backend_api_key(b):
-            model = (os.environ.get("GRAPHIFY_TRIAGE_MODEL")
-                     or _TRIAGE_MODEL_DEFAULTS.get(b)
-                     or _default_model_for_backend(b))
-            return b, model
+            return b, _triage_model(b)
 
     import shutil
     if shutil.which("claude"):
@@ -637,9 +642,14 @@ def triage_with_opus(prs: list[PRInfo], base: str) -> None:
 
         elif backend in ("kimi", "openai", "gemini", "ollama"):
             from openai import OpenAI
+            from graphify.llm import _openai_default_headers
             cfg = BACKENDS[backend]
             api_key = _get_backend_api_key(backend) or "ollama"
-            client = OpenAI(api_key=api_key, base_url=cfg.get("base_url", ""))
+            client = OpenAI(
+                api_key=api_key,
+                base_url=cfg.get("base_url", ""),
+                default_headers=_openai_default_headers(),
+            )
             with client.chat.completions.create(
                 model=model, max_tokens=1024, stream=True,
                 messages=[{"role": "user", "content": prompt}],
