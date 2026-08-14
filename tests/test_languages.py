@@ -8,7 +8,7 @@ from graphify.extract import (
     extract_swift, extract_go, extract_julia, extract_js, extract_fortran,
     extract_groovy, extract_sln, extract_csproj, extract_xaml, extract_razor,
     extract_dm, extract_dmi, extract_dmm, extract_dmf,
-    extract_powershell, extract_apex, extract_verilog,
+    extract_powershell, extract_apex, extract_advpl, extract_verilog,
     extract_powershell_manifest,
 )
 
@@ -2773,6 +2773,174 @@ def test_apex_no_dangling_edges():
         for e in r["edges"]:
             assert e["source"] in node_ids, f"dangling source in {fixture}: {e}"
             assert e["target"] in node_ids, f"dangling target in {fixture}: {e}"
+
+
+# --------------- AdvPL / TLPP (.prw / .tlpp / .ch / .th) -------------------
+
+def test_advpl_extensions_are_code_and_dispatch_to_extractor():
+    from graphify.detect import CODE_EXTENSIONS, FileType, classify_file
+    from graphify.extract import _get_extractor
+
+    for suffix in (".prw", ".tlpp", ".ch", ".th"):
+        path = Path(f"sample{suffix.upper()}")
+        assert suffix in CODE_EXTENSIONS
+        assert classify_file(path) == FileType.CODE
+        assert _get_extractor(path) is extract_advpl
+
+
+def test_advpl_extracts_functions_without_comment_or_string_false_positives():
+    result = extract_advpl(FIXTURES / "advpl" / "main.prw")
+    labels = set(_labels(result))
+
+    assert {"StartProcess()", "LocalHelper()", "ProductFunction()"} <= labels
+    assert "FakeFromDocumentation()" not in labels
+    assert "FakeFromString()" not in labels
+    assert ("StartProcess()", "LocalHelper()") in _calls(result)
+    assert all(call.get("language") == "advpl" for call in result["raw_calls"])
+
+
+def test_advpl_comment_markers_inside_strings_do_not_mask_code(tmp_path):
+    source = tmp_path / "strings.prw"
+    source.write_text(
+        'Function Caller()\nLocal cText := "/*"\nReturn Callee()\n'
+        'Function Callee()\nReturn 1\n/* real comment */\n',
+        encoding="utf-8",
+    )
+
+    result = extract_advpl(source)
+
+    assert {"Caller()", "Callee()"} <= set(_labels(result))
+    assert ("Caller()", "Callee()") in _calls(result)
+
+
+def test_advpl_extracts_include_as_import_to_real_header():
+    result = extract_advpl(FIXTURES / "advpl" / "main.prw")
+    node_by_id = {node["id"]: node["label"] for node in result["nodes"]}
+    imports = {
+        (node_by_id[edge["source"]], node_by_id[edge["target"]])
+        for edge in result["edges"]
+        if edge["relation"] == "imports"
+    }
+
+    assert ("main.prw", "common.ch") in imports
+
+
+def test_advpl_extracts_external_include_without_dangling_edge(tmp_path):
+    source = tmp_path / "main.prw"
+    source.write_text('#include "Protheus.ch"\n', encoding="utf-8")
+
+    result = extract_advpl(source)
+    node_by_id = {node["id"]: node for node in result["nodes"]}
+    imports = [edge for edge in result["edges"] if edge["relation"] == "imports"]
+
+    assert len(imports) == 1
+    assert node_by_id[imports[0]["target"]]["label"] == "Protheus.ch"
+    assert all(
+        edge[endpoint] in node_by_id
+        for edge in result["edges"]
+        for endpoint in ("source", "target")
+    )
+
+
+def test_advpl_resolves_nested_include_case_insensitively(tmp_path):
+    include_dir = tmp_path / "Includes"
+    include_dir.mkdir()
+    header = include_dir / "Common.CH"
+    header.write_text("Function Shared()\nReturn 1\n", encoding="utf-8")
+    source = tmp_path / "main.prw"
+    source.write_text('#include "includes/common.ch"\n', encoding="utf-8")
+
+    result = extract_advpl(source)
+
+    node_by_id = {node["id"]: node["label"] for node in result["nodes"]}
+    assert ("main.prw", "Common.CH") in {
+        (node_by_id[edge["source"]], node_by_id[edge["target"]])
+        for edge in result["edges"]
+        if edge["relation"] == "imports"
+    }
+
+
+def test_tlpp_extracts_class_methods_and_long_name_inheritance():
+    result = extract_advpl(FIXTURES / "advpl" / "model.tlpp")
+    labels = set(_labels(result))
+    inheritance = _edge_labels(result, "inherits")
+
+    assert {"SyntheticChild", ".New()", ".Validate()", ".Callback()"} <= labels
+    assert ("SyntheticChild", "synthetic.base.Parent") in inheritance
+    assert "IgnoredCall()" not in labels
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig", "cp1252"])
+def test_advpl_reads_supported_encodings(tmp_path, encoding):
+    source = tmp_path / "acentuacao.prw"
+    source.write_bytes(
+        'User Function Acao()\n    Local cDescricao := "ação válida"\nReturn\n'.encode(encoding)
+    )
+
+    result = extract_advpl(source)
+
+    assert "Acao()" in _labels(result)
+
+
+def test_advpl_cross_file_calls_respect_case_user_prefix_and_static_scope(tmp_path):
+    from graphify.extract import extract
+
+    public = tmp_path / "public.prw"
+    caller = tmp_path / "caller.tlpp"
+    private = tmp_path / "private.prw"
+    outsider = tmp_path / "outsider.prw"
+    public.write_text("User Function SharedHelper()\nReturn 1\n", encoding="utf-8")
+    caller.write_text("Function Caller()\nReturn U_SHAREDHELPER()\n", encoding="utf-8")
+    private.write_text("Static Function HiddenHelper()\nReturn 1\n", encoding="utf-8")
+    outsider.write_text("Function Outsider()\nReturn HiddenHelper()\n", encoding="utf-8")
+
+    result = extract(
+        [public, caller, private, outsider], cache_root=tmp_path, parallel=False
+    )
+    calls = _calls(result)
+
+    assert ("Caller()", "SharedHelper()") in calls
+    assert ("Outsider()", "HiddenHelper()") not in calls
+
+
+def test_advpl_include_disambiguates_same_named_cross_file_function(tmp_path):
+    from graphify.extract import extract
+
+    caller = tmp_path / "caller.prw"
+    selected = tmp_path / "selected.ch"
+    other = tmp_path / "other.ch"
+    caller.write_text(
+        '#include "selected.ch"\nFunction Caller()\nReturn Shared()\n',
+        encoding="utf-8",
+    )
+    selected.write_text("Function Shared()\nReturn 1\n", encoding="utf-8")
+    other.write_text("Function Shared()\nReturn 2\n", encoding="utf-8")
+
+    result = extract(
+        [caller, selected, other], cache_root=tmp_path, parallel=False
+    )
+    nodes = {node["id"]: node for node in result["nodes"]}
+    call = next(
+        edge for edge in result["edges"]
+        if edge["relation"] == "calls"
+        and nodes[edge["source"]]["label"] == "Caller()"
+    )
+
+    assert nodes[call["target"]]["source_file"] == "selected.ch"
+    assert call["confidence"] == "EXTRACTED"
+
+
+def test_advpl_fixture_corpus_survives_build(tmp_path):
+    from graphify.build import build_from_json
+    from graphify.extract import extract
+
+    files = list((FIXTURES / "advpl").iterdir())
+    result = extract(files, cache_root=tmp_path, parallel=False)
+    graph = build_from_json(result, root=FIXTURES / "advpl")
+
+    assert graph.number_of_nodes() > 0
+    assert any(data.get("relation") == "imports" for _, _, data in graph.edges(data=True))
+    assert any(data.get("relation") == "calls" for _, _, data in graph.edges(data=True))
 
 
 # -- SystemVerilog -------------------------------------------------------------

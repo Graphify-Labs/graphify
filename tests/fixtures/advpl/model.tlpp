@@ -1,0 +1,21 @@
+#include "types.th"
+
+Namespace synthetic.graphify
+
+Class SyntheticChild From LongNameClass synthetic.base.Parent
+    Public Method New() Constructor
+    Private Method Validate() As Logical
+    Static Method Callback()
+EndClass
+
+Method New() As Object Class SyntheticChild
+    _Super:New()
+Return Self
+
+Method Validate() As Logical Class SyntheticChild
+    Local cText := "IgnoredCall()"
+    ProductFunction()
+Return .T.
+
+Method Callback() Class SyntheticChild
+Return
