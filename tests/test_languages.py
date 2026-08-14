@@ -2796,6 +2796,7 @@ def test_advpl_extracts_functions_without_comment_or_string_false_positives():
     assert "FakeFromDocumentation()" not in labels
     assert "FakeFromString()" not in labels
     assert ("StartProcess()", "LocalHelper()") in _calls(result)
+    assert all(call.get("language") == "advpl" for call in result["raw_calls"])
 
 
 def test_advpl_comment_markers_inside_strings_do_not_mask_code(tmp_path):

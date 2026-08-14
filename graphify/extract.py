@@ -6310,9 +6310,11 @@ def extract(
             if not candidates:
                 continue
             go_exact_import = True
+        is_advpl_call = rc.get("language") == "advpl"
         candidates = [
             c for c in candidates
-            if c not in file_local_nids
+            if not is_advpl_call
+            or c not in file_local_nids
             or nid_to_source_file.get(c) == str(rc.get("source_file", ""))
         ]
         if not candidates:
@@ -6338,7 +6340,11 @@ def extract(
             candidate_file_nid = nid_to_file_nid.get(candidate_id)
             return (
                 candidate_id in imported_symbols
-                or (candidate_file_nid is not None and candidate_file_nid in imported_symbols)
+                or (
+                    is_advpl_call
+                    and candidate_file_nid is not None
+                    and candidate_file_nid in imported_symbols
+                )
                 or (candidate_file_nid is not None and candidate_file_nid in imported_modules)
             )
 
@@ -6355,7 +6361,11 @@ def extract(
             # against over-connecting common short names (log, execute, find).
             symbol_matches = [
                 c for c in candidates
-                if c in imported_symbols or nid_to_file_nid.get(c) in imported_symbols
+                if c in imported_symbols
+                or (
+                    is_advpl_call
+                    and nid_to_file_nid.get(c) in imported_symbols
+                )
             ]
             if len(symbol_matches) == 1:
                 tgt = symbol_matches[0]
