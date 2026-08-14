@@ -2824,6 +2824,23 @@ def test_advpl_extracts_include_as_import_to_real_header():
     assert ("main.prw", "common.ch") in imports
 
 
+def test_advpl_extracts_external_include_without_dangling_edge(tmp_path):
+    source = tmp_path / "main.prw"
+    source.write_text('#include "Protheus.ch"\n', encoding="utf-8")
+
+    result = extract_advpl(source)
+    node_by_id = {node["id"]: node for node in result["nodes"]}
+    imports = [edge for edge in result["edges"] if edge["relation"] == "imports"]
+
+    assert len(imports) == 1
+    assert node_by_id[imports[0]["target"]]["label"] == "Protheus.ch"
+    assert all(
+        edge[endpoint] in node_by_id
+        for edge in result["edges"]
+        for endpoint in ("source", "target")
+    )
+
+
 def test_advpl_resolves_nested_include_case_insensitively(tmp_path):
     include_dir = tmp_path / "Includes"
     include_dir.mkdir()
