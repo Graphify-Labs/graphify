@@ -35,6 +35,60 @@ _PER_FILE_OVERHEAD_CHARS = 160
 # is the standard heuristic for English/code on BPE tokenizers.
 _CHARS_PER_TOKEN = 4
 
+_HTTP_HEADER_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+_PROTECTED_OPENAI_HEADERS = frozenset(
+    {
+        "accept",
+        "accept-encoding",
+        "authorization",
+        "connection",
+        "content-length",
+        "content-type",
+        "host",
+        "proxy-authorization",
+        "api-key",
+        "x-api-key",
+        "cookie",
+        "set-cookie",
+        "te",
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
+    }
+)
+
+
+def _openai_default_headers() -> dict[str, str]:
+    """Parse safe OpenAI-compatible request headers from the environment."""
+    raw = os.environ.get("GRAPHIFY_OPENAI_HEADERS_JSON", "")
+    if not raw.strip():
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("GRAPHIFY_OPENAI_HEADERS_JSON must contain valid JSON.") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("GRAPHIFY_OPENAI_HEADERS_JSON must be a JSON object.")
+
+    headers: dict[str, str] = {}
+    normalized_names: set[str] = set()
+    for raw_name, value in parsed.items():
+        name = raw_name.strip() if isinstance(raw_name, str) else ""
+        normalized_name = name.casefold()
+        if not name or _HTTP_HEADER_NAME_RE.fullmatch(name) is None:
+            raise ValueError("GRAPHIFY_OPENAI_HEADERS_JSON contains an invalid header name.")
+        if normalized_name in _PROTECTED_OPENAI_HEADERS:
+            raise ValueError("GRAPHIFY_OPENAI_HEADERS_JSON cannot set protected headers.")
+        if normalized_name in normalized_names:
+            raise ValueError("GRAPHIFY_OPENAI_HEADERS_JSON contains duplicate header names.")
+        if not isinstance(value, str):
+            raise ValueError("GRAPHIFY_OPENAI_HEADERS_JSON header values must be strings.")
+        if "\r" in value or "\n" in value:
+            raise ValueError("GRAPHIFY_OPENAI_HEADERS_JSON contains an invalid header value.")
+        normalized_names.add(normalized_name)
+        headers[name] = value
+    return headers
+
 
 def _get_tokenizer():
     """Return a tiktoken encoder for accurate token counts, or None if tiktoken
@@ -1198,8 +1252,13 @@ def _call_openai_compat(
     _retries = _resolve_max_retries()
     if backend == "ollama" and not os.environ.get("GRAPHIFY_MAX_RETRIES", "").strip():
         _retries = 0
-    client = OpenAI(api_key=api_key, base_url=base_url, timeout=_resolve_api_timeout(),
-                    max_retries=_retries)
+    client = OpenAI(
+        api_key=api_key,
+        base_url=base_url,
+        timeout=_resolve_api_timeout(),
+        max_retries=_retries,
+        default_headers=_openai_default_headers(),
+    )
     kwargs: dict = {
         "model": model,
         "messages": [
@@ -2707,7 +2766,13 @@ def _call_llm(
         from openai import OpenAI
     except ImportError as exc:
         raise ImportError(_backend_pkg_hint("openai", "openai")) from exc
-    client = OpenAI(api_key=key, base_url=cfg["base_url"], timeout=_resolve_api_timeout(), max_retries=_resolve_max_retries())
+    client = OpenAI(
+        api_key=key,
+        base_url=cfg["base_url"],
+        timeout=_resolve_api_timeout(),
+        max_retries=_resolve_max_retries(),
+        default_headers=_openai_default_headers(),
+    )
     kwargs: dict = {
         "model": mdl,
         "messages": [{"role": "user", "content": prompt}],

@@ -561,6 +561,7 @@ def _run_cli() -> None:
         print("  affected \"X\"             reverse traversal to find nodes impacted by X")
         print("    --relation R            edge relation to traverse in reverse (repeatable)")
         print("    --depth N               reverse traversal depth (default 2)")
+        print("    --production-only       exclude test, eval, and docs nodes during traversal")
         print("    --graph <path>          path to graph.json (default graphify-out/graph.json)")
         print("  god-nodes               list the most connected nodes (architectural hubs)")
         print("    --top N                 how many to show (default 10)")

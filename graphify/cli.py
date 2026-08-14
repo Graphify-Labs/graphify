@@ -85,6 +85,24 @@ def _default_graph_path() -> str:
     return str(Path(_GRAPHIFY_OUT) / "graph.json")
 
 
+def _format_path_source(index: int, node_id: object, data: dict) -> str:
+    """Format one path node with honest, deterministic source evidence."""
+    label = str(data.get("label") or node_id)
+    source_file = data.get("source_file")
+    source_location = data.get("source_location")
+    if source_file:
+        source = str(source_file)
+        if source_location not in (None, ""):
+            source = f"{source}:{source_location}"
+    else:
+        source = "<unknown>"
+    return (
+        f"  node[{index}] label={json.dumps(label, ensure_ascii=False)} "
+        f"source={json.dumps(source, ensure_ascii=False)} "
+        f"id={json.dumps(str(node_id), ensure_ascii=False)}"
+    )
+
+
 def _stamped_manifest_files(
     files_by_type: dict[str, list[str]],
     sem_result: dict,
@@ -1062,12 +1080,17 @@ def dispatch_command(cmd: str) -> None:
         print(_result)
     elif cmd == "affected":
         if len(sys.argv) < 3:
-            print("Usage: graphify affected \"<node-or-label>\" [--relation R] [--depth N] [--graph path]", file=sys.stderr)
+            print(
+                "Usage: graphify affected \"<node-or-label>\" [--relation R] "
+                "[--depth N] [--production-only] [--graph path]",
+                file=sys.stderr,
+            )
             sys.exit(1)
         from graphify.affected import DEFAULT_AFFECTED_RELATIONS, format_affected, load_graph
         query = sys.argv[2]
         graph_path = _default_graph_path()
         depth = 2
+        production_only = False
         relations: list[str] = []
         args = sys.argv[3:]
         i = 0
@@ -1098,6 +1121,9 @@ def dispatch_command(cmd: str) -> None:
             elif args[i].startswith("--relation="):
                 relations.append(args[i].split("=", 1)[1])
                 i += 1
+            elif args[i] == "--production-only":
+                production_only = True
+                i += 1
             else:
                 i += 1
         gp = Path(graph_path).resolve()
@@ -1118,6 +1144,7 @@ def dispatch_command(cmd: str) -> None:
                 query,
                 relations=relations or DEFAULT_AFFECTED_RELATIONS,
                 depth=depth,
+                production_only=production_only,
             )
         )
     elif cmd in ("god-nodes", "god_nodes"):
@@ -1421,6 +1448,9 @@ def dispatch_command(cmd: str) -> None:
             else:
                 segments.append(f"<--{rel}{conf_str}-- {G.nodes[v].get('label', v)}")
         print(f"Shortest path ({hops} hops):\n  " + " ".join(segments))
+        print("Source proof:")
+        for index, node_id in enumerate(path_nodes):
+            print(_format_path_source(index, node_id, G.nodes[node_id]))
         from graphify import querylog
         querylog.log_query(
             kind="path",

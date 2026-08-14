@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Iterable
+from pathlib import Path, PurePosixPath
+from typing import Iterable, cast
 import unicodedata
 
 import networkx as nx
+
+from graphify.paths import _is_test_path
 
 
 DEFAULT_AFFECTED_RELATIONS = (
@@ -127,6 +129,43 @@ def _prefer_file_node(
     return None
 
 
+def _unique_or_production_match(graph: nx.Graph, node_ids: list[str]) -> str | None:
+    """Resolve uniquely, preferring one production node over only test rivals."""
+    if len(node_ids) == 1:
+        return node_ids[0]
+    production_nodes = [
+        node_id
+        for node_id in node_ids
+        if not _is_test_path(str(graph.nodes[node_id].get("source_file", "")))
+    ]
+    if len(production_nodes) == 1:
+        return production_nodes[0]
+    return None
+
+
+def _label_matches(graph: nx.Graph, query: str, *, bare: bool) -> list[str]:
+    normalize = _bare_name if bare else _normalize_label
+    normalized_query = normalize(query)
+    return [
+        str(node_id)
+        for node_id, data in graph.nodes(data=True)
+        if normalize(str(data.get("label", ""))) == normalized_query
+    ]
+
+
+def _resolve_source_match(graph: nx.Graph, query: str, query_lower: str) -> str | None:
+    repo_relative_query = _as_repo_relative(query)
+    query_path = _normalize_label(repo_relative_query)
+    matches = [
+        str(node_id)
+        for node_id, data in graph.nodes(data=True)
+        if _normalize_label(str(data.get("source_file", ""))) in (query_lower, query_path)
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    return _prefer_file_node(graph, matches, repo_relative_query) if matches else None
+
+
 def resolve_seed(graph: nx.Graph, query: str) -> str | None:
     # A trailing path separator must not change a source-file match — serve's
     # _find_node tokenizes the path (which drops it), so strip it here for parity
@@ -135,40 +174,24 @@ def resolve_seed(graph: nx.Graph, query: str) -> str | None:
     if query in graph:
         return query
     query_lower = _normalize_label(query)
-    exact_label_matches = [
-        str(node_id)
-        for node_id, data in graph.nodes(data=True)
-        if _normalize_label(str(data.get("label", ""))) == query_lower
-    ]
-    if len(exact_label_matches) == 1:
-        return exact_label_matches[0]
+    exact_label_match = _unique_or_production_match(
+        graph, _label_matches(graph, query_lower, bare=False)
+    )
+    if exact_label_match is not None:
+        return exact_label_match
     # Callable labels are decorated ("name()"), so a bare "name" query falls
     # through exact matching and then ties with any "name*" sibling in the
     # contains pass. Match on the undecorated name before giving up.
-    query_bare = _bare_name(query_lower)
-    bare_name_matches = [
-        str(node_id)
-        for node_id, data in graph.nodes(data=True)
-        if _bare_name(str(data.get("label", ""))) == query_bare
-    ]
-    if len(bare_name_matches) == 1:
-        return bare_name_matches[0]
+    bare_name_match = _unique_or_production_match(
+        graph, _label_matches(graph, query_lower, bare=True)
+    )
+    if bare_name_match is not None:
+        return bare_name_match
     # Compare paths in repo-relative form. Only this branch is path-shaped; the
     # label branches above keep the query verbatim.
-    query_path = _normalize_label(_as_repo_relative(query))
-    exact_source_matches = [
-        str(node_id)
-        for node_id, data in graph.nodes(data=True)
-        if _normalize_label(str(data.get("source_file", ""))) in (query_lower, query_path)
-    ]
-    if len(exact_source_matches) == 1:
-        return exact_source_matches[0]
-    if exact_source_matches:
-        preferred_file_node = _prefer_file_node(
-            graph, exact_source_matches, _as_repo_relative(query)
-        )
-        if preferred_file_node is not None:
-            return preferred_file_node
+    source_match = _resolve_source_match(graph, query, query_lower)
+    if source_match is not None:
+        return source_match
     contains_matches = [
         str(node_id)
         for node_id, data in graph.nodes(data=True)
@@ -179,57 +202,102 @@ def resolve_seed(graph: nx.Graph, query: str) -> str | None:
     return None
 
 
+_NON_PRODUCTION_DIR_SEGMENTS = frozenset({"docs", "eval"})
+_GraphEdge = tuple[object, object, dict]
+
+
+def _is_production_source(path: str) -> bool:
+    """Return whether a path is production code for affected traversal.
+
+    Tests use the shared repository classifier. Whole ``docs`` and ``eval``
+    directory segments are also excluded. Segment matching is conservative:
+    names such as ``contest``, ``latest``, and ``document_service`` remain
+    production paths.
+    """
+    if not path or _is_test_path(path):
+        return False
+    normalized = str(path).replace("\\", "/")
+    segments = (segment.casefold() for segment in PurePosixPath(normalized).parts)
+    return not any(segment in _NON_PRODUCTION_DIR_SEGMENTS for segment in segments)
+
+
+def _is_production_node(graph: nx.Graph, node_id: str) -> bool:
+    source_file = str(graph.nodes[node_id].get("source_file", ""))
+    return _is_production_source(source_file)
+
+
+def _out_edges(graph: nx.Graph, node_id: str) -> Iterable[_GraphEdge]:
+    edge_reader = getattr(graph, "out_edges", None)
+    if callable(edge_reader):
+        return cast(Iterable[_GraphEdge], edge_reader(node_id, data=True))
+    return (
+        (source, target, data)
+        for source, target, data in graph.edges(data=True)
+        if source == node_id
+    )
+
+
+def _in_edges(graph: nx.Graph, node_id: str) -> Iterable[_GraphEdge]:
+    edge_reader = getattr(graph, "in_edges", None)
+    if callable(edge_reader):
+        return cast(Iterable[_GraphEdge], edge_reader(node_id, data=True))
+    return (
+        (source, target, data)
+        for source, target, data in graph.edges(data=True)
+        if target == node_id
+    )
+
+
+def _seed_members(
+    graph: nx.Graph,
+    seed: str,
+    seen: set[str],
+    queue: deque[tuple[str, int]],
+    *,
+    production_only: bool,
+) -> None:
+    """Add root members as traversal-only seeds, subject to path policy."""
+    for _source, member, data in _out_edges(graph, seed):
+        if str(data.get("relation", "")) not in ("method", "contains"):
+            continue
+        member_id = str(member)
+        if member_id in seen:
+            continue
+        if production_only and not _is_production_node(graph, member_id):
+            continue
+        seen.add(member_id)
+        queue.append((member_id, 0))
+
+
 def affected_nodes(
     graph: nx.Graph,
     seed: str,
     *,
     relations: Iterable[str] = DEFAULT_AFFECTED_RELATIONS,
     depth: int = 2,
+    production_only: bool = False,
 ) -> list[AffectedHit]:
+    """Find reverse dependencies, optionally traversing production code only."""
     relation_set = set(relations)
     seen = {seed}
     queue: deque[tuple[str, int]] = deque([(seed, 0)])
     hits: list[AffectedHit] = []
 
-    # #1669: seed the reverse walk with the root's own member nodes (one outward
-    # `method`/`contains` hop). A caller can bind to a class's method node rather
-    # than the class node itself (e.g. `Service.call` resolves to the `def
-    # self.call` node, #1634), so those callers are unreachable from the class
-    # otherwise. The member nodes are seeds only (not reported as hits), and
-    # `method`/`contains` stay out of the general relation-filtered walk, so this
-    # adds no forward noise anywhere else.
-    if hasattr(graph, "out_edges"):
-        member_edges = graph.out_edges(seed, data=True)
-    else:
-        member_edges = (
-            (s, t, d) for s, t, d in graph.edges(data=True) if s == seed
-        )
-    for _s, member, data in member_edges:
-        if str(data.get("relation", "")) not in ("method", "contains"):
-            continue
-        member = str(member)
-        if member not in seen:
-            seen.add(member)
-            queue.append((member, 0))
+    # Seed the reverse walk with root members (#1669); members are not reported.
+    _seed_members(graph, seed, seen, queue, production_only=production_only)
 
     while queue:
         current, current_depth = queue.popleft()
         if current_depth >= depth:
             continue
-        if hasattr(graph, "in_edges"):
-            incoming = graph.in_edges(current, data=True)
-        else:
-            incoming = (
-                (source, target, data)
-                for source, target, data in graph.edges(data=True)
-                if target == current
-            )
-        for source, _target, data in incoming:
+        for source, _target, data in _in_edges(graph, current):
             relation = str(data.get("relation", ""))
             if relation not in relation_set:
                 continue
             source = str(source)
             if source in seen:
+                continue
+            if production_only and not _is_production_node(graph, source):
                 continue
             seen.add(source)
             # Carry the matched edge's location (taken from the SAME edge dict
@@ -237,7 +305,9 @@ def affected_nodes(
             # consistent) — that is the call/import/reference site in `source`'s
             # own file, which is where the user should click (#BUG1).
             hit = AffectedHit(
-                source, current_depth + 1, relation,
+                source,
+                current_depth + 1,
+                relation,
                 via_file=str(data.get("source_file") or "") or None,
                 via_location=str(data.get("source_location") or "") or None,
             )
@@ -253,13 +323,21 @@ def format_affected(
     *,
     relations: Iterable[str] = DEFAULT_AFFECTED_RELATIONS,
     depth: int = 2,
+    production_only: bool = False,
 ) -> str:
+    """Render affected nodes, optionally excluding non-production traversal."""
     relation_list = tuple(relations)
     seed = resolve_seed(graph, query)
     if seed is None:
         return f"No unique node match for {query}"
 
-    hits = affected_nodes(graph, seed, relations=relation_list, depth=depth)
+    hits = affected_nodes(
+        graph,
+        seed,
+        relations=relation_list,
+        depth=depth,
+        production_only=production_only,
+    )
     lines = [
         f"Affected nodes for {_node_label(graph, seed)}",
         f"Relations: {', '.join(relation_list)}",
