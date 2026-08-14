@@ -2,7 +2,11 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
-## 0.9.43 (unreleased)
+## 0.9.44 (unreleased)
+
+- Fix: an OCaml qualified call `M.f` to an external module (one not defined in the same file, e.g. Hardcaml's `Reg_spec.create`) no longer binds to a same-named local `let f` — which produced a false `calls` edge and, when the caller was that local `f`, a `f -> f` self-loop. External qualified calls are kept as a distinct target labelled by the full path; unqualified calls and calls into a locally-defined module still resolve locally, and cross-file `Geo.area` still collapses onto another file's `area`.
+
+## 0.9.43 (2026-08-14)
 
 - Feature: OCaml `.ml`/`.mli` extraction via tree-sitter-ocaml (optional `[ocaml]` extra). Extracts modules, top-level and module-level values/functions, types and their variant constructors, `open` imports, and function calls; qualified calls (`Geo.area`) resolve to the value, and cross-file `open`/call targets collapse onto the unique real definition via the corpus stub rewire.
 - Fix: a cross-file INFERRED `uses` edge now binds to the symbol whose body actually references the imported name (a module-level function is a valid source; a co-located class that never touches the import gets no edge), instead of fanning out from the import line to every class in the importing file (#2652, thanks @ousamabenyounes). A reference at module top level, with no enclosing symbol, emits no edge.
