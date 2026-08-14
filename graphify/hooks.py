@@ -39,9 +39,11 @@ fi
 if [ -z "$GRAPHIFY_PYTHON" ]; then
     _GFY_PYTHON_FILE="graphify-out/.graphify_python"
     if [ -f "$_GFY_PYTHON_FILE" ]; then
-        _FROM_FILE=$(cat "$_GFY_PYTHON_FILE" 2>/dev/null | tr -d '[:space:]')
+        _FROM_FILE=$(cat "$_GFY_PYTHON_FILE" 2>/dev/null | tr -d '\\r\\n')
+        _BOM=$(printf '\\357\\273\\277')
+        _FROM_FILE=${_FROM_FILE#$_BOM}
         case "$_FROM_FILE" in
-            *[!a-zA-Z0-9/_.@:\\\\-]*) _FROM_FILE="" ;;  # allowlist (covers Windows paths)
+            *[!a-zA-Z0-9/_.@:\\(\\)\\ \\\\-]*) _FROM_FILE="" ;;  # allowlist (covers Windows paths)
         esac
         if [ -n "$_FROM_FILE" ] && [ -x "$_FROM_FILE" ] && "$_FROM_FILE" -c "$_GFY_PROBE" 2>/dev/null; then
             GRAPHIFY_PYTHON="$_FROM_FILE"
@@ -79,7 +81,7 @@ if [ -z "$GRAPHIFY_PYTHON" ]; then
         # Allowlist: only keep characters valid in a filesystem path to prevent
         # injection if the shebang contains shell metacharacters.
         case "$GRAPHIFY_PYTHON" in
-            *[!a-zA-Z0-9/_.@:\\\\-]*) GRAPHIFY_PYTHON="" ;;
+            *[!a-zA-Z0-9/_.@:\\(\\)\\ \\\\-]*) GRAPHIFY_PYTHON="" ;;
         esac
         if [ -n "$GRAPHIFY_PYTHON" ] && ! "$GRAPHIFY_PYTHON" -c "$_GFY_PROBE" 2>/dev/null; then
             GRAPHIFY_PYTHON=""
@@ -513,7 +515,7 @@ def _pinned_python() -> str:
     means callers must fall back to the `graphify` launcher on PATH — safe
     degradation.
     """
-    if re.search(r"[^a-zA-Z0-9/_.@: \\-]", sys.executable):
+    if re.search(r"[^a-zA-Z0-9/_.@: ()\\-]", sys.executable):
         return ""
     return sys.executable
 

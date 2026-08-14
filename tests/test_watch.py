@@ -3516,3 +3516,50 @@ def test_incremental_indirect_call_parity_and_idempotency(tmp_path):
 
     fresh = _2438_seed(tmp_path / "fresh", caller_prefix="    x = 1\n")
     assert sorted(_2438_indirects(_2406_graph(fresh))) == sorted(incremental)
+
+
+def test_rebuild_code_absolute_subfolder_preserves_unchanged_nodes(tmp_path, monkeypatch):
+    """#2603: Rebuilding with an absolute subfolder watch_path must preserve repo-relative
+    source_file identities and not evict unchanged nodes from other files."""
+    from graphify.watch import _rebuild_code
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+
+    src = repo / "src"
+    src.mkdir()
+    foo_file = src / "foo.py"
+    bar_file = src / "bar.py"
+    foo_file.write_text("def foo_func(): pass\n", encoding="utf-8")
+    bar_file.write_text("def bar_func(): pass\n", encoding="utf-8")
+
+    monkeypatch.chdir(repo)
+    # Initial build using relative subfolder path
+    assert _rebuild_code(Path("src"), acquire_lock=False) is True
+
+    graph_path = src / "graphify-out" / "graph.json"
+    assert graph_path.exists()
+    initial_graph = json.loads(graph_path.read_text(encoding="utf-8"))
+    initial_sources = {n.get("source_file") for n in initial_graph.get("nodes", []) if n.get("source_file")}
+    assert "src/foo.py" in initial_sources
+    assert "src/bar.py" in initial_sources
+
+    # Modify foo.py
+    foo_file.write_text("def foo_func_v2(): pass\n", encoding="utf-8")
+
+    # Rebuild using an ABSOLUTE subfolder watch_path (mimicking git hook behavior)
+    abs_src = src.resolve()
+    assert _rebuild_code(abs_src, changed_paths=[Path("src/foo.py")], acquire_lock=False) is True
+
+    rebuilt_graph = json.loads(graph_path.read_text(encoding="utf-8"))
+    rebuilt_sources = {n.get("source_file") for n in rebuilt_graph.get("nodes", []) if n.get("source_file")}
+
+    # Verify unchanged file bar.py nodes were preserved and source identities stayed repo-relative
+    assert "src/bar.py" in rebuilt_sources, (
+        f"Unchanged nodes from src/bar.py were evicted! Remaining sources: {rebuilt_sources!r}"
+    )
+    assert "src/foo.py" in rebuilt_sources
+    assert not any("src/src" in s for s in rebuilt_sources), (
+        f"Source files were incorrectly prefixed with doubled paths: {rebuilt_sources!r}"
+    )
