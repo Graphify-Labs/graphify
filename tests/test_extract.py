@@ -3494,3 +3494,41 @@ def test_inferred_uses_edge_follows_an_import_alias(tmp_path):
     result = extract([tmp_path / "api.py", tmp_path / "helpers.py"], cache_root=tmp_path)
 
     assert ("api_handler", "helpers_helper") in _inferred_uses(result)
+
+
+def test_inferred_uses_edge_emitted_once_per_referencing_symbol(tmp_path):
+    """Each symbol that references the import gets its own edge, and only those
+    symbols do — guards against the old fan-out (every class in the file) and
+    against collapsing distinct sources into one (#2652)."""
+    (tmp_path / "helpers.py").write_text("class Helper:\n    pass\n", encoding="utf-8")
+    (tmp_path / "api.py").write_text(
+        "from helpers import Helper\n\n\n"
+        "def a(x):\n    return Helper()\n\n\n"
+        "def b(x):\n    return Helper()\n\n\n"
+        "def c(x):\n    return x\n",  # references nothing -> no edge
+        encoding="utf-8",
+    )
+
+    result = extract([tmp_path / "api.py", tmp_path / "helpers.py"], cache_root=tmp_path)
+    uses = _inferred_uses(result)
+
+    assert ("api_a", "helpers_helper") in uses
+    assert ("api_b", "helpers_helper") in uses
+    assert ("api_c", "helpers_helper") not in uses
+
+
+def test_inferred_uses_edge_dropped_for_module_top_level_reference(tmp_path):
+    """A reference at true module top level has no enclosing symbol to anchor on,
+    so no INFERRED `uses` edge is emitted (rather than falling back to the file
+    node) — the deliberate drop documented for #2652."""
+    (tmp_path / "helpers.py").write_text("class Helper:\n    pass\n", encoding="utf-8")
+    (tmp_path / "api.py").write_text(
+        "from helpers import Helper\n\n\n"
+        "SENTINEL = Helper()\n",  # top-level, outside any def/class
+        encoding="utf-8",
+    )
+
+    result = extract([tmp_path / "api.py", tmp_path / "helpers.py"], cache_root=tmp_path)
+    uses = _inferred_uses(result)
+
+    assert not any(tgt == "helpers_helper" for _, tgt in uses)
