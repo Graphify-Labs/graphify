@@ -20,11 +20,16 @@ import pytest
 from graphify.wiki import _safe_filename, to_wiki
 
 # Deliberately does not decode: the target is compared exactly as written.
-_MD_LINK = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+# Key on the `](target)` boundary rather than the whole `[display](target)` so a
+# display text that itself contains brackets (e.g. `Array[T] Models`) is still
+# captured — a display-anchored regex silently skips those links, making the
+# bracket case a vacuous pass. Wiki targets never contain `)` (parens are dropped
+# from the slug) or whitespace (spaces become `_`), so `[^)\s]+` is exact.
+_MD_TARGET = re.compile(r"\]\(([^)\s]+)\)")
 
 
 def _targets(text: str) -> list[str]:
-    return [t for _d, t in _MD_LINK.findall(text) if "://" not in t]
+    return [t for t in _MD_TARGET.findall(text) if "://" not in t]
 
 
 def _wiki(tmp_path, labels: dict[int, str], god: list[dict] | None = None):
