@@ -2926,3 +2926,121 @@ def test_sensitive_env_template_inside_secrets_dir_still_dropped(path):
     """Stage 1 dir guard runs before the Stage 2 template exemption: anything
     under a secrets/credentials dir stays excluded, template suffix or not."""
     assert _is_sensitive(Path(path)), f"{path} is under a secrets dir, must stay excluded (#2184)"
+
+def test_graphifyignore_excludes_memory_tree(tmp_path):
+    """#2267: .graphifyignore must reach graphify-out/memory/.
+
+    The memory tree (query results filed back into the graph) was exempt
+    from the ignore check, so a user could never exclude their own Q&A
+    output. After the fix, a pattern covering graphify-out/memory/ is
+    honored like every other path.
+    """
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "calc.py").write_text("def add(a, b):\n    return a + b\n")
+
+    # First detect seeds graphify-out/memory/ (the feedback loop).
+    detect(tmp_path)
+
+    memory = tmp_path / "graphify-out" / "memory"
+    memory.mkdir(parents=True, exist_ok=True)
+    (memory / "query_1.md").write_text("# Query\nThe calc module adds numbers.\n")
+
+    # User tries to exclude their own Q&A output.
+    (tmp_path / ".graphifyignore").write_text("graphify-out/memory/\n")
+
+    result = detect(tmp_path)
+    all_files = [f for files in result["files"].values() for f in files]
+    memory_hits = [f for f in all_files if "graphify-out" in f.replace("\\", "/")]
+    assert not memory_hits, \
+        "memory tree must be excludable via .graphifyignore, but got: %s" % memory_hits
+
+
+def test_gitignored_graphify_out_keeps_memory_included(tmp_path):
+    """#2267 regression: a gitignored graphify-out/ must NOT drop memory files.
+
+    ``graphify-out/`` is generated output and is commonly placed in
+    ``.gitignore``. The memory-tree ignore check is scoped to
+    ``.graphifyignore``-sourced patterns only, so a gitignored
+    ``graphify-out/`` still keeps memory files included — the default
+    memory round-trip stays intact.
+    """
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "calc.py").write_text("def add(a, b):\n    return a + b\n")
+
+    # First detect seeds graphify-out/memory/ (the feedback loop).
+    detect(tmp_path)
+
+    memory = tmp_path / "graphify-out" / "memory"
+    memory.mkdir(parents=True, exist_ok=True)
+    (memory / "query_1.md").write_text("# Query\nThe calc module adds numbers.\n")
+
+    # graphify-out/ is in .gitignore (common practice for generated output).
+    (tmp_path / ".gitignore").write_text("graphify-out/\n")
+
+    result = detect(tmp_path)
+    all_files = [f for files in result["files"].values() for f in files]
+    memory_hits = [f for f in all_files if "graphify-out" in f.replace("\\", "/")]
+    assert memory_hits, \
+        "memory files must stay included even when graphify-out/ is gitignored"
+
+
+def test_info_exclude_does_not_drop_memory(tmp_path):
+    """#2267 regression: $GIT_DIR/info/exclude must NOT drop memory files.
+
+    Same rationale as .gitignore: info/exclude is a git-sourced ignore,
+    not a user's explicit .graphifyignore. Memory files must survive.
+    """
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "calc.py").write_text("def add(a, b):\n    return a + b\n")
+
+    # First detect seeds graphify-out/memory/ (the feedback loop).
+    detect(tmp_path)
+
+    memory = tmp_path / "graphify-out" / "memory"
+    memory.mkdir(parents=True, exist_ok=True)
+    (memory / "query_1.md").write_text("# Query\nThe calc module adds numbers.\n")
+
+    # Stage a git repo so $GIT_DIR/info/exclude exists.
+    git_dir = tmp_path / ".git"
+    (git_dir / "info").mkdir(parents=True, exist_ok=True)
+    (git_dir / "info" / "exclude").write_text("graphify-out/\n")
+    # Minimal HEAD so _git_info_exclude recognises this as a git dir.
+    (git_dir / "HEAD").write_text("ref: refs/heads/main\n")
+
+    result = detect(tmp_path)
+    all_files = [f for files in result["files"].values() for f in files]
+    memory_hits = [f for f in all_files if "graphify-out" in f.replace("\\", "/")]
+    assert memory_hits, \
+        "memory files must stay included even when graphify-out/ is in info/exclude"
+
+
+def test_memory_cache_not_poisoned_by_non_memory_eval(tmp_path):
+    """#2267: _is_ignored cache must not collide across source filters.
+
+    A non-memory file under ``graphify-out/`` is evaluated with ALL ignore
+    sources (including ``.gitignore``) and cached as ignored. When a memory
+    file under the same ``graphify-out/`` ancestor is later evaluated with
+    ``sources={'graphifyignore'}``, the ancestor walk must NOT reuse the
+    cached non-graphifyignore result — otherwise memory files are silently
+    dropped. The cache key must differentiate by source filter.
+    """
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "calc.py").write_text("def add(a, b):\n    return a + b\n")
+
+    # graphify-out/ in .gitignore
+    (tmp_path / ".gitignore").write_text("graphify-out/\n")
+
+    # Seed memory + output
+    detect(tmp_path)
+
+    memory = tmp_path / "graphify-out" / "memory"
+    memory.mkdir(parents=True, exist_ok=True)
+    (memory / "query_1.md").write_text("# Query\nThe calc module adds numbers.\n")
+    # A non-memory file under graphify-out/ that .gitignore will catch
+    (tmp_path / "graphify-out" / "output.json").write_text('{"k": 1}\n')
+
+    result = detect(tmp_path)
+    all_files = [f for files in result["files"].values() for f in files]
+    memory_hits = [f for f in all_files if "graphify-out" in f.replace("\\", "/")]
+    assert memory_hits, \
+        "cache collision: memory files dropped because non-memory eval poisoned the cache"
