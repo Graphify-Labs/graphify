@@ -1573,7 +1573,7 @@ def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bo
     )
     cli_error = _claude_cli_error(proc.stdout)
     if proc.returncode != 0:
-        detail = proc.stderr.strip() or cli_error or "(no stderr, no error envelope)"
+        detail = cli_error or proc.stderr.strip() or "(no stderr, no error envelope)"
         raise RuntimeError(f"claude -p exited {proc.returncode}: {detail[:500]}")
     if cli_error:
         raise RuntimeError(f"claude -p reported an error: {cli_error[:500]}")
@@ -2634,7 +2634,7 @@ def _call_llm(
         )
         cli_error = _claude_cli_error(proc.stdout)
         if proc.returncode != 0:
-            detail = proc.stderr.strip() or cli_error or "(no stderr, no error envelope)"
+            detail = cli_error or proc.stderr.strip() or "(no stderr, no error envelope)"
             raise RuntimeError(f"claude -p exited {proc.returncode}: {detail[:500]}")
         if cli_error:
             # Without this the error text is returned as the model's reply and
