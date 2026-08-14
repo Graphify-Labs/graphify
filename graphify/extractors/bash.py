@@ -37,6 +37,24 @@ def _bash_source_suffix(raw: str, allow_dotdot: bool = False) -> str | None:
     return suffix
 
 
+def _within_tree(ceiling: Path, target: Path) -> bool:
+    """True if *target* is *ceiling* or lives beneath it, compared lexically
+    (normpath, no filesystem access).
+
+    A ``source`` path built with ``..`` (the ``$VAR/../lib`` idiom, #2596 form 4,
+    or a ``$(dirname …)`` prefix) must not be allowed to walk up to an arbitrary
+    host path: a corpus is attacker-controllable, and both the ``is_file()``
+    existence probe and the recorded absolute ``target_file`` on the emitted edge
+    are a corpus-side information leak (``source "$VAR/../../../../etc/passwd"``).
+    Callers gate the probe/emit on this so a target that escapes the allowed tree
+    is dropped before it is ever stat-ed. Defense in depth only:
+    ``resolve_bash_source_edges`` independently keeps a *resolved* edge only when
+    the target is itself a scanned corpus file."""
+    c = os.path.normpath(str(ceiling))
+    t = os.path.normpath(str(target))
+    return t == c or t.startswith(c + os.sep)
+
+
 # Recognise ``$(dirname "$VAR")`` (or ``$(dirname "${VAR}")``) at the start of
 # a ``source`` argument, capturing the variable name so the source resolver
 # can treat the whole construct as ``var_bases[VAR].parent`` (#2596 form 3).
@@ -334,7 +352,13 @@ def extract_bash(path: Path) -> dict:
                                 # Strip the $(dirname ...) prefix and any leading
                                 # slash to get the literal suffix.
                                 suffix = raw[dirname_match.end():].lstrip("/")
-                                if suffix and "$" not in suffix:
+                                # The base is a guessed script dir, so reject a
+                                # `..` suffix outright — same policy as
+                                # _bash_source_suffix(allow_dotdot=False); without
+                                # it, `$(dirname "$VAR")/../../../etc/passwd`
+                                # resolves and gets probed/recorded (#2596).
+                                if (suffix and "$" not in suffix
+                                        and ".." not in suffix.split("/")):
                                     resolved = (base / suffix).resolve()
                                     if resolved.is_file():
                                         add_edge(file_nid, _make_id(str(resolved)),
@@ -369,9 +393,18 @@ def extract_bash(path: Path) -> dict:
                                             base = var_bases[var_name]
                                     if var_match and var_name in var_bases:
                                         resolved = Path(os.path.normpath(base / suffix))
+                                        # A tracked base may reach a sibling via
+                                        # `$VAR/../lib`, so the ceiling is one
+                                        # level up — but `..` must not walk past
+                                        # it to an arbitrary host path (#2596).
+                                        ceiling = base.parent
                                     else:
                                         resolved = (base / suffix).resolve()
-                                    if resolved.is_file():
+                                        # Untracked base: `..` was already rejected
+                                        # by _bash_source_suffix, so the target is
+                                        # under base; the gate is belt-and-braces.
+                                        ceiling = base
+                                    if _within_tree(ceiling, resolved) and resolved.is_file():
                                         add_edge(file_nid, _make_id(str(resolved)),
                                                  "imports_from", line,
                                                  confidence="INFERRED", context="import",

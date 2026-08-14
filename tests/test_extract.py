@@ -2817,6 +2817,51 @@ def test_extract_bash_source_dotdot_suffix_script_dir_guess_still_rejected(tmp_p
     assert not targets, f"untracked var with .. should not resolve: {targets}"
 
 
+def test_extract_bash_source_dirname_cmdsubst_rejects_traversal(tmp_path):
+    """Form 3 hardening (#2596): the `$(dirname …)` base is a guessed directory,
+    so a `..` suffix must be rejected before the target is probed or recorded —
+    otherwise `source "$(dirname "$VAR")/../../../../etc/passwd"` resolves to an
+    arbitrary host path and leaks it as a source edge on an attacker-controlled
+    corpus."""
+    outside = tmp_path / "secret.sh"
+    outside.write_text("echo secret\n", encoding="utf-8")  # a real file to escape to
+    script = tmp_path / "proj" / "bin" / "x.sh"
+    script.parent.mkdir(parents=True)
+    script.write_text(
+        '#!/usr/bin/env bash\n'
+        'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
+        'source "$(dirname "$SCRIPT_DIR")/../../secret.sh"\n',
+        encoding="utf-8",
+    )
+    result = extract_bash(script)
+    assert not result["bash_sources"], result["bash_sources"]
+    leaked = [e.get("target_file") for e in result["edges"]
+              if e.get("relation") == "imports_from" and "secret.sh" in (e.get("target_file") or "")]
+    assert not leaked, f"traversal target leaked as an edge: {leaked}"
+
+
+def test_extract_bash_source_dotdot_tracked_var_cannot_escape_to_root(tmp_path):
+    """Form 4 hardening (#2596): a tracked base legitimately reaches a sibling via
+    `$VAR/../lib`, but a multi-level `..` that walks past the base's parent to an
+    arbitrary host path must be dropped, not probed and recorded."""
+    outside = tmp_path / "secret.sh"
+    outside.write_text("echo secret\n", encoding="utf-8")
+    # bin is two levels below tmp_path, so ../../.. escapes past base.parent.
+    script = tmp_path / "proj" / "bin" / "x.sh"
+    script.parent.mkdir(parents=True)
+    script.write_text(
+        '#!/usr/bin/env bash\n'
+        'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
+        'source "$SCRIPT_DIR/../../../secret.sh"\n',
+        encoding="utf-8",
+    )
+    result = extract_bash(script)
+    assert not result["bash_sources"], result["bash_sources"]
+    leaked = [e.get("target_file") for e in result["edges"]
+              if e.get("relation") == "imports_from" and "secret.sh" in (e.get("target_file") or "")]
+    assert not leaked, f"traversal target leaked as an edge: {leaked}"
+
+
 # ---------------------------------------------------------------------------
 # JSON extractor tests (#866)
 # ---------------------------------------------------------------------------
