@@ -9,9 +9,11 @@ import networkx as nx
 from graphify.build import edge_data
 from graphify.paths import stem_filename_budget
 
-# Room _unique_slug needs for the collision suffix ("_2" … "_999") it appends
-# after _safe_filename has already capped the slug.
-_SLUG_SUFFIX_RESERVE = 4
+# Room _unique_slug needs for the collision suffix ("_2" … "_9999") it appends
+# after _safe_filename has already capped the slug. The suffix is technically
+# unbounded, but 5 chars ("_" + 4 digits) covers ~10k identical stems, far past
+# anything real; sizing it to 3 digits let a 1000th collision overrun MAX_PATH.
+_SLUG_SUFFIX_RESERVE = 5
 
 # Characters a slug may not contain, because the article's LINK and its ON-DISK
 # NAME have to be the same string (#2597). Anything left here must be legal,

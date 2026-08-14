@@ -166,6 +166,31 @@ def test_wiki_respects_a_small_budget(tmp_path, monkeypatch):
         assert len(p.stem) <= 40, p.name
 
 
+def test_wiki_multibyte_labels_stay_within_budget_and_links_resolve(tmp_path, monkeypatch):
+    """A CJK label at a tight budget: the stem must stay within budget counted in
+    CHARACTERS (wiki slices by character), links must resolve on disk, and the
+    non-ASCII characters must survive rather than being reduced to underscores."""
+    monkeypatch.setattr(wiki_mod, "stem_filename_budget", lambda out, **kw: 40 - kw.get("reserve", 0))
+    G, comms = _graph(["文档索引" * 50, "配置解析器" * 50])
+    out = tmp_path / "wiki"
+    to_wiki(G, comms, str(out), community_labels={0: "模块" * 100})
+
+    written = list(out.glob("*.md"))
+    assert written
+    import re
+    target_re = re.compile(r"\]\(([^)\s]+)\)")
+    for p in written:
+        if p.name != "index.md":  # index is a fixed filename, not a label slug
+            # 40-char window: the stem is capped at 40 - reserve, and a collision
+            # suffix can add back up to the reserve, so the whole stem stays <= 40.
+            assert len(p.stem) <= 40, p.name
+            assert any("一" <= ch <= "鿿" for ch in p.stem), f"CJK stripped from {p.name}"
+        for target in target_re.findall(p.read_text(encoding="utf-8")):
+            if "://" in target:
+                continue
+            assert (out / target).exists(), f"{p.name}: dangling link {target!r}"
+
+
 # ---------------------------------------------------------------------------
 # End-to-end on the platform that actually has the ceiling
 # ---------------------------------------------------------------------------

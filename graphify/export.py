@@ -512,8 +512,10 @@ def _obsidian_safe_stem(label: str, limit: int = 200) -> str:
 
 
 # Room _dedup_node_filenames / the community loop need for a collision suffix
-# ("_1" … "_999") appended AFTER the stem was capped.
-_DEDUP_SUFFIX_RESERVE = 4
+# ("_1" … "_9999") appended AFTER the stem was capped. The suffix is technically
+# unbounded, but 5 chars ("_" + 4 digits) covers ~10k identical stems, far past
+# anything real; sizing it to 3 digits let a 1000th collision overrun MAX_PATH.
+_DEDUP_SUFFIX_RESERVE = 5
 
 # Prefix the community overview notes carry ("_COMMUNITY_Backend.md").
 _COMMUNITY_PREFIX = "_COMMUNITY_"
