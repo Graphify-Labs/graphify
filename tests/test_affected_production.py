@@ -42,6 +42,22 @@ def test_resolve_seed_test_only_duplicates_remain_ambiguous() -> None:
     assert resolve_seed(graph, "readDocStrict") is None
 
 
+def test_resolve_seed_does_not_treat_unknown_source_as_production() -> None:
+    graph = nx.DiGraph()
+    _add_node(graph, "unknown", "", label="readDocStrict()")
+    _add_node(graph, "test-mock", "tests/settings.test.ts", label="readDocStrict()")
+
+    assert resolve_seed(graph, "readDocStrict") is None
+
+
+def test_resolve_seed_does_not_treat_docs_as_production() -> None:
+    graph = nx.DiGraph()
+    _add_node(graph, "docs", "docs/example.ts", label="readDocStrict()")
+    _add_node(graph, "test-mock", "tests/settings.test.ts", label="readDocStrict()")
+
+    assert resolve_seed(graph, "readDocStrict") is None
+
+
 def test_resolve_seed_preserves_explicit_node_id() -> None:
     graph = nx.DiGraph()
     _add_node(graph, "explicit-test-id", "tests/settings.test.ts", label="readDocStrict()")
@@ -94,6 +110,21 @@ def test_production_only_does_not_traverse_excluded_nodes() -> None:
     graph.add_edge("production-caller", "test-bridge", relation="calls")
 
     assert affected_nodes(graph, "seed", depth=2, production_only=True) == []
+
+
+def test_production_only_excludes_nonproduction_edge_call_site() -> None:
+    graph = nx.DiGraph()
+    _add_node(graph, "seed", "src/target.py")
+    _add_node(graph, "production-caller", "src/caller.py")
+    graph.add_edge(
+        "production-caller",
+        "seed",
+        relation="calls",
+        source_file="tests/caller.test.py",
+        source_location="L7",
+    )
+
+    assert affected_nodes(graph, "seed", production_only=True) == []
 
 
 def test_production_only_does_not_seed_excluded_members() -> None:

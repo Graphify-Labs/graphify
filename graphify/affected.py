@@ -129,14 +129,33 @@ def _prefer_file_node(
     return None
 
 
+_NON_PRODUCTION_DIR_SEGMENTS = frozenset({"docs", "eval"})
+_GraphEdge = tuple[object, object, dict]
+
+
+def _is_production_source(path: str) -> bool:
+    """Return whether a path is production code for affected traversal.
+
+    Tests use the shared repository classifier. Whole ``docs`` and ``eval``
+    directory segments are also excluded. Segment matching is conservative:
+    names such as ``contest``, ``latest``, and ``document_service`` remain
+    production paths.
+    """
+    if not path or _is_test_path(path):
+        return False
+    normalized = str(path).replace("\\", "/")
+    segments = (segment.casefold() for segment in PurePosixPath(normalized).parts)
+    return not any(segment in _NON_PRODUCTION_DIR_SEGMENTS for segment in segments)
+
+
 def _unique_or_production_match(graph: nx.Graph, node_ids: list[str]) -> str | None:
-    """Resolve uniquely, preferring one production node over only test rivals."""
+    """Resolve uniquely, preferring one proven production node."""
     if len(node_ids) == 1:
         return node_ids[0]
     production_nodes = [
         node_id
         for node_id in node_ids
-        if not _is_test_path(str(graph.nodes[node_id].get("source_file", "")))
+        if _is_production_source(str(graph.nodes[node_id].get("source_file", "")))
     ]
     if len(production_nodes) == 1:
         return production_nodes[0]
@@ -200,25 +219,6 @@ def resolve_seed(graph: nx.Graph, query: str) -> str | None:
     if len(contains_matches) == 1:
         return contains_matches[0]
     return None
-
-
-_NON_PRODUCTION_DIR_SEGMENTS = frozenset({"docs", "eval"})
-_GraphEdge = tuple[object, object, dict]
-
-
-def _is_production_source(path: str) -> bool:
-    """Return whether a path is production code for affected traversal.
-
-    Tests use the shared repository classifier. Whole ``docs`` and ``eval``
-    directory segments are also excluded. Segment matching is conservative:
-    names such as ``contest``, ``latest``, and ``document_service`` remain
-    production paths.
-    """
-    if not path or _is_test_path(path):
-        return False
-    normalized = str(path).replace("\\", "/")
-    segments = (segment.casefold() for segment in PurePosixPath(normalized).parts)
-    return not any(segment in _NON_PRODUCTION_DIR_SEGMENTS for segment in segments)
 
 
 def _is_production_node(graph: nx.Graph, node_id: str) -> bool:
@@ -299,6 +299,9 @@ def affected_nodes(
                 continue
             if production_only and not _is_production_node(graph, source):
                 continue
+            via_file = str(data.get("source_file") or "")
+            if production_only and via_file and not _is_production_source(via_file):
+                continue
             seen.add(source)
             # Carry the matched edge's location (taken from the SAME edge dict
             # whose relation passed the filter, so relation and location stay
@@ -308,7 +311,7 @@ def affected_nodes(
                 source,
                 current_depth + 1,
                 relation,
-                via_file=str(data.get("source_file") or "") or None,
+                via_file=via_file or None,
                 via_location=str(data.get("source_location") or "") or None,
             )
             hits.append(hit)

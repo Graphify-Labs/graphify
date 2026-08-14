@@ -173,8 +173,8 @@ def test_lightweight_client_receives_synapse_headers_and_auto_model(monkeypatch)
         "x-task-type": "code",
     }
     monkeypatch.setenv("GRAPHIFY_OPENAI_HEADERS_JSON", json.dumps(expected_headers))
+    monkeypatch.setenv("GRAPHIFY_OPENAI_MODEL", "auto")
     monkeypatch.setattr(llm, "_get_backend_api_key", lambda _backend: "fake-key")
-    monkeypatch.setitem(llm.BACKENDS["openai"], "default_model", "auto")
     constructor_calls, request_calls = _install_fake_openai(monkeypatch)
 
     llm._call_llm("label this", backend="openai")
