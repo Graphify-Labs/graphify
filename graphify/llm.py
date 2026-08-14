@@ -1065,6 +1065,26 @@ def _parse_llm_json(raw: str) -> dict:
     return {"nodes": [], "edges": [], "hyperedges": []}
 
 
+def _anthropic_response_text(content, default: str | None = None) -> str | None:
+    """Return the first Anthropic content block that carries text.
+
+    Current Claude models emit a ``ThinkingBlock`` ahead of the ``TextBlock``
+    when extended thinking is enabled (including the default-on path where the
+    thinking text is omitted). Indexing ``content[0]`` therefore raises or
+    yields no text (#2697). Select on the block's type instead of its position.
+    """
+    if not content:
+        return default
+    for block in content:
+        block_type = getattr(block, "type", None)
+        if block_type is not None and block_type != "text":
+            continue
+        text = getattr(block, "text", None)
+        if isinstance(text, str) and text.strip():
+            return text
+    return default
+
+
 def _bedrock_response_text(resp: dict, default: str = "") -> str:
     """Return the first Converse content block that carries text.
 
@@ -1331,7 +1351,7 @@ def _call_claude(api_key: str, model: str, user_message: str, max_tokens: int = 
         system=_extraction_system(deep=deep_mode),
         messages=[{"role": "user", "content": _anthropic_content(user_message, images or [])}],
     )
-    raw_content = resp.content[0].text if resp.content else None
+    raw_content = _anthropic_response_text(resp.content)
     result = _parse_llm_json(raw_content or "{}")
     result["input_tokens"] = resp.usage.input_tokens if resp.usage else 0
     result["output_tokens"] = resp.usage.output_tokens if resp.usage else 0
@@ -2602,7 +2622,7 @@ def _call_llm(
         u = getattr(resp, "usage", None)
         if u is not None:
             _rec(getattr(u, "input_tokens", 0), getattr(u, "output_tokens", 0))
-        return resp.content[0].text if resp.content else ""
+        return _anthropic_response_text(resp.content, default="")
 
     if backend == "claude-cli":
         import platform, shutil, subprocess
