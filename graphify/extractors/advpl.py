@@ -159,9 +159,11 @@ def extract_advpl(path: Path) -> dict:
         reference = match.group(1).strip()
         resolved = _resolve_include(path, reference)
         if resolved is None:
-            continue
-        target_nid = _make_id(str(resolved))
-        add_node(target_nid, resolved.name, 1, source_file=str(resolved))
+            target_nid = _make_id("advpl-include", reference.casefold())
+            add_node(target_nid, reference, None, source_file=None)
+        else:
+            target_nid = _make_id(str(resolved))
+            add_node(target_nid, resolved.name, 1, source_file=str(resolved))
         add_edge(file_nid, target_nid, "imports", _line(clean, match.start()))
 
     code = clean
