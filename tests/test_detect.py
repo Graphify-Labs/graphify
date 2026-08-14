@@ -51,7 +51,11 @@ def test_detect_skips_dotfiles():
     result = detect(FIXTURES)
     for files in result["files"].values():
         for f in files:
-            assert "/." not in f
+            # Compare relative to the scan root: `"/." not in f` on an absolute
+            # path fails whenever the repo itself sits under a dot-directory,
+            # which has nothing to do with dotfile skipping.
+            rel = Path(f).relative_to(FIXTURES)
+            assert not any(part.startswith(".") for part in rel.parts), f
 
 
 def test_classify_md_paper_by_signals(tmp_path):

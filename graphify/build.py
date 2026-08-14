@@ -98,9 +98,43 @@ def patch_graph(
     Only re-processes files that actually changed (cache miss). Unchanged files'
     nodes/edges remain in G untouched, so the full rebuild cost is avoided.
     """
+    carried_edges: list[tuple] = []
     if stale_files:
         to_remove = [n for n, d in G.nodes(data=True) if d.get("source_file") in stale_files]
+        removed = set(to_remove)
+
+        # An edge belongs to the file that *declared* it, which is not necessarily
+        # a file either endpoint lives in: app.py's `App --uses--> Engine` is
+        # declared by app.py but reaches into core.py. Removing core.py's nodes
+        # takes that edge with them, and re-extracting only core.py cannot put it
+        # back — so it would silently vanish on every incremental update. Carry
+        # such edges over and reattach them once the new nodes are in.
+        carried_edges = [
+            (u, v, d)
+            for u, v, d in G.edges(data=True)
+            if d.get("source_file") not in stale_files
+            and (u in removed or v in removed)
+        ]
+
         G.remove_nodes_from(to_remove)
+
+        # Conversely, an edge declared by a stale file can survive the node removal
+        # when both of its endpoints live elsewhere. Drop those explicitly or they
+        # accumulate as phantom relationships no source file still asserts.
+        stale_edges = [
+            (u, v)
+            for u, v, d in G.edges(data=True)
+            if d.get("source_file") in stale_files
+        ]
+        G.remove_edges_from(stale_edges)
+
+        # Same problem for hyperedges, which live on the graph attribute dict and
+        # are therefore untouched by node/edge removal.
+        G.graph["hyperedges"] = [
+            h
+            for h in G.graph.get("hyperedges", [])
+            if h.get("source_file") not in stale_files
+        ]
 
     if new_extractions:
         G_patch = build(new_extractions, directed=directed)
@@ -109,10 +143,15 @@ def patch_graph(
         for u, v, data in G_patch.edges(data=True):
             if u in G.nodes and v in G.nodes:
                 G.add_edge(u, v, **data)
-        existing_hyperedges = G.graph.get("hyperedges", [])
         new_hyperedges = G_patch.graph.get("hyperedges", [])
         if new_hyperedges:
-            G.graph["hyperedges"] = existing_hyperedges + new_hyperedges
+            G.graph["hyperedges"] = G.graph.get("hyperedges", []) + new_hyperedges
+
+    # Reattach cross-file edges whose far endpoint came back with the new
+    # extraction. If the endpoint genuinely disappeared, the edge stays dropped.
+    for u, v, data in carried_edges:
+        if u in G.nodes and v in G.nodes:
+            G.add_edge(u, v, **data)
 
     return G
 

@@ -1297,8 +1297,16 @@ def main() -> None:
         from networkx.readwrite import json_graph as _jg
         from graphify.build import build_from_json as _bfj, build as _build
         from graphify.analyze import graph_diff as _gdiff
-        from graphify.extract import extract_code as _ec
+        from graphify.extract import extract as _ec, _make_id
         from graphify.detect import CODE_EXTENSIONS as _CE
+
+        _root_probe = _sp.run(
+            ["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True
+        )
+        if _root_probe.returncode != 0:
+            print("error: not inside a git repository", file=sys.stderr)
+            sys.exit(1)
+        repo_root = Path(_root_probe.stdout.strip()).resolve()
 
         ref = "HEAD~1"
         graph_path = "graphify-out/graph.json"
@@ -1334,33 +1342,108 @@ def main() -> None:
 
         supported = {f for f in changed_files if Path(f).suffix.lower() in _CE}
         old_extractions = []
-        for fpath in supported:
-            old_bytes = _sp.run(["git", "show", f"{ref}:{fpath}"], capture_output=True)
-            if old_bytes.returncode != 0:
-                continue
-            try:
-                suffix = Path(fpath).suffix
-                with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-                    tmp.write(old_bytes.stdout)
-                    tmp_path = Path(tmp.name)
-                ext = _ec(tmp_path)
-                tmp_path.unlink(missing_ok=True)
-                for n in ext.get("nodes", []):
-                    n["source_file"] = fpath
-                for e in ext.get("edges", []):
-                    e["source_file"] = fpath
-                old_extractions.append(ext)
-            except Exception:
-                pass
+        # Materialise each file as it existed at `ref` into a temp dir, then run a
+        # single batch extraction. extract() resolves imports *across* the paths it
+        # is given, so extracting per-file would silently drop every cross-file edge
+        # from the old graph and report them all as "new".
+        tmp_dir = Path(tempfile.mkdtemp(prefix="graphify-diff-"))
+        tmp_to_source: dict[Path, str] = {}
+        try:
+            for fpath in supported:
+                old_bytes = _sp.run(
+                    ["git", "show", f"{ref}:{fpath}"], capture_output=True
+                )
+                if old_bytes.returncode != 0:
+                    continue  # file did not exist at ref — it is genuinely new
+                # Mirror the original tree layout so relative import resolution and
+                # module naming behave the same as they do on the working tree.
+                tmp_path = tmp_dir / fpath
+                tmp_path.parent.mkdir(parents=True, exist_ok=True)
+                tmp_path.write_bytes(old_bytes.stdout)
+                tmp_to_source[tmp_path] = fpath
+
+            if tmp_to_source:
+                try:
+                    # cache_root=tmp_dir keeps the historical extraction out of the
+                    # project's real graphify-out/cache/, which is keyed to worktree
+                    # content and must not be poisoned with old revisions.
+                    ext = _ec(list(tmp_to_source), cache_root=tmp_dir)
+
+                    # File-level node IDs are _make_id(str(absolute_path)), so the
+                    # temp directory would give every historical file a different ID
+                    # than its working-tree counterpart — making the diff report the
+                    # entire changed set as removed-and-re-added. Rewrite those IDs
+                    # back to the ones the real path would have produced. Class and
+                    # function IDs are derived from the file *stem*, not the full
+                    # path, so they already match and must be left alone.
+                    id_remap = {
+                        _make_id(str(tmp)): _make_id(str((repo_root / src).resolve()))
+                        for tmp, src in tmp_to_source.items()
+                    }
+                    path_remap = {
+                        str(tmp): str((repo_root / src).resolve())
+                        for tmp, src in tmp_to_source.items()
+                    }
+                    for n in ext.get("nodes", []):
+                        n["id"] = id_remap.get(n.get("id"), n.get("id"))
+                        n["source_file"] = path_remap.get(
+                            n.get("source_file"), n.get("source_file")
+                        )
+                    for e in ext.get("edges", []):
+                        e["source"] = id_remap.get(e.get("source"), e.get("source"))
+                        e["target"] = id_remap.get(e.get("target"), e.get("target"))
+                        if e.get("source_file"):
+                            e["source_file"] = path_remap.get(
+                                e["source_file"], e["source_file"]
+                            )
+                    old_extractions.append(ext)
+                except Exception as exc:
+                    print(
+                        f"warning: could not extract {ref} revision: {exc}",
+                        file=sys.stderr,
+                    )
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+        # Nodes record source_file as an absolute path, while git reports paths
+        # relative to the repo root. Comparing the two directly never matches, so
+        # nothing was ever removed from the old graph and every changed file showed
+        # up as pure additions.
+        supported_abs = {str((repo_root / f).resolve()) for f in supported}
 
         G_old = copy.deepcopy(G_new)
-        to_rm = [n for n, d in G_old.nodes(data=True) if d.get("source_file") in supported]
+        to_rm = [
+            n for n, d in G_old.nodes(data=True)
+            if d.get("source_file") in supported_abs
+        ]
+        to_rm_set = set(to_rm)
+
+        # An edge declared by an *unchanged* file can still point at a node in a
+        # changed file (app.py's `App --uses--> Engine` reaches into core.py).
+        # remove_nodes_from drops those as collateral, and re-extracting only the
+        # changed files cannot recreate them, so they would be reported as newly
+        # added on every diff. Save them and restore them once the historical
+        # nodes are back.
+        preserved_edges = [
+            (u, v, d)
+            for u, v, d in G_old.edges(data=True)
+            if d.get("source_file") not in supported_abs
+            and (u in to_rm_set or v in to_rm_set)
+        ]
+
         G_old.remove_nodes_from(to_rm)
         if old_extractions:
             G_old_parts = _build(old_extractions)
             for node, data in G_old_parts.nodes(data=True):
                 G_old.add_node(node, **data)
             for u, v, data in G_old_parts.edges(data=True):
+                G_old.add_edge(u, v, **data)
+
+        # Restore edges owned by unchanged files whose far endpoint has just come
+        # back. If the endpoint is genuinely gone at `ref`, the edge stays dropped
+        # and is correctly reported as new.
+        for u, v, data in preserved_edges:
+            if u in G_old.nodes and v in G_old.nodes:
                 G_old.add_edge(u, v, **data)
 
         diff = _gdiff(G_old, G_new)

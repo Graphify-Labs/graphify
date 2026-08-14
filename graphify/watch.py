@@ -21,7 +21,8 @@ def _rebuild_code(watch_path: Path, *, follow_symlinks: bool = False) -> bool:
     try:
         from graphify.extract import extract
         from graphify.detect import detect
-        from graphify.build import build_from_json
+        from graphify.build import build_from_json, patch_graph
+        from graphify.cache import load_cached
         from graphify.cluster import cluster, score_all
         from graphify.analyze import god_nodes, surprising_connections, suggest_questions
         from graphify.report import generate
@@ -34,29 +35,57 @@ def _rebuild_code(watch_path: Path, *, follow_symlinks: bool = False) -> bool:
             print("[graphify watch] No code files found - nothing to rebuild.")
             return False
 
-        result = extract(code_files, cache_root=watch_path)
-
-        # Preserve semantic nodes/edges from a previous full run.
-        # AST-only rebuild replaces code nodes; doc/paper/image nodes are kept.
         out = watch_path / "graphify-out"
         existing_graph = out / "graph.json"
-        if existing_graph.exists():
+
+        # Which code files actually changed? A cache miss is the signal, so this
+        # must be computed *before* extract(), which fills the cache as it goes.
+        stale_files = [f for f in code_files if load_cached(f, watch_path) is None]
+
+        G = None
+        if existing_graph.exists() and stale_files and len(stale_files) < len(code_files):
+            # Incremental path: re-extract only the changed files and patch them
+            # into the previous graph. Everything else — unchanged code nodes and
+            # the semantic doc/paper/image nodes from the last full run — is
+            # carried over untouched, which is exactly what a full rebuild has to
+            # reconstruct from scratch.
             try:
                 existing = json.loads(existing_graph.read_text(encoding="utf-8"))
-                code_ids = {n["id"] for n in existing.get("nodes", []) if n.get("file_type") == "code"}
-                sem_nodes = [n for n in existing.get("nodes", []) if n.get("file_type") != "code"]
-                sem_edges = [e for e in existing.get("links", existing.get("edges", []))
-                             if e.get("confidence") in ("INFERRED", "AMBIGUOUS")
-                             or (e.get("source") not in code_ids and e.get("target") not in code_ids)]
-                result = {
-                    "nodes": result["nodes"] + sem_nodes,
-                    "edges": result["edges"] + sem_edges,
-                    "hyperedges": existing.get("hyperedges", []),
-                    "input_tokens": 0,
-                    "output_tokens": 0,
-                }
-            except Exception:
-                pass  # corrupt graph.json - proceed with AST-only
+                G_prev = build_from_json(existing)
+                new_result = extract(stale_files, cache_root=watch_path)
+                G = patch_graph(G_prev, {str(f) for f in stale_files}, [new_result])
+                print(
+                    f"[graphify watch] Incremental update: re-extracted "
+                    f"{len(stale_files)} of {len(code_files)} code files"
+                )
+            except Exception as patch_err:
+                print(f"[graphify watch] Incremental update failed ({patch_err}) - full rebuild.")
+                G = None
+
+        if G is None:
+            result = extract(code_files, cache_root=watch_path)
+
+            # Preserve semantic nodes/edges from a previous full run.
+            # AST-only rebuild replaces code nodes; doc/paper/image nodes are kept.
+            if existing_graph.exists():
+                try:
+                    existing = json.loads(existing_graph.read_text(encoding="utf-8"))
+                    code_ids = {n["id"] for n in existing.get("nodes", []) if n.get("file_type") == "code"}
+                    sem_nodes = [n for n in existing.get("nodes", []) if n.get("file_type") != "code"]
+                    sem_edges = [e for e in existing.get("links", existing.get("edges", []))
+                                 if e.get("confidence") in ("INFERRED", "AMBIGUOUS")
+                                 or (e.get("source") not in code_ids and e.get("target") not in code_ids)]
+                    result = {
+                        "nodes": result["nodes"] + sem_nodes,
+                        "edges": result["edges"] + sem_edges,
+                        "hyperedges": existing.get("hyperedges", []),
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                    }
+                except Exception:
+                    pass  # corrupt graph.json - proceed with AST-only
+
+            G = build_from_json(result)
 
         detection = {
             "files": {"code": [str(f) for f in code_files], "document": [], "paper": [], "image": []},
@@ -64,7 +93,6 @@ def _rebuild_code(watch_path: Path, *, follow_symlinks: bool = False) -> bool:
             "total_words": detected.get("total_words", 0),
         }
 
-        G = build_from_json(result)
         communities = cluster(G)
         cohesion = score_all(G, communities)
         gods = god_nodes(G)

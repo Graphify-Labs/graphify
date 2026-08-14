@@ -3218,6 +3218,23 @@ def extract(paths: list[Path], cache_root: Path | None = None) -> dict:
     }
 
 
+def _has_hidden_part(p: Path, target: Path) -> bool:
+    """True if `p` has a dot-prefixed component *below* the scan root.
+
+    Only components inside the scanned tree count. Testing the absolute path
+    instead makes the scan root's own ancestors decide the result, so a checkout
+    under any dot-directory (~/.personal, ~/.config, ~/.local/src) silently
+    collects zero files while the identical tree elsewhere collects all of them.
+    """
+    try:
+        parts = p.relative_to(target).parts
+    except ValueError:
+        # Outside the scan root (possible when following symlinks) — fall back to
+        # judging only the final component rather than the whole ancestor chain.
+        parts = (p.name,)
+    return any(part.startswith(".") for part in parts)
+
+
 def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | None = None) -> list[Path]:
     if target.is_file():
         return [target]
@@ -3240,7 +3257,7 @@ def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | N
         for ext in sorted(_EXTENSIONS):
             results.extend(
                 p for p in target.rglob(f"*{ext}")
-                if not any(part.startswith(".") for part in p.parts)
+                if not _has_hidden_part(p, target)
                 and not _ignored(p)
             )
         return sorted(results)
@@ -3254,7 +3271,7 @@ def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | N
                 dirnames.clear()
                 continue
         dp = Path(dirpath)
-        if any(part.startswith(".") for part in dp.parts):
+        if _has_hidden_part(dp, target):
             dirnames.clear()
             continue
         for fname in filenames:

@@ -70,7 +70,27 @@ def test_collect_files_from_dir():
 def test_collect_files_skips_hidden():
     files = collect_files(FIXTURES)
     for f in files:
-        assert not any(part.startswith(".") for part in f.parts)
+        # Only components *below* the scan root are the function's business.
+        # Asserting on f.parts tests the absolute path, so the check fails purely
+        # because of where the repo happens to be checked out (e.g. ~/.personal).
+        assert not any(part.startswith(".") for part in f.relative_to(FIXTURES).parts)
+
+
+def test_collect_files_unaffected_by_hidden_ancestor(tmp_path):
+    """A dot-prefixed *ancestor* of the scan root must not hide the tree.
+
+    Regression test: the hidden-path filter used to run against the absolute
+    path, so a checkout under any dot-directory collected zero files.
+    """
+    hidden_root = tmp_path / ".personal" / "project"
+    (hidden_root / "pkg").mkdir(parents=True)
+    (hidden_root / "pkg" / "mod.py").write_text("x = 1\n")
+    (hidden_root / "top.py").write_text("y = 2\n")
+    (hidden_root / ".secret").mkdir()
+    (hidden_root / ".secret" / "hide.py").write_text("z = 3\n")
+
+    found = {f.name for f in collect_files(hidden_root)}
+    assert found == {"mod.py", "top.py"}, f"got {found}"
 
 
 def test_collect_files_follows_symlinked_directory(tmp_path):
