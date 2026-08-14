@@ -7,6 +7,18 @@ from graphify import detect as detect_mod
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
+
+def as_posix_list(paths) -> list[str]:
+    """Normalize detect() output to forward slashes before matching on it.
+
+    detect() returns native absolute paths, so a literal like
+    ``"vendor/sub/important.py"`` never matches on Windows. That breaks positive
+    assertions outright, and — worse — makes NEGATIVE ones
+    (``not any(... in ...)``) pass unconditionally, so the property the test
+    exists to guard is never actually checked.
+    """
+    return [Path(p).as_posix() for p in paths]
+
 def test_classify_python():
     assert classify_file(Path("foo.py")) == FileType.CODE
 
@@ -296,7 +308,7 @@ def test_git_info_exclude_utf8_bom(tmp_path):
     assert any("real.py" in f for f in all_files)
 
 
-def test_detect_follows_symlinked_directory(tmp_path):
+def test_detect_follows_symlinked_directory(requires_symlinks, tmp_path):
     real_dir = tmp_path / "real_lib"
     real_dir.mkdir()
     (real_dir / "util.py").write_text("x = 1")
@@ -310,7 +322,7 @@ def test_detect_follows_symlinked_directory(tmp_path):
     assert any("linked_lib" in f for f in result_yes["files"]["code"])
 
 
-def test_detect_follows_symlinked_file(tmp_path):
+def test_detect_follows_symlinked_file(requires_symlinks, tmp_path):
     (tmp_path / "real.py").write_text("x = 1")
     (tmp_path / "link.py").symlink_to(tmp_path / "real.py")
 
@@ -445,9 +457,9 @@ def test_gitignore_nested_negation_overrides_broader_root_rule(tmp_path):
     (sub / "other.py").write_text("c = 1")
 
     result = detect(tmp_path)
-    code = result["files"]["code"]
+    code = as_posix_list(result["files"]["code"])
     # nested `!important.py` re-includes it despite the root `*.py` exclude...
-    assert any("vendor/sub/important.py" in f for f in code)
+    assert any(f.endswith("vendor/sub/important.py") for f in code)
     # ...while the root-excluded and non-re-included files stay out
     assert not any(f.endswith("root.py") for f in code)
     assert not any(f.endswith("other.py") for f in code)
@@ -467,12 +479,12 @@ def test_nested_ignore_overrides_git_info_exclude_and_root(tmp_path):
     (tmp_path / "drop.py").write_text("y = 1")                  # only info/exclude -> excluded
 
     result = detect(tmp_path)
-    code = result["files"]["code"]
-    assert any("a/b/keep.py" in f for f in code), "nested ! must beat root + info/exclude"
+    code = as_posix_list(result["files"]["code"])
+    assert any(f.endswith("a/b/keep.py") for f in code), "nested ! must beat root + info/exclude"
     assert not any(f.endswith("drop.py") for f in code)
 
 
-def test_detect_handles_circular_symlinks(tmp_path):
+def test_detect_handles_circular_symlinks(requires_symlinks, tmp_path):
     sub = tmp_path / "a"
     sub.mkdir()
     (sub / "main.py").write_text("x = 1")
@@ -482,7 +494,7 @@ def test_detect_handles_circular_symlinks(tmp_path):
     assert any("main.py" in f for f in result["files"]["code"])
 
 
-def test_detect_default_does_not_auto_follow_direct_symlink_child(tmp_path):
+def test_detect_default_does_not_auto_follow_direct_symlink_child(requires_symlinks, tmp_path):
     """Symlink directory following is explicit opt-in."""
     real_dir = tmp_path / "real_lib"
     real_dir.mkdir()
@@ -506,7 +518,7 @@ def test_detect_default_does_not_follow_when_no_symlinks(tmp_path):
     assert any("other.py" in f for f in result["files"]["code"])
 
 
-def test_detect_explicit_false_overrides_auto_detect(tmp_path):
+def test_detect_explicit_false_overrides_auto_detect(requires_symlinks, tmp_path):
     """An explicit follow_symlinks=False skips symlinked directories."""
     real_dir = tmp_path / "real_lib"
     real_dir.mkdir()
@@ -518,7 +530,7 @@ def test_detect_explicit_false_overrides_auto_detect(tmp_path):
     assert not any("linked_lib" in f for f in result["files"]["code"])
 
 
-def test_detect_skips_out_of_root_symlinked_directory_even_when_following(tmp_path):
+def test_detect_skips_out_of_root_symlinked_directory_even_when_following(requires_symlinks, tmp_path):
     root = tmp_path / "root"
     root.mkdir()
     outside = tmp_path / "outside"
@@ -532,7 +544,7 @@ def test_detect_skips_out_of_root_symlinked_directory_even_when_following(tmp_pa
     assert any("symlink target outside scan root" in item for item in result["skipped_sensitive"])
 
 
-def test_detect_skips_out_of_root_symlinked_file_by_default(tmp_path):
+def test_detect_skips_out_of_root_symlinked_file_by_default(requires_symlinks, tmp_path):
     root = tmp_path / "root"
     root.mkdir()
     outside = tmp_path / "outside"
@@ -546,7 +558,7 @@ def test_detect_skips_out_of_root_symlinked_file_by_default(tmp_path):
     assert any("symlink target outside scan root" in item for item in result["skipped_sensitive"])
 
 
-def test_detect_incremental_propagates_follow_symlinks(tmp_path, monkeypatch):
+def test_detect_incremental_propagates_follow_symlinks(requires_symlinks, tmp_path, monkeypatch):
     """detect_incremental must forward follow_symlinks so symlinked sub-trees
     appear in incremental scans the same way they appear in full scans."""
     monkeypatch.chdir(tmp_path)
@@ -1016,9 +1028,18 @@ def test_path_pattern_single_star_does_not_cross_segment(tmp_path):
     for pattern in ("/src/*.py", "src/*.py"):
         (tmp_path / ".graphifyignore").write_text(f"{pattern}\n")
         result = detect(tmp_path)
-        files = [path for paths in result["files"].values() for path in paths]
-        assert not any(path.endswith("src/main.py") for path in files)
-        assert any(path.endswith("src/app/main.py") for path in files)
+        files = as_posix_list(
+            path for paths in result["files"].values() for path in paths
+        )
+        # This negative is the actual subject of the test — that `*` did NOT
+        # cross a separator. Without the posix normalization it matched nothing
+        # on Windows and passed no matter what the matcher did.
+        assert not any(path.endswith("src/main.py") for path in files), (
+            f"`{pattern}` failed to exclude the direct child: {files}"
+        )
+        assert any(path.endswith("src/app/main.py") for path in files), (
+            f"`{pattern}` crossed a path segment and excluded the nested file: {files}"
+        )
 
 
 def test_directory_only_negation_does_not_reinclude_file(tmp_path):
@@ -1207,6 +1228,64 @@ def test_anchored_multi_segment_pattern(tmp_path):
     assert not _is_ignored(target_bad, tmp_path, patterns), (
         "x/src/inbox/b.py must NOT be ignored by /src/inbox/"
     )
+
+
+def test_detect_does_not_ignore_scan_root_itself_via_parent_gitignore(tmp_path):
+    """If a parent `.gitignore` (at the repo root) ignores the directory being scanned
+    (the scan root itself), files inside the scan root must not be ignored (#2468)."""
+    (tmp_path / ".git").mkdir()
+
+    corpus_dir = tmp_path / "graphify-corpus"
+    corpus_dir.mkdir()
+
+    (corpus_dir / "keep.py").write_text("x = 1\n", encoding="utf-8")
+    
+    docs_dir = corpus_dir / "docs"
+    docs_dir.mkdir()
+    (docs_dir / "intro.md").write_text("# Introduction\n", encoding="utf-8")
+
+    (tmp_path / ".gitignore").write_text("graphify-corpus/\n", encoding="utf-8")
+
+    result = detect(corpus_dir)
+
+    all_files = [Path(f) for files in result["files"].values() for f in files]
+    file_names = {f.name for f in all_files}
+
+    assert result["total_files"] == 2
+    assert "keep.py" in file_names
+    assert "intro.md" in file_names
+
+
+def test_detect_preserves_unrelated_parent_ignores_inside_scan_root(tmp_path):
+    """A parent `.gitignore` should still ignore unrelated directories (like `node_modules/`)
+    inside the scan root, even while the scan root itself is not ignored (#2468)."""
+    (tmp_path / ".git").mkdir()
+
+    corpus_dir = tmp_path / "graphify-corpus"
+    corpus_dir.mkdir()
+
+    (corpus_dir / "keep.py").write_text("x = 1\n", encoding="utf-8")
+    
+    docs_dir = corpus_dir / "docs"
+    docs_dir.mkdir()
+    (docs_dir / "intro.md").write_text("# Introduction\n", encoding="utf-8")
+
+    node_modules_dir = corpus_dir / "node_modules"
+    node_modules_dir.mkdir()
+    (node_modules_dir / "lib.js").write_text("console.log(1);\n", encoding="utf-8")
+
+    # Parent .gitignore ignoring the scan root itself AND node_modules/
+    (tmp_path / ".gitignore").write_text("graphify-corpus/\nnode_modules/\n", encoding="utf-8")
+
+    result = detect(corpus_dir)
+
+    all_files = [Path(f) for files in result["files"].values() for f in files]
+    file_names = {f.name for f in all_files}
+
+    assert result["total_files"] == 2
+    assert "keep.py" in file_names
+    assert "intro.md" in file_names
+    assert "lib.js" not in file_names
 
 
 # Tests for #1235 - memoise _is_ignored/_eval results via a per-detect() cache
@@ -2518,14 +2597,24 @@ def test_detect_reports_walk_errors_key():
     assert res["walk_errors"] == []
 
 
+@pytest.mark.skipif(
+    not hasattr(os, "geteuid"),
+    reason="POSIX-only: needs geteuid() and chmod 000 to actually block scandir",
+)
 def test_detect_surfaces_unreadable_dir_instead_of_silent_skip(tmp_path, capsys):
     """os.walk silently skips a subtree whose scandir raises (permissions, or a
     dir deleted mid-walk); that under-enumeration used to be invisible and could
     yield a silently partial graph. detect() now records it in walk_errors and
-    warns, while still enumerating the rest of the tree."""
-    import os
+    warns, while still enumerating the rest of the tree.
+
+    Guarded on the capability, not the platform: `os.geteuid` is Unix-only, so on
+    Windows the root check below raises AttributeError before the test can decide
+    anything. Shimming geteuid would not help — Windows ignores POSIX mode bits,
+    so `chmod 000` leaves the directory readable and the test fails on its real
+    assertion instead. Both reasons say the same thing: this test cannot run here
+    (#2643).
+    """
     if os.geteuid() == 0:
-        import pytest
         pytest.skip("running as root: chmod 000 does not block scandir")
     (tmp_path / "a.py").write_text("def f(): pass\n")
     locked = tmp_path / "locked"

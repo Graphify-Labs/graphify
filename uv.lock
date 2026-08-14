@@ -1092,6 +1092,7 @@ wheels = [
 name = "graphifyy"
 version = "0.9.32"
 version = "0.9.40"
+version = "0.9.41"
 source = { editable = "." }
 dependencies = [
     { name = "networkx", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },

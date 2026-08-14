@@ -67,6 +67,31 @@ def _normalize_label(label: str) -> str:
     return unicodedata.normalize("NFC", label).casefold()
 
 
+def _as_repo_relative(query: str) -> str:
+    """Repo-relative form of a path query, for matching a stored `source_file`.
+
+    The graph stores repo-relative paths, so `./src/x.py` and
+    `/abs/repo/src/x.py` name the same file as `src/x.py` and yet matched
+    nothing. `affected` then printed an empty list and exited 0 — a blast-radius
+    tool answering "nothing depends on this" about a file with sixteen
+    dependents, and indistinguishable from a genuine zero or a typo.
+
+    Non-path queries pass through unchanged: `Path("myFunc()").as_posix()` is
+    `"myFunc()"`, so label resolution is untouched. An absolute path rooted
+    outside the repo is left alone — no basename guessing.
+    """
+    path = Path(query)
+    if path.is_absolute():
+        try:
+            return path.relative_to(Path.cwd()).as_posix()
+        except ValueError:
+            # Rooted outside the repo: nothing here can make it repo-relative,
+            # so leave it alone rather than guess at a basename that would match
+            # some unrelated file with the same name.
+            return query
+    return path.as_posix()
+
+
 def _prefer_file_node(
     graph: nx.Graph,
     node_ids: list[str],
@@ -128,15 +153,20 @@ def resolve_seed(graph: nx.Graph, query: str) -> str | None:
     ]
     if len(bare_name_matches) == 1:
         return bare_name_matches[0]
+    # Compare paths in repo-relative form. Only this branch is path-shaped; the
+    # label branches above keep the query verbatim.
+    query_path = _normalize_label(_as_repo_relative(query))
     exact_source_matches = [
         str(node_id)
         for node_id, data in graph.nodes(data=True)
-        if _normalize_label(str(data.get("source_file", ""))) == query_lower
+        if _normalize_label(str(data.get("source_file", ""))) in (query_lower, query_path)
     ]
     if len(exact_source_matches) == 1:
         return exact_source_matches[0]
     if exact_source_matches:
-        preferred_file_node = _prefer_file_node(graph, exact_source_matches, query)
+        preferred_file_node = _prefer_file_node(
+            graph, exact_source_matches, _as_repo_relative(query)
+        )
         if preferred_file_node is not None:
             return preferred_file_node
     contains_matches = [

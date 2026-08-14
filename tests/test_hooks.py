@@ -460,17 +460,69 @@ def _extract_case_pattern(marker: str) -> str:
     raise AssertionError(f"case arm containing {marker!r} not found in _PYTHON_DETECT")
 
 
-def _shell_verdict(pattern: str, candidate: str) -> str:
+def _sh_single_quote(value: str) -> str:
+    """Render ``value`` as a shell single-quoted literal (no expansion at all)."""
+    return "'" + value.replace("'", "'\\''") + "'"
+
+
+def _shell_verdict(pattern: str, candidate: str, tmp_path) -> str:
+    """Run one `case` arm against ``candidate`` in a real bash, and report which
+    branch matched.
+
+    BOTH the pattern and the candidate are baked into a script FILE; neither
+    transits argv. On Windows there is no execve, so ``subprocess`` joins argv
+    into one command string and bash.exe's MSYS runtime re-parses it — which
+    strips backslashes, expands `$IFS`, and *executes* `` `id` `` / `$(id)`
+    before the case statement ever runs. Every value here is either a shell
+    metacharacter payload or a backslash path, i.e. exactly what that layer
+    destroys, so the old `bash -c ... , "_", candidate` form compared bash's
+    verdict on a string that was no longer the one under test (#2641).
+
+    Baking them in also matches production: the hook is a script file, and the
+    value being tested is already sitting in a shell variable by the time the
+    allowlist runs.
+    """
+    script = tmp_path / "case_test.sh"
+    script.write_text(
+        f"CANDIDATE={_sh_single_quote(candidate)}\n"
+        f'case "$CANDIDATE" in\n'
+        f"  {pattern}) echo REJECTED ;;\n"
+        f"  *) echo ACCEPTED ;;\n"
+        f"esac\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    # Invoke by bare filename from cwd: a Windows absolute path in argv would
+    # hit the same backslash mangling the script contents just avoided.
     result = subprocess.run(
-        ["bash", "-c", f'case "$1" in\n{pattern}) echo REJECTED ;;\n*) echo ACCEPTED ;;\nesac', "_", candidate],
-        capture_output=True, text=True,
+        ["bash", script.name],
+        capture_output=True, text=True, cwd=str(tmp_path),
     )
     # Fail loudly on a malformed case snippet instead of returning "" and
     # producing a confusing ACCEPTED/REJECTED mismatch downstream.
     assert result.returncode == 0, (
         f"bash exited {result.returncode} for pattern {pattern!r}: {result.stderr.strip()}"
     )
-    return result.stdout.strip()
+    verdict = result.stdout.strip()
+    assert verdict in ("ACCEPTED", "REJECTED"), (
+        f"harness produced no verdict for {candidate!r}: {result.stdout!r}"
+    )
+    return verdict
+
+
+def _assert_harness_can_reject(pattern: str, tmp_path) -> None:
+    """Control for the ACCEPT assertions below.
+
+    An ACCEPTED verdict only means something if this pattern is capable of
+    saying REJECTED. When the candidate never reaches bash intact, every input
+    falls through to `*)` and the accept tests pass while testing nothing —
+    which is how #2126's regression guard sat green on Windows while providing
+    zero coverage.
+    """
+    assert _shell_verdict(pattern, "foo;rm -rf /", tmp_path) == "REJECTED", (
+        f"pattern {pattern!r} rejects nothing, so an ACCEPTED verdict proves "
+        f"nothing — the harness is vacuous (#2641)"
+    )
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash required to exercise emitted glob")
@@ -478,11 +530,12 @@ def _shell_verdict(pattern: str, candidate: str) -> str:
     r"C:\Users\u\.venv\Scripts\python.exe",
     r"C:\Python311\python.exe",
 ])
-def test_file_path_allowlist_accepts_windows_backslash_path(winpath):
+def test_file_path_allowlist_accepts_windows_backslash_path(winpath, tmp_path):
     """#2126: the .graphify_python FILE allowlist must accept real Windows paths
     at actual shell runtime. Old pattern rejected them due to bash bracket-escape."""
     pattern = _extract_case_pattern('_FROM_FILE=""')
-    assert _shell_verdict(pattern, winpath) == "ACCEPTED", (
+    _assert_harness_can_reject(pattern, tmp_path)
+    assert _shell_verdict(pattern, winpath, tmp_path) == "ACCEPTED", (
         f"Windows path {winpath!r} rejected by file-path allowlist at shell runtime"
     )
 
@@ -491,25 +544,56 @@ def test_file_path_allowlist_accepts_windows_backslash_path(winpath):
 @pytest.mark.parametrize("shebang_path", [
     r"C:\Users\u\.venv\Scripts\python.exe",
 ])
-def test_shebang_allowlist_accepts_windows_backslash_path(shebang_path):
+def test_shebang_allowlist_accepts_windows_backslash_path(shebang_path, tmp_path):
     """#2126: the shebang-parsed launcher allowlist had no `:` or `\\` at all, so
     any Windows-style shebang path was unconditionally emptied. Must ACCEPT now."""
     pattern = _extract_case_pattern('GRAPHIFY_PYTHON="" ;;')
-    assert _shell_verdict(pattern, shebang_path) == "ACCEPTED", (
+    _assert_harness_can_reject(pattern, tmp_path)
+    assert _shell_verdict(pattern, shebang_path, tmp_path) == "ACCEPTED", (
         f"Windows shebang path {shebang_path!r} rejected by launcher allowlist"
     )
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash required to exercise emitted glob")
 @pytest.mark.parametrize("dangerous", ["foo;rm -rf /", "foo`id`", "foo$(id)", "foo$IFS"])
-def test_python_detect_allowlists_still_reject_shell_metacharacters(dangerous):
+def test_python_detect_allowlists_still_reject_shell_metacharacters(dangerous, tmp_path):
     """Guard against a naive fix (backslash right before `]`) that forms a
     `:`-to-`\\` range admitting `;`, backtick, `$`. Both allowlists must reject."""
     for marker in ('_FROM_FILE=""', 'GRAPHIFY_PYTHON="" ;;'):
         pattern = _extract_case_pattern(marker)
-        assert _shell_verdict(pattern, dangerous) == "REJECTED", (
+        assert _shell_verdict(pattern, dangerous, tmp_path) == "REJECTED", (
             f"{marker} allowlist wrongly accepted dangerous input {dangerous!r}"
         )
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash required to exercise emitted glob")
+@pytest.mark.parametrize("payload", [
+    r"C:\Users\u\.venv\Scripts\python.exe",   # backslashes get stripped by argv
+    "foo$IFS",                                 # expands to "foo" — an ALLOWED value
+    "foo`id`",                                 # command substitution actually RUNS
+])
+def test_shell_verdict_delivers_the_payload_bash_unmodified(payload, tmp_path):
+    """The harness must hand bash the exact bytes under test (#2641).
+
+    This is the root cause rather than the symptom: when the payload is mangled
+    in transit, the allowlist tests grade bash's answer to a different question.
+    `foo$IFS` is the sharpest case — through argv it arrives as `foo`, which the
+    allowlist legitimately ACCEPTS, so an injection test reports a false alarm
+    while a backslash path never gets tested at all.
+    """
+    script = tmp_path / "echo_payload.sh"
+    script.write_text(
+        f"CANDIDATE={_sh_single_quote(payload)}\nprintf %s \"$CANDIDATE\"\n",
+        encoding="utf-8", newline="\n",
+    )
+    result = subprocess.run(
+        ["bash", script.name], capture_output=True, text=True, cwd=str(tmp_path),
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == payload, (
+        f"bash saw {result.stdout!r}, not {payload!r} — the payload was rewritten "
+        f"in transit, so any verdict about it is meaningless"
+    )
 
 
 @pytest.mark.parametrize("name,script", _HOOK_SCRIPTS)

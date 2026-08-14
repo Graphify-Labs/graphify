@@ -1082,6 +1082,16 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
         total_nodes = sum(1 for l in lines if l.startswith("NODE "))
         shown_nodes = output[:cut_at].count("\nNODE ") + (1 if output.startswith("NODE ") else 0)
         cut_count = total_nodes - shown_nodes
+        # Nodes render before edges, so a char-budget overflow whose cut lands
+        # past the last NODE line drops only trailing edges — no whole node is
+        # lost. Announcing "showing N of N nodes … among the 0 cut nodes" then
+        # reads as a false truncation warning that teaches an agent to distrust a
+        # complete answer and burn follow-up narrowing calls for nodes that were
+        # never cut (#2601). When every node is shown the answer is complete:
+        # return the full output with no banner rather than silently dropping
+        # edges under a misleading notice.
+        if cut_count == 0:
+            return output
         # Prominent notice at the TOP so a truncated answer can never be mistaken
         # for a complete one — silence used to read as absence (#BUG2). The
         # notice + end marker sit OUTSIDE char_budget by design (two bounded

@@ -2871,11 +2871,13 @@ def _resolve_php_type_references(
             continue
         tgt = edge.get("target")
         label = stub_label.get(tgt)
+        uses = uses_by_file.get(ref_file, {})
+        if not label and relation == "imports":
+            label = next((alias for alias in uses if _make_id(alias) == tgt), "")
         if not label:
             continue
         bare = label.strip().lower()
         ns = ns_by_file[ref_file]
-        uses = uses_by_file.get(ref_file, {})
 
         raw = None
         if relation in _PHP_SUPERTYPE_RELATIONS:

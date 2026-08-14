@@ -840,7 +840,39 @@ uv run pytest tests/test_extract.py -q # one module
 uv run pytest tests/ -q -k "python"    # filter by name
 ```
 
+### CI parity checks
+
+The authoritative CI commands live in [`.github/workflows/`](.github/workflows/).
+For local CI-style verification, use Python 3.10 or 3.12 and run:
+
+```bash
+uv sync --all-extras --frozen
+uv run --frozen pytest tests/ -q --tb=short
+uv run --frozen python -m tools.skillgen --check
+uv run --frozen python -m tools.skillgen --audit-coverage
+uv run --frozen python -m tools.skillgen --schema-singleton
+uv run --frozen python -m tools.skillgen --monolith-roundtrip
+uv run --frozen python -m tools.skillgen --always-on-roundtrip
+uv run --frozen graphify --help
+uv run --frozen graphify install
+```
+
+Ruff is useful as an additional local check (`uv run --frozen ruff check .`),
+but is not currently a blocking CI job. Pyright is also local/advisory unless it
+is added to CI later. The Bandit and pip-audit CI steps currently use
+`continue-on-error`, so their findings are advisory rather than blocking.
+
 > macOS note: the test suite includes both `sample.f90` and `sample.F90` fixtures. These collide on case-insensitive HFS+ / APFS file systems. Run on Linux or in a Docker container if you need to test both Fortran variants simultaneously.
+
+> Windows note: the native Windows test suite exercises symbolic links, long
+> paths, POSIX permissions, path separators, and UTF-8 filesystem behavior.
+> Enable Windows Developer Mode to allow unprivileged symbolic-link creation, or
+> run the tests from an elevated shell. Enable the Windows `LongPathsEnabled`
+> policy before relying on long-path tests. Restart affected shells or applications
+> after changing either setting. For exact parity with the blocking GitHub Actions
+> test matrix, run the suite in WSL or Linux; CI currently runs on Ubuntu with
+> Python 3.10 and 3.12. Pyright is available as a local advisory check, but it is
+> not currently a blocking CI job.
 
 ### Git workflow
 
