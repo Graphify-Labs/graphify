@@ -101,6 +101,32 @@ def test_workflow_step_uses_edges(tmp_path):
     assert ("lint", "actions/setup-node@v4") in uses
 
 
+def test_comment_before_sequence_item_value_is_not_read_as_a_dependency(tmp_path):
+    # A comment on its own line before a block-sequence item's value is
+    # `is_named` in tree-sitter-yaml's grammar (confirmed empirically), so
+    # naively taking the first named child of `- \n  # note\n  lint` would
+    # read the comment text as the dependency name instead of `lint`
+    # (review finding).
+    body = (
+        "on: push\n"
+        "jobs:\n"
+        "  one:\n"
+        "    steps:\n"
+        "      - uses: actions/checkout@v4\n"
+        "  two:\n"
+        "    needs:\n"
+        "      -\n"
+        "        # not a dependency name\n"
+        "        one\n"
+        "    steps:\n"
+        "      - uses: actions/checkout@v4\n"
+    )
+    r = extract_github_actions(_write(tmp_path, "ci.yml", body))
+    deps = _rel_pairs(r, "depends_on")
+    assert ("two", "one") in deps
+    assert not any("not a dependency name" in lbl for lbl in _labels(r))
+
+
 def test_workflow_reusable_workflow_uses_edge(tmp_path):
     # Job-level `uses:` is a reusable-workflow call, not a step.
     r = extract_github_actions(_write(tmp_path, "ci.yml", WORKFLOW))
@@ -334,3 +360,20 @@ def test_github_actions_reports_grammar_init_failure_as_load_failure(tmp_path, m
     err = extract_github_actions(_write(tmp_path, ".github/workflows/ci.yml", WORKFLOW)).get("error") or ""
     assert "failed to load" in err
     assert "Incompatible Language version" in err
+
+
+def test_workflow_named_apm_yml_still_dispatches_to_github_actions(tmp_path):
+    # apm.yml is also a recognized package-manifest filename
+    # (is_package_manifest_path), checked in _get_extractor() before the
+    # workflow-shape gate used to be. A real workflow that happens to be
+    # named .github/workflows/apm.yml was getting claimed by the manifest
+    # extractor first and losing its job/needs/uses extraction entirely
+    # (review finding). The workflow check must win at this specific path.
+    from graphify.extract import _get_extractor
+    p = _write(tmp_path, ".github/workflows/apm.yml", WORKFLOW)
+    assert _get_extractor(p) is extract_github_actions
+
+    r = extract([p.resolve()], root=tmp_path)
+    labels = set(_labels(r))
+    for expected in ("lint", "test", "deploy"):
+        assert expected in labels

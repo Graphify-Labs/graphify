@@ -144,7 +144,11 @@ def _item_value(item):
     if item.type != "block_sequence_item":
         return item
     for child in item.children:
-        if child.is_named:
+        # A comment placed before the value on its own line (e.g. `-\n  #
+        # note\n  lint`) is `is_named` too, per tree-sitter-yaml's grammar --
+        # returning it here would let a `needs:`/`uses:` comment be read as
+        # the dependency's name (confirmed empirically; review finding).
+        if child.is_named and child.type != "comment":
             return child
     return item
 

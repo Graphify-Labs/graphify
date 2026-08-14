@@ -203,10 +203,12 @@ def _git_head(cwd: "str | Path | None" = None) -> str | None:
     describes a different repo — provenance must come from the repo the graph
     describes, so callers pass the graph's own location.
     """
+    import shutil
     import subprocess as _sp
+    git = shutil.which("git") or "git"
     try:
         r = _sp.run(
-            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=3,
+            [git, "rev-parse", "HEAD"], capture_output=True, text=True, timeout=3,
             cwd=str(cwd) if cwd is not None else None,
         )
         return r.stdout.strip() if r.returncode == 0 else None
