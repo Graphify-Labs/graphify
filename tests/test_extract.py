@@ -2725,6 +2725,98 @@ def test_extract_bash_var_source_untracked_var_keeps_script_dir_guess(tmp_path):
     assert (lib / "y.sh").resolve() in targets, targets
 
 
+def test_extract_bash_source_dirname_cmdsubst_in_argument(tmp_path):
+    """Form 3 (#2596): `source "$(dirname "$VAR")/lib/y.sh"` — command
+    substitution in the source argument.  The dirname idiom on the *source*
+    line should resolve the same way it does on an assignment line: treat
+    `$(dirname "$VAR")` as `var_bases[VAR].parent` (or `script_dir.parent`
+    when VAR is untracked), then resolve the literal suffix against it.
+    """
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "lib" / "y.sh").write_text(
+        "#!/usr/bin/env bash\ny_fn() { :; }\n", encoding="utf-8"
+    )
+    script = tmp_path / "bin" / "x.sh"
+    script.parent.mkdir(parents=True)
+    # SCRIPT_DIR is tracked by the existing idiom, so dirname("$SCRIPT_DIR")
+    # should resolve to tmp_path, and tmp_path/lib/y.sh is the target.
+    script.write_text(
+        '#!/usr/bin/env bash\n'
+        'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
+        'source "$(dirname "$SCRIPT_DIR")/lib/y.sh"\n',
+        encoding="utf-8",
+    )
+    result = extract_bash(script)
+    targets = [Path(s["target_path"]).resolve() for s in result["bash_sources"]]
+    assert (tmp_path / "lib" / "y.sh").resolve() in targets, targets
+
+
+def test_extract_bash_source_dirname_cmdsubst_untracked_var(tmp_path):
+    """Form 3 with an untracked variable: `source "$(dirname "$SCRIPT_DIR")/lib/y.sh"`
+    where SCRIPT_DIR is NOT assigned via the recognised idiom.  The fallback
+    is the script's own directory (same as the existing untracked-var path),
+    so dirname of the script dir is the parent.
+    """
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "lib" / "y.sh").write_text(
+        "#!/usr/bin/env bash\ny_fn() { :; }\n", encoding="utf-8"
+    )
+    script = tmp_path / "bin" / "x.sh"
+    script.parent.mkdir(parents=True)
+    # No SCRIPT_DIR assignment — the var is untracked, so the extractor
+    # falls back to script_dir.parent (= tmp_path) for dirname.
+    script.write_text(
+        '#!/usr/bin/env bash\n'
+        'source "$(dirname "$SCRIPT_DIR")/lib/y.sh"\n',
+        encoding="utf-8",
+    )
+    result = extract_bash(script)
+    targets = [Path(s["target_path"]).resolve() for s in result["bash_sources"]]
+    assert (tmp_path / "lib" / "y.sh").resolve() in targets, targets
+
+
+def test_extract_bash_source_dotdot_suffix_with_tracked_var(tmp_path):
+    """Form 4 (#2596): `source "$VAR/../lib/y.sh"` — `..` in the literal
+    suffix.  When the base comes from a tracked var_bases entry, `..` is
+    safe (it's a known directory, not a guess), so resolve via normpath
+    and the existing is_file() gate.  The `..` rejection should only apply
+    on the script-dir-guess path where the base is uncertain.
+    """
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "lib" / "y.sh").write_text(
+        "#!/usr/bin/env bash\ny_fn() { :; }\n", encoding="utf-8"
+    )
+    script = tmp_path / "bin" / "x.sh"
+    script.parent.mkdir(parents=True)
+    # SCRIPT_DIR is tracked (= bin/), so $SCRIPT_DIR/../lib/y.sh resolves
+    # to tmp_path/lib/y.sh.
+    script.write_text(
+        '#!/usr/bin/env bash\n'
+        'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
+        'source "$SCRIPT_DIR/../lib/y.sh"\n',
+        encoding="utf-8",
+    )
+    result = extract_bash(script)
+    targets = [Path(s["target_path"]).resolve() for s in result["bash_sources"]]
+    assert (tmp_path / "lib" / "y.sh").resolve() in targets, targets
+
+
+def test_extract_bash_source_dotdot_suffix_script_dir_guess_still_rejected(tmp_path):
+    """Form 4 guard: `..` in the suffix must still be rejected when the base
+    is the script-dir *guess* (no tracked variable).  Otherwise a path like
+    `source "${UNTRACKED}/../../etc/passwd"` could traverse outside the tree.
+    """
+    script = tmp_path / "run.sh"
+    script.write_text(
+        '#!/usr/bin/env bash\n'
+        'source "${UNTRACKED}/../evil.sh"\n',
+        encoding="utf-8",
+    )
+    result = extract_bash(script)
+    targets = [Path(s["target_path"]).resolve() for s in result["bash_sources"]]
+    assert not targets, f"untracked var with .. should not resolve: {targets}"
+
+
 # ---------------------------------------------------------------------------
 # JSON extractor tests (#866)
 # ---------------------------------------------------------------------------
