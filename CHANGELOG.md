@@ -4,6 +4,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.42 (unreleased)
 
+- Feature: OCaml `.ml`/`.mli` extraction via tree-sitter-ocaml (optional `[ocaml]` extra). Extracts modules, top-level and module-level values/functions, types and their variant constructors, `open` imports, and function calls; qualified calls (`Geo.area`) resolve to the value, and cross-file `open`/call targets collapse onto the unique real definition via the corpus stub rewire.
 - Fix: a JS/TS `for...of` / `for...in` loop binding is now shadowed, so passing it as a call argument no longer fabricates an `indirect_call` edge to an unrelated same-named callable (#2685, thanks @ousamabenyounes); completes the loop/closure/catch shadow family (#2568/#2569/#2517).
 - Fix: graph provenance (`built_at_commit`) is stamped from the analysed repository rather than the shell's working directory, so `graphify extract` run from elsewhere records the target's commit, not the caller's (#2534 family; #2699, thanks @C0KERNEL).
 - Fix: `affected` resolves a seed passed as a `./`-relative path (or an absolute path when run from the repo root) instead of silently returning nothing (#2707, thanks @phudayyy). Note: an absolute-path seed still requires the working directory to be the analysed repo root.

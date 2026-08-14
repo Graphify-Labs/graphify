@@ -46,6 +46,7 @@ from graphify.extractors.fortran import _cpp_preprocess, extract_fortran  # noqa
 from graphify.extractors.go import _GO_PREDECLARED_FUNCS, extract_go  # noqa: F401
 from graphify.extractors.json_config import extract_json  # noqa: F401
 from graphify.extractors.markdown import extract_markdown  # noqa: F401
+from graphify.extractors.ocaml import extract_ocaml  # noqa: F401
 from graphify.extractors.pascal_forms import extract_delphi_form, extract_lazarus_form  # noqa: F401
 from graphify.extractors.powershell import extract_powershell, extract_powershell_manifest  # noqa: F401
 from graphify.extractors.razor import extract_razor  # noqa: F401
@@ -4823,6 +4824,8 @@ _DISPATCH: dict[str, Any] = {
     ".svelte": extract_svelte,
     ".astro": extract_astro,
     ".dart": extract_dart,
+    ".ml": extract_ocaml,
+    ".mli": extract_ocaml,
     ".v": extract_verilog,
     ".sv": extract_verilog,
     ".svh": extract_verilog,
@@ -4875,6 +4878,8 @@ _EXTRA_FOR_EXTENSION = {
     ".hcl": "terraform",
     ".dm": "dm",
     ".dme": "dm",
+    ".ml": "ocaml",
+    ".mli": "ocaml",
 }
 
 # Substrings an extractor's error carries to classify why a dependency-backed
