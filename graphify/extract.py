@@ -786,7 +786,14 @@ _JS_CONFIG = LanguageConfig(
     call_accessor_node_types=frozenset({"member_expression"}),
     call_accessor_field="property",
     call_accessor_object_field="object",
-    function_boundary_types=frozenset({"function_declaration", "generator_function_declaration", "arrow_function", "method_definition"}),
+    # `function_expression` belongs here so UNTRACKED inline/nested expressions
+    # reach walk_calls' existing closure handler, which already names the type
+    # (`_JS_CLOSURE_TYPES`). Without it the gate never opens, so such an
+    # expression's parameters and locals never fold into extra_locals for its
+    # subtree and read as by-name references (#2241 family). A top-level
+    # `const f = function (…) {}` is tracked via its declarator and was already
+    # fine; the inline/nested forms are what this covers.
+    function_boundary_types=frozenset({"function_declaration", "generator_function_declaration", "arrow_function", "method_definition", "function_expression"}),
     import_handler=_import_js,
 )
 
@@ -807,7 +814,8 @@ _TS_CONFIG = LanguageConfig(
     call_accessor_node_types=frozenset({"member_expression"}),
     call_accessor_field="property",
     call_accessor_object_field="object",
-    function_boundary_types=frozenset({"function_declaration", "generator_function_declaration", "arrow_function", "method_definition"}),
+    # `function_expression`: see the note on the JS config above.
+    function_boundary_types=frozenset({"function_declaration", "generator_function_declaration", "arrow_function", "method_definition", "function_expression"}),
     import_handler=_import_js,
 )
 
