@@ -1,4 +1,5 @@
 import os
+import subprocess
 import unicodedata
 import pytest
 from pathlib import Path
@@ -6,6 +7,14 @@ from graphify.detect import classify_file, count_words, detect, detect_increment
 from graphify import detect as detect_mod
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=True,
+        capture_output=True,
+    )
 
 
 def as_posix_list(paths) -> list[str]:
@@ -426,6 +435,108 @@ def test_gitignore_nested_below_root_excludes_file(tmp_path):
     assert not any("root.log" in f for f in code_files)
     assert not any("secret.txt" in f for f in code_files)
     assert result["graphifyignore_patterns"] == 2
+
+
+def test_gitignore_keeps_tracked_file_but_drops_untracked_sibling(tmp_path):
+    """Gitignore rules do not apply to tracked files, matching Git itself (#2759)."""
+    _git(tmp_path, "init", "-q")
+    storage = tmp_path / "storage"
+    storage.mkdir()
+    tracked = storage / "fileWatcher.js"
+    tracked.write_text("export function watch(){ return 1; }", encoding="utf-8")
+    app = tmp_path / "app.js"
+    app.write_text("export function ok(){ return 2; }", encoding="utf-8")
+    _git(tmp_path, "add", "storage/fileWatcher.js", "app.js")
+
+    (tmp_path / ".gitignore").write_text("storage/\n", encoding="utf-8")
+    untracked = storage / "scratch.js"
+    untracked.write_text("export function scratch(){ return 3; }", encoding="utf-8")
+
+    result = detect(tmp_path)
+    code = {Path(path).name for path in result["files"]["code"]}
+
+    assert code == {"app.js", "fileWatcher.js"}
+    assert str(untracked) in result["ignored"]
+    assert str(tracked) not in result["ignored"]
+
+
+def test_graphifyignore_still_excludes_git_tracked_file(tmp_path):
+    """A graph-specific exclusion remains authoritative for tracked paths."""
+    _git(tmp_path, "init", "-q")
+    storage = tmp_path / "storage"
+    storage.mkdir()
+    tracked = storage / "fileWatcher.js"
+    tracked.write_text("export function watch(){ return 1; }", encoding="utf-8")
+    _git(tmp_path, "add", "storage/fileWatcher.js")
+    (tmp_path / ".graphifyignore").write_text("storage/\n", encoding="utf-8")
+
+    result = detect(tmp_path)
+
+    assert str(tracked) not in result["files"]["code"]
+    assert any(entry.rstrip(os.sep) == str(storage) for entry in result["ignored"])
+
+
+def test_tracked_gitignore_exemption_works_for_subdirectory_scan(tmp_path):
+    """Tracked paths are repo-relative even when the requested scan root is nested."""
+    _git(tmp_path, "init", "-q")
+    project = tmp_path / "packages" / "app"
+    storage = project / "storage"
+    storage.mkdir(parents=True)
+    tracked = storage / "fileWatcher.js"
+    tracked.write_text("export function watch(){ return 1; }", encoding="utf-8")
+    _git(tmp_path, "add", "packages/app/storage/fileWatcher.js")
+    (tmp_path / ".gitignore").write_text("storage/\n", encoding="utf-8")
+
+    result = detect(project)
+
+    assert str(tracked) in result["files"]["code"]
+
+
+def test_ignored_predicate_keeps_git_tracked_ignored_file(tmp_path):
+    """Watch reconciliation must agree with detect() for tracked paths (#2759)."""
+    _git(tmp_path, "init", "-q")
+    tracked = tmp_path / "tracked.py"
+    tracked.write_text("value = 1\n", encoding="utf-8")
+    _git(tmp_path, "add", "tracked.py")
+    (tmp_path / ".gitignore").write_text("tracked.py\n", encoding="utf-8")
+
+    ignored = detect_mod.ignored_predicate(tmp_path, gitignore=True)
+
+    assert ignored(tracked) is False
+
+
+def test_extra_exclude_still_excludes_git_tracked_file(tmp_path):
+    """CLI/persisted excludes are graph-level intent, not Git ignore rules."""
+    _git(tmp_path, "init", "-q")
+    tracked = tmp_path / "tracked.py"
+    tracked.write_text("value = 1\n", encoding="utf-8")
+    _git(tmp_path, "add", "tracked.py")
+
+    result = detect(tmp_path, extra_excludes=["tracked.py"])
+
+    assert str(tracked) not in result["files"]["code"]
+    assert str(tracked) in result["ignored"]
+
+
+def test_git_tracking_probe_failure_preserves_ignore_behavior(
+    tmp_path, monkeypatch
+):
+    """A missing/broken Git command must not fail open or abort discovery."""
+    _git(tmp_path, "init", "-q")
+    ignored_file = tmp_path / "ignored.py"
+    ignored_file.write_text("value = 1\n", encoding="utf-8")
+    _git(tmp_path, "add", "ignored.py")
+    (tmp_path / ".gitignore").write_text("ignored.py\n", encoding="utf-8")
+
+    def _git_unavailable(*args, **kwargs):
+        raise OSError("git unavailable")
+
+    monkeypatch.setattr(detect_mod.subprocess, "run", _git_unavailable)
+
+    result = detect(tmp_path)
+
+    assert str(ignored_file) not in result["files"]["code"]
+    assert str(ignored_file) in result["ignored"]
 
 
 def test_gitignore_nested_below_root_prunes_whole_directory(tmp_path):
