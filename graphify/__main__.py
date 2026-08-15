@@ -71,7 +71,6 @@ from graphify.install import (  # noqa: E402,F401
     _project_scope_root,
     _project_uninstall,
     _project_uninstall_all,
-    _refresh_all_version_stamps,
     _remove_claude_skill_registration,
     _remove_skill_file,
     _replace_or_append_section,
