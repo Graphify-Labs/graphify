@@ -539,6 +539,35 @@ def test_git_tracking_probe_failure_preserves_ignore_behavior(
     assert str(ignored_file) in result["ignored"]
 
 
+def test_git_lsfiles_skipped_when_no_gitignore_contributes(tmp_path, monkeypatch):
+    """Optimization (#2759): a git repo with no .gitignore in play must not pay
+    the `git ls-files` subprocess — nothing can be gitignore-dropped, so the
+    tracked-exemption is moot. A .gitignore that DOES contribute still probes."""
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "app.py").write_text("value = 1\n", encoding="utf-8")
+    _git(tmp_path, "add", "app.py")
+
+    real_run = detect_mod.subprocess.run
+    calls = {"ls_files": 0}
+
+    def _spy(args, *a, **k):
+        if isinstance(args, list) and "ls-files" in args:
+            calls["ls_files"] += 1
+        return real_run(args, *a, **k)
+
+    monkeypatch.setattr(detect_mod.subprocess, "run", _spy)
+
+    # No .gitignore anywhere -> gitignore contributes nothing -> no probe.
+    detect(tmp_path)
+    assert calls["ls_files"] == 0, "git ls-files ran despite no .gitignore in play"
+
+    # Add a .gitignore -> gitignore now contributes -> probe happens (once).
+    (tmp_path / ".gitignore").write_text("build/\n", encoding="utf-8")
+    calls["ls_files"] = 0
+    detect(tmp_path)
+    assert calls["ls_files"] >= 1, "git ls-files skipped even though .gitignore is present"
+
+
 def test_gitignore_nested_below_root_prunes_whole_directory(tmp_path):
     """A nested .gitignore excluding a directory prevents descending into it."""
     sub = tmp_path / "vendor" / "sub"

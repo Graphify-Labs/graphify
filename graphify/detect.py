@@ -1372,8 +1372,14 @@ def ignored_predicate(
     root = root.resolve()
     patterns = _load_graphifyignore(root, gitignore=gitignore)
     explicit_patterns = _load_graphifyignore(root, gitignore=False)
+    # Only shell out to git when .gitignore actually contributes patterns beyond
+    # the explicit (.graphifyignore/--exclude) set: with no .gitignore in play,
+    # nothing is dropped by gitignore and the tracked-file exemption is moot, so a
+    # non-.gitignore corpus pays no `git ls-files` cost.
     tracked_files, tracked_dirs = (
-        _git_tracked_path_keys(root) if gitignore else (set(), set())
+        _git_tracked_path_keys(root)
+        if gitignore and len(patterns) > len(explicit_patterns)
+        else (set(), set())
     )
     if extra_excludes:
         for pat in extra_excludes:
@@ -1503,8 +1509,12 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
     pruned_noise: list[str] = []
     ignore_patterns = _load_graphifyignore(root, gitignore=gitignore)
     explicit_ignore_patterns = _load_graphifyignore(root, gitignore=False)
+    # See ignored_predicate: skip the `git ls-files` subprocess when .gitignore
+    # contributes no patterns, so a non-.gitignore corpus pays nothing for it.
     tracked_files, tracked_dirs = (
-        _git_tracked_path_keys(root) if gitignore else (set(), set())
+        _git_tracked_path_keys(root)
+        if gitignore and len(ignore_patterns) > len(explicit_ignore_patterns)
+        else (set(), set())
     )
     ignore_cache: dict[Path, bool] = {}  # shared across all _is_ignored calls in this scan
     explicit_ignore_cache: dict[Path, bool] = {}
