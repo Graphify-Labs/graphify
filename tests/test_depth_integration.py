@@ -317,3 +317,41 @@ class TestDepthEndToEnd:
         # global_add was called exactly once, with the merged graph.
         assert len(add_calls) == 1
         assert add_calls[0] == result.merged_graph_path
+
+    def test_real_extract_writes_graphify_out_subdir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """`graphify extract --out <dir>` writes to <dir>/graphify-out/graph.json
+        (the conventional output location, not <dir>/graph.json directly).
+        The depth orchestrator must accept that path, not just the
+        flattened one. This test uses the real `graphify extract`
+        subprocess on a small fixture corpus with `--code-only` so it
+        requires no LLM API key.
+        """
+        from graphify.depth import depth_command
+        # Build a real fixture corpus with two top-level subdirs.
+        _write_corpus(tmp_path / "corpus")
+        # Run the real extract on the first bucket only (focused), so
+        # the test is hermetic and finishes quickly.
+        result = depth_command(
+            root=tmp_path / "corpus",
+            focuses=[tmp_path / "corpus" / "alpha"],
+            out_dir=tmp_path / "corpus" / "graphify-out",
+            min_files=1, min_words=1, max_buckets=10,
+            # Code-only + no-cluster keeps the run AST-only, so no
+            # LLM key is needed. The extract CLI also accepts these
+            # via the trailing -- forwarder.
+        )
+        # The real extract ran and the bucket has a graph.json.
+        alpha_bucket = next(b for b in result.buckets if b.name == "alpha")
+        assert alpha_bucket.status == "done", (
+            f"real extract failed: {alpha_bucket.error}"
+        )
+        assert alpha_bucket.graph_path is not None
+        assert alpha_bucket.graph_path.exists()
+        assert alpha_bucket.graph_path.name == "graph.json"
+        # The merged graph is written to <root>/graphify-out/graph.json
+        # and contains at least one node from the alpha bucket.
+        assert result.merged_graph_path is not None
+        merged = json.loads(result.merged_graph_path.read_text(encoding="utf-8"))
+        assert any(n["id"].startswith("alpha::") for n in merged["nodes"])

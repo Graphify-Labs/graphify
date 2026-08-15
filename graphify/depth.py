@@ -269,9 +269,15 @@ def run_bucket(
 
     bucket.out_dir.mkdir(parents=True, exist_ok=True)
     bin_path = graphify_bin or _resolve_graphify_bin()
-    # The bucket gets its own <root>/graphify-out/depth/buckets/<name>/
-    # output, and the inner extract writes its own graph.json there.
-    # We pass --out so the extract pipeline knows the output root.
+    # The bucket's extract writes its graph.json to
+    # <bucket_out_dir>/graphify-out/graph.json (per the `graphify extract`
+    # contract — `--out` sets the *root* for graphify-out/, not the
+    # graph.json path directly). We pass --out so the inner extract
+    # knows the output root, and we read back the graph.json from the
+    # conventional location. Setting `GRAPHIFY_OUT=<bucket_out_dir>` in
+    # the subprocess env would also work and would let us drop --out,
+    # but keeping --out is the more common idiom and matches the
+    # user-facing `graphify extract` help.
     cmd = [bin_path, "extract", str(bucket.path), "--out", str(bucket.out_dir), *extract_args]
     attempt = 0
     while True:
@@ -293,11 +299,23 @@ def run_bucket(
             transient = _is_transient_failure(result)
 
         if result is not None and result.returncode == 0:
-            graph_path = bucket.out_dir / "graph.json"
+            # `graphify extract --out <dir>` writes to <dir>/graphify-out/graph.json.
+            # We accept either the conventional location (preferred) or a
+            # flattened <dir>/graph.json as a fallback for users who set
+            # GRAPHIFY_OUT=<dir> in the per-bucket env.
+            graph_path = bucket.out_dir / "graphify-out" / "graph.json"
             if not graph_path.exists():
-                bucket.status = "failed"
-                bucket.error = f"extract succeeded but {graph_path} not found"
-                return skip_on_error
+                alt = bucket.out_dir / "graph.json"
+                if alt.exists():
+                    graph_path = alt
+                else:
+                    bucket.status = "failed"
+                    bucket.error = (
+                        f"extract succeeded but neither "
+                        f"{bucket.out_dir / 'graphify-out' / 'graph.json'} "
+                        f"nor {alt} were written"
+                    )
+                    return skip_on_error
             bucket.graph_path = graph_path
             bucket.nodes, bucket.edges = _read_node_edge_counts(graph_path)
             bucket.status = "done"
@@ -669,8 +687,10 @@ def write_depth_report(report: DepthReport, out_path: Path) -> None:
     lines.append("## How to inspect a single bucket")
     lines.append("")
     lines.append(
-        "Each bucket has its own `graph.json` and `GRAPH_REPORT.md`. "
-        "Open them directly to focus on one sub-system:"
+        "Each bucket's `graphify extract` run writes a complete "
+        "`<out>/graphify-out/graph.json` (plus a `GRAPH_REPORT.md` and "
+        "the usual cache + cost sidecars). Open them directly to focus "
+        "on one sub-system:"
     )
     lines.append("")
     for b in report.buckets:
@@ -681,7 +701,10 @@ def write_depth_report(report: DepthReport, out_path: Path) -> None:
             if b.out_dir.is_absolute()
             else b.out_dir
         )
-        lines.append(f"- `{rel}/graph.json`, `{rel}/GRAPH_REPORT.md` — bucket `{b.name}`")
+        lines.append(
+            f"- `{rel}/graphify-out/graph.json`, "
+            f"`{rel}/graphify-out/GRAPH_REPORT.md` — bucket `{b.name}`"
+        )
     lines.append("")
 
     if any(b.error for b in report.buckets):
