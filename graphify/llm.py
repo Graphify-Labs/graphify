@@ -581,9 +581,13 @@ def _read_files(units: "list[Path | FileSlice]", root: Path) -> str:
             print(f"[graphify] skipping {p}: symlink target outside corpus root", file=sys.stderr)
             continue
         try:
-            rel = str(p.relative_to(root))
+            # as_posix, not str: `rel` is handed to the model as the literal
+            # source_file to emit, so a native backslash spelling on Windows
+            # lands in the graph and splits one file across two source_file
+            # forms (#683 / #2259).
+            rel = p.relative_to(root).as_posix()
         except ValueError:
-            rel = str(p)
+            rel = Path(p).as_posix()
         try:
             if isinstance(u, FileSlice):
                 content = read_slice_text(u)
@@ -813,9 +817,13 @@ def _build_image_refs(image_files: list[Path], root: Path, *, read_bytes: bool =
             print(f"[graphify] skipping image {p}: symlink target outside corpus root", file=sys.stderr)
             continue
         try:
-            rel = str(p.relative_to(root))
+            # as_posix, not str: `rel` is handed to the model as the literal
+            # source_file to emit, so a native backslash spelling on Windows
+            # lands in the graph and splits one file across two source_file
+            # forms (#683 / #2259).
+            rel = p.relative_to(root).as_posix()
         except ValueError:
-            rel = str(p)
+            rel = Path(p).as_posix()
         media = _IMAGE_MEDIA_TYPES.get(p.suffix.lower(), "image/png")
         raw: bytes | None = None
         if read_bytes:

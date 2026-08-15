@@ -2,7 +2,35 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
-## 0.9.41 (unreleased)
+## 0.9.43 (unreleased)
+
+- Feature: OCaml `.ml`/`.mli` extraction via tree-sitter-ocaml (optional `[ocaml]` extra). Extracts modules, top-level and module-level values/functions, types and their variant constructors, `open` imports, and function calls; qualified calls (`Geo.area`) resolve to the value, and cross-file `open`/call targets collapse onto the unique real definition via the corpus stub rewire.
+- Fix: a cross-file INFERRED `uses` edge now binds to the symbol whose body actually references the imported name (a module-level function is a valid source; a co-located class that never touches the import gets no edge), instead of fanning out from the import line to every class in the importing file (#2652, thanks @ousamabenyounes). A reference at module top level, with no enclosing symbol, emits no edge.
+- Fix: a named `function` declaration nested inside another function now gets its own node, a `contains` edge from the enclosing function, and its own call scope, so calls made from inside it are no longer dropped as dangling (#2653, thanks @himanshupatro-334). Coverage was extended to the arrow idioms too: a function declared inside an arrow-defined component (`const Panel = () => { function handleClick(){} }`) or inside an arrow callback (`useEffect(() => { function h(){} })`) is captured and attributed to the nearest enclosing named scope.
+- Fix: the Bash extractor resolves two more `source` path forms — `source "$(dirname "$VAR")/lib/x.sh"` and a `..` suffix on a tracked-variable base (`source "$VAR/../lib/x.sh"`) — so those cross-file source edges are no longer silently dropped (#2596, thanks @hudsonwa). A `..` on a *guessed* base is still rejected, and a tracked-base `..` cannot walk past the base's parent to an arbitrary host path, so a hostile corpus can't make the extractor stat or record an out-of-tree file.
+- Fix: a wiki article link now targets the article's filename verbatim instead of a percent-encoded twin, so a label with `( ) & #` or non-ASCII characters no longer produces a link that names no file on disk; the link and the on-disk filename share one canonicalization (#2597, thanks @abhay-codes07).
+- Fix: export filenames are now budgeted against the full destination path rather than only the per-component `NAME_MAX`, so a long output directory on Windows no longer pushes an Obsidian/wiki note path past `MAX_PATH` and aborts the export mid-write (#2655, thanks @abhay-codes07). The collision-suffix reserve was widened so a four-digit dedup suffix can't overrun the budget.
+
+## 0.9.42 (2026-08-13)
+
+- Fix: a JS/TS `for...of` / `for...in` loop binding is now shadowed, so passing it as a call argument no longer fabricates an `indirect_call` edge to an unrelated same-named callable (#2685, thanks @ousamabenyounes); completes the loop/closure/catch shadow family (#2568/#2569/#2517).
+- Fix: graph provenance (`built_at_commit`) is stamped from the analysed repository rather than the shell's working directory, so `graphify extract` run from elsewhere records the target's commit, not the caller's (#2534 family; #2699, thanks @C0KERNEL).
+- Fix: `affected` resolves a seed passed as a `./`-relative path (or an absolute path when run from the repo root) instead of silently returning nothing (#2707, thanks @phudayyy). Note: an absolute-path seed still requires the working directory to be the analysed repo root.
+- Fix: a Python relative import of a subpackage (`from ..pkg.sub import x`) now resolves to the package's `__init__` instead of a nonexistent `.py` slug (#2688, thanks @ousamabenyounes).
+- Fix: a `.sql` file that fails to parse because tree-sitter-sql is installed but broken (e.g. an ABI mismatch) now reports the real load failure instead of the misleading "not installed" message (#2602, thanks @ousamabenyounes).
+- Fix: a corrupt semantic-cache entry is now surfaced with a warning and re-extracted, instead of being a silent cache miss that re-bills the LLM every run; a valid cache is not discarded (#2683, thanks @ousamabenyounes).
+- Fix: the `GRAPH_REPORT.md` header uses a portable basename instead of embedding the generator's absolute host path (#2682, thanks @ousamabenyounes).
+- Fix: `graphify update` / `_read_files` hand the model a POSIX `source_file`, and several path/atomic-write behaviors are hardened for Windows (#2620/#2622, thanks @rajarshidattapy).
+- Fix: a failed atomic write no longer leaks a read-only `.tmp` file in the output directory on Windows (#2622, thanks @rajarshidattapy).
+- Test/docs: Windows-portability test fixes (probe-and-skip symlink tests, separator-agnostic path assertions, shell-arg verdict test), a refreshed `ARCHITECTURE.md` module table with a doc-parity test, and README notes on CI parity checks and Windows test prerequisites (#2620/#2622/#2126/#2642/#2646/#2647/#2648/#2651, thanks @rajarshidattapy, @redzwanmutalib, @nelsondeleonc-source).
+- Fix: a non-regular file (FIFO/named pipe, device) in the scanned tree no longer hangs extraction on a blocking read; non-regular files are skipped during collection (#2463, thanks @itskaism).
+- Fix: an incremental run now re-queues a file rewritten to the same length within one mtime tick, instead of skipping it as unchanged (#2466, thanks @itskaism); complements the 0.9.40 file-hash guard (#2612).
+- Fix: the `apm.yml` fallback parser (used when PyYAML is absent) now captures the package version instead of dropping it (#2465, thanks @itskaism).
+- Fix: `graphify install` no longer fails when the packaged bundle is read-only (e.g. a Nix store or root-owned site-packages); the staged skill references are made writable before the atomic rename (#2453, thanks @bensleveritt).
+- Fix: hyperedge regions in `graph.html` are traced in convex-hull order instead of member-array order, so the shaded polygon no longer self-intersects (#2449, thanks @ysys143).
+- Fix: `graph_has_legacy_ids` no longer false-positives on a global MCP node id (e.g. from a nested `.mcp.json`), which wrongly flagged a modern graph as legacy (#2408, thanks @aryanbonigala).
+
+## 0.9.41 (2026-08-12)
 
 - Fix: a JS/TS `catch` binding passed as a call argument (`catch (handler) { pool.submit(handler) }`) no longer fabricates an `indirect_call` edge to an unrelated same-named callable (thanks @imagineers-tyler); the catch binding is now shadowed within its clause, completing the 0.9.38/0.9.40 arrow-parameter fixes (#2568).
 - Fix: `Cargo.toml` is now recognized as a package manifest (#2434, thanks @ousamabenyounes), minting one canonical package node by name plus `depends_on` edges (dependencies, plus target-specific deps; virtual-workspace roots and workspace-inherited versions are handled).

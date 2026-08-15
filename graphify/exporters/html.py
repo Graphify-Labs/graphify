@@ -73,6 +73,27 @@ def _hyperedge_script(hyperedges_json: str) -> str:
 const hyperedges = {hyperedges_json};
 // afterDrawing passes ctx already transformed to network coordinate space.
 // Draw node positions raw — no manual pan/zoom/DPR math needed.
+
+// Andrew's monotone chain. Returns the hull in counter-clockwise order, which
+// is what the perimeter must be traced in. Collinear and duplicate points
+// collapse to the extremes, so degenerate member sets render as a segment
+// rather than a zero-area crossed path.
+function convexHull(pts) {{
+    const p = pts.slice().sort((a, b) => (a.x - b.x) || (a.y - b.y));
+    if (p.length < 3) return p;
+    const cross = (o, a, b) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+    const build = seq => {{
+        const out = [];
+        for (const q of seq) {{
+            while (out.length >= 2 && cross(out[out.length - 2], out[out.length - 1], q) <= 0) out.pop();
+            out.push(q);
+        }}
+        out.pop();
+        return out;
+    }};
+    const hull = build(p).concat(build(p.slice().reverse()));
+    return hull.length >= 3 ? hull : p;
+}}
 network.on('afterDrawing', function(ctx) {{
     hyperedges.forEach(h => {{
         const positions = h.nodes
@@ -85,10 +106,14 @@ network.on('afterDrawing', function(ctx) {{
         ctx.strokeStyle = '#6366f1';
         ctx.lineWidth = 2;
         ctx.beginPath();
-        // Centroid and expanded hull in network coordinates
+        // Centroid and expanded hull in network coordinates.
+        // The perimeter must follow hull order, not h.nodes order: tracing the
+        // raw member order self-intersects whenever the layout does not happen
+        // to place members in angular order, filling as crossed wedges.
         const cx = positions.reduce((s, p) => s + p.x, 0) / positions.length;
         const cy = positions.reduce((s, p) => s + p.y, 0) / positions.length;
-        const expanded = positions.map(p => ({{
+        const hull = convexHull(positions);
+        const expanded = hull.map(p => ({{
             x: cx + (p.x - cx) * 1.15,
             y: cy + (p.y - cy) * 1.15
         }}));

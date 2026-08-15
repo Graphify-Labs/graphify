@@ -47,6 +47,7 @@ from graphify.extractors.gherkin import extract_gherkin  # noqa: F401
 from graphify.extractors.go import _GO_PREDECLARED_FUNCS, extract_go  # noqa: F401
 from graphify.extractors.json_config import extract_json  # noqa: F401
 from graphify.extractors.markdown import extract_markdown  # noqa: F401
+from graphify.extractors.ocaml import extract_ocaml  # noqa: F401
 from graphify.extractors.pascal_forms import extract_delphi_form, extract_lazarus_form  # noqa: F401
 from graphify.extractors.powershell import extract_powershell, extract_powershell_manifest  # noqa: F401
 from graphify.extractors.razor import extract_razor  # noqa: F401
@@ -125,6 +126,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _resolve_js_import_target,
     _resolve_js_module_path,
     _resolve_lua_import_target,
+    _probe_python_module_candidate,
     _resolve_python_module_path,
     _resolve_tsconfig_alias,
     _resolve_workspace_import,
@@ -351,8 +353,20 @@ def _import_python(node, source: bytes, file_nid: str, stem: str, edges: list, s
                 base = Path(str_path).parent
                 for _ in range(dots - 1):
                     base = base.parent
-                rel = (module_name.replace(".", "/") + ".py") if module_name else "__init__.py"
-                target_path = base / rel
+                # A relative import can name a subpackage (a directory with an
+                # __init__.py), not a module file. Probing the candidate on disk
+                # (mirroring the companion `imports` edge's
+                # _resolve_python_module_path) resolves `graphs` -> graphs/__init__.py
+                # instead of a nonexistent graphs.py: without it the target keeps an
+                # absolute-path-derived slug that the target_file stamp below can't
+                # heal, so it dangles per-checkout (#2455).
+                candidate = base / module_name.replace(".", "/") if module_name else base
+                resolved = _probe_python_module_candidate(candidate)
+                if resolved is not None:
+                    target_path = resolved
+                else:
+                    rel = (module_name.replace(".", "/") + ".py") if module_name else "__init__.py"
+                    target_path = base / rel
                 tgt_nid = _make_id(str(target_path))
             else:
                 tgt_nid = _make_id(raw)
@@ -4812,6 +4826,8 @@ _DISPATCH: dict[str, Any] = {
     ".svelte": extract_svelte,
     ".astro": extract_astro,
     ".dart": extract_dart,
+    ".ml": extract_ocaml,
+    ".mli": extract_ocaml,
     ".v": extract_verilog,
     ".sv": extract_verilog,
     ".svh": extract_verilog,
@@ -4864,7 +4880,16 @@ _EXTRA_FOR_EXTENSION = {
     ".hcl": "terraform",
     ".dm": "dm",
     ".dme": "dm",
+    ".ml": "ocaml",
+    ".mli": "ocaml",
 }
+
+# Substrings an extractor's error carries to classify why a dependency-backed
+# file contributed nothing, used by the #1745 warning in extract(). A grammar
+# that is present but fails to load (#2602) must not be reported as missing —
+# the "install the extra" hint would be a no-op.
+_DEP_MISSING_MARKER = "not installed"
+_DEP_LOAD_FAILED_MARKER = "failed to load"
 
 
 # Extensionless executables (CLI entry points like `devctl` or `manage`) carry
@@ -5453,21 +5478,28 @@ def extract(
     _missing_dep_error: dict[str, str] = {}
     for i, _p in enumerate(paths):
         _err = (per_file[i] or {}).get("error") or ""
-        if "not installed" in _err:
+        if _DEP_MISSING_MARKER in _err or _DEP_LOAD_FAILED_MARKER in _err:
             _ext = _p.suffix.lower()
             _missing_dep_count[_ext] = _missing_dep_count.get(_ext, 0) + 1
             _missing_dep_error.setdefault(_ext, _err)
     for _ext, _n in sorted(_missing_dep_count.items(), key=lambda kv: (-kv[1], kv[0])):
         _extra = _EXTRA_FOR_EXTENSION.get(_ext)
-        if _extra:
-            _reason = _missing_dep_error[_ext].split(". ")[0]
+        _err_text = _missing_dep_error[_ext]
+        if _extra and _DEP_MISSING_MARKER in _err_text:
+            # Genuinely absent optional extra — point the user at the install.
+            _reason = _err_text.split(". ")[0]
             _hint = f' Install it with: pip install "graphifyy[{_extra}]"'
+            _cause = "a dependency is missing"
         else:
-            _reason = _missing_dep_error[_ext]
+            # Either no known extra, or the grammar is present but failed to
+            # load (#2602): surface the real error and never suggest reinstall.
+            _reason = _err_text
             _hint = ""
+            _cause = ("a dependency is missing" if _DEP_MISSING_MARKER in _err_text
+                      else "a dependency failed to load")
         print(
             f"  warning: {_n} {_ext} file(s) contributed nothing to the graph "
-            f"because a dependency is missing: {_reason}.{_hint} (#1745)",
+            f"because {_cause}: {_reason}.{_hint} (#1745)",
             file=sys.stderr, flush=True,
         )
 

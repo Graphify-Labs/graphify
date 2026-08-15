@@ -16,6 +16,7 @@ from networkx.readwrite import json_graph
 from graphify.security import sanitize_label
 from graphify.analyze import _node_community_map
 from graphify.build import edge_data
+from graphify.paths import stem_filename_budget
 
 from graphify.exporters.graphdb import push_to_falkordb, push_to_neo4j  # noqa: E402,F401
 
@@ -170,11 +171,21 @@ def attach_hyperedges(G: nx.Graph, hyperedges: list) -> None:
     G.graph["hyperedges"] = existing
 
 
-def _git_head() -> str | None:
-    """Return the current git HEAD commit hash, or None if not in a git repo."""
+def _git_head(cwd: "str | Path | None" = None) -> str | None:
+    """Return git HEAD for the repo containing ``cwd``, or None outside a repo.
+
+    ``cwd`` selects the repository to ask, exactly as in watch._git_head
+    (#2316). Without it the command inherits the caller's working directory,
+    which stamps the *invoking* repo's commit when the graph being written
+    describes a different repo — provenance must come from the repo the graph
+    describes, so callers pass the graph's own location.
+    """
     import subprocess as _sp
     try:
-        r = _sp.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=3)
+        r = _sp.run(
+            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=3,
+            cwd=str(cwd) if cwd is not None else None,
+        )
         return r.stdout.strip() if r.returncode == 0 else None
     except Exception:
         return None
@@ -349,7 +360,10 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
     if isinstance(data.get("graph"), dict) and "hyperedges" in data["graph"]:
         data["graph"]["hyperedges"] = hyperedges
     data["hyperedges"] = hyperedges
-    commit = built_at_commit if built_at_commit is not None else _git_head()
+    # Fallback provenance comes from the repo the graph is being written INTO
+    # (output_path lives in <target>/graphify-out/), never the shell's cwd —
+    # the same cwd-anchoring mistake #2316 fixed for `update`.
+    commit = built_at_commit if built_at_commit is not None else _git_head(Path(output_path).resolve().parent)
     if commit:
         data["built_at_commit"] = commit
     from graphify.paths import write_json_atomic
@@ -466,7 +480,7 @@ def _cap_filename(s: str, limit: int = 200) -> str:
     return f"{truncated}_{digest}"
 
 
-def _obsidian_safe_stem(label: str) -> str:
+def _obsidian_safe_stem(label: str, limit: int = 200) -> str:
     """Filename stem for an Obsidian note / canvas card from a node label.
 
     Strips filesystem-unsafe characters, a trailing ``.md``-family extension
@@ -494,7 +508,17 @@ def _obsidian_safe_stem(label: str) -> str:
     # emit a "@.md"-style filename. (#1409)
     if not re.search(r"\w", cleaned, flags=re.UNICODE):
         return "unnamed"
-    return _cap_filename(cleaned)
+    return _cap_filename(cleaned, limit)
+
+
+# Room _dedup_node_filenames / the community loop need for a collision suffix
+# ("_1" … "_9999") appended AFTER the stem was capped. The suffix is technically
+# unbounded, but 5 chars ("_" + 4 digits) covers ~10k identical stems, far past
+# anything real; sizing it to 3 digits let a 1000th collision overrun MAX_PATH.
+_DEDUP_SUFFIX_RESERVE = 5
+
+# Prefix the community overview notes carry ("_COMMUNITY_Backend.md").
+_COMMUNITY_PREFIX = "_COMMUNITY_"
 
 
 def _dedup_node_filenames(G: nx.Graph, safe_name) -> dict[str, str]:
@@ -563,9 +587,16 @@ def to_obsidian(
 
     node_community = _node_community_map(communities)
 
+    # Cap stems against THIS vault's path, not just NAME_MAX: on Windows the
+    # 200-byte default plus an ordinary vault directory overruns MAX_PATH and
+    # every note write raises FileNotFoundError (#2655). No-op on POSIX.
+    _stem_limit = stem_filename_budget(out, reserve=_DEDUP_SUFFIX_RESERVE)
+
     # Map node_id → safe filename so wikilinks stay consistent.
     # Deduplicate: if two nodes produce the same filename, append a numeric suffix.
-    node_filename = _dedup_node_filenames(G, _obsidian_safe_stem)
+    node_filename = _dedup_node_filenames(
+        G, lambda label: _obsidian_safe_stem(label, _stem_limit)
+    )
 
     # Helper: compute dominant confidence for a node across all its edges
     def _dominant_confidence(node_id: str) -> str:
@@ -679,8 +710,13 @@ def to_obsidian(
     # this path had no dedup at all, so even same-case duplicate labels collided.
     community_filename: dict = {}
     used_community: set[str] = set()
+    # The community stem carries the "_COMMUNITY_" prefix on top of the dedup
+    # suffix, so it gets that much less of the MAX_PATH window (#2655).
+    _community_stem_limit = stem_filename_budget(
+        out, reserve=_DEDUP_SUFFIX_RESERVE + len(_COMMUNITY_PREFIX)
+    )
     for cid in communities:
-        base = f"_COMMUNITY_{_obsidian_safe_stem(_community_name(cid))}"
+        base = f"{_COMMUNITY_PREFIX}{_obsidian_safe_stem(_community_name(cid), _community_stem_limit)}"
         candidate = base
         n = 1
         while candidate.lower() in used_community:
@@ -755,7 +791,10 @@ def to_obsidian(
         if cross:
             lines.append("## Connections to other communities")
             for other_cid, edge_count in sorted(cross.items(), key=lambda x: -x[1]):
-                other_fname = community_filename.get(other_cid) or f"_COMMUNITY_{_obsidian_safe_stem(_community_name(other_cid))}"
+                other_fname = community_filename.get(other_cid) or (
+                    f"{_COMMUNITY_PREFIX}"
+                    f"{_obsidian_safe_stem(_community_name(other_cid), _community_stem_limit)}"
+                )
                 lines.append(f"- {edge_count} edge{'s' if edge_count != 1 else ''} to [[{other_fname}]]")
             lines.append("")
 
@@ -853,9 +892,18 @@ def to_canvas(
     # Obsidian canvas color codes (cycle through for communities)
     CANVAS_COLORS = ["1", "2", "3", "4", "5", "6"]  # red, orange, yellow, green, cyan, purple
 
-    # Build node_filenames if not provided (same dedup logic as to_obsidian)
+    # Build node_filenames if not provided (same dedup logic as to_obsidian).
+    # The CLI calls to_canvas without passing the map, so it must derive the
+    # SAME stem budget to keep card links pointing at the notes to_obsidian
+    # wrote — hence budgeting against the canvas's own directory, which is the
+    # vault directory (#2655).
+    _stem_limit = stem_filename_budget(
+        Path(output_path).parent, reserve=_DEDUP_SUFFIX_RESERVE
+    )
     if node_filenames is None:
-        node_filenames = _dedup_node_filenames(G, _obsidian_safe_stem)
+        node_filenames = _dedup_node_filenames(
+            G, lambda label: _obsidian_safe_stem(label, _stem_limit)
+        )
 
     # Fallback: with no community data (e.g. --no-cluster builds or a missing
     # analysis sidecar) the grid below produces nothing and the canvas is written
@@ -969,7 +1017,10 @@ def to_canvas(
             row = m_idx // inner_cols
             nx_x = gx + 20 + col * (180 + 20)
             nx_y = gy + 80 + row * (60 + 20)
-            fname = node_filenames.get(node_id, _obsidian_safe_stem(G.nodes[node_id].get("label", node_id)))
+            fname = node_filenames.get(
+                node_id,
+                _obsidian_safe_stem(G.nodes[node_id].get("label", node_id), _stem_limit),
+            )
             canvas_nodes.append({
                 "id": f"n_{node_id}",
                 "type": "file",

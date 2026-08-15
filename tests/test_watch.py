@@ -1683,10 +1683,12 @@ def test_queue_and_drain_pending_round_trip(tmp_path):
 
     pending_file = out / _PENDING_FILENAME
     assert pending_file.exists()
-    # Each path written on its own line.
-    assert pending_file.read_text(encoding="utf-8").splitlines() == [
-        "a.py", "sub/b.py", "c.md",
-    ]
+    # Each path written on its own line. Compared as Paths, not as strings: the
+    # documented contract is "one path per line" (see _queue_pending), not a
+    # separator convention, and os.fspath emits the native one — so a literal
+    # "sub/b.py" fails on Windows without any real defect.
+    lines = pending_file.read_text(encoding="utf-8").splitlines()
+    assert [Path(line) for line in lines] == paths
 
     drained = _drain_pending(out)
     assert drained == paths

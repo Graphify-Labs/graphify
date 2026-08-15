@@ -1455,3 +1455,34 @@ def test_file_hash_fastpath_still_serves_a_settled_file(tmp_path, monkeypatch):
     second = file_hash(f, tmp_path)
     assert second == first
     assert reads == [], "settled file was re-read; the stat fastpath is dead"
+
+
+def test_corrupt_semantic_entry_warns_and_is_a_miss(tmp_path):
+    """A corrupt (invalid-JSON) cache entry must not be silently swallowed
+    (#2405). Left unreported it fails to parse on every future run, re-billing
+    the semantic extraction forever with no diagnostic. check_semantic_cache
+    treats it as a miss (uncached) AND emits one aggregate warning naming the
+    count, mirroring the pre-fingerprint legacy-hit warning."""
+    from graphify.cache import (
+        check_semantic_cache,
+        save_semantic_cache,
+        cache_dir,
+    )
+
+    f = tmp_path / "doc.md"
+    f.write_text("# Doc\n\nBody.\n")
+    save_semantic_cache([{"id": "n", "source_file": "doc.md"}], [], root=tmp_path)
+
+    # Corrupt the on-disk entry (e.g. an old producer wrote unescaped
+    # backslashes, or a partial write left truncated JSON).
+    h = file_hash(f, tmp_path)
+    entry = cache_dir(tmp_path, "semantic") / f"{h}.json"
+    assert entry.exists()
+    entry.write_text('{"nodes": [ this is not valid json')
+
+    with pytest.warns(RuntimeWarning, match="corrupt"):
+        nodes, _, _, uncached = check_semantic_cache([str(f)], root=tmp_path)
+
+    # The corrupt entry is a miss, so the file is re-dispatched for extraction.
+    assert nodes == []
+    assert uncached == [str(f)]

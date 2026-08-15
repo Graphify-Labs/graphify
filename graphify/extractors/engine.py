@@ -1246,6 +1246,16 @@ def _js_local_bound_names(func_node, source: bytes) -> set[str]:
                 name = c.child_by_field_name("name")
                 if name is not None:
                     _js_collect_pattern_idents(name, source, bound)
+            elif c.type == "for_in_statement":
+                # `for (const entry of xs)` / `for (const {k} of xs)`: the loop
+                # binding is the `left` pattern, NOT wrapped in a
+                # variable_declarator, so the branch above misses it and `entry`
+                # read as a by-name reference to any same-named module callable
+                # (#2606). C-style `for (let i = 0; ...)` uses a lexical_declaration
+                # with real declarators, already covered by the recursion below.
+                left = c.child_by_field_name("left")
+                if left is not None:
+                    _js_collect_pattern_idents(left, source, bound)
             walk(c)
 
     body = func_node.child_by_field_name("body")
@@ -1865,6 +1875,78 @@ def _require_imports_js(node, source: bytes, file_nid: str, stem: str, edges: li
 
 _JS_FUNCTION_VALUE_TYPES = frozenset({"arrow_function", "function_expression", "function", "generator_function"})
 
+
+def _scan_js_nested_function_declarations(
+    container_node, parent_nid: str, *, source: bytes, config,
+    add_node, add_edge, callable_def_nids: set | None,
+    local_bound_names: dict | None, function_bodies: list,
+) -> None:
+    """Emit a node + `contains` edge for every named `function`/generator
+    declaration lexically nested inside *container_node*, scoped under
+    *parent_nid*, and track its body so calls made from inside it resolve
+    instead of dangling (#2653).
+
+    Recurses through non-function children AND through the bodies of nested
+    arrow / function expressions, so a `function` declared inside an arrow
+    callback (`useEffect(() => { function h(){} })`) or inside an arrow-defined
+    component (`const Panel = () => { function handleClick(){} }`, the React
+    idiom that motivated #2653) is captured too. Anonymous closures themselves
+    are not noded — they are attributed to the nearest enclosing named scope,
+    which is *parent_nid*.
+    """
+    if container_node is None:
+        return
+    for child in container_node.children:
+        if child.type in ("function_declaration", "generator_function_declaration"):
+            name_node = child.child_by_field_name(config.name_field)
+            if name_node is None:
+                for c in child.children:
+                    if c.type in config.name_fallback_child_types:
+                        name_node = c
+                        break
+            func_name = _read_text(name_node, source) if name_node else None
+            # A name that normalizes to nothing (e.g. minified `$`) would collapse
+            # the nested id onto parent_nid and leak the scan path (#1899); skip it.
+            if func_name and normalize_id(func_name):
+                line = child.start_point[0] + 1
+                nested_nid = _make_id(parent_nid, func_name)
+                add_node(nested_nid, f"{func_name}()", line)
+                add_edge(parent_nid, nested_nid, "contains", line)
+                if callable_def_nids is not None:
+                    callable_def_nids.add(nested_nid)
+                if local_bound_names is not None:
+                    local_bound_names[nested_nid] = _js_local_bound_names(child, source)
+                nested_body = _find_body(child, config)
+                if nested_body:
+                    function_bodies.append((nested_nid, nested_body))
+                    _scan_js_nested_function_declarations(
+                        nested_body, nested_nid, source=source, config=config,
+                        add_node=add_node, add_edge=add_edge,
+                        callable_def_nids=callable_def_nids,
+                        local_bound_names=local_bound_names,
+                        function_bodies=function_bodies,
+                    )
+        elif child.type in _JS_FUNCTION_VALUE_TYPES:
+            # An anonymous arrow/function expression is not itself a node, but a
+            # `function` declared inside its body still belongs to the enclosing
+            # named scope — descend into the body keeping the SAME parent_nid.
+            _scan_js_nested_function_declarations(
+                _find_body(child, config), parent_nid, source=source, config=config,
+                add_node=add_node, add_edge=add_edge,
+                callable_def_nids=callable_def_nids,
+                local_bound_names=local_bound_names,
+                function_bodies=function_bodies,
+            )
+        else:
+            _scan_js_nested_function_declarations(
+                child, parent_nid, source=source, config=config,
+                add_node=add_node, add_edge=add_edge,
+                callable_def_nids=callable_def_nids,
+                local_bound_names=local_bound_names,
+                function_bodies=function_bodies,
+            )
+
+
 def _js_topmost_closures(node, out: list) -> None:
     """Collect the TOPMOST closure nodes (arrow / function expressions) under
     ``node``, without descending into a found closure — its nested closures
@@ -1925,7 +2007,8 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                    parent_class_nid: str | None, add_node_fn, add_edge_fn,
                    callable_def_nids: set | None = None,
                    local_bound_names: dict | None = None,
-                   closure_locals_by_body: dict | None = None) -> bool:
+                   closure_locals_by_body: dict | None = None,
+                   config=None) -> bool:
     """Handle lexical_declaration (arrow functions, CJS requires, module-level const literals) for JS/TS. Returns True if handled."""
     # CommonJS / prototype member assignments whose value is a function:
     #   exports.X = () => {}     → file-contained function  X()
@@ -2043,6 +2126,18 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                             body = value.child_by_field_name("body")
                             if body:
                                 function_bodies.append((func_nid, body))
+                                # #2653: a `function` declared inside an arrow-defined
+                                # component (`const Panel = () => { function h(){} }`)
+                                # is otherwise never seen — the main walk does not
+                                # recurse into arrow bodies. Scan it here so the
+                                # nested declaration is noded and its calls resolve.
+                                _scan_js_nested_function_declarations(
+                                    body, func_nid, source=source, config=config,
+                                    add_node=add_node_fn, add_edge=add_edge_fn,
+                                    callable_def_nids=callable_def_nids,
+                                    local_bound_names=local_bound_names,
+                                    function_bodies=function_bodies,
+                                )
                             arrow_found = True
                     elif value and (
                         is_exported_scalar_binding
@@ -4101,6 +4196,16 @@ def _extract_generic(
                 if config.ts_module == "tree_sitter_c_sharp" and parent_class_nid:
                     csharp_method_scopes[id(body)] = (node, parent_class_nid)
                 function_bodies.append((func_nid, body))
+                if config.ts_module in (
+                    "tree_sitter_javascript", "tree_sitter_typescript"
+                ):
+                    _scan_js_nested_function_declarations(
+                        body, func_nid, source=source, config=config,
+                        add_node=add_node, add_edge=add_edge,
+                        callable_def_nids=callable_def_nids,
+                        local_bound_names=local_bound_names,
+                        function_bodies=function_bodies,
+                    )
                 if config.ts_module == "tree_sitter_kotlin":
                     # #2347: Kotlin anonymous objects (`object : Foo { … }`,
                     # node type `object_literal`). The function branch never
@@ -4193,7 +4298,7 @@ def _extract_generic(
                               nodes, edges, seen_ids, function_bodies,
                               parent_class_nid, add_node, add_edge,
                               callable_def_nids, local_bound_names,
-                              closure_locals_by_body):
+                              closure_locals_by_body, config=config):
                 return
 
         # TS namespace / module containers (internal_module, module)
@@ -4508,7 +4613,7 @@ def _extract_generic(
             return None
         return _read_text(scope, source)
 
-    _tracked_body_ids: set[int] = set()
+    _tracked_body_ids: set[object] = set()
     _JS_CLOSURE_TYPES = ("arrow_function", "function_expression")
     # #2575: nested NAMED functions get the same descent as closures. walk()
     # appends only the OUTER declaration's body to function_bodies and never
@@ -4538,7 +4643,7 @@ def _extract_generic(
             if (config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript")
                     and node.type in _JS_DESCEND_TYPES):
                 body = node.child_by_field_name("body")
-                if body is not None and id(body) not in _tracked_body_ids:
+                if body is not None and body not in _tracked_body_ids:
                     # This closure's own params/locals (`(r) => c.get(r)`) are
                     # scoped to it, not to the enclosing caller_nid — but its
                     # calls ARE attributed to caller_nid right here, so a bare
@@ -5185,7 +5290,7 @@ def _extract_generic(
     # skipped at the arrow boundary in walk_calls, losing its calls — so let
     # walk_calls descend into such untracked closures with the enclosing caller
     # (#1630 Pattern B). Guarding on the tracked set prevents double-walking.
-    _tracked_body_ids.update(id(b) for _, b in function_bodies)
+    _tracked_body_ids.update(b for _, b in function_bodies)
 
     # Body ids are unique (one language per file), so the Java (flat) and C#
     # (scoped, #2472) per-method receiver tables merge without collision — the
