@@ -1,34 +1,80 @@
 """Iterative sliding-window depth command for graphify.
 
-The `graphify depth` command runs the full extract pipeline per sub-bucket
-(an auto-detected top-level subdirectory, or a user-supplied `--focus` path)
-and merges the per-bucket graphs into a single cross-bucket graph. It is
-designed for the >500-file / >500K-word case where a single-pass build is
-too expensive or too noisy, and the user wants the depth-graph workflow:
-focus on each sub-system, then merge.
+================================================================
+WHATS-NEW / METHOD NAME: the "iterative sliding-window depth-graph"
+method, introduced for the >500-file / >500K-word case where a
+single-pass `graphify <root>` warns and asks the user to narrow
+manually.
 
-The command is a thin orchestration layer over the existing `extract` and
-`merge-graphs` subcommands. Per-bucket extract runs are invoked via
-subprocess so each bucket reuses the full pipeline (detect, AST, semantic
-extraction, cluster, report) without re-implementing it. Merging is done
-in-process against the same code path `merge-graphs` already uses, so node
-prefixes, hyperedge handling, and edge-direction preservation are identical
-to a manual `graphify merge-graphs` call.
+The method:
+  1. Auto-detects a corpus into N "buckets" (top-level subdirs with
+     at least M files / W words) — or accepts an explicit
+     `--focus <path>` set the user already knows about.
+  2. Runs the FULL extract pipeline (detect, AST, semantic
+     extraction, cluster, report) per bucket, via subprocess so
+     each bucket reuses the shipped pipeline without re-implementing
+     any of it.
+  3. Merges the per-bucket graphs into a single cross-bucket graph
+     using the same prefix-and-compose path the existing
+     `graphify merge-graphs` already uses, with explicit bucket
+     tags so each merged node's `repo` attribute is the bucket name.
+  4. Surfaces "cross-bucket signals" — entity LABELS (not ids) that
+     appear under multiple bucket prefixes in the merged graph —
+     in a new `DEPTH_REPORT.md`. A signal is the most actionable
+     cross-system hint a reviewer can get from a build: two
+     sub-systems both minting an entity called "User" (or
+     "Session", "Order", "Config") may be coincidence, may be a
+     deliberate shared abstraction, or may be a copy-paste that
+     should be deduplicated.
+  5. Supports resume (skip buckets whose graph.json is fresher
+     than the source mtime), transient-failure retry with
+     exponential backoff, parallel execution capped at 4 workers
+     (to respect LLM API rate limits when --mode deep is in
+     effect), and a --global flag that folds the cross-bucket
+     graph into the user's cross-repo global graph.
 
-Production scenarios covered:
-- Monorepo: auto-detects top-level subdirs, processes each.
-- Selective focus: `--focus` for explicit paths; useful when the user
-  already knows which sub-systems matter.
-- Resume after interruption: a per-bucket output dir means a partial run
-  is reusable; pass `--resume` to skip buckets whose graph.json exists
-  and is fresh against the source mtime.
-- CI: `--parallel` runs buckets concurrently for faster wall-clock.
-- Skip on error: a single failing bucket does not abort the rest.
+The new code is a thin orchestration layer over the existing
+`graphify extract` and `graphify merge-graphs` code paths. No
+existing command or its behaviour is changed.
 
-This module owns the orchestration, the auto-detection, the depth-aware
-report, and the cross-bucket signal detection. The actual extract and
-merge logic is reused as-is.
+================================================================
+AUTHORSHIP: implemented by JFWaskin. The iterative sliding-window
+depth-graph method (auto-detect → per-bucket extract → merge →
+cross-bucket signal detection → depth report) is a new contribution
+to graphify; it is not a refactor of an existing feature. The
+underlying `extract` and `merge-graphs` subcommands it composes
+are unchanged.
+
+================================================================
+PRODUCTION SCENARIOS COVERED (8):
+
+  1. Monorepo (>500 files). Auto-detects top-level subdirs as
+     buckets. Honors `.graphifyignore` and `.gitignore`.
+  2. Selective focus. `--focus packages/auth --focus packages/billing`
+     is the equivalent of "I already know which sub-systems
+     matter; just build those."
+  3. Resume after interruption. A per-bucket output dir means a
+     partial run is reusable; `--resume` skips buckets whose
+     `graph.json` is newer than the source mtime.
+  4. CI / flaky network. `--retries N --retry-backoff S` retries
+     transient failures (timeouts, 5xx, rate limits, connection
+     errors) with exponential backoff.
+  5. CI parallel. `--parallel N` runs buckets concurrently, capped
+     at 4 to respect LLM API rate limits when --mode deep is in
+     effect.
+  6. Cross-repo integration. `--global` folds the merged graph
+     into the user's cross-repo global graph (uses
+     `graphify.global_graph.global_add`); `--global-tag` overrides
+     the default tag.
+  7. Sandbox / read-only. `--dry-run` reports auto-detected buckets
+     without committing to a run.
+  8. Partial-failure containment. `--skip-on-error` (default)
+     continues past a single bucket failure; `--no-skip-on-error`
+     aborts on the first failure.
+
+================================================================
 """
+
 from __future__ import annotations
 
 import json
