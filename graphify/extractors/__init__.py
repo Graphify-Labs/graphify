@@ -19,6 +19,7 @@ from graphify.extractors.elixir import extract_elixir
 from graphify.extractors.fortran import extract_fortran
 from graphify.extractors.go import extract_go
 from graphify.extractors.json_config import extract_json
+from graphify.extractors.jenkins import extract_jenkinsfile
 from graphify.extractors.julia import extract_julia
 from graphify.extractors.markdown import extract_markdown
 from graphify.extractors.objc import extract_objc
@@ -47,6 +48,7 @@ LANGUAGE_EXTRACTORS: dict[str, Callable[[Path], dict]] = {
     "fortran": extract_fortran,
     "go": extract_go,
     "json": extract_json,
+    "jenkinsfile": extract_jenkinsfile,
     "julia": extract_julia,
     "lazarus_form": extract_lazarus_form,
     "markdown": extract_markdown,

@@ -508,6 +508,10 @@ def classify_file(path: Path) -> FileType | None:
     from graphify.manifest_ingest import is_package_manifest_path
     if is_package_manifest_path(path):
         return FileType.CODE
+    # Jenkins Pipeline files are conventionally extensionless, so they need a
+    # filename-based route before the generic shebang/suffix checks.
+    if path.name.lower() == "jenkinsfile":
+        return FileType.CODE
     # Compound extensions must be checked before simple suffix lookup
     if path.name.lower().endswith(".blade.php"):
         return FileType.CODE
