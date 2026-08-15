@@ -337,3 +337,37 @@ def test_affected_resolves_equivalent_path_forms(tmp_path, monkeypatch):
     ):
         assert resolve_seed(graph, query) == "target", query
 
+
+def test_affected_absolute_seed_resolves_via_graph_root_off_cwd(tmp_path, monkeypatch, capsys):
+    """An absolute-path seed resolves off the graph's location, not the cwd (#2706).
+
+    The shipped `./`/absolute fix only matched when the working directory already
+    was the analysed repo root. Editors and scripts pass an absolute path from
+    anywhere, so `affected` kept answering "nothing depends on this" — the
+    maintainer's noted follow-up. The root is now derived from the graph's own
+    location (`<root>/graphify-out/graph.json`).
+    """
+    from graphify.paths import GRAPHIFY_OUT_NAME
+
+    repo_root = tmp_path / "repo"
+    out_dir = repo_root / GRAPHIFY_OUT_NAME
+    out_dir.mkdir(parents=True)
+    g = nx.DiGraph()
+    g.add_node("target", label="Foo", source_file="pkg/foo.py", source_location="L1")
+    g.add_node("caller", label="X()", source_file="app.py", source_location="L4")
+    g.add_edge("caller", "target", relation="calls")
+    gp = out_dir / "graph.json"
+    gp.write_text(json.dumps(json_graph.node_link_data(g, edges="links")), encoding="utf-8")
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)  # NOT the repo root — mimics an editor/script caller
+    abs_seed = str(repo_root / "pkg" / "foo.py")
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(mainmod.sys, "argv", ["graphify", "affected", abs_seed, "--graph", str(gp)])
+    mainmod.main()
+
+    out = capsys.readouterr().out
+    assert "Affected nodes for Foo" in out
+    assert "X()" in out
+
