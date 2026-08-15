@@ -633,9 +633,21 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
         print(f"  command installed ->  {command_dst}")
 
     if cfg["claude_md"]:
-        # Register in the matching Claude Code scope.
-        claude_md = (project_dir / ".claude" / "CLAUDE.md") if project else Path.home() / ".claude" / "CLAUDE.md"
-        registration = _skill_registration(".claude/skills/graphify/SKILL.md" if project else "~/.claude/skills/graphify/SKILL.md")
+        # Register in the matching Claude Code scope. Honor CLAUDE_CONFIG_DIR
+        # for the global (non-project) case, same as _platform_skill_destination
+        # does for the skill copy path (#527) -- this always-on registration
+        # path was missed by that fix (#2694).
+        if project:
+            claude_md = project_dir / ".claude" / "CLAUDE.md"
+            skill_ref = ".claude/skills/graphify/SKILL.md"
+        elif os.environ.get("CLAUDE_CONFIG_DIR"):
+            config_dir = Path(os.environ["CLAUDE_CONFIG_DIR"])
+            claude_md = config_dir / "CLAUDE.md"
+            skill_ref = str(config_dir / "skills" / "graphify" / "SKILL.md")
+        else:
+            claude_md = Path.home() / ".claude" / "CLAUDE.md"
+            skill_ref = "~/.claude/skills/graphify/SKILL.md"
+        registration = _skill_registration(skill_ref)
         if claude_md.exists():
             content = claude_md.read_text(encoding="utf-8")
             if "graphify" in content:
