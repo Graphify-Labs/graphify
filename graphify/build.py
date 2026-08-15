@@ -29,6 +29,7 @@ import sys
 import unicodedata
 from pathlib import Path
 import networkx as nx
+from graphify.edges import effective_weight
 from .ids import make_id, normalize_id as _normalize_id
 from .paths import default_graph_json as _default_graph_json
 from .paths import is_absolute_any_platform as _is_abs
@@ -1167,6 +1168,10 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 if not math.isfinite(_num_val) or _num_val < 0:
                     _num_val = 1.0
                 attrs[_num_key] = _num_val
+        # Persist the score consumers should use for ranking, clustering, and
+        # rendering.  Raw relation weight alone makes inferred edges look as
+        # strong as explicitly extracted edges.
+        attrs["effective_weight"] = effective_weight(attrs)
         # Backfill source_file from the endpoint nodes (every node carries one).
         # Semantic/LLM edges occasionally omit it, which downstream validation
         # flags and leaves query results with no file reference (#1279).

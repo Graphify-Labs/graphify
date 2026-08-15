@@ -62,6 +62,12 @@ def test_inferred_edges_score_in_range():
     assert found, "No INFERRED edges found in test fixture"
 
 
+def test_effective_weight_multiplies_relation_weight_by_confidence():
+    G = build_from_json(_make_extraction())
+    inferred = next(d for _, _, d in G.edges(data=True) if d.get("confidence") == "INFERRED")
+    assert inferred["effective_weight"] == 0.75 * 0.8
+
+
 def test_ambiguous_edges_score_at_most_04():
     """AMBIGUOUS edges must have confidence_score <= 0.4."""
     G = build_from_json(_make_extraction())
@@ -96,6 +102,7 @@ def test_confidence_score_round_trip():
         score = link["confidence_score"]
         assert isinstance(score, float), f"confidence_score should be float, got {type(score)}"
         assert 0.0 <= score <= 1.0, f"confidence_score={score} out of range"
+        assert "effective_weight" in link
 
 
 def test_to_json_defaults_missing_confidence_score():

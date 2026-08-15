@@ -3,6 +3,7 @@ import math
 import re
 import tempfile
 from pathlib import Path
+import networkx as nx
 from graphify.build import build_from_json
 from graphify.cluster import cluster
 from graphify.export import to_json, to_cypher, to_graphml, to_html, to_canvas, to_obsidian
@@ -334,6 +335,19 @@ def test_to_html_contains_nodes_and_edges():
         content = out.read_text()
         assert "RAW_NODES" in content
         assert "RAW_EDGES" in content
+
+
+def test_to_html_filters_edges_by_effective_weight():
+    G = nx.Graph()
+    G.add_nodes_from(["a", "b", "c"])
+    G.add_edge("a", "b", relation="strong", confidence="EXTRACTED", confidence_score=1.0, weight=1.0)
+    G.add_edge("a", "c", relation="weak", confidence="INFERRED", confidence_score=0.2, weight=1.0)
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "graph.html"
+        to_html(G, {0: ["a", "b", "c"]}, str(out), min_effective_weight=0.5)
+        content = out.read_text()
+    assert '"label": "strong"' in content
+    assert '"label": "weak"' not in content
 
 
 def test_to_html_member_counts_accepted():

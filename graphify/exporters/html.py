@@ -8,6 +8,7 @@ from graphify.analyze import _node_community_map
 import json
 import networkx as nx
 from graphify.security import sanitize_label
+from graphify.edges import effective_weight, passes_edge_filter
 
 
 MAX_NODES_FOR_VIZ = 5_000
@@ -399,6 +400,7 @@ def to_html(
     member_counts: dict[int, int] | None = None,
     node_limit: int | None = None,
     learning_overlay: dict | None = None,
+    min_effective_weight: float = 0.0,
 ) -> None:
     """Generate an interactive vis.js HTML visualization of the graph.
 
@@ -425,6 +427,8 @@ def to_html(
                 meta.add_node(str(cid), label=(community_labels or {}).get(cid, f"Community {cid}"))
             edge_counts = _Counter()
             for u, v in G.edges():
+                if not passes_edge_filter(G.edges[u, v], min_effective_weight=min_effective_weight):
+                    continue
                 cu, cv = node_to_community.get(u), node_to_community.get(v)
                 if cu is not None and cv is not None and cu != cv:
                     edge_counts[(min(cu, cv), max(cu, cv))] += 1
@@ -461,7 +465,8 @@ def to_html(
                     })
                 meta.graph["hyperedges"] = remapped
             to_html(meta, meta_communities, output_path,
-                    community_labels=community_labels, member_counts=mc)
+                    community_labels=community_labels, member_counts=mc,
+                    min_effective_weight=min_effective_weight)
             print(f"graph.html written (aggregated: {meta.number_of_nodes()} community nodes, {meta.number_of_edges()} cross-community edges)")
             print("Tip: run with --obsidian for full node-level detail.")
             return
@@ -557,6 +562,8 @@ def to_html(
     # for `calls` and `rationale_for` in the rendered graph (#563).
     vis_edges = []
     for u, v, data in G.edges(data=True):
+        if not passes_edge_filter(data, min_effective_weight=min_effective_weight):
+            continue
         confidence = data.get("confidence", "EXTRACTED")
         relation = data.get("relation", "")
         true_src = data.get("_src", u)
@@ -570,6 +577,7 @@ def to_html(
             "width": 2 if confidence == "EXTRACTED" else 1,
             "color": {"opacity": 0.7 if confidence == "EXTRACTED" else 0.35},
             "confidence": confidence,
+            "effective_weight": effective_weight(data),
         })
 
     # Build community legend data

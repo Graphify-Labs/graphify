@@ -17,6 +17,7 @@ from graphify.security import sanitize_label
 from graphify.analyze import _node_community_map
 from graphify.build import edge_data
 from graphify.paths import stem_filename_budget
+from graphify.edges import effective_weight
 
 from graphify.exporters.graphdb import push_to_falkordb, push_to_neo4j  # noqa: E402,F401
 
@@ -317,6 +318,7 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
         if "confidence_score" not in link:
             conf = link.get("confidence", "EXTRACTED")
             link["confidence_score"] = _CONFIDENCE_SCORE_DEFAULTS.get(conf, 1.0)
+        link["effective_weight"] = effective_weight(link)
         # Restore original edge direction. Undirected NetworkX storage may
         # canonicalize endpoint order, flipping `calls` and other directional
         # edges in graph.json. The build path stashes the true endpoints in

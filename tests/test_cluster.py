@@ -1,5 +1,7 @@
 import json
 import sys
+import os
+import subprocess
 import networkx as nx
 from pathlib import Path
 from graphify.build import build_from_json
@@ -98,3 +100,40 @@ def test_remap_communities_to_previous_assigns_deterministic_new_ids():
     assert list(remapped.keys()) == [0, 1]
     assert remapped[0] == ["x", "y", "z"]
     assert remapped[1] == ["m"]
+
+
+def test_cluster_uses_effective_edge_weight_and_excludes_weighted_hubs():
+    G = nx.Graph()
+    G.add_edge("hub", "a", weight=1.0, confidence="INFERRED", confidence_score=0.2)
+    G.add_edge("hub", "b", weight=1.0, confidence="EXTRACTED", confidence_score=1.0)
+    G.add_edge("a", "b", weight=1.0, confidence="EXTRACTED", confidence_score=1.0)
+    communities = cluster(G, exclude_hubs_percentile=50)
+    assert {n for nodes in communities.values() for n in nodes} == set(G)
+
+
+def test_partition_is_stable_for_string_nodes_across_runs():
+    G = nx.Graph()
+    for left, right in (("alpha", "beta"), ("beta", "gamma"), ("delta", "epsilon")):
+        G.add_edge(left, right, weight=1.0, confidence="EXTRACTED", confidence_score=1.0)
+    first = cluster(G)
+    second = cluster(G)
+    assert first == second
+
+
+def test_partition_is_stable_across_fresh_processes():
+    script = """
+import json
+import networkx as nx
+from graphify.cluster import cluster
+G = nx.Graph()
+for left, right in ((\"alpha\", \"beta\"), (\"beta\", \"gamma\"), (\"delta\", \"epsilon\")):
+    G.add_edge(left, right, weight=1.0, confidence=\"EXTRACTED\", confidence_score=1.0)
+print(json.dumps(cluster(G), sort_keys=True))
+"""
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(Path(__file__).parents[1])
+    runs = [
+        subprocess.check_output([sys.executable, "-c", script], env=env, text=True)
+        for _ in range(2)
+    ]
+    assert runs[0] == runs[1]
