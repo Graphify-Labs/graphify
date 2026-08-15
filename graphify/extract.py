@@ -1650,9 +1650,19 @@ def extract_python(path: Path) -> dict:
     return result
 
 
+def _canonical_suffix(path: Path) -> str:
+    """Return the configured canonical suffix for ``path``."""
+    from graphify.detect import EXTENSION_ALIASES
+
+    suffix = path.suffix.lower()
+    return EXTENSION_ALIASES.get(suffix, suffix)
+
+
 def extract_js(path: Path) -> dict:
     """Extract classes, functions, arrow functions, and imports from a .js/.ts/.tsx file."""
-    config = _TS_CONFIG if path.suffix in (".ts", ".tsx") else _JS_CONFIG
+    config = (
+        _TS_CONFIG if _canonical_suffix(path) in (".ts", ".tsx") else _JS_CONFIG
+    )
     return _extract_generic(path, config)
 
 
@@ -3695,17 +3705,27 @@ def _get_extractor(path: Path) -> Any | None:
     """Return the correct extractor function for a file, or None if unsupported."""
     if path.name.endswith(".blade.php"):
         return extract_blade
-    suffix = path.suffix
+    suffix = path.suffix.lower()
     extractor = _DISPATCH.get(suffix)
     if extractor is not None:
         return extractor
     # Honor user-registered extension aliases (e.g. .pic → .php) declared via
     # GRAPHIFY_EXTENSION_ALIASES or register_extension_alias().
     from graphify.detect import EXTENSION_ALIASES
-    canonical = EXTENSION_ALIASES.get(suffix.lower())
+    canonical = EXTENSION_ALIASES.get(suffix)
     if canonical is not None:
         return _DISPATCH.get(canonical)
     return None
+
+
+def _initialize_worker_extension_aliases(
+    alias_pairs: tuple[tuple[str, str], ...],
+) -> None:
+    """Apply the parent process's extension aliases in a spawned worker."""
+    from graphify.detect import register_extension_alias
+
+    for custom, canonical in alias_pairs:
+        register_extension_alias(custom, canonical)
 
 
 def _extract_single_file(args: tuple) -> tuple[int, dict]:
@@ -3754,10 +3774,17 @@ def _extract_parallel(
 
     root_str = str(effective_root)
     work_items = [(idx, str(path), root_str) for idx, path in uncached_work]
+    from graphify.detect import EXTENSION_ALIASES
+
+    alias_pairs = tuple(EXTENSION_ALIASES.items())
 
     done_count = 0
     _PROGRESS_INTERVAL = 100
-    with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as pool:
+    with concurrent.futures.ProcessPoolExecutor(
+        max_workers=max_workers,
+        initializer=_initialize_worker_extension_aliases,
+        initargs=(alias_pairs,),
+    ) as pool:
         futures = {
             pool.submit(_extract_single_file, item): item[0] for item in work_items
         }
@@ -3917,9 +3944,11 @@ def extract(
                 e["target"] = id_remap[e["target"]]
 
     # Add cross-file class-level edges (Python only - uses Python parser internally)
-    py_paths = [p for p in paths if p.suffix == ".py"]
+    py_paths = [p for p in paths if _canonical_suffix(p) == ".py"]
     if py_paths:
-        py_results = [r for r, p in zip(per_file, paths) if p.suffix == ".py"]
+        py_results = [
+            r for r, p in zip(per_file, paths) if _canonical_suffix(p) == ".py"
+        ]
         try:
             cross_file_edges = _resolve_cross_file_imports(py_results, py_paths)
             all_edges.extend(cross_file_edges)
@@ -3928,9 +3957,11 @@ def extract(
             logging.getLogger(__name__).warning("Cross-file import resolution failed, skipping: %s", exc)
 
     # Cross-file Java import resolution
-    java_paths = [p for p in paths if p.suffix == ".java"]
+    java_paths = [p for p in paths if _canonical_suffix(p) == ".java"]
     if java_paths:
-        java_results = [r for r, p in zip(per_file, paths) if p.suffix == ".java"]
+        java_results = [
+            r for r, p in zip(per_file, paths) if _canonical_suffix(p) == ".java"
+        ]
         try:
             all_edges.extend(_resolve_cross_file_java_imports(java_results, java_paths))
         except Exception as exc:
@@ -4009,7 +4040,12 @@ def extract(
     }
 
 
-def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | None = None) -> list[Path]:
+def collect_files(
+    target: Path,
+    *,
+    follow_symlinks: bool = False,
+    root: Path | None = None,
+) -> list[Path]:
     if target.is_file():
         return [target]
     _EXTENSIONS = {
@@ -4019,10 +4055,11 @@ def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | N
         ".lua", ".toc", ".zig", ".ps1",
         ".m", ".mm",
     }
-    from graphify.detect import _load_graphifyignore, _is_ignored, EXTENSION_ALIASES
-    # Include any user-registered alias whose canonical is a discoverable code extension
+    from graphify.detect import EXTENSION_ALIASES, _is_ignored, _load_graphifyignore
+
+    # Include aliases whose canonical extension has an AST extractor.
     for _custom_ext, _canonical_ext in EXTENSION_ALIASES.items():
-        if _canonical_ext in _EXTENSIONS:
+        if _canonical_ext in _DISPATCH:
             _EXTENSIONS.add(_custom_ext)
     ignore_root = root if root is not None else target
     patterns = _load_graphifyignore(ignore_root)
@@ -4031,14 +4068,14 @@ def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | N
         return bool(patterns and _is_ignored(p, ignore_root, patterns))
 
     if not follow_symlinks:
-        results: list[Path] = []
-        for ext in sorted(_EXTENSIONS):
-            results.extend(
-                p for p in target.rglob(f"*{ext}")
-                if not any(part.startswith(".") for part in p.parts)
-                and not _ignored(p)
-            )
-        return sorted(results)
+        return sorted(
+            p
+            for p in target.rglob("*")
+            if p.is_file()
+            and p.suffix.lower() in _EXTENSIONS
+            and not any(part.startswith(".") for part in p.parts)
+            and not _ignored(p)
+        )
     # Walk with symlink following + cycle detection
     results = []
     for dirpath, dirnames, filenames in os.walk(target, followlinks=True):
@@ -4054,7 +4091,11 @@ def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | N
             continue
         for fname in filenames:
             p = dp / fname
-            if p.suffix in _EXTENSIONS and not fname.startswith(".") and not _ignored(p):
+            if (
+                p.suffix.lower() in _EXTENSIONS
+                and not fname.startswith(".")
+                and not _ignored(p)
+            ):
                 results.append(p)
     return sorted(results)
 
