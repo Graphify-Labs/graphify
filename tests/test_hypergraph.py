@@ -137,6 +137,20 @@ def test_attach_hyperedges_skips_entry_without_id():
     assert G.graph.get("hyperedges", []) == []
 
 
+def test_attach_hyperedges_tolerates_id_less_persisted():
+    # Regression for #2775: the semantic extractor emits hyperedges with no `id`
+    # and build.py persists them verbatim, so a prior graph.json can carry id-less
+    # hyperedges. On the next (incremental) run, attach_hyperedges read that
+    # persisted set with a hard `h["id"]` and died with `KeyError: 'id'`, writing
+    # nothing. Reading the persisted set must tolerate missing ids.
+    G = nx.DiGraph()
+    G.graph["hyperedges"] = [{"nodes": ["a", "b"], "type": "project", "attributes": {}}]
+    attach_hyperedges(G, [{"id": "flow_a", "label": "Flow A", "nodes": ["A", "B"]}])
+    # No crash; the id-less persisted entry is retained and the new id-bearing
+    # incoming hyperedge is appended.
+    assert len(G.graph["hyperedges"]) == 2
+
+
 # ---------------------------------------------------------------------------
 # 3. to_json includes hyperedges key
 # ---------------------------------------------------------------------------
