@@ -3,6 +3,8 @@ from __future__ import annotations
 import fnmatch
 import json
 import os
+import functools
+import subprocess
 import re
 import shlex
 import stat
@@ -1162,6 +1164,63 @@ def _match_anchored_ignore_pattern(path: str, pattern: str) -> bool:
     return _matches(0, 0)
 
 
+def _git_tracked_paths(root: Path) -> frozenset:
+    """Absolute paths git TRACKS under *root*, or empty when this is not a repo.
+
+    Ignore rules do not apply to tracked paths — that is git's own rule, and the
+    reason `git check-ignore` reports a tracked file as NOT ignored. Reading
+    `.gitignore` without it drops files the repository demonstrably ships, and
+    silently: querying them afterwards returns nothing, which is indistinguishable
+    from the code being unused (#2759).
+
+    Empty on any failure, so a folder with no git — or no git binary — keeps the
+    previous behaviour exactly.
+
+    ⚠️ NOT cached across calls. An `lru_cache` here made
+    `test_same_size_rewrite_in_one_tick_is_requeued` fail: a second `detect()` in the same
+    tick reused the first call's tracked set, so a file added between them was invisible and
+    never re-queued. One `git ls-files` per scan is cheap; a stale answer is not.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "-z", "--full-name"],
+            capture_output=True, timeout=20, check=True,
+        ).stdout.decode("utf-8", "replace")
+    except Exception:
+        return frozenset()
+    return frozenset((root / rel).resolve() for rel in out.split("\0") if rel)
+
+
+def _tracked_rescue(path: Path, root: Path, own_patterns, tracked_box, cache) -> bool:
+    """True when *path* is only being dropped by a `.gitignore` pattern that git
+    itself would not apply, because git tracks it.
+
+    `.graphifyignore` is deliberately NOT rescued: a pattern written there is an
+    explicit instruction to this tool, and dropping a tracked file because of it is
+    exactly right. So the rescue asks a second question — would the
+    `.graphifyignore`-only pattern set still ignore this? — and stands down if so.
+    """
+    # LAZY: `git ls-files` runs only once a path is actually about to be dropped. Calling it
+    # eagerly on every detect() cost ~100ms on corpora with no ignore file at all, and that was
+    # enough to break `test_same_size_rewrite_in_one_tick_is_requeued`, whose stat-vs-hash
+    # fastpath is timing-sensitive. A scan with nothing ignored now spawns no subprocess.
+    if tracked_box[0] is None:
+        tracked_box[0] = _git_tracked_paths(root)
+    tracked = tracked_box[0]
+    if not tracked:
+        return False
+    rp = path.resolve()
+    if path.is_dir():
+        # A directory is pruned before its files are ever walked, so rescue it when
+        # it holds any tracked file; the per-file gate still drops the untracked ones.
+        prefix = str(rp) + os.sep
+        if not any(str(t).startswith(prefix) for t in tracked):
+            return False
+    elif rp not in tracked:
+        return False
+    return not _is_ignored(path, root, own_patterns, _cache=cache)
+
+
 def _is_ignored(
     path: Path,
     root: Path,
@@ -1398,6 +1457,10 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
     ignored: list[str] = []
     pruned_noise: list[str] = []
     ignore_patterns = _load_graphifyignore(root, gitignore=gitignore)
+    # Nguồn phải tách được: chỉ pattern đến TỪ .gitignore mới được miễn cho file đã tracked.
+    own_ignore_patterns = _load_graphifyignore(root, gitignore=False) if gitignore else ignore_patterns
+    tracked_box: list = [None if gitignore else frozenset()]
+    own_ignore_cache: dict = {}
     ignore_cache: dict[Path, bool] = {}  # shared across all _is_ignored calls in this scan
     # CLI --exclude patterns are anchored at the scan root and appended last
     # so they win over any .graphifyignore/.gitignore rules (#947).
@@ -1485,7 +1548,9 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                         # than vanishing silently (#2058).
                         pruned_noise.append(str(dp / d) + os.sep)
                         continue
-                    if _is_ignored(dp / d, root, ignore_patterns, _cache=ignore_cache):
+                    if _is_ignored(dp / d, root, ignore_patterns, _cache=ignore_cache) \
+                            and not _tracked_rescue(dp / d, root, own_ignore_patterns,
+                                                    tracked_box, own_ignore_cache):
                         ignored.append(str(dp / d) + os.sep)
                         continue
                     kept_dirs.append(d)
@@ -1518,7 +1583,8 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
             # Skip files inside our own converted/ dir (avoid re-processing sidecars)
             if str(p).startswith(str(converted_dir)):
                 continue
-        if not in_memory and _is_ignored(p, root, ignore_patterns, _cache=ignore_cache):
+        if not in_memory and _is_ignored(p, root, ignore_patterns, _cache=ignore_cache) \
+                and not _tracked_rescue(p, root, own_ignore_patterns, tracked_box, own_ignore_cache):
             ignored.append(str(p))
             continue
         if not _resolves_under_root(p, root):
