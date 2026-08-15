@@ -340,12 +340,14 @@ def _node_search_text(data: dict, nid: str) -> str:
     source = (data.get("source_file") or "").lower()
     source_tokens = " ".join(_search_tokens(data.get("source_file") or ""))
     nid_text = str(nid).lower()
-    summary = _strip_diacritics(data.get("summary") or "").lower()
-    fields = (norm_label, label_tokens, nid_text, source, source_tokens, summary)
+    fields = (norm_label, label_tokens, nid_text, source, source_tokens)
     if not nid_text.isascii():
         nid_folded = _strip_diacritics(str(nid)).lower()
         if nid_folded != nid_text:
             fields += (nid_folded,)
+    summary = _strip_diacritics(data.get("summary") or "").lower()
+    if summary:
+        fields += (summary,)
     return "\x00".join(fields)
 
 
