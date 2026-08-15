@@ -776,6 +776,31 @@ def test_extract_js_member_require_emits_property_symbol():
     assert _make_id(helpers_stem, "helperFn") in sym_targets
 
 
+def test_extract_js_function_scoped_require_emits_import_edge(tmp_path):
+    """Lazy CommonJS requires belong to their enclosing function, not nowhere."""
+    target = tmp_path / "target.js"
+    target.write_text("exports.helper = () => 42;\n", encoding="utf-8")
+    caller = tmp_path / "lazy.js"
+    caller.write_text(
+        "function useItLazily() {\n"
+        "  const { helper } = require('./target');\n"
+        "  return helper();\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    result = extract([caller, target], cache_root=tmp_path, root=tmp_path, parallel=False)
+    labels = {node["id"]: node["label"] for node in result["nodes"]}
+    lazy_edges = [
+        edge for edge in result["edges"]
+        if edge["relation"] == "imports_from" and "target" in edge["target"]
+    ]
+
+    assert len(lazy_edges) == 1
+    assert labels[lazy_edges[0]["source"]] == "useItLazily()"
+    assert lazy_edges[0]["confidence"] == "EXTRACTED"
+
+
 def test_extract_js_arrow_function_still_extracted():
     """Regression: arrow functions in lexical_declaration must still produce nodes."""
     from graphify.extract import extract_js

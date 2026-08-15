@@ -1786,7 +1786,7 @@ def _find_require_call(value_node):
         return _find_require_call(obj)
     return None
 
-def _require_imports_js(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str) -> bool:
+def _require_imports_js(node, source: bytes, importer_nid: str, stem: str, edges: list, str_path: str) -> bool:
     """Detect CommonJS require imports inside lexical_declaration / variable_declaration.
 
     Handles three patterns:
@@ -1825,7 +1825,7 @@ def _require_imports_js(node, source: bytes, file_nid: str, stem: str, edges: li
         tgt_nid, resolved_path = resolved
         line = node.start_point[0] + 1
         edge = {
-            "source": file_nid,
+            "source": importer_nid,
             "target": tgt_nid,
             "relation": "imports_from",
             "context": "import",
@@ -1862,7 +1862,7 @@ def _require_imports_js(node, source: bytes, file_nid: str, stem: str, edges: li
         if target_stem is not None:
             for sym in sym_names:
                 edges.append({
-                    "source": file_nid,
+                    "source": importer_nid,
                     "target": _make_id(target_stem, sym),
                     "relation": "imports",
                     "context": "import",
@@ -4657,6 +4657,14 @@ def _extract_generic(
                     for child in node.children:
                         walk_calls(child, caller_nid, receiver_types, closure_locals)
             return
+
+        # CommonJS imports are valid at any lexical depth.  The module-level
+        # pass records top-level require() declarations; this pass owns function
+        # bodies, so detect lazy/cycle-breaking requires here and attribute the
+        # dependency to the enclosing callable rather than silently dropping it.
+        if (config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript")
+                and node.type in ("lexical_declaration", "variable_declaration")):
+            _require_imports_js(node, source, caller_nid, stem, edges, str_path)
 
         if node.type in config.call_types:
             # JS/TS dynamic imports: await import('./foo.js')
