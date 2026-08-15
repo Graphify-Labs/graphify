@@ -4,6 +4,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.44 (unreleased)
 
+- Fix: a lazy CommonJS `require(...)` inside a function body (the idiom for breaking circular dependencies) now emits the same `imports_from`/`imports` dependency edges as a top-level require, attributed to the enclosing function, instead of being silently dropped; a dynamic `require(variable)` is still skipped (#2700, thanks @rajanpanth).
 - Fix: a JS/TS identifier bound by an import whose target resolves outside the scanned corpus (e.g. a `lucide-react` icon) is now shadowed, so using it as a value no longer fabricates an INFERRED `indirect_call` onto an unrelated same-named callable elsewhere in the corpus; a relative/in-corpus import still resolves to its real target (#2757, thanks @phudayyy).
 - Fix: an OCaml qualified call `M.f` to an external module (one not defined in the same file, e.g. Hardcaml's `Reg_spec.create`) no longer binds to a same-named local `let f` — which produced a false `calls` edge and, when the caller was that local `f`, a `f -> f` self-loop. External qualified calls are kept as a distinct target labelled by the full path; unqualified calls and calls into a locally-defined module still resolve locally, and cross-file `Geo.area` still collapses onto another file's `area`.
 
