@@ -2306,7 +2306,7 @@ def _lang_is_case_insensitive(source_file: object) -> bool:
 # no family and are never filtered — same permissive default as before.
 _LANG_FAMILY_BY_EXT: dict[str, str] = {
     # JS/TS module graph (SFCs embed JS/TS)
-    ".js": "jsts", ".jsx": "jsts", ".mjs": "jsts", ".cjs": "jsts",
+    ".js": "jsts", ".jsx": "jsts", ".mjs": "jsts", ".cjs": "jsts", ".gs": "jsts",
     ".ts": "jsts", ".tsx": "jsts", ".mts": "jsts", ".cts": "jsts",
     ".vue": "jsts", ".svelte": "jsts", ".astro": "jsts",
     # JVM interop
@@ -5371,6 +5371,7 @@ _DISPATCH: dict[str, Any] = {
     ".jsx": extract_js,
     ".mjs": extract_js,
     ".cjs": extract_js,
+    ".gs": extract_js,
     ".ts": extract_js,
     ".tsx": extract_js,
     ".mts": extract_js,

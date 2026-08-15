@@ -2385,10 +2385,24 @@ def test_extract_legitimately_empty_result_keeps_no_error_marker(
 # Bash extractor tests (#866)
 # ---------------------------------------------------------------------------
 
-def test_dispatch_includes_sh_and_json():
+def test_dispatch_includes_sh_json_and_google_apps_script():
     assert ".sh" in _DISPATCH
     assert ".bash" in _DISPATCH
     assert ".json" in _DISPATCH
+    assert ".gs" in _DISPATCH
+
+
+def test_extract_google_apps_script_as_javascript(tmp_path):
+    """Google Apps Script files must enter the JS extractor instead of being skipped."""
+    script = tmp_path / "automation.gs"
+    script.write_text(
+        "function synchronizeSheet() { return SpreadsheetApp.getActive(); }\n",
+        encoding="utf-8",
+    )
+
+    result = extract([script], cache_root=tmp_path, root=tmp_path, parallel=False)
+
+    assert "synchronizeSheet()" in {node["label"] for node in result["nodes"]}
 
 
 def test_extract_bash_finds_functions():
