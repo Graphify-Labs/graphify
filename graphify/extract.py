@@ -4057,9 +4057,9 @@ def collect_files(
     }
     from graphify.detect import EXTENSION_ALIASES, _is_ignored, _load_graphifyignore
 
-    # Include aliases whose canonical extension has an AST extractor.
+    # Include aliases whose canonical extension is already discoverable.
     for _custom_ext, _canonical_ext in EXTENSION_ALIASES.items():
-        if _canonical_ext in _DISPATCH:
+        if _canonical_ext in _EXTENSIONS:
             _EXTENSIONS.add(_custom_ext)
     ignore_root = root if root is not None else target
     patterns = _load_graphifyignore(ignore_root)
@@ -4068,14 +4068,14 @@ def collect_files(
         return bool(patterns and _is_ignored(p, ignore_root, patterns))
 
     if not follow_symlinks:
-        return sorted(
-            p
-            for p in target.rglob("*")
-            if p.is_file()
-            and p.suffix.lower() in _EXTENSIONS
-            and not any(part.startswith(".") for part in p.parts)
-            and not _ignored(p)
-        )
+        results: list[Path] = []
+        for ext in sorted(_EXTENSIONS):
+            results.extend(
+                p for p in target.rglob(f"*{ext}")
+                if not any(part.startswith(".") for part in p.parts)
+                and not _ignored(p)
+            )
+        return sorted(results)
     # Walk with symlink following + cycle detection
     results = []
     for dirpath, dirnames, filenames in os.walk(target, followlinks=True):
@@ -4092,7 +4092,7 @@ def collect_files(
         for fname in filenames:
             p = dp / fname
             if (
-                p.suffix.lower() in _EXTENSIONS
+                p.suffix in _EXTENSIONS
                 and not fname.startswith(".")
                 and not _ignored(p)
             ):

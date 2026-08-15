@@ -380,10 +380,12 @@ def test_collect_files_includes_aliased_extension(alias_state, tmp_path):
     from graphify.extract import collect_files
 
     register_extension_alias(".pic", ".php")
-    (tmp_path / "main.PIC").write_text("<?php class Foo {} ?>")
+    (tmp_path / "main.pic").write_text("<?php class Foo {} ?>")
+    (tmp_path / "uppercase.PIC").write_text("<?php class Uppercase {} ?>")
     (tmp_path / "ignore.txt").write_text("not code")
     found = collect_files(tmp_path)
-    assert any(p.name == "main.PIC" for p in found)
+    assert any(p.name == "main.pic" for p in found)
+    assert not any(p.name == "uppercase.PIC" for p in found)
 
 
 def test_extract_dispatches_aliased_extension(alias_state, tmp_path):
