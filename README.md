@@ -624,6 +624,12 @@ uv tool upgrade graphifyy
 graphify install  # overwrites the skill file
 ```
 
+If another configuration manager owns the skill instructions, place a
+`.graphify_externally_managed` marker beside `SKILL.md` instead. Graphify will
+then suppress its version warning and refuse to overwrite or remove that skill,
+or mutate that platform's hooks and instruction files. Remove the marker only
+when you want Graphify's installer to take ownership.
+
 **Claude Code prompt cache invalidated after every `graphify extract`**
 Graphify writes output files (`graph.json`, `graphify-out/`) into the workspace. If those paths aren't ignored, every write invalidates Claude Code's prompt cache, forcing a full re-upload at cache-write rates on the next turn. Add them to `.claudeignore`:
 ```text
