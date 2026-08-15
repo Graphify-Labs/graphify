@@ -1910,6 +1910,11 @@ def _augment_cpp_string_tests(path: Path, result: dict) -> dict:
     str_path = str(path)
     stem = _file_stem(path)
     file_nid = _make_id(str_path)
+    # A test name that is all punctuation (TEST_CASE("***")) normalizes to empty,
+    # so _make_id(stem, name) collapses onto this bare-stem id — colliding with
+    # the file's namespace and silently swallowing every later such test under
+    # one id (#1899). Detect that collapse and fall back to a line-positional id.
+    stem_collapse_id = _make_id(stem)
     nodes = result.setdefault("nodes", [])
     edges = result.setdefault("edges", [])
     seen_ids = {n.get("id") for n in nodes}
@@ -1918,6 +1923,8 @@ def _augment_cpp_string_tests(path: Path, result: dict) -> dict:
         test_name = m.group(1)
         line = source.count("\n", 0, m.start()) + 1
         test_nid = _make_id(stem, test_name)
+        if test_nid == stem_collapse_id:
+            test_nid = _make_id(stem, "test", f"L{line}")
         if test_nid in seen_ids:
             continue
         seen_ids.add(test_nid)

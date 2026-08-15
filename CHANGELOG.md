@@ -4,6 +4,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.44 (unreleased)
 
+- Fix: doctest/Catch2 string-named test cases (`TEST_CASE("...")`, `SCENARIO`, `TEST_CASE_TEMPLATE`), which tree-sitter-cpp drops as ERROR nodes, are recovered as callable nodes contained by the file (#2594, thanks @ousamabenyounes); a punctuation-only test name gets a distinct line-positional id instead of collapsing onto the file-stem id.
 - Fix: `graphify affected` resolves an absolute-path seed against the repo root derived from the graph's own location instead of the current working directory, so a blast-radius query with an absolute seed run from anywhere (an editor, a script) no longer silently returns nothing; a seed outside the root still misses cleanly (#2706, thanks @ousamabenyounes).
 - Fix: a lazy CommonJS `require(...)` inside a function body (the idiom for breaking circular dependencies) now emits the same `imports_from`/`imports` dependency edges as a top-level require, attributed to the enclosing function, instead of being silently dropped; a dynamic `require(variable)` is still skipped (#2700, thanks @rajanpanth).
 - Fix: a JS/TS identifier bound by an import whose target resolves outside the scanned corpus (e.g. a `lucide-react` icon) is now shadowed, so using it as a value no longer fabricates an INFERRED `indirect_call` onto an unrelated same-named callable elsewhere in the corpus; a relative/in-corpus import still resolves to its real target (#2757, thanks @phudayyy).

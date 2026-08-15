@@ -215,6 +215,31 @@ def test_cpp_recovers_doctest_string_named_test_cases():
     }
     assert test_ids and test_ids <= contained
 
+
+def test_cpp_string_tests_punctuation_only_names_stay_distinct(tmp_path):
+    """A punctuation-only test name normalizes to empty, so a naive
+    ``_make_id(stem, name)`` collapses onto the bare file-stem id — colliding
+    with the file namespace and swallowing every later such test under one id
+    (#1899). The guard gives each a distinct line-positional id."""
+    f = tmp_path / "punct_tests.cpp"
+    f.write_text(
+        'TEST_CASE("***") { CHECK(1); }\n'
+        'TEST_CASE("...") { CHECK(2); }\n'
+        'SCENARIO("boots up") { REQUIRE(1); }\n',
+        encoding="utf-8",
+    )
+    r = extract_cpp(f)
+    from graphify.extract import _make_id, _file_stem
+    stem_collapse = _make_id(_file_stem(f))
+    tests = [n for n in r["nodes"] if n["label"].startswith('"')]
+    ids = [n["id"] for n in tests]
+    # both punctuation-only cases recovered, plus the SCENARIO macro
+    assert '"***"' in {n["label"] for n in tests}
+    assert '"..."' in {n["label"] for n in tests}
+    assert '"boots up"' in {n["label"] for n in tests}
+    assert len(set(ids)) == len(ids)                      # all distinct
+    assert all(i != stem_collapse for i in ids)           # none squats on the file stem
+
 def test_cpp_finds_includes():
     r = extract_cpp(FIXTURES / "sample.cpp")
     assert "imports" in _relations(r)
