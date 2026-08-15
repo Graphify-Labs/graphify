@@ -874,8 +874,40 @@ def test_config_baked_into_generated_hook(tmp_path):
     commit_hook = (repo / ".git" / "hooks" / "post-commit").read_text()
     checkout_hook = (repo / ".git" / "hooks" / "post-checkout").read_text()
 
-    assert 'export GRAPHIFY_VIZ_NODE_LIMIT="0"' in commit_hook
-    assert 'export GRAPHIFY_VIZ_NODE_LIMIT="0"' in checkout_hook
+    assert 'export GRAPHIFY_VIZ_NODE_LIMIT="${GRAPHIFY_VIZ_NODE_LIMIT:-0}"' in commit_hook
+    assert 'export GRAPHIFY_VIZ_NODE_LIMIT="${GRAPHIFY_VIZ_NODE_LIMIT:-0}"' in checkout_hook
+
+
+def test_baked_viz_limit_yields_to_an_explicit_per_run_override(tmp_path):
+    """Persisting the project default must not clobber an explicit per-run
+    GRAPHIFY_VIZ_NODE_LIMIT: the baked line uses the `${VAR:-<n>}` default form,
+    so an already-set env value wins (mirrors GRAPHIFY_MAX_WORKERS)."""
+    repo = _make_git_repo(tmp_path)
+    (repo / ".graphifyrc").write_text("viz_node_limit=100\n", encoding="utf-8")
+    install(repo)
+    commit_hook = (repo / ".git" / "hooks" / "post-commit").read_text()
+
+    # default form, not an unconditional assignment that would override the env
+    assert 'export GRAPHIFY_VIZ_NODE_LIMIT="${GRAPHIFY_VIZ_NODE_LIMIT:-100}"' in commit_hook
+    assert 'export GRAPHIFY_VIZ_NODE_LIMIT="100"' not in commit_hook
+    # prove the shell semantics: an explicit env value survives the export line
+    line = 'export GRAPHIFY_VIZ_NODE_LIMIT="${GRAPHIFY_VIZ_NODE_LIMIT:-100}"'
+    out = subprocess.run(
+        ["sh", "-c", f'GRAPHIFY_VIZ_NODE_LIMIT=7; {line}; echo "$GRAPHIFY_VIZ_NODE_LIMIT"'],
+        capture_output=True, text=True, check=True,
+    )
+    assert out.stdout.strip() == "7"
+
+
+def test_status_survives_a_malformed_graphifyrc(tmp_path):
+    """A typo in the committed .graphifyrc must not turn the read-only `status`
+    diagnostic into a traceback; it reports the problem and continues."""
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    (repo / ".graphifyrc").write_text("viz_node_limit=not-an-int\n", encoding="utf-8")
+
+    result = status(repo)  # must not raise
+    assert "installed" in result
 
 
 def test_changing_config_updates_existing_hook(tmp_path):
@@ -890,8 +922,8 @@ def test_changing_config_updates_existing_hook(tmp_path):
 
     assert "updated existing" in result
     commit_hook = (repo / ".git" / "hooks" / "post-commit").read_text()
-    assert 'export GRAPHIFY_VIZ_NODE_LIMIT="0"' in commit_hook
-    assert 'export GRAPHIFY_VIZ_NODE_LIMIT="5000"' not in commit_hook
+    assert 'export GRAPHIFY_VIZ_NODE_LIMIT="${GRAPHIFY_VIZ_NODE_LIMIT:-0}"' in commit_hook
+    assert 'export GRAPHIFY_VIZ_NODE_LIMIT="${GRAPHIFY_VIZ_NODE_LIMIT:-5000}"' not in commit_hook
     assert commit_hook.count("# graphify-hook-start") == 1
 
 
@@ -914,7 +946,7 @@ def test_user_hook_content_survives_update(tmp_path):
     content = post_commit.read_text()
     assert "echo 'user content before'" in content
     assert "echo 'user content after'" in content
-    assert 'export GRAPHIFY_VIZ_NODE_LIMIT="0"' in content
+    assert 'export GRAPHIFY_VIZ_NODE_LIMIT="${GRAPHIFY_VIZ_NODE_LIMIT:-0}"' in content
     assert "old block" not in content
 
 
@@ -943,4 +975,4 @@ def test_both_hooks_configured(tmp_path):
 
     for name in ("post-commit", "post-checkout"):
         hook_text = (repo / ".git" / "hooks" / name).read_text()
-        assert 'export GRAPHIFY_VIZ_NODE_LIMIT="42"' in hook_text
+        assert 'export GRAPHIFY_VIZ_NODE_LIMIT="${GRAPHIFY_VIZ_NODE_LIMIT:-42}"' in hook_text

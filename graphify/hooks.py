@@ -721,7 +721,11 @@ def install(path: Path = Path(".")) -> str:
     cfg = _load_graphifyrc(root)
     viz_limit = cfg.get("viz_node_limit")
     if viz_limit is not None:
-        viz_export = f'export GRAPHIFY_VIZ_NODE_LIMIT="{viz_limit}"\n'
+        # Use the `:-` default form (like GRAPHIFY_MAX_WORKERS below) so an
+        # explicit `GRAPHIFY_VIZ_NODE_LIMIT=... git commit` still wins over the
+        # baked project default — persisting config must not clobber a per-run
+        # override.
+        viz_export = f'export GRAPHIFY_VIZ_NODE_LIMIT="${{GRAPHIFY_VIZ_NODE_LIMIT:-{viz_limit}}}"\n'
     else:
         viz_export = ""
 
@@ -756,7 +760,13 @@ def status(path: Path = Path(".")) -> str:
     if root is None:
         return "Not in a git repository."
     hooks_dir = _user_hooks_dir(_hooks_dir(root))
-    cfg = _load_graphifyrc(root)
+    # status is a read-only diagnostic: a malformed .graphifyrc must not turn it
+    # into a traceback. Report the config problem and continue with no limit.
+    try:
+        cfg = _load_graphifyrc(root)
+    except ValueError as exc:
+        cfg = {}
+        print(f"  warning: {exc}")
     cfg_limit = cfg.get("viz_node_limit")
 
     def _check(name: str, marker: str) -> str:
@@ -767,8 +777,14 @@ def status(path: Path = Path(".")) -> str:
         if marker not in text:
             return "not installed (hook exists but graphify not found)"
         if cfg_limit is not None:
-            m = re.search(r'export GRAPHIFY_VIZ_NODE_LIMIT="(\d+)"', text)
-            installed_limit = int(m.group(1)) if m else None
+            # Baked as `"${GRAPHIFY_VIZ_NODE_LIMIT:-<n>}"` so a per-run override
+            # wins; match the default <n>, and still accept the older bare
+            # `"<n>"` form from hooks installed before that change.
+            m = re.search(
+                r'export GRAPHIFY_VIZ_NODE_LIMIT="(?:\$\{GRAPHIFY_VIZ_NODE_LIMIT:-(\d+)\}|(\d+))"',
+                text,
+            )
+            installed_limit = int(m.group(1) or m.group(2)) if m else None
             if installed_limit != cfg_limit:
                 return (
                     f"installed (out of date: hook has limit "
