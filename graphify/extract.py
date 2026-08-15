@@ -79,6 +79,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _contained_in_package,
     _decldef_class_stem,
     _disambiguate_colliding_node_ids,
+    _SOURCE_KEY_CACHE,
     _find_workspace_root,
     _go_import_path_for_file,
     _is_type_like_definition,
@@ -5319,6 +5320,9 @@ def extract(
     # Workspace package manifests/globs can change during watch or repeated extraction.
     _WORKSPACE_PACKAGE_CACHE.clear()
     _XAML_CSHARP_CLASS_CACHE.clear()
+    # Per-run memo for _source_key (resolution.py) — bounds it to one extract()
+    # call's corpus instead of growing unboundedly across a long-lived watch process.
+    _SOURCE_KEY_CACHE.clear()
 
     # Infer a common root for cache keys (use first diverging segment, not sum of all matches)
     try:

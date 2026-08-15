@@ -637,14 +637,29 @@ def _vue_mask_non_script(src: str) -> tuple[str, str | None]:
     out.append(_blank(src[pos:]))
     return "".join(out), lang
 
+# (source_file, root) -> resolved key. _disambiguate_colliding_node_ids calls
+# this once per node/edge/raw_call, and the same source_file repeats for every
+# item extracted from one file, so the uncached path was re-doing a
+# filesystem resolve() (stat + realpath) for every edge and raw_call in the
+# batch. Pure function of its arguments for the lifetime of one extract() run
+# (the corpus doesn't move mid-run), so memoizing is safe.
+_SOURCE_KEY_CACHE: dict[tuple[str, Path], str] = {}
+
+
 def _source_key(source_file: str, root: Path) -> str:
     if not source_file:
         return ""
+    cache_key = (source_file, root)
+    cached = _SOURCE_KEY_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
     source_path = Path(source_file)
     try:
-        return str(source_path.resolve().relative_to(root))
+        result = str(source_path.resolve().relative_to(root))
     except Exception:
-        return str(source_path)
+        result = str(source_path)
+    _SOURCE_KEY_CACHE[cache_key] = result
+    return result
 
 def _node_disambiguation_source_key(node: dict, root: Path) -> str:
     source_file = str(node.get("source_file", ""))
@@ -1668,9 +1683,20 @@ def _parse_python_tree(path: Path):
         return None
 
 def _walk_python_tree(node):
-    yield node
-    for child in node.children:
-        yield from _walk_python_tree(child)
+    """Pre-order DFS over the tree (node, then its children left to right).
+
+    Iterative with an explicit stack rather than ``yield from`` recursion: each
+    ``yield from`` frame re-forwards every descendant's value through the whole
+    call chain, so a recursive generator costs O(depth) per yielded node on a
+    tree this large. The stack walk yields each node exactly once, directly.
+    """
+    stack = [node]
+    while stack:
+        n = stack.pop()
+        yield n
+        children = n.children
+        for i in range(len(children) - 1, -1, -1):
+            stack.append(children[i])
 
 def _python_import_from_module(node, source: bytes) -> tuple[int, str] | None:
     level = 0
