@@ -176,6 +176,28 @@ dist/
 !src/**
 ```
 
+### Custom file extensions
+
+If your project uses non-standard extensions for a language graphify already
+supports (for example, `.pic` files containing PHP), set aliases before running
+graphify:
+
+```bash
+export GRAPHIFY_EXTENSION_ALIASES=".pic:.php,.foo:.py"
+/graphify .
+```
+
+Aliases can also be registered programmatically:
+
+```python
+from graphify.detect import register_extension_alias
+
+register_extension_alias(".pic", ".php")
+```
+
+The canonical extension must already be a known code or document extension.
+Aliases are applied during file detection, discovery, and AST extraction.
+
 ---
 
 ## Team setup
