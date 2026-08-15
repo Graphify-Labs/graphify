@@ -1221,12 +1221,62 @@ def _tracked_rescue(path: Path, root: Path, own_patterns, tracked_box, cache) ->
     return not _is_ignored(path, root, own_patterns, _cache=cache)
 
 
+_TRACKED_CACHE: "dict[Path, frozenset]" = {}
+_OWN_PATTERNS_CACHE: "dict[Path, list]" = {}
+
+
+def _git_tracked_paths(root: Path) -> frozenset:
+    """Absolute paths git TRACKS under *root*; empty when there is nothing tracked here.
+
+    Ignore rules do not apply to tracked paths — git's own rule, and the reason
+    `git check-ignore` reports a tracked file as NOT ignored (#2759).
+
+    `-C root` lists only what is tracked UNDER root, so a scan of a plain directory
+    that merely happens to sit inside some unrelated repository comes back empty and
+    behaves exactly as before. Cached per root: one `git ls-files` per scan.
+    """
+    key = root.resolve()
+    if key not in _TRACKED_CACHE:
+        try:
+            out = subprocess.run(
+                ["git", "-C", str(key), "ls-files", "-z"],
+                capture_output=True, timeout=20, check=True,
+            ).stdout.decode("utf-8", "replace")
+            _TRACKED_CACHE[key] = frozenset((key / r).resolve() for r in out.split("\x00") if r)
+        except Exception:
+            _TRACKED_CACHE[key] = frozenset()
+    return _TRACKED_CACHE[key]
+
+
+def _tracked_exemption(path: Path, root: Path) -> bool:
+    """True when *path* is only ignored by a `.gitignore` pattern git would not apply.
+
+    Two conditions, and the second is what keeps `.graphifyignore` working: a pattern
+    written there is an explicit instruction to THIS tool, and repositories use it to
+    keep their own tracked test trees out of the graph on purpose. So the exemption
+    re-asks with the `.graphifyignore`-only set and stands down if that alone ignores
+    the path.
+
+    Called only for a path already judged ignored, so the `git ls-files` behind it
+    never runs on a scan with nothing ignored.
+    """
+    tracked = _git_tracked_paths(root)
+    if not tracked or path.resolve() not in tracked:
+        return False
+    key = root.resolve()
+    if key not in _OWN_PATTERNS_CACHE:
+        _OWN_PATTERNS_CACHE[key] = _load_graphifyignore(root, gitignore=False)
+    own = _OWN_PATTERNS_CACHE[key]
+    return not (own and _is_ignored(path, root, own, _rescue=False))
+
+
 def _is_ignored(
     path: Path,
     root: Path,
     patterns: list[tuple[Path, str]],
     *,
     _cache: dict[Path, bool] | None = None,
+    _rescue: bool = True,
 ) -> bool:
     """Return True if the path should be ignored per .graphifyignore patterns.
 
@@ -1314,8 +1364,14 @@ def _is_ignored(
     for part in rel_parts[:-1]:
         ancestor = ancestor / part
         if _eval(ancestor):
-            return True
-    return _eval(path)
+            # Tổ tiên bị loại ⇒ file bị loại — trừ khi git TRACK file này và chỉ
+            # `.gitignore` mới loại nó. Cố ý KHÔNG chạm `_cache`: verdict thô của tổ
+            # tiên vẫn đúng cho các file chưa track nằm cùng thư mục.
+            return not (_rescue and _tracked_exemption(path, root))
+    verdict = _eval(path)
+    if verdict and _rescue and _tracked_exemption(path, root):
+        return False
+    return verdict
 
 
 def ignored_predicate(
