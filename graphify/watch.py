@@ -1,9 +1,12 @@
 # monitor a folder and auto-trigger --update when files change
 from __future__ import annotations
 import json
+import os
 import sys
 import time
 from pathlib import Path
+
+_GRAPHIFY_OUT = os.environ.get("GRAPHIFY_OUT", "graphify-out")
 
 
 from graphify.detect import CODE_EXTENSIONS, DOC_EXTENSIONS, PAPER_EXTENSIONS, IMAGE_EXTENSIONS
@@ -68,7 +71,7 @@ def _rebuild_code(watch_path: Path, *, follow_symlinks: bool = False, force: boo
         # Filter by node ID membership in the new AST output, not by file_type —
         # INFERRED/AMBIGUOUS nodes extracted from code files also carry file_type="code"
         # and would be wrongly dropped by a file_type-based filter.
-        out = watch_path / "graphify-out"
+        out = watch_path / _GRAPHIFY_OUT
         existing_graph = out / "graph.json"
         if existing_graph.exists():
             try:
@@ -159,7 +162,7 @@ def check_update(watch_path: Path) -> bool:
     re-extraction via `/graphify --update` — this function only signals
     that the update is needed.
     """
-    flag = Path(watch_path) / "graphify-out" / "needs_update"
+    flag = Path(watch_path) / _GRAPHIFY_OUT / "needs_update"
     if flag.exists():
         print(f"[graphify check-update] Pending non-code changes in {watch_path}.")
         print("[graphify check-update] Run `/graphify --update` to apply semantic re-extraction.")
@@ -168,7 +171,7 @@ def check_update(watch_path: Path) -> bool:
 
 def _notify_only(watch_path: Path) -> None:
     """Write a flag file and print a notification (fallback for non-code-only corpora)."""
-    flag = watch_path / "graphify-out" / "needs_update"
+    flag = watch_path / _GRAPHIFY_OUT / "needs_update"
     flag.parent.mkdir(parents=True, exist_ok=True)
     flag.write_text("1", encoding="utf-8")
     print(f"\n[graphify watch] New or changed files detected in {watch_path}")
@@ -213,7 +216,7 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
                 return
             if any(part.startswith(".") for part in path.parts):
                 return
-            if "graphify-out" in path.parts:
+            if _GRAPHIFY_OUT in path.parts:
                 return
             last_trigger = time.monotonic()
             pending = True
