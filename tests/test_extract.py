@@ -821,6 +821,34 @@ def test_extract_js_this_assigned_methods(tmp_path):
     assert (owner, ".getUser()") in method_edges
 
 
+def test_extract_js_factory_object_assigned_methods(tmp_path):
+    """Methods assigned to a local object-literal factory API remain visible."""
+    from graphify.extract import extract_js
+    f = tmp_path / "factory.js"
+    f.write_text(
+        "function createApi(deps) {\n"
+        "  const api = {};\n"
+        "  api.sourceClips = async function sourceClips(topic) { return deps.fetch(topic); };\n"
+        "  api.renderVideo = function renderVideo(clips) { return api.sourceClips(clips); };\n"
+        "  return api;\n"
+        "}\n"
+    )
+
+    result = extract_js(f)
+    by_label = {n["label"]: n for n in result["nodes"]}
+    assert {"createApi()", "api", ".sourceClips()", ".renderVideo()"} <= set(by_label)
+
+    factory_nid = by_label["createApi()"]["id"]
+    api_nid = by_label["api"]["id"]
+    source_clips_nid = by_label[".sourceClips()"]["id"]
+    render_video_nid = by_label[".renderVideo()"]["id"]
+    edges = {(e["source"], e["relation"], e["target"]) for e in result["edges"]}
+    assert (factory_nid, "contains", api_nid) in edges
+    assert (api_nid, "method", source_clips_nid) in edges
+    assert (api_nid, "method", render_video_nid) in edges
+    assert (render_video_nid, "calls", source_clips_nid) in edges
+
+
 def test_extract_js_commonjs_exports_assignment(tmp_path):
     """`exports.X = fn` and `module.exports.X = fn` must produce function nodes."""
     from graphify.extract import extract_js
