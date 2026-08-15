@@ -4,6 +4,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.44 (unreleased)
 
+- Fix: a JS/TS inline or nested function expression — including a generator function expression (`function*(k){…}`) — no longer fabricates an INFERRED `indirect_call` when one of its parameters/locals shares a name with an unrelated callable; the expression's own bindings now shadow the name (#2752, thanks @imagineers-tyler), completing the shadow family alongside catch/arrow/loop/external-import (#2757).
 - Fix: a git-tracked file that also matches a `.gitignore` pattern (a committed file later added to `.gitignore`, or a force-added one) is no longer dropped from the corpus, matching git's own behavior of never un-tracking such a file; `.graphifyignore`/`--exclude` stay authoritative and a non-git corpus is unaffected (#2759, thanks @NithishKumar04). The `git ls-files` probe is skipped entirely when no `.gitignore` is in play, so ordinary corpora pay nothing for it.
 
 - Fix: doctest/Catch2 string-named test cases (`TEST_CASE("...")`, `SCENARIO`, `TEST_CASE_TEMPLATE`), which tree-sitter-cpp drops as ERROR nodes, are recovered as callable nodes contained by the file (#2594, thanks @ousamabenyounes); a punctuation-only test name gets a distinct line-positional id instead of collapsing onto the file-stem id.

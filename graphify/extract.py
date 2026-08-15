@@ -793,7 +793,7 @@ _JS_CONFIG = LanguageConfig(
     # subtree and read as by-name references (#2241 family). A top-level
     # `const f = function (…) {}` is tracked via its declarator and was already
     # fine; the inline/nested forms are what this covers.
-    function_boundary_types=frozenset({"function_declaration", "generator_function_declaration", "arrow_function", "method_definition", "function_expression"}),
+    function_boundary_types=frozenset({"function_declaration", "generator_function_declaration", "arrow_function", "method_definition", "function_expression", "generator_function"}),
     import_handler=_import_js,
 )
 
@@ -815,7 +815,7 @@ _TS_CONFIG = LanguageConfig(
     call_accessor_field="property",
     call_accessor_object_field="object",
     # `function_expression`: see the note on the JS config above.
-    function_boundary_types=frozenset({"function_declaration", "generator_function_declaration", "arrow_function", "method_definition", "function_expression"}),
+    function_boundary_types=frozenset({"function_declaration", "generator_function_declaration", "arrow_function", "method_definition", "function_expression", "generator_function"}),
     import_handler=_import_js,
 )
 

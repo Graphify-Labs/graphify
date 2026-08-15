@@ -4711,7 +4711,8 @@ def _extract_generic(
     # _tracked_body_ids guard below still prevents double-walking the
     # top-level ones (those are entered via their own function_bodies entry).
     _JS_DESCEND_TYPES = _JS_CLOSURE_TYPES + (
-        "function_declaration", "generator_function_declaration")
+        "function_declaration", "generator_function_declaration",
+        "generator_function")
 
     def walk_calls(
         node,

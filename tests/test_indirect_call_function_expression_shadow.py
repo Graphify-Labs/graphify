@@ -189,3 +189,38 @@ def test_typescript_function_expression_shadows(tmp_path):
         os.chdir(old)
     nid = {n["label"].rstrip("()"): n["id"] for n in r["nodes"]}
     assert all(t != nid["k"] for _s, t in _indirect(r))
+
+
+def test_generator_function_expression_param_shadows(tmp_path):
+    """A GENERATOR function expression (`function*(k){}`) must shadow its param
+    the same way a plain function expression does — the type was in
+    generator_function_declaration form only, so the expression form still
+    fabricated the edge until generator_function joined the boundary set."""
+    r, nid = _extract_js_dir(tmp_path, {
+        "vendor.min.js": VENDOR,
+        "a.js": "export function run(xs, m){ const g = function*(k){ yield m.indexOf(k); }; return g; }\n",
+    })
+    assert all(t != nid["k"] for _s, t in _indirect(r))
+
+
+def test_tsx_function_expression_shadows(tmp_path):
+    """`.tsx` derives its boundary set from the TS config by reference; assert the
+    coupling so a future refactor that gives TSX its own literal can't silently
+    regress the shadow."""
+    base = tmp_path / "src"
+    base.mkdir()
+    (base / "vendor.min.tsx").write_text(VENDOR)
+    (base / "a.tsx").write_text(
+        "export function run(xs: number[], m: number[]) {\n"
+        "  return xs.some(function (k: number) { return m.indexOf(k) >= 0; });\n"
+        "}\n"
+    )
+    old = os.getcwd()
+    try:
+        os.chdir(tmp_path)
+        r = extract([Path("src") / "vendor.min.tsx", Path("src") / "a.tsx"],
+                    cache_root=Path(".cache"), parallel=False)
+    finally:
+        os.chdir(old)
+    nid = {n["label"].rstrip("()"): n["id"] for n in r["nodes"]}
+    assert all(t != nid["k"] for _s, t in _indirect(r))
