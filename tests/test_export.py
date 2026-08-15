@@ -350,6 +350,20 @@ def test_to_html_filters_edges_by_effective_weight():
     assert '"label": "weak"' not in content
 
 
+def test_to_obsidian_filters_weak_connections_by_effective_weight():
+    G = nx.Graph()
+    G.add_node("a", label="Alpha")
+    G.add_node("b", label="Beta")
+    G.add_node("c", label="Gamma")
+    G.add_edge("a", "b", relation="strong", confidence="EXTRACTED", confidence_score=1.0, weight=1.0)
+    G.add_edge("a", "c", relation="weak", confidence="INFERRED", confidence_score=0.2, weight=1.0)
+    with tempfile.TemporaryDirectory() as tmp:
+        to_obsidian(G, {0: ["a", "b", "c"]}, tmp, min_effective_weight=0.5)
+        alpha = (Path(tmp) / "Alpha.md").read_text()
+    assert "[[Beta]]" in alpha
+    assert "[[Gamma]]" not in alpha
+
+
 def test_to_html_member_counts_accepted():
     """to_html accepts member_counts without raising."""
     G = make_graph()

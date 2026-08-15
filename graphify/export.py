@@ -17,7 +17,7 @@ from graphify.security import sanitize_label
 from graphify.analyze import _node_community_map
 from graphify.build import edge_data
 from graphify.paths import stem_filename_budget
-from graphify.edges import effective_weight
+from graphify.edges import effective_weight, passes_edge_filter
 
 from graphify.exporters.graphdb import push_to_falkordb, push_to_neo4j  # noqa: E402,F401
 
@@ -551,12 +551,16 @@ def to_obsidian(
     output_dir: str,
     community_labels: dict[int, str] | None = None,
     cohesion: dict[int, float] | None = None,
+    min_effective_weight: float = 0.0,
 ) -> int:
     """Export graph as an Obsidian vault - one .md file per node with [[wikilinks]],
     plus one _COMMUNITY_name.md overview note per community (sorted to top by underscore prefix).
 
     Open the output directory as a vault in Obsidian to get an interactive
     graph view with community colors and full-text search over node metadata.
+
+    ``min_effective_weight`` filters weak/inferred connections consistently with
+    the HTML exporter.  The default of ``0.0`` preserves the historical export.
 
     Returns the number of node notes + community notes written.
     """
@@ -594,6 +598,9 @@ def to_obsidian(
     # every note write raises FileNotFoundError (#2655). No-op on POSIX.
     _stem_limit = stem_filename_budget(out, reserve=_DEDUP_SUFFIX_RESERVE)
 
+    def _edge_allowed(edata: dict) -> bool:
+        return passes_edge_filter(edata, min_effective_weight=min_effective_weight)
+
     # Map node_id → safe filename so wikilinks stay consistent.
     # Deduplicate: if two nodes produce the same filename, append a numeric suffix.
     node_filename = _dedup_node_filenames(
@@ -604,6 +611,8 @@ def to_obsidian(
     def _dominant_confidence(node_id: str) -> str:
         confs = []
         for u, v, edata in G.edges(node_id, data=True):
+            if not _edge_allowed(edata):
+                continue
             confs.append(edata.get("confidence", "EXTRACTED"))
         if not confs:
             return "EXTRACTED"
@@ -656,7 +665,10 @@ def to_obsidian(
         lines += ["---", "", f"# {label}", ""]
 
         # Outgoing edges as wikilinks
-        neighbors = list(G.neighbors(node_id))
+        neighbors = [
+            neighbor for neighbor in G.neighbors(node_id)
+            if _edge_allowed(edge_data(G, node_id, neighbor))
+        ]
         if neighbors:
             lines.append("## Connections")
             for neighbor in sorted(neighbors, key=lambda n: G.nodes[n].get("label", n)):
@@ -681,6 +693,8 @@ def to_obsidian(
     for cid in communities:
         inter_community_edges[cid] = {}
     for u, v in G.edges():
+        if not _edge_allowed(edge_data(G, u, v)):
+            continue
         cu = node_community.get(u)
         cv = node_community.get(v)
         if cu is not None and cv is not None and cu != cv:
@@ -694,7 +708,9 @@ def to_obsidian(
         neighbor_cids = {
             node_community[nb]
             for nb in G.neighbors(node_id)
-            if nb in node_community and node_community[nb] != node_community.get(node_id)
+            if nb in node_community
+            and node_community[nb] != node_community.get(node_id)
+            and _edge_allowed(edge_data(G, node_id, nb))
         }
         return len(neighbor_cids)
 
@@ -802,7 +818,14 @@ def to_obsidian(
 
         # Top bridge nodes - highest degree nodes that connect to other communities
         bridge_nodes = [
-            (node_id, G.degree(node_id), _community_reach(node_id))
+            (
+                node_id,
+                sum(
+                    1 for neighbor in G.neighbors(node_id)
+                    if _edge_allowed(edge_data(G, node_id, neighbor))
+                ),
+                _community_reach(node_id),
+            )
             for node_id in members
             if _community_reach(node_id) > 0
         ]
