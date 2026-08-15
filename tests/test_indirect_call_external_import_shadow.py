@@ -152,3 +152,24 @@ def test_unimported_same_file_callable_still_emits(tmp_path):
     )})
     indirect = _rels(r, "indirect_call")
     assert (nid["run"], nid["handler"]) in indirect
+
+
+def test_external_import_shadow_does_not_bind_to_a_same_named_local_callable(tmp_path):
+    """The precise collision the fix must survive: a name that is BOTH imported
+    externally AND defined as a callable in another corpus file. Using the
+    external `Filter` value must not fabricate an indirect_call onto the unrelated
+    corpus `Filter` — while a genuine by-name use of a local callable still binds."""
+    r, nid = _extract_js_dir(tmp_path, {
+        "table.ts": "export function Filter() { return null; }\n",   # unrelated corpus callable
+        "toolbar.tsx": (
+            "import { Filter } from 'lucide-react';\n"                # external, same name
+            "function onClick(x) { return x; }\n"
+            "export function build(sink, pool) {\n"
+            "  sink.push(Filter);\n"                                  # external -> must NOT bind to table.ts Filter
+            "  pool.submit(onClick);\n"                               # local -> must still bind
+            "}\n"
+        ),
+    })
+    indirect = _rels(r, "indirect_call")
+    assert (nid["build"], nid["Filter"]) not in indirect   # no cross-file phantom
+    assert (nid["build"], nid["onClick"]) in indirect      # real local reference preserved
