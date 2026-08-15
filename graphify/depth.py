@@ -248,11 +248,19 @@ def run_bucket(
     graphify_bin: str | None,
     timeout_s: int | None,
     skip_on_error: bool,
+    retries: int = 0,
+    retry_backoff_s: float = 2.0,
 ) -> bool:
     """Run the full extract pipeline for one bucket.
 
     Returns True on success (or a fresh skip / cached), False on failure.
     The bucket's `status` and `error` fields are populated in place.
+
+    Transient failures (network, 5xx, timeouts) are retried up to
+    `retries` times with exponential backoff. The first non-transient
+    failure (bad config, missing dependency) is reported immediately.
+    Retries only fire when `retries > 0`; the default is zero so this
+    function preserves its v1 behaviour for callers that don't opt in.
     """
     if not bucket.path.exists():
         bucket.status = "skipped"
@@ -265,39 +273,87 @@ def run_bucket(
     # output, and the inner extract writes its own graph.json there.
     # We pass --out so the extract pipeline knows the output root.
     cmd = [bin_path, "extract", str(bucket.path), "--out", str(bucket.out_dir), *extract_args]
-    started = time.monotonic()
-    try:
-        result = _run_subprocess(cmd, cwd=bucket_root, timeout=timeout_s)
-    except subprocess.TimeoutExpired:
-        bucket.elapsed_s = time.monotonic() - started
-        bucket.status = "failed"
-        bucket.error = f"timeout after {timeout_s}s"
-        return False
-    except FileNotFoundError as exc:
-        bucket.elapsed_s = time.monotonic() - started
-        bucket.status = "failed"
-        bucket.error = f"graphify binary not found: {exc}"
-        return False
-    bucket.elapsed_s = time.monotonic() - started
+    attempt = 0
+    while True:
+        attempt += 1
+        started = time.monotonic()
+        try:
+            result = _run_subprocess(cmd, cwd=bucket_root, timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            bucket.elapsed_s = time.monotonic() - started
+            transient = True
+            result = None
+        except FileNotFoundError as exc:
+            bucket.elapsed_s = time.monotonic() - started
+            bucket.status = "failed"
+            bucket.error = f"graphify binary not found: {exc}"
+            return False
+        else:
+            bucket.elapsed_s = time.monotonic() - started
+            transient = _is_transient_failure(result)
 
-    if result.returncode != 0:
-        bucket.status = "failed"
-        # Trim subprocess stderr to one line per 80 char window for
-        # the depth report — raw subprocess stderr can be voluminous.
-        stderr_tail = (result.stderr or "").strip().splitlines()[-5:]
-        bucket.error = "\n".join(stderr_tail) or f"exit {result.returncode}"
-        return skip_on_error  # honour caller policy
+        if result is not None and result.returncode == 0:
+            graph_path = bucket.out_dir / "graph.json"
+            if not graph_path.exists():
+                bucket.status = "failed"
+                bucket.error = f"extract succeeded but {graph_path} not found"
+                return skip_on_error
+            bucket.graph_path = graph_path
+            bucket.nodes, bucket.edges = _read_node_edge_counts(graph_path)
+            bucket.status = "done"
+            return True
 
-    graph_path = bucket.out_dir / "graph.json"
-    if not graph_path.exists():
+        # Failure path. Build the error message and decide whether to retry.
+        if result is not None:
+            stderr_tail = (result.stderr or "").strip().splitlines()[-8:]
+            stderr_text = "\n".join(stderr_tail) or f"exit {result.returncode}"
+        else:
+            stderr_text = f"timeout after {timeout_s}s"
+        if transient and attempt <= retries:
+            backoff = retry_backoff_s * (2 ** (attempt - 1))
+            bucket.status = "running"
+            # Surface a clear "retrying" line; the orchestrator's
+            # progress output uses status so this is observable.
+            print(
+                f"  [graphify depth] {bucket.label()} transient failure "
+                f"(attempt {attempt}/{retries + 1}); retrying in {backoff:.1f}s",
+                file=sys.stderr,
+            )
+            time.sleep(backoff)
+            continue
         bucket.status = "failed"
-        bucket.error = f"extract succeeded but {graph_path} not found"
+        bucket.error = stderr_text
         return skip_on_error
 
-    bucket.graph_path = graph_path
-    bucket.nodes, bucket.edges = _read_node_edge_counts(graph_path)
-    bucket.status = "done"
-    return True
+
+def _is_transient_failure(result: subprocess.CompletedProcess[str]) -> bool:
+    """Return True if the subprocess failure looks transient (retryable).
+
+    Heuristics, in order:
+    - Non-zero exit AND stdout/stderr contain a known transient marker
+      (timeout, rate limit, network error, 5xx HTTP).
+    - Otherwise False: a bad-config or missing-file failure is treated
+      as non-transient because retrying it is wasted work.
+    """
+    if result.returncode == 0:
+        return False
+    haystack = ((result.stdout or "") + "\n" + (result.stderr or "")).lower()
+    transient_markers = (
+        "timeout",
+        "timed out",
+        "rate limit",
+        "rate-limit",
+        "429",
+        "503",
+        "502",
+        "504",
+        "connection reset",
+        "connection refused",
+        "temporarily unavailable",
+        "try again",
+        "network is unreachable",
+    )
+    return any(marker in haystack for marker in transient_markers)
 
 
 def _read_node_edge_counts(graph_path: Path) -> tuple[int, int]:
@@ -663,6 +719,10 @@ def depth_command(
     skip_on_error: bool = True,
     resume: bool = False,
     dry_run: bool = False,
+    retries: int = 0,
+    retry_backoff_s: float = 2.0,
+    add_to_global: bool = False,
+    global_tag: str | None = None,
 ) -> DepthReport:
     """The `graphify depth` orchestration.
 
@@ -729,13 +789,15 @@ def depth_command(
         with _cf.ProcessPoolExecutor(max_workers=effective_parallel) as ex:
             futures = {
                 ex.submit(
-                    run_bucket,
-                    bucket=b,
-                    bucket_root=root,
-                    extract_args=list(extract_args),
-                    graphify_bin=graphify_bin,
-                    timeout_s=timeout_s,
-                    skip_on_error=skip_on_error,
+                    _run_bucket_worker,
+                    b,
+                    root,
+                    list(extract_args),
+                    graphify_bin,
+                    timeout_s,
+                    skip_on_error,
+                    retries,
+                    retry_backoff_s,
                 ): b
                 for b in pending
             }
@@ -758,6 +820,8 @@ def depth_command(
                 graphify_bin=graphify_bin,
                 timeout_s=timeout_s,
                 skip_on_error=skip_on_error,
+                retries=retries,
+                retry_backoff_s=retry_backoff_s,
             )
 
     # Merge the successful buckets.
@@ -769,10 +833,13 @@ def depth_command(
 
     if dry_run:
         # Dry-run never invokes extract and never writes the merged
-        # graph, but it still reports the bucket list (the user wants
-        # to see what auto-detect picked without committing to a run).
+        # graph, but it still writes a preview DEPTH_REPORT.md so the
+        # user can see what auto-detect picked without committing to
+        # a run. Cross-bucket signals are skipped (no merged graph).
         report.status = "done"
         report.total_elapsed_s = time.monotonic() - total_started
+        depth_report = depth_report_path or (out_dir / _DEFAULT_DEPTH_REPORT)
+        write_depth_report(report, depth_report)
         return report
 
     if not bucket_graphs:
@@ -806,7 +873,63 @@ def depth_command(
         merged_graph_path=target_merged, buckets=buckets,
     )
 
+    # --global: also fold the merged graph into the user's global graph.
+    # The cross-bucket graph is already prefixed (each node has a `repo`
+    # attribute equal to its bucket name), so `global_add` will treat the
+    # whole depth run as one repo for the purposes of stale-node pruning.
+    # The default tag is the root directory's name; --global-tag overrides.
+    if add_to_global and report.merged_graph_path is not None:
+        try:
+            from graphify.global_graph import global_add as _global_add
+        except Exception as exc:
+            # global_graph import is best-effort; if it fails we record
+            # the failure in the report but do not abort the depth run.
+            print(
+                f"  [graphify depth] could not import global_graph: {exc}",
+                file=sys.stderr,
+            )
+        else:
+            tag = global_tag or root.name
+            try:
+                summary = _global_add(report.merged_graph_path, tag)
+            except Exception as exc:
+                print(
+                    f"  [graphify depth] global_add failed: {exc}",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f"  [graphify depth] global_add: tag={tag} "
+                    f"nodes_added={summary.get('nodes_added', 0)} "
+                    f"skipped={summary.get('skipped', False)}"
+                )
+
     # Depth report.
     depth_report = depth_report_path or (out_dir / _DEFAULT_DEPTH_REPORT)
     write_depth_report(report, depth_report)
     return report
+
+
+def _run_bucket_worker(
+    b: "Bucket",
+    root: Path,
+    extract_args: list[str],
+    graphify_bin: str | None,
+    timeout_s: int | None,
+    skip_on_error: bool,
+    retries: int,
+    retry_backoff_s: float,
+) -> None:
+    """Process-pool entry point: `run_bucket` mutates `b` in place; we
+    just call it from a worker without re-importing the closure scope.
+    """
+    run_bucket(
+        bucket=b,
+        bucket_root=root,
+        extract_args=extract_args,
+        graphify_bin=graphify_bin,
+        timeout_s=timeout_s,
+        skip_on_error=skip_on_error,
+        retries=retries,
+        retry_backoff_s=retry_backoff_s,
+    )

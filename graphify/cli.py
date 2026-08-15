@@ -2411,7 +2411,9 @@ def dispatch_command(cmd: str) -> None:
                 "[--focus PATH]... [--out DIR] [--merged PATH] "
                 "[--report PATH] [--max-buckets N] [--min-files N] "
                 "[--min-words N] [--parallel N] [--timeout S] "
+                "[--retries N] [--retry-backoff S] "
                 "[--skip-on-error|--no-skip-on-error] [--resume] [--dry-run] "
+                "[--global] [--global-tag NAME] "
                 "[--graphify-bin PATH] [-- <extract args>...]",
                 file=sys.stderr,
             )
@@ -2433,9 +2435,13 @@ def dispatch_command(cmd: str) -> None:
         min_words = 5_000
         parallel = 1
         timeout_s: int | None = None
+        retries = 0
+        retry_backoff_s = 2.0
         skip_on_error = True
         resume = False
         dry_run = False
+        add_to_global = False
+        global_tag: str | None = None
         graphify_bin: str | None = None
         # Anything after a literal `--` is forwarded to every per-bucket
         # `graphify extract` invocation (e.g. `--backend`, `--model`,
@@ -2472,6 +2478,10 @@ def dispatch_command(cmd: str) -> None:
                 parallel = int(args[i - 3 + 1]); i += 2
             elif a == "--timeout" and i - 3 + 1 < len(args):
                 timeout_s = int(args[i - 3 + 1]); i += 2
+            elif a == "--retries" and i - 3 + 1 < len(args):
+                retries = int(args[i - 3 + 1]); i += 2
+            elif a == "--retry-backoff" and i - 3 + 1 < len(args):
+                retry_backoff_s = float(args[i - 3 + 1]); i += 2
             elif a == "--no-skip-on-error":
                 skip_on_error = False; i += 1
             elif a == "--skip-on-error":
@@ -2480,6 +2490,10 @@ def dispatch_command(cmd: str) -> None:
                 resume = True; i += 1
             elif a == "--dry-run":
                 dry_run = True; i += 1
+            elif a == "--global":
+                add_to_global = True; i += 1
+            elif a == "--global-tag" and i - 3 + 1 < len(args):
+                global_tag = args[i - 3 + 1]; i += 2
             elif a == "--graphify-bin" and i - 3 + 1 < len(args):
                 graphify_bin = args[i - 3 + 1]; i += 2
             else:
@@ -2503,6 +2517,10 @@ def dispatch_command(cmd: str) -> None:
             skip_on_error=skip_on_error,
             resume=resume,
             dry_run=dry_run,
+            retries=retries,
+            retry_backoff_s=retry_backoff_s,
+            add_to_global=add_to_global,
+            global_tag=global_tag,
         )
         print(
             f"[graphify depth] status={result.status} "
