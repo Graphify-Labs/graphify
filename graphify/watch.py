@@ -385,6 +385,12 @@ class _StoredSourcePaths:
                     if self._anchors_stored_sources(existing, resolved):
                         self.existing_source_root = resolved
                     else:
+                        # In the #2603 hook path watch_path is the absolute
+                        # marker, so project_root == watch_root == the bad
+                        # marker and the first candidate also fails to anchor;
+                        # Path.cwd() (the repo root a post-commit hook runs from)
+                        # is the load-bearing rescue candidate here. Keep both so
+                        # a relative-watch_path invocation is also covered.
                         for candidate in (self.project_root, Path.cwd().resolve()):
                             if self._anchors_stored_sources(existing, candidate):
                                 self.existing_source_root = candidate
@@ -430,7 +436,7 @@ class _StoredSourcePaths:
         pre-fix behavior (no worse).
         """
         checked = 0
-        for bucket in ("nodes", "links", "edges"):
+        for bucket in ("nodes", "links", "edges", "hyperedges"):
             for item in existing.get(bucket, []):
                 raw = item.get("source_file") if isinstance(item, dict) else None
                 stored = self._normalize_source(raw) if raw else None
