@@ -12,7 +12,7 @@ import re
 import sys
 import time
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 
 _SEARCH_NUDGE = json.dumps({
@@ -663,7 +663,7 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
                 in_project = False
                 for v in explicit:
                     p = Path(v)
-                    if not p.is_absolute():
+                    if _is_cwd_relative(v):
                         in_project = True  # relative -> anchored at cwd == in project
                         break
                     try:
@@ -708,6 +708,33 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
             sys.stdout.write(_READ_NUDGE)
     except Exception:
         pass
+
+
+def _is_cwd_relative(value: str) -> bool:
+    r"""Whether *value* is anchored at the current working directory.
+
+    The hook's out-of-project guard needs "is this path resolved against cwd?",
+    and ``Path.is_absolute()`` is the wrong question for it on Windows. A
+    driveless rooted path like ``/tmp/x.py`` — the form POSIX-shaped hosts, WSL
+    and Git Bash send — is NOT absolute there (no drive letter), but it is not
+    cwd-relative either: Windows anchors it at the current DRIVE root, so
+    ``Path("/somewhere/else/x.py").resolve()`` is ``C:\somewhere\else\x.py``,
+    which is outside the project unless the project sits at ``C:\``. Reading it
+    as cwd-relative made the guard declare it in-project and emit the read nudge
+    (and, in strict mode, the once-per-session deny) for files the graph has
+    nothing to say about.
+
+    ``C:x.py`` is the same trap from the other side: drive-relative, anchored at
+    that drive's current directory rather than cwd.
+
+    So the test is "no root and no drive", not "not absolute". These stay the
+    host's own rules — the path is about to be resolved against this filesystem,
+    so ``paths.is_absolute_any_platform`` (for stored, portable paths) is
+    deliberately not used. On POSIX ``root`` is set exactly when the path is
+    absolute and ``drive`` is always empty, so this is unchanged there.
+    """
+    pure = PureWindowsPath(value) if os.name == "nt" else PurePosixPath(value)
+    return not pure.root and not pure.drive
 
 
 def _target_is_indexed(file_path: str, root: "Path") -> bool:
