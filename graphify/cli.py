@@ -1047,6 +1047,7 @@ def dispatch_command(cmd: str) -> None:
             depth=2,
             token_budget=budget,
             context_filters=context_filters,
+            graph_path=str(gp),
         )
         querylog.log_query(
             kind="query",
