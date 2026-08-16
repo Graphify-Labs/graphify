@@ -25,6 +25,48 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 
 GRAPHIFY_OUT = os.environ.get("GRAPHIFY_OUT", "graphify-out")
 
+# Intermediate files the skill's Step 9 used to delete with `rm` / `find -delete`.
+# Permission-gated hosts deny those shell verbs (#2790), so cleanup is Python.
+_BUILD_INTERMEDIATE_NAMES = (
+    ".graphify_detect.json",
+    ".graphify_extract.json",
+    ".graphify_ast.json",
+    ".graphify_semantic.json",
+    ".graphify_semantic_new.json",
+    ".graphify_analysis.json",
+    ".graphify_cached.json",
+    ".graphify_uncached.txt",
+    ".needs_update",
+    "needs_update",
+)
+
+
+def cleanup_build_intermediates(out_dir: Path) -> list[Path]:
+    """Delete build intermediates in *out_dir* via pathlib (no shell).
+
+    Returns the paths that were actually removed. Missing files are skipped.
+    Chunk files are only taken from *out_dir* itself (the old ``find -maxdepth 1``).
+    """
+    out_dir = Path(out_dir)
+    removed: list[Path] = []
+    if not out_dir.is_dir():
+        return removed
+
+    victims = [out_dir / name for name in _BUILD_INTERMEDIATE_NAMES]
+    victims.extend(p for p in out_dir.glob(".graphify_chunk_*.json") if p.is_file())
+
+    seen: set[Path] = set()
+    for path in victims:
+        if path in seen or not path.is_file():
+            continue
+        # Stay inside out_dir — never follow a symlink out of the build folder.
+        if path.parent.resolve() != out_dir.resolve():
+            continue
+        seen.add(path)
+        path.unlink()
+        removed.append(path)
+    return removed
+
 
 def _atomic_replace(path: "str | Path", write_fn) -> None:
     """Atomically replace ``path`` with content written by ``write_fn(f)``.
