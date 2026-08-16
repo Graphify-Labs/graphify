@@ -318,3 +318,41 @@ def test_incremental_sibling_addition_keeps_cross_package_edge(tmp_path: Path) -
     assert start_targets == {"Run()"}, (
         f"cross-package edge re-pointed after partial rebuild: {start_targets}"
     )
+
+
+def test_case_only_sibling_methods_are_both_extracted(tmp_path: Path) -> None:
+    """Methods ``Get`` and ``get`` on the same type in one file are two symbols,
+    not one — the receiver-based id path must salt the collision too (#2779)."""
+    (tmp_path / "go.mod").write_text("module example.com/repro\n\ngo 1.22\n")
+    pkg = tmp_path / "pkga"
+    pkg.mkdir()
+    (pkg / "a.go").write_text(
+        "package pkga\n\n"
+        "type Store struct{}\n\n"
+        "func (s Store) Get() int { return s.get() }\n\n"
+        "func (s Store) get() int { return 0 }\n"
+    )
+    result = _extract(tmp_path)
+    exported = _ids(result, label="Get", suffix="a.go")
+    unexported = _ids(result, label="get", suffix="a.go")
+    assert len(exported) == 1, f"exported Get missing: {exported}"
+    assert len(unexported) == 1, f"unexported get missing: {unexported}"
+    assert exported != unexported, "Get and get collapsed onto one node id"
+
+
+def test_case_only_sibling_all_exported_are_both_extracted(tmp_path: Path) -> None:
+    """When no member is the unique exported one (``Run`` and ``RUN`` both start
+    uppercase), each is salted so neither is dropped (#2779, all-salted branch)."""
+    (tmp_path / "go.mod").write_text("module example.com/repro\n\ngo 1.22\n")
+    pkg = tmp_path / "pkga"
+    pkg.mkdir()
+    (pkg / "a.go").write_text(
+        "package pkga\n\n"
+        "func Run() int { return 1 }\n\n"
+        "func RUN() int { return 2 }\n"
+    )
+    result = _extract(tmp_path)
+    run1 = _ids(result, label="Run", suffix="a.go")
+    run2 = _ids(result, label="RUN", suffix="a.go")
+    assert len(run1) == 1 and len(run2) == 1, f"Run={run1} RUN={run2}"
+    assert run1 != run2, "Run and RUN collapsed onto one node id"
