@@ -163,7 +163,13 @@ _CONFIDENCE_SCORE_DEFAULTS = {"EXTRACTED": 1.0, "INFERRED": 0.5, "AMBIGUOUS": 0.
 def attach_hyperedges(G: nx.Graph, hyperedges: list) -> None:
     """Store hyperedges in the graph's metadata dict."""
     existing = G.graph.get("hyperedges", [])
-    seen_ids = {h["id"] for h in existing}
+    # Skip id-less persisted entries when seeding the dedup set (#2775): the
+    # semantic extractor emits hyperedges with no `id` and build.py persists them
+    # verbatim, so a prior graph.json can contain id-less hyperedges. A hard
+    # `h["id"]` here raised `KeyError: 'id'` on every incremental re-extract,
+    # symmetric with the `.get("id")` guard the loop below already applies to the
+    # incoming set.
+    seen_ids = {h["id"] for h in existing if h.get("id")}
     for h in hyperedges:
         if h.get("id") and h["id"] not in seen_ids:
             existing.append(h)
