@@ -60,6 +60,7 @@ services:
   graphify:
     image: *image
     build: .
+    entrypoint: ["graphify"]
     user: "0"
     volumes:
       - ./graphify-out:/data/graphify-out
@@ -74,7 +75,6 @@ services:
   mcp:
     image: *image
     build: .
-    entrypoint: ["graphify-mcp"]
     command:
       - /data/graph.json
       - --transport
