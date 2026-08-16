@@ -1087,11 +1087,29 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
         # lost. Announcing "showing N of N nodes … among the 0 cut nodes" then
         # reads as a false truncation warning that teaches an agent to distrust a
         # complete answer and burn follow-up narrowing calls for nodes that were
-        # never cut (#2601). When every node is shown the answer is complete:
-        # return the full output with no banner rather than silently dropping
-        # edges under a misleading notice.
+        # never cut (#2601). When every node is shown the answer is complete, so
+        # edges are never dropped either (returning output[:cut_at] here would
+        # silently truncate them) — but that completeness guarantee is exactly
+        # why a query can quietly cost 4-6x its requested budget once the last
+        # node crosses the fit line (#2784): the check above only ever compared
+        # the FULL output (nodes+edges) against char_budget, so this branch was
+        # already known to be over budget, yet said nothing about it. Report the
+        # real size instead of silence — still the complete, non-truncated
+        # answer, just an honest one.
         if cut_count == 0:
-            return output
+            if len(output) <= char_budget:
+                return output
+            total_edges = sum(1 for l in lines if l.startswith("EDGE "))
+            est_tokens = len(output) // 3
+            return (
+                f"[i] Complete answer over budget: all {total_nodes} nodes and "
+                f"{total_edges} edges shown (~{est_tokens} tokens vs the "
+                f"requested ~{token_budget}-token budget). Edges are never "
+                f"dropped once every node fits, so this is already the full "
+                f"answer — raising --budget further will not shrink it. Narrow "
+                f"with context_filter=['call'] or use get_node for a specific "
+                f"symbol to reduce size instead.\n\n"
+            ) + output
         # Prominent notice at the TOP so a truncated answer can never be mistaken
         # for a complete one — silence used to read as absence (#BUG2). The
         # notice + end marker sit OUTSIDE char_budget by design (two bounded
