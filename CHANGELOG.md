@@ -2,7 +2,11 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
-## 0.9.44 (unreleased)
+## 0.9.45 (unreleased)
+
+- Fix: loading a `graph.json` that contains a hyperedge with no `id` field (the semantic extractor emits them and they persist verbatim) no longer crashes the incremental re-extract with `KeyError: 'id'`; id-less hyperedges are tolerated and retained (#2775, thanks @ousamabenyounes).
+
+## 0.9.44 (2026-08-15)
 
 - Feature: `graphify hook install` reads a committed `.graphifyrc` (`viz_node_limit=<int>`) and bakes the visualization node limit into the generated git hooks, so a project-wide limit is shared via version control and survives hook regeneration; `hook status` reports it (#2760, thanks @hopstreax). The baked value uses a `${GRAPHIFY_VIZ_NODE_LIMIT:-<n>}` default so an explicit per-run env var still wins, and `hook status` degrades gracefully on a malformed `.graphifyrc`.
 - Fix: `graphify install` (Claude always-on) now writes the CLAUDE.md registration into `$CLAUDE_CONFIG_DIR` when that env var relocates the Claude profile, instead of always mutating the default `~/.claude/CLAUDE.md` (part of #2694, thanks @AromalBiju1).
