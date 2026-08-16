@@ -209,6 +209,31 @@ def test_envelope_survives_preamble_around_array_shaped_stream():
     assert [n["label"] for n in result["nodes"]] == ["Foo", "greet"]
 
 
+def test_call_llm_bare_flag_opt_in(monkeypatch):
+    """#2693: the labeling-call spawn (_call_llm's own claude-cli branch, used
+    for community labels) honours GRAPHIFY_CLAUDE_CLI_BARE the same as the
+    extraction spawn (_call_claude_cli)."""
+    envelope = dict(_ENVELOPE, result="a fine label")
+    completed = MagicMock(returncode=0, stdout=json.dumps(envelope), stderr="")
+    monkeypatch.setenv("GRAPHIFY_CLAUDE_CLI_BARE", "1")
+    with patch("shutil.which", return_value="/fake/bin/claude"), \
+         patch("subprocess.run", return_value=completed) as run:
+        llm._call_llm("dummy", backend="claude-cli")
+    argv = run.call_args.args[0]
+    assert "--bare" in argv
+
+
+def test_call_llm_bare_flag_absent_by_default(monkeypatch):
+    envelope = dict(_ENVELOPE, result="a fine label")
+    completed = MagicMock(returncode=0, stdout=json.dumps(envelope), stderr="")
+    monkeypatch.delenv("GRAPHIFY_CLAUDE_CLI_BARE", raising=False)
+    with patch("shutil.which", return_value="/fake/bin/claude"), \
+         patch("subprocess.run", return_value=completed) as run:
+        llm._call_llm("dummy", backend="claude-cli")
+    argv = run.call_args.args[0]
+    assert "--bare" not in argv
+
+
 def test_raises_on_garbage_envelope():
     completed = MagicMock(returncode=0, stdout="not json", stderr="")
     with patch("shutil.which", return_value="/fake/bin/claude"), \
@@ -237,6 +262,49 @@ def test_no_session_persistence_flag_in_subprocess(fake_claude):
     llm._call_claude_cli("dummy", max_tokens=8192)
     call_args = fake_claude.call_args[0][0]
     assert "--no-session-persistence" in call_args
+
+
+# ---------- GRAPHIFY_CLAUDE_CLI_BARE opt-in (#2693) ----------
+# Each `claude -p` spawn boots a full Claude Code session with the user's
+# global config, including SessionStart/SessionEnd hooks. A failing/cancelled
+# hook can flip the exit code to nonzero for a chunk whose extraction actually
+# succeeded. --bare skips hook/skill/plugin/MCP/CLAUDE.md auto-discovery for
+# that one spawn; it must stay off by default so existing hook setups keep
+# firing.
+
+
+def test_bare_flag_absent_by_default(fake_claude, monkeypatch):
+    monkeypatch.delenv("GRAPHIFY_CLAUDE_CLI_BARE", raising=False)
+    llm._call_claude_cli("dummy", max_tokens=8192)
+    argv = fake_claude.call_args.args[0]
+    assert "--bare" not in argv
+
+
+def test_bare_flag_present_when_opted_in(fake_claude, monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_CLAUDE_CLI_BARE", "1")
+    llm._call_claude_cli("dummy", max_tokens=8192)
+    argv = fake_claude.call_args.args[0]
+    assert "--bare" in argv
+
+
+def test_bare_flag_absent_for_any_non_one_value(fake_claude, monkeypatch):
+    """Only the exact value "1" opts in — matches GRAPHIFY_CLAUDE_CLI_PARALLEL's
+    convention elsewhere in this module."""
+    monkeypatch.setenv("GRAPHIFY_CLAUDE_CLI_BARE", "true")
+    llm._call_claude_cli("dummy", max_tokens=8192)
+    argv = fake_claude.call_args.args[0]
+    assert "--bare" not in argv
+
+
+def test_bare_args_helper():
+    import os as _os
+    _os.environ.pop("GRAPHIFY_CLAUDE_CLI_BARE", None)
+    assert llm._claude_cli_bare_args() == []
+    _os.environ["GRAPHIFY_CLAUDE_CLI_BARE"] = "1"
+    try:
+        assert llm._claude_cli_bare_args() == ["--bare"]
+    finally:
+        _os.environ.pop("GRAPHIFY_CLAUDE_CLI_BARE", None)
 
 
 # ---------- extraction instructions delivered in the user turn ----------

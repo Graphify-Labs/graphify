@@ -404,6 +404,26 @@ def _no_window_kwargs() -> dict:
     return {}
 
 
+def _claude_cli_bare_args() -> list[str]:
+    """``--bare`` for `claude -p`, opt-in via GRAPHIFY_CLAUDE_CLI_BARE=1.
+
+    Each `claude -p` spawn (one per extraction chunk, plus one per community
+    label) boots a full Claude Code session with the user's global config,
+    including SessionStart/SessionEnd hooks and plugins. For an unattended
+    extraction pipeline this is pure overhead, and worse: a failing or
+    cancelled SessionEnd hook can flip the process exit code to nonzero, so a
+    chunk whose extraction actually succeeded gets recorded as a hook
+    failure instead (#2693). `--bare` skips auto-discovery of hooks, skills,
+    plugins, MCP servers, auto memory, and CLAUDE.md for that one spawn — it
+    does not touch the user's global config, and does not affect the
+    subscription/OAuth auth graphify's claude-cli backend relies on.
+
+    Opt-in and off by default: existing users may rely on their hooks firing
+    for every session, including these ones.
+    """
+    return ["--bare"] if os.environ.get("GRAPHIFY_CLAUDE_CLI_BARE", "").strip() == "1" else []
+
+
 def _resolve_api_timeout(default: float = 600.0) -> float:
     """Honour GRAPHIFY_API_TIMEOUT env var override, else use default (seconds)."""
     raw = os.environ.get("GRAPHIFY_API_TIMEOUT", "").strip()
@@ -1751,6 +1771,7 @@ def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bo
         claude_cmd, "-p",
         "--output-format", "json",
         "--no-session-persistence",
+        *_claude_cli_bare_args(),
         *add_dir_args,
     ]
     # claude-cli defaults to Opus, which is overkill for the structured-JSON
@@ -2940,7 +2961,10 @@ def _call_llm(
                 raise RuntimeError("Claude Code CLI not found on $PATH")
         elif shutil.which("claude") is None:
             raise RuntimeError("Claude Code CLI not found on $PATH")
-        cli_args = [claude_cmd, "-p", "--output-format", "json", "--no-session-persistence"]
+        cli_args = [
+            claude_cmd, "-p", "--output-format", "json", "--no-session-persistence",
+            *_claude_cli_bare_args(),
+        ]
         if model is not None:
             cli_args.extend(["--model", mdl])
         proc = subprocess.run(
