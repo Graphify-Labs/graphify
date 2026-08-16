@@ -52,6 +52,16 @@ def _is_ast_tier(item: dict) -> bool:
     return isinstance(loc, str) and bool(_AST_LOC_RE.match(loc))
 
 
+# Relations that say only "these two symbols appear together", with no claim about
+# HOW. An extractor that finds a specific fact for a pair — a call, an import, an
+# inheritance — routinely emits one of these for the same pair as well, so when the
+# simple graph collapses the pair to one edge, the generic one must never be the
+# survivor. Deliberately a small denylist rather than a full precedence order over
+# every relation: ranking `contains` against `calls` would be inventing a
+# cross-axis judgement, whereas "specific beats generic" is the only comparison
+# this collapse actually needs.
+_GENERIC_RELATIONS: frozenset[str] = frozenset({"references", "uses", "mentions"})
+
 # Language interop families, keyed by extension, for the cross-language phantom-edge
 # guard in the edge loop below. Families group by REAL interop (JS/TS share a module
 # graph; C/C++/ObjC share a compilation unit via headers; JVM langs share bytecode),
@@ -1228,6 +1238,25 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             existing = edge_data(G, src, tgt)
             if existing.get("relation") == attrs.get("relation") and (
                 existing.get("_src") == tgt and existing.get("_tgt") == src
+            ):
+                continue
+        # A pair that already carries a SPECIFIC relation must not be downgraded
+        # to a generic one. Only one edge survives per pair here, and the sort
+        # above orders same-pair edges by relation name, so "last write wins"
+        # resolved the winner alphabetically — which put `references` after
+        # `calls` and `uses` after everything. On graphify's own corpus that
+        # rewrote all 144 pairs where the extraction found both `calls` and
+        # `references` into plain `references`, and callflow's relation filter
+        # does not include `references`, so those call sites left the call graph
+        # entirely. Alphabetical order carries no meaning; keeping the specific
+        # fact does. The reverse (specific arriving after generic) still
+        # overwrites, so the outcome no longer depends on edge order at all.
+        if G.has_edge(src, tgt):
+            existing_rel = edge_data(G, src, tgt).get("relation")
+            if (
+                attrs.get("relation") in _GENERIC_RELATIONS
+                and existing_rel is not None
+                and existing_rel not in _GENERIC_RELATIONS
             ):
                 continue
         G.add_edge(src, tgt, **attrs)
