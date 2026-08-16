@@ -4,6 +4,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.45 (unreleased)
 
+- Fix: `graphify install <platform>` now advances the `.graphify_version` stamp only for the platform it actually (re)writes, instead of stamping every installed platform as current; a platform whose skill content was left untouched keeps its old stamp so its staleness warning stays truthful (#2694, thanks @ousamabenyounes). This completes #2694 (the CLAUDE_CONFIG_DIR half shipped in 0.9.44).
 - Fix: loading a `graph.json` that contains a hyperedge with no `id` field (the semantic extractor emits them and they persist verbatim) no longer crashes the incremental re-extract with `KeyError: 'id'`; id-less hyperedges are tolerated and retained (#2775, thanks @ousamabenyounes).
 
 ## 0.9.44 (2026-08-15)

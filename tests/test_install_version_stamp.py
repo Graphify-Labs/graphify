@@ -47,3 +47,30 @@ def test_install_does_not_bump_other_platforms_stamp(tmp_path, monkeypatch):
         assert codex_stamp.read_text() == _STALE_STAMP, (
             "installing claude must not advance codex's version stamp (#2694)"
         )
+
+
+def test_stale_untouched_platform_still_emits_warning(tmp_path, monkeypatch, capsys):
+    """End-to-end (#2694): after installing one platform, a different stale
+    platform must actually EMIT the staleness warning — the behavior the
+    over-stamping bug suppressed."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.chdir(tmp_path)
+    real_check = mainmod._check_skill_version  # keep the real warner for the assertion
+
+    with patch("graphify.__main__.Path.home", return_value=home):
+        codex_skill = mainmod._platform_skill_destination("codex", project=False)
+        codex_skill.parent.mkdir(parents=True, exist_ok=True)
+        codex_skill.write_text("stale skill body", encoding="utf-8")
+        (codex_skill.parent / ".graphify_version").write_text(_STALE_STAMP, encoding="utf-8")
+
+        with patch.object(mainmod, "_check_skill_version", lambda _: None):
+            mainmod.install("claude")  # install noise silenced
+
+        capsys.readouterr()  # drop install output
+        real_check(codex_skill)  # now run the real warner on the untouched platform
+
+    err = capsys.readouterr().err
+    assert _STALE_STAMP in err and "update" in err, (
+        f"stale codex platform should warn, got stderr: {err!r}"
+    )
