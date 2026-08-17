@@ -1666,3 +1666,34 @@ def test_shortest_path_tool_undirected_opt_in():
     assert "Shortest path (2 hops)" in out
     assert out.count("<--calls--") == 2
     assert "-->" not in out
+def test_underscore_query_matches_hyphenated_label():
+    r"""Separator-blind seeding: `_` must split like `-` does.
+
+    `\w` counts `_` as a word character but not `-`, so a query written with
+    underscores stayed one un-matchable token while the label tokenized into
+    parts. Both sides run through _search_tokens, so normalising there keeps
+    query and label consistent. Regression for the 2026-07-29 finding: the
+    graph could not find its own `local_id` spelling of a node.
+    """
+    G = nx.Graph()
+    G.add_node("n1", label="graph-first-guard.py", source_file="bin/graph-first-guard.py",
+               source_location="L1", community=0)
+    G.add_node("n2", label="unrelated", source_file="other.py", source_location="L1", community=1)
+
+    hyphen = _score_nodes(G, _query_terms("graph-first-guard"))
+    underscore = _score_nodes(G, _query_terms("graph_first_guard"))
+
+    assert hyphen, "hyphenated query must match (this already worked)"
+    assert underscore, "underscored query must match the same node"
+    assert hyphen[0][1] == underscore[0][1] == "n1"
+
+
+def test_snake_case_identifier_still_matches_itself():
+    """Splitting on `_` must not break plain snake_case lookups."""
+    G = nx.Graph()
+    G.add_node("n1", label="_query_terms", source_file="graphify/serve.py",
+               source_location="L128", community=0)
+    G.add_node("n2", label="unrelated", source_file="other.py", source_location="L1", community=1)
+
+    scored = _score_nodes(G, _query_terms("_query_terms"))
+    assert scored and scored[0][1] == "n1"
