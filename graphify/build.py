@@ -1839,6 +1839,12 @@ def build_merge(
         # match on source_file. A node with neither a source_file nor an edge
         # names nothing and connects nothing, so dropping it loses no
         # information (#2807).
+        #
+        # A single pass suffices: external-import stubs are only ever edge
+        # TARGETS (extractors mint them as the target of an imports_from/
+        # references/inherits edge, never as a source), so removing one can
+        # never drop another to degree 0. A future extractor emitting a
+        # stub->stub edge would require iterating this to a fixpoint.
         orphaned = [
             n for n, d in G.nodes(data=True)
             if not d.get("source_file")

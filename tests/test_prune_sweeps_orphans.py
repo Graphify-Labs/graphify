@@ -153,3 +153,33 @@ def test_a_prune_that_matches_nothing_sweeps_nothing(tmp_path):
 def test_pruning_every_file_leaves_an_empty_graph(tmp_path):
     G = _prune(_corpus_graph(), tmp_path, ["a.py", "b.py"])
     assert G.number_of_nodes() == 0, sorted(G.nodes)
+
+
+def test_sweeping_an_orphan_does_not_trip_the_shrink_guard(tmp_path):
+    """The #479 shrink guard raises on unexplained node loss. Swept orphans are
+    source-less, so they must be treated as explained: build_merge completes
+    (does not raise) and returns the pruned graph with the orphan gone."""
+    # build_merge itself runs the guard; this pruning both a file AND sweeping
+    # its stranded stub must not raise.
+    G = _prune(_corpus_graph(), tmp_path, ["a.py"])
+    assert "mod_a_path" not in G.nodes  # swept orphan
+    assert "mod_b_keep" in G.nodes      # unrelated file survives
+
+
+def test_a_stub_referenced_by_a_surviving_file_is_not_swept(tmp_path):
+    """A stub shared by two files must survive when only one referrer is pruned
+    (single-pass sweep only removes it once it is genuinely degree 0)."""
+    nodes = [
+        {"id": "mod_a_run", "label": "run()", "file_type": "code", "source_file": "a.py"},
+        {"id": "mod_b_run", "label": "run()", "file_type": "code", "source_file": "b.py"},
+        {"id": "ext_path", "label": "Path", "file_type": "code"},  # shared external stub
+    ]
+    edges = [
+        {"source": "mod_a_run", "target": "ext_path", "relation": "references",
+         "confidence": "EXTRACTED", "source_file": "a.py"},
+        {"source": "mod_b_run", "target": "ext_path", "relation": "references",
+         "confidence": "EXTRACTED", "source_file": "b.py"},
+    ]
+    G = _prune(build_from_json(_extraction(nodes, edges)), tmp_path, ["a.py"])
+    assert "ext_path" in G.nodes, "stub still referenced by b.py must not be swept"
+    assert "mod_b_run" in G.nodes
