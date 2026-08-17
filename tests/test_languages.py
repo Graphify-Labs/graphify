@@ -625,13 +625,36 @@ def test_java_annotation_references_are_not_duplicated(tmp_path):
 
     result = extract([annotation, consumer], cache_root=tmp_path / "cache")
 
-    refs = [
-        pair
-        for pair in _edge_labels(result, "references", "attribute")
-        if pair in {("Consumer", "Uses"), ("apply", "Uses")}
+    # Count RAW edge occurrences, not _edge_labels (which returns a set and would
+    # trivially satisfy count()==1 whether or not the dedup ran). @Uses({X, X})
+    # names the same class literal twice, so without dedup this would be 2.
+    lab = {n["id"]: _normalize_symbol_label(n["label"]) for n in result["nodes"]}
+    raw_pairs = [
+        (lab.get(e["source"]), lab.get(e["target"]))
+        for e in result["edges"]
+        if e["relation"] == "references" and e.get("context") == "attribute"
     ]
-    assert refs.count(("Consumer", "Uses")) == 1
-    assert refs.count(("apply", "Uses")) == 1
+    assert raw_pairs.count(("Consumer", "Uses")) == 1, raw_pairs
+    assert raw_pairs.count(("apply", "Uses")) == 1, raw_pairs
+
+
+def test_java_annotation_string_and_enum_args_are_not_type_refs(tmp_path):
+    """Only class-literal args (Foo.class) are type references. String and
+    enum-constant annotation arguments must NOT fabricate reference edges."""
+    source = tmp_path / "Config.java"
+    source.write_text(
+        "class Config {\n"
+        '    @RequestMapping("/users")\n'
+        "    @Retention(RetentionPolicy.RUNTIME)\n"
+        "    void handle() {}\n"
+        "}\n"
+    )
+    result = extract_java(source)
+    ref_targets = {t for _s, t in _edge_labels(result, "references", "attribute")}
+    # the string literal and the enum path must not become type-reference targets
+    assert "/users" not in ref_targets
+    assert "RUNTIME" not in ref_targets
+    assert "RetentionPolicy.RUNTIME" not in ref_targets
 
 
 def test_java_annotation_class_literal_keeps_qualified_type_identity(tmp_path):
