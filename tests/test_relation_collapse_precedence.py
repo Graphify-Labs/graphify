@@ -157,3 +157,28 @@ def test_directed_graphs_get_the_same_protection():
                         directed=True)
     assert G.is_directed()
     assert edge_data(G, "a", "b").get("relation") == "calls"
+
+
+def test_specific_edge_numeric_metadata_survives_the_demotion():
+    """When the generic edge is skipped, the surviving specific edge keeps its OWN
+    weight/confidence, not the demoted generic one's."""
+    G = build_from_json(_extraction([
+        _edge("calls", weight=3.0, confidence="EXTRACTED", confidence_score=1.0),
+        _edge("references", weight=9.0, confidence="INFERRED", confidence_score=0.2),
+    ]))
+    d = edge_data(G, "a", "b")
+    assert d.get("relation") == "calls"
+    assert d.get("weight") == 3.0
+    assert d.get("confidence") == "EXTRACTED"
+    assert d.get("confidence_score") == 1.0
+
+
+def test_unknown_relation_is_treated_as_specific():
+    """A relation not on the generic denylist counts as specific: a generic edge
+    must not overwrite it, and it must not be demoted by the guard — so the
+    denylist can't silently drift into an ordering (either arrival order keeps
+    the unknown one)."""
+    for order in ([_edge("custom_rel"), _edge("references")],
+                  [_edge("references"), _edge("custom_rel")]):
+        G = build_from_json(_extraction(order))
+        assert _relation(G) == "custom_rel", f"order {[e['relation'] for e in order]}"

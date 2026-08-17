@@ -2,7 +2,11 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
-## 0.9.45 (unreleased)
+## 0.9.46 (unreleased)
+
+- Fix: when two edges connect the same node pair with different relations, the graph builder now keeps the more specific relation (`calls`, `imports`, `inherits`, ...) instead of letting a generic `references`/`uses`/`mentions` overwrite it; previously a real `calls` could be downgraded to `references` and then dropped from the call graph (#2803, thanks @abhay-codes07).
+
+## 0.9.45 (2026-08-16)
 
 - Fix: `graphify install <platform>` now advances the `.graphify_version` stamp only for the platform it actually (re)writes, instead of stamping every installed platform as current; a platform whose skill content was left untouched keeps its old stamp so its staleness warning stays truthful (#2694, thanks @ousamabenyounes). This completes #2694 (the CLAUDE_CONFIG_DIR half shipped in 0.9.44).
 - Fix: an incremental rebuild no longer collapses the whole graph when the `.graphify_root` marker records a subfolder while stored `source_file` paths are relative to the repo root; the marker is validated against the stored paths before it is trusted as their anchor, so a mismatched marker can't make every unchanged source look deleted (#2603, thanks @catpotd). A genuinely deleted source is still evicted, and incremental ids stay identical to a cold build.
