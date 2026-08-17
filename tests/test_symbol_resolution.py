@@ -70,7 +70,7 @@ def test_resolve_cross_file_raw_calls_emits_unique_unqualified_call() -> None:
             "relation": "calls",
             "context": "call",
             "confidence": "INFERRED",
-            "confidence_score": 0.8,
+            "confidence_score": 0.85,  # rubric value; 0.8 is not on the scale (#2813)
             "source_file": "caller.py",
             "source_location": "L2",
             "weight": 1.0,

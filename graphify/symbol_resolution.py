@@ -367,7 +367,9 @@ def resolve_cross_file_raw_calls(
                 "relation": "calls",
                 "context": "call",
                 "confidence": "INFERRED",
-                "confidence_score": 0.8,
+                # 0.85, not 0.8 — the extraction-spec rubric's INFERRED values
+                # are a discrete set and 0.8 is not one of them (#2813).
+                "confidence_score": 0.85,
                 "source_file": raw_call.get("source_file", ""),
                 "source_location": raw_call.get("source_location"),
                 "weight": 1.0,

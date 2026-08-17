@@ -6485,7 +6485,11 @@ def extract(
                     "relation": "indirect_call",
                     "context": rc.get("context", "argument"),
                     "confidence": "INFERRED",
-                    "confidence_score": 0.8,
+                    # 0.85, not 0.8: the rubric in references/extraction-spec.md
+                    # is a discrete set {0.55, 0.65, 0.75, 0.85, 0.95} and 0.8 is
+                    # not in it. Same tier, same meaning ("strong inference"),
+                    # now a value the documented scale actually contains (#2813).
+                    "confidence_score": 0.85,
                     "source_file": rc.get("source_file", ""),
                     "source_location": rc.get("source_location"),
                     "weight": 1.0,
@@ -6514,7 +6518,9 @@ def extract(
                 confidence_score = 1.0
             else:
                 confidence = "INFERRED"
-                confidence_score = 0.8
+                # 0.85 rather than 0.8 — the rubric's INFERRED set is discrete
+                # and does not contain 0.8 (#2813).
+                confidence_score = 0.85
             all_edges.append({
                 "source": caller,
                 "target": tgt,

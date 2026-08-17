@@ -2062,6 +2062,12 @@ def _resolve_cross_file_imports(
                     "target": tgt_nid,
                     "relation": "uses",
                     "confidence": "INFERRED",
+                    # 0.95 = "direct structural evidence (named cross-file
+                    # reference)" from the extraction-spec rubric, which is
+                    # exactly what this edge is: a name this file imports, then
+                    # references. Omitting the score entirely fell through to the
+                    # 0.5 default the same rubric forbids outright (#2813).
+                    "confidence_score": 0.95,
                     "source_file": str_path,
                     "source_location": f"L{line}",
                     "weight": 0.8,

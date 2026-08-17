@@ -157,7 +157,15 @@ from graphify.exporters.base import COMMUNITY_COLORS  # noqa: E402,F401
 from graphify.exporters.html import to_html  # noqa: E402,F401
 
 
-_CONFIDENCE_SCORE_DEFAULTS = {"EXTRACTED": 1.0, "INFERRED": 0.5, "AMBIGUOUS": 0.2}
+# Fallback scores for an edge that carries a confidence tier but no
+# confidence_score. The INFERRED default was 0.5, which references/extraction-spec.md
+# rules out in as many words — "never omit it, never use 0.5 as a default" — and
+# which is not in the discrete INFERRED set {0.55, 0.65, 0.75, 0.85, 0.95} either.
+# It is now the bottom of that set: a missing score is an absence of evidence
+# about strength, so the honest fallback is the weakest value the rubric allows,
+# not a midpoint that reads as a coin flip (#2813). Every AST emission site now
+# supplies its own score, so this is a backstop rather than a routine path.
+_CONFIDENCE_SCORE_DEFAULTS = {"EXTRACTED": 1.0, "INFERRED": 0.55, "AMBIGUOUS": 0.2}
 
 
 def attach_hyperedges(G: nx.Graph, hyperedges: list) -> None:

@@ -4602,6 +4602,12 @@ def _extract_generic(
             "relation": "indirect_call",
             "context": context,
             "confidence": "INFERRED",
+            # 0.85 = "strong inference" on the extraction-spec rubric. The symbol
+            # link is direct — the function is named right here — but that it is
+            # ever INVOKED is the inference, which is why this is not the 0.95
+            # tier. Previously no score was emitted at all and the edge inherited
+            # the 0.5 default the rubric forbids (#2813).
+            "confidence_score": 0.85,
             "source_file": str_path,
             "source_location": f"L{loc_node.start_point[0] + 1}",
             "weight": 1.0,
