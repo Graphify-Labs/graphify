@@ -3516,3 +3516,127 @@ def test_incremental_indirect_call_parity_and_idempotency(tmp_path):
 
     fresh = _2438_seed(tmp_path / "fresh", caller_prefix="    x = 1\n")
     assert sorted(_2438_indirects(_2406_graph(fresh))) == sorted(incremental)
+
+
+# --- #2603: absolute .graphify_root must not re-anchor cwd-relative sources ---
+
+def test_subfolder_root_marker_preserves_unchanged_nodes(tmp_path, monkeypatch):
+    """End-to-end pin for #2603: a graph built from the repo root scoped to a
+    subfolder stores source_file relative to the repo root ("src/mod0.py"),
+    while the skill writes an ABSOLUTE subfolder path into .graphify_root.
+    _StoredSourcePaths then anchored the stored paths to the subfolder,
+    doubling them (src/src/...), judging every unchanged source deleted, and
+    collapsing the graph. The marker must be validated against the stored
+    paths before it is trusted as their anchor."""
+    from graphify.watch import _rebuild_code
+
+    repo = tmp_path / "repo"
+    src = repo / "src"
+    src.mkdir(parents=True)
+    for i in range(3):
+        (src / f"mod{i}.py").write_text(
+            f"class Thing{i}:\n    def run(self):\n        return {i}\n",
+            encoding="utf-8",
+        )
+    monkeypatch.chdir(repo)
+
+    # Build from the repo root scoped to the subfolder (the skill's shape):
+    # stored source_file values come out relative to the repo root.
+    assert _rebuild_code(Path("src"), acquire_lock=False) is True
+    out = src / "graphify-out"
+    graph_path = out / "graph.json"
+    baseline = json.loads(graph_path.read_text(encoding="utf-8"))
+    baseline_ids = {n["id"] for n in baseline["nodes"]}
+    assert any(
+        (n.get("source_file") or "").startswith("src/") for n in baseline["nodes"]
+    ), "precondition: stored sources are repo-root-relative"
+
+    # The skill's Step 1 marker: an absolute path to the SUBFOLDER. The build
+    # above wrote the safe relative form; overwrite with the absolute form
+    # that reproduces #2603.
+    (out / ".graphify_root").write_text(str(src.resolve()), encoding="utf-8")
+
+    # Incremental rebuild the way the post-commit hook calls it: absolute
+    # watch_path read from the marker, one changed file.
+    (src / "mod0.py").write_text(
+        "class Thing0:\n    def run(self):\n        return 100\n", encoding="utf-8"
+    )
+    assert _rebuild_code(
+        src.resolve(), changed_paths=[Path("src/mod0.py")], acquire_lock=False
+    ) is True
+
+    after_ids = {
+        n["id"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]
+    }
+    # mod0's nodes are re-minted by the re-extraction; nodes of the UNCHANGED
+    # files must all survive.
+    unchanged_lost = {i for i in baseline_ids - after_ids if "mod0" not in i}
+    assert not unchanged_lost, (
+        f"unchanged sources lost {len(unchanged_lost)} node(s) to marker "
+        f"re-anchoring: {sorted(unchanged_lost)[:5]}"
+    )
+
+
+def test_subfolder_marker_still_evicts_a_deleted_file(tmp_path, monkeypatch):
+    """The anchor validation must not over-preserve (#2603): once the correct
+    anchor is chosen, a genuinely deleted source is still evicted."""
+    from graphify.watch import _rebuild_code
+
+    repo = tmp_path / "repo"
+    src = repo / "src"
+    src.mkdir(parents=True)
+    for i in range(3):
+        (src / f"mod{i}.py").write_text(
+            f"class Thing{i}:\n    def run(self):\n        return {i}\n", encoding="utf-8"
+        )
+    monkeypatch.chdir(repo)
+    assert _rebuild_code(Path("src"), acquire_lock=False) is True
+    out = src / "graphify-out"
+    graph_path = out / "graph.json"
+    (out / ".graphify_root").write_text(str(src.resolve()), encoding="utf-8")
+
+    (src / "mod1.py").unlink()  # a genuine deletion
+    assert _rebuild_code(
+        src.resolve(), changed_paths=[Path("src/mod1.py")], acquire_lock=False
+    ) is True
+
+    after = json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]
+    assert not any("mod1" in n["id"] for n in after), "deleted file's nodes must be evicted"
+    assert any("mod2" in n["id"] for n in after), "unchanged file must survive"
+
+
+def test_subfolder_marker_incremental_matches_cold_build(tmp_path, monkeypatch):
+    """Incremental rebuild with the validated anchor produces the same node-id
+    set as a cold rebuild of the identical on-disk state (id parity, #2603)."""
+    from graphify.watch import _rebuild_code
+
+    repo = tmp_path / "repo"
+    src = repo / "src"
+    src.mkdir(parents=True)
+    for i in range(3):
+        (src / f"mod{i}.py").write_text(
+            f"class Thing{i}:\n    def run(self):\n        return {i}\n", encoding="utf-8"
+        )
+    monkeypatch.chdir(repo)
+    assert _rebuild_code(Path("src"), acquire_lock=False) is True
+    out = src / "graphify-out"
+    graph_path = out / "graph.json"
+    (out / ".graphify_root").write_text(str(src.resolve()), encoding="utf-8")
+
+    (src / "mod0.py").write_text(
+        "class Thing0:\n    def run(self):\n        return 100\n", encoding="utf-8"
+    )
+    assert _rebuild_code(
+        src.resolve(), changed_paths=[Path("src/mod0.py")], acquire_lock=False
+    ) is True
+    incremental_ids = {n["id"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+
+    import shutil
+    shutil.rmtree(out)
+    assert _rebuild_code(Path("src"), acquire_lock=False) is True
+    cold_ids = {n["id"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+
+    assert incremental_ids == cold_ids, (
+        f"incremental vs cold id drift: only-incremental={sorted(incremental_ids - cold_ids)[:5]}, "
+        f"only-cold={sorted(cold_ids - incremental_ids)[:5]}"
+    )

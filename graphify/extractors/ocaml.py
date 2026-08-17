@@ -42,9 +42,15 @@ def extract_ocaml(path: Path) -> dict:
     # once in the file is marked ambiguous and never resolved locally.
     local_defs: dict[str, str] = {}
     ambiguous: set[str] = set()
-    # (caller_nid, callee_name, line) recorded on pass 1, resolved on pass 2 so
-    # that forward references (e.g. `let rec ... and ...`) resolve correctly.
-    call_sites: list[tuple[str, str, int]] = []
+    # Names of modules DEFINED in this file. Used to decide whether a qualified
+    # call `M.f` may bind to a local `f`: if `M` is not a local module it is an
+    # external library (e.g. `Reg_spec.create`), so binding to a same-named local
+    # `f` would be a false edge (and a self-loop when the caller is that `f`).
+    local_modules: set[str] = set()
+    # (caller_nid, callee_name, qualifier_root_module_or_None, full_path_text,
+    # line) recorded on pass 1, resolved on pass 2 so that forward references
+    # (e.g. `let rec ... and ...`) resolve correctly.
+    call_sites: list[tuple[str, str, str | None, str, int]] = []
 
     def add_node(nid: str, label: str, line: int) -> None:
         if nid not in seen_ids:
@@ -112,6 +118,23 @@ def extract_ocaml(path: Path) -> dict:
                 found = _read_text(n, source)
         return found
 
+    def path_root_module(path_node) -> str | None:
+        """Leftmost (outermost) module segment qualifying a *_path node:
+        `Reg_spec.create` -> `Reg_spec`, `Stdlib.List.map` -> `Stdlib`. Returns
+        None when the path is unqualified (`create`), which has no child
+        module_path."""
+        mp = next((c for c in path_node.children if c.type == "module_path"), None)
+        if mp is None:
+            return None
+        node = mp
+        while True:
+            inner = next((c for c in node.children if c.type == "module_path"), None)
+            if inner is None:
+                break
+            node = inner
+        mn = next((c for c in node.children if c.type == "module_name"), None)
+        return _read_text(mn, source) if mn is not None else None
+
     def register_def(name: str, nid: str) -> None:
         if name in ambiguous:
             return
@@ -166,6 +189,7 @@ def extract_ocaml(path: Path) -> dict:
                     add_edge(container_nid, mnid,
                              "defines" if container_nid == file_nid else "contains", line)
                     register_def(mname, mnid)
+                    local_modules.add(mname)
                     for child in binding.children:
                         walk(child, mnid, enclosing_value)
                     return
@@ -179,6 +203,7 @@ def extract_ocaml(path: Path) -> dict:
                 add_edge(container_nid, mnid,
                          "defines" if container_nid == file_nid else "contains", line)
                 register_def(mname, mnid)
+                local_modules.add(mname)
                 for child in node.children:
                     walk(child, mnid, enclosing_value)
                 return
@@ -232,7 +257,8 @@ def extract_ocaml(path: Path) -> dict:
                 callee = last_name(fn)
                 if callee:
                     caller = enclosing_value if enclosing_value else file_nid
-                    call_sites.append((caller, callee, line_of(node)))
+                    call_sites.append((caller, callee, path_root_module(fn),
+                                       _read_text(fn, source), line_of(node)))
             # Fall through: arguments may contain further applications/definitions.
 
         for child in node.children:
@@ -240,8 +266,22 @@ def extract_ocaml(path: Path) -> dict:
 
     walk(root, file_nid, "")
 
-    for caller, callee, line in call_sites:
-        if callee in local_defs:
+    for caller, callee, qualifier, full_path, line in call_sites:
+        # A qualified call `M.f` where `M` is NOT a module defined in this file
+        # is an external-library call (e.g. `Reg_spec.create`). Binding it to a
+        # same-named local `f` would be a false edge (and a `create -> create`
+        # self-loop when the caller is that local `f`), so keep it distinct: a
+        # stub keyed by the FULL qualified name (`Reg_spec.create`) never
+        # collapses onto the local `f` in the corpus rewire. Unqualified calls,
+        # and qualified calls into a locally-defined module, still resolve to a
+        # local definition; a bare-name stub still allows the cross-file rewire
+        # to collapse `Geo.area` onto another file's `area` (#hardcaml).
+        if qualifier is not None and qualifier not in local_modules:
+            if callee in local_defs:
+                add_edge(caller, ref_stub(full_path), "calls", line, confidence="INFERRED")
+            else:
+                add_edge(caller, ref_stub(callee), "calls", line, confidence="INFERRED")
+        elif callee in local_defs:
             add_edge(caller, local_defs[callee], "calls", line)
         else:
             add_edge(caller, ref_stub(callee), "calls", line, confidence="INFERRED")

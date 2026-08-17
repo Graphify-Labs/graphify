@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Callable
 
 # Single source of truth in graphify.paths (#1423); re-exported as _GRAPHIFY_OUT.
-from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
+from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT, is_absolute_any_platform
 _PENDING_FILENAME = ".pending_changes"
 _PENDING_DRAIN_MAX_PASSES = 20
 
@@ -371,7 +371,32 @@ class _StoredSourcePaths:
             try:
                 saved_root = Path(root_marker.read_text(encoding="utf-8").strip())
                 if saved_root.is_absolute():
-                    self.existing_source_root = saved_root.resolve()
+                    # #2603: the marker holds the SCAN root, but stored
+                    # source_file values are relative to the BUILD's cwd
+                    # (the skill builds from the repo root scoped to a
+                    # subfolder). Trusting the marker blindly re-anchors
+                    # "src/mod.py" under src/, doubling the path; every
+                    # unchanged source is then judged deleted and evicted,
+                    # collapsing the graph. Only adopt an anchor the stored
+                    # paths actually resolve under; when none does, keep the
+                    # marker (previous behavior) so a fully-deleted corpus
+                    # still evicts.
+                    resolved = saved_root.resolve()
+                    if self._anchors_stored_sources(existing, resolved):
+                        self.existing_source_root = resolved
+                    else:
+                        # In the #2603 hook path watch_path is the absolute
+                        # marker, so project_root == watch_root == the bad
+                        # marker and the first candidate also fails to anchor;
+                        # Path.cwd() (the repo root a post-commit hook runs from)
+                        # is the load-bearing rescue candidate here. Keep both so
+                        # a relative-watch_path invocation is also covered.
+                        for candidate in (self.project_root, Path.cwd().resolve()):
+                            if self._anchors_stored_sources(existing, candidate):
+                                self.existing_source_root = candidate
+                                break
+                        else:
+                            self.existing_source_root = resolved
                 else:
                     invocation_root = Path.cwd().resolve()
                     if (invocation_root / saved_root).resolve() == watch_root:
@@ -398,6 +423,31 @@ class _StoredSourcePaths:
                 if has_project_relative_source:
                     break
             self.legacy_watch_relative = not has_project_relative_source
+
+    def _anchors_stored_sources(self, existing: dict, root: Path, sample: int = 25) -> bool:
+        """Whether stored relative source_file paths resolve under ``root``.
+
+        Samples the first ``sample`` relative entries: the first hit accepts
+        the anchor; ``sample`` consecutive misses reject it. A graph with no
+        relative sources returns True (any anchor is harmless there). The
+        bound keeps the check O(sample) on large graphs; its known limit is a
+        commit that deletes ``sample``-plus files whose nodes happen to sort
+        first — the anchor then falls back to the marker, matching the
+        pre-fix behavior (no worse).
+        """
+        checked = 0
+        for bucket in ("nodes", "links", "edges", "hyperedges"):
+            for item in existing.get(bucket, []):
+                raw = item.get("source_file") if isinstance(item, dict) else None
+                stored = self._normalize_source(raw) if raw else None
+                if not stored or is_absolute_any_platform(stored):
+                    continue
+                checked += 1
+                if (root / Path(posixpath.normpath(stored))).exists():
+                    return True
+                if checked >= sample:
+                    return False
+        return checked == 0
 
     def normalize(self, source_file: str | None) -> str | None:
         normalized = self._normalize_source(source_file, str(self.project_root))

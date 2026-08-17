@@ -786,7 +786,14 @@ _JS_CONFIG = LanguageConfig(
     call_accessor_node_types=frozenset({"member_expression"}),
     call_accessor_field="property",
     call_accessor_object_field="object",
-    function_boundary_types=frozenset({"function_declaration", "generator_function_declaration", "arrow_function", "method_definition"}),
+    # `function_expression` belongs here so UNTRACKED inline/nested expressions
+    # reach walk_calls' existing closure handler, which already names the type
+    # (`_JS_CLOSURE_TYPES`). Without it the gate never opens, so such an
+    # expression's parameters and locals never fold into extra_locals for its
+    # subtree and read as by-name references (#2241 family). A top-level
+    # `const f = function (…) {}` is tracked via its declarator and was already
+    # fine; the inline/nested forms are what this covers.
+    function_boundary_types=frozenset({"function_declaration", "generator_function_declaration", "arrow_function", "method_definition", "function_expression", "generator_function"}),
     import_handler=_import_js,
 )
 
@@ -807,7 +814,8 @@ _TS_CONFIG = LanguageConfig(
     call_accessor_node_types=frozenset({"member_expression"}),
     call_accessor_field="property",
     call_accessor_object_field="object",
-    function_boundary_types=frozenset({"function_declaration", "generator_function_declaration", "arrow_function", "method_definition"}),
+    # `function_expression`: see the note on the JS config above.
+    function_boundary_types=frozenset({"function_declaration", "generator_function_declaration", "arrow_function", "method_definition", "function_expression", "generator_function"}),
     import_handler=_import_js,
 )
 
@@ -1864,9 +1872,99 @@ def extract_c(path: Path) -> dict:
     return _extract_generic(path, _C_CONFIG)
 
 
+# doctest / Catch2 name each test case with a string literal
+# (``TEST_CASE("name")``), which tree-sitter-cpp cannot parse: the construct
+# becomes an ERROR node and the whole test function is dropped from the graph
+# (issue #2594). Recover the test cases with a regex fallback, mirroring the
+# Spock handling of Groovy ``def "feature"()`` above. Scoped to doctest +
+# Catch2, which share this string-named-macro surface.
+#
+# Only the top-level test-declaration macros are recovered as callable nodes.
+# ``SUBCASE`` / ``SECTION`` are *nested* scopes inside a test body and
+# ``TEST_SUITE`` is a grouping wrapper, not a test function — emitting them as
+# file-contained nodes would fabricate wrong-granularity nodes and edges.
+_CPP_STRING_TEST_MACROS = (
+    "TEST_CASE", "TEST_CASE_TEMPLATE", "SCENARIO",
+)
+# The name group consumes C-string escapes (``\"``, ``\\``) so a test whose
+# name embeds an escaped quote is captured whole, not truncated at the escape.
+_CPP_STRING_TEST_RE = re.compile(
+    r'^[ \t]*(?:' + "|".join(_CPP_STRING_TEST_MACROS) + r')\s*\(\s*"((?:[^"\\]|\\.)+)"',
+    re.MULTILINE,
+)
+
+
+def _augment_cpp_string_tests(path: Path, result: dict) -> dict:
+    """Append callable nodes for doctest/Catch2 string-named test cases that
+    tree-sitter-cpp drops as ERROR nodes (issue #2594).
+
+    The generic C++ pass still recovers the surrounding functions and include
+    edges reliably, so this only adds the missing ``TEST_CASE("...")`` nodes and
+    their ``contains`` edge from the file node — it does not rebuild the result.
+
+    Matching is line-anchored raw text, mirroring the Spock fallback above; it is
+    deliberately not comment/preprocessor aware (a ``TEST_CASE`` disabled behind
+    a block comment or ``#if 0`` may still surface as a node, exactly as a
+    commented Spock ``def "feature"()`` would).
+    """
+    try:
+        source = path.read_text(errors="replace")
+    except OSError:
+        return result
+    matches = list(_CPP_STRING_TEST_RE.finditer(source))
+    if not matches:
+        return result
+
+    str_path = str(path)
+    stem = _file_stem(path)
+    file_nid = _make_id(str_path)
+    # A test name that is all punctuation (TEST_CASE("***")) normalizes to empty,
+    # so _make_id(stem, name) collapses onto this bare-stem id — colliding with
+    # the file's namespace and silently swallowing every later such test under
+    # one id (#1899). Detect that collapse and fall back to a line-positional id.
+    stem_collapse_id = _make_id(stem)
+    nodes = result.setdefault("nodes", [])
+    edges = result.setdefault("edges", [])
+    seen_ids = {n.get("id") for n in nodes}
+
+    for m in matches:
+        test_name = m.group(1)
+        line = source.count("\n", 0, m.start()) + 1
+        test_nid = _make_id(stem, test_name)
+        if test_nid == stem_collapse_id:
+            test_nid = _make_id(stem, "test", f"L{line}")
+        if test_nid in seen_ids:
+            continue
+        seen_ids.add(test_nid)
+        # Keep the raw test name as the label (mirroring the Spock fallback,
+        # which labels feature methods with their quoted string name).
+        nodes.append({
+            "id": test_nid,
+            "label": f'"{test_name}"',
+            "file_type": "code",
+            "source_file": str_path,
+            "source_location": f"L{line}",
+        })
+        edges.append({
+            "source": file_nid,
+            "target": test_nid,
+            "relation": "contains",
+            "confidence": "EXTRACTED",
+            "source_file": str_path,
+            "source_location": f"L{line}",
+            "weight": 1.0,
+        })
+    return result
+
+
 def extract_cpp(path: Path) -> dict:
-    """Extract functions, classes, and includes from a .cpp/.cc/.cxx/.hpp file."""
-    return _extract_generic(path, _CPP_CONFIG)
+    """Extract functions, classes, and includes from a .cpp/.cc/.cxx/.hpp file.
+
+    Recovers doctest/Catch2 ``TEST_CASE("name")`` test cases that tree-sitter-cpp
+    drops as ERROR nodes (issue #2594), mirroring the Spock fallback for Groovy.
+    """
+    result = _extract_generic(path, _CPP_CONFIG)
+    return _augment_cpp_string_tests(path, result)
 
 
 def extract_ruby(path: Path) -> dict:

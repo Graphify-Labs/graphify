@@ -187,6 +187,59 @@ def test_cpp_finds_methods():
     # C++ extractor captures the constructor and public-visible methods
     assert any("HttpClient" in l for l in labels)
 
+def test_cpp_recovers_doctest_string_named_test_cases():
+    """doctest/Catch2 ``TEST_CASE("name")`` uses a string literal where the
+    grammar expects an identifier, so tree-sitter-cpp drops the whole test
+    function as an ERROR node (#2594). The regex fallback must recover one
+    callable node per test case, keeping the raw name as the label, without
+    losing the surrounding functions the tree-sitter pass still parses.
+    """
+    r = extract_cpp(FIXTURES / "sample_doctest.cpp")
+    labels = _labels(r)
+    assert '"addition works"' in labels
+    assert '"subtraction works"' in labels
+    # The plain function next to the test cases must still be present.
+    assert any(l.startswith("add") for l in labels)
+    # A nested SUBCASE is a scope inside a test body, not a file-level test
+    # function, so it must not be emitted as its own callable node.
+    assert '"small operands"' not in labels
+    # An escaped quote inside the test name is captured whole, not truncated
+    # at the first ``\"``.
+    assert r'"handles \"quoted\" names"' in labels
+    # Each recovered test case is contained by its file node.
+    file_id = next(n["id"] for n in r["nodes"] if n["label"] == "sample_doctest.cpp")
+    test_ids = {n["id"] for n in r["nodes"] if n["label"].startswith('"')}
+    contained = {
+        e["target"] for e in r["edges"]
+        if e["relation"] == "contains" and e["source"] == file_id
+    }
+    assert test_ids and test_ids <= contained
+
+
+def test_cpp_string_tests_punctuation_only_names_stay_distinct(tmp_path):
+    """A punctuation-only test name normalizes to empty, so a naive
+    ``_make_id(stem, name)`` collapses onto the bare file-stem id — colliding
+    with the file namespace and swallowing every later such test under one id
+    (#1899). The guard gives each a distinct line-positional id."""
+    f = tmp_path / "punct_tests.cpp"
+    f.write_text(
+        'TEST_CASE("***") { CHECK(1); }\n'
+        'TEST_CASE("...") { CHECK(2); }\n'
+        'SCENARIO("boots up") { REQUIRE(1); }\n',
+        encoding="utf-8",
+    )
+    r = extract_cpp(f)
+    from graphify.extract import _make_id, _file_stem
+    stem_collapse = _make_id(_file_stem(f))
+    tests = [n for n in r["nodes"] if n["label"].startswith('"')]
+    ids = [n["id"] for n in tests]
+    # both punctuation-only cases recovered, plus the SCENARIO macro
+    assert '"***"' in {n["label"] for n in tests}
+    assert '"..."' in {n["label"] for n in tests}
+    assert '"boots up"' in {n["label"] for n in tests}
+    assert len(set(ids)) == len(ids)                      # all distinct
+    assert all(i != stem_collapse for i in ids)           # none squats on the file stem
+
 def test_cpp_finds_includes():
     r = extract_cpp(FIXTURES / "sample.cpp")
     assert "imports" in _relations(r)

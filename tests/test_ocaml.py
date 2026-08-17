@@ -86,6 +86,44 @@ def test_impl_calls_resolve_same_file(tmp_path):
     assert ("main", "Shapes") not in calls
 
 
+def test_qualified_external_call_does_not_bind_to_local_same_name(tmp_path):
+    """A qualified call `M.f` to an EXTERNAL module (not defined in this file)
+    must not bind to a same-named local `f` — that would be a false edge and,
+    when the caller is that local `f`, a `f -> f` self-loop. It is kept as a
+    distinct external target labelled by the full path (e.g. Hardcaml's
+    `Reg_spec.create` next to a local `let create`)."""
+    src = (
+        "let create x =\n"
+        "  let spec = Reg_spec.create x in\n"  # external, same bare name as local
+        "  spec\n"
+        "let run () = Scope.create ()\n"       # external, same bare name
+    )
+    r = extract_ocaml(_write(tmp_path, "counter.ml", src))
+    calls = _rel_pairs(r, "calls")
+    assert ("create", "create") not in calls              # no self-loop
+    assert ("create", "Reg_spec.create") in calls         # kept distinct
+    assert ("run", "Scope.create") in calls
+    assert ("run", "create") not in calls                 # not the local create
+    # no dangling edges introduced by the qualified external stubs
+    ids = {n["id"] for n in r["nodes"]}
+    assert all(e["source"] in ids and e["target"] in ids for e in r["edges"])
+
+
+def test_qualified_call_into_local_module_resolves(tmp_path):
+    """A qualified call whose qualifier IS a module defined in this file still
+    resolves to the local definition."""
+    src = (
+        "module M = struct\n"
+        "  let helper x = x\n"
+        "end\n"
+        "let run () = M.helper 1\n"
+    )
+    r = extract_ocaml(_write(tmp_path, "m.ml", src))
+    calls = _rel_pairs(r, "calls")
+    assert ("run", "helper") in calls
+    assert not any(t == "M.helper" for _, t in calls)  # not left as an external stub
+
+
 def test_impl_open_emits_import(tmp_path):
     r = extract_ocaml(_write(tmp_path, "shapes.ml", IMPL))
     imports = _rel_pairs(r, "imports_from")

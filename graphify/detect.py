@@ -6,6 +6,7 @@ import os
 import re
 import shlex
 import stat
+import subprocess
 import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
@@ -1020,6 +1021,65 @@ def _find_vcs_root(start: Path) -> Path | None:
         current = parent
 
 
+def _path_identity(path: Path) -> str:
+    """Portable comparison key for an existing filesystem path."""
+    return _nfc(os.path.normcase(os.path.abspath(os.fspath(path))))
+
+
+def _git_tracked_path_keys(root: Path) -> tuple[set[str], set[str]]:
+    """Return tracked-file keys and their ancestor-directory keys under *root*.
+
+    Gitignore rules do not apply to paths already present in Git's index. Ask
+    Git once per scan/predicate construction with NUL-delimited output so every
+    valid filename is preserved. Missing Git, a non-Git VCS marker, command
+    failure, and malformed output all fail closed to the historical ignore
+    behavior rather than making discovery fail (#2759).
+    """
+    root = root.resolve()
+    vcs_root = _find_vcs_root(root)
+    if vcs_root is None or not (vcs_root / ".git").exists():
+        return set(), set()
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(vcs_root), "ls-files", "-z", "--cached"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=30,
+            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+        )
+    except (OSError, subprocess.SubprocessError):
+        return set(), set()
+    if proc.returncode != 0:
+        return set(), set()
+
+    tracked_files: set[str] = set()
+    tracked_dirs: set[str] = set()
+    for raw in proc.stdout.split(b"\0"):
+        if not raw:
+            continue
+        path = Path(os.path.abspath(vcs_root / os.fsdecode(raw)))
+        try:
+            path.relative_to(root)
+        except ValueError:
+            continue
+        # Deleted index entries and submodule gitlinks are not discoverable
+        # files. Symlinks to regular files remain eligible; the existing
+        # in-root target guard still decides whether they may enter the corpus.
+        if not _is_regular_file(path):
+            continue
+        tracked_files.add(_path_identity(path))
+        parent = path.parent
+        while parent != root:
+            parent_key = _path_identity(parent)
+            if parent_key in tracked_dirs:
+                break  # its ancestors were added with the first file below it
+            tracked_dirs.add(parent_key)
+            parent = parent.parent
+    return tracked_files, tracked_dirs
+
+
 def _git_info_exclude(vcs_root: Path) -> Path | None:
     """Resolve ``$GIT_DIR/info/exclude`` for the repo rooted at ``vcs_root``.
 
@@ -1259,6 +1319,32 @@ def _is_ignored(
     return _eval(path)
 
 
+def _is_scan_ignored(
+    path: Path,
+    root: Path,
+    patterns: list[tuple[Path, str]],
+    explicit_patterns: list[tuple[Path, str]],
+    tracked_files: set[str],
+    tracked_dirs: set[str],
+    *,
+    cache: dict[Path, bool],
+    explicit_cache: dict[Path, bool],
+) -> bool:
+    """Apply ignore rules while preserving Git-tracked paths.
+
+    ``patterns`` combines Git and graph-specific rules. ``explicit_patterns``
+    contains only .graphifyignore/--exclude rules, which remain authoritative
+    even for tracked files. A tracked file's ancestor directories are preserved
+    from Git-only pruning so the walk can reach the file (#2759).
+    """
+    if not _is_ignored(path, root, patterns, _cache=cache):
+        return False
+    if _is_ignored(path, root, explicit_patterns, _cache=explicit_cache):
+        return True
+    identity = _path_identity(path)
+    return identity not in tracked_files and identity not in tracked_dirs
+
+
 def ignored_predicate(
     root: Path,
     *,
@@ -1285,12 +1371,24 @@ def ignored_predicate(
     """
     root = root.resolve()
     patterns = _load_graphifyignore(root, gitignore=gitignore)
+    explicit_patterns = _load_graphifyignore(root, gitignore=False)
+    # Only shell out to git when .gitignore actually contributes patterns beyond
+    # the explicit (.graphifyignore/--exclude) set: with no .gitignore in play,
+    # nothing is dropped by gitignore and the tracked-file exemption is moot, so a
+    # non-.gitignore corpus pays no `git ls-files` cost.
+    tracked_files, tracked_dirs = (
+        _git_tracked_path_keys(root)
+        if gitignore and len(patterns) > len(explicit_patterns)
+        else (set(), set())
+    )
     if extra_excludes:
         for pat in extra_excludes:
             line = _parse_gitignore_line(pat)
             if line:
                 patterns.append((root, line))
+                explicit_patterns.append((root, line))
     cache: dict[Path, bool] = {}
+    explicit_cache: dict[Path, bool] = {}
     # root's own ignore file is the last entry of _load_graphifyignore's chain.
     loaded_dirs: set[Path] = {root}
 
@@ -1317,7 +1415,19 @@ def ignored_predicate(
             if ancestor not in loaded_dirs:
                 loaded_dirs.add(ancestor)
                 patterns.extend(_load_dir_own_ignore(ancestor, gitignore=gitignore))
-        return _is_ignored(path, root, patterns, _cache=cache)
+                explicit_patterns.extend(
+                    _load_dir_own_ignore(ancestor, gitignore=False)
+                )
+        return _is_scan_ignored(
+            path,
+            root,
+            patterns,
+            explicit_patterns,
+            tracked_files,
+            tracked_dirs,
+            cache=cache,
+            explicit_cache=explicit_cache,
+        )
 
     return _ignored
 
@@ -1398,7 +1508,16 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
     ignored: list[str] = []
     pruned_noise: list[str] = []
     ignore_patterns = _load_graphifyignore(root, gitignore=gitignore)
+    explicit_ignore_patterns = _load_graphifyignore(root, gitignore=False)
+    # See ignored_predicate: skip the `git ls-files` subprocess when .gitignore
+    # contributes no patterns, so a non-.gitignore corpus pays nothing for it.
+    tracked_files, tracked_dirs = (
+        _git_tracked_path_keys(root)
+        if gitignore and len(ignore_patterns) > len(explicit_ignore_patterns)
+        else (set(), set())
+    )
     ignore_cache: dict[Path, bool] = {}  # shared across all _is_ignored calls in this scan
+    explicit_ignore_cache: dict[Path, bool] = {}
     # CLI --exclude patterns are anchored at the scan root and appended last
     # so they win over any .graphifyignore/.gitignore rules (#947).
     if extra_excludes:
@@ -1406,6 +1525,19 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
             line = _parse_gitignore_line(pat)
             if line:
                 ignore_patterns.append((root, line))
+                explicit_ignore_patterns.append((root, line))
+
+    def _ignored_for_scan(path: Path) -> bool:
+        return _is_scan_ignored(
+            path,
+            root,
+            ignore_patterns,
+            explicit_ignore_patterns,
+            tracked_files,
+            tracked_dirs,
+            cache=ignore_cache,
+            explicit_cache=explicit_ignore_cache,
+        )
 
     # Always include graphify-out/memory/ - query results filed back into the graph
     memory_dir = root / GRAPHIFY_OUT / "memory"
@@ -1455,6 +1587,9 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                 # file governs its own subtree the same way git honors it (#1206).
                 if dp != root:
                     ignore_patterns.extend(_load_dir_own_ignore(dp, gitignore=gitignore))
+                    explicit_ignore_patterns.extend(
+                        _load_dir_own_ignore(dp, gitignore=False)
+                    )
                 # Prune noise dirs in-place so os.walk never descends into them.
                 # Dot dirs are allowed — users often want .github/, .claude/, etc.
                 # Framework caches (.next, .nuxt, …) are caught by _is_noise_dir.
@@ -1485,7 +1620,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                         # than vanishing silently (#2058).
                         pruned_noise.append(str(dp / d) + os.sep)
                         continue
-                    if _is_ignored(dp / d, root, ignore_patterns, _cache=ignore_cache):
+                    if _ignored_for_scan(dp / d):
                         ignored.append(str(dp / d) + os.sep)
                         continue
                     kept_dirs.append(d)
@@ -1518,7 +1653,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
             # Skip files inside our own converted/ dir (avoid re-processing sidecars)
             if str(p).startswith(str(converted_dir)):
                 continue
-        if not in_memory and _is_ignored(p, root, ignore_patterns, _cache=ignore_cache):
+        if not in_memory and _ignored_for_scan(p):
             ignored.append(str(p))
             continue
         if not _resolves_under_root(p, root):
@@ -1562,7 +1697,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                     skipped_sensitive.append(str(p) + f" [Google Workspace export failed: {exc}]")
                     continue
                 if md_path:
-                    if _is_ignored(md_path, root, ignore_patterns, _cache=ignore_cache):
+                    if _ignored_for_scan(md_path):
                         continue
                     files[ftype].append(str(md_path))
                     total_words += _wc(md_path)
@@ -1573,7 +1708,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
             if p.suffix.lower() in OFFICE_EXTENSIONS:
                 md_path = convert_office_file(p, converted_dir, root=root)
                 if md_path:
-                    if _is_ignored(md_path, root, ignore_patterns, _cache=ignore_cache):
+                    if _ignored_for_scan(md_path):
                         continue
                     files[ftype].append(str(md_path))
                     total_words += _wc(md_path)

@@ -1287,6 +1287,81 @@ def _js_module_bound_names(root, source: bytes) -> set[str]:
     walk(root)
     return bound
 
+def _js_import_binds_external(raw: str, str_path: str) -> bool:
+    """True when a JS/TS import specifier names a module outside the scanned corpus.
+
+    Reuses `_resolve_js_import_target`, so this is graphify's own verdict rather
+    than a second opinion: a specifier it cannot resolve is an external package
+    (the `ref`-namespaced branch). The extra `node_modules` test covers the case
+    where resolution *succeeds* but lands in a dependency tree — a `tsconfig`
+    `paths` entry mapping a package to its own installed copy
+    (`"lucide-react": ["./node_modules/lucide-react"]`) is common, and
+    `node_modules` is pruned from every scan, so the target is never a node.
+    """
+    resolved = _resolve_js_import_target(raw, str_path)
+    if resolved is None:
+        return False  # empty specifier — binds nothing
+    _target_nid, resolved_path = resolved
+    if resolved_path is None:
+        return True  # unresolved after relative / alias / workspace lookup
+    return "node_modules" in resolved_path.parts
+
+
+def _js_external_import_names(root, source: bytes, str_path: str) -> set[str]:
+    """Names an `import` binds to a module OUTSIDE the corpus.
+
+    An imported name is a module-scoped binding: within this file it denotes the
+    imported symbol and nothing else. Neither shadow set collects it —
+    `_js_local_bound_names` reads parameters and `variable_declarator`s and
+    `_js_module_bound_names` only the latter — so the name reaches
+    `_emit_indirect_ref` as an unresolved by-name reference, gets resolved against
+    the corpus-wide label index, and fabricates an `indirect_call` (INFERRED, 0.8)
+    to any unique same-named callable elsewhere in the corpus. That is the symptom
+    already fixed for `catch` bindings, single-parameter arrows and untracked
+    closures; an import binding is the same class of shadow, and a UI kit makes it
+    land constantly because icon names (`Palette`, `Search`, `Filter`) collide with
+    ordinary component names.
+
+    Only imports the corpus cannot contain are collected. A relative specifier
+    resolves to a real file and that edge is the graph's whole point, so those
+    names stay resolvable.
+    """
+    bound: set[str] = set()
+
+    def _clause_names(clause) -> None:
+        for c in clause.children:
+            if c.type == "identifier":            # import Default from "pkg"
+                bound.add(_read_text(c, source))
+            elif c.type == "namespace_import":    # import * as NS from "pkg"
+                for ident in c.children:
+                    if ident.type == "identifier":
+                        bound.add(_read_text(ident, source))
+            elif c.type == "named_imports":       # import { A, B as C } from "pkg"
+                for spec in c.children:
+                    if spec.type != "import_specifier":
+                        continue
+                    idents = [g for g in spec.children if g.type == "identifier"]
+                    # `B as C` exposes both names; only the LAST one is bound here.
+                    if idents:
+                        bound.add(_read_text(idents[-1], source))
+
+    def walk(n) -> None:
+        for c in n.children:
+            if c.type == "import_statement":
+                src_node = c.child_by_field_name("source")
+                if src_node is not None:
+                    raw = _read_text(src_node, source).strip("\"'`")
+                    if _js_import_binds_external(raw, str_path):
+                        for child in c.children:
+                            if child.type == "import_clause":
+                                _clause_names(child)
+                continue
+            walk(c)
+
+    walk(root)
+    return bound
+
+
 def _js_dispatch_value_idents(coll_node):
     """Yield identifier value-nodes of a JS/TS object/array literal that are
     function-reference candidates: object property VALUES and shorthand properties
@@ -1786,7 +1861,7 @@ def _find_require_call(value_node):
         return _find_require_call(obj)
     return None
 
-def _require_imports_js(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str) -> bool:
+def _require_imports_js(node, source: bytes, importer_nid: str, stem: str, edges: list, str_path: str) -> bool:
     """Detect CommonJS require imports inside lexical_declaration / variable_declaration.
 
     Handles three patterns:
@@ -1825,7 +1900,7 @@ def _require_imports_js(node, source: bytes, file_nid: str, stem: str, edges: li
         tgt_nid, resolved_path = resolved
         line = node.start_point[0] + 1
         edge = {
-            "source": file_nid,
+            "source": importer_nid,
             "target": tgt_nid,
             "relation": "imports_from",
             "context": "import",
@@ -1862,7 +1937,7 @@ def _require_imports_js(node, source: bytes, file_nid: str, stem: str, edges: li
         if target_stem is not None:
             for sym in sym_names:
                 edges.append({
-                    "source": file_nid,
+                    "source": importer_nid,
                     "target": _make_id(target_stem, sym),
                     "relation": "imports",
                     "context": "import",
@@ -2688,6 +2763,14 @@ def _extract_generic(
 
     stem = _file_stem(path)
     str_path = str(path)
+    # Names bound by an import of a module outside the corpus. Module-scoped, so it
+    # is computed once per file and consulted from every scope — see
+    # `_js_external_import_names`.
+    js_external_imports: set[str] = (
+        _js_external_import_names(root, source, str_path)
+        if config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript")
+        else set()
+    )
     nodes: list[dict] = []
     edges: list[dict] = []
     seen_ids: set[str] = set()
@@ -4540,6 +4623,11 @@ def _extract_generic(
         # shadowing: a param / local binding names a local value, not the module fn
         if ident_name in enclosing_locals or ident_name in ("self", "cls"):
             return
+        # An import from outside the corpus binds the name for the whole module, so
+        # it shadows in every scope — no unique same-named definition elsewhere in
+        # the corpus is what this identifier refers to.
+        if ident_name in js_external_imports:
+            return
         _emit_indirect_by_name(ident_name, ident, scope_nid, context)
 
     def _python_dispatch_value_idents(coll_node):
@@ -4623,7 +4711,8 @@ def _extract_generic(
     # _tracked_body_ids guard below still prevents double-walking the
     # top-level ones (those are entered via their own function_bodies entry).
     _JS_DESCEND_TYPES = _JS_CLOSURE_TYPES + (
-        "function_declaration", "generator_function_declaration")
+        "function_declaration", "generator_function_declaration",
+        "generator_function")
 
     def walk_calls(
         node,
@@ -4657,6 +4746,14 @@ def _extract_generic(
                     for child in node.children:
                         walk_calls(child, caller_nid, receiver_types, closure_locals)
             return
+
+        # CommonJS imports are valid at any lexical depth.  The module-level
+        # pass records top-level require() declarations; this pass owns function
+        # bodies, so detect lazy/cycle-breaking requires here and attribute the
+        # dependency to the enclosing callable rather than silently dropping it.
+        if (config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript")
+                and node.type in ("lexical_declaration", "variable_declaration")):
+            _require_imports_js(node, source, caller_nid, stem, edges, str_path)
 
         if node.type in config.call_types:
             # JS/TS dynamic imports: await import('./foo.js')
