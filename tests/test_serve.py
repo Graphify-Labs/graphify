@@ -1697,3 +1697,17 @@ def test_snake_case_identifier_still_matches_itself():
 
     scored = _score_nodes(G, _query_terms("_query_terms"))
     assert scored and scored[0][1] == "n1"
+
+
+def test_underscore_query_does_not_let_a_single_token_outrank_the_real_match():
+    """Splitting on `_` broadens seeding, so an unrelated single-token node can now
+    be scored — but coverage-scaling/IDF must keep it from out-ranking the node
+    that matches the full multi-token query (the over-match guard for this fix)."""
+    G = nx.Graph()
+    G.add_node("real", label="user-service-client",
+               source_file="a.py", source_location="L1", community=0)
+    G.add_node("noise", label="user",
+               source_file="b.py", source_location="L1", community=1)
+    scored = _score_nodes(G, _query_terms("user_service_client"))
+    assert scored, "the multi-token query must match the full-label node"
+    assert scored[0][1] == "real", f"a single-token node out-ranked the real match: {scored}"

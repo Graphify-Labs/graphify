@@ -4,6 +4,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.46 (unreleased)
 
+- Fix: `graphify query` treats `_` as a token separator (like `-`), so an underscore-spelled query (`user_service`) matches a hyphenated label (`user-service`); coverage-scaling keeps the broader tokenization from surfacing unrelated single-token noise (#2473, thanks @nadiadatepe-eng).
 - Fix: the `post-checkout` hook skips its rebuild when HEAD is unchanged (e.g. `git checkout -b` with no start point), so creating a branch no longer triggers a full graph rebuild (#2421, thanks @nothariharan).
 - Feature: Markdown nodes now carry a `node_kind` (`page` vs `heading`) attribute so a docs corpus can be filtered by kind, and leading YAML frontmatter is parsed onto the page node as bounded, sanitized attributes; a `#` comment inside frontmatter is no longer mis-extracted as a heading (thanks @evanthomasgelders). Node ids are unchanged, so existing markdown graphs are not re-keyed.
 
