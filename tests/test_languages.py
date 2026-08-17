@@ -3052,3 +3052,220 @@ def test_decldef_merge_does_not_merge_same_name_same_dir_distinct_files():
     r = _corpus("cpp_samedir/Alpha.h", "cpp_samedir/Beta.h")
     dups = _nodes_with_label(r, "Dup")
     assert len(dups) == 2, f"same-dir distinct Dups must stay distinct, got {[n['id'] for n in dups]}"
+
+
+# ── Monkey C (Garmin Connect IQ) ─────────────────────────────────────────────
+from graphify.extract import extract_monkeyc
+
+
+def _mc():
+    return extract_monkeyc(FIXTURES / "sample.mc")
+
+
+def _mc_labelled(r, relation, context=None):
+    labels = {n["id"]: n["label"] for n in r["nodes"]}
+    return {
+        (labels.get(e["source"], e["source"]), labels.get(e["target"], e["target"]))
+        for e in r["edges"]
+        if e["relation"] == relation and (context is None or e.get("context") == context)
+    }
+
+
+def test_monkeyc_no_error():
+    r = _mc()
+    assert "error" not in r
+    assert r["nodes"] and r["edges"]
+
+
+def test_monkeyc_finds_modules_and_classes():
+    labels = set(_labels(_mc()))
+    assert {"Helpers", "Ticker", "SampleView", "SampleDelegate", "DerivedView"} <= labels
+    # declarations inside comments/strings never become nodes
+    assert "Nope" not in labels
+    assert "nope()" not in labels
+
+
+def test_monkeyc_finds_functions_with_scope_labels():
+    labels = set(_labels(_mc()))
+    # module functions are `name()`, class methods `.name()`
+    assert {"bump()", "label()"} <= labels
+    assert {".initialize()", ".start()", ".onTick()", ".report()", ".onShow()", ".onBack()"} <= labels
+    # annotated + private method still found
+    assert "._dump()" in labels
+
+
+def test_monkeyc_contains_and_method_edges():
+    r = _mc()
+    contains = _mc_labelled(r, "contains")
+    methods = _mc_labelled(r, "method")
+    assert ("sample.mc", "Helpers") in contains
+    assert ("Helpers", "bump()") in contains
+    assert ("Helpers", "Ticker") in contains          # class nested in a module
+    assert ("sample.mc", "SampleView") in contains
+    assert ("Ticker", ".onTick()") in methods
+    assert ("SampleView", "._dump()") in methods       # braces in string/char/dict did not desync scopes
+    assert ("DerivedView", ".onHide()") in methods
+
+
+def test_monkeyc_inherits_local_and_sdk_stub():
+    r = _mc()
+    inherits = _mc_labelled(r, "inherits")
+    # a base declared in the same file resolves to the real node
+    assert ("DerivedView", "SampleView") in inherits
+    # an SDK base becomes a sourceless stub with the alias-expanded name
+    assert ("SampleView", "Toybox.WatchUi.View") in inherits
+    assert ("SampleDelegate", "Toybox.WatchUi.BehaviorDelegate") in inherits
+    stub = _node_by_label(r, "Toybox.WatchUi.View")
+    assert stub["source_file"] == "" and stub["file_type"] == "code"
+
+
+def test_monkeyc_imports():
+    r = _mc()
+    imports = _edges_with_relation(r, "imports_from")
+    assert len(imports) >= 6
+    assert all(e.get("context") == "import" for e in imports)
+    # `import Helpers;` targets the module declared (later) in this very file
+    helpers = _node_by_label(r, "Helpers")
+    assert helpers["source_file"].endswith("sample.mc")
+    assert any(e["target"] == helpers["id"] for e in imports)
+
+
+def test_monkeyc_intra_file_calls():
+    r = _mc()
+    calls = _mc_labelled(r, "calls")
+    assert (".onTick()", ".report()") in calls           # me.report()
+    assert ("label()", "bump()") in calls                # bare call inside the module
+    assert (".report()", "label()") in calls             # class method -> enclosing module function
+    assert (".initialize()", "SampleDelegate") in calls  # new LocalClass()
+    assert (".initialize()", ".initialize()") in calls   # DerivedView -> SampleView.initialize()
+    assert (".onTick()", "bump()") in calls              # Helpers.bump() — module declared in this file
+    assert (".onShow()", "bump()") in calls              # $.Helpers.bump() — `$.` global qualifier dropped
+    call_edges = _edges_with_relation(r, "calls")
+    assert all(e.get("context") == "call" for e in call_edges)
+    assert all(e["confidence"] == "EXTRACTED" for e in call_edges)
+
+
+def test_monkeyc_callback_symbol_is_indirect_call():
+    r = _mc()
+    indirect = _edges_with_relation(r, "indirect_call")
+    pairs = _mc_labelled(r, "indirect_call")
+    assert (".start()", ".onTick()") in pairs    # method(:onTick)
+    assert (".start()", ".onIdle()") in pairs    # new Lang.Method(self, :onIdle)
+    assert (".report()", ".onIdle()") in pairs   # me.method(:onIdle)
+    assert all(e["confidence"] == "INFERRED" and e.get("context") == "callback" for e in indirect)
+
+
+def test_monkeyc_raw_calls_carry_receiver_types():
+    r = _mc()
+    raw = r["raw_calls"]
+    assert raw and all(rc["lang"] == "monkeyc" for rc in raw)
+    by_callee = {}
+    for rc in raw:
+        by_callee.setdefault(rc["callee"], []).append(rc)
+    # `Ui.popView(...)` — explicit qualifier through a `using ... as Ui` alias
+    pop = by_callee["popView"]
+    assert pop[0]["is_member_call"] is True
+    assert pop[0]["receiver_type"] == "Toybox.WatchUi" and pop[0]["receiver_kind"] == "static"
+    # `_ticker.start()` — field typed by `var _ticker as Helpers.Ticker`
+    start = [rc for rc in by_callee["start"] if rc.get("receiver") == "_ticker"]
+    assert start and start[0]["receiver_type"] == "Helpers.Ticker" and start[0]["receiver_kind"] == "typed"
+    # `_timer.start(...)` — field typed by `var _timer as Timer.Timer or Null`, alias-expanded
+    timer = [rc for rc in by_callee["start"] if rc.get("receiver") == "_timer"]
+    assert timer and timer[0]["receiver_type"] == "Toybox.Timer.Timer" and timer[0]["receiver_kind"] == "typed"
+    # `s.onBack()` — local typed by `var s = new SampleDelegate()`
+    on_back = by_callee["onBack"]
+    assert on_back[0]["receiver_type"] == "SampleDelegate" and on_back[0]["receiver_kind"] == "typed"
+    # `requestUpdate()` — bare, unresolved in-file, made from a class body
+    req = by_callee["requestUpdate"]
+    assert req[0]["is_member_call"] is False and req[0]["self_scope"] is True
+    # `View.initialize()` — SDK class brought in by `import`: a static member raw call
+    view_init = [rc for rc in by_callee["initialize"] if rc.get("receiver") == "View"]
+    assert view_init and view_init[0]["is_member_call"] is True
+    assert view_init[0]["receiver_type"] == "View" and view_init[0]["receiver_kind"] == "static"
+    # `new Timer.Timer()` / `new Lang.InvalidValueException()` — SDK constructors are never raw calls
+    assert "Timer" not in by_callee and "InvalidValueException" not in by_callee
+    # `if (`, `switch (` and friends are not calls
+    assert not {"if", "switch", "return", "new", "method", "throw"} & set(by_callee)
+
+
+def test_monkeyc_no_dangling_edges():
+    r = _mc()
+    ids = {n["id"] for n in r["nodes"]}
+    for e in r["edges"]:
+        assert e["source"] in ids, e
+        if e["relation"] != "imports_from":
+            assert e["target"] in ids, e
+
+
+def test_monkeyc_line_numbers_survive_blanking():
+    r = _mc()
+    ticker = _node_by_label(r, "Ticker")
+    lines = (FIXTURES / "sample.mc").read_text().splitlines()
+    line_no = int(ticker["source_location"][1:])
+    assert "class Ticker" in lines[line_no - 1]
+
+
+def test_monkeyc_dispatch_registered():
+    from graphify.extract import _DISPATCH
+    assert _DISPATCH[".mc"] is extract_monkeyc
+
+
+def test_monkeyc_detect_extension_registered():
+    from graphify.detect import CODE_EXTENSIONS, classify_file, FileType
+    assert ".mc" in CODE_EXTENSIONS
+    assert classify_file(FIXTURES / "sample.mc") == FileType.CODE
+
+
+def test_monkeyc_cross_file_resolution():
+    """Two-file corpus: `extends`, `Module.fn()`, `new Class()`, an inherited
+    bare call and a typed receiver all resolve across files, and a bare
+    `import Store;` is rewired onto the real module node."""
+    r = _corpus("monkeyc_cross_file/Base.mc", "monkeyc_cross_file/App.mc")
+    labels = {n["id"]: n["label"] for n in r["nodes"]}
+    src_of = {n["id"]: n.get("source_file", "") for n in r["nodes"]}
+
+    def pairs(relation):
+        return {
+            (labels.get(e["source"], e["source"]), labels.get(e["target"], e["target"]), e["confidence"])
+            for e in r["edges"] if e["relation"] == relation
+        }
+
+    # inherits rewired from the sourceless stub onto the real BaseView (in Base.mc)
+    inherits = [e for e in r["edges"] if e["relation"] == "inherits" and labels.get(e["source"]) == "MainView"]
+    assert len(inherits) == 1
+    assert labels[inherits[0]["target"]] == "BaseView"
+    assert src_of[inherits[0]["target"]].endswith("Base.mc")
+    # only one BaseView node survives (no leftover stub)
+    assert len([n for n in r["nodes"] if n["label"] == "BaseView"]) == 1
+
+    calls = pairs("calls")
+    assert (".onShow()", "get()", "EXTRACTED") in calls          # Store.get() — explicit qualifier
+    assert (".initialize()", ".initialize()", "EXTRACTED") in calls  # BaseView.initialize()
+    # `refresh()` inherited from BaseView: bound by the shared pass (unique name, INFERRED)
+    # or, when the name is ambiguous, by the inherits chain (EXTRACTED) — either way one edge.
+    assert any(s == ".onShow()" and t == ".refresh()" for s, t, _ in calls)
+    assert any(s == ".initialize()" and t == "BaseView" for s, t, _ in calls)  # new BaseView()
+    # `Store.reset()` — Store is known but has no reset(): type-level references, EXTRACTED
+    assert (".onShow()", "Store", "EXTRACTED") in pairs("references")
+
+    # `import Store;` -> the real Store module node in Base.mc
+    store = [n for n in r["nodes"] if n["label"] == "Store"]
+    assert len(store) == 1 and store[0]["source_file"].endswith("Base.mc")
+    imports = [e for e in r["edges"] if e["relation"] == "imports_from" and e["target"] == store[0]["id"]]
+    assert imports, "import Store; should be rewired onto the real module node"
+
+    # SDK stubs stay external and unique
+    view_stubs = [n for n in r["nodes"] if n["label"] == "Toybox.WatchUi.View"]
+    assert view_stubs and all(n["source_file"] == "" for n in view_stubs)
+
+
+def test_monkeyc_ambiguous_type_yields_no_edge():
+    """Two same-named classes in different files: `Twin.ping()` must not bind to either
+    (the exactly-one-definition guard), and no phantom Twin node is fabricated."""
+    r = _corpus("monkeyc_ambiguous/A.mc", "monkeyc_ambiguous/B.mc", "monkeyc_ambiguous/Caller.mc")
+    labels = {n["id"]: n["label"] for n in r["nodes"]}
+    twins = [n for n in r["nodes"] if n["label"] == "Twin" and n.get("source_file")]
+    assert len(twins) == 2
+    from_go = [(labels.get(e["target"], e["target"]), e["relation"])
+               for e in r["edges"] if labels.get(e["source"]) == ".go()"]
+    assert not any(t in (".ping()", "Twin") for t, _ in from_go), from_go

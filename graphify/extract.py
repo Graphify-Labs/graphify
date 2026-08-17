@@ -46,6 +46,7 @@ from graphify.extractors.fortran import _cpp_preprocess, extract_fortran  # noqa
 from graphify.extractors.go import _GO_PREDECLARED_FUNCS, extract_go  # noqa: F401
 from graphify.extractors.json_config import extract_json  # noqa: F401
 from graphify.extractors.markdown import extract_markdown  # noqa: F401
+from graphify.extractors.monkeyc import extract_monkeyc, resolve_monkeyc_member_calls  # noqa: F401
 from graphify.extractors.ocaml import extract_ocaml  # noqa: F401
 from graphify.extractors.pascal_forms import extract_delphi_form, extract_lazarus_form  # noqa: F401
 from graphify.extractors.powershell import extract_powershell, extract_powershell_manifest  # noqa: F401
@@ -2127,6 +2128,7 @@ _LANG_FAMILY_BY_EXT: dict[str, str] = {
     ".ex": "elixir", ".exs": "elixir",
     ".jl": "julia",
     ".dart": "dart",
+    ".mc": "monkeyc",
     ".sh": "shell", ".bash": "shell",
     ".ps1": "powershell", ".psm1": "powershell", ".psd1": "powershell",
 }
@@ -3833,6 +3835,12 @@ register_language_resolver(
 register_language_resolver(
     LanguageResolver("java_member_calls", frozenset({".java"}), _resolve_java_member_calls)
 )
+# Monkey C (Garmin Connect IQ): receiver-typed / `Type.fn()`-qualified member
+# calls and inherited bare calls, resolved corpus-wide against the caller's
+# class `inherits` chain (see graphify.extractors.monkeyc).
+register_language_resolver(
+    LanguageResolver("monkeyc_member_calls", frozenset({".mc"}), resolve_monkeyc_member_calls)
+)
 # Pascal/Delphi cross-file inherited-method-call resolution: a call from a
 # manual descendant class to a method it inherits from an ancestor declared
 # in a DIFFERENT file (the common generated-base/manual-descendant split,
@@ -4922,6 +4930,7 @@ _DISPATCH: dict[str, Any] = {
     ".svelte": extract_svelte,
     ".astro": extract_astro,
     ".dart": extract_dart,
+    ".mc": extract_monkeyc,
     ".ml": extract_ocaml,
     ".mli": extract_ocaml,
     ".v": extract_verilog,
