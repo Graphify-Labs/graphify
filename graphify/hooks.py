@@ -283,7 +283,7 @@ _HOOK_SCRIPT = """\
 # order is randomized per-process by PYTHONHASHSEED, so community assignments
 # churn run-to-run. Pinning it makes graphify-out reproducible.
 export PYTHONHASHSEED=0
-
+__VIZ_LIMIT_EXPORT__
 # Git for Windows/MSYS hooks can inherit fragile pipe handles from GUI clients
 # and agent shells. Keep hook-triggered rebuilds sequential by default there;
 # explicit GRAPHIFY_MAX_WORKERS still wins for users who want parallelism.
@@ -338,7 +338,7 @@ _CHECKOUT_SCRIPT = """\
 # order is randomized per-process by PYTHONHASHSEED, so community assignments
 # churn run-to-run. Pinning it makes graphify-out reproducible.
 export PYTHONHASHSEED=0
-
+__VIZ_LIMIT_EXPORT__
 # Git for Windows/MSYS hooks can inherit fragile pipe handles from GUI clients
 # and agent shells. Keep hook-triggered rebuilds sequential by default there;
 # explicit GRAPHIFY_MAX_WORKERS still wins for users who want parallelism.
@@ -380,6 +380,41 @@ export GRAPHIFY_REBUILD_LOG="$_GRAPHIFY_LOG"
 echo "[graphify] Branch switched - launching background rebuild (log: $_GRAPHIFY_LOG)"
 """ + _detached_launch(_REBUILD_BODY_CHECKOUT) + """# graphify-checkout-hook-end
 """
+
+
+def _load_graphifyrc(root: Path) -> dict[str, str | int]:
+    """Load key/value options from <root>/.graphifyrc if present.
+
+    Supported options:
+      viz_node_limit: integer >= 0 (e.g. viz_node_limit=0)
+    """
+    rc_path = root / ".graphifyrc"
+    if not rc_path.is_file():
+        return {}
+
+    cfg: dict[str, str | int] = {}
+    content = rc_path.read_text(encoding="utf-8")
+    for line_num, raw in enumerate(content.splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            raise ValueError(f"Invalid line {line_num} in {rc_path}: {raw!r} (expected key=value)")
+        key, val = line.split("=", 1)
+        key = key.strip()
+        val = val.strip()
+        if key == "viz_node_limit":
+            try:
+                parsed_val = int(val)
+                if parsed_val < 0:
+                    raise ValueError("must be a non-negative integer")
+                cfg["viz_node_limit"] = parsed_val
+            except ValueError as exc:
+                raise ValueError(
+                    f"Invalid viz_node_limit in {rc_path} at line {line_num}: {val!r}. "
+                    f"Must be a non-negative integer."
+                ) from exc
+    return cfg
 
 
 def _git_root(path: Path) -> Path | None:
@@ -461,12 +496,29 @@ def _hooks_dir(root: Path) -> Path:
     return d
 
 
-def _install_hook(hooks_dir: Path, name: str, script: str, marker: str) -> str:
-    """Install a single git hook, appending if an existing hook is present."""
+def _install_hook(
+    hooks_dir: Path,
+    name: str,
+    script: str,
+    marker: str,
+    marker_end: str = "",
+) -> str:
+    """Install a single git hook, appending if an existing hook is present, or updating
+    an existing graphify block in-place."""
     hook_path = hooks_dir / name
     if hook_path.exists():
         content = hook_path.read_text(encoding="utf-8")
         if marker in content:
+            if marker_end and marker_end in content:
+                start_idx = content.find(marker)
+                end_idx = content.find(marker_end)
+                if start_idx != -1 and end_idx != -1 and end_idx >= start_idx:
+                    end_idx += len(marker_end)
+                    new_content = content[:start_idx] + script.rstrip() + content[end_idx:]
+                    if new_content == content:
+                        return f"already installed at {hook_path}"
+                    hook_path.write_text(new_content, encoding="utf-8", newline="\n")
+                    return f"updated existing {name} hook at {hook_path}"
             return f"already installed at {hook_path}"
         hook_path.write_text(content.rstrip() + "\n\n" + script, encoding="utf-8", newline="\n")
         return f"appended to existing {name} hook at {hook_path}"
@@ -666,20 +718,23 @@ def install(path: Path = Path(".")) -> str:
 
     hooks_dir = _user_hooks_dir(_hooks_dir(root))
 
-    # Pin the current interpreter so the hook works even when the graphify
-    # launcher is not on PATH at git-trigger time (uv tool / pipx isolation).
-    # sys.executable is the Python running this very install command, so it is
-    # always the correct isolated-venv interpreter.  The placeholder is replaced
-    # in both scripts before writing; the allowlist in _pinned_python() strips
-    # any characters unsafe in a shell path (empty result -> the pinned probe is
-    # skipped), and import-verification catches a stale pinned path so it safely
-    # falls through to the dynamic detection.
-    pinned = _pinned_python()
-    hook = _HOOK_SCRIPT.replace("__PINNED_PYTHON__", pinned)
-    checkout = _CHECKOUT_SCRIPT.replace("__PINNED_PYTHON__", pinned)
+    cfg = _load_graphifyrc(root)
+    viz_limit = cfg.get("viz_node_limit")
+    if viz_limit is not None:
+        # Use the `:-` default form (like GRAPHIFY_MAX_WORKERS below) so an
+        # explicit `GRAPHIFY_VIZ_NODE_LIMIT=... git commit` still wins over the
+        # baked project default — persisting config must not clobber a per-run
+        # override.
+        viz_export = f'export GRAPHIFY_VIZ_NODE_LIMIT="${{GRAPHIFY_VIZ_NODE_LIMIT:-{viz_limit}}}"\n'
+    else:
+        viz_export = ""
 
-    commit_msg = _install_hook(hooks_dir, "post-commit", hook, _HOOK_MARKER)
-    checkout_msg = _install_hook(hooks_dir, "post-checkout", checkout, _CHECKOUT_MARKER)
+    pinned = _pinned_python()
+    hook = _HOOK_SCRIPT.replace("__PINNED_PYTHON__", pinned).replace("__VIZ_LIMIT_EXPORT__", viz_export)
+    checkout = _CHECKOUT_SCRIPT.replace("__PINNED_PYTHON__", pinned).replace("__VIZ_LIMIT_EXPORT__", viz_export)
+
+    commit_msg = _install_hook(hooks_dir, "post-commit", hook, _HOOK_MARKER, _HOOK_MARKER_END)
+    checkout_msg = _install_hook(hooks_dir, "post-checkout", checkout, _CHECKOUT_MARKER, _CHECKOUT_MARKER_END)
     merge_msg = _register_merge_driver(root)
 
     return f"post-commit: {commit_msg}\npost-checkout: {checkout_msg}\nmerge driver: {merge_msg}"
@@ -705,14 +760,44 @@ def status(path: Path = Path(".")) -> str:
     if root is None:
         return "Not in a git repository."
     hooks_dir = _user_hooks_dir(_hooks_dir(root))
+    # status is a read-only diagnostic: a malformed .graphifyrc must not turn it
+    # into a traceback. Report the config problem and continue with no limit.
+    try:
+        cfg = _load_graphifyrc(root)
+    except ValueError as exc:
+        cfg = {}
+        print(f"  warning: {exc}")
+    cfg_limit = cfg.get("viz_node_limit")
 
     def _check(name: str, marker: str) -> str:
         p = hooks_dir / name
         if not p.exists():
             return "not installed"
-        return "installed" if marker in p.read_text(encoding="utf-8") else "not installed (hook exists but graphify not found)"
+        text = p.read_text(encoding="utf-8")
+        if marker not in text:
+            return "not installed (hook exists but graphify not found)"
+        if cfg_limit is not None:
+            # Baked as `"${GRAPHIFY_VIZ_NODE_LIMIT:-<n>}"` so a per-run override
+            # wins; match the default <n>, and still accept the older bare
+            # `"<n>"` form from hooks installed before that change.
+            m = re.search(
+                r'export GRAPHIFY_VIZ_NODE_LIMIT="(?:\$\{GRAPHIFY_VIZ_NODE_LIMIT:-(\d+)\}|(\d+))"',
+                text,
+            )
+            installed_limit = int(m.group(1) or m.group(2)) if m else None
+            if installed_limit != cfg_limit:
+                return (
+                    f"installed (out of date: hook has limit "
+                    f"{installed_limit if installed_limit is not None else 'unset'}, "
+                    f".graphifyrc has {cfg_limit})"
+                )
+        return "installed"
 
     commit = _check("post-commit", _HOOK_MARKER)
     checkout = _check("post-checkout", _CHECKOUT_MARKER)
     merge = _merge_driver_status(root)
-    return f"post-commit: {commit}\npost-checkout: {checkout}\nmerge driver: {merge}"
+
+    res = f"post-commit: {commit}\npost-checkout: {checkout}\nmerge driver: {merge}"
+    if cfg_limit is not None:
+        res += f"\nviz node limit: {cfg_limit}"
+    return res

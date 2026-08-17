@@ -1343,11 +1343,19 @@ def dispatch_command(cmd: str) -> None:
         except Exception as exc:
             print(f"error: could not load graph: {exc}", file=sys.stderr)
             sys.exit(1)
+        # Derive the analysed repo root from the graph's own location so an
+        # absolute-path seed resolves without requiring cwd to be that root
+        # (#2706). The graph is written to <root>/<GRAPHIFY_OUT_NAME>/graph.json,
+        # so the root is the output dir's parent; a graph pointed at directly by
+        # --graph falls back to its own directory.
+        from graphify.paths import GRAPHIFY_OUT_NAME
+        graph_root = gp.parent.parent if gp.parent.name == GRAPHIFY_OUT_NAME else gp.parent
         out = format_affected(
             graph,
             query,
             relations=relations or DEFAULT_AFFECTED_RELATIONS,
             depth=depth,
+            root=graph_root,
         )
         if out.startswith("No unique node match") or out.rstrip().endswith("No affected nodes found."):
             hint = _maybe_cluster_hint(gp)
@@ -4223,7 +4231,17 @@ def dispatch_command(cmd: str) -> None:
         # passing --allow-partial (the good graph is preserved and the manifest
         # is not stamped, so the retry re-extracts).
         _force_write = cli_allow_partial or not _extraction_incomplete
-        _wrote = _to_json(G, communities, str(graph_json_path), force=_force_write)
+        # Stamp provenance from the ANALYSED repo, not the shell's cwd: without
+        # this, to_json's fallback asks `git rev-parse HEAD` in whatever repo the
+        # command was invoked from, so `graphify extract <target>` run from
+        # another repo's root stamped the invoker's commit into the target's
+        # graph.json — and cluster then propagates that stamp into
+        # GRAPH_REPORT.md (#2534 keeps the extract-time stamp by design). Same
+        # cwd-anchoring mistake #2316 fixed for watch/update, surviving in the
+        # extract path.
+        from graphify.watch import _git_head as _gh_target
+        _wrote = _to_json(G, communities, str(graph_json_path), force=_force_write,
+                          built_at_commit=_gh_target(cwd=Path(target).resolve()))
         if not _wrote:
             # The shrink guard refused: this partial build is smaller than the
             # existing graph. Exit before writing the manifest/marker below, which

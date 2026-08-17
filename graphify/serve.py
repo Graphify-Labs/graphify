@@ -322,6 +322,14 @@ def _node_search_text(data: dict, nid: str) -> str:
     - `source_tokens` feeds _find_node's exact source-file path lookup, where a
       query like "app/api/example/route.ts" tokenizes to "app api example route ts".
     - `nid` feeds the whole-query `joined == nid_lower` tier.
+    - a trailing diacritic-folded `nid` feeds _find_node's `norm_query == nid_norm`
+      tier. Every query path folds through `_strip_diacritics` (NFKD), so a raw-only
+      id field leaves the needle and the posting under different normal forms and
+      the node is dropped before any predicate runs (#2467). Hangul is the common
+      case: NFKD decomposes a syllable into conjoining jamo, which have combining
+      class 0 and therefore survive the combining-character filter. The field is
+      appended only when the fold actually differs, so the text an all-ASCII graph
+      indexes — and every field position the other readers rely on — is unchanged.
 
     NUL separators stop a trigram from spanning two fields (a query never contains
     NUL, so a cross-field trigram can never be a real match).
@@ -330,7 +338,13 @@ def _node_search_text(data: dict, nid: str) -> str:
     label_tokens = " ".join(_search_tokens(data.get("label") or ""))
     source = (data.get("source_file") or "").lower()
     source_tokens = " ".join(_search_tokens(data.get("source_file") or ""))
-    return "\x00".join((norm_label, label_tokens, str(nid).lower(), source, source_tokens))
+    nid_text = str(nid).lower()
+    fields = (norm_label, label_tokens, nid_text, source, source_tokens)
+    if not nid_text.isascii():
+        nid_folded = _strip_diacritics(str(nid)).lower()
+        if nid_folded != nid_text:
+            fields += (nid_folded,)
+    return "\x00".join(fields)
 
 
 def _get_trigram_index(G: nx.Graph) -> dict:
@@ -1067,6 +1081,16 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
         total_nodes = sum(1 for l in lines if l.startswith("NODE "))
         shown_nodes = output[:cut_at].count("\nNODE ") + (1 if output.startswith("NODE ") else 0)
         cut_count = total_nodes - shown_nodes
+        # Nodes render before edges, so a char-budget overflow whose cut lands
+        # past the last NODE line drops only trailing edges — no whole node is
+        # lost. Announcing "showing N of N nodes … among the 0 cut nodes" then
+        # reads as a false truncation warning that teaches an agent to distrust a
+        # complete answer and burn follow-up narrowing calls for nodes that were
+        # never cut (#2601). When every node is shown the answer is complete:
+        # return the full output with no banner rather than silently dropping
+        # edges under a misleading notice.
+        if cut_count == 0:
+            return output
         # Prominent notice at the TOP so a truncated answer can never be mistaken
         # for a complete one — silence used to read as absence (#BUG2). The
         # notice + end marker sit OUTSIDE char_budget by design (two bounded
@@ -1213,6 +1237,8 @@ def _find_node_tiers(
     # `term`/`label_tokens` works when the node label tokenizes the same way, but is
     # fragile if `label` and `norm_label` diverge. `norm_query` matches `norm_label`
     # symmetrically so an exactly-typed punctuated label always resolves (#1704).
+    # `nid_norm` below extends that symmetry to node ids, which keep their
+    # punctuation too and are compared raw against the tokenized `term` (#2467).
     norm_query = _strip_diacritics(str(label)).lower().strip()
     source_exact: list[str] = []
     exact: list[str] = []
@@ -1231,11 +1257,14 @@ def _find_node_tiers(
         label_tokens = " ".join(_search_tokens(d.get("label") or ""))
         source_tokens = " ".join(_search_tokens(d.get("source_file") or ""))
         nid_lower = nid.lower()
+        # `_strip_diacritics` is the identity on ASCII, so the NFKD fold is only
+        # paid for ids that actually carry non-ASCII text.
+        nid_norm = nid_lower if nid.isascii() else _strip_diacritics(nid).lower()
         if term == source_tokens:
             source_exact.append(nid)
         elif (
             term == norm_label or term == bare_label or term == label_tokens or term == nid_lower
-            or norm_query == norm_label or norm_query == bare_label
+            or norm_query == norm_label or norm_query == bare_label or norm_query == nid_norm
         ):
             exact.append(nid)
         elif (

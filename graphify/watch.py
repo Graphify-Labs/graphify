@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Callable
 
 # Single source of truth in graphify.paths (#1423); re-exported as _GRAPHIFY_OUT.
-from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
+from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT, is_absolute_any_platform
 _PENDING_FILENAME = ".pending_changes"
 _PENDING_DRAIN_MAX_PASSES = 20
 
@@ -371,7 +371,32 @@ class _StoredSourcePaths:
             try:
                 saved_root = Path(root_marker.read_text(encoding="utf-8").strip())
                 if saved_root.is_absolute():
-                    self.existing_source_root = saved_root.resolve()
+                    # #2603: the marker holds the SCAN root, but stored
+                    # source_file values are relative to the BUILD's cwd
+                    # (the skill builds from the repo root scoped to a
+                    # subfolder). Trusting the marker blindly re-anchors
+                    # "src/mod.py" under src/, doubling the path; every
+                    # unchanged source is then judged deleted and evicted,
+                    # collapsing the graph. Only adopt an anchor the stored
+                    # paths actually resolve under; when none does, keep the
+                    # marker (previous behavior) so a fully-deleted corpus
+                    # still evicts.
+                    resolved = saved_root.resolve()
+                    if self._anchors_stored_sources(existing, resolved):
+                        self.existing_source_root = resolved
+                    else:
+                        # In the #2603 hook path watch_path is the absolute
+                        # marker, so project_root == watch_root == the bad
+                        # marker and the first candidate also fails to anchor;
+                        # Path.cwd() (the repo root a post-commit hook runs from)
+                        # is the load-bearing rescue candidate here. Keep both so
+                        # a relative-watch_path invocation is also covered.
+                        for candidate in (self.project_root, Path.cwd().resolve()):
+                            if self._anchors_stored_sources(existing, candidate):
+                                self.existing_source_root = candidate
+                                break
+                        else:
+                            self.existing_source_root = resolved
                 else:
                     invocation_root = Path.cwd().resolve()
                     if (invocation_root / saved_root).resolve() == watch_root:
@@ -398,6 +423,31 @@ class _StoredSourcePaths:
                 if has_project_relative_source:
                     break
             self.legacy_watch_relative = not has_project_relative_source
+
+    def _anchors_stored_sources(self, existing: dict, root: Path, sample: int = 25) -> bool:
+        """Whether stored relative source_file paths resolve under ``root``.
+
+        Samples the first ``sample`` relative entries: the first hit accepts
+        the anchor; ``sample`` consecutive misses reject it. A graph with no
+        relative sources returns True (any anchor is harmless there). The
+        bound keeps the check O(sample) on large graphs; its known limit is a
+        commit that deletes ``sample``-plus files whose nodes happen to sort
+        first — the anchor then falls back to the marker, matching the
+        pre-fix behavior (no worse).
+        """
+        checked = 0
+        for bucket in ("nodes", "links", "edges", "hyperedges"):
+            for item in existing.get(bucket, []):
+                raw = item.get("source_file") if isinstance(item, dict) else None
+                stored = self._normalize_source(raw) if raw else None
+                if not stored or is_absolute_any_platform(stored):
+                    continue
+                checked += 1
+                if (root / Path(posixpath.normpath(stored))).exists():
+                    return True
+                if checked >= sample:
+                    return False
+        return checked == 0
 
     def normalize(self, source_file: str | None) -> str | None:
         normalized = self._normalize_source(source_file, str(self.project_root))
@@ -847,6 +897,7 @@ def _check_shrink(
     *,
     had_explicit_deletions: bool = False,
     rebuilt_sources: "set[str] | None" = None,
+    failed_sources: "set[str] | None" = None,
 ) -> bool:
     """Return True (ok to proceed) or False (shrink refused).
 
@@ -866,6 +917,8 @@ def _check_shrink(
     NOT touch — e.g. a dropped semantic/doc node) refuses the write. This lets a
     plain ``graphify update`` after deleting a function refresh the graph without
     ``--force`` (#1116 left stale nodes write-blocked even though build dropped them).
+    Files in ``failed_sources`` never account for lost nodes: extraction did not
+    complete, so their disappearance is the silent shrink this guard protects.
     """
     if force or not existing_data:
         return True
@@ -890,6 +943,8 @@ def _check_shrink(
 
         def _accounted(n: dict) -> bool:
             sf = n.get("source_file")
+            if sf and failed_sources and _norm_source_file(sf) in failed_sources:
+                return False
             return (not sf
                     or sf in rebuilt_sources
                     or _norm_source_file(sf) in rebuilt_sources)
@@ -1407,6 +1462,10 @@ def _rebuild_code(
         else:
             rebuilt_sources = {(_nsf(str(p), _rebuilt_root) or str(p)) for p in extract_targets}
         rebuilt_sources |= set(deleted_paths)
+        failed_sources = {
+            _nsf(source, _rebuilt_root) or source
+            for source in _failed_ast_sources
+        }
         out.mkdir(exist_ok=True)
 
         if no_cluster:
@@ -1469,6 +1528,7 @@ def _rebuild_code(
                     force, existing_graph_data, candidate_graph_data,
                     had_explicit_deletions=bool(deleted_paths),
                     rebuilt_sources=rebuilt_sources,
+                    failed_sources=failed_sources,
                 ):
                     return False
                 from graphify.export import backup_if_protected as _backup
@@ -1675,6 +1735,7 @@ def _rebuild_code(
                 tmp=graph_tmp,
                 had_explicit_deletions=bool(deleted_paths),
                 rebuilt_sources=rebuilt_sources,
+                failed_sources=failed_sources,
             ):
                 return False
             from graphify.export import backup_if_protected as _backup
@@ -1805,6 +1866,30 @@ def _has_non_code(changed_paths: list[Path]) -> bool:
     return any(p.suffix.lower() not in _CODE_EXTENSIONS for p in changed_paths)
 
 
+def _batch_triggers_rebuild(batch: list[Path]) -> bool:
+    """True when a debounced watch batch needs an immediate rebuild.
+
+    Code changes always rebuild (AST extraction needs no LLM). Deletions of
+    ANY watched file also rebuild: eviction needs no LLM either — the full
+    corpus reconcile drops nodes whose source is gone from disk. Without
+    this, a doc-only deletion batch would sit behind the needs_update flag
+    until the next code event or a manual `graphify update` (#2580).
+    """
+    has_code = any(p.suffix.lower() in _CODE_EXTENSIONS for p in batch)
+    has_deletion = any(not p.exists() for p in batch)
+    return has_code or has_deletion
+
+
+def _batch_needs_llm_flag(batch: list[Path]) -> bool:
+    """True when the batch contains a non-code file that still exists on disk.
+
+    Only surviving non-code files need the needs_update flag (LLM-backed
+    re-extraction); deleted ones are already handled by the rebuild's
+    reconcile sweep, so a pure-deletion batch must not leave a stale flag.
+    """
+    return _has_non_code([p for p in batch if p.exists()])
+
+
 def watch(watch_path: Path, debounce: float = 3.0) -> None:
     """
     Watch watch_path for new or modified files and auto-update the graph.
@@ -1885,11 +1970,9 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
                 batch = list(changed)
                 changed.clear()
                 print(f"\n[graphify watch] {len(batch)} file(s) changed")
-                has_non_code = _has_non_code(batch)
-                has_code = any(p.suffix.lower() in _CODE_EXTENSIONS for p in batch)
-                if has_code:
+                if _batch_triggers_rebuild(batch):
                     _rebuild_code(watch_path)
-                if has_non_code:
+                if _batch_needs_llm_flag(batch):
                     _notify_only(watch_path)
     except KeyboardInterrupt:
         print("\n[graphify watch] Stopped.")
