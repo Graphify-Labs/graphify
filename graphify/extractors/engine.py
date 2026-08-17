@@ -350,6 +350,7 @@ def _java_collect_type_refs(
     generic: bool,
     out: list[tuple[str, str]],
     skip: frozenset[str] | None = None,
+    preserve_qualified: bool = False,
 ) -> None:
     """Walk a Java type expression; append (name, role) tuples."""
     if node is None:
@@ -365,18 +366,26 @@ def _java_collect_type_refs(
             out.append((name, "generic_arg" if generic else "type"))
         return
     if t == "scoped_type_identifier":
-        text = _read_text(node, source).rsplit(".", 1)[-1]
-        if text and text not in _JAVA_BUILTIN_TYPES:
+        raw = _read_text(node, source)
+        simple = raw.rsplit(".", 1)[-1]
+        text = raw if preserve_qualified else raw.rsplit(".", 1)[-1]
+        if text and simple not in _JAVA_BUILTIN_TYPES:
             out.append((text, "generic_arg" if generic else "type"))
         return
     if t == "generic_type":
         for c in node.children:
             if c.type in ("type_identifier", "scoped_type_identifier"):
-                text = _read_text(c, source).rsplit(".", 1)[-1]
+                raw = _read_text(c, source)
+                simple = raw.rsplit(".", 1)[-1]
+                text = (
+                    raw
+                    if preserve_qualified and c.type == "scoped_type_identifier"
+                    else simple
+                )
                 if (
                     text
-                    and text not in _JAVA_BUILTIN_TYPES
-                    and (c.type == "scoped_type_identifier" or text not in skip)
+                    and simple not in _JAVA_BUILTIN_TYPES
+                    and (c.type == "scoped_type_identifier" or simple not in skip)
                 ):
                     out.append((text, "generic_arg" if generic else "type"))
                 break
@@ -384,17 +393,23 @@ def _java_collect_type_refs(
             if c.type == "type_arguments":
                 for arg in c.children:
                     if arg.is_named:
-                        _java_collect_type_refs(arg, source, True, out, skip)
+                        _java_collect_type_refs(
+                            arg, source, True, out, skip, preserve_qualified
+                        )
         return
     if t == "array_type":
         for c in node.children:
             if c.is_named:
-                _java_collect_type_refs(c, source, generic, out, skip)
+                _java_collect_type_refs(
+                    c, source, generic, out, skip, preserve_qualified
+                )
         return
     if node.is_named:
         for c in node.children:
             if c.is_named:
-                _java_collect_type_refs(c, source, generic, out, skip)
+                _java_collect_type_refs(
+                    c, source, generic, out, skip, preserve_qualified
+                )
 
 
 def _java_receiver_type_name(type_node, source: bytes) -> str | None:
@@ -548,21 +563,28 @@ def _java_method_receiver_types(
     return table
 
 
-def _java_annotation_names(declaration_node, source: bytes) -> list[tuple[str, str]]:
-    """Collect ``(simple, raw)`` annotation names from a Java declaration's
-    `modifiers` child. ``raw`` keeps the dotted qualifier of an inline-qualified
-    annotation (``@org.pkg.Foo``); it equals ``simple`` when unqualified."""
-    names: list[tuple[str, str]] = []
+def _java_annotation_nodes(declaration_node) -> list:
+    """Return annotations from a Java declaration's `modifiers` child."""
     modifiers = None
     for child in declaration_node.children:
         if child.type == "modifiers":
             modifiers = child
             break
     if modifiers is None:
-        return names
-    for anno in modifiers.children:
-        if anno.type not in ("marker_annotation", "annotation"):
-            continue
+        return []
+    return [
+        child
+        for child in modifiers.children
+        if child.type in ("marker_annotation", "annotation")
+    ]
+
+
+def _java_annotation_names(declaration_node, source: bytes) -> list[tuple[str, str]]:
+    """Collect ``(simple, raw)`` annotation names from a Java declaration's
+    `modifiers` child. ``raw`` keeps the dotted qualifier of an inline-qualified
+    annotation (``@org.pkg.Foo``); it equals ``simple`` when unqualified."""
+    names: list[tuple[str, str]] = []
+    for anno in _java_annotation_nodes(declaration_node):
         name_node = anno.child_by_field_name("name")
         if name_node is None:
             for sub in anno.children:
@@ -575,6 +597,35 @@ def _java_annotation_names(declaration_node, source: bytes) -> list[tuple[str, s
             if text:
                 names.append((text, raw))
     return names
+
+
+def _java_annotation_class_literal_refs(
+    declaration_node,
+    source: bytes,
+) -> list[str]:
+    """Collect Java type names used as class literals in annotation arguments."""
+    names: list[str] = []
+    for anno in _java_annotation_nodes(declaration_node):
+        arguments = anno.child_by_field_name("arguments")
+        if arguments is None:
+            continue
+        stack = [arguments]
+        while stack:
+            current = stack.pop()
+            if current.type == "class_literal":
+                type_node = next(
+                    (child for child in current.children if child.is_named),
+                    None,
+                )
+                refs: list[tuple[str, str]] = []
+                _java_collect_type_refs(
+                    type_node, source, False, refs, preserve_qualified=True
+                )
+                names.extend(name for name, _role in refs)
+                continue
+            stack.extend(child for child in current.children if child.is_named)
+    return names
+
 
 def _php_name_text(node, source: bytes) -> str | None:
     """Return the unqualified name text from a PHP `name`/`qualified_name` node."""
@@ -3351,6 +3402,7 @@ def _extract_generic(
                                         if tid.is_named:
                                             _emit_java_parent_type(tid, "inherits", line)
 
+                annotation_targets: set[str] = set()
                 for anno_name, anno_raw in _java_annotation_names(node, source):
                     # An inline-qualified annotation (`@org.pkg.Foo`) keeps its
                     # full dotted name so a bare same-named local class can't
@@ -3360,9 +3412,16 @@ def _extract_generic(
                     if "." in anno_raw and config.ts_module == "tree_sitter_java":
                         anno_name = anno_raw
                     target_nid = ensure_named_node(anno_name, line)
-                    if target_nid != class_nid:
+                    if target_nid != class_nid and target_nid not in annotation_targets:
                         add_edge(class_nid, target_nid, "references", line,
                                  context="attribute")
+                        annotation_targets.add(target_nid)
+                for ref_name in _java_annotation_class_literal_refs(node, source):
+                    target_nid = ensure_named_node(ref_name, line)
+                    if target_nid != class_nid and target_nid not in annotation_targets:
+                        add_edge(class_nid, target_nid, "references", line,
+                                 context="attribute")
+                        annotation_targets.add(target_nid)
 
                 if t == "record_declaration":
                     components = node.child_by_field_name("parameters")
@@ -3666,6 +3725,23 @@ def _extract_generic(
                     if target_nid != parent_class_nid:
                         add_edge(parent_class_nid, target_nid, "references",
                                  line, context=ctx)
+            return
+
+        if (config.ts_module == "tree_sitter_java"
+                and t == "annotation_type_element_declaration"
+                and parent_class_nid):
+            type_node = node.child_by_field_name("type")
+            line = node.start_point[0] + 1
+            refs: list[tuple[str, str]] = []
+            _java_collect_type_refs(
+                type_node, source, False, refs, preserve_qualified=True
+            )
+            for ref_name, role in refs:
+                ctx = "generic_arg" if role == "generic_arg" else "return_type"
+                target_nid = ensure_named_node(ref_name, line)
+                if target_nid != parent_class_nid:
+                    add_edge(parent_class_nid, target_nid, "references",
+                             line, context=ctx)
             return
 
         if (config.ts_module == "tree_sitter_php"
@@ -4018,13 +4094,21 @@ def _extract_generic(
                         target_nid = ensure_named_node(ref_name, line)
                         if target_nid != func_nid:
                             add_edge(func_nid, target_nid, "references", line, context=ctx)
+                annotation_targets: set[str] = set()
                 for anno_name, anno_raw in _java_annotation_names(node, source):
                     # Inline-qualified: keep the dotted name (#2504); see the
                     # class-level annotation handling above.
                     target_nid = ensure_named_node(
                         anno_raw if "." in anno_raw else anno_name, line)
-                    if target_nid != func_nid:
+                    if target_nid != func_nid and target_nid not in annotation_targets:
                         add_edge(func_nid, target_nid, "references", line, context="attribute")
+                        annotation_targets.add(target_nid)
+                for ref_name in _java_annotation_class_literal_refs(node, source):
+                    target_nid = ensure_named_node(ref_name, line)
+                    if target_nid != func_nid and target_nid not in annotation_targets:
+                        add_edge(func_nid, target_nid, "references", line,
+                                 context="attribute")
+                        annotation_targets.add(target_nid)
 
             if config.ts_module == "tree_sitter_php":
                 params_container = None
