@@ -80,6 +80,15 @@ def _platform_skill_destination(platform_name: str, *, project: bool = False, pr
             return (project_dir or Path(".")) / ".opencode" / "skills" / "graphify" / "SKILL.md"
         return Path.home() / ".config" / "opencode" / "skills" / "graphify" / "SKILL.md"
 
+    if platform_name == "poolside":
+        # The Poolside `pool` CLI discovers skills from the standard skills
+        # directories: ~/.config/poolside/skills/<name>/ (user scope) and
+        # .poolside/skills/<name>/ (project scope). No AGENTS.md/hook/plugin
+        # wiring is needed — pool loads SKILL.md directly from the skills dir.
+        if project:
+            return (project_dir or Path(".")) / ".poolside" / "skills" / "graphify" / "SKILL.md"
+        return Path.home() / ".config" / "poolside" / "skills" / "graphify" / "SKILL.md"
+
     if platform_name == "hermes":
         if project:
             return (project_dir or Path(".")) / ".hermes" / "skills" / "graphify" / "SKILL.md"
@@ -348,6 +357,18 @@ _PLATFORM_CONFIG: dict[str, dict] = {
         "skill_dst": Path(".config") / "opencode" / "skills" / "graphify" / "SKILL.md",
         "claude_md": False,
         "skill_refs": "opencode",
+    },
+    "poolside": {
+        # Reuses Claude's lean core (skill.md) and the claude references/
+        # sidecar — the Poolside skill body is byte-identical to Claude's, so
+        # `graphify install poolside` nukes the old `graphify install` + rsync
+        # workflow and writes the skill natively to the poolside skills dir.
+        # Skill-only: no always-on md, hook, or plugin (pool reads SKILL.md from
+        # the skills directory directly).
+        "skill_file": "skill.md",
+        "skill_dst": Path(".config") / "poolside" / "skills" / "graphify" / "SKILL.md",
+        "claude_md": False,
+        "skill_refs": "claude",
     },
     "kilo": {
         "skill_file": "skill-kilo.md",
@@ -1588,9 +1609,9 @@ def _project_install(platform_name: str, project_dir: Path | None = None, strict
         skill_dst = _copy_skill_file("antigravity", project=True, project_dir=project_dir)
         _antigravity_finalize(skill_dst, project_dir)
         _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir), project_dir / ".agents"])
-    elif platform_name in ("copilot", "pi", "kimi", "agents"):
+    elif platform_name in ("copilot", "pi", "kimi", "agents", "poolside"):
         # Skill-only project install: drop SKILL.md (+ references) at the scope
-        # root. `agents` -> ./.agents/skills/graphify/SKILL.md.
+        # root (e.g. `.poolside/skills`, `.agents/skills`, `.pi/agent/skills`).
         skill_dst = _copy_skill_file(platform_name, project=True, project_dir=project_dir)
         _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir)])
     else:
@@ -1621,7 +1642,7 @@ def _project_uninstall(platform_name: str, project_dir: Path | None = None) -> N
         _devin_rules_uninstall(project_dir)
         if not removed:
             print("nothing to remove")
-    elif platform_name in ("copilot", "pi", "kimi", "agents"):
+    elif platform_name in ("copilot", "pi", "kimi", "agents", "poolside"):
         removed = _remove_skill_file(platform_name, project=True, project_dir=project_dir)
         if not removed:
             print("nothing to remove")
@@ -2013,6 +2034,7 @@ _CLI_INSTALL_COMMANDS = frozenset({
     "kiro",
     "opencode",
     "pi",
+    "poolside",
     "skills",
     "trae",
     "trae-cn",
@@ -2233,6 +2255,21 @@ def dispatch_install_cli(cmd: str) -> bool:
                 _remove_skill_file("pi")
         else:
             print("Usage: graphify pi [install|uninstall]", file=sys.stderr)
+            sys.exit(1)
+    elif cmd == "poolside":
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd == "install":
+            if "--project" in sys.argv[3:]:
+                _project_install("poolside", Path("."))
+            else:
+                install("poolside")
+        elif subcmd == "uninstall":
+            if "--project" in sys.argv[3:]:
+                _project_uninstall("poolside", Path("."))
+            else:
+                _remove_skill_file("poolside")
+        else:
+            print("Usage: graphify poolside [install|uninstall]", file=sys.stderr)
             sys.exit(1)
     elif cmd == "amp":
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""

@@ -315,13 +315,13 @@ def test_gemini_install_references_all_resolve(tmp_path):
 
 
 def test_claude_twins_ride_the_claude_bundle(tmp_path):
-    """antigravity and kimi reuse claude's split bundle, so they go progressive too.
+    """antigravity, kimi, and poolside reuse claude's split bundle, so they go progressive too.
 
     gemini has no _PLATFORM_CONFIG entry but installs claude's skill.md body
     verbatim; that body is the lean progressive core, so gemini must ride the
     claude references bundle as well or it ships a SKILL.md with dead pointers.
     """
-    for platform in ("antigravity", "kimi", "gemini"):
+    for platform in ("antigravity", "kimi", "poolside", "gemini"):
         refs_src = mainmod._packaged_skill_refs_dir(platform)
         assert refs_src is not None
         assert refs_src == PKG_DIR / "skills" / "claude" / "references"

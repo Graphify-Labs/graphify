@@ -5,6 +5,8 @@ import sys
 from unittest.mock import patch
 import pytest
 
+import graphify.__main__ as mainmod
+
 
 PLATFORMS = {
     "claude": (".claude/skills/graphify/SKILL.md",),
@@ -20,6 +22,7 @@ PLATFORMS = {
     "trae": (".trae/skills/graphify/SKILL.md",),
     "trae-cn": (".trae-cn/skills/graphify/SKILL.md",),
     "windows": (".claude/skills/graphify/SKILL.md",),
+    "poolside": (".config/poolside/skills/graphify/SKILL.md",),
 }
 
 
@@ -65,6 +68,105 @@ def test_install_positional_platform_opencode(tmp_path, monkeypatch):
         main()
     assert (tmp_path / ".config" / "opencode" / "skills" / "graphify" / "SKILL.md").exists()
     assert not (tmp_path / ".claude" / "skills" / "graphify" / "SKILL.md").exists()
+
+
+def test_install_poolside(tmp_path):
+    _install(tmp_path, "poolside")
+    assert (
+        tmp_path / ".config" / "poolside" / "skills" / "graphify" / "SKILL.md"
+    ).exists()
+    # Reuses the claude bundle: references/ sidecar lands alongside SKILL.md.
+    assert (
+        tmp_path / ".config" / "poolside" / "skills" / "graphify" / "references"
+        / "extraction-spec.md"
+    ).exists()
+    assert (
+        tmp_path / ".config" / "poolside" / "skills" / "graphify" / ".graphify_version"
+    ).read_text() == mainmod.__version__
+
+
+def test_install_positional_platform_poolside(tmp_path, monkeypatch):
+    from graphify.__main__ import main
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["graphify", "install", "poolside"])
+    with patch("graphify.__main__.Path.home", return_value=tmp_path):
+        main()
+    assert (
+        tmp_path / ".config" / "poolside" / "skills" / "graphify" / "SKILL.md"
+    ).exists()
+    # A poolside install must not touch the claude tree.
+    assert not (tmp_path / ".claude" / "skills" / "graphify" / "SKILL.md").exists()
+
+
+def test_poolside_install_ships_claude_body(tmp_path):
+    """`graphify install poolside` ships the same Claude core (skill.md) body."""
+    import graphify
+
+    pkg = Path(graphify.__file__).parent
+    _install(tmp_path, "poolside")
+    installed = (
+        tmp_path / ".config" / "poolside" / "skills" / "graphify" / "SKILL.md"
+    )
+    assert installed.read_bytes() == (pkg / "skill.md").read_bytes()
+    # and the references/ sidecar ships too (no dead pointers in the body).
+    assert (installed.parent / "references" / "query.md").exists()
+
+
+def test_poolside_subcommand_global_install_and_uninstall(tmp_path, monkeypatch):
+    from graphify.__main__ import main
+    monkeypatch.chdir(tmp_path)
+    with patch("graphify.__main__.Path.home", return_value=tmp_path):
+        monkeypatch.setattr(sys, "argv", ["graphify", "poolside", "install"])
+        main()
+        skill = tmp_path / ".config" / "poolside" / "skills" / "graphify" / "SKILL.md"
+        assert skill.exists()
+        assert (skill.parent / ".graphify_version").read_text() == mainmod.__version__
+
+        monkeypatch.setattr(sys, "argv", ["graphify", "poolside", "uninstall"])
+        main()
+        assert not skill.exists()
+        assert not (skill.parent / ".graphify_version").exists()
+        # The empty skill tree is walked away.
+        assert not (tmp_path / ".config" / "poolside").exists()
+
+
+def test_poolside_project_install_and_uninstall_are_project_scoped(tmp_path, monkeypatch, capsys):
+    """`graphify poolside install --project` lands in .poolside/ and spares the user skill."""
+    from graphify.__main__ import main
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    project.mkdir()
+    user_skill = home / ".config" / "poolside" / "skills" / "graphify" / "SKILL.md"
+    user_skill.parent.mkdir(parents=True)
+    user_skill.write_text("user skill")
+    monkeypatch.chdir(project)
+    monkeypatch.setattr(sys, "argv", ["graphify", "poolside", "install", "--project"])
+    with patch("graphify.__main__.Path.home", return_value=home):
+        main()
+    assert (project / ".poolside" / "skills" / "graphify" / "SKILL.md").exists()
+    assert user_skill.exists(), "project install must not delete the user-global skill"
+    assert "git add .poolside/" in capsys.readouterr().out
+
+
+def test_poolside_project_uninstall_spares_global(tmp_path, monkeypatch):
+    """`graphify poolside uninstall --project` removes only the project tree."""
+    from graphify.__main__ import main
+    home = tmp_path / "home"
+    project = tmp_path / "proj"
+    project.mkdir()
+    user_skill = home / ".config" / "poolside" / "skills" / "graphify" / "SKILL.md"
+    user_skill.parent.mkdir(parents=True)
+    user_skill.write_text("user skill")
+    proj_skill = project / ".poolside" / "skills" / "graphify" / "SKILL.md"
+    proj_skill.parent.mkdir(parents=True)
+    proj_skill.write_text("project skill")
+    monkeypatch.chdir(project)
+    monkeypatch.setattr(sys, "argv", ["graphify", "poolside", "uninstall", "--project"])
+    with patch("graphify.__main__.Path.home", return_value=home):
+        main()
+    assert user_skill.exists(), "project uninstall must not delete the user-global skill"
+    assert not proj_skill.exists()
+    assert not (project / ".poolside").exists()
 
 
 def test_install_project_claude_writes_project_scope(tmp_path, monkeypatch, capsys):
