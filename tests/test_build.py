@@ -721,6 +721,53 @@ def test_build_from_json_preserves_first_direction_on_bidirectional_pair(tmp_pat
 # whenever the loaded JSON has multigraph: true. Plain G.edges[u, v] crashes
 # on those with `ValueError: not enough values to unpack (expected 3, got 2)`.
 
+def _same_pair_calls_references_extraction(calls_first: bool) -> dict:
+    """An extraction with a `calls` and a `references` edge on the SAME (src, tgt)
+    pair — the shape that triggers #2391 (a return-type annotation landing on the
+    same undirected node pair as a real call)."""
+    edges = [
+        {"source": "caller", "target": "callee", "relation": "calls",
+         "confidence": "EXTRACTED", "source_file": "a.ts"},
+        {"source": "caller", "target": "callee", "relation": "references",
+         "confidence": "INFERRED", "source_file": "a.ts"},
+    ]
+    if not calls_first:
+        edges.reverse()
+    return {
+        "nodes": [
+            {"id": "caller", "label": "caller", "file_type": "code", "source_file": "a.ts"},
+            {"id": "callee", "label": "callee", "file_type": "code", "source_file": "a.ts"},
+        ],
+        "edges": edges,
+        "input_tokens": 0,
+        "output_tokens": 0,
+    }
+
+
+def test_build_from_json_calls_survives_references_collapse_either_order():
+    """Regression for #2391.
+
+    The deterministic (source, target, relation) edge sort processes `calls`
+    before `references` (c < r), so on an undirected nx.Graph the second
+    add_edge("references") used to plain-overwrite the real "calls" edge on the
+    same pair — silently dropping the call from call-graph queries. The
+    higher-information relation must win the collapse regardless of the input
+    order the two edges arrive in.
+    """
+    for calls_first in (True, False):
+        G = build_from_json(_same_pair_calls_references_extraction(calls_first))
+        # One undirected edge between the pair survives.
+        assert G.number_of_edges() == 1
+        data = edge_data(G, "caller", "callee")
+        # The call survives; the lower-information reference loses the collapse.
+        assert data["relation"] == "calls", (
+            f"calls edge clobbered by references when calls_first={calls_first}: "
+            f"got relation {data['relation']!r}"
+        )
+        assert data["_src"] == "caller"
+        assert data["_tgt"] == "callee"
+
+
 def test_edge_data_simple_graph():
     G = nx.Graph()
     G.add_edge("a", "b", relation="calls", confidence="EXTRACTED")
