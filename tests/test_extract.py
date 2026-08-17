@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from graphify.build import build_from_json
-from graphify.extract import extract_python, extract, collect_files, _make_id, extract_bash, extract_json, _DISPATCH
+from graphify.extract import extract_python, extract, collect_files, _make_id, extract_bash, extract_json, extract_sas, _DISPATCH
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -2234,7 +2234,98 @@ def test_extract_legitimately_empty_result_keeps_no_error_marker(
 def test_dispatch_includes_sh_and_json():
     assert ".sh" in _DISPATCH
     assert ".bash" in _DISPATCH
+    assert ".zsh" in _DISPATCH
     assert ".json" in _DISPATCH
+
+
+def test_dispatch_routes_zsh_to_bash():
+    from graphify.extract import _get_extractor
+    assert _get_extractor(Path("script.zsh")) is extract_bash
+
+
+def test_extract_bash_handles_zsh_extension():
+    # #2825: a suffixed .zsh file must route through the shell extractor and
+    # produce the same node shape as .sh — not be silently dropped.
+    result = extract_bash(FIXTURES / "sample.zsh")
+    assert "error" not in result
+    labels = {n["label"] for n in result["nodes"]}
+    assert "greet()" in labels
+    assert "deploy()" in labels
+
+
+# ---------------------------------------------------------------------------
+# SAS extractor tests (#2681)
+# ---------------------------------------------------------------------------
+
+def test_dispatch_includes_sas():
+    assert ".sas" in _DISPATCH
+
+
+def test_dispatch_routes_sas_to_sas_extractor():
+    from graphify.extract import _get_extractor
+    assert _get_extractor(Path("model.sas")) is extract_sas
+
+
+def test_extract_sas_emits_step_and_macro_nodes():
+    result = extract_sas(FIXTURES / "sample.sas")
+    assert "error" not in result
+    labels = {n["label"] for n in result["nodes"]}
+    assert "data work.customers" in labels
+    assert any(lbl.startswith("proc sort") for lbl in labels)
+    assert "%greet" in labels
+
+def test_extract_sas_nodes_have_source_location():
+    result = extract_sas(FIXTURES / "sample.sas")
+    for n in result["nodes"]:
+        assert n["file_type"] == "code"
+        assert n["source_file"].endswith("sample.sas")
+        assert n["source_location"].startswith("L")
+
+
+def test_extract_sas_emits_defines_edges():
+    result = extract_sas(FIXTURES / "sample.sas")
+    defines = [(e["source"], e["target"], e.get("context")) for e in result["edges"]
+               if e["relation"] == "defines"]
+    # file node defines each step/macro
+    assert len(defines) == 3
+    assert any(ctx == "data_step" for _, _, ctx in defines)
+    assert any(ctx == "proc_step" for _, _, ctx in defines)
+    assert any(ctx == "macro" for _, _, ctx in defines)
+
+
+def test_extract_sas_macro_call_resolves_to_same_file_definition():
+    result = extract_sas(FIXTURES / "sample.sas")
+    calls = [(e["source"], e["target"]) for e in result["edges"] if e["relation"] == "calls"]
+    assert len(calls) == 1
+    source, target = calls[0]
+    assert source == result["nodes"][0]["id"]  # the file node
+    assert "greet" in target
+
+
+def test_extract_sas_missing_dependency_returns_error_marker(monkeypatch):
+    import builtins
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "tree_sitter_sas":
+            raise ImportError("tree_sitter_sas not installed")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    result = extract_sas(Path("model.sas"))
+    assert result["nodes"] == []
+    assert "error" in result
+
+
+def test_extract_sas_via_extract_no_1689_warning(tmp_path, capsys):
+    # A .sas file routed through extract() must not fire the #1689
+    # no-AST-extractor warning and must produce a non-empty node set.
+    f = tmp_path / "model.sas"
+    f.write_text("data work.t;\nrun;\n")
+    result = extract([f])
+    assert result["nodes"]
+    out = capsys.readouterr().err
+    assert "no AST extractor" not in out
 
 
 def test_extract_bash_finds_functions():
