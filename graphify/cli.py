@@ -942,7 +942,7 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(1)
     elif cmd == "query":
         if len(sys.argv) < 3:
-            print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--budget N] [--graph path]", file=sys.stderr)
+            print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--budget N] [--graph path] [--rationale]", file=sys.stderr)
             sys.exit(1)
         from graphify.serve import _query_graph_text
         from graphify.security import sanitize_label
@@ -954,6 +954,7 @@ def dispatch_command(cmd: str) -> None:
         budget = 2000
         graph_path = _default_graph_path()
         context_filters: list[str] = []
+        include_rationale = False
         args = sys.argv[3:]
         i = 0
         while i < len(args):
@@ -980,6 +981,9 @@ def dispatch_command(cmd: str) -> None:
             elif args[i] == "--graph" and i + 1 < len(args):
                 graph_path = args[i + 1]
                 i += 2
+            elif args[i] == "--rationale":
+                include_rationale = True
+                i += 1
             else:
                 i += 1
         gp = Path(graph_path).resolve()
@@ -1047,6 +1051,7 @@ def dispatch_command(cmd: str) -> None:
             depth=2,
             token_budget=budget,
             context_filters=context_filters,
+            include_rationale=include_rationale,
         )
         querylog.log_query(
             kind="query",
@@ -1440,17 +1445,25 @@ def dispatch_command(cmd: str) -> None:
 
     elif cmd == "explain":
         if len(sys.argv) < 3:
-            print('Usage: graphify explain "<node>" [--graph path]', file=sys.stderr)
+            print('Usage: graphify explain "<node>" [--graph path] [--rationale]', file=sys.stderr)
             sys.exit(1)
         from graphify.serve import _find_node, find_node_ambiguity
         from networkx.readwrite import json_graph
 
         label = sys.argv[2]
         graph_path = _default_graph_path()
+        include_rationale = False
         args = sys.argv[3:]
-        for i, a in enumerate(args):
-            if a == "--graph" and i + 1 < len(args):
+        i = 0
+        while i < len(args):
+            if args[i] == "--graph" and i + 1 < len(args):
                 graph_path = args[i + 1]
+                i += 2
+            elif args[i] == "--rationale":
+                include_rationale = True
+                i += 1
+            else:
+                i += 1
         gp = Path(graph_path).resolve()
         if not gp.exists():
             print(f"error: graph file not found: {gp}", file=sys.stderr)
@@ -1486,6 +1499,15 @@ def dispatch_command(cmd: str) -> None:
         )
         print(f"  Type:      {d.get('file_type', '')}")
         print(f"  Community: {d.get('community_name') or d.get('community', '')}")
+        if include_rationale:
+            from graphify.security import sanitize_rationale, MAX_DETAIL_RATIONALE_CHARS
+            rat = sanitize_rationale(
+                d.get("rationale"),
+                single_line=False,
+                max_chars=MAX_DETAIL_RATIONALE_CHARS,
+            )
+            if rat:
+                print(f"  Rationale: {rat}")
         # Work-memory overlay: a derived experiential hint from `graphify reflect`,
         # merged in display-only from the .graphify_learning.json sidecar next to
         # graph.json. No line when the node has no overlay entry.

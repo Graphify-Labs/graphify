@@ -12,7 +12,13 @@ import threading
 from typing import NamedTuple
 import networkx as nx
 from networkx.readwrite import json_graph
-from graphify.security import sanitize_label, check_graph_file_size_cap
+from graphify.security import (
+    sanitize_label,
+    check_graph_file_size_cap,
+    sanitize_rationale,
+    MAX_QUERY_RATIONALE_CHARS,
+    MAX_DETAIL_RATIONALE_CHARS,
+)
 from graphify.build import edge_data, edge_datas
 from graphify.paths import default_graph_json as _default_graph_json
 
@@ -979,7 +985,7 @@ def _dfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], lis
     return visited, edges_seen
 
 
-def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_budget: int = 2000, *, seeds: list[str] | None = None) -> str:
+def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_budget: int = 2000, *, seeds: list[str] | None = None, include_rationale: bool = False) -> str:
     """Render subgraph as text, cutting at token_budget (approx 3 chars/token).
 
     seeds: exact-match nodes rendered first before the degree-sorted expansion,
@@ -1034,12 +1040,22 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
             status = sanitize_label(str(entry.get("status", "")))
             if status:
                 learning_suffix = f" learning={status}{':stale' if entry.get('stale') else ''}"
+        why_suffix = ""
+        if include_rationale:
+            rationale_text = sanitize_rationale(
+                d.get("rationale"),
+                single_line=True,
+                max_chars=MAX_QUERY_RATIONALE_CHARS,
+            )
+            if rationale_text:
+                why_suffix = f" WHY {rationale_text}"
         line = (
             f"NODE {sanitize_label(d.get('label', nid))} "
             f"[src={sanitize_label(str(d.get('source_file', '')))} "
             f"loc={sanitize_label(str(d.get('source_location', '')))} "
             f"community={sanitize_label(str(d.get('community_name') or d.get('community', '')))}"
             f"{learning_suffix}]"
+            f"{why_suffix}"
         )
         lines.append(line)
     for u, v in edges:
@@ -1171,6 +1187,7 @@ def _query_graph_text(
     depth: int = 3,
     token_budget: int = 2000,
     context_filters: list[str] | None = None,
+    include_rationale: bool = False,
 ) -> str:
     terms = _query_terms(question)
     # One graph scoring pass produces both the combined ranking (used to drive
@@ -1210,7 +1227,14 @@ def _query_graph_text(
     # Pass the seeds so the queried symbol renders first and survives truncation
     # (#BUG2): a branch merge had silently dropped this argument, leaving the
     # seed-first ordering as dead code.
-    return header + _subgraph_to_text(traversal_graph, nodes, edges, token_budget, seeds=start_nodes)
+    return header + _subgraph_to_text(
+        traversal_graph,
+        nodes,
+        edges,
+        token_budget,
+        seeds=start_nodes,
+        include_rationale=include_rationale,
+    )
 
 
 def _find_node_tiers(
@@ -1561,6 +1585,11 @@ def _build_server(graph_path: str):
                             "items": {"type": "string"},
                             "description": "Optional explicit edge-context filter, e.g. ['call', 'field']",
                         },
+                        "include_rationale": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Include WHY rationale on nodes when available",
+                        },
                     },
                     "required": ["question"],
                 },
@@ -1570,7 +1599,14 @@ def _build_server(graph_path: str):
                 description="Get full details for a specific node by label or ID.",
                 inputSchema={
                     "type": "object",
-                    "properties": {"label": {"type": "string", "description": "Node label or ID to look up"}},
+                    "properties": {
+                        "label": {"type": "string", "description": "Node label or ID to look up"},
+                        "include_rationale": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Include node rationale if available",
+                        },
+                    },
                     "required": ["label"],
                 },
             ),
@@ -1702,6 +1738,7 @@ def _build_server(graph_path: str):
         depth = min(int(arguments.get("depth", 3)), 6)
         budget = int(arguments.get("token_budget", 2000))
         context_filter = arguments.get("context_filter")
+        include_rationale = arguments.get("include_rationale") is True
         _t0 = _time.perf_counter()
         result = _query_graph_text(
             G,
@@ -1710,6 +1747,7 @@ def _build_server(graph_path: str):
             depth=depth,
             token_budget=budget,
             context_filters=context_filter,
+            include_rationale=include_rationale,
         )
         querylog.log_query(
             kind="mcp_query",
@@ -1725,20 +1763,30 @@ def _build_server(graph_path: str):
 
     def _tool_get_node(arguments: dict) -> str:
         label = arguments["label"].lower()
+        include_rationale = arguments.get("include_rationale") is True
         matches = [(nid, d) for nid, d in G.nodes(data=True)
                    if label in (d.get("label") or "").lower() or label == nid.lower()]
         if not matches:
             return f"No node matching '{label}' found."
         nid, d = matches[0]
         # Sanitise every LLM-derived field before concatenation (F-010).
-        return "\n".join([
+        lines = [
             f"Node: {sanitize_label(d.get('label', nid))}",
             f"  ID: {sanitize_label(nid)}",
             f"  Source: {sanitize_label(str(d.get('source_file', '')))} {sanitize_label(str(d.get('source_location', '')))}",
             f"  Type: {sanitize_label(str(d.get('file_type', '')))}",
             f"  Community: {sanitize_label(str(d.get('community_name') or d.get('community', '')))}",
-            f"  Degree: {G.degree(nid)}",
-        ])
+        ]
+        if include_rationale:
+            rat = sanitize_rationale(
+                d.get("rationale"),
+                single_line=False,
+                max_chars=MAX_DETAIL_RATIONALE_CHARS,
+            )
+            if rat:
+                lines.append(f"  Rationale: {rat}")
+        lines.append(f"  Degree: {G.degree(nid)}")
+        return "\n".join(lines)
 
     def _tool_get_neighbors(arguments: dict) -> str:
         label = arguments["label"].lower()
