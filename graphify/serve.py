@@ -1097,8 +1097,9 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
         # real size instead of silence — still the complete, non-truncated
         # answer, just an honest one.
         if cut_count == 0:
-            if len(output) <= char_budget:
-                return output
+            # Reached only inside `len(output) > char_budget`, so every node
+            # fits but the full nodes+edges output does not: an honest
+            # over-budget notice, never a truncation.
             total_edges = sum(1 for l in lines if l.startswith("EDGE "))
             est_tokens = len(output) // 3
             return (
