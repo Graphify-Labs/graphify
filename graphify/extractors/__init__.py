@@ -21,6 +21,7 @@ from graphify.extractors.go import extract_go
 from graphify.extractors.json_config import extract_json
 from graphify.extractors.julia import extract_julia
 from graphify.extractors.markdown import extract_markdown
+from graphify.extractors.monkeyc import extract_monkeyc
 from graphify.extractors.objc import extract_objc
 from graphify.extractors.pascal import extract_pascal
 from graphify.extractors.pascal_forms import extract_delphi_form, extract_lazarus_form
@@ -50,6 +51,7 @@ LANGUAGE_EXTRACTORS: dict[str, Callable[[Path], dict]] = {
     "julia": extract_julia,
     "lazarus_form": extract_lazarus_form,
     "markdown": extract_markdown,
+    "monkeyc": extract_monkeyc,
     "objc": extract_objc,
     "pascal": extract_pascal,
     "powershell": extract_powershell,
