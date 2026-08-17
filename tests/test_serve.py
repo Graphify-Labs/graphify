@@ -1496,6 +1496,33 @@ def test_subgraph_to_text_no_notice_when_under_budget():
     assert "TRUNCATED" not in text and "truncated" not in text
 
 
+def test_subgraph_to_text_no_banner_when_only_edges_overflow():
+    """#2601: nodes render before edges, so a budget overflow that only trims
+    trailing edges cuts zero whole nodes. The banner must not fire with a
+    misleading "showing N of N nodes … among the 0 cut nodes" — that pushes an
+    agent to distrust a complete answer and issue pointless narrowing calls."""
+    import itertools
+
+    G = nx.Graph()
+    labels = [f"n{i}" for i in range(4)]
+    for lbl in labels:
+        G.add_node(lbl, label=lbl, source_file="f.py", source_location="L1", community="c")
+    edges = list(itertools.combinations(labels, 2))
+    for u, v in edges:
+        G.add_edge(u, v, relation="calls", confidence="high")
+    # Budget large enough for every NODE line but not the trailing EDGE lines.
+    text = _subgraph_to_text(G, set(G.nodes), edges, token_budget=60)
+    node_lines = [l for l in text.splitlines() if l.startswith("NODE ")]
+    edge_lines = [l for l in text.splitlines() if l.startswith("EDGE ")]
+    assert len(node_lines) == len(labels), "every node must still be shown"
+    assert "TRUNCATED" not in text and "truncated" not in text
+    assert "cut nodes" not in text
+    # A complete answer renders the whole subgraph: suppressing the banner must
+    # not silently truncate the trailing edges either (a `return output[:cut_at]`
+    # would drop them and still pass the assertions above).
+    assert len(edge_lines) == len(edges), "all edges must survive a complete answer"
+
+
 def test_subgraph_to_text_order_is_deterministic():
     """Equal-degree nodes render in a stable order regardless of set iteration."""
     G = nx.Graph()

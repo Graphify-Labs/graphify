@@ -5,6 +5,9 @@ import json
 import os
 import re
 import shlex
+import stat
+import subprocess
+import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
@@ -30,7 +33,16 @@ class FileType(str, Enum):
 
 _MANIFEST_PATH = str(out_path("manifest.json"))
 
-CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.ejs', '.ets', '.go', '.rs', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.cu', '.cuh', '.metal', '.rb', '.rake', '.swift', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.psm1', '.psd1', '.ex', '.exs', '.m', '.mm', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.tf', '.tfvars', '.hcl', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.slnx', '.csproj', '.fsproj', '.vbproj', '.xaml', '.razor', '.cshtml', '.cls', '.trigger'}
+#: Window in which a manifest row's own timestamp is too close to the file's
+#: mtime for "mtime unchanged" to prove the content is unchanged. Coarse for
+#: filesystems that round mtime to whole seconds; tight when real sub-second
+#: precision is reported. Mirrors cache.py's `_MTIME_GRANULARITY_NS` (2s) —
+#: the same racily-clean assumption at the hash-cache layer (#2466 / #2612);
+#: keep the two in sync.
+_MTIME_COARSE_S = 2.0
+_MTIME_SUBSECOND_S = 0.05
+
+CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.ejs', '.ets', '.go', '.rs', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.cu', '.cuh', '.metal', '.rb', '.rake', '.swift', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.psm1', '.psd1', '.ex', '.exs', '.m', '.mm', '.ml', '.mli', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.tf', '.tfvars', '.hcl', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.slnx', '.csproj', '.fsproj', '.vbproj', '.xaml', '.razor', '.cshtml', '.cls', '.trigger'}
 DOC_EXTENSIONS = {'.md', '.mdx', '.qmd', '.skill', '.txt', '.rst', '.html', '.yaml', '.yml'}
 PAPER_EXTENSIONS = {'.pdf'}
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'}
@@ -490,7 +502,7 @@ def _shebang_file_type(path: Path) -> FileType | None:
 
 
 def classify_file(path: Path) -> FileType | None:
-    # Package manifests (apm.yml, pyproject.toml, go.mod, pom.xml) are parsed
+    # Package manifests (apm.yml, pyproject.toml, Cargo.toml, go.mod, pom.xml) are parsed
     # deterministically, so route them to the AST path (CODE) rather than the LLM
     # document path — otherwise apm.yml (a .yml "document") would be LLM-extracted
     # and a package would split into duplicate file-anchored nodes (#1377).
@@ -781,10 +793,35 @@ def count_words(path: Path) -> int:
             return len(docx_to_markdown(path).split())
         if ext == ".xlsx":
             return len(xlsx_to_markdown(path).split())
+        # Only regular files may be opened. A repository can contain named
+        # pipes, sockets and device nodes, and `clone <github-url>` exists to
+        # point the scan at trees the operator did not write. open() on a FIFO
+        # with no writer BLOCKS FOREVER — it never raises, so the except below
+        # cannot help, and `graphify update` hangs with no output. os.stat
+        # follows symlinks on purpose: a link pointing at a FIFO blocks exactly
+        # like the FIFO itself.
+        if not stat.S_ISREG(os.stat(_os_path(path)).st_mode):
+            return 0
         with open(_os_path(path), encoding="utf-8", errors="ignore") as f:
             return len(f.read().split())
     except Exception:
         return 0
+
+
+def _is_regular_file(path: Path) -> bool:
+    """True only for regular files (symlinks followed).
+
+    Named pipes, sockets and device nodes must never reach a reader:
+    ``open()`` on a FIFO with no writer blocks forever and never raises, so a
+    single ``pipe.py`` in a scanned repository hangs the run with no output.
+    A symlink is resolved deliberately — a link pointing at a FIFO blocks
+    exactly like the FIFO itself. A path that cannot be stat'ed is treated as
+    not readable rather than raising.
+    """
+    try:
+        return stat.S_ISREG(os.stat(path).st_mode)
+    except OSError:
+        return False
 
 
 # Directory names to always skip - venvs, caches, build artifacts, deps
@@ -982,6 +1019,65 @@ def _find_vcs_root(start: Path) -> Path | None:
         if parent == current or current == home:
             return None
         current = parent
+
+
+def _path_identity(path: Path) -> str:
+    """Portable comparison key for an existing filesystem path."""
+    return _nfc(os.path.normcase(os.path.abspath(os.fspath(path))))
+
+
+def _git_tracked_path_keys(root: Path) -> tuple[set[str], set[str]]:
+    """Return tracked-file keys and their ancestor-directory keys under *root*.
+
+    Gitignore rules do not apply to paths already present in Git's index. Ask
+    Git once per scan/predicate construction with NUL-delimited output so every
+    valid filename is preserved. Missing Git, a non-Git VCS marker, command
+    failure, and malformed output all fail closed to the historical ignore
+    behavior rather than making discovery fail (#2759).
+    """
+    root = root.resolve()
+    vcs_root = _find_vcs_root(root)
+    if vcs_root is None or not (vcs_root / ".git").exists():
+        return set(), set()
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(vcs_root), "ls-files", "-z", "--cached"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=30,
+            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+        )
+    except (OSError, subprocess.SubprocessError):
+        return set(), set()
+    if proc.returncode != 0:
+        return set(), set()
+
+    tracked_files: set[str] = set()
+    tracked_dirs: set[str] = set()
+    for raw in proc.stdout.split(b"\0"):
+        if not raw:
+            continue
+        path = Path(os.path.abspath(vcs_root / os.fsdecode(raw)))
+        try:
+            path.relative_to(root)
+        except ValueError:
+            continue
+        # Deleted index entries and submodule gitlinks are not discoverable
+        # files. Symlinks to regular files remain eligible; the existing
+        # in-root target guard still decides whether they may enter the corpus.
+        if not _is_regular_file(path):
+            continue
+        tracked_files.add(_path_identity(path))
+        parent = path.parent
+        while parent != root:
+            parent_key = _path_identity(parent)
+            if parent_key in tracked_dirs:
+                break  # its ancestors were added with the first file below it
+            tracked_dirs.add(parent_key)
+            parent = parent.parent
+    return tracked_files, tracked_dirs
 
 
 def _git_info_exclude(vcs_root: Path) -> Path | None:
@@ -1189,7 +1285,14 @@ def _is_ignored(
             except ValueError:
                 continue  # target outside this pattern's anchor: cannot match
             if rel_anchor != ".":
-                matched = _matches(rel_anchor, p, path_relative=path_relative)
+                rel = rel_anchor
+                if not path_relative:
+                    try:
+                        if len(root.parts) > len(anchor.parts):
+                            rel = _nfc(str(target.relative_to(root)).replace(os.sep, "/"))
+                    except ValueError:
+                        pass
+                matched = _matches(rel, p, path_relative=path_relative)
                 if matched and directory_only and not target.is_dir():
                     matched = False
 
@@ -1214,6 +1317,32 @@ def _is_ignored(
         if _eval(ancestor):
             return True
     return _eval(path)
+
+
+def _is_scan_ignored(
+    path: Path,
+    root: Path,
+    patterns: list[tuple[Path, str]],
+    explicit_patterns: list[tuple[Path, str]],
+    tracked_files: set[str],
+    tracked_dirs: set[str],
+    *,
+    cache: dict[Path, bool],
+    explicit_cache: dict[Path, bool],
+) -> bool:
+    """Apply ignore rules while preserving Git-tracked paths.
+
+    ``patterns`` combines Git and graph-specific rules. ``explicit_patterns``
+    contains only .graphifyignore/--exclude rules, which remain authoritative
+    even for tracked files. A tracked file's ancestor directories are preserved
+    from Git-only pruning so the walk can reach the file (#2759).
+    """
+    if not _is_ignored(path, root, patterns, _cache=cache):
+        return False
+    if _is_ignored(path, root, explicit_patterns, _cache=explicit_cache):
+        return True
+    identity = _path_identity(path)
+    return identity not in tracked_files and identity not in tracked_dirs
 
 
 def ignored_predicate(
@@ -1242,12 +1371,24 @@ def ignored_predicate(
     """
     root = root.resolve()
     patterns = _load_graphifyignore(root, gitignore=gitignore)
+    explicit_patterns = _load_graphifyignore(root, gitignore=False)
+    # Only shell out to git when .gitignore actually contributes patterns beyond
+    # the explicit (.graphifyignore/--exclude) set: with no .gitignore in play,
+    # nothing is dropped by gitignore and the tracked-file exemption is moot, so a
+    # non-.gitignore corpus pays no `git ls-files` cost.
+    tracked_files, tracked_dirs = (
+        _git_tracked_path_keys(root)
+        if gitignore and len(patterns) > len(explicit_patterns)
+        else (set(), set())
+    )
     if extra_excludes:
         for pat in extra_excludes:
             line = _parse_gitignore_line(pat)
             if line:
                 patterns.append((root, line))
+                explicit_patterns.append((root, line))
     cache: dict[Path, bool] = {}
+    explicit_cache: dict[Path, bool] = {}
     # root's own ignore file is the last entry of _load_graphifyignore's chain.
     loaded_dirs: set[Path] = {root}
 
@@ -1274,7 +1415,19 @@ def ignored_predicate(
             if ancestor not in loaded_dirs:
                 loaded_dirs.add(ancestor)
                 patterns.extend(_load_dir_own_ignore(ancestor, gitignore=gitignore))
-        return _is_ignored(path, root, patterns, _cache=cache)
+                explicit_patterns.extend(
+                    _load_dir_own_ignore(ancestor, gitignore=False)
+                )
+        return _is_scan_ignored(
+            path,
+            root,
+            patterns,
+            explicit_patterns,
+            tracked_files,
+            tracked_dirs,
+            cache=cache,
+            explicit_cache=explicit_cache,
+        )
 
     return _ignored
 
@@ -1355,7 +1508,16 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
     ignored: list[str] = []
     pruned_noise: list[str] = []
     ignore_patterns = _load_graphifyignore(root, gitignore=gitignore)
+    explicit_ignore_patterns = _load_graphifyignore(root, gitignore=False)
+    # See ignored_predicate: skip the `git ls-files` subprocess when .gitignore
+    # contributes no patterns, so a non-.gitignore corpus pays nothing for it.
+    tracked_files, tracked_dirs = (
+        _git_tracked_path_keys(root)
+        if gitignore and len(ignore_patterns) > len(explicit_ignore_patterns)
+        else (set(), set())
+    )
     ignore_cache: dict[Path, bool] = {}  # shared across all _is_ignored calls in this scan
+    explicit_ignore_cache: dict[Path, bool] = {}
     # CLI --exclude patterns are anchored at the scan root and appended last
     # so they win over any .graphifyignore/.gitignore rules (#947).
     if extra_excludes:
@@ -1363,6 +1525,19 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
             line = _parse_gitignore_line(pat)
             if line:
                 ignore_patterns.append((root, line))
+                explicit_ignore_patterns.append((root, line))
+
+    def _ignored_for_scan(path: Path) -> bool:
+        return _is_scan_ignored(
+            path,
+            root,
+            ignore_patterns,
+            explicit_ignore_patterns,
+            tracked_files,
+            tracked_dirs,
+            cache=ignore_cache,
+            explicit_cache=explicit_ignore_cache,
+        )
 
     # Always include graphify-out/memory/ - query results filed back into the graph
     memory_dir = root / GRAPHIFY_OUT / "memory"
@@ -1412,6 +1587,9 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                 # file governs its own subtree the same way git honors it (#1206).
                 if dp != root:
                     ignore_patterns.extend(_load_dir_own_ignore(dp, gitignore=gitignore))
+                    explicit_ignore_patterns.extend(
+                        _load_dir_own_ignore(dp, gitignore=False)
+                    )
                 # Prune noise dirs in-place so os.walk never descends into them.
                 # Dot dirs are allowed — users often want .github/, .claude/, etc.
                 # Framework caches (.next, .nuxt, …) are caught by _is_noise_dir.
@@ -1442,7 +1620,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                         # than vanishing silently (#2058).
                         pruned_noise.append(str(dp / d) + os.sep)
                         continue
-                    if _is_ignored(dp / d, root, ignore_patterns, _cache=ignore_cache):
+                    if _ignored_for_scan(dp / d):
                         ignored.append(str(dp / d) + os.sep)
                         continue
                     kept_dirs.append(d)
@@ -1475,11 +1653,23 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
             # Skip files inside our own converted/ dir (avoid re-processing sidecars)
             if str(p).startswith(str(converted_dir)):
                 continue
-        if not in_memory and _is_ignored(p, root, ignore_patterns, _cache=ignore_cache):
+        if not in_memory and _ignored_for_scan(p):
             ignored.append(str(p))
             continue
         if not _resolves_under_root(p, root):
             skipped_sensitive.append(str(p) + " [symlink target outside scan root]")
+            continue
+        if not _is_regular_file(p):
+            # A repository may contain named pipes, sockets and device nodes,
+            # and `clone <github-url>` exists precisely to point the scan at
+            # trees the operator did not write.
+            #
+            # This has to be caught HERE, at the one place where a path is
+            # admitted to the corpus, rather than at each read: the readers
+            # number in the hundreds across the extractors, and open() on a
+            # FIFO with no writer BLOCKS FOREVER — it never raises, so their
+            # try/except cannot help and the whole run hangs with no output.
+            skipped_sensitive.append(str(p) + " [not a regular file]")
             continue
         if _is_sensitive(p):
             skipped_sensitive.append(str(p))
@@ -1507,7 +1697,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                     skipped_sensitive.append(str(p) + f" [Google Workspace export failed: {exc}]")
                     continue
                 if md_path:
-                    if _is_ignored(md_path, root, ignore_patterns, _cache=ignore_cache):
+                    if _ignored_for_scan(md_path):
                         continue
                     files[ftype].append(str(md_path))
                     total_words += _wc(md_path)
@@ -1518,7 +1708,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
             if p.suffix.lower() in OFFICE_EXTENSIONS:
                 md_path = convert_office_file(p, converted_dir, root=root)
                 if md_path:
-                    if _is_ignored(md_path, root, ignore_patterns, _cache=ignore_cache):
+                    if _ignored_for_scan(md_path):
                         continue
                     files[ftype].append(str(md_path))
                     total_words += _wc(md_path)
@@ -1880,7 +2070,11 @@ def save_manifest(
         mtime, h = hashed[f]
         key = _nfc(f)
         prev = _normalise_entry(existing.get(key, {})) or {}
-        entry: dict = {"mtime": mtime}
+        # seen: when this row was written. If the file's mtime sits inside the
+        # same filesystem tick, a later same-length edit can land in that tick
+        # without moving mtime, so the mtime-unchanged fastpath cannot prove
+        # the content is still current and detect_incremental re-hashes.
+        entry: dict = {"mtime": mtime, "seen": time.time()}
         if kind in ("ast", "both"):
             entry["ast_hash"] = h
         else:
@@ -1905,6 +2099,35 @@ def save_manifest(
     # Atomic write: a crash mid-write must not leave a truncated manifest that
     # detect_incremental then fails to parse.
     write_json_atomic(manifest_path, manifest, indent=2)
+
+
+def _mtime_may_hide_a_rewrite(current_mtime: float, stored: dict) -> bool:
+    """Was this manifest row written in the same tick as the file it describes?
+
+    The incremental gate treats "mtime unchanged" as proof the content is
+    unchanged. That is only true while the filesystem can distinguish the two
+    writes: an edit keeping the file the same length and landing in the same
+    timestamp tick moves neither size nor mtime, so the file silently skips
+    re-extraction and the graph keeps serving the old content.
+
+    ``seen`` records when the row was stamped. If the file's mtime falls inside
+    the same tick, this row cannot prove currency and the caller pays for one
+    MD5. Every other row — the whole settled corpus, and any manifest written
+    by an earlier run — keeps the free stat-only fastpath.
+
+    Rows predating ``seen`` are treated as safe: they necessarily come from an
+    earlier process, where a later write would have had to move mtime.
+    """
+    seen = stored.get("seen")
+    if not isinstance(seen, (int, float)):
+        return False
+    delta = float(seen) - float(current_mtime)
+    if delta < 0:
+        return False  # file is newer than the row; the mtime check already fired
+    # Derive granularity from the timestamp: a whole-second mtime means the
+    # filesystem cannot separate writes inside that second.
+    coarse = float(current_mtime).is_integer()
+    return delta < (_MTIME_COARSE_S if coarse else _MTIME_SUBSECOND_S)
 
 
 def detect_incremental(
@@ -2001,6 +2224,14 @@ def detect_incremental(
                         stored_mtime = None
                     if stored_mtime is None or current_mtime != stored_mtime:
                         # mtime bumped — verify with content hash before re-extracting
+                        changed = _md5_file(Path(f)) != stored_hash
+                    elif _mtime_may_hide_a_rewrite(current_mtime, stored):
+                        # mtime is unchanged, but it was recorded in the same
+                        # filesystem tick the file was written in — a later
+                        # same-length edit lands in that tick without moving
+                        # mtime, and the file silently skips re-extraction
+                        # while the graph keeps serving the old content.
+                        # Only this narrow window pays for a content hash.
                         changed = _md5_file(Path(f)) != stored_hash
                     else:
                         changed = False

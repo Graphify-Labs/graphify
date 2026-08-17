@@ -76,7 +76,15 @@ def _atomic_replace(path: "str | Path", write_fn) -> None:
         try:
             os.unlink(tmp)
         except OSError:
-            pass
+            # The temp was chmod'd to match the destination above, so when the
+            # destination is read-only the temp is too — and Windows refuses to
+            # unlink a read-only file. Clear the bit and retry, or every failed
+            # write leaks a `.graph.json.*.tmp` into the output directory.
+            try:
+                os.chmod(tmp, stat.S_IWRITE)
+                os.unlink(tmp)
+            except OSError:
+                pass
         raise
 
 
@@ -336,6 +344,55 @@ def is_absolute_any_platform(p: "str | Path | None") -> bool:
         return False
     s = str(p)
     return PurePosixPath(s).is_absolute() or PureWindowsPath(s).is_absolute()
+
+
+# Legacy Windows path ceiling. Unless long-path support is enabled *and* every
+# consumer opts in, the ENTIRE path — drive, directories, filename, and the
+# terminating NUL — must fit in MAX_PATH (260) characters, so the usable budget
+# is 259. POSIX has no equivalent whole-path ceiling in practice; its limit is
+# per-component (NAME_MAX, conventionally 255 bytes).
+_WINDOWS_MAX_PATH = 260
+
+# Floor for the stem budget below. A directory deep enough to push the budget
+# under this cannot host readable filenames anyway; keep enough room for
+# _cap_filename's "_" + 8-char digest so a truncated stem stays collision-safe
+# and deterministic rather than degenerating into a bare prefix.
+_MIN_STEM_BUDGET = 16
+
+
+def stem_filename_budget(output_dir: "str | Path", *, reserve: int = 0, limit: int = 200) -> int:
+    """Largest filename stem an exporter may write directly into ``output_dir``.
+
+    Exporters cap note/article filenames so they stay under the filesystem's
+    per-component limit (conventionally NAME_MAX=255 bytes, hence the 200
+    default). That is the right question on POSIX and the wrong one on Windows,
+    where the constraint is on the WHOLE path, not the component: a 200-char
+    stem under a perfectly ordinary vault directory such as
+    ``C:\\Users\\me\\projects\\svc\\graphify-out\\obsidian`` exceeds MAX_PATH and
+    the write dies with ``FileNotFoundError``, aborting the export mid-vault.
+
+    Returns ``limit`` unchanged on POSIX, so existing output is byte-for-byte
+    stable there. On Windows it returns the smaller of ``limit`` and whatever
+    still fits inside MAX_PATH once ``output_dir``, the separator, ``reserve``
+    (room for caller-added prefixes/collision suffixes) and the ``.md``
+    extension are accounted for.
+
+    The budget is a CHARACTER count, but callers that cap UTF-8 BYTES may pass
+    it straight through: a string's UTF-8 length is never below its character
+    length, so a byte-capped stem always satisfies the character ceiling too.
+    """
+    if os.name != "nt":
+        return limit
+    try:
+        base = os.path.abspath(str(output_dir))
+    except (OSError, ValueError):
+        return limit
+    # An extended-length path ("\\?\C:\...", "\\?\UNC\...") opts out of MAX_PATH
+    # entirely, so nothing needs shrinking.
+    if base.startswith("\\\\?\\"):
+        return limit
+    budget = (_WINDOWS_MAX_PATH - 1) - len(base) - len(os.sep) - reserve - len(".md")
+    return max(_MIN_STEM_BUDGET, min(limit, budget))
 
 
 def nfc(s: str) -> str:

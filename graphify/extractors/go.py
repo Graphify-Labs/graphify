@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 
+import hashlib
 from pathlib import Path
 from graphify.extractors.base import _LANGUAGE_BUILTIN_GLOBALS, _file_stem, _make_id, _read_text
 
@@ -206,6 +207,68 @@ def extract_go(path: Path) -> dict:
                     if tgt != func_nid:
                         add_edge(func_nid, tgt, "references", line, context=ctx)
 
+    # Node IDs are casefolded (ids.py), so `Run` and `run` declared in one file
+    # produce the same id and add_node silently dropped the second — the unexported
+    # half vanished from the graph and its call sites bound by bare name to a
+    # same-named function in another package, which Go's visibility rules make
+    # impossible (#2779). Salt the non-canonical member of a case-only collision
+    # so both survive.
+    #
+    # The EXPORTED member keeps the plain id. Only exported symbols are reachable
+    # across packages, so cross-package edges (and edges cached in graph.json from
+    # files an incremental rebuild does not touch) target the exported one — keeping
+    # its id stable means adding/removing an unexported sibling in an update never
+    # re-points them. Docs likewise reference the exported API, so the casefolded id
+    # a semantic node produces lands on the symbol it actually describes. Calls to
+    # the unexported sibling can only come from the same package and only resolve
+    # once the sibling exists, so salting it re-points nothing. When the collision
+    # has no unique exported member (`Run`/`RUN`), every member is salted rather
+    # than picking one arbitrarily, so the result never depends on declaration order.
+    case_groups: dict[str, set[str]] = {}
+
+    def _receiver_type_of(node) -> str | None:
+        receiver = node.child_by_field_name("receiver")
+        if not receiver:
+            return None
+        for param in receiver.children:
+            if param.type == "parameter_declaration":
+                type_node = param.child_by_field_name("type")
+                if type_node:
+                    return _read_text(type_node, source).lstrip("*").strip()
+                break
+        return None
+
+    def _plain_symbol_nid(node) -> tuple[str, str] | None:
+        name_node = node.child_by_field_name("name")
+        if not name_node:
+            return None
+        name = _read_text(name_node, source)
+        if node.type == "method_declaration":
+            receiver_type = _receiver_type_of(node)
+            base = _make_id(pkg_scope, receiver_type) if receiver_type else stem
+        else:
+            base = stem
+        return _make_id(base, name), name
+
+    def _scan_declarations(node) -> None:
+        if node.type in ("function_declaration", "method_declaration"):
+            found = _plain_symbol_nid(node)
+            if found:
+                case_groups.setdefault(found[0], set()).add(found[1])
+            return
+        for child in node.children:
+            _scan_declarations(child)
+
+    def symbol_nid(plain_nid: str, name: str) -> str:
+        names = case_groups.get(plain_nid) or set()
+        if len(names) < 2:
+            return plain_nid
+        exported = [n for n in names if n[:1].isupper()]
+        if len(exported) == 1 and name == exported[0]:
+            return plain_nid
+        salt = hashlib.sha1(name.encode("utf-8"), usedforsecurity=False).hexdigest()[:6]
+        return _make_id(plain_nid, salt)
+
     def walk(node) -> None:
         t = node.type
 
@@ -214,7 +277,7 @@ def extract_go(path: Path) -> dict:
             if name_node:
                 func_name = _read_text(name_node, source)
                 line = node.start_point[0] + 1
-                func_nid = _make_id(stem, func_name)
+                func_nid = symbol_nid(_make_id(stem, func_name), func_name)
                 add_node(func_nid, f"{func_name}()", line)
                 add_edge(file_nid, func_nid, "contains", line)
                 emit_go_method_refs(node, func_nid, line)
@@ -242,11 +305,11 @@ def extract_go(path: Path) -> dict:
             if receiver_type:
                 parent_nid = _make_id(pkg_scope, receiver_type)
                 add_node(parent_nid, receiver_type, line)
-                method_nid = _make_id(parent_nid, method_name)
+                method_nid = symbol_nid(_make_id(parent_nid, method_name), method_name)
                 add_node(method_nid, f".{method_name}()", line)
                 add_edge(parent_nid, method_nid, "method", line)
             else:
-                method_nid = _make_id(stem, method_name)
+                method_nid = symbol_nid(_make_id(stem, method_name), method_name)
                 add_node(method_nid, f"{method_name}()", line)
                 add_edge(file_nid, method_nid, "contains", line)
 
@@ -357,6 +420,7 @@ def extract_go(path: Path) -> dict:
         for child in node.children:
             walk(child)
 
+    _scan_declarations(root)
     walk(root)
 
     label_to_nid: dict[str, str] = {}

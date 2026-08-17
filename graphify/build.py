@@ -668,6 +668,22 @@ def _semantic_id_remap(nodes: list, root: str | None) -> dict:
     return remap
 
 
+# MCP node kinds whose ID is GLOBAL by design — deliberately shared across every
+# config file that mentions them (`mcp_command_npx`, `mcp_package_...`,
+# `env_var_...`), so it is not derived from ``source_file`` at all (#2408). The
+# file-scoped kinds (`mcp_config_file`, `mcp_server`) ARE stem-derived and stay
+# subject to legacy detection.
+_MCP_GLOBAL_ID_KINDS = frozenset({"mcp_command", "mcp_package", "env_var"})
+
+
+def _has_global_id(node: dict) -> bool:
+    """Whether ``node``'s ID is global by construction rather than file-derived."""
+    meta = node.get("metadata")
+    if not isinstance(meta, dict):
+        return False
+    return meta.get("mcp_kind") in _MCP_GLOBAL_ID_KINDS
+
+
 def graph_has_legacy_ids(nodes: list, root: str | Path | None = None, sample: int = 300) -> bool:
     """Whether a loaded graph still uses pre-#1504 node IDs (parent-dir / filename
     stem) rather than the full repo-relative path. Read-only consumers (query,
@@ -677,8 +693,10 @@ def graph_has_legacy_ids(nodes: list, root: str | Path | None = None, sample: in
     inspected, because their ID is unambiguously the file stem. Symbol nodes are
     skipped — some extractors scope a symbol by package/directory (Go's
     ``_make_id(pkg_dir, name)`` → ``sub_thing``), which can coincide with an old
-    file-stem form and would otherwise false-positive. Returns True as soon as one
-    file node's ID matches an OLD stem form but not the canonical full-path form."""
+    file-stem form and would otherwise false-positive. Nodes whose ID is global by
+    construction (see ``_MCP_GLOBAL_ID_KINDS``) are skipped for the same reason.
+    Returns True as soon as one file node's ID matches an OLD stem form but not the
+    canonical full-path form."""
     from graphify.extractors.base import _file_stem
     _r = str(root) if root is not None else None
     checked = 0
@@ -687,6 +705,14 @@ def graph_has_legacy_ids(nodes: list, root: str | Path | None = None, sample: in
             continue
         if str(node.get("source_location") or "") != "L1":
             continue  # only file-level nodes carry an unambiguous file-stem ID
+        if _has_global_id(node):
+            # #2408: MCP ingest stamps every node it emits with line 1 (JSON has no
+            # line info), so globally-scoped nodes slip past the L1 proxy for
+            # "file-level". For `sub/.mcp.json` the old bare stem is `mcp` while the
+            # canonical stem is `sub_mcp`, so a perfectly valid `mcp_command_npx`
+            # reads as a legacy `mcp_`-prefixed id and warns on every fresh build.
+            # (A root-level `.mcp.json` never tripped it: there `mcp` IS canonical.)
+            continue
         nid = node.get("id")
         sf = node.get("source_file")
         if not nid or not isinstance(nid, str) or not sf:

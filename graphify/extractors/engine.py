@@ -1246,6 +1246,16 @@ def _js_local_bound_names(func_node, source: bytes) -> set[str]:
                 name = c.child_by_field_name("name")
                 if name is not None:
                     _js_collect_pattern_idents(name, source, bound)
+            elif c.type == "for_in_statement":
+                # `for (const entry of xs)` / `for (const {k} of xs)`: the loop
+                # binding is the `left` pattern, NOT wrapped in a
+                # variable_declarator, so the branch above misses it and `entry`
+                # read as a by-name reference to any same-named module callable
+                # (#2606). C-style `for (let i = 0; ...)` uses a lexical_declaration
+                # with real declarators, already covered by the recursion below.
+                left = c.child_by_field_name("left")
+                if left is not None:
+                    _js_collect_pattern_idents(left, source, bound)
             walk(c)
 
     body = func_node.child_by_field_name("body")
@@ -1276,6 +1286,81 @@ def _js_module_bound_names(root, source: bytes) -> set[str]:
 
     walk(root)
     return bound
+
+def _js_import_binds_external(raw: str, str_path: str) -> bool:
+    """True when a JS/TS import specifier names a module outside the scanned corpus.
+
+    Reuses `_resolve_js_import_target`, so this is graphify's own verdict rather
+    than a second opinion: a specifier it cannot resolve is an external package
+    (the `ref`-namespaced branch). The extra `node_modules` test covers the case
+    where resolution *succeeds* but lands in a dependency tree — a `tsconfig`
+    `paths` entry mapping a package to its own installed copy
+    (`"lucide-react": ["./node_modules/lucide-react"]`) is common, and
+    `node_modules` is pruned from every scan, so the target is never a node.
+    """
+    resolved = _resolve_js_import_target(raw, str_path)
+    if resolved is None:
+        return False  # empty specifier — binds nothing
+    _target_nid, resolved_path = resolved
+    if resolved_path is None:
+        return True  # unresolved after relative / alias / workspace lookup
+    return "node_modules" in resolved_path.parts
+
+
+def _js_external_import_names(root, source: bytes, str_path: str) -> set[str]:
+    """Names an `import` binds to a module OUTSIDE the corpus.
+
+    An imported name is a module-scoped binding: within this file it denotes the
+    imported symbol and nothing else. Neither shadow set collects it —
+    `_js_local_bound_names` reads parameters and `variable_declarator`s and
+    `_js_module_bound_names` only the latter — so the name reaches
+    `_emit_indirect_ref` as an unresolved by-name reference, gets resolved against
+    the corpus-wide label index, and fabricates an `indirect_call` (INFERRED, 0.8)
+    to any unique same-named callable elsewhere in the corpus. That is the symptom
+    already fixed for `catch` bindings, single-parameter arrows and untracked
+    closures; an import binding is the same class of shadow, and a UI kit makes it
+    land constantly because icon names (`Palette`, `Search`, `Filter`) collide with
+    ordinary component names.
+
+    Only imports the corpus cannot contain are collected. A relative specifier
+    resolves to a real file and that edge is the graph's whole point, so those
+    names stay resolvable.
+    """
+    bound: set[str] = set()
+
+    def _clause_names(clause) -> None:
+        for c in clause.children:
+            if c.type == "identifier":            # import Default from "pkg"
+                bound.add(_read_text(c, source))
+            elif c.type == "namespace_import":    # import * as NS from "pkg"
+                for ident in c.children:
+                    if ident.type == "identifier":
+                        bound.add(_read_text(ident, source))
+            elif c.type == "named_imports":       # import { A, B as C } from "pkg"
+                for spec in c.children:
+                    if spec.type != "import_specifier":
+                        continue
+                    idents = [g for g in spec.children if g.type == "identifier"]
+                    # `B as C` exposes both names; only the LAST one is bound here.
+                    if idents:
+                        bound.add(_read_text(idents[-1], source))
+
+    def walk(n) -> None:
+        for c in n.children:
+            if c.type == "import_statement":
+                src_node = c.child_by_field_name("source")
+                if src_node is not None:
+                    raw = _read_text(src_node, source).strip("\"'`")
+                    if _js_import_binds_external(raw, str_path):
+                        for child in c.children:
+                            if child.type == "import_clause":
+                                _clause_names(child)
+                continue
+            walk(c)
+
+    walk(root)
+    return bound
+
 
 def _js_dispatch_value_idents(coll_node):
     """Yield identifier value-nodes of a JS/TS object/array literal that are
@@ -1776,7 +1861,7 @@ def _find_require_call(value_node):
         return _find_require_call(obj)
     return None
 
-def _require_imports_js(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str) -> bool:
+def _require_imports_js(node, source: bytes, importer_nid: str, stem: str, edges: list, str_path: str) -> bool:
     """Detect CommonJS require imports inside lexical_declaration / variable_declaration.
 
     Handles three patterns:
@@ -1815,7 +1900,7 @@ def _require_imports_js(node, source: bytes, file_nid: str, stem: str, edges: li
         tgt_nid, resolved_path = resolved
         line = node.start_point[0] + 1
         edge = {
-            "source": file_nid,
+            "source": importer_nid,
             "target": tgt_nid,
             "relation": "imports_from",
             "context": "import",
@@ -1852,7 +1937,7 @@ def _require_imports_js(node, source: bytes, file_nid: str, stem: str, edges: li
         if target_stem is not None:
             for sym in sym_names:
                 edges.append({
-                    "source": file_nid,
+                    "source": importer_nid,
                     "target": _make_id(target_stem, sym),
                     "relation": "imports",
                     "context": "import",
@@ -1864,6 +1949,78 @@ def _require_imports_js(node, source: bytes, file_nid: str, stem: str, edges: li
     return found
 
 _JS_FUNCTION_VALUE_TYPES = frozenset({"arrow_function", "function_expression", "function", "generator_function"})
+
+
+def _scan_js_nested_function_declarations(
+    container_node, parent_nid: str, *, source: bytes, config,
+    add_node, add_edge, callable_def_nids: set | None,
+    local_bound_names: dict | None, function_bodies: list,
+) -> None:
+    """Emit a node + `contains` edge for every named `function`/generator
+    declaration lexically nested inside *container_node*, scoped under
+    *parent_nid*, and track its body so calls made from inside it resolve
+    instead of dangling (#2653).
+
+    Recurses through non-function children AND through the bodies of nested
+    arrow / function expressions, so a `function` declared inside an arrow
+    callback (`useEffect(() => { function h(){} })`) or inside an arrow-defined
+    component (`const Panel = () => { function handleClick(){} }`, the React
+    idiom that motivated #2653) is captured too. Anonymous closures themselves
+    are not noded — they are attributed to the nearest enclosing named scope,
+    which is *parent_nid*.
+    """
+    if container_node is None:
+        return
+    for child in container_node.children:
+        if child.type in ("function_declaration", "generator_function_declaration"):
+            name_node = child.child_by_field_name(config.name_field)
+            if name_node is None:
+                for c in child.children:
+                    if c.type in config.name_fallback_child_types:
+                        name_node = c
+                        break
+            func_name = _read_text(name_node, source) if name_node else None
+            # A name that normalizes to nothing (e.g. minified `$`) would collapse
+            # the nested id onto parent_nid and leak the scan path (#1899); skip it.
+            if func_name and normalize_id(func_name):
+                line = child.start_point[0] + 1
+                nested_nid = _make_id(parent_nid, func_name)
+                add_node(nested_nid, f"{func_name}()", line)
+                add_edge(parent_nid, nested_nid, "contains", line)
+                if callable_def_nids is not None:
+                    callable_def_nids.add(nested_nid)
+                if local_bound_names is not None:
+                    local_bound_names[nested_nid] = _js_local_bound_names(child, source)
+                nested_body = _find_body(child, config)
+                if nested_body:
+                    function_bodies.append((nested_nid, nested_body))
+                    _scan_js_nested_function_declarations(
+                        nested_body, nested_nid, source=source, config=config,
+                        add_node=add_node, add_edge=add_edge,
+                        callable_def_nids=callable_def_nids,
+                        local_bound_names=local_bound_names,
+                        function_bodies=function_bodies,
+                    )
+        elif child.type in _JS_FUNCTION_VALUE_TYPES:
+            # An anonymous arrow/function expression is not itself a node, but a
+            # `function` declared inside its body still belongs to the enclosing
+            # named scope — descend into the body keeping the SAME parent_nid.
+            _scan_js_nested_function_declarations(
+                _find_body(child, config), parent_nid, source=source, config=config,
+                add_node=add_node, add_edge=add_edge,
+                callable_def_nids=callable_def_nids,
+                local_bound_names=local_bound_names,
+                function_bodies=function_bodies,
+            )
+        else:
+            _scan_js_nested_function_declarations(
+                child, parent_nid, source=source, config=config,
+                add_node=add_node, add_edge=add_edge,
+                callable_def_nids=callable_def_nids,
+                local_bound_names=local_bound_names,
+                function_bodies=function_bodies,
+            )
+
 
 def _js_topmost_closures(node, out: list) -> None:
     """Collect the TOPMOST closure nodes (arrow / function expressions) under
@@ -1925,7 +2082,8 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                    parent_class_nid: str | None, add_node_fn, add_edge_fn,
                    callable_def_nids: set | None = None,
                    local_bound_names: dict | None = None,
-                   closure_locals_by_body: dict | None = None) -> bool:
+                   closure_locals_by_body: dict | None = None,
+                   config=None) -> bool:
     """Handle lexical_declaration (arrow functions, CJS requires, module-level const literals) for JS/TS. Returns True if handled."""
     # CommonJS / prototype member assignments whose value is a function:
     #   exports.X = () => {}     → file-contained function  X()
@@ -2043,6 +2201,18 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                             body = value.child_by_field_name("body")
                             if body:
                                 function_bodies.append((func_nid, body))
+                                # #2653: a `function` declared inside an arrow-defined
+                                # component (`const Panel = () => { function h(){} }`)
+                                # is otherwise never seen — the main walk does not
+                                # recurse into arrow bodies. Scan it here so the
+                                # nested declaration is noded and its calls resolve.
+                                _scan_js_nested_function_declarations(
+                                    body, func_nid, source=source, config=config,
+                                    add_node=add_node_fn, add_edge=add_edge_fn,
+                                    callable_def_nids=callable_def_nids,
+                                    local_bound_names=local_bound_names,
+                                    function_bodies=function_bodies,
+                                )
                             arrow_found = True
                     elif value and (
                         is_exported_scalar_binding
@@ -2162,7 +2332,7 @@ def _csharp_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: 
                        nodes: list, edges: list, seen_ids: set, function_bodies: list,
                        parent_class_nid: str | None, add_node_fn, add_edge_fn,
                        walk_fn, namespace_stack: list[str], scope_stack: list[str]) -> bool:
-    """Handle namespace declarations for C#. Returns True if handled."""
+    """Handle C# namespaces and transparent class-member wrappers."""
     if node.type == "namespace_declaration":
         ns_name = _csharp_namespace_name(node, source)
         pushed = False
@@ -2198,6 +2368,13 @@ def _csharp_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: 
             line = node.start_point[0] + 1
             add_node_fn(ns_nid, ns_label, line, node_type="namespace", metadata={"kind": "csharp_namespace"})
             add_edge_fn(file_nid, ns_nid, "contains", line)
+        return True
+    if parent_class_nid and node.type.startswith("preproc_"):
+        # tree-sitter wraps members in #if/#else/#elif directives in preproc_*
+        # nodes. They are conditional containers, not ownership scopes: dropping
+        # parent_class_nid here makes guarded methods look file-level (#2631).
+        for child in node.children:
+            walk_fn(child, parent_class_nid)
         return True
     return False
 
@@ -2586,6 +2763,14 @@ def _extract_generic(
 
     stem = _file_stem(path)
     str_path = str(path)
+    # Names bound by an import of a module outside the corpus. Module-scoped, so it
+    # is computed once per file and consulted from every scope — see
+    # `_js_external_import_names`.
+    js_external_imports: set[str] = (
+        _js_external_import_names(root, source, str_path)
+        if config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript")
+        else set()
+    )
     nodes: list[dict] = []
     edges: list[dict] = []
     seen_ids: set[str] = set()
@@ -4094,6 +4279,16 @@ def _extract_generic(
                 if config.ts_module == "tree_sitter_c_sharp" and parent_class_nid:
                     csharp_method_scopes[id(body)] = (node, parent_class_nid)
                 function_bodies.append((func_nid, body))
+                if config.ts_module in (
+                    "tree_sitter_javascript", "tree_sitter_typescript"
+                ):
+                    _scan_js_nested_function_declarations(
+                        body, func_nid, source=source, config=config,
+                        add_node=add_node, add_edge=add_edge,
+                        callable_def_nids=callable_def_nids,
+                        local_bound_names=local_bound_names,
+                        function_bodies=function_bodies,
+                    )
                 if config.ts_module == "tree_sitter_kotlin":
                     # #2347: Kotlin anonymous objects (`object : Foo { … }`,
                     # node type `object_literal`). The function branch never
@@ -4186,7 +4381,7 @@ def _extract_generic(
                               nodes, edges, seen_ids, function_bodies,
                               parent_class_nid, add_node, add_edge,
                               callable_def_nids, local_bound_names,
-                              closure_locals_by_body):
+                              closure_locals_by_body, config=config):
                 return
 
         # TS namespace / module containers (internal_module, module)
@@ -4428,6 +4623,11 @@ def _extract_generic(
         # shadowing: a param / local binding names a local value, not the module fn
         if ident_name in enclosing_locals or ident_name in ("self", "cls"):
             return
+        # An import from outside the corpus binds the name for the whole module, so
+        # it shadows in every scope — no unique same-named definition elsewhere in
+        # the corpus is what this identifier refers to.
+        if ident_name in js_external_imports:
+            return
         _emit_indirect_by_name(ident_name, ident, scope_nid, context)
 
     def _python_dispatch_value_idents(coll_node):
@@ -4501,7 +4701,7 @@ def _extract_generic(
             return None
         return _read_text(scope, source)
 
-    _tracked_body_ids: set[int] = set()
+    _tracked_body_ids: set[object] = set()
     _JS_CLOSURE_TYPES = ("arrow_function", "function_expression")
     # #2575: nested NAMED functions get the same descent as closures. walk()
     # appends only the OUTER declaration's body to function_bodies and never
@@ -4511,7 +4711,8 @@ def _extract_generic(
     # _tracked_body_ids guard below still prevents double-walking the
     # top-level ones (those are entered via their own function_bodies entry).
     _JS_DESCEND_TYPES = _JS_CLOSURE_TYPES + (
-        "function_declaration", "generator_function_declaration")
+        "function_declaration", "generator_function_declaration",
+        "generator_function")
 
     def walk_calls(
         node,
@@ -4531,7 +4732,7 @@ def _extract_generic(
             if (config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript")
                     and node.type in _JS_DESCEND_TYPES):
                 body = node.child_by_field_name("body")
-                if body is not None and id(body) not in _tracked_body_ids:
+                if body is not None and body not in _tracked_body_ids:
                     # This closure's own params/locals (`(r) => c.get(r)`) are
                     # scoped to it, not to the enclosing caller_nid — but its
                     # calls ARE attributed to caller_nid right here, so a bare
@@ -4545,6 +4746,14 @@ def _extract_generic(
                     for child in node.children:
                         walk_calls(child, caller_nid, receiver_types, closure_locals)
             return
+
+        # CommonJS imports are valid at any lexical depth.  The module-level
+        # pass records top-level require() declarations; this pass owns function
+        # bodies, so detect lazy/cycle-breaking requires here and attribute the
+        # dependency to the enclosing callable rather than silently dropping it.
+        if (config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript")
+                and node.type in ("lexical_declaration", "variable_declaration")):
+            _require_imports_js(node, source, caller_nid, stem, edges, str_path)
 
         if node.type in config.call_types:
             # JS/TS dynamic imports: await import('./foo.js')
@@ -5132,6 +5341,23 @@ def _extract_generic(
             for ident in _python_ref_value_idents(value):
                 _emit_indirect_ref(ident, caller_nid, enclosing_locals, "return")
 
+        # `catch (e)` binds through the clause's own `parameter` field, never a
+        # variable_declarator, so `_js_local_bound_names` never sees it: a one-letter
+        # binding passed on as a call argument in the handler read as a by-name
+        # reference to a same-named callable elsewhere in the corpus (minified bundles
+        # supply one for nearly every letter). The binding is scoped to the clause, so
+        # fold it into extra_locals for that subtree only — same shape as the untracked
+        # closure fold above (#2241) — leaving references outside the block resolvable.
+        if (
+            config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript")
+            and node.type == "catch_clause"
+        ):
+            param = node.child_by_field_name("parameter")  # absent for ES2019 `catch {}`
+            if param is not None:
+                caught: set[str] = set()
+                _js_collect_pattern_idents(param, source, caught)
+                extra_locals = extra_locals | frozenset(caught)
+
         for child in node.children:
             walk_calls(child, caller_nid, receiver_types, extra_locals)
 
@@ -5161,7 +5387,7 @@ def _extract_generic(
     # skipped at the arrow boundary in walk_calls, losing its calls — so let
     # walk_calls descend into such untracked closures with the enclosing caller
     # (#1630 Pattern B). Guarding on the tracked set prevents double-walking.
-    _tracked_body_ids.update(id(b) for _, b in function_bodies)
+    _tracked_body_ids.update(b for _, b in function_bodies)
 
     # Body ids are unique (one language per file), so the Java (flat) and C#
     # (scoped, #2472) per-method receiver tables merge without collision — the
