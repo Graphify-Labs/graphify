@@ -2293,6 +2293,19 @@ def test_extract_sas_emits_defines_edges():
     assert any(ctx == "macro" for _, _, ctx in defines)
 
 
+def test_extract_sas_multiple_data_steps_stay_distinct(tmp_path):
+    # Two data steps in one file must not collapse into a single node (#2681).
+    f = tmp_path / "multi.sas"
+    f.write_text("data work.a;\nrun;\n\ndata work.b;\nrun;\n")
+    result = extract_sas(f)
+    labels = {n["label"] for n in result["nodes"]}
+    assert "data work.a" in labels
+    assert "data work.b" in labels
+    data_ids = [n["id"] for n in result["nodes"] if n["label"].startswith("data")]
+    assert len(data_ids) == 2
+    assert len(set(data_ids)) == 2
+
+
 def test_extract_sas_macro_call_resolves_to_same_file_definition():
     result = extract_sas(FIXTURES / "sample.sas")
     calls = [(e["source"], e["target"]) for e in result["edges"] if e["relation"] == "calls"]

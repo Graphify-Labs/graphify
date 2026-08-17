@@ -2129,7 +2129,7 @@ _LANG_FAMILY_BY_EXT: dict[str, str] = {
     ".ex": "elixir", ".exs": "elixir",
     ".jl": "julia",
     ".dart": "dart",
-    ".sh": "shell", ".bash": "shell",
+    ".sh": "shell", ".bash": "shell", ".zsh": "shell",
     ".ps1": "powershell", ".psm1": "powershell", ".psd1": "powershell",
 }
 

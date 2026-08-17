@@ -8,7 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from graphify.extractors.base import _file_stem, _make_id
+from graphify.extractors.base import _file_stem, _make_id, _read_text
 
 
 def extract_sas(path: Path) -> dict:
@@ -57,7 +57,7 @@ def extract_sas(path: Path) -> dict:
     def _macro_name_text(node: Any) -> str | None:
         for child in node.children:
             if child.type == "macro_name":
-                return child.text.decode("utf-8", errors="replace").strip()
+                return _read_text(child, source).strip()
         return None
 
     # First pass: collect macro definitions so call sites can resolve.
@@ -70,7 +70,7 @@ def extract_sas(path: Path) -> dict:
     def _step_label(node: Any) -> str | None:
         for child in node.children:
             if child.type in ("data_step_header", "proc_step_header"):
-                text = child.text.decode("utf-8", errors="replace").strip()
+                text = _read_text(child, source).strip()
                 # strip the trailing `;` so the label reads `data work.customers`
                 return text.rstrip(";").strip() if text else None
         return None
@@ -85,12 +85,13 @@ def extract_sas(path: Path) -> dict:
             add_edge(file_nid, nid, "defines", node.start_point.row + 1, context="macro")
         elif node.type == "data_step":
             label = _step_label(node) or "data"
-            nid = _make_id(stem, "data")
+            # disambiguate by line so multiple data steps in one file stay distinct
+            nid = _make_id(stem, "data", str(node.start_point.row + 1))
             add_node(nid, label, node.start_point.row + 1)
             add_edge(file_nid, nid, "defines", node.start_point.row + 1, context="data_step")
         elif node.type == "proc_step":
             label = _step_label(node) or "proc"
-            nid = _make_id(stem, "proc")
+            nid = _make_id(stem, "proc", str(node.start_point.row + 1))
             add_node(nid, label, node.start_point.row + 1)
             add_edge(file_nid, nid, "defines", node.start_point.row + 1, context="proc_step")
 
