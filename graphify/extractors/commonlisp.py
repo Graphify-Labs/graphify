@@ -135,6 +135,25 @@ def extract_commonlisp(path: Path) -> dict:
     file_nid = _cl_id(stem)
     add_node(file_nid, path.name, 1)
 
+    def add_import_stub(mod_name: str) -> str:
+        """Mint a SOURCELESS stub for an imported package so its `imports` edge
+        has a real target instead of dangling. The corpus rewire collapses it
+        onto a unique in-corpus `defpackage` of the same name; an external one
+        (cl, alexandria) stays a sourceless leaf. `origin_file` is stripped
+        before persist (no #1899 leak); a sourced bare stub would salt the id."""
+        nid = _cl_id(mod_name)
+        if nid not in seen_ids:
+            seen_ids.add(nid)
+            nodes.append({
+                "id": nid,
+                "label": mod_name,
+                "file_type": "code",
+                "source_file": "",
+                "source_location": "",
+                "origin_file": str_path,
+            })
+        return nid
+
     def _first_sym(node) -> str | None:
         """Get the first sym_lit text from a list_lit's children."""
         for child in node.children:
@@ -178,7 +197,7 @@ def extract_commonlisp(path: Path) -> dict:
                                 if uc.type == "kwd_lit" and uc != gc:
                                     mod_name = _kwd_text(uc)
                                     if mod_name != "use":
-                                        tgt_nid = _cl_id(mod_name)
+                                        tgt_nid = add_import_stub(mod_name)
                                         add_edge(pkg_nid, tgt_nid, "imports",
                                                  child.start_point[0] + 1)
                             break
@@ -427,7 +446,7 @@ def extract_commonlisp(path: Path) -> dict:
                 if child.type in ("kwd_lit", "str_lit"):
                     mod_name = _kwd_text(child) if child.type == "kwd_lit" else _text(child).strip('"')
                     if mod_name:
-                        tgt_nid = _cl_id(mod_name)
+                        tgt_nid = add_import_stub(mod_name)
                         add_edge(file_nid, tgt_nid, "imports",
                                  top.start_point[0] + 1)
                     break

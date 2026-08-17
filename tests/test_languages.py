@@ -3291,3 +3291,18 @@ def test_cl_defparameter_string_value_not_docstring():
         path.unlink()
 
 
+
+@_needs_commonlisp
+def test_cl_import_edges_are_not_dangling():
+    """Every `imports` edge must target a real node (a sourceless stub the corpus
+    rewire can collapse), not a nodeless id — otherwise the edge dangles."""
+    r = extract_commonlisp(FIXTURES / "sample.lisp")
+    ids = {n["id"] for n in r["nodes"]}
+    dangling = [e for e in r["edges"] if e["source"] not in ids or e["target"] not in ids]
+    assert not dangling, f"dangling edges: {dangling}"
+    import_targets = [e["target"] for e in r["edges"] if e["relation"] == "imports"]
+    assert import_targets, "sample.lisp uses packages, so it must emit imports edges"
+    assert all(t in ids for t in import_targets)
+    # the import-target stubs are sourceless so the corpus rewire can collapse them
+    stub_labels = {n["label"] for n in r["nodes"] if n.get("source_file") == ""}
+    assert "cl" in stub_labels

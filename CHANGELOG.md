@@ -4,6 +4,8 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.46 (unreleased)
 
+- Feature: Common Lisp `.lisp`/`.cl`/`.lsp`/`.asd` extraction via tree-sitter-commonlisp (optional `[commonlisp]` extra) — packages, classes, functions, methods, generics, macros, variable definers, and same-file calls; `open`ed/`:use`d packages resolve cross-file (thanks @fade).
+
 - Fix: a `graphify query` whose node set fits the budget but whose edges push the total over now prints an honest "complete answer over budget" notice with the real size, instead of silently returning a payload several times the requested budget (and no longer advises raising the budget, which was the exact trigger); edges are still never dropped from a complete answer (#2784, thanks @AromalBiju1).
 - Fix: a `.gitignore`/`.graphifyignore` saved in a non-UTF-8 encoding no longer silently drops its rules (which let an explicitly-excluded directory get scanned anyway); the file is decoded UTF-8-first, then by a UTF-16 BOM, then the host codepage/latin-1, so the rule survives intact with a warning instead of being truncated (#2798, thanks @abhay-codes07).
 - Fix: when node dedup merges two nodes, any hyperedge that listed the merged-away node as a member now rewires that member to the survivor instead of silently dropping it, so a grouping no longer loses participants on dedup (#2805, thanks @abhay-codes07).
