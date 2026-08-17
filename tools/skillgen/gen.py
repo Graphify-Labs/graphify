@@ -99,6 +99,22 @@ ALWAYS_ON_BLOCKS = {
 # to the baseline before the byte-for-byte comparison; anything not covered here
 # still fails the guard, so unrelated drift cannot slip through. Each entry is a
 # one-time, audited edit to the otherwise-immutable v8 baseline.
+# Temporal hand-off: the graph is structural and stores no session history, so
+# every always-on block routes session-history questions (why a change was
+# made, what was decided or tried) to session memory tools when a memory layer
+# is connected, instead of letting agents retry the graph.
+_TEMPORAL_BULLET = (
+    "- The graph maps what the code is, not what happened. For session-history "
+    "questions (why a change was made, what was decided or tried before, what "
+    "changed recently), use session memory tools such as `memory_recall` from "
+    "agentmemory if connected; the graph stores no session history.\n"
+)
+
+_BULLET_TAIL = (
+    "- After modifying code, run `graphify update .` to keep the graph current "
+    "(AST-only, no API cost).\n"
+)
+
 ALWAYS_ON_SANCTIONED_EDITS: dict[str, tuple[tuple[str, str], ...]] = {
     # #1530: install guidance must stay host-generic — do not tell agents to
     # invoke a literal `skill` tool with `skill: "graphify"`, which is
@@ -109,6 +125,43 @@ ALWAYS_ON_SANCTIONED_EDITS: dict[str, tuple[tuple[str, str], ...]] = {
             '`skill: "graphify"` before doing anything else.',
             "When the user types `/graphify`, use the installed graphify skill or instructions "
             "before doing anything else.",
+        ),
+        (_BULLET_TAIL, _BULLET_TAIL + _TEMPORAL_BULLET),
+    ),
+    "_CLAUDE_MD_SECTION": ((_BULLET_TAIL, _BULLET_TAIL + _TEMPORAL_BULLET),),
+    "_GEMINI_MD_SECTION": ((_BULLET_TAIL, _BULLET_TAIL + _TEMPORAL_BULLET),),
+    "_ANTIGRAVITY_RULES": (
+        (
+            "- After modifying code files in this session, run `graphify update .` "
+            "to keep the graph current (AST-only, no API cost)\n",
+            "- After modifying code files in this session, run `graphify update .` "
+            "to keep the graph current (AST-only, no API cost)\n" + _TEMPORAL_BULLET,
+        ),
+    ),
+    "_KIRO_STEERING": (
+        (
+            "Read `GRAPH_REPORT.md` only for broad architecture review or when "
+            "those commands do not surface enough context.\n",
+            "Read `GRAPH_REPORT.md` only for broad architecture review or when "
+            "those commands do not surface enough context. The graph maps what "
+            "the code is, not what happened: for session-history questions (why "
+            "a change was made, what was decided or tried before), use session "
+            "memory tools such as `memory_recall` from agentmemory if "
+            "connected.\n",
+        ),
+    ),
+    "_VSCODE_INSTRUCTIONS_SECTION": (
+        (
+            "(c) the graph is missing or stale.\n\n"
+            "Type `/graphify` in Copilot Chat",
+            "(c) the graph is missing or stale.\n\n"
+            "The graph maps what the code is, not what happened. For "
+            'session-history questions ("why was this\n'
+            'added", "what did we decide", "what changed recently"), use session '
+            "memory tools such as\n"
+            "`memory_recall` from agentmemory if connected; the graph stores no "
+            "session history.\n\n"
+            "Type `/graphify` in Copilot Chat",
         ),
     ),
 }

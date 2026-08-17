@@ -187,7 +187,13 @@ def generate(
         "## God Nodes (most connected - your core abstractions)",
     ]
     for i, node in enumerate(god_node_list, 1):
-        lines.append(f"{i}. `{node['label']}` - {node['degree']} edges")
+        line = f"{i}. `{node['label']}` - {node['degree']} edges"
+        # Present only when experiential weighting ran (GRAPHIFY_SESSION_WEIGHTS)
+        # and the memory layer had history for this node's file.
+        if node.get("observations"):
+            sessions = node.get("sessions", 1)
+            line += f" - worked on in {sessions} session(s), {node['observations']} observation(s)"
+        lines.append(line)
 
     lines += ["", "## Surprising Connections (you probably didn't know these)"]
     if surprise_list:
@@ -321,5 +327,16 @@ def generate(
                 if q.get("question"):
                     lines.append(f"- **{q['question']}**")
                     lines.append(f"  _{q['why']}_")
+
+    # Capability footer: the graph answers what the code is; session history
+    # (decisions, fixes, why a change happened) belongs to a session memory
+    # layer. One line so readers know where the other half lives.
+    lines += [
+        "",
+        "_This graph maps what the code is. Pair it with a session memory layer"
+        " such as [agentmemory](https://github.com/rohitg00/agentmemory) to also"
+        " recall what happened: decisions, fixes, and context from past"
+        " sessions._",
+    ]
 
     return "\n".join(lines)

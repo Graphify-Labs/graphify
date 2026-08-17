@@ -1799,6 +1799,11 @@ def dispatch_command(cmd: str) -> None:
         )
         from graphify.report import generate
         from graphify.export import to_json, to_html
+        from graphify.session_weights import (
+            apply_experiential_weights,
+            fetch_file_activity,
+            session_weights_base_url,
+        )
 
         stages = _StageTimer(co_timing)
         print("Loading existing graph...")
@@ -1843,6 +1848,20 @@ def dispatch_command(cmd: str) -> None:
         stages.mark("cluster")
         cohesion = score_all(G, communities)
         gods = god_nodes(G)
+        # Opt-in experiential weighting (GRAPHIFY_SESSION_WEIGHTS): annotate
+        # and re-rank god nodes with per-file session activity from a running
+        # memory layer. Unreachable server degrades to structural ranking.
+        _sw_base = session_weights_base_url()
+        if _sw_base and gods:
+            _node_files = {
+                str(n["id"]): G.nodes[n["id"]].get("source_file", "")
+                for n in gods
+                if n.get("id") in G.nodes
+            }
+            _activity = fetch_file_activity(
+                sorted({f for f in _node_files.values() if f}), _sw_base
+            )
+            gods = apply_experiential_weights(gods, _node_files, _activity)
         surprises = surprising_connections(G, communities)
         stages.mark("analyze")
         # Where outputs (GRAPH_REPORT.md, re-clustered graph.json, labels,
