@@ -1340,6 +1340,9 @@ def build(
         combined["nodes"], combined["edges"] = deduplicate_entities(
             combined["nodes"], combined["edges"], communities={},
             dedup_llm_backend=dedup_llm_backend, root=root,
+            # Hyperedge members reference node ids too, so they need the same
+            # survivor rewiring the edges get (#2805).
+            hyperedges=combined.get("hyperedges"),
         )
     return build_from_json(combined, directed=directed, root=root)
 

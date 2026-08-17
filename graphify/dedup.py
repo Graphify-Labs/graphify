@@ -460,6 +460,46 @@ def _report_id_collision(nid: str, survivor: dict, losers: list[dict]) -> None:
 
 # ── main entry point ──────────────────────────────────────────────────────────
 
+def _remap_hyperedge_members(hyperedges: list[dict], remap: dict[str, str]) -> None:
+    """Rewire hyperedge member ids onto dedup survivors, in place.
+
+    Members come in both shapes the rest of the codebase tolerates — a bare id
+    string, or an object carrying one — so both are handled;
+    ``_normalize_hyperedge_members`` fixes the SHAPE but never resolves a member
+    against surviving node ids, which is why this is needed as well.
+
+    Two members that remap onto the same survivor collapse to one entry. That
+    shrinks the group, but honestly: they were the same entity, and the previous
+    behaviour dropped the loser without promoting it, which shrank the group
+    *and* lost the participant. Order is preserved so a rebuilt graph does not
+    churn.
+    """
+    for he in hyperedges:
+        if not isinstance(he, dict):
+            continue
+        members = he.get("nodes")
+        if not isinstance(members, list):
+            continue
+        seen: set = set()
+        rewired: list = []
+        for m in members:
+            if isinstance(m, str):
+                new_id = remap.get(m, m)
+                entry = new_id
+            elif isinstance(m, dict):
+                raw = m.get("id")
+                new_id = remap.get(raw, raw) if isinstance(raw, str) else raw
+                entry = dict(m, id=new_id) if new_id != raw else m
+            else:
+                new_id, entry = None, m
+            if isinstance(new_id, str):
+                if new_id in seen:
+                    continue
+                seen.add(new_id)
+            rewired.append(entry)
+        he["nodes"] = rewired
+
+
 def deduplicate_entities(
     nodes: list[dict],
     edges: list[dict],
@@ -467,6 +507,7 @@ def deduplicate_entities(
     communities: dict[str, int],
     dedup_llm_backend: str | None = None,
     root: str | Path | None = None,
+    hyperedges: "list[dict] | None" = None,
 ) -> tuple[list[dict], list[dict]]:
     """Deduplicate near-identical entities in a knowledge graph.
 
@@ -477,6 +518,9 @@ def deduplicate_entities(
         dedup_llm_backend: if set, use LLM to resolve ambiguous pairs
         root: scan root; ID-collision ranking judges source paths relative to
             it so path form and checkout location cannot flip the survivor (#2532)
+        hyperedges: when given, member ids are rewired to survivors IN PLACE,
+            the same way edge endpoints are. Optional and mutating rather than
+            returned so existing two-tuple callers are unaffected (#2805).
 
     Returns:
         (deduped_nodes, deduped_edges) with edges rewired to survivors
@@ -778,6 +822,15 @@ def deduplicate_entities(
     if parts:
         msg += f" ({', '.join(parts)})"
     print(msg + ".", flush=True)
+
+    # Hyperedge members are node references exactly like edge endpoints, and
+    # must follow the survivor for the same reason. Without this the member
+    # naming a merged-away id was simply absent from the rebuilt graph: the
+    # group lost a participant silently, could fall under the 3-member threshold
+    # that makes it a hyperedge at all, and left NO dangling reference, so a
+    # referential-integrity check saw nothing wrong (#2805).
+    if hyperedges:
+        _remap_hyperedge_members(hyperedges, remap)
 
     deduped_nodes = [n for n in unique_nodes if n["id"] not in remap]
     deduped_edges = []
