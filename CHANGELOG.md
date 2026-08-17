@@ -4,6 +4,8 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.46 (unreleased)
 
+- Fix: node-id normalization is now caseless-stable for combining-mark sequences — `casefold` and NFKC don't commute, so a single pass left `normalize_id(s) != normalize_id(s.casefold())` for inputs like Greek ypogegrammeni followed by a combining accent; normalization now iterates casefold+NFKC to a fixpoint. Letter/digit-bearing ids are unchanged, so existing graphs are not re-keyed.
+
 - Fix: Java annotations now emit `references` edges to their type — including class-literal arguments (`@Repeatable(Foo.class)`, `@Uses({A.class, B.class})`) and annotation-member return types — so a container annotation is no longer a disconnected island; string/enum arguments are not mistaken for type references (#2426, thanks @oleksii-tumanov).
 - Fix: `graphify query` treats `_` as a token separator (like `-`), so an underscore-spelled query (`user_service`) matches a hyphenated label (`user-service`); coverage-scaling keeps the broader tokenization from surfacing unrelated single-token noise (#2473, thanks @nadiadatepe-eng).
 - Fix: the `post-checkout` hook skips its rebuild when HEAD is unchanged (e.g. `git checkout -b` with no start point), so creating a branch no longer triggers a full graph rebuild (#2421, thanks @nothariharan).
