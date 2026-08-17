@@ -4,6 +4,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.46 (unreleased)
 
+- Fix: the `post-checkout` hook skips its rebuild when HEAD is unchanged (e.g. `git checkout -b` with no start point), so creating a branch no longer triggers a full graph rebuild (#2421, thanks @nothariharan).
 - Feature: Markdown nodes now carry a `node_kind` (`page` vs `heading`) attribute so a docs corpus can be filtered by kind, and leading YAML frontmatter is parsed onto the page node as bounded, sanitized attributes; a `#` comment inside frontmatter is no longer mis-extracted as a heading (thanks @evanthomasgelders). Node ids are unchanged, so existing markdown graphs are not re-keyed.
 
 - Feature: Common Lisp `.lisp`/`.cl`/`.lsp`/`.asd` extraction via tree-sitter-commonlisp (optional `[commonlisp]` extra) — packages, classes, functions, methods, generics, macros, variable definers, and same-file calls; `open`ed/`:use`d packages resolve cross-file (thanks @fade).

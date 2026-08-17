@@ -614,13 +614,30 @@ def test_hooks_honor_skip_env(name, script):
     )
 
 
-def test_checkout_hook_skips_same_head_noop():
-    """`git checkout -b` with no start point passes identical PREV/NEW heads.
-    Rebuild must short-circuit ΓÇö PREV_HEAD/NEW_HEAD were previously assigned
-    and never read (#2421 / leftover from #1809)."""
-    assert "PREV_HEAD=$1" in _CHECKOUT_SCRIPT
-    assert "NEW_HEAD=$2" in _CHECKOUT_SCRIPT
-    assert '[ "$PREV_HEAD" = "$NEW_HEAD" ] && exit 0' in _CHECKOUT_SCRIPT
+def test_checkout_hook_skips_same_head_noop_at_runtime():
+    """`git checkout -b` with no start point reports a branch switch (flag=1) but
+    passes identical PREV/NEW heads, so the rebuild must short-circuit (#2421).
+    Prove BEHAVIOR by running the real emitted script under sh up to the guard
+    with a sentinel, not by matching the source string (per the #2126/#2641
+    convention that static assertions provided zero coverage)."""
+    from graphify.hooks import _CHECKOUT_SCRIPT
+    guard = '[ "$PREV_HEAD" = "$NEW_HEAD" ] && exit 0'
+    assert guard in _CHECKOUT_SCRIPT, "guard missing from the checkout script"
+    # Real script through the same-head guard, then a sentinel — stops before the
+    # graphify-out check / detached launch so nothing is actually rebuilt.
+    prefix = _CHECKOUT_SCRIPT.split(guard)[0] + guard + "\necho RAN\n"
+
+    def run(prev, new, flag):
+        # sh -c CMD name arg1 arg2 arg3  ->  $0=name $1=prev $2=new $3=flag
+        return subprocess.run(["sh", "-c", prefix, "hook", prev, new, flag],
+                              capture_output=True, text=True)
+
+    # branch switch (flag=1), SAME head -> short-circuit, sentinel not reached
+    assert "RAN" not in run("abc123", "abc123", "1").stdout
+    # branch switch (flag=1), DIFFERENT head -> falls through to the sentinel
+    assert "RAN" in run("abc123", "def456", "1").stdout
+    # file checkout (flag != 1) -> skips at the earlier BRANCH_SWITCH guard
+    assert "RAN" not in run("abc123", "def456", "0").stdout
 
 
 @pytest.mark.parametrize("name,script", _HOOK_SCRIPTS)
