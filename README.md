@@ -232,6 +232,7 @@ for example `graphify claude install --project` or `graphify codex install --pro
 | Pi coding agent | `graphify install --platform pi` |
 | Cursor | `graphify cursor install` |
 | Devin CLI | `graphify devin install` |
+| Poolside | `graphify install --platform poolside` |
 | Google Antigravity | `graphify antigravity install` |
 
 Codex users also need `multi_agent = true` under `[features]` in `~/.codex/config.toml` for parallel extraction. CodeBuddy uses the same Agent tool and PreToolUse hook mechanism as Claude Code. Factory Droid uses the `Task` tool for parallel subagent dispatch. OpenClaw and Aider use sequential extraction (parallel agent support is still early on those platforms). Trae uses the Agent tool for parallel subagent dispatch and does **not** support `PreToolUse` hooks, so AGENTS.md is the always-on mechanism.
@@ -301,6 +302,7 @@ Run this once in your project after building a graph:
 | Agent Skills (cross-framework) | `graphify agents install` (alias `graphify skills install`) |
 | Kiro IDE/CLI | `graphify kiro install` |
 | Pi coding agent | `graphify pi install` |
+| Poolside | `graphify poolside install` |
 | Devin CLI | `graphify devin install` |
 | Google Antigravity | `graphify antigravity install` |
 
