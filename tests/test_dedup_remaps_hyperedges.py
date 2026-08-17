@@ -125,3 +125,22 @@ def test_an_empty_remap_changes_nothing():
     hes = [{"id": "h", "nodes": ["a", "b", "c"]}]
     _remap_hyperedge_members(hes, {})
     assert hes[0]["nodes"] == ["a", "b", "c"]
+
+
+def test_chained_collapse_lands_on_the_final_survivor():
+    """A dedup remap built from union-find is fully flattened (path-compressed),
+    so a member of a chained component (a_old -> a_mid -> a) rewires directly to
+    the final survivor in a single lookup, never to an intermediate."""
+    hes = [{"id": "h", "nodes": ["a_old", "a_mid", "b"]}]
+    # what components()/UnionFind produces: every non-winner maps to the winner
+    _remap_hyperedge_members(hes, {"a_old": "a", "a_mid": "a"})
+    assert hes[0]["nodes"] == ["a", "b"]
+
+
+def test_a_hyperedge_collapsing_to_one_member_is_kept():
+    """Sub-two-member hyperedges are kept by design (build_from_json only drops
+    the zero-valid-member case). Pin it so a future refactor doesn't silently
+    start dropping a 1-member group after a collapse."""
+    hes = [{"id": "h", "nodes": ["a_old", "a_new"]}]
+    _remap_hyperedge_members(hes, {"a_old": "a", "a_new": "a"})
+    assert hes[0]["nodes"] == ["a"]  # collapsed to one, still present

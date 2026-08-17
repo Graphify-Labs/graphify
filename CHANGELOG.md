@@ -4,6 +4,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.46 (unreleased)
 
+- Fix: when node dedup merges two nodes, any hyperedge that listed the merged-away node as a member now rewires that member to the survivor instead of silently dropping it, so a grouping no longer loses participants on dedup (#2805, thanks @abhay-codes07).
 - Fix: pruning a source file now also sweeps the external-import placeholder nodes it strands at degree 0, instead of leaving them to accumulate in the node count, `GRAPH_REPORT.md`, and exports; genuinely-isolated real nodes (which carry a `source_file`) are never touched (#2807, thanks @abhay-codes07).
 - Fix: when two edges connect the same node pair with different relations, the graph builder now keeps the more specific relation (`calls`, `imports`, `inherits`, ...) instead of letting a generic `references`/`uses`/`mentions` overwrite it; previously a real `calls` could be downgraded to `references` and then dropped from the call graph (#2803, thanks @abhay-codes07).
 
