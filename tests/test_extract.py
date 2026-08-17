@@ -2315,6 +2315,57 @@ def test_extract_sas_macro_call_resolves_to_same_file_definition():
     assert "greet" in target
 
 
+def test_extract_sas_macro_call_inside_step_resolves(tmp_path):
+    # #2681: a macro invoked inside a data step (the common inline-function
+    # idiom) must still emit a calls edge to its same-file definition.
+    f = tmp_path / "inline.sas"
+    f.write_text(
+        "%macro gen_cols();\n"
+        "  %put generating;\n"
+        "%mend gen_cols;\n"
+        "data work.x;\n"
+        "  %gen_cols();\n"
+        "run;\n"
+    )
+    result = extract_sas(f)
+    calls = [(e["source"], e["target"]) for e in result["edges"] if e["relation"] == "calls"]
+    assert len(calls) == 1
+    assert "gen_cols" in calls[0][1]
+
+
+def test_extract_sas_macro_case_insensitive(tmp_path):
+    # SAS macro names are case-insensitive: %greet() must resolve %macro Greet.
+    f = tmp_path / "case.sas"
+    f.write_text(
+        "%macro Greet(name);\n"
+        "  %put Hello &name;\n"
+        "%mend Greet;\n"
+        "%greet(World);\n"
+    )
+    result = extract_sas(f)
+    calls = [e for e in result["edges"] if e["relation"] == "calls"]
+    assert len(calls) == 1
+    assert "greet" in calls[0]["target"]
+
+
+def test_extract_sas_duplicate_macro_defs_dedup_edges(tmp_path):
+    # Legal SAS redefinition of %macro util must not emit duplicate defines edges.
+    f = tmp_path / "dup.sas"
+    f.write_text("%macro util;\n%mend util;\n%macro util;\n%mend util;\n")
+    result = extract_sas(f)
+    defines = [e for e in result["edges"] if e["relation"] == "defines"]
+    assert len(defines) == 1
+
+
+def test_extract_sas_same_line_steps_stay_distinct(tmp_path):
+    # Two data steps packed on one line must not collapse into one node.
+    f = tmp_path / "oneline.sas"
+    f.write_text("data work.a; run; data work.b; run;\n")
+    result = extract_sas(f)
+    data_nodes = [n for n in result["nodes"] if n["label"].startswith("data")]
+    assert len(data_nodes) == 2
+
+
 def test_extract_sas_missing_dependency_returns_error_marker(monkeypatch):
     import builtins
     real_import = builtins.__import__

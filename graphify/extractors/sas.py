@@ -16,8 +16,16 @@ def extract_sas(path: Path) -> dict:
     try:
         import tree_sitter_sas as tssas
         from tree_sitter import Language, Parser
-    except ImportError:
-        return {"nodes": [], "edges": [], "error": "tree_sitter_sas not installed"}
+    except ImportError as e:
+        import importlib.util
+        # Distinguish a genuinely-absent grammar from an installed-but-broken
+        # one (e.g. a C extension built for a different Python ABI, #2602) so
+        # the #1745 warning does not send the user to a no-op install.
+        if importlib.util.find_spec("tree_sitter_sas") is None:
+            return {"nodes": [], "edges": [],
+                    "error": "tree_sitter_sas not installed"}
+        return {"nodes": [], "edges": [],
+                "error": f"tree_sitter_sas is installed but failed to load: {e}"}
 
     try:
         language = Language(tssas.language())
@@ -33,6 +41,7 @@ def extract_sas(path: Path) -> dict:
     nodes: list[dict] = []
     edges: list[dict] = []
     seen_ids: set[str] = set()
+    seen_edges: set[tuple[str, str, str]] = set()
     macro_defs: dict[str, str] = {}
 
     def add_node(nid: str, label: str, line: int) -> None:
@@ -42,11 +51,14 @@ def extract_sas(path: Path) -> dict:
                           "source_file": str_path, "source_location": f"L{line}"})
 
     def add_edge(src: str, tgt: str, relation: str, line: int,
-                 confidence: str = "EXTRACTED", weight: float = 1.0,
                  context: str | None = None) -> None:
+        key = (src, tgt, relation)
+        if key in seen_edges:
+            return
+        seen_edges.add(key)
         edge = {"source": src, "target": tgt, "relation": relation,
-                "confidence": confidence, "source_file": str_path,
-                "source_location": f"L{line}", "weight": weight}
+                "confidence": "EXTRACTED", "source_file": str_path,
+                "source_location": f"L{line}", "weight": 1.0}
         if context:
             edge["context"] = context
         edges.append(edge)
@@ -54,53 +66,66 @@ def extract_sas(path: Path) -> dict:
     file_nid = _make_id(str(path))
     add_node(file_nid, path.name, 1)
 
-    def _macro_name_text(node: Any) -> str | None:
+    def _child_text(node: Any, child_types: tuple[str, ...]) -> str | None:
         for child in node.children:
-            if child.type == "macro_name":
+            if child.type in child_types:
                 return _read_text(child, source).strip()
         return None
 
-    # First pass: collect macro definitions so call sites can resolve.
+    def _macro_name_text(node: Any) -> str | None:
+        return _child_text(node, ("macro_name",))
+
+    # First pass: collect macro definitions (case-insensitively, per SAS) so
+    # call sites resolve regardless of where the definition appears.
     for node in root.children:
         if node.type == "macro_definition":
             name = _macro_name_text(node)
             if name:
-                macro_defs[name] = _make_id(stem, name)
+                macro_defs[name.casefold()] = _make_id(stem, name)
 
     def _step_label(node: Any) -> str | None:
-        for child in node.children:
-            if child.type in ("data_step_header", "proc_step_header"):
-                text = _read_text(child, source).strip()
-                # strip the trailing `;` so the label reads `data work.customers`
-                return text.rstrip(";").strip() if text else None
-        return None
+        text = _child_text(node, ("data_step_header", "proc_step_header"))
+        # strip the trailing `;` so the label reads `data work.customers`
+        return text.rstrip(";").strip() if text else None
+
+    def _emit_macro_calls(node: Any) -> None:
+        """Emit calls edges for macro call statements anywhere in the subtree."""
+        stack = [node]
+        while stack:
+            current = stack.pop()
+            if current.type == "macro_call_statement":
+                name = _macro_name_text(current)
+                if name:
+                    nid = macro_defs.get(name.casefold())
+                    if nid:
+                        add_edge(file_nid, nid, "calls",
+                                 current.start_point.row + 1, context="call")
+            stack.extend(current.children)
 
     for node in root.children:
         if node.type == "macro_definition":
             name = _macro_name_text(node)
             if not name:
                 continue
-            nid = macro_defs[name]
+            nid = macro_defs[name.casefold()]
             add_node(nid, f"%{name}", node.start_point.row + 1)
             add_edge(file_nid, nid, "defines", node.start_point.row + 1, context="macro")
+            _emit_macro_calls(node)
         elif node.type == "data_step":
             label = _step_label(node) or "data"
-            # disambiguate by line so multiple data steps in one file stay distinct
-            nid = _make_id(stem, "data", str(node.start_point.row + 1))
+            # disambiguate by byte offset so multiple steps (even on one line)
+            # stay distinct
+            nid = _make_id(stem, "data", str(node.start_byte))
             add_node(nid, label, node.start_point.row + 1)
             add_edge(file_nid, nid, "defines", node.start_point.row + 1, context="data_step")
+            _emit_macro_calls(node)
         elif node.type == "proc_step":
             label = _step_label(node) or "proc"
-            nid = _make_id(stem, "proc", str(node.start_point.row + 1))
+            nid = _make_id(stem, "proc", str(node.start_byte))
             add_node(nid, label, node.start_point.row + 1)
             add_edge(file_nid, nid, "defines", node.start_point.row + 1, context="proc_step")
+            _emit_macro_calls(node)
+        else:
+            _emit_macro_calls(node)
 
-    # Macro call sites: emit calls edges to macros defined in this file.
-    for node in root.children:
-        if node.type == "macro_call_statement":
-            name = _macro_name_text(node)
-            if name and name in macro_defs:
-                add_edge(file_nid, macro_defs[name], "calls",
-                         node.start_point.row + 1, context="call")
-
-    return {"nodes": nodes, "edges": edges, "raw_calls": []}
+    return {"nodes": nodes, "edges": edges}
