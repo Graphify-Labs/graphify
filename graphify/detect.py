@@ -1122,6 +1122,53 @@ def _git_info_exclude(vcs_root: Path) -> Path | None:
     return exclude if exclude.is_file() else None
 
 
+_warned_ignore_encodings: set[str] = set()
+
+
+def _read_ignore_text(path: Path) -> str:
+    """Read an ignore file, preferring UTF-8 but never silently dropping a rule.
+
+    These files were read with ``errors="ignore"``, which turns a mis-encoded
+    byte into *no* byte. An ignore file saved in the host's ANSI codepage — the
+    historical Notepad default on Windows, and still what ``Set-Content`` writes
+    without ``-Encoding`` — is not valid UTF-8, so ``Or\xe7amento/`` decoded to
+    the pattern ``Oramento/``. That matches nothing, and nothing said so: the
+    directory was scanned despite an explicit exclusion, which for a rule
+    covering documents or PDFs means they reach the semantic pass anyway.
+
+    So: UTF-8 (BOM-tolerant) first, since that is what the format should be and
+    what every other reader here assumes. Only if that fails do we fall back to
+    the host encoding, then to latin-1, which cannot fail and maps every byte to
+    a codepoint — a rule spelled in some third encoding still comes out wrong,
+    but it comes out *whole*, and the warning names the file so it is fixable.
+    Decoding never raises, matching the previous contract.
+    """
+    raw = path.read_bytes()
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        pass
+    import locale
+    import sys as _sys
+    fallback = locale.getpreferredencoding(False) or "latin-1"
+    for enc in (fallback, "latin-1"):
+        try:
+            text = raw.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+        key = str(path)
+        if key not in _warned_ignore_encodings:
+            _warned_ignore_encodings.add(key)
+            print(
+                f"[graphify] WARNING: {path} is not valid UTF-8; read it as "
+                f"{enc} instead. Re-save it as UTF-8 — patterns with non-ASCII "
+                "characters may not match as written.",
+                file=_sys.stderr,
+            )
+        return text
+    return raw.decode("utf-8", errors="ignore")
+
+
 def _load_dir_own_ignore(d: Path, *, gitignore: bool = True) -> list[tuple[Path, str]]:
     """Read .gitignore/.graphifyignore directly inside *d* (not its ancestors).
 
@@ -1142,7 +1189,7 @@ def _load_dir_own_ignore(d: Path, *, gitignore: bool = True) -> list[tuple[Path,
     for fname in ((".gitignore", ".graphifyignore") if gitignore else (".graphifyignore",)):
         ignore_file = d / fname
         if ignore_file.exists():
-            for raw in ignore_file.read_text(encoding="utf-8-sig", errors="ignore").splitlines():
+            for raw in _read_ignore_text(ignore_file).splitlines():
                 line = _parse_gitignore_line(raw)
                 if line:
                     patterns.append((d, line))
@@ -1184,7 +1231,7 @@ def _load_graphifyignore(root: Path, *, gitignore: bool = True) -> list[tuple[Pa
     # re-include still override it (#1810).
     info_exclude = _git_info_exclude(ceiling) if gitignore else None
     if info_exclude is not None:
-        for raw in info_exclude.read_text(encoding="utf-8-sig", errors="ignore").splitlines():
+        for raw in _read_ignore_text(info_exclude).splitlines():
             line = _parse_gitignore_line(raw)
             if line:
                 patterns.append((ceiling, line))

@@ -171,7 +171,7 @@ def test_graphifyignore_matches_nfd_path_with_nfc_pattern(tmp_path):
     nfd_name = unicodedata.normalize("NFD", nfc_name)
     assert nfc_name != nfd_name  # guard: the two forms really do differ
 
-    (tmp_path / ".graphifyignore").write_text(f"{nfc_name}/\n")
+    (tmp_path / ".graphifyignore").write_text(f"{nfc_name}/\n", encoding="utf-8")
     secret_dir = tmp_path / nfd_name
     secret_dir.mkdir()
     (secret_dir / "contrato.py").write_text("x = 1")
@@ -188,7 +188,7 @@ def test_graphifyignore_matches_nfc_path_with_nfd_pattern(tmp_path):
     nfc_name = unicodedata.normalize("NFC", "Or\u00e7amento")
     nfd_name = unicodedata.normalize("NFD", nfc_name)
 
-    (tmp_path / ".graphifyignore").write_text(f"{nfd_name}/\n")
+    (tmp_path / ".graphifyignore").write_text(f"{nfd_name}/\n", encoding="utf-8")
     d = tmp_path / nfc_name
     d.mkdir()
     (d / "contrato.py").write_text("x = 1")
