@@ -690,11 +690,10 @@ def _run_cli() -> None:
         print("  kiro uninstall          remove skill + steering file")
         print("  pi install              write skill to ~/.pi/agent/skills/graphify/ (Pi coding agent)")
         print("  pi uninstall            remove skill from ~/.pi/agent/skills/graphify/")
+
         print("  devin install           write skill to ~/.config/devin/skills/graphify/ (Devin CLI)")
         print("  devin uninstall         remove skill from ~/.config/devin/skills/graphify/")
-        print(
-            "  poolside install        write graphify skill to ~/.config/poolside/skills/graphify/ (Poolside)"
-        )
+        print("  poolside install        write graphify skill to ~/.config/poolside/skills/graphify/ (Poolside)")
         print("  poolside uninstall      remove graphify skill from ~/.config/poolside/skills/graphify/")
         print()
         return

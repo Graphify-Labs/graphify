@@ -360,11 +360,7 @@ _PLATFORM_CONFIG: dict[str, dict] = {
     },
     "poolside": {
         # Reuses Claude's lean core (skill.md) and the claude references/
-        # sidecar — the Poolside skill body is byte-identical to Claude's, so
-        # `graphify install poolside` nukes the old `graphify install` + rsync
-        # workflow and writes the skill natively to the poolside skills dir.
-        # Skill-only: no always-on md, hook, or plugin (pool reads SKILL.md from
-        # the skills directory directly).
+        # sidecar — the Poolside skill body is identical to Claude's.
         "skill_file": "skill.md",
         "skill_dst": Path(".config") / "poolside" / "skills" / "graphify" / "SKILL.md",
         "claude_md": False,
