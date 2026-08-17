@@ -387,7 +387,7 @@ def check_graph_file_size_cap(path: Path) -> None:
 # Label sanitisation (mirrors code-review-graph's _sanitize_name pattern)
 # ---------------------------------------------------------------------------
 
-_CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
+_CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _MAX_LABEL_LEN = 256
 
 
@@ -403,6 +403,68 @@ def sanitize_label(text: str | None) -> str:
     if len(text) > _MAX_LABEL_LEN:
         text = text[:_MAX_LABEL_LEN]
     return text
+
+
+MAX_QUERY_RATIONALE_CHARS = 512
+MAX_DETAIL_RATIONALE_CHARS = 2048
+
+_CONTROL_CHAR_NO_NL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
+
+
+def sanitize_rationale(
+    text: str | None,
+    *,
+    single_line: bool = False,
+    max_chars: int | None = None,
+) -> str:
+    """Sanitize and optionally truncate a node rationale string.
+
+    In compact (single-line) mode:
+    - Normalizes all whitespace runs (newlines, tabs, spaces) to single spaces
+    - Strips control characters
+    - Caps output at `max_chars` (default MAX_QUERY_RATIONALE_CHARS = 512)
+    - Adds an explicit '...' truncation marker when capped
+
+    In detail mode:
+    - Preserves newlines/paragraphs while stripping unsafe control characters
+    - Caps output at `max_chars` (default MAX_DETAIL_RATIONALE_CHARS = 2048)
+    - Adds an explicit '...' truncation marker when capped
+
+    Returns empty string if text is None, empty, or whitespace-only.
+    """
+    if text is None:
+        return ""
+    raw = str(text)
+    if not raw.strip():
+        return ""
+
+    if max_chars is None:
+        max_chars = MAX_QUERY_RATIONALE_CHARS if single_line else MAX_DETAIL_RATIONALE_CHARS
+
+    if single_line:
+        # Collapse all whitespace sequences to a single space, then strip control chars
+        flat = " ".join(raw.split())
+        cleaned = _CONTROL_CHAR_RE.sub("", flat).strip()
+        if not cleaned:
+            return ""
+        if len(cleaned) > max_chars:
+            marker = "..."
+            if max_chars <= len(marker):
+                return cleaned[:max_chars]
+            return cleaned[: max_chars - len(marker)].rstrip() + marker
+        return cleaned
+    else:
+        # Preserve newlines/paragraphs, normalize CRLF to LF, strip other control chars
+        normalized = raw.replace("\r\n", "\n").replace("\r", "\n")
+        cleaned = _CONTROL_CHAR_NO_NL_RE.sub("", normalized).strip()
+        if not cleaned:
+            return ""
+        if len(cleaned) > max_chars:
+            marker = "..."
+            if max_chars <= len(marker):
+                return cleaned[:max_chars]
+            return cleaned[: max_chars - len(marker)].rstrip() + marker
+        return cleaned
 
 
 # ---------------------------------------------------------------------------

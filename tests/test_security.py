@@ -461,3 +461,105 @@ def test_sanitize_metadata_bool_not_coerced_to_int():
     assert out["flag_t"] is True
     assert out["flag_f"] is False
     assert out["num"] == 1
+
+
+# ---------------------------------------------------------------------------
+# sanitize_rationale
+# ---------------------------------------------------------------------------
+
+from graphify.security import (
+    sanitize_rationale,
+    MAX_QUERY_RATIONALE_CHARS,
+    MAX_DETAIL_RATIONALE_CHARS,
+)
+
+
+def test_sanitize_rationale_empty_or_none():
+    assert sanitize_rationale(None) == ""
+    assert sanitize_rationale("") == ""
+    assert sanitize_rationale("   \n\t  ") == ""
+
+
+def test_sanitize_rationale_single_line_normalizes_whitespace():
+    raw = "Decision: Use tree-sitter.\n\nWHY: Deterministic\tand fast.\r\nRobust."
+    out = sanitize_rationale(raw, single_line=True)
+    assert "\n" not in out
+    assert "\t" not in out
+    assert "\r" not in out
+    assert out == "Decision: Use tree-sitter. WHY: Deterministic and fast. Robust."
+
+
+def test_sanitize_rationale_single_line_strips_control_chars():
+    raw = "Good\x00 rationale\x1b[31m with ansi\x07"
+    out = sanitize_rationale(raw, single_line=True)
+    assert "\x00" not in out
+    assert "\x1b" not in out
+    assert "\x07" not in out
+    assert "Good rationale[31m with ansi" in out
+
+
+def test_sanitize_rationale_single_line_truncation():
+    long_text = "A" * (MAX_QUERY_RATIONALE_CHARS + 100)
+    out = sanitize_rationale(long_text, single_line=True)
+    assert len(out) == MAX_QUERY_RATIONALE_CHARS
+    assert out.endswith("...")
+
+
+def test_sanitize_rationale_detail_mode_preserves_newlines():
+    raw = "Decision: Pick SQLite.\n\nWHY: Zero config."
+    out = sanitize_rationale(raw, single_line=False)
+    assert out == "Decision: Pick SQLite.\n\nWHY: Zero config."
+
+
+def test_sanitize_rationale_detail_mode_truncation():
+    long_text = "B" * (MAX_DETAIL_RATIONALE_CHARS + 200)
+    out = sanitize_rationale(long_text, single_line=False)
+    assert len(out) == MAX_DETAIL_RATIONALE_CHARS
+    assert out.endswith("...")
+
+
+def test_sanitize_rationale_strips_c1_control_chars_compact_and_detail():
+    # Test full range of C1 controls U+0080 through U+009F
+    c1_chars = "".join(chr(cp) for cp in range(0x80, 0xA0))
+    raw = f"Prefix{c1_chars}Suffix"
+
+    out_compact = sanitize_rationale(raw, single_line=True)
+    assert all(chr(cp) not in out_compact for cp in range(0x80, 0xA0))
+
+    out_detail = sanitize_rationale(raw, single_line=False)
+    assert all(chr(cp) not in out_detail for cp in range(0x80, 0xA0))
+    assert out_detail == "PrefixSuffix"
+
+    # Non-whitespace C1 controls strip without word splitting
+    c1_non_ws = "".join(chr(cp) for cp in range(0x80, 0xA0) if cp != 0x85)
+    assert sanitize_rationale(f"Prefix{c1_non_ws}Suffix", single_line=True) == "PrefixSuffix"
+
+
+def test_sanitize_rationale_strips_dangerous_c1_introducers():
+    # U+009B (CSI), U+009D (OSC), U+0090 (DCS), U+009F (APC)
+    raw = "Safe\x9b31mColor\x9dTitle\x90Device\x9fApp"
+
+    out_compact = sanitize_rationale(raw, single_line=True)
+    assert "\x9b" not in out_compact
+    assert "\x9d" not in out_compact
+    assert "\x90" not in out_compact
+    assert "\x9f" not in out_compact
+    assert out_compact == "Safe31mColorTitleDeviceApp"
+
+    out_detail = sanitize_rationale(raw, single_line=False)
+    assert "\x9b" not in out_detail
+    assert "\x9d" not in out_detail
+    assert "\x90" not in out_detail
+    assert "\x9f" not in out_detail
+    assert out_detail == "Safe31mColorTitleDeviceApp"
+
+
+def test_sanitize_rationale_preserves_printable_unicode():
+    raw = "Decisión: café con leche.\n\nWHY: 日本語サポート and fast 🚀 emojis."
+
+    out_compact = sanitize_rationale(raw, single_line=True)
+    assert out_compact == "Decisión: café con leche. WHY: 日本語サポート and fast 🚀 emojis."
+
+    out_detail = sanitize_rationale(raw, single_line=False)
+    assert out_detail == "Decisión: café con leche.\n\nWHY: 日本語サポート and fast 🚀 emojis."
+    assert "\n\n" in out_detail
