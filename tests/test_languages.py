@@ -3422,3 +3422,26 @@ def test_markdown_malformed_frontmatter_does_not_raise():
     r = _md_extract("---\n: : : not valid yaml : :\n---\n\n# Body\n")
     assert "error" not in r
     assert any("Body" in l for l in _labels(r))
+
+
+def test_markdown_frontmatter_fallback_parses_flat_keys():
+    """The PyYAML-absent fallback must still parse flat `key: value` frontmatter
+    (it is used verbatim when PyYAML is missing or the YAML is malformed)."""
+    from graphify.extractors.markdown import _parse_frontmatter_fallback
+    out = _parse_frontmatter_fallback(
+        ["title: Hello World", 'status: "draft"', "  indented: skip", "empty:"]
+    )
+    assert out == {"title": "Hello World", "status": "draft"}
+
+
+def test_markdown_heading_id_is_stable_regardless_of_frontmatter():
+    """node_kind/frontmatter are additive: a heading's id stays _make_id(stem, title),
+    so existing markdown graphs and incremental caches are not re-keyed."""
+    from graphify.extractors.base import _make_id, _file_stem
+    r = _md_extract("---\ntitle: Doc\ntags: [a, b]\n---\n\n# Overview\n\n## Details\n")
+    heading_ids = {n["id"] for n in r["nodes"] if n.get("node_kind") == "heading"}
+    # recompute against the file the fixture wrote (single .md temp file)
+    src_file = {n["source_file"] for n in r["nodes"]}.pop()
+    stem = _file_stem(Path(src_file))
+    assert _make_id(stem, "Overview") in heading_ids
+    assert _make_id(stem, "Details") in heading_ids
