@@ -52,6 +52,7 @@ from graphify.install import (  # noqa: E402,F401
     _install_codex_hook,
     _install_gemini_hook,
     _install_kilo_plugin,
+    _install_jcode_hook,
     _install_opencode_plugin,
     _install_skill_references,
     _kilo_config_path,
@@ -84,6 +85,7 @@ from graphify.install import (  # noqa: E402,F401
     _uninstall_codex_hook,
     _uninstall_gemini_hook,
     _uninstall_kilo_plugin,
+    _uninstall_jcode_hook,
     _uninstall_opencode_plugin,
     claude_install,
     claude_uninstall,
@@ -506,7 +508,7 @@ def _run_cli() -> None:
         print("Usage: graphify <command>")
         print()
         print("Commands:")
-        print("  install [--platform P]  copy skill to platform config dir (claude|windows|codebuddy|codex|opencode|aider|amp|agents|claw|droid|trae|trae-cn|gemini|cursor|antigravity|hermes|kiro|pi|devin)")
+        print("  install [--platform P]  copy skill to platform config dir (claude|windows|codebuddy|codex|jcode|opencode|aider|amp|agents|claw|droid|trae|trae-cn|gemini|cursor|antigravity|hermes|kiro|pi|devin)")
         print("  uninstall               remove graphify from all detected platforms in one shot")
         print("    --purge                 also delete graphify-out/ directory")
         print("  path \"A\" \"B\"            shortest path between two nodes in graph.json")
@@ -538,6 +540,8 @@ def _run_cli() -> None:
         print("    --force                 overwrite graph.json even if the rebuild has fewer nodes")
         print("                            (also: GRAPHIFY_FORCE=1 env var; use after refactors that delete code)")
         print("    --no-cluster            skip clustering, write raw extraction only")
+        print("  check-knowledge <path>  validate lat.md wiki links and @lat code references")
+        print("    --json                  emit machine-readable validation results")
         print("  cluster-only <path>     rerun clustering on an existing graph.json and regenerate report")
         print("    --no-viz                skip graph.html generation (useful for >5000 node graphs / CI)")
         print("    --graph <path>          path to graph.json (default <path>/graphify-out/graph.json)")

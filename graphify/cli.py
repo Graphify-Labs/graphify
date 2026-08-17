@@ -710,6 +710,52 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
         pass
 
 
+def _run_jcode_hook_guard() -> bool:
+    """Redirect Jcode's first raw code lookup to Graphify.
+
+    Jcode sends the tool input JSON on stdin, exports metadata through
+    ``JCODE_HOOK_*``, and treats exit 2 plus stderr as a blocked tool call.
+    Return True only for the first matching raw lookup in a session; malformed
+    input and unsupported tools fail open.
+    """
+    from graphify.paths import out_path
+
+    try:
+        if not out_path("graph.json").is_file() or _query_stamp_fresh():
+            return False
+        payload = json.loads(sys.stdin.buffer.read().decode("utf-8", "replace"))
+        if not isinstance(payload, dict):
+            return False
+
+        tool_name = os.environ.get("JCODE_HOOK_TOOL_NAME", "").strip().lower()
+        command = str(payload.get("command") or "")
+        command_lower = command.lower()
+        if "graphify query" in command_lower:
+            return False
+
+        is_raw_lookup = tool_name in {"agentgrep", "grep", "read"}
+        if tool_name == "bash":
+            is_raw_lookup = any(
+                token in command_lower
+                for token in ("grep", "ripgrep", "rg ", "find ", "fd ", "ack ", "ag ")
+            )
+        if not is_raw_lookup:
+            return False
+
+        session_id = os.environ.get("JCODE_HOOK_SESSION_ID", "").strip()
+        if not session_id or not _mark_session_denied(f"jcode-{session_id}"):
+            return False
+
+        sys.stderr.write(
+            "Graphify knowledge graph is available for this project. "
+            "Run `graphify query \"<your codebase question>\"` before raw "
+            "search/read, then retry this tool if more detail is needed.\n"
+        )
+        return True
+    except Exception:
+        return False
+
+
 def _target_is_indexed(file_path: str, root: "Path") -> bool:
     """Guard the strict deny: only block a read of a file the graph actually indexes.
     Reads manifest.json (cheap, capped); on any doubt (missing/corrupt/oversized
@@ -800,6 +846,25 @@ def _clone_repo(
 def _reenter_main() -> None:
     from graphify.__main__ import main
     main()
+
+
+def _print_knowledge_validation(result: dict) -> None:
+    """Print one deterministic human-readable knowledge validation report."""
+    if result["valid"]:
+        print(
+            f"Knowledge lattice valid: {result['sections']} sections "
+            f"across {result['files']} files."
+        )
+        return
+    for error in result["errors"]:
+        print(
+            f"{error['file']}:{error['line']}: "
+            f"{error['code']}: {error['message']}"
+        )
+    print(
+        f"Knowledge lattice invalid: {len(result['errors'])} error(s).",
+        file=sys.stderr,
+    )
 
 
 def dispatch_command(cmd: str) -> None:
@@ -1666,6 +1731,26 @@ def dispatch_command(cmd: str) -> None:
         else:
             print(format_diagnostic_report(summary))
 
+    elif cmd == "check-knowledge":
+        import json as _json
+        from graphify.lattice_ingest import validate_lattice
+
+        check_path = Path(".")
+        for arg in sys.argv[2:]:
+            if not arg.startswith("--"):
+                check_path = Path(arg)
+                break
+        if not check_path.exists() or not check_path.is_dir():
+            print(f"error: path not found or not a directory: {check_path}", file=sys.stderr)
+            sys.exit(1)
+        result = validate_lattice(check_path)
+        if "--json" in sys.argv:
+            print(_json.dumps(result, indent=2, ensure_ascii=False))
+        else:
+            _print_knowledge_validation(result)
+        if not result["valid"]:
+            sys.exit(1)
+
     elif cmd == "add":
         if len(sys.argv) < 3:
             print(
@@ -2123,6 +2208,14 @@ def dispatch_command(cmd: str) -> None:
         ok = _rebuild_code(watch_path, force=force, no_cluster=no_cluster, block_on_lock=True)
         if ok:
             print("Code graph updated. For doc/paper/image changes run /graphify --update in your AI assistant.")
+            lattice_dir = watch_path.resolve() / "lat.md"
+            if lattice_dir.is_dir():
+                from graphify.lattice_ingest import validate_lattice
+
+                knowledge = validate_lattice(watch_path)
+                _print_knowledge_validation(knowledge)
+                if not knowledge["valid"]:
+                    sys.exit(1)
             if not (
                 os.environ.get("GEMINI_API_KEY")
                 or os.environ.get("GOOGLE_API_KEY")
@@ -2155,6 +2248,10 @@ def dispatch_command(cmd: str) -> None:
             strict="--strict" in sys.argv[3:],
         )
         sys.exit(0)
+    elif cmd == "jcode-hook":
+        # Jcode pre_tool gate: exit 2 blocks once and exposes stderr to the
+        # model; every unsupported/error path fails open with exit 0.
+        sys.exit(2 if _run_jcode_hook_guard() else 0)
     elif cmd == "check-update":
         if len(sys.argv) < 3:
             print("Usage: graphify check-update <path>", file=sys.stderr)

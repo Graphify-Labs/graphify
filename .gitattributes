@@ -4,3 +4,4 @@
 worked/**/*.html linguist-vendored=true
 graphify-out/**/*.html linguist-vendored=true
 *.html linguist-detectable=false
+graphify-out/graph.json merge=graphify

@@ -452,6 +452,13 @@ _PLATFORM_CONFIG: dict[str, dict] = {
         "claude_md": False,
         "skill_refs": "agents",
     },
+    "jcode": {
+        # Jcode follows Agent Skills and discovers global skills here.
+        "skill_file": "skill-agents.md",
+        "skill_dst": Path(".jcode") / "skills" / "graphify" / "SKILL.md",
+        "claude_md": False,
+        "skill_refs": "agents",
+    },
     "devin": {
         # Monolith: devin ships the full SKILL.md inline, no references/ sidecar.
         "skill_file": "skill-devin.md",
@@ -607,6 +614,9 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
     project_dir = project_dir or Path(".")
     skill_dst = _copy_skill_file(platform, project=project, project_dir=project_dir)
 
+    if platform == "jcode" and not project:
+        _install_jcode_hook()
+
     if platform == "kilo":
         # Kilo Code also supports a native /graphify command file.
         command_src = Path(__file__).parent / "command-kilo.md"
@@ -685,6 +695,113 @@ def _print_install_usage() -> None:
     print(f"Platforms: {platforms}")
     print("  --strict  block the first raw file read per session until one "
           "`graphify query` runs (Claude Code project hook only; needs --project)")
+
+
+def _jcode_config_path() -> Path:
+    root = os.environ.get("JCODE_HOME")
+    return (Path(root) if root else Path.home() / ".jcode") / "config.toml"
+
+
+def _render_toml_strings(values: list[str]) -> str:
+    encoded = [json.dumps(value, ensure_ascii=False) for value in values]
+    return encoded[0] if len(encoded) == 1 else "[" + ", ".join(encoded) + "]"
+
+
+def _replace_jcode_pre_tool(config_text: str, values: list[str]) -> str:
+    """Replace only hooks.pre_tool while preserving the rest of config.toml."""
+    import tomllib
+
+    parsed = tomllib.loads(config_text) if config_text.strip() else {}
+    if not isinstance(parsed.get("hooks", {}), dict):
+        raise ValueError("[hooks] must be a TOML table")
+
+    lines = config_text.splitlines()
+    section_start = next(
+        (i for i, line in enumerate(lines) if line.strip() == "[hooks]"), None
+    )
+    rendered = "pre_tool = " + _render_toml_strings(values) if values else ""
+    if section_start is None:
+        if not values:
+            return config_text
+        prefix = config_text.rstrip()
+        return (prefix + "\n\n" if prefix else "") + "[hooks]\n" + rendered + "\n"
+
+    section_end = next(
+        (i for i in range(section_start + 1, len(lines))
+         if lines[i].strip().startswith("[")),
+        len(lines),
+    )
+    assignment_start = next(
+        (i for i in range(section_start + 1, section_end)
+         if re.match(r"^\s*pre_tool\s*=", lines[i])),
+        None,
+    )
+    if assignment_start is None:
+        if values:
+            lines.insert(section_end, rendered)
+    else:
+        assignment_end = assignment_start + 1
+        for candidate_end in range(assignment_start + 1, section_end + 1):
+            snippet = "[hooks]\n" + "\n".join(lines[assignment_start:candidate_end])
+            try:
+                candidate = tomllib.loads(snippet).get("hooks", {}).get("pre_tool")
+            except tomllib.TOMLDecodeError:
+                continue
+            if isinstance(candidate, (str, list)):
+                assignment_end = candidate_end
+                break
+        lines[assignment_start:assignment_end] = [rendered] if values else []
+
+    result = "\n".join(lines)
+    return result + ("\n" if config_text.endswith("\n") or result else "")
+
+
+def _jcode_hook_values(config_text: str) -> list[str]:
+    import tomllib
+
+    parsed = tomllib.loads(config_text) if config_text.strip() else {}
+    current = parsed.get("hooks", {}).get("pre_tool")
+    if current is None:
+        return []
+    if isinstance(current, str):
+        return [current]
+    if isinstance(current, list) and all(isinstance(value, str) for value in current):
+        return list(current)
+    raise ValueError("hooks.pre_tool must be a string or an array of strings")
+
+
+def _install_jcode_hook() -> None:
+    config_path = _jcode_config_path()
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    text = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
+    exe = _resolve_graphify_exe()
+    if " " in exe and not exe.startswith('"'):
+        exe = f'"{exe}"'
+    try:
+        values = [v for v in _jcode_hook_values(text) if "jcode-hook" not in v]
+        values.append(f"{exe} jcode-hook")
+        updated = _replace_jcode_pre_tool(text, values)
+    except Exception as exc:
+        print(f"error: cannot update {config_path}: {exc}", file=sys.stderr)
+        sys.exit(1)
+    config_path.write_text(updated, encoding="utf-8")
+    print(f"  Jcode pre_tool   ->  registered in {config_path}")
+
+
+def _uninstall_jcode_hook() -> None:
+    config_path = _jcode_config_path()
+    if not config_path.exists():
+        return
+    text = config_path.read_text(encoding="utf-8")
+    try:
+        values = [v for v in _jcode_hook_values(text) if "jcode-hook" not in v]
+        updated = _replace_jcode_pre_tool(text, values)
+    except Exception as exc:
+        print(f"error: cannot update {config_path}: {exc}", file=sys.stderr)
+        sys.exit(1)
+    if updated != text:
+        config_path.write_text(updated, encoding="utf-8")
+        print(f"  Jcode pre_tool   ->  Graphify hook removed from {config_path}")
 _CLAUDE_MD_MARKER = "## graphify"
 _CODEBUDDY_MD_MARKER = "## graphify"
 _AGENTS_MD_MARKER = "## graphify"
@@ -1803,6 +1920,8 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
     # The generic agents platform's user-scope skill lives at ~/.agents/skills,
     # which neither the AGENTS.md cleanup nor amp's removal reaches.
     _remove_skill_file("agents")
+    _remove_skill_file("jcode")
+    _uninstall_jcode_hook()
     _uninstall_opencode_plugin(pd)
     _uninstall_codex_hook(pd)
 
@@ -2008,6 +2127,7 @@ _CLI_INSTALL_COMMANDS = frozenset({
     "install",
     "kilo",
     "kiro",
+    "jcode",
     "opencode",
     "pi",
     "skills",
@@ -2138,6 +2258,18 @@ def dispatch_install_cli(cmd: str) -> bool:
             codebuddy_uninstall()
         else:
             print("Usage: graphify codebuddy [install|uninstall]", file=sys.stderr)
+            sys.exit(1)
+    elif cmd == "jcode":
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd == "install":
+            install(platform="jcode")
+        elif subcmd == "uninstall":
+            removed = _remove_skill_file("jcode")
+            if removed:
+                print("skill removed")
+            _uninstall_jcode_hook()
+        else:
+            print("Usage: graphify jcode [install|uninstall]", file=sys.stderr)
             sys.exit(1)
     elif cmd == "gemini":
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
