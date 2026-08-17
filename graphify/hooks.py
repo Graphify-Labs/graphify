@@ -355,6 +355,10 @@ if [ "$BRANCH_SWITCH" != "1" ]; then
     exit 0
 fi
 
+# A no-op checkout (e.g. `git checkout -b` with no start point) reports a
+# branch switch but leaves the tree unchanged ΓÇö nothing to rebuild (#2421).
+[ "$PREV_HEAD" = "$NEW_HEAD" ] && exit 0
+
 # Only run if graphify-out/ exists (graph has been built before)
 if [ ! -d "graphify-out" ]; then
     exit 0
