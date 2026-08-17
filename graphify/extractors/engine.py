@@ -3441,6 +3441,59 @@ def _extract_generic(
                                 add_edge(class_nid, target_nid, "references",
                                          cp_line, context=ctx)
 
+            # C#: a primary constructor (`class Foo(IBar bar)`, C# 12+) declares
+            # its dependencies on the type declaration itself rather than in a
+            # field or property, so neither the field_declaration nor the
+            # property_declaration handler ever sees them — the parameter type
+            # got no references edge, and because the name was never registered
+            # in csharp_field_types, _csharp_method_receiver_types could not type
+            # the receiver either, so calls through it (`bar.Baz()`) lost their
+            # calls edge as well. The Scala class_parameters branch directly
+            # above is the analogue; Kotlin's is #2063. Grammar note: the list is
+            # an UNNAMED child of the declaration, so child_by_field_name(
+            # "parameters") returns None and the children must be scanned.
+            if config.ts_module == "tree_sitter_c_sharp" and t in (
+                "class_declaration",
+                "record_declaration",
+                "struct_declaration",
+            ):
+                csharp_type_params = _csharp_type_parameters_in_scope(node, source)
+                for c in node.children:
+                    if c.type != "parameter_list":
+                        continue
+                    for param in c.children:
+                        if param.type != "parameter":
+                            continue
+                        ptype = param.child_by_field_name("type")
+                        if ptype is None:
+                            continue
+                        pname = param.child_by_field_name("name")
+                        p_line = param.start_point[0] + 1
+                        # Receiver binding mirrors the field_declaration rule:
+                        # Pascal-case only (a primitive owns no resolvable
+                        # method) and never a bare type parameter (`T item`).
+                        recv = _csharp_receiver_type_name(ptype, source)
+                        if (pname is not None and recv and recv[:1].isupper()
+                                and recv not in csharp_type_params):
+                            csharp_field_types.setdefault(class_nid, {})[
+                                _read_text(pname, source)
+                            ] = recv
+                        refs = []
+                        _csharp_collect_type_refs(
+                            ptype, source, False, refs, csharp_type_params
+                        )
+                        for ref_name, role, qualified, qualifier in refs:
+                            ctx = "generic_arg" if role == "generic_arg" else "field"
+                            target_nid = ensure_named_node(ref_name, p_line)
+                            if target_nid != class_nid:
+                                metadata = {"ref_token": ref_name}
+                                if qualified:
+                                    metadata["qualified"] = True
+                                if qualifier:
+                                    metadata["ref_qualifier"] = qualifier
+                                add_edge(class_nid, target_nid, "references",
+                                         p_line, context=ctx, metadata=metadata)
+
             # C++-specific: inheritance via base_class_clause (class and struct).
             # tree-sitter-cpp shape:
             #   class_specifier / struct_specifier
