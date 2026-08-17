@@ -10,6 +10,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -446,6 +447,96 @@ def _thinking_disabled_via_env() -> bool:
     (kimi) branch keeps disabling thinking unconditionally because that model returns
     empty content otherwise."""
     return os.environ.get("GRAPHIFY_DISABLE_THINKING", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+# Process-local verbose switch for LLM-call tracing. Set by the CLI's
+# `--verbose` flag (set_llm_verbose) or by GRAPHIFY_LLM_VERBOSE=1 in the
+# environment. The env var covers paths with no flag parsing (watch, update,
+# dedup tiebreaker), the flag covers a single `cluster-only`/`label` run.
+_LLM_VERBOSE = False
+
+# Serialized stderr writes: labeling fans batches out across threads, and
+# without a lock two batches' exchanges interleave mid-line.
+_VERBOSE_LOCK = threading.Lock()
+
+
+def set_llm_verbose(enabled: bool = True) -> None:
+    """Enable verbose LLM-call tracing for this process (see ``--verbose``)."""
+    global _LLM_VERBOSE
+    _LLM_VERBOSE = enabled
+
+
+def _llm_verbose() -> bool:
+    return _LLM_VERBOSE or os.environ.get("GRAPHIFY_LLM_VERBOSE", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+# Token-economics-only mode: same per-call accounting as verbose, but without
+# dumping prompt/thinking/response bodies. Unlike verbose it changes NOTHING
+# about the calls themselves — no extended thinking on claude, no stream-json
+# on claude-cli — so it is pure accounting with zero billing side effects.
+# Set by `--tokens` (set_llm_tokens) or GRAPHIFY_LLM_TOKENS=1. Verbose mode
+# implies it: the full exchange already ends with the token line.
+_LLM_TOKENS = False
+
+
+def set_llm_tokens(enabled: bool = True) -> None:
+    """Enable token-only LLM-call accounting for this process (see ``--tokens``)."""
+    global _LLM_TOKENS
+    _LLM_TOKENS = enabled
+
+
+def _llm_tokens() -> bool:
+    return _LLM_TOKENS or os.environ.get("GRAPHIFY_LLM_TOKENS", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _verbose_llm_exchange(
+    *,
+    backend: str,
+    model: str,
+    prompt: str,
+    thinking: str | None,
+    text: str,
+    usage: dict,
+) -> None:
+    """Dump one LLM exchange (prompt, thinking, response, tokens) to stderr.
+
+    Thinking is only shown when the backend surfaced it (claude with extended
+    thinking enabled, claude-cli stream-json assistant events, OpenAI-compat
+    models returning ``reasoning_content``); otherwise the section says so
+    explicitly, so "no thinking shown" is distinguishable from "verbose off".
+    """
+    with _VERBOSE_LOCK:
+
+        def _emit(line: str = "") -> None:
+            print(f"[graphify llm] {line}", file=sys.stderr, flush=True)
+
+        _emit(f"── call ── backend={backend} model={model} prompt={len(prompt):,} chars")
+        _emit("── prompt ──")
+        print(prompt, file=sys.stderr, flush=True)
+        if thinking:
+            _emit("── thinking ──")
+            print(thinking, file=sys.stderr, flush=True)
+        else:
+            _emit("── thinking: (none returned by backend) ──")
+        _emit("── response ──")
+        print(text, file=sys.stderr, flush=True)
+        _emit(f"── tokens: {usage.get('input', 0):,} in · {usage.get('output', 0):,} out ──")
+
+
+def _verbose_llm_tokens(*, backend: str, model: str, prompt: str, usage: dict) -> None:
+    """Print one line of per-call token accounting to stderr (``--tokens``).
+
+    The token-economics-only counterpart to ``_verbose_llm_exchange``: same
+    numbers, none of the prompt/thinking/response bodies.
+    """
+    with _VERBOSE_LOCK:
+        print(
+            f"[graphify llm] ── call ── backend={backend} model={model} "
+            f"prompt={len(prompt):,} chars ── tokens: "
+            f"{usage.get('input', 0):,} in · {usage.get('output', 0):,} out ──",
+            file=sys.stderr, flush=True,
+        )
+
 
 _EXTRACTION_SYSTEM = """\
 You are a graphify semantic extraction agent. Extract a knowledge graph fragment from the files provided.
@@ -1404,6 +1495,45 @@ def _claude_cli_error(stdout: str) -> str:
     if isinstance(detail, str) and detail.strip():
         return detail.strip()
     return "unspecified error"
+
+
+def _claude_cli_stream_result(stdout: str) -> tuple[dict, str | None]:
+    """Parse `claude -p --output-format stream-json --verbose` stdout (NDJSON).
+
+    Verbose mode uses stream-json instead of json because the plain json
+    envelope collapses each turn to the final result text, so the assistant
+    events that carry thinking blocks never appear. Returns ``(envelope,
+    thinking)`` where envelope is the final ``{"type": "result"}`` event (same
+    shape `_claude_cli_envelope` normalizes to) and thinking is the
+    concatenated thinking blocks across assistant turns, or None.
+    """
+    events: list[dict] = []
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue  # tolerate non-JSON chatter between events
+        if isinstance(event, dict):
+            events.append(event)
+    result_events = [e for e in events if e.get("type") == "result"]
+    if not result_events:
+        raise RuntimeError(
+            "claude -p stream-json produced no result event; "
+            f"first 500 chars of stdout: {stdout[:500]!r}"
+        )
+    thinking_parts: list[str] = []
+    for event in events:
+        if event.get("type") != "assistant":
+            continue
+        for block in (event.get("message") or {}).get("content") or []:
+            if isinstance(block, dict) and block.get("type") == "thinking":
+                part = block.get("thinking")
+                if part:
+                    thinking_parts.append(str(part))
+    return result_events[-1], ("\n".join(thinking_parts) or None)
 
 
 # A JSON Schema pinning the top-level shape graphify consumes. Passed to
@@ -2568,6 +2698,14 @@ def _call_llm(
     Previously `graphify.dedup` imported a `_call_llm` symbol that did not
     exist in this module, so the LLM tiebreaker silently no-op'd on
     `ImportError` (F-038). Adding the function here re-enables it.
+
+    When verbose tracing is on (``set_llm_verbose`` / ``GRAPHIFY_LLM_VERBOSE``),
+    the full exchange (prompt, thinking where the backend surfaces it, reply,
+    and per-call token counts) is printed to stderr. For the ``claude``
+    backend verbose mode also enables extended thinking so there is reasoning
+    to show. Token-only mode (``set_llm_tokens`` / ``GRAPHIFY_LLM_TOKENS``)
+    prints just the per-call token line and touches nothing about the call
+    itself — no extended thinking, no stream-json — so it is side-effect free.
     """
     if backend not in BACKENDS:
         raise ValueError(f"Unknown backend {backend!r}")
@@ -2583,10 +2721,24 @@ def _call_llm(
         )
     mdl = model or _default_model_for_backend(backend)
 
+    # Per-call usage, tracked separately from the caller's accumulator so
+    # verbose mode can report THIS exchange's cost even when usage_out
+    # accumulates across batches.
+    call_usage: dict = {}
+
     def _rec(inp, out) -> None:
+        call_usage["input"] = call_usage.get("input", 0) + int(inp or 0)
+        call_usage["output"] = call_usage.get("output", 0) + int(out or 0)
         if usage_out is not None:
             usage_out["input"] = usage_out.get("input", 0) + int(inp or 0)
             usage_out["output"] = usage_out.get("output", 0) + int(out or 0)
+
+    verbose = _llm_verbose()
+    # Verbose already ends its exchange dump with the token line, so the
+    # one-liner is only needed when verbose is off.
+    tokens_only = not verbose and _llm_tokens()
+    thinking_text: str | None = None
+    text: str
 
     if backend == "claude":
         try:
@@ -2594,17 +2746,33 @@ def _call_llm(
         except ImportError as exc:
             raise ImportError(_backend_pkg_hint("anthropic", "anthropic")) from exc
         client = anthropic.Anthropic(api_key=key, base_url=cfg["base_url"], timeout=_resolve_api_timeout(), max_retries=_resolve_max_retries())
-        resp = client.messages.create(
-            model=mdl,
-            max_tokens=max_tokens,
-            messages=[{"role": "user", "content": prompt}],
-        )
+        create_kwargs: dict = {
+            "model": mdl,
+            "max_tokens": max_tokens,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        if verbose:
+            # Extended thinking is off on this plain-text path by default;
+            # verbose mode turns it on so the trace shows the model's
+            # reasoning, not just its answer. budget_tokens must be >= 1024
+            # and strictly below max_tokens, so small labeling budgets get
+            # bumped. Thinking tokens are billed as output tokens, exactly
+            # the accountability verbose mode exists to show.
+            budget = 1024
+            create_kwargs["max_tokens"] = max(max_tokens, budget + 1024)
+            create_kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
+        resp = client.messages.create(**create_kwargs)
         u = getattr(resp, "usage", None)
         if u is not None:
             _rec(getattr(u, "input_tokens", 0), getattr(u, "output_tokens", 0))
-        return resp.content[0].text if resp.content else ""
+        # With thinking enabled the first content block is the reasoning, so
+        # select by block type rather than assuming content[0] is text.
+        thinking_text = "".join(
+            str(getattr(b, "thinking", "")) for b in resp.content if getattr(b, "type", "") == "thinking"
+        ) or None
+        text = "".join(str(getattr(b, "text", "")) for b in resp.content if getattr(b, "type", "") == "text")
 
-    if backend == "claude-cli":
+    elif backend == "claude-cli":
         import platform, shutil, subprocess
         # Mirror the extraction-path resolution: on Windows the npm shim is
         # claude.cmd, which CreateProcess can't resolve from a bare "claude"
@@ -2618,7 +2786,12 @@ def _call_llm(
                 raise RuntimeError("Claude Code CLI not found on $PATH")
         elif shutil.which("claude") is None:
             raise RuntimeError("Claude Code CLI not found on $PATH")
-        cli_args = [claude_cmd, "-p", "--output-format", "json", "--no-session-persistence"]
+        cli_args = [claude_cmd, "-p", "--output-format", "stream-json" if verbose else "json", "--no-session-persistence"]
+        if verbose:
+            # stream-json with -p requires --verbose; it also emits per-turn
+            # assistant events, which is where thinking blocks appear. The
+            # plain json envelope keeps only the final result text.
+            cli_args.append("--verbose")
         if model is not None:
             cli_args.extend(["--model", mdl])
         proc = subprocess.run(
@@ -2632,7 +2805,20 @@ def _call_llm(
             check=False,
             **_no_window_kwargs(),
         )
-        cli_error = _claude_cli_error(proc.stdout)
+        envelope: dict | None = None
+        if verbose:
+            # Parse only after a clean exit: on a hard failure stdout may not
+            # be NDJSON at all, and stderr carries the real cause.
+            if proc.returncode != 0:
+                detail = proc.stderr.strip() or "(no stderr, no result event)"
+                raise RuntimeError(f"claude -p exited {proc.returncode}: {detail[:500]}")
+            envelope, thinking_text = _claude_cli_stream_result(proc.stdout)
+            cli_error = ""
+            if envelope.get("is_error"):
+                r = envelope.get("result")
+                cli_error = r.strip() if isinstance(r, str) and r.strip() else "unspecified error"
+        else:
+            cli_error = _claude_cli_error(proc.stdout)
         if proc.returncode != 0:
             detail = proc.stderr.strip() or cli_error or "(no stderr, no error envelope)"
             raise RuntimeError(f"claude -p exited {proc.returncode}: {detail[:500]}")
@@ -2640,7 +2826,8 @@ def _call_llm(
             # Without this the error text is returned as the model's reply and
             # the caller writes it into the graph as a community label (#2554).
             raise RuntimeError(f"claude -p reported an error: {cli_error[:500]}")
-        envelope = _claude_cli_envelope(proc.stdout)
+        if envelope is None:
+            envelope = _claude_cli_envelope(proc.stdout)
         cli_usage = envelope.get("usage") or {}
         if cli_usage:
             _rec(
@@ -2649,10 +2836,10 @@ def _call_llm(
                 + (cli_usage.get("cache_creation_input_tokens", 0) or 0),
                 cli_usage.get("output_tokens", 0),
             )
-        return envelope.get("result", "")
+        result_text = envelope.get("result", "")
+        text = result_text if isinstance(result_text, str) else str(result_text or "")
 
-
-    if backend == "bedrock":
+    elif backend == "bedrock":
         try:
             import boto3
             import botocore.config
@@ -2677,9 +2864,20 @@ def _call_llm(
         bu = resp.get("usage") or {}
         if bu:
             _rec(bu.get("inputTokens", 0), bu.get("outputTokens", 0))
-        return _bedrock_response_text(resp, default="")
+        # Reasoning models on Bedrock surface reasoningContent blocks. Nothing
+        # here enables reasoning, but show it when the deployment was
+        # configured to return it.
+        reasoning_parts = [
+            str(rc["reasoningText"]["text"])
+            for block in (resp.get("output") or {}).get("message", {}).get("content", []) or []
+            if isinstance(block, dict)
+            for rc in [block.get("reasoningContent") or {}]
+            if isinstance(rc.get("reasoningText"), dict) and rc["reasoningText"].get("text")
+        ]
+        thinking_text = "\n".join(reasoning_parts) or None
+        text = _bedrock_response_text(resp, default="")
 
-    if backend == "azure":
+    elif backend == "azure":
         endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip()
         if not endpoint:
             raise ValueError(
@@ -2700,44 +2898,60 @@ def _call_llm(
         au = getattr(resp, "usage", None)
         if au is not None:
             _rec(getattr(au, "prompt_tokens", 0), getattr(au, "completion_tokens", 0))
-        return resp.choices[0].message.content or ""
+        azure_msg = resp.choices[0].message
+        thinking_text = getattr(azure_msg, "reasoning_content", None) or None
+        text = azure_msg.content or ""
 
-    # OpenAI-compatible (kimi, openai, gemini, ollama)
-    try:
-        from openai import OpenAI
-    except ImportError as exc:
-        raise ImportError(_backend_pkg_hint("openai", "openai")) from exc
-    client = OpenAI(api_key=key, base_url=cfg["base_url"], timeout=_resolve_api_timeout(), max_retries=_resolve_max_retries())
-    kwargs: dict = {
-        "model": mdl,
-        "messages": [{"role": "user", "content": prompt}],
-        "max_completion_tokens": max_tokens,
-        # Force a single non-streamed response: some OpenAI-compatible gateways
-        # default to SSE streaming when `stream` is omitted, but the result here
-        # is always read as resp.choices[0]. Same fix as _call_openai_compat
-        # (#1223) — this path feeds the --dedup-llm tiebreaker.
-        "stream": False,
-    }
-    temperature = _resolve_temperature(cfg.get("temperature", 0), mdl)
-    if temperature is not None:
-        kwargs["temperature"] = temperature
-    if cfg.get("reasoning_effort"):
-        kwargs["reasoning_effort"] = cfg["reasoning_effort"]
-    # Custom providers can override via providers.json `extra_body`; falls back
-    # to the moonshot default to preserve existing behavior.
-    if cfg.get("extra_body") is not None:
-        kwargs["extra_body"] = cfg["extra_body"]
-    elif "moonshot" in cfg["base_url"]:
-        kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
-    elif _thinking_disabled_via_env():
-        kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
-    resp = client.chat.completions.create(**kwargs)
-    if not resp.choices or resp.choices[0].message is None:
-        raise ValueError("LLM returned empty or filtered response")
-    ou = getattr(resp, "usage", None)
-    if ou is not None:
-        _rec(getattr(ou, "prompt_tokens", 0), getattr(ou, "completion_tokens", 0))
-    return resp.choices[0].message.content or ""
+    else:
+        # OpenAI-compatible (kimi, openai, gemini, ollama, custom providers)
+        try:
+            from openai import OpenAI
+        except ImportError as exc:
+            raise ImportError(_backend_pkg_hint("openai", "openai")) from exc
+        client = OpenAI(api_key=key, base_url=cfg["base_url"], timeout=_resolve_api_timeout(), max_retries=_resolve_max_retries())
+        kwargs: dict = {
+            "model": mdl,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_completion_tokens": max_tokens,
+            # Force a single non-streamed response: some OpenAI-compatible gateways
+            # default to SSE streaming when `stream` is omitted, but the result here
+            # is always read as resp.choices[0]. Same fix as _call_openai_compat
+            # (#1223); this path feeds the --dedup-llm tiebreaker.
+            "stream": False,
+        }
+        temperature = _resolve_temperature(cfg.get("temperature", 0), mdl)
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+        if cfg.get("reasoning_effort"):
+            kwargs["reasoning_effort"] = cfg["reasoning_effort"]
+        # Custom providers can override via providers.json `extra_body`; falls back
+        # to the moonshot default to preserve existing behavior.
+        if cfg.get("extra_body") is not None:
+            kwargs["extra_body"] = cfg["extra_body"]
+        elif "moonshot" in cfg["base_url"]:
+            kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+        elif _thinking_disabled_via_env():
+            kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+        resp = client.chat.completions.create(**kwargs)
+        if not resp.choices or resp.choices[0].message is None:
+            raise ValueError("LLM returned empty or filtered response")
+        ou = getattr(resp, "usage", None)
+        if ou is not None:
+            _rec(getattr(ou, "prompt_tokens", 0), getattr(ou, "completion_tokens", 0))
+        msg = resp.choices[0].message
+        # DeepSeek/Kimi-style reasoning is returned out of band as
+        # reasoning_content; surface it when present.
+        thinking_text = getattr(msg, "reasoning_content", None) or None
+        text = msg.content or ""
+
+    if verbose:
+        _verbose_llm_exchange(
+            backend=backend, model=mdl, prompt=prompt,
+            thinking=thinking_text, text=text, usage=call_usage,
+        )
+    elif tokens_only:
+        _verbose_llm_tokens(backend=backend, model=mdl, prompt=prompt, usage=call_usage)
+    return text
 
 
 def estimate_cost(backend: str, input_tokens: int, output_tokens: int) -> float:

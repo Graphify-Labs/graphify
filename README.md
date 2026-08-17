@@ -533,6 +533,8 @@ These are only needed for **headless / CI extraction** (`graphify extract`). Whe
 | `GRAPHIFY_MAX_GRAPH_BYTES` | Override the 512 MiB graph.json size cap — e.g. `700MB`, `2GB`, or plain bytes | optional — useful for very large corpora |
 | `GRAPHIFY_MAX_CONTEXTS` | Maximum number of non-default project graphs retained by one multi-project MCP server | optional — default: `8`; invalid values use `8`, and values below `1` use `1` |
 | `GRAPHIFY_LLM_TEMPERATURE` | Override LLM temperature for semantic extraction — e.g. `0.7`, or `none` to omit | optional — auto-omitted for o1/o3/o4/gpt-5 reasoning models |
+| `GRAPHIFY_LLM_VERBOSE` | Print every labeling/dedup LLM call's prompt, thinking, response, and per-call token counts to stderr | optional; also `--verbose` on `cluster-only`/`label` |
+| `GRAPHIFY_LLM_TOKENS` | Print only the token economics: one line of per-call token counts plus a run total — no prompt/thinking/response dumps | optional; also `--tokens` on `cluster-only`/`label` |
 
 ---
 
@@ -784,11 +786,17 @@ graphify cluster-only ./my-project --exclude-hubs 99           # exclude p99 deg
 graphify cluster-only ./my-project --no-label                  # keep "Community N" placeholders
 graphify cluster-only ./my-project --backend=gemini            # backend for community naming
 graphify cluster-only ./my-project --backend=gemini --model gemini-2.5-pro  # specific model
+graphify cluster-only ./my-project --verbose                 # trace labeling LLM calls: prompt, thinking, response, tokens
+graphify cluster-only ./my-project --tokens                  # token economics only: per-call counts and a run total
 graphify label ./my-project                                    # (re)name communities with the configured backend
 graphify label ./my-project --backend=openai --model gpt-4o   # force a specific backend and model
 ```
 
 > **Community names:** inside an agent (Claude Code, Gemini CLI) the agent names communities itself. When you run the bare CLI, `cluster-only` auto-names them with the configured backend (built-in or custom OpenAI-compatible provider) — pass `--no-label` to keep `Community N`, or run `graphify label` to (re)generate names on demand.
+
+> **Verbose labeling:** `--verbose` on `cluster-only`/`label` (or `GRAPHIFY_LLM_VERBOSE=1` on any command) prints each labeling call's prompt, thinking, response, and per-call token counts to stderr, then a run total with a cost estimate. On the `claude` backend verbose mode enables extended thinking so the reasoning is visible (billed as output tokens); on `claude-cli` it reads thinking from the CLI's streamed assistant events. Non-verbose runs are unchanged.
+
+> **Token economics only:** `--tokens` (or `GRAPHIFY_LLM_TOKENS=1` on any command) prints just one line of per-call token counts plus the run total — no prompt/thinking/response dumps. Unlike `--verbose` it changes nothing about the calls themselves (no extended thinking, no stream-json), so the accounting is side-effect free.
 
 ---
 

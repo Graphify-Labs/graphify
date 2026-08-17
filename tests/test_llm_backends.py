@@ -1130,7 +1130,10 @@ def test_call_llm_claude_client_built_with_timeout_and_retries(monkeypatch):
 
     class _FakeMessages:
         def create(self, **_):
-            return types.SimpleNamespace(content=[types.SimpleNamespace(text="ok")])
+            # Real Anthropic content blocks always carry a `type`; _call_llm
+            # selects text blocks by it (thinking blocks precede the reply
+            # when extended thinking is on).
+            return types.SimpleNamespace(content=[types.SimpleNamespace(type="text", text="ok")])
 
     class _FakeAnthropic:
         def __init__(self, *_, **kwargs):
