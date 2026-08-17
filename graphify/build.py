@@ -1805,6 +1805,13 @@ def build_merge(
 
     # Prune nodes and edges from deleted source files
     if prune_sources:
+        # Source-less nodes that are ALREADY isolated before this prune. They are
+        # not this prune's doing, so they must survive it — the sweep below is
+        # scoped to the ones it orphans itself.
+        _isolated_before = {
+            n for n, d in G.nodes(data=True)
+            if not d.get("source_file") and G.degree(n) == 0
+        }
         to_remove = [
             n for n, d in G.nodes(data=True)
             if _prune_match(d.get("source_file"))
@@ -1818,6 +1825,29 @@ def build_merge(
         ]
         if edges_to_remove:
             G.remove_edges_from(edges_to_remove)
+
+        # Extractors create a per-file node for each IMPORTED EXTERNAL symbol
+        # (`Path` from pathlib, `Counter` from collections), and those carry no
+        # source_file because they are defined outside the corpus. Every edge
+        # they have points at symbols in the one file they were created for, so
+        # pruning that file leaves them at degree 0 — named after a file the
+        # corpus no longer contains, counted in every total that reads the graph,
+        # exported as a note of their own, and unreachable by any future prune
+        # since there is no source_file to match on. Nothing else can collect
+        # them: deletions go through deleted_files, exclusions through
+        # excluded_files (#1908) and _stale_graph_sources (#1909), and all three
+        # match on source_file. A node with neither a source_file nor an edge
+        # names nothing and connects nothing, so dropping it loses no
+        # information (#2807).
+        orphaned = [
+            n for n, d in G.nodes(data=True)
+            if not d.get("source_file")
+            and G.degree(n) == 0
+            and n not in _isolated_before
+        ]
+        if orphaned:
+            G.remove_nodes_from(orphaned)
+            n_nodes += len(orphaned)
 
         # Report only the prune entries that ACTUALLY matched something — not
         # len(prune_sources), which counted every entry as pruned-from even
