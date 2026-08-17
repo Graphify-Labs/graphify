@@ -126,3 +126,23 @@ def test_utf8_rules_still_match_across_normalisation_forms(tmp_path, form):
     other = unicodedata.normalize("NFD" if form == "NFC" else "NFC", NAME)
     _corpus(tmp_path, f"{pattern}/\n".encode("utf-8"), dirname=other)
     assert "contrato.py" not in _scanned(detect(tmp_path))
+
+
+def test_utf16_bom_encoded_rule_still_excludes(tmp_path):
+    """A UTF-16 (BOM) .graphifyignore — what PowerShell Set-Content and Notepad
+    'Unicode' emit — must decode by its BOM and apply, not fall to latin-1 and
+    garble every rule into NUL-laden noise."""
+    _corpus(tmp_path, f"{NAME}/\n".encode("utf-16"))
+    scanned = _scanned(detect(tmp_path))
+    assert "contrato.py" not in scanned, (
+        "a UTF-16 ignore rule silently did nothing; scanned=" + repr(scanned))
+    assert "main.py" in scanned
+
+
+def test_utf16_is_decoded_without_nul_garbage(tmp_path):
+    """Direct check: the decoded text is clean UTF-16, not latin-1 mojibake."""
+    p = tmp_path / ".graphifyignore"
+    p.write_bytes("build/\nsecret.py\n".encode("utf-16"))
+    text = _read_ignore_text(p)
+    assert "\x00" not in text
+    assert text.splitlines() == ["build/", "secret.py"]

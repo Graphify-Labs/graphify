@@ -1148,6 +1148,14 @@ def _read_ignore_text(path: Path) -> str:
         return raw.decode("utf-8-sig")
     except UnicodeDecodeError:
         pass
+    # A BOM'd UTF-16 file (common from PowerShell `Set-Content` / Notepad "Unicode")
+    # is not valid UTF-8, and latin-1 would map its interleaved NUL bytes to a
+    # wall of \x00, garbling every rule. Decode it as UTF-16 by its BOM first.
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        try:
+            return raw.decode("utf-16")
+        except UnicodeDecodeError:
+            pass
     import locale
     import sys as _sys
     fallback = locale.getpreferredencoding(False) or "latin-1"
