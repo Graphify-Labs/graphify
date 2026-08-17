@@ -45,6 +45,7 @@ from graphify.extractors.elixir import extract_elixir  # noqa: F401
 from graphify.extractors.fortran import _cpp_preprocess, extract_fortran  # noqa: F401
 from graphify.extractors.go import _GO_PREDECLARED_FUNCS, extract_go  # noqa: F401
 from graphify.extractors.json_config import extract_json  # noqa: F401
+from graphify.extractors.commonlisp import extract_commonlisp  # noqa: F401
 from graphify.extractors.markdown import extract_markdown  # noqa: F401
 from graphify.extractors.ocaml import extract_ocaml  # noqa: F401
 from graphify.extractors.pascal_forms import extract_delphi_form, extract_lazarus_form  # noqa: F401
@@ -4924,6 +4925,10 @@ _DISPATCH: dict[str, Any] = {
     ".dart": extract_dart,
     ".ml": extract_ocaml,
     ".mli": extract_ocaml,
+    ".lisp": extract_commonlisp,
+    ".cl": extract_commonlisp,
+    ".lsp": extract_commonlisp,
+    ".asd": extract_commonlisp,
     ".v": extract_verilog,
     ".sv": extract_verilog,
     ".svh": extract_verilog,
@@ -4978,6 +4983,10 @@ _EXTRA_FOR_EXTENSION = {
     ".dme": "dm",
     ".ml": "ocaml",
     ".mli": "ocaml",
+    ".lisp": "commonlisp",
+    ".cl": "commonlisp",
+    ".lsp": "commonlisp",
+    ".asd": "commonlisp",
 }
 
 # Substrings an extractor's error carries to classify why a dependency-backed

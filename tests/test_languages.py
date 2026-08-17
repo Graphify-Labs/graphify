@@ -8,7 +8,7 @@ from graphify.extract import (
     extract_swift, extract_go, extract_julia, extract_js, extract_fortran,
     extract_groovy, extract_sln, extract_csproj, extract_xaml, extract_razor,
     extract_dm, extract_dmi, extract_dmm, extract_dmf,
-    extract_powershell, extract_apex, extract_verilog,
+    extract_powershell, extract_apex, extract_commonlisp, extract_verilog,
     extract_powershell_manifest,
 )
 
@@ -21,6 +21,10 @@ import importlib.util as _ilu
 _needs_dm = pytest.mark.skipif(
     _ilu.find_spec("tree_sitter_dm") is None,
     reason="tree-sitter-dm not installed (optional [dm] extra)",
+)
+_needs_commonlisp = pytest.mark.skipif(
+    _ilu.find_spec("tree_sitter_commonlisp") is None,
+    reason="tree-sitter-commonlisp not installed (optional [commonlisp] extra)",
 )
 
 
@@ -3052,3 +3056,238 @@ def test_decldef_merge_does_not_merge_same_name_same_dir_distinct_files():
     r = _corpus("cpp_samedir/Alpha.h", "cpp_samedir/Beta.h")
     dups = _nodes_with_label(r, "Dup")
     assert len(dups) == 2, f"same-dir distinct Dups must stay distinct, got {[n['id'] for n in dups]}"
+# ── Common Lisp ──────────────────────────────────────────────────────────────
+
+@_needs_commonlisp
+def test_cl_finds_package():
+    r = extract_commonlisp(FIXTURES / "sample.lisp")
+    assert "error" not in r
+    assert "http-server" in _labels(r)
+
+@_needs_commonlisp
+def test_cl_finds_class():
+    r = extract_commonlisp(FIXTURES / "sample.lisp")
+    assert "server" in _labels(r)
+    assert "ssl-server" in _labels(r)
+
+@_needs_commonlisp
+def test_cl_finds_defun():
+    r = extract_commonlisp(FIXTURES / "sample.lisp")
+    labels = _labels(r)
+    assert any("make-server" in l for l in labels)
+    assert any("start" in l for l in labels)
+    assert any("stop" in l for l in labels)
+
+@_needs_commonlisp
+def test_cl_finds_generic():
+    r = extract_commonlisp(FIXTURES / "sample.lisp")
+    assert any("process-request" in l for l in _labels(r))
+
+@_needs_commonlisp
+def test_cl_finds_macro():
+    r = extract_commonlisp(FIXTURES / "sample.lisp")
+    assert any("with-server" in l and "macro" in l for l in _labels(r))
+
+@_needs_commonlisp
+def test_cl_emits_calls():
+    r = extract_commonlisp(FIXTURES / "sample.lisp")
+    calls = _calls(r)
+    # start() calls process-request
+    assert any("start" in src and "process-request" in tgt for src, tgt in calls)
+    # with-server macro calls make-server and start
+    assert any("with-server" in src and "make-server" in tgt for src, tgt in calls)
+    assert any("with-server" in src and "start" in tgt for src, tgt in calls)
+
+@_needs_commonlisp
+def test_cl_calls_are_extracted():
+    r = extract_commonlisp(FIXTURES / "sample.lisp")
+    for e in r["edges"]:
+        if e["relation"] == "calls":
+            assert e["confidence"] == "EXTRACTED"
+
+@_needs_commonlisp
+def test_cl_no_dangling_edges():
+    r = extract_commonlisp(FIXTURES / "sample.lisp")
+    node_ids = {n["id"] for n in r["nodes"]}
+    for e in r["edges"]:
+        if e["relation"] in ("contains", "method", "calls"):
+            assert e["source"] in node_ids
+
+@_needs_commonlisp
+def test_cl_docstrings():
+    r = extract_commonlisp(FIXTURES / "sample.lisp")
+    rationale_edges = [e for e in r["edges"] if e["relation"] == "rationale_for"]
+    assert len(rationale_edges) >= 3  # make-server, start, process-request have docstrings
+    labels = _labels(r)
+    assert any("Process an incoming" in l for l in labels)
+
+@_needs_commonlisp
+def test_cl_method_specializers():
+    r = extract_commonlisp(FIXTURES / "sample.lisp")
+    spec_edges = [e for e in r["edges"] if e["relation"] == "specializes"]
+    assert len(spec_edges) >= 1
+    # process-request specializes on server
+    assert any("process_request" in e["source"] and "server" in e["target"] for e in spec_edges)
+
+@_needs_commonlisp
+def test_cl_inherits():
+    r = extract_commonlisp(FIXTURES / "sample.lisp")
+    inherit_edges = [e for e in r["edges"] if e["relation"] == "inherits"]
+    assert len(inherit_edges) >= 1
+    assert any("ssl_server" in e["source"] and "server" in e["target"] for e in inherit_edges)
+
+@_needs_commonlisp
+def test_cl_imports():
+    r = extract_commonlisp(FIXTURES / "sample.lisp")
+    import_edges = [e for e in r["edges"] if e["relation"] == "imports"]
+    targets = {e["target"] for e in import_edges}
+    assert "cl" in targets
+    assert "alexandria" in targets
+
+@_needs_commonlisp
+def test_cl_finds_deftype():
+    r = extract_commonlisp(FIXTURES / "sample.lisp")
+    assert "port-number" in _labels(r)
+
+@_needs_commonlisp
+def test_cl_finds_defstruct():
+    r = extract_commonlisp(FIXTURES / "sample.lisp")
+    labels = _labels(r)
+    assert "request-stats" in labels
+    # defstruct with options form: (defstruct (name ...) ...)
+    assert "connection" in labels
+
+@_needs_commonlisp
+def test_cl_finds_defvar_defparameter_defconstant():
+    r = extract_commonlisp(FIXTURES / "sample.lisp")
+    labels = _labels(r)
+    assert "*active-connections*" in labels
+    assert "*default-port*" in labels
+    assert "+max-headers+" in labels
+
+@_needs_commonlisp
+def test_cl_finds_define_condition():
+    r = extract_commonlisp(FIXTURES / "sample.lisp")
+    assert "server-error" in _labels(r)
+
+@_needs_commonlisp
+def test_cl_finds_custom_definer():
+    """The def-prefix heuristic should catch definline / definline-maybe."""
+    r = extract_commonlisp(FIXTURES / "sample.lisp")
+    labels = _labels(r)
+    # definline-maybe and definline should produce function-style nodes
+    assert "header=()" in labels
+    assert "header<()" in labels
+
+@_needs_commonlisp
+def test_cl_custom_definer_in_call_graph():
+    """Functions defined via custom definers should appear in the call graph."""
+    r = extract_commonlisp(FIXTURES / "sample.lisp")
+    calls = _calls(r)
+    # compare-headers calls header= and header< (defined via definline-maybe / definline)
+    assert any("compare-headers" in src and "header=" in tgt for src, tgt in calls)
+    assert any("compare-headers" in src and "header<" in tgt for src, tgt in calls)
+
+@_needs_commonlisp
+def test_cl_operator_names_disambiguated():
+    """upi=, upi<, upi> must produce distinct ids (operator chars matter)."""
+    r = extract_commonlisp(FIXTURES / "sample.lisp")
+    # header= and header< must have different ids
+    eq_ids = [n["id"] for n in r["nodes"] if n["label"] == "header=()"]
+    lt_ids = [n["id"] for n in r["nodes"] if n["label"] == "header<()"]
+    assert len(eq_ids) == 1
+    assert len(lt_ids) == 1
+    assert eq_ids[0] != lt_ids[0]
+
+@_needs_commonlisp
+def test_cl_default_value_not_treated_as_definition():
+    """The def-prefix heuristic must not match denylisted symbols."""
+    import tempfile
+    code = "(in-package :cl-user)\n(default-value foo)\n"
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.lisp', delete=False) as f:
+        f.write(code)
+        path = Path(f.name)
+    try:
+        r = extract_commonlisp(path)
+        labels = _labels(r)
+        # default-value is denylisted, shouldn't create a "foo" node
+        assert "foo" not in labels
+        assert "foo()" not in labels
+    finally:
+        path.unlink()
+
+@_needs_commonlisp
+def test_cl_defs_inside_wrapper_macro():
+    """Definitions nested inside wrapper macros like (optimizing ...) or
+    (eval-when ...) must be extracted. Many CL codebases wrap hot-path
+    inline functions in application-specific macros."""
+    import tempfile
+    code = """(in-package :cl-user)
+(optimizing
+ (definline-maybe packet-type (p) (aref p 0))
+ (definline-maybe set-packet-type (p v) (setf (aref p 0) v)))
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun helper () 42))
+(progn
+  (defun progn-def () 'ok))
+"""
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.lisp', delete=False) as f:
+        f.write(code)
+        path = Path(f.name)
+    try:
+        r = extract_commonlisp(path)
+        labels = _labels(r)
+        assert "packet-type()" in labels
+        assert "set-packet-type()" in labels
+        assert "helper()" in labels
+        assert "progn-def()" in labels
+    finally:
+        path.unlink()
+
+@_needs_commonlisp
+def test_cl_defs_inside_reader_conditional():
+    """#+feature / #-feature reader conditionals wrap their guarded form
+    in an include_reader_macro AST node, which the walker must descend
+    into to find the nested definition."""
+    import tempfile
+    code = """(in-package :cl-user)
+#+little-endian
+(definline-maybe byte-hash= (a b) (eq a b))
+#-sbcl
+(defun only-on-non-sbcl () 1)
+"""
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.lisp', delete=False) as f:
+        f.write(code)
+        path = Path(f.name)
+    try:
+        r = extract_commonlisp(path)
+        labels = _labels(r)
+        assert "byte-hash=()" in labels
+        assert "only-on-non-sbcl()" in labels
+    finally:
+        path.unlink()
+
+@_needs_commonlisp
+def test_cl_defparameter_string_value_not_docstring():
+    """For defvar/defparameter/defconstant, a string literal in the VALUE
+    position must not be wrongly captured as a docstring node."""
+    import tempfile
+    code = '''(in-package :cl-user)
+(defparameter *config-path* "/etc/app/config")
+(defvar *greeting* "hello world")
+'''
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.lisp', delete=False) as f:
+        f.write(code)
+        path = Path(f.name)
+    try:
+        r = extract_commonlisp(path)
+        labels = _labels(r)
+        assert "*config-path*" in labels
+        assert "*greeting*" in labels
+        # The string VALUES must not show up as rationale nodes
+        assert not any("/etc/app/config" in l for l in labels)
+        assert not any("hello world" in l for l in labels)
+    finally:
+        path.unlink()
+
+
