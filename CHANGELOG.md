@@ -4,6 +4,8 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.46 (unreleased)
 
+- Fix: a `graph.json` written by a pre-enum graphify version, whose edges carry a numeric `confidence` (1.0/0.95/0.9/0.85) instead of `EXTRACTED`/`INFERRED`/`AMBIGUOUS`, now loads silently instead of warning once per legacy edge on every load (a June-2026 graph produced 73 warnings per load). The number normalizes to `INFERRED` — numeric confidences only ever came from the LLM semantic pass, and LLM-derived edges are INFERRED by definition — and the original float is preserved in the `confidence_score` companion field (an explicit `confidence_score` already on the edge wins).
+
 - Fix: node-id normalization is now caseless-stable for combining-mark sequences — `casefold` and NFKC don't commute, so a single pass left `normalize_id(s) != normalize_id(s.casefold())` for inputs like Greek ypogegrammeni followed by a combining accent; normalization now iterates casefold+NFKC to a fixpoint. Letter/digit-bearing ids are unchanged, so existing graphs are not re-keyed.
 
 - Fix: Java annotations now emit `references` edges to their type — including class-literal arguments (`@Repeatable(Foo.class)`, `@Uses({A.class, B.class})`) and annotation-member return types — so a container annotation is no longer a disconnected island; string/enum arguments are not mistaken for type references (#2426, thanks @oleksii-tumanov).
