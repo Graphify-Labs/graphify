@@ -31,10 +31,12 @@ def _write_graph(tmp_path):
     return p
 
 
-def _run(monkeypatch, graph_path, label, capsys):
+def _run(monkeypatch, graph_path, label, capsys, extra_args=None):
     monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
-    monkeypatch.setattr(mainmod.sys, "argv",
-        ["graphify", "explain", label, "--graph", str(graph_path)])
+    argv = ["graphify", "explain", label, "--graph", str(graph_path)]
+    if extra_args:
+        argv.extend(extra_args)
+    monkeypatch.setattr(mainmod.sys, "argv", argv)
     mainmod.main()
     return capsys.readouterr().out
 
@@ -320,3 +322,53 @@ def test_explain_matches_within_one_file_are_not_ambiguous(monkeypatch, tmp_path
     out = _run(monkeypatch, p, "MetricsPort", capsys)
     assert "Ambiguous" not in out
     assert "Node: MetricsPort" in out
+
+
+def test_explain_rationale_flag_shows_rationale(monkeypatch, tmp_path, capsys):
+    graph_data = {
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [
+            {
+                "id": "cluster_node",
+                "label": "Clustering per deposito",
+                "source_file": "deposito.py",
+                "source_location": "L10",
+                "file_type": "code",
+                "community": 0,
+                "rationale": "cannot work on ORIGINALS_NORMALIZED as it stands, because timestamps and coordinates are missing",
+            }
+        ],
+        "links": [],
+    }
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps(graph_data))
+
+    # Without --rationale flag
+    out_default = _run(monkeypatch, p, "Clustering per deposito", capsys)
+    assert "Rationale:" not in out_default
+
+    # With --rationale flag
+    out_rat = _run(monkeypatch, p, "Clustering per deposito", capsys, extra_args=["--rationale"])
+    assert "  Rationale: cannot work on ORIGINALS_NORMALIZED as it stands, because timestamps and coordinates are missing" in out_rat
+
+
+def test_explain_rationale_empty_omitted(monkeypatch, tmp_path, capsys):
+    graph_data = {
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [
+            {
+                "id": "empty_rat_node",
+                "label": "EmptyNode",
+                "source_file": "empty.py",
+                "source_location": "L1",
+                "file_type": "code",
+                "community": 0,
+                "rationale": "   \n\t  ",
+            }
+        ],
+        "links": [],
+    }
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps(graph_data))
+    out = _run(monkeypatch, p, "EmptyNode", capsys, extra_args=["--rationale"])
+    assert "Rationale:" not in out

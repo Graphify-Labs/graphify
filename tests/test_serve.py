@@ -1666,6 +1666,8 @@ def test_shortest_path_tool_undirected_opt_in():
     assert "Shortest path (2 hops)" in out
     assert out.count("<--calls--") == 2
     assert "-->" not in out
+
+
 def test_underscore_query_matches_hyphenated_label():
     r"""Separator-blind seeding: `_` must split like `-` does.
 
@@ -1711,3 +1713,361 @@ def test_underscore_query_does_not_let_a_single_token_outrank_the_real_match():
     scored = _score_nodes(G, _query_terms("user_service_client"))
     assert scored, "the multi-token query must match the full-label node"
     assert scored[0][1] == "real", f"a single-token node out-ranked the real match: {scored}"
+
+
+# --- Rationale Rendering Tests (#2821) ---
+
+def test_subgraph_to_text_rationale_disabled_by_default():
+    G = nx.DiGraph()
+    G.add_node("n1", label="Parser", source_file="p.py", source_location="L10", community=0, rationale="Use tree-sitter for speed")
+    out = _subgraph_to_text(G, {"n1"}, [])
+    assert "WHY" not in out
+    assert "tree-sitter" not in out
+    assert out.strip() == "NODE Parser [src=p.py loc=L10 community=0]"
+
+
+def test_subgraph_to_text_rationale_enabled_renders_why():
+    G = nx.DiGraph()
+    G.add_node("n1", label="Parser", source_file="p.py", source_location="L10", community=0, rationale="Use tree-sitter for speed")
+    out = _subgraph_to_text(G, {"n1"}, [], include_rationale=True)
+    assert "WHY Use tree-sitter for speed" in out
+    assert out.strip() == "NODE Parser [src=p.py loc=L10 community=0] WHY Use tree-sitter for speed"
+
+
+def test_subgraph_to_text_rationale_multiline_normalized():
+    G = nx.DiGraph()
+    G.add_node("n1", label="Auth", source_file="a.py", source_location="L1", community=0, rationale="Decision: JWT tokens.\n\nWHY: Stateless auth across services.")
+    out = _subgraph_to_text(G, {"n1"}, [], include_rationale=True)
+    assert "\n" not in out.strip()
+    assert "WHY Decision: JWT tokens. WHY: Stateless auth across services." in out
+
+
+def test_subgraph_to_text_rationale_empty_or_missing_omitted():
+    G = nx.DiGraph()
+    G.add_node("n1", label="NoRat", source_file="a.py", source_location="L1", community=0)
+    G.add_node("n2", label="EmptyRat", source_file="b.py", source_location="L2", community=0, rationale="   \n\t  ")
+    G.add_node("n3", label="NoneRat", source_file="c.py", source_location="L3", community=0, rationale=None)
+    out = _subgraph_to_text(G, {"n1", "n2", "n3"}, [], include_rationale=True)
+    assert "WHY" not in out
+
+
+def test_subgraph_to_text_rationale_capped_at_512():
+    G = nx.DiGraph()
+    long_rationale = "Word " * 200
+    G.add_node("n1", label="Long", source_file="l.py", source_location="L1", community=0, rationale=long_rationale)
+    out = _subgraph_to_text(G, {"n1"}, [], include_rationale=True)
+    node_line = out.strip()
+    why_part = node_line.split(" WHY ", 1)[1]
+    assert len(why_part) == 512
+    assert why_part.endswith("...")
+
+
+def test_subgraph_to_text_rationale_counts_toward_token_budget():
+    G = nx.DiGraph()
+    G.add_node("s1", label="SeedNode", source_file="s.py", source_location="L1", community=0, rationale="A" * 200)
+    G.add_node("n1", label="Neighbor1", source_file="n.py", source_location="L1", community=0)
+    G.add_edge("s1", "n1", relation="calls")
+    # Small budget where rationale pushes neighbor past cut threshold
+    out_without = _subgraph_to_text(G, {"s1", "n1"}, [("s1", "n1")], token_budget=45, seeds=["s1"], include_rationale=False)
+    out_with = _subgraph_to_text(G, {"s1", "n1"}, [("s1", "n1")], token_budget=45, seeds=["s1"], include_rationale=True)
+    assert "Neighbor1" in out_without
+    assert "TRUNCATED" in out_with
+    assert "WHY" in out_with
+
+
+def test_query_graph_text_forward_include_rationale():
+    G = nx.DiGraph()
+    G.add_node("auth_mod", label="AuthModule", source_file="auth.py", source_location="L1", community=0, rationale="Central auth gateway")
+    out_no_rat = _query_graph_text(G, "AuthModule", include_rationale=False)
+    out_rat = _query_graph_text(G, "AuthModule", include_rationale=True)
+    assert "WHY" not in out_no_rat
+    assert "WHY Central auth gateway" in out_rat
+
+
+def test_tool_get_node_and_query_graph_mcp(tmp_path):
+    import asyncio
+    import mcp.types as types
+    from graphify.serve import _build_server
+    from graphify.export import to_json
+
+    G = nx.DiGraph()
+    G.add_node(
+        "auth_service",
+        label="AuthService",
+        source_file="auth.py",
+        source_location="L10",
+        file_type="code",
+        community=1,
+        rationale="Decision: OAuth2 compliance.\n\nWHY: Standard protocol.",
+    )
+    gp = tmp_path / "graph.json"
+    to_json(G, {1: ["auth_service"]}, str(gp))
+
+    server = _build_server(str(gp))
+
+    # Test list_tools schema
+    list_handler = server.request_handlers[types.ListToolsRequest]
+    tools_res = asyncio.run(list_handler(types.ListToolsRequest()))
+    tools_by_name = {t.name: t for t in tools_res.root.tools}
+
+    assert "include_rationale" in tools_by_name["query_graph"].inputSchema["properties"]
+    assert "include_rationale" in tools_by_name["get_node"].inputSchema["properties"]
+
+    # Test call_tool get_node without rationale (default)
+    call_handler = server.request_handlers[types.CallToolRequest]
+    res_no_rat = asyncio.run(
+        call_handler(
+            types.CallToolRequest(
+                params=types.CallToolRequestParams(
+                    name="get_node",
+                    arguments={"label": "AuthService", "include_rationale": False},
+                )
+            )
+        )
+    )
+    text_no_rat = res_no_rat.root.content[0].text
+    assert "Rationale:" not in text_no_rat
+
+    # Test call_tool get_node with rationale
+    res_rat = asyncio.run(
+        call_handler(
+            types.CallToolRequest(
+                params=types.CallToolRequestParams(
+                    name="get_node",
+                    arguments={"label": "AuthService", "include_rationale": True},
+                )
+            )
+        )
+    )
+    text_rat = res_rat.root.content[0].text
+    assert "  Rationale: Decision: OAuth2 compliance.\n\nWHY: Standard protocol." in text_rat
+
+    # Test call_tool query_graph without rationale
+    q_no_rat = asyncio.run(
+        call_handler(
+            types.CallToolRequest(
+                params=types.CallToolRequestParams(
+                    name="query_graph",
+                    arguments={"question": "AuthService", "include_rationale": False},
+                )
+            )
+        )
+    )
+    q_text_no_rat = q_no_rat.root.content[0].text
+    assert "WHY" not in q_text_no_rat
+
+    # Test call_tool query_graph with rationale
+    q_rat = asyncio.run(
+        call_handler(
+            types.CallToolRequest(
+                params=types.CallToolRequestParams(
+                    name="query_graph",
+                    arguments={"question": "AuthService", "include_rationale": True},
+                )
+            )
+        )
+    )
+    q_text_rat = q_rat.root.content[0].text
+    assert "WHY Decision: OAuth2 compliance. WHY: Standard protocol." in q_text_rat
+
+
+def test_mcp_backward_compatibility_omitted_include_rationale(tmp_path):
+    """Regression test: calling get_node and query_graph without include_rationale in arguments
+
+    must succeed, omit rationale/WHY, and preserve exact previous default output.
+    """
+    import asyncio
+    import mcp.types as types
+    from graphify.serve import _build_server
+    from graphify.export import to_json
+
+    G = nx.DiGraph()
+    G.add_node(
+        "auth_service",
+        label="AuthService",
+        source_file="auth.py",
+        source_location="L10",
+        file_type="code",
+        community=1,
+        rationale="Decision: OAuth2 compliance.\n\nWHY: Standard protocol.",
+    )
+    gp = tmp_path / "graph.json"
+    to_json(G, {1: ["auth_service"]}, str(gp))
+
+    server = _build_server(str(gp))
+    call_handler = server.request_handlers[types.CallToolRequest]
+
+    # Call get_node with ONLY {"label": "AuthService"}
+    res = asyncio.run(
+        call_handler(
+            types.CallToolRequest(
+                params=types.CallToolRequestParams(
+                    name="get_node",
+                    arguments={"label": "AuthService"},
+                )
+            )
+        )
+    )
+    text = res.root.content[0].text
+    assert "Rationale:" not in text
+    expected_lines = [
+        "Node: AuthService",
+        "  ID: auth_service",
+        "  Source: auth.py L10",
+        "  Type: code",
+        "  Community: 1",
+        "  Degree: 0",
+    ]
+    assert text == "\n".join(expected_lines)
+
+    # Call query_graph with ONLY {"question": "AuthService"}
+    q_res = asyncio.run(
+        call_handler(
+            types.CallToolRequest(
+                params=types.CallToolRequestParams(
+                    name="query_graph",
+                    arguments={"question": "AuthService"},
+                )
+            )
+        )
+    )
+    q_text = q_res.root.content[0].text
+    assert "WHY" not in q_text
+    assert "NODE AuthService [src=auth.py loc=L10 community=1]" in q_text
+
+
+def test_mcp_strict_boolean_include_rationale(tmp_path):
+    """Regression test: string 'false'/'true' or truthy non-booleans must NOT enable rationale."""
+    import asyncio
+    import mcp.types as types
+    from graphify.serve import _build_server
+    from graphify.export import to_json
+
+    G = nx.DiGraph()
+    G.add_node(
+        "auth_service",
+        label="AuthService",
+        source_file="auth.py",
+        source_location="L10",
+        file_type="code",
+        community=1,
+        rationale="Decision: OAuth2 compliance.\n\nWHY: Standard protocol.",
+    )
+    gp = tmp_path / "graph.json"
+    to_json(G, {1: ["auth_service"]}, str(gp))
+
+    server = _build_server(str(gp))
+    call_handler = server.request_handlers[types.CallToolRequest]
+
+    # 1. String "false"
+    res_get_str_false = asyncio.run(
+        call_handler(
+            types.CallToolRequest(
+                params=types.CallToolRequestParams(
+                    name="get_node",
+                    arguments={"label": "AuthService", "include_rationale": "false"},
+                )
+            )
+        )
+    )
+    assert "Rationale:" not in res_get_str_false.root.content[0].text
+
+    res_q_str_false = asyncio.run(
+        call_handler(
+            types.CallToolRequest(
+                params=types.CallToolRequestParams(
+                    name="query_graph",
+                    arguments={"question": "AuthService", "include_rationale": "false"},
+                )
+            )
+        )
+    )
+    assert "WHY" not in res_q_str_false.root.content[0].text
+
+    # 2. String "true"
+    res_get_str_true = asyncio.run(
+        call_handler(
+            types.CallToolRequest(
+                params=types.CallToolRequestParams(
+                    name="get_node",
+                    arguments={"label": "AuthService", "include_rationale": "true"},
+                )
+            )
+        )
+    )
+    assert "Rationale:" not in res_get_str_true.root.content[0].text
+
+    res_q_str_true = asyncio.run(
+        call_handler(
+            types.CallToolRequest(
+                params=types.CallToolRequestParams(
+                    name="query_graph",
+                    arguments={"question": "AuthService", "include_rationale": "true"},
+                )
+            )
+        )
+    )
+    assert "WHY" not in res_q_str_true.root.content[0].text
+
+    # 3. None / integer truthy
+    res_get_int = asyncio.run(
+        call_handler(
+            types.CallToolRequest(
+                params=types.CallToolRequestParams(
+                    name="get_node",
+                    arguments={"label": "AuthService", "include_rationale": 1},
+                )
+            )
+        )
+    )
+    assert "Rationale:" not in res_get_int.root.content[0].text
+
+    # 4. Actual True
+    res_get_true = asyncio.run(
+        call_handler(
+            types.CallToolRequest(
+                params=types.CallToolRequestParams(
+                    name="get_node",
+                    arguments={"label": "AuthService", "include_rationale": True},
+                )
+            )
+        )
+    )
+    assert "  Rationale: Decision: OAuth2 compliance.\n\nWHY: Standard protocol." in res_get_true.root.content[0].text
+
+    res_q_true = asyncio.run(
+        call_handler(
+            types.CallToolRequest(
+                params=types.CallToolRequestParams(
+                    name="query_graph",
+                    arguments={"question": "AuthService", "include_rationale": True},
+                )
+            )
+        )
+    )
+    assert "WHY Decision: OAuth2 compliance. WHY: Standard protocol." in res_q_true.root.content[0].text
+
+    # 5. Actual False
+    res_get_false = asyncio.run(
+        call_handler(
+            types.CallToolRequest(
+                params=types.CallToolRequestParams(
+                    name="get_node",
+                    arguments={"label": "AuthService", "include_rationale": False},
+                )
+            )
+        )
+    )
+    assert "Rationale:" not in res_get_false.root.content[0].text
+
+    res_q_false = asyncio.run(
+        call_handler(
+            types.CallToolRequest(
+                params=types.CallToolRequestParams(
+                    name="query_graph",
+                    arguments={"question": "AuthService", "include_rationale": False},
+                )
+            )
+        )
+    )
+    assert "WHY" not in res_q_false.root.content[0].text
