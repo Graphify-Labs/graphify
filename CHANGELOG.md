@@ -4,6 +4,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.47 (unreleased)
 
+- Fix: AST-derived INFERRED edges now carry a rubric `confidence_score` keyed to the relation (`uses` 0.95, `indirect_call`/unresolved cross-file `calls` 0.85) instead of landing at the rubric-forbidden 0.5 or a flat 0.8; the INFERRED default moves 0.5→0.55 so every score-less INFERRED edge is on the discrete rubric set (#2813, thanks @abhay-codes07).
 - Fix: a legacy `graph.json` that stored a numeric edge `confidence` (from a pre-enum version) no longer warns once per edge on every incremental reload; the numeric value is normalized to the `INFERRED` tag with the original float preserved in `confidence_score` (thanks @Trantor-develops).
 
 ## 0.9.46 (2026-08-17)
