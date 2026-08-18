@@ -239,7 +239,14 @@ class _NoFileRedirectHandler(urllib.request.HTTPRedirectHandler):
         validate_url(newurl)          # raises ValueError if scheme is wrong
         old_origin = urllib.parse.urlsplit(req.full_url)
         new_origin = urllib.parse.urlsplit(newurl)
-        if req.has_header("Authorization") and (
+        request_headers = {
+            header.lower()
+            for header in (*req.headers, *req.unredirected_hdrs)
+        }
+        has_credentials = bool(
+            request_headers & {"authorization", "cookie", "proxy-authorization"}
+        )
+        if has_credentials and (
             old_origin.scheme.lower(),
             old_origin.hostname,
             old_origin.port,
@@ -248,7 +255,7 @@ class _NoFileRedirectHandler(urllib.request.HTTPRedirectHandler):
             new_origin.hostname,
             new_origin.port,
         ):
-            raise ValueError("Blocked cross-origin redirect for authenticated request.")
+            raise ValueError("Blocked cross-origin redirect for credentialed request.")
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 

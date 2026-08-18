@@ -86,12 +86,13 @@ def test_build_safe_opener_rejects_file_url():
         build_safe_opener().open("file:///etc/passwd")
 
 
-def test_authenticated_redirect_must_stay_on_same_origin():
+@pytest.mark.parametrize("header", ["Authorization", "Cookie", "Proxy-Authorization"])
+def test_credentialed_redirect_must_stay_on_same_origin(header):
     from graphify.security import _NoFileRedirectHandler
 
     request = urllib.request.Request(
         "https://infranodus.com/api",
-        headers={"Authorization": "secret"},
+        headers={header: "secret"},
     )
     handler = _NoFileRedirectHandler()
     with patch("graphify.security.validate_url", return_value="https://example.com/"):
