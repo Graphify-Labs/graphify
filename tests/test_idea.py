@@ -336,6 +336,40 @@ def test_untrusted_graph_url_is_not_rendered(tmp_path):
     assert "javascript:" not in graph.read_text()
 
 
+def test_graph_url_with_control_characters_is_not_rendered(tmp_path):
+    vault = tmp_path / "Notes"
+    vault.mkdir()
+    response = _response()
+    response["entriesAndGraphOfContext"]["graphUrl"] = (
+        "https://infranodus.com/example\njavascript:alert(1)"
+    )
+
+    note, graph = create_idea_graph(
+        text="New text",
+        title="Tool library",
+        vault=vault,
+        output_path=tmp_path / "idea.html",
+        response=response,
+    )
+
+    assert "javascript:" not in note.read_text()
+    assert "javascript:" not in graph.read_text()
+
+
+def test_create_idea_graph_rejects_non_object_response(tmp_path):
+    vault = tmp_path / "Notes"
+    vault.mkdir()
+
+    with pytest.raises(ValueError, match="JSON object"):
+        create_idea_graph(
+            text="New text",
+            title="Tool library",
+            vault=vault,
+            output_path=tmp_path / "idea.html",
+            response=[],
+        )
+
+
 def test_idea_cli_supports_offline_infranodus_response(tmp_path):
     vault = tmp_path / "Notes"
     vault.mkdir()

@@ -138,6 +138,8 @@ def _response_metadata(response: Mapping[str, Any]) -> tuple[str, Mapping[str, A
 def _safe_infranodus_url(value: str) -> str:
     if not value:
         return ""
+    if any(ord(character) < 0x20 or ord(character) == 0x7F for character in value):
+        return ""
     parsed = urllib.parse.urlparse(value)
     hostname = (parsed.hostname or "").lower()
     if parsed.scheme != "https" or not (
@@ -148,6 +150,8 @@ def _safe_infranodus_url(value: str) -> str:
 
 
 def _safe_obsidian_uri(value: str) -> str:
+    if any(ord(character) < 0x20 or ord(character) == 0x7F for character in value):
+        return ""
     parsed = urllib.parse.urlparse(value)
     if parsed.scheme.lower() != "obsidian" or not value.lower().startswith("obsidian://"):
         return ""
@@ -483,6 +487,8 @@ def create_idea_graph(
     """Create an Obsidian source note and local Cytoscape graph for one idea."""
     if not text.strip():
         raise ValueError("Idea text cannot be empty.")
+    if response is not None and not isinstance(response, Mapping):
+        raise ValueError("InfraNodus response must be a JSON object.")
     vault = vault.expanduser().resolve()
     if not vault.is_dir():
         raise ValueError(f"Obsidian vault does not exist or is not a directory: {vault}")
@@ -560,7 +566,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args(argv)
 
-    if bool(args.text) == bool(args.file):
+    if (args.text is None) == (args.file is None):
         parser.error("provide exactly one of idea text or --file")
     text = args.text
     if args.file:
