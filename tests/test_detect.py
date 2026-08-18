@@ -3066,3 +3066,151 @@ def test_sensitive_env_template_inside_secrets_dir_still_dropped(path):
     """Stage 1 dir guard runs before the Stage 2 template exemption: anything
     under a secrets/credentials dir stays excluded, template suffix or not."""
     assert _is_sensitive(Path(path)), f"{path} is under a secrets dir, must stay excluded (#2184)"
+
+
+# --- #1958: ignore-matcher cost (anchor index + memo-free globstar matcher) ---
+
+from graphify.detect import (
+    _AnchorIndex,
+    _anchor_index,
+    _match_anchored_ignore_pattern,
+    _ANCHOR_INDEX_MEMO,
+)
+
+
+def _flat_candidates(patterns, target):
+    """What the pre-#1958 flat scan kept: the anchors relative_to() accepted."""
+    out = []
+    for i, (anchor, _pattern) in enumerate(patterns):
+        try:
+            target.relative_to(anchor)
+        except ValueError:
+            continue
+        out.append(i)
+    return out
+
+
+def test_anchor_index_selects_exactly_the_relative_to_survivors(tmp_path):
+    """The index must select the same set the relative_to() scan did."""
+    a = tmp_path / "a" / "b"
+    sibling = tmp_path / "other"
+    a.mkdir(parents=True)
+    sibling.mkdir()
+    patterns = [
+        (tmp_path, "*.log"),
+        (sibling, "*.py"),      # sibling subtree: inert for targets under a/b
+        (tmp_path / "a", "gen/"),
+        (a, "*.tmp"),
+    ]
+    target = a / "x.py"
+    index = _anchor_index(patterns)
+    assert index.candidates(target) == _flat_candidates(patterns, target)
+
+
+def test_anchor_index_preserves_original_order_for_last_match_wins(tmp_path):
+    """_eval is last-match-wins, so a later ! must still override an earlier
+    rule even when the two live in different anchor buckets."""
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    patterns = [
+        (sub, "keep.py"),      # nested rule ...
+        (tmp_path, "!keep.py"),  # ... overridden by a later root-anchored one
+    ]
+    target = sub / "keep.py"
+    assert _anchor_index(patterns).candidates(target) == [0, 1]
+    assert _is_ignored(target, tmp_path, patterns) is False
+
+    patterns.reverse()  # flip the order: the nested rule now wins
+    _ANCHOR_INDEX_MEMO.clear()
+    assert _is_ignored(target, tmp_path, patterns) is True
+
+
+def test_anchor_index_indexes_appended_patterns(tmp_path):
+    """detect() extends the list mid-walk; the index must see the new tail."""
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    target = sub / "x.py"
+    target.write_text("x")
+    patterns = [(tmp_path, "*.log")]
+    assert _is_ignored(target, tmp_path, patterns) is False
+    patterns.append((sub, "*.py"))  # a nested .gitignore discovered mid-walk
+    assert _is_ignored(target, tmp_path, patterns) is True
+
+
+def test_anchor_index_rebuilds_when_the_pattern_list_shrinks(tmp_path):
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    target = sub / "x.py"
+    target.write_text("x")
+    patterns = [(tmp_path, "*.log"), (sub, "*.py")]
+    index = _AnchorIndex(patterns)
+    assert index.candidates(target) == [0, 1]
+    del patterns[1]
+    assert index.candidates(target) == [0]
+
+
+def test_anchor_index_memo_survives_a_reused_list_identity(tmp_path):
+    """The memo is id()-keyed, so it must hold the list: a freed one's address
+    could be recycled and hand a later scan somebody else's index."""
+    patterns = [(tmp_path, "*.py")]
+    first = _anchor_index(patterns)
+    assert _anchor_index(patterns) is first
+    other = [(tmp_path, "*.log")]
+    assert _anchor_index(other) is not first
+
+
+@pytest.mark.parametrize("path,pattern,expected", [
+    ("a/b/c.py", "a/b/c.py", True),
+    ("a/b/c.py", "a/*/c.py", True),
+    ("a/b/c.py", "a/*.py", False),       # * must not cross a /
+    ("a/b/c.py", "a/**/c.py", True),
+    ("a/b/c/d.py", "a/**/d.py", True),
+    ("a/c.py", "a/**/c.py", True),       # ** spans zero components
+    ("a/b/c.py", "a/b", False),          # pattern shorter than the path
+    ("a", "a/**", False),                # trailing ** needs a component to eat
+    ("a/b", "a/**", True),
+    ("a/b/c/d/e.py", "**/c/**/*.py", True),
+    ("a/b/x.txt", "**/*.py", False),
+])
+def test_match_anchored_ignore_pattern_semantics(path, pattern, expected):
+    """Semantics must survive the move off the nested lru_cache."""
+    assert _match_anchored_ignore_pattern(path, pattern) is expected
+
+
+def test_globstar_match_leaves_no_cyclic_garbage():
+    """The old nested lru_cache closure referenced itself through its own
+    cache, leaking a cycle per call for the GC to reclaim."""
+    import gc
+
+    gc.collect()
+    gc.set_debug(gc.DEBUG_SAVEALL)
+    try:
+        before = len(gc.garbage)
+        for _ in range(500):
+            _match_anchored_ignore_pattern("a/b/c/d/e.py", "**/c/**/*.py")
+        gc.collect()
+        created = len(gc.garbage) - before
+    finally:
+        gc.set_debug(0)
+        del gc.garbage[:]
+        gc.collect()
+    assert created == 0, f"{created} cyclic objects from 500 globstar matches"
+
+
+def test_sibling_anchored_patterns_do_not_cost_per_path_work(tmp_path):
+    """Sibling-anchored patterns are inert, so a path's candidate set stays
+    O(its own depth), not O(all patterns)."""
+    target_dir = tmp_path / "pkg0" / "src"
+    target_dir.mkdir(parents=True)
+    target = target_dir / "main.py"
+    target.write_text("x")
+    patterns = [(tmp_path, "*.log")]
+    for i in range(1, 200):
+        sibling = tmp_path / f"pkg{i}"
+        patterns.extend((sibling, f"*.gen{j}") for j in range(10))
+    patterns.append((target_dir, "*.tmp"))
+
+    candidates = _anchor_index(patterns).candidates(target)
+    assert candidates == _flat_candidates(patterns, target)
+    assert len(candidates) == 2  # only the root and the file's own dir
+    assert _is_ignored(target, tmp_path, patterns) is False

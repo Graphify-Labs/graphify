@@ -11,7 +11,6 @@ import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
-from functools import lru_cache
 from pathlib import Path
 from typing import Callable
 
@@ -1249,32 +1248,165 @@ def _load_graphifyignore(root: Path, *, gitignore: bool = True) -> list[tuple[Pa
     return patterns
 
 
+def _match_globstar_parts(
+    path_parts: tuple[str, ...],
+    pattern_parts: tuple[str, ...],
+    path_idx: int,
+    pattern_idx: int,
+    memo: dict[tuple[int, int], bool],
+) -> bool:
+    """Component-wise match where ``**`` spans zero or more path components.
+
+    Module-level with a passed-in memo, not a nested ``lru_cache``: a recursive
+    closure wrapped in its own cache references itself through that cache, so
+    every call leaked a reference cycle for the GC to reclaim — and the cache
+    died before it could serve a second call. This memo dies by refcount.
+
+    A trailing ``**`` still requires at least one remaining path component.
+    """
+    key = (path_idx, pattern_idx)
+    hit = memo.get(key)
+    if hit is not None:
+        return hit
+
+    n_path = len(path_parts)
+    n_pattern = len(pattern_parts)
+    if pattern_idx == n_pattern:
+        result = path_idx == n_path
+    else:
+        part = pattern_parts[pattern_idx]
+        if part == "**":
+            if pattern_idx == n_pattern - 1:
+                result = path_idx < n_path
+            else:
+                result = _match_globstar_parts(
+                    path_parts, pattern_parts, path_idx, pattern_idx + 1, memo
+                ) or (
+                    path_idx < n_path
+                    and _match_globstar_parts(
+                        path_parts, pattern_parts, path_idx + 1, pattern_idx, memo
+                    )
+                )
+        else:
+            result = (
+                path_idx < n_path
+                and fnmatch.fnmatchcase(path_parts[path_idx], part)
+                and _match_globstar_parts(
+                    path_parts, pattern_parts, path_idx + 1, pattern_idx + 1, memo
+                )
+            )
+
+    memo[key] = result
+    return result
+
+
 def _match_anchored_ignore_pattern(path: str, pattern: str) -> bool:
     """Match an anchored gitignore pattern without letting ``*`` cross ``/``."""
     path_parts = tuple(path.split("/"))
     pattern_parts = tuple(pattern.split("/"))
 
-    @lru_cache(maxsize=None)
-    def _matches(path_idx: int, pattern_idx: int) -> bool:
-        if pattern_idx == len(pattern_parts):
-            return path_idx == len(path_parts)
-
-        part = pattern_parts[pattern_idx]
-        if part == "**":
-            if pattern_idx == len(pattern_parts) - 1:
-                return path_idx < len(path_parts)
-            return _matches(path_idx, pattern_idx + 1) or (
-                path_idx < len(path_parts)
-                and _matches(path_idx + 1, pattern_idx)
-            )
-
-        return (
-            path_idx < len(path_parts)
-            and fnmatch.fnmatchcase(path_parts[path_idx], part)
-            and _matches(path_idx + 1, pattern_idx + 1)
+    if "**" not in pattern_parts:
+        # Without ``**`` each pattern component eats exactly one path component,
+        # so this is a straight zip and the recursion below would never reuse a
+        # memo entry. Also the common shape: 54 of 57,283 patterns in a large
+        # monorepo contain ``**``.
+        if len(path_parts) != len(pattern_parts):
+            return False
+        return all(
+            fnmatch.fnmatchcase(part, pat)
+            for part, pat in zip(path_parts, pattern_parts)
         )
 
-    return _matches(0, 0)
+    return _match_globstar_parts(path_parts, pattern_parts, 0, 0, {})
+
+
+class _AnchorIndex:
+    """Anchor-bucketed view over a flat ``[(anchor_dir, pattern), ...]`` list.
+
+    ``_is_ignored`` only needs patterns whose anchor is an ancestor of (or equal
+    to) the target; the rest are inert, per the invariant ``ignored_predicate``
+    documents. Bucketing by anchor turns the per-path cost from O(all patterns)
+    into O(path depth) dict lookups.
+
+    The flat scan it replaces tested each anchor with
+    ``target.relative_to(anchor)``, which on CPython 3.12+ scans
+    ``target.parents`` linearly, minting a ``Path`` per element, then raises
+    ``ValueError`` for the ~97% of anchors that are not ancestors. On a monorepo
+    with 1,697 ``.gitignore`` files (57k patterns) that was 813ms per path.
+
+    ``detect()`` extends the list as its walk finds nested ignore files, so
+    ``_refresh`` indexes only the new tail.
+    """
+
+    __slots__ = ("_patterns", "_by_anchor", "_indexed")
+
+    def __init__(self, patterns: list[tuple[Path, str]]) -> None:
+        self._patterns = patterns
+        self._by_anchor: dict[Path, list[int]] = {}
+        self._indexed = 0
+        self._refresh()
+
+    def _refresh(self) -> None:
+        n = len(self._patterns)
+        if n == self._indexed:
+            return
+        if n < self._indexed:
+            # Shrunk: the list was truncated or reused for a different scan.
+            self._by_anchor.clear()
+            self._indexed = 0
+        by_anchor = self._by_anchor
+        for i in range(self._indexed, n):
+            by_anchor.setdefault(self._patterns[i][0], []).append(i)
+        self._indexed = n
+
+    def candidates(self, target: Path) -> list[int]:
+        """Indices of the patterns that can match *target*, in original order.
+
+        Order matters: ``_eval`` is last-match-wins, so a later ``!`` negation
+        (or a CLI ``--exclude``) must still override an earlier rule. The
+        candidate set is exactly ``{target} | set(target.parents)`` — the anchors
+        ``relative_to`` accepted — so this matches the scan it replaces.
+        """
+        self._refresh()
+        by_anchor = self._by_anchor
+        if not by_anchor:
+            return []
+        buckets: list[list[int]] = []
+        anchor = target
+        while True:
+            bucket = by_anchor.get(anchor)
+            if bucket is not None:
+                buckets.append(bucket)
+            parent = anchor.parent
+            if parent == anchor:  # reached the filesystem/drive root
+                break
+            anchor = parent
+        if not buckets:
+            return []
+        if len(buckets) == 1:
+            return buckets[0]  # already ascending
+        return sorted(i for bucket in buckets for i in bucket)
+
+
+# Identity-keyed memo so every _is_ignored caller gets the index without a
+# signature change. The entry holds the list, so its id() cannot be recycled
+# while live. Cap covers the lists one path can interleave: _is_scan_ignored
+# alternates two per scan, and a `watch` rebuild has its own plus two
+# predicates' pairs — evicting below that rebuilds per call, not per scan.
+_ANCHOR_INDEX_MEMO_MAX = 8
+_ANCHOR_INDEX_MEMO: dict[int, tuple[list[tuple[Path, str]], _AnchorIndex]] = {}
+
+
+def _anchor_index(patterns: list[tuple[Path, str]]) -> _AnchorIndex:
+    key = id(patterns)
+    hit = _ANCHOR_INDEX_MEMO.get(key)
+    if hit is not None and hit[0] is patterns:
+        return hit[1]
+    if len(_ANCHOR_INDEX_MEMO) >= _ANCHOR_INDEX_MEMO_MAX:
+        _ANCHOR_INDEX_MEMO.clear()
+    index = _AnchorIndex(patterns)
+    _ANCHOR_INDEX_MEMO[key] = (patterns, index)
+    return index
 
 
 def _is_ignored(
@@ -1300,6 +1432,8 @@ def _is_ignored(
     if not patterns:
         return False
 
+    index = _anchor_index(patterns)
+
     def _eval(target: Path) -> bool:
         """Apply last-match-wins to a single target path."""
         if _cache is not None and target in _cache:
@@ -1320,7 +1454,13 @@ def _is_ignored(
             return False
 
         result = False
-        for anchor, pattern in patterns:
+        # gitignore semantics: patterns from A/.gitignore apply ONLY to paths
+        # under A, so only anchors on the target's ancestor chain can match. The
+        # index yields those in list order, replacing a full-list scan that
+        # rediscovered the same fact one raised ValueError at a time.
+        target_parts = target.parts
+        n_target = len(target_parts)
+        for anchor, pattern in (patterns[i] for i in index.candidates(target)):
             negated = pattern.startswith("!")
             raw = pattern[1:] if negated else pattern
             directory_only = raw.endswith("/")
@@ -1329,17 +1469,16 @@ def _is_ignored(
             if not p:
                 continue
 
-            # gitignore semantics: patterns from A/.gitignore apply ONLY to paths
-            # under A. Matching non-anchored patterns against root-relative paths
-            # let e.g. .hypothesis/.gitignore's bare "*" ignore the ENTIRE repo
-            # (detect() returned 0 files). The anchor dir itself is exempt — an
-            # ignore file governs its directory's contents, not the directory.
+            # Matching non-anchored patterns against root-relative paths let e.g.
+            # .hypothesis/.gitignore's bare "*" ignore the ENTIRE repo (detect()
+            # returned 0 files). The anchor dir itself is exempt — an ignore file
+            # governs its contents, not itself. anchor is a known ancestor here,
+            # so the relative path is a part-slice and equal depth means
+            # anchor == target, i.e. the old relative_to's ".".
             matched = False
-            try:
-                rel_anchor = _nfc(str(target.relative_to(anchor)).replace(os.sep, "/"))
-            except ValueError:
-                continue  # target outside this pattern's anchor: cannot match
-            if rel_anchor != ".":
+            n_anchor = len(anchor.parts)
+            if n_anchor < n_target:
+                rel_anchor = _nfc("/".join(target_parts[n_anchor:]))
                 rel = rel_anchor
                 if not path_relative:
                     try:
