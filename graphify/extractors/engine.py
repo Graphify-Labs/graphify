@@ -4400,6 +4400,11 @@ def _extract_generic(
                         if name is not None and name.type == "identifier" \
                                 and value is not None and value.type == "object":
                             object_bindings[_read_text(name, source)] = declarator
+                # A factory object gets one owner node and one `contains` edge no
+                # matter how many methods hang off it. add_node dedups on id, but
+                # add_edge does not, so without this guard N assigned methods would
+                # emit N identical `contains` edges (the flood #1077 warns against).
+                contained_owners: set[str] = set()
                 for stmt in body.children:
                     if stmt.type != "expression_statement":
                         continue
@@ -4421,7 +4426,9 @@ def _extract_generic(
                         owner_nid = _make_id(function_owner_nid, object_name)
                         owner_line = object_bindings[object_name].start_point[0] + 1
                         add_node(owner_nid, object_name, owner_line)
-                        add_edge(function_owner_nid, owner_nid, "contains", owner_line)
+                        if owner_nid not in contained_owners:
+                            contained_owners.add(owner_nid)
+                            add_edge(function_owner_nid, owner_nid, "contains", owner_line)
                     else:
                         continue
                     m_name = tgt[2]

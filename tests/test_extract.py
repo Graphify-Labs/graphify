@@ -906,6 +906,75 @@ def test_extract_js_factory_object_assigned_methods(tmp_path):
     assert (render_video_nid, "calls", source_clips_nid) in edges
 
 
+def test_extract_js_factory_object_contains_edge_not_duplicated(tmp_path):
+    """The factory-to-object `contains` edge is emitted once regardless of how
+    many methods hang off the object. add_edge does not dedup, so a per-method
+    emission would flood the graph with N identical `contains` edges."""
+    from graphify.extract import extract_js
+    f = tmp_path / "many.js"
+    f.write_text(
+        "function build() {\n"
+        "  const api = {};\n"
+        "  api.a = () => 1;\n"
+        "  api.b = () => 2;\n"
+        "  api.c = () => 3;\n"
+        "  api.d = () => 4;\n"
+        "  return api;\n"
+        "}\n"
+    )
+    result = extract_js(f)
+    api_nid = next(n["id"] for n in result["nodes"] if n["label"] == "api")
+    contains = [
+        e for e in result["edges"]
+        if e["relation"] == "contains" and e["target"] == api_nid
+    ]
+    assert len(contains) == 1, f"expected one contains edge, got {len(contains)}"
+    methods = [e for e in result["edges"]
+               if e["relation"] == "method" and e["source"] == api_nid]
+    assert len(methods) == 4
+
+
+def test_extract_js_factory_object_arrow_assigned_methods(tmp_path):
+    """Arrow functions assigned to a factory object are captured just like
+    function expressions (the dominant modern factory shape)."""
+    from graphify.extract import extract_js
+    f = tmp_path / "arrow_factory.js"
+    f.write_text(
+        "function makeStore() {\n"
+        "  const store = {};\n"
+        "  store.get = (k) => k;\n"
+        "  store.set = (k, v) => store.get(k);\n"
+        "  return store;\n"
+        "}\n"
+    )
+    result = extract_js(f)
+    by_label = {n["label"]: n for n in result["nodes"]}
+    assert {"makeStore()", "store", ".get()", ".set()"} <= set(by_label)
+    store_nid = by_label["store"]["id"]
+    edges = {(e["source"], e["relation"], e["target"]) for e in result["edges"]}
+    assert (store_nid, "method", by_label[".get()"]["id"]) in edges
+    assert (store_nid, "method", by_label[".set()"]["id"]) in edges
+    assert (by_label[".set()"]["id"], "calls", by_label[".get()"]["id"]) in edges
+
+
+def test_extract_js_bare_object_member_assignment_not_captured(tmp_path):
+    """An `obj.x = fn` where `obj` is NOT a local object-literal binding must be
+    skipped — capturing arbitrary receivers reintroduces the #1077 phantom-owner
+    flood the scope check exists to prevent."""
+    from graphify.extract import extract_js
+    f = tmp_path / "bare.js"
+    f.write_text(
+        "function wire(external) {\n"
+        "  external.handler = () => 1;\n"
+        "  return external;\n"
+        "}\n"
+    )
+    result = extract_js(f)
+    labels = {n["label"] for n in result["nodes"]}
+    assert "external" not in labels
+    assert ".handler()" not in labels
+
+
 def test_extract_js_commonjs_exports_assignment(tmp_path):
     """`exports.X = fn` and `module.exports.X = fn` must produce function nodes."""
     from graphify.extract import extract_js
