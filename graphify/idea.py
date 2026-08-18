@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import html
 import json
 import os
@@ -315,8 +316,8 @@ def render_note(
 
 def render_cytoscape_html(title: str, elements: list[dict[str, Any]]) -> str:
     safe_title = html.escape(title)
-    # ASCII escaping also protects JS line parsing from literal U+2028/U+2029.
-    elements_json = json.dumps(elements).replace("</", "<\\/")
+    # Keep untrusted graph content entirely out of executable script syntax.
+    elements_payload = base64.b64encode(json.dumps(elements).encode("utf-8")).decode("ascii")
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -349,7 +350,7 @@ a {{ display: inline-block; margin: 12px 8px 0 0; padding: 8px 10px; border-radi
   are connected directly. Use the Obsidian button to return to the source note.</div>
 </aside>
 <script>
-const elements = {elements_json};
+const elements = JSON.parse(atob('{elements_payload}'));
 const cy = cytoscape({{
   container: document.getElementById('cy'),
   elements,
@@ -553,7 +554,7 @@ def main(argv: list[str] | None = None) -> None:
             save_infranodus=args.save_infranodus,
             force=args.force,
         )
-    except (ValueError, FileExistsError, RuntimeError) as exc:
+    except (ValueError, OSError, RuntimeError) as exc:
         parser.error(str(exc))
 
     print(f"Obsidian note: {note_path}")

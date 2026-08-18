@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -132,8 +134,8 @@ def test_render_cytoscape_html_escapes_script_breakouts_and_js_line_separators()
     output = render_cytoscape_html("Safe", elements)
 
     assert "</script><img" not in output
-    assert "\\u2028" in output
     assert "\u2028" not in output
+    assert "const elements = JSON.parse(atob('" in output
 
 
 @pytest.mark.parametrize("title", ["---", "...", "@@@"])
@@ -166,8 +168,12 @@ def test_create_idea_graph_writes_obsidian_note_and_cytoscape_html(tmp_path):
     assert "Open the clickable Cytoscape graph" in note_text
     assert "shared tools" in note_text
     assert "cytoscape@3.33.1" in graph_text
-    assert "obsidian://open" in graph_text
-    assert "concept:tools" in graph_text
+    payload_match = re.search(r"atob\('([^']+)'\)", graph_text)
+    assert payload_match is not None
+    payload = json.loads(base64.b64decode(payload_match.group(1)))
+    payload_text = json.dumps(payload)
+    assert "obsidian://open" in payload_text
+    assert "concept:tools" in payload_text
 
 
 def test_create_idea_graph_refuses_to_overwrite_note(tmp_path):
@@ -304,3 +310,31 @@ def test_idea_cli_supports_offline_infranodus_response(tmp_path):
     assert (vault / "Ideas" / "Tool library.md").exists()
     assert output.exists()
     assert "Clickable graph:" in result.stdout
+
+
+def test_idea_cli_reports_filesystem_errors(tmp_path, monkeypatch, capsys):
+    import graphify.idea as idea_module
+
+    vault = tmp_path / "Notes"
+    vault.mkdir()
+    response_path = tmp_path / "response.json"
+    response_path.write_text(json.dumps(_response()))
+
+    def fail_write(**_kwargs):
+        raise PermissionError("permission denied")
+
+    monkeypatch.setattr(idea_module, "create_idea_graph", fail_write)
+
+    with pytest.raises(SystemExit) as exc:
+        idea_module.main(
+            [
+                "New idea",
+                "--vault",
+                str(vault),
+                "--response",
+                str(response_path),
+            ]
+        )
+
+    assert exc.value.code == 2
+    assert "permission denied" in capsys.readouterr().err
