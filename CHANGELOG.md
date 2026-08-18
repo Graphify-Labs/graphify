@@ -4,6 +4,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.47 (unreleased)
 
+- Fix: the `claude` backend no longer crashes with `AttributeError: 'ThinkingBlock'` when an extended-thinking response leads with a thinking block; the first text block is read instead (#2697, thanks @mdshzb04).
 - Fix: `graphify update` / `save_manifest` no longer rewrites `manifest.json` timestamps on a no-op run, so `graphify-out/` stops showing as dirty (and stops producing a trailing graph commit) when nothing changed; a genuine change still updates and persists (#2838, thanks @hopstreax).
 - Fix: a C# 12 primary constructor's parameters are now walked, so `class Svc(IRepo repo)` emits the `references` edge to `IRepo` and calls through `repo` resolve — previously the class silently dropped its dependency; built-in and type-parameter types are not fabricated (#2829, thanks @brobl2008).
 - Fix: AST-derived INFERRED edges now carry a rubric `confidence_score` keyed to the relation (`uses` 0.95, `indirect_call`/unresolved cross-file `calls` 0.85) instead of landing at the rubric-forbidden 0.5 or a flat 0.8; the INFERRED default moves 0.5→0.55 so every score-less INFERRED edge is on the discrete rubric set (#2813, thanks @abhay-codes07).

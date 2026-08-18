@@ -424,6 +424,18 @@ def test_anthropic_response_text_falls_back_without_text():
     assert llm._anthropic_response_text(content, default="SENTINEL") == "SENTINEL"
 
 
+def test_anthropic_response_text_returns_first_text_block_not_concatenation():
+    """Locks the first-wins semantics: graphify's claude calls return a single
+    JSON payload, so the helper must return the FIRST text block, never
+    concatenate multiple (which would corrupt the JSON)."""
+    content = [
+        SimpleNamespace(type="thinking", thinking="planning"),
+        SimpleNamespace(type="text", text=_NODE_JSON),
+        SimpleNamespace(type="text", text='{"nodes": [], "edges": []}'),
+    ]
+    assert llm._anthropic_response_text(content) == _NODE_JSON
+
+
 def test_call_claude_parses_thinking_model_response(tmp_path, monkeypatch):
     """Extended-thinking models must not crash on content[0] being ThinkingBlock."""
     img, _, _ = _make_corpus(tmp_path)
