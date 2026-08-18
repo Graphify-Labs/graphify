@@ -101,6 +101,24 @@ def test_cytoscape_elements_accept_weighted_degree_spelling():
     assert tools["degree"] == 11
 
 
+def test_cytoscape_elements_normalize_edge_endpoint_keys():
+    response = _response()
+    edge = response["entriesAndGraphOfContext"]["graph"]["graphologyGraph"]["edges"][0]
+    edge["source"] = " tools "
+    edge["target"] = " neighbors "
+
+    elements = cytoscape_elements(
+        response,
+        title="Tool library",
+        idea_text="Neighbors share tools.",
+        note_uri="obsidian://open?vault=Notes&file=Ideas%2FTool+library",
+    )
+
+    graph_edge = next(item["data"] for item in elements if item["data"].get("kind") == "infranodus")
+    assert graph_edge["source"] == "concept:tools"
+    assert graph_edge["target"] == "concept:neighbors"
+
+
 def test_render_cytoscape_html_escapes_script_breakouts_and_js_line_separators():
     elements = [
         {
@@ -192,9 +210,7 @@ def test_write_new_atomically_creates_new_target(tmp_path):
     assert target.read_text() == "content"
 
 
-def test_create_idea_graph_rolls_back_owned_output_when_note_commit_fails(
-    tmp_path, monkeypatch
-):
+def test_create_idea_graph_preserves_note_when_html_commit_fails(tmp_path, monkeypatch):
     import graphify.idea as idea_module
 
     vault = tmp_path / "Notes"
@@ -202,14 +218,14 @@ def test_create_idea_graph_rolls_back_owned_output_when_note_commit_fails(
     output = tmp_path / "idea.html"
     original_write = idea_module._write_new
 
-    def fail_note(path, content, *, force):
-        if path.suffix == ".md":
-            raise FileExistsError("concurrent note")
+    def fail_html(path, content, *, force):
+        if path.suffix == ".html":
+            raise FileExistsError("concurrent graph")
         return original_write(path, content, force=force)
 
-    monkeypatch.setattr(idea_module, "_write_new", fail_note)
+    monkeypatch.setattr(idea_module, "_write_new", fail_html)
 
-    with pytest.raises(FileExistsError, match="concurrent note"):
+    with pytest.raises(FileExistsError, match="concurrent graph"):
         create_idea_graph(
             text="New text",
             title="Tool library",
@@ -218,6 +234,7 @@ def test_create_idea_graph_rolls_back_owned_output_when_note_commit_fails(
             response=_response(),
         )
 
+    assert (vault / "Ideas" / "Tool library.md").exists()
     assert not output.exists()
 
 

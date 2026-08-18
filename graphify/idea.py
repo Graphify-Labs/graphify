@@ -225,8 +225,10 @@ def cytoscape_elements(
     for item in graph["edges"]:
         if not isinstance(item, Mapping):
             continue
-        source = f"concept:{item.get('source', '')}"
-        target = f"concept:{item.get('target', '')}"
+        source_key = str(item.get("source") or "").strip()
+        target_key = str(item.get("target") or "").strip()
+        source = f"concept:{source_key}"
+        target = f"concept:{target_key}"
         if source not in concept_ids or target not in concept_ids:
             continue
         attrs = item.get("attributes")
@@ -393,7 +395,7 @@ cy.on('tap', 'node', event => {{
 """
 
 
-def _write_new(path: Path, content: str, *, force: bool) -> tuple[int, int]:
+def _write_new(path: Path, content: str, *, force: bool) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary_name = tempfile.mkstemp(
         dir=path.parent,
@@ -415,20 +417,8 @@ def _write_new(path: Path, content: str, *, force: bool) -> tuple[int, int]:
                 os.link(temporary, path)
             except FileExistsError:
                 raise FileExistsError(f"Refusing to overwrite existing file: {path}") from None
-        committed = path.stat()
-        return committed.st_dev, committed.st_ino
     finally:
         temporary.unlink(missing_ok=True)
-
-
-def _unlink_if_same_file(path: Path, identity: tuple[int, int]) -> None:
-    """Remove a partial output only when it is still the file this process wrote."""
-    try:
-        current = path.stat()
-    except FileNotFoundError:
-        return
-    if (current.st_dev, current.st_ino) == identity:
-        path.unlink()
 
 
 def create_idea_graph(
@@ -495,13 +485,10 @@ def create_idea_graph(
         graph_url=graph_url,
         summary=summary,
     )
-    output_identity = _write_new(output_path, html_content, force=force)
-    try:
-        _write_new(note_path, note_content, force=force)
-    except Exception:
-        if not force:
-            _unlink_if_same_file(output_path, output_identity)
-        raise
+    # The note is the durable source of truth. Publish it first so a later HTML
+    # filesystem failure never loses the captured idea or requires racy rollback.
+    _write_new(note_path, note_content, force=force)
+    _write_new(output_path, html_content, force=force)
     return note_path, output_path
 
 
