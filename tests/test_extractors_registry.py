@@ -70,3 +70,10 @@ def test_objc_migrated():
 
     assert facade.extract_objc is extract_objc
     assert LANGUAGE_EXTRACTORS["objc"] is extract_objc
+
+
+def test_pascal_migrated():
+    from graphify.extractors.pascal import extract_pascal
+
+    assert facade.extract_pascal is extract_pascal
+    assert LANGUAGE_EXTRACTORS["pascal"] is extract_pascal

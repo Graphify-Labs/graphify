@@ -30,7 +30,8 @@ written so an AI agent can execute it in a single session.
 | slnx | yes |
 | csproj | yes |
 | objc | yes |
-| (other bespoke: julia, verilog, markdown, pascal) | no |
+| pascal | yes |
+| (other bespoke: julia, verilog, markdown) | no |
 
 Note: config-driven extractors (python, js, java, c, cpp, ruby, csharp,
 kotlin, scala, php, lua, swift, groovy) depend on the shared
