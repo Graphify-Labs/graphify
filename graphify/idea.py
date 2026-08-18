@@ -146,6 +146,13 @@ def _safe_infranodus_url(value: str) -> str:
     return value
 
 
+def _safe_obsidian_uri(value: str) -> str:
+    parsed = urllib.parse.urlparse(value)
+    if parsed.scheme.lower() != "obsidian" or not value.lower().startswith("obsidian://"):
+        return ""
+    return value
+
+
 def _obsidian_uri(vault: Path, note_path: Path) -> str:
     relative = note_path.relative_to(vault).with_suffix("").as_posix()
     query = urllib.parse.urlencode({"vault": vault.name, "file": relative})
@@ -164,10 +171,7 @@ def cytoscape_elements(
     note_uri: str,
 ) -> list[dict[str, Any]]:
     """Convert an InfraNodus Graphology graph to Cytoscape elements."""
-    if (
-        urllib.parse.urlparse(note_uri).scheme.lower() != "obsidian"
-        or not note_uri.lower().startswith("obsidian://")
-    ):
+    if not _safe_obsidian_uri(note_uri):
         raise ValueError("Node note URI must use the obsidian:// scheme.")
     graph = _graphology_graph(response)
     graph_url, _summary = _response_metadata(response)
@@ -323,8 +327,20 @@ def render_note(
 
 def render_cytoscape_html(title: str, elements: list[dict[str, Any]]) -> str:
     safe_title = html.escape(title)
+    safe_elements: list[dict[str, Any]] = []
+    for element in elements:
+        safe_element = dict(element)
+        data = element.get("data")
+        if isinstance(data, Mapping):
+            safe_data = dict(data)
+            if "note_uri" in safe_data:
+                safe_data["note_uri"] = _safe_obsidian_uri(str(data.get("note_uri") or ""))
+            if "graph_url" in safe_data:
+                safe_data["graph_url"] = _safe_infranodus_url(str(data.get("graph_url") or ""))
+            safe_element["data"] = safe_data
+        safe_elements.append(safe_element)
     # Keep untrusted graph content entirely out of executable script syntax.
-    elements_payload = base64.b64encode(json.dumps(elements).encode("utf-8")).decode("ascii")
+    elements_payload = base64.b64encode(json.dumps(safe_elements).encode("utf-8")).decode("ascii")
     return f"""<!doctype html>
 <html lang="en">
 <head>

@@ -161,6 +161,27 @@ def test_render_cytoscape_html_escapes_script_breakouts_and_js_line_separators()
     assert "const elements = JSON.parse(atob('" in output
 
 
+def test_render_cytoscape_html_sanitizes_node_links_at_render_boundary():
+    elements = [
+        {
+            "data": {
+                "id": "unsafe",
+                "label": "Unsafe",
+                "note_uri": "javascript:alert(1)",
+                "graph_url": "https://infranodus.com.evil.example/graph",
+            }
+        }
+    ]
+
+    output = render_cytoscape_html("Unsafe links", elements)
+    payload_match = re.search(r"atob\('([^']+)'\)", output)
+    assert payload_match is not None
+    payload = json.loads(base64.b64decode(payload_match.group(1)))
+
+    assert payload[0]["data"]["note_uri"] == ""
+    assert payload[0]["data"]["graph_url"] == ""
+
+
 @pytest.mark.parametrize("title", ["---", "...", "@@@"])
 def test_safe_stem_rejects_titles_without_letters_or_numbers(title):
     with pytest.raises(ValueError, match="letter or number"):
