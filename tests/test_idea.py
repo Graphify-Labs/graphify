@@ -4,10 +4,17 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
-from graphify.idea import create_idea_graph, cytoscape_elements
+from graphify.idea import (
+    _safe_stem,
+    _write_new,
+    create_idea_graph,
+    cytoscape_elements,
+    render_cytoscape_html,
+)
 
 
 def _response():
@@ -65,6 +72,62 @@ def test_cytoscape_elements_include_clickable_idea_and_concepts():
     assert any(item["data"].get("kind") == "idea-context" for item in elements)
 
 
+def test_cytoscape_elements_reject_non_obsidian_note_uri():
+    with pytest.raises(ValueError, match="obsidian"):
+        cytoscape_elements(
+            _response(),
+            title="Tool library",
+            idea_text="Neighbors share tools.",
+            note_uri="javascript:alert(1)",
+        )
+
+
+def test_cytoscape_elements_accept_weighted_degree_spelling():
+    response = _response()
+    attributes = response["entriesAndGraphOfContext"]["graph"]["graphologyGraph"]["nodes"][0][
+        "attributes"
+    ]
+    attributes.pop("weighedDegree")
+    attributes["weightedDegree"] = 11
+
+    elements = cytoscape_elements(
+        response,
+        title="Tool library",
+        idea_text="Neighbors share tools.",
+        note_uri="obsidian://open?vault=Notes&file=Ideas%2FTool+library",
+    )
+
+    tools = next(item["data"] for item in elements if item["data"]["id"] == "concept:tools")
+    assert tools["degree"] == 11
+
+
+def test_render_cytoscape_html_escapes_script_breakouts_and_js_line_separators():
+    elements = [
+        {
+            "data": {
+                "id": "idea",
+                "content": "</script><img src=x onerror=alert(1)>\u2028next",
+            }
+        }
+    ]
+
+    output = render_cytoscape_html("Safe", elements)
+
+    assert "</script><img" not in output
+    assert "\\u2028" in output
+    assert "\u2028" not in output
+
+
+@pytest.mark.parametrize("title", ["---", "...", "@@@"])
+def test_safe_stem_rejects_titles_without_letters_or_numbers(title):
+    with pytest.raises(ValueError, match="letter or number"):
+        _safe_stem(title)
+
+
+def test_safe_stem_accepts_non_ascii_letters():
+    assert _safe_stem("アイデア") == "アイデア"
+
+
 def test_create_idea_graph_writes_obsidian_note_and_cytoscape_html(tmp_path):
     vault = tmp_path / "Notes"
     vault.mkdir()
@@ -104,6 +167,58 @@ def test_create_idea_graph_refuses_to_overwrite_note(tmp_path):
             response=_response(),
         )
     assert note.read_text() == "personal content"
+
+
+def test_write_new_uses_unique_temp_file_and_preserves_existing_target(tmp_path):
+    target = tmp_path / "idea.html"
+    target.write_text("original")
+    stale_temp = tmp_path / ".idea.html.tmp"
+    stale_temp.symlink_to(tmp_path / "outside")
+
+    with pytest.raises(FileExistsError, match="Refusing to overwrite"):
+        _write_new(target, "replacement", force=False)
+
+    assert target.read_text() == "original"
+    assert stale_temp.is_symlink()
+    assert not (tmp_path / "outside").exists()
+    assert list(tmp_path.glob(".idea.html.*.tmp")) == []
+
+
+def test_write_new_atomically_creates_new_target(tmp_path):
+    target = Path(tmp_path) / "idea.html"
+
+    _write_new(target, "content", force=False)
+
+    assert target.read_text() == "content"
+
+
+def test_create_idea_graph_rolls_back_owned_output_when_note_commit_fails(
+    tmp_path, monkeypatch
+):
+    import graphify.idea as idea_module
+
+    vault = tmp_path / "Notes"
+    vault.mkdir()
+    output = tmp_path / "idea.html"
+    original_write = idea_module._write_new
+
+    def fail_note(path, content, *, force):
+        if path.suffix == ".md":
+            raise FileExistsError("concurrent note")
+        return original_write(path, content, force=force)
+
+    monkeypatch.setattr(idea_module, "_write_new", fail_note)
+
+    with pytest.raises(FileExistsError, match="concurrent note"):
+        create_idea_graph(
+            text="New text",
+            title="Tool library",
+            vault=vault,
+            output_path=output,
+            response=_response(),
+        )
+
+    assert not output.exists()
 
 
 def test_create_idea_graph_blocks_folder_escape(tmp_path):

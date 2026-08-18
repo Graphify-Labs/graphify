@@ -6,6 +6,7 @@ import html
 import json
 import os
 import re
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -14,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from graphify.exporters.base import COMMUNITY_COLORS
-from graphify.security import _build_opener
+from graphify.security import build_safe_opener
 
 
 INFRANODUS_ENDPOINT = "https://infranodus.com/api/v1/graphAndStatements"
@@ -24,7 +25,7 @@ _MAX_RESPONSE_BYTES = 20 * 1024 * 1024
 def _safe_stem(value: str) -> str:
     stem = re.sub(r'[\\/:*?"<>|#^[\]]', "", value).strip().strip(".")
     stem = re.sub(r"\s+", " ", stem)
-    if not stem:
+    if not any(character.isalnum() for character in stem):
         raise ValueError("Idea title must contain at least one letter or number.")
     encoded = stem.encode("utf-8")
     if len(encoded) > 180:
@@ -83,7 +84,7 @@ def request_infranodus(
         method="POST",
     )
     try:
-        with _build_opener().open(request, timeout=timeout) as response:
+        with build_safe_opener().open(request, timeout=timeout) as response:
             raw = response.read(_MAX_RESPONSE_BYTES + 1)
     except urllib.error.HTTPError as exc:
         raise RuntimeError(f"InfraNodus request failed with HTTP {exc.code}.") from exc
@@ -158,6 +159,11 @@ def cytoscape_elements(
     note_uri: str,
 ) -> list[dict[str, Any]]:
     """Convert an InfraNodus Graphology graph to Cytoscape elements."""
+    if (
+        urllib.parse.urlparse(note_uri).scheme.lower() != "obsidian"
+        or not note_uri.lower().startswith("obsidian://")
+    ):
+        raise ValueError("Node note URI must use the obsidian:// scheme.")
     graph = _graphology_graph(response)
     graph_url, _summary = _response_metadata(response)
     elements: list[dict[str, Any]] = [
@@ -191,7 +197,10 @@ def cytoscape_elements(
             community = int(attrs.get("community", 0))
         except (TypeError, ValueError):
             community = 0
-        degree = attrs.get("weighedDegree", attrs.get("degree", 0))
+        degree = attrs.get(
+            "weighedDegree",
+            attrs.get("weightedDegree", attrs.get("degree", 0)),
+        )
         try:
             rank = float(degree)
         except (TypeError, ValueError):
@@ -304,7 +313,8 @@ def render_note(
 
 def render_cytoscape_html(title: str, elements: list[dict[str, Any]]) -> str:
     safe_title = html.escape(title)
-    elements_json = json.dumps(elements, ensure_ascii=False).replace("</", "<\\/")
+    # ASCII escaping also protects JS line parsing from literal U+2028/U+2029.
+    elements_json = json.dumps(elements).replace("</", "<\\/")
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -383,13 +393,42 @@ cy.on('tap', 'node', event => {{
 """
 
 
-def _write_new(path: Path, content: str, *, force: bool) -> None:
-    if path.exists() and not force:
-        raise FileExistsError(f"Refusing to overwrite existing file: {path}")
+def _write_new(path: Path, content: str, *, force: bool) -> tuple[int, int]:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.tmp")
-    temporary.write_text(content, encoding="utf-8")
-    temporary.replace(path)
+    fd, temporary_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if force:
+            os.replace(temporary, path)
+        else:
+            try:
+                # Hard-linking commits the staged file without overwriting a
+                # concurrently created target. The link operation is atomic.
+                os.link(temporary, path)
+            except FileExistsError:
+                raise FileExistsError(f"Refusing to overwrite existing file: {path}") from None
+        committed = path.stat()
+        return committed.st_dev, committed.st_ino
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _unlink_if_same_file(path: Path, identity: tuple[int, int]) -> None:
+    """Remove a partial output only when it is still the file this process wrote."""
+    try:
+        current = path.stat()
+    except FileNotFoundError:
+        return
+    if (current.st_dev, current.st_ino) == identity:
+        path.unlink()
 
 
 def create_idea_graph(
@@ -456,8 +495,13 @@ def create_idea_graph(
         graph_url=graph_url,
         summary=summary,
     )
-    _write_new(output_path, html_content, force=force)
-    _write_new(note_path, note_content, force=force)
+    output_identity = _write_new(output_path, html_content, force=force)
+    try:
+        _write_new(note_path, note_content, force=force)
+    except Exception:
+        if not force:
+            _unlink_if_same_file(output_path, output_identity)
+        raise
     return note_path, output_path
 
 

@@ -240,7 +240,8 @@ class _NoFileRedirectHandler(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def _build_opener() -> urllib.request.OpenerDirector:
+def build_safe_opener() -> urllib.request.OpenerDirector:
+    """Build a urllib opener with DNS-rebinding and redirect SSRF guards."""
     # build_opener replaces the default HTTP(S)Handlers with our SSRF-guarded
     # subclasses, so every connection resolves+validates DNS once and connects
     # to that exact IP. Thread-safe: no process-global state is mutated.
@@ -249,6 +250,10 @@ def _build_opener() -> urllib.request.OpenerDirector:
         _SSRFGuardedHTTPSHandler,
         _NoFileRedirectHandler,
     )
+
+
+# Backward-compatible alias for callers/tests that used the original private helper.
+_build_opener = build_safe_opener
 
 
 # ---------------------------------------------------------------------------
@@ -272,7 +277,7 @@ def safe_fetch(url: str, max_bytes: int = _MAX_FETCH_BYTES, timeout: int = 30) -
         OSError               - size cap exceeded
     """
     validate_url(url)
-    opener = _build_opener()
+    opener = build_safe_opener()
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 graphify/1.0"})
 
     with opener.open(req, timeout=timeout) as resp:
