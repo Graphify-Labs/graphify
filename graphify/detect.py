@@ -1277,6 +1277,12 @@ def _match_anchored_ignore_pattern(path: str, pattern: str) -> bool:
     return _matches(0, 0)
 
 
+# Sentinels for the per-scan caches in _is_ignored. A str key cannot collide with the
+# Path keys the ancestor memo uses.
+_PREPARED_KEY = "__prepared_patterns__"
+_UNSET = object()
+
+
 def _is_ignored(
     path: Path,
     root: Path,
@@ -1320,14 +1326,40 @@ def _is_ignored(
             return False
 
         result = False
-        for anchor, pattern in patterns:
-            negated = pattern.startswith("!")
-            raw = pattern[1:] if negated else pattern
-            directory_only = raw.endswith("/")
-            path_relative = "/" in raw.rstrip("/")
-            p = raw.strip("/")
-            if not p:
-                continue
+
+        # Pattern parsing does not depend on the target, so do it once per scan and
+        # keep it in the shared cache. It used to run for every target: on a repo with
+        # ~55 patterns and ~14k targets that is ~770k redundant string splits.
+        #
+        # Invalidate on pattern count: detect() appends patterns from nested .gitignore
+        # files *during* the walk (see ignore_patterns.extend below), so a frozen parse
+        # would silently stop applying the later ones.
+        prepared = None
+        if _cache is not None:
+            cached = _cache.get(_PREPARED_KEY)
+            if cached is not None and cached[0] == len(patterns):
+                prepared = cached[1]
+        if prepared is None:
+            prepared = []
+            for _anchor, _pattern in patterns:
+                _negated = _pattern.startswith("!")
+                _raw = _pattern[1:] if _negated else _pattern
+                _p = _raw.strip("/")
+                if not _p:
+                    continue
+                prepared.append((_anchor, _negated, _raw.endswith("/"),
+                                 "/" in _raw.rstrip("/"), _p))
+            if _cache is not None:
+                _cache[_PREPARED_KEY] = (len(patterns), prepared)
+
+        # relative_to() + _nfc() are the dominant cost in this loop and depend only on
+        # the anchor (or on root), never on the individual pattern. Anchors are few,
+        # patterns are many, so memoise per target.
+        rel_by_anchor: dict = {}
+        rel_root_cached = _UNSET
+        target_is_dir = None
+
+        for anchor, negated, directory_only, path_relative, p in prepared:
 
             # gitignore semantics: patterns from A/.gitignore apply ONLY to paths
             # under A. Matching non-anchored patterns against root-relative paths
@@ -1335,21 +1367,33 @@ def _is_ignored(
             # (detect() returned 0 files). The anchor dir itself is exempt — an
             # ignore file governs its directory's contents, not the directory.
             matched = False
-            try:
-                rel_anchor = _nfc(str(target.relative_to(anchor)).replace(os.sep, "/"))
-            except ValueError:
-                continue  # target outside this pattern's anchor: cannot match
+            if anchor in rel_by_anchor:
+                rel_anchor = rel_by_anchor[anchor]
+            else:
+                try:
+                    rel_anchor = _nfc(str(target.relative_to(anchor)).replace(os.sep, "/"))
+                except ValueError:
+                    rel_anchor = None  # target outside this anchor: cannot match
+                rel_by_anchor[anchor] = rel_anchor
+            if rel_anchor is None:
+                continue
             if rel_anchor != ".":
                 rel = rel_anchor
-                if not path_relative:
-                    try:
-                        if len(root.parts) > len(anchor.parts):
-                            rel = _nfc(str(target.relative_to(root)).replace(os.sep, "/"))
-                    except ValueError:
-                        pass
+                if not path_relative and len(root.parts) > len(anchor.parts):
+                    if rel_root_cached is _UNSET:
+                        try:
+                            rel_root_cached = _nfc(
+                                str(target.relative_to(root)).replace(os.sep, "/"))
+                        except ValueError:
+                            rel_root_cached = None
+                    if rel_root_cached is not None:
+                        rel = rel_root_cached
                 matched = _matches(rel, p, path_relative=path_relative)
-                if matched and directory_only and not target.is_dir():
-                    matched = False
+                if matched and directory_only:
+                    if target_is_dir is None:
+                        target_is_dir = target.is_dir()
+                    if not target_is_dir:
+                        matched = False
 
             if matched:
                 result = not negated  # last match wins; ! flips to un-ignore

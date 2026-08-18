@@ -3066,3 +3066,30 @@ def test_sensitive_env_template_inside_secrets_dir_still_dropped(path):
     """Stage 1 dir guard runs before the Stage 2 template exemption: anything
     under a secrets/credentials dir stays excluded, template suffix or not."""
     assert _is_sensitive(Path(path)), f"{path} is under a secrets dir, must stay excluded (#2184)"
+
+def test_nested_gitignore_applies_when_patterns_grow_mid_walk(tmp_path):
+    """Patterns from a nested .gitignore are appended while the walk is already
+    running, so any per-scan caching of the parsed pattern list must invalidate
+    when the list grows.
+
+    The root .gitignore matters: it makes the parse cache fill up early, before
+    the walk reaches pkg/sub. Without a root pattern _is_ignored returns before
+    touching the cache and the bug cannot reproduce.
+    """
+    (tmp_path / ".gitignore").write_text("*.log\n")
+    (tmp_path / "root.log").write_text("noise")
+    (tmp_path / "keep.py").write_text("x = 1")
+
+    deep = tmp_path / "pkg" / "sub"
+    deep.mkdir(parents=True)
+    (deep / "kept.py").write_text("y = 2")
+    (deep / "skipped.py").write_text("z = 3")
+    (deep / ".gitignore").write_text("skipped.py\n")
+
+    result = detect(tmp_path)
+    all_files = [f for files in result["files"].values() for f in files]
+
+    assert not any("root.log" in f for f in all_files)   # root pattern still applies
+    assert any("keep.py" in f for f in all_files)
+    assert any("kept.py" in f for f in all_files)
+    assert not any("skipped.py" in f for f in all_files)  # nested pattern applies too
