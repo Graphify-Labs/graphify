@@ -382,6 +382,7 @@ def _render_frontmatter(platform: Platform) -> str:
 # belt-and-braces post-check on the final body.
 
 _PY_INVOKE_POSIX = '$(cat graphify-out/.graphify_python) -c "'
+_PY_INVOKE_POSIX_QUOTED = '"$(cat graphify-out/.graphify_python)" -c "'
 _PY_INVOKE_PS_OPEN = "@'"
 _PY_INVOKE_PS_CLOSE = "'@ | & (Get-Content graphify-out\\.graphify_python) -"
 _MKDIR_POSIX = "mkdir -p graphify-out"
@@ -393,7 +394,7 @@ _FIND_CHUNKS_PS = (
 )
 
 # Bash-only tokens that must never survive in a powershell-shell render.
-_POWERSHELL_BANNED_TOKENS = ("$(cat ", "rm -f ", "2>/dev/null", "```bash")
+_POWERSHELL_BANNED_TOKENS = ("$(cat ", '"$(cat ', "rm -f ", "2>/dev/null", "```bash")
 
 
 def _unescape_bash_dq(line: str) -> str:
@@ -439,7 +440,7 @@ def _translate_bash_block(lines: list[str]) -> list[str]:
                 in_py = False
             else:
                 out.append(_unescape_bash_dq(line))
-        elif line == _PY_INVOKE_POSIX:
+        elif line in (_PY_INVOKE_POSIX, _PY_INVOKE_POSIX_QUOTED):
             out.append(_PY_INVOKE_PS_OPEN)
             in_py = True
         elif line == _MKDIR_POSIX:

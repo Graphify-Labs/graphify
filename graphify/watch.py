@@ -160,59 +160,27 @@ def _rebuild_lock(out_dir: Path, *, blocking: bool = False):
     """Per-repo advisory lock around a rebuild.
 
     Yields True if acquired, False if another rebuild is already running and
-    ``blocking`` is False. Uses fcntl.flock so the lock is released
-    automatically if the process is killed (no stale-lock cleanup needed).
+    ``blocking`` is False. Uses the unified Graphify build-lock protocol.
 
-    While the lock is held, ``.rebuild.lock`` contains the owning PID followed
-    by a newline so external pollers (publish scripts, etc.) can read it.
-    On successful release the file is unlinked so downstream tooling that
-    waits for the lock to clear by polling for its absence unblocks promptly.
-
-    Falls back to a no-op yield(True) on platforms without fcntl (Windows).
+    While the lock is held, ``.rebuild.lock`` contains the owning PID on line 1
+    so external pollers and inspection can read it. On release the file is
+    unlinked so downstream tooling unblocks promptly.
     """
+    from graphify.detect import acquire_build_lock, release_build_lock, LockResult
+    target_path = out_dir.parent if out_dir.name == "graphify-out" else out_dir
+    status = acquire_build_lock(target_path)
+    acquired = status.result in (LockResult.ACQUIRED, LockResult.RECLAIMED_STALE)
+    if not acquired and blocking:
+        start = time.monotonic()
+        while not acquired and (time.monotonic() - start < 30.0):
+            time.sleep(0.05)
+            status = acquire_build_lock(target_path)
+            acquired = status.result in (LockResult.ACQUIRED, LockResult.RECLAIMED_STALE)
     try:
-        import fcntl
-    except ImportError:
-        yield True
-        return
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-    lock_path = out_dir / ".rebuild.lock"
-    # "a+" creates the file if missing without truncating an existing holder's
-    # PID payload — important because another process may have already written
-    # its PID before we attempt the flock.
-    fh = open(lock_path, "a+", encoding="utf-8")
-    acquired = False
-    try:
-        flags = fcntl.LOCK_EX if blocking else (fcntl.LOCK_EX | fcntl.LOCK_NB)
-        try:
-            fcntl.flock(fh.fileno(), flags)
-        except BlockingIOError:
-            yield False
-            return
-        acquired = True
-        # Replace any prior owner's PID with ours so external readers see a
-        # single parseable line, not a digit-concatenation across rebuilds.
-        try:
-            fh.seek(0)
-            fh.truncate()
-            fh.write(f"{os.getpid()}\n")
-            fh.flush()
-        except OSError:
-            pass
-        yield True
+        yield acquired
     finally:
-        if acquired:
-            try:
-                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-            except OSError:
-                pass
-        fh.close()
-        # Signal "rebuild done" by removing the lock file. Only the holder
-        # unlinks; a non-acquiring caller leaves the existing lock in place.
-        if acquired:
-            with contextlib.suppress(OSError):
-                lock_path.unlink()
+        if acquired and status.token:
+            release_build_lock(target_path, token=status.token)
 
 
 def _apply_resource_limits() -> None:

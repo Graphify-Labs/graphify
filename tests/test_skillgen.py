@@ -430,7 +430,7 @@ def test_windows_python_step_bodies_match_posix_verbatim():
     bodies = []
     current = None
     for line in claude_core.splitlines():
-        if line == gen._PY_INVOKE_POSIX:
+        if line in (gen._PY_INVOKE_POSIX, gen._PY_INVOKE_POSIX_QUOTED):
             current = []
         elif current is not None and line == '"':
             bodies.append("\n".join(gen._unescape_bash_dq(l) for l in current))
@@ -1093,3 +1093,47 @@ def test_semantic_cache_calls_pass_prompt_file_for_every_split_host():
             )
         # The placeholder is inert unless the body tells the agent what to substitute.
         assert "SPEC_PATH below is the **absolute** path" in a.content, a.path
+
+
+def test_fast_path_graph_state_inspection_rendered_across_all_split_hosts():
+    """All split-host skill variants include the inspect_graph_state fast-path policy."""
+    platforms = gen.load_platforms()
+    for key, p in platforms.items():
+        if p.bucket != "split":
+            continue
+        arts = gen.render(p)
+        core_art = next(a for a in arts if a.path == p.skill_dst)
+        content = core_art.content
+        assert "Fast path — existing graph" in content, f"{p.skill_dst} missing fast path section"
+        assert "inspect_graph_state" in content, f"{p.skill_dst} missing inspect_graph_state call"
+        assert "FRESH" in content, f"{p.skill_dst} missing FRESH state guidance"
+        assert "STALE" in content, f"{p.skill_dst} missing STALE state guidance"
+        assert "INCOMPLETE" in content, f"{p.skill_dst} missing INCOMPLETE state guidance"
+        assert "BUILDING" in content, f"{p.skill_dst} missing BUILDING state guidance"
+        assert "UNVERIFIABLE" in content, f"{p.skill_dst} missing UNVERIFIABLE state guidance"
+        assert "ABSENT" in content, f"{p.skill_dst} missing ABSENT state guidance"
+
+
+def test_fast_path_powershell_translation_for_windows():
+    """Windows platform skill renders valid PowerShell for inspect_graph_state call."""
+    platforms = gen.load_platforms()
+    arts = gen.render(platforms["windows"])
+    core_art = next(a for a in arts if a.path == "graphify/skill-windows.md")
+    content = core_art.content
+    assert "'@ | & (Get-Content graphify-out\\.graphify_python) -" in content
+    assert "inspect_graph_state" in content
+    assert "$(cat " not in content
+    assert '"$(cat ' not in content
+
+
+def test_posix_skills_use_quoted_interpreter_invocation():
+    """POSIX platform skills use quoted \"$(cat ...)\" for fast path, step 2, and abort cleanup."""
+    platforms = gen.load_platforms()
+    for key in ("claude", "amp", "agents", "codex", "opencode"):
+        arts = gen.render(platforms[key])
+        core_art = next(a for a in arts if a.path == platforms[key].skill_dst)
+        content = core_art.content
+        assert '"$(cat graphify-out/.graphify_python)" -c "' in content, f"{key} missing quoted python invocation"
+        assert "release_build_lock" in content
+        assert "re_state.state == GraphState.FRESH" in content
+        assert "release_build_lock('.', token=status.token)" in content
