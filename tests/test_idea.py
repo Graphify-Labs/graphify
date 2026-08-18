@@ -121,6 +121,29 @@ def test_cytoscape_elements_normalize_edge_endpoint_keys():
     assert graph_edge["target"] == "concept:neighbors"
 
 
+def test_cytoscape_elements_preserve_numeric_zero_node_ids():
+    response = _response()
+    graph = response["entriesAndGraphOfContext"]["graph"]["graphologyGraph"]
+    graph["nodes"] = [
+        {"key": 0, "attributes": {"degree": 1}},
+        {"key": 1, "attributes": {"degree": 1}},
+    ]
+    graph["edges"] = [{"source": 0, "target": 1, "attributes": {"weight": 1}}]
+
+    elements = cytoscape_elements(
+        response,
+        title="Numbered concepts",
+        idea_text="Connect zero to one.",
+        note_uri="obsidian://open?vault=Notes&file=Ideas%2FNumbers",
+    )
+
+    ids = {item["data"]["id"] for item in elements}
+    assert {"concept:0", "concept:1"} <= ids
+    edge = next(item["data"] for item in elements if item["data"].get("kind") == "infranodus")
+    assert edge["source"] == "concept:0"
+    assert edge["target"] == "concept:1"
+
+
 def test_render_cytoscape_html_escapes_script_breakouts_and_js_line_separators():
     elements = [
         {

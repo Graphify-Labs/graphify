@@ -152,6 +152,10 @@ def _obsidian_uri(vault: Path, note_path: Path) -> str:
     return f"obsidian://open?{query}"
 
 
+def _identifier(value: Any) -> str:
+    return "" if value is None else str(value).strip()
+
+
 def cytoscape_elements(
     response: Mapping[str, Any],
     *,
@@ -187,7 +191,10 @@ def cytoscape_elements(
     for item in graph["nodes"]:
         if not isinstance(item, Mapping):
             continue
-        key = str(item.get("key") or item.get("id") or "").strip()
+        key_value = item.get("key")
+        if key_value is None:
+            key_value = item.get("id")
+        key = _identifier(key_value)
         if not key:
             continue
         attrs = item.get("attributes")
@@ -226,8 +233,8 @@ def cytoscape_elements(
     for item in graph["edges"]:
         if not isinstance(item, Mapping):
             continue
-        source_key = str(item.get("source") or "").strip()
-        target_key = str(item.get("target") or "").strip()
+        source_key = _identifier(item.get("source"))
+        target_key = _identifier(item.get("target"))
         source = f"concept:{source_key}"
         target = f"concept:{target_key}"
         if source not in concept_ids or target not in concept_ids:

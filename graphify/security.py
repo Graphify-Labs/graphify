@@ -237,7 +237,27 @@ class _NoFileRedirectHandler(urllib.request.HTTPRedirectHandler):
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         validate_url(newurl)          # raises ValueError if scheme is wrong
+        old_origin = urllib.parse.urlsplit(req.full_url)
+        new_origin = urllib.parse.urlsplit(newurl)
+        if req.has_header("Authorization") and (
+            old_origin.scheme.lower(),
+            old_origin.hostname,
+            old_origin.port,
+        ) != (
+            new_origin.scheme.lower(),
+            new_origin.hostname,
+            new_origin.port,
+        ):
+            raise ValueError("Blocked cross-origin redirect for authenticated request.")
         return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+class _SchemeValidationHandler(urllib.request.BaseHandler):
+    """Reject non-HTTP(S) requests before protocol-specific handlers run."""
+
+    def default_open(self, req):
+        validate_url(req.full_url)
+        return None
 
 
 def build_safe_opener() -> urllib.request.OpenerDirector:
@@ -246,6 +266,7 @@ def build_safe_opener() -> urllib.request.OpenerDirector:
     # subclasses, so every connection resolves+validates DNS once and connects
     # to that exact IP. Thread-safe: no process-global state is mutated.
     return urllib.request.build_opener(
+        _SchemeValidationHandler,
         _SSRFGuardedHTTPHandler,
         _SSRFGuardedHTTPSHandler,
         _NoFileRedirectHandler,

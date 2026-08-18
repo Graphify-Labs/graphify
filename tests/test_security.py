@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -10,6 +11,15 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from graphify.security import (
+    _MAX_FETCH_BYTES,
+    _MAX_GRAPH_FILE_BYTES,
+    _MAX_TEXT_BYTES,
+    _METADATA_MAX_LIST_ITEMS,
+    _METADATA_MAX_VALUE_LEN,
+    _max_graph_file_bytes,
+    _sanitize_metadata_string,
+    _sanitize_metadata_value,
+    build_safe_opener,
     check_graph_file_size_cap,
     sanitize_label,
     sanitize_metadata,
@@ -17,14 +27,6 @@ from graphify.security import (
     safe_fetch_text,
     validate_graph_path,
     validate_url,
-    _MAX_FETCH_BYTES,
-    _MAX_GRAPH_FILE_BYTES,
-    _MAX_TEXT_BYTES,
-    _max_graph_file_bytes,
-    _METADATA_MAX_LIST_ITEMS,
-    _METADATA_MAX_VALUE_LEN,
-    _sanitize_metadata_string,
-    _sanitize_metadata_value,
 )
 
 
@@ -77,6 +79,32 @@ def test_safe_fetch_rejects_file_url():
 def test_safe_fetch_rejects_ftp_url():
     with pytest.raises(ValueError, match="ftp"):
         safe_fetch("ftp://example.com/file.zip")
+
+
+def test_build_safe_opener_rejects_file_url():
+    with pytest.raises(ValueError, match="file"):
+        build_safe_opener().open("file:///etc/passwd")
+
+
+def test_authenticated_redirect_must_stay_on_same_origin():
+    from graphify.security import _NoFileRedirectHandler
+
+    request = urllib.request.Request(
+        "https://infranodus.com/api",
+        headers={"Authorization": "secret"},
+    )
+    handler = _NoFileRedirectHandler()
+    with patch("graphify.security.validate_url", return_value="https://example.com/"):
+        with pytest.raises(ValueError, match="cross-origin"):
+            handler.redirect_request(
+                request,
+                None,
+                302,
+                "Found",
+                {},
+                "https://example.com/redirect",
+            )
+
 
 def test_safe_fetch_returns_bytes(tmp_path):
     mock_resp = _make_mock_response(b"hello world")
