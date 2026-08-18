@@ -261,7 +261,7 @@ def test_write_new_atomically_creates_new_target(tmp_path):
     assert target.read_text() == "content"
 
 
-def test_write_new_falls_back_when_filesystem_rejects_hard_links(tmp_path, monkeypatch):
+def test_write_new_reports_filesystem_without_hard_links(tmp_path, monkeypatch):
     target = tmp_path / "idea.html"
 
     def reject_hard_link(source, destination):
@@ -269,9 +269,10 @@ def test_write_new_falls_back_when_filesystem_rejects_hard_links(tmp_path, monke
 
     monkeypatch.setattr("graphify.idea.os.link", reject_hard_link)
 
-    _write_new(target, "content", force=False)
+    with pytest.raises(OSError, match="atomic no-overwrite publication"):
+        _write_new(target, "content", force=False)
 
-    assert target.read_text() == "content"
+    assert not target.exists()
     assert list(tmp_path.glob(".idea.html.*.tmp")) == []
 
 

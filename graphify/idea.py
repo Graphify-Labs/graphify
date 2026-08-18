@@ -455,18 +455,12 @@ def _write_new(path: Path, content: str, *, force: bool) -> None:
                 }
                 if error.errno not in unsupported:
                     raise
-                try:
-                    # Some removable/network filesystems cannot create hard
-                    # links. O_EXCL preserves the no-overwrite guarantee there.
-                    target_fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
-                except FileExistsError:
-                    raise FileExistsError(
-                        f"Refusing to overwrite existing file: {path}"
-                    ) from None
-                with os.fdopen(target_fd, "w", encoding="utf-8") as target:
-                    target.write(content)
-                    target.flush()
-                    os.fsync(target.fileno())
+                raise OSError(
+                    error.errno,
+                    "Filesystem does not support atomic no-overwrite publication; "
+                    "rerun with --force to allow atomic replacement.",
+                    path,
+                ) from error
     finally:
         temporary.unlink(missing_ok=True)
 
