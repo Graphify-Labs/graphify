@@ -26,6 +26,7 @@ Signatures below are the real ones - `tests/test_architecture_doc.py` imports ev
 | `wiki.py` | `to_wiki(G, communities, output_dir, ...)` | graph → one markdown article per community + `index.md` |
 | `callflow_html.py` | `write_callflow_html(...)` | graphify-out files → Mermaid architecture/call-flow HTML |
 | `ingest.py` | `ingest(url, target_dir, ...)` | URL → file saved to corpus dir |
+| `idea.py` | `request_infranodus`, `cytoscape_elements`, `create_idea_graph` | idea text → InfraNodus graph → Obsidian note + clickable Cytoscape HTML |
 | `cache.py` | `check_semantic_cache(files, root)`, `save_semantic_cache(nodes, edges, ...)` | files → cached nodes / edges / hyperedges + the list of files still needing extraction |
 | `security.py` | `validate_url`, `safe_fetch`, `validate_graph_path`, `sanitize_label` | URL / path / label → validated value, or raises |
 | `validate.py` | `validate_extraction(data)`, `assert_valid(data)` | extraction dict → **list of schema error strings** (`validate_extraction` returns them; `assert_valid` raises) |
