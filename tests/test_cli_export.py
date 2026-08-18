@@ -775,3 +775,34 @@ def test_cluster_only_preserves_built_at_commit_from_non_repo_cwd(tmp_path):
     assert r.returncode == 0, r.stderr
     final = json.loads(graph_json.read_text(encoding="utf-8"))
     assert final.get("built_at_commit") == commit_x
+
+
+# ── graphify query names its graph (#2789) ───────────────────────────────────
+
+def test_query_command_header_names_the_graph(tmp_path):
+    """End-to-end: the CLI `query` command must actually wire the resolved graph
+    path into the header. The header logic is unit-tested in
+    test_query_names_its_graph.py, but only a real subprocess run proves the CLI
+    call site passes graph_path through (the wiring that was the point of #2789)."""
+    _make_graph(tmp_path)
+    r = _run(["query", "Transformer"], tmp_path)
+    assert r.returncode == 0, r.stderr
+    first_line = r.stdout.splitlines()[0]
+    assert first_line.startswith("Graph: graphify-out/graph.json ("), first_line
+    assert "nodes)" in first_line
+    assert "Traversal:" in first_line
+
+
+def test_query_command_names_a_graph_outside_the_cwd(tmp_path):
+    """The #2789 scenario: querying an explicit graph that sits outside the CWD
+    must show it in full so the operator can tell the answer came from elsewhere."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    out = _make_graph(elsewhere)
+    here = tmp_path / "here"
+    here.mkdir()
+    r = _run(["query", "Transformer", "--graph", str(out / "graph.json")], here)
+    assert r.returncode == 0, r.stderr
+    first_line = r.stdout.splitlines()[0]
+    assert first_line.startswith("Graph: "), first_line
+    assert "elsewhere" in first_line, first_line
