@@ -9,6 +9,7 @@ import pytest
 
 from graphify.watch import (
     _notify_only,
+    _rebuild_code,
     _WATCHED_EXTENSIONS,
     _rebuild_lock,
     _check_shrink,
@@ -1256,6 +1257,61 @@ def test_check_shrink_blocks_shrink_outside_rebuilt_sources(capsys):
     assert "Refusing to overwrite" in capsys.readouterr().err
 
 
+def test_check_shrink_blocks_loss_from_failed_rebuilt_source(capsys):
+    """A failed extractor must not account for nodes it dropped during rebuild."""
+    existing = {"nodes": [
+        {"id": "app", "source_file": "app.py"},
+        {"id": "table", "source_file": "schema.sql"},
+    ], "links": []}
+    new = {"nodes": [{"id": "app", "source_file": "app.py"}], "links": []}
+
+    ok = _check_shrink(
+        False,
+        existing,
+        new,
+        rebuilt_sources={"app.py", "schema.sql"},
+        failed_sources={"schema.sql"},
+    )
+
+    assert ok is False
+    assert "Refusing to overwrite" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("no_cluster", [False, True])
+def test_rebuild_refuses_loss_from_failed_source(tmp_path, monkeypatch, no_cluster):
+    """A failed AST extractor must not overwrite its last good graph."""
+    previous_sql_node_count = 10
+    (tmp_path / "app.py").write_text(
+        "def alpha(): return beta()\ndef beta(): return 1\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "schema.sql").write_text(
+        "create table cliente (id int primary key);\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    graph_path = out / "graph.json"
+    existing_nodes = [
+        {"id": "app.py", "label": "app.py", "source_file": "app.py", "type": "file", "_origin": "ast"},
+        {"id": "app.py:alpha", "label": "alpha", "source_file": "app.py", "type": "function", "_origin": "ast"},
+        {"id": "app.py:beta", "label": "beta", "source_file": "app.py", "type": "function", "_origin": "ast"},
+        {"id": "schema.sql", "label": "schema.sql", "source_file": "schema.sql", "type": "file", "_origin": "ast"},
+    ]
+    existing_nodes.extend(
+        {"id": f"sql:table_{index}", "label": f"table_{index}", "source_file": "schema.sql", "type": "table", "_origin": "ast"}
+        for index in range(previous_sql_node_count)
+    )
+    existing = {"nodes": existing_nodes, "links": []}
+    graph_path.write_text(json.dumps(existing), encoding="utf-8")
+    monkeypatch.setitem(sys.modules, "tree_sitter_sql", None)
+
+    ok = _rebuild_code(tmp_path, force=False, no_cluster=no_cluster)
+
+    assert ok is False
+    assert json.loads(graph_path.read_text(encoding="utf-8")) == existing
+
+
 def test_check_shrink_allows_growth():
     """new > existing is always fine."""
     ok = _check_shrink(
@@ -1627,10 +1683,12 @@ def test_queue_and_drain_pending_round_trip(tmp_path):
 
     pending_file = out / _PENDING_FILENAME
     assert pending_file.exists()
-    # Each path written on its own line.
-    assert pending_file.read_text(encoding="utf-8").splitlines() == [
-        "a.py", "sub/b.py", "c.md",
-    ]
+    # Each path written on its own line. Compared as Paths, not as strings: the
+    # documented contract is "one path per line" (see _queue_pending), not a
+    # separator convention, and os.fspath emits the native one — so a literal
+    # "sub/b.py" fails on Windows without any real defect.
+    lines = pending_file.read_text(encoding="utf-8").splitlines()
+    assert [Path(line) for line in lines] == paths
 
     drained = _drain_pending(out)
     assert drained == paths
@@ -3458,3 +3516,127 @@ def test_incremental_indirect_call_parity_and_idempotency(tmp_path):
 
     fresh = _2438_seed(tmp_path / "fresh", caller_prefix="    x = 1\n")
     assert sorted(_2438_indirects(_2406_graph(fresh))) == sorted(incremental)
+
+
+# --- #2603: absolute .graphify_root must not re-anchor cwd-relative sources ---
+
+def test_subfolder_root_marker_preserves_unchanged_nodes(tmp_path, monkeypatch):
+    """End-to-end pin for #2603: a graph built from the repo root scoped to a
+    subfolder stores source_file relative to the repo root ("src/mod0.py"),
+    while the skill writes an ABSOLUTE subfolder path into .graphify_root.
+    _StoredSourcePaths then anchored the stored paths to the subfolder,
+    doubling them (src/src/...), judging every unchanged source deleted, and
+    collapsing the graph. The marker must be validated against the stored
+    paths before it is trusted as their anchor."""
+    from graphify.watch import _rebuild_code
+
+    repo = tmp_path / "repo"
+    src = repo / "src"
+    src.mkdir(parents=True)
+    for i in range(3):
+        (src / f"mod{i}.py").write_text(
+            f"class Thing{i}:\n    def run(self):\n        return {i}\n",
+            encoding="utf-8",
+        )
+    monkeypatch.chdir(repo)
+
+    # Build from the repo root scoped to the subfolder (the skill's shape):
+    # stored source_file values come out relative to the repo root.
+    assert _rebuild_code(Path("src"), acquire_lock=False) is True
+    out = src / "graphify-out"
+    graph_path = out / "graph.json"
+    baseline = json.loads(graph_path.read_text(encoding="utf-8"))
+    baseline_ids = {n["id"] for n in baseline["nodes"]}
+    assert any(
+        (n.get("source_file") or "").startswith("src/") for n in baseline["nodes"]
+    ), "precondition: stored sources are repo-root-relative"
+
+    # The skill's Step 1 marker: an absolute path to the SUBFOLDER. The build
+    # above wrote the safe relative form; overwrite with the absolute form
+    # that reproduces #2603.
+    (out / ".graphify_root").write_text(str(src.resolve()), encoding="utf-8")
+
+    # Incremental rebuild the way the post-commit hook calls it: absolute
+    # watch_path read from the marker, one changed file.
+    (src / "mod0.py").write_text(
+        "class Thing0:\n    def run(self):\n        return 100\n", encoding="utf-8"
+    )
+    assert _rebuild_code(
+        src.resolve(), changed_paths=[Path("src/mod0.py")], acquire_lock=False
+    ) is True
+
+    after_ids = {
+        n["id"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]
+    }
+    # mod0's nodes are re-minted by the re-extraction; nodes of the UNCHANGED
+    # files must all survive.
+    unchanged_lost = {i for i in baseline_ids - after_ids if "mod0" not in i}
+    assert not unchanged_lost, (
+        f"unchanged sources lost {len(unchanged_lost)} node(s) to marker "
+        f"re-anchoring: {sorted(unchanged_lost)[:5]}"
+    )
+
+
+def test_subfolder_marker_still_evicts_a_deleted_file(tmp_path, monkeypatch):
+    """The anchor validation must not over-preserve (#2603): once the correct
+    anchor is chosen, a genuinely deleted source is still evicted."""
+    from graphify.watch import _rebuild_code
+
+    repo = tmp_path / "repo"
+    src = repo / "src"
+    src.mkdir(parents=True)
+    for i in range(3):
+        (src / f"mod{i}.py").write_text(
+            f"class Thing{i}:\n    def run(self):\n        return {i}\n", encoding="utf-8"
+        )
+    monkeypatch.chdir(repo)
+    assert _rebuild_code(Path("src"), acquire_lock=False) is True
+    out = src / "graphify-out"
+    graph_path = out / "graph.json"
+    (out / ".graphify_root").write_text(str(src.resolve()), encoding="utf-8")
+
+    (src / "mod1.py").unlink()  # a genuine deletion
+    assert _rebuild_code(
+        src.resolve(), changed_paths=[Path("src/mod1.py")], acquire_lock=False
+    ) is True
+
+    after = json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]
+    assert not any("mod1" in n["id"] for n in after), "deleted file's nodes must be evicted"
+    assert any("mod2" in n["id"] for n in after), "unchanged file must survive"
+
+
+def test_subfolder_marker_incremental_matches_cold_build(tmp_path, monkeypatch):
+    """Incremental rebuild with the validated anchor produces the same node-id
+    set as a cold rebuild of the identical on-disk state (id parity, #2603)."""
+    from graphify.watch import _rebuild_code
+
+    repo = tmp_path / "repo"
+    src = repo / "src"
+    src.mkdir(parents=True)
+    for i in range(3):
+        (src / f"mod{i}.py").write_text(
+            f"class Thing{i}:\n    def run(self):\n        return {i}\n", encoding="utf-8"
+        )
+    monkeypatch.chdir(repo)
+    assert _rebuild_code(Path("src"), acquire_lock=False) is True
+    out = src / "graphify-out"
+    graph_path = out / "graph.json"
+    (out / ".graphify_root").write_text(str(src.resolve()), encoding="utf-8")
+
+    (src / "mod0.py").write_text(
+        "class Thing0:\n    def run(self):\n        return 100\n", encoding="utf-8"
+    )
+    assert _rebuild_code(
+        src.resolve(), changed_paths=[Path("src/mod0.py")], acquire_lock=False
+    ) is True
+    incremental_ids = {n["id"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+
+    import shutil
+    shutil.rmtree(out)
+    assert _rebuild_code(Path("src"), acquire_lock=False) is True
+    cold_ids = {n["id"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+
+    assert incremental_ids == cold_ids, (
+        f"incremental vs cold id drift: only-incremental={sorted(incremental_ids - cold_ids)[:5]}, "
+        f"only-cold={sorted(cold_ids - incremental_ids)[:5]}"
+    )

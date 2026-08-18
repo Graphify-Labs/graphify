@@ -112,3 +112,54 @@ def test_malformed_manifest_does_not_crash(tmp_path):
     p = _write(tmp_path / "pom.xml", "<project><not closed")
     r = extract_package_manifest(p)  # parse error -> empty, no exception
     assert r["nodes"] == [] and r["edges"] == []
+
+
+# ── #2434: Cargo.toml joins pyproject.toml/go.mod/pom.xml as a package manifest ─
+
+def test_cargo_classifies_as_code_manifest(tmp_path):
+    p = _write(tmp_path / "Cargo.toml", '[package]\nname = "x"\n')
+    assert is_package_manifest_path(p)
+    assert classify_file(p) is FileType.CODE
+
+
+def test_cargo_parses_name_version_and_deps(tmp_path):
+    # A crate declares its name/version under [package]; deps appear both as a
+    # bare version string and as an inline table (version + features).
+    p = _write(tmp_path / "Cargo.toml",
+               '[package]\nname = "my-crate"\nversion = "0.3.1"\nedition = "2021"\n\n'
+               '[dependencies]\nserde = "1.0"\ntokio = { version = "1", features = ["full"] }\n')
+    r = extract_package_manifest(p)
+    pkg = _pkg_nodes(r)[0]
+    assert pkg["label"] == "my-crate" and pkg["version"] == "0.3.1"
+    assert pkg["ecosystem"] == "cargo"
+    deps = {e["target"] for e in r["edges"] if e["relation"] == "depends_on"}
+    assert {"pkg_serde", "pkg_tokio"} <= deps  # inline-table dep keyed by name
+
+
+def test_cargo_virtual_workspace_manifest_emits_no_package(tmp_path):
+    # A virtual workspace root has no [package] table, so it declares no package
+    # of its own — it must not fabricate a node.
+    p = _write(tmp_path / "Cargo.toml", '[workspace]\nmembers = ["a", "b"]\n')
+    r = extract_package_manifest(p)
+    assert _pkg_nodes(r) == []
+
+
+def test_cargo_target_conditional_deps_are_collected(tmp_path):
+    # Platform-gated deps under [target.'cfg(...)'.dependencies] are common in
+    # real crates and must not be dropped just because they are conditional.
+    p = _write(tmp_path / "Cargo.toml",
+               '[package]\nname = "portable"\n\n'
+               '[dependencies]\nserde = "1"\n\n'
+               '[target."cfg(windows)".dependencies]\nwinapi = "0.3"\n')
+    r = extract_package_manifest(p)
+    deps = {e["target"] for e in r["edges"] if e["relation"] == "depends_on"}
+    assert {"pkg_serde", "pkg_winapi"} <= deps
+
+
+def test_cargo_workspace_inherited_version_does_not_crash(tmp_path):
+    # `version.workspace = true` yields a table, not a string. It must be ignored
+    # (no bogus version attribute) rather than crash the parse.
+    p = _write(tmp_path / "Cargo.toml",
+               '[package]\nname = "member"\nversion.workspace = true\n')
+    pkg = _pkg_nodes(extract_package_manifest(p))[0]
+    assert pkg["label"] == "member" and "version" not in pkg

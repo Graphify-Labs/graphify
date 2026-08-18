@@ -2,7 +2,32 @@
 from __future__ import annotations
 import re
 from datetime import date
+from pathlib import Path
 import networkx as nx
+
+
+def _portable_root_label(root: str) -> str:
+    """Portable label for the report header — the project directory basename.
+
+    GRAPH_REPORT.md is a tracked artifact in practice, so its header must not
+    bake the generator host's absolute path into the file: the same graph would
+    otherwise produce different bytes on different machines and leak the build
+    machine's directory layout into git history (#2628, same class as #2598).
+
+    Taking the basename strips any leading absolute path without touching the
+    filesystem, and makes `graphify update .`, `graphify update ./proj`, and
+    `graphify update /abs/path/proj` all label the header `proj`. Only the
+    degenerate `.`/``/`..` cases need a cwd resolve to recover the real name;
+    if even that fails, fall back to the raw value.
+    """
+    raw = str(root).replace("\\", "/")
+    name = Path(raw).name
+    if name in ("", ".", ".."):
+        try:
+            name = Path(raw).resolve().name
+        except (OSError, RuntimeError):
+            name = ""
+    return name or raw
 
 
 def _safe_community_name(label: str) -> str:
@@ -101,7 +126,7 @@ def generate(
     inf_avg = round(sum(inf_scores) / len(inf_scores), 2) if inf_scores else None
 
     lines = [
-        f"# Graph Report - {root}  ({today})",
+        f"# Graph Report - {_portable_root_label(root)}  ({today})",
         "",
         "## Corpus Check",
     ]

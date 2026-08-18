@@ -36,6 +36,12 @@ def test_write_text_atomic_preserves_existing_on_failure(tmp_path, monkeypatch):
     assert sorted(x.name for x in tmp_path.iterdir()) == ["graph.json"]
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="Windows has no POSIX mode bits: chmod only toggles the read-only "
+           "attribute, and st_mode reports 0o666 for any writable file, so "
+           "chmod(0o644) followed by an equality check can never hold",
+)
 def test_write_text_atomic_preserves_existing_mode(tmp_path):
     # An atomic replace must not tighten a 0644 file to mkstemp's 0600 default.
     p = tmp_path / "graph.json"
@@ -43,6 +49,44 @@ def test_write_text_atomic_preserves_existing_mode(tmp_path):
     os.chmod(p, 0o644)
     write_text_atomic(p, '{"x": 1}')
     assert (os.stat(p).st_mode & 0o777) == 0o644
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows read-only attribute semantics")
+def test_write_text_atomic_refuses_a_readonly_destination_without_leaking_a_temp(
+    tmp_path,
+):
+    """The Windows analogue of the mode-preservation contract.
+
+    There is no POSIX mode to preserve here, so the property worth pinning is
+    the one Windows actually has: a read-only destination is NOT silently
+    overwritten, the original survives intact, and — the part that used to be
+    wrong — no temp file is left behind.
+
+    `_atomic_replace` chmods the temp to match the destination, so against a
+    read-only target the temp is read-only too; Windows then refuses to unlink
+    it and the cleanup swallowed the error, dropping a `.graph.json.*.tmp` into
+    the output directory on every failed write.
+
+    Note this diverges from POSIX, where `os.replace` needs only directory write
+    permission and so happily replaces a read-only file. Documented rather than
+    "fixed": refusing to overwrite a file the user marked read-only is the
+    defensible behaviour.
+    """
+    import stat as _stat
+
+    p = tmp_path / "graph.json"
+    p.write_text("original", encoding="utf-8")
+    os.chmod(p, _stat.S_IREAD)
+    try:
+        with pytest.raises(PermissionError):
+            write_text_atomic(p, "replaced")
+
+        assert p.read_text(encoding="utf-8") == "original", "read-only file was clobbered"
+        assert [x.name for x in tmp_path.iterdir()] == ["graph.json"], (
+            f"failed write leaked a temp file: {[x.name for x in tmp_path.iterdir()]}"
+        )
+    finally:
+        os.chmod(p, _stat.S_IWRITE)  # let tmp_path cleanup remove it
 
 
 def test_write_text_atomic_new_file_respects_umask(tmp_path):
@@ -55,7 +99,7 @@ def test_write_text_atomic_new_file_respects_umask(tmp_path):
     assert (os.stat(p).st_mode & 0o777) == (0o666 & ~umask)
 
 
-def test_write_text_atomic_writes_through_symlink(tmp_path):
+def test_write_text_atomic_writes_through_symlink(requires_symlinks, tmp_path):
     # Shared-output setups symlink graph.json to shared storage; the atomic write
     # must update the target and keep the link, not replace it with a real file.
     target = tmp_path / "real.json"

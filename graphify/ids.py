@@ -15,13 +15,14 @@ is exactly how the recurring ID-drift bug class crept in (#811 Unicode collapse,
 module exists so the recipe lives in one place and the two callers can no longer
 diverge.
 
-The recipe: NFKC-normalize (so composed/decomposed Unicode forms collapse),
-casefold, NFKC-normalize again (casefold can *expand* a character into a base
-letter plus a combining mark — ``İ`` -> ``i`` + U+0307 — and the second pass
-recomposes what can be recomposed), replace runs of non-word characters with a
-single underscore (``re.UNICODE`` so CJK/Cyrillic/Arabic/accented-Latin letters
-survive instead of collapsing to a per-file node), collapse repeated
-underscores, then strip leading/trailing underscores.
+The recipe: iterate ``casefold`` then NFKC-normalize to a fixpoint (casefold can
+*expand* a character into a base letter plus a combining mark — ``İ`` -> ``i`` +
+U+0307 — and NFKC then recomposes what can be recomposed; because the two do not
+commute and neither is a fixpoint of the other, a single pass is not
+caseless-stable), then replace runs of non-word characters with a single
+underscore (``re.UNICODE`` so CJK/Cyrillic/Arabic/accented-Latin letters survive
+instead of collapsing to a per-file node), collapse repeated underscores, then
+strip leading/trailing underscores.
 
 Casefolding runs BEFORE the non-word filter, not after. With it last, the
 combining marks casefold introduces were never filtered: ``İslemYap`` produced
@@ -29,6 +30,14 @@ combining marks casefold introduces were never filtered: ``İslemYap`` produced
 second pass collapsed it to ``i_slemyap``, so the function was not idempotent
 and the builder's re-normalization disagreed with the extractor's ``make_id``
 for any Turkish identifier (#2614).
+
+Casefolding runs in a FIXPOINT LOOP, not once. A single ``NFKC(casefold(...))``
+left ``normalize_id(s) != normalize_id(s.casefold())`` for some combining-mark
+sequences (Greek ypogegrammeni U+0345 followed by a combining accent):
+pre-casefolding turns U+0345 into ``ι``, which NFKC composes with the accent into
+a precomposed char the single pass never reached. Iterating to a fixpoint —
+casefold first, on the raw input — makes the result caseless-stable regardless of
+how many times the caller has already casefolded.
 """
 from __future__ import annotations
 
@@ -41,21 +50,37 @@ __all__ = ["normalize_id", "make_id"]
 def normalize_id(s: str) -> str:
     r"""Normalize a single ID string to its canonical form.
 
-    Guarantees, both enforced by tests:
+    Guarantees, all enforced by tests:
 
     - Idempotent: ``normalize_id(normalize_id(s)) == normalize_id(s)``.
     - The result contains only ``\w`` characters and ``_``.
+    - Caseless-stable: ``normalize_id(s) == normalize_id(s.casefold())``.
 
-    Casefolding before the ``[^\w]+`` filter is what makes both hold — see the
-    module docstring for why the reverse order silently broke them (#2614).
+    casefold and NFKC do not commute, and neither is a fixpoint of the other:
+    casefolding a char can expand it into a base letter plus a combining mark
+    (``İ`` -> ``i`` + U+0307), and NFKC can then recompose that mark with an
+    adjacent one into a different precomposed char. A single ``NFKC(casefold(...))``
+    pass therefore left ``normalize_id(s) != normalize_id(s.casefold())`` for some
+    combining-mark sequences (e.g. Greek ypogegrammeni U+0345 followed by a
+    combining accent): pre-casefolding turned U+0345 into ``ι`` which NFKC then
+    composed with the accent, reaching a form the single-pass recipe never saw.
+
+    So iterate ``casefold`` then ``NFKC`` to a fixpoint (casefold FIRST, on the
+    raw input, so a caller that pre-casefolds lands on the same fixpoint). The
+    loop is bounded — Unicode caseless folding converges in one or two steps —
+    with a hard cap as a termination guard. Only then apply the ``[^\w]+`` filter,
+    so every combining mark casefold introduced has been fully normalized before
+    it is filtered (#2614 and its combining-mark follow-on).
     """
-    s = unicodedata.normalize("NFKC", s)
-    # casefold can expand one character into a letter + combining mark, so it
-    # must run while the non-word filter can still see the result.
-    s = unicodedata.normalize("NFKC", s.casefold())
-    s = re.sub(r"[^\w]+", "_", s, flags=re.UNICODE)
-    s = re.sub(r"_+", "_", s)
-    return s.strip("_")
+    cur = s
+    for _ in range(6):
+        nxt = unicodedata.normalize("NFKC", cur.casefold())
+        if nxt == cur:
+            break
+        cur = nxt
+    cur = re.sub(r"[^\w]+", "_", cur, flags=re.UNICODE)
+    cur = re.sub(r"_+", "_", cur)
+    return cur.strip("_")
 
 
 def make_id(*parts: str) -> str:

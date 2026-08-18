@@ -63,6 +63,30 @@ def test_report_shows_raw_cohesion_scores():
     assert "⚠" not in report
 
 
+def test_report_header_does_not_embed_host_absolute_path():
+    """#2628 / #2598: the header must not bake the generator host absolute path
+    into GRAPH_REPORT.md — it labels with the project directory basename so the
+    same graph produces the same bytes on any machine."""
+    G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
+    report = generate(G, communities, cohesion, labels, gods, surprises, detection,
+                      tokens, "/Users/mike/dev/apps/secretproj")
+    header = report.splitlines()[0]
+    assert "/Users/mike" not in header
+    assert "secretproj" in header
+
+
+def test_portable_root_label():
+    from graphify.report import _portable_root_label
+    # Absolute paths collapse to the basename on both POSIX and Windows.
+    assert _portable_root_label("/Users/mike/dev/apps/proj") == "proj"
+    assert _portable_root_label(r"C:\Users\mike\dev\proj") == "proj"
+    # A trailing slash still yields the directory name, not an empty label.
+    assert _portable_root_label("/Users/mike/dev/proj/") == "proj"
+    # Relative names pass through unchanged.
+    assert _portable_root_label("./project") == "project"
+    assert _portable_root_label("project") == "project"
+
+
 # --- work-memory lessons section ----------------------------------------------
 
 def test_report_work_memory_section_present_with_overlay_and_dead_ends():
