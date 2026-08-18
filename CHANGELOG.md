@@ -2,7 +2,11 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
-## 0.9.46 (unreleased)
+## 0.9.47 (unreleased)
+
+- Fix: a legacy `graph.json` that stored a numeric edge `confidence` (from a pre-enum version) no longer warns once per edge on every incremental reload; the numeric value is normalized to the `INFERRED` tag with the original float preserved in `confidence_score` (thanks @Trantor-develops).
+
+## 0.9.46 (2026-08-17)
 
 - Fix: node-id normalization is now caseless-stable for combining-mark sequences — `casefold` and NFKC don't commute, so a single pass left `normalize_id(s) != normalize_id(s.casefold())` for inputs like Greek ypogegrammeni followed by a combining accent; normalization now iterates casefold+NFKC to a fixpoint. Letter/digit-bearing ids are unchanged, so existing graphs are not re-keyed.
 

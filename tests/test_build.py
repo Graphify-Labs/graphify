@@ -228,6 +228,28 @@ def test_legacy_numeric_confidence_links_spelling_reload(capsys):
     assert data["confidence_score"] == 0.85
 
 
+def test_legacy_numeric_confidence_normalization_is_idempotent(capsys):
+    """Healing must survive a round-trip: after the first load rewrites the tag to
+    INFERRED (with the float in confidence_score), a second load of the persisted
+    graph must stay silent and leave the score stable — otherwise the warning
+    would just move one run later."""
+    from networkx.readwrite import json_graph
+    raw = {"nodes": [{"id": "n1", "label": "A", "file_type": "code", "source_file": "a.py"},
+                     {"id": "n2", "label": "B", "file_type": "code", "source_file": "b.py"}],
+           "links": [{"source": "n1", "target": "n2", "relation": "calls",
+                      "confidence": 0.85, "source_file": "a.py"}]}
+    G1 = build_from_json(raw)
+    capsys.readouterr()
+    # persist exactly as graph.json would, then reload
+    persisted = json_graph.node_link_data(G1, edges="links")
+    G2 = build_from_json(persisted)
+    err = capsys.readouterr().err
+    assert "invalid confidence" not in err
+    d = edge_data(G2, "n1", "n2")
+    assert d["confidence"] == "INFERRED"
+    assert d["confidence_score"] == 0.85
+
+
 def test_node_alias_canonical_field_wins():
     """#2194: when both the canonical field and its alias are present, the
     canonical value wins and the alias key is left untouched."""
