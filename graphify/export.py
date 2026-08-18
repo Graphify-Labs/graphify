@@ -340,6 +340,22 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
         if true_src is not None and true_tgt is not None:
             link["source"] = true_src
             link["target"] = true_tgt
+    # Canonicalize the key order WITHIN each node/link dict. node_link_data always
+    # appends the node key (`id`) at the end, so a node whose `id` was an inline
+    # attribute on a cold build (position varies) lands last after a read-rebuild
+    # (build_from_json consumes `id` as the pure node key). The values are
+    # identical either way, but the field order churns, so a byte-diff of two
+    # equivalent graph.json files is noisy and any position-sensitive consumer
+    # sees a spurious change on every round-trip. Emit a stable order — the
+    # identity keys first, then the remaining keys sorted — so the serialized
+    # form is invariant regardless of how the attribute was stored in memory.
+    def _canonical(item: dict, lead: tuple[str, ...]) -> dict:
+        leading = [k for k in lead if k in item]
+        rest = sorted(k for k in item if k not in leading)
+        return {k: item[k] for k in (*leading, *rest)}
+
+    data["nodes"] = [_canonical(n, ("id", "label")) for n in data["nodes"]]
+    data["links"] = [_canonical(link, ("source", "target", "relation")) for link in data["links"]]
     data["nodes"].sort(key=_json_sort_key)
     data["links"].sort(key=_json_sort_key)
     if "hyperedges" not in getattr(G, "graph", {}):
