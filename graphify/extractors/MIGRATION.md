@@ -26,7 +26,10 @@ written so an AI agent can execute it in a single session.
 | pascal_forms (dfm + lfm) | yes |
 | json_config | yes |
 | (config-driven core: python, js, java, c, cpp, csharp, kotlin, scala, php, lua, swift, groovy, vue, svelte, astro, xaml, groovy) | no — shared _extract_generic core, move as one batch |
-| (other bespoke: julia, verilog, markdown, objc, csproj, slnx, lazarus_package, pascal) | no |
+| lazarus_package | yes |
+| slnx | yes |
+| csproj | yes |
+| (other bespoke: julia, verilog, markdown, objc, pascal) | no |
 
 Note: config-driven extractors (python, js, java, c, cpp, ruby, csharp,
 kotlin, scala, php, lua, swift, groovy) depend on the shared

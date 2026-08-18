@@ -42,3 +42,24 @@ def test_terraform_migrated():
 
     assert facade.extract_terraform is extract_terraform
     assert LANGUAGE_EXTRACTORS["terraform"] is extract_terraform
+
+
+def test_lazarus_package_migrated():
+    from graphify.extractors.lazarus_package import extract_lazarus_package
+
+    assert facade.extract_lazarus_package is extract_lazarus_package
+    assert LANGUAGE_EXTRACTORS["lazarus_package"] is extract_lazarus_package
+
+
+def test_slnx_migrated():
+    from graphify.extractors.slnx import extract_slnx
+
+    assert facade.extract_slnx is extract_slnx
+    assert LANGUAGE_EXTRACTORS["slnx"] is extract_slnx
+
+
+def test_csproj_migrated():
+    from graphify.extractors.csproj import extract_csproj
+
+    assert facade.extract_csproj is extract_csproj
+    assert LANGUAGE_EXTRACTORS["csproj"] is extract_csproj
