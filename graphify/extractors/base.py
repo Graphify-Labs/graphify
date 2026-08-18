@@ -1,6 +1,7 @@
 # DO NOT import from graphify.extract here — direction is extract.py → extractors/ only.
 from __future__ import annotations
 
+import textwrap
 from pathlib import Path
 
 from graphify.ids import make_id
@@ -89,6 +90,23 @@ def _read_text(node, source: bytes) -> str:
 # Real .csproj/.fsproj/.vbproj/.lpk files are well under 2 MiB; anything
 # larger is either malformed or hostile.
 _PROJECT_XML_MAX_BYTES = 2 * 1024 * 1024
+
+
+def _shorten_rationale_label(text: str, width: int = 80) -> str:
+    """Collapse whitespace and truncate ``text`` to ``width`` chars for a
+    rationale node label, cutting on a word boundary rather than mid-word.
+    Shared by the Python and JS/TS rationale extractors (#2206).
+
+    ``textwrap.shorten`` collapses to just the placeholder when the first
+    "word" alone exceeds ``width`` (e.g. a docstring/comment that opens with
+    an unbroken URL) -- that would emit a content-free label, so fall back to
+    a plain character truncation of the normalized text in that case.
+    """
+    label = textwrap.shorten(text, width=width, placeholder="…")
+    if label in ("", "…"):
+        flat = " ".join(text.split())
+        label = flat if len(flat) <= width else flat[: width - 1] + "…"
+    return label
 
 
 def _project_xml_is_safe(src: bytes) -> bool:

@@ -98,3 +98,115 @@ def test_markdown_migrated():
 
     assert facade.extract_markdown is extract_markdown
     assert LANGUAGE_EXTRACTORS["markdown"] is extract_markdown
+
+
+def test_python_migrated():
+    from graphify.extractors.python import extract_python
+
+    assert facade.extract_python is extract_python
+    assert LANGUAGE_EXTRACTORS["python"] is extract_python
+
+
+def test_js_migrated():
+    from graphify.extractors.js import extract_js
+
+    assert facade.extract_js is extract_js
+    assert LANGUAGE_EXTRACTORS["js"] is extract_js
+
+
+def test_svelte_migrated():
+    from graphify.extractors.svelte import extract_svelte
+
+    assert facade.extract_svelte is extract_svelte
+    assert LANGUAGE_EXTRACTORS["svelte"] is extract_svelte
+
+
+def test_astro_migrated():
+    from graphify.extractors.astro import extract_astro
+
+    assert facade.extract_astro is extract_astro
+    assert LANGUAGE_EXTRACTORS["astro"] is extract_astro
+
+
+def test_vue_migrated():
+    from graphify.extractors.vue import extract_vue
+
+    assert facade.extract_vue is extract_vue
+    assert LANGUAGE_EXTRACTORS["vue"] is extract_vue
+
+
+def test_java_migrated():
+    from graphify.extractors.java import extract_java
+
+    assert facade.extract_java is extract_java
+    assert LANGUAGE_EXTRACTORS["java"] is extract_java
+
+
+def test_groovy_migrated():
+    from graphify.extractors.groovy import extract_groovy
+
+    assert facade.extract_groovy is extract_groovy
+    assert LANGUAGE_EXTRACTORS["groovy"] is extract_groovy
+
+
+def test_c_migrated():
+    from graphify.extractors.c import extract_c
+
+    assert facade.extract_c is extract_c
+    assert LANGUAGE_EXTRACTORS["c"] is extract_c
+
+
+def test_cpp_migrated():
+    from graphify.extractors.cpp import extract_cpp
+
+    assert facade.extract_cpp is extract_cpp
+    assert LANGUAGE_EXTRACTORS["cpp"] is extract_cpp
+
+
+def test_ruby_migrated():
+    from graphify.extractors.ruby import extract_ruby
+
+    assert facade.extract_ruby is extract_ruby
+    assert LANGUAGE_EXTRACTORS["ruby"] is extract_ruby
+
+
+def test_csharp_migrated():
+    from graphify.extractors.csharp import extract_csharp
+
+    assert facade.extract_csharp is extract_csharp
+    assert LANGUAGE_EXTRACTORS["csharp"] is extract_csharp
+
+
+def test_kotlin_migrated():
+    from graphify.extractors.kotlin import extract_kotlin
+
+    assert facade.extract_kotlin is extract_kotlin
+    assert LANGUAGE_EXTRACTORS["kotlin"] is extract_kotlin
+
+
+def test_scala_migrated():
+    from graphify.extractors.scala import extract_scala
+
+    assert facade.extract_scala is extract_scala
+    assert LANGUAGE_EXTRACTORS["scala"] is extract_scala
+
+
+def test_php_migrated():
+    from graphify.extractors.php import extract_php
+
+    assert facade.extract_php is extract_php
+    assert LANGUAGE_EXTRACTORS["php"] is extract_php
+
+
+def test_lua_migrated():
+    from graphify.extractors.lua import extract_lua
+
+    assert facade.extract_lua is extract_lua
+    assert LANGUAGE_EXTRACTORS["lua"] is extract_lua
+
+
+def test_swift_migrated():
+    from graphify.extractors.swift import extract_swift
+
+    assert facade.extract_swift is extract_swift
+    assert LANGUAGE_EXTRACTORS["swift"] is extract_swift

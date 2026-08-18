@@ -25,7 +25,22 @@ written so an AI agent can execute it in a single session.
 | sln | yes |
 | pascal_forms (dfm + lfm) | yes |
 | json_config | yes |
-| (config-driven core: python, js, java, c, cpp, csharp, kotlin, scala, php, lua, swift, groovy, vue, svelte, astro, xaml, groovy) | no — shared _extract_generic core, move as one batch |
+| python | yes |
+| js (js/ts/tsx/mts/cts) | yes |
+| svelte | yes |
+| astro | yes |
+| vue | yes |
+| java | yes |
+| groovy | yes |
+| c | yes |
+| cpp | yes |
+| ruby | yes |
+| csharp (extractor appended to existing csharp.py) | yes |
+| kotlin | yes |
+| scala | yes |
+| php | yes |
+| lua | yes |
+| swift | yes |
 | lazarus_package | yes |
 | slnx | yes |
 | csproj | yes |

@@ -1,19 +1,13 @@
-"""C# cross-file resolution.
-
-The config-driven C# *extractor* (``extract_csharp`` → ``_extract_generic``)
-still lives in ``graphify/extract.py``; per ``extractors/MIGRATION.md`` the
-config-driven languages cannot be ported one-by-one until the shared
-``_extract_generic`` core moves as its own coordinated batch. This module is
-the C# home for the parts that *are* cleanly separable — today, the cross-file
-type-reference resolver below — and is where ``extract_csharp`` will land when
-the core migration happens.
-"""
+"""C# cross-file resolution and extractor. Moved verbatim from graphify/extract.py."""
 from __future__ import annotations
 
 import html
 from pathlib import Path
 
-from graphify.extractors.base import _make_id
+from graphify.extractors.base import _make_id, _read_text
+from graphify.extractors.models import LanguageConfig
+from graphify.extractors.engine import _extract_generic
+from graphify.security import sanitize_metadata
 
 
 def _build_csharp_type_def_index(all_nodes: list[dict]) -> dict[tuple[str, str], str]:
@@ -439,3 +433,60 @@ def _resolve_csharp_type_references(
         node for node in all_nodes
         if node.get("id") not in repointed_from or node.get("id") in still_referenced
     ]
+
+
+def _import_csharp(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str, scope_stack: list[str] | None = None) -> None:
+    text = _read_text(node, source).strip().rstrip(";")
+    if text.startswith("global "):
+        text = text[len("global "):].strip()
+    if not text.startswith("using"):
+        return
+    body = text[len("using"):].strip()
+    using_kind, alias, target_fqn = "namespace", None, body
+    if body.startswith("static "):
+        using_kind, target_fqn = "static", body[len("static "):].strip()
+    elif "=" in body:
+        lhs, rhs = body.split("=", 1)
+        using_kind, alias, target_fqn = "alias", lhs.strip(), rhs.strip()
+    if not target_fqn:
+        return
+    edges.append({
+        "source": file_nid,
+        "target": _make_id(target_fqn),
+        "relation": "imports",
+        "context": "import",
+        "confidence": "EXTRACTED",
+        "source_file": str_path,
+        "source_location": f"L{node.start_point[0] + 1}",
+        "weight": 1.0,
+        "metadata": sanitize_metadata({k: v for k, v in
+            {"using_kind": using_kind, "alias": alias, "target_fqn": target_fqn,
+             "scope_kind": "namespace" if scope_stack else "file",
+             "scope_id": scope_stack[-1] if scope_stack else None}.items() if v is not None}),
+    })
+
+
+_CSHARP_CONFIG = LanguageConfig(
+    ts_module="tree_sitter_c_sharp",
+    class_types=frozenset({
+        "class_declaration",
+        "interface_declaration",
+        "enum_declaration",
+        "struct_declaration",
+        "record_declaration",
+    }),
+    function_types=frozenset({"method_declaration"}),
+    import_types=frozenset({"using_directive"}),
+    call_types=frozenset({"invocation_expression"}),
+    call_function_field="function",
+    call_accessor_node_types=frozenset({"member_access_expression"}),
+    call_accessor_field="name",
+    body_fallback_child_types=("declaration_list",),
+    function_boundary_types=frozenset({"method_declaration"}),
+    import_handler=_import_csharp,
+)
+
+
+def extract_csharp(path: Path) -> dict:
+    """Extract C# type declarations, methods, namespaces, and usings from a .cs file."""
+    return _extract_generic(path, _CSHARP_CONFIG)
