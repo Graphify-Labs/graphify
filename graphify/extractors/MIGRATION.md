@@ -49,6 +49,7 @@ written so an AI agent can execute it in a single session.
 | julia | yes |
 | verilog | yes |
 | markdown | yes |
+| xaml | yes |
 
 Note: config-driven extractors (python, js, java, c, cpp, ruby, csharp,
 kotlin, scala, php, lua, swift, groovy) depend on the shared

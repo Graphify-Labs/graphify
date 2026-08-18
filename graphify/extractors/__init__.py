@@ -50,6 +50,7 @@ from graphify.extractors.swift import extract_swift
 from graphify.extractors.terraform import extract_terraform
 from graphify.extractors.verilog import extract_verilog
 from graphify.extractors.vue import extract_vue
+from graphify.extractors.xaml import extract_xaml
 from graphify.extractors.zig import extract_zig
 
 LANGUAGE_EXTRACTORS: dict[str, Callable[[Path], dict]] = {
@@ -98,5 +99,6 @@ LANGUAGE_EXTRACTORS: dict[str, Callable[[Path], dict]] = {
     "terraform": extract_terraform,
     "verilog": extract_verilog,
     "vue": extract_vue,
+    "xaml": extract_xaml,
     "zig": extract_zig,
 }

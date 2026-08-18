@@ -210,3 +210,10 @@ def test_swift_migrated():
 
     assert facade.extract_swift is extract_swift
     assert LANGUAGE_EXTRACTORS["swift"] is extract_swift
+
+
+def test_xaml_migrated():
+    from graphify.extractors.xaml import extract_xaml
+
+    assert facade.extract_xaml is extract_xaml
+    assert LANGUAGE_EXTRACTORS["xaml"] is extract_xaml
