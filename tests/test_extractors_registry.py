@@ -77,3 +77,24 @@ def test_pascal_migrated():
 
     assert facade.extract_pascal is extract_pascal
     assert LANGUAGE_EXTRACTORS["pascal"] is extract_pascal
+
+
+def test_julia_migrated():
+    from graphify.extractors.julia import extract_julia
+
+    assert facade.extract_julia is extract_julia
+    assert LANGUAGE_EXTRACTORS["julia"] is extract_julia
+
+
+def test_verilog_migrated():
+    from graphify.extractors.verilog import extract_verilog
+
+    assert facade.extract_verilog is extract_verilog
+    assert LANGUAGE_EXTRACTORS["verilog"] is extract_verilog
+
+
+def test_markdown_migrated():
+    from graphify.extractors.markdown import extract_markdown
+
+    assert facade.extract_markdown is extract_markdown
+    assert LANGUAGE_EXTRACTORS["markdown"] is extract_markdown
