@@ -740,3 +740,39 @@ def test_primary_constructor_type_parameter_is_not_referenced(tmp_path):
     labels = {n["id"]: n["label"] for n in r["nodes"]}
     assert not [t for s, t in refs if s == holder and labels.get(t) == "T"], \
         "a type parameter must not be emitted as a referenced type"
+
+
+def test_primary_constructor_builtin_param_is_not_fabricated(tmp_path):
+    """A built-in-typed primary-ctor parameter (`int count`) must not fabricate a
+    referenced type node — only real type dependencies get a references edge."""
+    _, r = _calls(tmp_path, {
+        "S.cs": (
+            "public interface IDep { bool Plain(); }\n"
+            "public class Holder(IDep dep, int count) {\n"
+            "    public bool Run() { return dep.Plain(); }\n"
+            "}\n"
+        )
+    })
+    holder = _find(r, "Holder", "holder")
+    refs = _refs(r)
+    idep = _find(r, "IDep", "idep")
+    assert (holder, idep) in refs, "the real dependency must still be referenced"
+    labels = {n["id"]: n["label"] for n in r["nodes"]}
+    assert not [t for s, t in refs if s == holder and labels.get(t) in ("int", "Int32")], \
+        "a built-in parameter type must not become a referenced node"
+
+
+def test_struct_primary_constructor_parameter_emits_references_edge(tmp_path):
+    """The branch also covers `struct` primary constructors, not just class/record."""
+    _, r = _calls(tmp_path, {
+        "S.cs": (
+            "public interface IDep { bool Plain(); }\n"
+            "public struct Holder(IDep dep) {\n"
+            "    public bool Run() { return dep.Plain(); }\n"
+            "}\n"
+        )
+    })
+    holder = _find(r, "Holder", "holder")
+    idep = _find(r, "IDep", "idep")
+    assert (holder, idep) in _refs(r), \
+        "a struct primary-constructor parameter type must produce a references edge"
