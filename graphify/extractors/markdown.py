@@ -6,6 +6,7 @@ import os
 
 from pathlib import Path
 from graphify.extractors.base import _file_stem, _make_id
+from graphify.security import sanitize_metadata
 
 
 _MD_INLINE_LINK_RE = re.compile(r'(?<!\!)\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+[^)]*)?\)')
@@ -15,6 +16,79 @@ _MD_REF_DEF_RE = re.compile(r'^\s{0,3}\[[^\]]+\]:\s*<?([^\s>]+)>?')
 _MD_WIKILINK_RE = re.compile(r'(?<!\!)\[\[([^\]|#]+)(?:[#|][^\]]*)?\]\]')
 
 _MD_LINKABLE_EXTS = {".md", ".mdx", ".qmd", ".markdown", ".rst", ".txt"}
+
+# A YAML frontmatter block is only frontmatter when the opening `---` is the
+# very first line of the file. A `---` further down is a horizontal rule and
+# must not be mistaken for one. Bounded so a file that opens a fence and never
+# closes it cannot swallow the whole document.
+_MD_FRONTMATTER_CLOSE = ("---", "...")
+_MD_FRONTMATTER_MAX_LINES = 200
+
+# Flat `key: value` fallback, used only when PyYAML is unavailable. PyYAML is
+# not a declared dependency of graphify (see manifest_ingest._parse_apm for the
+# same defensive-import pattern), so the extractor must degrade rather than
+# fail.
+_MD_FM_SCALAR_RE = re.compile(r'^([A-Za-z0-9_][A-Za-z0-9_\-. ]*):\s*(.*)$')
+
+
+def _split_frontmatter(lines: list[str]) -> tuple[list[str], int]:
+    """Split leading YAML frontmatter off *lines*.
+
+    Returns ``(frontmatter_lines, body_start_index)``. When the file has no
+    frontmatter — the common case — returns ``([], 0)`` and the caller parses
+    from line 0 exactly as before.
+    """
+    if not lines or lines[0].strip() != "---":
+        return [], 0
+    limit = min(len(lines), _MD_FRONTMATTER_MAX_LINES + 1)
+    for i in range(1, limit):
+        if lines[i].strip() in _MD_FRONTMATTER_CLOSE:
+            return lines[1:i], i + 1
+    # Unterminated fence: treat the `---` as ordinary content, not frontmatter.
+    return [], 0
+
+
+def _parse_frontmatter(fm_lines: list[str]) -> dict:
+    """Parse frontmatter lines into a plain dict.
+
+    Values are passed through ``sanitize_metadata`` by the caller, so nested
+    dicts and lists survive (a review workflow's ``coherence_check:`` block,
+    Obsidian ``aliases:``) while staying bounded and HTML-safe.
+    """
+    if not fm_lines:
+        return {}
+    text = "\n".join(fm_lines)
+    try:
+        import yaml
+    except ImportError:
+        return _parse_frontmatter_fallback(fm_lines)
+    try:
+        data = yaml.safe_load(text)
+    except Exception:
+        # Malformed YAML in one document must not fail the whole extraction.
+        return _parse_frontmatter_fallback(fm_lines)
+    return data if isinstance(data, dict) else {}
+
+
+def _parse_frontmatter_fallback(fm_lines: list[str]) -> dict:
+    """Flat `key: value` parser for when PyYAML is not installed.
+
+    Nested blocks and list items are skipped rather than guessed at; the keys
+    that matter for graph filtering (``type``, ``review_status``, ``title``)
+    are flat scalars in practice.
+    """
+    out: dict = {}
+    for raw in fm_lines:
+        if not raw[:1].strip():
+            continue  # indented -> belongs to a nested block, skip
+        m = _MD_FM_SCALAR_RE.match(raw.strip())
+        if not m:
+            continue
+        key, value = m.group(1).strip(), m.group(2).strip()
+        if not value:
+            continue  # a bare `key:` opens a nested block
+        out[key] = value.strip('"\'')
+    return out
 
 def _resolve_markdown_link(raw: str, source_dir: Path) -> "Path | None":
     """Resolve a markdown link target to the absolute path of a sibling document.
@@ -54,8 +128,16 @@ def extract_markdown(path: Path) -> dict:
     """Extract structural nodes and edges from a Markdown file.
 
     Produces nodes for:
-    - The file itself
-    - Each heading (# / ## / ### etc.)
+    - The file itself, tagged ``node_kind: "page"``, carrying any YAML
+      frontmatter under ``frontmatter``
+    - Each heading (# / ## / ### etc.), tagged ``node_kind: "heading"``
+
+    ``node_kind`` exists because ``file_type`` cannot carry this distinction:
+    it is a closed enum (build.py rewrites anything outside
+    ``code|document|paper|image|rationale|concept`` to ``"concept"``) and
+    ``"document"`` on both endpoints is load-bearing for the twin-merge pass.
+    Without a separate field, headings — typically the large majority of nodes
+    in a docs-heavy corpus — cannot be filtered out by a consumer.
 
     Produces edges for:
     - file --contains--> heading
@@ -74,6 +156,11 @@ def extract_markdown(path: Path) -> dict:
     them — they were always orphans (only a single contains edge to the
     parent doc) and inflated the disconnected-component count (#1077).
 
+    Leading YAML frontmatter is parsed onto the page node and excluded from
+    heading detection (a `#` there is a YAML comment). Links inside it are
+    still followed: review workflows keep wikilinks in frontmatter and those
+    are genuine references.
+
     No tree-sitter dependency — pure line-by-line parsing.
     """
     try:
@@ -87,11 +174,16 @@ def extract_markdown(path: Path) -> dict:
     edges: list[dict] = []
     seen_ids: set[str] = set()
 
-    def add_node(nid: str, label: str, line: int, file_type: str = "document") -> None:
+    def add_node(nid: str, label: str, line: int, file_type: str = "document",
+                 node_kind: str = "heading", extra: "dict | None" = None) -> None:
         if nid not in seen_ids:
             seen_ids.add(nid)
-            nodes.append({"id": nid, "label": label, "file_type": file_type,
-                          "source_file": str_path, "source_location": f"L{line}"})
+            node = {"id": nid, "label": label, "file_type": file_type,
+                    "node_kind": node_kind,
+                    "source_file": str_path, "source_location": f"L{line}"}
+            if extra:
+                node.update(extra)
+            nodes.append(node)
 
     def add_edge(src: str, tgt: str, relation: str, line: int,
                  confidence: str = "EXTRACTED", weight: float = 1.0,
@@ -103,8 +195,13 @@ def extract_markdown(path: Path) -> dict:
             edge["target_file"] = target_file
         edges.append(edge)
 
+    lines = source.splitlines()
+    fm_lines, body_start = _split_frontmatter(lines)
+    frontmatter = sanitize_metadata(_parse_frontmatter(fm_lines))
+
     file_nid = _make_id(str(path))
-    add_node(file_nid, path.name, 1)
+    add_node(file_nid, path.name, 1, node_kind="page",
+             extra={"frontmatter": frontmatter} if frontmatter else None)
 
     source_dir = path.parent
     # Dedup link edges by resolved target node so a hub doc that links to the
@@ -144,7 +241,6 @@ def extract_markdown(path: Path) -> dict:
     heading_stack: list[tuple[int, str]] = []
     in_code_block = False
 
-    lines = source.splitlines()
     for line_num_0, line_text in enumerate(lines):
         line_num = line_num_0 + 1
 
@@ -168,6 +264,13 @@ def extract_markdown(path: Path) -> dict:
         ref_def = _MD_REF_DEF_RE.match(line_text)
         if ref_def:
             add_link(ref_def.group(1), line_num)
+
+        # Inside the frontmatter block a leading `#` is a YAML comment, not an
+        # H1. Links above are still scanned there on purpose: review workflows
+        # put wikilinks in frontmatter (e.g. a `consulted:` list), and those are
+        # real references. Only heading detection is suppressed.
+        if line_num_0 < body_start:
+            continue
 
         # Detect headings: # Heading, ## Heading, etc.
         heading_match = re.match(r'^(#{1,6})\s+(.+)', line_text)

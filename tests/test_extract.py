@@ -776,6 +776,63 @@ def test_extract_js_member_require_emits_property_symbol():
     assert _make_id(helpers_stem, "helperFn") in sym_targets
 
 
+def test_extract_js_function_scoped_require_emits_import_edge(tmp_path):
+    """Lazy CommonJS requires belong to their enclosing function, not nowhere."""
+    target = tmp_path / "target.js"
+    target.write_text("exports.helper = () => 42;\n", encoding="utf-8")
+    caller = tmp_path / "lazy.js"
+    caller.write_text(
+        "function useItLazily() {\n"
+        "  const { helper } = require('./target');\n"
+        "  return helper();\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    result = extract([caller, target], cache_root=tmp_path, root=tmp_path, parallel=False)
+    labels = {node["id"]: node["label"] for node in result["nodes"]}
+    lazy_edges = [
+        edge for edge in result["edges"]
+        if edge["relation"] == "imports_from" and "target" in edge["target"]
+    ]
+
+    assert len(lazy_edges) == 1
+    assert labels[lazy_edges[0]["source"]] == "useItLazily()"
+    assert lazy_edges[0]["confidence"] == "EXTRACTED"
+
+
+def test_extract_js_dynamic_require_variable_is_not_fabricated(tmp_path):
+    """A lazy `require(someVar)` has no static string target, so the body pass
+    must skip it rather than fabricate an edge to a guessed path (#2700)."""
+    caller = tmp_path / "dyn.js"
+    caller.write_text(
+        "function load(name) {\n"
+        "  const mod = require(name);\n"
+        "  return mod;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    result = extract([caller], cache_root=tmp_path, root=tmp_path, parallel=False)
+    assert not [e for e in result["edges"] if e["relation"] in ("imports_from", "imports")]
+
+
+def test_extract_js_module_scope_require_still_single_edge(tmp_path):
+    """No-double-count regression: the module-level and body require passes must
+    never both emit for the same require — a top-level require stays exactly one
+    imports_from edge (#2700)."""
+    target = tmp_path / "target.js"
+    target.write_text("exports.helper = () => 42;\n", encoding="utf-8")
+    caller = tmp_path / "top.js"
+    caller.write_text("const { helper } = require('./target');\n", encoding="utf-8")
+
+    result = extract([caller, target], cache_root=tmp_path, root=tmp_path, parallel=False)
+    lazy_edges = [
+        e for e in result["edges"]
+        if e["relation"] == "imports_from" and "target" in e["target"]
+    ]
+    assert len(lazy_edges) == 1
+
+
 def test_extract_js_arrow_function_still_extracted():
     """Regression: arrow functions in lexical_declaration must still produce nodes."""
     from graphify.extract import extract_js
@@ -886,6 +943,149 @@ def test_extract_js_arbitrary_member_assignment_not_captured(tmp_path):
     labels = [n["label"] for n in extract_js(f)["nodes"]]
     assert "whatever()" not in labels
     assert ".whatever()" not in labels
+
+
+def test_extract_js_nested_function_declarations(tmp_path):
+    """#2653: function declarations nested inside another function emit nodes,
+    source contains edges from the enclosing function, and attribute call edges correctly."""
+    from graphify.extract import extract
+    f = tmp_path / "Panel.tsx"
+    f.write_text(
+        "function doThing() {}\n"
+        "export function Panel() {\n"
+        "  function handleClick() {\n"
+        "    doThing()\n"
+        "  }\n"
+        "  return <button onClick={handleClick} />\n"
+        "}\n"
+    )
+    result = extract([f], root=tmp_path)
+    by_label = {n["label"]: n for n in result["nodes"]}
+
+    assert "handleClick()" in by_label
+    assert by_label["handleClick()"]["id"] == "panel_panel_handleclick"
+
+    edges = [(e["source"], e["target"], e["relation"]) for e in result["edges"]]
+
+    panel_id = by_label["Panel()"]["id"]
+    handle_id = by_label["handleClick()"]["id"]
+    dothing_id = by_label["doThing()"]["id"]
+
+    assert (panel_id, handle_id, "contains") in edges
+    assert (handle_id, dothing_id, "calls") in edges
+    assert (panel_id, dothing_id, "calls") not in edges
+
+
+def test_extract_js_deeply_nested_function_declarations(tmp_path):
+    """#2653: arbitrary depth nested named function declarations establish hierarchical containment and correct call attribution."""
+    from graphify.extract import extract
+    f = tmp_path / "Deep.ts"
+    f.write_text(
+        "function doThing() {}\n"
+        "function Panel() {\n"
+        "  function outer() {\n"
+        "    function inner() {\n"
+        "      doThing()\n"
+        "    }\n"
+        "  }\n"
+        "}\n"
+    )
+    result = extract([f], root=tmp_path)
+    by_label = {n["label"]: n for n in result["nodes"]}
+
+    panel_id = by_label["Panel()"]["id"]
+    outer_id = by_label["outer()"]["id"]
+    inner_id = by_label["inner()"]["id"]
+    dothing_id = by_label["doThing()"]["id"]
+
+    edges = [(e["source"], e["target"], e["relation"]) for e in result["edges"]]
+
+    assert (panel_id, outer_id, "contains") in edges
+    assert (outer_id, inner_id, "contains") in edges
+    assert (inner_id, dothing_id, "calls") in edges
+    assert (panel_id, dothing_id, "calls") not in edges
+    assert (outer_id, dothing_id, "calls") not in edges
+
+
+def test_extract_js_function_nested_in_arrow_component(tmp_path):
+    """#2653 (the motivating React idiom): a named function declared inside an
+    ARROW-defined component `const Panel = () => { function handleRegen(){…} }`
+    is noded, contained by the component, and its calls resolve — the main walk
+    never recurses into arrow bodies, so this must be scanned explicitly."""
+    from graphify.extract import extract
+    f = tmp_path / "Panel.jsx"
+    f.write_text(
+        "function doThing() {}\n"
+        "const Panel = () => {\n"
+        "  function handleRegen() {\n"
+        "    doThing()\n"
+        "  }\n"
+        "  return handleRegen\n"
+        "}\n"
+    )
+    result = extract([f], root=tmp_path)
+    by_label = {n["label"]: n for n in result["nodes"]}
+
+    assert "handleRegen()" in by_label
+    edges = [(e["source"], e["target"], e["relation"]) for e in result["edges"]]
+    panel_id = by_label["Panel()"]["id"]
+    handle_id = by_label["handleRegen()"]["id"]
+    dothing_id = by_label["doThing()"]["id"]
+
+    assert (panel_id, handle_id, "contains") in edges
+    assert (handle_id, dothing_id, "calls") in edges
+    assert (panel_id, dothing_id, "calls") not in edges
+
+
+def test_extract_js_function_nested_in_arrow_callback(tmp_path):
+    """#2653: a named function declared inside an arrow CALLBACK nested in a
+    function (`function Panel(){ useEffect(() => { function h(){…} }) }`) is
+    attributed to the nearest enclosing named scope (the anonymous arrow is not
+    a node), and its calls resolve instead of dangling."""
+    from graphify.extract import extract
+    f = tmp_path / "Effect.jsx"
+    f.write_text(
+        "function doThing() {}\n"
+        "function Panel() {\n"
+        "  useEffect(() => {\n"
+        "    function h() {\n"
+        "      doThing()\n"
+        "    }\n"
+        "  })\n"
+        "}\n"
+    )
+    result = extract([f], root=tmp_path)
+    by_label = {n["label"]: n for n in result["nodes"]}
+
+    assert "h()" in by_label
+    edges = [(e["source"], e["target"], e["relation"]) for e in result["edges"]]
+    panel_id = by_label["Panel()"]["id"]
+    h_id = by_label["h()"]["id"]
+    dothing_id = by_label["doThing()"]["id"]
+
+    # the anonymous arrow is not noded, so h is contained directly by Panel
+    assert (panel_id, h_id, "contains") in edges
+    assert (h_id, dothing_id, "calls") in edges
+
+
+def test_extract_js_nested_function_local_variable_preservation(tmp_path):
+    """#2653 / #1077: extracting nested named functions must preserve local variable suppression."""
+    from graphify.extract import extract_js
+    f = tmp_path / "LocalVar.ts"
+    f.write_text(
+        "function doThing() {}\n"
+        "function Panel() {\n"
+        "  const localValue = 123;\n"
+        "  function handleClick() {\n"
+        "    doThing();\n"
+        "  }\n"
+        "}\n"
+    )
+    res = extract_js(f)
+    labels = [n["label"] for n in res["nodes"]]
+    assert "handleClick()" in labels
+    assert "localValue" not in labels
+
 
 
 def by_label_by_id(result, node_id):
@@ -2725,6 +2925,143 @@ def test_extract_bash_var_source_untracked_var_keeps_script_dir_guess(tmp_path):
     assert (lib / "y.sh").resolve() in targets, targets
 
 
+def test_extract_bash_source_dirname_cmdsubst_in_argument(tmp_path):
+    """Form 3 (#2596): `source "$(dirname "$VAR")/lib/y.sh"` — command
+    substitution in the source argument.  The dirname idiom on the *source*
+    line should resolve the same way it does on an assignment line: treat
+    `$(dirname "$VAR")` as `var_bases[VAR].parent` (or `script_dir.parent`
+    when VAR is untracked), then resolve the literal suffix against it.
+    """
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "lib" / "y.sh").write_text(
+        "#!/usr/bin/env bash\ny_fn() { :; }\n", encoding="utf-8"
+    )
+    script = tmp_path / "bin" / "x.sh"
+    script.parent.mkdir(parents=True)
+    # SCRIPT_DIR is tracked by the existing idiom, so dirname("$SCRIPT_DIR")
+    # should resolve to tmp_path, and tmp_path/lib/y.sh is the target.
+    script.write_text(
+        '#!/usr/bin/env bash\n'
+        'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
+        'source "$(dirname "$SCRIPT_DIR")/lib/y.sh"\n',
+        encoding="utf-8",
+    )
+    result = extract_bash(script)
+    targets = [Path(s["target_path"]).resolve() for s in result["bash_sources"]]
+    assert (tmp_path / "lib" / "y.sh").resolve() in targets, targets
+
+
+def test_extract_bash_source_dirname_cmdsubst_untracked_var(tmp_path):
+    """Form 3 with an untracked variable: `source "$(dirname "$SCRIPT_DIR")/lib/y.sh"`
+    where SCRIPT_DIR is NOT assigned via the recognised idiom.  The fallback
+    is the script's own directory (same as the existing untracked-var path),
+    so dirname of the script dir is the parent.
+    """
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "lib" / "y.sh").write_text(
+        "#!/usr/bin/env bash\ny_fn() { :; }\n", encoding="utf-8"
+    )
+    script = tmp_path / "bin" / "x.sh"
+    script.parent.mkdir(parents=True)
+    # No SCRIPT_DIR assignment — the var is untracked, so the extractor
+    # falls back to script_dir.parent (= tmp_path) for dirname.
+    script.write_text(
+        '#!/usr/bin/env bash\n'
+        'source "$(dirname "$SCRIPT_DIR")/lib/y.sh"\n',
+        encoding="utf-8",
+    )
+    result = extract_bash(script)
+    targets = [Path(s["target_path"]).resolve() for s in result["bash_sources"]]
+    assert (tmp_path / "lib" / "y.sh").resolve() in targets, targets
+
+
+def test_extract_bash_source_dotdot_suffix_with_tracked_var(tmp_path):
+    """Form 4 (#2596): `source "$VAR/../lib/y.sh"` — `..` in the literal
+    suffix.  When the base comes from a tracked var_bases entry, `..` is
+    safe (it's a known directory, not a guess), so resolve via normpath
+    and the existing is_file() gate.  The `..` rejection should only apply
+    on the script-dir-guess path where the base is uncertain.
+    """
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "lib" / "y.sh").write_text(
+        "#!/usr/bin/env bash\ny_fn() { :; }\n", encoding="utf-8"
+    )
+    script = tmp_path / "bin" / "x.sh"
+    script.parent.mkdir(parents=True)
+    # SCRIPT_DIR is tracked (= bin/), so $SCRIPT_DIR/../lib/y.sh resolves
+    # to tmp_path/lib/y.sh.
+    script.write_text(
+        '#!/usr/bin/env bash\n'
+        'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
+        'source "$SCRIPT_DIR/../lib/y.sh"\n',
+        encoding="utf-8",
+    )
+    result = extract_bash(script)
+    targets = [Path(s["target_path"]).resolve() for s in result["bash_sources"]]
+    assert (tmp_path / "lib" / "y.sh").resolve() in targets, targets
+
+
+def test_extract_bash_source_dotdot_suffix_script_dir_guess_still_rejected(tmp_path):
+    """Form 4 guard: `..` in the suffix must still be rejected when the base
+    is the script-dir *guess* (no tracked variable).  Otherwise a path like
+    `source "${UNTRACKED}/../../etc/passwd"` could traverse outside the tree.
+    """
+    script = tmp_path / "run.sh"
+    script.write_text(
+        '#!/usr/bin/env bash\n'
+        'source "${UNTRACKED}/../evil.sh"\n',
+        encoding="utf-8",
+    )
+    result = extract_bash(script)
+    targets = [Path(s["target_path"]).resolve() for s in result["bash_sources"]]
+    assert not targets, f"untracked var with .. should not resolve: {targets}"
+
+
+def test_extract_bash_source_dirname_cmdsubst_rejects_traversal(tmp_path):
+    """Form 3 hardening (#2596): the `$(dirname …)` base is a guessed directory,
+    so a `..` suffix must be rejected before the target is probed or recorded —
+    otherwise `source "$(dirname "$VAR")/../../../../etc/passwd"` resolves to an
+    arbitrary host path and leaks it as a source edge on an attacker-controlled
+    corpus."""
+    outside = tmp_path / "secret.sh"
+    outside.write_text("echo secret\n", encoding="utf-8")  # a real file to escape to
+    script = tmp_path / "proj" / "bin" / "x.sh"
+    script.parent.mkdir(parents=True)
+    script.write_text(
+        '#!/usr/bin/env bash\n'
+        'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
+        'source "$(dirname "$SCRIPT_DIR")/../../secret.sh"\n',
+        encoding="utf-8",
+    )
+    result = extract_bash(script)
+    assert not result["bash_sources"], result["bash_sources"]
+    leaked = [e.get("target_file") for e in result["edges"]
+              if e.get("relation") == "imports_from" and "secret.sh" in (e.get("target_file") or "")]
+    assert not leaked, f"traversal target leaked as an edge: {leaked}"
+
+
+def test_extract_bash_source_dotdot_tracked_var_cannot_escape_to_root(tmp_path):
+    """Form 4 hardening (#2596): a tracked base legitimately reaches a sibling via
+    `$VAR/../lib`, but a multi-level `..` that walks past the base's parent to an
+    arbitrary host path must be dropped, not probed and recorded."""
+    outside = tmp_path / "secret.sh"
+    outside.write_text("echo secret\n", encoding="utf-8")
+    # bin is two levels below tmp_path, so ../../.. escapes past base.parent.
+    script = tmp_path / "proj" / "bin" / "x.sh"
+    script.parent.mkdir(parents=True)
+    script.write_text(
+        '#!/usr/bin/env bash\n'
+        'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
+        'source "$SCRIPT_DIR/../../../secret.sh"\n',
+        encoding="utf-8",
+    )
+    result = extract_bash(script)
+    assert not result["bash_sources"], result["bash_sources"]
+    leaked = [e.get("target_file") for e in result["edges"]
+              if e.get("relation") == "imports_from" and "secret.sh" in (e.get("target_file") or "")]
+    assert not leaked, f"traversal target leaked as an edge: {leaked}"
+
+
 # ---------------------------------------------------------------------------
 # JSON extractor tests (#866)
 # ---------------------------------------------------------------------------
@@ -3434,3 +3771,101 @@ def test_extract_emits_posix_source_file_for_relative_inputs(tmp_path):
     assert {sf for _, sf in carriers} == {
         "src/lib/content.ts", "src/pages/index.astro",
     }
+
+
+def _inferred_uses(result):
+    """(source, target) pairs of every INFERRED cross-file `uses` edge."""
+    return {
+        (e["source"], e["target"])
+        for e in result["edges"]
+        if e.get("relation") == "uses" and e.get("confidence") == "INFERRED"
+    }
+
+
+def test_inferred_uses_edge_attributes_to_the_referencing_symbol(tmp_path):
+    """A cross-file INFERRED `uses` edge binds to the symbol that actually
+    references the import — a function is a valid source and a co-located class
+    that never touches the import gets no edge (#2652)."""
+    (tmp_path / "helpers.py").write_text("class Helper:\n    pass\n", encoding="utf-8")
+    (tmp_path / "api.py").write_text(
+        "from helpers import Helper\n\n\n"
+        "class Request:\n    x: int = 0\n\n\n"
+        "def handler(req):\n    return Helper()\n",
+        encoding="utf-8",
+    )
+
+    result = extract([tmp_path / "api.py", tmp_path / "helpers.py"], cache_root=tmp_path)
+    uses = _inferred_uses(result)
+
+    # handler() references Helper -> it is the source.
+    assert ("api_handler", "helpers_helper") in uses
+    # Request never references Helper -> no false edge from the co-located class.
+    assert ("api_request", "helpers_helper") not in uses
+
+
+def test_inferred_uses_edge_kept_when_the_class_body_references_the_import(tmp_path):
+    """Positive control: a class that genuinely uses the imported symbol still
+    gets its class-level INFERRED `uses` edge (the DigestAuth->Response case)."""
+    (tmp_path / "models.py").write_text("class Response:\n    pass\n", encoding="utf-8")
+    (tmp_path / "auth.py").write_text(
+        "from models import Response\n\n\n"
+        "class DigestAuth:\n    def build(self):\n        return Response()\n",
+        encoding="utf-8",
+    )
+
+    result = extract([tmp_path / "auth.py", tmp_path / "models.py"], cache_root=tmp_path)
+
+    assert ("auth_digestauth", "models_response") in _inferred_uses(result)
+
+
+def test_inferred_uses_edge_follows_an_import_alias(tmp_path):
+    """`from helpers import Helper as H` attributes via the local alias `H`, so a
+    body that only ever names `H` still resolves to the imported target (#2652)."""
+    (tmp_path / "helpers.py").write_text("class Helper:\n    pass\n", encoding="utf-8")
+    (tmp_path / "api.py").write_text(
+        "from helpers import Helper as H\n\n\n"
+        "def handler(req):\n    return H()\n",
+        encoding="utf-8",
+    )
+
+    result = extract([tmp_path / "api.py", tmp_path / "helpers.py"], cache_root=tmp_path)
+
+    assert ("api_handler", "helpers_helper") in _inferred_uses(result)
+
+
+def test_inferred_uses_edge_emitted_once_per_referencing_symbol(tmp_path):
+    """Each symbol that references the import gets its own edge, and only those
+    symbols do — guards against the old fan-out (every class in the file) and
+    against collapsing distinct sources into one (#2652)."""
+    (tmp_path / "helpers.py").write_text("class Helper:\n    pass\n", encoding="utf-8")
+    (tmp_path / "api.py").write_text(
+        "from helpers import Helper\n\n\n"
+        "def a(x):\n    return Helper()\n\n\n"
+        "def b(x):\n    return Helper()\n\n\n"
+        "def c(x):\n    return x\n",  # references nothing -> no edge
+        encoding="utf-8",
+    )
+
+    result = extract([tmp_path / "api.py", tmp_path / "helpers.py"], cache_root=tmp_path)
+    uses = _inferred_uses(result)
+
+    assert ("api_a", "helpers_helper") in uses
+    assert ("api_b", "helpers_helper") in uses
+    assert ("api_c", "helpers_helper") not in uses
+
+
+def test_inferred_uses_edge_dropped_for_module_top_level_reference(tmp_path):
+    """A reference at true module top level has no enclosing symbol to anchor on,
+    so no INFERRED `uses` edge is emitted (rather than falling back to the file
+    node) — the deliberate drop documented for #2652."""
+    (tmp_path / "helpers.py").write_text("class Helper:\n    pass\n", encoding="utf-8")
+    (tmp_path / "api.py").write_text(
+        "from helpers import Helper\n\n\n"
+        "SENTINEL = Helper()\n",  # top-level, outside any def/class
+        encoding="utf-8",
+    )
+
+    result = extract([tmp_path / "api.py", tmp_path / "helpers.py"], cache_root=tmp_path)
+    uses = _inferred_uses(result)
+
+    assert not any(tgt == "helpers_helper" for _, tgt in uses)

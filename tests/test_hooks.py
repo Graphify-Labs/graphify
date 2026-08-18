@@ -614,6 +614,32 @@ def test_hooks_honor_skip_env(name, script):
     )
 
 
+def test_checkout_hook_skips_same_head_noop_at_runtime():
+    """`git checkout -b` with no start point reports a branch switch (flag=1) but
+    passes identical PREV/NEW heads, so the rebuild must short-circuit (#2421).
+    Prove BEHAVIOR by running the real emitted script under sh up to the guard
+    with a sentinel, not by matching the source string (per the #2126/#2641
+    convention that static assertions provided zero coverage)."""
+    from graphify.hooks import _CHECKOUT_SCRIPT
+    guard = '[ "$PREV_HEAD" = "$NEW_HEAD" ] && exit 0'
+    assert guard in _CHECKOUT_SCRIPT, "guard missing from the checkout script"
+    # Real script through the same-head guard, then a sentinel — stops before the
+    # graphify-out check / detached launch so nothing is actually rebuilt.
+    prefix = _CHECKOUT_SCRIPT.split(guard)[0] + guard + "\necho RAN\n"
+
+    def run(prev, new, flag):
+        # sh -c CMD name arg1 arg2 arg3  ->  $0=name $1=prev $2=new $3=flag
+        return subprocess.run(["sh", "-c", prefix, "hook", prev, new, flag],
+                              capture_output=True, text=True)
+
+    # branch switch (flag=1), SAME head -> short-circuit, sentinel not reached
+    assert "RAN" not in run("abc123", "abc123", "1").stdout
+    # branch switch (flag=1), DIFFERENT head -> falls through to the sentinel
+    assert "RAN" in run("abc123", "def456", "1").stdout
+    # file checkout (flag != 1) -> skips at the earlier BRANCH_SWITCH guard
+    assert "RAN" not in run("abc123", "def456", "0").stdout
+
+
 @pytest.mark.parametrize("name,script", _HOOK_SCRIPTS)
 def test_hooks_skip_linked_worktrees(name, script):
     """Both hooks must short-circuit in a linked worktree (git-dir != common-dir),
@@ -839,3 +865,140 @@ def test_install_pins_interpreter_path_with_spaces(tmp_path, monkeypatch):
         script = (repo / ".git" / "hooks" / name).read_text()
         assert f"_PINNED='{exe}'" in script, f"{name} did not pin the spaced interpreter"
         assert "_PINNED=''" not in script, f"{name} pinned an empty interpreter (#2166)"
+
+
+def test_graphifyrc_parsing(tmp_path):
+    """Test 1: .graphifyrc parsing for valid and invalid values."""
+    from graphify.hooks import _load_graphifyrc
+
+    rc = tmp_path / ".graphifyrc"
+    rc.write_text("# comment\nviz_node_limit=0\n", encoding="utf-8")
+    cfg = _load_graphifyrc(tmp_path)
+    assert cfg.get("viz_node_limit") == 0
+
+    rc.write_text("viz_node_limit=invalid\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="Invalid viz_node_limit"):
+        _load_graphifyrc(tmp_path)
+
+
+def test_no_config_preserves_existing_hook(tmp_path):
+    """Test 2: Without .graphifyrc, generated hooks omit GRAPHIFY_VIZ_NODE_LIMIT export."""
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    commit_hook = (repo / ".git" / "hooks" / "post-commit").read_text()
+    checkout_hook = (repo / ".git" / "hooks" / "post-checkout").read_text()
+    assert "GRAPHIFY_VIZ_NODE_LIMIT" not in commit_hook
+    assert "GRAPHIFY_VIZ_NODE_LIMIT" not in checkout_hook
+
+
+def test_config_baked_into_generated_hook(tmp_path):
+    """Test 3: viz_node_limit from .graphifyrc is baked into both hooks."""
+    repo = _make_git_repo(tmp_path)
+    (repo / ".graphifyrc").write_text("viz_node_limit=0\n", encoding="utf-8")
+    install(repo)
+
+    commit_hook = (repo / ".git" / "hooks" / "post-commit").read_text()
+    checkout_hook = (repo / ".git" / "hooks" / "post-checkout").read_text()
+
+    assert 'export GRAPHIFY_VIZ_NODE_LIMIT="${GRAPHIFY_VIZ_NODE_LIMIT:-0}"' in commit_hook
+    assert 'export GRAPHIFY_VIZ_NODE_LIMIT="${GRAPHIFY_VIZ_NODE_LIMIT:-0}"' in checkout_hook
+
+
+def test_baked_viz_limit_yields_to_an_explicit_per_run_override(tmp_path):
+    """Persisting the project default must not clobber an explicit per-run
+    GRAPHIFY_VIZ_NODE_LIMIT: the baked line uses the `${VAR:-<n>}` default form,
+    so an already-set env value wins (mirrors GRAPHIFY_MAX_WORKERS)."""
+    repo = _make_git_repo(tmp_path)
+    (repo / ".graphifyrc").write_text("viz_node_limit=100\n", encoding="utf-8")
+    install(repo)
+    commit_hook = (repo / ".git" / "hooks" / "post-commit").read_text()
+
+    # default form, not an unconditional assignment that would override the env
+    assert 'export GRAPHIFY_VIZ_NODE_LIMIT="${GRAPHIFY_VIZ_NODE_LIMIT:-100}"' in commit_hook
+    assert 'export GRAPHIFY_VIZ_NODE_LIMIT="100"' not in commit_hook
+    # prove the shell semantics: an explicit env value survives the export line
+    line = 'export GRAPHIFY_VIZ_NODE_LIMIT="${GRAPHIFY_VIZ_NODE_LIMIT:-100}"'
+    out = subprocess.run(
+        ["sh", "-c", f'GRAPHIFY_VIZ_NODE_LIMIT=7; {line}; echo "$GRAPHIFY_VIZ_NODE_LIMIT"'],
+        capture_output=True, text=True, check=True,
+    )
+    assert out.stdout.strip() == "7"
+
+
+def test_status_survives_a_malformed_graphifyrc(tmp_path):
+    """A typo in the committed .graphifyrc must not turn the read-only `status`
+    diagnostic into a traceback; it reports the problem and continues."""
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    (repo / ".graphifyrc").write_text("viz_node_limit=not-an-int\n", encoding="utf-8")
+
+    result = status(repo)  # must not raise
+    assert "installed" in result
+
+
+def test_changing_config_updates_existing_hook(tmp_path):
+    """Test 4: Re-running install updates existing Graphify hook block with new config."""
+    repo = _make_git_repo(tmp_path)
+    rc = repo / ".graphifyrc"
+    rc.write_text("viz_node_limit=5000\n", encoding="utf-8")
+    install(repo)
+
+    rc.write_text("viz_node_limit=0\n", encoding="utf-8")
+    result = install(repo)
+
+    assert "updated existing" in result
+    commit_hook = (repo / ".git" / "hooks" / "post-commit").read_text()
+    assert 'export GRAPHIFY_VIZ_NODE_LIMIT="${GRAPHIFY_VIZ_NODE_LIMIT:-0}"' in commit_hook
+    assert 'export GRAPHIFY_VIZ_NODE_LIMIT="${GRAPHIFY_VIZ_NODE_LIMIT:-5000}"' not in commit_hook
+    assert commit_hook.count("# graphify-hook-start") == 1
+
+
+def test_user_hook_content_survives_update(tmp_path):
+    """Test 5: User hook content outside graphify markers survives hook update."""
+    repo = _make_git_repo(tmp_path)
+    hooks_dir = repo / ".git" / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    post_commit = hooks_dir / "post-commit"
+    post_commit.write_text(
+        "#!/bin/sh\necho 'user content before'\n"
+        "# graphify-hook-start\nold block\n# graphify-hook-end\n"
+        "echo 'user content after'\n",
+        encoding="utf-8",
+    )
+
+    (repo / ".graphifyrc").write_text("viz_node_limit=0\n", encoding="utf-8")
+    install(repo)
+
+    content = post_commit.read_text()
+    assert "echo 'user content before'" in content
+    assert "echo 'user content after'" in content
+    assert 'export GRAPHIFY_VIZ_NODE_LIMIT="${GRAPHIFY_VIZ_NODE_LIMIT:-0}"' in content
+    assert "old block" not in content
+
+
+def test_status_reports_configuration(tmp_path):
+    """Test 6: graphify hook status exposes configured viz node limit and detects out-of-date hooks."""
+    repo = _make_git_repo(tmp_path)
+    rc = repo / ".graphifyrc"
+    rc.write_text("viz_node_limit=0\n", encoding="utf-8")
+    install(repo)
+
+    res = status(repo)
+    assert "viz node limit: 0" in res
+    assert "(out of date" not in res
+
+    rc.write_text("viz_node_limit=100\n", encoding="utf-8")
+    res_outdated = status(repo)
+    assert "out of date" in res_outdated
+    assert "viz node limit: 100" in res_outdated
+
+
+def test_both_hooks_configured(tmp_path):
+    """Test 7: Verify both post-commit and post-checkout hooks receive the setting."""
+    repo = _make_git_repo(tmp_path)
+    (repo / ".graphifyrc").write_text("viz_node_limit=42\n", encoding="utf-8")
+    install(repo)
+
+    for name in ("post-commit", "post-checkout"):
+        hook_text = (repo / ".git" / "hooks" / name).read_text()
+        assert 'export GRAPHIFY_VIZ_NODE_LIMIT="${GRAPHIFY_VIZ_NODE_LIMIT:-42}"' in hook_text

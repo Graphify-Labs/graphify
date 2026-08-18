@@ -52,6 +52,16 @@ def _is_ast_tier(item: dict) -> bool:
     return isinstance(loc, str) and bool(_AST_LOC_RE.match(loc))
 
 
+# Relations that say only "these two symbols appear together", with no claim about
+# HOW. An extractor that finds a specific fact for a pair — a call, an import, an
+# inheritance — routinely emits one of these for the same pair as well, so when the
+# simple graph collapses the pair to one edge, the generic one must never be the
+# survivor. Deliberately a small denylist rather than a full precedence order over
+# every relation: ranking `contains` against `calls` would be inventing a
+# cross-axis judgement, whereas "specific beats generic" is the only comparison
+# this collapse actually needs.
+_GENERIC_RELATIONS: frozenset[str] = frozenset({"references", "uses", "mentions"})
+
 # Language interop families, keyed by extension, for the cross-language phantom-edge
 # guard in the edge loop below. Families group by REAL interop (JS/TS share a module
 # graph; C/C++/ObjC share a compilation unit via headers; JVM langs share bytecode),
@@ -1230,6 +1240,25 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 existing.get("_src") == tgt and existing.get("_tgt") == src
             ):
                 continue
+        # A pair that already carries a SPECIFIC relation must not be downgraded
+        # to a generic one. Only one edge survives per pair here, and the sort
+        # above orders same-pair edges by relation name, so "last write wins"
+        # resolved the winner alphabetically — which put `references` after
+        # `calls` and `uses` after everything. On graphify's own corpus that
+        # rewrote all 144 pairs where the extraction found both `calls` and
+        # `references` into plain `references`, and callflow's relation filter
+        # does not include `references`, so those call sites left the call graph
+        # entirely. Alphabetical order carries no meaning; keeping the specific
+        # fact does. The reverse (specific arriving after generic) still
+        # overwrites, so the outcome no longer depends on edge order at all.
+        if G.has_edge(src, tgt):
+            existing_rel = edge_data(G, src, tgt).get("relation")
+            if (
+                attrs.get("relation") in _GENERIC_RELATIONS
+                and existing_rel is not None
+                and existing_rel not in _GENERIC_RELATIONS
+            ):
+                continue
         G.add_edge(src, tgt, **attrs)
     hyperedges = extraction.get("hyperedges", [])
     if hyperedges:
@@ -1340,6 +1369,9 @@ def build(
         combined["nodes"], combined["edges"] = deduplicate_entities(
             combined["nodes"], combined["edges"], communities={},
             dedup_llm_backend=dedup_llm_backend, root=root,
+            # Hyperedge members reference node ids too, so they need the same
+            # survivor rewiring the edges get (#2805).
+            hyperedges=combined.get("hyperedges"),
         )
     return build_from_json(combined, directed=directed, root=root)
 
@@ -1776,6 +1808,13 @@ def build_merge(
 
     # Prune nodes and edges from deleted source files
     if prune_sources:
+        # Source-less nodes that are ALREADY isolated before this prune. They are
+        # not this prune's doing, so they must survive it — the sweep below is
+        # scoped to the ones it orphans itself.
+        _isolated_before = {
+            n for n, d in G.nodes(data=True)
+            if not d.get("source_file") and G.degree(n) == 0
+        }
         to_remove = [
             n for n, d in G.nodes(data=True)
             if _prune_match(d.get("source_file"))
@@ -1789,6 +1828,35 @@ def build_merge(
         ]
         if edges_to_remove:
             G.remove_edges_from(edges_to_remove)
+
+        # Extractors create a per-file node for each IMPORTED EXTERNAL symbol
+        # (`Path` from pathlib, `Counter` from collections), and those carry no
+        # source_file because they are defined outside the corpus. Every edge
+        # they have points at symbols in the one file they were created for, so
+        # pruning that file leaves them at degree 0 — named after a file the
+        # corpus no longer contains, counted in every total that reads the graph,
+        # exported as a note of their own, and unreachable by any future prune
+        # since there is no source_file to match on. Nothing else can collect
+        # them: deletions go through deleted_files, exclusions through
+        # excluded_files (#1908) and _stale_graph_sources (#1909), and all three
+        # match on source_file. A node with neither a source_file nor an edge
+        # names nothing and connects nothing, so dropping it loses no
+        # information (#2807).
+        #
+        # A single pass suffices: external-import stubs are only ever edge
+        # TARGETS (extractors mint them as the target of an imports_from/
+        # references/inherits edge, never as a source), so removing one can
+        # never drop another to degree 0. A future extractor emitting a
+        # stub->stub edge would require iterating this to a fixpoint.
+        orphaned = [
+            n for n, d in G.nodes(data=True)
+            if not d.get("source_file")
+            and G.degree(n) == 0
+            and n not in _isolated_before
+        ]
+        if orphaned:
+            G.remove_nodes_from(orphaned)
+            n_nodes += len(orphaned)
 
         # Report only the prune entries that ACTUALLY matched something — not
         # len(prune_sources), which counted every entry as pruned-from even

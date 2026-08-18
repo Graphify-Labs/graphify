@@ -1112,12 +1112,20 @@ def dispatch_command(cmd: str) -> None:
         except Exception as exc:
             print(f"error: could not load graph: {exc}", file=sys.stderr)
             sys.exit(1)
+        # Derive the analysed repo root from the graph's own location so an
+        # absolute-path seed resolves without requiring cwd to be that root
+        # (#2706). The graph is written to <root>/<GRAPHIFY_OUT_NAME>/graph.json,
+        # so the root is the output dir's parent; a graph pointed at directly by
+        # --graph falls back to its own directory.
+        from graphify.paths import GRAPHIFY_OUT_NAME
+        graph_root = gp.parent.parent if gp.parent.name == GRAPHIFY_OUT_NAME else gp.parent
         print(
             format_affected(
                 graph,
                 query,
                 relations=relations or DEFAULT_AFFECTED_RELATIONS,
                 depth=depth,
+                root=graph_root,
             )
         )
     elif cmd in ("god-nodes", "god_nodes"):

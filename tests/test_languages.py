@@ -8,7 +8,7 @@ from graphify.extract import (
     extract_swift, extract_go, extract_julia, extract_js, extract_fortran,
     extract_groovy, extract_sln, extract_csproj, extract_xaml, extract_razor,
     extract_dm, extract_dmi, extract_dmm, extract_dmf,
-    extract_powershell, extract_apex, extract_verilog,
+    extract_powershell, extract_apex, extract_commonlisp, extract_verilog,
     extract_powershell_manifest,
 )
 
@@ -21,6 +21,10 @@ import importlib.util as _ilu
 _needs_dm = pytest.mark.skipif(
     _ilu.find_spec("tree_sitter_dm") is None,
     reason="tree-sitter-dm not installed (optional [dm] extra)",
+)
+_needs_commonlisp = pytest.mark.skipif(
+    _ilu.find_spec("tree_sitter_commonlisp") is None,
+    reason="tree-sitter-commonlisp not installed (optional [commonlisp] extra)",
 )
 
 
@@ -186,6 +190,59 @@ def test_cpp_finds_methods():
     labels = _labels(r)
     # C++ extractor captures the constructor and public-visible methods
     assert any("HttpClient" in l for l in labels)
+
+def test_cpp_recovers_doctest_string_named_test_cases():
+    """doctest/Catch2 ``TEST_CASE("name")`` uses a string literal where the
+    grammar expects an identifier, so tree-sitter-cpp drops the whole test
+    function as an ERROR node (#2594). The regex fallback must recover one
+    callable node per test case, keeping the raw name as the label, without
+    losing the surrounding functions the tree-sitter pass still parses.
+    """
+    r = extract_cpp(FIXTURES / "sample_doctest.cpp")
+    labels = _labels(r)
+    assert '"addition works"' in labels
+    assert '"subtraction works"' in labels
+    # The plain function next to the test cases must still be present.
+    assert any(l.startswith("add") for l in labels)
+    # A nested SUBCASE is a scope inside a test body, not a file-level test
+    # function, so it must not be emitted as its own callable node.
+    assert '"small operands"' not in labels
+    # An escaped quote inside the test name is captured whole, not truncated
+    # at the first ``\"``.
+    assert r'"handles \"quoted\" names"' in labels
+    # Each recovered test case is contained by its file node.
+    file_id = next(n["id"] for n in r["nodes"] if n["label"] == "sample_doctest.cpp")
+    test_ids = {n["id"] for n in r["nodes"] if n["label"].startswith('"')}
+    contained = {
+        e["target"] for e in r["edges"]
+        if e["relation"] == "contains" and e["source"] == file_id
+    }
+    assert test_ids and test_ids <= contained
+
+
+def test_cpp_string_tests_punctuation_only_names_stay_distinct(tmp_path):
+    """A punctuation-only test name normalizes to empty, so a naive
+    ``_make_id(stem, name)`` collapses onto the bare file-stem id — colliding
+    with the file namespace and swallowing every later such test under one id
+    (#1899). The guard gives each a distinct line-positional id."""
+    f = tmp_path / "punct_tests.cpp"
+    f.write_text(
+        'TEST_CASE("***") { CHECK(1); }\n'
+        'TEST_CASE("...") { CHECK(2); }\n'
+        'SCENARIO("boots up") { REQUIRE(1); }\n',
+        encoding="utf-8",
+    )
+    r = extract_cpp(f)
+    from graphify.extract import _make_id, _file_stem
+    stem_collapse = _make_id(_file_stem(f))
+    tests = [n for n in r["nodes"] if n["label"].startswith('"')]
+    ids = [n["id"] for n in tests]
+    # both punctuation-only cases recovered, plus the SCENARIO macro
+    assert '"***"' in {n["label"] for n in tests}
+    assert '"..."' in {n["label"] for n in tests}
+    assert '"boots up"' in {n["label"] for n in tests}
+    assert len(set(ids)) == len(ids)                      # all distinct
+    assert all(i != stem_collapse for i in ids)           # none squats on the file stem
 
 def test_cpp_finds_includes():
     r = extract_cpp(FIXTURES / "sample.cpp")
@@ -521,6 +578,234 @@ def test_java_type_annotations_have_attribute_context(tmp_path):
     refs = _edge_labels(result, "references", "attribute")
     assert ("CheckoutService", "Service") in refs
     assert ("CheckoutService", "Entity") in refs
+
+
+def test_java_annotation_class_literal_arguments(tmp_path):
+    source = tmp_path / "AnnotationArguments.java"
+    source.write_text(
+        "class PrimaryRule {}\n"
+        "class BackupRule {}\n"
+        "@interface UsesRules { Class<?>[] value(); }\n"
+        "@UsesRules({PrimaryRule.class, BackupRule.class, java.lang.String.class})\n"
+        "class RuleHandler {\n"
+        "    @UsesRules(PrimaryRule.class)\n"
+        "    void apply() {}\n"
+        "}\n"
+    )
+
+    result = extract_java(source)
+
+    refs = _edge_labels(result, "references", "attribute")
+    assert ("RuleHandler", "PrimaryRule") in refs
+    assert ("RuleHandler", "BackupRule") in refs
+    assert ("apply", "PrimaryRule") in refs
+    assert ("RuleHandler", "java.lang.String") not in refs
+
+
+def test_java_annotation_references_are_not_duplicated(tmp_path):
+    from graphify.extract import extract
+
+    annotation = tmp_path / "pkg" / "Uses.java"
+    annotation.parent.mkdir()
+    annotation.write_text(
+        "package pkg;\n"
+        "public @interface Uses { Class<?>[] value(); }\n"
+    )
+    consumer = tmp_path / "app" / "Consumer.java"
+    consumer.parent.mkdir()
+    consumer.write_text(
+        "package app;\n"
+        "import pkg.Uses;\n"
+        "@Uses({pkg.Uses.class, pkg.Uses.class})\n"
+        "class Consumer {\n"
+        "    @Uses({pkg.Uses.class, pkg.Uses.class})\n"
+        "    void apply() {}\n"
+        "}\n"
+    )
+
+    result = extract([annotation, consumer], cache_root=tmp_path / "cache")
+
+    # Count RAW edge occurrences, not _edge_labels (which returns a set and would
+    # trivially satisfy count()==1 whether or not the dedup ran). @Uses({X, X})
+    # names the same class literal twice, so without dedup this would be 2.
+    lab = {n["id"]: _normalize_symbol_label(n["label"]) for n in result["nodes"]}
+    raw_pairs = [
+        (lab.get(e["source"]), lab.get(e["target"]))
+        for e in result["edges"]
+        if e["relation"] == "references" and e.get("context") == "attribute"
+    ]
+    assert raw_pairs.count(("Consumer", "Uses")) == 1, raw_pairs
+    assert raw_pairs.count(("apply", "Uses")) == 1, raw_pairs
+
+
+def test_java_annotation_string_and_enum_args_are_not_type_refs(tmp_path):
+    """Only class-literal args (Foo.class) are type references. String and
+    enum-constant annotation arguments must NOT fabricate reference edges."""
+    source = tmp_path / "Config.java"
+    source.write_text(
+        "class Config {\n"
+        '    @RequestMapping("/users")\n'
+        "    @Retention(RetentionPolicy.RUNTIME)\n"
+        "    void handle() {}\n"
+        "}\n"
+    )
+    result = extract_java(source)
+    ref_targets = {t for _s, t in _edge_labels(result, "references", "attribute")}
+    # the string literal and the enum path must not become type-reference targets
+    assert "/users" not in ref_targets
+    assert "RUNTIME" not in ref_targets
+    assert "RetentionPolicy.RUNTIME" not in ref_targets
+
+
+def test_java_annotation_class_literal_keeps_qualified_type_identity(tmp_path):
+    from graphify.extract import extract
+
+    internal = tmp_path / "internal" / "Rule.java"
+    internal.parent.mkdir()
+    internal.write_text("package internal;\npublic class Rule {}\n")
+    outer = tmp_path / "internal" / "Outer.java"
+    outer.write_text(
+        "package internal;\n"
+        "public class Outer { public static class Nested {} }\n"
+    )
+    consumer = tmp_path / "app" / "Consumer.java"
+    consumer.parent.mkdir()
+    consumer.write_text(
+        "package app;\n"
+        "@interface Uses { Class<?>[] value(); }\n"
+        "@Uses({internal.Rule.class, internal.Outer.Nested.class, "
+        "external.Rule.class})\n"
+        "public class Consumer {}\n"
+    )
+
+    result = extract([internal, outer, consumer], cache_root=tmp_path / "cache")
+
+    by_id = {node["id"]: node for node in result["nodes"]}
+    targets = [
+        by_id[edge["target"]]
+        for edge in result["edges"]
+        if edge.get("relation") == "references"
+        and edge.get("context") == "attribute"
+        and edge.get("source_file", "").endswith("Consumer.java")
+        and by_id[edge["target"]].get("label")
+        in {"Rule", "Nested", "external.Rule"}
+    ]
+    assert any(
+        target.get("label") == "Rule"
+        and target.get("source_file", "").endswith("internal/Rule.java")
+        for target in targets
+    )
+    assert any(
+        target.get("label") == "external.Rule" and not target.get("source_file")
+        for target in targets
+    )
+    assert any(
+        target.get("label") == "Nested"
+        and target.get("source_file", "").endswith("Outer.java")
+        for target in targets
+    )
+
+
+def test_java_repeatable_annotation_references_container_and_element_type(tmp_path):
+    from graphify.extract import extract
+
+    annotation = tmp_path / "RubricFor.java"
+    annotation.write_text(
+        "package com.example;\n"
+        "import java.lang.annotation.Repeatable;\n"
+        "@Repeatable(RubricsFor.class)\n"
+        "public @interface RubricFor {}\n"
+    )
+    container = tmp_path / "RubricsFor.java"
+    container.write_text(
+        "package com.example;\n"
+        "public @interface RubricsFor {\n"
+        "    RubricFor[] value();\n"
+        "}\n"
+    )
+
+    result = extract([annotation, container], cache_root=tmp_path / "cache")
+
+    assert ("RubricFor", "RubricsFor") in _edge_labels(
+        result, "references", "attribute"
+    )
+    assert ("RubricsFor", "RubricFor") in _edge_labels(
+        result, "references", "return_type"
+    )
+    assert not [
+        node
+        for node in result["nodes"]
+        if node.get("label") in {"RubricFor", "RubricsFor"}
+        and not node.get("source_file")
+    ]
+
+
+def test_java_annotation_member_keeps_qualified_type_identity(tmp_path):
+    from graphify.extract import extract
+
+    internal = tmp_path / "internal" / "Rule.java"
+    internal.parent.mkdir()
+    internal.write_text("package internal;\npublic class Rule {}\n")
+    outer = tmp_path / "internal" / "Outer.java"
+    outer.write_text(
+        "package internal;\n"
+        "public class Outer { public static class Nested {} }\n"
+    )
+    local = tmp_path / "app" / "Rule.java"
+    local.parent.mkdir()
+    local.write_text("package app;\npublic class Rule {}\n")
+    annotation = tmp_path / "app" / "Uses.java"
+    annotation.write_text(
+        "package app;\n"
+        "public @interface Uses {\n"
+        "    internal.Rule[] direct();\n"
+        "    Class<internal.Rule> generic();\n"
+        "    internal.Outer.Nested[] nestedDirect();\n"
+        "    Class<internal.Outer.Nested> nestedGeneric();\n"
+        "    java.lang.String label();\n"
+        "}\n"
+    )
+
+    result = extract(
+        [internal, outer, local, annotation], cache_root=tmp_path / "cache"
+    )
+
+    by_id = {node["id"]: node for node in result["nodes"]}
+    targets = [
+        (by_id[edge["target"]], edge.get("context"))
+        for edge in result["edges"]
+        if edge.get("relation") == "references"
+        and edge.get("source_file", "").endswith("Uses.java")
+        and by_id[edge["source"]].get("label") == "Uses"
+        and by_id[edge["target"]].get("label") == "Rule"
+    ]
+    assert {
+        context
+        for target, context in targets
+        if target.get("source_file", "").endswith("internal/Rule.java")
+    } == {"return_type", "generic_arg"}
+    assert not [
+        target
+        for target, _context in targets
+        if target.get("source_file", "").endswith("app/Rule.java")
+    ]
+    assert not [
+        node
+        for node in result["nodes"]
+        if node.get("label") == "java.lang.String"
+    ]
+    assert {
+        context
+        for target, context in [
+            (by_id[edge["target"]], edge.get("context"))
+            for edge in result["edges"]
+            if edge.get("relation") == "references"
+            and edge.get("source_file", "").endswith("Uses.java")
+            and by_id[edge["source"]].get("label") == "Uses"
+            and by_id[edge["target"]].get("label") == "Nested"
+        ]
+        if target.get("source_file", "").endswith("Outer.java")
+    } == {"return_type", "generic_arg"}
 
 
 def test_java_enum_and_annotation_declarations_are_type_nodes(tmp_path):
@@ -2999,3 +3284,392 @@ def test_decldef_merge_does_not_merge_same_name_same_dir_distinct_files():
     r = _corpus("cpp_samedir/Alpha.h", "cpp_samedir/Beta.h")
     dups = _nodes_with_label(r, "Dup")
     assert len(dups) == 2, f"same-dir distinct Dups must stay distinct, got {[n['id'] for n in dups]}"
+# ── Common Lisp ──────────────────────────────────────────────────────────────
+
+@_needs_commonlisp
+def test_cl_finds_package():
+    r = extract_commonlisp(FIXTURES / "sample.lisp")
+    assert "error" not in r
+    assert "http-server" in _labels(r)
+
+@_needs_commonlisp
+def test_cl_finds_class():
+    r = extract_commonlisp(FIXTURES / "sample.lisp")
+    assert "server" in _labels(r)
+    assert "ssl-server" in _labels(r)
+
+@_needs_commonlisp
+def test_cl_finds_defun():
+    r = extract_commonlisp(FIXTURES / "sample.lisp")
+    labels = _labels(r)
+    assert any("make-server" in l for l in labels)
+    assert any("start" in l for l in labels)
+    assert any("stop" in l for l in labels)
+
+@_needs_commonlisp
+def test_cl_finds_generic():
+    r = extract_commonlisp(FIXTURES / "sample.lisp")
+    assert any("process-request" in l for l in _labels(r))
+
+@_needs_commonlisp
+def test_cl_finds_macro():
+    r = extract_commonlisp(FIXTURES / "sample.lisp")
+    assert any("with-server" in l and "macro" in l for l in _labels(r))
+
+@_needs_commonlisp
+def test_cl_emits_calls():
+    r = extract_commonlisp(FIXTURES / "sample.lisp")
+    calls = _calls(r)
+    # start() calls process-request
+    assert any("start" in src and "process-request" in tgt for src, tgt in calls)
+    # with-server macro calls make-server and start
+    assert any("with-server" in src and "make-server" in tgt for src, tgt in calls)
+    assert any("with-server" in src and "start" in tgt for src, tgt in calls)
+
+@_needs_commonlisp
+def test_cl_calls_are_extracted():
+    r = extract_commonlisp(FIXTURES / "sample.lisp")
+    for e in r["edges"]:
+        if e["relation"] == "calls":
+            assert e["confidence"] == "EXTRACTED"
+
+@_needs_commonlisp
+def test_cl_no_dangling_edges():
+    r = extract_commonlisp(FIXTURES / "sample.lisp")
+    node_ids = {n["id"] for n in r["nodes"]}
+    for e in r["edges"]:
+        if e["relation"] in ("contains", "method", "calls"):
+            assert e["source"] in node_ids
+
+@_needs_commonlisp
+def test_cl_docstrings():
+    r = extract_commonlisp(FIXTURES / "sample.lisp")
+    rationale_edges = [e for e in r["edges"] if e["relation"] == "rationale_for"]
+    assert len(rationale_edges) >= 3  # make-server, start, process-request have docstrings
+    labels = _labels(r)
+    assert any("Process an incoming" in l for l in labels)
+
+@_needs_commonlisp
+def test_cl_method_specializers():
+    r = extract_commonlisp(FIXTURES / "sample.lisp")
+    spec_edges = [e for e in r["edges"] if e["relation"] == "specializes"]
+    assert len(spec_edges) >= 1
+    # process-request specializes on server
+    assert any("process_request" in e["source"] and "server" in e["target"] for e in spec_edges)
+
+@_needs_commonlisp
+def test_cl_inherits():
+    r = extract_commonlisp(FIXTURES / "sample.lisp")
+    inherit_edges = [e for e in r["edges"] if e["relation"] == "inherits"]
+    assert len(inherit_edges) >= 1
+    assert any("ssl_server" in e["source"] and "server" in e["target"] for e in inherit_edges)
+
+@_needs_commonlisp
+def test_cl_imports():
+    r = extract_commonlisp(FIXTURES / "sample.lisp")
+    import_edges = [e for e in r["edges"] if e["relation"] == "imports"]
+    targets = {e["target"] for e in import_edges}
+    assert "cl" in targets
+    assert "alexandria" in targets
+
+@_needs_commonlisp
+def test_cl_finds_deftype():
+    r = extract_commonlisp(FIXTURES / "sample.lisp")
+    assert "port-number" in _labels(r)
+
+@_needs_commonlisp
+def test_cl_finds_defstruct():
+    r = extract_commonlisp(FIXTURES / "sample.lisp")
+    labels = _labels(r)
+    assert "request-stats" in labels
+    # defstruct with options form: (defstruct (name ...) ...)
+    assert "connection" in labels
+
+@_needs_commonlisp
+def test_cl_finds_defvar_defparameter_defconstant():
+    r = extract_commonlisp(FIXTURES / "sample.lisp")
+    labels = _labels(r)
+    assert "*active-connections*" in labels
+    assert "*default-port*" in labels
+    assert "+max-headers+" in labels
+
+@_needs_commonlisp
+def test_cl_finds_define_condition():
+    r = extract_commonlisp(FIXTURES / "sample.lisp")
+    assert "server-error" in _labels(r)
+
+@_needs_commonlisp
+def test_cl_finds_custom_definer():
+    """The def-prefix heuristic should catch definline / definline-maybe."""
+    r = extract_commonlisp(FIXTURES / "sample.lisp")
+    labels = _labels(r)
+    # definline-maybe and definline should produce function-style nodes
+    assert "header=()" in labels
+    assert "header<()" in labels
+
+@_needs_commonlisp
+def test_cl_custom_definer_in_call_graph():
+    """Functions defined via custom definers should appear in the call graph."""
+    r = extract_commonlisp(FIXTURES / "sample.lisp")
+    calls = _calls(r)
+    # compare-headers calls header= and header< (defined via definline-maybe / definline)
+    assert any("compare-headers" in src and "header=" in tgt for src, tgt in calls)
+    assert any("compare-headers" in src and "header<" in tgt for src, tgt in calls)
+
+@_needs_commonlisp
+def test_cl_operator_names_disambiguated():
+    """upi=, upi<, upi> must produce distinct ids (operator chars matter)."""
+    r = extract_commonlisp(FIXTURES / "sample.lisp")
+    # header= and header< must have different ids
+    eq_ids = [n["id"] for n in r["nodes"] if n["label"] == "header=()"]
+    lt_ids = [n["id"] for n in r["nodes"] if n["label"] == "header<()"]
+    assert len(eq_ids) == 1
+    assert len(lt_ids) == 1
+    assert eq_ids[0] != lt_ids[0]
+
+@_needs_commonlisp
+def test_cl_default_value_not_treated_as_definition():
+    """The def-prefix heuristic must not match denylisted symbols."""
+    import tempfile
+    code = "(in-package :cl-user)\n(default-value foo)\n"
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.lisp', delete=False) as f:
+        f.write(code)
+        path = Path(f.name)
+    try:
+        r = extract_commonlisp(path)
+        labels = _labels(r)
+        # default-value is denylisted, shouldn't create a "foo" node
+        assert "foo" not in labels
+        assert "foo()" not in labels
+    finally:
+        path.unlink()
+
+@_needs_commonlisp
+def test_cl_defs_inside_wrapper_macro():
+    """Definitions nested inside wrapper macros like (optimizing ...) or
+    (eval-when ...) must be extracted. Many CL codebases wrap hot-path
+    inline functions in application-specific macros."""
+    import tempfile
+    code = """(in-package :cl-user)
+(optimizing
+ (definline-maybe packet-type (p) (aref p 0))
+ (definline-maybe set-packet-type (p v) (setf (aref p 0) v)))
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun helper () 42))
+(progn
+  (defun progn-def () 'ok))
+"""
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.lisp', delete=False) as f:
+        f.write(code)
+        path = Path(f.name)
+    try:
+        r = extract_commonlisp(path)
+        labels = _labels(r)
+        assert "packet-type()" in labels
+        assert "set-packet-type()" in labels
+        assert "helper()" in labels
+        assert "progn-def()" in labels
+    finally:
+        path.unlink()
+
+@_needs_commonlisp
+def test_cl_defs_inside_reader_conditional():
+    """#+feature / #-feature reader conditionals wrap their guarded form
+    in an include_reader_macro AST node, which the walker must descend
+    into to find the nested definition."""
+    import tempfile
+    code = """(in-package :cl-user)
+#+little-endian
+(definline-maybe byte-hash= (a b) (eq a b))
+#-sbcl
+(defun only-on-non-sbcl () 1)
+"""
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.lisp', delete=False) as f:
+        f.write(code)
+        path = Path(f.name)
+    try:
+        r = extract_commonlisp(path)
+        labels = _labels(r)
+        assert "byte-hash=()" in labels
+        assert "only-on-non-sbcl()" in labels
+    finally:
+        path.unlink()
+
+@_needs_commonlisp
+def test_cl_defparameter_string_value_not_docstring():
+    """For defvar/defparameter/defconstant, a string literal in the VALUE
+    position must not be wrongly captured as a docstring node."""
+    import tempfile
+    code = '''(in-package :cl-user)
+(defparameter *config-path* "/etc/app/config")
+(defvar *greeting* "hello world")
+'''
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.lisp', delete=False) as f:
+        f.write(code)
+        path = Path(f.name)
+    try:
+        r = extract_commonlisp(path)
+        labels = _labels(r)
+        assert "*config-path*" in labels
+        assert "*greeting*" in labels
+        # The string VALUES must not show up as rationale nodes
+        assert not any("/etc/app/config" in l for l in labels)
+        assert not any("hello world" in l for l in labels)
+    finally:
+        path.unlink()
+
+
+
+@_needs_commonlisp
+def test_cl_import_edges_are_not_dangling():
+    """Every `imports` edge must target a real node (a sourceless stub the corpus
+    rewire can collapse), not a nodeless id — otherwise the edge dangles."""
+    r = extract_commonlisp(FIXTURES / "sample.lisp")
+    ids = {n["id"] for n in r["nodes"]}
+    dangling = [e for e in r["edges"] if e["source"] not in ids or e["target"] not in ids]
+    assert not dangling, f"dangling edges: {dangling}"
+    import_targets = [e["target"] for e in r["edges"] if e["relation"] == "imports"]
+    assert import_targets, "sample.lisp uses packages, so it must emit imports edges"
+    assert all(t in ids for t in import_targets)
+    # the import-target stubs are sourceless so the corpus rewire can collapse them
+    stub_labels = {n["label"] for n in r["nodes"] if n.get("source_file") == ""}
+    assert "cl" in stub_labels
+
+
+# ── Markdown: node_kind + frontmatter ────────────────────────────────────────
+
+def _md_extract(src: str):
+    """Write *src* to a temp .md file and extract it."""
+    import tempfile, os
+    with tempfile.NamedTemporaryFile(suffix=".md", mode="w", delete=False) as fh:
+        fh.write(src)
+        fpath = fh.name
+    try:
+        return extract_markdown(Path(fpath))
+    finally:
+        os.unlink(fpath)
+
+
+def test_markdown_node_kind_separates_pages_from_headings():
+    """Headings must be filterable. file_type is 'document' for both, so a
+    consumer needs node_kind to tell a page from a heading."""
+    r = _md_extract("# Title\n\n## Section\n\n### Deeper\n")
+    kinds = [n["node_kind"] for n in r["nodes"]]
+    assert kinds.count("page") == 1, f"expected exactly one page node, got {kinds}"
+    assert kinds.count("heading") == 3, f"expected three heading nodes, got {kinds}"
+    # file_type stays 'document' on both — build.py's twin-merge depends on it.
+    assert {n["file_type"] for n in r["nodes"]} == {"document"}
+
+
+def test_markdown_frontmatter_lands_on_page_node():
+    r = _md_extract(
+        "---\n"
+        "title: Two Tier Model\n"
+        "type: decision\n"
+        "review_status: reviewed\n"
+        "---\n"
+        "\n"
+        "# Body Heading\n"
+    )
+    page = [n for n in r["nodes"] if n["node_kind"] == "page"][0]
+    assert page["frontmatter"]["type"] == "decision"
+    assert page["frontmatter"]["review_status"] == "reviewed"
+    heading = [n for n in r["nodes"] if n["node_kind"] == "heading"][0]
+    assert "frontmatter" not in heading
+
+
+def test_markdown_no_frontmatter_key_when_absent():
+    """A plain document must not grow an empty frontmatter dict."""
+    r = _md_extract("# Just A Heading\n")
+    page = [n for n in r["nodes"] if n["node_kind"] == "page"][0]
+    assert "frontmatter" not in page
+
+
+def test_markdown_yaml_comment_is_not_a_heading():
+    """`#` inside frontmatter is a YAML comment, not an H1."""
+    r = _md_extract(
+        "---\n"
+        "# this is a yaml comment\n"
+        "title: Real Title\n"
+        "---\n"
+        "\n"
+        "# Actual Heading\n"
+    )
+    labels = _labels(r)
+    assert not any("yaml comment" in l for l in labels), \
+        f"YAML comment parsed as heading: {labels}"
+    assert any("Actual Heading" in l for l in labels)
+
+
+def test_markdown_horizontal_rule_is_not_frontmatter():
+    """A `---` that is not on line 1 is a horizontal rule."""
+    r = _md_extract("# Title\n\n---\n\nsome text\n")
+    page = [n for n in r["nodes"] if n["node_kind"] == "page"][0]
+    assert "frontmatter" not in page
+    assert any("Title" in l for l in _labels(r))
+
+
+def test_markdown_unterminated_frontmatter_fence_is_content():
+    """An opening `---` with no closing fence must not swallow the document."""
+    r = _md_extract("---\ntitle: Dangling\n\n# Still A Heading\n")
+    assert any("Still A Heading" in l for l in _labels(r))
+
+
+def test_markdown_frontmatter_wikilinks_still_produce_edges():
+    """Review workflows keep wikilinks in frontmatter (a `consulted:` list);
+    those are genuine references and must not be dropped."""
+    import tempfile, os
+    d = tempfile.mkdtemp()
+    try:
+        (Path(d) / "target.md").write_text("# Target\n")
+        src = Path(d) / "source.md"
+        src.write_text("---\nconsulted: [[target]]\n---\n\n# Source\n")
+        r = extract_markdown(src)
+        refs = [e for e in r["edges"] if e["relation"] == "references"]
+        assert refs, "wikilink in frontmatter produced no reference edge"
+    finally:
+        import shutil; shutil.rmtree(d)
+
+
+def test_markdown_nested_frontmatter_survives():
+    """Nested blocks (a coherence_check: record) must not be flattened away."""
+    r = _md_extract(
+        "---\n"
+        "title: Nested\n"
+        "coherence_check:\n"
+        "  verdict: extends\n"
+        "---\n"
+        "\n"
+        "# Body\n"
+    )
+    page = [n for n in r["nodes"] if n["node_kind"] == "page"][0]
+    assert page["frontmatter"]["coherence_check"]["verdict"] == "extends"
+
+
+def test_markdown_malformed_frontmatter_does_not_raise():
+    r = _md_extract("---\n: : : not valid yaml : :\n---\n\n# Body\n")
+    assert "error" not in r
+    assert any("Body" in l for l in _labels(r))
+
+
+def test_markdown_frontmatter_fallback_parses_flat_keys():
+    """The PyYAML-absent fallback must still parse flat `key: value` frontmatter
+    (it is used verbatim when PyYAML is missing or the YAML is malformed)."""
+    from graphify.extractors.markdown import _parse_frontmatter_fallback
+    out = _parse_frontmatter_fallback(
+        ["title: Hello World", 'status: "draft"', "  indented: skip", "empty:"]
+    )
+    assert out == {"title": "Hello World", "status": "draft"}
+
+
+def test_markdown_heading_id_is_stable_regardless_of_frontmatter():
+    """node_kind/frontmatter are additive: a heading's id stays _make_id(stem, title),
+    so existing markdown graphs and incremental caches are not re-keyed."""
+    from graphify.extractors.base import _make_id, _file_stem
+    r = _md_extract("---\ntitle: Doc\ntags: [a, b]\n---\n\n# Overview\n\n## Details\n")
+    heading_ids = {n["id"] for n in r["nodes"] if n.get("node_kind") == "heading"}
+    # recompute against the file the fixture wrote (single .md temp file)
+    src_file = {n["source_file"] for n in r["nodes"]}.pop()
+    stem = _file_stem(Path(src_file))
+    assert _make_id(stem, "Overview") in heading_ids
+    assert _make_id(stem, "Details") in heading_ids

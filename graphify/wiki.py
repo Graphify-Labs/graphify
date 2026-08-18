@@ -3,25 +3,57 @@
 from __future__ import annotations
 from collections import Counter
 from pathlib import Path
-from urllib.parse import quote
+import re
 import networkx as nx
 
 from graphify.build import edge_data
+from graphify.paths import stem_filename_budget
+
+# Room _unique_slug needs for the collision suffix ("_2" … "_9999") it appends
+# after _safe_filename has already capped the slug. The suffix is technically
+# unbounded, but 5 chars ("_" + 4 digits) covers ~10k identical stems, far past
+# anything real; sizing it to 3 digits let a 1000th collision overrun MAX_PATH.
+_SLUG_SUFFIX_RESERVE = 5
+
+# Characters a slug may not contain, because the article's LINK and its ON-DISK
+# NAME have to be the same string (#2597). Anything left here must be legal,
+# unescaped, in a CommonMark link destination:
+#   < > : " / \ | ? *   Windows-reserved in filenames (pre-existing set)
+#   ( )                 parentheses delimit/nest a link destination
+#   #                   starts a fragment, so `a#b.md` resolves to the file `a`
+#   %                   reads as the start of a percent-escape
+#   control chars       forbidden in a link destination, hostile in a filename
+#
+# Non-ASCII is deliberately NOT stripped. It is legal raw in a link destination
+# and resolves fine on every filesystem graphify targets; stripping it would
+# reduce a CJK, Cyrillic or accented wiki to a wall of underscores.
+_UNSAFE_SLUG_CHARS = re.compile(r'[<>:"/\\|?*#%\x00-\x1f\x7f]')
 
 
-def _safe_filename(name: str) -> str:
-    """Make a label safe for use as a filename across platforms.
+def _safe_filename(name: str, limit: int = 200) -> str:
+    """Make a label safe for use as a filename across platforms AND as a
+    markdown link destination.
 
     Substitutes characters that Windows reserves in filenames
-    (< > : " / \\ | ? *) and strips trailing dots/spaces, also reserved.
-    Falls back to 'unnamed' for empty results and caps length at 200
-    chars to stay well under common filesystem limits.
+    (< > : " / \\ | ? *) plus the ones that would make the emitted link stop
+    matching the file on disk, and strips trailing dots/spaces, also reserved.
+    Falls back to 'unnamed' for empty results and caps length at ``limit``
+    chars (default 200) to stay well under common filesystem limits; ``to_wiki``
+    lowers ``limit`` when the wiki directory leaves less than that inside
+    Windows' MAX_PATH window (#2655).
+
+    Parentheses are DROPPED rather than substituted: every callable node is
+    labelled ``foo()``, and substituting would leave a trailing ``foo__`` on
+    each of them — and would mangle Python dunders (``__init__()`` ->
+    ``_init_``) if the resulting runs were then collapsed. Dropping keeps
+    ``__init__`` intact. Two labels that collapse to one slug are still
+    separated by ``_unique_slug``.
     """
-    import re
     s = name.replace("/", "-").replace(" ", "_").replace(":", "-")
-    s = re.sub(r'[<>:"/\\|?*]', '_', s)
+    s = s.replace("(", "").replace(")", "")
+    s = _UNSAFE_SLUG_CHARS.sub('_', s)
     s = s.strip('. ')
-    return s[:200] if s else 'unnamed'
+    return s[:limit] if s else 'unnamed'
 
 
 def _md_link(label: str, resolver: dict[str, str]) -> str:
@@ -29,13 +61,23 @@ def _md_link(label: str, resolver: dict[str, str]) -> str:
 
     ``resolver`` maps an article's display label to the slug (filename stem) it
     was written under. When the label has an article, emit a standard
-    ``[label](slug.md)`` link, URL-encoding the target so any spaces, parens, &
-    or # in the slug survive every CommonMark renderer (GitHub, GitLab, VS Code
-    preview, a plain browser) and Obsidian alike. The old ``[[label]]`` form
-    only resolved inside Obsidian, because the on-disk filename differs from the
-    label — _safe_filename turns spaces into underscores and substitutes
-    reserved characters — so e.g. ``[[Domain Data Models]]`` pointed at a
-    non-existent ``Domain Data Models.md`` everywhere else.
+    ``[label](slug.md)`` link whose target is the on-disk name VERBATIM.
+
+    The target is deliberately not percent-encoded (#2597). ``quote()`` turned
+    ``_make_id().md`` into ``_make_id%28%29.md`` while the file stayed raw, so
+    the link pointed at a path that does not exist. Renderers hid it by
+    decoding before resolving, but the wiki's whole purpose is to be
+    agent-crawlable, and an agent that reads the target off disk verbatim got a
+    FileNotFoundError. ``_safe_filename`` now keeps the slug free of everything
+    that would need encoding, so raw emission and the filename are the same
+    string by construction — one source of truth instead of two spellings that
+    happened to agree only for URL-safe labels.
+
+    The old ``[[label]]`` form only resolved inside Obsidian, because the
+    on-disk filename differs from the label — _safe_filename turns spaces into
+    underscores and substitutes reserved characters — so e.g.
+    ``[[Domain Data Models]]`` pointed at a non-existent
+    ``Domain Data Models.md`` everywhere else.
 
     Labels with no article — most node-level links, since only communities and
     god nodes get article files — render as plain text instead of a dead link
@@ -45,7 +87,7 @@ def _md_link(label: str, resolver: dict[str, str]) -> str:
     slug = resolver.get(label)
     if slug is None:
         return text
-    return f"[{text}]({quote(f'{slug}.md')})"
+    return f"[{text}]({slug}.md)"
 
 
 def _cross_community_links(G: nx.Graph, nodes: list[str], own_cid: int, labels: dict[int, str], node_community: dict[str, int]) -> list[tuple[str, int]]:
@@ -288,6 +330,12 @@ def to_wiki(
     count = 0
     used_slugs: set[str] = set()
 
+    # Articles are capped against THIS wiki directory, not just NAME_MAX: on
+    # Windows a 200-char slug under an ordinary graphify-out/wiki/ overruns
+    # MAX_PATH and write_text raises FileNotFoundError partway through the
+    # export (#2655). No-op on POSIX.
+    _slug_limit = stem_filename_budget(out, reserve=_SLUG_SUFFIX_RESERVE)
+
     def _unique_slug(base: str) -> str:
         # Fold case in the collision check: two labels differing only by case
         # (e.g. "Parser" vs "parser") resolve to one path on case-insensitive
@@ -315,7 +363,7 @@ def to_wiki(
     community_slugs: dict[int, str] = {}
     for cid in communities:
         label = labels.get(cid, f"Community {cid}")
-        slug = _unique_slug(_safe_filename(label))
+        slug = _unique_slug(_safe_filename(label, _slug_limit))
         community_slugs[cid] = slug
         resolver.setdefault(label, slug)
 
@@ -323,7 +371,7 @@ def to_wiki(
     for node_data in god_nodes_data:
         nid = node_data.get("id")
         if nid and nid in G:
-            slug = _unique_slug(_safe_filename(node_data['label']))
+            slug = _unique_slug(_safe_filename(node_data['label'], _slug_limit))
             god_articles.append((nid, slug))
             resolver.setdefault(node_data['label'], slug)
 
