@@ -122,6 +122,35 @@ def test_to_json_field_order_stable_across_read_rebuild(tmp_path):
     assert endpoints == [("a_foo", "b_bar"), ("b_bar", "c_baz")]
 
 
+def test_to_json_field_order_stable_with_non_ascii_labels(tmp_path):
+    """The byte-identity guarantee must hold with non-ASCII labels — the fix's
+    round-trip stability implicitly relies on the ensure_ascii write path, and a
+    reordered dict with escaped-unicode values must still serialize identically."""
+    extraction = {
+        "nodes": [
+            {"id": "a_cafe", "label": "café", "file_type": "code", "source_file": "a.py"},
+            {"id": "b_ja", "label": "日本語クラス", "file_type": "code", "source_file": "b.py"},
+        ],
+        "edges": [
+            {"source": "a_cafe", "target": "b_ja", "relation": "references",
+             "confidence": "INFERRED", "confidence_score": 0.55, "source_file": "a.py"},
+        ],
+        "hyperedges": [],
+    }
+    communities = {0: ["a_cafe", "b_ja"]}
+    first = tmp_path / "first.json"
+    to_json(build_from_json(extraction), communities, str(first),
+            built_at_commit="fixed", force=True)
+    reread = json.loads(first.read_text())
+    second = tmp_path / "second.json"
+    to_json(build_from_json(reread), communities, str(second),
+            built_at_commit="fixed", force=True)
+    assert first.read_bytes() == second.read_bytes(), "non-ASCII round-trip churned field order"
+    # the reorder preserves the non-ASCII value
+    labels = {n["id"]: n.get("label") for n in json.loads(first.read_text())["nodes"]}
+    assert labels.get("b_ja") == "日本語クラス"
+
+
 def test_to_json_commit_fallback_uses_output_repo_not_cwd(tmp_path, monkeypatch):
     # Without an explicit built_at_commit, provenance must come from the repo
     # the graph is written into, not from whatever repo the shell happens to
