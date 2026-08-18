@@ -2989,6 +2989,68 @@ def test_detect_incremental_exclusion_stable_across_runs(tmp_path):
     assert inc2["excluded_files"] == []
 
 
+# ── #2838: manifest seen timestamps preserved for unchanged entries ──
+
+def test_save_manifest_unchanged_file_preserves_seen(tmp_path):
+    """#2838: save_manifest preserves existing seen timestamp for unchanged entries."""
+    import json
+    a = tmp_path / "a.py"
+    a.write_text("x = 1\n", encoding="utf-8")
+    manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
+
+    save_manifest({"code": [str(a)]}, manifest_path, root=tmp_path)
+    raw1 = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    seen_1 = raw1["a.py"]["seen"]
+    assert isinstance(seen_1, (int, float))
+
+    # Second save on unchanged file must keep identical seen value
+    save_manifest({"code": [str(a)]}, manifest_path, root=tmp_path)
+    raw2 = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    assert raw2["a.py"]["seen"] == seen_1
+    assert raw2["a.py"]["ast_hash"] == raw1["a.py"]["ast_hash"]
+    assert raw2["a.py"]["mtime"] == raw1["a.py"]["mtime"]
+
+
+def test_save_manifest_changed_file_updates_seen(tmp_path):
+    """#2838: save_manifest assigns a new seen timestamp when file content changes."""
+    import json
+    import time
+    a = tmp_path / "a.py"
+    a.write_text("x = 1\n", encoding="utf-8")
+    manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
+
+    save_manifest({"code": [str(a)]}, manifest_path, root=tmp_path)
+    raw1 = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    seen_1 = raw1["a.py"]["seen"]
+
+    # Modify file content (new hash)
+    time.sleep(0.01)
+    a.write_text("x = 2\n", encoding="utf-8")
+    save_manifest({"code": [str(a)]}, manifest_path, root=tmp_path)
+    raw2 = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+
+    assert raw2["a.py"]["seen"] >= seen_1
+    assert raw2["a.py"]["ast_hash"] != raw1["a.py"]["ast_hash"]
+
+
+def test_save_manifest_noop_skips_disk_write(tmp_path):
+    """#2838: save_manifest does not rewrite manifest.json when payload is identical."""
+    a = tmp_path / "a.py"
+    a.write_text("x = 1\n", encoding="utf-8")
+    manifest_path = Path(tmp_path / "graphify-out" / "manifest.json")
+
+    save_manifest({"code": [str(a)]}, str(manifest_path), root=tmp_path)
+    mtime_1 = manifest_path.stat().st_mtime_ns
+    bytes_1 = manifest_path.read_bytes()
+
+    save_manifest({"code": [str(a)]}, str(manifest_path), root=tmp_path)
+    mtime_2 = manifest_path.stat().st_mtime_ns
+    bytes_2 = manifest_path.read_bytes()
+
+    assert bytes_1 == bytes_2
+    assert mtime_1 == mtime_2
+
+
 # ── #2106: sensitive-filter over-match (prose/source rescued, real secrets kept) ──
 
 @pytest.mark.parametrize("path", [
