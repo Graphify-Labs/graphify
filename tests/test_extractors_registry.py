@@ -63,3 +63,10 @@ def test_csproj_migrated():
 
     assert facade.extract_csproj is extract_csproj
     assert LANGUAGE_EXTRACTORS["csproj"] is extract_csproj
+
+
+def test_objc_migrated():
+    from graphify.extractors.objc import extract_objc
+
+    assert facade.extract_objc is extract_objc
+    assert LANGUAGE_EXTRACTORS["objc"] is extract_objc

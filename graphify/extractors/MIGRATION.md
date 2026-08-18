@@ -29,7 +29,8 @@ written so an AI agent can execute it in a single session.
 | lazarus_package | yes |
 | slnx | yes |
 | csproj | yes |
-| (other bespoke: julia, verilog, markdown, objc, pascal) | no |
+| objc | yes |
+| (other bespoke: julia, verilog, markdown, pascal) | no |
 
 Note: config-driven extractors (python, js, java, c, cpp, ruby, csharp,
 kotlin, scala, php, lua, swift, groovy) depend on the shared
