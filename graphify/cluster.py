@@ -6,6 +6,7 @@ import io
 import json
 import sys
 import networkx as nx
+from graphify.edges import effective_weight
 
 
 def _suppress_output():
@@ -32,17 +33,35 @@ def _partition(G: nx.Graph, resolution: float = 1.0) -> dict[str, int]:
     from corrupting terminal scroll buffers on Windows PowerShell 5.1.
     """
     stable = nx.Graph()
-    stable.add_nodes_from(sorted(G.nodes(), key=str))
-    edge_rows = sorted(
-        G.edges(data=True),
+    # NetworkX's Louvain implementation uses sets internally.  Integer node
+    # IDs have stable hashing across Python processes; mapping back after the
+    # partition removes process-randomized string-hash ordering.
+    ordered_nodes = sorted(G.nodes(), key=str)
+    node_to_int = {node: index for index, node in enumerate(ordered_nodes)}
+    int_to_node = {index: node for node, index in node_to_int.items()}
+    stable.add_nodes_from(range(len(ordered_nodes)))
+    edge_rows = []
+    for src, tgt, attrs in G.edges(data=True):
+        src_i, tgt_i = node_to_int[src], node_to_int[tgt]
+        if src_i > tgt_i:
+            src_i, tgt_i = tgt_i, src_i
+        edge_rows.append((src_i, tgt_i, attrs))
+    edge_rows.sort(
         key=lambda row: (
-            str(row[0]),
-            str(row[1]),
+            row[0],
+            row[1],
             json.dumps(row[2], sort_keys=True, ensure_ascii=False, default=str),
-        ),
+        )
     )
-    for src, tgt, attrs in edge_rows:
-        stable.add_edge(src, tgt, **attrs)
+    for src_i, tgt_i, attrs in edge_rows:
+        weighted_attrs = dict(attrs)
+        # NetworkX's Louvain implementation reads the canonical ``weight``
+        # attribute internally, even when a custom weight name is requested by
+        # the public wrapper.  Feed it the confidence-adjusted score explicitly.
+        weighted_attrs["weight"] = effective_weight(attrs)
+        # Endpoints were canonicalized before sorting so each adjacency mapping
+        # has the same order in every process.
+        stable.add_edge(src_i, tgt_i, **weighted_attrs)
 
     try:
         from graspologic.partition import leiden
@@ -63,18 +82,27 @@ def _partition(G: nx.Graph, resolution: float = 1.0) -> dict[str, int]:
                 result = leiden(stable, **kwargs)
         finally:
             sys.stderr = old_stderr
-        return result
+        return {int_to_node[node]: cid for node, cid in result.items()}
     except ImportError:
         pass
 
     # Fallback: networkx louvain (available since networkx 2.7).
     # Inspect kwargs to stay compatible across NetworkX versions — max_level
     # was added in a later release and prevents hangs on large sparse graphs.
-    kwargs: dict = {"seed": 42, "threshold": 1e-4, "resolution": resolution}
+    kwargs: dict = {
+        "seed": 42,
+        "threshold": 1e-4,
+        "resolution": resolution,
+        "weight": "effective_weight",
+    }
     if "max_level" in inspect.signature(nx.community.louvain_communities).parameters:
         kwargs["max_level"] = 10
     communities = nx.community.louvain_communities(stable, **kwargs)
-    return {node: cid for cid, nodes in enumerate(communities) for node in nodes}
+    return {
+        int_to_node[node]: cid
+        for cid, nodes in enumerate(communities)
+        for node in nodes
+    }
 
 
 _MAX_COMMUNITY_FRACTION = 0.25   # communities larger than 25% of graph get split
@@ -162,11 +190,11 @@ def cluster(
     # Compute hub exclusion set before removing anything so degree is based on full graph
     hub_nodes: set[str] = set()
     if exclude_hubs_percentile is not None:
-        degrees = sorted(d for _, d in G.degree())
+        degrees = sorted(_weighted_degree(G, node) for node in G.nodes())
         if degrees:
             idx = max(0, int(len(degrees) * exclude_hubs_percentile / 100) - 1)
             threshold = degrees[idx]
-            hub_nodes = {n for n, d in G.degree() if d > threshold}
+            hub_nodes = {n for n in G if _weighted_degree(G, n) > threshold}
 
     # Leiden warns and drops isolates - handle them separately
     # Also exclude hub nodes from partitioning so they don't pull unrelated
@@ -263,6 +291,10 @@ def cohesion_score(G: nx.Graph, community_nodes: list[str]) -> float:
     actual = subgraph.number_of_edges()
     possible = n * (n - 1) / 2
     return actual / possible if possible > 0 else 0.0
+
+
+def _weighted_degree(G: nx.Graph, node: str) -> float:
+    return sum(effective_weight(data) for _, _, data in G.edges(node, data=True))
 
 
 def score_all(G: nx.Graph, communities: dict[int, list[str]]) -> dict[int, float]:
