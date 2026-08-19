@@ -98,7 +98,7 @@ def backup_if_protected(out_dir: Path) -> "Path | None":
         return None
 
 def _obsidian_tag(name: str) -> str:
-    """Sanitize a community name for use as an Obsidian tag.
+    r"""Sanitize a community name for use as an Obsidian tag.
 
     Obsidian tags accept letters from any language plus digits, hyphens,
     underscores and slashes; spaces and most punctuation are not allowed, and a
