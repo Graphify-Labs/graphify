@@ -1831,22 +1831,19 @@ def dispatch_command(cmd: str) -> None:
         stages = _StageTimer(co_timing)
         print("Loading existing graph...")
         # Solution 3 (#1019): don't hard-exit on an oversized graph.json here.
-        # Core outputs (graph.json + GRAPH_REPORT.md) still get written; the
-        # graph.html render below falls back to the community-aggregation view
-        # (node_limit=5000) when over the cap.
+        # Core outputs (graph.json + GRAPH_REPORT.md) still get written. The
+        # visualization policy below uses its own node-count limit.
         from graphify.security import check_graph_file_size_cap as _check_cap
-        _over_cap = False
         try:
             _check_cap(graph_json)
         except ValueError:
-            _over_cap = True
             try:
                 _over_cap_bytes = graph_json.stat().st_size
             except OSError:
                 _over_cap_bytes = -1
             print(
                 f"warning: graph.json exceeds cap ({_over_cap_bytes} bytes); "
-                f"falling back to community-aggregation view (node_limit=5000)",
+                "continuing with best-effort visualization",
                 file=sys.stderr,
             )
         _raw = json.loads(graph_json.read_text(encoding="utf-8"))
@@ -2038,12 +2035,31 @@ def dispatch_command(cmd: str) -> None:
         # Snapshot BEFORE any artifact is replaced: GRAPH_REPORT.md was written
         # first, so the dated folder held the NEW report, not the previous (#2402).
         from graphify.export import backup_if_protected as _backup
+        from graphify.exporters.html import _HTML_STALE_MARKER
         _backup(out)
+        html_stale_marker = out / _HTML_STALE_MARKER
+
+        def _clear_html_stale_marker() -> None:
+            try:
+                html_stale_marker.unlink(missing_ok=True)
+            except OSError as exc:
+                print(
+                    "warning: graph.html stale marker could not be cleared; "
+                    f"regeneration may be retried: {exc}",
+                    file=sys.stderr,
+                )
+
+        stale_marker_preexisted = html_stale_marker.exists()
+        # Mark before graph.json advances. Report/sidecar generation or process
+        # interruption must not leave an older HTML looking current.
+        html_stale_marker.touch()
         # The #479 guard can refuse this write, so it goes before the sidecars —
         # a report and labels describing a clustering graph.json does not contain
         # are worse than no run at all (#2436).
         if not to_json(G, communities, str(out / "graph.json"),
                        community_labels=labels, built_at_commit=_commit):
+            if not stale_marker_preexisted:
+                _clear_html_stale_marker()
             print(
                 "graph.json NOT written: refusing to overwrite (see warning above). "
                 "GRAPH_REPORT.md, .graphify_labels.json and .graphify_analysis.json "
@@ -2092,22 +2108,46 @@ def dispatch_command(cmd: str) -> None:
         if no_viz:
             if html_target.exists():
                 html_target.unlink()
+            _clear_html_stale_marker()
             stages.mark("export"); stages.total()
             print(f"Done - {len(communities)} communities. GRAPH_REPORT.md and graph.json updated (--no-viz; graph.html removed).")
         else:
+            html_written = False
+            skip_reason: str | None = None
             try:
-                # Over-cap fallback (#1019): force the community-aggregation
-                # path so an oversized graph still renders a usable graph.html.
-                _node_limit = 5000 if _over_cap else None
-                to_html(G, communities, str(html_target), community_labels=labels or None,
-                        node_limit=_node_limit)
-                stages.mark("export"); stages.total()
-                print(f"Done - {len(communities)} communities. GRAPH_REPORT.md, graph.json and graph.html updated.")
+                from graphify.exporters.html import _viz_node_limit
+                viz_limit = _viz_node_limit()
+                if viz_limit <= 0:
+                    html_target.unlink(missing_ok=True)
+                    _clear_html_stale_marker()
+                    skip_reason = "GRAPHIFY_VIZ_NODE_LIMIT=0 disables HTML visualization"
+                else:
+                    # Passing the positive visualization limit explicitly selects
+                    # the community meta-graph when the full graph is too large.
+                    html_written = to_html(
+                        G,
+                        communities,
+                        str(html_target),
+                        community_labels=labels or None,
+                        node_limit=viz_limit,
+                    )
+                    if html_written:
+                        _clear_html_stale_marker()
+                    else:
+                        skip_reason = "no useful community aggregation could be generated"
+                        if html_target.exists():
+                            skip_reason += "; existing graph.html left unchanged"
             except ValueError as viz_err:
+                skip_reason = str(viz_err)
                 if html_target.exists():
-                    html_target.unlink()
-                print(f"Skipped graph.html: {viz_err}")
-                stages.mark("export"); stages.total()
+                    skip_reason += "; existing graph.html left unchanged"
+
+            if skip_reason:
+                print(f"Skipped graph.html: {skip_reason}")
+            stages.mark("export"); stages.total()
+            if html_written:
+                print(f"Done - {len(communities)} communities. GRAPH_REPORT.md, graph.json and graph.html updated.")
+            else:
                 print(f"Done - {len(communities)} communities. GRAPH_REPORT.md and graph.json updated.")
 
     elif cmd == "update":
