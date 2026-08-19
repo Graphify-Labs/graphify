@@ -52,3 +52,15 @@ def test_no_warning_when_all_files_produce_nodes(tmp_path, capsys):
     ex.extract([f], cache_root=tmp_path / "out", parallel=False)
     err = capsys.readouterr().err
     assert "zero nodes" not in err
+
+
+def test_intentionally_skipped_data_json_does_not_warn(tmp_path, capsys):
+    """A recognized data document is empty by design, not an extractor failure."""
+    f = tmp_path / "records.json"
+    f.write_text('[{"id": 1, "name": "Ada"}]')
+
+    result = ex.extract([f], cache_root=tmp_path / "out", parallel=False)
+
+    assert result["nodes"] == []
+    err = capsys.readouterr().err
+    assert "zero nodes" not in err, err

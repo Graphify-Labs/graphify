@@ -5512,7 +5512,11 @@ def extract(
     _empty_sources: list[str] = []
     for i, _p in enumerate(paths):
         _res = per_file[i] or {}
-        if _res.get("nodes") or _res.get("error"):
+        # Some extractors deliberately return no graph data for recognized input
+        # (for example, JSON records rather than a config/manifest).  Their
+        # explicit ``skipped`` marker distinguishes that expected outcome from
+        # the anomalous empty extraction this warning is meant to surface.
+        if _res.get("nodes") or _res.get("error") or _res.get("skipped"):
             continue
         if _get_extractor(_p) is not None:
             _empty_sources.append(str(_p))
