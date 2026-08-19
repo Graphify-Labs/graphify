@@ -585,6 +585,29 @@ def test_ast_cache_invalidated_on_version_bump(tmp_path, monkeypatch):
     )
 
 
+def test_ast_cache_schema_rejects_same_version_legacy_collision(
+    tmp_path, monkeypatch
+):
+    """A key-schema change must not replay a poisoned same-version AST entry."""
+    import json
+    import graphify.cache as cache_mod
+
+    target = tmp_path / "real.py"
+    target.write_text("value = 1\n")
+    monkeypatch.setattr(cache_mod, "_EXTRACTOR_VERSION", "0.9.46", raising=False)
+    old_dir = tmp_path / cache_mod._GRAPHIFY_OUT / "cache" / "ast" / "v0.9.46"
+    old_dir.mkdir(parents=True)
+    old_hash = file_hash(target, tmp_path)
+    (old_dir / f"{old_hash}.json").write_text(json.dumps({
+        "nodes": [{"id": "alias", "source_file": "alias.py"}],
+        "edges": [],
+    }))
+    monkeypatch.setattr(cache_mod, "_cleaned_ast_dirs", set(), raising=False)
+
+    assert load_cached(target, root=tmp_path, kind="ast") is None
+    assert not old_dir.exists()
+
+
 def test_ast_cache_version_bump_cleans_stale_entries(tmp_path, monkeypatch):
     """Upgrading removes AST entries left behind by previous versions so the
     cache directory does not grow one full copy per release."""
@@ -680,6 +703,246 @@ def test_save_cached_in_root_symlink_keeps_symlink_name(tmp_path):
         f"cache must store symlink name, not resolved target; got "
         f"{on_disk['nodes'][0]['source_file']!r}"
     )
+
+
+def test_file_hash_distinguishes_walked_symlink_paths_portably(
+    requires_symlinks, tmp_path
+):
+    """Aliases of one target need separate portable extraction-cache keys."""
+    from graphify import cache as cache_mod
+
+    _reset_stat_index()
+    hashes_by_root = []
+    for dirname in ("repo_a", "repo_b"):
+        root = tmp_path / dirname
+        (root / "sub").mkdir(parents=True)
+        target = root / "real.py"
+        target.write_text("def value():\n    return 1\n")
+        aliases = (root / "alias.py", root / "sub" / "link.py")
+        aliases[0].symlink_to(target)
+        aliases[1].symlink_to(target)
+
+        hashes = tuple(file_hash(path, root) for path in (target, *aliases))
+        assert len(set(hashes)) == 3
+        assert len(cache_mod._stat_index[str(target.resolve())]["hashes"]) == 3
+        hashes_by_root.append(hashes)
+
+    assert hashes_by_root[0] == hashes_by_root[1]
+
+
+def test_file_hash_keeps_resolved_fallback_for_external_symlink(
+    requires_symlinks, tmp_path
+):
+    """An out-of-root target retains the existing resolved-path identity."""
+    _reset_stat_index()
+    root = tmp_path / "repo"
+    root.mkdir()
+    target = tmp_path / "external.py"
+    target.write_text("external = True\n")
+    alias = root / "external.py"
+    alias.symlink_to(target)
+
+    assert file_hash(alias, root) == file_hash(target, root)
+
+
+def test_warm_cache_keeps_target_and_symlink_sources_distinct(
+    requires_symlinks, tmp_path, monkeypatch
+):
+    """#2832: a warm cache must not move target nodes onto its symlink."""
+    from collections import Counter
+
+    import graphify.extract as extract_mod
+
+    _reset_stat_index()
+    physical_root = tmp_path / "repo"
+    (physical_root / "sub").mkdir(parents=True)
+    target = physical_root / "real.py"
+    target.write_text("def value():\n    return 1\n")
+    alias = physical_root / "sub" / "link.py"
+    alias.symlink_to(target)
+    root = tmp_path / "scan"
+    root.symlink_to(physical_root, target_is_directory=True)
+
+    paths = extract_mod.collect_files(root)
+    assert [path.relative_to(root).as_posix() for path in paths] == [
+        "real.py",
+        "sub/link.py",
+    ]
+
+    cold = extract_mod.extract(paths, cache_root=root, root=root, parallel=False)
+    misses = []
+    real_extract = extract_mod._safe_extract_with_xaml_root
+
+    def counting_extract(extractor, path, extract_root):
+        misses.append(path)
+        return real_extract(extractor, path, extract_root)
+
+    monkeypatch.setattr(extract_mod, "_safe_extract_with_xaml_root", counting_extract)
+    warm = extract_mod.extract(paths, cache_root=root, root=root, parallel=False)
+
+    assert misses == []
+    cold_counts = Counter(n.get("source_file") for n in cold["nodes"])
+    warm_counts = Counter(n.get("source_file") for n in warm["nodes"])
+    assert warm_counts == cold_counts
+    assert len(cold_counts) == 2
+    assert {Path(source).name for source in cold_counts} == {"real.py", "link.py"}
+
+
+def test_semantic_cache_self_heals_legacy_symlink_collision(
+    requires_symlinks, tmp_path
+):
+    """A poisoned legacy entry misses once, then walked groups round-trip."""
+    import json
+
+    from graphify.cache import check_semantic_cache, save_semantic_cache
+
+    _reset_stat_index()
+    physical_root = tmp_path / "repo"
+    physical_root.mkdir()
+    (physical_root / "real.md").write_text("# Shared\n")
+    (physical_root / "alias.md").symlink_to(physical_root / "real.md")
+    root = tmp_path / "scan"
+    root.symlink_to(physical_root, target_is_directory=True)
+    target = root / "real.md"
+    alias = root / "alias.md"
+
+    legacy_hash = file_hash(target, root)
+    legacy_entry = cache_dir(root, "semantic") / f"{legacy_hash}.json"
+    legacy_entry.write_text(json.dumps({
+        "nodes": [{"id": "alias-old", "source_file": "alias.md"}],
+        "edges": [],
+    }))
+
+    nodes, _, _, uncached = check_semantic_cache(
+        [str(target), str(alias)], root=root
+    )
+    assert nodes == []
+    assert uncached == [str(target), str(alias)]
+
+    saved = save_semantic_cache(
+        [
+            {"id": "real", "source_file": str(target)},
+            {"id": "alias", "source_file": str(alias)},
+        ],
+        [],
+        root=root,
+    )
+    stored_sources = []
+    for path in (target, alias):
+        entry = cache_dir(root, "semantic") / f"{file_hash(path, root)}.json"
+        stored_sources.append(json.loads(entry.read_text())["nodes"][0]["source_file"])
+    nodes, _, _, uncached = check_semantic_cache(
+        [str(target), str(alias)], root=root
+    )
+
+    assert saved == 2
+    assert stored_sources == ["real.md", "alias.md"]
+    assert [node["id"] for node in nodes] == ["real", "alias"]
+    assert uncached == []
+
+
+def test_semantic_symlink_policy_uses_walked_identity(
+    requires_symlinks, tmp_path
+):
+    """Alias authorization and partial state must not leak to its target."""
+    from graphify.cache import load_cached, save_semantic_cache
+
+    _reset_stat_index()
+    target = tmp_path / "real.md"
+    target.write_text("# Shared\n")
+    alias = tmp_path / "alias.md"
+    alias.symlink_to(target)
+
+    with pytest.warns(RuntimeWarning, match="out-of-scope source_file 'alias.md'"):
+        saved = save_semantic_cache(
+            [
+                {"id": "real", "source_file": "real.md"},
+                {"id": "alias", "source_file": "alias.md"},
+            ],
+            [],
+            root=tmp_path,
+            allowed_source_files=[target],
+            partial_source_files=[alias],
+        )
+
+    target_entry = load_cached(
+        target, root=tmp_path, kind="semantic", allow_partial=True
+    )
+    assert saved == 1
+    assert target_entry is not None
+    assert target_entry.get("partial") is not True
+    assert load_cached(alias, root=tmp_path, kind="semantic") is None
+
+
+def test_semantic_symlink_root_accepts_resolved_policy_paths_without_alias_leak(
+    requires_symlinks, tmp_path
+):
+    """Resolved root spellings apply only to the matching walked identity."""
+    from graphify.cache import load_cached, save_semantic_cache
+
+    _reset_stat_index()
+    physical_root = tmp_path / "repo"
+    physical_root.mkdir()
+    target = physical_root / "real.md"
+    target.write_text("# Shared\n")
+    alias = physical_root / "alias.md"
+    alias.symlink_to(target)
+    root = tmp_path / "scan"
+    root.symlink_to(physical_root, target_is_directory=True)
+    walked_target = root / "real.md"
+    walked_alias = root / "alias.md"
+
+    with pytest.warns(RuntimeWarning, match="out-of-scope source_file"):
+        saved = save_semantic_cache(
+            [
+                {"id": "real", "source_file": str(walked_target)},
+                {"id": "alias", "source_file": str(walked_alias)},
+            ],
+            [],
+            root=root,
+            allowed_source_files=[walked_target.resolve()],
+            partial_source_files=[walked_target.resolve()],
+        )
+
+    target_entry = load_cached(
+        walked_target, root=root, kind="semantic", allow_partial=True
+    )
+    assert saved == 1
+    assert target_entry is not None
+    assert [node["id"] for node in target_entry["nodes"]] == ["real"]
+    assert target_entry["partial"] is True
+    assert load_cached(walked_target, root=root, kind="semantic") is None
+    assert load_cached(walked_alias, root=root, kind="semantic") is None
+
+
+def test_semantic_symlink_root_keeps_external_policy_path_absolute(
+    requires_symlinks, tmp_path
+):
+    """An allowed absolute source outside a symlinked root stays external."""
+    from graphify.cache import load_cached, save_semantic_cache
+
+    _reset_stat_index()
+    physical_root = tmp_path / "repo"
+    physical_root.mkdir()
+    root = tmp_path / "scan"
+    root.symlink_to(physical_root, target_is_directory=True)
+    external = tmp_path / "external.md"
+    external.write_text("# External\n")
+
+    saved = save_semantic_cache(
+        [{"id": "external", "source_file": str(external)}],
+        [],
+        root=root,
+        allowed_source_files=[external],
+        partial_source_files=[external],
+    )
+
+    entry = load_cached(external, root=root, kind="semantic", allow_partial=True)
+    assert saved == 1
+    assert entry is not None
+    assert Path(entry["nodes"][0]["source_file"]) == external
+    assert entry["partial"] is True
+    assert load_cached(external, root=root, kind="semantic") is None
 
 
 def test_semantic_prune_removes_orphan_entries(tmp_path):
