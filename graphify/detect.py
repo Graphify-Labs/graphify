@@ -1331,14 +1331,20 @@ def _is_ignored(
         # keep it in the shared cache. It used to run for every target: on a repo with
         # ~55 patterns and ~14k targets that is ~770k redundant string splits.
         #
-        # Invalidate on pattern count: detect() appends patterns from nested .gitignore
-        # files *during* the walk (see ignore_patterns.extend below), so a frozen parse
-        # would silently stop applying the later ones.
+        # The entry is keyed on the pattern list's identity AND its length, and it
+        # keeps a reference to that list:
+        #   - length, because detect() appends patterns from nested .gitignore files
+        #     *during* the walk (see ignore_patterns.extend below), so a frozen parse
+        #     would silently stop applying the later ones;
+        #   - identity, because a caller may pass a different list of the same length
+        #     with the same _cache, and length alone would serve the wrong parse.
+        # Holding the list keeps it alive, so an `is` check cannot be fooled by a new
+        # list landing on a freed one's address (which `id()` alone would allow).
         prepared = None
         if _cache is not None:
             cached = _cache.get(_PREPARED_KEY)
-            if cached is not None and cached[0] == len(patterns):
-                prepared = cached[1]
+            if cached is not None and cached[0] is patterns and cached[1] == len(patterns):
+                prepared = cached[2]
         if prepared is None:
             prepared = []
             for _anchor, _pattern in patterns:
@@ -1350,7 +1356,7 @@ def _is_ignored(
                 prepared.append((_anchor, _negated, _raw.endswith("/"),
                                  "/" in _raw.rstrip("/"), _p))
             if _cache is not None:
-                _cache[_PREPARED_KEY] = (len(patterns), prepared)
+                _cache[_PREPARED_KEY] = (patterns, len(patterns), prepared)
 
         # relative_to() + _nfc() are the dominant cost in this loop and depend only on
         # the anchor (or on root), never on the individual pattern. Anchors are few,

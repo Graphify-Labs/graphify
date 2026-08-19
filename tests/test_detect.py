@@ -3093,3 +3093,29 @@ def test_nested_gitignore_applies_when_patterns_grow_mid_walk(tmp_path):
     assert any("keep.py" in f for f in all_files)
     assert any("kept.py" in f for f in all_files)
     assert not any("skipped.py" in f for f in all_files)  # nested pattern applies too
+
+
+def test_prepared_pattern_cache_is_not_shared_across_pattern_lists(tmp_path):
+    """A shared _cache must not serve one pattern list's parse to another.
+
+    The per-scan parse cache is keyed on the pattern list, not just on its
+    length: detect() only ever grows one list (so length alone suffices there),
+    but _is_ignored takes both `patterns` and `_cache` as arguments, so any
+    other caller can hand it two different lists of equal length. Keyed on
+    length alone, the second call silently matches against the first list's
+    patterns.
+    """
+    (tmp_path / "a.log").write_text("noise")
+    (tmp_path / "b.tmp").write_text("noise")
+    (tmp_path / "c.log").write_text("noise")
+
+    logs = [(tmp_path, "*.log")]
+    temps = [(tmp_path, "*.tmp")]
+    cache: dict = {}
+
+    # First call fills the parse cache from `logs`.
+    assert _is_ignored(tmp_path / "a.log", tmp_path, logs, _cache=cache) is True
+
+    # Same length, different contents: `temps` must be parsed on its own.
+    assert _is_ignored(tmp_path / "b.tmp", tmp_path, temps, _cache=cache) is True
+    assert _is_ignored(tmp_path / "c.log", tmp_path, temps, _cache=cache) is False
