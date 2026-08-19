@@ -100,10 +100,19 @@ def backup_if_protected(out_dir: Path) -> "Path | None":
 def _obsidian_tag(name: str) -> str:
     """Sanitize a community name for use as an Obsidian tag.
 
-    Obsidian tags only allow alphanumerics, hyphens, underscores, and slashes.
-    Spaces become underscores; everything else is stripped.
+    Obsidian tags accept letters from any language plus digits, hyphens,
+    underscores and slashes; spaces and most punctuation are not allowed, and a
+    tag cannot be digits-only. ``\w`` is Unicode-aware in Python 3, so Hangul,
+    CJK, Cyrillic and accented Latin survive instead of being stripped (#2862):
+    an ASCII-only filter collapsed every non-Latin community label to
+    underscores, so every note in that community carried the same tag.
     """
-    return re.sub(r"[^a-zA-Z0-9_\-/]", "", name.replace(" ", "_"))
+    tag = re.sub(r"[^\w\-/]", "", name.replace(" ", "_"))
+    if not tag.strip("_-/"):
+        return "unnamed"          # label was punctuation only
+    if tag.isdigit():
+        return f"c{tag}"          # Obsidian ignores digits-only tags
+    return tag
 
 
 def _strip_diacritics(text: str | None) -> str:
@@ -832,7 +841,10 @@ def to_obsidian(
     graph_config = {
         "colorGroups": [
             {
-                "query": f"tag:#community/{label.replace(' ', '_')}",
+                # Same sanitizer as the note tags (#2862): built from the raw
+                # label, the canvas colour group queried a tag that no note
+                # carries whenever the label held non-ASCII or punctuation.
+                "query": f"tag:#community/{_obsidian_tag(label)}",
                 "color": {"a": 1, "rgb": int(COMMUNITY_COLORS[cid % len(COMMUNITY_COLORS)].lstrip('#'), 16)}
             }
             for cid, label in sorted((community_labels or {}).items())
