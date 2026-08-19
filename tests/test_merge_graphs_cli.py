@@ -247,3 +247,33 @@ def test_merge_graphs_reads_top_level_only_hyperedges(tmp_path):
     assert [h["id"] for h in data["hyperedges"]] == ["alpha::h_top"]
     assert data["hyperedges"][0]["nodes"] == ["alpha::x"]
 
+def test_merge_graphs_external_node_repos_union_not_clobbered(tmp_path):
+    # #2873: prefix_graph_for_global leaves `external` nodes (unresolved
+    # imports) unprefixed so nx.compose unifies them across repos, tagging
+    # each with a `repos` list. nx.compose merges shared-node attrs with
+    # dict.update, so each pass's `repos` list overwrote the previous one —
+    # only the LAST repo survived on a 3-way merge. merge-graphs now
+    # accumulates the union itself and reattaches it after composing.
+    a = tmp_path / "alpha" / "graphify-out" / "graph.json"
+    b = tmp_path / "beta" / "graphify-out" / "graph.json"
+    c = tmp_path / "gamma" / "graphify-out" / "graph.json"
+    for p, local_id in ((a, "a_mod"), (b, "b_mod"), (c, "c_mod")):
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({
+            "directed": False, "multigraph": False, "graph": {},
+            "nodes": [
+                {"id": local_id},
+                {"id": "typing", "label": "typing", "type": "module",
+                 "external": True, "repos": []},
+            ],
+            "links": [{"source": local_id, "target": "typing"}],
+        }))
+    out = tmp_path / "merged.json"
+    r = _run(["merge-graphs", str(a), str(b), str(c), "--out", str(out)], tmp_path)
+    assert r.returncode == 0, r.stderr
+    data = json.loads(out.read_text())
+    ext_nodes = [n for n in data["nodes"] if n.get("id") == "typing"]
+    assert len(ext_nodes) == 1, f"external node fragmented: {ext_nodes}"
+    assert sorted(ext_nodes[0].get("repos", [])) == ["alpha", "beta", "gamma"], (
+        f"repos union clobbered: {ext_nodes[0].get('repos')}"
+    )

@@ -2399,12 +2399,25 @@ def dispatch_command(cmd: str) -> None:
         # diagnosis in PR #1691). Collect every input's prefixed hyperedges
         # and re-attach the union after composing.
         collected_hyperedges: list = []
+        # Same clobbering hazard as the hyperedge list (#2484) hits the 'repos'
+        # attribute prefix_graph_for_global puts on shared, un-namespaced
+        # external nodes (#2873): nx.compose merges shared-node attrs with
+        # dict.update, so each pass's 'repos' list overwrites the previous
+        # one instead of unioning with it. Accumulate the union ourselves and
+        # reattach it after composing, same shape as collected_hyperedges.
+        external_repos: dict[str, set] = {}
         for G, repo_tag in zip(graphs, repo_tags):
             prefixed = _to_simple(_prefix(G, repo_tag))
             hes = prefixed.graph.get("hyperedges")
             if isinstance(hes, list):
                 collected_hyperedges.extend(h for h in hes if isinstance(h, dict))
+            for nid, data in prefixed.nodes(data=True):
+                if data.get("external"):
+                    external_repos.setdefault(nid, set()).update(data.get("repos", ()))
             merged = _nx.compose(merged, prefixed)
+        for nid, repos in external_repos.items():
+            if nid in merged.nodes:
+                merged.nodes[nid]["repos"] = sorted(repos)
         # Drop whatever compose left behind (the last input's list, possibly
         # with internal duplicates) so attach_hyperedges dedups the full
         # collection by id from a clean slate.

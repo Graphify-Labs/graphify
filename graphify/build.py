@@ -1608,6 +1608,8 @@ def merge_raw_extraction(
         # re-extracted its source. Hyperedges are semantic-tier (no _origin,
         # null source_location), so an AST-only re-extract carries them.
         # Deletion pruning below stays tier-blind.
+        if item.get("external"):
+            return False  # external stub nodes/edges (#2873): never carried-forward-drop, never replace-drop
         own = new_ast_sources if _is_ast_tier(item) else new_sem_sources
         if sf in own or _norm_source_file(sf, _eff_root) in own:
             return True  # re-extracted this run — replaced by the new chunk
@@ -1987,12 +1989,29 @@ def prefix_graph_for_global(G: nx.Graph, repo_tag: str) -> nx.Graph:
     is added to each node so the original ID can be recovered. Edges and
     their directional attributes (_src/_tgt) are rewritten to match the new
     prefixed IDs. The 'repo' attribute is set on every node.
+
+    Nodes marked ``external`` (stdlib/third-party references materialized by
+    the #2873 dangling-edge-endpoint pass) are deliberately NOT namespaced:
+    they are not repo-local ids that happen to collide, they are external
+    identifiers that arrived through a repo-local path, so `typing` from repoA
+    and `typing` from repoB are the same node. Leaving the id bare lets
+    nx.compose unify them across inputs instead of manufacturing one
+    `repoX::typing` per repo (#2873). A 'repos' list (not the singular
+    'repo') accumulates every repo tag that referenced the node, since an
+    external node can now be shared by several inputs.
     """
-    relabel = {n: f"{repo_tag}::{n}" for n in G.nodes}
+    relabel = {
+        n: f"{repo_tag}::{n}"
+        for n, data in G.nodes(data=True)
+        if not data.get("external")
+    }
     H = nx.relabel_nodes(G, relabel, copy=True)
     for node, data in H.nodes(data=True):
-        data["repo"] = repo_tag
-        data.setdefault("local_id", node.split("::", 1)[1])
+        if data.get("external"):
+            data["repos"] = sorted(set(data.get("repos", [])) | {repo_tag})
+        else:
+            data["repo"] = repo_tag
+            data.setdefault("local_id", node.split("::", 1)[1])
     for u, v, data in H.edges(data=True):
         if "_src" in data and data["_src"] in relabel:
             data["_src"] = relabel[data["_src"]]
