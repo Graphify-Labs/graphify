@@ -6649,6 +6649,21 @@ def extract(
             continue
         sf_path = Path(sf)
         if not sf_path.is_absolute():
+            # No id-remap needed here (an id is minted independently of this
+            # string), but the raw source_file itself can still carry a
+            # native `\` separator on Windows — every extractor sets it via
+            # plain str(path), and only the absolute-input branch below ever
+            # ran it through as_posix(). A relative-path caller (the
+            # documented `extract(paths)` entry point with no `root`, or
+            # `python -m graphify.extract <file>...`) got whichever
+            # separator convention that one extractor happened to use,
+            # diverging from the canonical POSIX form every other path
+            # (explicit `root`, the CLI, which always passes one) produces.
+            # That fragments string-equality lookups keyed on source_file
+            # (build._norm_source_file, analyze.find_import_cycles, the
+            # semantic-cache key) into two spellings of one file (#2625).
+            if "\\" in sf:
+                item["source_file"] = sf.replace("\\", "/")
             continue
         new_sf, canonical_id, keys = _sf_entry(str(sf), sf_path)
         if "id" in item:
