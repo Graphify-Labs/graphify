@@ -12,7 +12,7 @@ import re
 import subprocess
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -563,7 +563,7 @@ def _wrap_untrusted(rel: str, content: str) -> str:
     )
 
 
-def _read_files(units: "list[Path | FileSlice]", root: Path) -> str:
+def _read_files(units: "Sequence[Path | FileSlice]", root: Path) -> str:
     """Return file/slice contents formatted for the extraction prompt.
 
     Each unit is wrapped in an <untrusted_source> delimiter block and known
@@ -789,7 +789,7 @@ def _is_vision_image(path: Path) -> bool:
 
 
 def _partition_semantic_files(
-    units: "list[Path | FileSlice]",
+    units: "Sequence[Path | FileSlice]",
 ) -> tuple["list[Path | FileSlice]", list[Path]]:
     """Split a chunk into (text-like units, raster-image files).
 
@@ -1755,7 +1755,7 @@ def _call_bedrock(model: str, user_message: str, max_tokens: int = 8192, *, deep
 
 
 def extract_files_direct(
-    files: list[Path],
+    files: Sequence[Path | FileSlice],
     backend: str | None = None,
     api_key: str | None = None,
     model: str | None = None,
@@ -2083,7 +2083,7 @@ def _strip_partial_markers(result: dict) -> None:
 
 
 def _extract_with_adaptive_retry(
-    chunk: list[Path],
+    chunk: Sequence[Path | FileSlice],
     backend: str,
     api_key: str | None,
     model: str | None,
@@ -2287,7 +2287,7 @@ def _extract_with_adaptive_retry(
 
 
 def extract_corpus_parallel(
-    files: list[Path],
+    files: Sequence[str | Path],
     backend: str = "kimi",
     api_key: str | None = None,
     model: str | None = None,
@@ -2349,11 +2349,11 @@ def extract_corpus_parallel(
     # Split oversized splittable documents into slices that cover the whole file
     # before packing, so content past _FILE_CHAR_CAP is extracted instead of
     # silently dropped (#1369). Files at/under the cap pass through unchanged.
-    files = expand_oversized_files(files, _FILE_CHAR_CAP)
+    units = expand_oversized_files(files, _FILE_CHAR_CAP)
     if token_budget is not None:
-        chunks = _pack_chunks_by_tokens(files, token_budget=token_budget)
+        chunks = _pack_chunks_by_tokens(units, token_budget=token_budget)
     else:
-        chunks = [files[i:i + chunk_size] for i in range(0, len(files), chunk_size)]
+        chunks = [units[i:i + chunk_size] for i in range(0, len(units), chunk_size)]
 
     merged: dict = {
         "nodes": [], "edges": [], "hyperedges": [],
@@ -2362,7 +2362,9 @@ def extract_corpus_parallel(
     }
     total = len(chunks)
 
-    def _run_one(idx: int, chunk: list[Path]) -> tuple[int, dict | None, Exception | None]:
+    def _run_one(
+        idx: int, chunk: Sequence[Path | FileSlice]
+    ) -> tuple[int, dict | None, Exception | None]:
         t0 = time.time()
         try:
             result = _extract_with_adaptive_retry(
