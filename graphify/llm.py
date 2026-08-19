@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 from collections.abc import Callable
@@ -1997,6 +1998,27 @@ def _looks_like_context_exceeded(exc: BaseException) -> bool:
     return any(marker in msg for marker in _CONTEXT_EXCEEDED_MARKERS)
 
 
+def _looks_like_timeout(exc: BaseException) -> bool:
+    """Classify an exception as a recognized subprocess or SDK timeout."""
+    types: list[type[BaseException]] = [subprocess.TimeoutExpired]
+    try:
+        import openai
+        types.append(openai.APITimeoutError)
+    except ImportError:
+        pass
+    try:
+        import anthropic
+        types.append(anthropic.APITimeoutError)
+    except ImportError:
+        pass
+    try:
+        import botocore.exceptions
+        types.extend([botocore.exceptions.ReadTimeoutError, botocore.exceptions.ConnectTimeoutError])
+    except ImportError:
+        pass
+    return isinstance(exc, tuple(types))
+
+
 def _mark_partial(result: dict) -> None:
     """Tag every node/edge/hyperedge in a truncated chunk result with an internal
     ``_partial`` marker.
@@ -2071,11 +2093,11 @@ def _extract_with_adaptive_retry(
     *,
     deep_mode: bool = False,
 ) -> dict:
-    """Extract a chunk; if the response is truncated (`finish_reason="length"`)
-    or the API rejects the prompt as too large for the model's context window,
-    split the chunk in half and recurse.
+    """Extract a chunk; if the response is truncated (`finish_reason="length"`),
+    the API rejects the prompt as too large for the model's context window, or
+    the call times out, split the chunk in half and recurse.
 
-    Three signals drive the retry, all funnelled through the same code:
+    Four signals drive the retry, all funnelled through the same code:
 
     - `finish_reason == "length"` — the model accepted the input but ran out of
       `max_completion_tokens` mid-output. The truncated JSON is unparseable, so
@@ -2093,6 +2115,13 @@ def _extract_with_adaptive_retry(
       `_call_openai_compat` re-labels these as `finish_reason="length"` so they
       take the same recovery path; without that the chunk would be silently
       dropped from the corpus.
+
+    - recognized timeout exceptions — dense chunks can take long enough to hit
+      `GRAPHIFY_API_TIMEOUT` before returning output. For `claude-cli`,
+      `subprocess.TimeoutExpired` is raised; for SDK backends, concrete timeout
+      classes (e.g. `openai.APITimeoutError`, `anthropic.APITimeoutError`,
+      `botocore.exceptions.ReadTimeoutError` / `ConnectTimeoutError`) are raised.
+      Adaptive bisection splits the chunk so smaller pieces finish within the timeout.
 
     Recursion is capped at `max_depth` to bound worst-case cost. A chunk of N
     files can split into up to 2**max_depth pieces — at depth=3 that's 8x. If
@@ -2133,33 +2162,37 @@ def _extract_with_adaptive_retry(
         result = extract_files_direct(
             chunk, backend=backend, api_key=api_key, model=model, root=root, deep_mode=deep_mode
         )
-    except Exception as exc:  # noqa: BLE001 — re-raise unless it's a known context overflow
-        if not _looks_like_context_exceeded(exc):
+    except Exception as exc:  # noqa: BLE001 — re-raise unless it's a known context overflow or timeout
+        is_timeout = _looks_like_timeout(exc)
+        if not (_looks_like_context_exceeded(exc) or is_timeout):
             raise
+        reason = "timed out" if is_timeout else "exceeded context"
         if len(chunk) <= 1:
             halves = _split_lone_slice()
             if halves is not None:
                 print(
-                    f"[graphify] slice of {unit_path(chunk[0])} exceeded context at "
+                    f"[graphify] slice of {unit_path(chunk[0])} {reason} at "
                     f"depth {_depth}; splitting the slice and retrying",
                     file=sys.stderr,
                 )
                 return _merge_two([halves[0]], [halves[1]])
+            fail_desc = "timed out" if is_timeout else "exceeds model context"
             print(
-                f"[graphify] single-file chunk {unit_path(chunk[0])} exceeds model context "
+                f"[graphify] single-file chunk {unit_path(chunk[0])} {fail_desc} "
                 f"and cannot be split further: {exc}",
                 file=sys.stderr,
             )
             return {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0, "model": model, "finish_reason": "stop"}
         if _depth >= max_depth:
+            persist_desc = "still times out" if is_timeout else "still overflows context"
             print(
-                f"[graphify] chunk of {len(chunk)} still overflows context at "
+                f"[graphify] chunk of {len(chunk)} {persist_desc} at "
                 f"recursion depth {_depth} (max {max_depth}) — dropping",
                 file=sys.stderr,
             )
             return {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0, "model": model, "finish_reason": "stop"}
         print(
-            f"[graphify] chunk of {len(chunk)} exceeded context at depth "
+            f"[graphify] chunk of {len(chunk)} {reason} at depth "
             f"{_depth} ({type(exc).__name__}); splitting in half and retrying",
             file=sys.stderr,
         )
