@@ -49,6 +49,32 @@ def test_classify_skill():
     # #1901: .skill agent files (Markdown with YAML frontmatter) were dropped as unclassified.
     assert classify_file(Path("10_Orchestrator.skill")) == FileType.DOCUMENT
 
+def test_classify_typst():
+    # #2826: Typst is a prose authoring format, but .typ was in no extension set,
+    # so a repo whose report/spec chapters are written in Typst lost all of them.
+    assert classify_file(Path("main.typ")) == FileType.DOCUMENT
+
+def test_typst_is_watched():
+    # watch derives _WATCHED_EXTENSIONS from DOC_EXTENSIONS, so a new document
+    # type must also trigger an incremental rebuild when it is edited (#2826).
+    from graphify.watch import _WATCHED_EXTENSIONS
+    assert ".typ" in _WATCHED_EXTENSIONS
+
+def test_detect_surfaces_typst_chapters_as_documents(tmp_path):
+    """The reported symptom (#2826): a Typst-authored report reaches the corpus.
+
+    Classification alone is not the promise — the file has to come back out of
+    ``detect()`` in the document set, which is what was empty for the reporter.
+    """
+    (tmp_path / "main.typ").write_text(
+        "= Test Report\n\nProse documentation authored in Typst.\n", encoding="utf-8")
+    (tmp_path / "chapter.typ").write_text(
+        "== Measurements\n\nMore prose.\n", encoding="utf-8")
+
+    docs = detect(tmp_path)["files"]["document"]
+
+    assert sorted(Path(d).name for d in docs) == ["chapter.typ", "main.typ"]
+
 def test_classify_pdf():
     assert classify_file(Path("paper.pdf")) == FileType.PAPER
 

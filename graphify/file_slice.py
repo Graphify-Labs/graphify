@@ -26,7 +26,10 @@ from pathlib import Path
 # `_file_to_text` is a straight ``read_text`` (so a char range matches the bytes
 # the model is shown). Deliberately excludes code (.py, .ts, ...) and binary
 # docs (.pdf) — those are never sliced.
-_SPLITTABLE_TEXT_SUFFIXES = frozenset({".md", ".mdx", ".markdown", ".txt", ".rst"})
+# .typ (Typst) qualifies on both counts (#2826): it is prose source read straight
+# through `read_text`, and although its headings are `=`/`==` rather than `#`,
+# the blank-line and newline boundaries below still cut it at paragraph edges.
+_SPLITTABLE_TEXT_SUFFIXES = frozenset({".md", ".mdx", ".markdown", ".txt", ".rst", ".typ"})
 
 # Boundary preferences, strongest first. A Markdown heading (``\n#``) keeps a
 # section with its title; a blank line keeps a paragraph intact; a bare newline
