@@ -2,7 +2,7 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
-## 0.9.48 (unreleased)
+## 0.9.48 (2026-08-20)
 
 - Fix: a control character in a node label or id no longer aborts the whole export; the GraphML and Obsidian exporters scrub only the characters those formats forbid (tab, newline, and non-ASCII letters are preserved), and `graph.json` and its byte-identity round-trip are untouched (#2897, thanks @abhay-codes07).
 - Fix: `graphify update` / `label` / `cluster-only` no longer leave a large graph without a `graph.html`; the aggregated community view renders instead of raising, a failed render preserves the previous file, and a missing `graph.html` is regenerated on the no-change fast path without reclustering (#2853, thanks @oleksii-tumanov).
