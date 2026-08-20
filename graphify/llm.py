@@ -433,6 +433,26 @@ def _resolve_max_retries(default: int = 6) -> int:
     return default
 
 
+def _resolve_max_retry_depth(default: int = 3) -> int:
+    """How deep adaptive retry may bisect a truncated chunk.
+
+    A chunk of N files can split into up to ``2**depth`` pieces, so this is the
+    knob that bounds worst-case cost. It used to be a Python-API kwarg only,
+    with no way for a `graphify extract` operator to lower it — or set it to 0 —
+    as a mitigation (#2880). Honour GRAPHIFY_MAX_RETRY_DEPTH; 0 disables
+    retries entirely.
+    """
+    raw = os.environ.get("GRAPHIFY_MAX_RETRY_DEPTH", "").strip()
+    if raw:
+        try:
+            v = int(raw)
+            if v >= 0:
+                return v
+        except ValueError:
+            pass
+    return default
+
+
 def _thinking_disabled_via_env() -> bool:
     """Opt-in (GRAPHIFY_DISABLE_THINKING) to send ``{"thinking": {"type": "disabled"}}``
     to reasoning-capable OpenAI-compatible models such as ``deepseek-v4-flash``.
@@ -1093,9 +1113,10 @@ def _bedrock_response_text(resp: dict, default: str = "") -> str:
     API does not promise a text block is first: reasoning-capable models emit a
     ``reasoningContent`` block ahead of the answer, and ``toolUse`` or future
     block types can precede it too. Indexing position 0 therefore yields no text
-    at all for those models, which reads downstream as a hollow response, gets
-    reclassified as truncation, and sends the chunk into bisection that cannot
-    converge. Select on the block's shape instead of its position so this holds
+    at all for those models, which reads downstream as a hollow response and
+    costs the chunk a round of retries before it is failed (before #2880 it was
+    reclassified as truncation and bisected, which could not converge at all).
+    Select on the block's shape instead of its position so this holds
     for any model; a response whose first block is already text is unaffected.
     """
     content = resp.get("output", {}).get("message", {}).get("content", [])
@@ -1118,9 +1139,8 @@ def _response_is_hollow(raw_content: str | None, parsed: dict) -> bool:
     JSON prefix that fails to parse. All of these collapse to a "successful"
     call producing zero nodes and zero edges. Without this check the chunk
     is silently dropped from the corpus because no exception is raised and
-    `finish_reason` is `"stop"` rather than `"length"`. By flagging the
-    result as hollow, callers can re-route it through the same bisection
-    path used for context-window overflow and `finish_reason="length"`.
+    `finish_reason` is `"stop"` rather than `"length"`. Callers flag it with
+    :func:`_mark_hollow` so the adaptive-retry layer can recover it.
     """
     if raw_content is None or not raw_content.strip():
         return True
@@ -1128,6 +1148,42 @@ def _response_is_hollow(raw_content: str | None, parsed: dict) -> bool:
     edges = parsed.get("edges")
     hyperedges = parsed.get("hyperedges")
     return not nodes and not edges and not hyperedges
+
+
+# Backoff between same-chunk retries of a hollow response (#2880). Two entries
+# ⇒ at most three calls per chunk, versus the 15 the bisection path could spend.
+_HOLLOW_BACKOFF_S = (2.0, 8.0)
+
+
+def _mark_hollow(result: dict, raw_content: str | None, backend: str | None) -> dict:
+    """Label a hollow response so adaptive retry retries it, without bisecting.
+
+    Hollow and truncated are different failures with different remedies, and
+    labelling hollow as `finish_reason="length"` conflated them (#2880):
+
+    - **truncated** — the model ran out of `max_completion_tokens` mid-JSON.
+      Bisecting is the correct recovery: smaller input ⇒ shorter output.
+    - **hollow** — HTTP 200 with empty/null/whitespace content, or content that
+      parses to zero nodes and zero edges (a rate limit, a transport hiccup, a
+      refusal, an agentic prose reply, a reasoning-first content block).
+
+    Bisecting a hollow response cannot converge: both halves go to the same
+    misbehaving backend and come back hollow too, so one bad response cost
+    `2**max_retry_depth` billed calls — up to 15 per chunk at the default
+    depth, all of them failing. `_extract_with_adaptive_retry` retries the
+    *same* chunk with backoff instead.
+    """
+    if _response_is_hollow(raw_content, result) and result.get("finish_reason") != "length":
+        print(
+            f"[graphify] {backend or 'backend'} returned a hollow response "
+            f"(content={'empty' if not (raw_content or '').strip() else 'no nodes/edges'}, "
+            f"output_tokens={result.get('output_tokens', 0)}); "
+            "will retry the same chunk (a hollow response is not a size problem, "
+            "so the chunk is not bisected).",
+            file=sys.stderr,
+        )
+        result["finish_reason"] = "hollow"
+    return result
 
 
 def _backend_env_keys(backend: str) -> list[str]:
@@ -1308,17 +1364,9 @@ def _call_openai_compat(
     # An overwhelmed local model (typically Ollama) can return HTTP 200 with
     # empty / null content or unparseable half-generated JSON. The call looks
     # successful, `finish_reason` is `"stop"`, and the chunk would be silently
-    # dropped from the corpus. Re-label as `"length"` so the adaptive retry
-    # layer bisects the chunk — same recovery as a true truncation.
-    if _response_is_hollow(raw_content, result) and result["finish_reason"] != "length":
-        print(
-            f"[graphify] {backend or 'backend'} returned a hollow response "
-            f"(content={'empty' if not (raw_content or '').strip() else 'no nodes/edges'}, "
-            f"output_tokens={result['output_tokens']}); "
-            "treating as truncation so adaptive retry can bisect the chunk.",
-            file=sys.stderr,
-        )
-        result["finish_reason"] = "length"
+    # dropped from the corpus. Label it hollow so the adaptive retry layer
+    # retries the same chunk — see _mark_hollow for why not bisection.
+    _mark_hollow(result, raw_content, backend)
     output_tokens = result["output_tokens"]
     if output_tokens < 50 and backend == "ollama":
         print(
@@ -1361,13 +1409,7 @@ def _call_claude(api_key: str, model: str, user_message: str, max_tokens: int = 
     # vocabulary so the adaptive-retry layer doesn't have to know which
     # backend produced the result.
     result["finish_reason"] = "length" if resp.stop_reason == "max_tokens" else "stop"
-    if _response_is_hollow(raw_content, result) and result["finish_reason"] != "length":
-        print(
-            "[graphify] claude returned a hollow response; treating as "
-            "truncation so adaptive retry can bisect the chunk.",
-            file=sys.stderr,
-        )
-        result["finish_reason"] = "length"
+    _mark_hollow(result, raw_content, "claude")
     return result
 
 
@@ -1527,9 +1569,10 @@ def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bo
     # the user turn is only a raw file dump with no request, reply
     # conversationally ("I see the file, but there's no actual request
     # attached — what would you like me to do with it?"). That prose parses to
-    # zero nodes/edges, so _response_is_hollow flags it as truncation and the
-    # adaptive-retry path bisects the chunk indefinitely, never converging and
-    # never writing graph.json (verified against Claude Code 2.1.197).
+    # zero nodes/edges, so _response_is_hollow flags it and the chunk is
+    # retried and then failed rather than extracted (verified against Claude
+    # Code 2.1.197). Before #2880 it was misread as truncation and bisected
+    # indefinitely, never converging and never writing graph.json.
     #
     # Putting the full extraction schema plus an explicit imperative in the
     # user turn — and dropping --system-prompt — makes the CLI emit the JSON
@@ -1575,8 +1618,8 @@ def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bo
     # Claude Code releases increasingly treat a bare file-dump prompt as an
     # agentic task and REPORT the extraction in prose ("Knowledge graph
     # extracted — 21 nodes, 20 edges…") instead of returning it; that parses to
-    # zero nodes, reads as truncation, and gets bisected without ever
-    # converging (#2076). --json-schema pins the object shape regardless of
+    # zero nodes and reads as hollow (#2076 — and before #2880, as truncation
+    # to be bisected without ever converging). --json-schema pins the shape regardless of
     # that framing; the user-turn prompt above stays as the fallback for older
     # CLIs that predate the flag.
     if _claude_cli_supports_json_schema(claude_cmd):
@@ -1624,13 +1667,7 @@ def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bo
     result["model"] = next(iter(model_usage), "claude-code-plan")
     stop_reason = envelope.get("stop_reason", "")
     result["finish_reason"] = "length" if stop_reason == "max_tokens" else "stop"
-    if _response_is_hollow(raw_content, result) and result["finish_reason"] != "length":
-        print(
-            "[graphify] claude-cli returned a hollow response; treating as "
-            "truncation so adaptive retry can bisect the chunk.",
-            file=sys.stderr,
-        )
-        result["finish_reason"] = "length"
+    _mark_hollow(result, raw_content, "claude-cli")
     return result
 
 
@@ -1687,13 +1724,7 @@ def _call_azure(
     result["output_tokens"] = resp.usage.completion_tokens if resp.usage else 0
     result["model"] = model
     result["finish_reason"] = resp.choices[0].finish_reason
-    if _response_is_hollow(raw_content, result) and result["finish_reason"] != "length":
-        print(
-            "[graphify] azure returned a hollow response; treating as "
-            "truncation so adaptive retry can bisect the chunk.",
-            file=sys.stderr,
-        )
-        result["finish_reason"] = "length"
+    _mark_hollow(result, raw_content, "azure")
     return result
 
 
@@ -1744,13 +1775,7 @@ def _call_bedrock(model: str, user_message: str, max_tokens: int = 8192, *, deep
     result["output_tokens"] = usage.get("outputTokens", 0)
     result["model"] = model
     result["finish_reason"] = "length" if resp.get("stopReason") == "max_tokens" else "stop"
-    if _response_is_hollow(text, result) and result["finish_reason"] != "length":
-        print(
-            "[graphify] bedrock returned a hollow response; treating as "
-            "truncation so adaptive retry can bisect the chunk.",
-            file=sys.stderr,
-        )
-        result["finish_reason"] = "length"
+    _mark_hollow(result, text, "bedrock")
     return result
 
 
@@ -2112,9 +2137,11 @@ def _extract_with_adaptive_retry(
 
     - hollow successful responses — the model returned HTTP 200 with empty,
       null, or unparseable content (typical of a local Ollama under load).
-      `_call_openai_compat` re-labels these as `finish_reason="length"` so they
-      take the same recovery path; without that the chunk would be silently
-      dropped from the corpus.
+      These do NOT bisect: a hollow response is a backend problem, not a size
+      problem, and both halves come back hollow from the same backend, so
+      bisection cannot converge and costs `2**max_depth` billed calls (#2880).
+      The *same* chunk is retried with backoff instead, and the chunk fails
+      loudly if it is still hollow.
 
     - recognized timeout exceptions — dense chunks can take long enough to hit
       `GRAPHIFY_API_TIMEOUT` before returning output. For `claude-cli`,
@@ -2162,6 +2189,22 @@ def _extract_with_adaptive_retry(
         result = extract_files_direct(
             chunk, backend=backend, api_key=api_key, model=model, root=root, deep_mode=deep_mode
         )
+        # A hollow response is retried as-is, with backoff — see _mark_hollow.
+        # Bounded by a fixed number of attempts, so one misbehaving backend
+        # costs at most _HOLLOW_BACKOFF_S + 1 calls per chunk instead of the
+        # 2**max_depth the bisection path used to spend (#2880).
+        for _delay in _HOLLOW_BACKOFF_S:
+            if result.get("finish_reason") != "hollow":
+                break
+            print(
+                f"[graphify] retrying the same chunk of {len(chunk)} in {_delay:g}s "
+                f"after a hollow response",
+                file=sys.stderr,
+            )
+            time.sleep(_delay)
+            result = extract_files_direct(
+                chunk, backend=backend, api_key=api_key, model=model, root=root, deep_mode=deep_mode
+            )
     except Exception as exc:  # noqa: BLE001 — re-raise unless it's a known context overflow or timeout
         is_timeout = _looks_like_timeout(exc)
         if not (_looks_like_context_exceeded(exc) or is_timeout):
@@ -2213,6 +2256,26 @@ def _extract_with_adaptive_retry(
             "finish_reason": "stop",
             "_partial_files": _merged_partial_files(left, right),
         }
+
+    if result.get("finish_reason") == "hollow":
+        # Still hollow after every retry. Fail the chunk loudly rather than
+        # bisecting into a fan-out that cannot converge (#2880): the files are
+        # marked partial so the next run re-dispatches them, and they are not
+        # promoted to the semantic cache as authoritative.
+        print(
+            f"[graphify] chunk of {len(chunk)} still hollow after "
+            f"{len(_HOLLOW_BACKOFF_S) + 1} attempts — giving up on this chunk. "
+            f"Its files are marked for re-extraction on the next run. A hollow "
+            f"response usually means a rate limit, a transport hiccup, a refusal, "
+            f"or a model that answered in prose rather than JSON.",
+            file=sys.stderr,
+        )
+        _mark_partial(result)
+        result["_partial_files"] = sorted(
+            set(_chunk_partial_files(chunk)) | set(result.get("_partial_files", []) or [])
+        )
+        result["finish_reason"] = "stop"
+        return result
 
     if result.get("finish_reason") != "length":
         return result
@@ -2296,7 +2359,7 @@ def extract_corpus_parallel(
     on_chunk_done: Callable | None = None,
     token_budget: int | None = 60_000,
     max_concurrency: int = 4,
-    max_retry_depth: int = 3,
+    max_retry_depth: int | None = None,
     deep_mode: bool = False,
     cache_root: "Path | None" = None,
 ) -> dict:
@@ -2319,10 +2382,14 @@ def extract_corpus_parallel(
         - When the LLM returns `finish_reason="length"` (output truncated at
           `max_completion_tokens`), the chunk is split in half and each half
           re-extracted recursively, up to `max_retry_depth` levels deep
-          (default 3 → max 8x expansion of one chunk).
+          (default 3 → max 8x expansion of one chunk). Leave it None to take
+          the default, overridable by GRAPHIFY_MAX_RETRY_DEPTH so an operator
+          can lower it without a code change (#2880).
         - This is signal-driven: chunks too dense to fit in one response
           self-heal by splitting until they do, while well-sized chunks pay
           no extra cost. Set `max_retry_depth=0` to disable retries.
+        - Hollow responses (HTTP 200, no usable content) are NOT bisected —
+          the same chunk is retried with backoff, then fails loudly.
 
     `on_chunk_done(idx, total, chunk_result)` fires once per chunk as it
     completes (in completion order, not submission order). `idx` is the
@@ -2345,6 +2412,8 @@ def extract_corpus_parallel(
     Accepts ``str`` paths as well as ``Path``; string entries are coerced up
     front so packing/slicing helpers can rely on ``Path`` semantics (#1386).
     """
+    if max_retry_depth is None:
+        max_retry_depth = _resolve_max_retry_depth()
     files = [f if isinstance(f, (Path, FileSlice)) else Path(f) for f in files]
     # Split oversized splittable documents into slices that cover the whole file
     # before packing, so content past _FILE_CHAR_CAP is extracted instead of
