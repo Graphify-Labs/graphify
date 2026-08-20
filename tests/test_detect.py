@@ -49,6 +49,9 @@ def test_classify_skill():
     # #1901: .skill agent files (Markdown with YAML frontmatter) were dropped as unclassified.
     assert classify_file(Path("10_Orchestrator.skill")) == FileType.DOCUMENT
 
+def test_classify_gherkin():
+    assert classify_file(Path("login.feature")) == FileType.DOCUMENT
+
 def test_classify_pdf():
     assert classify_file(Path("paper.pdf")) == FileType.PAPER
 

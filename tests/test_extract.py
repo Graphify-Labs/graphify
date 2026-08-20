@@ -3819,6 +3819,187 @@ def test_rewire_does_not_bind_supertype_stub_to_function():
     assert edges[0]["target"] == "BookStore"  # inherits stub not bound to function
 
 
+# ── Gherkin Extractor Tests ───────────────────────────────────────────────────
+
+def test_gherkin_dispatcher():
+    from graphify.extract import _get_extractor
+    from graphify.extractors.gherkin import extract_gherkin
+    assert _get_extractor(Path("login.feature")) is extract_gherkin
+
+
+def test_gherkin_simple_feature(tmp_path):
+    from graphify.extractors.gherkin import extract_gherkin
+    f = tmp_path / "login.feature"
+    f.write_text("Feature: Login\n")
+    r = extract_gherkin(f)
+    
+    assert len(r["nodes"]) == 2
+    assert r["nodes"][0]["label"] == "login.feature"
+    assert r["nodes"][0]["file_type"] == "document"
+    assert r["nodes"][1]["label"] == "Login"
+    assert r["nodes"][1]["file_type"] == "document"
+    
+    assert len(r["edges"]) == 1
+    assert r["edges"][0]["relation"] == "contains"
+    assert r["edges"][0]["source"] == r["nodes"][0]["id"]
+    assert r["edges"][0]["target"] == r["nodes"][1]["id"]
+    assert r["edges"][0]["confidence"] == "EXTRACTED"
+    assert r["edges"][0]["weight"] == 1.0
+
+
+def test_gherkin_feature_with_scenario(tmp_path):
+    from graphify.extractors.gherkin import extract_gherkin
+    f = tmp_path / "login.feature"
+    f.write_text(
+        "Feature: Login\n"
+        "Scenario: Success\n"
+    )
+    r = extract_gherkin(f)
+    
+    node_labels = {n["label"]: n["id"] for n in r["nodes"]}
+    assert "Login" in node_labels
+    assert "Success" in node_labels
+    
+    contains_edges = {(e["source"], e["target"]) for e in r["edges"]}
+    file_id = r["nodes"][0]["id"]
+    feature_id = node_labels["Login"]
+    scenario_id = node_labels["Success"]
+    
+    assert (file_id, feature_id) in contains_edges
+    assert (feature_id, scenario_id) in contains_edges
+
+
+def test_gherkin_background(tmp_path):
+    from graphify.extractors.gherkin import extract_gherkin
+    f = tmp_path / "login.feature"
+    f.write_text(
+        "Feature: Login\n"
+        "Background:\n"
+    )
+    r = extract_gherkin(f)
+    
+    node_labels = {n["label"]: n["id"] for n in r["nodes"]}
+    assert "Background" in node_labels
+    
+    contains_edges = {(e["source"], e["target"]) for e in r["edges"]}
+    feature_id = node_labels["Login"]
+    background_id = node_labels["Background"]
+    
+    assert (feature_id, background_id) in contains_edges
+
+
+def test_gherkin_scenario_outline_with_examples(tmp_path):
+    from graphify.extractors.gherkin import extract_gherkin
+    f = tmp_path / "login.feature"
+    f.write_text(
+        "Feature: Login\n"
+        "Scenario Outline: Authenticate\n"
+        "Examples:\n"
+    )
+    r = extract_gherkin(f)
+    
+    node_labels = {n["label"]: n["id"] for n in r["nodes"]}
+    assert "Authenticate" in node_labels
+    assert "Examples" in node_labels
+    
+    contains_edges = {(e["source"], e["target"]) for e in r["edges"]}
+    feature_id = node_labels["Login"]
+    outline_id = node_labels["Authenticate"]
+    examples_id = node_labels["Examples"]
+    
+    assert (feature_id, outline_id) in contains_edges
+    assert (outline_id, examples_id) in contains_edges
+
+
+def test_gherkin_duplicate_scenario_names(tmp_path):
+    from graphify.extractors.gherkin import extract_gherkin
+    f = tmp_path / "login.feature"
+    f.write_text(
+        "Feature: Login\n"
+        "Scenario: Success\n"
+        "Scenario: Success\n"
+    )
+    r = extract_gherkin(f)
+    
+    assert len(r["nodes"]) == 4
+    ids = [n["id"] for n in r["nodes"]]
+    assert len(set(ids)) == 4
+
+
+def test_gherkin_comments_ignored(tmp_path):
+    from graphify.extractors.gherkin import extract_gherkin
+    f = tmp_path / "login.feature"
+    f.write_text(
+        "# comment\n"
+        "Feature: Login\n"
+        "# another\n"
+        "Scenario: Success\n"
+    )
+    r = extract_gherkin(f)
+    
+    node_labels = {n["label"] for n in r["nodes"]}
+    assert "comment" not in node_labels
+    assert "another" not in node_labels
+    assert len(node_labels) == 3
+
+
+def test_gherkin_outline_reset_regression(tmp_path):
+    from graphify.extractors.gherkin import extract_gherkin
+    f = tmp_path / "login.feature"
+    f.write_text(
+        "Feature: Login\n"
+        "Scenario Outline: Valid\n"
+        "Examples:\n"
+        "Scenario: Invalid\n"
+        "Examples:\n"
+    )
+    r = extract_gherkin(f)
+    
+    node_labels = {n["label"]: n["id"] for n in r["nodes"]}
+    contains_edges = {(e["source"], e["target"]) for e in r["edges"]}
+    
+    outline_id = None
+    first_examples_id = None
+    scenario_id = None
+    second_examples_id = None
+    feature_id = node_labels["Login"]
+    
+    for n in r["nodes"]:
+        if n["label"] == "Valid":
+            outline_id = n["id"]
+        elif n["label"] == "Examples" and n["source_location"] == "L3":
+            first_examples_id = n["id"]
+        elif n["label"] == "Invalid":
+            scenario_id = n["id"]
+        elif n["label"] == "Examples" and n["source_location"] == "L5":
+            second_examples_id = n["id"]
+            
+    assert outline_id is not None
+    assert first_examples_id is not None
+    assert scenario_id is not None
+    assert second_examples_id is not None
+    
+    assert (outline_id, first_examples_id) in contains_edges
+    assert (feature_id, scenario_id) in contains_edges
+    assert (outline_id, second_examples_id) not in contains_edges
+    assert (feature_id, second_examples_id) in contains_edges
+
+
+def test_gherkin_empty_titles(tmp_path):
+    from graphify.extractors.gherkin import extract_gherkin
+    f = tmp_path / "login.feature"
+    f.write_text(
+        "Feature:\n"
+        "Scenario:\n"
+        "Examples:\n"
+    )
+    r = extract_gherkin(f)
+    
+    node_labels = [n["label"] for n in r["nodes"]]
+    assert "Feature" in node_labels
+    assert "Scenario" in node_labels
+    assert "Examples" in node_labels
+
 def test_extract_emits_posix_source_file_for_relative_inputs(tmp_path):
     r"""source_file must be canonical POSIX on every node AND edge, whatever
     separator the caller's input paths used.

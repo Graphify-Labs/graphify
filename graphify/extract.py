@@ -43,6 +43,7 @@ from graphify.extractors.dart import extract_dart  # noqa: F401
 from graphify.extractors.dm import extract_dm, extract_dmf, extract_dmi, extract_dmm  # noqa: F401
 from graphify.extractors.elixir import extract_elixir  # noqa: F401
 from graphify.extractors.fortran import _cpp_preprocess, extract_fortran  # noqa: F401
+from graphify.extractors.gherkin import extract_gherkin  # noqa: F401
 from graphify.extractors.go import _GO_PREDECLARED_FUNCS, extract_go  # noqa: F401
 from graphify.extractors.json_config import extract_json  # noqa: F401
 from graphify.extractors.commonlisp import extract_commonlisp  # noqa: F401
@@ -5017,6 +5018,7 @@ _DISPATCH: dict[str, Any] = {
     ".F03": extract_fortran,
     ".f08": extract_fortran,
     ".F08": extract_fortran,
+    ".feature": extract_gherkin,
     ".vue": extract_vue,
     ".svelte": extract_svelte,
     ".astro": extract_astro,
