@@ -11,7 +11,12 @@ from pathlib import Path
 from typing import Callable
 
 # Single source of truth in graphify.paths (#1423); re-exported as _GRAPHIFY_OUT.
-from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT, is_absolute_any_platform
+from graphify.paths import (
+    GRAPHIFY_OUT as _GRAPHIFY_OUT,
+    graphify_out_dir,
+    is_absolute_any_platform,
+    resolve_output_root,
+)
 _PENDING_FILENAME = ".pending_changes"
 _PENDING_DRAIN_MAX_PASSES = 20
 
@@ -82,12 +87,13 @@ def _write_build_config(
     *,
     excludes: "list[str] | None",
     gitignore: bool | None = None,
+    multigraph: bool | None = None,
 ) -> None:
     """Persist corpus-shaping options under ``out_dir``.
 
     Best effort and non clobbering: omitted options retain their existing values.
     """
-    if not excludes and gitignore is None:
+    if not excludes and gitignore is None and multigraph is None:
         return
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -102,6 +108,8 @@ def _write_build_config(
             config["excludes"] = list(excludes)
         if gitignore is not None:
             config["gitignore"] = gitignore
+        if multigraph is not None:
+            config["multigraph"] = multigraph
         path.write_text(json.dumps(config), encoding="utf-8")
     except OSError:
         pass
@@ -132,6 +140,19 @@ def _read_build_gitignore(out_dir: Path) -> bool:
     except (OSError, json.JSONDecodeError):
         pass
     return True
+
+
+def _read_build_multigraph(out_dir: Path) -> bool:
+    """Return whether this output is configured for canonical parallel edges."""
+    try:
+        path = out_dir / _BUILD_CONFIG_FILENAME
+        if path.is_file():
+            cfg = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(cfg, dict) and isinstance(cfg.get("multigraph"), bool):
+                return cfg["multigraph"]
+    except (OSError, json.JSONDecodeError):
+        pass
+    return False
 
 
 def _merge_changed_paths(*sources: "list[Path] | None") -> list[Path]:
@@ -1090,6 +1111,7 @@ def _rebuild_code(
     follow_symlinks: bool = False,
     force: bool = False,
     no_cluster: bool = False,
+    multigraph: bool | None = None,
     acquire_lock: bool = True,
     block_on_lock: bool = False,
 ) -> bool:
@@ -1119,7 +1141,11 @@ def _rebuild_code(
     if not _stabilize_rebuild_cwd(watch_path):
         return False
 
-    out = watch_path / _GRAPHIFY_OUT
+    output_root = resolve_output_root(watch_path)
+    out = output_root / _GRAPHIFY_OUT
+    if multigraph is True:
+        _write_build_config(out, excludes=None, multigraph=True)
+    effective_multigraph = bool(multigraph or _read_build_multigraph(out))
     if acquire_lock:
         # #1059: incremental (changed_paths is not None) hooks must not drop
         # their change set when another rebuild is already running. Queue
@@ -1150,6 +1176,7 @@ def _rebuild_code(
                 follow_symlinks=follow_symlinks,
                 force=force,
                 no_cluster=no_cluster,
+                multigraph=effective_multigraph,
                 acquire_lock=False,
             )
             # Late-arrival drain: another hook may have queued work while we
@@ -1167,6 +1194,7 @@ def _rebuild_code(
                         follow_symlinks=follow_symlinks,
                         force=force,
                         no_cluster=no_cluster,
+                        multigraph=effective_multigraph,
                         acquire_lock=False,
                     ) and ok
             return ok
@@ -1196,6 +1224,7 @@ def _rebuild_code(
         detected = detect(
             watch_path, follow_symlinks=follow_symlinks,
             extra_excludes=_persisted_excludes or None,
+            cache_root=output_root,
             gitignore=_gitignore_enabled,
         )
         code_files = [Path(f) for f in detected['files']['code']]
@@ -1453,7 +1482,7 @@ def _rebuild_code(
         commit = _git_head(cwd=watch_root)
         result = extract(
             extract_targets,
-            cache_root=watch_root,
+            cache_root=output_root,
             resolution_context_nodes=resolution_context_nodes or None,
             resolution_context_edges=resolution_context_edges or None,
         ) if extract_targets else {
@@ -1555,16 +1584,34 @@ def _rebuild_code(
             # Dedupe parallel edges (the clustered path's DiGraph collapses them implicitly);
             # without it, --no-cluster + repeated `update` accumulate duplicates and edge
             # counts diverge across build modes (#1317).
-            from graphify.build import dedupe_edges as _dedupe_edges, dedupe_nodes as _dedupe_nodes
-            candidate_graph_data = {
-                **{k: v for k, v in result.items() if k not in ("edges", "nodes")},
-                "nodes": _dedupe_nodes(result.get("nodes", [])),
-                "links": _dedupe_edges(result.get("edges", [])),
-                # Inherit the existing graph's directed flag (#2342) so
-                # `graphify update --no-cluster` can't silently drop it -
-                # `result` (the raw merged extraction) never carries one.
-                "directed": bool((existing_graph_data or {}).get("directed", False)),
-            }
+            if effective_multigraph:
+                from networkx.readwrite import json_graph
+                from graphify.build import build as _build_raw_multigraph
+
+                raw_graph = _build_raw_multigraph(
+                    [result],
+                    multigraph=True,
+                    dedup=True,
+                    root=watch_root,
+                )
+                try:
+                    candidate_graph_data = json_graph.node_link_data(
+                        raw_graph, edges="links"
+                    )
+                except TypeError:
+                    candidate_graph_data = json_graph.node_link_data(raw_graph)
+            else:
+                from graphify.build import dedupe_edges as _dedupe_edges, dedupe_nodes as _dedupe_nodes
+                candidate_graph_data = {
+                    **{k: v for k, v in result.items() if k not in ("edges", "nodes")},
+                    "nodes": _dedupe_nodes(result.get("nodes", [])),
+                    "links": _dedupe_edges(result.get("edges", [])),
+                    # Inherit the existing graph's directed flag (#2342) so
+                    # `graphify update --no-cluster` can't silently drop it -
+                    # `result` (the raw merged extraction) never carries one.
+                    "directed": bool((existing_graph_data or {}).get("directed", False)),
+                    "multigraph": False,
+                }
             candidate_graph_text = _json_text(candidate_graph_data)
             same_graph = False
             if existing_graph.exists():
@@ -1652,7 +1699,14 @@ def _rebuild_code(
         # Inherit the existing graph's directed flag (#2342) so `graphify
         # update` can't silently downgrade a directed graph to undirected -
         # build_from_json defaults to directed=False otherwise.
-        G = build_from_json(result, directed=bool((existing_graph_data or {}).get("directed", False)))
+        G = build_from_json(
+            result,
+            directed=bool((existing_graph_data or {}).get("directed", False)),
+            multigraph=(
+                effective_multigraph
+                or bool((existing_graph_data or {}).get("multigraph", False))
+            ),
+        )
         candidate_topology = _topology_from_graph(G)
         if existing_graph_data:
             try:
@@ -1894,7 +1948,7 @@ def check_update(watch_path: Path) -> bool:
     re-extraction via `/graphify --update` — this function only signals
     that the update is needed.
     """
-    flag = Path(watch_path) / _GRAPHIFY_OUT / "needs_update"
+    flag = graphify_out_dir(watch_path) / "needs_update"
     if flag.exists():
         print(f"[graphify check-update] Pending non-code changes in {watch_path}.")
         print("[graphify check-update] Run `/graphify --update` to apply semantic re-extraction.")
@@ -1903,7 +1957,7 @@ def check_update(watch_path: Path) -> bool:
 
 def _notify_only(watch_path: Path) -> None:
     """Write a flag file and print a notification (fallback for non-code-only corpora)."""
-    flag = watch_path / _GRAPHIFY_OUT / "needs_update"
+    flag = graphify_out_dir(watch_path) / "needs_update"
     flag.parent.mkdir(parents=True, exist_ok=True)
     flag.write_text("1", encoding="utf-8")
     print(f"\n[graphify watch] New or changed files detected in {watch_path}")
@@ -1971,7 +2025,7 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
     watch_root_for_ignore = watch_path.resolve()
     ignore_patterns = _load_graphifyignore(
         watch_root_for_ignore,
-        gitignore=_read_build_gitignore(watch_path / _GRAPHIFY_OUT),
+        gitignore=_read_build_gitignore(graphify_out_dir(watch_path)),
     )
 
     class Handler(FileSystemEventHandler):

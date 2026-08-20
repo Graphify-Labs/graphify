@@ -288,6 +288,22 @@ def test_to_graphml_preserves_native_scalar_types():
         assert H.nodes["a"]["name"] == "x"
 
 
+def test_to_graphml_preserves_parallel_multigraph_edges(tmp_path):
+    import networkx as nx
+
+    graph = nx.MultiDiGraph()
+    graph.add_node("a", label="A")
+    graph.add_node("b", label="B")
+    graph.add_edge("a", "b", key="calls", relation="calls")
+    graph.add_edge("a", "b", key="imports", relation="imports")
+    output = tmp_path / "parallel.graphml"
+
+    to_graphml(graph, {0: ["a", "b"]}, str(output))
+    restored = nx.read_graphml(output)
+
+    assert restored.number_of_edges("a", "b") == 2
+
+
 def test_to_html_creates_file():
     G = make_graph()
     communities = cluster(G)

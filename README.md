@@ -746,12 +746,21 @@ graphify extract ./docs --google-workspace     # export .gdoc/.gsheet/.gslides v
 graphify extract ./src --no-gitignore          # include git-ignored source; still honor .graphifyignore
 graphify extract ./docs --mode deep            # richer semantic extraction via extended system prompt
 graphify extract ./docs --no-cluster           # raw extraction only, skip clustering
+graphify extract ./src --code-only --multigraph --out D:/graphs/my-project  # preserve parallel edges outside the repo
 graphify extract ./docs --timing               # print per-stage wall-clock timings to stderr (also works on cluster-only)
 graphify extract ./docs --force                # overwrite graph.json even if new graph has fewer nodes (use after refactors or to clear ghost duplicates)
 graphify extract ./docs --dedup-llm            # LLM tiebreaker for ambiguous entity pairs (uses same API key)
 graphify extract ./src --no-dedup              # skip entity dedup; on an incremental merge this also arms the shrink guard that refuses to drop untouched files' nodes
 graphify extract ./docs --global --as myrepo   # extract and register into the cross-project global graph
 GRAPHIFY_MAX_OUTPUT_TOKENS=32768 graphify extract ./docs --backend claude  # raise output cap for dense corpora
+
+`--multigraph` stores the authoritative graph as a directed `MultiDiGraph`, so
+distinct relations and source locations between the same ordered node pair are
+not overwritten. `--out` can point anywhere; Graphify remembers an explicit
+selection per scanned source root under `~/.graphify/output-roots/`. Later
+`extract`, `update`, watch, query, and export commands reuse that location, and
+another explicit `--out` replaces it. Build settings such as `--multigraph` are
+saved with the graph. The scanned repository remains unchanged.
 
 graphify export callflow-html                       # graphify-out/<project>-callflow.html
 graphify export callflow-html --max-sections 8      # cap generated architecture sections

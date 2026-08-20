@@ -11,7 +11,12 @@ import os
 import re
 import sys
 import time
-from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
+from graphify.paths import (
+    GRAPHIFY_OUT as _GRAPHIFY_OUT,
+    graphify_out_dir,
+    remember_output_root,
+    resolve_output_root,
+)
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 
@@ -82,7 +87,7 @@ _GEMINI_NUDGE_TEXT = (
 
 
 def _default_graph_path() -> str:
-    return str(Path(_GRAPHIFY_OUT) / "graph.json")
+    return str(graphify_out_dir(Path.cwd()) / "graph.json")
 
 
 def _stamped_manifest_files(
@@ -1322,7 +1327,10 @@ def dispatch_command(cmd: str) -> None:
         p.add_argument("--nodes", nargs="*", default=[])
         p.add_argument("--outcome", choices=("useful", "dead_end", "corrected"), default=None)
         p.add_argument("--correction", default=None)
-        p.add_argument("--memory-dir", default=str(Path(_GRAPHIFY_OUT) / "memory"))
+        p.add_argument(
+            "--memory-dir",
+            default=str(graphify_out_dir(Path.cwd()) / "memory"),
+        )
         opts = p.parse_args(sys.argv[2:])
         if opts.answer_file:
             opts.answer = Path(opts.answer_file).read_text(encoding="utf-8").strip()
@@ -1343,11 +1351,12 @@ def dispatch_command(cmd: str) -> None:
     elif cmd == "reflect":
         import argparse as _ap
 
+        default_reflect_dir = graphify_out_dir(Path.cwd())
         p = _ap.ArgumentParser(prog="graphify reflect")
-        p.add_argument("--memory-dir", default=str(Path(_GRAPHIFY_OUT) / "memory"))
+        p.add_argument("--memory-dir", default=str(default_reflect_dir / "memory"))
         p.add_argument(
             "--out",
-            default=str(Path(_GRAPHIFY_OUT) / "reflections" / "LESSONS.md"),
+            default=str(default_reflect_dir / "reflections" / "LESSONS.md"),
         )
         p.add_argument("--graph", default=None)
         p.add_argument("--analysis", default=None)
@@ -1364,7 +1373,7 @@ def dispatch_command(cmd: str) -> None:
 
         graph_arg = opts.graph
         if graph_arg is None:
-            default_graph = Path(_GRAPHIFY_OUT) / "graph.json"
+            default_graph = default_reflect_dir / "graph.json"
             if default_graph.exists():
                 graph_arg = str(default_graph)
 
@@ -1908,7 +1917,11 @@ def dispatch_command(cmd: str) -> None:
                 i_arg += 1
         if watch_path is None:
             watch_path = Path(".")
-        graph_json = graph_override if graph_override is not None else watch_path / _GRAPHIFY_OUT / "graph.json"
+        graph_json = (
+            graph_override
+            if graph_override is not None
+            else graphify_out_dir(watch_path) / "graph.json"
+        )
         if not graph_json.exists():
             print(
                 f"error: no graph found at {graph_json} — run /graphify first",
@@ -1946,7 +1959,11 @@ def dispatch_command(cmd: str) -> None:
             )
         _raw = json.loads(graph_json.read_text(encoding="utf-8"))
         _directed = bool(_raw.get("directed", False))
-        G = build_from_json(_raw, directed=_directed)
+        G = build_from_json(
+            _raw,
+            directed=_directed,
+            multigraph=bool(_raw.get("multigraph", False)),
+        )
         print(f"Graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
         stages.mark("load")
         print("Re-clustering...")
@@ -1980,7 +1997,7 @@ def dispatch_command(cmd: str) -> None:
         if graph_override is not None and graph_json.parent.name == _out_name:
             out = graph_json.parent
         else:
-            out = watch_path / _GRAPHIFY_OUT
+            out = graphify_out_dir(watch_path)
         out.mkdir(parents=True, exist_ok=True)
         labels_path = out / ".graphify_labels.json"
         existing_labels: dict[int, str] = {}
@@ -2251,6 +2268,7 @@ def dispatch_command(cmd: str) -> None:
     elif cmd == "update":
         force = os.environ.get("GRAPHIFY_FORCE", "").lower() in ("1", "true", "yes")
         no_cluster = False
+        multigraph: bool | None = None
         args = sys.argv[2:]
         watch_arg: str | None = None
         for a in args:
@@ -2259,6 +2277,9 @@ def dispatch_command(cmd: str) -> None:
                 continue
             if a == "--no-cluster":
                 no_cluster = True
+                continue
+            if a == "--multigraph":
+                multigraph = True
                 continue
             if a.startswith("-"):
                 print(f"error: unknown update option: {a}", file=sys.stderr)
@@ -2272,7 +2293,7 @@ def dispatch_command(cmd: str) -> None:
             watch_path = Path(watch_arg)
         else:
             # Try to recover the scan root saved by the last full build
-            saved = Path(_GRAPHIFY_OUT) / ".graphify_root"
+            saved = graphify_out_dir(Path.cwd()) / ".graphify_root"
             if saved.exists():
                 watch_path = Path(saved.read_text(encoding="utf-8").strip())
             else:
@@ -2286,7 +2307,13 @@ def dispatch_command(cmd: str) -> None:
         # Interactive CLI: block on the per-repo lock rather than skip, so the
         # user sees their explicit `graphify update` complete instead of
         # exiting silently when a hook-driven rebuild happens to be running.
-        ok = _rebuild_code(watch_path, force=force, no_cluster=no_cluster, block_on_lock=True)
+        ok = _rebuild_code(
+            watch_path,
+            force=force,
+            no_cluster=no_cluster,
+            multigraph=multigraph,
+            block_on_lock=True,
+        )
         if ok:
             print("Code graph updated. For doc/paper/image changes run /graphify --update in your AI assistant.")
             if not (
@@ -2337,7 +2364,7 @@ def dispatch_command(cmd: str) -> None:
         # showing top-K outbound edges per symbol.
         from typing import Optional as _Opt
         from graphify.tree_html import write_tree_html, DEFAULT_MAX_CHILDREN
-        graph_path = Path(_GRAPHIFY_OUT) / "graph.json"
+        graph_path = Path(_default_graph_path())
         output_path: "_Opt[Path]" = None
         root: "_Opt[str]" = None
         max_children = DEFAULT_MAX_CHILDREN
@@ -2622,11 +2649,12 @@ def dispatch_command(cmd: str) -> None:
 
         # Parse shared args
         args = sys.argv[3:]
-        graph_path = Path(_GRAPHIFY_OUT) / "graph.json"
+        default_export_dir = graphify_out_dir(Path.cwd())
+        graph_path = default_export_dir / "graph.json"
         graph_path_explicit = False
-        labels_path = Path(_GRAPHIFY_OUT) / ".graphify_labels.json"
+        labels_path = default_export_dir / ".graphify_labels.json"
         labels_path_explicit = False
-        report_path = Path(_GRAPHIFY_OUT) / "GRAPH_REPORT.md"
+        report_path = default_export_dir / "GRAPH_REPORT.md"
         report_path_explicit = False
         sections_path: Path | None = None
         callflow_output: Path | None = None
@@ -2635,10 +2663,10 @@ def dispatch_command(cmd: str) -> None:
         callflow_diagram_scale = 1.0
         callflow_max_diagram_nodes = 18
         callflow_max_diagram_edges = 24
-        analysis_path = Path(_GRAPHIFY_OUT) / ".graphify_analysis.json"
+        analysis_path = default_export_dir / ".graphify_analysis.json"
         node_limit = 5000
         no_viz = False
-        obsidian_dir = Path(_GRAPHIFY_OUT) / "obsidian"
+        obsidian_dir = default_export_dir / "obsidian"
         # Shared push-connection settings for the graph-database sinks (neo4j,
         # falkordb), parsed from the generic --push/--user/--password flags below.
         push_uri: str | None = None
@@ -2687,7 +2715,7 @@ def dispatch_command(cmd: str) -> None:
                 print("Usage: graphify export callflow-html [GRAPH|DIR] [--graph PATH] [--labels PATH]")
                 print("  --report PATH          path to GRAPH_REPORT.md")
                 print("  --sections PATH        JSON section definitions")
-                print("  --output HTML          output path (default graphify-out/<project>-callflow.html)")
+                print("  --output HTML          output path (default: configured source output)")
                 print("  --lang LANG            auto, zh-CN, en, etc. (default auto)")
                 print("  --max-sections N       maximum auto-derived sections (default 15)")
                 print("  --diagram-scale N      Mermaid diagram scale (default 1.0)")
@@ -2713,7 +2741,7 @@ def dispatch_command(cmd: str) -> None:
                 elif (candidate / "graph.json").exists():
                     graph_path = candidate / "graph.json"
                 else:
-                    graph_path = candidate / _GRAPHIFY_OUT / "graph.json"
+                    graph_path = graphify_out_dir(candidate) / "graph.json"
                 graph_path_explicit = True
                 i += 1
             else:
@@ -2994,7 +3022,7 @@ def dispatch_command(cmd: str) -> None:
             print(
                 "Usage: graphify extract <path> [--backend gemini|kimi|claude|openai|deepseek|ollama] "
                 "[--model M] [--mode deep] [--out DIR|--output DIR] [--google-workspace] [--no-cluster] "
-                "[--no-gitignore] [--code-only] [--no-dedup] "
+                "[--multigraph] [--no-gitignore] [--code-only] [--no-dedup] "
                 "[--max-workers N] [--token-budget N] [--max-concurrency N] "
                 "[--api-timeout S] [--postgres DSN] [--cargo] [--allow-partial] [--timing]",
                 file=sys.stderr,
@@ -3019,6 +3047,7 @@ def dispatch_command(cmd: str) -> None:
         cli_cargo: bool = False
         cli_allow_partial: bool = False
         no_cluster = False
+        cli_multigraph = False
         dedup_llm = False
         # --no-dedup: skip entity deduplication entirely. On an incremental
         # merge the fuzzy pass runs over the COMBINED node set (existing graph +
@@ -3093,6 +3122,8 @@ def dispatch_command(cmd: str) -> None:
                 out_dir = Path(a.split("=", 1)[1]); i += 1
             elif a == "--no-cluster":
                 no_cluster = True; i += 1
+            elif a == "--multigraph":
+                cli_multigraph = True; i += 1
             elif a == "--dedup-llm":
                 dedup_llm = True; i += 1
             elif a == "--no-dedup":
@@ -3187,15 +3218,27 @@ def dispatch_command(cmd: str) -> None:
         # Resolve output dir. The user-facing contract is "<out>/graphify-out/"
         # so a fresh checkout writes graphify-out/ at the project root, matching
         # the skill.md pipeline.
-        out_root = (out_dir.resolve() if out_dir else target)
+        out_root = resolve_output_root(target, out_dir)
         graphify_out = out_root / _GRAPHIFY_OUT
         graphify_out.mkdir(parents=True, exist_ok=True)
+
+        def _remember_selected_output() -> None:
+            if out_dir is None:
+                return
+            try:
+                remember_output_root(target, out_root)
+            except OSError as exc:
+                print(
+                    f"[graphify extract] warning: could not remember --out: {exc}",
+                    file=sys.stderr,
+                )
         # Persist corpus-shaping options so later update/watch/hook rebuilds
         # use the same file set as the initial extraction (#1886).
         from graphify.watch import (
             _write_build_config as _write_build_cfg,
             _read_build_excludes as _read_build_ex,
             _read_build_gitignore as _read_build_gi,
+            _read_build_multigraph as _read_build_mg,
         )
         # #1971 persistence: an explicit --no-gitignore persists False; a later
         # flag-less `graphify extract` must NOT clobber it back to True, which
@@ -3207,10 +3250,12 @@ def dispatch_command(cmd: str) -> None:
         _effective_gitignore = False if no_gitignore else _read_build_gi(graphify_out)
         # An explicit list replaces the persisted one; omission reuses it.
         _effective_excludes = cli_excludes or _read_build_ex(graphify_out)
+        _effective_multigraph = cli_multigraph or _read_build_mg(graphify_out)
         _write_build_cfg(
             graphify_out,
             excludes=cli_excludes or None,
             gitignore=False if no_gitignore else None,
+            multigraph=True if cli_multigraph else None,
         )
 
         stages = _StageTimer(cli_timing)
@@ -3275,6 +3320,7 @@ def dispatch_command(cmd: str) -> None:
                 manifest_path=str(manifest_path),
                 google_workspace=google_workspace or None,
                 extra_excludes=_effective_excludes or None,
+                cache_root=out_root,
                 gitignore=_effective_gitignore,
             )
             files_by_type = detection.get("files", {})
@@ -4021,8 +4067,18 @@ def dispatch_command(cmd: str) -> None:
                     # raw-dump this run's partial extraction over it.
                     print(f"error: {exc}", file=sys.stderr)
                     sys.exit(1)
-            merged["nodes"] = _dedupe_nodes(merged["nodes"])
-            merged["edges"] = _dedupe_edges(merged["edges"])
+            raw_multigraph = None
+            if _effective_multigraph:
+                from graphify.build import build as _build_raw_multigraph
+                raw_multigraph = _build_raw_multigraph(
+                    [merged],
+                    multigraph=True,
+                    dedup=True,
+                    root=target,
+                )
+            else:
+                merged["nodes"] = _dedupe_nodes(merged["nodes"])
+                merged["edges"] = _dedupe_edges(merged["edges"])
             # Disambiguate colliding-basename file-node labels (#2032). This raw
             # --no-cluster path bypasses build_from_json (where the clustered path
             # gets this), so apply it directly on the merged node list.
@@ -4045,14 +4101,19 @@ def dispatch_command(cmd: str) -> None:
                 from graphify.export import MALFORMED_GRAPH as _MALFORMED_GRAPH
                 _existing_n = _existing_graph_node_count(graph_json_path)
                 _malformed = _existing_n is _MALFORMED_GRAPH
-                _shrinks = isinstance(_existing_n, int) and len(merged["nodes"]) < _existing_n
+                _candidate_nodes = (
+                    raw_multigraph.number_of_nodes()
+                    if raw_multigraph is not None
+                    else len(merged["nodes"])
+                )
+                _shrinks = isinstance(_existing_n, int) and _candidate_nodes < _existing_n
                 if _malformed or _shrinks:
                     _detail = (
                         f"the existing {graph_json_path} is present but unparseable "
                         "(corrupt or a mid-write), so a shrink cannot be ruled out"
                         if _malformed
                         else f"smaller than the existing {graph_json_path} "
-                        f"({len(merged['nodes'])} < {_existing_n} nodes)"
+                        f"({_candidate_nodes} < {_existing_n} nodes)"
                     )
                     print(
                         "[graphify extract] error: extraction was incomplete (an AST/"
@@ -4064,8 +4125,19 @@ def dispatch_command(cmd: str) -> None:
                     sys.exit(1)
             _backup(graphify_out)
             _invalidate_file_manifest_for_db_graph()
-            from graphify.paths import write_json_atomic as _write_json_atomic
-            _write_json_atomic(graph_json_path, merged, indent=2)
+            if raw_multigraph is not None:
+                from graphify.export import to_json as _write_raw_multigraph
+                from graphify.watch import _git_head as _raw_git_head
+                _write_raw_multigraph(
+                    raw_multigraph,
+                    {},
+                    str(graph_json_path),
+                    force=True,
+                    built_at_commit=_raw_git_head(cwd=Path(target).resolve()),
+                )
+            else:
+                from graphify.paths import write_json_atomic as _write_json_atomic
+                _write_json_atomic(graph_json_path, merged, indent=2)
             try:
                 # Record the scan root so a later build_merge / update runbook can
                 # relativize deleted-file paths correctly even for a custom --out
@@ -4076,13 +4148,15 @@ def dispatch_command(cmd: str) -> None:
                 )
             except OSError:
                 pass
+            _remember_selected_output()
             stages.mark("write")
             cost = _estimate_cost(
                 backend, merged["input_tokens"], merged["output_tokens"]
             )
             print(
                 f"[graphify extract] wrote {graph_json_path} — "
-                f"{len(merged['nodes'])} nodes, {len(merged['edges'])} edges "
+                f"{raw_multigraph.number_of_nodes() if raw_multigraph is not None else len(merged['nodes'])} nodes, "
+                f"{raw_multigraph.number_of_edges() if raw_multigraph is not None else len(merged['edges'])} edges "
                 f"(no clustering)"
             )
             if merged["input_tokens"] or merged["output_tokens"]:
@@ -4136,6 +4210,7 @@ def dispatch_command(cmd: str) -> None:
                     [merged],
                     graph_path=existing_graph_path,
                     prune_sources=_prune_sources or None,
+                    multigraph=True if _effective_multigraph else None,
                     dedup=not no_dedup,
                     dedup_llm_backend=dedup_backend,
                     root=target,
@@ -4148,7 +4223,13 @@ def dispatch_command(cmd: str) -> None:
                 print(f"[graphify extract] {exc}", file=sys.stderr)
                 sys.exit(1)
         else:
-            G = _build([merged], dedup=not no_dedup, dedup_llm_backend=dedup_backend, root=target)
+            G = _build(
+                [merged],
+                multigraph=_effective_multigraph,
+                dedup=not no_dedup,
+                dedup_llm_backend=dedup_backend,
+                root=target,
+            )
         stages.mark("build")
         if G.number_of_nodes() == 0:
             print(
@@ -4228,6 +4309,7 @@ def dispatch_command(cmd: str) -> None:
             )
         except OSError:
             pass
+        _remember_selected_output()
         stages.mark("export")
         if merged.get("output_tokens", 0) > 0:
             (graphify_out / ".graphify_semantic_marker").write_text(
@@ -4343,10 +4425,15 @@ def dispatch_command(cmd: str) -> None:
             else:
                 i += 1
         files = [f for f in files_from.read_text(encoding="utf-8").splitlines() if f.strip()]
+        cache_output_root = resolve_output_root(root)
         cached_nodes, cached_edges, cached_hyperedges, uncached = check_semantic_cache(
-            files, root, mode=cache_mode, prompt_file=prompt_file
+            files,
+            root,
+            mode=cache_mode,
+            prompt_file=prompt_file,
+            cache_root=cache_output_root,
         )
-        out = root / _GRAPHIFY_OUT
+        out = cache_output_root / _GRAPHIFY_OUT
         out.mkdir(parents=True, exist_ok=True)
         if cached_nodes or cached_edges or cached_hyperedges:
             (out / ".graphify_cached.json").write_text(

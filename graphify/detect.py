@@ -2218,6 +2218,7 @@ def detect_incremental(
     google_workspace: bool | None = None,
     kind: str = "semantic",
     extra_excludes: list[str] | None = None,
+    cache_root: Path | None = None,
     gitignore: bool = True,
 ) -> dict:
     """Like detect(), but returns only new or modified files since the last run.
@@ -2234,6 +2235,9 @@ def detect_incremental(
     beyond stat). Slow path: mtime bumped → compare MD5 against the relevant
     hash field before re-extracting.
 
+    ``cache_root`` is forwarded to :func:`detect` so repeated scans configured
+    with an external output keep the stat/word-count cache outside the corpus.
+
     Backwards compatible with legacy manifests storing plain float mtime values
     or {mtime, hash} dicts (treated as ast_hash only; semantic_hash = miss).
 
@@ -2247,6 +2251,7 @@ def detect_incremental(
         follow_symlinks=follow_symlinks,
         google_workspace=google_workspace,
         extra_excludes=extra_excludes,
+        cache_root=cache_root,
         gitignore=gitignore,
     )
     # Pass ``root`` so a manifest written with relative keys (post-#777) is

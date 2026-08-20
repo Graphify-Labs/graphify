@@ -430,6 +430,7 @@ def _import_js(node, source: bytes, file_nid: str, stem: str, edges: list, str_p
         resolved = _resolve_js_import_target(raw, str_path)
         if resolved is not None:
             tgt_nid, resolved_path = resolved
+            attempted_path = resolved_path
             # `_resolve_js_import_path` returns the attempted path when no
             # local file exists. Static ES imports must treat that as unresolved
             # rather than minting a checkout-specific target ID (#2457).
@@ -445,6 +446,7 @@ def _import_js(node, source: bytes, file_nid: str, stem: str, edges: list, str_p
                 "source_file": str_path,
                 "source_location": f"L{node.start_point[0] + 1}",
                 "weight": 1.0,
+                "specifier": raw,
             }
             # Stamp the resolved target file so a same-basename cross-extension
             # sibling (foo.ts importing/re-exporting ./foo.mjs) keys its target salt
@@ -453,6 +455,24 @@ def _import_js(node, source: bytes, file_nid: str, stem: str, edges: list, str_p
             # back onto the importer's own variant, a phantom self-loop (#1814).
             if resolved_path is not None:
                 edge["target_file"] = str(resolved_path)
+            elif attempted_path is not None:
+                edge["target_file"] = str(attempted_path)
+                edge["unresolved_internal"] = True
+            else:
+                aliases = _load_tsconfig_aliases(Path(str_path).parent)
+                local_alias = any(
+                    _match_tsconfig_alias(raw, pattern) is not None
+                    for pattern in aliases
+                )
+                workspace_packages = _load_workspace_packages(Path(str_path).parent)
+                local_workspace = any(
+                    raw == name or raw.startswith(name + "/")
+                    for name in workspace_packages
+                )
+                if raw.startswith((".", "/", "#")) or local_alias or local_workspace:
+                    edge["unresolved_internal"] = True
+                else:
+                    edge["external"] = True
             edges.append(edge)
 
     # Emit symbol-level edges for named imports/re-exports from local/aliased files.
@@ -486,6 +506,7 @@ def _import_js(node, source: bytes, file_nid: str, stem: str, edges: list, str_p
                                     "source_file": str_path,
                                     "source_location": f"L{line}",
                                     "weight": 1.0,
+                                    "specifier_symbol": sym,
                                     # Which file this symbol target was synthesized
                                     # from, so the id-remap post-pass can repoint a
                                     # target the candidates rewrite never learns —
@@ -513,6 +534,7 @@ def _import_js(node, source: bytes, file_nid: str, stem: str, edges: list, str_p
                                             "source_file": str_path,
                                             "source_location": f"L{line}",
                                             "weight": 1.0,
+                                            "specifier_symbol": sym,
                                             # See the re_exports stamp above (#1983).
                                             "target_file": str(resolved_path),
                                         })
@@ -6388,6 +6410,102 @@ def extract(
     _repoint_python_package_imports(paths, all_nodes, all_edges, root)
     _merge_swift_extensions(per_file, all_nodes, all_edges)
     _merge_csharp_partial_class_nodes(per_file, all_nodes, all_edges, paths, root)
+
+    # Preserve JS/TS dependency records whose target is intentionally outside
+    # the scanned node set. Explicit endpoint nodes keep those edges available
+    # to queries while distinguishing dependencies, excluded resources, and
+    # genuinely unresolved project-local imports.
+    _owned_endpoint_ids = {node.get("id") for node in all_nodes}
+    _owned_endpoint_ids.update(
+        node.get("id")
+        for node in (resolution_context_nodes or [])
+        if isinstance(node, dict)
+    )
+    _owned_labels = {
+        node.get("id"): str(node.get("label", "")).strip().strip("()").lstrip(".")
+        for node in [*all_nodes, *(resolution_context_nodes or [])]
+        if isinstance(node, dict) and node.get("id")
+    }
+    def _resolved_path_key(value) -> str:
+        if not value:
+            return ""
+        try:
+            return str(Path(str(value)).resolve())
+        except (OSError, RuntimeError):
+            return str(value)
+
+    _resolved_symbol_evidence = {
+        (
+            edge.get("source"),
+            edge.get("relation"),
+            edge.get("source_location"),
+            edge.get("resolved_specifier_symbol")
+            or _owned_labels.get(edge.get("target")),
+            _resolved_path_key(edge.get("resolved_specifier_file")),
+        )
+        for edge in all_edges
+        if edge.get("target") in _owned_endpoint_ids
+        and not edge.get("specifier_symbol")
+    }
+    _redundant_symbol_edges = {
+        id(edge)
+        for edge in all_edges
+        if edge.get("specifier_symbol")
+        and (
+            edge.get("source"),
+            edge.get("relation"),
+            edge.get("source_location"),
+            edge.get("specifier_symbol"),
+            _resolved_path_key(edge.get("target_file")),
+        ) in _resolved_symbol_evidence
+    }
+    if _redundant_symbol_edges:
+        all_edges[:] = [
+            edge for edge in all_edges if id(edge) not in _redundant_symbol_edges
+        ]
+    for _edge in all_edges:
+        _edge.pop("resolved_specifier_file", None)
+        _edge.pop("resolved_specifier_symbol", None)
+    for _edge in all_edges:
+        _target = _edge.get("target")
+        if (
+            not _target
+            or _target in _owned_endpoint_ids
+            or _edge.get("relation") not in ("imports", "imports_from", "re_exports")
+        ):
+            continue
+        _specifier = _edge.get("specifier") or _edge.get("specifier_symbol")
+        _target_file = _edge.get("target_file")
+        if _edge.get("external") is True:
+            _kind = "external"
+        elif _edge.get("unresolved_internal") is True:
+            _kind = "unresolved_internal"
+        elif _target_file and _edge.get("relation") == "imports_from":
+            _kind = "excluded_local"
+            _edge["excluded_local"] = True
+        elif _target_file:
+            _kind = "unresolved_internal"
+            _edge["unresolved_internal"] = True
+        else:
+            continue
+
+        _stub = {
+            "id": _target,
+            "label": str(_specifier or Path(str(_target_file or _target)).name or _target),
+            "file_type": "concept",
+            "source_file": "",
+            _kind: True,
+        }
+        if _kind == "excluded_local" and _target_file:
+            try:
+                _stub["source_file"] = Path(_target_file).resolve().relative_to(root).as_posix()
+            except (ValueError, OSError):
+                pass
+        all_nodes.append(_stub)
+        _owned_endpoint_ids.add(_target)
+    for _edge in all_edges:
+        _edge.pop("specifier_symbol", None)
+
     _disambiguate_colliding_node_ids(all_nodes, all_edges, all_raw_calls, root)
     _canonicalize_csharp_namespace_nodes(all_nodes, all_edges)
     # PHP namespace/use disambiguation must run BEFORE the unique-stub rewire:

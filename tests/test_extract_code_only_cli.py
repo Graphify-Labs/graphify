@@ -80,6 +80,15 @@ def _run_relative_out(repo: Path, *extra: str):
     )
 
 
+def _run_graphify(repo: Path, *args: str):
+    env = {k: v for k, v in os.environ.items() if k not in _KEY_VARS}
+    env["GRAPHIFY_OUT"] = "graphify-out"
+    return subprocess.run(
+        [PYTHON, "-m", "graphify", *args],
+        cwd=repo, capture_output=True, text=True, env=env,
+    )
+
+
 def test_output_flag_is_alias_of_out(tmp_path):
     """#2004 part 3: `--output DIR` was silently ignored on extract (output went
     to the default `<path>/graphify-out/`). It is now an alias of `--out`."""
@@ -102,6 +111,87 @@ def test_output_flag_inline_form(tmp_path):
     r = _run_relative_out(repo, "--code-only", "--no-cluster", f"--output={custom}")
     assert r.returncode == 0, r.stderr
     assert (custom / "graphify-out" / "graph.json").exists()
+
+
+def test_external_output_is_reused_by_extract_update_and_query(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "origin.ts").write_text("export const value = 1\n", encoding="utf-8")
+    (repo / "barrel.ts").write_text(
+        "import { value } from './origin.js'\n"
+        "export { value } from './origin.js'\n",
+        encoding="utf-8",
+    )
+    (repo / "README.md").write_text("# External output\n", encoding="utf-8")
+    external = tmp_path / "external"
+
+    first = _run_relative_out(
+        repo,
+        "--code-only",
+        "--no-cluster",
+        "--multigraph",
+        "--out",
+        str(external),
+    )
+    assert first.returncode == 0, first.stderr
+
+    graph_out = external / "graphify-out"
+    graph = json.loads((graph_out / "graph.json").read_text(encoding="utf-8"))
+    config = json.loads(
+        (graph_out / ".graphify_build.json").read_text(encoding="utf-8")
+    )
+    assert graph["directed"] is True
+    assert graph["multigraph"] is True
+    assert all(node.get("community") is None for node in graph["nodes"])
+    assert not (graph_out / ".graphify_analysis.json").exists()
+    assert config["multigraph"] is True
+    assert not (repo / "graphify-out").exists()
+
+    (repo / "later.ts").write_text(
+        "export const persistedOutput = true\n",
+        encoding="utf-8",
+    )
+    second = _run_relative_out(repo, "--code-only", "--no-cluster", "--force")
+    assert second.returncode == 0, second.stderr
+    persisted = json.loads((graph_out / "graph.json").read_text(encoding="utf-8"))
+    assert persisted["directed"] is True
+    assert persisted["multigraph"] is True
+    assert any(node.get("label") == "persistedOutput" for node in persisted["nodes"])
+    assert not (repo / "graphify-out").exists()
+
+    (repo / "updated.ts").write_text(
+        "export const updatedThroughPersistentOut = true\n",
+        encoding="utf-8",
+    )
+    updated = _run_graphify(repo, "update", ".", "--no-cluster")
+    assert updated.returncode == 0, updated.stderr
+    after_update = json.loads((graph_out / "graph.json").read_text(encoding="utf-8"))
+    assert any(
+        node.get("label") == "updatedThroughPersistentOut"
+        for node in after_update["nodes"]
+    )
+    assert after_update["multigraph"] is True
+    assert not (repo / "graphify-out").exists()
+
+    queried = _run_graphify(repo, "query", "persistedOutput")
+    assert queried.returncode == 0, queried.stderr
+    assert "persistedOutput" in queried.stdout
+
+    exported = _run_graphify(repo, "export", "graphml")
+    assert exported.returncode == 0, exported.stderr
+    assert (graph_out / "graph.graphml").exists()
+
+    callflow_path = graph_out / "callflow.html"
+    callflow = _run_graphify(
+        repo,
+        "export",
+        "callflow-html",
+        str(repo),
+        "--output",
+        str(callflow_path),
+    )
+    assert callflow.returncode == 0, callflow.stderr
+    assert callflow_path.exists()
 
 
 def test_no_gitignore_indexes_vcs_ignored_code_but_keeps_graphifyignore(tmp_path):

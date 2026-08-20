@@ -144,3 +144,60 @@ def test_is_absolute_any_platform_is_host_independent():
     from graphify.paths import is_absolute_any_platform
     assert is_absolute_any_platform("/home/ci/x.md")
     assert is_absolute_any_platform("C:/Users/u/x.md")
+
+
+def test_output_root_binding_applies_to_project_subdirectories(tmp_path) -> None:
+    from graphify.paths import persisted_output_root, remember_output_root
+
+    project = tmp_path / "project"
+    nested = project / "packages/app"
+    output = tmp_path / "graphs/project"
+    nested.mkdir(parents=True)
+
+    remember_output_root(project, output)
+
+    assert persisted_output_root(project) == output.resolve()
+    assert persisted_output_root(nested) == output.resolve()
+
+
+def test_nearest_output_root_binding_wins(tmp_path) -> None:
+    from graphify.paths import persisted_output_root, remember_output_root
+
+    project = tmp_path / "project"
+    package = project / "packages/app"
+    project_output = tmp_path / "graphs/project"
+    package_output = tmp_path / "graphs/app"
+    package.mkdir(parents=True)
+
+    remember_output_root(project, project_output)
+    remember_output_root(package, package_output)
+
+    assert persisted_output_root(package / "src") == package_output.resolve()
+    assert persisted_output_root(project / "other") == project_output.resolve()
+
+
+def test_explicit_output_root_replaces_persisted_selection(tmp_path) -> None:
+    from graphify.paths import persisted_output_root, remember_output_root
+
+    project = tmp_path / "project"
+    project.mkdir()
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+
+    remember_output_root(project, first)
+    remember_output_root(project, second)
+
+    assert persisted_output_root(project) == second.resolve()
+
+
+def test_nondefault_graphify_out_environment_overrides_binding(
+    tmp_path, monkeypatch
+) -> None:
+    from graphify.paths import remember_output_root, resolve_output_root
+
+    project = tmp_path / "project"
+    project.mkdir()
+    remember_output_root(project, tmp_path / "remembered")
+    monkeypatch.setenv("GRAPHIFY_OUT", "graphify-out-worktree")
+
+    assert resolve_output_root(project) == project.resolve()

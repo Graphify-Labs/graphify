@@ -8,6 +8,8 @@ produced an id like `..._foo` while the real file's node id was `..._foo_ts`,
 so `build_from_json` dropped the edge as external.
 """
 
+import json
+
 from pathlib import Path
 
 from graphify.extract import (
@@ -153,6 +155,39 @@ def test_resolve_js_to_ts_when_real_file_is_ts(tmp_path):
     target = _write(tmp_path / "foo.ts", "export const x = 1")
     written_as = tmp_path / "foo.js"
     assert _resolve_js_module_path(written_as) == target
+
+
+def test_resolve_js_to_tsx_when_real_file_is_tsx(tmp_path):
+    target = _write(tmp_path / "button.tsx", "export const Button = () => null")
+    assert _resolve_js_module_path(tmp_path / "button.js") == target
+
+
+def test_resolve_js_to_declaration_when_runtime_file_is_absent(tmp_path):
+    target = _write(tmp_path / "server.d.ts", "export type MutationCtx = object")
+    assert _resolve_js_module_path(tmp_path / "server.js") == target
+
+
+def test_resource_query_is_ignored_for_filesystem_resolution(tmp_path):
+    target = _write(tmp_path / "styles.css", "body {}")
+    assert _resolve_js_module_path("./styles.css?url", tmp_path) == target
+
+
+def test_package_import_map_prefers_scanned_source(tmp_path):
+    source = _write(tmp_path / "src" / "models.ts", "export const model = 1\n")
+    _write(tmp_path / "dist" / "models.js", "export const model = 1\n")
+    (tmp_path / "package.json").write_text(
+        json.dumps({
+            "imports": {
+                "#/*": {
+                    "development": "./src/*.ts",
+                    "default": "./dist/*.js",
+                }
+            }
+        }),
+        encoding="utf-8",
+    )
+
+    assert _resolve_js_module_path("#/models?raw", source.parent) == source
 
 
 def test_resolve_jsx_to_tsx_when_real_file_is_tsx(tmp_path):

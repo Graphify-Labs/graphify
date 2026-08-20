@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import networkx as nx
 
-from graphify.build import edge_data
+from graphify.build import analysis_projection, edge_data
 
 # Builtin/mock names that can appear as annotation-derived nodes in pre-existing
 # graphs. Excluded from god-node ranking so they don't displace real abstractions
@@ -112,7 +112,8 @@ def god_nodes(G: nx.Graph, top_n: int = 10) -> list[dict]:
     File-level hub nodes are excluded: they accumulate import/contains edges
     mechanically and don't represent meaningful architectural abstractions.
     """
-    degree = dict(G.degree())
+    topology = analysis_projection(G)
+    degree = {node: topology.degree(node) for node in G.nodes}
     sorted_nodes = sorted(degree.items(), key=lambda x: x[1], reverse=True)
     result = []
     for node_id, deg in sorted_nodes:
@@ -289,7 +290,7 @@ def _cross_file_surprises(G: nx.Graph, communities: dict[int, list[str]], top_n:
     Each result includes a 'why' field explaining what makes it non-obvious.
     """
     node_community = _node_community_map(communities)
-    degrees = dict(G.degree())
+    degrees = dict(analysis_projection(G).degree())
     candidates = []
 
     for u, v, data in G.edges(data=True):
@@ -355,7 +356,7 @@ def _cross_community_surprises(
             return []
         if G.number_of_nodes() > 5000:
             return []
-        betweenness = nx.edge_betweenness_centrality(G)
+        betweenness = nx.edge_betweenness_centrality(analysis_projection(G))
         top_edges = sorted(betweenness.items(), key=lambda x: x[1], reverse=True)[:top_n]
         result = []
         for (u, v), score in top_edges:
