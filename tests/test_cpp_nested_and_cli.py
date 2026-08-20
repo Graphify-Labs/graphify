@@ -155,3 +155,67 @@ def test_cli_normalization_preserves_line_breaks(tmp_path):
     ]
     assert b"ref class" not in out
     assert b"assembly" not in out
+
+
+def test_attached_arithmetic_is_not_mistaken_for_a_handle(tmp_path):
+    """`a% b` and `hash^ mask` are modulo and XOR, not CLI type suffixes.
+
+    Attachment to the preceding token does not separate the two readings —
+    `String^ s` and `a^ b` are lexically identical — so rewriting on
+    attachment alone turned arithmetic into `a  b` and broke the statement.
+    """
+    p = tmp_path / "ops.h"
+    p.write_text(
+        "namespace N {\n"
+        "    public ref class Hasher\n"
+        "    {\n"
+        "    public:\n"
+        '        static System::String^ Name() { return gcnew System::String(""); }\n'
+        "        static int Mix(int a, int b) { return a% b; }\n"
+        "        static int Fold(int hash, int mask) { return hash^ mask; }\n"
+        "        static void Track(System::Object^ o, int% n) { }\n"
+        "    };\n"
+        "}\n"
+    )
+    result = extract_cpp(p)
+    assert result.get("parse_errors") is None
+    labels = [n["label"] for n in result["nodes"]]
+    for expected in ("Hasher", ".Name()", ".Mix()", ".Fold()", ".Track()"):
+        assert expected in labels
+
+    # The operator characters themselves survive in the parsed source.
+    out = _normalize_cpp_cli(p.read_bytes())
+    assert b"return a% b;" in out
+    assert b"return hash^ mask;" in out
+
+
+@pytest.mark.parametrize("expr", [
+    b"int m = a% b;",
+    b"int x = hash^ mask;",
+    b"int c = count% 2;",
+    b"int d = (a ^ b) % 7;",
+    b"int e = a^*p;",
+    b"int f = a^&b;",
+    b"x %= y;",
+])
+def test_arithmetic_forms_survive(expr):
+    src = b"ref class C { void f() { " + expr + b" } };"
+    out = _normalize_cpp_cli(src)
+    assert out is not None
+    assert expr in out, f"{expr!r} was rewritten"
+
+
+@pytest.mark.parametrize("decl,rewritten", [
+    (b"System::String^ s;", b"System::String  s;"),
+    (b"List<int>^ items;", b"List<int>  items;"),
+    (b"DataTable^ t;", b"DataTable  t;"),
+    (b"int% n;", b"int  n;"),
+    (b"void F(String^, int);", b"void F(String , int);"),
+    (b"array<String^>^ a;", b"array<String >  a;"),
+])
+def test_cli_type_suffixes_are_still_rewritten(decl, rewritten):
+    src = b"ref class C { " + decl + b" };"
+    out = _normalize_cpp_cli(src)
+    assert out is not None
+    assert len(out) == len(src)
+    assert rewritten in out

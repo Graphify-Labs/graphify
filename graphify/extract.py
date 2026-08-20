@@ -1981,10 +1981,33 @@ _CPP_CLI_CLASS_RE = re.compile(
     rb"(?:\b(?:public|private|protected)\s+)?\b(?:ref|value)\s+(?=(?:class|struct)\b)"
     rb"|(?:\b(?:public|private|protected)\s+)?\binterface\s+(?=class\b)"
 )
-# Handle (`String^ s`) and tracking-reference (`List<int>% r`) suffixes. Only
-# the spelling attached to the preceding token is rewritten, so a spaced
-# `a ^ b` / `a % b` operator elsewhere in the same file keeps its meaning.
-_CPP_CLI_SUFFIX_RE = re.compile(rb"(?<=[A-Za-z0-9_>])[\^%](?=[\s*&,)\]>;{]|$)")
+# Handle (`String^ s`) and tracking-reference (`int% n`) suffixes.
+#
+# `^` and `%` are also XOR and modulo, and `String^ s` is lexically identical to
+# `a^ b` — attachment to the preceding token does not separate them, because
+# `a% b` and `hash^ mask` are attached too. Rewriting on attachment alone
+# corrupted those into `a  b` / `hash  mask`. So the rewrite is restricted to
+# the two positions where an operator reading is impossible or implausible.
+#
+# 1. Followed by a token that cannot begin an operand: `f(String^, int)`,
+#    `List<String^>`, `(String^)x`, `Object^;`. `a^,` is not valid C++, so
+#    there is no arithmetic to lose here. `*` and `&` are deliberately NOT in
+#    the set — `a^*p` and `a^&b` are valid XOR expressions, and `String^*` is
+#    rare enough not to be worth trading for them.
+_CPP_CLI_SUFFIX_UNAMBIGUOUS_RE = re.compile(rb"(?<=[A-Za-z0-9_>])[\^%](?=\s*[,)\]>;])")
+# 2. A type-shaped left side followed by a declarator: `System::String^ s`,
+#    `List<int>^ items`, `DataTable^ t`, `int% n`. Qualified names, a closing
+#    generic bracket, .NET's PascalCase convention and the primitive value
+#    types are all type positions; requiring one keeps lowercase operands like
+#    `count% 2` and `hash^ mask` as arithmetic. The type is captured and
+#    re-emitted so the substitution stays byte-length preserving.
+_CPP_CLI_SUFFIX_DECL_RE = re.compile(
+    rb"(\b[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)+"   # System::String
+    rb"|\b[A-Z][A-Za-z0-9_]*"                                    # String, DataTable, T
+    rb"|\b(?:bool|char|wchar_t|short|int|long|float|double|unsigned|signed)"
+    rb"|>)"                                                      # List<int>^
+    rb"[\^%](?=\s+[A-Za-z_])"
+)
 # `[assembly:AssemblyVersion("1.0")]` and friends.
 _CPP_CLI_ATTR_RE = re.compile(rb"\[\s*(?:assembly|module)\s*:[^\[\]]*\]", re.S)
 
@@ -2014,7 +2037,8 @@ def _normalize_cpp_cli(source: bytes) -> bytes | None:
         return None
     out = _CPP_CLI_CLASS_RE.sub(_blank_keeping_newlines, source)
     out = re.sub(rb"\bgcnew\b", b"new  ", out)
-    out = _CPP_CLI_SUFFIX_RE.sub(b" ", out)
+    out = _CPP_CLI_SUFFIX_UNAMBIGUOUS_RE.sub(b" ", out)
+    out = _CPP_CLI_SUFFIX_DECL_RE.sub(rb"\1 ", out)
     return _CPP_CLI_ATTR_RE.sub(_blank_keeping_newlines, out)
 
 
