@@ -5512,7 +5512,7 @@ def extract(
     _empty_sources: list[str] = []
     for i, _p in enumerate(paths):
         _res = per_file[i] or {}
-        if _res.get("nodes") or _res.get("error"):
+        if _res.get("nodes") or _res.get("error") or _res.get("skipped"):
             continue
         if _get_extractor(_p) is not None:
             _empty_sources.append(str(_p))
@@ -5543,6 +5543,12 @@ def extract(
             if _key not in _failed_seen:
                 _failed_sources.append(_key)
                 _failed_seen.add(_key)
+            continue
+        if _res.get("skipped"):
+            # The extractor declined this file by design (data JSON, #1224), so
+            # zero nodes is the intended outcome rather than a failure. Marking
+            # it failed keeps it out of the incremental manifest and re-queues
+            # it on every subsequent run, forever (#2879).
             continue
         if (not _res.get("nodes")) and _get_extractor(_p) is not None:
             if _key not in _failed_seen:
