@@ -91,6 +91,24 @@ def test_expand_does_not_slice_code_even_when_oversized(tmp_path):
     assert units == [f]  # stays whole — code needs whole-symbol context
 
 
+def test_expand_oversized_typst_is_sliced_with_full_coverage(tmp_path):
+    """#2826: Typst chapters are prose, so an oversized one must slice, not truncate.
+
+    Typst marks headings with `=` rather than `#`, so the heading separator never
+    fires — the blank-line boundary carries it, which is the same fallback a .txt
+    document relies on.
+    """
+    text = ("= Section\n\n" + "word " * 200 + "\n\n") * 30
+    f = _write(tmp_path / "report.typ", text)
+    assert is_splittable_text(f)
+    units = expand_oversized_files([f], max_chars=2000)
+    slices = [u for u in units if isinstance(u, FileSlice)]
+    assert len(slices) >= 2
+    assert "".join(read_slice_text(s) for s in slices) == text
+    assert all((s.end - s.start) <= 2000 for s in slices)
+    assert all(s.path == f for s in slices)
+
+
 def test_expand_unreadable_file_passes_through(tmp_path):
     missing = tmp_path / "nope.md"
     units = expand_oversized_files([missing], max_chars=10)
