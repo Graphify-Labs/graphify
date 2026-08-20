@@ -524,7 +524,7 @@ These are only needed for **headless / CI extraction** (`graphify extract`). Whe
 | `GRAPHIFY_MAX_OUTPUT_TOKENS` | Raise output cap for dense corpora | optional — e.g. `32768` for large files |
 | `GRAPHIFY_API_TIMEOUT` | Per-call timeout in seconds for HTTP, claude-cli, Anthropic SDK, and Bedrock backends (default: 600) | optional — also `--api-timeout` flag |
 | `GRAPHIFY_MAX_RETRIES` | How many times to retry a rate-limited (429) request before giving up (default: 6; honors `Retry-After`) | optional — raise for strict per-org limits (e.g. kimi); `0` disables |
-| `GRAPHIFY_NO_SQL_LINKS` | Skip the pass that links SQL tables to the code whose queries name them | optional — set to `1` for ORM-based repos, which name tables via model classes rather than in SQL text |
+| `GRAPHIFY_NO_SQL_LINKS` | Skip the pass that links SQL tables to the code whose queries name them | optional — also `--no-sql-links` flag; useful for ORM-based repos, which name tables via model classes rather than in SQL text |
 | `GRAPHIFY_FORCE` | Force graph rebuild even with fewer nodes | optional — also `--force` flag |
 | `GRAPHIFY_GOOGLE_WORKSPACE` | Auto-enable Google Workspace export | optional — set to `1` |
 | `GRAPHIFY_TRIAGE_BACKEND` | Backend for `graphify prs --triage` | optional — auto-detected from available keys |
@@ -749,6 +749,7 @@ graphify extract ./docs --no-cluster           # raw extraction only, skip clust
 graphify extract ./docs --timing               # print per-stage wall-clock timings to stderr (also works on cluster-only)
 graphify extract ./docs --force                # overwrite graph.json even if new graph has fewer nodes (use after refactors or to clear ghost duplicates)
 graphify extract ./docs --dedup-llm            # LLM tiebreaker for ambiguous entity pairs (uses same API key)
+graphify extract ./src --no-sql-links          # skip linking SQL tables to the code whose queries name them (useful for ORM-based repos)
 graphify extract ./docs --global --as myrepo   # extract and register into the cross-project global graph
 GRAPHIFY_MAX_OUTPUT_TOKENS=32768 graphify extract ./docs --backend claude  # raise output cap for dense corpora
 

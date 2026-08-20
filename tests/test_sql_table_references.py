@@ -152,3 +152,49 @@ def test_quoted_table_names_match(tmp_path):
     result = extract(paths, cache_root=tmp_path)
     linked = {f for f, label in _refs(result) if label == "user_email_preferences"}
     assert linked == {"mysql.ts", "pg.ts", "tsql.ts"}
+
+
+def _run_cli(monkeypatch, argv):
+    import graphify.__main__ as mainmod
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(mainmod.sys, "argv", argv)
+    try:
+        mainmod.main()
+    except SystemExit as exc:
+        return exc.code or 0
+    return 0
+
+
+def _graph_edges(out_dir):
+    import json
+    return json.loads((out_dir / "graphify-out" / "graph.json").read_text())
+
+
+def test_cli_flag_skips_the_pass(tmp_path, monkeypatch):
+    """#2884 review: the pass is on by default, so the opt-out has to be a real
+    flag and not only an env var a user has to know exists."""
+    monkeypatch.delenv("GRAPHIFY_NO_SQL_LINKS", raising=False)
+    root, db, src = _corpus(tmp_path)
+    out = tmp_path / "out"
+    assert _run_cli(monkeypatch, [
+        "graphify", "extract", str(root), "--code-only", "--no-cluster",
+        "--no-sql-links", "--out", str(out),
+    ]) == 0
+    graph = _graph_edges(out)
+    links = [e for e in graph.get("links", graph.get("edges", []))
+             if e.get("context") == "sql_table"]
+    assert links == []
+
+
+def test_cli_emits_the_links_by_default(tmp_path, monkeypatch):
+    monkeypatch.delenv("GRAPHIFY_NO_SQL_LINKS", raising=False)
+    root, db, src = _corpus(tmp_path)
+    out = tmp_path / "out"
+    assert _run_cli(monkeypatch, [
+        "graphify", "extract", str(root), "--code-only", "--no-cluster",
+        "--out", str(out),
+    ]) == 0
+    graph = _graph_edges(out)
+    links = [e for e in graph.get("links", graph.get("edges", []))
+             if e.get("context") == "sql_table"]
+    assert links, "the pass is on by default — that is the point of the issue"
