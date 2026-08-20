@@ -2889,7 +2889,7 @@ def dispatch_command(cmd: str) -> None:
             print(
                 "Usage: graphify extract <path> [--backend gemini|kimi|claude|openai|deepseek|ollama] "
                 "[--model M] [--mode deep] [--out DIR|--output DIR] [--google-workspace] [--no-cluster] "
-                "[--no-gitignore] [--code-only] "
+                "[--no-gitignore] [--code-only] [--no-dedup] "
                 "[--max-workers N] [--token-budget N] [--max-concurrency N] "
                 "[--api-timeout S] [--postgres DSN] [--cargo] [--allow-partial] [--timing]",
                 file=sys.stderr,
@@ -2915,6 +2915,13 @@ def dispatch_command(cmd: str) -> None:
         cli_allow_partial: bool = False
         no_cluster = False
         dedup_llm = False
+        # --no-dedup: skip entity deduplication entirely. On an incremental
+        # merge the fuzzy pass runs over the COMBINED node set (existing graph +
+        # new chunk), so a small diff merged into a large graph can collapse
+        # pre-existing nodes from files the diff never touched. Turning dedup
+        # off also arms build_merge's #479 shrink guard, which is disabled while
+        # dedup is on because fuzzy merging shrinks the graph legitimately (#2881).
+        no_dedup = False
         google_workspace = False
         global_merge = False
         code_only = False
@@ -2983,6 +2990,8 @@ def dispatch_command(cmd: str) -> None:
                 no_cluster = True; i += 1
             elif a == "--dedup-llm":
                 dedup_llm = True; i += 1
+            elif a == "--no-dedup":
+                no_dedup = True; i += 1
             elif a == "--code-only":
                 code_only = True; i += 1
             elif a == "--google-workspace":
@@ -3040,6 +3049,16 @@ def dispatch_command(cmd: str) -> None:
         if not has_path and cli_postgres_dsn is None:
             print("error: must specify a path to scan or a --postgres DSN", file=sys.stderr)
             sys.exit(1)
+
+        if no_dedup and dedup_llm:
+            # --dedup-llm is pass 3 of the dedup pipeline, so with dedup off it
+            # would be a silent no-op that still demands an API key.
+            print(
+                "error: --no-dedup and --dedup-llm are mutually exclusive "
+                "(--dedup-llm is a tiebreaker inside the dedup pass)",
+                file=sys.stderr,
+            )
+            sys.exit(2)
 
         _VALID_MODES = {"deep"}
         if extract_mode is not None and extract_mode not in _VALID_MODES:
@@ -3946,16 +3965,24 @@ def dispatch_command(cmd: str) -> None:
             for _src in list(excluded_files) + graph_stale_sources:
                 if _src not in _prune_sources:
                     _prune_sources.append(_src)
-            G = _build_merge(
-                [merged],
-                graph_path=existing_graph_path,
-                prune_sources=_prune_sources or None,
-                dedup=True,
-                dedup_llm_backend=dedup_backend,
-                root=target,
-            )
+            try:
+                G = _build_merge(
+                    [merged],
+                    graph_path=existing_graph_path,
+                    prune_sources=_prune_sources or None,
+                    dedup=not no_dedup,
+                    dedup_llm_backend=dedup_backend,
+                    root=target,
+                )
+            except ValueError as exc:
+                # --no-dedup arms build_merge's #479 shrink guard, which refuses
+                # to drop nodes belonging to files this run neither re-extracted
+                # nor pruned. Report the refusal instead of a traceback (#2881):
+                # graph.json on disk is untouched, so the old graph is intact.
+                print(f"[graphify extract] {exc}", file=sys.stderr)
+                sys.exit(1)
         else:
-            G = _build([merged], dedup=True, dedup_llm_backend=dedup_backend, root=target)
+            G = _build([merged], dedup=not no_dedup, dedup_llm_backend=dedup_backend, root=target)
         stages.mark("build")
         if G.number_of_nodes() == 0:
             print(
