@@ -15,6 +15,7 @@ from graphify.paths import (
     GRAPHIFY_OUT as _GRAPHIFY_OUT,
     graphify_out_dir,
     remember_output_root,
+    resolve_output_binding,
     resolve_output_root,
 )
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -88,6 +89,24 @@ _GEMINI_NUDGE_TEXT = (
 
 def _default_graph_path() -> str:
     return str(graphify_out_dir(Path.cwd()) / "graph.json")
+
+
+def _default_update_path(source_path: Path) -> Path:
+    """Recover and validate the scan root for ``graphify update`` without a path."""
+    saved = graphify_out_dir(source_path) / ".graphify_root"
+    if not saved.exists():
+        return Path(".")
+
+    watch_path = Path(saved.read_text(encoding="utf-8").strip())
+    binding = resolve_output_binding(source_path)
+    if binding is not None:
+        expected_source, _ = binding
+        if watch_path.expanduser().resolve() != expected_source:
+            raise ValueError(
+                f"saved scan root {watch_path} does not match configured project "
+                f"{expected_source}; pass the source path explicitly"
+            )
+    return watch_path
 
 
 def _stamped_manifest_files(
@@ -2293,11 +2312,11 @@ def dispatch_command(cmd: str) -> None:
             watch_path = Path(watch_arg)
         else:
             # Try to recover the scan root saved by the last full build
-            saved = graphify_out_dir(Path.cwd()) / ".graphify_root"
-            if saved.exists():
-                watch_path = Path(saved.read_text(encoding="utf-8").strip())
-            else:
-                watch_path = Path(".")
+            try:
+                watch_path = _default_update_path(Path.cwd())
+            except (OSError, ValueError) as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                sys.exit(1)
         if not watch_path.exists():
             print(f"error: path not found: {watch_path}", file=sys.stderr)
             sys.exit(1)

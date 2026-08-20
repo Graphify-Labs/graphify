@@ -137,13 +137,10 @@ def remember_output_root(source_root: "str | Path", output_root: "str | Path") -
     )
 
 
-def persisted_output_root(source_root: "str | Path") -> "Path | None":
-    """Return the nearest remembered output root for a source path.
-
-    Exact bindings win. Walking parents lets commands launched from a project
-    subdirectory find the output configured at the project root. Malformed or
-    mismatched binding files are ignored rather than redirecting output.
-    """
+def _persisted_output_binding(
+    source_root: "str | Path",
+) -> "tuple[Path, Path] | None":
+    """Return the nearest valid ``(source, output)`` binding."""
     source = _canonical_local_path(source_root)
     for candidate in (source, *source.parents):
         path = _output_root_binding_path(candidate)
@@ -161,8 +158,32 @@ def persisted_output_root(source_root: "str | Path") -> "Path | None":
         ):
             continue
         if _local_path_identity(stored_source) == _local_path_identity(candidate):
-            return stored_output
+            return candidate, stored_output
     return None
+
+
+def resolve_output_binding(
+    source_root: "str | Path",
+) -> "tuple[Path, Path] | None":
+    """Return the remembered binding used by default output resolution.
+
+    A non-default ``GRAPHIFY_OUT`` is an explicit override and therefore has no
+    active remembered binding.
+    """
+    if os.environ.get("GRAPHIFY_OUT", "graphify-out") != "graphify-out":
+        return None
+    return _persisted_output_binding(source_root)
+
+
+def persisted_output_root(source_root: "str | Path") -> "Path | None":
+    """Return the nearest remembered output root for a source path.
+
+    Exact bindings win. Walking parents lets commands launched from a project
+    subdirectory find the output configured at the project root. Malformed or
+    mismatched binding files are ignored rather than redirecting output.
+    """
+    binding = _persisted_output_binding(source_root)
+    return binding[1] if binding is not None else None
 
 
 def resolve_output_root(
@@ -178,9 +199,10 @@ def resolve_output_root(
     source = _canonical_local_path(source_root)
     if explicit_output_root is not None:
         return _canonical_local_path(explicit_output_root)
-    if os.environ.get("GRAPHIFY_OUT", "graphify-out") != "graphify-out":
+    binding = resolve_output_binding(source)
+    if binding is None:
         return source
-    return persisted_output_root(source) or source
+    return binding[1]
 
 
 def graphify_out_dir(
