@@ -31,7 +31,19 @@ def _run(monkeypatch, argv):
 
 
 def _capture_dedup(monkeypatch):
-    """Record the `dedup` kwarg both build entry points are called with."""
+    """Record the `dedup` kwarg both build entry points are called with.
+
+    Patching `graphify.build` does reach the CLI's `_build` / `_build_merge`
+    aliases, even though it refers to them by those names: the
+
+        from graphify.build import build as _build, build_merge as _build_merge
+
+    is function-local to `dispatch_command`, so the alias is bound when the
+    command runs, which is after this patch is installed. A module-level import
+    would bind at import time and make the patch inert — `_assert_spied` below
+    turns that into a loud failure rather than a test that quietly asserts
+    nothing.
+    """
     import graphify.build as buildmod
 
     seen: dict[str, bool] = {}
@@ -51,6 +63,16 @@ def _capture_dedup(monkeypatch):
     return seen
 
 
+def _assert_spied(seen: dict, entry_point: str) -> None:
+    """Fail loudly if the spy never fired, so no assertion is vacuous."""
+    assert entry_point in seen, (
+        f"{entry_point}() was never called through the patched "
+        f"graphify.build symbol — the spy is inert and every dedup assertion "
+        f"below it would be vacuous. Did the CLI's import of it move to module "
+        f"scope, or did this run take a path that skips the build stage?"
+    )
+
+
 def test_no_dedup_flag_disables_dedup(monkeypatch, tmp_path):
     corpus = _corpus(tmp_path)
     seen = _capture_dedup(monkeypatch)
@@ -59,7 +81,8 @@ def test_no_dedup_flag_disables_dedup(monkeypatch, tmp_path):
         "--no-dedup", "--out", str(tmp_path / "out"),
     ])
     assert code == 0
-    assert seen.get("build") is False
+    _assert_spied(seen, "build")
+    assert seen["build"] is False
 
 
 def test_dedup_is_on_by_default(monkeypatch, tmp_path):
@@ -70,7 +93,8 @@ def test_dedup_is_on_by_default(monkeypatch, tmp_path):
         "--out", str(tmp_path / "out"),
     ])
     assert code == 0
-    assert seen.get("build") is True
+    _assert_spied(seen, "build")
+    assert seen["build"] is True
 
 
 def test_no_dedup_reaches_the_incremental_merge(monkeypatch, tmp_path):
@@ -89,7 +113,8 @@ def test_no_dedup_reaches_the_incremental_merge(monkeypatch, tmp_path):
         "graphify", "extract", str(corpus), "--code-only",
         "--no-dedup", "--out", str(out),
     ]) == 0
-    assert seen.get("build_merge") is False, (
+    _assert_spied(seen, "build_merge")
+    assert seen["build_merge"] is False, (
         "the incremental path hardcoded dedup=True, which is the bug"
     )
 
