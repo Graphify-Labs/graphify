@@ -12,7 +12,7 @@ import re
 import subprocess
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -1054,17 +1054,46 @@ def _json_object_candidates(text: str) -> list[int]:
     return preferred + rest
 
 
+def _json_fragment_candidates(text: str) -> "Iterator[str]":
+    """Yield candidate JSON texts from a model reply, most-likely first.
+
+    Two sources, in order:
+
+    * fenced blocks — every fence, not just the first in the text, since a
+      reasoning preamble often opens a ```python or ```text block of its own
+      before the answer's ```json block. JSON-tagged and untagged fences come
+      first; a fence in another language is still yielded, since models
+      mislabel the tag.
+    * balanced ``{...}`` objects lifted out of surrounding prose, at each
+      plausible start rather than only the first `{` in the text.
+
+    Both read the ORIGINAL text. Rewriting it in place — as the old fence
+    handling did, cutting from the first ``` to the last — let a fence in the
+    narration truncate the real answer before it was ever parsed (#2882).
+    """
+    for _lang, body in sorted(
+        _FENCE_RE.findall(text), key=lambda b: b[0].strip().lower() not in ("json", "")
+    ):
+        yield body.strip()
+    for start in _json_object_candidates(text):
+        blob = _balanced_object(text, start)
+        if blob is not None:
+            yield blob
+
+
 def _parse_llm_json(raw: str) -> dict:
     """Strip optional markdown fences and parse JSON. Returns empty fragment on failure.
 
     Caps the input at `_LLM_JSON_MAX_BYTES` so a hostile or runaway model
     response cannot exhaust memory inside `json.loads` (F-016).
 
-    Recovery is deliberately layered, because plenty of models will not return
-    a bare JSON object no matter how the prompt is worded: they think out loud
-    first, wrap the answer in a fence, or do both (#2882). Each layer is tried
-    against the ORIGINAL text rather than a destructively rewritten copy, so a
-    fence appearing in the narration cannot truncate the real answer.
+    Plenty of models will not return a bare JSON object no matter how the
+    prompt is worded: they think out loud first, wrap the answer in a fence, or
+    do both (#2882). So the whole reply is tried first, then each candidate
+    :func:`_json_fragment_candidates` finds. An object carrying none of the
+    extraction keys is kept only as a last resort — reasoning-first models
+    routinely restate the schema (``{"description": "graph fragment"}``) before
+    answering, and the narration must never shadow the answer that follows it.
     """
     if len(raw) > _LLM_JSON_MAX_BYTES:
         print(
@@ -1076,60 +1105,28 @@ def _parse_llm_json(raw: str) -> dict:
 
     stripped = _THINK_BLOCK_RE.sub(" ", raw).strip()
 
-    # Strategy 1: the whole response is the object.
     try:
         parsed = json.loads(stripped)
         if isinstance(parsed, dict):
             return _sanitize_fragment(parsed)
         # Top-level array/scalar (common LLM output) is not a usable graph
-        # fragment; fall through to the next strategy rather than returning a
-        # non-dict that callers will try to subscript (e.g. result["input_tokens"]).
+        # fragment; fall through rather than returning a non-dict that callers
+        # will try to subscript (e.g. result["input_tokens"]).
     except json.JSONDecodeError:
         pass
 
-    # An object that parses but carries none of the extraction keys is kept
-    # only as a last resort: reasoning-first models routinely restate the
-    # schema ({"description": "graph fragment"}) before answering, and the
-    # narration must never shadow the answer that follows it (#2882).
     fallback: dict | None = None
-
-    def _consider(text: str) -> dict | None:
-        nonlocal fallback
+    for candidate in _json_fragment_candidates(stripped):
         try:
-            parsed = json.loads(text)
+            parsed = json.loads(candidate)
         except json.JSONDecodeError:
-            return None
+            continue
         if not isinstance(parsed, dict):
-            return None
+            continue
         if any(k in parsed for k in _FRAGMENT_KEYS):
             return _sanitize_fragment(parsed)
         if fallback is None:
             fallback = parsed
-        return None
-
-    # Strategy 2: a fenced block. Every fence is considered, not just the first
-    # one in the text — a reasoning preamble often opens a ```python or ```text
-    # block of its own before the answer's ```json block. JSON-tagged and
-    # untagged fences are tried first; a fence in another language is still
-    # tried, since models mislabel the tag.
-    blocks = _FENCE_RE.findall(stripped)
-    for _lang, body in sorted(blocks, key=lambda b: b[0].strip().lower() not in ("json", "")):
-        hit = _consider(body.strip())
-        if hit is not None:
-            return hit
-
-    # Strategy 3: extract a balanced JSON object from surrounding prose. Each
-    # plausible start is tried rather than only the first `{` in the text,
-    # because the narration that precedes the answer frequently contains braces
-    # of its own and giving up on the first failed candidate discarded chunks
-    # whose answer was sitting right there (#2882).
-    for start in _json_object_candidates(stripped):
-        blob = _balanced_object(stripped, start)
-        if blob is None:
-            continue
-        hit = _consider(blob)
-        if hit is not None:
-            return hit
 
     if fallback is not None:
         return _sanitize_fragment(fallback)
