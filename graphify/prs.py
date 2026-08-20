@@ -240,6 +240,18 @@ def _page_limits(limit: int) -> list[int]:
     return chain
 
 
+def _parse_limit(raw: str) -> int:
+    try:
+        v = int(raw)
+    except ValueError:
+        print(f"error: --limit must be a positive integer (got {raw!r})", file=sys.stderr)
+        sys.exit(2)
+    if v <= 0:
+        print(f"error: --limit must be > 0 (got {v})", file=sys.stderr)
+        sys.exit(2)
+    return v
+
+
 def _fetch_prs_page(repo: str | None, limit: int) -> tuple[list | dict | None, GhFailure | None]:
     args = [
         "pr", "list", "--state", "open", "--limit", str(limit),
@@ -764,9 +776,9 @@ def cmd_prs(argv: list[str]) -> None:
         elif arg in ("--repo", "-R") and i + 1 < len(argv):
             repo = argv[i + 1]; i += 1
         elif arg in ("--limit", "-n") and i + 1 < len(argv):
-            limit = int(argv[i + 1]); i += 1
+            limit = _parse_limit(argv[i + 1]); i += 1
         elif arg.startswith("--limit="):
-            limit = int(arg.split("=", 1)[1])
+            limit = _parse_limit(arg.split("=", 1)[1])
         elif arg.startswith("--graph="):
             graph_path = Path(arg.split("=", 1)[1])
         elif arg == "--graph" and i + 1 < len(argv):

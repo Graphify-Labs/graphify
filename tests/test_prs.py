@@ -16,6 +16,7 @@ from graphify.prs import (
     _gh,
     _gh_call,
     _page_limits,
+    _parse_limit,
     _parse_ci,
     _path_match,
     build_community_labels,
@@ -102,6 +103,21 @@ class TestPageLimits:
 
     def test_small_limit_has_no_larger_fallback(self):
         assert _page_limits(10) == [10]
+
+
+class TestParseLimit:
+    def test_valid(self):
+        assert _parse_limit("20") == 20
+
+    def test_invalid_exits(self):
+        with pytest.raises(SystemExit) as exc:
+            _parse_limit("abc")
+        assert exc.value.code == 2
+
+    def test_nonpositive_exits(self):
+        with pytest.raises(SystemExit) as exc:
+            _parse_limit("0")
+        assert exc.value.code == 2
 
 
 class TestFetchPrs:
