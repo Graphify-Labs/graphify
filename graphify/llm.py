@@ -1115,7 +1115,13 @@ def _parse_llm_json(raw: str) -> dict:
     except json.JSONDecodeError:
         pass
 
-    fallback: dict | None = None
+    # Preference ladder, weakest last. A model that restates the required shape
+    # before answering — "the schema is `{"nodes": [], "edges": []}`" — produces
+    # a candidate that carries the extraction keys but no content, and taking it
+    # would let the restatement shadow the answer just as surely as a prose
+    # object would (#2882).
+    empty_fragment: dict | None = None   # right shape, nothing in it
+    fallback: dict | None = None         # parses, but not a fragment at all
     for candidate in _json_fragment_candidates(stripped):
         try:
             parsed = json.loads(candidate)
@@ -1124,12 +1130,18 @@ def _parse_llm_json(raw: str) -> dict:
         if not isinstance(parsed, dict):
             continue
         if any(k in parsed for k in _FRAGMENT_KEYS):
-            return _sanitize_fragment(parsed)
-        if fallback is None:
+            if any(parsed.get(k) for k in _FRAGMENT_KEYS):
+                return _sanitize_fragment(parsed)
+            if empty_fragment is None:
+                empty_fragment = parsed
+        elif fallback is None:
             fallback = parsed
 
-    if fallback is not None:
-        return _sanitize_fragment(fallback)
+    # A genuinely empty extraction is still a valid answer, and still reads as
+    # hollow downstream, so it outranks an object that is not a fragment at all.
+    for weaker in (empty_fragment, fallback):
+        if weaker is not None:
+            return _sanitize_fragment(weaker)
 
     print(
         f"[graphify] LLM returned invalid JSON, skipping chunk "

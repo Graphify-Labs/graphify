@@ -90,3 +90,49 @@ def test_candidate_scan_is_bounded():
     # Likely and unlikely candidates are capped separately, so the noise
     # cannot crowd out the answer, and neither list can grow without bound.
     assert len(llm._json_object_candidates(raw)) <= 2 * llm._MAX_OBJECT_CANDIDATES
+
+
+def test_empty_schema_restatement_does_not_shadow_the_answer():
+    """A restated shape carries the extraction keys but no content.
+
+    Preferring any candidate that merely *has* nodes/edges let the restatement
+    win over the answer below it — the same shadowing this module exists to
+    prevent, one level deeper than a keyless prose object.
+    """
+    raw = (
+        "The schema is:\n"
+        "```json\n"
+        '{"nodes": [], "edges": []}\n'
+        "```\n"
+        "Now the answer:\n"
+        '{"nodes": [{"id": "real"}], "edges": []}\n'
+    )
+    assert llm._parse_llm_json(raw)["nodes"] == [{"id": "real"}]
+
+
+def test_empty_restatement_without_a_fence_does_not_shadow_either():
+    raw = (
+        'Shape: {"nodes": [], "edges": [], "hyperedges": []}\n'
+        'Answer: {"nodes": [{"id": "real"}], "edges": []}\n'
+    )
+    assert llm._parse_llm_json(raw)["nodes"] == [{"id": "real"}]
+
+
+def test_a_genuinely_empty_extraction_is_still_returned():
+    """The model looked and found nothing: that is a valid answer, and it must
+    keep reading as an empty fragment so the hollow detector takes over."""
+    assert llm._parse_llm_json('{"nodes": [], "edges": [], "hyperedges": []}') == EMPTY
+    assert llm._parse_llm_json(
+        'Nothing to extract here.\n```json\n{"nodes": [], "edges": []}\n```'
+    )["nodes"] == []
+
+
+def test_empty_fragment_outranks_a_non_fragment_object():
+    """Right shape but empty still beats an object that is not a fragment."""
+    raw = (
+        'Notes: {"description": "graph fragment", "version": 2}\n'
+        '{"nodes": [], "edges": []}\n'
+    )
+    result = llm._parse_llm_json(raw)
+    assert "description" not in result
+    assert result["nodes"] == []
