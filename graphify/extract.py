@@ -1989,21 +1989,33 @@ _CPP_CLI_SUFFIX_RE = re.compile(rb"(?<=[A-Za-z0-9_>])[\^%](?=[\s*&,)\]>;{]|$)")
 _CPP_CLI_ATTR_RE = re.compile(rb"\[\s*(?:assembly|module)\s*:[^\[\]]*\]", re.S)
 
 
+def _blank_keeping_newlines(m: "re.Match[bytes]") -> bytes:
+    """Replace a match with spaces, but keep its line breaks.
+
+    Byte length alone is not enough. Both the class-header and the attribute
+    pattern can span lines — ``[assembly:AssemblyVersion(\\n  "1.0"\\n)]`` is
+    ordinary formatting — and blanking a newline merges two source lines, which
+    shifts the reported line number of every symbol below it. Preserving CR and
+    LF in place keeps line and column stable as well as offset.
+    """
+    return re.sub(rb"[^\r\n]", b" ", m.group(0))
+
+
 def _normalize_cpp_cli(source: bytes) -> bytes | None:
     """Rewrite C++/CLI spellings to standard C++ ones, or None if not C++/CLI.
 
     The rewrite is **byte-length preserving** — dropped tokens are overwritten
-    with spaces, never deleted, and ``gcnew`` becomes ``new`` plus padding — so
-    every offset, line and column still points at the same place in the file on
-    disk and reported source locations stay accurate (#2876).
+    with spaces, never deleted, and ``gcnew`` becomes ``new`` plus padding — and
+    line breaks inside a removed token are kept, so every offset, line and
+    column still points at the same place in the file on disk and reported
+    source locations stay accurate (#2876).
     """
     if not _CPP_CLI_MARKER_RE.search(source):
         return None
-    blank = lambda m: b" " * (m.end() - m.start())  # noqa: E731
-    out = _CPP_CLI_CLASS_RE.sub(blank, source)
+    out = _CPP_CLI_CLASS_RE.sub(_blank_keeping_newlines, source)
     out = re.sub(rb"\bgcnew\b", b"new  ", out)
     out = _CPP_CLI_SUFFIX_RE.sub(b" ", out)
-    return _CPP_CLI_ATTR_RE.sub(blank, out)
+    return _CPP_CLI_ATTR_RE.sub(_blank_keeping_newlines, out)
 
 
 def extract_cpp(path: Path) -> dict:

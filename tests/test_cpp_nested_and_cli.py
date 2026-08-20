@@ -110,3 +110,48 @@ def test_operators_survive_in_a_cli_file(tmp_path):
     out = _normalize_cpp_cli(src)
     assert out is not None
     assert b"(a ^ b) % 7" in out
+
+
+def test_multiline_cli_attribute_keeps_line_numbers(tmp_path):
+    """A removed token that spans lines must keep its line breaks.
+
+    `[assembly:AssemblyVersion(\n    "1.0"\n)]` is ordinary formatting. Blanking
+    its newlines preserved byte length but merged source lines, so every symbol
+    below it reported a line number that was too low.
+    """
+    p = tmp_path / "cli.h"
+    p.write_text(
+        "[assembly:AssemblyVersion(\n"
+        '    "1.0.0.0"\n'
+        ")];\n"
+        "namespace N {\n"
+        "    public ref class Wrapper\n"
+        "    {\n"
+        "    public:\n"
+        "        static void Init() { }\n"
+        "    };\n"
+        "}\n"
+    )
+    nodes = {n["label"]: n["source_location"] for n in extract_cpp(p)["nodes"]}
+    assert nodes["Wrapper"] == "L5"
+    assert nodes[".Init()"] == "L8"
+
+
+def test_cli_normalization_preserves_line_breaks(tmp_path):
+    src = (
+        "[assembly:AssemblyVersion(\n"
+        '    "1.0.0.0"\n'
+        ")];\n"
+        "namespace N {\n"
+        "    public\n"          # access specifier split from the keyword
+        "    ref class W { };\n"
+        "}\n"
+    ).encode()
+    out = _normalize_cpp_cli(src)
+    assert out is not None
+    assert len(out) == len(src)
+    assert [i for i, b in enumerate(src) if b == 0x0A] == [
+        i for i, b in enumerate(out) if b == 0x0A
+    ]
+    assert b"ref class" not in out
+    assert b"assembly" not in out
