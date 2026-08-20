@@ -2071,7 +2071,21 @@ def distinct_repo_tags(graph_paths: "list[Path]") -> "list[str]":
 
 
 def prune_repo_from_graph(G: nx.Graph, repo_tag: str) -> int:
-    """Remove all nodes tagged with repo_tag from G in-place. Returns count removed."""
-    to_remove = [n for n, d in G.nodes(data=True) if d.get("repo") == repo_tag]
+    """Remove all nodes tagged with repo_tag from G in-place. Returns count removed.
+
+    External nodes (#2873) can be referenced by multiple repos via their
+    'repos' list -- pruning one repo only removes the tag; the node itself
+    is removed only once no repo still references it.
+    """
+    to_remove = []
+    for n, d in G.nodes(data=True):
+        if d.get("repo") == repo_tag:
+            to_remove.append(n)
+        elif d.get("external") and repo_tag in d.get("repos", ()):
+            remaining = [r for r in d["repos"] if r != repo_tag]
+            if remaining:
+                d["repos"] = remaining
+            else:
+                to_remove.append(n)
     G.remove_nodes_from(to_remove)
     return len(to_remove)
