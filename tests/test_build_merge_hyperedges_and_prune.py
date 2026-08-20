@@ -264,3 +264,122 @@ def test_prune_reextracted_absolute_node_not_deleted(tmp_path):
     G = build_merge([new_chunk], graph_path, prune_sources=["mod.py"], dedup=False)
     labels = {d["label"] for _, d in G.nodes(data=True)}
     assert "gone" in labels, "re-extracted file wrongly pruned across mismatched forms (#2012/#1796)"
+
+
+# ── #2908: skill --update prunes excluded_files alongside deleted_files ──────────
+
+def test_skill_update_prunes_excluded_files_and_preserves_reinclusion(tmp_path):
+    """#2908: when a file leaves scan scope (.graphifyignore), detect_incremental
+    places it in excluded_files. The skill --update flow must include excluded_files
+    in prune_sources so its graph contributions are removed when save_manifest
+    drops the file from the manifest, leaving subsequent runs clean and allowing
+    clean re-inclusion when unignored."""
+    from graphify.detect import detect, detect_incremental, save_manifest
+    from graphify.extract import extract
+    from graphify.build import build
+    from graphify.cluster import cluster
+    from graphify.export import to_json
+    from graphify.cli import _stamped_manifest_files
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    a_py = corpus / "A.py"
+    a_py.write_text("def hello():\n    return 'world'\n", encoding="utf-8")
+
+    out_dir = corpus / "graphify-out"
+    out_dir.mkdir()
+    graph_path = out_dir / "graph.json"
+    manifest_path = out_dir / "manifest.json"
+
+    # 1. Initial build & manifest
+    det = detect(corpus)
+    ast_res = extract([a_py], root=corpus)
+    G0 = build([ast_res], root=corpus, directed=False)
+    to_json(G0, cluster(G0), str(graph_path), force=True)
+
+    _manifest_files = _stamped_manifest_files(det["files"], ast_res, corpus)
+    _scan = {f for fl in det["files"].values() for f in fl}
+    save_manifest(_manifest_files, str(manifest_path), root=corpus, scan_corpus=_scan)
+
+    # Initial assertions
+    g0_data = json.loads(graph_path.read_text(encoding="utf-8"))
+    m0_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert any(n.get("source_file") == "A.py" for n in g0_data["nodes"])
+    assert "A.py" in m0_data
+
+    # 2. Scope change: A.py is added to .graphifyignore while remaining on disk
+    (corpus / ".graphifyignore").write_text("A.py\n", encoding="utf-8")
+    assert a_py.exists()
+
+    inc1 = detect_incremental(corpus, str(manifest_path))
+    assert inc1.get("deleted_files") == []
+    assert len(inc1.get("excluded_files", [])) == 1
+    assert Path(inc1["excluded_files"][0]).name == "A.py"
+
+    # 3. Execute the skill --update merge sequence
+    deleted = list(inc1.get("deleted_files", []))
+    excluded = list(inc1.get("excluded_files", []))
+    prune = deleted + excluded or None
+
+    assert prune is not None
+    assert any("A.py" in str(p) for p in prune)
+
+    new_extraction = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0}
+    G1 = build_merge(
+        [new_extraction],
+        graph_path=str(graph_path),
+        prune_sources=prune,
+        root=str(corpus),
+        directed=False,
+    )
+    to_json(G1, cluster(G1), str(graph_path), force=True)
+
+    # Skill save_manifest step
+    _manifest_files_1 = _stamped_manifest_files(inc1["files"], new_extraction, corpus)
+    _scan_1 = {f for fl in inc1["files"].values() for f in fl}
+    save_manifest(_manifest_files_1, str(manifest_path), root=corpus, scan_corpus=_scan_1)
+
+    # Assert A.py is removed from graph.json and manifest.json
+    g1_data = json.loads(graph_path.read_text(encoding="utf-8"))
+    m1_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert not any(n.get("source_file") == "A.py" for n in g1_data["nodes"])
+    assert "A.py" not in m1_data
+
+    # 4. Second incremental cycle (steady state)
+    inc2 = detect_incremental(corpus, str(manifest_path))
+    assert inc2.get("deleted_files") == []
+    assert inc2.get("excluded_files") == []
+    assert inc2.get("new_total") == 0
+
+    g2_data = json.loads(graph_path.read_text(encoding="utf-8"))
+    m2_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert not any(n.get("source_file") == "A.py" for n in g2_data["nodes"])
+    assert "A.py" not in m2_data
+
+    # 5. Re-inclusion: remove .graphifyignore and modify A.py
+    (corpus / ".graphifyignore").unlink()
+    a_py.write_text("def hello():\n    return 'restored'\n", encoding="utf-8")
+
+    inc3 = detect_incremental(corpus, str(manifest_path))
+    assert inc3.get("deleted_files") == []
+    assert inc3.get("excluded_files") == []
+    assert any(Path(p).name == "A.py" for p in inc3.get("new_files", {}).get("code", []))
+
+    ast_res3 = extract([a_py], root=corpus)
+    G3 = build_merge(
+        [ast_res3],
+        graph_path=str(graph_path),
+        prune_sources=inc3.get("deleted_files") or None,
+        root=str(corpus),
+        directed=False,
+    )
+    to_json(G3, cluster(G3), str(graph_path), force=True)
+
+    _manifest_files_3 = _stamped_manifest_files(inc3["files"], ast_res3, corpus)
+    _scan_3 = {f for fl in inc3["files"].values() for f in fl}
+    save_manifest(_manifest_files_3, str(manifest_path), root=corpus, scan_corpus=_scan_3)
+
+    g3_data = json.loads(graph_path.read_text(encoding="utf-8"))
+    m3_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert any(n.get("source_file") == "A.py" for n in g3_data["nodes"])
+    assert "A.py" in m3_data

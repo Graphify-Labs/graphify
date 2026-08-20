@@ -17,11 +17,14 @@ new_total = result.get('new_total', 0)
 print(json.dumps(result, indent=2, ensure_ascii=False))
 Path('graphify-out/.graphify_incremental.json').write_text(json.dumps(result, ensure_ascii=False), encoding=\"utf-8\")
 deleted = list(result.get('deleted_files', []))
-if new_total == 0 and not deleted:
+excluded = list(result.get('excluded_files', []))
+if new_total == 0 and not deleted and not excluded:
     print('No files changed since last run. Nothing to update.')
     raise SystemExit(0)
 if deleted:
     print(f'{len(deleted)} deleted file(s) to prune.')
+if excluded:
+    print(f'{len(excluded)} excluded file(s) to prune.')
 if new_total > 0:
     print(f'{new_total} new/changed file(s) to re-extract.')
 "
@@ -93,13 +96,14 @@ from graphify.detect import save_manifest
 new_extraction = json.loads(Path('graphify-out/.graphify_extract.json').read_text(encoding=\"utf-8\"))
 incremental = json.loads(Path('graphify-out/.graphify_incremental.json').read_text(encoding=\"utf-8\"))
 deleted = list(incremental.get('deleted_files', []))
-# prune_sources is ONLY for genuinely DELETED files. Changed/re-extracted files are
-# handled by build_merge's replace-on-re-extract (#1344): every source_file in
-# new_chunks is dropped from the base before merge, so old/stale nodes don't survive.
+excluded = list(incremental.get('excluded_files', []))
+# prune_sources is ONLY for genuinely DELETED and EXCLUDED files (#1908/#2908). Changed/
+# re-extracted files are handled by build_merge's replace-on-re-extract (#1344): every
+# source_file in new_chunks is dropped from the base before merge, so old/stale nodes don't survive.
 # Do NOT add `changed` here: with root= passed, prune_set relativizes to the same base
 # as the freshly merged nodes and would DELETE the re-extracted content (#1178 is moot
 # now that replace — not the dedup pass — reconciles changed files).
-prune = list(deleted) or None
+prune = deleted + excluded or None
 
 # Use build_merge() — reads graph.json directly without NetworkX round-trip
 # so edge direction (calls, implements, imports) is always preserved (#801).
