@@ -77,6 +77,24 @@ def test_multigraph_edge_keys_survive_node_link_roundtrip():
     assert set(graph["a"]["b"]) == set(restored["a"]["b"])
 
 
+def test_simple_graph_preserves_edge_attribute_named_key():
+    graph = build_from_json(
+        {
+            "nodes": [{"id": "a"}, {"id": "b"}],
+            "edges": [
+                {
+                    "source": "a",
+                    "target": "b",
+                    "relation": "calls",
+                    "key": "domain-key",
+                },
+            ],
+        }
+    )
+
+    assert graph["a"]["b"]["key"] == "domain-key"
+
+
 def test_analysis_projection_counts_each_directed_pair_once():
     graph = nx.MultiDiGraph()
     graph.add_nodes_from(["a", "b"])

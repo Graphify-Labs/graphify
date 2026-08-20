@@ -1260,10 +1260,13 @@ def build_from_json(
         # strings, NaN/inf, negatives — while numeric strings coerce cleanly.
         # Repair (not drop) the key so graph.json round-trips a clean value and a
         # cluster-only/--update reload never re-ingests the null.
+        excluded_attrs = {"source", "target", "target_file", "local_alias"}
+        if multigraph:
+            excluded_attrs.add("key")
         attrs = {
             k: v
             for k, v in edge.items()
-            if k not in ("source", "target", "target_file", "local_alias", "key")
+            if k not in excluded_attrs
         }
         for _num_key in ("weight", "confidence_score"):
             if _num_key in attrs:
