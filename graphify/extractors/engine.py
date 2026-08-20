@@ -3992,6 +3992,11 @@ def _extract_generic(
             # it a `contains` edge from the enclosing type. The declarator loop
             # below still runs, since `class Inner { } inst;` declares a member
             # alongside the type.
+            # Only class/struct nested types are recovered here: `enum_specifier`
+            # is deliberately not in C++'s `class_types`, so a nested `enum` and
+            # its enumerators are still not emitted. That is outside #2876's scope
+            # (which is about nested class/struct and C++/CLI) and is left as a
+            # known gap rather than widened here.
             is_nested_type = (
                 type_node is not None
                 and type_node.type in config.class_types
