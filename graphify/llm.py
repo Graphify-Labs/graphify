@@ -1036,6 +1036,12 @@ def _json_object_candidates(text: str) -> list[int]:
     model that narrates before answering — "Here's a thinking process: 1.
     **Analyze User Input:** …" with braces in the narration — does not have its
     real answer masked by the first brace in the text (#2882).
+
+    Known limit: each bucket is capped at ``_MAX_OBJECT_CANDIDATES`` from the
+    front, so a reply with more than that many *keyed* braces before the real
+    answer (a very verbose model that emits a ``{"nodes": …}`` sketch per file)
+    could drop the true answer's brace. This needs an implausibly chatty
+    preamble and is left as a known gap rather than complicating the scan.
     """
     preferred: list[int] = []
     rest: list[int] = []
@@ -1130,10 +1136,18 @@ def _parse_llm_json(raw: str) -> dict:
         if not isinstance(parsed, dict):
             continue
         if any(k in parsed for k in _FRAGMENT_KEYS):
-            if any(parsed.get(k) for k in _FRAGMENT_KEYS):
-                return _sanitize_fragment(parsed)
+            # Gate on the SANITIZED content, not the raw value. A reasoning
+            # sketch commonly lists ids as bare strings — `{"nodes": ["A", "B"]}`
+            # — whose arrays are truthy but hold no edge/node objects. Testing
+            # the raw value would let that sketch win and then sanitize down to
+            # empty, shadowing the real answer that follows and re-triggering the
+            # #2880 hollow-response bisection. Sanitizing first demotes it to the
+            # empty-fragment tier so the genuine fragment below still wins.
+            cand = _sanitize_fragment(parsed)
+            if any(cand.get(k) for k in _FRAGMENT_KEYS):
+                return cand
             if empty_fragment is None:
-                empty_fragment = parsed
+                empty_fragment = cand
         elif fallback is None:
             fallback = parsed
 

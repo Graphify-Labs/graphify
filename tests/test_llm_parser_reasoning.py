@@ -136,3 +136,30 @@ def test_empty_fragment_outranks_a_non_fragment_object():
     result = llm._parse_llm_json(raw)
     assert "description" not in result
     assert result["nodes"] == []
+
+
+def test_string_list_sketch_does_not_shadow_the_real_answer():
+    """A reasoning sketch that lists ids as bare strings (`{"nodes": ["A","B"]}`)
+    has truthy arrays but no node/edge objects. Gating on the raw value would let
+    it win and then sanitize to empty, shadowing the real fragment that follows
+    and re-triggering the #2880 hollow-response bisection. The sanitized-content
+    gate must demote the sketch and return the real answer."""
+    raw = (
+        "Planning the graph. First a rough sketch of what I will emit:\n"
+        '{"nodes": ["FileA", "FileB"], "edges": ["FileA->FileB"]}\n\n'
+        "Now the actual fragment:\n"
+        '{"nodes": [{"id": "a", "label": "A"}], '
+        '"edges": [{"source": "a", "target": "b"}], "hyperedges": []}'
+    )
+    result = llm._parse_llm_json(raw)
+    assert result["nodes"] == [{"id": "a", "label": "A"}], result
+    assert result["edges"] == [{"source": "a", "target": "b"}]
+
+
+def test_string_list_sketch_alone_sanitizes_to_empty():
+    """With no real answer following, a string-list sketch must not masquerade as
+    content: its non-dict entries are stripped, leaving an empty fragment (which
+    then reads as hollow downstream)."""
+    result = llm._parse_llm_json('{"nodes": ["FileA", "FileB"], "edges": ["x"]}')
+    assert result["nodes"] == []
+    assert result["edges"] == []
