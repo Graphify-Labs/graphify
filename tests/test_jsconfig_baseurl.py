@@ -191,3 +191,145 @@ def test_tsconfig_wins_when_both_configs_present(tmp_path):
     targets = _targets(r)
     assert _cid(tmp_path, ts_hit) in targets
     assert _cid(tmp_path, tmp_path / "js_root" / "mods" / "W.js") not in targets
+
+
+# --- TS 5.5 `${configDir}` template (#2340) ---------------------------------
+#
+# TS 5.5 allows the literal template `${configDir}` in `baseUrl` and `paths`
+# values; it expands to the directory of the ORIGINATING config in the
+# `extends` chain (the file passed to tsc), not the file that declares the
+# option. Un-substituted, the literal token landed in the joined path and the
+# result could never exist on disk, so aliased imports silently dropped.
+
+def test_config_dir_token_in_baseurl_and_paths_resolves(tmp_path):
+    _write(tmp_path / "tsconfig.json",
+           '{\n  "compilerOptions": {\n'
+           '    "baseUrl": "${configDir}",\n'
+           '    "paths": { "@/*": ["${configDir}/src/*"] }\n'
+           '  }\n}\n')
+    helper = _write(tmp_path / "src" / "utils" / "helper.ts",
+                    "export const x = 1;\n")
+    f = _write(tmp_path / "main.ts",
+               "import { x } from '@/utils/helper';\nexport default x;\n")
+    r = extract([f], cache_root=tmp_path)
+    assert _cid(tmp_path, helper) in _targets(r)
+
+
+def test_config_dir_token_in_paths_without_baseurl(tmp_path):
+    _write(tmp_path / "tsconfig.json",
+           '{\n  "compilerOptions": {\n'
+           '    "paths": { "@/*": ["${configDir}/src/*"] }\n'
+           '  }\n}\n')
+    helper = _write(tmp_path / "src" / "utils" / "helper.ts",
+                    "export const x = 1;\n")
+    f = _write(tmp_path / "main.ts",
+               "import { x } from '@/utils/helper';\nexport default x;\n")
+    r = extract([f], cache_root=tmp_path)
+    assert _cid(tmp_path, helper) in _targets(r)
+
+
+def test_config_dir_token_in_baseurl_only(tmp_path):
+    # baseUrl alone (no paths) uses the fallback-root path (#2153); the token
+    # must still be substituted there.
+    _write(tmp_path / "tsconfig.json",
+           '{\n  "compilerOptions": {\n'
+           '    "baseUrl": "${configDir}/app/javascript"\n'
+           '  }\n}\n')
+    widget = _write(tmp_path / "app/javascript" / "mods" / "Widget.js",
+                    "export default function Widget() {}\n")
+    f = _write(tmp_path / "app/javascript" / "packs" / "dashboard.js",
+               "import Widget from 'mods/Widget.js';\nexport default Widget;\n")
+    r = extract([f], cache_root=tmp_path)
+    assert _cid(tmp_path, widget) in _targets(r)
+
+
+def test_config_dir_token_expands_to_originating_config_not_base(tmp_path):
+    # The spec-critical case: a BASE config (extended by a child) declares
+    # `paths` with `${configDir}`. It must expand to the CHILD's (originating)
+    # directory, not the base config's own directory.
+    base_dir = tmp_path / "base"
+    child_dir = tmp_path / "child"
+    _write(base_dir / "tsconfig.base.json",
+           '{\n  "compilerOptions": {\n'
+           '    "paths": { "@/*": ["${configDir}/src/*"] }\n'
+           '  }\n}\n')
+    _write(child_dir / "tsconfig.json",
+           '{\n  "extends": "../base/tsconfig.base.json",\n'
+           '  "compilerOptions": {}\n'
+           '}\n')
+    helper = _write(child_dir / "src" / "utils" / "helper.ts",
+                    "export const x = 1;\n")
+    # A file placed at the base dir's equivalent path must NOT be the target.
+    _write(base_dir / "src" / "utils" / "helper.ts", "export const x = 2;\n")
+    f = _write(child_dir / "main.ts",
+               "import { x } from '@/utils/helper';\nexport default x;\n")
+    r = extract([f], cache_root=tmp_path)
+    targets = _targets(r)
+    assert _cid(tmp_path, helper) in targets
+    assert _cid(tmp_path, base_dir / "src" / "utils" / "helper.ts") not in targets
+
+    # Also assert the directory explicitly at the alias-resolution level.
+    from graphify.extractors import resolution as r2
+    aliases = r2._load_tsconfig_aliases(child_dir)
+    assert aliases["@/*"] == [str(child_dir.resolve() / "src" / "*")]
+
+
+def test_no_config_dir_token_unchanged(tmp_path):
+    # Regression guard: configs without the token resolve exactly as before.
+    f = _rails_tree(tmp_path, "tsconfig.json",
+                    "import Widget from 'mods/Widget.js';\n"
+                    "export default Widget;\n")
+    r = extract([f], cache_root=tmp_path)
+    assert _widget(tmp_path) in _targets(r)
+
+
+def test_config_dir_token_jsconfig_variant(tmp_path):
+    _write(tmp_path / "jsconfig.json",
+           '{\n  "compilerOptions": {\n'
+           '    "baseUrl": "${configDir}",\n'
+           '    "paths": { "@/*": ["${configDir}/src/*"] }\n'
+           '  }\n}\n')
+    helper = _write(tmp_path / "src" / "utils" / "helper.js",
+                    "export const x = 1;\n")
+    f = _write(tmp_path / "main.js",
+               "import { x } from '@/utils/helper';\nexport default x;\n")
+    r = extract([f], cache_root=tmp_path)
+    assert _cid(tmp_path, helper) in _targets(r)
+
+
+def test_config_dir_token_with_dot_slash_prefix_variants(tmp_path):
+    # TS only gives the token meaning at the start of the value, and a "./" prefix
+    # in front of it must not survive into the substituted absolute path. Covers
+    # the doubled-slash form too, which an exact "./" check would miss (#2340).
+    _write(tmp_path / "tsconfig.json",
+           '{\n  "compilerOptions": {\n'
+           '    "baseUrl": "./${configDir}",\n'
+           '    "paths": { "@/*": [".//${configDir}/src/*"] }\n'
+           '  }\n}\n')
+    helper = _write(tmp_path / "src" / "utils" / "helper.js",
+                    "export const x = 1;\n")
+    f = _write(tmp_path / "main.js",
+               "import { x } from '@/utils/helper';\nexport default x;\n")
+    r = extract([f], cache_root=tmp_path)
+    assert _cid(tmp_path, helper) in _targets(r)
+
+
+def test_config_dir_token_mid_value_is_left_literal(tmp_path):
+    # tsc does not accept the token mid-path. Splicing it in would fabricate a
+    # nonsense path; leaving it literal keeps the pre-#2340 behavior (the alias
+    # simply does not resolve) rather than inventing a wrong edge. The sibling
+    # declared-relative alias in the same config must still resolve.
+    _write(tmp_path / "tsconfig.json",
+           '{\n  "compilerOptions": {\n'
+           '    "paths": {\n'
+           '      "@bad/*": ["packages/${configDir}/src/*"],\n'
+           '      "@ok/*": ["src/*"]\n'
+           '    }\n  }\n}\n')
+    helper = _write(tmp_path / "src" / "utils" / "helper.js",
+                    "export const x = 1;\n")
+    f = _write(tmp_path / "main.js",
+               "import { x } from '@bad/utils/helper';\n"
+               "import { y } from '@ok/utils/helper';\n"
+               "export default x;\n")
+    r = extract([f], cache_root=tmp_path)
+    assert _cid(tmp_path, helper) in _targets(r)
