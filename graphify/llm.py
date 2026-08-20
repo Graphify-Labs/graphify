@@ -439,8 +439,12 @@ def _resolve_max_retry_depth(default: int = 3) -> int:
     A chunk of N files can split into up to ``2**depth`` pieces, so this is the
     knob that bounds worst-case cost. It used to be a Python-API kwarg only,
     with no way for a `graphify extract` operator to lower it — or set it to 0 —
-    as a mitigation (#2880). Honour GRAPHIFY_MAX_RETRY_DEPTH; 0 disables
-    retries entirely.
+    as a mitigation (#2880). Honour GRAPHIFY_MAX_RETRY_DEPTH.
+
+    ``0`` means no retries of any kind: no bisection, and no same-chunk retry of
+    a hollow response either. It is set to cap spend, so it has to hold for
+    every retry path, not only the one it names — see
+    :func:`_extract_with_adaptive_retry`. One call per chunk, full stop.
     """
     raw = os.environ.get("GRAPHIFY_MAX_RETRY_DEPTH", "").strip()
     if raw:
@@ -2193,7 +2197,12 @@ def _extract_with_adaptive_retry(
         # Bounded by a fixed number of attempts, so one misbehaving backend
         # costs at most _HOLLOW_BACKOFF_S + 1 calls per chunk instead of the
         # 2**max_depth the bisection path used to spend (#2880).
-        for _delay in _HOLLOW_BACKOFF_S:
+        #
+        # max_depth=0 means "no retries", and an operator sets it to cap spend,
+        # so it has to hold for the hollow path too: one call per chunk, full
+        # stop. Bounding only the bisection depth would still let a misbehaving
+        # backend triple the call count of a run that asked for no retries.
+        for _delay in (_HOLLOW_BACKOFF_S if max_depth > 0 else ()):
             if result.get("finish_reason") != "hollow":
                 break
             print(
@@ -2262,9 +2271,10 @@ def _extract_with_adaptive_retry(
         # bisecting into a fan-out that cannot converge (#2880): the files are
         # marked partial so the next run re-dispatches them, and they are not
         # promoted to the semantic cache as authoritative.
+        _attempts = (len(_HOLLOW_BACKOFF_S) + 1) if max_depth > 0 else 1
         print(
             f"[graphify] chunk of {len(chunk)} still hollow after "
-            f"{len(_HOLLOW_BACKOFF_S) + 1} attempts — giving up on this chunk. "
+            f"{_attempts} attempt(s) — giving up on this chunk. "
             f"Its files are marked for re-extraction on the next run. A hollow "
             f"response usually means a rate limit, a transport hiccup, a refusal, "
             f"or a model that answered in prose rather than JSON.",
@@ -2387,9 +2397,11 @@ def extract_corpus_parallel(
           can lower it without a code change (#2880).
         - This is signal-driven: chunks too dense to fit in one response
           self-heal by splitting until they do, while well-sized chunks pay
-          no extra cost. Set `max_retry_depth=0` to disable retries.
+          no extra cost.
         - Hollow responses (HTTP 200, no usable content) are NOT bisected —
           the same chunk is retried with backoff, then fails loudly.
+        - `max_retry_depth=0` disables retries of BOTH kinds: no bisection
+          and no same-chunk hollow retry, so a chunk costs exactly one call.
 
     `on_chunk_done(idx, total, chunk_result)` fires once per chunk as it
     completes (in completion order, not submission order). `idx` is the

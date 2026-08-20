@@ -1399,6 +1399,68 @@ def test_adaptive_retry_recovers_a_transient_hollow_response(tmp_path, monkeypat
     assert not result.get("_partial_files")
 
 
+def test_max_retry_depth_zero_disables_hollow_retries_too(tmp_path, monkeypatch):
+    """#2880 review catch: `0` means no retries of ANY kind.
+
+    Bounding only the bisection depth still let a misbehaving backend triple
+    the call count of a run whose operator had explicitly asked for no retries,
+    which is the opposite of what the knob is set for.
+    """
+    monkeypatch.setattr(llm, "_HOLLOW_BACKOFF_S", (0.0, 0.0))
+    files = [tmp_path / f"f{i}.md" for i in range(4)]
+    for f in files:
+        f.write_text("hello")
+
+    calls = {"n": 0}
+
+    def fake_extract(chunk, *_, **__):
+        calls["n"] += 1
+        return {
+            "nodes": [], "edges": [], "hyperedges": [],
+            "input_tokens": 100, "output_tokens": 0,
+            "model": "m", "finish_reason": "hollow",
+        }
+
+    with patch("graphify.llm.extract_files_direct", side_effect=fake_extract):
+        result = llm._extract_with_adaptive_retry(
+            files, backend="ollama", api_key="ollama", model="qwen2.5-coder:7b",
+            root=tmp_path, max_depth=0,
+        )
+
+    assert calls["n"] == 1, "max_depth=0 must cost exactly one call per chunk"
+    # The chunk still fails loudly and its files are still re-dispatched next run.
+    assert sorted(Path(p).name for p in result["_partial_files"]) == [
+        "f0.md", "f1.md", "f2.md", "f3.md",
+    ]
+    assert result["finish_reason"] == "stop"
+
+
+def test_hollow_retries_still_run_at_the_default_depth(tmp_path, monkeypatch):
+    """Guard the other side: the cap must not silently disable the retry path."""
+    monkeypatch.setattr(llm, "_HOLLOW_BACKOFF_S", (0.0, 0.0))
+    files = [tmp_path / f"f{i}.md" for i in range(4)]
+    for f in files:
+        f.write_text("hello")
+
+    calls = {"n": 0}
+
+    def fake_extract(chunk, *_, **__):
+        calls["n"] += 1
+        return {
+            "nodes": [], "edges": [], "hyperedges": [],
+            "input_tokens": 100, "output_tokens": 0,
+            "model": "m", "finish_reason": "hollow",
+        }
+
+    with patch("graphify.llm.extract_files_direct", side_effect=fake_extract):
+        llm._extract_with_adaptive_retry(
+            files, backend="ollama", api_key="ollama", model="qwen2.5-coder:7b",
+            root=tmp_path, max_depth=3,
+        )
+
+    assert calls["n"] == 3
+
+
 def test_max_retry_depth_reads_the_env_var(monkeypatch):
     """#2880: max_retry_depth was a Python-API kwarg only, so a `graphify
     extract` operator had no way to lower it as a mitigation."""
