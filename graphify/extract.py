@@ -22,6 +22,7 @@ from .resolver_registry import (
     run_language_resolvers,
 )
 from .ruby_resolution import resolve_ruby_member_calls
+from .elixir_resolution import resolve_elixir_remote_calls
 from .pascal_resolution import resolve_pascal_inherited_calls
 
 # --- migrated to graphify/extractors/ (see graphify/extractors/MIGRATION.md) ---
@@ -3903,6 +3904,13 @@ register_language_resolver(
 # graphify.ruby_resolution; registered here as a second consumer of the framework.
 register_language_resolver(
     LanguageResolver("ruby_member_calls", frozenset({".rb", ".rake"}), resolve_ruby_member_calls)
+)
+# Elixir remote-call resolution (Module.function(), alias-aware). Opt-in via
+# GRAPHIFY_ELIXIR_REMOTE_CALLS=1 — ExUnit spec bodies contribute most of these
+# raw_calls, so the flag doubles as the spec-coverage switch. Lives in
+# graphify.elixir_resolution; registered here as a consumer of the framework.
+register_language_resolver(
+    LanguageResolver("elixir_remote_calls", frozenset({".ex", ".exs"}), resolve_elixir_remote_calls)
 )
 register_language_resolver(
     LanguageResolver("typescript_member_calls", frozenset({".ts", ".tsx", ".mts", ".cts", ".js", ".jsx"}), _resolve_typescript_member_calls)
