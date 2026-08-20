@@ -986,11 +986,85 @@ def _sanitize_fragment(parsed: dict) -> dict:
     return parsed
 
 
+# Keys that identify an extraction fragment. Used to tell the graph object
+# apart from a brace that merely appeared in the model's narration (#2882).
+_FRAGMENT_KEYS = ("nodes", "edges", "hyperedges")
+_FRAGMENT_KEY_TOKENS = tuple(f'"{k}"' for k in _FRAGMENT_KEYS)
+# Bound on how many `{` positions are probed, so a pathological response with
+# thousands of braces cannot turn recovery into a quadratic scan. Applied to
+# the likely and the unlikely candidate lists separately, so a wall of noise
+# braces cannot crowd out an answer that comes after it.
+_MAX_OBJECT_CANDIDATES = 64
+# Reasoning models (nemotron, deepseek-r1, qwq, …) emit their chain of thought
+# in a <think> block ahead of the answer. It is prose, and it routinely
+# contains braces, so it is removed before any brace scanning.
+_THINK_BLOCK_RE = re.compile(r"<(think|thinking|reasoning)>.*?</\1>", re.S | re.I)
+_FENCE_RE = re.compile(r"```[ \t]*([A-Za-z0-9_+-]*)[ \t]*\r?\n(.*?)```", re.S)
+
+
+def _balanced_object(text: str, start: int) -> str | None:
+    """Return the balanced ``{...}`` substring starting at ``start``, else None."""
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+    return None
+
+
+def _json_object_candidates(text: str) -> list[int]:
+    """Indices of ``{`` that plausibly start an extraction fragment.
+
+    Braces followed shortly by one of ``_FRAGMENT_KEYS`` are tried first, so a
+    model that narrates before answering — "Here's a thinking process: 1.
+    **Analyze User Input:** …" with braces in the narration — does not have its
+    real answer masked by the first brace in the text (#2882).
+    """
+    preferred: list[int] = []
+    rest: list[int] = []
+    idx = text.find("{")
+    while idx != -1:
+        bucket = (
+            preferred
+            if any(k in text[idx:idx + 200] for k in _FRAGMENT_KEY_TOKENS)
+            else rest
+        )
+        if len(bucket) < _MAX_OBJECT_CANDIDATES:
+            bucket.append(idx)
+        elif len(preferred) >= _MAX_OBJECT_CANDIDATES and len(rest) >= _MAX_OBJECT_CANDIDATES:
+            break
+        idx = text.find("{", idx + 1)
+    return preferred + rest
+
+
 def _parse_llm_json(raw: str) -> dict:
     """Strip optional markdown fences and parse JSON. Returns empty fragment on failure.
 
     Caps the input at `_LLM_JSON_MAX_BYTES` so a hostile or runaway model
     response cannot exhaust memory inside `json.loads` (F-016).
+
+    Recovery is deliberately layered, because plenty of models will not return
+    a bare JSON object no matter how the prompt is worded: they think out loud
+    first, wrap the answer in a fence, or do both (#2882). Each layer is tried
+    against the ORIGINAL text rather than a destructively rewritten copy, so a
+    fence appearing in the narration cannot truncate the real answer.
     """
     if len(raw) > _LLM_JSON_MAX_BYTES:
         print(
@@ -999,23 +1073,10 @@ def _parse_llm_json(raw: str) -> dict:
             file=sys.stderr,
         )
         return {"nodes": [], "edges": [], "hyperedges": []}
-    # Strategy 1: strip whitespace, then handle markdown fences anywhere in the
-    # text (not only at offset 0 — the original code only stripped fences when
-    # `raw.startswith("```")`, missing the common case where Claude prepends a
-    # preamble like "Here's the extracted entities:\n\n```json\n{...}\n```").
-    stripped = raw.strip()
-    fence_start = stripped.find("```")
-    if fence_start != -1:
-        after_fence = stripped[fence_start + 3 :]
-        # Optional language tag (json, JSON, javascript, etc.) up to newline.
-        nl = after_fence.find("\n")
-        if nl != -1 and after_fence[:nl].strip().lower() in {"json", "javascript", "js", ""}:
-            after_fence = after_fence[nl + 1 :]
-        fence_end = after_fence.rfind("```")
-        if fence_end != -1:
-            stripped = after_fence[:fence_end].strip()
-        else:
-            stripped = after_fence.strip()
+
+    stripped = _THINK_BLOCK_RE.sub(" ", raw).strip()
+
+    # Strategy 1: the whole response is the object.
     try:
         parsed = json.loads(stripped)
         if isinstance(parsed, dict):
@@ -1025,39 +1086,54 @@ def _parse_llm_json(raw: str) -> dict:
         # non-dict that callers will try to subscript (e.g. result["input_tokens"]).
     except json.JSONDecodeError:
         pass
-    # Strategy 2: extract the first balanced JSON object found anywhere in
-    # the text. Handles the case where Claude wraps the JSON in prose without
-    # any markdown fence ("The extracted graph is { ... }. Hope this helps!").
-    start = stripped.find("{")
-    if start != -1:
-        depth = 0
-        in_string = False
-        escape = False
-        for i in range(start, len(stripped)):
-            ch = stripped[i]
-            if escape:
-                escape = False
-                continue
-            if ch == "\\":
-                escape = True
-                continue
-            if ch == '"':
-                in_string = not in_string
-                continue
-            if in_string:
-                continue
-            if ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    try:
-                        parsed = json.loads(stripped[start : i + 1])
-                        if isinstance(parsed, dict):
-                            return _sanitize_fragment(parsed)
-                        break
-                    except json.JSONDecodeError:
-                        break
+
+    # An object that parses but carries none of the extraction keys is kept
+    # only as a last resort: reasoning-first models routinely restate the
+    # schema ({"description": "graph fragment"}) before answering, and the
+    # narration must never shadow the answer that follows it (#2882).
+    fallback: dict | None = None
+
+    def _consider(text: str) -> dict | None:
+        nonlocal fallback
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(parsed, dict):
+            return None
+        if any(k in parsed for k in _FRAGMENT_KEYS):
+            return _sanitize_fragment(parsed)
+        if fallback is None:
+            fallback = parsed
+        return None
+
+    # Strategy 2: a fenced block. Every fence is considered, not just the first
+    # one in the text — a reasoning preamble often opens a ```python or ```text
+    # block of its own before the answer's ```json block. JSON-tagged and
+    # untagged fences are tried first; a fence in another language is still
+    # tried, since models mislabel the tag.
+    blocks = _FENCE_RE.findall(stripped)
+    for _lang, body in sorted(blocks, key=lambda b: b[0].strip().lower() not in ("json", "")):
+        hit = _consider(body.strip())
+        if hit is not None:
+            return hit
+
+    # Strategy 3: extract a balanced JSON object from surrounding prose. Each
+    # plausible start is tried rather than only the first `{` in the text,
+    # because the narration that precedes the answer frequently contains braces
+    # of its own and giving up on the first failed candidate discarded chunks
+    # whose answer was sitting right there (#2882).
+    for start in _json_object_candidates(stripped):
+        blob = _balanced_object(stripped, start)
+        if blob is None:
+            continue
+        hit = _consider(blob)
+        if hit is not None:
+            return hit
+
+    if fallback is not None:
+        return _sanitize_fragment(fallback)
+
     print(
         f"[graphify] LLM returned invalid JSON, skipping chunk "
         f"(first 200 chars: {raw[:200]!r})",
