@@ -127,3 +127,38 @@ def test_no_dedup_conflicts_with_dedup_llm(monkeypatch, tmp_path, capsys):
     ])
     assert code == 2
     assert "mutually exclusive" in capsys.readouterr().err
+
+
+# ── graph-level behaviour (the invariant that makes --no-dedup safe) ─────────
+# The CLI tests above only prove the dedup=False kwarg reaches build/build_merge.
+# These prove what that kwarg actually does to the graph: fuzzy near-duplicates
+# are preserved, but exact-id collisions still collapse (a structural invariant
+# of the graph, not a dedup responsibility), so the flag cannot corrupt it.
+
+from graphify.build import build
+
+
+def test_no_dedup_preserves_fuzzy_near_duplicates_but_dedup_merges_them():
+    # "GraphExtractor" vs "Graph Extractor": a Jaro-Winkler >= 0.92 fuzzy pair
+    # (distinct ids, non-code so the _is_code skip does not apply).
+    extraction = {"nodes": [
+        {"id": "graphextractor", "label": "GraphExtractor", "source_file": "a.md"},
+        {"id": "graph_extractor", "label": "Graph Extractor", "source_file": "b.md"},
+    ], "edges": [], "hyperedges": []}
+
+    merged = build([extraction], dedup=True)
+    assert merged.number_of_nodes() == 1, "dedup=True should fuzzy-merge the pair"
+
+    kept = build([extraction], dedup=False)
+    assert kept.number_of_nodes() == 2, "dedup=False must preserve both near-duplicates"
+
+
+def test_no_dedup_still_collapses_exact_id_collisions():
+    # Two extractions emit the SAME id. NetworkX add_node collapses them
+    # regardless of dedup, so --no-dedup cannot produce duplicate-id corruption.
+    ext_a = {"nodes": [{"id": "pkg.foo", "label": "foo()", "source_file": "x.go"}],
+             "edges": [], "hyperedges": []}
+    ext_b = {"nodes": [{"id": "pkg.foo", "label": "foo()", "source_file": "x.go"}],
+             "edges": [], "hyperedges": []}
+    G = build([ext_a, ext_b], dedup=False)
+    assert [n for n in G.nodes] == ["pkg.foo"], "exact-id duplicates must still collapse to one node"
