@@ -2626,6 +2626,121 @@ def test_markdown_link_edges_resolve_to_real_nodes(tmp_path):
     assert len(index_refs) == 3, f"hub doc under-connected: {index_refs}"
 
 
+def _vault_extract(vault, paths):
+    """Serial extract() anchored at *vault*, returning (node_ids, ref_edges,
+    page-id lookup keyed by vault-relative posix path)."""
+    from graphify.extract import extract
+    res = extract(sorted(paths), cache_root=vault, root=vault, parallel=False)
+    node_ids = {n["id"] for n in res["nodes"]}
+    refs = [e for e in res["edges"] if e["relation"] == "references"]
+    by_sf = {n["source_file"]: n["id"] for n in res["nodes"]
+             if n.get("node_kind") == "page"}
+
+    def page_id(path):
+        return by_sf[path.relative_to(vault).as_posix()]
+
+    return node_ids, refs, page_id
+
+
+def test_markdown_wikilink_vault_fallback(tmp_path):
+    """A subfolder note's [[wikilink]] to a root-level doc resolves vault-wide
+    when sibling resolution misses, instead of silently dropping at build."""
+    vault = tmp_path / "vault"
+    (vault / "log").mkdir(parents=True)
+    (vault / "hub.md").write_text("# Hub\nContent.\n")
+    (vault / "log" / "entry.md").write_text("# Entry\nSee [[hub]].\n")
+    node_ids, refs, page_id = _vault_extract(
+        vault, [vault / "hub.md", vault / "log" / "entry.md"])
+    entry_id = page_id(vault / "log" / "entry.md")
+    hub_id = page_id(vault / "hub.md")
+    assert any(e["source"] == entry_id and e["target"] == hub_id
+               for e in refs), f"vault link lost: {refs}"
+    for e in refs:
+        assert e["target"] in node_ids, f"link target is a ghost node: {e}"
+
+
+def test_markdown_wikilink_fallback_path_qualified(tmp_path):
+    """[[folder/name]] from a subfolder matches on the full segment suffix."""
+    vault = tmp_path / "vault"
+    (vault / "log").mkdir(parents=True)
+    (vault / "Materials").mkdir()
+    (vault / "Materials" / "ref.md").write_text("# Ref\n")
+    (vault / "log" / "entry.md").write_text("See [[Materials/ref]].\n")
+    _, refs, page_id = _vault_extract(
+        vault, [vault / "Materials" / "ref.md", vault / "log" / "entry.md"])
+    assert any(e["target"] == page_id(vault / "Materials" / "ref.md")
+               for e in refs), f"path-qualified vault link lost: {refs}"
+
+
+def test_markdown_wikilink_fallback_root_wins(tmp_path):
+    """On a bare-name collision the shallowest match wins — Obsidian resolves
+    a bare wikilink to the root-level file over a same-named subfolder file."""
+    vault = tmp_path / "vault"
+    (vault / "log").mkdir(parents=True)
+    (vault / "sub").mkdir()
+    (vault / "hub.md").write_text("# Root hub\n")
+    (vault / "sub" / "hub.md").write_text("# Sub hub\n")
+    (vault / "log" / "entry.md").write_text("See [[hub]].\n")
+    _, refs, page_id = _vault_extract(
+        vault, [vault / "hub.md", vault / "sub" / "hub.md",
+                vault / "log" / "entry.md"])
+    entry_id = page_id(vault / "log" / "entry.md")
+    targets = {e["target"] for e in refs if e["source"] == entry_id}
+    assert targets == {page_id(vault / "hub.md")}, (
+        f"expected the root-level hub only, got {targets}")
+
+
+def test_markdown_wikilink_sibling_still_wins(tmp_path):
+    """An existing sibling target keeps lexical resolution — the fallback only
+    fires when the resolved path is missing, so #1376 behavior is unchanged."""
+    vault = tmp_path / "vault"
+    (vault / "sub").mkdir(parents=True)
+    (vault / "hub.md").write_text("# Root hub\n")
+    (vault / "sub" / "hub.md").write_text("# Sub hub\n")
+    (vault / "sub" / "entry.md").write_text("See [[hub]].\n")
+    _, refs, page_id = _vault_extract(
+        vault, [vault / "hub.md", vault / "sub" / "hub.md",
+                vault / "sub" / "entry.md"])
+    entry_id = page_id(vault / "sub" / "entry.md")
+    targets = {e["target"] for e in refs if e["source"] == entry_id}
+    assert targets == {page_id(vault / "sub" / "hub.md")}, (
+        f"sibling must shadow the vault-wide match, got {targets}")
+
+
+def test_markdown_inline_link_keeps_relative_semantics(tmp_path):
+    """Inline [text](missing.md) links get no vault fallback: a missing
+    relative target stays dangling exactly as before."""
+    vault = tmp_path / "vault"
+    (vault / "log").mkdir(parents=True)
+    (vault / "hub.md").write_text("# Hub\n")
+    (vault / "log" / "entry.md").write_text("See [hub](hub.md).\n")
+    node_ids, refs, page_id = _vault_extract(
+        vault, [vault / "hub.md", vault / "log" / "entry.md"])
+    entry_id = page_id(vault / "log" / "entry.md")
+    entry_refs = [e for e in refs if e["source"] == entry_id]
+    for e in entry_refs:
+        assert e["target"] != page_id(vault / "hub.md"), (
+            f"inline link must not resolve vault-wide: {e}")
+
+
+def test_markdown_wikilink_fallback_unicode_normalization(tmp_path):
+    """A wikilink typed in NFD finds a file named in NFC (and spaces survive):
+    filesystems disagree on Unicode normalization, the index must not."""
+    import unicodedata
+    vault = tmp_path / "vault"
+    (vault / "log").mkdir(parents=True)
+    name_nfc = unicodedata.normalize("NFC", "어휘 노트")
+    (vault / f"{name_nfc}.md").write_text("# Term\n")
+    name_nfd = unicodedata.normalize("NFD", name_nfc)
+    (vault / "log" / "entry.md").write_text(f"See [[{name_nfd}]].\n")
+    _, refs, page_id = _vault_extract(
+        vault, [vault / f"{name_nfc}.md", vault / "log" / "entry.md"])
+    entry_id = page_id(vault / "log" / "entry.md")
+    target_id = page_id(vault / f"{name_nfc}.md")
+    assert any(e["source"] == entry_id and e["target"] == target_id
+               for e in refs), f"NFD wikilink missed the NFC file: {refs}"
+
+
 # ── Groovy ───────────────────────────────────────────────────────────────────
 
 

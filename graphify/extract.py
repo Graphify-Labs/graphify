@@ -46,7 +46,7 @@ from graphify.extractors.fortran import _cpp_preprocess, extract_fortran  # noqa
 from graphify.extractors.go import _GO_PREDECLARED_FUNCS, extract_go  # noqa: F401
 from graphify.extractors.json_config import extract_json  # noqa: F401
 from graphify.extractors.commonlisp import extract_commonlisp  # noqa: F401
-from graphify.extractors.markdown import extract_markdown  # noqa: F401
+from graphify.extractors.markdown import extract_markdown, _MD_LINK_INDEX_CACHE  # noqa: F401
 from graphify.extractors.ocaml import extract_ocaml  # noqa: F401
 from graphify.extractors.pascal_forms import extract_delphi_form, extract_lazarus_form  # noqa: F401
 from graphify.extractors.powershell import extract_powershell, extract_powershell_manifest  # noqa: F401
@@ -5426,6 +5426,7 @@ def extract(
     # Workspace package manifests/globs can change during watch or repeated extraction.
     _WORKSPACE_PACKAGE_CACHE.clear()
     _XAML_CSHARP_CLASS_CACHE.clear()
+    _MD_LINK_INDEX_CACHE.clear()
 
     # Infer a common root for cache keys (use first diverging segment, not sum of all matches)
     try:
