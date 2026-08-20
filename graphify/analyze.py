@@ -360,13 +360,21 @@ def _cross_community_surprises(
         top_edges = sorted(betweenness.items(), key=lambda x: x[1], reverse=True)[:top_n]
         result = []
         for (u, v), score in top_edges:
+            if G.is_directed() and not G.has_edge(u, v):
+                u, v = v, u
             data = edge_data(G, u, v)
+            src_id = data.get("_src", u)
+            if src_id not in G.nodes:
+                src_id = u
+            tgt_id = data.get("_tgt", v)
+            if tgt_id not in G.nodes:
+                tgt_id = v
             result.append({
-                "source": G.nodes[u].get("label", u),
-                "target": G.nodes[v].get("label", v),
+                "source": G.nodes[src_id].get("label", src_id),
+                "target": G.nodes[tgt_id].get("label", tgt_id),
                 "source_files": [
-                    G.nodes[u].get("source_file", ""),
-                    G.nodes[v].get("source_file", ""),
+                    G.nodes[src_id].get("source_file", ""),
+                    G.nodes[tgt_id].get("source_file", ""),
                 ],
                 "confidence": data.get("confidence", "EXTRACTED"),
                 "relation": data.get("relation", ""),
