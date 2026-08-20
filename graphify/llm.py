@@ -1392,8 +1392,11 @@ def _call_claude(api_key: str, model: str, user_message: str, max_tokens: int = 
     result["output_tokens"] = resp.usage.output_tokens if resp.usage else 0
     result["model"] = model
     # Normalise Anthropic's `stop_reason` to the OpenAI-compat `finish_reason`
-    # vocabulary so the adaptive-retry layer doesn't have to know which
-    # backend produced the result.
+    # vocabulary ("length" / "stop") so the adaptive-retry layer doesn't need
+    # to know which backend produced the result. `"hollow"` below is not part
+    # of that provider vocabulary — it's a graphify-internal sentinel applied
+    # uniformly across all 5 backends by the shared `_response_is_hollow`
+    # check, not something any backend's API returns.
     result["finish_reason"] = "length" if resp.stop_reason == "max_tokens" else "stop"
     if _response_is_hollow(raw_content, result) and result["finish_reason"] != "length":
         print(
