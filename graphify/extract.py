@@ -1999,11 +1999,15 @@ _CPP_CLI_SUFFIX_UNAMBIGUOUS_RE = re.compile(rb"(?<=[A-Za-z0-9_>])[\^%](?=\s*[,)\
 #    `List<int>^ items`, `DataTable^ t`, `int% n`. Qualified names, a closing
 #    generic bracket, .NET's PascalCase convention and the primitive value
 #    types are all type positions; requiring one keeps lowercase operands like
-#    `count% 2` and `hash^ mask` as arithmetic. The type is captured and
-#    re-emitted so the substitution stays byte-length preserving.
+#    `count% 2` and `hash^ mask` as arithmetic. A capitalized name must also
+#    carry a lowercase letter, so SCREAMING_CASE constants stay arithmetic
+#    too (`MASK^ value`); a lone capital is exempt for generic parameters
+#    (`T^ x`). The type is captured and re-emitted so the substitution stays
+#    byte-length preserving.
 _CPP_CLI_SUFFIX_DECL_RE = re.compile(
     rb"(\b[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)+"   # System::String
-    rb"|\b[A-Z][A-Za-z0-9_]*"                                    # String, DataTable, T
+    rb"|\b[A-Z][A-Za-z0-9_]*[a-z][A-Za-z0-9_]*"                   # String, DataTable
+    rb"|\b[A-Z](?=[\^%])"                                        # T
     rb"|\b(?:bool|char|wchar_t|short|int|long|float|double|unsigned|signed)"
     rb"|>)"                                                      # List<int>^
     rb"[\^%](?=\s+[A-Za-z_])"

@@ -189,6 +189,36 @@ def test_attached_arithmetic_is_not_mistaken_for_a_handle(tmp_path):
     assert b"return hash^ mask;" in out
 
 
+def test_screaming_case_constants_stay_arithmetic(tmp_path):
+    """`MASK^ value` is XOR against a constant, not a `MASK^` handle.
+
+    SCREAMING_CASE is the macro/constant convention and never a .NET type
+    name, so a capitalized left side must also carry a lowercase letter. A
+    lone capital stays a type position for generic parameters (`T^ x`).
+    """
+    p = tmp_path / "consts.h"
+    p.write_text(
+        '''namespace N {
+    public ref class Hasher
+    {
+    public:
+        static int Fold(int value) { return MASK^ value; }
+        static int Trim(int value) { return LIMIT% value; }
+        static System::Object^ Box(T^ item) { return gcnew System::Object(); }
+    };
+}
+'''
+    )
+    out = _normalize_cpp_cli(p.read_bytes())
+    assert b"return MASK^ value;" in out
+    assert b"return LIMIT% value;" in out
+    assert b"System::Object  Box(T  item)" in out
+
+    result = extract_cpp(p)
+    assert result.get("parse_errors") is None
+    assert ".Fold()" in _labels(p)
+
+
 @pytest.mark.parametrize("expr", [
     b"int m = a% b;",
     b"int x = hash^ mask;",
