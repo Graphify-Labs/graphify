@@ -42,6 +42,13 @@ def test_resolver_runs_only_when_suffix_present() -> None:
     assert log == ["ruby"]  # go skipped: no .go file present
 
 
+def test_resolver_accepts_mixed_case_suffix() -> None:
+    log: list[str] = []
+    resolvers = [_make_resolver("kotlin", ".kt", log)]
+    run_language_resolvers([Path("Caller.KT")], [], [], [], resolvers=resolvers)
+    assert log == ["kotlin"]
+
+
 def test_resolvers_run_in_given_order() -> None:
     log: list[str] = []
     resolvers = [_make_resolver("first", ".rb", log), _make_resolver("second", ".rb", log)]

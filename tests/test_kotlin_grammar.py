@@ -102,6 +102,18 @@ def test_kotlin_imports_resolve_to_real_nodes(tmp_path):
         assert e["target"] in node_ids, f"import target {e['target']} dangles"
 
 
+def test_kotlin_imports_resolve_from_mixed_case_source_suffix(tmp_path):
+    corpus = dict(_IMPORT_CORPUS)
+    corpus["app/Main.KT"] = corpus.pop("app/Main.kt")
+    result = _extract(tmp_path, corpus)
+    main_file = _find(result, "Main.KT")
+    money = _find(result, "Money")
+    ledger = _find(result, "Ledger")
+    imports = _edges(result, "imports")
+    assert (main_file, money) in imports
+    assert (main_file, ledger) in imports
+
+
 def test_kotlin_import_evidence_promotes_calls_to_extracted(tmp_path):
     r = _extract(tmp_path, _IMPORT_CORPUS)
     main_fn = _find(r, "main()")

@@ -75,7 +75,11 @@ def run_language_resolvers(
     exercise the driver in isolation.
     """
     active = _REGISTRY if resolvers is None else resolvers
-    suffixes_present = {p.suffix for p in paths}
+    suffixes_present = {
+        suffix
+        for path in paths
+        for suffix in (path.suffix, path.suffix.lower())
+    }
     for resolver in active:
         if not (resolver.suffixes & suffixes_present):
             continue
