@@ -778,6 +778,7 @@ graphify --version                                    # print installed version
 graphify watch ./src
 graphify check-update ./src
 graphify update ./src
+graphify update ./my-workspace --semantic --backend kimi  # refresh changed code + documents, then regenerate report/community outputs
 graphify update ./src --no-cluster  # skip reclustering, write raw AST graph only
 graphify update ./src --force       # overwrite even if new graph has fewer nodes
 graphify cluster-only ./my-project
@@ -791,6 +792,14 @@ graphify cluster-only ./my-project --backend=gemini --model gemini-2.5-pro  # sp
 graphify label ./my-project                                    # (re)name communities with the configured backend
 graphify label ./my-project --backend=openai --model gpt-4o   # force a specific backend and model
 ```
+
+Use `graphify update <path> --semantic` for a mixed code/document corpus when
+you want one incremental command to finish the whole pipeline. It reuses the
+semantic cache, prunes replaced or deleted sources, and regenerates
+`graph.json`, community labels, and `GRAPH_REPORT.md`. Changed documents use
+the selected LLM backend and may incur API cost; plain `graphify update` stays
+AST-only and makes no LLM calls. `--semantic` cannot be combined with
+`--code-only` or `--no-cluster`.
 
 > **Community names:** inside an agent (Claude Code, Gemini CLI) the agent names communities itself. When you run the bare CLI, `cluster-only` auto-names them with the configured backend (built-in or custom OpenAI-compatible provider) — pass `--no-label` to keep `Community N`, or run `graphify label` to (re)generate names on demand.
 
