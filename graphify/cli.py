@@ -2889,7 +2889,7 @@ def dispatch_command(cmd: str) -> None:
             print(
                 "Usage: graphify extract <path> [--backend gemini|kimi|claude|openai|deepseek|ollama] "
                 "[--model M] [--mode deep] [--out DIR|--output DIR] [--google-workspace] [--no-cluster] "
-                "[--no-gitignore] [--code-only] [--no-dedup] "
+                "[--no-gitignore] [--code-only] [--no-dedup] [--no-sql-links] "
                 "[--max-workers N] [--token-budget N] [--max-concurrency N] "
                 "[--api-timeout S] [--postgres DSN] [--cargo] [--allow-partial] [--timing]",
                 file=sys.stderr,
@@ -2915,6 +2915,12 @@ def dispatch_command(cmd: str) -> None:
         cli_allow_partial: bool = False
         no_cluster = False
         dedup_llm = False
+        # --no-sql-links: skip the pass that links SQL tables to the code whose
+        # queries name them (#2884). On by default, like every other language
+        # resolver, because a schema that is invisible to the graph is the
+        # problem it exists to fix; an ORM-based repo names tables via model
+        # classes and gets little from it.
+        no_sql_links = False
         # --no-dedup: skip entity deduplication entirely. On an incremental
         # merge the fuzzy pass runs over the COMBINED node set (existing graph +
         # new chunk), so a small diff merged into a large graph can collapse
@@ -2990,6 +2996,8 @@ def dispatch_command(cmd: str) -> None:
                 no_cluster = True; i += 1
             elif a == "--dedup-llm":
                 dedup_llm = True; i += 1
+            elif a == "--no-sql-links":
+                no_sql_links = True; i += 1
             elif a == "--no-dedup":
                 no_dedup = True; i += 1
             elif a == "--code-only":
@@ -3078,6 +3086,11 @@ def dispatch_command(cmd: str) -> None:
             os.environ["GRAPHIFY_API_TIMEOUT"] = str(cli_api_timeout)
         if cli_max_workers is not None:
             os.environ["GRAPHIFY_MAX_WORKERS"] = str(cli_max_workers)
+        # Same bridge as --api-timeout above: the SQL resolver runs inside
+        # extract() with no access to CLI args, so the flag sets the env var
+        # it already reads. The flag wins; the env var alone still works.
+        if no_sql_links:
+            os.environ["GRAPHIFY_NO_SQL_LINKS"] = "1"
 
         # Resolve output dir. The user-facing contract is "<out>/graphify-out/"
         # so a fresh checkout writes graphify-out/ at the project root, matching

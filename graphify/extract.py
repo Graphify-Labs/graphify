@@ -22,6 +22,7 @@ from .resolver_registry import (
     run_language_resolvers,
 )
 from .ruby_resolution import resolve_ruby_member_calls
+from .sql_resolution import resolve_sql_table_references
 from .pascal_resolution import resolve_pascal_inherited_calls
 
 # --- migrated to graphify/extractors/ (see graphify/extractors/MIGRATION.md) ---
@@ -3953,6 +3954,13 @@ register_language_resolver(
     LanguageResolver(
         "kotlin_qualified_calls", frozenset({".kt", ".kts"}), _resolve_kotlin_qualified_calls
     )
+)
+# SQL <-> host-language linkage (#2884): a table declared in a .sql file gets a
+# `references` edge from every non-SQL source whose text names it in a SQL
+# keyword position. Lexical by necessity — the table name lives inside a string
+# literal the host grammar never looks into. Lives in graphify.sql_resolution.
+register_language_resolver(
+    LanguageResolver("sql_table_references", frozenset({".sql"}), resolve_sql_table_references)
 )
 
 
