@@ -191,6 +191,69 @@ def test_uppercase_receiver_fallback_respects_lexical_value_shadowing(
     )
 
 
+def test_nested_classifier_shadows_top_level_receiver_type(tmp_path: Path) -> None:
+    result = _extract(
+        tmp_path,
+        {
+            "Top.kt": (
+                "package demo\n"
+                "class Service {\n"
+                "    fun ping() {}\n"
+                "}\n"
+            ),
+            "Holder.kt": (
+                "package demo\n"
+                "class Holder {\n"
+                "    class Service {\n"
+                "        fun ping() {}\n"
+                "    }\n"
+                "    val instance = Service()\n"
+                "    fun caller() { instance.ping() }\n"
+                "}\n"
+            ),
+        },
+    )
+
+    caller = _find(result, ".caller()", "holder")
+    top_level_ping = _find(result, ".ping()", "top")
+    assert not any(
+        edge["source"] == caller and edge["target"] == top_level_ping
+        for edge in _call_edges(result)
+    )
+
+
+def test_initializer_owner_facts_do_not_cross_same_named_nested_types(
+    tmp_path: Path,
+) -> None:
+    result = _extract(
+        tmp_path,
+        {
+            "Owners.kt": (
+                "class Other\n"
+                "class Decoy { fun ping() {} }\n"
+                "class OuterA {\n"
+                "    class Inner(private val other: Other) {\n"
+                "        val Service = other\n"
+                "        val initialized = Service.ping()\n"
+                "    }\n"
+                "}\n"
+                "class OuterB {\n"
+                "    class Inner {\n"
+                "        val Service: Decoy = Decoy()\n"
+                "    }\n"
+                "}\n"
+            ),
+        },
+    )
+
+    inner = _find(result, "Inner", "owners")
+    decoy_ping = _find(result, ".ping()", "decoy")
+    assert not any(
+        edge["source"] == inner and edge["target"] == decoy_ping
+        for edge in _call_edges(result)
+    )
+
+
 def test_explicit_this_call_resolves_only_to_its_owner(tmp_path: Path) -> None:
     result = _extract(
         tmp_path,

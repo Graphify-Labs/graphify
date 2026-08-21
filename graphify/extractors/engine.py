@@ -978,6 +978,19 @@ def _kotlin_owner_return_types(owner_node, source: bytes) -> dict[str, str | Non
     return returns
 
 
+def _kotlin_initializer_owner_span(property_node, root_node) -> tuple[int, int]:
+    """Return the Kotlin file/class/object span that owns a property initializer."""
+    current = property_node.parent
+    while current is not None:
+        if current.type == "companion_object":
+            current = current.parent
+            continue
+        if current.type in ("class_declaration", "object_declaration"):
+            return current.start_byte, current.end_byte
+        current = current.parent
+    return root_node.start_byte, root_node.end_byte
+
+
 _KOTLIN_CONSTRUCTOR_TYPE_PREFIX = "@constructor:"
 
 
@@ -1075,6 +1088,12 @@ def _kotlin_receiver_types_by_body(
             if member.type == "property_declaration"
             for name in _kotlin_variable_names(member, source)
         }
+        owner_shadows.update(
+            name
+            for member in members
+            if member.type in ("class_declaration", "object_declaration")
+            if (name := _kotlin_declaration_name(member, source))
+        )
         if owner_node.type != "source_file":
             constructor = next(
                 (
@@ -3406,8 +3425,7 @@ def _extract_generic(
     # #1356: call expressions in property/field initializers (e.g.
     # `let vm = VM()`) live outside function bodies, so the call-walk never
     # reaches them. Collect (owner_nid, call_node) here and walk them too.
-    initializer_nodes: list[tuple[str, object]] = []
-    kotlin_owner_nids: dict[tuple[int, int], str] = {}
+    initializer_nodes: list[tuple[str, object, tuple[int, int] | None]] = []
     # Ruby include/extend/prepend mixins collected during the node walk (#1668),
     # merged into raw_calls after the call-walk populates it (raw_calls does not
     # exist yet while walk() runs). Resolved cross-file by the Ruby resolver.
@@ -3509,8 +3527,6 @@ def _extract_generic(
 
     file_nid = _make_id(str(path))
     add_node(file_nid, path.name, 1)
-    if config.ts_module == "tree_sitter_kotlin":
-        kotlin_owner_nids[(root.start_byte, root.end_byte)] = file_nid
 
     def walk(node, parent_class_nid: str | None = None) -> None:
         t = node.type
@@ -3570,8 +3586,6 @@ def _extract_generic(
                 ruby_segments = class_name.split("::")
                 class_name = "::".join(ruby_namespace + ruby_segments)
             class_nid = _make_id(stem, ".".join(namespace_stack), class_name)
-            if config.ts_module == "tree_sitter_kotlin":
-                kotlin_owner_nids[(node.start_byte, node.end_byte)] = class_nid
             line = node.start_point[0] + 1
             metadata = None
             if config.ts_module == "tree_sitter_c_sharp":
@@ -4388,17 +4402,18 @@ def _extract_generic(
             # the `=`, so post-`=` named children are only the initializer.
             # Top-level properties attribute to the file node.
             owner_nid = parent_class_nid or file_nid
+            owner_span = _kotlin_initializer_owner_span(node, root)
             seen_eq = False
             for child in node.children:
                 if not child.is_named:
                     seen_eq = seen_eq or child.type == "="
                     continue
                 if seen_eq:                              # `= expr` initializer
-                    initializer_nodes.append((owner_nid, child))
+                    initializer_nodes.append((owner_nid, child, owner_span))
                 elif child.type == "property_delegate":  # `by lazy { ... }` / any delegate
                     for sub in child.children:
                         if sub.is_named:
-                            initializer_nodes.append((owner_nid, sub))
+                            initializer_nodes.append((owner_nid, sub, owner_span))
             return
 
         if (config.ts_module == "tree_sitter_swift"
@@ -4424,7 +4439,7 @@ def _extract_generic(
             pending_factory: tuple[str, str] | None = None
             for child in node.children:
                 if child.type in config.call_types:
-                    initializer_nodes.append((parent_class_nid, child))
+                    initializer_nodes.append((parent_class_nid, child, None))
                     if prop_type is None:
                         ctor = _swift_constructor_type(child, source)
                         if ctor is not None:
@@ -5289,13 +5304,9 @@ def _extract_generic(
         kotlin_receiver_types, kotlin_owner_receiver_types = (
             _kotlin_receiver_types_by_body(root, source)
         )
-        kotlin_initializer_receiver_types = {
-            owner_nid: kotlin_owner_receiver_types.get(owner_span, {})
-            for owner_span, owner_nid in kotlin_owner_nids.items()
-        }
     else:
         kotlin_receiver_types = {}
-        kotlin_initializer_receiver_types = {}
+        kotlin_owner_receiver_types = {}
 
     def _emit_indirect_by_name(ident_name: str, loc_node, scope_nid: str,
                                context: str) -> None:
@@ -6239,11 +6250,11 @@ def _extract_generic(
     # #1356: walk property/field initializers (collected above). walk_calls
     # self-guards against re-entering function bodies and dedups via
     # seen_call_pairs, so a closure inside an initializer is not double-walked.
-    for owner_nid, init_node in initializer_nodes:
+    for owner_nid, init_node, owner_span in initializer_nodes:
         walk_calls(
             init_node,
             owner_nid,
-            kotlin_initializer_receiver_types.get(owner_nid),
+            kotlin_owner_receiver_types.get(owner_span) if owner_span else None,
         )
 
     # ── Event listener pass ───────────────────────────────────────────────────
