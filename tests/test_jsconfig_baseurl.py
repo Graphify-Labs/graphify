@@ -191,3 +191,63 @@ def test_tsconfig_wins_when_both_configs_present(tmp_path):
     targets = _targets(r)
     assert _cid(tmp_path, ts_hit) in targets
     assert _cid(tmp_path, tmp_path / "js_root" / "mods" / "W.js") not in targets
+
+
+# --- config edits must survive the per-process caches (#2917) ---------------
+#
+# `_TSCONFIG_ALIAS_CACHE` and `_TSCONFIG_BASEURL_CACHE` are keyed on the config
+# path with no mtime component. Every test above calls extract() exactly once
+# under its own tmp_path, so each gets a fresh cache key and the staleness never
+# shows. `graphify watch` and the MCP server are the opposite shape: one process,
+# one config path, many extract() calls — so an edit to compilerOptions was never
+# observed again for the life of the process. These two run extract() twice
+# against the SAME config path, which is the case that was unguarded.
+
+
+def test_edited_paths_alias_is_observed_by_a_later_extract(tmp_path):
+    """Editing `paths` mid-session must retarget the alias, not keep the old map."""
+    _write(tmp_path / "src" / "target.ts", "export function hit() { return 1; }\n")
+    _write(tmp_path / "lib" / "target.ts", "export function hit() { return 2; }\n")
+    importer = _write(tmp_path / "main.ts", "import { hit } from '@app/target';\nhit();\n")
+
+    def _run() -> set[str]:
+        return _targets(extract([importer], root=tmp_path))
+
+    _write(tmp_path / "tsconfig.json",
+           '{\n  "compilerOptions": {\n'
+           '    "baseUrl": ".",\n'
+           '    "paths": { "@app/*": ["src/*"] }\n'
+           '  }\n}\n')
+    assert _cid(tmp_path, tmp_path / "src" / "target.ts") in _run()
+
+    _write(tmp_path / "tsconfig.json",
+           '{\n  "compilerOptions": {\n'
+           '    "baseUrl": ".",\n'
+           '    "paths": { "@app/*": ["lib/*"] }\n'
+           '  }\n}\n')
+    second = _run()
+    assert _cid(tmp_path, tmp_path / "lib" / "target.ts") in second, (
+        "second extract() resolved @app/target through the alias map cached by the "
+        "first run, so the edited tsconfig was never read"
+    )
+    assert _cid(tmp_path, tmp_path / "src" / "target.ts") not in second
+
+
+def test_edited_baseurl_is_observed_by_a_later_extract(tmp_path):
+    """Same contract for the separately cached `baseUrl` root (#2153)."""
+    _write(tmp_path / "one" / "mods" / "Widget.js", "export default function Widget() {}\n")
+    _write(tmp_path / "two" / "mods" / "Widget.js", "export default function Widget() {}\n")
+    importer = _write(tmp_path / "packs" / "dashboard.js",
+                      "import Widget from 'mods/Widget.js';\nexport default Widget;\n")
+
+    def _run() -> set[str]:
+        return _targets(extract([importer], root=tmp_path))
+
+    _write(tmp_path / "jsconfig.json", '{\n  "compilerOptions": { "baseUrl": "one" }\n}\n')
+    assert _cid(tmp_path, tmp_path / "one" / "mods" / "Widget.js") in _run()
+
+    _write(tmp_path / "jsconfig.json", '{\n  "compilerOptions": { "baseUrl": "two" }\n}\n')
+    second = _run()
+    assert _cid(tmp_path, tmp_path / "two" / "mods" / "Widget.js") in second, (
+        "second extract() resolved through the baseUrl cached by the first run"
+    )
