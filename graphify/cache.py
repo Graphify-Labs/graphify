@@ -992,6 +992,22 @@ def load_cached(path: Path, root: Path = Path("."), kind: str = "ast",
         # across chunks without losing the truncated one (it stays partial).
         if not allow_partial and isinstance(result, dict) and result.get("partial"):
             return None
+        # An entry carrying edges but ZERO nodes is a model-omission artifact
+        # (#2927) that older versions cached keyed by content hash, replaying
+        # the empty node set forever — the file sat at 0 nodes while every
+        # edge pointing into it dangled. Treat it as a MISS so the file is
+        # re-dispatched and a complete extraction overwrites the poisoned key
+        # (self-healing, same mechanism as the ``partial`` check above).
+        # Hyperedge-only entries remain valid output (#1920). No
+        # ``allow_partial`` escape hatch here: a zero-node entry carries
+        # nothing worth merging onto a slice union.
+        if (
+            kind.startswith("semantic")
+            and isinstance(result, dict)
+            and not result.get("nodes")
+            and result.get("edges")
+        ):
+            return None
         if (
             kind.startswith("semantic")
             and isinstance(result, dict)
@@ -1329,6 +1345,13 @@ def save_semantic_cache(
     so the flag survives even when a caller (e.g. cli.py's final save) does not
     pass ``partial_source_files``.
 
+    A per-file result carrying edges but ZERO nodes is a model-omission
+    artifact (#2927): caching it keyed by content hash makes every later run a
+    hit, permanently freezing the file out of the graph while the console
+    claims "a re-run will retry them". Such groups are NOT written — the file
+    stays uncached and genuinely re-dispatches next run. Hyperedge-only
+    results remain valid output and cache normally (#1920).
+
     ``prompt`` is the extraction prompt that produced these results — text, or
     a Path to the prompt file. It stamps entries into the p{fingerprint}/
     namespace so a later run under a different prompt re-extracts rather than
@@ -1492,6 +1515,7 @@ def save_semantic_cache(
 
     saved = 0
     skipped_not_file = 0
+    edges_only_skips = 0
     for fpath, result in by_file.items():
         cache_path = source_path(fpath)
         p = resolved_source_path(fpath)
@@ -1528,6 +1552,17 @@ def save_semantic_cache(
                     }
             else:
                 _prev_partial = False
+            # Edges-but-no-nodes is a model-omission artifact (#2927): writing
+            # it keyed by content hash would make every later run a cache hit,
+            # permanently freezing the file out of the graph while the console
+            # claims "a re-run will retry them". Leave it uncached so the next
+            # run genuinely re-dispatches the file. Evaluated AFTER the merge
+            # so a multi-chunk file whose earlier slice produced nodes still
+            # accumulates (the union carries nodes), and hyperedge-only
+            # results stay cacheable (#1920).
+            if not result["nodes"] and result["edges"]:
+                edges_only_skips += 1
+                continue
             # A file is partial if the caller named it, any of its grouped items
             # carries the intrinsic ``_partial`` marker, OR the entry it merged
             # onto was already partial (an empty-parse truncation leaves a
@@ -1555,6 +1590,14 @@ def save_semantic_cache(
             "means ``root`` is anchored to the wrong directory (e.g. the --out "
             "directory instead of the corpus root). Pass the corpus directory as "
             "``root`` and the output directory as ``cache_root`` (#1991).",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    if edges_only_skips:
+        warnings.warn(
+            f"save_semantic_cache: {edges_only_skips} file(s) produced edges but no "
+            "nodes — the model omitted them from its response (#2927). Nothing was "
+            "cached for them, so the next run will re-dispatch and retry them.",
             RuntimeWarning,
             stacklevel=2,
         )

@@ -429,15 +429,43 @@ def test_stamped_manifest_files_normalizes_both_sides(tmp_path):
         "document": [str(fresh_doc), str(cached_doc), str(omitted_doc)],
     }
     sem_result = {
-        # fresh extraction: root-relative source_file
-        "nodes": [{"id": "n1", "source_file": "fresh.md"}],
-        # cache replay: absolute source_file (edge-only coverage counts too)
+        # fresh extraction: root-relative source_file; cache replay: absolute
+        "nodes": [
+            {"id": "n1", "source_file": "fresh.md"},
+            {"id": "n2", "source_file": str(cached_doc)},
+        ],
         "edges": [{"source": "a", "target": "b", "source_file": str(cached_doc)}],
     }
 
     out = _stamped_manifest_files(files_by_type, sem_result, tmp_path)
     assert out["code"] == [str(code)]
     assert out["document"] == [str(fresh_doc), str(cached_doc)]
+
+
+def test_stamped_manifest_files_drops_edges_only_docs(tmp_path):
+    """#2927: a doc attributed only edges (no nodes, no hyperedges) was
+    model-omitted from its response. Stamping it up-to-date froze it out of
+    every warm incremental run at 0 nodes; it must stay unstamped so
+    detect_incremental re-queues it, matching the cache-write skip."""
+    from graphify.cli import _stamped_manifest_files
+
+    edges_only_doc = tmp_path / "hub.md"; edges_only_doc.write_text("# hub")
+    node_doc = tmp_path / "ok.md"; node_doc.write_text("# ok")
+
+    files_by_type = {"document": [str(edges_only_doc), str(node_doc)]}
+    sem_result = {
+        "nodes": [{"id": "n1", "source_file": str(node_doc)}],
+        "edges": [
+            {"source": "a", "target": "b", "source_file": str(edges_only_doc)},
+        ],
+        "hyperedges": [],
+    }
+
+    out = _stamped_manifest_files(files_by_type, sem_result, tmp_path)
+    assert str(edges_only_doc) not in out["document"], (
+        "an edges-only doc must not be stamped (#2927)"
+    )
+    assert str(node_doc) in out["document"]
 
 
 def test_stamped_manifest_files_counts_hyperedge_only_docs(tmp_path):

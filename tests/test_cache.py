@@ -1749,3 +1749,123 @@ def test_corrupt_semantic_entry_warns_and_is_a_miss(tmp_path):
     # The corrupt entry is a miss, so the file is re-dispatched for extraction.
     assert nodes == []
     assert uncached == [str(f)]
+
+
+def test_save_semantic_cache_skips_edges_only_results(tmp_path):
+    """#2927: a dispatched file whose semantic result carries edges but ZERO
+    nodes is a model omission. Caching it keyed by content hash made every
+    later run a hit, permanently freezing the file out of the graph while the
+    console claimed "a re-run will retry them". The write must be skipped so
+    the file stays uncached and genuinely re-dispatches on the next run."""
+    from graphify.cache import check_semantic_cache, save_semantic_cache
+
+    f = tmp_path / "hub.md"
+    f.write_text("# Hub\n\nMost-referenced doc.\n")
+
+    with pytest.warns(RuntimeWarning, match="edges but no nodes"):
+        saved = save_semantic_cache(
+            [],
+            [{"source": "a", "target": "b", "source_file": "hub.md"}],
+            root=tmp_path,
+        )
+
+    assert saved == 0
+    # No entry was written for the content hash...
+    entry = cache_dir(tmp_path, "semantic") / f"{file_hash(f, tmp_path)}.json"
+    assert not entry.exists()
+    # ...so the next run reports the file as uncached (re-dispatch).
+    nodes, edges, _, uncached = check_semantic_cache([str(f)], root=tmp_path)
+    assert nodes == [] and edges == []
+    assert uncached == [str(f)]
+
+
+def test_save_semantic_cache_edges_only_merges_onto_node_entry(tmp_path):
+    """#2927 skip must not break multi-chunk accumulation: an edges-only slice
+    merging onto a prior entry that HAS nodes still saves the union. Only a
+    zero-node FINAL result is skipped."""
+    from graphify.cache import load_cached, save_semantic_cache
+
+    f = tmp_path / "big.md"
+    f.write_text("# Big\n\n" + "para\n" * 200)
+    save_semantic_cache([{"id": "n1", "source_file": "big.md"}], [], root=tmp_path)
+
+    saved = save_semantic_cache(
+        [],
+        [{"source": "n1", "target": "x", "source_file": "big.md"}],
+        root=tmp_path,
+        merge_existing=True,
+    )
+    assert saved == 1
+    loaded = load_cached(f, tmp_path, kind="semantic")
+    assert [n["id"] for n in loaded["nodes"]] == ["n1"]
+    assert [e["source"] for e in loaded["edges"]] == ["n1"]
+
+
+def test_save_semantic_cache_hyperedge_only_still_caches(tmp_path):
+    """#1920 must survive the #2927 fix: a hyperedge-only result is valid
+    output and caches normally."""
+    from graphify.cache import check_semantic_cache, save_semantic_cache
+
+    f = tmp_path / "hyper.md"
+    f.write_text("# Hyper\n")
+    hyper = {
+        "id": "h1", "label": "L", "nodes": ["a", "b", "c"],
+        "relation": "participate_in", "source_file": "hyper.md",
+    }
+    saved = save_semantic_cache([], [], [hyper], root=tmp_path)
+    assert saved == 1
+
+    nodes, _, hyperedges, uncached = check_semantic_cache([str(f)], root=tmp_path)
+    assert uncached == []
+    # Replay absolutizes source_file (#777); identity is the hyperedge id.
+    assert [h["id"] for h in hyperedges] == ["h1"]
+
+
+def test_edges_only_semantic_entry_is_a_miss_and_self_heals(tmp_path):
+    """#2927 healing: entries already poisoned by older versions (edges, no
+    nodes) must read as a MISS so the file re-dispatches and a complete
+    extraction overwrites the poisoned key. Hyperedge-only entries (#1920)
+    keep serving, and AST entries are untouched by the rule."""
+    from graphify.cache import check_semantic_cache, save_semantic_cache
+
+    f = tmp_path / "hub.md"
+    f.write_text("# Hub\n")
+    poison = {
+        "nodes": [],
+        "edges": [{"source": "a", "target": "b", "source_file": "hub.md"}],
+    }
+    save_cached(f, poison, tmp_path, kind="semantic")
+    assert load_cached(f, tmp_path, kind="semantic") is None
+
+    _, _, _, uncached = check_semantic_cache([str(f)], root=tmp_path)
+    assert uncached == [str(f)]
+
+    # Self-heal: a complete extraction overwrites the same content-hash key.
+    save_semantic_cache(
+        [{"id": "hub", "source_file": "hub.md"}],
+        [{"source": "a", "target": "hub", "source_file": "hub.md"}],
+        root=tmp_path,
+    )
+    loaded = load_cached(f, tmp_path, kind="semantic")
+    assert [n["id"] for n in loaded["nodes"]] == ["hub"]
+    _, _, _, uncached = check_semantic_cache([str(f)], root=tmp_path)
+    assert uncached == []
+
+    # Hyperedge-only entries remain valid output (#1920).
+    h = tmp_path / "hyper.md"
+    h.write_text("# Hyper\n")
+    save_cached(
+        h,
+        {"nodes": [], "edges": [], "hyperedges": [
+            {"id": "h1", "nodes": ["a", "b", "c"], "source_file": "hyper.md"},
+        ]},
+        tmp_path, kind="semantic",
+    )
+    served = load_cached(h, tmp_path, kind="semantic")
+    assert served is not None and served["hyperedges"]
+
+    # AST kind is outside the rule's scope.
+    a = tmp_path / "mod.py"
+    a.write_text("x = 1\n")
+    save_cached(a, {"nodes": [], "edges": []}, tmp_path, kind="ast")
+    assert load_cached(a, tmp_path, kind="ast") is not None

@@ -97,6 +97,15 @@ def _stamped_manifest_files(
     have no source_file entry in sem_result — leaving their semantic_hash
     empty so detect_incremental re-queues them (#933).
 
+    A file attributed only EDGES (no nodes, no hyperedges) did not really
+    produce output — the model omitted the file from its response (#2927).
+    Counting edge coverage as output stamped such a file up-to-date, so
+    detect_incremental never re-dispatched it and it stayed frozen at 0 nodes
+    even after the cache stopped serving the empty entry. Edges therefore do
+    not contribute to stamping; the file stays unstamped and is re-queued
+    next run (same #933 mechanism). Hyperedges still count (#1920); the
+    stamping condition mirrors save_semantic_cache's cache-write rule.
+
     A file in ``partial_source_files`` DID produce output this run, but only a
     truncated fragment of it, so it is excluded from stamping too — otherwise
     detect_incremental would see it "done" and never re-dispatch it, leaving the
@@ -133,7 +142,10 @@ def _stamped_manifest_files(
             return p
 
     sem_extracted: set[Path] = set()
-    for coll in ("nodes", "edges", "hyperedges"):
+    # Edges deliberately excluded (#2927) — see the docstring: edge-only
+    # attribution is the model-omission shape, and stamping it froze the file
+    # out of warm incremental runs. Nodes and hyperedges (#1920) count.
+    for coll in ("nodes", "hyperedges"):
         for item in sem_result.get(coll, []):
             sf = item.get("source_file", "")
             if sf:
