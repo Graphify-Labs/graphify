@@ -1749,3 +1749,131 @@ def test_corrupt_semantic_entry_warns_and_is_a_miss(tmp_path):
     # The corrupt entry is a miss, so the file is re-dispatched for extraction.
     assert nodes == []
     assert uncached == [str(f)]
+
+
+# --- #2927: zero-node semantic cache rejection and healing -------------------
+
+def test_edge_only_semantic_result_not_cached(tmp_path):
+    """#2927: an edge-only semantic result (0 nodes, 0 hyperedges) represents an
+    omission by the model and must NOT be written to cache, so subsequent runs
+    can re-dispatch and retry the file (#933/#1666)."""
+    from graphify.cache import check_semantic_cache, load_cached, save_semantic_cache
+
+    f = tmp_path / "doc.md"
+    f.write_text("# Architecture\nSome prose.\n", encoding="utf-8")
+    edges = [{"source": "auth_a", "target": "auth_b", "source_file": "doc.md"}]
+
+    saved = save_semantic_cache([], edges, root=tmp_path, prompt="PROMPT V1")
+    assert saved == 0, "edge-only result must not be saved to cache"
+
+    # load_cached must return None (miss)
+    assert load_cached(f, root=tmp_path, kind="semantic", prompt="PROMPT V1") is None
+    # check_semantic_cache must treat it as uncached
+    nodes, edges_out, hyper_out, uncached = check_semantic_cache([str(f)], root=tmp_path, prompt="PROMPT V1")
+    assert nodes == [] and edges_out == [] and hyper_out == []
+    assert uncached == [str(f)]
+
+
+def test_node_only_and_node_edge_semantic_results_cached(tmp_path):
+    """Normal extractions (nodes-only and nodes+edges) continue to cache normally."""
+    from graphify.cache import load_cached, save_semantic_cache
+
+    f1 = tmp_path / "doc1.md"
+    f1.write_text("# Doc 1\n", encoding="utf-8")
+    f2 = tmp_path / "doc2.md"
+    f2.write_text("# Doc 2\n", encoding="utf-8")
+
+    # Node-only
+    saved1 = save_semantic_cache([{"id": "n1", "source_file": "doc1.md"}], [], root=tmp_path, prompt="P")
+    assert saved1 == 1
+    loaded1 = load_cached(f1, root=tmp_path, kind="semantic", prompt="P")
+    assert loaded1 is not None and len(loaded1["nodes"]) == 1
+
+    # Node + edge
+    saved2 = save_semantic_cache(
+        [{"id": "n2", "source_file": "doc2.md"}],
+        [{"source": "n2", "target": "n2", "source_file": "doc2.md"}],
+        root=tmp_path,
+        prompt="P",
+    )
+    assert saved2 == 1
+    loaded2 = load_cached(f2, root=tmp_path, kind="semantic", prompt="P")
+    assert loaded2 is not None and len(loaded2["nodes"]) == 1 and len(loaded2["edges"]) == 1
+
+
+def test_hyperedge_only_semantic_result_cached(tmp_path):
+    """#1920: hyperedge-only documents are valid semantic output and must be cached."""
+    from graphify.cache import check_semantic_cache, load_cached, save_semantic_cache
+
+    f = tmp_path / "hyper.md"
+    f.write_text("# Pipeline Concept\n", encoding="utf-8")
+    hyperedges = [
+        {"id": "h1", "label": "Pipeline", "nodes": ["a", "b", "c"], "source_file": "hyper.md"}
+    ]
+
+    saved = save_semantic_cache([], [], hyperedges, root=tmp_path, prompt="PROMPT V1")
+    assert saved == 1, "hyperedge-only result must be saved to cache (#1920)"
+
+    loaded = load_cached(f, root=tmp_path, kind="semantic", prompt="PROMPT V1")
+    assert loaded is not None
+    assert len(loaded["hyperedges"]) == 1
+
+    _, _, cached_hyper, uncached = check_semantic_cache([str(f)], root=tmp_path, prompt="PROMPT V1")
+    assert uncached == []
+    assert len(cached_hyper) == 1
+
+
+def test_poisoned_edge_only_cache_entry_treated_as_miss(tmp_path):
+    """#2927 healing: a legacy on-disk cache entry containing edges but no nodes
+    or hyperedges must be rejected by load_cached as a cache MISS."""
+    import json
+    from graphify.cache import cache_dir, file_hash, load_cached, prompt_fingerprint
+
+    f = tmp_path / "poisoned.md"
+    f.write_text("# Poisoned\n", encoding="utf-8")
+
+    # Manually seed a legacy poisoned cache file (nodes: [], edges: [...])
+    prompt = "PROMPT V1"
+    fp = prompt_fingerprint(prompt)
+    cdir = cache_dir(tmp_path, "semantic", fp)
+    cdir.mkdir(parents=True, exist_ok=True)
+    h = file_hash(f, tmp_path)
+    (cdir / f"{h}.json").write_text(
+        json.dumps({
+            "nodes": [],
+            "edges": [{"source": "x", "target": "y", "source_file": "poisoned.md"}],
+            "hyperedges": [],
+        }),
+        encoding="utf-8",
+    )
+
+    # load_cached must reject the poisoned entry
+    assert load_cached(f, root=tmp_path, kind="semantic", prompt=prompt) is None
+
+
+def test_existing_hyperedge_only_cache_entry_remains_hit(tmp_path):
+    """#1920 / #2927: an existing on-disk cache entry with hyperedges but no nodes
+    remains a valid cache hit."""
+    import json
+    from graphify.cache import cache_dir, file_hash, load_cached, prompt_fingerprint
+
+    f = tmp_path / "valid_hyper.md"
+    f.write_text("# Hyper\n", encoding="utf-8")
+
+    prompt = "PROMPT V1"
+    fp = prompt_fingerprint(prompt)
+    cdir = cache_dir(tmp_path, "semantic", fp)
+    cdir.mkdir(parents=True, exist_ok=True)
+    h = file_hash(f, tmp_path)
+    (cdir / f"{h}.json").write_text(
+        json.dumps({
+            "nodes": [],
+            "edges": [],
+            "hyperedges": [{"id": "h1", "label": "Group", "nodes": ["a", "b", "c"], "source_file": "valid_hyper.md"}],
+        }),
+        encoding="utf-8",
+    )
+
+    loaded = load_cached(f, root=tmp_path, kind="semantic", prompt=prompt)
+    assert loaded is not None
+    assert len(loaded["hyperedges"]) == 1
