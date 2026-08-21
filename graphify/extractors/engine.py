@@ -2809,6 +2809,10 @@ def _extract_generic(
     try:
         parser = Parser(language)
         source = path.read_bytes() if source_override is None else source_override
+        if config.source_transform is not None:
+            # Per-language byte mask applied to whatever gets parsed — e.g.
+            # the TSX bare-``&``-in-JSX-text mask (#2922).
+            source = config.source_transform(source)
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:

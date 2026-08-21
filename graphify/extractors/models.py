@@ -53,6 +53,11 @@ class LanguageConfig:
     # Extra walk hook called after generic dispatch (for JS arrow functions, C# namespaces, etc.)
     extra_walk_fn: Callable | None = None
 
+    # Optional bytes transform applied to the source right before parsing
+    # (e.g. the TSX bare-``&`` JSX-text mask, #2922). Runs on the bytes that
+    # are actually parsed, after any ``source_override`` substitution.
+    source_transform: Callable[[bytes], bytes] | None = None
+
 @dataclass(frozen=True)
 class _SymbolDeclarationFact:
     file_path: Path
