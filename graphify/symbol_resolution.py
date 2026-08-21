@@ -206,15 +206,20 @@ def canonicalize_python_type_aliases(
     node_by_id = {
         str(node.get("id")): node for node in nodes if node.get("id")
     }
+    edges_by_source: dict[Path, list[dict[str, Any]]] = {}
+    for edge in edges:
+        edge_source = _resolved_source(edge.get("source_file"))
+        if edge_source is not None:
+            edges_by_source.setdefault(edge_source, []).append(edge)
     rewired_stub_ids: set[str] = set()
     for path in paths:
         if path.suffix.lower() not in {".py", ".pyw"}:
             continue
         imports = parse_python_import_aliases(path)
         source = _resolved_source(path)
-        for edge in edges:
-            if _resolved_source(edge.get("source_file")) != source:
-                continue
+        if source is None:
+            continue
+        for edge in edges_by_source.get(source, ()):
             stub = node_by_id.get(str(edge.get("target")))
             if not stub or stub.get("source_file"):
                 continue

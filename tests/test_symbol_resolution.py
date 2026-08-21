@@ -115,6 +115,52 @@ def test_canonicalize_python_type_aliases_rewires_imported_stub(tmp_path):
     assert all(node["id"] != "stub_orderfn" for node in nodes)
 
 
+def test_canonicalize_python_type_aliases_indexes_edges_by_source(
+    monkeypatch, tmp_path
+):
+    """A repository pass must resolve each edge source a bounded number of times."""
+    import graphify.symbol_resolution as sr
+
+    paths = []
+    nodes = []
+    edges = []
+    for index in range(12):
+        path = tmp_path / f"module_{index}.py"
+        path.write_text("VALUE = 1\n", encoding="utf-8")
+        paths.append(path)
+        nodes.append(
+            {
+                "id": f"module_{index}",
+                "label": path.name,
+                "file_type": "code",
+                "source_file": str(path),
+            }
+        )
+        for edge_index in range(10):
+            edges.append(
+                {
+                    "source": f"module_{index}",
+                    "target": f"external_{edge_index}",
+                    "relation": "references",
+                    "source_file": str(path),
+                }
+            )
+
+    original = sr._resolved_source
+    calls = 0
+
+    def counted(value):
+        nonlocal calls
+        calls += 1
+        return original(value)
+
+    monkeypatch.setattr(sr, "_resolved_source", counted)
+
+    canonicalize_python_type_aliases(paths, nodes, edges)
+
+    assert calls < 400
+
+
 def test_extract_canonicalizes_imported_python_type_alias(tmp_path):
     from graphify.extract import extract
 
