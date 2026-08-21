@@ -275,30 +275,59 @@ def generate(
             ]
 
     # --- Gaps section ---
-    from .analyze import _is_file_node, _is_concept_node
+    from .analyze import _is_file_node
+    from .gaps import GapCategory, classify_gap_node, gap_breakdown
 
-    isolated = [
-        n for n in G.nodes()
-        if G.degree(n) <= 1
-        and not _is_file_node(G, n)
-        and not _is_concept_node(G, n)
-        and G.nodes[n].get("file_type") != "rationale"
+    weak_nodes = [node_id for node_id in G.nodes() if G.degree(node_id) <= 1]
+    weak_breakdown = gap_breakdown(G, weak_nodes)
+    actionable_isolated = [
+        node_id
+        for node_id in weak_nodes
+        if classify_gap_node(G, node_id) is GapCategory.ACTIONABLE_LOCAL
     ]
     thin_communities = {
         cid: nodes for cid, nodes in communities.items()
-        if 0 < sum(1 for n in nodes if not _is_file_node(G, n)) < 3
+        if 0 < sum(1 for n in nodes if not _is_file_node(G, n)) < min_community_size
     }
-    gap_count = len(isolated) + len(thin_communities)
+    thin_breakdowns = {
+        cid: gap_breakdown(G, nodes)
+        for cid, nodes in thin_communities.items()
+    }
+    actionable_thin = {
+        cid: counts
+        for cid, counts in thin_breakdowns.items()
+        if counts[GapCategory.ACTIONABLE_LOCAL.value] > 0
+    }
+    benign_thin_count = len(thin_breakdowns) - len(actionable_thin)
 
-    if gap_count > 0 or amb_pct > 20:
+    if weak_nodes or thin_breakdowns or amb_pct > 20:
         lines += ["", "## Knowledge Gaps"]
-        if isolated:
-            isolated_labels = [G.nodes[n].get("label", n) for n in isolated[:5]]
-            suffix = f" (+{len(isolated)-5} more)" if len(isolated) > 5 else ""
-            lines.append(f"- **{len(isolated)} isolated node(s):** {', '.join(f'`{l}`' for l in isolated_labels)}{suffix}")
+        if actionable_isolated:
+            isolated_labels = [
+                G.nodes[node_id].get("label", node_id)
+                for node_id in actionable_isolated[:5]
+            ]
+            suffix = (
+                f" (+{len(actionable_isolated) - 5} more)"
+                if len(actionable_isolated) > 5
+                else ""
+            )
+            lines.append(
+                f"- **{len(actionable_isolated)} actionable isolated node(s):** "
+                f"{', '.join(f'`{label}`' for label in isolated_labels)}{suffix}"
+            )
             lines.append("  These have ≤1 connection - possible missing edges or undocumented components.")
-        if thin_communities:
-            lines.append(f"- **{len(thin_communities)} thin communities (<{min_community_size} nodes) omitted from report** — run `graphify query` to explore isolated nodes.")
+        lines.append(
+            "- **Benign weak-node breakdown:** "
+            f"external: {weak_breakdown['external']}, "
+            f"rationale: {weak_breakdown['rationale']}, "
+            f"metadata: {weak_breakdown['metadata']}, "
+            f"structural: {weak_breakdown['structural']}"
+        )
+        lines.append(
+            f"- **actionable thin communities: {len(actionable_thin)}**"
+        )
+        lines.append(f"- **benign thin communities: {benign_thin_count}**")
         if amb_pct > 20:
             lines.append(f"- **High ambiguity: {amb_pct}% of edges are AMBIGUOUS.** Review the Ambiguous Edges section above.")
 
