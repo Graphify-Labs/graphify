@@ -390,7 +390,7 @@ graphify export callflow-html      # Mermaid architecture/call-flow HTML (auto-r
 /graphify add https://arxiv.org/abs/1706.03762   # fetch a paper and add it
 /graphify add <youtube-url>                       # transcribe and add a video
 
-graphify hook install              # auto-rebuild on git commit
+graphify hook install              # auto-rebuild on git commit (AST; optional semantics)
 graphify merge-graphs a.json b.json              # combine two graphs
 
 graphify prs                       # PR dashboard: CI state, review status, worktree mapping
@@ -440,8 +440,24 @@ graphify-out/cost.json        # local only
 **Workflow:**
 1. One person runs `/graphify .` and commits `graphify-out/`.
 2. Everyone pulls — their assistant reads the graph immediately.
-3. Run `graphify hook install` to auto-rebuild after each commit (AST only, no API cost). This also sets up a git merge driver so `graph.json` is never left with conflict markers — two devs committing in parallel get their graphs union-merged automatically.
-4. When docs or papers change, run `/graphify --update` to refresh those nodes.
+3. Run `graphify hook install` to auto-rebuild after each commit (AST only, no API cost by default). This also sets up a git merge driver so `graph.json` is never left with conflict markers — two devs committing in parallel get their graphs union-merged automatically.
+4. To keep documents, papers, and images current without a manual step, opt the project into semantic updates:
+
+```ini
+# .graphifyrc
+semantic_update=on_commit
+semantic_backend=kimi
+semantic_env_file=.env.local
+# semantic_model=kimi-k2.6  # optional
+# semantic_google_workspace=true  # optional
+```
+
+The semantic worker runs detached after a commit, shares the graph rebuild lock,
+and coalesces overlapping commits. Failed or interrupted work stays queued for a
+later commit. The env file is parsed as data, never sourced as shell code; only
+credential variables for the selected backend are loaded, existing process
+credentials win, and endpoint variables are ignored. Keep that file untracked.
+Without `semantic_update=on_commit`, hooks remain AST-only and incur no LLM cost.
 
 ---
 

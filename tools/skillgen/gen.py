@@ -1142,6 +1142,25 @@ def _is_community_label_export_fix_line(line: str) -> bool:
     )
 
 
+def _is_semantic_commit_automation_doc_line(line: str) -> bool:
+    """Whether a monolith line documents opt-in semantic commit automation.
+
+    The old hook guidance required a manual doc/image refresh. The native
+    semantic update command now has an explicitly configured post-commit worker,
+    so the two legacy lines and the replacement safety/queueing guidance are an
+    intentional divergence from the frozen v8 monoliths.
+    """
+    return any(
+        marker in line
+        for marker in (
+            "Doc/image changes are ignored by the hook",
+            "This default path uses no LLM and has no API cost.",
+            "To update docs, papers, and images automatically",
+            "Optionally set `semantic_env_file`",
+        )
+    )
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -1163,6 +1182,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_uv_from_interpreter_fix_line,
     _is_semantic_cache_scope_fix_line,
     _is_community_label_export_fix_line,
+    _is_semantic_commit_automation_doc_line,
 )
 
 
