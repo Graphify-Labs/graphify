@@ -2988,6 +2988,65 @@ def _kotlin_package_name(root, source: bytes) -> str | None:
     return None
 
 
+def _kotlin_has_wildcard_import(root, source: bytes) -> bool:
+    """Whether a Kotlin source file imports any package with ``*``."""
+    for child in root.children:
+        if child.type not in ("import", "import_header"):
+            continue
+        path_node = child.child_by_field_name("path")
+        if path_node is None:
+            path_node = next(
+                (
+                    part
+                    for part in child.children
+                    if part.type == "qualified_identifier"
+                ),
+                None,
+            )
+        if path_node is not None:
+            raw = _read_text(path_node, source).strip()
+        else:
+            raw = next(
+                (
+                    _read_text(part, source).strip()
+                    for part in child.children
+                    if part.type in ("identifier", "simple_identifier")
+                ),
+                "",
+            )
+        is_wildcard = raw.endswith(".*") or any(
+            part.type == "*" for part in child.children
+        )
+        package = raw.removesuffix(".*").rstrip(".")
+        if is_wildcard and package:
+            return True
+    return False
+
+
+def _kotlin_relative_classifier_heads(root, source: bytes) -> set[str]:
+    """File-local classifier names that cannot be treated as package heads."""
+    names: set[str] = set()
+    stack = [root]
+    while stack:
+        current = stack.pop()
+        is_relative_classifier = (
+            current.type in ("type_alias", "companion_object")
+            or (
+                current.type in ("class_declaration", "object_declaration")
+                and current.parent is not None
+                and current.parent.type != "source_file"
+            )
+        )
+        if is_relative_classifier:
+            name = _kotlin_declaration_name(current, source)
+            if current.type == "companion_object" and not name:
+                name = "Companion"
+            if name:
+                names.add(name)
+        stack.extend(current.children)
+    return names
+
+
 def _kotlin_nav_identifier_segments(nav, source: bytes) -> list[str] | None:
     """Flatten a Kotlin ``navigation_expression`` chain into its dotted
     identifier segments (``com.example.Foo.bar`` -> [com, example, Foo, bar]).
@@ -6250,6 +6309,19 @@ def _extract_generic(
     if config.ts_module == "tree_sitter_kotlin":
         if kotlin_package:
             result["kotlin_package"] = kotlin_package
+        has_wildcard_import = _kotlin_has_wildcard_import(root, source)
+        relative_classifier_heads = _kotlin_relative_classifier_heads(root, source)
+        for call in raw_calls:
+            if call.get("lang") != "kotlin":
+                continue
+            if has_wildcard_import:
+                call["kotlin_has_wildcard_import"] = True
+            receiver_type = str(call.get("receiver_type") or "")
+            if (
+                "." in receiver_type
+                and receiver_type.partition(".")[0] in relative_classifier_heads
+            ):
+                call["kotlin_has_relative_classifier_head"] = True
         top_level_types = {
             edge["target"]
             for edge in clean_edges
@@ -6273,6 +6345,14 @@ def _extract_generic(
                 if (name := _kotlin_declaration_name(declaration, source))
             }
         )
+        top_level_type_alias_fqns = sorted(
+            {
+                f"{kotlin_package}.{name}" if kotlin_package else name
+                for declaration in root.children
+                if declaration.type == "type_alias"
+                if (name := _kotlin_declaration_name(declaration, source))
+            }
+        )
         node_by_id = {item["id"]: item for item in nodes}
         member_symbol_inventory = [
             f"type:{item['_kotlin_fqn']}"
@@ -6291,6 +6371,9 @@ def _extract_generic(
                 member_symbol_inventory.append(f"method:{owner}#{method_name}")
         member_symbol_inventory.extend(
             f"function:{fqn}" for fqn in top_level_function_fqns
+        )
+        member_symbol_inventory.extend(
+            f"typealias:{fqn}" for fqn in top_level_type_alias_fqns
         )
         has_member_call_dependencies = any(
             call.get("lang") == "kotlin"

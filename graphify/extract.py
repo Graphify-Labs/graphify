@@ -4117,6 +4117,7 @@ def _resolve_kotlin_member_calls(
     node_by_id = {node.get("id"): node for node in all_nodes}
     types_by_fqn: dict[str, list[str]] = {}
     functions_by_fqn: dict[str, list[str]] = {}
+    type_alias_fqns: set[str] = set()
     for node in all_nodes:
         node_id = node.get("id")
         if not node_id:
@@ -4126,6 +4127,9 @@ def _resolve_kotlin_member_calls(
             types_by_fqn.setdefault(str(type_fqn), []).append(node_id)
         for function_fqn in node.get("_kotlin_top_level_function_fqns") or ():
             functions_by_fqn.setdefault(str(function_fqn), []).append(node_id)
+        for symbol in node.get("_kotlin_member_symbol_inventory") or ():
+            if str(symbol).startswith("typealias:"):
+                type_alias_fqns.add(str(symbol).removeprefix("typealias:"))
 
     methods: dict[tuple[str, str], list[str]] = {}
     imports_by_file: dict[str, dict[str, set[str]]] = {}
@@ -4157,16 +4161,27 @@ def _resolve_kotlin_member_calls(
     existing_pairs = {(edge.get("source"), edge.get("target")) for edge in all_edges}
 
     def visible_type_fqns(
-        type_name: str, source_file: str, package: str
+        type_name: str,
+        source_file: str,
+        package: str,
+        has_relative_head: bool,
     ) -> set[str]:
         if "." in type_name:
             head = type_name.partition(".")[0]
             imported_heads = imports_by_file.get(source_file, {})
             package_head = f"{package}.{head}" if package else head
-            if head in imported_heads or types_by_fqn.get(package_head):
+            if (
+                head[:1].isupper()
+                or has_relative_head
+                or head in imported_heads
+                or types_by_fqn.get(package_head)
+                or package_head in type_alias_fqns
+            ):
                 # `Outer.Inner` can qualify an imported or same-package class,
-                # not an absolute package. Nested types are not inventoried yet,
-                # so accepting the spelling as an FQN could bind a package decoy.
+                # a class supplied by a wildcard import, or a lexically nested
+                # classifier (including Kotlin/JVM implicit imports), not an
+                # absolute package. Nested types are not inventoried yet, so
+                # accepting the spelling as an FQN could bind a package decoy.
                 return set()
             return {type_name}
         imported = imports_by_file.get(source_file, {}).get(type_name)
@@ -4178,7 +4193,15 @@ def _resolve_kotlin_member_calls(
         source_file = str(call.get("source_file", ""))
         receiver_type = str(call["receiver_type"])
         package = str(call.get("kotlin_package", ""))
-        candidate_fqns = visible_type_fqns(receiver_type, source_file, package)
+        candidate_fqns = visible_type_fqns(
+            receiver_type,
+            source_file,
+            package,
+            bool(
+                call.get("kotlin_has_wildcard_import")
+                or call.get("kotlin_has_relative_classifier_head")
+            ),
+        )
         if len(candidate_fqns) != 1:
             continue
         resolved_fqn = next(iter(candidate_fqns))

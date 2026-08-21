@@ -266,6 +266,14 @@ def test_dotted_relative_receivers_do_not_bind_absolute_package_decoy(
                 "package Outer\n"
                 "class Service { fun run() {} }\n"
             ),
+            "companion_decoy/Service.kt": (
+                "package Companion\n"
+                "class Service { fun run() {} }\n"
+            ),
+            "implicit_decoy/Option.kt": (
+                "package StackWalker\n"
+                "class Option { override fun toString(): String = \"x\" }\n"
+            ),
             "domain/SamePackageUse.kt": (
                 "package domain\n"
                 "fun samePackage(value: Outer.Service) { value.run() }\n"
@@ -275,23 +283,78 @@ def test_dotted_relative_receivers_do_not_bind_absolute_package_decoy(
                 "import domain.Outer\n"
                 "fun imported(value: Outer.Service) { value.run() }\n"
             ),
+            "app/WildcardUse.kt": (
+                "package app\n"
+                "import domain.*\n"
+                "fun wildcard(value: Outer.Service) { value.run() }\n"
+            ),
+            "app/Alias.kt": "package app\ntypealias Outer = domain.Outer\n",
+            "app/TypeAliasUse.kt": (
+                "package app\n"
+                "fun typeAlias(value: Outer.Service) { value.run() }\n"
+            ),
+            "app/NestedUse.kt": (
+                "package app\n"
+                "class Container {\n"
+                "    class Outer {\n"
+                "        class Service { fun run() {} }\n"
+                "    }\n"
+                "    fun nested(value: Outer.Service) { value.run() }\n"
+                "}\n"
+            ),
+            "app/NamedCompanionUse.kt": (
+                "package app\n"
+                "class NamedHost {\n"
+                "    companion object Outer {\n"
+                "        class Service { fun run() {} }\n"
+                "    }\n"
+                "    fun namedCompanion(value: Outer.Service) { value.run() }\n"
+                "}\n"
+            ),
+            "app/UnnamedCompanionUse.kt": (
+                "package app\n"
+                "class UnnamedHost {\n"
+                "    companion object {\n"
+                "        class Service { fun run() {} }\n"
+                "    }\n"
+                "    fun unnamedCompanion(value: Companion.Service) { value.run() }\n"
+                "}\n"
+            ),
+            "app/ImplicitUse.kt": (
+                "package app\n"
+                "fun implicit(value: StackWalker.Option) { value.toString() }\n"
+            ),
         },
     )
 
     callers = {
         _find(result, "samePackage()", "samepackageuse"),
         _find(result, "imported()", "use"),
+        _find(result, "wildcard()", "wildcarduse"),
+        _find(result, "typeAlias()", "typealiasuse"),
+        _find(result, ".nested()", "nesteduse"),
+        _find(result, ".namedCompanion()", "namedcompanionuse"),
+        _find(result, ".unnamedCompanion()", "unnamedcompanionuse"),
+        _find(result, "implicit()", "implicituse"),
     }
-    decoy_run = next(
+    decoy_runs = {
         node["id"]
         for node in result["nodes"]
         if node.get("label") == ".run()"
         and str(node.get("source_file", "")).endswith(
-            "absolute_decoy/Service.kt"
+            ("absolute_decoy/Service.kt", "companion_decoy/Service.kt")
         )
-    )
+    }
+    decoy_methods = decoy_runs | {
+        node["id"]
+        for node in result["nodes"]
+        if node.get("label") == ".toString()"
+        and str(node.get("source_file", "")).endswith(
+            "implicit_decoy/Option.kt"
+        )
+    }
     assert not any(
-        edge["source"] in callers and edge["target"] == decoy_run
+        edge["source"] in callers and edge["target"] in decoy_methods
         for edge in _call_edges(result)
     )
 
