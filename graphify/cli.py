@@ -133,7 +133,10 @@ def _stamped_manifest_files(
             return p
 
     sem_extracted: set[Path] = set()
-    for coll in ("nodes", "edges", "hyperedges"):
+    # #2927: only nodes and hyperedges count as valid semantic output that stamps
+    # the manifest. An edge-only result has no entity representation in the graph
+    # and must be left unstamped so detect_incremental re-queues it (#933/#1666).
+    for coll in ("nodes", "hyperedges"):
         for item in sem_result.get(coll, []):
             sf = item.get("source_file", "")
             if sf:
@@ -417,6 +420,101 @@ def _zero_node_stamped_code_sources(
             pass
         if spellings & present:
             continue  # the graph has this file: stamp is honest
+        healed.append(f)
+    return healed
+
+
+def _zero_node_stamped_semantic_sources(
+    graph_path: Path,
+    scan_root: Path,
+    unchanged_semantic: list[str],
+) -> list[str]:
+    """Manifest-stamped semantic files (doc/paper/image) with ZERO nodes
+    and ZERO hyperedges in the existing graph.json (#2927 heal).
+
+    A manifest poisoned before #2927 (edge-only result cached and stamped)
+    keeps reporting the file unchanged forever, freezing it out of the graph.
+    Re-queue any unchanged semantic file that has neither nodes nor hyperedges
+    in graph.json. If it succeeds, its nodes enter graph.json; if it produces
+    no nodes or fails, it is now left unstamped, so this cannot wedge.
+
+    Membership mirrors the ``source_file`` spellings extracts store (#1897/
+    #1941: scan-root-relative, forward slash; absolute for out-of-root) and
+    compares NFC-normalized (#2210/#2221).
+    """
+    if not unchanged_semantic:
+        return []
+    from graphify.paths import nfc
+    try:
+        data = json.loads(graph_path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if not isinstance(data, dict):
+        return []
+    try:
+        root_res = scan_root.resolve()
+    except (OSError, RuntimeError):
+        root_res = scan_root
+    out_base = graph_path.parent.parent
+    try:
+        out_base = out_base.resolve()
+    except (OSError, RuntimeError):
+        pass
+
+    present: set[str] = set()
+    for n in data.get("nodes", []):
+        if not isinstance(n, dict):
+            continue
+        sf = n.get("source_file")
+        if not sf or not isinstance(sf, str):
+            continue
+        present.add(nfc(sf))
+        p = Path(sf)
+        if p.is_absolute():
+            try:
+                present.add(nfc(str(p.resolve())))
+            except (OSError, RuntimeError):
+                pass
+        else:
+            rel = sf.replace("\\", "/")
+            for base in (root_res, out_base):
+                present.add(nfc(os.path.normpath(str(base / rel))))
+
+    hyper_items = list(data.get("hyperedges", []) or [])
+    if isinstance((data.get("graph") or {}).get("hyperedges"), list):
+        hyper_items.extend(data["graph"]["hyperedges"])
+    for h in hyper_items:
+        if not isinstance(h, dict):
+            continue
+        sf = h.get("source_file")
+        if not sf or not isinstance(sf, str):
+            continue
+        present.add(nfc(sf))
+        p = Path(sf)
+        if p.is_absolute():
+            try:
+                present.add(nfc(str(p.resolve())))
+            except (OSError, RuntimeError):
+                pass
+        else:
+            rel = sf.replace("\\", "/")
+            for base in (root_res, out_base):
+                present.add(nfc(os.path.normpath(str(base / rel))))
+
+    healed: list[str] = []
+    for f in unchanged_semantic:
+        p = Path(f)
+        spellings = {nfc(str(p))}
+        try:
+            spellings.add(nfc(str(p.resolve())))
+        except (OSError, RuntimeError):
+            pass
+        try:
+            spellings.add(nfc(p.resolve().relative_to(root_res).as_posix()))
+        except (ValueError, OSError, RuntimeError):
+            pass
+        if spellings & present:
+            continue  # the graph has nodes or hyperedges for this file: stamp is honest
         healed.append(f)
     return healed
 
@@ -3195,6 +3293,34 @@ def dispatch_command(cmd: str) -> None:
                     f"(prior failed extraction, #2543)"
                 )
                 code_files.extend(Path(p) for p in _healed_sources)
+            # #2927 heal: manifests poisoned BEFORE zero-node semantic cache rejection
+            # existed carry live hashes for semantic files (doc/paper/image) whose
+            # extraction produced zero nodes and zero hyperedges (e.g. edge-only).
+            # Re-queue any such file so it is re-dispatched and self-heals.
+            _unchanged_sem: list[str] = []
+            for _k in ("document", "paper", "image"):
+                _unchanged_sem.extend(detection.get("unchanged_files", {}).get(_k, []))
+            _healed_sem_sources = _zero_node_stamped_semantic_sources(
+                existing_graph_path,
+                target,
+                _unchanged_sem,
+            )
+            if _healed_sem_sources:
+                print(
+                    f"[graphify extract] re-queuing {len(_healed_sem_sources)} "
+                    f"manifest-stamped semantic file(s) with no nodes or hyperedges in graph.json "
+                    f"(prior empty/edge-only extraction, #2927)"
+                )
+                _healed_sem_set = set(_healed_sem_sources)
+                for _p in detection.get("unchanged_files", {}).get("document", []):
+                    if _p in _healed_sem_set:
+                        doc_files.append(Path(_p))
+                for _p in detection.get("unchanged_files", {}).get("paper", []):
+                    if _p in _healed_sem_set:
+                        paper_files.append(Path(_p))
+                for _p in detection.get("unchanged_files", {}).get("image", []):
+                    if _p in _healed_sem_set:
+                        image_files.append(Path(_p))
         else:
             print(f"[graphify extract] scanning {target}")
             detection = _detect(

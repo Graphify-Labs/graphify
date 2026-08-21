@@ -992,6 +992,18 @@ def load_cached(path: Path, root: Path = Path("."), kind: str = "ast",
         # across chunks without losing the truncated one (it stays partial).
         if not allow_partial and isinstance(result, dict) and result.get("partial"):
             return None
+        # A semantic entry with zero nodes and zero hyperedges is invalid (#2927):
+        # an edge-only or empty result (e.g. LLM omitted entities for the file)
+        # is not a valid standalone extraction. Treating it as a cache MISS
+        # ensures the file is re-dispatched and retried (#933/#1666).
+        if (
+            not allow_partial
+            and kind.startswith("semantic")
+            and isinstance(result, dict)
+            and not result.get("nodes")
+            and not result.get("hyperedges")
+        ):
+            return None
         if (
             kind.startswith("semantic")
             and isinstance(result, dict)
@@ -1543,6 +1555,11 @@ def save_semantic_cache(
             )
             if is_partial:
                 result = {**result, "partial": True}
+            # A semantic extraction with zero nodes and zero hyperedges is not a valid
+            # standalone extraction (#2927): edge-only or empty results must not be
+            # cached, so that subsequent runs can re-dispatch and retry the file (#933/#1666).
+            if not is_partial and not (result.get("nodes") or result.get("hyperedges")):
+                continue
             save_cached(cache_path, result, root, kind=kind, cache_root=cache_root,
                         prompt=prompt, prompt_file=prompt_file)
             saved += 1
