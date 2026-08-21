@@ -6129,6 +6129,10 @@ def _extract_generic(
         # char is added only if the original file does not end with it.
         if source and not source.endswith(b"\n"):
             source = source + b"\n"
+        if config.source_transform is not None:
+            # Per-language byte mask applied to whatever gets parsed — e.g.
+            # the TSX bare-``&``-in-JSX-text mask (#2922).
+            source = config.source_transform(source)
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:
