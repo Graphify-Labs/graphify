@@ -5,7 +5,9 @@ import re
 import os
 import unicodedata
 
+from dataclasses import dataclass
 from pathlib import Path
+from graphify.detect import CODE_EXTENSIONS
 from graphify.extractors.base import _file_stem, _make_id
 from graphify.security import sanitize_metadata
 
@@ -17,6 +19,16 @@ _MD_REF_DEF_RE = re.compile(r'^\s{0,3}\[[^\]]+\]:\s*<?([^\s>]+)>?')
 _MD_WIKILINK_RE = re.compile(r'(?<!\!)\[\[([^\]|#]+)(?:[#|][^\]]*)?\]\]')
 
 _MD_LINKABLE_EXTS = {".md", ".mdx", ".qmd", ".markdown", ".rst", ".txt"}
+
+_MD_LINE_FRAGMENT_RE = re.compile(r"^L([1-9][0-9]*)$", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class ResolvedMarkdownTarget:
+    """A local Markdown target plus optional one-based code line evidence."""
+
+    path: Path
+    line: int | None = None
 
 # A YAML frontmatter block is only frontmatter when the opening `---` is the
 # very first line of the file. A `---` further down is a horizontal rule and
@@ -182,18 +194,22 @@ def _vault_lookup(target: str, root: Path) -> "Path | None":
     return min(matches)[2]
 
 
-def _resolve_markdown_link(raw: str, source_dir: Path,
-                           wikilink: bool = False) -> "Path | None":
-    """Resolve a markdown link target to the absolute path of a sibling document.
+def _resolve_markdown_target(
+    raw: str,
+    source_dir: Path,
+    wikilink: bool = False,
+) -> "ResolvedMarkdownTarget | None":
+    """Resolve a local Markdown link and retain valid code-line evidence.
 
     Returns the resolved (normalized, not necessarily existing) path when the
-    target is a *local* relative/absolute file-path link to a document, or None
+    target is a *local* relative/absolute file-path link to a document or code
+    file, or None
     when it should be skipped: external URLs (http/https/mailto/protocol-
-    relative/data), pure in-page anchors (``#section``), and links to non-doc
-    file types (code/assets are handled by their own extractors).
+    relative/data), pure in-page anchors (``#section``), and links to other
+    file types.
 
-    The anchor fragment (``#section``) and query (``?x=1``) are stripped before
-    resolution so ``./repo.md#setup`` resolves to the same node as ``./repo.md``.
+    A code fragment of the form ``#L83`` becomes one-based line evidence.
+    Other fragments are stripped, preserving existing document-link behavior.
     Extension-less targets (typical of wikilinks) are treated as sibling ``.md``.
 
     With ``wikilink=True``, a target whose lexically resolved path does not
@@ -202,11 +218,11 @@ def _resolve_markdown_link(raw: str, source_dir: Path,
     reference-style links keep pure relative semantics: for them a missing
     relative target is an authoring error, not an alternate link convention.
     """
-    target = raw.strip()
-    if not target:
+    raw_target = raw.strip()
+    if not raw_target:
         return None
-    # Drop anchor / query so #section links still resolve to the target doc.
-    target = target.split("#", 1)[0].split("?", 1)[0].strip()
+    path_and_query, separator, fragment = raw_target.partition("#")
+    target = path_and_query.split("?", 1)[0].strip()
     if not target:
         return None
     low = target.lower()
@@ -216,7 +232,7 @@ def _resolve_markdown_link(raw: str, source_dir: Path,
     if suffix == "":
         target = target + ".md"
         suffix = ".md"
-    if suffix not in _MD_LINKABLE_EXTS:
+    if suffix not in _MD_LINKABLE_EXTS and suffix not in CODE_EXTENSIONS:
         return None
     candidate = Path(target)
     if not candidate.is_absolute():
@@ -232,8 +248,27 @@ def _resolve_markdown_link(raw: str, source_dir: Path,
             if scan_root is not None:
                 hit = _vault_lookup(target, scan_root)
                 if hit is not None:
-                    return Path(os.path.normpath(str(hit)))
-    return resolved
+                    resolved = Path(os.path.normpath(str(hit)))
+    line_match = (
+        _MD_LINE_FRAGMENT_RE.fullmatch(fragment.strip()) if separator else None
+    )
+    line = (
+        int(line_match.group(1))
+        if line_match is not None and suffix in CODE_EXTENSIONS
+        else None
+    )
+    return ResolvedMarkdownTarget(path=resolved, line=line)
+
+
+def _resolve_markdown_link(
+    raw: str,
+    source_dir: Path,
+    wikilink: bool = False,
+) -> "Path | None":
+    """Compatibility wrapper returning only the resolved target path."""
+
+    target = _resolve_markdown_target(raw, source_dir, wikilink=wikilink)
+    return target.path if target is not None else None
 
 def extract_markdown(path: Path) -> dict:
     """Extract structural nodes and edges from a Markdown file.
@@ -298,12 +333,15 @@ def extract_markdown(path: Path) -> dict:
 
     def add_edge(src: str, tgt: str, relation: str, line: int,
                  confidence: str = "EXTRACTED", weight: float = 1.0,
-                 target_file: "str | None" = None) -> None:
+                 target_file: "str | None" = None,
+                 target_line: "int | None" = None) -> None:
         edge = {"source": src, "target": tgt, "relation": relation,
                 "confidence": confidence, "source_file": str_path,
                 "source_location": f"L{line}", "weight": weight}
         if target_file is not None:
             edge["target_file"] = target_file
+        if target_line is not None:
+            edge["target_line"] = target_line
         edges.append(edge)
 
     lines = source.splitlines()
@@ -320,18 +358,19 @@ def extract_markdown(path: Path) -> dict:
     linked_targets: set[str] = set()
 
     def add_link(raw: str, line: int, wikilink: bool = False) -> None:
-        resolved = _resolve_markdown_link(raw, source_dir, wikilink=wikilink)
-        if resolved is None:
+        target = _resolve_markdown_target(raw, source_dir, wikilink=wikilink)
+        if target is None:
             return
         # Build the target ID with the SAME recipe as the target file's own
         # node (_make_id(str(path)) at extract time, canonicalized to
         # _file_node_id(rel) by the extract() post-pass). Using the absolute
         # resolved path means both endpoints get remapped identically, so the
         # edge merges into the existing doc node instead of spawning a ghost.
-        tgt_nid = _make_id(str(resolved))
-        if tgt_nid == file_nid or tgt_nid in linked_targets:
+        tgt_nid = _make_id(str(target.path))
+        dedupe_key = f"{tgt_nid}:L{target.line or 0}"
+        if tgt_nid == file_nid or dedupe_key in linked_targets:
             return
-        linked_targets.add(tgt_nid)
+        linked_targets.add(dedupe_key)
         # Stamp the resolved target file (mirroring the JS/Python import
         # stamps, #1814/#2213) so the #2169 remap pass can canonicalize this
         # edge's target on an incremental run where the linked doc is not in
@@ -342,11 +381,18 @@ def extract_markdown(path: Path) -> dict:
         # and popped before graph.json ships.
         target_file = None
         try:
-            if resolved.is_file():
-                target_file = str(resolved)
+            if target.path.is_file():
+                target_file = str(target.path)
         except OSError:
             pass
-        add_edge(file_nid, tgt_nid, "references", line, target_file=target_file)
+        add_edge(
+            file_nid,
+            tgt_nid,
+            "references",
+            line,
+            target_file=target_file,
+            target_line=target.line,
+        )
 
     # Track heading stack for nesting: [(level, nid), ...]
     heading_stack: list[tuple[int, str]] = []
