@@ -168,10 +168,10 @@ Replace `QUESTION` with the **expanded** query string, `MODE` with `bfs` or `dfs
 After writing the answer, save it back into the graph so it improves future queries. Include the expanded tokens inside the `--answer` text (e.g. `"Expanded from original query via vocab: [tokens]. Then traversed..."`) so the next `--update` extracts the expansion history as a graph node:
 
 ```bash
-"$(cat graphify-out/.graphify_python)" -m graphify save-result --question "ORIGINAL_QUESTION" --answer "ANSWER" --type query --nodes NODE1 NODE2
+"$(cat graphify-out/.graphify_python)" -m graphify save-result --question 'ORIGINAL_QUESTION' --answer 'ANSWER' --type query --nodes NODE1 NODE2
 ```
 
-Replace `ORIGINAL_QUESTION` with the user's verbatim question, `ANSWER` with your full answer text (containing the expanded-token trace), `NODE1 NODE2` with the list of node labels you cited. This closes the feedback loop: the next `--update` will extract this Q&A as a node in the graph.
+Replace `ORIGINAL_QUESTION` with the user's verbatim question, `ANSWER` with your full answer text (containing the expanded-token trace), `NODE1 NODE2` with the list of node labels you cited. The single quotes around the user-supplied values make the substitution injection-safe: a question like `hello"; rm -rf /` cannot escape the argument. If your content contains a literal single quote, replace it with `'\''` (close-quote, escaped-quote, open-quote). This closes the feedback loop: the next `--update` will extract this Q&A as a node in the graph.
 
 **Work memory (self-improving loop).** Add an `--outcome` so future sessions learn from this one — append `--outcome useful|dead_end|corrected` to the `save-result` command (and `--correction "the right answer"` when correcting):
 
@@ -243,10 +243,10 @@ except nx.NodeNotFound as e:
 
 Replace `NODE_A` and `NODE_B` with the actual concept names from the user. Then explain the path in plain language - what each hop means, why it's significant.
 
-After writing the explanation, save it back:
+After writing the explanation, save it back (single quotes around the user-supplied values keep the substitution injection-safe; replace any literal `'` in the substituted text with `'\''`):
 
 ```bash
-"$(cat graphify-out/.graphify_python)" -m graphify save-result --question "Path from NODE_A to NODE_B" --answer "ANSWER" --type path_query --nodes NODE_A NODE_B
+"$(cat graphify-out/.graphify_python)" -m graphify save-result --question 'Path from NODE_A to NODE_B' --answer 'ANSWER' --type path_query --nodes NODE_A NODE_B
 ```
 
 ---
@@ -304,8 +304,8 @@ for neighbor in G.neighbors(nid):
 
 Replace `NODE_NAME` with the concept the user asked about. Then write a 3-5 sentence explanation of what this node is, what it connects to, and why those connections are significant. Use the source locations as citations.
 
-After writing the explanation, save it back:
+After writing the explanation, save it back (single quotes around the user-supplied values keep the substitution injection-safe; replace any literal `'` in the substituted text with `'\''`):
 
 ```bash
-"$(cat graphify-out/.graphify_python)" -m graphify save-result --question "Explain NODE_NAME" --answer "ANSWER" --type explain --nodes NODE_NAME
+"$(cat graphify-out/.graphify_python)" -m graphify save-result --question 'Explain NODE_NAME' --answer 'ANSWER' --type explain --nodes NODE_NAME
 ```
