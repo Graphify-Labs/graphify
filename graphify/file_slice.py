@@ -26,7 +26,19 @@ from pathlib import Path
 # `_file_to_text` is a straight ``read_text`` (so a char range matches the bytes
 # the model is shown). Deliberately excludes code (.py, .ts, ...) and binary
 # docs (.pdf) — those are never sliced.
-_SPLITTABLE_TEXT_SUFFIXES = frozenset({".md", ".mdx", ".markdown", ".txt", ".rst"})
+#
+# This set has to keep pace with ``detect.DOC_EXTENSIONS``: anything classified
+# as a document reaches the semantic pass, and anything the pass sees that is
+# NOT listed here is silently cut at ``_FILE_CHAR_CAP`` by ``_read_files``. The
+# two lists drifted as DOC_EXTENSIONS grew — .qmd, .skill, .html, .yaml and .yml
+# were documents that never got sliced, so a 38k-character one reached the model
+# as its first 20k with no warning and no partial marker (#2900).
+# ``tests/test_oversized_document_slicing.py`` pins the relationship so a future
+# addition to DOC_EXTENSIONS fails loudly instead of quietly losing content.
+_SPLITTABLE_TEXT_SUFFIXES = frozenset({
+    ".md", ".mdx", ".markdown", ".txt", ".rst",
+    ".qmd", ".skill", ".html", ".yaml", ".yml",
+})
 
 # Boundary preferences, strongest first. A Markdown heading (``\n#``) keeps a
 # section with its title; a blank line keeps a paragraph intact; a bare newline
