@@ -9,7 +9,7 @@ import re
 import tempfile
 import time
 import warnings
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 # Output directory name — override with GRAPHIFY_OUT env var for worktrees or
@@ -1286,6 +1286,50 @@ def _group_has_partial_marker(group: dict) -> bool:
     return False
 
 
+def _semantic_source_matcher(
+    root: Path,
+) -> tuple[Callable[[str | Path], Path], Callable[[str | Path], str]]:
+    """Shared path-identity machinery for the semantic-scope guards (#1757/#2926).
+
+    ``save_semantic_cache``'s write allowlist and ``scope_semantic_result``'s
+    graph-feed filter must agree on exactly which ``source_file`` values are in
+    scope, so both derive their matching from this one implementation rather
+    than parallel copies that could drift apart.
+
+    Returns ``(source_identity, normalize_value)`` closed over ``root``:
+
+    - ``normalize_value(src)`` maps a raw ``source_file`` to its portable
+      relative forward-slash form (#2197),
+    - ``source_identity(value)`` maps any form (relative or absolute, against
+      the walked or the resolved root) to the single canonical walked path
+      that identities are compared against.
+    """
+    root_walked = _normalize_path(Path(os.path.abspath(root)))
+    root_resolved = _normalize_path(Path(root).resolve())
+
+    def normalize_value(src: str | Path) -> str:
+        norm = _normalize_source_file_value(src, root_walked)
+        if Path(norm).is_absolute() and root_walked != root_resolved:
+            norm = _normalize_source_file_value(src, root_resolved)
+        return norm
+
+    def source_identity(value: str | Path) -> Path:
+        path = Path(value)
+        if not path.is_absolute():
+            path = root_walked / path
+        elif root_walked != root_resolved:
+            normalized = _normalize_path(Path(os.path.abspath(path)))
+            try:
+                relative = normalized.relative_to(root_resolved)
+            except ValueError:
+                pass
+            else:
+                path = root_walked / relative
+        return _normalize_path(Path(os.path.abspath(path)))
+
+    return source_identity, normalize_value
+
+
 def save_semantic_cache(
     nodes: list[dict],
     edges: list[dict],
@@ -1350,8 +1394,7 @@ def save_semantic_cache(
     from collections import defaultdict
 
     kind = "semantic" if mode is None else f"semantic-{mode}"
-    root_walked = _normalize_path(Path(os.path.abspath(root)))
-    root_resolved = _normalize_path(Path(root).resolve())
+    source_path, _normalize_value = _semantic_source_matcher(root)
 
     def _normalized(item: dict) -> dict:
         """Copy of ``item`` with a portable ``source_file`` (#2197).
@@ -1366,9 +1409,7 @@ def save_semantic_cache(
         src = item.get("source_file")
         if not src:
             return item
-        norm = _normalize_source_file_value(src, root_walked)
-        if Path(norm).is_absolute() and root_walked != root_resolved:
-            norm = _normalize_source_file_value(src, root_resolved)
+        norm = _normalize_value(src)
         if norm != src:
             item = {**item, "source_file": norm}
         return item
@@ -1389,21 +1430,6 @@ def save_semantic_cache(
         src = h.get("source_file", "")
         if src:
             by_file[src]["hyperedges"].append(h)
-
-    def source_path(value: str | Path) -> Path:
-        """Return the normalized walked identity for a semantic group."""
-        path = Path(value)
-        if not path.is_absolute():
-            path = root_walked / path
-        elif root_walked != root_resolved:
-            normalized = _normalize_path(Path(os.path.abspath(path)))
-            try:
-                relative = normalized.relative_to(root_resolved)
-            except ValueError:
-                pass
-            else:
-                path = root_walked / relative
-        return _normalize_path(Path(os.path.abspath(path)))
 
     def resolved_source_path(value: str | Path) -> Path:
         path = source_path(value)
@@ -1584,9 +1610,10 @@ def scope_semantic_result(
     id is dropped too (#1916 mirror), unless that id is also defined by a kept
     node (duplicate attribution must not be over-pruned).
 
-    Path matching uses the same normalization as :func:`save_semantic_cache`
-    (relative against ``root``, walked-path identity), so an item this function
-    keeps can never still hit the save's out-of-scope skip, and vice versa.
+    Path matching shares :func:`_semantic_source_matcher` with
+    :func:`save_semantic_cache` (relative against ``root``, walked-path
+    identity), so an item this function keeps can never still hit the save's
+    out-of-scope skip, and vice versa.
 
     Returns ``(dropped_source_files, dropped_item_count)`` for logging;
     ``dropped_source_files`` holds the normalized ``source_file`` strings of
@@ -1595,34 +1622,17 @@ def scope_semantic_result(
     if allowed_source_files is None:
         return set(), 0
 
-    root_walked = _normalize_path(Path(os.path.abspath(root)))
-    root_resolved = _normalize_path(Path(root).resolve())
-
-    def _identity(value: str) -> Path:
-        path = Path(value)
-        if not path.is_absolute():
-            path = root_walked / path
-        elif root_walked != root_resolved:
-            normalized = _normalize_path(Path(os.path.abspath(path)))
-            try:
-                relative = normalized.relative_to(root_resolved)
-            except ValueError:
-                pass
-            else:
-                path = root_walked / relative
-        return _normalize_path(Path(os.path.abspath(path)))
+    source_identity, normalize_value = _semantic_source_matcher(root)
 
     def _item_identity(item: dict) -> tuple[str | None, Path | None]:
         """(display form, walked identity) of an item's source_file."""
         src = item.get("source_file")
         if not src:
             return None, None
-        norm = _normalize_source_file_value(src, root_walked)
-        if Path(norm).is_absolute() and root_walked != root_resolved:
-            norm = _normalize_source_file_value(src, root_resolved)
-        return norm, _identity(norm)
+        norm = normalize_value(src)
+        return norm, source_identity(norm)
 
-    allowed_paths = {_identity(str(path)) for path in allowed_source_files}
+    allowed_paths = {source_identity(str(path)) for path in allowed_source_files}
 
     def _hashable(value) -> bool:
         try:
