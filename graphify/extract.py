@@ -4160,6 +4160,14 @@ def _resolve_kotlin_member_calls(
         type_name: str, source_file: str, package: str
     ) -> set[str]:
         if "." in type_name:
+            head = type_name.partition(".")[0]
+            imported_heads = imports_by_file.get(source_file, {})
+            package_head = f"{package}.{head}" if package else head
+            if head in imported_heads or types_by_fqn.get(package_head):
+                # `Outer.Inner` can qualify an imported or same-package class,
+                # not an absolute package. Nested types are not inventoried yet,
+                # so accepting the spelling as an FQN could bind a package decoy.
+                return set()
             return {type_name}
         imported = imports_by_file.get(source_file, {}).get(type_name)
         if imported is not None:

@@ -250,6 +250,52 @@ def test_import_alias_and_fqn_select_the_exact_type(tmp_path: Path) -> None:
     assert (qualified, b_run) not in pairs
 
 
+def test_dotted_relative_receivers_do_not_bind_absolute_package_decoy(
+    tmp_path: Path,
+) -> None:
+    result = _extract(
+        tmp_path,
+        {
+            "domain/Outer.kt": (
+                "package domain\n"
+                "class Outer {\n"
+                "    class Service { fun run() {} }\n"
+                "}\n"
+            ),
+            "absolute_decoy/Service.kt": (
+                "package Outer\n"
+                "class Service { fun run() {} }\n"
+            ),
+            "domain/SamePackageUse.kt": (
+                "package domain\n"
+                "fun samePackage(value: Outer.Service) { value.run() }\n"
+            ),
+            "app/Use.kt": (
+                "package app\n"
+                "import domain.Outer\n"
+                "fun imported(value: Outer.Service) { value.run() }\n"
+            ),
+        },
+    )
+
+    callers = {
+        _find(result, "samePackage()", "samepackageuse"),
+        _find(result, "imported()", "use"),
+    }
+    decoy_run = next(
+        node["id"]
+        for node in result["nodes"]
+        if node.get("label") == ".run()"
+        and str(node.get("source_file", "")).endswith(
+            "absolute_decoy/Service.kt"
+        )
+    )
+    assert not any(
+        edge["source"] in callers and edge["target"] == decoy_run
+        for edge in _call_edges(result)
+    )
+
+
 def test_markerless_incremental_kotlin_context_fails_closed(tmp_path: Path) -> None:
     caller_path = tmp_path / "Caller.kt"
     caller_path.write_text(
