@@ -1877,3 +1877,114 @@ def test_existing_hyperedge_only_cache_entry_remains_hit(tmp_path):
     loaded = load_cached(f, root=tmp_path, kind="semantic", prompt=prompt)
     assert loaded is not None
     assert len(loaded["hyperedges"]) == 1
+# --- #2926: graph-side scope filter -------------------------------------------
+# The #1757 guard protects the cache write, but the unfiltered fresh result
+# also feeds build_merge(), whose replace-set logic swaps a non-dispatched
+# file's entire prior contribution for a stray fragment. scope_semantic_result
+# applies the same allowlist to the result dict before it reaches the merge.
+
+def test_scope_semantic_result_drops_out_of_scope_groups(tmp_path):
+    """Stray items attributed to a non-dispatched file are removed; allowed
+    and source-less items pass through."""
+    from graphify.cache import scope_semantic_result
+
+    result = {
+        "nodes": [
+            {"id": "kept", "source_file": "intended.md"},
+            {"id": "stray", "source_file": "protected.md"},
+            {"id": "phantom", "source_file": "src/foo.ts"},  # nonexistent path
+            {"id": "no_source"},  # no source_file: passes through
+        ],
+        "edges": [
+            {"source": "kept", "target": "other", "source_file": "intended.md"},
+            {"source": "stray", "target": "kept", "source_file": "protected.md"},
+        ],
+        "hyperedges": [
+            {"id": "h_kept", "nodes": ["kept"], "source_file": "intended.md"},
+            {"id": "h_stray", "nodes": ["stray"], "source_file": "protected.md"},
+        ],
+    }
+
+    dropped_files, dropped_items = scope_semantic_result(
+        result, root=tmp_path, allowed_source_files=["intended.md"],
+    )
+
+    assert [n["id"] for n in result["nodes"]] == ["kept", "no_source"]
+    assert [e["source"] for e in result["edges"]] == ["kept"]
+    assert [h["id"] for h in result["hyperedges"]] == ["h_kept"]
+    assert dropped_files == {"protected.md", "src/foo.ts"}
+    assert dropped_items == 4  # 2 stray nodes + 1 stray edge + 1 stray hyperedge
+
+
+def test_scope_semantic_result_matches_absolute_and_relative_forms(tmp_path):
+    """An absolute in-root source_file and its relative form are the same
+    identity — both must match the allowlist entry (#2197 normalization)."""
+    from graphify.cache import scope_semantic_result
+
+    result = {
+        "nodes": [
+            {"id": "abs", "source_file": str(tmp_path / "doc.md")},
+            {"id": "rel", "source_file": "doc.md"},
+        ],
+        "edges": [],
+        "hyperedges": [],
+    }
+
+    dropped_files, dropped_items = scope_semantic_result(
+        result, root=tmp_path, allowed_source_files=["doc.md"],
+    )
+
+    assert [n["id"] for n in result["nodes"]] == ["abs", "rel"]
+    assert dropped_files == set()
+    assert dropped_items == 0
+
+
+def test_scope_semantic_result_prunes_edges_referencing_dropped_ids(tmp_path):
+    """#1916 mirror: an edge attributed to an ALLOWED file that references a
+    node id only defined by a DROPPED group would materialize that id as a
+    phantom node at build time; it must be dropped too. A duplicate-attribution
+    id (defined by both a kept and a dropped group) keeps its edges."""
+    from graphify.cache import scope_semantic_result
+
+    result = {
+        "nodes": [
+            {"id": "kept", "source_file": "a.md"},
+            {"id": "shared", "source_file": "a.md"},   # also defined by b.md
+            {"id": "shared", "source_file": "b.md"},   # duplicate attribution
+            {"id": "gone", "source_file": "c.md"},
+        ],
+        "edges": [
+            {"source": "kept", "target": "shared", "source_file": "a.md"},
+            {"source": "kept", "target": "gone", "source_file": "a.md"},
+        ],
+        "hyperedges": [
+            {"id": "h1", "nodes": ["kept", "gone"], "source_file": "a.md"},
+            {"id": "h2", "nodes": ["kept", "shared"], "source_file": "a.md"},
+        ],
+    }
+
+    scope_semantic_result(result, root=tmp_path,
+                          allowed_source_files=["a.md"])
+
+    # The b.md COPY of "shared" is dropped as out-of-scope, but because a kept
+    # node also defines that id, references to it must NOT be pruned.
+    assert [n["id"] for n in result["nodes"]] == ["kept", "shared"]
+    assert [e["target"] for e in result["edges"]] == ["shared"]
+    assert [h["id"] for h in result["hyperedges"]] == ["h2"]
+
+
+def test_scope_semantic_result_unscoped_is_a_no_op():
+    """allowed_source_files=None must leave the result untouched (same contract
+    as save_semantic_cache's unscoped callers)."""
+    from graphify.cache import scope_semantic_result
+
+    result = {
+        "nodes": [{"id": "n", "source_file": "anywhere.md"}],
+        "edges": [],
+        "hyperedges": [],
+    }
+
+    dropped_files, dropped_items = scope_semantic_result(result, root=Path("."))
+
+    assert (dropped_files, dropped_items) == (set(), 0)
+    assert [n["id"] for n in result["nodes"]] == ["n"]
