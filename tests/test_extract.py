@@ -3966,3 +3966,42 @@ def test_inferred_uses_edge_dropped_for_module_top_level_reference(tmp_path):
     uses = _inferred_uses(result)
 
     assert not any(tgt == "helpers_helper" for _, tgt in uses)
+
+
+def test_extract_declined_data_json_is_not_failed(tmp_path, capsys):
+    """#2879: data JSON is declined by design (#1224), not failed.
+
+    A `.json` extractor is registered, so a declined file used to satisfy both
+    halves of the failed-source test (zero nodes + extractor exists) and was
+    re-queued on every incremental run because the CLI never stamped it as
+    processed.
+    """
+    pytest.importorskip("tree_sitter_json")
+    data = tmp_path / "meta.json"
+    data.write_text('{"pages": ["a", "b"], "title": "Docs"}\n')
+    cfg = tmp_path / "package.json"
+    cfg.write_text('{"dependencies": {"left-pad": "^1.0.0"}}\n')
+
+    result = extract([data, cfg], cache_root=tmp_path)
+    err = capsys.readouterr().err
+
+    assert result.get("failed_sources") == []
+    # ...and no "produced zero nodes" noise for a deliberate decline (#1666).
+    assert "zero nodes" not in err
+    # the config JSON still extracts normally
+    assert any(str(n.get("label", "")).startswith("package.json") for n in result["nodes"])
+
+
+def test_extract_genuinely_empty_json_still_failed(tmp_path, monkeypatch):
+    """#2879 guard: only an explicit `skipped` marker is exempt."""
+    pytest.importorskip("tree_sitter_json")
+    import graphify.extract as _ex
+
+    monkeypatch.setattr(
+        _ex, "_get_extractor",
+        lambda p: (lambda _p: {"nodes": [], "edges": []}) if p.suffix == ".json" else None,
+    )
+    p = tmp_path / "meta.json"
+    p.write_text("{}\n")
+    result = _ex.extract([p], cache_root=tmp_path)
+    assert [Path(x).name for x in result.get("failed_sources", [])] == ["meta.json"]

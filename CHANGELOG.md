@@ -2,6 +2,17 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## 0.9.48 (2026-08-20)
+
+- Fix: a control character in a node label or id no longer aborts the whole export; the GraphML and Obsidian exporters scrub only the characters those formats forbid (tab, newline, and non-ASCII letters are preserved), and `graph.json` and its byte-identity round-trip are untouched (#2897, thanks @abhay-codes07).
+- Fix: `graphify update` / `label` / `cluster-only` no longer leave a large graph without a `graph.html`; the aggregated community view renders instead of raising, a failed render preserves the previous file, and a missing `graph.html` is regenerated on the no-change fast path without reclustering (#2853, thanks @oleksii-tumanov).
+- Feature: `graphify extract --no-dedup` skips the fuzzy near-duplicate merge on build and incremental merge, for operators who would rather keep distinct symbols that fuzzy-matched; exact-id uniqueness is unaffected and the flag arms the shrink guard so a surprising node drop is refused loudly (#2881, thanks @rajarshidattapy).
+- Fix: a response that parses but carries no symbols (a "hollow" reply) is now retried on the same chunk with backoff instead of being bisected like a truncated one, so an overwhelmed backend no longer wastes calls re-splitting a chunk it already answered emptily; on persistent hollow the files are marked partial and retried next run, and `GRAPHIFY_MAX_RETRY_DEPTH=0` disables the hollow retry too so a chunk costs exactly one call (#2880, thanks @rajarshidattapy).
+- Fix: reasoning-first models that narrate before emitting JSON (or fence the answer) no longer have their chunk dropped; the parser recovers the JSON fragment from mixed text, preferring an object that carries the extraction keys so narration braces or a schema restatement cannot shadow the real answer, and gating on the sanitized content so a bare-string id sketch cannot either (#2882, thanks @rajarshidattapy).
+- Fix: a data-shaped JSON that the extractor deliberately declines is no longer counted as a failed extraction, so it is recorded in the incremental manifest and stops being re-processed on every run; genuine failures are still reported (#2879, thanks @rajarshidattapy).
+- Fix: C++ nested class/struct types and their members are now kept in the graph instead of being silently dropped, and C++/CLI sources (`ref class`, `gcnew`, `^`/`%` handles) are normalized to plain C++ before parsing so tree-sitter no longer fabricates phantom symbols from the ERROR nodes it would otherwise produce (#2876, thanks @rajarshidattapy).
+- Fix: Obsidian-style `[[wikilinks]]` now resolve vault-wide by basename when sibling resolution misses, so cross-folder links are no longer silently lost; resolution stays deterministic on ambiguous basenames (shallowest then lexicographic path) and sibling matches keep priority (#2875, thanks @BaeHyunJae).
+
 ## 0.9.47 (2026-08-19)
 
 - Fix: extraction now bisects a file chunk on timeout instead of failing the whole chunk, so one slow file no longer drops its chunk-mates from the graph; recognized timeouts (subprocess, SDK, and botocore read/connect) route through the same bounded split-and-merge path as context-window-exceeded errors, and a single unsplittable file that times out is left unstamped and retried next run (#2866, thanks @hopstreax).

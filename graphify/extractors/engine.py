@@ -3983,8 +3983,28 @@ def _extract_generic(
                     and any(c.type == "function_declarator" for c in d.children))
                 for d in decls
             )
-            if not is_method:
-                type_node = node.child_by_field_name("type")
+            type_node = node.child_by_field_name("type")
+            # A nested type (`class Inner { … };` inside a class body) is a
+            # field_declaration whose `type` field IS the class_specifier, so
+            # returning from this branch used to drop Inner and everything it
+            # declares — silently, with no parse error (#2876). Walk it as a
+            # class instead: the engine's existing nested-type handling gives
+            # it a `contains` edge from the enclosing type. The declarator loop
+            # below still runs, since `class Inner { } inst;` declares a member
+            # alongside the type.
+            # Only class/struct nested types are recovered here: `enum_specifier`
+            # is deliberately not in C++'s `class_types`, so a nested `enum` and
+            # its enumerators are still not emitted. That is outside #2876's scope
+            # (which is about nested class/struct and C++/CLI) and is left as a
+            # known gap rather than widened here.
+            is_nested_type = (
+                type_node is not None
+                and type_node.type in config.class_types
+                and type_node.child_by_field_name("body") is not None
+            )
+            if is_nested_type:
+                walk(type_node, parent_class_nid)
+            if not is_method and not is_nested_type:
                 if type_node is not None:
                     line = node.start_point[0] + 1
                     refs: list[tuple[str, str]] = []

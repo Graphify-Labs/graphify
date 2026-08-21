@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 import os
+import unicodedata
 
 from pathlib import Path
 from graphify.extractors.base import _file_stem, _make_id
@@ -90,7 +91,99 @@ def _parse_frontmatter_fallback(fm_lines: list[str]) -> dict:
         out[key] = value.strip('"\'')
     return out
 
-def _resolve_markdown_link(raw: str, source_dir: Path) -> "Path | None":
+# Vault-wide wikilink fallback. Obsidian-style vaults resolve a [[wikilink]]
+# by vault-global filename lookup, not relative to the linking file, so a note
+# in a subfolder linking [[hub]] reaches a root-level hub.md. The lexical
+# sibling resolution below is correct when the target exists beside the
+# source; when it does not, the reference edge kept an id derived from a
+# nonexistent path, matched no node, and silently dropped at build time — the
+# same lost-edge failure #1376 fixed for hub docs, reintroduced for every
+# cross-folder vault link. The fallback consults a per-scan-root index of
+# document files and only fires when the lexically resolved path does not
+# exist, so non-vault corpora and resolvable relative links are untouched.
+#
+# Keyed by resolved scan root. extract() clears it at the start of each run
+# (beside _WORKSPACE_PACKAGE_CACHE) so a serial rerun in one process sees
+# files created since the last run; parallel workers are fresh processes.
+_MD_LINK_INDEX_CACHE: "dict[str, dict[str, list[tuple[int, str, Path]]]]" = {}
+
+
+def _active_scan_root() -> "Path | None":
+    """The scan root of the extraction in flight, or None outside extract().
+
+    _safe_extract_with_xaml_root sets this for every extraction despite its
+    XAML-era name; a direct extract_markdown() call has no root and the
+    fallback stays off.
+    """
+    import graphify.extract as _extract
+    return getattr(_extract, "_XAML_ACTIVE_EXTRACT_ROOT", None)
+
+
+def _nfc(s: str) -> str:
+    # Filesystems disagree on Unicode normalization (macOS decomposes, others
+    # do not); a link typed in NFC must still find a file listed in NFD.
+    return unicodedata.normalize("NFC", s)
+
+
+def _build_link_index(root: Path) -> "dict[str, list[tuple[int, str, Path]]]":
+    """Index every linkable document under *root* by NFC-normalized basename.
+
+    Each entry maps basename -> [(depth, root-relative posix path, absolute
+    path)]. Directories in detect._SKIP_DIRS and dot-directories are pruned —
+    the same corpus boundary the scanner draws, and Obsidian itself does not
+    index dot-folders.
+    """
+    from graphify.detect import _SKIP_DIRS
+    index: dict[str, list[tuple[int, str, Path]]] = {}
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(
+            d for d in dirnames if not d.startswith(".") and d not in _SKIP_DIRS
+        )
+        for fname in filenames:
+            if Path(fname).suffix.lower() not in _MD_LINKABLE_EXTS:
+                continue
+            abs_path = Path(dirpath) / fname
+            rel = os.path.relpath(str(abs_path), str(root)).replace("\\", "/")
+            index.setdefault(_nfc(fname), []).append(
+                (rel.count("/"), _nfc(rel), abs_path)
+            )
+    return index
+
+
+def _vault_lookup(target: str, root: Path) -> "Path | None":
+    """Resolve *target* (a normalized wikilink path, `.md` already appended)
+    against the corpus under *root*, or None when nothing matches.
+
+    A bare name matches by basename; a path-qualified target
+    (``folder/name.md``) must match its full segment suffix. Ties break to the
+    shallowest match, then lexicographically — mirroring Obsidian, where a
+    root-level file wins a bare-link name collision — so resolution is
+    deterministic regardless of walk order.
+    """
+    root_key = str(root)
+    index = _MD_LINK_INDEX_CACHE.get(root_key)
+    if index is None:
+        try:
+            index = _build_link_index(root)
+        except OSError:
+            index = {}
+        _MD_LINK_INDEX_CACHE[root_key] = index
+    parts = _nfc(target.replace("\\", "/")).split("/")
+    candidates = index.get(parts[-1])
+    if not candidates:
+        return None
+    suffix = "/".join(parts)
+    matches = [
+        c for c in candidates
+        if c[1] == suffix or c[1].endswith("/" + suffix)
+    ]
+    if not matches:
+        return None
+    return min(matches)[2]
+
+
+def _resolve_markdown_link(raw: str, source_dir: Path,
+                           wikilink: bool = False) -> "Path | None":
     """Resolve a markdown link target to the absolute path of a sibling document.
 
     Returns the resolved (normalized, not necessarily existing) path when the
@@ -102,6 +195,12 @@ def _resolve_markdown_link(raw: str, source_dir: Path) -> "Path | None":
     The anchor fragment (``#section``) and query (``?x=1``) are stripped before
     resolution so ``./repo.md#setup`` resolves to the same node as ``./repo.md``.
     Extension-less targets (typical of wikilinks) are treated as sibling ``.md``.
+
+    With ``wikilink=True``, a target whose lexically resolved path does not
+    exist is retried as a vault-global lookup across the active scan root (see
+    _vault_lookup) — Obsidian's own resolution order for wikilinks. Inline and
+    reference-style links keep pure relative semantics: for them a missing
+    relative target is an authoring error, not an alternate link convention.
     """
     target = raw.strip()
     if not target:
@@ -122,7 +221,19 @@ def _resolve_markdown_link(raw: str, source_dir: Path) -> "Path | None":
     candidate = Path(target)
     if not candidate.is_absolute():
         candidate = source_dir / candidate
-    return Path(os.path.normpath(str(candidate)))
+    resolved = Path(os.path.normpath(str(candidate)))
+    if wikilink and not Path(target).is_absolute():
+        try:
+            missing = not resolved.is_file()
+        except OSError:
+            missing = False
+        if missing:
+            scan_root = _active_scan_root()
+            if scan_root is not None:
+                hit = _vault_lookup(target, scan_root)
+                if hit is not None:
+                    return Path(os.path.normpath(str(hit)))
+    return resolved
 
 def extract_markdown(path: Path) -> dict:
     """Extract structural nodes and edges from a Markdown file.
@@ -208,8 +319,8 @@ def extract_markdown(path: Path) -> dict:
     # same sibling many times yields one edge, not N (keeps weights meaningful).
     linked_targets: set[str] = set()
 
-    def add_link(raw: str, line: int) -> None:
-        resolved = _resolve_markdown_link(raw, source_dir)
+    def add_link(raw: str, line: int, wikilink: bool = False) -> None:
+        resolved = _resolve_markdown_link(raw, source_dir, wikilink=wikilink)
         if resolved is None:
             return
         # Build the target ID with the SAME recipe as the target file's own
@@ -260,7 +371,7 @@ def extract_markdown(path: Path) -> dict:
         for m in _MD_INLINE_LINK_RE.finditer(line_text):
             add_link(m.group(1), line_num)
         for m in _MD_WIKILINK_RE.finditer(line_text):
-            add_link(m.group(1), line_num)
+            add_link(m.group(1), line_num, wikilink=True)
         ref_def = _MD_REF_DEF_RE.match(line_text)
         if ref_def:
             add_link(ref_def.group(1), line_num)

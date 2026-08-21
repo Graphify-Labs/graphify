@@ -502,6 +502,31 @@ def to_cypher(G: nx.Graph, output_path: str) -> None:
 generate_html = to_html
 
 
+# Characters XML 1.0 cannot carry: the C0 controls except tab, LF and CR.
+_XML_ILLEGAL_RE = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def _strip_xml_illegal(s: str) -> str:
+    """Drop characters XML 1.0 cannot represent, leaving tab/LF/CR intact.
+
+    ``nx.write_graphml`` raises ``ValueError("All strings must be XML
+    compatible: Unicode or ASCII, no NULL bytes or control characters")`` on any
+    of them and aborts the whole export over a single label. Labels arrive
+    unfiltered from the corpus, so this is ordinary content rather than hostile
+    input: an ANSI escape in a markdown heading pasted from a terminal capture,
+    or the form feed some Python/Emacs sources use as a section separator
+    (#2897).
+    """
+    return _XML_ILLEGAL_RE.sub("", s)
+
+
+# C0 controls and DEL, folded to a space when building a filename stem. Windows
+# rejects them in a path outright with OSError EINVAL, so one of them in a label
+# aborted a whole Obsidian vault export; POSIX would accept the name but leave a
+# note nothing can comfortably open (#2897).
+_CONTROL_TO_SPACE_RE = re.compile("[\x00-\x1f\x7f]")
+
+
 def _cap_filename(s: str, limit: int = 200) -> str:
     """Cap a filename stem to ``limit`` UTF-8 bytes so it stays under the 255-byte
     filesystem limit even after the ``.md`` extension and dedup suffix are added
@@ -531,7 +556,11 @@ def _obsidian_safe_stem(label: str, limit: int = 200) -> str:
     cleaned = re.sub(
         r'[\\/*?:"<>|#^[\]]',
         "",
-        label.replace("\r\n", " ").replace("\r", " ").replace("\n", " "),
+        # CR/LF were already folded to spaces here; every other C0 control now
+        # goes the same way. They are not merely awkward in a filename — Windows
+        # rejects them outright, so a single one aborted the whole vault export
+        # rather than spoiling one note (#2897).
+        _CONTROL_TO_SPACE_RE.sub(" ", label),
     ).strip()
     cleaned = re.sub(r"\.(md|mdx|qmd|markdown)$", "", cleaned, flags=re.IGNORECASE)
     # Obsidian treats a leading-dot filename as a hidden file (#2205). Only
@@ -1127,12 +1156,26 @@ def to_graphml(
     def _graphml_safe(val):
         if val is None:
             return ""
-        if isinstance(val, bool) or isinstance(val, (int, float, str)):
+        if isinstance(val, bool) or isinstance(val, (int, float)):
             return val  # GraphML-native scalars pass through unchanged
+        if isinstance(val, str):
+            # Scalar, but still has to be XML-representable — see
+            # _strip_xml_illegal. This is the line that turns "one label carried
+            # an ANSI escape" from a lost export into a lost escape character.
+            return _strip_xml_illegal(val)
         try:
-            return json.dumps(val, default=str, sort_keys=True)
+            return _strip_xml_illegal(json.dumps(val, default=str, sort_keys=True))
         except (TypeError, ValueError):
-            return str(val)
+            return _strip_xml_illegal(str(val))
+
+    # Node IDs become the `id` attribute of every <node> and edge endpoint, so
+    # they must be XML-representable too. Normalised ids never carry a control
+    # character, but a caller can hand us a hand-built graph, and a crash here
+    # loses the export just as completely as one in the values.
+    _id_remap = {n: _strip_xml_illegal(n) for n in H.nodes if isinstance(n, str)}
+    _id_remap = {k: v for k, v in _id_remap.items() if k != v}
+    if _id_remap:
+        H = nx.relabel_nodes(H, _id_remap, copy=True)
 
     for key, val in list(H.graph.items()):
         H.graph[key] = _graphml_safe(val)
