@@ -142,6 +142,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
 )
 
 from graphify.symbol_resolution import (  # noqa: E402
+    canonicalize_python_type_aliases,
     resolve_bash_source_edges,
     resolve_markdown_code_references,
 )
@@ -6202,6 +6203,7 @@ def extract(
     _repoint_python_package_imports(paths, all_nodes, all_edges, root)
     _merge_swift_extensions(per_file, all_nodes, all_edges)
     _merge_csharp_partial_class_nodes(per_file, all_nodes, all_edges, paths, root)
+    canonicalize_python_type_aliases(paths, all_nodes, all_edges)
     _markdown_resolution_nodes = all_nodes
     if resolution_context_nodes:
         _fresh_markdown_ids = {node.get("id") for node in all_nodes}

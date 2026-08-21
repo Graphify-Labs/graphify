@@ -4,19 +4,256 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from graphify.symbol_resolution import (
     _bash_make_id,
     build_label_index,
     build_python_symbol_index,
+    canonicalize_python_type_aliases,
     find_unique_python_symbol,
     node_is_resolvable_symbol,
     normalise_callable_label,
     parse_python_import_aliases,
+    parse_python_type_aliases,
     resolve_bash_source_edges,
     resolve_cross_file_raw_calls,
     resolve_markdown_code_references,
     resolve_python_import_guided_calls,
 )
+
+
+def test_parse_python_type_aliases_supports_assignment_and_typealias(tmp_path):
+    module = tmp_path / "ordering.py"
+    module.write_text(
+        "from typing import Callable, TypeAlias\n"
+        "OrderFn = Callable[[int], str]\n"
+        "ExplicitOrderFn: TypeAlias = Callable[[int], str]\n",
+        encoding="utf-8",
+    )
+
+    aliases = parse_python_type_aliases(module)
+
+    assert [(alias.name, alias.source_location) for alias in aliases] == [
+        ("OrderFn", "L2"),
+        ("ExplicitOrderFn", "L3"),
+    ]
+
+
+def test_parse_python_type_aliases_ignores_function_local_assignments(tmp_path):
+    module = tmp_path / "ordering.py"
+    module.write_text(
+        "from typing import Callable\n"
+        "def build():\n"
+        "    LocalOrderFn = Callable[[int], str]\n",
+        encoding="utf-8",
+    )
+
+    assert parse_python_type_aliases(module) == []
+
+
+def test_canonicalize_python_type_aliases_rewires_imported_stub(tmp_path):
+    definitions = tmp_path / "ordering.py"
+    consumer = tmp_path / "planner.py"
+    definitions.write_text(
+        "from typing import Callable\nOrderFn = Callable[[int], str]\n",
+        encoding="utf-8",
+    )
+    consumer.write_text(
+        "from ordering import OrderFn\n"
+        "def plan(order: OrderFn):\n"
+        "    return order(1)\n",
+        encoding="utf-8",
+    )
+    nodes = [
+        {
+            "id": "ordering",
+            "label": "ordering.py",
+            "file_type": "code",
+            "source_file": str(definitions),
+            "source_location": "L1",
+        },
+        {
+            "id": "planner",
+            "label": "planner.py",
+            "file_type": "code",
+            "source_file": str(consumer),
+            "source_location": "L1",
+        },
+        {
+            "id": "planner_plan",
+            "label": "plan",
+            "file_type": "code",
+            "node_kind": "function",
+            "source_file": str(consumer),
+            "source_location": "L2",
+        },
+        {
+            "id": "stub_orderfn",
+            "label": "OrderFn",
+            "file_type": "code",
+        },
+    ]
+    edges = [
+        {
+            "source": "planner_plan",
+            "target": "stub_orderfn",
+            "relation": "references",
+            "source_file": str(consumer),
+        }
+    ]
+
+    canonicalize_python_type_aliases([definitions, consumer], nodes, edges)
+
+    aliases = [
+        node for node in nodes if node.get("node_kind") == "type_alias"
+    ]
+    assert len(aliases) == 1
+    assert aliases[0]["label"] == "OrderFn"
+    assert aliases[0]["source_file"] == str(definitions)
+    assert edges[0]["target"] == aliases[0]["id"]
+    assert all(node["id"] != "stub_orderfn" for node in nodes)
+
+
+def test_extract_canonicalizes_imported_python_type_alias(tmp_path):
+    from graphify.extract import extract
+
+    definitions = tmp_path / "ordering.py"
+    consumer = tmp_path / "planner.py"
+    definitions.write_text(
+        "from typing import Callable\nOrderFn = Callable[[int], str]\n",
+        encoding="utf-8",
+    )
+    consumer.write_text(
+        "from ordering import OrderFn\n"
+        "def plan(order: OrderFn):\n"
+        "    return order(1)\n",
+        encoding="utf-8",
+    )
+
+    result = extract(
+        [definitions, consumer],
+        cache_root=tmp_path,
+        root=tmp_path,
+        parallel=False,
+    )
+
+    aliases = [
+        node
+        for node in result["nodes"]
+        if node.get("label") == "OrderFn"
+    ]
+    assert len(aliases) == 1
+    assert aliases[0].get("node_kind") == "type_alias"
+    assert aliases[0].get("source_file") == "ordering.py"
+    assert any(
+        edge.get("target") == aliases[0]["id"]
+        and edge.get("relation") == "references"
+        for edge in result["edges"]
+    )
+
+
+@pytest.mark.parametrize(
+    "consumer_source",
+    [
+        "from ordering import *\ndef plan(order: OrderFn):\n    return order(1)\n",
+        "def plan(order: OrderFn):\n    from ordering import OrderFn\n    return order(1)\n",
+        "from external_lib import OrderFn\ndef plan(order: OrderFn):\n    return order(1)\n",
+    ],
+)
+def test_python_type_alias_resolution_requires_top_level_exact_import(
+    tmp_path, consumer_source
+):
+    definitions = tmp_path / "ordering.py"
+    consumer = tmp_path / "planner.py"
+    definitions.write_text(
+        "from typing import Callable\nOrderFn = Callable[[int], str]\n",
+        encoding="utf-8",
+    )
+    consumer.write_text(consumer_source, encoding="utf-8")
+    nodes = [
+        {
+            "id": "ordering",
+            "label": "ordering.py",
+            "file_type": "code",
+            "source_file": str(definitions),
+        },
+        {
+            "id": "planner",
+            "label": "planner.py",
+            "file_type": "code",
+            "source_file": str(consumer),
+        },
+        {"id": "stub", "label": "OrderFn", "file_type": "code"},
+    ]
+    edges = [
+        {
+            "source": "planner",
+            "target": "stub",
+            "relation": "references",
+            "source_file": str(consumer),
+        }
+    ]
+
+    canonicalize_python_type_aliases([definitions, consumer], nodes, edges)
+
+    assert edges[0]["target"] == "stub"
+    assert any(node["id"] == "stub" for node in nodes)
+
+
+def test_python_type_alias_resolution_leaves_ambiguous_modules_unresolved(
+    tmp_path,
+):
+    first = tmp_path / "one" / "ordering.py"
+    second = tmp_path / "two" / "ordering.py"
+    consumer = tmp_path / "planner.py"
+    first.parent.mkdir()
+    second.parent.mkdir()
+    alias_source = (
+        "from typing import Callable\nOrderFn = Callable[[int], str]\n"
+    )
+    first.write_text(alias_source, encoding="utf-8")
+    second.write_text(alias_source, encoding="utf-8")
+    consumer.write_text(
+        "from ordering import OrderFn\n"
+        "def plan(order: OrderFn):\n"
+        "    return order(1)\n",
+        encoding="utf-8",
+    )
+    nodes = [
+        {
+            "id": "one_ordering",
+            "label": "ordering.py",
+            "file_type": "code",
+            "source_file": str(first),
+        },
+        {
+            "id": "two_ordering",
+            "label": "ordering.py",
+            "file_type": "code",
+            "source_file": str(second),
+        },
+        {
+            "id": "planner",
+            "label": "planner.py",
+            "file_type": "code",
+            "source_file": str(consumer),
+        },
+        {"id": "stub", "label": "OrderFn", "file_type": "code"},
+    ]
+    edges = [
+        {
+            "source": "planner",
+            "target": "stub",
+            "relation": "references",
+            "source_file": str(consumer),
+        }
+    ]
+
+    canonicalize_python_type_aliases([first, second, consumer], nodes, edges)
+
+    assert edges[0]["target"] == "stub"
+    assert any(node["id"] == "stub" for node in nodes)
 
 
 def test_markdown_code_reference_prefers_exact_symbol(tmp_path):
