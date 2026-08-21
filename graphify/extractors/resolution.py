@@ -209,7 +209,9 @@ def _load_tsconfig_aliases(start_dir: Path) -> dict[str, list[str]]:
     Follows extends chains so SvelteKit/Nuxt/NestJS inherited aliases are included.
     Returns a dict mapping alias patterns to ordered resolved target patterns;
     wildcard tokens remain intact for substitution during resolution (#927).
-    Result is cached by config path string.
+    Result is cached by config path string. The cache has no mtime/content
+    component, so extract() clears it per run (#2917); do not assume the entry
+    survives a config edit within a long-lived process.
     """
     found = _find_js_config(start_dir)
     if found is None:
@@ -227,7 +229,8 @@ def _load_tsconfig_base_url(start_dir: Path) -> "Path | None":
     so a config declaring baseUrl and NO paths yielded an empty alias map and
     every non-relative import went unresolved (#2153). Exposed separately so it
     can act as a resolution root of last resort, after all declared aliases miss.
-    Returns None when no config declares baseUrl.
+    Returns None when no config declares baseUrl. Cached by config path with no
+    mtime component, so extract() clears it per run (#2917).
     """
     found = _find_js_config(start_dir)
     if found is None:
