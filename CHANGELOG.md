@@ -4,6 +4,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.48 (2026-08-20)
 
+- Fix: a class that extends one of its own language's built-in exception types no longer inherits from an unrelated same-named class in another language, so a PHP `class FooApiException extends \Exception` stops fusing onto a TypeScript `Exception` class; the unique-stub rewire now refuses that cross-language match and leaves the built-in base on its own external stub, while legitimate cross-language rewires are unchanged (#2812, thanks @moeen-basra).
 - Fix: a control character in a node label or id no longer aborts the whole export; the GraphML and Obsidian exporters scrub only the characters those formats forbid (tab, newline, and non-ASCII letters are preserved), and `graph.json` and its byte-identity round-trip are untouched (#2897, thanks @abhay-codes07).
 - Fix: `graphify update` / `label` / `cluster-only` no longer leave a large graph without a `graph.html`; the aggregated community view renders instead of raising, a failed render preserves the previous file, and a missing `graph.html` is regenerated on the no-change fast path without reclustering (#2853, thanks @oleksii-tumanov).
 - Feature: `graphify extract --no-dedup` skips the fuzzy near-duplicate merge on build and incremental merge, for operators who would rather keep distinct symbols that fuzzy-matched; exact-id uniqueness is unaffected and the flag arms the shrink guard so a surprising node drop is refused loudly (#2881, thanks @rajarshidattapy).
