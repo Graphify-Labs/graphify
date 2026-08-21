@@ -98,6 +98,31 @@ def test_issue_1699_resolves_four_typed_receiver_shapes(tmp_path: Path) -> None:
     )
 
 
+def test_member_call_coexists_with_method_ownership_edge(tmp_path: Path) -> None:
+    result = _extract(
+        tmp_path,
+        {
+            "Owner.kt": (
+                "class Owner {\n"
+                "    companion object {\n"
+                "        fun ping() {}\n"
+                "        val initialized = Owner.ping()\n"
+                "    }\n"
+                "}\n"
+            ),
+        },
+    )
+
+    owner = _find(result, "Owner", "owner")
+    ping = _find(result, ".ping()", "owner")
+    relations = {
+        edge["relation"]
+        for edge in result["edges"]
+        if edge.get("source") == owner and edge.get("target") == ping
+    }
+    assert {"method", "calls"} <= relations
+
+
 def test_receiver_bindings_do_not_leak_between_methods(tmp_path: Path) -> None:
     result = _extract(
         tmp_path,

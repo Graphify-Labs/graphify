@@ -4158,7 +4158,11 @@ def _resolve_kotlin_member_calls(
                 local_name, set()
             ).add(target_fqn)
 
-    existing_pairs = {(edge.get("source"), edge.get("target")) for edge in all_edges}
+    existing_pairs = {
+        (edge.get("source"), edge.get("target"))
+        for edge in all_edges
+        if edge.get("relation") == "calls"
+    }
 
     def visible_type_fqns(
         type_name: str,
