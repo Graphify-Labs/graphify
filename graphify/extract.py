@@ -2078,7 +2078,12 @@ def extract_csharp(path: Path) -> dict:
 
 def extract_kotlin(path: Path) -> dict:
     """Extract classes, objects, functions, and imports from a .kt/.kts file."""
-    return _extract_generic(path, _KOTLIN_CONFIG)
+    result = _extract_generic(path, _KOTLIN_CONFIG)
+    result["_kotlin_member_symbol_inventory_complete"] = any(
+        node.get("_kotlin_member_symbol_inventory_version") == 1
+        for node in result.get("nodes", [])
+    )
+    return result
 
 
 def extract_scala(path: Path) -> dict:
@@ -3879,6 +3884,344 @@ def _resolve_kotlin_qualified_calls(
         })
 
 
+def _kotlin_incremental_member_callers(
+    graph_path: Path,
+    *,
+    changed_paths: list[Path],
+    deleted_paths: list[Path],
+    live_code_paths: list[Path],
+    root: Path,
+    stored_source_identity: Callable[[str], str | None] | None = None,
+) -> list[Path]:
+    """Return unchanged Kotlin callers invalidated by symbol inventories.
+
+    Receiver resolution depends on corpus-wide type, directly-owned method,
+    overload, and top-level-factory inventories. When one of those inventories
+    changes, a caller-owned edge from an unchanged file cannot be preserved:
+    the same call may now be ambiguous (or may have become resolvable). Requeue
+    only files known to contain typed Kotlin member-call dependencies.
+    """
+    root = Path(os.path.abspath(root))
+
+    def identity(value: str | Path) -> str:
+        path = Path(value)
+        if not path.is_absolute():
+            path = root / path
+        return Path(os.path.abspath(path)).as_posix()
+
+    changed_kotlin = [
+        path
+        for path in changed_paths
+        if path.suffix.lower() in (".kt", ".kts") and path.is_file()
+    ]
+    deleted_kotlin = [
+        path for path in deleted_paths if path.suffix.lower() in (".kt", ".kts")
+    ]
+    if not changed_kotlin and not deleted_kotlin:
+        return []
+
+    changed_source_ids = {identity(path) for path in changed_kotlin}
+    deleted_source_ids = {identity(path) for path in deleted_kotlin}
+    live_source_ids = {identity(path) for path in live_code_paths}
+    known_source_ids = changed_source_ids | deleted_source_ids | live_source_ids
+    path_rehoming_required = False
+    suffix_index: dict[str, set[str]] = {}
+    for candidate in known_source_ids:
+        parts = candidate.replace("\\", "/").strip("/").split("/")
+        for offset in range(len(parts)):
+            suffix_index.setdefault("/".join(parts[offset:]), set()).add(candidate)
+
+    def persisted_identity(source_file: str) -> str:
+        nonlocal path_rehoming_required
+        stored = None
+        if stored_source_identity is not None:
+            try:
+                stored = stored_source_identity(source_file)
+            except (OSError, ValueError):
+                stored = None
+        fallback = identity(source_file)
+        for candidate in (stored, fallback):
+            if candidate in known_source_ids:
+                return str(candidate)
+        suffix = Path(source_file).as_posix().lstrip("/")
+        suffix_matches = suffix_index.get(suffix, set())
+        if len(suffix_matches) == 1:
+            path_rehoming_required = True
+            return next(iter(suffix_matches))
+        return str(stored or fallback)
+
+    try:
+        from graphify.security import check_graph_file_size_cap
+
+        check_graph_file_size_cap(graph_path)
+        graph = json.loads(graph_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return []
+
+    old_inventories: dict[str, tuple[str, ...]] = {}
+    dependency_sources: set[str] = set()
+    graph_kotlin_sources: set[str] = set()
+    inventoried_sources: set[str] = set()
+    for node in graph.get("nodes", []):
+        source_file = node.get("source_file")
+        if not source_file:
+            continue
+        source_id = persisted_identity(str(source_file))
+        if str(source_file).endswith((".kt", ".kts")):
+            graph_kotlin_sources.add(source_id)
+        if "_kotlin_member_symbol_inventory_version" in node:
+            inventoried_sources.add(source_id)
+            old_inventories[source_id] = tuple(
+                str(value)
+                for value in node.get("_kotlin_member_symbol_inventory") or ()
+            )
+        if node.get("_kotlin_member_call_dependencies"):
+            dependency_sources.add(source_id)
+
+    if graph_kotlin_sources - inventoried_sources:
+        # One-time migration for a graph persisted before inventory v1. Its
+        # caller edges may already be stale, and it has no dependency markers
+        # with which to target a narrower invalidation. Refresh the live Kotlin
+        # corpus once; the resulting graph carries complete inventories.
+        return [
+            path
+            for path in live_code_paths
+            if path.suffix.lower() in (".kt", ".kts")
+            and identity(path) not in changed_source_ids
+            and identity(path) not in deleted_source_ids
+            and path.is_file()
+        ]
+
+    inventory_changed = False
+    incomplete_fresh_inventory = False
+    for path in changed_kotlin:
+        try:
+            result = extract_kotlin(path)
+        except Exception:
+            # Incremental invalidation is a safety preflight, not the main
+            # extraction boundary. A provider that cannot be parsed cannot
+            # prove that an ambiguity disappeared, so requeue the Kotlin
+            # corpus below and let the normal safe extractor persist an
+            # incomplete-inventory sentinel for subsequent rebuilds.
+            incomplete_fresh_inventory = True
+            continue
+        fresh_file = next(
+            (
+                node
+                for node in result.get("nodes", [])
+                if node.get("_kotlin_member_symbol_inventory_version") == 1
+            ),
+            None,
+        )
+        if fresh_file is None:
+            # A recovery parse cannot prove that an ambiguity provider was
+            # removed. Requeue dependants below, then the missing completeness
+            # marker makes the corpus resolver fail closed.
+            incomplete_fresh_inventory = True
+            continue
+        fresh_inventory = tuple(
+            str(value)
+            for value in fresh_file.get("_kotlin_member_symbol_inventory") or ()
+        )
+        if old_inventories.get(identity(path)) != fresh_inventory:
+            inventory_changed = True
+
+    if incomplete_fresh_inventory:
+        return [
+            path
+            for path in live_code_paths
+            if path.suffix.lower() in (".kt", ".kts")
+            and identity(path) not in changed_source_ids
+            and identity(path) not in deleted_source_ids
+            and path.is_file()
+        ]
+    if any(old_inventories.get(source_id) for source_id in deleted_source_ids):
+        inventory_changed = True
+    if path_rehoming_required:
+        # Re-extracting only the caller while invocation-root semantics changed
+        # can leave its unchanged type/method targets outside reconciliation's
+        # live identity set. Refresh the small affected language corpus so the
+        # rewritten graph remains self-consistent across invocation styles.
+        return [
+            path
+            for path in live_code_paths
+            if path.suffix.lower() in (".kt", ".kts")
+            and identity(path) not in changed_source_ids
+            and identity(path) not in deleted_source_ids
+            and path.is_file()
+        ]
+    if not inventory_changed:
+        return []
+
+    invalidated_sources = dependency_sources - changed_source_ids - deleted_source_ids
+    return [
+        path
+        for path in live_code_paths
+        if identity(path) in invalidated_sources and path.is_file()
+    ]
+
+
+def _resolve_kotlin_member_calls(
+    per_file: list[dict],
+    all_nodes: list[dict],
+    all_edges: list[dict],
+) -> None:
+    """Resolve Kotlin member calls through one exact receiver type (#1699).
+
+    Receiver facts are collected per method by the Kotlin engine. This corpus
+    pass intentionally fails closed: a type must resolve through its written
+    FQN, an explicit import/alias, or the caller's package, and the type must
+    directly own exactly one method with the requested name. There is no global
+    simple-name or inheritance fallback.
+    """
+    raw_calls = [
+        call
+        for result in per_file
+        for call in result.get("raw_calls", [])
+        if call.get("lang") == "kotlin"
+        and call.get("is_member_call")
+        and call.get("receiver_type")
+        and not call.get("qualified_prefix")
+        and call.get("callee")
+        and call.get("caller_nid")
+    ]
+    if not raw_calls:
+        return
+
+    if any(
+        result.get("_kotlin_member_symbol_inventory_complete") is False
+        for result in per_file
+    ):
+        # A failed/zero-node Kotlin extraction has no source node on which to
+        # carry the corpus completeness marker. The explicit per-result flag
+        # keeps that unknown provider visible and prevents negative-evidence
+        # resolution from fabricating an edge.
+        return
+
+    kotlin_sources = {
+        str(node.get("source_file", ""))
+        for node in all_nodes
+        if str(node.get("source_file", "")).endswith((".kt", ".kts"))
+    }
+    inventoried_sources = {
+        str(node.get("source_file", ""))
+        for node in all_nodes
+        if node.get("_kotlin_member_symbol_inventory_version") == 1
+    }
+    if not kotlin_sources.issubset(inventoried_sources):
+        # Incremental graphs created by an older extractor do not carry
+        # negative evidence about duplicate types, overloads, or factories.
+        # Until a full refresh inventories every Kotlin file, fail closed.
+        return
+
+    node_by_id = {node.get("id"): node for node in all_nodes}
+    types_by_fqn: dict[str, list[str]] = {}
+    functions_by_fqn: dict[str, list[str]] = {}
+    for node in all_nodes:
+        node_id = node.get("id")
+        if not node_id:
+            continue
+        type_fqn = node.get("_kotlin_fqn")
+        if type_fqn and node.get("_callable_class"):
+            types_by_fqn.setdefault(str(type_fqn), []).append(node_id)
+        for function_fqn in node.get("_kotlin_top_level_function_fqns") or ():
+            functions_by_fqn.setdefault(str(function_fqn), []).append(node_id)
+
+    methods: dict[tuple[str, str], list[str]] = {}
+    imports_by_file: dict[str, dict[str, set[str]]] = {}
+    for edge in all_edges:
+        if edge.get("relation") == "method":
+            target = edge.get("target")
+            label = str(node_by_id.get(target, {}).get("label", ""))
+            method_name = label.strip("()").lstrip(".")
+            if method_name:
+                methods.setdefault((edge.get("source"), method_name), []).append(
+                    target
+                )
+            continue
+        if edge.get("relation") != "imports":
+            continue
+        source_file = str(edge.get("source_file", ""))
+        if not source_file.endswith((".kt", ".kts")):
+            continue
+        metadata = edge.get("metadata") or {}
+        target_fqn = str(metadata.get("target_fqn", ""))
+        if not target_fqn:
+            continue
+        local_name = str(metadata.get("alias") or target_fqn.rpartition(".")[2])
+        if local_name:
+            imports_by_file.setdefault(source_file, {}).setdefault(
+                local_name, set()
+            ).add(target_fqn)
+
+    existing_pairs = {(edge.get("source"), edge.get("target")) for edge in all_edges}
+
+    def visible_type_fqns(
+        type_name: str, source_file: str, package: str
+    ) -> set[str]:
+        if "." in type_name:
+            return {type_name}
+        imported = imports_by_file.get(source_file, {}).get(type_name)
+        if imported is not None:
+            return set(imported)
+        return {f"{package}.{type_name}" if package else type_name}
+
+    for call in raw_calls:
+        source_file = str(call.get("source_file", ""))
+        receiver_type = str(call["receiver_type"])
+        package = str(call.get("kotlin_package", ""))
+        candidate_fqns = visible_type_fqns(receiver_type, source_file, package)
+        if len(candidate_fqns) != 1:
+            continue
+        resolved_fqn = next(iter(candidate_fqns))
+        constructor_name = str(call.get("receiver_constructor_name") or "")
+        visible_function_fqns = {resolved_fqn}
+        if constructor_name and "." not in constructor_name:
+            visible_function_fqns.add(
+                f"{package}.{constructor_name}" if package else constructor_name
+            )
+            visible_function_fqns.update(
+                imports_by_file.get(source_file, {}).get(constructor_name, set())
+            )
+        if call.get("receiver_constructor") and any(
+            functions_by_fqn.get(fqn) for fqn in visible_function_fqns
+        ):
+            # A same-named top-level callable can be a factory returning another
+            # type (`fun Widget(...): Product`). Without overload/signature
+            # resolution, constructor-inferred receivers must fail closed.
+            continue
+        type_candidates = [
+            node_id
+            for fqn in candidate_fqns
+            for node_id in types_by_fqn.get(fqn, [])
+        ]
+        if len(type_candidates) != 1:
+            continue
+
+        callee = str(call["callee"])
+        targets = methods.get((type_candidates[0], callee), [])
+        if len(targets) != 1:
+            continue
+        caller = call["caller_nid"]
+        target = targets[0]
+        if caller == target or (caller, target) in existing_pairs:
+            continue
+        existing_pairs.add((caller, target))
+        all_edges.append(
+            {
+                "source": caller,
+                "target": target,
+                "relation": "calls",
+                "context": "call",
+                "confidence": "INFERRED",
+                "confidence_score": 0.85,
+                "source_file": source_file,
+                "source_location": call.get("source_location"),
+                "weight": 1.0,
+            }
+        )
+
+
 # Kotlin import-target resolution runs EARLY (directly in extract(), before the
 # shared call pass builds its import-evidence index) — registering it in the
 # tail registry would rewrite the targets after promotion already read them.
@@ -3931,6 +4274,11 @@ register_language_resolver(
 )
 register_language_resolver(
     LanguageResolver("java_member_calls", frozenset({".java"}), _resolve_java_member_calls)
+)
+register_language_resolver(
+    LanguageResolver(
+        "kotlin_member_calls", frozenset({".kt", ".kts"}), _resolve_kotlin_member_calls
+    )
 )
 # Pascal/Delphi cross-file inherited-method-call resolution: a call from a
 # manual descendant class to a method it inherits from an ancestor declared
@@ -5605,6 +5953,19 @@ def extract(
                 "error": "internal: no extraction result produced",
             }
 
+    # Stamp Kotlin corpus-completeness centrally, after cached, sequential,
+    # parallel, and safe-exception paths converge. `extract_kotlin()` stamps
+    # its normal return for the incremental preflight above, but exceptions
+    # caught by `_safe_extract` and old cache entries bypass that wrapper.
+    for i, _p in enumerate(paths):
+        if _p.suffix.lower() not in (".kt", ".kts"):
+            continue
+        _res = per_file[i] or {}
+        _res["_kotlin_member_symbol_inventory_complete"] = any(
+            node.get("_kotlin_member_symbol_inventory_version") == 1
+            for node in _res.get("nodes", [])
+        )
+
     # #1666: surface any source file an extractor accepted but that produced zero
     # nodes (not even a file node). Such a file is silently absent from the graph,
     # so affected/explain are blind to and through it with no other signal.
@@ -5767,6 +6128,28 @@ def extract(
             f"may be partially extracted: {_shown}{_more}",
             file=sys.stderr, flush=True,
         )
+
+    # A zero-node Kotlin failure has no natural carrier for the absent
+    # inventory marker. Persist a file-shaped sentinel only after empty/error
+    # diagnostics have been collected, so warnings and manifest retry behavior
+    # remain unchanged. Its missing inventory-v1 marker keeps both this batch
+    # and later incremental rebuilds fail-closed until the source extracts
+    # successfully and replaces it.
+    for i, _p in enumerate(paths):
+        _res = per_file[i] or {}
+        if (
+            _p.suffix.lower() in (".kt", ".kts")
+            and _res.get("_kotlin_member_symbol_inventory_complete") is False
+            and not _res.get("nodes")
+        ):
+            _res["nodes"] = [{
+                "id": _make_id(str(_p)),
+                "label": _p.name,
+                "file_type": "code",
+                "source_file": str(_p),
+                "source_location": "L1",
+                "_kotlin_member_symbol_inventory_incomplete": True,
+            }]
 
     all_nodes: list[dict] = []
     all_edges: list[dict] = []

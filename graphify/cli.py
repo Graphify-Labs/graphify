@@ -3402,8 +3402,35 @@ def dispatch_command(cmd: str) -> None:
         # AST extraction on code files. Empty code list (docs-only corpus) is
         # the issue #698 case — skip cleanly instead of crashing inside extract().
         ast_result: dict = {"nodes": [], "edges": [], "input_tokens": 0, "output_tokens": 0}
+        from graphify.extract import (
+            _kotlin_incremental_member_callers,
+            extract as _ast_extract,
+        )
+        if incremental_mode and existing_graph_path.exists():
+            _kotlin_requeued = _kotlin_incremental_member_callers(
+                existing_graph_path,
+                changed_paths=code_files,
+                deleted_paths=[
+                    Path(path)
+                    for path in (
+                        list(deleted_files)
+                        + list(excluded_files)
+                        + list(graph_stale_sources)
+                    )
+                ],
+                live_code_paths=[
+                    Path(path) for path in files_by_type.get("code", [])
+                ],
+                root=target,
+            )
+            if _kotlin_requeued:
+                code_files.extend(_kotlin_requeued)
+                print(
+                    "[graphify extract] re-queuing "
+                    f"{len(_kotlin_requeued)} Kotlin member-call caller(s) "
+                    "after a type/method/factory inventory change"
+                )
         if code_files:
-            from graphify.extract import extract as _ast_extract
             # Anchor the cache at the output root, not the scanned project:
             # with --out, a <target>/graphify-out/cache/ would leak a
             # graphify-out/ dir into a project that asked for external output.
@@ -3454,6 +3481,7 @@ def dispatch_command(cmd: str) -> None:
                         for _flist in detection.get("unchanged_files", {}).values()
                         for f in _flist
                     }
+                    _ctx_live -= {_ctx_identity(path) for path in code_files}
                     _ctx_live.discard(None)
                     for _node in _ctx_graph.get("nodes", []):
                         if not _node.get("id") or not _ctx_is_ast_tier(_node):
@@ -3468,8 +3496,15 @@ def dispatch_command(cmd: str) -> None:
                             "file_type": _node.get("file_type"),
                             "type": _node.get("type"),
                         }
-                        for _marker in ("_callable", "_callable_class"):
-                            if _node.get(_marker):
+                        for _marker in (
+                            "_callable",
+                            "_callable_class",
+                            "_kotlin_fqn",
+                            "_kotlin_top_level_function_fqns",
+                            "_kotlin_member_symbol_inventory_version",
+                            "_kotlin_member_symbol_inventory",
+                        ):
+                            if _marker in _node:
                                 _ctx_node[_marker] = _node[_marker]
                         _ctx_nodes.append(_ctx_node)
                     for _edge in _ctx_graph.get(

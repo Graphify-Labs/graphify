@@ -797,6 +797,459 @@ def _kotlin_function_return_type_node(func_node):
                 return c
     return None
 
+
+def _kotlin_type_parameters_in_scope(node, source: bytes) -> set[str]:
+    """Return Kotlin generic parameter names visible at ``node``."""
+    names: set[str] = set()
+    current = node
+    while current is not None:
+        if current.type in (
+            "class_declaration",
+            "object_declaration",
+            "function_declaration",
+        ):
+            for child in current.children:
+                if child.type != "type_parameters":
+                    continue
+                for parameter in child.children:
+                    if parameter.type != "type_parameter":
+                        continue
+                    name = next(
+                        (
+                            _read_text(token, source)
+                            for token in parameter.children
+                            if token.type
+                            in ("identifier", "simple_identifier", "type_identifier")
+                        ),
+                        None,
+                    )
+                    if name:
+                        names.add(name)
+        current = current.parent
+    return names
+
+
+def _kotlin_receiver_type_name(type_node, source: bytes) -> str | None:
+    """Return a concrete Kotlin type name suitable for receiver resolution."""
+    if type_node is None:
+        return None
+    if type_node.type in ("nullable_type", "parenthesized_type", "type_reference"):
+        for child in type_node.children:
+            if child.is_named:
+                result = _kotlin_receiver_type_name(child, source)
+                if result:
+                    return result
+        return None
+    if type_node.type not in ("user_type", "simple_user_type"):
+        return None
+
+    identifiers: list[str] = []
+    for child in type_node.children:
+        if child.type in ("identifier", "simple_identifier", "type_identifier"):
+            identifiers.append(_read_text(child, source))
+        elif child.type == "simple_user_type":
+            nested = _kotlin_receiver_type_name(child, source)
+            if nested:
+                identifiers.append(nested)
+    if not identifiers:
+        return None
+    bare_name = identifiers[-1]
+    if (
+        bare_name in _KOTLIN_BUILTIN_TYPES
+        or bare_name in _JAVA_BUILTIN_TYPES
+        or (
+            len(identifiers) == 1
+            and bare_name in _kotlin_type_parameters_in_scope(type_node, source)
+        )
+    ):
+        return None
+    return ".".join(identifiers)
+
+
+def _kotlin_declaration_name(node, source: bytes) -> str | None:
+    """Return the first name declared by a Kotlin binding node."""
+    if node is None:
+        return None
+    for child in node.children:
+        if child.type in ("identifier", "simple_identifier"):
+            return _read_text(child, source) or None
+        if child.type == "variable_declaration":
+            name = _kotlin_declaration_name(child, source)
+            if name:
+                return name
+    return None
+
+
+def _kotlin_variable_names(node, source: bytes) -> list[str]:
+    """Return names introduced by a Kotlin binding or destructuring pattern."""
+    if node is not None and node.type in ("identifier", "simple_identifier"):
+        name = _read_text(node, source)
+        return [name] if name else []
+    names: list[str] = []
+    stack = [node] if node is not None else []
+    while stack:
+        current = stack.pop()
+        if current.type in ("variable_declaration", "parameter", "class_parameter"):
+            name = _kotlin_declaration_name(current, source)
+            if name:
+                names.append(name)
+            continue
+        stack.extend(
+            child
+            for child in current.children
+            if child.type
+            in (
+                "variable_declaration",
+                "multi_variable_declaration",
+                "parameter",
+                "class_parameter",
+            )
+        )
+    return names
+
+
+def _kotlin_call_target_name(call_node, source: bytes) -> str | None:
+    """Return the name invoked by a simple Kotlin call expression."""
+    if call_node is None or call_node.type != "call_expression":
+        return None
+    first = next((child for child in call_node.children if child.is_named), None)
+    if first is None or first.type not in ("identifier", "simple_identifier"):
+        return None
+    return _read_text(first, source) or None
+
+
+def _kotlin_function_receiver_type_node(function_node):
+    """Return the extension receiver before a Kotlin function name, if present."""
+    name_node = function_node.child_by_field_name("name")
+    if name_node is None:
+        return None
+    for child in function_node.children:
+        if child == name_node:
+            break
+        if child.type in ("user_type", "nullable_type", "type_reference"):
+            return child
+    return None
+
+
+def _kotlin_owner_members(owner_node) -> list:
+    """Return direct declarations owned by a Kotlin file/class/object."""
+    if owner_node.type == "source_file":
+        return list(owner_node.children)
+    body = next(
+        (child for child in owner_node.children if child.type == "class_body"),
+        None,
+    )
+    return list(body.children) if body is not None else []
+
+
+def _kotlin_owner_return_types(owner_node, source: bytes) -> dict[str, str | None]:
+    """Collect unique declared return types for direct functions of one owner."""
+    returns: dict[str, str | None] = {}
+    ambiguous: set[str] = set()
+    for member in _kotlin_owner_members(owner_node):
+        if member.type != "function_declaration":
+            continue
+        if _kotlin_function_receiver_type_node(member) is not None:
+            continue
+        name = _kotlin_declaration_name(member, source)
+        type_name = _kotlin_receiver_type_name(
+            _kotlin_function_return_type_node(member), source
+        )
+        if not name or name in ambiguous:
+            continue
+        if name in returns and returns[name] != type_name:
+            returns[name] = None
+            ambiguous.add(name)
+        else:
+            returns[name] = type_name
+    return returns
+
+
+_KOTLIN_CONSTRUCTOR_TYPE_PREFIX = "@constructor:"
+
+
+def _kotlin_receiver_fact_type(fact: str | None) -> str | None:
+    if fact and fact.startswith(_KOTLIN_CONSTRUCTOR_TYPE_PREFIX):
+        return fact.removeprefix(_KOTLIN_CONSTRUCTOR_TYPE_PREFIX)
+    return fact
+
+
+def _kotlin_binding_type(
+    property_node,
+    source: bytes,
+    return_types: dict[str, str | None],
+    shadowed_call_targets: set[str],
+    callable_names: set[str],
+) -> str | None:
+    """Infer a binding from an annotation, constructor, or typed getter call."""
+    explicit = _kotlin_receiver_type_name(
+        _kotlin_property_type_node(property_node), source
+    )
+    if explicit:
+        return explicit
+    initializer = next(
+        (child for child in property_node.children if child.type == "call_expression"),
+        None,
+    )
+    target = _kotlin_call_target_name(initializer, source)
+    if not target or target in shadowed_call_targets:
+        return None
+    if target[:1].isupper():
+        # A same-named function can shadow a constructor. Without signatures,
+        # choosing either would fabricate a receiver type.
+        return (
+            None
+            if target in callable_names
+            else f"{_KOTLIN_CONSTRUCTOR_TYPE_PREFIX}{target}"
+        )
+    return return_types.get(target)
+
+
+def _kotlin_receiver_types_by_body(
+    root_node, source: bytes
+) -> dict[tuple[int, int], dict[str, str]]:
+    """Build fail-closed, per-function Kotlin receiver facts (#1699)."""
+    callable_names: set[str] = set()
+    stack = [root_node]
+    while stack:
+        current = stack.pop()
+        if current.type == "function_declaration":
+            name = _kotlin_declaration_name(current, source)
+            if name:
+                callable_names.add(name)
+        stack.extend(current.children)
+
+    tables: dict[tuple[int, int], dict[str, str]] = {}
+
+    def process_owner(owner_node) -> None:
+        members = _kotlin_owner_members(owner_node)
+        return_types = _kotlin_owner_return_types(owner_node, source)
+        # Only top-level owners have a stable package-qualified identity in the
+        # narrow #1699 resolver. A nested/companion ``this`` must fail closed:
+        # reducing it to the simple owner name can bind a same-named top-level
+        # class and fabricate a call edge.
+        owner_type = (
+            _kotlin_declaration_name(owner_node, source)
+            if owner_node.type != "source_file"
+            and owner_node.parent is not None
+            and owner_node.parent.type == "source_file"
+            else None
+        )
+        field_types: dict[str, str] = {}
+        field_poisoned: set[str] = set()
+
+        def bind_field(name: str | None, type_name: str | None) -> None:
+            if not name or name in field_poisoned:
+                return
+            previous = field_types.get(name)
+            if not type_name or (
+                previous is not None
+                and _kotlin_receiver_fact_type(previous)
+                != _kotlin_receiver_fact_type(type_name)
+            ):
+                field_types.pop(name, None)
+                field_poisoned.add(name)
+            else:
+                field_types[name] = type_name
+
+        owner_shadows = {
+            name
+            for member in members
+            if member.type == "property_declaration"
+            for name in _kotlin_variable_names(member, source)
+        }
+        if owner_node.type != "source_file":
+            constructor = next(
+                (
+                    child
+                    for child in owner_node.children
+                    if child.type == "primary_constructor"
+                ),
+                None,
+            )
+            if constructor is not None:
+                pending = list(constructor.children)
+                while pending:
+                    parameter = pending.pop()
+                    if parameter.type == "class_parameter":
+                        if any(token.type in ("val", "var") for token in parameter.children):
+                            type_node = next(
+                                (
+                                    token
+                                    for token in parameter.children
+                                    if token.type
+                                    in ("user_type", "nullable_type", "type_reference")
+                                ),
+                                None,
+                            )
+                            bind_field(
+                                _kotlin_declaration_name(parameter, source),
+                                _kotlin_receiver_type_name(type_node, source),
+                            )
+                        continue
+                    pending.extend(parameter.children)
+        for member in members:
+            if member.type != "property_declaration":
+                continue
+            names = _kotlin_variable_names(member, source)
+            type_name = (
+                _kotlin_binding_type(
+                    member,
+                    source,
+                    return_types,
+                    owner_shadows,
+                    callable_names,
+                )
+                if len(names) == 1
+                else None
+            )
+            for name in names:
+                bind_field(name, type_name)
+
+        field_types.update(
+            {f"this.{name}": type_name for name, type_name in field_types.items()}
+        )
+
+        for member in members:
+            if member.type != "function_declaration":
+                continue
+            body = next(
+                (child for child in member.children if child.type == "function_body"),
+                None,
+            )
+            if body is None:
+                continue
+            table = dict(field_types)
+            if owner_type:
+                table["@this"] = owner_type
+            poisoned: set[str] = set()
+
+            def bind(name: str | None, type_name: str | None) -> None:
+                if not name or name in poisoned:
+                    return
+                previous = table.get(name)
+                if not type_name or (
+                    previous is not None
+                    and _kotlin_receiver_fact_type(previous)
+                    != _kotlin_receiver_fact_type(type_name)
+                ):
+                    table.pop(name, None)
+                    poisoned.add(name)
+                else:
+                    table[name] = type_name
+
+            params = next(
+                (
+                    child
+                    for child in member.children
+                    if child.type == "function_value_parameters"
+                ),
+                None,
+            )
+            method_shadows: set[str] = set(owner_shadows)
+            local_names: set[str] = set()
+            if params is not None:
+                for parameter in params.children:
+                    if parameter.type != "parameter":
+                        continue
+                    name = _kotlin_declaration_name(parameter, source)
+                    method_shadows.update([name] if name else [])
+                    local_names.update([name] if name else [])
+                    type_node = next(
+                        (
+                            child
+                            for child in parameter.children
+                            if child.type
+                            in ("user_type", "nullable_type", "type_reference")
+                        ),
+                        None,
+                    )
+                    bind(name, _kotlin_receiver_type_name(type_node, source))
+
+            declarations: list = []
+            assigned_names: set[str] = set()
+            pending = list(body.children)
+            while pending:
+                current = pending.pop()
+                if current.type in (
+                    "class_declaration",
+                    "object_declaration",
+                    "function_declaration",
+                ):
+                    if current.type == "function_declaration":
+                        name = _kotlin_declaration_name(current, source)
+                        if name:
+                            method_shadows.add(name)
+                    continue
+                if current.type == "property_declaration":
+                    declarations.append(current)
+                    declared = _kotlin_variable_names(current, source)
+                    method_shadows.update(declared)
+                    local_names.update(declared)
+                elif current.type == "assignment":
+                    left = current.child_by_field_name("left")
+                    if left is not None and left.type == "navigation_expression":
+                        named = [child for child in left.children if child.is_named]
+                        if (
+                            len(named) == 2
+                            and named[0].type == "this_expression"
+                            and named[1].type
+                            in ("identifier", "simple_identifier")
+                        ):
+                            assigned_names.add(
+                                f"this.{_read_text(named[1], source)}"
+                            )
+                    else:
+                        assigned_names.update(_kotlin_variable_names(left, source))
+                elif current.type in (
+                    "for_statement",
+                    "lambda_parameters",
+                    "catch_block",
+                    "when_subject",
+                ):
+                    for name in _kotlin_variable_names(current, source):
+                        bind(name, None)
+                pending.extend(current.children)
+
+            field_assignment_aliases: set[str] = set()
+            for name in assigned_names:
+                if name.startswith("this."):
+                    field_assignment_aliases.add(name.removeprefix("this."))
+                elif name in field_types and name not in local_names:
+                    field_assignment_aliases.add(f"this.{name}")
+            assigned_names.update(field_assignment_aliases)
+
+            for declaration in declarations:
+                names = _kotlin_variable_names(declaration, source)
+                type_name = (
+                    _kotlin_binding_type(
+                        declaration,
+                        source,
+                        return_types,
+                        method_shadows,
+                        callable_names,
+                    )
+                    if len(names) == 1
+                    else None
+                )
+                for name in names:
+                    bind(name, type_name)
+            for name in assigned_names:
+                bind(name, None)
+            for name in poisoned:
+                table.pop(name, None)
+            for name, type_name in return_types.items():
+                if type_name and name not in method_shadows:
+                    table[f"@call:{name}"] = type_name
+            tables[(body.start_byte, body.end_byte)] = table
+
+        for member in members:
+            if member.type in ("class_declaration", "object_declaration"):
+                process_owner(member)
+
+    process_owner(root_node)
+    return tables
+
 def _swift_declaration_keyword(node) -> str | None:
     """Return the leading kind token for a Swift class_declaration: class/struct/enum/extension/actor."""
     for c in node.children:
@@ -2816,6 +3269,11 @@ def _extract_generic(
 
     stem = _file_stem(path)
     str_path = str(path)
+    kotlin_package = (
+        _kotlin_package_name(root, source)
+        if config.ts_module == "tree_sitter_kotlin"
+        else None
+    )
     # Names bound by an import of a module outside the corpus. Module-scoped, so it
     # is computed once per file and consulted from every scope — see
     # `_js_external_import_names`.
@@ -4739,6 +5197,11 @@ def _extract_generic(
         )
         for body_id, (method_node, class_nid) in csharp_method_scopes.items()
     }
+    kotlin_receiver_types = (
+        _kotlin_receiver_types_by_body(root, source)
+        if config.ts_module == "tree_sitter_kotlin"
+        else {}
+    )
 
     def _emit_indirect_by_name(ident_name: str, loc_node, scope_nid: str,
                                context: str) -> None:
@@ -4963,6 +5426,9 @@ def _extract_generic(
             swift_receiver: str | None = None
             member_receiver: str | None = None
             kotlin_qualified_prefix: str | None = None
+            kotlin_receiver_type: str | None = None
+            kotlin_constructor_receiver = False
+            kotlin_constructor_receiver_name: str | None = None
 
             # Special handling per language
             if config.ts_module == "tree_sitter_swift":
@@ -5011,6 +5477,67 @@ def _extract_generic(
                         segments = _kotlin_nav_identifier_segments(first, source)
                         if segments is not None and len(segments) >= 3:
                             kotlin_qualified_prefix = ".".join(segments[:-1])
+                        else:
+                            named = [child for child in first.children if child.is_named]
+                            receiver = named[0] if len(named) >= 2 else None
+                            if receiver is not None and receiver.type in (
+                                "identifier",
+                                "simple_identifier",
+                            ):
+                                member_receiver = _read_text(receiver, source)
+                            elif (
+                                receiver is not None
+                                and receiver.type == "this_expression"
+                            ):
+                                member_receiver = "this"
+                            elif receiver is not None and receiver.type == "call_expression":
+                                target = _kotlin_call_target_name(receiver, source)
+                                if target:
+                                    kotlin_receiver_type = (receiver_types or {}).get(
+                                        f"@call:{target}"
+                                    )
+                            elif (
+                                receiver is not None
+                                and receiver.type == "navigation_expression"
+                            ):
+                                receiver_named = [
+                                    child for child in receiver.children if child.is_named
+                                ]
+                                if (
+                                    len(receiver_named) == 2
+                                    and receiver_named[0].type == "this_expression"
+                                    and receiver_named[1].type
+                                    in ("identifier", "simple_identifier")
+                                ):
+                                    member_receiver = (
+                                        f"this.{_read_text(receiver_named[1], source)}"
+                                    )
+                            if member_receiver:
+                                lookup_name = (
+                                    "@this" if member_receiver == "this" else member_receiver
+                                )
+                                kotlin_receiver_type = (receiver_types or {}).get(lookup_name)
+                                kotlin_constructor_receiver = bool(
+                                    kotlin_receiver_type
+                                    and kotlin_receiver_type.startswith(
+                                        _KOTLIN_CONSTRUCTOR_TYPE_PREFIX
+                                    )
+                                )
+                                kotlin_receiver_type = _kotlin_receiver_fact_type(
+                                    kotlin_receiver_type
+                                )
+                                if kotlin_constructor_receiver:
+                                    kotlin_constructor_receiver_name = (
+                                        kotlin_receiver_type
+                                    )
+                                if (
+                                    kotlin_receiver_type is None
+                                    and member_receiver[:1].isupper()
+                                ):
+                                    # Preserve direct object/companion calls without
+                                    # the old label-only fallback. The corpus resolver
+                                    # still requires exact package/import evidence.
+                                    kotlin_receiver_type = member_receiver
             elif config.ts_module == "tree_sitter_scala":
                 # Scala: first child
                 first = node.children[0] if node.children else None
@@ -5256,7 +5783,10 @@ def _extract_generic(
                 _java_defer = (
                     config.ts_module == "tree_sitter_java" and is_member_call
                 )
-                if _python_defer or _java_defer or (
+                _kotlin_defer = (
+                    config.ts_module == "tree_sitter_kotlin" and is_member_call
+                )
+                if _python_defer or _java_defer or _kotlin_defer or (
                     is_member_call
                     and member_receiver
                     and (
@@ -5323,11 +5853,21 @@ def _extract_generic(
                         receiver_type = (receiver_types or {}).get(member_receiver or "")
                         if receiver_type:
                             rc_entry["receiver_type"] = receiver_type
-                    # Kotlin fully-qualified call (#2550): the dotted prefix +
-                    # lang tag let _resolve_kotlin_qualified_calls claim it.
-                    if kotlin_qualified_prefix:
+                    # Kotlin calls are claimed by package-aware resolvers. Member
+                    # calls carry a method-scoped receiver type; fully-qualified
+                    # calls retain the existing exact written prefix (#2550).
+                    if config.ts_module == "tree_sitter_kotlin" and is_member_call:
                         rc_entry["lang"] = "kotlin"
-                        rc_entry["qualified_prefix"] = kotlin_qualified_prefix
+                        rc_entry["kotlin_package"] = kotlin_package or ""
+                        if kotlin_receiver_type:
+                            rc_entry["receiver_type"] = kotlin_receiver_type
+                            if kotlin_constructor_receiver:
+                                rc_entry["receiver_constructor"] = True
+                                rc_entry["receiver_constructor_name"] = (
+                                    kotlin_constructor_receiver_name
+                                )
+                        if kotlin_qualified_prefix:
+                            rc_entry["qualified_prefix"] = kotlin_qualified_prefix
                     raw_calls.append(rc_entry)
 
             # Indirect dispatch: a function passed BY NAME as a call argument
@@ -5583,13 +6123,20 @@ def _extract_generic(
 
     # Body ids are unique (one language per file), so the Java (flat) and C#
     # (scoped, #2472) per-method receiver tables merge without collision — the
-    # stamp site branches on language to read the matching shape.
+    # stamp site branches on language to read the matching shape. Kotlin uses
+    # byte ranges because its fail-closed pre-scan and the main walk can receive
+    # distinct Python wrappers for the same tree-sitter node.
     receiver_types_by_body = {**java_receiver_types, **csharp_receiver_types}
     for caller_nid, body_node in function_bodies:
+        body_receiver_types = receiver_types_by_body.get(id(body_node))
+        if config.ts_module == "tree_sitter_kotlin":
+            body_receiver_types = kotlin_receiver_types.get(
+                (body_node.start_byte, body_node.end_byte)
+            )
         walk_calls(
             body_node,
             caller_nid,
-            receiver_types_by_body.get(id(body_node)),
+            body_receiver_types,
             frozenset(closure_locals_by_body.get(id(body_node), ())),
         )
 
@@ -5701,9 +6248,80 @@ def _extract_generic(
     # file; the import-target and qualified-call resolvers key their per-package
     # symbol indexes off it.
     if config.ts_module == "tree_sitter_kotlin":
-        _pkg = _kotlin_package_name(root, source)
-        if _pkg:
-            result["kotlin_package"] = _pkg
+        if kotlin_package:
+            result["kotlin_package"] = kotlin_package
+        top_level_types = {
+            edge["target"]
+            for edge in clean_edges
+            if edge.get("relation") == "contains"
+            and edge.get("source") == file_nid
+            and edge.get("target") in callable_class_nids
+        }
+        for item in nodes:
+            if item["id"] not in top_level_types:
+                continue
+            name = str(item.get("label", "")).strip("()")
+            item["_kotlin_fqn"] = (
+                f"{kotlin_package}.{name}" if kotlin_package else name
+            )
+        top_level_function_fqns = sorted(
+            {
+                f"{kotlin_package}.{name}" if kotlin_package else name
+                for declaration in root.children
+                if declaration.type == "function_declaration"
+                and _kotlin_function_receiver_type_node(declaration) is None
+                if (name := _kotlin_declaration_name(declaration, source))
+            }
+        )
+        node_by_id = {item["id"]: item for item in nodes}
+        member_symbol_inventory = [
+            f"type:{item['_kotlin_fqn']}"
+            for item in nodes
+            if item["id"] in top_level_types and item.get("_kotlin_fqn")
+        ]
+        for edge in clean_edges:
+            if edge.get("relation") != "method" or edge.get("source") not in top_level_types:
+                continue
+            owner = node_by_id.get(edge["source"], {}).get("_kotlin_fqn")
+            target = node_by_id.get(edge.get("target"), {})
+            method_name = str(target.get("label", "")).strip("()").lstrip(".")
+            if owner and method_name:
+                # Keep duplicate entries: two same-named overloads are an
+                # ambiguity-provider change even though their symbol key is equal.
+                member_symbol_inventory.append(f"method:{owner}#{method_name}")
+        member_symbol_inventory.extend(
+            f"function:{fqn}" for fqn in top_level_function_fqns
+        )
+        has_member_call_dependencies = any(
+            call.get("lang") == "kotlin"
+            and call.get("is_member_call")
+            and call.get("receiver_type")
+            for call in raw_calls
+        )
+        inventory_carrier_ids = {file_nid} | {
+            edge["target"]
+            for edge in clean_edges
+            if edge.get("relation") == "contains"
+            and edge.get("source") == file_nid
+            and edge.get("target") in callable_def_nids
+        }
+        inventory_complete = not root.has_error or (
+            len(nodes) > 1 and not _has_multiline_error(root)
+        )
+        if inventory_complete:
+            for item in nodes:
+                if item["id"] not in inventory_carrier_ids:
+                    continue
+                # The explicit version is completeness evidence. Empty
+                # inventories survive persistence, but a recovery parse can
+                # never provide trustworthy negative symbol evidence.
+                item["_kotlin_member_symbol_inventory_version"] = 1
+                item["_kotlin_member_symbol_inventory"] = sorted(
+                    member_symbol_inventory
+                )
+                item["_kotlin_top_level_function_fqns"] = top_level_function_fqns
+                if has_member_call_dependencies:
+                    item["_kotlin_member_call_dependencies"] = True
     if callable_def_nids:
         # Mark function / method / class defs with a `_callable` attribute so the
         # cross-file indirect_call pass can resolve a by-name callback only to a real

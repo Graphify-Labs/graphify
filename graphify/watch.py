@@ -1179,7 +1179,11 @@ def _rebuild_code(
     project_root = Path.cwd().resolve() if not watch_path.is_absolute() else watch_root
     report_root = _report_root_label(watch_path)
     try:
-        from graphify.extract import extract, _get_extractor
+        from graphify.extract import (
+            _get_extractor,
+            _kotlin_incremental_member_callers,
+            extract,
+        )
         from graphify.detect import detect
         from graphify.build import build_from_json, _is_ast_tier, _norm_source_file as _nsf
         from graphify.cluster import cluster, remap_communities_to_previous, score_all
@@ -1228,6 +1232,39 @@ def _rebuild_code(
         if not code_files and not existing_graph.exists():
             print("[graphify watch] No code files found - nothing to rebuild.")
             return False
+
+        ignored_kotlin_inventory_sources: list[Path] = []
+        inventory_source_identity: Callable[[str], str | None] | None = None
+        if changed_paths is not None and existing_graph.exists():
+            try:
+                check_graph_file_size_cap(existing_graph)
+                inventory_graph = json.loads(
+                    existing_graph.read_text(encoding="utf-8")
+                )
+                inventory_paths = _StoredSourcePaths(
+                    inventory_graph,
+                    out=out,
+                    project_root=project_root,
+                    watch_root=watch_root,
+                    normalize_source=_nsf,
+                )
+                inventory_source_identity = inventory_paths.identity
+                seen_ignored_inventory_sources: set[str] = set()
+                for node in inventory_graph.get("nodes", []):
+                    source_file = str(node.get("source_file", ""))
+                    if not source_file.endswith((".kt", ".kts")):
+                        continue
+                    identity = inventory_paths.identity(source_file)
+                    if (
+                        identity
+                        and identity not in seen_ignored_inventory_sources
+                        and Path(identity).is_file()
+                        and _ignored_always(Path(identity))
+                    ):
+                        seen_ignored_inventory_sources.add(identity)
+                        ignored_kotlin_inventory_sources.append(Path(identity))
+            except Exception:
+                ignored_kotlin_inventory_sources = []
 
         # #1915: a document that already carries SEMANTIC (LLM) nodes in the
         # existing graph must not ALSO be AST-quick-scanned — otherwise every
@@ -1354,7 +1391,11 @@ def _rebuild_code(
                     # File was deleted or renamed away inside the watched root.
                     # Evict preserved nodes that still claim this source path.
                     _add_deleted_source(deleted_in_root)
-            if not wanted and not deleted_paths:
+            if (
+                not wanted
+                and not deleted_paths
+                and not ignored_kotlin_inventory_sources
+            ):
                 print("[graphify watch] No tracked code files in change set - skipping rebuild.")
                 return True
             extract_targets = wanted
@@ -1366,6 +1407,24 @@ def _rebuild_code(
             # rebuilt_source_identities, #2333 COEXIST) leaves their existing
             # AST heading layer intact alongside the semantic layer.
             extract_targets = [p for p in code_files if p not in semantic_doc_files]
+
+        if changed_paths is not None and existing_graph.exists():
+            kotlin_requeued = _kotlin_incremental_member_callers(
+                existing_graph,
+                changed_paths=extract_targets,
+                deleted_paths=[Path(path) for path in deleted_source_identities]
+                + ignored_kotlin_inventory_sources,
+                live_code_paths=code_files,
+                root=project_root,
+                stored_source_identity=inventory_source_identity,
+            )
+            if kotlin_requeued:
+                extract_targets.extend(kotlin_requeued)
+                print(
+                    "[graphify watch] re-queuing "
+                    f"{len(kotlin_requeued)} Kotlin member-call caller(s) after "
+                    "a type/method/factory inventory change"
+                )
 
         # #2406: an incremental rebuild parses only the changed files, so the
         # cross-file resolvers could not see a callee living in an unchanged
@@ -1419,11 +1478,18 @@ def _rebuild_code(
                         "file_type": node.get("file_type"),
                         "type": node.get("type"),
                     }
-                    # #2438: the persisted callability markers are the only
-                    # thing that lets an unchanged target pass the
-                    # indirect_call guard — never re-derived from the label.
-                    for marker in ("_callable", "_callable_class"):
-                        if node.get(marker):
+                    # Persisted resolver facts are never re-derived from labels:
+                    # callability guards indirect calls (#2438), while Kotlin
+                    # FQNs support receiver resolution.
+                    for marker in (
+                        "_callable",
+                        "_callable_class",
+                        "_kotlin_fqn",
+                        "_kotlin_top_level_function_fqns",
+                        "_kotlin_member_symbol_inventory_version",
+                        "_kotlin_member_symbol_inventory",
+                    ):
+                        if marker in node:
                             ctx_node[marker] = node[marker]
                     resolution_context_nodes.append(ctx_node)
                 # #2437: the member-call resolvers map receiver type -> owning
