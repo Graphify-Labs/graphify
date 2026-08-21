@@ -367,6 +367,44 @@ def test_top_level_classifier_remains_a_valid_receiver(tmp_path: Path) -> None:
     assert (file_owner, service_ping) in pairs
 
 
+def test_enum_entry_body_uses_its_own_receiver_facts(tmp_path: Path) -> None:
+    result = _extract(
+        tmp_path,
+        {
+            "Types.kt": (
+                "object Service {\n"
+                "    fun ping() {}\n"
+                "}\n"
+                "class Other {\n"
+                "    fun ping() {}\n"
+                "}\n"
+            ),
+            "Mode.kt": (
+                "enum class Mode {\n"
+                "    ENTRY {\n"
+                "        val Service = Other()\n"
+                "        val initialized = Service.ping()\n"
+                "        fun caller() { Service.ping() }\n"
+                "    }\n"
+                "}\n"
+            ),
+        },
+    )
+
+    entry = _find(result, "ENTRY", "mode")
+    caller = _find(result, ".caller()", "mode")
+    service_ping = _find(result, ".ping()", "service")
+    other_ping = _find(result, ".ping()", "other")
+    pairs = {
+        (edge["source"], edge["target"])
+        for edge in _call_edges(result)
+    }
+    assert (entry, other_ping) in pairs
+    assert (caller, other_ping) in pairs
+    assert (entry, service_ping) not in pairs
+    assert (caller, service_ping) not in pairs
+
+
 def test_explicit_this_call_resolves_only_to_its_owner(tmp_path: Path) -> None:
     result = _extract(
         tmp_path,

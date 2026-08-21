@@ -991,6 +991,7 @@ def _kotlin_initializer_owner_span(property_node, root_node) -> tuple[int, int]:
             continue
         if current.type in (
             "class_declaration",
+            "enum_entry",
             "object_declaration",
             "object_literal",
         ):
@@ -1318,7 +1319,11 @@ def _kotlin_receiver_types_by_body(
             tables[(body.start_byte, body.end_byte)] = table
 
         for member in members:
-            if member.type in ("class_declaration", "object_declaration"):
+            if member.type in (
+                "class_declaration",
+                "enum_entry",
+                "object_declaration",
+            ):
                 process_owner(member)
 
     process_owner(root_node)
