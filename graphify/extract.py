@@ -3884,6 +3884,10 @@ def _resolve_kotlin_qualified_calls(
         })
 
 
+def _is_kotlin_source_file(value: object) -> bool:
+    return str(value).lower().endswith((".kt", ".kts"))
+
+
 def _kotlin_incremental_member_callers(
     graph_path: Path,
     *,
@@ -3967,7 +3971,7 @@ def _kotlin_incremental_member_callers(
         if not source_file:
             continue
         source_id = persisted_identity(str(source_file))
-        if str(source_file).endswith((".kt", ".kts")):
+        if _is_kotlin_source_file(source_file):
             graph_kotlin_sources.add(source_id)
         if "_kotlin_member_symbol_inventory_version" in node:
             inventoried_sources.add(source_id)
@@ -4101,7 +4105,7 @@ def _resolve_kotlin_member_calls(
     kotlin_sources = {
         str(node.get("source_file", ""))
         for node in all_nodes
-        if str(node.get("source_file", "")).endswith((".kt", ".kts"))
+        if _is_kotlin_source_file(node.get("source_file", ""))
     }
     inventoried_sources = {
         str(node.get("source_file", ""))
@@ -4146,7 +4150,7 @@ def _resolve_kotlin_member_calls(
         if edge.get("relation") != "imports":
             continue
         source_file = str(edge.get("source_file", ""))
-        if not source_file.endswith((".kt", ".kts")):
+        if not _is_kotlin_source_file(source_file):
             continue
         metadata = edge.get("metadata") or {}
         target_fqn = str(metadata.get("target_fqn", ""))
@@ -4210,6 +4214,13 @@ def _resolve_kotlin_member_calls(
             continue
         resolved_fqn = next(iter(candidate_fqns))
         constructor_name = str(call.get("receiver_constructor_name") or "")
+        if call.get("receiver_constructor") and call.get(
+            "kotlin_has_wildcard_import"
+        ):
+            # A wildcard import can supply a same-named factory whose return type
+            # differs from the visible class. Without signature resolution, a
+            # constructor-inferred receiver must not assume the class type.
+            continue
         visible_function_fqns = {resolved_fqn}
         if constructor_name and "." not in constructor_name:
             visible_function_fqns.add(

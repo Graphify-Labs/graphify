@@ -574,6 +574,51 @@ def test_same_package_factory_shadows_imported_class_constructor(
     assert (typed, product_render) not in pairs
 
 
+def test_wildcard_imported_factory_makes_constructor_binding_ambiguous(
+    tmp_path: Path,
+) -> None:
+    result = _extract(
+        tmp_path,
+        {
+            "model/Widget.kt": (
+                "package model\n"
+                "class Widget { fun render() {} }\n"
+            ),
+            "product/Product.kt": (
+                "package product\n"
+                "class Product { fun render() {} }\n"
+            ),
+            "factory/Factory.kt": (
+                "package factory\n"
+                "import product.Product\n"
+                "fun Widget(size: Int): Product = Product()\n"
+            ),
+            "app/Use.kt": (
+                "package app\n"
+                "import model.Widget\n"
+                "import factory.*\n"
+                "fun use() {\n"
+                "    val value = Widget(1)\n"
+                "    value.render()\n"
+                "}\n"
+                "fun typed(value: Widget) { value.render() }\n"
+            ),
+        },
+    )
+
+    caller = _find(result, "use()", "use")
+    typed = _find(result, "typed()", "use")
+    widget_render = _find(result, ".render()", "widget")
+    product_render = _find(result, ".render()", "product")
+    pairs = {(edge["source"], edge["target"]) for edge in _call_edges(result)}
+    assert not any(
+        source == caller and target in {widget_render, product_render}
+        for source, target in pairs
+    )
+    assert (typed, widget_render) in pairs
+    assert (typed, product_render) not in pairs
+
+
 def test_recovery_parsed_kotlin_provider_fails_inventory_closed(
     tmp_path: Path,
 ) -> None:
@@ -843,7 +888,8 @@ def test_watch_zero_node_provider_invalidates_existing_caller(
     import graphify.extract as extract_module
     from graphify.watch import _rebuild_code
 
-    root, broken = _incremental_factory_corpus(tmp_path / "watch-zero-provider")
+    root, _ = _incremental_factory_corpus(tmp_path / "watch-zero-provider")
+    broken = root / "Factory.KT"
     assert _rebuild_code(root, no_cluster=True, acquire_lock=False) is True
     widget_render, product_render = _factory_render_ids(root)
     assert widget_render in _factory_call_targets(root)
@@ -855,7 +901,7 @@ def test_watch_zero_node_provider_invalidates_existing_caller(
     original = extract_module.extract_kotlin
 
     def fail_broken(path: Path) -> dict:
-        if path.name == "Factory.kt":
+        if path.name == "Factory.KT":
             raise RuntimeError("forced Kotlin extraction failure")
         return original(path)
 
