@@ -254,6 +254,65 @@ def test_initializer_owner_facts_do_not_cross_same_named_nested_types(
     )
 
 
+def test_companion_names_shadow_top_level_receiver_types(tmp_path: Path) -> None:
+    result = _extract(
+        tmp_path,
+        {
+            "Decoys.kt": (
+                "package demo\n"
+                "object Service {\n"
+                "    fun ping() {}\n"
+                "}\n"
+                "object Companion {\n"
+                "    fun ping() {}\n"
+                "}\n"
+            ),
+            "Holders.kt": (
+                "package demo\n"
+                "class NamedHolder {\n"
+                "    companion object Service {\n"
+                "        val initialized = Service.ping()\n"
+                "    }\n"
+                "}\n"
+                "class UnnamedHolder {\n"
+                "    companion object {\n"
+                "        val initialized = Companion.ping()\n"
+                "    }\n"
+                "}\n"
+            ),
+        },
+    )
+
+    targets = {
+        _find(result, ".ping()", "service"),
+        _find(result, ".ping()", "companion"),
+    }
+    assert not any(edge["target"] in targets for edge in _call_edges(result))
+
+
+def test_object_literal_initializer_uses_its_own_shadow_facts(tmp_path: Path) -> None:
+    result = _extract(
+        tmp_path,
+        {
+            "Service.kt": "object Service { fun ping() {} }\n",
+            "Use.kt": (
+                "class Other\n"
+                "fun make(other: Other) {\n"
+                "    val value = object {\n"
+                "        val Service = other\n"
+                "        val initialized = Service.ping()\n"
+                "    }\n"
+                "}\n"
+            ),
+        },
+    )
+
+    service_ping = _find(result, ".ping()", "service")
+    assert not any(
+        edge["target"] == service_ping for edge in _call_edges(result)
+    )
+
+
 def test_explicit_this_call_resolves_only_to_its_owner(tmp_path: Path) -> None:
     result = _extract(
         tmp_path,

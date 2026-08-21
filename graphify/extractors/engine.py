@@ -985,7 +985,11 @@ def _kotlin_initializer_owner_span(property_node, root_node) -> tuple[int, int]:
         if current.type == "companion_object":
             current = current.parent
             continue
-        if current.type in ("class_declaration", "object_declaration"):
+        if current.type in (
+            "class_declaration",
+            "object_declaration",
+            "object_literal",
+        ):
             return current.start_byte, current.end_byte
         current = current.parent
     return root_node.start_byte, root_node.end_byte
@@ -1094,6 +1098,17 @@ def _kotlin_receiver_types_by_body(
             if member.type in ("class_declaration", "object_declaration")
             if (name := _kotlin_declaration_name(member, source))
         )
+        owner_body = next(
+            (child for child in owner_node.children if child.type == "class_body"),
+            None,
+        )
+        if owner_body is not None:
+            for child in owner_body.children:
+                if child.type != "companion_object":
+                    continue
+                owner_shadows.add(
+                    _kotlin_declaration_name(child, source) or "Companion"
+                )
         if owner_node.type != "source_file":
             constructor = next(
                 (
@@ -1148,6 +1163,9 @@ def _kotlin_receiver_types_by_body(
         owner_table = dict(field_types)
         for name in field_poisoned:
             owner_table[f"@blocked:{name}"] = "1"
+        for name in owner_shadows:
+            if name not in owner_table:
+                owner_table[f"@blocked:{name}"] = "1"
         owner_tables[(owner_node.start_byte, owner_node.end_byte)] = owner_table
 
         for member in members:
@@ -1291,6 +1309,12 @@ def _kotlin_receiver_types_by_body(
                 process_owner(member)
 
     process_owner(root_node)
+    pending = list(root_node.children)
+    while pending:
+        current = pending.pop()
+        if current.type == "object_literal":
+            process_owner(current)
+        pending.extend(current.children)
     return tables, owner_tables
 
 def _swift_declaration_keyword(node) -> str | None:
