@@ -3819,6 +3819,74 @@ def test_rewire_does_not_bind_supertype_stub_to_function():
     assert edges[0]["target"] == "BookStore"  # inherits stub not bound to function
 
 
+def test_rewire_does_not_bind_supertype_stub_across_language():
+    """#2812: a bare `extends Exception` in PHP is the language's own built-in.
+    It must not fuse onto a unique same-named TypeScript class."""
+    from graphify.extract import _rewire_unique_stub_nodes
+    nodes = [
+        {"id": "app_exception_Exception", "label": "Exception", "file_type": "code",
+         "source_file": "app/exception.ts", "source_location": "L1"},
+        {"id": "Exception", "label": "Exception", "file_type": "code", "source_file": ""},
+    ]
+    edges = [{"source": "pkg_FooApiException", "target": "Exception", "relation": "inherits",
+              "source_file": "pkg/FooApiException.php", "weight": 1.0}]
+    _rewire_unique_stub_nodes(nodes, edges)
+    assert edges[0]["target"] == "Exception"  # unchanged — cross-language blocked
+    assert "Exception" in {n["id"] for n in nodes}  # stub kept as the external base
+
+
+def test_rewire_binds_builtin_named_supertype_stub_within_same_language():
+    """#2812 control: the guard is per language family, not a name blocklist — a
+    PHP corpus that declares its own `Exception` must still absorb the stub."""
+    from graphify.extract import _rewire_unique_stub_nodes
+    nodes = [
+        {"id": "pkg_support_Exception", "label": "Exception", "file_type": "code",
+         "source_file": "pkg/Support/Exception.php", "source_location": "L1"},
+        {"id": "Exception", "label": "Exception", "file_type": "code", "source_file": ""},
+    ]
+    edges = [{"source": "pkg_FooApiException", "target": "Exception", "relation": "inherits",
+              "source_file": "pkg/FooApiException.php", "weight": 1.0}]
+    _rewire_unique_stub_nodes(nodes, edges)
+    assert edges[0]["target"] == "pkg_support_Exception"
+
+
+def test_rewire_builtin_supertype_guard_folds_case_insensitive_languages():
+    """#2812: PHP resolves class names case-insensitively, so `extends \\exception`
+    names the same built-in as `extends \\Exception` and must be blocked too."""
+    from graphify.extract import _rewire_unique_stub_nodes
+    nodes = [
+        {"id": "app_exception_exception", "label": "exception", "file_type": "code",
+         "source_file": "app/exception.ts", "source_location": "L1"},
+        {"id": "exception", "label": "exception", "file_type": "code", "source_file": ""},
+    ]
+    edges = [{"source": "pkg_FooApiException", "target": "exception", "relation": "inherits",
+              "source_file": "pkg/FooApiException.php", "weight": 1.0}]
+    _rewire_unique_stub_nodes(nodes, edges)
+    assert edges[0]["target"] == "exception"
+
+
+def test_rewire_builtin_supertype_guard_is_per_edge_not_per_stub():
+    """#2812: one sourceless `Exception` stub collects referrers from every
+    language that names it. A TypeScript referrer sharing the stub must not
+    re-open the cross-language bind for the PHP one — the guard reads the
+    referring file, not the union of the stub's referrer families."""
+    from graphify.extract import _rewire_unique_stub_nodes
+    nodes = [
+        {"id": "app_exception_Exception", "label": "Exception", "file_type": "code",
+         "source_file": "app/exception.ts", "source_location": "L1"},
+        {"id": "Exception", "label": "Exception", "file_type": "code", "source_file": ""},
+    ]
+    edges = [
+        {"source": "pkg_FooApiException", "target": "Exception", "relation": "inherits",
+         "source_file": "pkg/FooApiException.php", "weight": 1.0},
+        {"source": "app_http_HttpError", "target": "Exception", "relation": "inherits",
+         "source_file": "app/http.ts", "weight": 1.0},
+    ]
+    _rewire_unique_stub_nodes(nodes, edges)
+    assert edges[0]["target"] == "Exception"                 # PHP still blocked
+    assert edges[1]["target"] == "app_exception_Exception"   # TS still resolves
+
+
 def test_extract_emits_posix_source_file_for_relative_inputs(tmp_path):
     r"""source_file must be canonical POSIX on every node AND edge, whatever
     separator the caller's input paths used.
