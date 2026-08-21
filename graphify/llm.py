@@ -375,6 +375,63 @@ def _resolve_temperature(default: float | None, model: str = "") -> float | None
     return default
 
 
+# Same families _THINK_BLOCK_RE strips a <think>/<reasoning> block for: local
+# reasoning-tuned models that narrate a long chain of thought before the
+# answer. Served through Ollama's OpenAI-compat endpoint, that narration lands
+# in a separate `message.reasoning` field (confirmed live against
+# nemotron-3-super via raw /v1/chat/completions calls) — `.content` itself is
+# never hollow, so this is not a parsing bug. The narration still costs real
+# wall-clock and shares the request's token budget, and on a real multi-file
+# extraction chunk it can consume enough of both that the client's
+# --api-timeout trips, the adaptive bisect-and-retry kicks in, and a chunk can
+# still fail at a single file with nothing left to bisect.
+_OLLAMA_REASONING_MODEL_FAMILIES = ("nemotron", "deepseek-r1", "qwq")
+
+
+def _ollama_model_is_reasoning(model: str) -> bool:
+    """True for a local model known to narrate a chain of thought via Ollama."""
+    m = (model or "").lower().rsplit("/", 1)[-1]
+    return any(fam in m for fam in _OLLAMA_REASONING_MODEL_FAMILIES)
+
+
+def _resolve_reasoning_effort(cfg: dict, model: str, backend: str) -> str | None:
+    """Resolve the `reasoning_effort` value to send, if any.
+
+    Precedence:
+      1. GRAPHIFY_OLLAMA_REASONING_EFFORT env var, if `backend == "ollama"` and
+         it's set — explicit user override. Any backend-recognised value
+         ("low"/"medium"/"high"), or the literal "none"/"omit"/"default"
+         (case-insensitive, mirrors GRAPHIFY_LLM_TEMPERATURE's convention) to
+         force omission even for a recognised reasoning model.
+      2. The backend config's own default (only `gemini` sets one today).
+      3. For `ollama` with a recognised local reasoning model
+         (_ollama_model_is_reasoning) and no config default: "high". Measured
+         empirically against nemotron-3-super (raw API, three otherwise-identical
+         calls): omitting the field or passing "low" both produced ~17.5k chars
+         of reasoning and ~5.2k completion tokens; "high" cut that to ~9.2k
+         chars / ~2.8k tokens — roughly half the time/token budget per call,
+         which is the difference between finishing under a real extraction
+         chunk's timeout and not.
+      4. Otherwise None (omit the parameter — unchanged default behaviour for
+         every other backend/model).
+
+    Ollama serves a heterogeneous zoo of models, most of which are not
+    reasoning-tuned and were never observed with this field, so the default in
+    step 3 is scoped to named reasoning families rather than applied backend-wide.
+    """
+    if backend == "ollama":
+        env_raw = os.environ.get("GRAPHIFY_OLLAMA_REASONING_EFFORT", "").strip()
+        if env_raw:
+            if env_raw.lower() in ("none", "omit", "default"):
+                return None
+            return env_raw
+    if cfg.get("reasoning_effort"):
+        return cfg["reasoning_effort"]
+    if backend == "ollama" and _ollama_model_is_reasoning(model):
+        return "high"
+    return None
+
+
 def _bedrock_inference_config(max_tokens: int, model: str = "") -> dict:
     """Build Bedrock inferenceConfig, honouring GRAPHIFY_LLM_TEMPERATURE.
 
@@ -1980,7 +2037,7 @@ def extract_files_direct(
             mdl,
             user_msg,
             temperature=_resolve_temperature(cfg.get("temperature", 0), mdl),
-            reasoning_effort=cfg.get("reasoning_effort"),
+            reasoning_effort=_resolve_reasoning_effort(cfg, mdl, backend),
             # Honour max_completion_tokens (gemini) or the older max_tokens key
             # (ollama/deepseek/kimi/openai) -- most openai-compat configs define the
             # latter, so reading only max_completion_tokens silently capped their
@@ -2954,8 +3011,9 @@ def _call_llm(
     temperature = _resolve_temperature(cfg.get("temperature", 0), mdl)
     if temperature is not None:
         kwargs["temperature"] = temperature
-    if cfg.get("reasoning_effort"):
-        kwargs["reasoning_effort"] = cfg["reasoning_effort"]
+    reasoning_effort = _resolve_reasoning_effort(cfg, mdl, backend)
+    if reasoning_effort:
+        kwargs["reasoning_effort"] = reasoning_effort
     # Custom providers can override via providers.json `extra_body`; falls back
     # to the moonshot default to preserve existing behavior.
     if cfg.get("extra_body") is not None:
