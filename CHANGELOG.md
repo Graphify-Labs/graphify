@@ -2,6 +2,13 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## 0.9.49 (unreleased)
+
+- Fix: the tsconfig/jsconfig alias and `baseUrl` caches are now cleared per extraction run, so an edit to `compilerOptions.paths` or `baseUrl` is picked up on the next `graphify watch` / MCP rebuild instead of resolving imports through a stale alias map for the life of the process (#2917, thanks @sashankh).
+- Fix: the C# extractor now emits `references` edges for types used as generic arguments — both at call sites (`repo.Get<User>()`, `services.AddSingleton<IFoo, Foo>()`) and in field declarations (`private List<Order> _orders`) — so generic calls and field-injected dependencies are no longer invisible; built-in and type-parameter types are not fabricated (#2911, thanks @santhiprakash and @brobl2008).
+- Fix: oversized PDFs are now sliced through their text converter and their token count is estimated from the extracted text rather than the raw container, so a large paper no longer loses everything past the character cap or gets mis-sized by its binary bytes; slicing (including the adaptive-retry bisection) indexes the same extracted text the prompt carries (#2903, #2906, thanks @abhay-codes07).
+- Fix: every text document type is now sliced when oversized, not just five suffixes, so a large `.qmd` / `.skill` / `.html` / `.yaml` / `.yml` is no longer silently truncated at the character cap (#2900, thanks @abhay-codes07).
+
 ## 0.9.48 (2026-08-20)
 
 - Fix: a control character in a node label or id no longer aborts the whole export; the GraphML and Obsidian exporters scrub only the characters those formats forbid (tab, newline, and non-ASCII letters are preserved), and `graph.json` and its byte-identity round-trip are untouched (#2897, thanks @abhay-codes07).
