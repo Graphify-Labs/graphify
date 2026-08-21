@@ -1369,3 +1369,121 @@ def test_cache_check_prompt_file_scopes_hits_to_that_prompt(monkeypatch, tmp_pat
     os.utime(spec, ns=(0, 0))
     _run_extract(monkeypatch, base + ["--prompt-file", str(spec)])
     assert "Cache: 0 hit, 1 miss" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# #2926: LLM output misattributed to a NON-dispatched file must not reach
+# build_merge. Its replace-set logic swaps any source_file present in the new
+# chunks for the new fragment — so a 1-node stray for an unchanged doc used to
+# delete that doc's entire prior contribution (the doc is never re-dispatched
+# and, being unchanged, never even read back from the semantic cache), and a
+# stray naming a nonexistent path accumulated phantom nodes forever.
+# ---------------------------------------------------------------------------
+
+def _stray_corpus(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.go").write_text("package main\nfunc main() {}\n")
+    (project / "README.md").write_text("# Notes\nThe main function entry point.\n")
+    (project / "OTHER.md").write_text("# Other\nAn independent second doc.\n")
+    return project
+
+
+def test_incremental_stray_attribution_preserves_undispatched_file(
+    monkeypatch, tmp_path, capsys
+):
+    """Run 1 builds a graph where OTHER.md contributes two nodes. Run 2 changes
+    only README.md; the stubbed model answers with README's node PLUS strays
+    attributed to OTHER.md and to a nonexistent src/foo.ts. OTHER.md's original
+    nodes must survive intact and no phantom may appear."""
+    project = _stray_corpus(tmp_path)
+    out_dir = tmp_path / "out"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-fake-key")
+
+    def _seed_extraction(paths, **kwargs):
+        on_chunk = kwargs.get("on_chunk_done")
+        chunk = {
+            "nodes": [
+                {"id": "readme_page", "label": "Notes",
+                 "file_type": "document", "source_file": "README.md"},
+                {"id": "other_page", "label": "Other",
+                 "file_type": "document", "source_file": "OTHER.md"},
+                {"id": "other_concept_a", "label": "Other concept A",
+                 "file_type": "document", "source_file": "OTHER.md"},
+            ],
+            "edges": [],
+            "hyperedges": [],
+        }
+        if on_chunk:
+            on_chunk(0, 1, chunk)
+        return {**chunk, "input_tokens": 100, "output_tokens": 50}
+
+    monkeypatch.setattr(
+        "graphify.llm.extract_corpus_parallel", _seed_extraction
+    )
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    argv = ["graphify", "extract", str(project), "--out", str(out_dir)]
+    _run_extract(monkeypatch, argv)
+    capsys.readouterr()
+
+    graph_path = out_dir / "graphify-out" / "graph.json"
+
+    def _node_ids():
+        import json
+        data = json.loads(graph_path.read_text(encoding="utf-8"))
+        return {n["id"]: n.get("source_file") for n in data.get("nodes", [])}
+
+    ids = _node_ids()
+    assert ids.get("other_page") == "OTHER.md" and ids.get("other_concept_a") == "OTHER.md", (
+        f"seed run must give OTHER.md a two-node contribution: {ids}"
+    )
+
+    # Change ONLY README.md; OTHER.md stays untouched (never dispatched).
+    (project / "README.md").write_text(
+        "# Notes\nThe main function entry point. Now with more detail.\n"
+    )
+
+    def _straying_extraction(paths, **kwargs):
+        on_chunk = kwargs.get("on_chunk_done")
+        chunk = {
+            "nodes": [
+                {"id": "readme_page", "label": "Notes v2",
+                 "file_type": "document", "source_file": "README.md"},
+                # Stray: attributed to a file NOT dispatched this run.
+                {"id": "stray_other", "label": "Stray fragment",
+                 "file_type": "document", "source_file": "OTHER.md"},
+                # Stray: forward-reference to a nonexistent path.
+                {"id": "phantom_ts", "label": "Phantom",
+                 "file_type": "code", "source_file": "src/foo.ts"},
+            ],
+            "edges": [
+                {"source": "stray_other", "target": "readme_page",
+                 "source_file": "OTHER.md"},
+            ],
+            "hyperedges": [],
+        }
+        if on_chunk:
+            on_chunk(0, 1, chunk)
+        return {**chunk, "input_tokens": 10, "output_tokens": 5}
+
+    monkeypatch.setattr(
+        "graphify.llm.extract_corpus_parallel", _straying_extraction
+    )
+    _run_extract(monkeypatch, argv)
+
+    out_text = capsys.readouterr().out
+    assert "out-of-scope" in out_text, (
+        f"the scope filter must report what it dropped: {out_text}"
+    )
+    ids = _node_ids()
+    assert ids.get("other_page") == "OTHER.md", (
+        f"#2926: the undispatched file's prior node was deleted by the stray "
+        f"fragment's replace-set: {ids}"
+    )
+    assert ids.get("other_concept_a") == "OTHER.md", (
+        f"#2926: second prior node also lost: {ids}"
+    )
+    assert "stray_other" not in ids, f"stray fragment leaked into the graph: {ids}"
+    assert "phantom_ts" not in ids, (
+        f"stray attributed to a nonexistent path became a phantom node: {ids}"
+    )

@@ -3515,6 +3515,7 @@ def dispatch_command(cmd: str) -> None:
             check_semantic_cache as _check_semantic_cache,
             prune_semantic_cache as _prune_semantic_cache,
             save_semantic_cache as _save_semantic_cache,
+            scope_semantic_result as _scope_semantic_result,
         )
         sem_result: dict = {
             "nodes": [], "edges": [], "hyperedges": [],
@@ -3619,6 +3620,24 @@ def dispatch_command(cmd: str) -> None:
                 # graph without an explicit --allow-partial override.
                 if _chunk_stats["total"] and _chunk_stats["succeeded"] < _chunk_stats["total"]:
                     _extraction_incomplete = True
+                # #2926: scope the fresh result to the files actually dispatched,
+                # mirroring the allowed_source_files guard the cache write below
+                # applies. A model can attribute stray nodes/edges to a corpus
+                # file that was not dispatched this run; build_merge() derives
+                # its replace-set from the source_files present in new chunks,
+                # so such a fragment would REPLACE that file's entire prior
+                # contribution in graph.json while its manifest entry still says
+                # unchanged — no later incremental run re-dispatches it and the
+                # loss is permanent until a full rebuild.
+                _dropped_files, _dropped_items = _scope_semantic_result(
+                    fresh, target, uncached_paths,
+                )
+                if _dropped_files:
+                    print(
+                        f"[graphify extract] dropped {_dropped_items} out-of-scope "
+                        f"item(s) attributed to {len(_dropped_files)} file(s) not "
+                        f"dispatched this run: {', '.join(sorted(_dropped_files))}"
+                    )
                 # Which files truncated this run (item markers + the empty-parse
                 # _partial_files set). Computed BEFORE the save so it can be passed
                 # as partial_source_files: without it, a file whose only truncated

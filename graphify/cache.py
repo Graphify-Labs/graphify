@@ -1559,3 +1559,121 @@ def save_semantic_cache(
             stacklevel=2,
         )
     return saved
+
+
+def scope_semantic_result(
+    result: dict,
+    root: Path = Path("."),
+    allowed_source_files: "Iterable[str | Path] | None" = None,
+) -> tuple[set[str], int]:
+    """Scope an extraction result in place to the files actually dispatched (#2926).
+
+    Graph-side mirror of the ``allowed_source_files`` write-guard in
+    :func:`save_semantic_cache` (#1757). A model can attribute stray
+    nodes/edges to a corpus file that was not part of the current extraction
+    batch; :func:`build_merge` derives its replace-set from the source_files
+    present in the new chunks, so such a stray fragment would REPLACE that
+    file's entire prior contribution in graph.json — while its manifest entry
+    still says unchanged, so no later incremental run re-dispatches it and the
+    loss is permanent until a full rebuild.
+
+    Items whose ``source_file`` resolves outside ``allowed_source_files`` are
+    dropped from ``result``'s ``nodes`` / ``edges`` / ``hyperedges`` lists
+    (mutated in place); items without a ``source_file`` pass through. An edge
+    or hyperedge that survives the scope filter but references a dropped node
+    id is dropped too (#1916 mirror), unless that id is also defined by a kept
+    node (duplicate attribution must not be over-pruned).
+
+    Path matching uses the same normalization as :func:`save_semantic_cache`
+    (relative against ``root``, walked-path identity), so an item this function
+    keeps can never still hit the save's out-of-scope skip, and vice versa.
+
+    Returns ``(dropped_source_files, dropped_item_count)`` for logging;
+    ``dropped_source_files`` holds the normalized ``source_file`` strings of
+    every group that had at least one item removed.
+    """
+    if allowed_source_files is None:
+        return set(), 0
+
+    root_walked = _normalize_path(Path(os.path.abspath(root)))
+    root_resolved = _normalize_path(Path(root).resolve())
+
+    def _identity(value: str) -> Path:
+        path = Path(value)
+        if not path.is_absolute():
+            path = root_walked / path
+        elif root_walked != root_resolved:
+            normalized = _normalize_path(Path(os.path.abspath(path)))
+            try:
+                relative = normalized.relative_to(root_resolved)
+            except ValueError:
+                pass
+            else:
+                path = root_walked / relative
+        return _normalize_path(Path(os.path.abspath(path)))
+
+    def _item_identity(item: dict) -> tuple[str | None, Path | None]:
+        """(display form, walked identity) of an item's source_file."""
+        src = item.get("source_file")
+        if not src:
+            return None, None
+        norm = _normalize_source_file_value(src, root_walked)
+        if Path(norm).is_absolute() and root_walked != root_resolved:
+            norm = _normalize_source_file_value(src, root_resolved)
+        return norm, _identity(norm)
+
+    allowed_paths = {_identity(str(path)) for path in allowed_source_files}
+
+    def _hashable(value) -> bool:
+        try:
+            hash(value)
+        except TypeError:
+            return False
+        return True
+
+    dropped_files: set[str] = set()
+    dropped_items = 0
+    dropped_ids: set = set()
+    kept_ids: set = set()
+    for bucket in ("nodes", "edges", "hyperedges"):
+        kept: list[dict] = []
+        for item in result.get(bucket) or []:
+            display, ident = _item_identity(item)
+            if ident is not None and ident not in allowed_paths:
+                dropped_files.add(display)
+                dropped_items += 1
+                if bucket == "nodes" and item.get("id") is not None:
+                    nid = item["id"]
+                    if _hashable(nid):
+                        dropped_ids.add(nid)
+                continue
+            if bucket == "nodes" and item.get("id") is not None and _hashable(item["id"]):
+                kept_ids.add(item["id"])
+            kept.append(item)
+        result[bucket] = kept
+
+    # A duplicate-attribution node (defined in a dropped AND a kept group)
+    # survives the filter — don't prune references to it.
+    dropped_ids -= kept_ids
+    if dropped_ids:
+
+        def edge_dangles(e: dict) -> bool:
+            try:
+                return e.get("source") in dropped_ids or e.get("target") in dropped_ids
+            except TypeError:
+                # Non-hashable endpoint from an untrusted result; leave it
+                # to build-time validation rather than fail here.
+                return False
+
+        def hyperedge_dangles(h: dict) -> bool:
+            try:
+                return bool(dropped_ids & set(h.get("nodes") or []))
+            except TypeError:
+                return False
+
+        result["edges"] = [e for e in result.get("edges") or [] if not edge_dangles(e)]
+        result["hyperedges"] = [
+            h for h in result.get("hyperedges") or [] if not hyperedge_dangles(h)
+        ]
+
+    return dropped_files, dropped_items
