@@ -308,6 +308,57 @@ def test_incremental_md_reference_target_canonicalizes(tmp_path):
         assert "target_file" not in e, e
 
 
+def test_incremental_markdown_code_line_resolves_like_full_build(tmp_path):
+    """A changed doc keeps targeting an unchanged code symbol by line."""
+    from graphify.extract import extract
+
+    root = Path(os.path.realpath(tmp_path))
+    docs = root / "docs"
+    src = root / "src"
+    docs.mkdir()
+    src.mkdir()
+    service = src / "service.py"
+    service.write_text(
+        "def run():\n    return 1\n", encoding="utf-8"
+    )
+    page = docs / "map.md"
+    page.write_text(
+        "[implementation](../src/service.py#L2)\n", encoding="utf-8"
+    )
+
+    full = extract(
+        [page, service], cache_root=root, root=root, parallel=False
+    )
+    page.write_text(
+        "# Updated\n[implementation](../src/service.py#L2)\n",
+        encoding="utf-8",
+    )
+    incremental = extract(
+        [page],
+        cache_root=root,
+        root=root,
+        parallel=False,
+        resolution_context_nodes=full["nodes"],
+        resolution_context_edges=full["edges"],
+    )
+
+    def reference_target(result):
+        edge = next(
+            edge
+            for edge in result["edges"]
+            if edge.get("relation") == "references"
+            and str(edge.get("source_file", "")).endswith("map.md")
+        )
+        assert "target_file" not in edge
+        assert "target_line" not in edge
+        return edge["target"]
+
+    target = reference_target(full)
+    by_id = {node["id"]: node for node in full["nodes"]}
+    assert by_id[target]["label"].strip("().") == "run"
+    assert reference_target(incremental) == target
+
+
 def test_update_prunes_a_removed_imports_edge(tmp_path):
     """#1521: when an import is deleted from a file, `graphify update` must prune
     the edge it produced — preserving it (keyed only on endpoint membership) left a

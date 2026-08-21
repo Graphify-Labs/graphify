@@ -14,8 +14,90 @@ from graphify.symbol_resolution import (
     parse_python_import_aliases,
     resolve_bash_source_edges,
     resolve_cross_file_raw_calls,
+    resolve_markdown_code_references,
     resolve_python_import_guided_calls,
 )
+
+
+def test_markdown_code_reference_prefers_exact_symbol(tmp_path):
+    source = tmp_path / "service.py"
+    source.write_text("def run():\n    return 1\n", encoding="utf-8")
+    nodes = [
+        {
+            "id": "service",
+            "label": "service.py",
+            "file_type": "code",
+            "source_file": str(source),
+            "source_location": "L1",
+        },
+        {
+            "id": "service_run",
+            "label": "run",
+            "file_type": "code",
+            "node_kind": "function",
+            "source_file": str(source),
+            "source_location": "L1",
+        },
+    ]
+    edges = [
+        {
+            "source": "architecture",
+            "target": "service",
+            "relation": "references",
+            "target_file": str(source),
+            "target_line": 1,
+        }
+    ]
+
+    resolve_markdown_code_references(nodes, edges)
+
+    assert edges[0]["target"] == "service_run"
+    assert "target_line" not in edges[0]
+
+
+def test_markdown_code_reference_uses_nearest_preceding_symbol(tmp_path):
+    source = tmp_path / "service.py"
+    source.write_text(
+        "def first():\n    pass\n\ndef second():\n    pass\n", encoding="utf-8"
+    )
+    nodes = [
+        {
+            "id": "service",
+            "label": "service.py",
+            "file_type": "code",
+            "source_file": str(source),
+            "source_location": "L1",
+        },
+        {
+            "id": "first",
+            "label": "first",
+            "file_type": "code",
+            "node_kind": "function",
+            "source_file": str(source),
+            "source_location": "L1",
+        },
+        {
+            "id": "second",
+            "label": "second",
+            "file_type": "code",
+            "node_kind": "function",
+            "source_file": str(source),
+            "source_location": "L4",
+        },
+    ]
+    edges = [
+        {
+            "source": "architecture",
+            "target": "service",
+            "relation": "references",
+            "target_file": str(source),
+            "target_line": 5,
+        }
+    ]
+
+    resolve_markdown_code_references(nodes, edges)
+
+    assert edges[0]["target"] == "second"
 
 
 def test_normalise_callable_label_strips_function_punctuation() -> None:

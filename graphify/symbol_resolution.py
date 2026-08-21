@@ -27,6 +27,89 @@ class ImportedSymbol:
     source_location: str
 
 
+_SOURCE_LINE_RE = re.compile(r"^L([1-9][0-9]*)")
+_SYMBOL_KIND_PRIORITY = {
+    "method": 0,
+    "function": 1,
+    "class": 2,
+    "type_alias": 3,
+}
+
+
+def _source_line(node: dict[str, Any]) -> int | None:
+    """Return a node's one-based starting line when present."""
+
+    match = _SOURCE_LINE_RE.match(str(node.get("source_location", "")))
+    return int(match.group(1)) if match else None
+
+
+def resolve_markdown_code_references(
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    root: Path | None = None,
+) -> None:
+    """Refine stamped Markdown code links to exact or preceding symbols.
+
+    The target path and optional line are deterministic extraction evidence.
+    When the line cannot identify a symbol, the canonical file node remains the
+    target. No node is fabricated for a missing file.
+    """
+
+    by_path: dict[Path, list[tuple[int, int, str]]] = {}
+    file_ids: dict[Path, str] = {}
+
+    def resolved_graph_path(value: object) -> Path:
+        path = Path(str(value))
+        if root is not None and not path.is_absolute():
+            path = root / path
+        return path.resolve()
+
+    for node in nodes:
+        source_file = node.get("source_file")
+        node_id = node.get("id")
+        if (
+            not source_file
+            or not node_id
+            or node.get("file_type") != "code"
+        ):
+            continue
+        try:
+            path = resolved_graph_path(source_file)
+        except (OSError, RuntimeError):
+            continue
+        label = str(node.get("label", ""))
+        if label == Path(str(source_file)).name:
+            file_ids[path] = str(node_id)
+            continue
+        line = _source_line(node)
+        if line is None:
+            continue
+        priority = _SYMBOL_KIND_PRIORITY.get(str(node.get("node_kind", "")), 10)
+        by_path.setdefault(path, []).append((line, priority, str(node_id)))
+    for candidates in by_path.values():
+        candidates.sort(key=lambda item: (item[0], item[1], item[2]))
+
+    for edge in edges:
+        if edge.get("relation") != "references" or not edge.get("target_file"):
+            continue
+        raw_line = edge.pop("target_line", None)
+        try:
+            path = resolved_graph_path(edge["target_file"])
+        except (OSError, RuntimeError):
+            continue
+        fallback = file_ids.get(path)
+        if fallback is not None:
+            edge["target"] = fallback
+        if not isinstance(raw_line, int) or raw_line < 1:
+            continue
+        preceding = [item for item in by_path.get(path, []) if item[0] <= raw_line]
+        if not preceding:
+            continue
+        best_line = preceding[-1][0]
+        same_line = [item for item in preceding if item[0] == best_line]
+        edge["target"] = min(same_line, key=lambda item: (item[1], item[2]))[2]
+
+
 def normalise_callable_label(label: str) -> str:
     """Normalize a node label into the key used for call resolution."""
 
