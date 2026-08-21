@@ -77,11 +77,13 @@ def test_a_small_document_is_still_passed_through_whole(tmp_path):
     assert units == [f], "a file under the cap must pass through as a plain Path"
 
 
-def test_binary_documents_are_still_not_sliced(tmp_path):
-    """A PDF's bytes are not what the model is shown, so slicing the raw file
-    would be wrong. It must keep passing through untouched."""
-    f = tmp_path / "paper.pdf"
-    f.write_bytes(b"%PDF-1.4\n" + b"x" * 40_000)
+def test_image_documents_are_not_sliced(tmp_path):
+    """An image has no addressable text, so it can never be sliced and must pass
+    through untouched. (A PDF, by contrast, is now sliced through its converter —
+    #2906 — so the old assertion that PDFs are unsplittable no longer holds; the
+    unreadable-PDF passthrough case is covered in test_pdf_slicing.py.)"""
+    f = tmp_path / "diagram.png"
+    f.write_bytes(b"\x89PNG\r\n\x1a\n" + b"x" * 40_000)
     assert not is_splittable_text(f)
     assert expand_oversized_files([f], _FILE_CHAR_CAP) == [f]
 

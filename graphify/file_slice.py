@@ -226,9 +226,15 @@ def bisect_slice(fs: FileSlice) -> tuple[FileSlice, FileSlice] | None:
     """
     if fs.end - fs.start <= 1:
         return None
+    # Index the SAME string the slice offsets were computed against and the
+    # prompt carries: for a PDF that is the extracted text via unit_source_text,
+    # not the raw container bytes. Reading the container here (the old behavior)
+    # searched for the newline cut in binary coordinates, so a compressed PDF
+    # slice could cut mid-line or past the text end (#2906). Any converter/read
+    # failure means we cannot split, so fall back to None (treated as atomic).
     try:
-        text = fs.path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
+        text = unit_source_text(fs.path)
+    except Exception:
         return None
     mid = (fs.start + fs.end) // 2
     nl = text.find("\n", mid, fs.end)

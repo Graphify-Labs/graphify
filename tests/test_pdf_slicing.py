@@ -23,6 +23,7 @@ import pytest
 
 from graphify.file_slice import (
     FileSlice,
+    bisect_slice,
     expand_oversized_files,
     is_splittable_text,
     read_slice_text,
@@ -183,3 +184,24 @@ def test_a_rewritten_pdf_is_re_read(tmp_path):
 def test_repeated_reads_agree(big_pdf):
     _, p = big_pdf
     assert len({unit_source_text(p) for _ in range(3)}) == 1
+
+
+def test_bisect_slice_of_a_pdf_indexes_extracted_text_not_bytes(big_pdf):
+    """The adaptive-retry path (a lone oversized slice that still overflows) calls
+    bisect_slice. For a PDF it must split the EXTRACTED text, not the raw
+    container: the cut has to land on a newline boundary in the extracted text and
+    the two halves must tile the original slice exactly. Reading container bytes
+    (the pre-fix behavior) searched for the newline in binary coordinates, so the
+    cut would not align to a text line."""
+    _, p = big_pdf
+    text = unit_source_text(p)
+    whole = FileSlice(p, 0, len(text), 0, 1)
+    halves = bisect_slice(whole)
+    assert halves is not None, "a multi-line PDF slice must be splittable"
+    left, right = halves
+    # cut lands just after a newline in the EXTRACTED text (byte-coordinate search
+    # on the compressed container could not produce a text-aligned cut here)
+    assert text[left.end - 1] == "\n", "cut did not land on an extracted-text line boundary"
+    # halves tile the original slice exactly, in text coordinates
+    assert read_slice_text(left) + read_slice_text(right) == text
+    assert left.start == 0 and right.end == len(text) and left.end == right.start
