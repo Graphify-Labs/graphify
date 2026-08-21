@@ -162,9 +162,14 @@ def test_uppercase_receiver_fallback_respects_lexical_value_shadowing(
                 "    val Service = other\n"
                 "    Service.ping()\n"
                 "}\n"
+                "fun callable() {\n"
+                "    fun Service() {}\n"
+                "    Service.ping()\n"
+                "}\n"
                 "class Holder(private val other: Other) {\n"
                 "    val Service = other\n"
                 "    fun field() { Service.ping() }\n"
+                "    val initialized = Service.ping()\n"
                 "}\n"
             ),
         },
@@ -172,7 +177,9 @@ def test_uppercase_receiver_fallback_respects_lexical_value_shadowing(
 
     callers = {
         _find(result, "local()", "use"),
+        _find(result, "callable()", "use"),
         _find(result, ".field()", "holder"),
+        _find(result, "Holder", "holder"),
     }
     targets = {
         _find(result, ".ping()", "service"),

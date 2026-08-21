@@ -932,14 +932,27 @@ def _kotlin_function_receiver_type_node(function_node):
 
 
 def _kotlin_owner_members(owner_node) -> list:
-    """Return direct declarations owned by a Kotlin file/class/object."""
+    """Return declarations attributed to a Kotlin file/class/object."""
     if owner_node.type == "source_file":
         return list(owner_node.children)
     body = next(
         (child for child in owner_node.children if child.type == "class_body"),
         None,
     )
-    return list(body.children) if body is not None else []
+    if body is None:
+        return []
+    members: list = []
+    for child in body.children:
+        if child.type != "companion_object":
+            members.append(child)
+            continue
+        companion_body = next(
+            (item for item in child.children if item.type == "class_body"),
+            None,
+        )
+        if companion_body is not None:
+            members.extend(companion_body.children)
+    return members
 
 
 def _kotlin_owner_return_types(owner_node, source: bytes) -> dict[str, str | None]:
@@ -1007,7 +1020,10 @@ def _kotlin_binding_type(
 
 def _kotlin_receiver_types_by_body(
     root_node, source: bytes
-) -> dict[tuple[int, int], dict[str, str]]:
+) -> tuple[
+    dict[tuple[int, int], dict[str, str]],
+    dict[tuple[int, int], dict[str, str]],
+]:
     """Build fail-closed, per-function Kotlin receiver facts (#1699)."""
     callable_names: set[str] = set()
     stack = [root_node]
@@ -1020,6 +1036,7 @@ def _kotlin_receiver_types_by_body(
         stack.extend(current.children)
 
     tables: dict[tuple[int, int], dict[str, str]] = {}
+    owner_tables: dict[tuple[int, int], dict[str, str]] = {}
 
     def process_owner(owner_node) -> None:
         members = _kotlin_owner_members(owner_node)
@@ -1109,6 +1126,10 @@ def _kotlin_receiver_types_by_body(
         field_types.update(
             {f"this.{name}": type_name for name, type_name in field_types.items()}
         )
+        owner_table = dict(field_types)
+        for name in field_poisoned:
+            owner_table[f"@blocked:{name}"] = "1"
+        owner_tables[(owner_node.start_byte, owner_node.end_byte)] = owner_table
 
         for member in members:
             if member.type != "function_declaration":
@@ -1176,10 +1197,9 @@ def _kotlin_receiver_types_by_body(
                     "object_declaration",
                     "function_declaration",
                 ):
-                    if current.type == "function_declaration":
-                        name = _kotlin_declaration_name(current, source)
-                        if name:
-                            method_shadows.add(name)
+                    name = _kotlin_declaration_name(current, source)
+                    if name:
+                        method_shadows.add(name)
                     continue
                 if current.type == "property_declaration":
                     declarations.append(current)
@@ -1239,6 +1259,9 @@ def _kotlin_receiver_types_by_body(
             for name in poisoned:
                 table.pop(name, None)
                 table[f"@blocked:{name}"] = "1"
+            for name in method_shadows:
+                if name not in table:
+                    table[f"@blocked:{name}"] = "1"
             for name, type_name in return_types.items():
                 if type_name and name not in method_shadows:
                     table[f"@call:{name}"] = type_name
@@ -1249,7 +1272,7 @@ def _kotlin_receiver_types_by_body(
                 process_owner(member)
 
     process_owner(root_node)
-    return tables
+    return tables, owner_tables
 
 def _swift_declaration_keyword(node) -> str | None:
     """Return the leading kind token for a Swift class_declaration: class/struct/enum/extension/actor."""
@@ -3384,6 +3407,7 @@ def _extract_generic(
     # `let vm = VM()`) live outside function bodies, so the call-walk never
     # reaches them. Collect (owner_nid, call_node) here and walk them too.
     initializer_nodes: list[tuple[str, object]] = []
+    kotlin_owner_nids: dict[tuple[int, int], str] = {}
     # Ruby include/extend/prepend mixins collected during the node walk (#1668),
     # merged into raw_calls after the call-walk populates it (raw_calls does not
     # exist yet while walk() runs). Resolved cross-file by the Ruby resolver.
@@ -3485,6 +3509,8 @@ def _extract_generic(
 
     file_nid = _make_id(str(path))
     add_node(file_nid, path.name, 1)
+    if config.ts_module == "tree_sitter_kotlin":
+        kotlin_owner_nids[(root.start_byte, root.end_byte)] = file_nid
 
     def walk(node, parent_class_nid: str | None = None) -> None:
         t = node.type
@@ -3544,6 +3570,8 @@ def _extract_generic(
                 ruby_segments = class_name.split("::")
                 class_name = "::".join(ruby_namespace + ruby_segments)
             class_nid = _make_id(stem, ".".join(namespace_stack), class_name)
+            if config.ts_module == "tree_sitter_kotlin":
+                kotlin_owner_nids[(node.start_byte, node.end_byte)] = class_nid
             line = node.start_point[0] + 1
             metadata = None
             if config.ts_module == "tree_sitter_c_sharp":
@@ -5257,11 +5285,17 @@ def _extract_generic(
         )
         for body_id, (method_node, class_nid) in csharp_method_scopes.items()
     }
-    kotlin_receiver_types = (
-        _kotlin_receiver_types_by_body(root, source)
-        if config.ts_module == "tree_sitter_kotlin"
-        else {}
-    )
+    if config.ts_module == "tree_sitter_kotlin":
+        kotlin_receiver_types, kotlin_owner_receiver_types = (
+            _kotlin_receiver_types_by_body(root, source)
+        )
+        kotlin_initializer_receiver_types = {
+            owner_nid: kotlin_owner_receiver_types.get(owner_span, {})
+            for owner_span, owner_nid in kotlin_owner_nids.items()
+        }
+    else:
+        kotlin_receiver_types = {}
+        kotlin_initializer_receiver_types = {}
 
     def _emit_indirect_by_name(ident_name: str, loc_node, scope_nid: str,
                                context: str) -> None:
@@ -6206,7 +6240,11 @@ def _extract_generic(
     # self-guards against re-entering function bodies and dedups via
     # seen_call_pairs, so a closure inside an initializer is not double-walked.
     for owner_nid, init_node in initializer_nodes:
-        walk_calls(init_node, owner_nid)
+        walk_calls(
+            init_node,
+            owner_nid,
+            kotlin_initializer_receiver_types.get(owner_nid),
+        )
 
     # ── Event listener pass ───────────────────────────────────────────────────
     seen_listen_pairs: set[tuple[str, str]] = set()
