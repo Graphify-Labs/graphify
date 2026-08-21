@@ -687,6 +687,22 @@ def test_generated_runbooks_pass_root_to_save_manifest():
     assert checked >= 4, f"expected save_manifest calls across the runbooks, found {checked}"
 
 
+def test_split_skills_prefer_native_semantic_update_conductor():
+    """Every split-skill host reuses the CLI semantic-update conductor.
+
+    Keeping this assertion at the rendered-artifact boundary prevents one of
+    the shared-reference hosts from silently drifting back to the duplicated
+    manual runbook.
+    """
+    platforms = gen.load_platforms()
+    for key, platform in platforms.items():
+        if platform.bucket != "split":
+            continue
+        body = "\n".join(artifact.content for artifact in gen.render(platform))
+        assert "graphify update INPUT_PATH --semantic" in body, key
+        assert "Compatibility fallback" in body, key
+
+
 def test_devin_keeps_its_multi_field_frontmatter():
     """devin renders inline, so its 4+-field frontmatter is preserved verbatim."""
     platforms = gen.load_platforms()

@@ -6,6 +6,22 @@ Load this only when the user passed `--update` or `--cluster-only`. A first-time
 
 Use when you've added or modified files since the last run. Only re-extracts changed files - saves tokens and time.
 
+### Native conductor (preferred)
+
+Run the complete incremental pipeline through Graphify's tested CLI conductor first:
+
+```bash
+graphify update INPUT_PATH --semantic
+```
+
+Replace `INPUT_PATH` with the path being updated. Append any supported flags the user supplied, such as `--backend`, `--model`, `--no-label`, or `--no-viz`. Keep `--semantic`: bare `graphify update` intentionally remains the AST-only fast path. The conductor detects changes, reuses the semantic cache, prunes stale sources, refreshes code and content, and regenerates communities and reports. A code-only change needs no LLM backend.
+
+If the command exits successfully, do not replay the compatibility flow below. Use that flow only when the installed binary rejects `--semantic`, or when it reports that changed semantic files need an unconfigured backend and the current host can perform semantic extraction itself. For any other failure, stop and report the error instead of mutating the graph through a second path.
+
+### Compatibility fallback
+
+The remaining steps preserve host-agent extraction for older Graphify binaries or environments without a configured native semantic backend.
+
 ```bash
 $(cat graphify-out/.graphify_python) -c "
 import sys, json
