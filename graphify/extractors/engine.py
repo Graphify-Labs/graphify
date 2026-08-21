@@ -5085,6 +5085,60 @@ def _extract_generic(
                                 else:
                                     callee_name = raw
                                 break
+                # C#: emit a `references[generic_arg]` edge for every type
+                # argument at the call site (`recv.Do<T>()`, the
+                # `services.AddScoped<ISvc, Impl>()` DI shape, static
+                # `Foo<IBar>()`). The property/return/parameter branches
+                # already walk their declared type for the same reason; the
+                # call-site branch didn't, so the type arguments never
+                # became nodes and dependency edges were silently erased
+                # (#2911). The C# class_declaration's field_declaration and
+                # property_declaration branches above are the direct
+                # analogue. The call-site function carries its type-arg list
+                # either as a `type_argument_list` child on a `generic_name`
+                # (static call) or as the same child on the
+                # `member_access_expression`'s `name` `generic_name` (member
+                # call); the fallback path uses raw text and never sees the
+                # structured type-arg list. The class declaration's
+                # field_declaration case is closed by the parallel fix in
+                # #2913; this branch covers what that PR deliberately left
+                # out.
+                if fn_node is not None:
+                    call_tal = None
+                    if fn_node.type == "member_access_expression":
+                        ma_name = fn_node.child_by_field_name("name")
+                        if ma_name is not None and ma_name.type == "generic_name":
+                            for tal_child in ma_name.children:
+                                if tal_child.type == "type_argument_list":
+                                    call_tal = tal_child
+                                    break
+                    elif fn_node.type == "generic_name":
+                        for tal_child in fn_node.children:
+                            if tal_child.type == "type_argument_list":
+                                call_tal = tal_child
+                                break
+                    if call_tal is not None:
+                        call_type_params = _csharp_type_parameters_in_scope(node, source)
+                        call_line = node.start_point[0] + 1
+                        for call_arg in call_tal.children:
+                            if not call_arg.is_named:
+                                continue
+                            call_refs: list[tuple[str, str, bool, str]] = []
+                            _csharp_collect_type_refs(
+                                call_arg, source, True, call_refs, call_type_params
+                            )
+                            for call_ref_name, _call_role, call_qualified, call_qualifier in call_refs:
+                                call_target = ensure_named_node(call_ref_name, call_line)
+                                if call_target == caller_nid:
+                                    continue
+                                call_meta = {"ref_token": call_ref_name}
+                                if call_qualified:
+                                    call_meta["qualified"] = True
+                                if call_qualifier:
+                                    call_meta["ref_qualifier"] = call_qualifier
+                                add_edge(caller_nid, call_target, "references",
+                                         call_line, context="generic_arg",
+                                         metadata=call_meta)
             elif config.ts_module == "tree_sitter_php":
                 # PHP: distinguish call expression subtypes
                 if node.type == "function_call_expression":
