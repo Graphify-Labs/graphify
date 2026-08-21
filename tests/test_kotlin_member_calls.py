@@ -313,6 +313,60 @@ def test_object_literal_initializer_uses_its_own_shadow_facts(tmp_path: Path) ->
     )
 
 
+def test_enum_entry_shadows_top_level_receiver_type(tmp_path: Path) -> None:
+    result = _extract(
+        tmp_path,
+        {
+            "Top.kt": (
+                "package demo\n"
+                "object Service {\n"
+                "    fun ping() {}\n"
+                "}\n"
+            ),
+            "Mode.kt": (
+                "package demo\n"
+                "enum class Mode {\n"
+                "    Service;\n"
+                "    fun ping() {}\n"
+                "    fun caller() { Service.ping() }\n"
+                "}\n"
+            ),
+        },
+    )
+
+    caller = _find(result, ".caller()", "mode")
+    top_level_ping = _find(result, ".ping()", "top")
+    assert not any(
+        edge["source"] == caller and edge["target"] == top_level_ping
+        for edge in _call_edges(result)
+    )
+
+
+def test_top_level_classifier_remains_a_valid_receiver(tmp_path: Path) -> None:
+    result = _extract(
+        tmp_path,
+        {
+            "Use.kt": (
+                "object Service {\n"
+                "    fun ping() {}\n"
+                "}\n"
+                "val initialized = Service.ping()\n"
+                "fun caller() { Service.ping() }\n"
+            ),
+        },
+    )
+
+    service_ping = _find(result, ".ping()", "service")
+    caller = _find(result, "caller()", "use")
+    file_owner = _find(result, "Use.kt", "use")
+    pairs = {
+        (edge["source"], edge["target"])
+        for edge in _call_edges(result)
+    }
+    assert (caller, service_ping) in pairs
+    assert (file_owner, service_ping) in pairs
+
+
 def test_explicit_this_call_resolves_only_to_its_owner(tmp_path: Path) -> None:
     result = _extract(
         tmp_path,

@@ -936,7 +936,11 @@ def _kotlin_owner_members(owner_node) -> list:
     if owner_node.type == "source_file":
         return list(owner_node.children)
     body = next(
-        (child for child in owner_node.children if child.type == "class_body"),
+        (
+            child
+            for child in owner_node.children
+            if child.type in ("class_body", "enum_class_body")
+        ),
         None,
     )
     if body is None:
@@ -1092,14 +1096,23 @@ def _kotlin_receiver_types_by_body(
             if member.type == "property_declaration"
             for name in _kotlin_variable_names(member, source)
         }
-        owner_shadows.update(
-            name
-            for member in members
-            if member.type in ("class_declaration", "object_declaration")
-            if (name := _kotlin_declaration_name(member, source))
-        )
+        if owner_node.type != "source_file":
+            owner_shadows.update(
+                name
+                for member in members
+                if member.type in (
+                    "class_declaration",
+                    "object_declaration",
+                    "enum_entry",
+                )
+                if (name := _kotlin_declaration_name(member, source))
+            )
         owner_body = next(
-            (child for child in owner_node.children if child.type == "class_body"),
+            (
+                child
+                for child in owner_node.children
+                if child.type in ("class_body", "enum_class_body")
+            ),
             None,
         )
         if owner_body is not None:
