@@ -691,7 +691,7 @@ def _incremental_corpus(root: Path) -> tuple[Path, Path]:
     (root / "Service.kt").write_text(
         "package lib\nclass Service { fun ping() {} }\n", encoding="utf-8"
     )
-    caller = root / "Caller.kt"
+    caller = root / "Caller.KT"
     caller.write_text(
         "package app\n"
         "import lib.Service\n"
@@ -707,7 +707,7 @@ def _incremental_member_edges(root: Path) -> list[tuple[str, str]]:
         node["id"]
         for node in graph["nodes"]
         if node.get("label") == "call()"
-        and str(node.get("source_file", "")).endswith("Caller.kt")
+        and str(node.get("source_file", "")).lower().endswith("caller.kt")
     )
     target = next(
         node["id"]
