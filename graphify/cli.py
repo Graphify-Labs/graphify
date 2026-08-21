@@ -3129,6 +3129,20 @@ def dispatch_command(cmd: str) -> None:
         # --force: full scan, not the manifest-gated incremental diff — a warm
         # unchanged tree would otherwise dispatch zero files (#1894).
         incremental_mode = incremental_mode and not force
+        # #2923: --force --code-only must NOT drop the existing semantic layer.
+        # The AST pass is fully replaced (full re-scan, semantic cache reads
+        # skipped), but the semantic pass is itself skipped entirely, so
+        # doc/paper/image nodes from the existing graph carry forward via the
+        # incremental merge (build_merge / merge_raw_extraction keep them
+        # because no new semantic-tier sources are dispatched). Without this,
+        # a single --code-only --force silently erases every doc/paper/image
+        # node plus its connected hyperedges.
+        if force and code_only and existing_graph_path.exists():
+            incremental_mode = True
+            print(
+                "[graphify extract] --force --code-only: full AST re-scan, "
+                "existing semantic layer preserved (no semantic pass this run)"
+            )
         if force:
             print("[graphify extract] --force: full re-scan, semantic cache reads skipped")
         elif incremental_mode and not manifest_path.exists():
