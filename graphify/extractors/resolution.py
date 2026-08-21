@@ -22,6 +22,10 @@ _TSCONFIG_ALIAS_CACHE: dict[str, dict[str, list[str]]] = {}
 # compilerOptions.baseUrl per config path, as an absolute dir (#2153).
 _TSCONFIG_BASEURL_CACHE: "dict[str, Path | None]" = {}
 
+# stat() sentinel for a config that vanished between the exists() probe and the
+# cache-key read — a distinct key, so the miss is recomputed rather than served.
+_CONFIG_MTIME_UNAVAILABLE = -1
+
 _WORKSPACE_MANIFEST_NAMES = ("pnpm-workspace.yaml", "package.json")
 
 _JS_RESOLVE_EXTS = (".ts", ".tsx", ".mts", ".cts", ".svelte", ".js", ".jsx", ".mjs", ".cjs")
@@ -203,19 +207,34 @@ def _find_js_config(start_dir: Path) -> "tuple[Path, Path] | None":
                 return config, candidate
     return None
 
+def _js_config_cache_key(config: Path) -> str:
+    """Cache key that changes when the config file is edited (#2917).
+
+    Keying on the path alone froze an edited `compilerOptions` for the life of
+    the process, so `graphify watch`, the MCP server, and repeated `extract_js`
+    calls kept wiring imports to the previous alias target. Mirrors the
+    manifest-mtime key `_load_workspace_packages` already uses.
+    """
+    try:
+        mtime = config.stat().st_mtime_ns
+    except OSError:
+        mtime = _CONFIG_MTIME_UNAVAILABLE
+    return str((str(config), mtime))
+
+
 def _load_tsconfig_aliases(start_dir: Path) -> dict[str, list[str]]:
     """Walk up from start_dir to find tsconfig/jsconfig.json and return compilerOptions.paths aliases.
 
     Follows extends chains so SvelteKit/Nuxt/NestJS inherited aliases are included.
     Returns a dict mapping alias patterns to ordered resolved target patterns;
     wildcard tokens remain intact for substitution during resolution (#927).
-    Result is cached by config path string.
+    Result is cached by config path and mtime.
     """
     found = _find_js_config(start_dir)
     if found is None:
         return {}
     config, candidate = found
-    key = str(config)
+    key = _js_config_cache_key(config)
     if key not in _TSCONFIG_ALIAS_CACHE:
         _TSCONFIG_ALIAS_CACHE[key] = _read_tsconfig_aliases(config, candidate, seen=set())
     return _TSCONFIG_ALIAS_CACHE[key]
@@ -233,7 +252,7 @@ def _load_tsconfig_base_url(start_dir: Path) -> "Path | None":
     if found is None:
         return None
     config, candidate = found
-    key = str(config)
+    key = _js_config_cache_key(config)
     if key not in _TSCONFIG_BASEURL_CACHE:
         base_url = None
         data = _read_json_config(config)

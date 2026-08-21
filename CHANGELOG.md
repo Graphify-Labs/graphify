@@ -4,6 +4,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.48 (2026-08-20)
 
+- Fix: `graphify watch`, the MCP server, and any caller that runs `extract()` or `extract_js()` more than once in a process now see an edited `tsconfig.json` / `jsconfig.json`; the `compilerOptions.paths` and `baseUrl` caches are keyed by config mtime — as the workspace-manifest cache already is — and cleared per run so an edit to an `extends` base config lands too, instead of silently wiring imports to the previous alias target for the life of the process (#2917, thanks @sashankh).
 - Fix: a control character in a node label or id no longer aborts the whole export; the GraphML and Obsidian exporters scrub only the characters those formats forbid (tab, newline, and non-ASCII letters are preserved), and `graph.json` and its byte-identity round-trip are untouched (#2897, thanks @abhay-codes07).
 - Fix: `graphify update` / `label` / `cluster-only` no longer leave a large graph without a `graph.html`; the aggregated community view renders instead of raising, a failed render preserves the previous file, and a missing `graph.html` is regenerated on the no-change fast path without reclustering (#2853, thanks @oleksii-tumanov).
 - Feature: `graphify extract --no-dedup` skips the fuzzy near-duplicate merge on build and incremental merge, for operators who would rather keep distinct symbols that fuzzy-matched; exact-id uniqueness is unaffected and the flag arms the shrink guard so a surprising node drop is refused loudly (#2881, thanks @rajarshidattapy).

@@ -70,6 +70,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _JS_PRIMITIVE_TYPES,
     _JS_RESOLVE_EXTS,
     _TSCONFIG_ALIAS_CACHE,
+    _TSCONFIG_BASEURL_CACHE,
     _VUE_SCRIPT_LANG_RE,
     _VUE_SCRIPT_RE,
     _WORKSPACE_MANIFEST_NAMES,
@@ -5522,9 +5523,14 @@ def extract(
     _check_tree_sitter_version()
     _raise_recursion_limit()
     # Workspace package manifests/globs can change during watch or repeated extraction.
+    # The tsconfig/jsconfig caches are mtime-keyed per config file, which the run
+    # boundary completes: an alias inherited through an `extends` chain is keyed on
+    # the leaf config only, so an edit to the BASE config needs this clear (#2917).
     _WORKSPACE_PACKAGE_CACHE.clear()
     _XAML_CSHARP_CLASS_CACHE.clear()
     _MD_LINK_INDEX_CACHE.clear()
+    _TSCONFIG_ALIAS_CACHE.clear()
+    _TSCONFIG_BASEURL_CACHE.clear()
 
     # Infer a common root for cache keys (use first diverging segment, not sum of all matches)
     try:

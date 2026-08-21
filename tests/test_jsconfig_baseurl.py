@@ -191,3 +191,79 @@ def test_tsconfig_wins_when_both_configs_present(tmp_path):
     targets = _targets(r)
     assert _cid(tmp_path, ts_hit) in targets
     assert _cid(tmp_path, tmp_path / "js_root" / "mods" / "W.js") not in targets
+
+
+def test_tsconfig_paths_alias_edit_is_seen_by_a_second_extract(tmp_path):
+    # #2917: watch / MCP call extract() repeatedly in one process. The alias
+    # cache is keyed on the config path with no invalidation, so retargeting
+    # `paths` mid-session kept wiring imports to the previous directory —
+    # silently, since the edges still existed and still looked plausible.
+    _write(tmp_path / "src" / "target.ts", "export function hit() { return 1; }\n")
+    _write(tmp_path / "lib" / "target.ts", "export function hit() { return 2; }\n")
+    f = _write(tmp_path / "main.ts", "import { hit } from '@app/target';\nhit();\n")
+
+    def _retarget(alias_dir: str) -> set[str]:
+        _write(tmp_path / "tsconfig.json",
+               '{\n  "compilerOptions": {\n    "baseUrl": ".",\n'
+               f'    "paths": {{ "@app/*": ["{alias_dir}/*"] }}\n'
+               '  }\n}\n')
+        return _targets(extract([f], root=tmp_path))
+
+    first = _retarget("src")
+    assert any(t.startswith("src_target") for t in first), first
+    second = _retarget("lib")
+    assert any(t.startswith("lib_target") for t in second), second
+    assert not any(t.startswith("src_target") for t in second), second
+
+
+def test_tsconfig_baseurl_edit_is_seen_by_a_second_extract(tmp_path):
+    # #2917, the baseUrl half: same missing invalidation on the sibling cache.
+    _write(tmp_path / "a_root" / "mods" / "W.js", "export default 1;\n")
+    _write(tmp_path / "b_root" / "mods" / "W.js", "export default 2;\n")
+    f = _write(tmp_path / "packs" / "d.js",
+               "import W from 'mods/W.js';\nexport default W;\n")
+
+    def _rebase(base_url: str) -> set[str]:
+        _write(tmp_path / "tsconfig.json",
+               f'{{\n  "compilerOptions": {{ "baseUrl": "{base_url}" }}\n}}\n')
+        return _targets(extract([f], cache_root=tmp_path))
+
+    a_hit = _cid(tmp_path, tmp_path / "a_root" / "mods" / "W.js")
+    b_hit = _cid(tmp_path, tmp_path / "b_root" / "mods" / "W.js")
+    assert a_hit in _rebase("a_root")
+    second = _rebase("b_root")
+    assert b_hit in second
+    assert a_hit not in second
+
+
+def test_tsconfig_alias_edit_is_seen_without_a_full_extract(tmp_path):
+    # #2917: extract_js() reads the alias/baseUrl caches directly, so callers
+    # that never go through extract() need the entries themselves to expire.
+    # (`os.utime` stands in for a later edit, so the test cannot depend on the
+    # filesystem's mtime granularity.)
+    import os
+
+    from graphify.extractors.resolution import (
+        _load_tsconfig_aliases,
+        _load_tsconfig_base_url,
+    )
+
+    config = tmp_path / "tsconfig.json"
+    src = _write(tmp_path / "src" / "main.ts", "export const x = 1;\n")
+
+    def _retarget(root_dir: str, bump: int) -> None:
+        _write(config,
+               '{\n  "compilerOptions": {\n'
+               f'    "baseUrl": "{root_dir}",\n'
+               '    "paths": { "@app/*": ["*"] }\n'
+               '  }\n}\n')
+        stamp = config.stat().st_mtime_ns + bump
+        os.utime(config, ns=(stamp, stamp))
+
+    _retarget("src", bump=0)
+    assert _load_tsconfig_aliases(src.parent)["@app/*"] == [f"{tmp_path / 'src'}/*"]
+    assert _load_tsconfig_base_url(src.parent) == tmp_path / "src"
+
+    _retarget("lib", bump=10**9)
+    assert _load_tsconfig_aliases(src.parent)["@app/*"] == [f"{tmp_path / 'lib'}/*"]
+    assert _load_tsconfig_base_url(src.parent) == tmp_path / "lib"
