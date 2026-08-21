@@ -2012,6 +2012,33 @@ def extract_files_direct(
     return result
 
 
+# Estimating a PDF means extracting its text, and packing asks for the same
+# file repeatedly while it decides where a chunk ends. Memoise on
+# (path, size, mtime) so a corpus of papers is parsed once per run rather than
+# once per packing probe, and so a file rewritten mid-run is not served a stale
+# estimate. Bounded because a huge corpus should not pin every paper's text in
+# memory; the entries are cheap (an int) but the dict should not grow forever.
+_PDF_ESTIMATE_CACHE: "dict[tuple, str]" = {}
+_PDF_ESTIMATE_CACHE_MAX = 512
+
+
+def _pdf_text_for_estimate(path: Path) -> str:
+    """Extracted text of a PDF, memoised for the packing pass."""
+    try:
+        st = path.stat()
+        key = (str(path), st.st_size, st.st_mtime_ns)
+    except OSError:
+        return ""
+    hit = _PDF_ESTIMATE_CACHE.get(key)
+    if hit is not None:
+        return hit
+    text = _file_to_text(path)
+    if len(_PDF_ESTIMATE_CACHE) >= _PDF_ESTIMATE_CACHE_MAX:
+        _PDF_ESTIMATE_CACHE.clear()
+    _PDF_ESTIMATE_CACHE[key] = text
+    return text
+
+
 def _estimate_file_tokens(unit: "Path | FileSlice") -> int:
     """Estimate the prompt-token cost of a file or slice under `_read_files` rules.
 
@@ -2036,18 +2063,36 @@ def _estimate_file_tokens(unit: "Path | FileSlice") -> int:
     # fixed token cost, so estimate by image count rather than (binary) byte size.
     if _is_vision_image(path):
         return _IMAGE_TOKEN_ESTIMATE
-    if _TOKENIZER is None:
+
+    # A PDF's bytes are not what the prompt carries. `_read_files` sends it
+    # through `_file_to_text` -> `extract_pdf_text`, so estimating from the file
+    # instead measures a compressed binary: every real PDF Flate-compresses its
+    # text streams, so the estimate came out several times too SMALL and packing
+    # overfilled the chunk. On a 400-line fixture the same document estimated at
+    # 1,334 tokens uncompressed-vs-4,598 actual, and 1,334 vs 4,599 once
+    # FlateDecode was applied — a 3.45x undercount, which is what a real PDF
+    # looks like. The chunk then blows the context window and falls into
+    # adaptive bisection, paying for the same content several times (#2903).
+    if path.suffix.lower() == ".pdf":
+        try:
+            content = _pdf_text_for_estimate(path)[:_FILE_CHAR_CAP]
+        except Exception:
+            return 0
+    elif _TOKENIZER is None:
         try:
             size = path.stat().st_size
         except OSError:
             return 0
         chars = min(size, _FILE_CHAR_CAP) + _PER_FILE_OVERHEAD_CHARS
         return chars // _CHARS_PER_TOKEN
+    else:
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")[:_FILE_CHAR_CAP]
+        except OSError:
+            return 0
 
-    try:
-        content = path.read_text(encoding="utf-8", errors="replace")[:_FILE_CHAR_CAP]
-    except OSError:
-        return 0
+    if _TOKENIZER is None:
+        return (len(content) + _PER_FILE_OVERHEAD_CHARS) // _CHARS_PER_TOKEN
     return len(_TOKENIZER.encode(content, disallowed_special=())) + (_PER_FILE_OVERHEAD_CHARS // _CHARS_PER_TOKEN)
 
 
