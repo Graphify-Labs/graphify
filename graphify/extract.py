@@ -3762,7 +3762,7 @@ def _resolve_kotlin_import_targets(
     for e in all_edges:
         if e.get("relation") != "imports":
             continue
-        if not str(e.get("source_file", "")).endswith((".kt", ".kts")):
+        if not _is_kotlin_source_file(e.get("source_file", "")):
             continue
         fqn = (e.get("metadata") or {}).get("target_fqn", "")
         pkg, _, name = str(fqn).rpartition(".")

@@ -1181,6 +1181,7 @@ def _rebuild_code(
     try:
         from graphify.extract import (
             _get_extractor,
+            _is_kotlin_source_file,
             _kotlin_incremental_member_callers,
             extract,
         )
@@ -1252,7 +1253,7 @@ def _rebuild_code(
                 seen_ignored_inventory_sources: set[str] = set()
                 for node in inventory_graph.get("nodes", []):
                     source_file = str(node.get("source_file", ""))
-                    if not source_file.endswith((".kt", ".kts")):
+                    if not _is_kotlin_source_file(source_file):
                         continue
                     identity = inventory_paths.identity(source_file)
                     if (

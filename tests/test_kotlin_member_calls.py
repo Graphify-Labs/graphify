@@ -149,6 +149,41 @@ def test_receiver_bindings_do_not_leak_between_methods(tmp_path: Path) -> None:
     assert (second, alpha_close) not in pairs
 
 
+def test_uppercase_receiver_fallback_respects_lexical_value_shadowing(
+    tmp_path: Path,
+) -> None:
+    result = _extract(
+        tmp_path,
+        {
+            "Service.kt": "object Service { fun ping() {} }\n",
+            "Other.kt": "class Other { fun ping() {} }\n",
+            "Use.kt": (
+                "fun local(other: Other) {\n"
+                "    val Service = other\n"
+                "    Service.ping()\n"
+                "}\n"
+                "class Holder(private val other: Other) {\n"
+                "    val Service = other\n"
+                "    fun field() { Service.ping() }\n"
+                "}\n"
+            ),
+        },
+    )
+
+    callers = {
+        _find(result, "local()", "use"),
+        _find(result, ".field()", "holder"),
+    }
+    targets = {
+        _find(result, ".ping()", "service"),
+        _find(result, ".ping()", "other"),
+    }
+    assert not any(
+        edge["source"] in callers and edge["target"] in targets
+        for edge in _call_edges(result)
+    )
+
+
 def test_explicit_this_call_resolves_only_to_its_owner(tmp_path: Path) -> None:
     result = _extract(
         tmp_path,
@@ -843,13 +878,14 @@ def test_watch_requeues_caller_when_factory_becomes_excluded(
     from graphify.watch import _rebuild_code
 
     root, factory = _incremental_factory_corpus(tmp_path / "watch-excluded-factory")
+    factory = factory.with_suffix(".KT")
     _write_factory(factory)
     assert _rebuild_code(root, no_cluster=True, acquire_lock=False) is True
     widget_render, product_render = _factory_render_ids(root)
     assert not _factory_call_targets(root) & {widget_render, product_render}
 
     ignore = root / ".graphifyignore"
-    ignore.write_text("Factory.kt\n", encoding="utf-8")
+    ignore.write_text("Factory.KT\n", encoding="utf-8")
     assert _rebuild_code(
         root, changed_paths=[ignore], no_cluster=True, acquire_lock=False
     ) is True

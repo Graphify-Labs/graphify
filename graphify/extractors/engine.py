@@ -1122,7 +1122,7 @@ def _kotlin_receiver_types_by_body(
             table = dict(field_types)
             if owner_type:
                 table["@this"] = owner_type
-            poisoned: set[str] = set()
+            poisoned: set[str] = set(field_poisoned)
 
             def bind(name: str | None, type_name: str | None) -> None:
                 if not name or name in poisoned:
@@ -1238,6 +1238,7 @@ def _kotlin_receiver_types_by_body(
                 bind(name, None)
             for name in poisoned:
                 table.pop(name, None)
+                table[f"@blocked:{name}"] = "1"
             for name, type_name in return_types.items():
                 if type_name and name not in method_shadows:
                     table[f"@call:{name}"] = type_name
@@ -5592,6 +5593,8 @@ def _extract_generic(
                                 if (
                                     kotlin_receiver_type is None
                                     and member_receiver[:1].isupper()
+                                    and f"@blocked:{member_receiver}"
+                                    not in (receiver_types or {})
                                 ):
                                     # Preserve direct object/companion calls without
                                     # the old label-only fallback. The corpus resolver
