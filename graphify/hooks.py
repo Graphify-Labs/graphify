@@ -67,10 +67,17 @@ if [ -z "$GRAPHIFY_PYTHON" ]; then
         # POSIX launcher: parse the shebang. head -c + tr strip NUL bytes first —
         # when the launcher is a Windows binary reached without its .exe suffix,
         # a raw `head -1` reads binary into the command substitution and the
-        # shell warns about ignored null bytes on every commit.
+        # shell warns about ignored null bytes on every commit. Gate on a
+        # leading '#!': a launcher can also be a binary trampoline with no
+        # shebang at all (uv tool installs on Windows), and its bytes must
+        # never reach the shebang parse (#2852).
         case "$GRAPHIFY_BIN" in
-            *.exe) _SHEBANG="" ;;
-            *)     _SHEBANG=$(head -c 256 "$GRAPHIFY_BIN" 2>/dev/null | tr -d '\\000' | head -n 1 | sed 's/^#![[:space:]]*//') ;;
+            *.exe) _GFY_HEAD="" ;;
+            *)     _GFY_HEAD=$(head -c 256 "$GRAPHIFY_BIN" 2>/dev/null | tr -d '\\000') ;;
+        esac
+        case "$_GFY_HEAD" in
+            '#!'*) _SHEBANG=$(printf '%s\\n' "$_GFY_HEAD" | head -n 1 | sed 's/^#![[:space:]]*//') ;;
+            *)     _SHEBANG="" ;;
         esac
         case "$_SHEBANG" in
             */env\\ *) GRAPHIFY_PYTHON="${_SHEBANG#*/env }" ;;
@@ -85,6 +92,29 @@ if [ -z "$GRAPHIFY_PYTHON" ]; then
             GRAPHIFY_PYTHON=""
         fi
     fi
+fi
+# Fourth probe: uv tool environments. `uv tool install` (the README's
+# recommended method) puts graphify in an isolated venv that no ambient
+# python can import, and on Windows its launcher on PATH is a binary
+# trampoline with no shebang to parse — so the probes above can all miss a
+# healthy install and the hook dies at the last-resort fallback (#2852).
+# Scan the uv tool envs directly; UV_TOOL_DIR overrides the default
+# location. A tool env is adopted only if its python passes the probe, so a
+# co-installed tool without graphify never satisfies it.
+if [ -z "$GRAPHIFY_PYTHON" ]; then
+    for _GFY_TOOLS in \
+        "${UV_TOOL_DIR:-}" \
+        "$HOME/.local/share/uv/tools" \
+        "$HOME/AppData/Roaming/uv/tools"; do
+        [ -n "$_GFY_TOOLS" ] || continue
+        for _GFY_CAND in "$_GFY_TOOLS"/*/bin/python "$_GFY_TOOLS"/*/Scripts/python.exe; do
+            [ -x "$_GFY_CAND" ] || continue
+            if "$_GFY_CAND" -c "$_GFY_PROBE" 2>/dev/null; then
+                GRAPHIFY_PYTHON="$_GFY_CAND"
+                break 2
+            fi
+        done
+    done
 fi
 # Last resort: try python3 / python (works for system/venv installs on PATH).
 if [ -z "$GRAPHIFY_PYTHON" ]; then
