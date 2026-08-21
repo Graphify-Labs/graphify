@@ -120,6 +120,54 @@ def test_a_table_named_like_a_variable_is_not_falsely_linked(tmp_path):
     assert ("assignments.ts", "volunteer_assignments") in _refs(result)
 
 
+def test_comments_and_prose_are_not_queries(tmp_path):
+    """#2884 review: the same phantom class one level up from a bare identifier.
+
+    A table name after a SQL keyword is not a query when it sits in a comment or
+    in ordinary prose, and all three of these minted a `references` edge while
+    the matcher scanned raw file bytes.
+    """
+    root, db, src = _corpus(tmp_path)
+    (src / "comment.ts").write_text(
+        "// SELECT foo FROM events\n"
+        "export const n = 1;\n"
+    )
+    (src / "prose.ts").write_text(
+        'const s = "the FROM events keyword";\n'
+        "export const t = s;\n"
+    )
+    (src / "docs.py").write_text(
+        '"""Docs: you can JOIN events with assets here."""\n'
+        "N = 1\n"
+    )
+    paths = (sorted(db.rglob("*.sql")) + sorted(src.glob("*.ts"))
+             + sorted(src.glob("*.py")))
+    result = extract(paths, cache_root=tmp_path)
+
+    refs = _refs(result)
+    assert ("comment.ts", "events") not in refs
+    assert ("prose.ts", "events") not in refs
+    assert ("docs.py", "events") not in refs
+    assert ("assignments.ts", "volunteer_assignments") in refs
+
+
+def test_schema_qualified_table_links_both_reference_forms(tmp_path):
+    """#2884 review: labels are stored verbatim, so a Postgres/T-SQL corpus
+    declares `public.users` — and matching on the label alone gave it zero
+    edges, whichever way the query spells the reference."""
+    db = tmp_path / "db"
+    db.mkdir()
+    (db / "schema.sql").write_text("CREATE TABLE public.users (id INT);\n")
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "bare.ts").write_text("q(`SELECT id FROM users`);\n")
+    (src / "qualified.ts").write_text("q(`SELECT id FROM public.users`);\n")
+
+    paths = sorted(db.glob("*.sql")) + sorted(src.glob("*.ts"))
+    result = extract(paths, cache_root=tmp_path)
+    assert {f for f, label in _refs(result)} == {"bare.ts", "qualified.ts"}
+
+
 def test_unreferenced_table_gets_no_edges(tmp_path):
     """A useful side effect: tables with no SQL-position reference anywhere are
     surfaced as dead schema rather than papered over."""
