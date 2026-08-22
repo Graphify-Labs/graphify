@@ -7,6 +7,7 @@ import re
 import shlex
 import stat
 import subprocess
+import threading
 import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
@@ -1337,6 +1338,13 @@ class _AnchorIndex:
     ``detect()`` extends the list as its walk finds nested ignore files, so
     ``_refresh`` indexes only the new tail.
 
+    ``watch`` drives this from two threads — the watchdog observer thread calls
+    ``_is_ignored`` per filesystem event while the main thread rebuilds — so
+    ``lookup`` serialises refreshes under ``_lock`` and hands back the candidate
+    indices together with the snapshot they index. Invalidation rebinds
+    ``_entries`` rather than clearing it, so a snapshot a reader already holds
+    stays internally consistent even as the index rebuilds underneath it.
+
     Contract: the source list is append-only for as long as an index is live.
     Every producer here obeys it — ``detect()`` and ``_is_scan_ignored`` only
     ``append``/``extend``. ``_refresh`` still catches a shrink and a rewritten
@@ -1346,13 +1354,14 @@ class _AnchorIndex:
     rather than a wrong one.
     """
 
-    __slots__ = ("_patterns", "_entries", "_by_anchor")
+    __slots__ = ("_patterns", "_entries", "_by_anchor", "_lock")
 
     def __init__(self, patterns: list[tuple[Path, str]]) -> None:
         self._patterns = patterns
         self._entries: list[tuple[Path, str]] = []
         self._by_anchor: dict[Path, list[int]] = {}
-        self._refresh()
+        self._lock = threading.Lock()
+        self._refresh()  # not yet shared; _lock guards every later refresh
 
     @property
     def entries(self) -> list[tuple[Path, str]]:
@@ -1364,10 +1373,15 @@ class _AnchorIndex:
         bucket's anchor is an ancestor. Reading a source entry that has since
         been swapped would break that promise and build a nonsense relative
         path, so the snapshot keeps a stale index merely stale.
+
+        Prefer ``lookup``: indices and snapshot must be captured together, or a
+        concurrent rebuild between the two reads pairs indices with the wrong
+        list. This accessor exists for tests and for that paired capture.
         """
         return self._entries
 
     def _refresh(self) -> None:
+        """Index the new tail. Callers must hold ``_lock``."""
         patterns = self._patterns
         n = len(patterns)
         indexed = len(self._entries)
@@ -1380,10 +1394,11 @@ class _AnchorIndex:
         # rewrite is out of contract (see the class docstring); the snapshot
         # bounds its blast radius to staleness.
         if n < indexed or (indexed and patterns[indexed - 1] is not self._entries[-1]):
-            # Cleared in place, not rebound: callers hold ``entries`` across a
-            # ``candidates()`` call, which refreshes.
-            self._entries.clear()
-            self._by_anchor.clear()
+            # Rebound, not cleared in place: a reader that captured the old
+            # snapshot from ``lookup`` keeps a list that only ever grew, so its
+            # indices stay aligned instead of running off a truncated list.
+            self._entries = []
+            self._by_anchor = {}
             indexed = 0
         entries = self._entries
         by_anchor = self._by_anchor
@@ -1392,15 +1407,28 @@ class _AnchorIndex:
             entries.append(entry)
             by_anchor.setdefault(entry[0], []).append(i)
 
+    def lookup(self, target: Path) -> tuple[list[int], list[tuple[Path, str]]]:
+        """Candidate indices and the snapshot they index, captured together.
+
+        One critical section for both: taken separately, a rebuild landing
+        between the two reads pairs indices with a list they do not belong to.
+        """
+        with self._lock:
+            self._refresh()
+            return self._candidates(target), self._entries
+
     def candidates(self, target: Path) -> list[int]:
-        """Indices of the patterns that can match *target*, in original order.
+        """Indices of the patterns that can match *target*, in original order."""
+        return self.lookup(target)[0]
+
+    def _candidates(self, target: Path) -> list[int]:
+        """Callers must hold ``_lock``.
 
         Order matters: ``_eval`` is last-match-wins, so a later ``!`` negation
         (or a CLI ``--exclude``) must still override an earlier rule. The
         candidate set is exactly ``{target} | set(target.parents)`` — the anchors
         ``relative_to`` accepted — so this matches the scan it replaces.
         """
-        self._refresh()
         by_anchor = self._by_anchor
         if not by_anchor:
             return []
@@ -1430,16 +1458,23 @@ _ANCHOR_INDEX_MEMO_MAX = 8
 _ANCHOR_INDEX_MEMO: dict[int, tuple[list[tuple[Path, str]], _AnchorIndex]] = {}
 
 
+_ANCHOR_INDEX_LOCK = threading.Lock()
+
+
 def _anchor_index(patterns: list[tuple[Path, str]]) -> _AnchorIndex:
-    key = id(patterns)
-    hit = _ANCHOR_INDEX_MEMO.get(key)
-    if hit is not None and hit[0] is patterns:
-        return hit[1]
-    if len(_ANCHOR_INDEX_MEMO) >= _ANCHOR_INDEX_MEMO_MAX:
-        _ANCHOR_INDEX_MEMO.clear()
-    index = _AnchorIndex(patterns)
-    _ANCHOR_INDEX_MEMO[key] = (patterns, index)
-    return index
+    # Locked because `watch` reaches this from the observer thread and the main
+    # thread at once: without it two threads can each build an index for the
+    # same list and one silently loses its memo entry, rebuilding per event.
+    with _ANCHOR_INDEX_LOCK:
+        key = id(patterns)
+        hit = _ANCHOR_INDEX_MEMO.get(key)
+        if hit is not None and hit[0] is patterns:
+            return hit[1]
+        if len(_ANCHOR_INDEX_MEMO) >= _ANCHOR_INDEX_MEMO_MAX:
+            _ANCHOR_INDEX_MEMO.clear()
+        index = _AnchorIndex(patterns)
+        _ANCHOR_INDEX_MEMO[key] = (patterns, index)
+        return index
 
 
 def _is_ignored(
@@ -1493,8 +1528,9 @@ def _is_ignored(
         # rediscovered the same fact one raised ValueError at a time.
         target_parts = target.parts
         n_target = len(target_parts)
-        candidates = index.candidates(target)  # refreshes the index first
-        entries = index.entries
+        # Paired capture: indices and the snapshot they index must come from
+        # one critical section, or a concurrent rebuild misaligns them.
+        candidates, entries = index.lookup(target)
         for anchor, pattern in (entries[i] for i in candidates):
             negated = pattern.startswith("!")
             raw = pattern[1:] if negated else pattern

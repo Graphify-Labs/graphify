@@ -3217,6 +3217,60 @@ def test_anchor_index_reads_its_own_snapshot_not_the_live_list(tmp_path):
     assert _is_ignored(target, tmp_path, patterns) is False  # stale, not wrong
 
 
+def test_anchor_index_refresh_is_atomic_across_threads(tmp_path):
+    """`watch` calls _is_ignored from the observer thread on every filesystem
+    event while the main thread rebuilds, so a refresh must not tear: the
+    entries snapshot is a list parallel to the bucket indices, and two threads
+    indexing the same tail would append it twice and leave `entries[i]`
+    pointing at some other anchor's rule."""
+    import sys
+    import threading
+
+    root = tmp_path
+    target = root / "d5" / "f.py"
+    ancestors = frozenset(target.parents)
+    old_interval = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)  # maximise interleaving under the GIL
+    try:
+        violations = []
+        for _ in range(10):
+            patterns = [(root, "*.a")]
+            index = _AnchorIndex(patterns)
+            done = threading.Event()
+
+            def grow():
+                try:
+                    for i in range(300):
+                        patterns.append((root / f"d{i}", f"*.g{i}"))
+                finally:
+                    done.set()
+
+            def look():
+                while not done.is_set():
+                    candidates, entries = index.lookup(target)
+                    for i in candidates:
+                        if i >= len(entries):
+                            violations.append(("index past snapshot", i))
+                            return
+                        anchor_dir = entries[i][0]
+                        # candidates() promises every anchor it yields is an
+                        # ancestor of the target; _eval slices target.parts by
+                        # that anchor's depth and would build nonsense otherwise.
+                        if anchor_dir != target and anchor_dir not in ancestors:
+                            violations.append(("misaligned", i, str(anchor_dir)))
+                            return
+
+            threads = [threading.Thread(target=grow)]
+            threads += [threading.Thread(target=look) for _ in range(3)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            assert not violations, violations[:3]
+    finally:
+        sys.setswitchinterval(old_interval)
+
+
 @pytest.mark.parametrize("path,pattern,expected", [
     ("a/b/c.py", "a/b/c.py", True),
     ("a/b/c.py", "a/*/c.py", True),
