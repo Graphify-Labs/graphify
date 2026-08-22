@@ -12,8 +12,12 @@ import sys
 from graphify.ingest import ingest
 from pathlib import Path
 
+url = sys.argv[1]
+author = sys.argv[2] if len(sys.argv) > 2 else ''
+contributor = sys.argv[3] if len(sys.argv) > 3 else ''
+
 try:
-    out = ingest('URL', Path('./raw'), author='AUTHOR', contributor='CONTRIBUTOR')
+    out = ingest(url, Path('./raw'), author=author, contributor=contributor)
     print(f'Saved to {out}')
 except ValueError as e:
     print(f'error: {e}', file=sys.stderr)
@@ -21,10 +25,10 @@ except ValueError as e:
 except RuntimeError as e:
     print(f'error: {e}', file=sys.stderr)
     sys.exit(1)
-"
+" 'URL' 'AUTHOR' 'CONTRIBUTOR'
 ```
 
-Replace `URL` with the actual URL, `AUTHOR` with the user's name if provided, `CONTRIBUTOR` likewise. If the command exits with an error, tell the user what went wrong - do not silently continue. After a successful save, automatically run the `--update` pipeline on `./raw` to merge the new file into the existing graph.
+Replace `URL` with the actual URL, `AUTHOR` with the user's name if provided, `CONTRIBUTOR` likewise. Each value is passed as a separate shell argument and read in Python via `sys.argv`, so user-supplied text never lands inside the evaluated Python source - even a URL containing single quotes, double quotes, backticks, or shell metacharacters is treated as a string value, not code. Single-quote each argument in the shell command; if a value contains a literal single quote, replace it with `'\''` (close-quote, escaped-quote, open-quote). If the command exits with an error, tell the user what went wrong - do not silently continue. After a successful save, automatically run the `--update` pipeline on `./raw` to merge the new file into the existing graph.
 
 Supported URL types (auto-detected):
 - YouTube / any video URL → audio downloaded via yt-dlp, transcribed to `.txt` on next run (requires `pip install 'graphifyy[video]'`)
