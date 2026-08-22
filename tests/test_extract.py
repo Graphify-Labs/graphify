@@ -4005,3 +4005,54 @@ def test_extract_genuinely_empty_json_still_failed(tmp_path, monkeypatch):
     p.write_text("{}\n")
     result = _ex.extract([p], cache_root=tmp_path)
     assert [Path(x).name for x in result.get("failed_sources", [])] == ["meta.json"]
+
+
+def test_extract_does_not_bind_a_call_across_language_families(tmp_path):
+    """A call must not resolve to a same-named definition in another language.
+
+    The unresolved-call resolver already refuses this (#1718, #1749), but
+    _rewire_unique_stub_nodes runs afterwards and redirects the call edge to whatever
+    unique same-named definition exists. Third-party imports are never extracted, so the
+    Python side below is a sourceless stub and the Swift class absorbs it.
+    """
+    py = tmp_path / "test_views.py"
+    swift = tmp_path / "APIClient.swift"
+    # The return annotation is load-bearing: it is what makes `APIClient` a sourceless
+    # type stub that _rewire_unique_stub_nodes will redirect. Without it the bug does
+    # not reproduce.
+    py.write_text(
+        "from rest_framework.test import APIClient\n\n\n"
+        "def api_client() -> APIClient:\n    return APIClient()\n",
+        encoding="utf-8",
+    )
+    swift.write_text("import Foundation\n\nfinal class APIClient {\n    func send() {}\n}\n", encoding="utf-8")
+
+    result = extract([py, swift], cache_root=tmp_path)
+    node_by_id = {node["id"]: node for node in result["nodes"]}
+
+    cross = [
+        edge for edge in result["edges"]
+        if edge["relation"] == "calls"
+        and str(node_by_id.get(edge["source"], {}).get("source_file", "")).endswith(".py")
+        and str(node_by_id.get(edge["target"], {}).get("source_file", "")).endswith(".swift")
+    ]
+    assert not cross, f"phantom cross-language call edges: {cross}"
+
+
+def test_extract_keeps_same_language_call_rewiring(tmp_path):
+    """Control for the guard above: a same-language stub must still rewire."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "models.py").write_text("class Widget:\n    pass\n", encoding="utf-8")
+    (pkg / "registry.py").write_text("from .models import Widget\n\n__all__ = ['Widget']\n", encoding="utf-8")
+    (pkg / "service.py").write_text("from .registry import Widget\n\n\ndef build():\n    return Widget()\n", encoding="utf-8")
+
+    result = extract([pkg / "models.py", pkg / "registry.py", pkg / "service.py"], cache_root=tmp_path)
+    node_by_id = {node["id"]: node for node in result["nodes"]}
+    resolved = [
+        edge for edge in result["edges"]
+        if edge["relation"] == "calls"
+        and node_by_id.get(edge["target"], {}).get("label") == "Widget"
+        and node_by_id.get(edge["target"], {}).get("source_file", "").endswith("models.py")
+    ]
+    assert resolved, "same-language stub no longer rewires to its real definition"

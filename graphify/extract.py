@@ -2260,6 +2260,54 @@ def _is_top_level_function_definition(node: dict) -> bool:
     )
 
 
+# Relations that describe one symbol invoking another. Kept separate from the supertype
+# relations (`inherits`/`implements`/`extends`), which _rewire_unique_stub_nodes is
+# deliberately allowed to resolve across languages -- see
+# test_extract_rewires_unique_inheritance_stub_to_real_definition, where a C# class binds
+# to a Python definition.
+_CROSS_LANG_FORBIDDEN_RELATIONS = frozenset({"calls", "dynamic_import"})
+
+
+def _drop_cross_language_call_edges(nodes: list[dict], edges: list[dict]) -> None:
+    """Remove call edges whose endpoints live in different language families.
+
+    The unresolved-call resolver already refuses to bind a call across families (#1718,
+    #1749). _rewire_unique_stub_nodes runs after it and re-introduces exactly what that
+    guard rejects: a call edge pointing at a sourceless stub is redirected to whatever
+    unique same-named definition exists, in any language. Third-party symbols are never
+    extracted, so this fires constantly in polyglot repos::
+
+        # backend/.../tests/test_views.py
+        from rest_framework.test import APIClient   # third-party -> sourceless stub
+        def api_client(): return APIClient()
+
+        // mobile/ios/.../APIClient.swift
+        final class APIClient { ... }               # unique -> absorbs the stub
+
+    In one 33k-node Django + Next.js + Swift repo this produced 102 phantom `calls` edges
+    and made the Swift APIClient the graph's highest-betweenness node.
+
+    Endpoints whose family is unknown (no source_file, non-code nodes) are kept, matching
+    the permissive behaviour of the #1749 guard; genuine interop pairs (Kotlin/Java,
+    C/C++/ObjC, JS/TS) share a family and are unaffected.
+    """
+    family_by_id = {
+        node["id"]: _lang_family(node.get("source_file"))
+        for node in nodes
+        if node.get("id")
+    }
+    survivors = []
+    for edge in edges:
+        if edge.get("relation") in _CROSS_LANG_FORBIDDEN_RELATIONS:
+            src_family = family_by_id.get(edge.get("source"))
+            tgt_family = family_by_id.get(edge.get("target"))
+            if src_family is not None and tgt_family is not None and src_family != tgt_family:
+                continue
+        survivors.append(edge)
+    if len(survivors) != len(edges):
+        edges[:] = survivors
+
+
 def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
     """Map unresolved no-source stubs to a unique real definition with the same label."""
     real_by_label: dict[str, list[dict]] = {}       # exact-case type-like (all languages)
@@ -6248,6 +6296,7 @@ def extract(
                 "Go type-reference resolution failed, skipping: %s", exc
             )
     _rewire_unique_stub_nodes(all_nodes, all_edges)
+    _drop_cross_language_call_edges(all_nodes, all_edges)
 
     # Add cross-file class-level edges (Python only - uses Python parser internally)
     py_paths = [p for p in paths if p.suffix == ".py"]
