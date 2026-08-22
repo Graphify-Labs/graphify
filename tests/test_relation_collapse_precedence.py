@@ -25,7 +25,7 @@ from graphify.build import build_from_json, edge_data
 
 SPECIFIC = ["calls", "imports", "imports_from", "inherits", "implements",
             "method", "indirect_call", "re_exports", "contains"]
-GENERIC = ["references", "uses", "mentions"]
+GENERIC = ["references", "uses", "uses_type", "mentions"]
 
 
 def _extraction(edges):
@@ -46,6 +46,38 @@ def _edge(rel, src="a", tgt="b", **kw):
 
 def _relation(G):
     return edge_data(G, "a", "b").get("relation")
+
+
+def test_calls_beats_uses_type_and_keeps_runtime_metadata():
+    for edges in (
+        [
+            _edge("calls", source_location="L9", weight=1.0, confidence_score=1.0),
+            _edge(
+                "uses_type",
+                source_location="L4",
+                context="type_annotation",
+                type_roles=["return"],
+                weight=1.0,
+                confidence_score=1.0,
+            ),
+        ],
+        [
+            _edge(
+                "uses_type",
+                source_location="L4",
+                context="type_annotation",
+                type_roles=["return"],
+                weight=1.0,
+                confidence_score=1.0,
+            ),
+            _edge("calls", source_location="L9", weight=1.0, confidence_score=1.0),
+        ],
+    ):
+        graph = build_from_json(_extraction(edges))
+        data = edge_data(graph, "a", "b")
+        assert data["relation"] == "calls"
+        assert data["source_location"] == "L9"
+        assert "type_roles" not in data
 
 
 # ---------------------------------------------------------------------------

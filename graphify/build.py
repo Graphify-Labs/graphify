@@ -60,7 +60,9 @@ def _is_ast_tier(item: dict) -> bool:
 # every relation: ranking `contains` against `calls` would be inventing a
 # cross-axis judgement, whereas "specific beats generic" is the only comparison
 # this collapse actually needs.
-_GENERIC_RELATIONS: frozenset[str] = frozenset({"references", "uses", "mentions"})
+_GENERIC_RELATIONS: frozenset[str] = frozenset(
+    {"references", "uses", "uses_type", "mentions"}
+)
 
 # Language interop families, keyed by extension, for the cross-language phantom-edge
 # guard in the edge loop below. Families group by REAL interop (JS/TS share a module
