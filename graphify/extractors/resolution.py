@@ -1881,19 +1881,13 @@ def _resolve_cross_file_imports(
     per_file: list[dict],
     paths: list[Path],
 ) -> list[dict]:
-    """
-    Two-pass import resolution: turn file-level imports into class-level edges.
+    """Resolve source-backed Python imports at the symbol level.
 
-    Pass 1 - build a global map: class/function name → node_id, per stem.
-    Pass 2 - for each `from .module import Name`, look up Name in the global
-              map and add a direct INFERRED edge from each class in the
-              importing file to the imported entity.
-
-    This turns:
-        auth.py --imports_from--> models.py          (obvious, filtered out)
-    Into:
-        DigestAuth --uses--> Response  [INFERRED]    (cross-file, interesting!)
-        BasicAuth  --uses--> Request   [INFERRED]
+    Pass one indexes project definitions by directory-qualified module stem.
+    Pass two attributes each imported-name occurrence to its top-level owning
+    class or function. Supported annotations emit deterministic ``uses_type``
+    edges with aggregated roles; other body references retain the conservative
+    ``uses/INFERRED`` relationship.
     """
     try:
         import tree_sitter_python as tspython
@@ -1910,7 +1904,7 @@ def _resolve_cross_file_imports(
     # A secondary bare-stem index handles absolute imports where only the module
     # name is known — first writer wins when names collide (inherently ambiguous).
     stem_to_entities: dict[str, dict[str, str]] = {}
-    bare_to_qualified: dict[str, str] = {}
+    bare_to_qualified: dict[str, str | None] = {}
     for file_result in per_file:
         for node in file_result.get("nodes", []):
             src = node.get("source_file", "")
@@ -1932,8 +1926,11 @@ def _resolve_cross_file_imports(
                 and node.get("file_type") != "rationale"
             ):
                 stem_to_entities.setdefault(fq_stem, {})[label] = nid
-                if src_path.stem not in bare_to_qualified:
-                    bare_to_qualified[src_path.stem] = fq_stem
+                bare = src_path.stem
+                if bare not in bare_to_qualified:
+                    bare_to_qualified[bare] = fq_stem
+                elif bare_to_qualified[bare] != fq_stem:
+                    bare_to_qualified[bare] = None
 
     # Pass 2: for each file, find `from .X import A, B, C`, then attribute the
     # `uses` edge to the specific local symbol (class OR function) whose body
@@ -1972,8 +1969,10 @@ def _resolve_cross_file_imports(
         # local_name -> target node id (local_name honours `import X as Y`, so a
         # reference to the alias in the body still attributes correctly).
         import_targets: dict[str, str] = {}
-        # referenced name -> {source symbol nid: first reference line}
+        # referenced name -> {source symbol nid: first body-reference line}
         ref_sources: dict[str, dict[str, int]] = {}
+        # referenced name -> source symbol nid -> roles + first annotation line
+        type_ref_sources: dict[str, dict[str, dict[str, Any]]] = {}
 
         def _text(n) -> str:
             return source[n.start_byte:n.end_byte].decode("utf-8", errors="replace")
@@ -2028,7 +2027,87 @@ def _resolve_cross_file_imports(
                 if tgt_nid:
                     import_targets[local_name] = tgt_nid
 
-        def visit(node, current_nid: str | None) -> None:
+        def _same_node(left, right) -> bool:
+            return (
+                left is not None
+                and right is not None
+                and left.type == right.type
+                and left.start_byte == right.start_byte
+                and left.end_byte == right.end_byte
+            )
+
+        def _contains(outer, inner) -> bool:
+            return (
+                outer is not None
+                and outer.start_byte <= inner.start_byte
+                and inner.end_byte <= outer.end_byte
+            )
+
+        def _annotation_role(ref_node, owner_node) -> str | None:
+            """Classify a reference only when it is inside a supported annotation."""
+            cursor = ref_node
+            kind: str | None = None
+            anchor = None
+            while cursor.parent is not None and not _same_node(cursor, owner_node):
+                parent = cursor.parent
+                if parent.type in ("typed_parameter", "typed_default_parameter"):
+                    type_node = parent.child_by_field_name("type")
+                    if _contains(type_node, ref_node):
+                        kind, anchor = "parameter", parent
+                        break
+                if parent.type == "function_definition":
+                    return_node = parent.child_by_field_name("return_type")
+                    if _contains(return_node, ref_node):
+                        kind, anchor = "return", parent
+                        break
+                if parent.type == "assignment":
+                    type_node = parent.child_by_field_name("type")
+                    if _contains(type_node, ref_node):
+                        kind, anchor = "field", parent
+                        break
+                cursor = parent
+
+            if kind is None or anchor is None:
+                return None
+
+            if kind == "field":
+                scope = anchor.parent
+                while scope is not None and not _same_node(scope, owner_node):
+                    if scope.type in ("class_definition", "function_definition"):
+                        break
+                    scope = scope.parent
+                if scope is None or scope.type != "class_definition":
+                    return None
+                return "field" if _same_node(scope, owner_node) else "nested_field"
+
+            annotation_function = anchor
+            while (
+                annotation_function is not None
+                and annotation_function.type != "function_definition"
+            ):
+                annotation_function = annotation_function.parent
+            if annotation_function is None:
+                return None
+            if owner_node.type == "function_definition":
+                nested = not _same_node(annotation_function, owner_node)
+            else:
+                nested = False
+                scope = annotation_function.parent
+                while scope is not None and not _same_node(scope, owner_node):
+                    if scope.type in ("class_definition", "function_definition"):
+                        nested = True
+                    scope = scope.parent
+                if scope is None:
+                    return None
+            return f"nested_{kind}" if nested else kind
+
+        def _record_type_ref(name: str, source_nid: str, role: str, line: int) -> None:
+            by_source = type_ref_sources.setdefault(name, {})
+            evidence = by_source.setdefault(source_nid, {"roles": set(), "line": line})
+            evidence["roles"].add(role)
+            evidence["line"] = min(evidence["line"], line)
+
+        def visit(node, current_nid: str | None, owner_node=None) -> None:
             # Identifiers inside an import statement are the import itself, not a
             # real use — resolve the import here and don't descend into it.
             if node.type == "import_from_statement":
@@ -2045,11 +2124,29 @@ def _resolve_cross_file_imports(
                     mapped = name_to_nid.get(_text(name_node))
                     if mapped is not None:
                         current_nid = mapped
-            if node.type == "identifier" and current_nid is not None:
-                slot = ref_sources.setdefault(_text(node), {})
-                slot.setdefault(current_nid, node.start_point[0] + 1)
+                        owner_node = node
+            if current_nid is not None and owner_node is not None:
+                if node.type == "identifier":
+                    name = _text(node)
+                    role = _annotation_role(node, owner_node)
+                    if role is None:
+                        slot = ref_sources.setdefault(name, {})
+                        slot.setdefault(current_nid, node.start_point[0] + 1)
+                    else:
+                        _record_type_ref(
+                            name, current_nid, role, node.start_point[0] + 1
+                        )
+                elif node.type == "string":
+                    role = _annotation_role(node, owner_node)
+                    if role is not None:
+                        # Tokenize only a string already proven to be an annotation;
+                        # do not evaluate it as Python.
+                        for name in re.findall(r"\b[A-Za-z_]\w*\b", _text(node)):
+                            _record_type_ref(
+                                name, current_nid, role, node.start_point[0] + 1
+                            )
             for child in node.children:
-                visit(child, current_nid)
+                visit(child, current_nid, owner_node)
 
         visit(tree.root_node, None)
 
@@ -2071,6 +2168,21 @@ def _resolve_cross_file_imports(
                     "source_file": str_path,
                     "source_location": f"L{line}",
                     "weight": 0.8,
+                })
+            for src_nid, evidence in type_ref_sources.get(name, {}).items():
+                if src_nid == tgt_nid:
+                    continue
+                new_edges.append({
+                    "source": src_nid,
+                    "target": tgt_nid,
+                    "relation": "uses_type",
+                    "context": "type_annotation",
+                    "type_roles": sorted(evidence["roles"]),
+                    "confidence": "EXTRACTED",
+                    "confidence_score": 1.0,
+                    "source_file": str_path,
+                    "source_location": f"L{evidence['line']}",
+                    "weight": 1.0,
                 })
 
     return new_edges
