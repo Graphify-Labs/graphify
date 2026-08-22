@@ -2530,7 +2530,7 @@ def dispatch_command(cmd: str) -> None:
             print("  --diagram-scale N      Mermaid diagram scale (default 1.0)")
             print("  --max-diagram-nodes N  representative nodes per section (default 18)")
             print("  --max-diagram-edges N  representative edges per section (default 24)")
-            sys.exit(0)
+            return
         graph_path = Path(_GRAPHIFY_OUT) / "graph.json"
         graph_path_explicit = False
         labels_path = Path(_GRAPHIFY_OUT) / ".graphify_labels.json"

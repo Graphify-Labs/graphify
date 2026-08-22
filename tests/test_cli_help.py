@@ -14,10 +14,7 @@ def _invoke_main(monkeypatch, capsys, tmp_path, args: list[str]):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(sys, "argv", ["graphify", *args])
     with patch("graphify.__main__._check_skill_version"):
-        try:
-            main()
-        except SystemExit as exc:
-            assert exc.code in (0, None)
+        main()
     return capsys.readouterr()
 
 
