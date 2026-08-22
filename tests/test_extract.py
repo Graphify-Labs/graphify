@@ -1834,6 +1834,29 @@ def test_python_subdirectory_aliased_call_survives_warm_cache(tmp_path):
         assert "local_alias" not in edge, "transient local_alias leaked into final output"
 
 
+def test_python_loose_script_imports_from_edge_is_not_repointed(tmp_path):
+    """Loose-script repointing only touches plain `imports` edges, leaving `imports_from`
+    edges unchanged so symbol-resolution facts remain authoritative."""
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "mod_a.py").write_text("def target():\n    return 1\n")
+    caller = scripts / "caller.py"
+    caller.write_text("from mod_a import target\n\ndef go():\n    return target()\n")
+
+    result = extract([caller, scripts / "mod_a.py"], cache_root=tmp_path, root=tmp_path)
+    imports_from_edges = [
+        e for e in result["edges"]
+        if e["relation"] == "imports_from"
+    ]
+    assert len(imports_from_edges) == 1
+    assert imports_from_edges[0]["target"] == "mod_a"
+    symbol_imports = [
+        e for e in result["edges"]
+        if e["relation"] == "imports" and e["target"] == "scripts_mod_a_target"
+    ]
+    assert len(symbol_imports) == 1
+
+
 def test_python_qualified_call_resolves_when_method_name_collides_with_caller(tmp_path):
     """The real #1446 shape: a viewset action `approve()` delegates to a SERVICE
     action of the SAME name via `Service.approve()`. The bare-name in-file lookup
