@@ -398,7 +398,14 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         if stmt.type == "statement":
             for child in stmt.children:
                 walk(child)
-        elif stmt.type in ("fb_proc_or_trigger", "set_term", "declare_external_function", "ERROR"):
+        elif stmt.type in ("fb_proc_or_trigger", "set_term", "declare_external_function",
+                            "ERROR", "transaction"):
+            # `transaction` wraps BEGIN/START TRANSACTION ... COMMIT/ROLLBACK
+            # blocks in its own top-level node (#2953), so statements inside
+            # never reach the `stmt.type == "statement"` branch above and were
+            # silently dropped. walk() has no special case for "transaction"
+            # either, so it falls through to its generic per-child recursion,
+            # which reaches the nested `statement` nodes normally.
             walk(stmt)
 
     # Global regex fallback: catch any REFERENCES missed due to ERROR nodes in the parse tree

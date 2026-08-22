@@ -487,6 +487,28 @@ def test_sql_no_dangling_edges():
     for e in r["edges"]:
         assert e["source"] in node_ids, f"dangling source: {e['source']}"
 
+def test_sql_transaction_block_is_not_dropped(tmp_path):
+    """#2953: statements wrapped in BEGIN; ... COMMIT; land under a top-level
+    `transaction` node, not `statement`, and were silently skipped entirely."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "con_transaccion.sql"
+    p.write_text(
+        "BEGIN;\n"
+        "CREATE TABLE gamma (id INT PRIMARY KEY);\n"
+        "CREATE TABLE delta (id INT PRIMARY KEY, gamma_id INT REFERENCES gamma(id));\n"
+        "COMMIT;\n"
+    )
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"]]
+    assert "gamma" in labels
+    assert "delta" in labels
+    # Both tables get real source info, not a sourceless _ref_stub
+    by_label = {n["label"]: n for n in r["nodes"]}
+    assert by_label["gamma"]["source_location"] == "L2"
+    assert by_label["delta"]["source_location"] == "L3"
+    fk_edges = [e for e in r["edges"] if e["relation"] == "references"]
+    assert len(fk_edges) == 1
+
 def test_sql_cte_is_not_read_as_a_table():
     """#2577: a name bound by WITH ... AS (...) is scoped to its statement, not a table.
 
