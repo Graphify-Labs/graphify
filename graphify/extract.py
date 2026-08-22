@@ -5485,8 +5485,8 @@ def extract(
 
     Two-pass process:
     1. Per-file structural extraction (classes, functions, imports)
-    2. Cross-file import resolution: turns file-level imports into
-       class-level INFERRED edges (DigestAuth --uses--> Response)
+    2. Cross-file import resolution: emits source-backed runtime relationships
+       and deterministic Python ``uses_type`` edges.
 
     Args:
         paths: files to extract from
@@ -5504,15 +5504,12 @@ def extract(
             value of GRAPHIFY_MAX_WORKERS if set), bounded by len(uncached_work).
         resolution_context_nodes: read-only AST nodes from files that are NOT
             being extracted this run (an incremental rebuild's unchanged
-            corpus, #2406). They extend the cross-file resolution indexes —
-            the shared direct-call pass's label/file indexes, the
-            indirect_call callable guard (via the persisted `_callable` /
-            `_callable_class` markers, #2438), and the member-call resolvers
-            run by `run_language_resolvers` (#2437) — so a changed caller can
-            still bind `foo()`, `obj.method()`, or `submit(handler)` to an
-            unchanged callee. They are never parsed, mutated, or returned;
-            raw_calls come only from `paths`, so only edges sourced by the
-            re-extracted files are emitted.
+            corpus, #2406). They extend the Python import/type-use target index,
+            the shared direct-call label/file indexes, the indirect_call
+            callable guard (via persisted `_callable` / `_callable_class`
+            markers, #2438), and member-call resolvers run by
+            `run_language_resolvers` (#2437). They are never parsed, mutated,
+            or returned; only edges sourced by re-extracted files are emitted.
         resolution_context_edges: the `contains`/`method` edges of the same
             unchanged corpus (#2437). The member-call resolvers walk these to
             map a receiver type to the single class owning the called method;
@@ -6272,7 +6269,12 @@ def extract(
     if py_paths:
         py_results = [r for r, p in zip(per_file, paths) if p.suffix == ".py"]
         try:
-            cross_file_edges = _resolve_cross_file_imports(py_results, py_paths)
+            cross_file_edges = _resolve_cross_file_imports(
+                py_results,
+                py_paths,
+                resolution_context_nodes=resolution_context_nodes,
+                root=root,
+            )
             all_edges.extend(cross_file_edges)
         except Exception as exc:
             import logging

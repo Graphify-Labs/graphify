@@ -1880,6 +1880,9 @@ def _augment_symbol_resolution_edges(
 def _resolve_cross_file_imports(
     per_file: list[dict],
     paths: list[Path],
+    *,
+    resolution_context_nodes: list[dict] | None = None,
+    root: Path | None = None,
 ) -> list[dict]:
     """Resolve source-backed Python imports at the symbol level.
 
@@ -1902,35 +1905,45 @@ def _resolve_cross_file_imports(
     # Keyed by directory-qualified stem (e.g. "auth_models") to avoid collisions
     # when multiple files share the same filename in different directories.
     # A secondary bare-stem index handles absolute imports where only the module
-    # name is known — first writer wins when names collide (inherently ambiguous).
+    # name is known. Collisions are marked ambiguous rather than bound arbitrarily.
     stem_to_entities: dict[str, dict[str, str]] = {}
     bare_to_qualified: dict[str, str | None] = {}
+
+    def index_definition(node: dict, *, overwrite: bool) -> None:
+        src = node.get("source_file", "")
+        if not src:
+            return
+        src_path = Path(src)
+        if root is not None and not src_path.is_absolute():
+            src_path = Path(root) / src_path
+        if src_path.suffix not in (".py", ".pyi"):
+            return
+        fq_stem = _file_stem(src_path)
+        label = node.get("label", "")
+        nid = node.get("id", "")
+        if (
+            not label
+            or label.endswith((")", ".py", ".pyi"))
+            or "_" in label[:1]
+            or node.get("file_type") == "rationale"
+        ):
+            return
+        entities = stem_to_entities.setdefault(fq_stem, {})
+        if overwrite:
+            entities[label] = nid
+        else:
+            entities.setdefault(label, nid)
+        bare = src_path.stem
+        if bare not in bare_to_qualified:
+            bare_to_qualified[bare] = fq_stem
+        elif bare_to_qualified[bare] != fq_stem:
+            bare_to_qualified[bare] = None
+
     for file_result in per_file:
         for node in file_result.get("nodes", []):
-            src = node.get("source_file", "")
-            if not src:
-                continue
-            src_path = Path(src)
-            fq_stem = _file_stem(src_path)
-            label = node.get("label", "")
-            nid = node.get("id", "")
-            # Index class-level entities only. Function/method labels end in "()"
-            # so are excluded by the `endswith(")")` filter; file nodes end in ".py";
-            # private/internal labels start with "_"; rationale nodes carry
-            # file_type=="rationale" and must never participate in cross-file
-            # import resolution (#563).
-            if (
-                label
-                and not label.endswith((")", ".py"))
-                and "_" not in label[:1]
-                and node.get("file_type") != "rationale"
-            ):
-                stem_to_entities.setdefault(fq_stem, {})[label] = nid
-                bare = src_path.stem
-                if bare not in bare_to_qualified:
-                    bare_to_qualified[bare] = fq_stem
-                elif bare_to_qualified[bare] != fq_stem:
-                    bare_to_qualified[bare] = None
+            index_definition(node, overwrite=True)
+    for node in resolution_context_nodes or []:
+        index_definition(node, overwrite=False)
 
     # Pass 2: for each file, find `from .X import A, B, C`, then attribute the
     # `uses` edge to the specific local symbol (class OR function) whose body

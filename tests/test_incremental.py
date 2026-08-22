@@ -211,6 +211,49 @@ def test_extract_no_cluster_incremental_code_only_preserves_doc_nodes(tmp_path):
     assert any("beta" in i for i in after_by_id), sorted(after_by_id)
 
 
+def test_incremental_python_type_use_matches_full_extraction(tmp_path):
+    from graphify.extract import extract
+
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    model = pkg / "models.py"
+    model.write_text("class Debt:\n    pass\n", encoding="utf-8")
+    planner = pkg / "planner.py"
+    planner.write_text(
+        "from .models import Debt\n\n\n"
+        "def prioritize(debts: list[Debt]) -> Debt:\n"
+        "    return debts[0]\n",
+        encoding="utf-8",
+    )
+
+    full = extract(
+        [planner, model], cache_root=tmp_path, root=tmp_path, parallel=False
+    )
+    incremental = extract(
+        [planner],
+        cache_root=tmp_path,
+        root=tmp_path,
+        parallel=False,
+        resolution_context_nodes=full["nodes"],
+        resolution_context_edges=full["edges"],
+    )
+
+    def type_edge(result):
+        return next(
+            edge
+            for edge in result["edges"]
+            if edge.get("relation") == "uses_type"
+            and edge.get("source") == "pkg_planner_prioritize"
+        )
+
+    full_edge = type_edge(full)
+    incremental_edge = type_edge(incremental)
+    assert incremental_edge["target"] == full_edge["target"] == "pkg_models_debt"
+    assert incremental_edge["type_roles"] == ["parameter", "return"]
+    assert incremental_edge["confidence"] == "EXTRACTED"
+    assert incremental_edge["confidence_score"] == 1.0
+
+
 def test_incremental_python_relative_import_target_canonicalizes(tmp_path):
     """#2213 (defect 1, shared root with #2211): a Python relative import's
     imports_from edge must stamp target_file so the #2169 remap canonicalizes
