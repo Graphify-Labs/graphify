@@ -450,39 +450,39 @@ def test_cache_miss_after_file_change(tmp_path):
 
 # ── SQL ───────────────────────────────────────────────────────────────────────
 
-def _extract_sql_or_skip(fixture: str = "sample.sql"):
-    pytest.importorskip("tree_sitter_sql")
+def _extract_sql_required(fixture: str = "sample.sql"):
+    import tree_sitter_sql  # noqa: F401 — core dep since 0.9.49; absence must FAIL, not skip
     return extract_sql(FIXTURES / fixture)
 
 
 def test_sql_finds_tables():
-    r = _extract_sql_or_skip()
+    r = _extract_sql_required()
     labels = [n["label"] for n in r["nodes"]]
     assert any("users" in l for l in labels)
     assert any("organizations" in l for l in labels)
 
 def test_sql_finds_view():
-    r = _extract_sql_or_skip()
+    r = _extract_sql_required()
     labels = [n["label"] for n in r["nodes"]]
     assert any("active_users" in l for l in labels)
 
 def test_sql_finds_function():
-    r = _extract_sql_or_skip()
+    r = _extract_sql_required()
     labels = [n["label"] for n in r["nodes"]]
     assert any("get_user" in l for l in labels)
 
 def test_sql_emits_foreign_key_edge():
-    r = _extract_sql_or_skip()
+    r = _extract_sql_required()
     relations = {e["relation"] for e in r["edges"]}
     assert "references" in relations
 
 def test_sql_emits_reads_from_edge():
-    r = _extract_sql_or_skip()
+    r = _extract_sql_required()
     relations = {e["relation"] for e in r["edges"]}
     assert "reads_from" in relations
 
 def test_sql_no_dangling_edges():
-    r = _extract_sql_or_skip()
+    r = _extract_sql_required()
     node_ids = {n["id"] for n in r["nodes"]}
     for e in r["edges"]:
         assert e["source"] in node_ids, f"dangling source: {e['source']}"
@@ -495,7 +495,7 @@ def test_sql_cte_is_not_read_as_a_table():
     with a same-named node from another language. The real table in the same
     FROM/JOIN must still resolve.
     """
-    r = _extract_sql_or_skip("sample_cte.sql")
+    r = _extract_sql_required("sample_cte.sql")
     labels = [n["label"] for n in r["nodes"]]
     assert "levels" not in labels, "CTE name leaked into the graph as a table node"
 
@@ -509,7 +509,7 @@ def test_sql_cte_is_not_read_as_a_table():
 
 def test_sql_column_list_cte_is_not_read_as_a_table(tmp_path):
     """#2577: `WITH levels(a, b) AS (...)` — the name precedes a column list."""
-    pytest.importorskip("tree_sitter_sql")
+    import tree_sitter_sql  # noqa: F401 — core dep since 0.9.49; absence must FAIL, not skip
     p = tmp_path / "schema.sql"
     p.write_text(
         "CREATE TABLE users (id INT, role TEXT);\n"
@@ -527,7 +527,7 @@ def test_sql_cte_shadows_same_named_table_within_its_statement(tmp_path):
     """#2577: inside the declaring statement the CTE shadows a real same-named
     table (SQL scoping), so v1's FROM binds to the CTE and emits nothing; v2 has
     no CTE in scope and reads the real table. Exactly one deterministic edge."""
-    pytest.importorskip("tree_sitter_sql")
+    import tree_sitter_sql  # noqa: F401 — core dep since 0.9.49; absence must FAIL, not skip
     p = tmp_path / "schema.sql"
     p.write_text(
         "CREATE TABLE levels (role TEXT);\n"
@@ -546,7 +546,7 @@ def test_sql_subquery_cte_does_not_suppress_outer_real_table(tmp_path):
     """#2577 refinement: a WITH inside a subquery is scoped to that subquery
     only. A statement-wide pre-collect would also swallow the OUTER reference
     to the real `t2`, dropping a true edge — per-subtree scoping keeps it."""
-    pytest.importorskip("tree_sitter_sql")
+    import tree_sitter_sql  # noqa: F401 — core dep since 0.9.49; absence must FAIL, not skip
     p = tmp_path / "schema.sql"
     p.write_text(
         "CREATE TABLE t2 (id INT);\n"
@@ -567,7 +567,7 @@ def test_sql_cte_never_binds_to_cross_language_symbol(tmp_path):
     so _rewire_unique_stub_nodes bound it to a same-named symbol from ANOTHER
     language (schema_v_roles -> ui_levels). With the CTE excluded, no reads_from
     edge may target a TypeScript node."""
-    pytest.importorskip("tree_sitter_sql")
+    import tree_sitter_sql  # noqa: F401 — core dep since 0.9.49; absence must FAIL, not skip
     sql = tmp_path / "schema.sql"
     sql.write_text(
         "CREATE TABLE users (id INT, role TEXT);\n"
@@ -594,7 +594,7 @@ def test_sql_cross_file_fk_resolves_and_never_leaks_scan_path(tmp_path):
     minted a node-less id under the referencing file's own stem, which with
     absolute inputs leaked the machine path AND could never match the m1
     definition, so prisma-style cross-migration FKs dangled."""
-    pytest.importorskip("tree_sitter_sql")
+    import tree_sitter_sql  # noqa: F401 — core dep since 0.9.49; absence must FAIL, not skip
     from graphify.ids import make_id
 
     m1 = tmp_path / "prisma" / "migrations" / "m1"
@@ -647,7 +647,7 @@ def test_sql_cross_file_fk_resolves_and_never_leaks_scan_path(tmp_path):
 
 def test_sql_alter_table_fk_edge():
     """ALTER TABLE ... FOREIGN KEY ... REFERENCES produces a references edge."""
-    r = _extract_sql_or_skip("sample_alter_fk.sql")
+    r = _extract_sql_required("sample_alter_fk.sql")
     fk_edges = [e for e in r["edges"] if e["relation"] == "references"]
     assert len(fk_edges) >= 1
     node_ids = {n["id"] for n in r["nodes"]}
@@ -657,14 +657,14 @@ def test_sql_alter_table_fk_edge():
 
 def test_sql_schema_qualified_names():
     """Schema-qualified table names (Schema.Table) are preserved."""
-    r = _extract_sql_or_skip("sample_schema_qualified.sql")
+    r = _extract_sql_required("sample_schema_qualified.sql")
     labels = [n["label"] for n in r["nodes"]]
     assert any("Sales.Customer" in l for l in labels)
     assert any("Sales.SalesOrder" in l for l in labels)
 
 def test_sql_schema_qualified_alter_fk():
     """ALTER TABLE with schema-qualified names produces correct edges."""
-    r = _extract_sql_or_skip("sample_schema_qualified.sql")
+    r = _extract_sql_required("sample_schema_qualified.sql")
     fk_edges = [e for e in r["edges"] if e["relation"] == "references"]
     assert len(fk_edges) >= 1
     node_ids = {n["id"] for n in r["nodes"]}
@@ -675,7 +675,7 @@ def test_sql_schema_qualified_alter_fk():
 def test_sql_plpgsql_functions_survive_parse_errors():
     """PL/pgSQL bodies make tree-sitter-sql emit ERROR nodes; the functions
     must still be extracted (#1910), without cascading into later statements."""
-    r = _extract_sql_or_skip("sample_plpgsql.sql")
+    r = _extract_sql_required("sample_plpgsql.sql")
     labels = [n["label"] for n in r["nodes"]]
     # Both PL/pgSQL functions extracted, schema-qualified name kept whole
     assert "exposed.important_function()" in labels
@@ -694,7 +694,7 @@ def test_sql_plpgsql_functions_survive_parse_errors():
 
 def test_sql_plpgsql_clean_function_not_double_emitted():
     """A cleanly-parsed LANGUAGE sql function in the same file is emitted once."""
-    r = _extract_sql_or_skip("sample_plpgsql.sql")
+    r = _extract_sql_required("sample_plpgsql.sql")
     labels = [n["label"] for n in r["nodes"]]
     assert labels.count("plain_sql_fn()") == 1
     # And nothing else is duplicated either
@@ -712,7 +712,7 @@ def test_sql_quoted_plpgsql_routines_are_recovered():
     with an *unquoted* name recovered fine, which is why the drop looked like it
     depended only on the body statement.
     """
-    r = _extract_sql_or_skip("sample_plpgsql_quoted.sql")
+    r = _extract_sql_required("sample_plpgsql_quoted.sql")
     labels = [n["label"] for n in r["nodes"]]
     for name in (
         "raise_exception_fn",
@@ -727,7 +727,7 @@ def test_sql_quoted_plpgsql_routines_are_recovered():
 
 def test_sql_quoted_plpgsql_file_stays_clean():
     """The #2180 recovery must not add junk, duplicates, or drop the tables."""
-    r = _extract_sql_or_skip("sample_plpgsql_quoted.sql")
+    r = _extract_sql_required("sample_plpgsql_quoted.sql")
     labels = [n["label"] for n in r["nodes"]]
     # Tables before and after the unparseable routines still extract.
     assert any("accounts" in l for l in labels)
