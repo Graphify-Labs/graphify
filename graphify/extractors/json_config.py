@@ -48,6 +48,29 @@ def _is_config_json(path: Path, obj_node, source: bytes) -> bool:
             return True
     return False
 
+def _is_pattern_literal(text: str) -> bool:
+    """True for array entries that are patterns or placeholders, not module names.
+
+    Every string in every JSON array is minted as an external-dependency ``ref_`` node,
+    which is right for ``extends``/``plugins`` but wrong for regex arrays. Prettier's
+    ``@ianvs/prettier-plugin-sort-imports`` config is the motivating case::
+
+        "importOrder": ["^react$", "^next(/.*)?$", "<THIRD_PARTY_MODULES>", "^[./]"]
+
+    ``^react$`` collapses to the id ``ref_react`` -- the same id a real ``import ... from
+    "react"`` resolves to. Whichever is scanned first claims the label, so a config file
+    could rename the most-imported dependency in a project to a regex. These strings are
+    never module names, so they are not minted at all.
+    """
+    if not text:
+        return True
+    if text.startswith("^") or text.endswith("$"):
+        return True
+    if text.startswith("<") and text.endswith(">"):
+        return True
+    return "(.*)" in text or "(/" in text
+
+
 def extract_json(path: Path) -> dict:
     """Extract structure and dependency edges from a *config/manifest* .json file.
 
@@ -169,7 +192,7 @@ def extract_json(path: Path) -> dict:
                     if item.type == "string":
                         content = item.child_by_field_name("string_content")
                         ref = _read_text(content, source) if content else _read_text(item, source).strip('"\'')
-                        if ref:
+                        if ref and not _is_pattern_literal(ref):
                             ref_nid = _make_id("ref", ref)
                             if ref_nid:
                                 add_node(ref_nid, ref, line, file_type="concept")

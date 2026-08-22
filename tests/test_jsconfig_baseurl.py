@@ -191,3 +191,29 @@ def test_tsconfig_wins_when_both_configs_present(tmp_path):
     targets = _targets(r)
     assert _cid(tmp_path, ts_hit) in targets
     assert _cid(tmp_path, tmp_path / "js_root" / "mods" / "W.js") not in targets
+
+
+def test_import_order_regexes_do_not_become_dependency_nodes(tmp_path):
+    """Regex array entries are patterns, not module names.
+
+    @ianvs/prettier-plugin-sort-imports stores regexes in `importOrder`. Each string in
+    each JSON array is minted as a `ref_<name>` external-dependency node, so "^react$"
+    collapses to the id `ref_react` -- the same id a real `import ... from "react"`
+    resolves to -- and whichever file is scanned first claims the label.
+    """
+    from graphify.extractors.json_config import extract_json
+
+    cfg = tmp_path / ".prettierrc.json"
+    cfg.write_text(
+        '{"plugins": ["@ianvs/prettier-plugin-sort-imports"],'
+        ' "importOrder": ["^react$", "^next(/.*)?$", "<THIRD_PARTY_MODULES>", "^@/lib/(.*)$", "^[./]"]}',
+        encoding="utf-8",
+    )
+    result = extract_json(cfg)
+    labels = [node["label"] for node in result["nodes"]]
+
+    assert not [lbl for lbl in labels if lbl.startswith("^") or lbl.startswith("<")], labels
+    assert not any(node["id"] == "ref_react" for node in result["nodes"]), \
+        "a regex claimed the id that real react imports resolve to"
+    # The genuine dependency in `plugins` is still extracted.
+    assert "@ianvs/prettier-plugin-sort-imports" in labels
