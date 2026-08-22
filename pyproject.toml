@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "graphifyy"
-version = "0.9.48"
+version = "0.9.49"
 description = "AI coding assistant skill (Claude Code, CodeBuddy, Codex, OpenCode, Kilo Code, Cursor, Gemini CLI, Aider, OpenClaw, Factory Droid, Trae, Hermes, Kiro, Pi, Devin CLI, Google Antigravity) - turn any folder of code, docs, papers, images, or videos into a queryable knowledge graph"
 readme = "README.md"
 license = "Apache-2.0"
@@ -41,6 +41,13 @@ dependencies = [
     "tree-sitter-fortran>=0.6,<0.8",
     "tree-sitter-bash>=0.23,<0.27",
     "tree-sitter-json>=0.23,<0.26",
+    # Core since 0.9.49 (was the [sql] extra): .sql files are a mainstream
+    # corpus language and the extra-gated grammar made a default install
+    # silently skip them (#1745). Ships prebuilt abi3 wheels for every
+    # supported platform (win/macOS/Linux glibc+musl, x86_64+arm64) from
+    # 0.3.9, so no C toolchain is needed — the reason tree-sitter-dm stays
+    # optional does not apply here.
+    "tree-sitter-sql>=0.3.9,<0.4",
 ]
 
 [project.urls]
@@ -74,7 +81,10 @@ anthropic = ["anthropic"]
 gemini = ["openai", "tiktoken"]
 openai = ["openai", "tiktoken"]
 chinese = ["jieba"]
-sql = ["tree-sitter-sql"]
+# tree-sitter-sql moved to core dependencies in 0.9.49. The extra is kept as
+# an alias so existing `graphifyy[sql]` install commands and scripts keep
+# resolving; it adds nothing beyond the core install.
+sql = ["tree-sitter-sql>=0.3.9,<0.4"]
 # extract_pascal() uses tree-sitter-pascal for AST-quality extraction (more
 # accurate calls/inherits edges) and falls back to a regex extractor when it is
 # absent (#781), so this stays optional. Unlike tree-sitter-dm below, it ships

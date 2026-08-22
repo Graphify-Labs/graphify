@@ -41,7 +41,9 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         # and surface the real exception in the latter case.
         if importlib.util.find_spec("tree_sitter_sql") is None:
             return {"nodes": [], "edges": [],
-                    "error": "tree_sitter_sql not installed. Run: pip install tree-sitter-sql"}
+                    "error": ("tree_sitter_sql not installed. It is a core dependency "
+                              "since 0.9.49, so this install is incomplete — reinstall "
+                              "graphifyy or run: pip install tree-sitter-sql")}
         return {"nodes": [], "edges": [],
                 "error": f"tree_sitter_sql is installed but failed to load: {e}"}
 

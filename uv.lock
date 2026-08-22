@@ -1090,7 +1090,7 @@ wheels = [
 
 [[package]]
 name = "graphifyy"
-version = "0.9.48"
+version = "0.9.49"
 source = { editable = "." }
 dependencies = [
     { name = "networkx", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -1120,6 +1120,7 @@ dependencies = [
     { name = "tree-sitter-ruby" },
     { name = "tree-sitter-rust" },
     { name = "tree-sitter-scala" },
+    { name = "tree-sitter-sql" },
     { name = "tree-sitter-swift" },
     { name = "tree-sitter-typescript" },
     { name = "tree-sitter-verilog" },
@@ -1334,8 +1335,9 @@ requires-dist = [
     { name = "tree-sitter-ruby", specifier = ">=0.23,<0.25" },
     { name = "tree-sitter-rust", specifier = ">=0.23,<0.25" },
     { name = "tree-sitter-scala", specifier = ">=0.23,<0.27" },
+    { name = "tree-sitter-sql", specifier = ">=0.3.9,<0.4" },
     { name = "tree-sitter-sql", marker = "extra == 'all'" },
-    { name = "tree-sitter-sql", marker = "extra == 'sql'" },
+    { name = "tree-sitter-sql", marker = "extra == 'sql'", specifier = ">=0.3.9,<0.4" },
     { name = "tree-sitter-swift", specifier = ">=0.7,<0.9" },
     { name = "tree-sitter-typescript", specifier = ">=0.23,<0.25" },
     { name = "tree-sitter-verilog", specifier = ">=1.0,<2.0" },
