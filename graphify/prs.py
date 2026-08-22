@@ -688,6 +688,10 @@ def cmd_prs(argv: list[str]) -> None:
     pr_number: int | None = None
     graph_path = Path(_default_graph_json())
 
+    if any(arg in ("-h", "--help") for arg in argv):
+        print(__doc__)
+        return
+
     i = 0
     while i < len(argv):
         arg = argv[i]
@@ -711,9 +715,6 @@ def cmd_prs(argv: list[str]) -> None:
             graph_path = Path(argv[i + 1]); i += 1
         elif arg.lstrip("#").isdigit():
             pr_number = int(arg.lstrip("#"))
-        elif arg in ("-h", "--help"):
-            print(__doc__)
-            return
         i += 1
 
     if base is None:

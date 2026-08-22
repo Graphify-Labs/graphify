@@ -480,15 +480,15 @@ def main() -> None:
 
 
 def _has_detailed_help_handler(cmd: str, args: list[str]) -> bool:
-    """Return whether this exact invocation has a side-effect-free help handler."""
+    """Return whether this invocation has a side-effect-free help handler."""
     help_flags = {"-h", "--help"}
-    if len(args) == 1 and args[0] in help_flags:
-        return cmd in {"prs", "reflect", "tree"}
+    if cmd in {"prs", "reflect", "tree"}:
+        return any(arg in help_flags for arg in args)
     return (
         cmd == "export"
-        and len(args) == 2
+        and len(args) >= 2
         and args[0] == "callflow-html"
-        and args[1] in help_flags
+        and any(arg in help_flags for arg in args[1:])
     )
 
 
