@@ -5,6 +5,7 @@ import textwrap
 from pathlib import Path
 
 from graphify.extract import extract_dart, _make_id, _file_stem
+from graphify.extractors.dart import _parse_dartdoc
 
 
 class TestDart(unittest.TestCase):
@@ -634,6 +635,184 @@ class TestDart(unittest.TestCase):
         )
         self.assertIsNotNone(nav_edge)
         self.assertEqual(nav_edge["target"], "route_home_id_123_type_auth")
+
+
+    def test_dartdoc_extraction(self):
+        """Dartdoc (///) survives comment stripping: summaries land on nodes, and
+        See also / {@tool} / {@template}-{@macro} become edges."""
+        code_content = textwrap.dedent("""
+        /// Material Design button collection.
+        ///
+        /// Second paragraph is not part of the summary.
+        library;
+
+        import 'package:flutter/material.dart';
+
+        /// {@template app.buttons.onPressed}
+        /// Called when the button is tapped.
+        /// {@end-template}
+        const double kButtonHeight = 48.0;
+
+        /// A Material Design floating action button.
+        ///
+        /// A circular icon button that hovers over content to promote a primary
+        /// action, most commonly used in the [Scaffold.floatingActionButton] field.
+        ///
+        /// {@macro app.buttons.onPressed}
+        ///
+        /// {@tool dartpad}
+        /// This example shows a [MyFab] in its usual position.
+        ///
+        /// ** See code in examples/api/lib/material/my_fab/my_fab.0.dart **
+        /// {@end-tool}
+        ///
+        /// See also:
+        ///
+        ///  * [Scaffold], in which floating action buttons typically live.
+        ///  * [showDialog], the dialog helper declared below.
+        ///  * [onPressed], a member reference that must not become a node.
+        ///  * <https://m3.material.io/components/floating-action-button>
+        class MyFab extends StatelessWidget {
+          /// Creates a circular floating action button.
+          const MyFab({super.key});
+        }
+
+        /// Shows a Material dialog.
+        Future<void> showDialog() async {}
+
+        class Undocumented extends StatelessWidget {}
+        """)
+
+        file_path = self.temp_path / "my_fab.dart"
+        file_path.write_text(code_content, encoding="utf-8")
+
+        result = extract_dart(file_path)
+        nodes = result["nodes"]
+        edges = result["edges"]
+        by_label = {n["label"]: n for n in nodes}
+
+        # A. Library-level dartdoc lands on the file node, first paragraph only.
+        self.assertEqual(by_label["my_fab.dart"]["doc"], "Material Design button collection.")
+
+        # B. Class summary is the first paragraph, with [refs] unwrapped.
+        fab = by_label["MyFab"]
+        self.assertEqual(fab["doc"], "A Material Design floating action button.")
+
+        # C. Top-level function and variable docs are attached too.
+        self.assertEqual(by_label["showDialog"]["doc"], "Shows a Material dialog.")
+        self.assertIn("doc", by_label["kButtonHeight"])
+
+        # D. An undocumented declaration carries no doc key at all.
+        self.assertNotIn("doc", by_label["Undocumented"])
+
+        # E. See also: entries become references edges, tagged as dartdoc.
+        see_also = {
+            e["target"]
+            for e in edges
+            if e["source"] == fab["id"] and e.get("context") == "dartdoc_see_also"
+        }
+        self.assertIn(_make_id("Scaffold"), see_also)
+        # A lowercase entry resolves only when this file declares it.
+        self.assertIn(_make_id(_file_stem(file_path), "showDialog"), see_also)
+        # A bare member reference resolves to nothing and must be dropped.
+        self.assertNotIn(_make_id("onPressed"), see_also)
+        self.assertNotIn(_make_id(_file_stem(file_path), "onPressed"), see_also)
+
+        # F. {@tool} sample paths become edges to the example file.
+        sample = next(
+            (e for e in edges if e.get("context") == "dartdoc_sample"), None
+        )
+        self.assertIsNotNone(sample)
+        self.assertEqual(sample["source"], fab["id"])
+        self.assertEqual(
+            sample["target"], _make_id("examples/api/lib/material/my_fab/my_fab.0.dart")
+        )
+
+        # G. {@template} is defined once and {@macro} references the same node,
+        #    so doc reuse is traversable across files.
+        template_nid = _make_id("dartdoc", "app.buttons.onPressed")
+        template_def = next(
+            (
+                e
+                for e in edges
+                if e["target"] == template_nid and e.get("context") == "dartdoc_template"
+            ),
+            None,
+        )
+        self.assertIsNotNone(template_def)
+        self.assertEqual(template_def["relation"], "defines")
+
+        macro_ref = next(
+            (
+                e
+                for e in edges
+                if e["target"] == template_nid and e.get("context") == "dartdoc_macro"
+            ),
+            None,
+        )
+        self.assertIsNotNone(macro_ref)
+        self.assertEqual(macro_ref["source"], fab["id"])
+        self.assertEqual(macro_ref["relation"], "references")
+
+    def test_dartdoc_does_not_leak_into_external_nodes(self):
+        """A referenced external type that shares a name with a documented local
+        symbol must not inherit the local doc."""
+        code_content = textwrap.dedent("""
+        /// The local repository implementation.
+        class Repository {}
+
+        void lookup() {
+          final other = locator<Session>();
+        }
+        """)
+        file_path = self.temp_path / "repo.dart"
+        file_path.write_text(code_content, encoding="utf-8")
+
+        result = extract_dart(file_path)
+        session = next(n for n in result["nodes"] if n["id"] == _make_id("Session"))
+        self.assertIsNone(session["source_file"])
+        self.assertNotIn("doc", session)
+
+    def test_dartdoc_ignores_directive_only_blocks(self):
+        """A doc block that holds only @docImport lines has no prose, so it must
+        not produce a bogus summary."""
+        code_content = textwrap.dedent("""
+        /// @docImport 'elevated_button.dart';
+        /// @docImport 'ink_well.dart';
+        library;
+
+        class Plain {}
+        """)
+        file_path = self.temp_path / "plain.dart"
+        file_path.write_text(code_content, encoding="utf-8")
+
+        result = extract_dart(file_path)
+        file_node = next(n for n in result["nodes"] if n["label"] == "plain.dart")
+        self.assertNotIn("doc", file_node)
+
+
+
+    def test_dartdoc_summary_is_prose_not_markup(self):
+        """Dartdoc renders inline HTML (all ~8.8k icon constants in Flutter's
+        icons.dart are documented as an <i> tag), but a summary must read as prose.
+        Autolinks are not tags and must survive."""
+        icon_doc = _parse_dartdoc(
+            '<i class="material-icons md-36">help_outline</i> '
+            "&#x2014; material icon named \"help outline\"."
+        )
+        self.assertEqual(
+            icon_doc["summary"], 'help_outline \u2014 material icon named "help outline".'
+        )
+
+        link_doc = _parse_dartdoc("See <https://m3.material.io/x> for details.")
+        self.assertEqual(link_doc["summary"], "See <https://m3.material.io/x> for details.")
+
+    def test_dartdoc_summary_is_bounded(self):
+        """A summary is navigation signal, not the documentation itself."""
+        long_doc = _parse_dartdoc(" ".join(["word"] * 400))
+        self.assertLessEqual(len(long_doc["summary"]), 281)
+        self.assertTrue(long_doc["summary"].endswith("\u2026"))
+
 
 
 if __name__ == "__main__":
