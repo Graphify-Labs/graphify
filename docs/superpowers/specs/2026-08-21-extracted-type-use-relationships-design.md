@@ -1,7 +1,7 @@
 # Extracted Type-Use Relationships — Design
 
 **Date:** 2026-08-21
-**Status:** Proposed for user review
+**Status:** Approved
 
 ## Problem
 
