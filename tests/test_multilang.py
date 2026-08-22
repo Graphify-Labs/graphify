@@ -487,6 +487,97 @@ def test_sql_no_dangling_edges():
     for e in r["edges"]:
         assert e["source"] in node_ids, f"dangling source: {e['source']}"
 
+def test_sql_tsql_bracketed_procedure_is_recovered(tmp_path):
+    """T-SQL CREATE PROCEDURE [Schema].[Name] ... AS BEGIN...END.
+
+    The grammar has no create_procedure parse for T-SQL's AS BEGIN...END body
+    idiom, so the statement lands in ERROR recovery — where a name pattern
+    without a bracket-delimited alternative recovered nothing. In a T-SQL
+    codebase that brackets every identifier (a common house standard), that
+    made every stored procedure invisible.
+    """
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "proc.sql"
+    p.write_text(
+        "CREATE PROCEDURE [dbo].[usp_LoadDebtors]\n"
+        "    @BatchId INT\n"
+        "AS\n"
+        "BEGIN\n"
+        "    SET NOCOUNT ON;\n"
+        "    INSERT INTO dbo.Debtors (Id) SELECT Id FROM staging.Debtors;\n"
+        "END;\n"
+    )
+    r = extract_sql(p)
+    routine = [n["label"] for n in r["nodes"] if n["label"] != "proc.sql"]
+    assert routine == ["[dbo].[usp_LoadDebtors]()"], routine
+
+
+def test_sql_tsql_create_or_alter_procedure_is_recovered(tmp_path):
+    """T-SQL spells idempotent re-creation CREATE OR ALTER (no OR REPLACE)."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "proc.sql"
+    p.write_text(
+        "CREATE OR ALTER PROCEDURE [Utils].[ValidateSourceView]\n"
+        "AS\nBEGIN\n    SELECT 1;\nEND;\n"
+        "CREATE OR ALTER PROCEDURE usp_Bare AS\nBEGIN\n SELECT 1;\nEND;\n"
+    )
+    r = extract_sql(p)
+    labels = sorted(n["label"] for n in r["nodes"] if n["label"] != "proc.sql")
+    assert labels == ["[Utils].[ValidateSourceView]()", "usp_Bare()"], labels
+
+
+def test_sql_recovery_sites_agree_on_the_captured_name(tmp_path):
+    """A mixed-delimiter name (dbo.[usp_Mixed]) must yield exactly ONE node.
+
+    The walk-time ERROR scan and the whole-file has_error fallback recover the
+    same statement; when their patterns drifted, they captured different names
+    (`dbo.[usp_Mixed]` vs `dbo`), minted different ids, and _add_node's
+    id-dedupe never fired — one procedure became two nodes, one of them a
+    phantom named after the schema. Sharing _ROUTINE_RECOVERY_RX makes the
+    drift impossible; this pins the observable behaviour.
+    """
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "proc.sql"
+    p.write_text("CREATE PROCEDURE dbo.[usp_Mixed] AS\nBEGIN\n SELECT 1;\nEND;\n")
+    r = extract_sql(p)
+    routine = [n["label"] for n in r["nodes"] if n["label"] != "proc.sql"]
+    assert routine == ["dbo.[usp_Mixed]()"], routine
+
+
+def test_sql_tsql_proc_shorthand_is_recovered(tmp_path):
+    """T-SQL's official PROC shorthand, including CREATE OR ALTER PROC with a
+    qualified bracket-delimited name, must recover like the long form."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "proc.sql"
+    p.write_text(
+        "CREATE OR ALTER PROC [dbo].[usp_Short]\n"
+        "AS\nBEGIN\n    SELECT 1;\nEND;\n"
+        "CREATE PROC usp_BareShort AS\nBEGIN\n SELECT 1;\nEND;\n"
+    )
+    r = extract_sql(p)
+    labels = sorted(n["label"] for n in r["nodes"] if n["label"] != "proc.sql")
+    assert labels == ["[dbo].[usp_Short]()", "usp_BareShort()"], labels
+
+
+def test_sql_commented_ddl_is_not_fabricated_by_error_recovery(tmp_path):
+    """An unrelated syntax error arms the whole-file recovery scan; DDL that
+    exists only inside comments must not fabricate routine nodes from it."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "broken.sql"
+    p.write_text(
+        "-- CREATE PROCEDURE [dbo].[usp_LineComment] AS BEGIN SELECT 1; END;\n"
+        "/*\nCREATE OR ALTER PROC dbo.usp_BlockComment AS\nBEGIN SELECT 1; END;\n*/\n"
+        "CREATE PROCEDURE [dbo].[usp_Real]\nAS\nBEGIN\n    SELECT 1;\nEND;\n"
+        "THIS IS NOT SQL AT ALL %%%;\n"
+    )
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"] if n["label"] != "broken.sql"]
+    assert "[dbo].[usp_Real]()" in labels, labels
+    assert not any("Comment" in l for l in labels), (
+        f"commented-out DDL fabricated a node: {labels}"
+    )
+
+
 def test_sql_cte_is_not_read_as_a_table():
     """#2577: a name bound by WITH ... AS (...) is scoped to its statement, not a table.
 

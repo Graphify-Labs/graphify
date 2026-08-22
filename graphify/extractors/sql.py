@@ -6,6 +6,50 @@ import re
 from pathlib import Path
 from graphify.extractors.base import _file_stem, _make_id
 
+# Recovers CREATE FUNCTION/PROCEDURE statements the grammar could not parse
+# structurally. Used by BOTH recovery sites — the walk-time ERROR-node scan and
+# the whole-file has_error fallback (#2180). They MUST share one pattern: when
+# they disagreed, the same statement produced two nodes with different names
+# (the ERROR scan captured `dbo.[usp_Mixed]`, the fallback stopped at `dbo`,
+# and _add_node's id-dedupe never fired because the ids differed).
+#
+# Each name part is a bare identifier, a double-quoted (delimited) one, or a
+# T-SQL bracket-delimited one, so CREATE OR REPLACE FUNCTION "public"."fn"(...)
+# and CREATE PROCEDURE [dbo].[usp_Load] ... are both recovered. A bare [\w$.]+
+# stops dead at the leading delimiter, which silently dropped every quoted
+# PL/pgSQL routine (#2180) and every bracket-named T-SQL procedure. T-SQL's
+# AS BEGIN...END body idiom always lands in recovery — the grammar has no
+# create_procedure parse for it — and T-SQL spells re-creation CREATE OR ALTER
+# (it has no OR REPLACE), so accept that form too, mirroring fb_proc_or_trigger.
+# PROC is T-SQL's official shorthand for PROCEDURE and equally common in the
+# wild; the optional (?:EDURE)? still requires trailing whitespace, so a word
+# that merely starts with PROC cannot match.
+_ROUTINE_RECOVERY_RX = re.compile(
+    r"CREATE\s+(?:OR\s+(?:REPLACE|ALTER)\s+)?(?:FUNCTION|PROC(?:EDURE)?)\s+"
+    r"(?:IF\s+NOT\s+EXISTS\s+)?"
+    r"((?:\"[^\"\n]+\"|\[[^\]\n]+\]|[\w$]+)"
+    r"(?:\s*\.\s*(?:\"[^\"\n]+\"|\[[^\]\n]+\]|[\w$]+))*)",
+    re.IGNORECASE,
+)
+
+# Matches SQL line comments (-- ...) and block comments (/* ... */) for
+# _mask_sql_comments. DOTALL so a block comment may span lines.
+_SQL_COMMENT_RX = re.compile(r"--[^\n]*|/\*.*?\*/", re.DOTALL)
+
+
+def _mask_sql_comments(text: str) -> str:
+    """Blank out comment spans, preserving every character offset.
+
+    Non-newline characters inside a comment become spaces and newlines are
+    kept, so positions and line numbers computed against the masked text are
+    valid against the original. Used by the whole-file routine recovery so
+    commented-out CREATE PROCEDURE/FUNCTION DDL in a file that has an
+    unrelated parse error cannot fabricate a routine node.
+    """
+    return _SQL_COMMENT_RX.sub(
+        lambda m: "".join("\n" if c == "\n" else " " for c in m.group(0)), text
+    )
+
 
 def _norm_ident(name: str) -> str:
     """Normalize a SQL identifier for name-based reference resolution.
@@ -254,18 +298,11 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
             # do not scan the body for FROM/JOIN references: PL/pgSQL loop
             # variables and locals would produce junk reads_from targets.
             #
-            # Each name part is either a bare identifier or a double-quoted
-            # (delimited) one, so schema-qualified generated DDL such as
-            # CREATE OR REPLACE FUNCTION "public"."fn"(...) is recovered too.
-            # A bare [\w$.]+ stops dead at the leading quote, which silently
-            # dropped every quoted PL/pgSQL routine (#2180).
+            # Name and keyword shapes accepted here are defined once in
+            # _ROUTINE_RECOVERY_RX, shared with the whole-file fallback below —
+            # see the comment on the constant.
             text = _read(node)
-            for m in re.finditer(
-                r"CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE)\s+"
-                r"(?:IF\s+NOT\s+EXISTS\s+)?"
-                r"((?:\"[^\"\n]+\"|[\w$]+)(?:\s*\.\s*(?:\"[^\"\n]+\"|[\w$]+))*)",
-                text, re.IGNORECASE,
-            ):
+            for m in _ROUTINE_RECOVERY_RX.finditer(text):
                 name = m.group(1)
                 m_line = line + text[: m.start()].count("\n")
                 nid = _make_id(stem, name)
@@ -429,8 +466,9 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
     #      (keyword_create/keyword_function/object_reference/... ) and the ERROR
     #      node holds only the offending body line, e.g. `PERFORM x();` or
     #      `x := 1;` -- so no CREATE text is inside any ERROR node at all
-    #   3. the name is a quoted identifier ("public"."fn"), which a bare
-    #      [\w$.]+ pattern cannot match
+    #   3. the name is a delimited identifier — quoted ("public"."fn") or
+    #      T-SQL-bracketed ([dbo].[usp_Load]) — which a bare [\w$.]+ pattern
+    #      cannot match
     # Shapes 2 and 3 silently dropped the routine: no node, no warning, exit 0.
     # Scanning the raw source catches all three, and _add_node dedupes by id so
     # routines already recovered from the tree are not emitted twice.
@@ -441,12 +479,10 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
     # observed drop shape leaves an ERROR node in the tree, so has_error loses
     # nothing while protecting clean corpora (#2180 follow-up).
     if root.has_error:
-        for m in re.finditer(
-            r"CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE)\s+"
-            r"(?:IF\s+NOT\s+EXISTS\s+)?"
-            r"((?:\"[^\"\n]+\"|[\w$]+)(?:\s*\.\s*(?:\"[^\"\n]+\"|[\w$]+))*)",
-            src_text, re.IGNORECASE,
-        ):
+        # Comments are masked (offset-preserving) so commented-out DDL cannot
+        # fabricate a routine when an unrelated error arms this scan; DDL
+        # inside string bodies remains covered only by the has_error gate.
+        for m in _ROUTINE_RECOVERY_RX.finditer(_mask_sql_comments(src_text)):
             fn_name = m.group(1)
             fn_line = src_text[: m.start()].count("\n") + 1
             _add_node(_make_id(stem, fn_name), f"{fn_name}()", fn_line)
