@@ -262,7 +262,6 @@ Codex users also need `multi_agent = true` under `[features]` in `~/.codex/confi
 | `anthropic` | Anthropic Claude API (`--backend claude`, uses `ANTHROPIC_API_KEY`) | `uv tool install "graphifyy[anthropic]"` |
 | `bedrock` | AWS Bedrock (uses IAM, no API key) | `uv tool install "graphifyy[bedrock]"` |
 | `azure` | Azure OpenAI Service (`--backend azure`, uses `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT`) | `uv tool install "graphifyy[openai]"` |
-| `sql` | SQL schema extraction | `uv tool install "graphifyy[sql]"` |
 | `postgres` | Live PostgreSQL introspection (`--postgres DSN`) | `uv tool install "graphifyy[postgres]"` |
 | `dm` | BYOND DreamMaker `.dm`/`.dme` AST extraction (may need a C compiler + `python3-dev` if no wheel matches your platform) | `uv tool install "graphifyy[dm]"` |
 | `terraform` | Terraform / HCL `.tf`/`.tfvars`/`.hcl` AST extraction | `uv tool install "graphifyy[terraform]"` |
@@ -271,6 +270,8 @@ Codex users also need `multi_agent = true` under `[features]` in `~/.codex/confi
 | `commonlisp` | Common Lisp `.lisp`/`.cl`/`.lsp`/`.asd` AST extraction | `uv tool install "graphifyy[commonlisp]"` |
 | `chinese` | Chinese query segmentation (jieba) | `uv tool install "graphifyy[chinese]"` |
 | `all` | Everything above | `uv tool install "graphifyy[all]"` |
+
+> **SQL is no longer an extra.** Since 0.9.49, `.sql` schema extraction is included in every default install (`tree-sitter-sql` is a core dependency). If you previously installed the `sql` extra or ran `pipx inject graphifyy tree-sitter-sql`, the normal upgrade (`uv tool upgrade graphifyy` or `pipx upgrade graphifyy`) is all you need — the `sql` extra remains as a harmless alias for older install scripts.
 
 </details>
 
