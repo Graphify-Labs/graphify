@@ -323,7 +323,13 @@ def _import_python(node, source: bytes, file_nid: str, stem: str, edges: list, s
                 raw = _read_text(child, source)
                 raw_module, _, raw_alias = raw.partition(" as ")
                 module_name = raw_module.strip().lstrip(".")
-                tgt_nid = _make_id(module_name)
+                target_path: "Path | None" = None
+                root = _XAML_ACTIVE_EXTRACT_ROOT or Path(str_path).parent
+                target_path = _resolve_python_module_path(module_name, Path(str_path), root, level=0)
+                if target_path is not None:
+                    tgt_nid = _make_id(str(target_path))
+                else:
+                    tgt_nid = _make_id(module_name)
                 edge = {
                     "source": file_nid,
                     "target": tgt_nid,
@@ -334,6 +340,12 @@ def _import_python(node, source: bytes, file_nid: str, stem: str, edges: list, s
                     "source_location": f"L{node.start_point[0] + 1}",
                     "weight": 1.0,
                 }
+                if target_path is not None:
+                    try:
+                        if target_path.is_file():
+                            edge["target_file"] = str(target_path)
+                    except OSError:
+                        pass
                 if raw_alias:
                     # `import pkg.mod as alias` binds the local name `alias`, not
                     # `mod`'s own stem, to the module -- stash it so the cross-file
