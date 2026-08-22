@@ -375,6 +375,43 @@ def _resolve_temperature(default: float | None, model: str = "") -> float | None
     return default
 
 
+# Model-name fragments for Ollama-served chain-of-thought models. Ollama's
+# OpenAI-compat endpoint honours `reasoning_effort` for these, and without it
+# they narrate at length before answering, burning most of --api-timeout on
+# reasoning tokens instead of the JSON reply (#2932). Matched case-insensitively
+# against the resolved model tag (e.g. "deepseek-r1:32b").
+_OLLAMA_REASONING_MODEL_MARKERS = ("nemotron", "deepseek-r1", "qwq")
+
+
+def _model_is_ollama_reasoning_model(model: str) -> bool:
+    """True if `model` is a known Ollama chain-of-thought model (#2932)."""
+    m = (model or "").lower()
+    return any(marker in m for marker in _OLLAMA_REASONING_MODEL_MARKERS)
+
+
+def _resolve_ollama_reasoning_effort(model: str) -> str | None:
+    """Resolve the `reasoning_effort` to send for the ollama backend (#2932).
+
+    Precedence:
+      1. GRAPHIFY_OLLAMA_REASONING_EFFORT env var, if set:
+           - "none"/"omit" (case-insensitive) sends no reasoning_effort at all;
+           - any other value (e.g. "low", "medium", "high") is sent verbatim.
+      2. Otherwise, known reasoning models (nemotron, deepseek-r1, qwq) get
+         "high" — without it they spend most of the request narrating instead
+         of answering, and time out on real extraction chunks.
+      3. Otherwise None (omit the parameter — unchanged default behaviour for
+         non-reasoning models like qwen2.5-coder).
+    """
+    raw = os.environ.get("GRAPHIFY_OLLAMA_REASONING_EFFORT", "").strip()
+    if raw:
+        if raw.lower() in ("none", "omit"):
+            return None
+        return raw
+    if _model_is_ollama_reasoning_model(model):
+        return "high"
+    return None
+
+
 def _bedrock_inference_config(max_tokens: int, model: str = "") -> dict:
     """Build Bedrock inferenceConfig, honouring GRAPHIFY_LLM_TEMPERATURE.
 
@@ -1980,7 +2017,10 @@ def extract_files_direct(
             mdl,
             user_msg,
             temperature=_resolve_temperature(cfg.get("temperature", 0), mdl),
-            reasoning_effort=cfg.get("reasoning_effort"),
+            reasoning_effort=(
+                _resolve_ollama_reasoning_effort(mdl) if backend == "ollama"
+                else cfg.get("reasoning_effort")
+            ),
             # Honour max_completion_tokens (gemini) or the older max_tokens key
             # (ollama/deepseek/kimi/openai) -- most openai-compat configs define the
             # latter, so reading only max_completion_tokens silently capped their
@@ -2954,8 +2994,12 @@ def _call_llm(
     temperature = _resolve_temperature(cfg.get("temperature", 0), mdl)
     if temperature is not None:
         kwargs["temperature"] = temperature
-    if cfg.get("reasoning_effort"):
-        kwargs["reasoning_effort"] = cfg["reasoning_effort"]
+    reasoning_effort = (
+        _resolve_ollama_reasoning_effort(mdl) if backend == "ollama"
+        else cfg.get("reasoning_effort")
+    )
+    if reasoning_effort:
+        kwargs["reasoning_effort"] = reasoning_effort
     # Custom providers can override via providers.json `extra_body`; falls back
     # to the moonshot default to preserve existing behavior.
     if cfg.get("extra_body") is not None:
