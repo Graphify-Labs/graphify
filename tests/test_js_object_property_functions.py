@@ -79,6 +79,14 @@ def test_const_object_scoping_baseline_unchanged(tmp_path):
     assert _labels(arrow) == ["api"]
 
 
+def test_parenthesized_function_values_captured(tmp_path):
+    r = _extract(tmp_path, "paren.js", "module.exports = { m: (() => 1) };\n")
+    assert _labels(r) == ["m()"]
+    # a parenthesized non-function value stays out of the graph
+    r2 = _extract(tmp_path, "parencall.js", "module.exports = { m: (fn()) };\n")
+    assert not [label for label in _labels(r2) if label.endswith("()")]
+
+
 def test_computed_and_string_keys_still_skipped(tmp_path):
     # Only plain identifier keys are named symbols; computed and string keys
     # stay out of the graph exactly as before.

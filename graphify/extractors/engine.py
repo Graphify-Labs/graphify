@@ -4041,6 +4041,12 @@ def _extract_generic(
                 and config.ts_module in ("tree_sitter_javascript",
                                          "tree_sitter_typescript")):
             pair_value = node.child_by_field_name("value")
+            # `{ m: (() => {}) }` wraps the function in parenthesized_expression
+            # nodes; unwrap them so the parenthesized spelling matches too.
+            while (pair_value is not None
+                   and pair_value.type == "parenthesized_expression"):
+                pair_value = next(
+                    (c for c in pair_value.children if c.is_named), None)
             if pair_value is not None and pair_value.type in _JS_FUNCTION_VALUE_TYPES:
                 pair_key = node.child_by_field_name("key")
                 if pair_key is not None and pair_key.type == "property_identifier":
