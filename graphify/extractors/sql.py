@@ -21,14 +21,18 @@ from graphify.extractors.base import _file_stem, _make_id
 # AS BEGIN...END body idiom always lands in recovery — the grammar has no
 # create_procedure parse for it — and T-SQL spells re-creation CREATE OR ALTER
 # (it has no OR REPLACE), so accept that form too, mirroring fb_proc_or_trigger.
+# Inside a bracket-delimited part, a literal ] is escaped by doubling
+# ([a]]b] names the identifier a]b), so consume ]] before treating a
+# lone ] as the closing delimiter — stopping at the first ] truncated
+# the name and minted a phantom that could collide with a real [a].
 # PROC is T-SQL's official shorthand for PROCEDURE and equally common in the
 # wild; the optional (?:EDURE)? still requires trailing whitespace, so a word
 # that merely starts with PROC cannot match.
 _ROUTINE_RECOVERY_RX = re.compile(
     r"CREATE\s+(?:OR\s+(?:REPLACE|ALTER)\s+)?(?:FUNCTION|PROC(?:EDURE)?)\s+"
     r"(?:IF\s+NOT\s+EXISTS\s+)?"
-    r"((?:\"[^\"\n]+\"|\[[^\]\n]+\]|[\w$]+)"
-    r"(?:\s*\.\s*(?:\"[^\"\n]+\"|\[[^\]\n]+\]|[\w$]+))*)",
+    r"((?:\"[^\"\n]+\"|\[(?:[^\]\n]|\]\])+\]|[\w$]+)"
+    r"(?:\s*\.\s*(?:\"[^\"\n]+\"|\[(?:[^\]\n]|\]\])+\]|[\w$]+))*)",
     re.IGNORECASE,
 )
 

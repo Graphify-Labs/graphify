@@ -526,6 +526,19 @@ def test_sql_tsql_create_or_alter_procedure_is_recovered(tmp_path):
     assert labels == ["[Utils].[ValidateSourceView]()", "usp_Bare()"], labels
 
 
+def test_sql_escaped_closing_bracket_in_routine_name_is_consumed(tmp_path):
+    """T-SQL escapes a literal ] inside a bracketed identifier by doubling it:
+    [a]]b] names the identifier a]b. A pattern that stops at the first ]
+    truncated the name to [dbo].[a] — a phantom that could collide with a
+    genuinely-named [dbo].[a]."""
+    import tree_sitter_sql  # noqa: F401 — required by the recovery path under test
+    p = tmp_path / "proc.sql"
+    p.write_text("CREATE PROCEDURE [dbo].[a]]b]\nAS\nBEGIN\n    SELECT 1;\nEND;\n")
+    r = extract_sql(p)
+    routine = [n["label"] for n in r["nodes"] if n["label"] != "proc.sql"]
+    assert routine == ["[dbo].[a]]b]()"], routine
+
+
 def test_sql_recovery_sites_agree_on_the_captured_name(tmp_path):
     """A mixed-delimiter name (dbo.[usp_Mixed]) must yield exactly ONE node.
 
