@@ -24,13 +24,31 @@ _DARTDOC_TYPE_DECL = re.compile(
     r"^\s*(?:(?:abstract|sealed|base|interface|final|mixin)\s+)*"
     r"(?:class|mixin|enum|extension\s+type|extension|typedef)\s+(\w+)"
 )
-# Everything else (methods, fields, constructors, top-level functions/variables):
-# the declared name is the last identifier before the first `(`, `=`, `;` or `{`.
+# A constructor is the one declaration whose name IS the enclosing type, with no
+# return type in front: `Foo(`, `const Foo(`, `factory Foo.fromJson(`, `Foo._(`.
+# The `type == enclosing type` check at the call site is what keeps a widget
+# constructor CALL inside a build method (`Padding(`) from matching.
+_DARTDOC_CONSTRUCTOR_DECL = re.compile(
+    r"^\s*(?:(?:const|factory|external)\s+)*"
+    r"(?P<type>[A-Z]\w*)(?:\.(?P<name>\w+))?\s*\("
+)
+# Inside a constructor's parameter list, `this.x` / `super.x` forwards to a field
+# that already has its own node, so a doc above it documents that field.
+_DARTDOC_FORWARDED_PARAM = re.compile(r"^\s*(?:required\s+)?(?:this|super)\.(\w+)")
+# Any other parameter: the last identifier before the end of the declaration,
+# once a default value has been cut off (a default can itself contain commas and
+# identifiers — `= EdgeInsets.only(left: 1, right: 2)` — and the parameter name is
+# always to its left). The trailing class covers `field, {`, where the brace opens
+# the named-parameter group. Only consulted when the line is known to sit inside a
+# parameter list.
+_DARTDOC_PARAM_NAME = re.compile(r"(\w+)\s*[,;)}\]{\s]*$")
+# Everything else (methods, fields, getters, top-level functions/variables): the
+# declared name is the last identifier before the first `(`, `=`, `;` or `{`.
 _DARTDOC_MEMBER_DECL = re.compile(r"(\w+)\s*[(=;{]")
 _DARTDOC_LIBRARY_DECL = re.compile(r"^\s*library\b")
 
 # Line-level dartdoc directives (`@docImport 'x.dart';`, `@nodoc`) carry no prose
-# and must never leak into a summary.
+# and must never leak into the doc text.
 _DARTDOC_LINE_DIRECTIVE = re.compile(r"^\s*@\w+")
 # Inline directives: {@template id}, {@macro id}, {@tool dartpad}, {@youtube ...}.
 _DARTDOC_INLINE_DIRECTIVE = re.compile(r"\{@[^}]*\}")
@@ -44,16 +62,24 @@ _DARTDOC_SEE_ALSO = re.compile(r"^See also:\s*$", re.MULTILINE)
 _DARTDOC_SEE_ALSO_ENTRY = re.compile(r"^\s*\*\s+\[([A-Za-z_]\w*)", re.MULTILINE)
 # Dartdoc renders inline HTML, and generated files lean on it — every one of the
 # ~8.8k icon constants in Flutter's icons.dart is documented as an <i> tag. Strip
-# the markup so a summary reads as prose. The tag-name charset excludes ":" so
+# the markup so the text reads as prose. The tag-name charset excludes ":" so
 # dartdoc's <https://...> autolinks survive.
 _DARTDOC_HTML_TAG = re.compile(r"</?[a-zA-Z][\w-]*(?:\s[^>\n]*)?>")
 # `[Foo]` / `[Foo.bar]` inside prose is a dartdoc reference, not a markdown link.
 _DARTDOC_REF = re.compile(r"\[([^\]\n]+)\]")
+# A control character in a node attribute breaks the HTML export (#2897).
+_DARTDOC_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 
-# A summary is one bounded sentence-ish lead paragraph, not the whole block; the
-# graph carries navigation signal, not documentation. Matches the 200-300 char
-# budget floated in docs/node-summaries-rfc.md.
-_DARTDOC_SUMMARY_MAX = 280
+# Blanked before counting brackets for structural context: string literals and
+# trailing `//` comments, whose brackets are not code. Doc lines start with `///`
+# so they are already excluded.
+_DARTDOC_LINE_NOISE = re.compile(
+    r"'''[\s\S]*?'''"
+    r'|"""[\s\S]*?"""'
+    r"|'(?:\\.|[^'\\])*'"
+    r'|"(?:\\.|[^"\\])*"'
+    r"|//.*$"
+)
 
 # Scalar/collection builtins are never worth a `references` edge — same list the
 # type-lookup pass in section 7 filters on.
@@ -67,13 +93,17 @@ _DARTDOC_REF_NOISE = frozenset({
 def _parse_dartdoc(body: str) -> dict:
     """Split one raw dartdoc block into the parts worth putting in a graph.
 
-    ``summary`` is the lead paragraph with directives removed and `[refs]`
-    unwrapped; ``see_also`` is the curated cross-reference list; ``samples`` are
-    the runnable example files a ``{@tool}`` block points at; ``templates`` and
-    ``macros`` are the two halves of dartdoc's transclusion (`{@template id}`
-    declares a reusable fragment, `{@macro id}` pastes it in — 714 macros
-    resolving to 224 templates across Flutter's `src/material`, many of them
-    living in another package entirely).
+    ``doc`` is the block's full prose — every paragraph, joined by blank lines,
+    with directives removed, inline HTML stripped and `[refs]` unwrapped. It is
+    deliberately NOT truncated: a consumer that wants the one-line summary takes
+    ``doc.split("\\n\\n")[0]``, which is dartdoc's own convention for the first
+    paragraph, and one that wants the whole explanation now has it.
+
+    ``see_also`` is the curated cross-reference list; ``samples`` are the runnable
+    example files a ``{@tool}`` block points at; ``templates`` and ``macros`` are
+    the two halves of dartdoc's transclusion (`{@template id}` declares a reusable
+    fragment, `{@macro id}` pastes it in — 714 macros resolving to 224 templates
+    across Flutter's `src/material`, many living in another package entirely).
     """
     see_also: list[str] = []
     prose_source = body
@@ -94,14 +124,12 @@ def _parse_dartdoc(body: str) -> dict:
     prose = _DARTDOC_HTML_TAG.sub("", prose)
     prose = html.unescape(prose)
     prose = _DARTDOC_REF.sub(r"\1", prose)
+    prose = _DARTDOC_CONTROL.sub("", prose)
 
-    paragraph = next((p for p in re.split(r"\n\s*\n", prose) if p.strip()), "")
-    summary = " ".join(paragraph.split())
-    if len(summary) > _DARTDOC_SUMMARY_MAX:
-        summary = summary[:_DARTDOC_SUMMARY_MAX].rsplit(" ", 1)[0] + "\u2026"
+    paragraphs = [" ".join(p.split()) for p in re.split(r"\n\s*\n", prose) if p.strip()]
 
     return {
-        "summary": summary,
+        "doc": "\n\n".join(paragraphs),
         "see_also": see_also,
         "samples": _DARTDOC_SAMPLE.findall(body),
         "templates": _DARTDOC_TEMPLATE.findall(body),
@@ -109,26 +137,99 @@ def _parse_dartdoc(body: str) -> dict:
     }
 
 
-def _collect_dartdoc(src: str) -> tuple[dict, dict]:
-    """Map documented declarations in ``src`` to their parsed dartdoc.
+def _dartdoc_constructor_label(type_name: str, ctor_name: str | None) -> str:
+    """Node label for a constructor. The trailing `()` is what keeps an unnamed
+    constructor's label from colliding with its class's."""
+    return f"{type_name}.{ctor_name}()" if ctor_name else f"{type_name}()"
 
-    Returns ``(library_doc, by_name)``. A block sitting above ``library;``
-    documents the file itself; every other block documents the next declaration,
-    skipping the blank lines and annotations dartdoc allows in between.
 
-    Keying ``by_name`` on the bare declared name matches how this extractor
-    already identifies nodes (``_make_id(stem, name)``), so a name declared twice
-    in one file — ``build`` in two widget classes — resolves to one node either
-    way and the first doc block wins.
+def _dartdoc_constructor_key(type_name: str, ctor_name: str | None) -> str:
+    """ID fragment for a constructor. A name made only of underscores normalizes
+    to nothing, which would collapse `Foo._()` onto the class node — or, for the
+    bare `_`, onto the FILE node (#2738)."""
+    if not ctor_name:
+        return f"{type_name}.new"
+    return f"{type_name}.{ctor_name}" if ctor_name.strip("_") else f"{type_name}.private"
+
+
+def _dartdoc_structure(lines: list[str]) -> tuple[list, list]:
+    """For every line, the type that encloses it and the constructor whose
+    parameter list it sits in.
+
+    Brace depth resolves the enclosing type, paren depth resolves the parameter
+    list, both counted on lines with strings and trailing comments blanked out.
     """
-    library_doc: dict = {}
-    by_name: dict[str, dict] = {}
+    enclosing: list[str | None] = []
+    param_of: list[tuple[str, str, str | None] | None] = []
+    stack: list[tuple[int, str]] = []
+    depth = 0
+    current_ctor: tuple[str, str, str | None] | None = None
+    paren_depth = 0
+
+    for raw in lines:
+        line = _DARTDOC_LINE_NOISE.sub("", raw)
+        enclosing.append(stack[-1][1] if stack else None)
+        param_of.append(current_ctor)
+
+        type_match = _DARTDOC_TYPE_DECL.match(line)
+        if type_match:
+            stack.append((depth, type_match.group(1)))
+        elif current_ctor is None and stack:
+            ctor_match = _DARTDOC_CONSTRUCTOR_DECL.match(line)
+            if ctor_match and ctor_match.group("type") == stack[-1][1]:
+                current_ctor = (
+                    _dartdoc_constructor_label(
+                        ctor_match.group("type"), ctor_match.group("name")
+                    ),
+                    ctor_match.group("type"),
+                    ctor_match.group("name"),
+                )
+                paren_depth = 0
+
+        if current_ctor is not None:
+            paren_depth += line.count("(") - line.count(")")
+            if paren_depth <= 0:
+                current_ctor = None
+                paren_depth = 0
+
+        depth += line.count("{") - line.count("}")
+        while stack and depth <= stack[-1][0]:
+            stack.pop()
+
+    return enclosing, param_of
+
+
+def _collect_dartdoc(src: str) -> tuple[dict, dict, dict, list]:
+    """Bind every dartdoc block to the declaration it documents.
+
+    A block attaches to the first thing below it that is not more documentation,
+    skipping the blank lines, annotations and plain `//` comments Dart allows in
+    between — and it attaches at that declaration's own granularity:
+
+    - above ``library;``            -> the file
+    - above a class/mixin/enum/...  -> that type
+    - above a constructor           -> that constructor
+    - above a constructor parameter -> the field it forwards to (``this.x``), or
+                                       the parameter itself
+    - anything else                 -> that member (field, method, getter, ...)
+
+    Returns ``(library_doc, by_label, constructors, parameters)``. ``by_label`` is
+    keyed by the LABEL the node will carry, so ``add_node`` picks a doc up without
+    knowing which pass created the node. A label declared twice in one file —
+    ``build`` in two widget classes — already resolves to a single node, so the
+    first block wins, matching the ID collision that already exists.
+    """
     lines = src.splitlines()
-    i = 0
+    enclosing, param_of = _dartdoc_structure(lines)
+    library_doc: dict = {}
+    by_label: dict[str, dict] = {}
+    constructors: dict[str, tuple[str, str | None]] = {}
+    parameters: list[tuple[str, str]] = []
     total = len(lines)
+    i = 0
+
     while i < total:
-        match = _DARTDOC_LINE.match(lines[i])
-        if match is None:
+        if _DARTDOC_LINE.match(lines[i]) is None:
             i += 1
             continue
         block: list[str] = []
@@ -138,24 +239,58 @@ def _collect_dartdoc(src: str) -> tuple[dict, dict]:
                 break
             block.append(match.group(1))
             i += 1
-        # Walk to the declaration the block documents, past blank lines and
-        # annotations (`@immutable`, `@Deprecated('...')`).
         j = i
-        while j < total and (not lines[j].strip() or lines[j].lstrip().startswith("@")):
+        while j < total:
+            stripped = lines[j].strip()
+            if stripped and not stripped.startswith("@") and not stripped.startswith("//"):
+                break
             j += 1
         if j >= total:
             continue
+
         declaration = lines[j]
         parsed = _parse_dartdoc("\n".join(block))
+
         if _DARTDOC_LIBRARY_DECL.match(declaration):
             if not library_doc:
                 library_doc = parsed
             continue
-        name_match = _DARTDOC_TYPE_DECL.match(declaration) or _DARTDOC_MEMBER_DECL.search(declaration)
-        if name_match is None:
+
+        owner_ctor = param_of[j]
+        if owner_ctor is not None:
+            forwarded = _DARTDOC_FORWARDED_PARAM.match(declaration)
+            name_match = forwarded or _DARTDOC_PARAM_NAME.search(
+                declaration.split("=", 1)[0]
+            )
+            if name_match is None:
+                continue
+            ctor_label, ctor_type, ctor_name = owner_ctor
+            constructors.setdefault(ctor_label, (ctor_type, ctor_name))
+            parameters.append((ctor_label, name_match.group(1)))
+            by_label.setdefault(name_match.group(1), parsed)
             continue
-        by_name.setdefault(name_match.group(1), parsed)
-    return library_doc, by_name
+
+        type_match = _DARTDOC_TYPE_DECL.match(declaration)
+        if type_match:
+            by_label.setdefault(type_match.group(1), parsed)
+            continue
+
+        ctor_match = _DARTDOC_CONSTRUCTOR_DECL.match(declaration)
+        if ctor_match and ctor_match.group("type") == enclosing[j]:
+            label = _dartdoc_constructor_label(
+                ctor_match.group("type"), ctor_match.group("name")
+            )
+            constructors.setdefault(
+                label, (ctor_match.group("type"), ctor_match.group("name"))
+            )
+            by_label.setdefault(label, parsed)
+            continue
+
+        member_match = _DARTDOC_MEMBER_DECL.search(declaration)
+        if member_match is not None:
+            by_label.setdefault(member_match.group(1), parsed)
+
+    return library_doc, by_label, constructors, parameters
 
 
 def extract_dart(path: Path) -> dict:
@@ -183,7 +318,8 @@ def extract_dart(path: Path) -> dict:
 
     # Recover the dartdoc the stripping above just deleted. Read from `src`,
     # not `src_clean`, and keep every later pass on the comment-free text.
-    library_doc, dartdoc_by_name = _collect_dartdoc(src)
+    (library_doc, dartdoc_by_label,
+     dartdoc_constructors, dartdoc_parameters) = _collect_dartdoc(src)
 
     stem = _file_stem(path)
     file_nid = _make_id(str(path))
@@ -207,25 +343,31 @@ def extract_dart(path: Path) -> dict:
     if not is_part:
         file_node = {"id": file_nid, "label": path.name, "file_type": "code",
                      "source_file": str(path), "source_location": None}
-        if library_doc.get("summary"):
-            file_node["doc"] = library_doc["summary"]
+        if library_doc.get("doc"):
+            file_node["doc"] = library_doc["doc"]
         nodes.append(file_node)
     edges = []
     defined: set[str] = set()
+    node_by_id: dict[str, dict] = {}
 
     def add_node(nid: str, label: str, ftype: str = "code", source_file: str | None = str(path)) -> None:
+        # Only a symbol DECLARED here can carry this file's dartdoc. Nodes minted
+        # for referenced external types pass source_file=None, and a name collision
+        # with a local symbol must not hand them its doc.
+        doc = dartdoc_by_label.get(label, {}).get("doc") if source_file is not None else None
         if nid not in defined:
             node = {"id": nid, "label": label, "file_type": ftype,
                     "source_file": source_file, "source_location": None}
-            # Only a symbol DECLARED here can carry this file's dartdoc. Nodes
-            # minted for referenced external types pass source_file=None, and a
-            # name collision with a local symbol must not hand them its doc.
-            if source_file is not None:
-                summary = dartdoc_by_name.get(label, {}).get("summary")
-                if summary:
-                    node["doc"] = summary
+            if doc:
+                node["doc"] = doc
             nodes.append(node)
+            node_by_id[nid] = node
             defined.add(nid)
+        elif doc:
+            # An earlier pass already created this node under a different label
+            # that carried no doc. IDs are normalized, so `_field` and `field`
+            # are one node; without this the doc for the second label is dropped.
+            node_by_id[nid].setdefault("doc", doc)
 
     def add_edge(src_id: str, tgt_id: str, relation: str, weight: float = 1.0, context: str | None = None) -> None:
         edge = {"source": src_id, "target": tgt_id, "relation": relation,
@@ -691,7 +833,39 @@ def extract_dart(path: Path) -> dict:
             add_node(target_nid, clean_name, source_file=None)
             add_edge(file_nid, target_nid, "references", context="type_lookup")
 
-    # 8. Dartdoc cross-references
+    # 8. Dartdoc-declared API surface
+    # A documented constructor and its documented parameters are API surface the
+    # author chose to describe, but no earlier pass mints a node for either: the
+    # method pass skips any name starting uppercase (so every constructor), and
+    # parameter lists are never walked. Create them here — only when a doc block
+    # points at them, so this stays proportional to the documentation rather than
+    # minting a node for every constructor in the corpus.
+    dartdoc_nid_by_label: dict[str, str] = {}
+    for ctor_label, (ctor_type, ctor_name) in dartdoc_constructors.items():
+        type_nid = _make_id(stem, ctor_type)
+        if type_nid not in defined:
+            continue
+        ctor_nid = _make_id(stem, _dartdoc_constructor_key(ctor_type, ctor_name))
+        if ctor_nid in (type_nid, file_nid):
+            continue
+        add_node(ctor_nid, ctor_label)
+        add_edge(type_nid, ctor_nid, "contains", context="dartdoc_constructor")
+        dartdoc_nid_by_label[ctor_label] = ctor_nid
+
+    for ctor_label, param_label in dartdoc_parameters:
+        ctor_nid = dartdoc_nid_by_label.get(ctor_label)
+        if ctor_nid is None:
+            continue
+        param_nid = _make_id(stem, param_label)
+        if param_nid in (ctor_nid, file_nid):
+            continue
+        # A `this.x` parameter forwards to a field that already has a node, so
+        # this reuses it rather than declaring a second owner for the same prop —
+        # hence `references`, not `contains`.
+        add_node(param_nid, param_label)
+        add_edge(ctor_nid, param_nid, "references", context="dartdoc_parameter")
+
+    # 9. Dartdoc cross-references
     # Only the parts a human curated as a relation become edges. `See also:` is an
     # explicit "these belong together" list; a {@tool} block names the runnable file
     # that shows how to use the symbol; {@template}/{@macro} is dartdoc's own
@@ -733,8 +907,8 @@ def extract_dart(path: Path) -> dict:
 
     if not is_part and library_doc:
         add_dartdoc_edges(file_nid, library_doc)
-    for owner_name, doc in dartdoc_by_name.items():
-        owner_nid = _make_id(stem, owner_name)
+    for owner_label, doc in dartdoc_by_label.items():
+        owner_nid = dartdoc_nid_by_label.get(owner_label) or _make_id(stem, owner_label)
         if owner_nid in defined:
             add_dartdoc_edges(owner_nid, doc)
 
