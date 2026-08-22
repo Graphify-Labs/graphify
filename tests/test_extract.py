@@ -934,6 +934,112 @@ def test_extract_js_factory_object_contains_edge_not_duplicated(tmp_path):
     assert len(methods) == 4
 
 
+def test_extract_js_factory_objects_in_sibling_methods_stay_separate(tmp_path):
+    """Two methods of one class that build same-named local factory objects must
+    get one node each.
+
+    The object is a local of the method, so it has to be namespaced by the
+    method. Namespacing it by the enclosing class instead collapsed both
+    `const api = {}` locals onto a single node: `.get()` and `.put()` hung off
+    the same object and the second method's object never appeared at all.
+    """
+    from graphify.extract import extract_js
+    f = tmp_path / "registry.js"
+    f.write_text(
+        "class Registry {\n"
+        "  buildRead() {\n"
+        "    const api = {};\n"
+        "    api.get = function () { return 1; };\n"
+        "    return api;\n"
+        "  }\n"
+        "  buildWrite() {\n"
+        "    const api = {};\n"
+        "    api.put = function () { return 2; };\n"
+        "    return api;\n"
+        "  }\n"
+        "}\n"
+    )
+    result = extract_js(f)
+    by_label = {}
+    for n in result["nodes"]:
+        by_label.setdefault(n["label"], []).append(n)
+
+    api_nodes = by_label.get("api", [])
+    assert len(api_nodes) == 2, (
+        "each method's local object needs its own node, got "
+        f"{[n['id'] for n in api_nodes]}"
+    )
+
+    edges = {(e["source"], e["relation"], e["target"]) for e in result["edges"]}
+    read_nid = by_label[".buildRead()"][0]["id"]
+    write_nid = by_label[".buildWrite()"][0]["id"]
+    read_api = next(n["id"] for n in api_nodes
+                    if (read_nid, "contains", n["id"]) in edges)
+    write_api = next(n["id"] for n in api_nodes
+                     if (write_nid, "contains", n["id"]) in edges)
+    assert read_api != write_api
+
+    # Each object owns only its own method.
+    assert (read_api, "method", by_label[".get()"][0]["id"]) in edges
+    assert (write_api, "method", by_label[".put()"][0]["id"]) in edges
+    assert (read_api, "method", by_label[".put()"][0]["id"]) not in edges
+    assert (write_api, "method", by_label[".get()"][0]["id"]) not in edges
+
+
+def test_extract_js_factory_contains_edge_not_duplicated_across_methods(tmp_path):
+    """`contained_owners` is scoped to one function, so it cannot dedup across
+    sibling methods. With the object keyed on the class, both methods minted the
+    same owner id and emitted the identical `contains` edge twice."""
+    from graphify.extract import extract_js
+    f = tmp_path / "dup.js"
+    f.write_text(
+        "class Builder {\n"
+        "  one() {\n"
+        "    const api = {};\n"
+        "    api.a = () => 1;\n"
+        "    return api;\n"
+        "  }\n"
+        "  two() {\n"
+        "    const api = {};\n"
+        "    api.b = () => 2;\n"
+        "    return api;\n"
+        "  }\n"
+        "}\n"
+    )
+    result = extract_js(f)
+    contains = [(e["source"], e["target"]) for e in result["edges"]
+                if e["relation"] == "contains"]
+    assert len(contains) == len(set(contains)), (
+        f"duplicate contains edges: {contains}"
+    )
+
+
+def test_extract_js_this_assignment_still_belongs_to_the_class(tmp_path):
+    """Control: `this.X = fn` keeps its class-level owner.
+
+    Only the object-literal arm moves to the function; `this` in a constructor
+    really does refer to the instance, so both methods must land on the class.
+    """
+    from graphify.extract import extract_js
+    f = tmp_path / "self.js"
+    f.write_text(
+        "class Handler {\n"
+        "  constructor() {\n"
+        "    this.onOpen = function () { return 1; };\n"
+        "  }\n"
+        "  wire() {\n"
+        "    this.onClose = function () { return 2; };\n"
+        "  }\n"
+        "}\n"
+    )
+    result = extract_js(f)
+    by_label = {n["label"]: n["id"] for n in result["nodes"]}
+    cls = by_label["Handler"]
+    edges = {(e["source"], e["relation"], e["target"]) for e in result["edges"]}
+    assert (cls, "method", by_label[".onOpen()"]) in edges
+    assert (cls, "method", by_label[".onClose()"]) in edges
+
+
 def test_extract_js_factory_object_arrow_assigned_methods(tmp_path):
     """Arrow functions assigned to a factory object are captured just like
     function expressions (the dominant modern factory shape)."""
