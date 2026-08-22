@@ -3159,6 +3159,64 @@ def test_anchor_index_memo_survives_a_reused_list_identity(tmp_path):
     assert _anchor_index(other) is not first
 
 
+def test_anchor_index_rebuilds_when_a_same_length_edit_rewrites_the_tail(tmp_path):
+    """Length alone cannot see pop+append, so the tail entry is the sentinel."""
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    target = sub / "x.py"
+    target.write_text("x")
+    patterns = [(tmp_path, "*.log"), (sub, "*.py")]
+    index = _anchor_index(patterns)
+    assert index.candidates(target) == [0, 1]
+    assert _is_ignored(target, tmp_path, patterns) is True
+
+    # Same length, different content: slot 1 moves from an ancestor anchor to a
+    # sibling one. A stale bucket would still offer it, and _eval would slice
+    # target.parts by the sibling's depth and match the leftover "x.py".
+    patterns.pop()
+    patterns.append((tmp_path / "elsewhere", "*.py"))
+    assert index.candidates(target) == [0]
+    assert _is_ignored(target, tmp_path, patterns) is False
+
+
+def test_anchor_index_rebuilds_on_in_place_tail_replacement(tmp_path):
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    target = sub / "x.py"
+    target.write_text("x")
+    patterns = [(tmp_path, "*.log"), (sub, "*.py")]
+    index = _AnchorIndex(patterns)
+    assert index.candidates(target) == [0, 1]
+    patterns[-1] = (tmp_path / "elsewhere", "*.py")
+    assert index.candidates(target) == [0]
+
+
+def test_anchor_index_reads_its_own_snapshot_not_the_live_list(tmp_path):
+    """An interior rewrite is out of contract and undetectable in O(1). Reads
+    go through the snapshot so it degrades to stale, never to applying a
+    sibling subtree's rule: _eval slices target.parts by len(anchor.parts) on
+    the promise the bucketed anchor is an ancestor, and a swapped-in
+    non-ancestor of equal depth would slice to a bogus relative path."""
+    sub = tmp_path / "sub"
+    other = tmp_path / "other"
+    sub.mkdir()
+    other.mkdir()
+    target = sub / "x.py"
+    target.write_text("x")
+    # A trailing entry the rewrite leaves alone, so the tail sentinel stays
+    # quiet and the interior edit really does go undetected.
+    patterns = [(sub, "nothing.txt"), (tmp_path, "*.zzz")]
+    assert _is_ignored(target, tmp_path, patterns) is False
+
+    # Interior rewrite: the sub bucket still points at slot 0, but slot 0 in
+    # the live list now belongs to a sibling anchor that is no ancestor.
+    patterns[0] = (other, "x.py")
+    index = _anchor_index(patterns)
+    assert index.candidates(target) == [0, 1]
+    assert index.entries[0] == (sub, "nothing.txt")   # snapshot, not the list
+    assert _is_ignored(target, tmp_path, patterns) is False  # stale, not wrong
+
+
 @pytest.mark.parametrize("path,pattern,expected", [
     ("a/b/c.py", "a/b/c.py", True),
     ("a/b/c.py", "a/*/c.py", True),

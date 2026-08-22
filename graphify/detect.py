@@ -1336,28 +1336,61 @@ class _AnchorIndex:
 
     ``detect()`` extends the list as its walk finds nested ignore files, so
     ``_refresh`` indexes only the new tail.
+
+    Contract: the source list is append-only for as long as an index is live.
+    Every producer here obeys it — ``detect()`` and ``_is_scan_ignored`` only
+    ``append``/``extend``. ``_refresh`` still catches a shrink and a rewritten
+    tail (a same-length ``pop`` + ``append`` included) and rebuilds; an
+    *interior* rewrite is undetectable in O(1) and is what the contract buys.
+    Because reads go through ``entries``, even that degrades to a stale answer
+    rather than a wrong one.
     """
 
-    __slots__ = ("_patterns", "_by_anchor", "_indexed")
+    __slots__ = ("_patterns", "_entries", "_by_anchor")
 
     def __init__(self, patterns: list[tuple[Path, str]]) -> None:
         self._patterns = patterns
+        self._entries: list[tuple[Path, str]] = []
         self._by_anchor: dict[Path, list[int]] = {}
-        self._indexed = 0
         self._refresh()
 
+    @property
+    def entries(self) -> list[tuple[Path, str]]:
+        """The entries the buckets index, snapshotted as they were indexed.
+
+        Callers must read patterns from here, not from the source list: an
+        index is only ever consistent with what it indexed, and ``_is_ignored``
+        slices ``target.parts`` by ``len(anchor.parts)`` on the promise that the
+        bucket's anchor is an ancestor. Reading a source entry that has since
+        been swapped would break that promise and build a nonsense relative
+        path, so the snapshot keeps a stale index merely stale.
+        """
+        return self._entries
+
     def _refresh(self) -> None:
-        n = len(self._patterns)
-        if n == self._indexed:
+        patterns = self._patterns
+        n = len(patterns)
+        indexed = len(self._entries)
+        if n == indexed and (not indexed or patterns[-1] is self._entries[-1]):
             return
-        if n < self._indexed:
-            # Shrunk: the list was truncated or reused for a different scan.
+        # Anything but a pure append invalidates the buckets: indices shift, and
+        # a replaced entry can move to another anchor. Length alone cannot see a
+        # same-length edit, so the last indexed entry doubles as a sentinel —
+        # it catches truncate-then-append and any tail rewrite. An interior
+        # rewrite is out of contract (see the class docstring); the snapshot
+        # bounds its blast radius to staleness.
+        if n < indexed or (indexed and patterns[indexed - 1] is not self._entries[-1]):
+            # Cleared in place, not rebound: callers hold ``entries`` across a
+            # ``candidates()`` call, which refreshes.
+            self._entries.clear()
             self._by_anchor.clear()
-            self._indexed = 0
+            indexed = 0
+        entries = self._entries
         by_anchor = self._by_anchor
-        for i in range(self._indexed, n):
-            by_anchor.setdefault(self._patterns[i][0], []).append(i)
-        self._indexed = n
+        for i in range(indexed, n):
+            entry = patterns[i]
+            entries.append(entry)
+            by_anchor.setdefault(entry[0], []).append(i)
 
     def candidates(self, target: Path) -> list[int]:
         """Indices of the patterns that can match *target*, in original order.
@@ -1460,7 +1493,9 @@ def _is_ignored(
         # rediscovered the same fact one raised ValueError at a time.
         target_parts = target.parts
         n_target = len(target_parts)
-        for anchor, pattern in (patterns[i] for i in index.candidates(target)):
+        candidates = index.candidates(target)  # refreshes the index first
+        entries = index.entries
+        for anchor, pattern in (entries[i] for i in candidates):
             negated = pattern.startswith("!")
             raw = pattern[1:] if negated else pattern
             directory_only = raw.endswith("/")
