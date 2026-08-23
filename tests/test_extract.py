@@ -3614,7 +3614,7 @@ def test_extract_warns_when_sql_grammar_missing(tmp_path, capsys, monkeypatch):
     # #1745: .sql HAS a dispatch entry, so the #1689 warning can't fire, and
     # extract_sql returns an "error" result when tree-sitter-sql is absent, so
     # the #1666 warning skips it too. The files must not vanish silently.
-    # Since 0.9.49 the grammar is a core dependency, so absence means a broken
+    # The grammar is a core dependency, so absence means a broken
     # install: the warning must name the direct repair, not a [sql] extra.
     # The dev environment now ships the grammar, so simulate genuine absence
     # by failing the import AND blanking find_spec for this one module.
@@ -3649,7 +3649,7 @@ def test_extract_warns_when_sql_grammar_missing(tmp_path, capsys, monkeypatch):
 
 def test_extract_failed_sources_empty_when_sql_installed(tmp_path):
     """#2543: successful extracts do not appear in failed_sources."""
-    import tree_sitter_sql  # noqa: F401 — core dep since 0.9.49; absence must FAIL, not skip
+    import tree_sitter_sql  # noqa: F401 — core dependency; absence must FAIL, not skip
     s = tmp_path / "schema.sql"; s.write_text("CREATE TABLE users (id INT);\n")
     py = tmp_path / "main.py"; py.write_text("def main():\n    return 1\n")
     result = extract([s, py], cache_root=tmp_path)
@@ -3657,7 +3657,7 @@ def test_extract_failed_sources_empty_when_sql_installed(tmp_path):
 
 
 def test_extract_no_missing_dep_warning_when_sql_installed(tmp_path, capsys):
-    import tree_sitter_sql  # noqa: F401 — core dep since 0.9.49; absence must FAIL, not skip
+    import tree_sitter_sql  # noqa: F401 — core dependency; absence must FAIL, not skip
     s = tmp_path / "schema.sql"; s.write_text("CREATE TABLE users (id INT);\n")
     extract([s], cache_root=tmp_path)
     err = capsys.readouterr().err
@@ -3671,7 +3671,7 @@ def test_extract_sql_reports_load_failure_not_missing(tmp_path, monkeypatch):
     # `pip install` — but surface the real load exception instead.
     import builtins
     from graphify.extractors.sql import extract_sql
-    import tree_sitter_sql  # noqa: F401 — core dep since 0.9.49; absence must FAIL, not skip  # find_spec must see it as installed
+    import tree_sitter_sql  # noqa: F401 — core dependency; absence must FAIL, not skip  # find_spec must see it as installed
 
     _orig_import = builtins.__import__
 
@@ -3692,7 +3692,7 @@ def test_extract_warns_sql_grammar_failed_to_load(tmp_path, capsys, monkeypatch)
     # grammar with the real cause and WITHOUT the misleading "install the extra"
     # hint, so the files are neither silently dropped nor sent to a no-op fix.
     import builtins
-    import tree_sitter_sql  # noqa: F401 — core dep since 0.9.49; absence must FAIL, not skip
+    import tree_sitter_sql  # noqa: F401 — core dependency; absence must FAIL, not skip
 
     _orig_import = builtins.__import__
 

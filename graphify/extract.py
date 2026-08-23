@@ -5073,8 +5073,8 @@ _DISPATCH: dict[str, Any] = {
 # rather than falling back like Pascal does. Used by the #1745 warning in
 # extract() to tell the user which extra restores the language.
 _EXTRA_FOR_EXTENSION = {
-    # .sql is deliberately absent: tree-sitter-sql became a core dependency in
-    # 0.9.49, so a missing grammar means a broken install, not a missing extra
+    # .sql is deliberately absent: tree-sitter-sql is a core dependency, so a
+    # missing grammar means a broken install, not a missing extra
     # — the extractor's own error names the direct pip install that repairs it.
     ".tf": "terraform",
     ".tfvars": "terraform",

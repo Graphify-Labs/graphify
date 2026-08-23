@@ -2,10 +2,6 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
-## 0.9.49 (unreleased)
-
-- Feature: SQL schema extraction now works in every default install — `tree-sitter-sql` moved from the optional `[sql]` extra into the core dependencies (it ships prebuilt wheels for every supported platform, so the install stays toolchain-free). Previously a plain `uv tool install graphifyy` / `pipx install graphifyy` silently contributed nothing for `.sql` files until the user found the extra or ran `pipx inject`. The `sql` extra remains as a harmless alias so existing install scripts keep resolving, and the missing-grammar error now says the install is incomplete instead of pointing at an extra. Existing installs pick this up with the normal `uv tool upgrade graphifyy` / `pipx upgrade graphifyy`.
-
 ## 0.9.48 (2026-08-20)
 
 - Fix: a control character in a node label or id no longer aborts the whole export; the GraphML and Obsidian exporters scrub only the characters those formats forbid (tab, newline, and non-ASCII letters are preserved), and `graph.json` and its byte-identity round-trip are untouched (#2897, thanks @abhay-codes07).

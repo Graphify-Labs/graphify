@@ -1,4 +1,4 @@
-"""SQL parsing is a core capability, not an optional extra (0.9.49).
+"""SQL parsing is a core capability, not an optional extra.
 
 tree-sitter-sql used to live behind the [sql] extra, so a default
 `uv tool install graphifyy` / `pipx install graphifyy` silently skipped every

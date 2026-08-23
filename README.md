@@ -271,7 +271,7 @@ Codex users also need `multi_agent = true` under `[features]` in `~/.codex/confi
 | `chinese` | Chinese query segmentation (jieba) | `uv tool install "graphifyy[chinese]"` |
 | `all` | Everything above | `uv tool install "graphifyy[all]"` |
 
-> **SQL is no longer an extra.** Since 0.9.49, `.sql` schema extraction is included in every default install (`tree-sitter-sql` is a core dependency). If you previously installed the `sql` extra or ran `pipx inject graphifyy tree-sitter-sql`, the normal upgrade (`uv tool upgrade graphifyy` or `pipx upgrade graphifyy`) is all you need — the `sql` extra remains as a harmless alias for older install scripts.
+> **SQL is no longer an extra.** `.sql` schema extraction is included in every default install (`tree-sitter-sql` is a core dependency). If you previously installed the `sql` extra or ran `pipx inject graphifyy tree-sitter-sql`, the normal upgrade (`uv tool upgrade graphifyy` or `pipx upgrade graphifyy`) is all you need — the `sql` extra remains as a harmless alias for older install scripts.
 
 </details>
 

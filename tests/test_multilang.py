@@ -451,7 +451,7 @@ def test_cache_miss_after_file_change(tmp_path):
 # ── SQL ───────────────────────────────────────────────────────────────────────
 
 def _extract_sql_required(fixture: str = "sample.sql"):
-    import tree_sitter_sql  # noqa: F401 — core dep since 0.9.49; absence must FAIL, not skip
+    import tree_sitter_sql  # noqa: F401 — core dependency; absence must FAIL, not skip
     return extract_sql(FIXTURES / fixture)
 
 
@@ -509,7 +509,7 @@ def test_sql_cte_is_not_read_as_a_table():
 
 def test_sql_column_list_cte_is_not_read_as_a_table(tmp_path):
     """#2577: `WITH levels(a, b) AS (...)` — the name precedes a column list."""
-    import tree_sitter_sql  # noqa: F401 — core dep since 0.9.49; absence must FAIL, not skip
+    import tree_sitter_sql  # noqa: F401 — core dependency; absence must FAIL, not skip
     p = tmp_path / "schema.sql"
     p.write_text(
         "CREATE TABLE users (id INT, role TEXT);\n"
@@ -527,7 +527,7 @@ def test_sql_cte_shadows_same_named_table_within_its_statement(tmp_path):
     """#2577: inside the declaring statement the CTE shadows a real same-named
     table (SQL scoping), so v1's FROM binds to the CTE and emits nothing; v2 has
     no CTE in scope and reads the real table. Exactly one deterministic edge."""
-    import tree_sitter_sql  # noqa: F401 — core dep since 0.9.49; absence must FAIL, not skip
+    import tree_sitter_sql  # noqa: F401 — core dependency; absence must FAIL, not skip
     p = tmp_path / "schema.sql"
     p.write_text(
         "CREATE TABLE levels (role TEXT);\n"
@@ -546,7 +546,7 @@ def test_sql_subquery_cte_does_not_suppress_outer_real_table(tmp_path):
     """#2577 refinement: a WITH inside a subquery is scoped to that subquery
     only. A statement-wide pre-collect would also swallow the OUTER reference
     to the real `t2`, dropping a true edge — per-subtree scoping keeps it."""
-    import tree_sitter_sql  # noqa: F401 — core dep since 0.9.49; absence must FAIL, not skip
+    import tree_sitter_sql  # noqa: F401 — core dependency; absence must FAIL, not skip
     p = tmp_path / "schema.sql"
     p.write_text(
         "CREATE TABLE t2 (id INT);\n"
@@ -567,7 +567,7 @@ def test_sql_cte_never_binds_to_cross_language_symbol(tmp_path):
     so _rewire_unique_stub_nodes bound it to a same-named symbol from ANOTHER
     language (schema_v_roles -> ui_levels). With the CTE excluded, no reads_from
     edge may target a TypeScript node."""
-    import tree_sitter_sql  # noqa: F401 — core dep since 0.9.49; absence must FAIL, not skip
+    import tree_sitter_sql  # noqa: F401 — core dependency; absence must FAIL, not skip
     sql = tmp_path / "schema.sql"
     sql.write_text(
         "CREATE TABLE users (id INT, role TEXT);\n"
@@ -594,7 +594,7 @@ def test_sql_cross_file_fk_resolves_and_never_leaks_scan_path(tmp_path):
     minted a node-less id under the referencing file's own stem, which with
     absolute inputs leaked the machine path AND could never match the m1
     definition, so prisma-style cross-migration FKs dangled."""
-    import tree_sitter_sql  # noqa: F401 — core dep since 0.9.49; absence must FAIL, not skip
+    import tree_sitter_sql  # noqa: F401 — core dependency; absence must FAIL, not skip
     from graphify.ids import make_id
 
     m1 = tmp_path / "prisma" / "migrations" / "m1"
