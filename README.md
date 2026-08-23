@@ -205,6 +205,8 @@ for example `graphify claude install --project` or `graphify codex install --pro
 
 > **Strict mode (Claude Code):** `graphify install --project --strict` makes the assistant actually use the graph. The default install *nudges* it to run `graphify query` before reading files; strict mode *blocks* the first raw source read of a session and redirects it to the graph, then reverts to the nudge (so it fires at most once per session and never gets stuck). Toggle at runtime with `GRAPHIFY_HOOK_STRICT=1`/`0`; the default install is unchanged (soft nudge).
 
+> **Nudge frequency:** the soft nudge fires at most once per session for reads and once for searches — the assistant only needs telling that a graph exists, and repeating it on every later call just spends its context window. Set `GRAPHIFY_HOOK_NUDGE_ONCE=0` to get the old behaviour (nudge on every matching call).
+
 <details>
 <summary><b>Pick your platform</b> (20+ assistants, click to expand)</summary>
 

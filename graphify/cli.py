@@ -707,35 +707,71 @@ def _query_stamp_fresh() -> bool:
         return False
 
 
-def _mark_session_denied(session_id: str) -> bool:
-    """Atomically claim a one-time strict block for this session. Returns True only
-    on the FIRST call for a given session id (O_EXCL create wins once); every later
-    call — or any error — returns False, so a session is blocked at most once and an
-    agent can never be stranded. Best-effort GC of markers older than 24h."""
+def _claim_session_marker(session_id: str, suffix: str, on_error: bool) -> bool:
+    """Atomically claim a once-per-session marker file under the graph's cache dir.
+
+    Returns True only on the FIRST claim of a given (session id, suffix) pair —
+    the O_EXCL create wins exactly once — and False once it is already claimed.
+    When the claim cannot be made at all (no usable session id, or a filesystem
+    error) there is no state to key off, so *on_error* is returned and each caller
+    picks the fail direction that keeps its own behaviour safe. Best-effort GC of
+    markers older than 24h."""
     from graphify.paths import out_path
     sid = re.sub(r"[^A-Za-z0-9_-]", "_", str(session_id))[:64]
     if not sid:
-        return False
+        return on_error
+    # Preparing the directory is kept out of the claim's try block on purpose: an
+    # unusable cache path can itself raise FileExistsError, which must not be read
+    # as "already claimed".
     try:
         d = out_path("cache", "hook_sessions")
         d.mkdir(parents=True, exist_ok=True)
-        fd = os.open(str(d / f"{sid}.denied"), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-        os.close(fd)
-        try:
-            cutoff = time.time() - 86400
-            for entry in os.scandir(d):
-                try:
-                    if entry.stat().st_mtime < cutoff:
-                        os.unlink(entry.path)
-                except OSError:
-                    pass
-        except OSError:
-            pass
-        return True
+        marker = str(d / f"{sid}.{suffix}")
+    except Exception:
+        return on_error
+    try:
+        os.close(os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644))
     except FileExistsError:
         return False
     except Exception:
-        return False
+        return on_error
+    try:
+        cutoff = time.time() - 86400
+        for entry in os.scandir(d):
+            try:
+                if entry.stat().st_mtime < cutoff:
+                    os.unlink(entry.path)
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return True
+
+
+def _mark_session_denied(session_id: str) -> bool:
+    """Atomically claim a one-time strict block for this session. Returns True only
+    on the FIRST call for a given session id; every later call — or any error —
+    returns False, so a session is blocked at most once and an agent can never be
+    stranded."""
+    return _claim_session_marker(session_id, "denied", on_error=False)
+
+
+def _nudge_once(session_id: str, kind: str) -> bool:
+    """Whether the *kind* nudge should still be emitted for this session (#2984).
+
+    The nudge is orientation, not information: once an agent has been told the
+    graph exists it has either used it or decided not to, and repeating the same
+    line on every later matching call only spends its context window. So emit on
+    the first in-scope call per session per kind and stay quiet afterwards.
+
+    An untrackable session (a host that sends no session id, or an unwritable
+    cache) keeps the historic always-emit behaviour rather than going silent —
+    never nudging is the worse failure. ``GRAPHIFY_HOOK_NUDGE_ONCE=0`` restores
+    the unthrottled behaviour outright."""
+    v = os.environ.get("GRAPHIFY_HOOK_NUDGE_ONCE", "").strip().lower()
+    if v in ("0", "false", "no", "off"):
+        return True
+    return _claim_session_marker(session_id, f"{kind}.nudged", on_error=True)
 
 
 _SEARCH_COMMANDS = frozenset({
@@ -828,7 +864,10 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
     nudge-only: a compound shell command has no single parseable target and blocking
     file listing would strand navigation. #1840: reads of out-of-project files are
     ignored, and a graph that is stale for the target file softens to a non-mandatory
-    nudge instead of blocking or demanding.
+    nudge instead of blocking or demanding. #2984: an in-scope nudge is emitted at
+    most once per session per kind (`GRAPHIFY_HOOK_NUDGE_ONCE=0` to disable), since
+    repeating it on every later call spends the agent's context without telling it
+    anything it was not already told.
     """
     from graphify.paths import out_path, GRAPHIFY_OUT_NAME
     # Gemini's BeforeTool hook takes no stdin and must ALWAYS return a decision so
@@ -866,7 +905,8 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
             # grep. Nudge-only, even in strict mode — see the docstring.
             is_grep_tool = not cmd_str and bool(t.get("pattern"))
             is_bash_search = bool(cmd_str) and _bash_invokes_search(cmd_str)
-            if (is_grep_tool or is_bash_search) and out_path("graph.json").is_file():
+            if (is_grep_tool or is_bash_search) and out_path("graph.json").is_file() \
+                    and _nudge_once(str(d.get("session_id") or ""), "search"):
                 sys.stdout.write(_SEARCH_NUDGE)
         elif kind == "read":
             vals = [str(t.get("file_path") or ""), str(t.get("pattern") or ""), str(t.get("path") or "")]
@@ -926,10 +966,13 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
             except Exception:
                 pass
             if stale:
-                sys.stdout.write(_READ_NUDGE_STALE)
+                if _nudge_once(str(d.get("session_id") or ""), "read"):
+                    sys.stdout.write(_READ_NUDGE_STALE)
                 return
             # Strict block: Read tool only, first time per session, not recently
-            # oriented, and the file is demonstrably indexed.
+            # oriented, and the file is demonstrably indexed. The deny carries its
+            # own once-per-session claim and is not part of the nudge budget, so a
+            # denied read still leaves the session its one soft nudge.
             tool_name = d.get("tool_name")
             if _hook_strict_enabled(strict) and tool_name in (None, "Read") \
                     and not _query_stamp_fresh() \
@@ -937,7 +980,8 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
                     and _mark_session_denied(str(d.get("session_id") or "")):
                 sys.stdout.write(_READ_DENY)
                 return
-            sys.stdout.write(_READ_NUDGE)
+            if _nudge_once(str(d.get("session_id") or ""), "read"):
+                sys.stdout.write(_READ_NUDGE)
     except Exception:
         pass
 
