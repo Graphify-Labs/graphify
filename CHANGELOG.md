@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## 0.9.50 (unreleased)
+
+- Fix: `graphify prs` no longer reports every `gh` failure as an authentication problem, and no longer fails outright on a busy repo. A 50-PR page with `statusCheckRollup` exceeds GitHub's GraphQL timeout once a repo has a few hundred open PRs, so the fetch now steps down through smaller pages (20, 10, 5) on a server timeout and says on stderr which page it settled for; every other failure — missing `gh`, bad credentials, unknown repo, a secondary rate limit — is reported at once with what `gh` actually printed. New `graphify prs --limit <n>` sets the page size, and an undetected default branch is flagged instead of being silently assumed to be `main` — including under `--repo`, where the local clone's branch was being used for a repo it knows nothing about (#2850, thanks @andraghetti).
+
 ## 0.9.49 (2026-08-24)
 
 - Feature: `graphify merge-graphs` now links a type declaration that two repos share — same fully-qualified namespace and name, from different repos — with a `same_type_as` edge, so a shared contract type is navigable across the repo boundary; two unrelated types that merely share a short name are not linked (#3007, thanks @durmazoguzhan).

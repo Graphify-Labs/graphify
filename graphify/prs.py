@@ -11,6 +11,8 @@ Usage:
   graphify prs --worktrees       # show worktree → branch → PR mapping
   graphify prs --conflicts       # PRs sharing graph communities (merge-order risk)
   graphify prs --base <branch>   # filter to PRs targeting this base (default: v8)
+  graphify prs --limit <n>       # PRs to request per page (default: 50; lower it
+                                 # if GitHub times out on a very busy repo)
 """
 
 from __future__ import annotations
@@ -138,19 +140,42 @@ def _ci_icon(status: str) -> str:
 
 # ── GitHub data fetching ──────────────────────────────────────────────────────
 
+_GH_TIMEOUT = 30
+
+# Why _gh's last call returned None. A non-zero exit, a timeout, unparseable
+# output and a missing binary all collapse to the same None, which is how an
+# HTTP 504 came to be reported as "run gh auth login" (#2850).
+_LAST_GH_ERROR = ""
+
+
+def last_gh_error() -> str:
+    """The error behind the last _gh() call that returned None ("" if it succeeded)."""
+    return _LAST_GH_ERROR
+
+
 def _gh(*args: str) -> list | dict | None:
+    global _LAST_GH_ERROR
     try:
         result = subprocess.run(
             ["gh", *args],
             # Decode gh's output as UTF-8, not the Windows cp1252 locale codec: gh
             # emits UTF-8 JSON with non-Latin1 titles/logins (emoji, فارسی), and the
             # default text=True decode crashes on those (#1505 fixed the same in llm).
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=_GH_TIMEOUT
         )
         if result.returncode != 0:
+            _LAST_GH_ERROR = (result.stderr or "").strip() or f"gh exited {result.returncode}"
             return None
+        _LAST_GH_ERROR = ""
         return json.loads(result.stdout)
-    except (subprocess.TimeoutExpired, json.JSONDecodeError, FileNotFoundError):
+    except subprocess.TimeoutExpired:
+        _LAST_GH_ERROR = f"gh timed out after {_GH_TIMEOUT}s: gh {' '.join(args)}"
+        return None
+    except json.JSONDecodeError as exc:
+        _LAST_GH_ERROR = f"gh returned output that is not JSON: {exc}"
+        return None
+    except FileNotFoundError:
+        _LAST_GH_ERROR = "gh CLI not found on PATH. Install it, then run: gh auth login"
         return None
 
 
@@ -163,18 +188,24 @@ def _detect_default_branch(repo: str | None = None) -> str:
     data = _gh(*args)
     if data and data.get("defaultBranchRef", {}).get("name"):
         return data["defaultBranchRef"]["name"]
-    # Fall back to git symbolic-ref for the current repo
-    try:
-        result = subprocess.run(
-            ["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5
-        )
-        if result.returncode == 0:
-            # refs/remotes/origin/main → main
-            ref = result.stdout.strip()
-            return ref.split("/")[-1] if ref else "main"
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        pass
+    # Fall back to git symbolic-ref, but only for the current repo: --repo names
+    # a different one, whose default branch the local clone does not know.
+    if not repo:
+        try:
+            result = subprocess.run(
+                ["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5
+            )
+            ref = result.stdout.strip() if result.returncode == 0 else ""
+            if ref:
+                return ref.split("/")[-1]  # refs/remotes/origin/main → main
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+    # Nothing answered, so "main" is a guess — and a wrong guess silently labels
+    # every PR WRONG-BASE. Say so rather than presenting it as detected.
+    target = f" for {repo}" if repo else ""
+    print(dim(f"  Could not detect the default branch{target}; assuming 'main'. "
+              "Pass --base to be sure."), file=sys.stderr)
     return "main"
 
 
@@ -195,19 +226,64 @@ def _parse_ci(rollup: list) -> str:
     return "NONE"
 
 
-def fetch_prs(repo: str | None = None, base: str | None = None, limit: int = 50) -> list[PRInfo]:
-    resolved_base = base or _detect_default_branch(repo)
-    args = [
-        "pr", "list", "--state", "open", "--limit", str(limit),
-        "--json", "number,title,headRefName,baseRefName,author,isDraft,"
-                  "reviewDecision,statusCheckRollup,updatedAt",
-    ]
-    if repo:
-        args += ["--repo", repo]
+# statusCheckRollup is resolved per PR server side, so on a repo with a few
+# hundred open PRs a 50-PR page exceeds GitHub's GraphQL timeout while a page of
+# 20 comes back in about a second — hence the step-down (#2850).
+_DEFAULT_PR_LIMIT = 50
+_PR_PAGE_FALLBACKS = (20, 10, 5)
 
-    raw = _gh(*args)
+# Failures a smaller page can plausibly fix: GitHub gave up on this query.
+# Everything else fails on the first call — including a secondary rate limit,
+# which a smaller page cannot fix and an immediate retry only aggravates.
+_GH_RETRYABLE_MARKERS = ("502", "503", "504", "gateway",
+                         "timed out", "timeout", "temporarily unavailable")
+
+
+def _is_retryable_gh_error(err: str) -> bool:
+    low = err.lower()
+    return any(marker in low for marker in _GH_RETRYABLE_MARKERS)
+
+
+def _gh_error_summary(err: str, width: int = 120) -> str:
+    """First line of a gh error, short enough to sit inside a one-line notice."""
+    first = err.splitlines()[0].strip() if err else ""
+    if not first:
+        return "no detail"
+    return first if len(first) <= width else first[: width - 1] + "…"
+
+
+def fetch_prs(repo: str | None = None, base: str | None = None, limit: int = _DEFAULT_PR_LIMIT) -> list[PRInfo]:
+    resolved_base = base or _detect_default_branch(repo)
+
+    def _list(page_size: int) -> list | dict | None:
+        args = [
+            "pr", "list", "--state", "open", "--limit", str(page_size),
+            "--json", "number,title,headRefName,baseRefName,author,isDraft,"
+                      "reviewDecision,statusCheckRollup,updatedAt",
+        ]
+        if repo:
+            args += ["--repo", repo]
+        return _gh(*args)
+
+    page_sizes = [limit] + [n for n in _PR_PAGE_FALLBACKS if n < limit]
+    raw, err, tried = None, "", []
+    for page_size in page_sizes:
+        tried.append(page_size)
+        raw = _list(page_size)
+        if raw is not None:
+            if page_size != limit:
+                print(dim(f"  gh could not return {limit} PRs ({_gh_error_summary(err)}); "
+                          f"showing {page_size} of them instead. Use --limit to pick a page size."),
+                      file=sys.stderr)
+            break
+        err = last_gh_error()
+        if not _is_retryable_gh_error(err):
+            break
+
     if raw is None:
-        raise RuntimeError("gh CLI not found or not authenticated. Run: gh auth login")
+        detail = err or "gh produced no output"
+        sizes = ", ".join(str(n) for n in tried)
+        raise RuntimeError(f"gh pr list failed (page sizes tried: {sizes}): {detail}")
 
     prs = []
     for item in raw:
@@ -678,6 +754,19 @@ def triage_with_opus(prs: list[PRInfo], base: str) -> None:
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
+def _parse_limit(value: str) -> int:
+    """Parse --limit; reject values gh itself would refuse rather than passing them on."""
+    try:
+        limit = int(value)
+    except ValueError:
+        print(red(f"  Error: --limit expects a number, got {value!r}"), file=sys.stderr)
+        sys.exit(1)
+    if limit < 1:
+        print(red(f"  Error: --limit must be at least 1, got {limit}"), file=sys.stderr)
+        sys.exit(1)
+    return limit
+
+
 def cmd_prs(argv: list[str]) -> None:
     base: str | None = None  # auto-detected from repo if not given
     repo: str | None = None
@@ -686,6 +775,7 @@ def cmd_prs(argv: list[str]) -> None:
     do_conflicts = False
     show_wrong_base = False
     pr_number: int | None = None
+    limit = _DEFAULT_PR_LIMIT
     graph_path = Path(_default_graph_json())
 
     i = 0
@@ -705,6 +795,10 @@ def cmd_prs(argv: list[str]) -> None:
             base = arg.split("=", 1)[1]
         elif arg in ("--repo", "-R") and i + 1 < len(argv):
             repo = argv[i + 1]; i += 1
+        elif arg in ("--limit", "-n") and i + 1 < len(argv):
+            limit = _parse_limit(argv[i + 1]); i += 1
+        elif arg.startswith("--limit="):
+            limit = _parse_limit(arg.split("=", 1)[1])
         elif arg.startswith("--graph="):
             graph_path = Path(arg.split("=", 1)[1])
         elif arg == "--graph" and i + 1 < len(argv):
@@ -720,7 +814,7 @@ def cmd_prs(argv: list[str]) -> None:
         base = _detect_default_branch(repo)
 
     try:
-        prs = fetch_prs(repo=repo, base=base)
+        prs = fetch_prs(repo=repo, base=base, limit=limit)
     except RuntimeError as e:
         print(red(f"  Error: {e}"), file=sys.stderr)
         sys.exit(1)
