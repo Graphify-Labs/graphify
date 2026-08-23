@@ -2,10 +2,6 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
-## 0.9.49 (unreleased)
-
-- Fix: T-SQL stored procedures and functions are no longer silently dropped from the graph — the ERROR-node recovery now accepts bracket-delimited names (`CREATE PROCEDURE [dbo].[usp_Load]`) and T-SQL's `CREATE OR ALTER`, both of which previously recovered nothing (the `AS BEGIN...END` body idiom never parses structurally, so recovery was these objects' only path into the graph). The two recovery sites now share one pattern, fixing a related defect where a mixed-delimiter name (`dbo.[usp_Mixed]`) produced a second phantom node named after the schema. The `PROC` shorthand is accepted alongside `PROCEDURE`, and the whole-file recovery scan now masks SQL comments so commented-out DDL in a file with an unrelated parse error cannot fabricate routine nodes. Recovered routines are name-only nodes (no body `reads_from` edges), matching the existing PL/pgSQL recovery.
-
 ## 0.9.48 (2026-08-20)
 
 - Fix: a control character in a node label or id no longer aborts the whole export; the GraphML and Obsidian exporters scrub only the characters those formats forbid (tab, newline, and non-ASCII letters are preserved), and `graph.json` and its byte-identity round-trip are untouched (#2897, thanks @abhay-codes07).
