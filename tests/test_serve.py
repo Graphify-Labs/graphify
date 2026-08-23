@@ -1711,3 +1711,93 @@ def test_underscore_query_does_not_let_a_single_token_outrank_the_real_match():
     scored = _score_nodes(G, _query_terms("user_service_client"))
     assert scored, "the multi-token query must match the full-label node"
     assert scored[0][1] == "real", f"a single-token node out-ranked the real match: {scored}"
+
+
+# --- rationale prefix scaling tests (#2962) ---
+
+def test_rationale_generic_prefix_does_not_dominate_code():
+    """Docstring action verbs ('Computes ...') must not out-seed production code (#2962)."""
+    G = nx.Graph()
+    G.add_node("calc", label="calculate_roas", file_type="code", source_file="analytics/roas.py")
+    G.add_node("doc", label="Computes Return On Ad Spend (ROAS) from spend and revenue.", file_type="rationale", source_file="analytics/roas.py")
+    G.add_node("rep", label="roas_report", file_type="code", source_file="analytics/report.py")
+    G.add_edge("doc", "calc", relation="rationale_for")
+    G.add_edge("rep", "calc", relation="calls")
+
+    qs = _score_query(G, _query_terms("what computes ROAS"), collect_per_term_seeds=True)
+    seeds = _pick_seeds(qs.ranked, G=G, best_seed_by_term=qs.best_seed_by_term)
+
+    # Code symbol roas_report should beat the docstring for top seed position
+    assert qs.ranked[0][1] == "rep", f"code node must outrank rationale node; got top={qs.ranked[0][1]}"
+    assert seeds[0] == "rep", f"code node must be the primary seed; got seeds={seeds}"
+
+
+def test_rationale_multiword_joined_prefix_is_scaled():
+    """Multi-word query prefixing a rationale label must scale the joined prefix tier (#2962)."""
+    G = nx.Graph()
+    G.add_node("doc", label="Computes ROAS metrics for campaign performance and attribution.", file_type="rationale", source_file="analytics/roas.py")
+    G.add_node("cls", label="RoasCalculator", file_type="code", source_file="analytics/calculator.py")
+    G.add_node("fn", label="calculate_roas_metrics", file_type="code", source_file="analytics/roas.py")
+
+    qs = _score_query(G, _query_terms("computes roas"), collect_per_term_seeds=True)
+    seeds = _pick_seeds(qs.ranked, G=G, best_seed_by_term=qs.best_seed_by_term)
+
+    # RoasCalculator matching roas as code prefix must outrank the rationale joined-prefix
+    assert qs.ranked[0][1] == "cls", f"code node RoasCalculator must outrank doc; got {qs.ranked[0][1]}"
+    assert seeds[0] == "cls"
+
+
+def test_rationale_singleton_recovered_by_per_term_guarantee():
+    """When a rationale node is the only match for a query term, #1445 still seeds it (#2962)."""
+    G = nx.Graph()
+    G.add_node("noise", label="unrelated_service", file_type="code", source_file="src/noise.py")
+    G.add_node("doc", label="Widgets handler for UI components.", file_type="rationale", source_file="src/widget.py")
+
+    qs = _score_query(G, _query_terms("unrelated widget"), collect_per_term_seeds=True)
+    seeds = _pick_seeds(qs.ranked, G=G, best_seed_by_term=qs.best_seed_by_term)
+
+    assert "noise" in seeds
+    assert "doc" in seeds, f"rationale node must still be recovered by #1445; got seeds={seeds}"
+
+
+def test_code_prefix_scoring_unchanged():
+    """Code identifier prefix scoring remains at the full 100x bonus (#2962)."""
+    G = nx.Graph()
+    G.add_node("u", label="user", file_type="code", source_file="models/user.py")
+    G.add_node("us", label="user_service", file_type="code", source_file="services/user.py")
+    G.add_node("other", label="account", file_type="code", source_file="models/account.py")
+
+    scored = _score_nodes(G, ["user"])
+    by_id = {nid: s for s, nid in scored}
+    w = _compute_idf(G, ["user"])["user"]
+
+    # Exact match on 'user' (10000 + 1000) * w vs prefix on 'user_service' (1000 + 100) * w
+    assert scored[0][1] == "u"
+    assert scored[1][1] == "us"
+    assert by_id["us"] > 100.0 * w, "code prefix bonus must remain at full magnitude"
+
+
+def test_exact_rationale_search_remains_strong():
+    """Exact/full rationale query matches strongly via joined exact tier (#2962)."""
+    G = nx.Graph()
+    G.add_node("doc", label="Explains why authentication was redesigned to use JWT tokens.", file_type="rationale", source_file="auth/design.md")
+    G.add_node("code", label="auth_service", file_type="code", source_file="auth/service.py")
+
+    query = "Explains why authentication was redesigned to use JWT tokens."
+    qs = _score_query(G, _query_terms(query), collect_per_term_seeds=True)
+    assert qs.ranked[0][1] == "doc"
+    seeds = _pick_seeds(qs.ranked, G=G, best_seed_by_term=qs.best_seed_by_term)
+    assert seeds[0] == "doc"
+
+
+def test_rationale_substring_scoring_unchanged():
+    """Rationale substring match on content terms retains unscaled substring scoring (#2962)."""
+    G = nx.Graph()
+    G.add_node("doc", label="Explains why PostgreSQL is used for persistence.", file_type="rationale", source_file="db/postgres.md")
+    G.add_node("other", label="unrelated_service", file_type="code", source_file="other.py")
+
+    # 'postgres' matches 'doc' as an internal substring (not a prefix)
+    qs = _score_query(G, _query_terms("why use postgres"), collect_per_term_seeds=True)
+    assert qs.ranked[0][1] == "doc"
+    seeds = _pick_seeds(qs.ranked, G=G, best_seed_by_term=qs.best_seed_by_term)
+    assert "doc" in seeds
