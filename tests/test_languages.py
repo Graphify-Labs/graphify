@@ -175,6 +175,32 @@ def test_c_call_edges_have_call_context():
     assert all(e.get("context") == "call" for e in call_edges)
 
 
+def test_c_struct_and_fields_are_extracted(tmp_path):
+    """C structs are the primary data-modeling construct.
+
+    `class_types` was empty, so every struct (and its fields) was dropped,
+    erasing the C type layer -- while C++, using the same generic extractor,
+    captured them. Mirror the C++ struct handling.
+    """
+    src = tmp_path / "shapes.c"
+    src.write_text(
+        "struct Point { int x; int y; };\n"
+        "struct Rect { struct Point origin; int w; };\n"
+        "int area(struct Rect r) { return r.w; }\n"
+    )
+    r = extract_c(src)
+    assert "error" not in r
+    labels = _labels(r)
+    assert "Point" in labels
+    assert "Rect" in labels
+    # struct fields become `defines`/field edges, same as C++
+    assert ("Point", "x") in _edge_labels(r, "defines", "field")
+    assert ("Point", "y") in _edge_labels(r, "defines", "field")
+    assert ("Rect", "w") in _edge_labels(r, "defines", "field")
+    # a struct-typed field/parameter still references the struct type
+    assert ("Rect", "Point") in _edge_labels(r, "references", "field")
+
+
 # ── C++ ───────────────────────────────────────────────────────────────────────
 
 def test_cpp_no_error():
