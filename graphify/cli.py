@@ -767,7 +767,9 @@ def _nudge_once(session_id: str, kind: str) -> bool:
     An untrackable session (a host that sends no session id, or an unwritable
     cache) keeps the historic always-emit behaviour rather than going silent —
     never nudging is the worse failure. ``GRAPHIFY_HOOK_NUDGE_ONCE=0`` restores
-    the unthrottled behaviour outright."""
+    the unthrottled behaviour outright. Markers are GC'd after 24h, so a session
+    still alive past that gets one more nudge — which is the right side to err on.
+    """
     v = os.environ.get("GRAPHIFY_HOOK_NUDGE_ONCE", "").strip().lower()
     if v in ("0", "false", "no", "off"):
         return True
