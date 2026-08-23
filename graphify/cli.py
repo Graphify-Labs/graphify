@@ -849,6 +849,22 @@ def _bash_invokes_search(cmd_str: str) -> bool:
     return False
 
 
+def _strict_denies(d: dict, fp: str, root: "Path", strict: bool) -> bool:
+    """Whether this read earns the strict one-per-session block.
+
+    Every term is a precondition of the next and the last one *claims* the
+    session marker, so the short-circuit order is load-bearing: a read that is
+    not strict-eligible must never reach the claim and burn the session's single
+    block. Kept as one predicate so that ordering lives in one place."""
+    return bool(
+        _hook_strict_enabled(strict)
+        and d.get("tool_name") in (None, "Read")
+        and not _query_stamp_fresh()
+        and _target_is_indexed(fp, root)
+        and _mark_session_denied(str(d.get("session_id") or ""))
+    )
+
+
 def _run_hook_guard(kind: str, strict: bool = False) -> None:
     """Shell-agnostic PreToolUse guard (#522).
 
@@ -972,14 +988,11 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
                     sys.stdout.write(_READ_NUDGE_STALE)
                 return
             # Strict block: Read tool only, first time per session, not recently
-            # oriented, and the file is demonstrably indexed. The deny carries its
-            # own once-per-session claim and is not part of the nudge budget, so a
-            # denied read still leaves the session its one soft nudge.
-            tool_name = d.get("tool_name")
-            if _hook_strict_enabled(strict) and tool_name in (None, "Read") \
-                    and not _query_stamp_fresh() \
-                    and _target_is_indexed(fp, root) \
-                    and _mark_session_denied(str(d.get("session_id") or "")):
+            # oriented, and the file is demonstrably indexed (see _strict_denies).
+            # The deny carries its own once-per-session claim and is not part of
+            # the nudge budget, so a denied read still leaves the session its one
+            # soft nudge.
+            if _strict_denies(d, fp, root, strict):
                 sys.stdout.write(_READ_DENY)
                 return
             if _nudge_once(str(d.get("session_id") or ""), "read"):

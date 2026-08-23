@@ -13,7 +13,17 @@ import json
 import sys
 import time
 
+import pytest
+
 import graphify.cli as cli
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_throttle_env(monkeypatch):
+    """A GRAPHIFY_HOOK_NUDGE_ONCE inherited from the developer's or CI's
+    environment would silently turn the default-behaviour cases into kill-switch
+    cases. Tests that want the switch set it themselves."""
+    monkeypatch.delenv("GRAPHIFY_HOOK_NUDGE_ONCE", raising=False)
 
 
 def _project(tmp_path):
@@ -121,6 +131,31 @@ def test_stale_nudge_spends_the_same_read_budget(tmp_path, monkeypatch):
     first = _invoke("read", _read(f), tmp_path, monkeypatch)
     assert "STALE" in first and "MANDATORY" not in first
     assert _invoke("read", _read(f), tmp_path, monkeypatch) == ""
+
+
+def test_an_ineligible_read_does_not_burn_the_strict_claim(tmp_path, monkeypatch):
+    """_strict_denies claims the session marker in its last term, so the
+    short-circuit order is load-bearing: a read that is not strict-eligible (here,
+    a file the graph does not index) must not spend the session's single block."""
+    f = _project(tmp_path)
+    unindexed = f.parent / "other.py"
+    unindexed.write_text("y = 2\n", encoding="utf-8")
+    time.sleep(0.02)  # keep the graph newer than both files, so neither is stale
+    (tmp_path / "graphify-out" / "graph.json").write_text('{"nodes":[],"links":[]}', encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    def _run(path):
+        class _Stdin:
+            buffer = io.BytesIO(json.dumps(_read(path)).encode())
+        monkeypatch.setattr(sys, "stdin", _Stdin())
+        buf = io.StringIO()
+        monkeypatch.setattr(sys, "stdout", buf)
+        cli._run_hook_guard("read", strict=True)
+        return buf.getvalue()
+
+    assert "MANDATORY" in _run(unindexed)  # nudge, not a deny
+    assert not (tmp_path / "graphify-out" / "cache" / "hook_sessions" / "s1.denied").exists()
+    assert json.loads(_run(f))["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
 def test_the_strict_deny_keeps_its_own_budget(tmp_path, monkeypatch):
