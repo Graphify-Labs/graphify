@@ -188,6 +188,19 @@ def test_query_budget_flag(tmp_path):
     assert r.returncode == 0, r.stderr
 
 
+def test_query_baseline_tokenizer_flag(tmp_path):
+    _make_graph(tmp_path)
+    r = _run(["query", "test", "--tokenizer", "baseline"], tmp_path)
+    assert r.returncode == 0, r.stderr
+
+
+def test_query_unknown_tokenizer_fails(tmp_path):
+    _make_graph(tmp_path)
+    r = _run(["query", "test", "--tokenizer", "unknown"], tmp_path)
+    assert r.returncode != 0
+    assert "Unsupported query tokenizer" in r.stderr
+
+
 def test_query_missing_graph_fails(tmp_path):
     r = _run(["query", "anything"], tmp_path)
     assert r.returncode != 0
