@@ -920,7 +920,23 @@ def _check_shrink(
     Files in ``failed_sources`` never account for lost nodes: extraction did not
     complete, so their disappearance is the silent shrink this guard protects.
     """
-    if force or not existing_data:
+    if force:
+        if existing_data:
+            existing_nodes = existing_data.get("nodes", [])
+            existing_edges = (
+                existing_data.get("links") or existing_data.get("edges") or []
+            )
+            new_nodes = new_data.get("nodes", [])
+            new_edges = new_data.get("links") or new_data.get("edges") or []
+            old_n, old_e = len(existing_nodes), len(existing_edges)
+            new_n, new_e = len(new_nodes), len(new_edges)
+            print(
+                f"[graphify] --force: replacing {old_n} nodes / {old_e} edges "
+                f"with {new_n} / {new_e} ({new_n - old_n:+d} nodes, {new_e - old_e:+d} edges)",
+                file=sys.stderr,
+            )
+        return True
+    if not existing_data:
         return True
     if had_explicit_deletions and rebuilt_sources is None:
         # Legacy callers declare deletions but pass no rebuilt_sources, so the

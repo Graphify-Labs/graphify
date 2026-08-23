@@ -1194,7 +1194,7 @@ def test_check_shrink_blocks_silent_shrink(capsys):
     assert "80 nodes" in captured.err and "100" in captured.err
 
 
-def test_check_shrink_allows_force_override():
+def test_check_shrink_allows_force_override(capsys):
     """force=True bypasses the guard regardless of node delta."""
     ok = _check_shrink(
         force=True,
@@ -1202,6 +1202,21 @@ def test_check_shrink_allows_force_override():
         new_data=_shrink_payload(1),
     )
     assert ok is True
+    assert "--force: replacing" in capsys.readouterr().err
+
+
+def test_check_shrink_force_reports_delta(capsys):
+    """#2833: force=True prints before/after node and edge counts."""
+    existing = _shrink_payload(100)
+    existing["links"] = [{"source": "a", "target": "b"}] * 50
+    new = _shrink_payload(98)
+    new["links"] = [{"source": "a", "target": "b"}] * 48
+    ok = _check_shrink(force=True, existing_data=existing, new_data=new)
+    assert ok is True
+    err = capsys.readouterr().err
+    assert "--force: replacing" in err
+    assert "100" in err and "98" in err
+    assert "50" in err and "48" in err
 
 
 def test_check_shrink_allows_explicit_deletions(capsys):
