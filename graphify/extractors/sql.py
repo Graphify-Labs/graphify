@@ -36,9 +36,23 @@ _ROUTINE_RECOVERY_RX = re.compile(
     re.IGNORECASE,
 )
 
-# Matches SQL line comments (-- ...) and block comments (/* ... */) for
-# _mask_sql_comments. DOTALL so a block comment may span lines.
-_SQL_COMMENT_RX = re.compile(r"--[^\n]*|/\*.*?\*/", re.DOTALL)
+# Matches string/identifier literals (preserved) or comments (blanked) for
+# _mask_sql_comments. Literals are matched first so a comment opener INSIDE a
+# literal ('-- not a comment', [a--b]) is not treated as a comment. Literal
+# patterns are deliberately single-line: this mask only runs on files that
+# already failed to parse, where an unclosed quote is likely, and a multi-line
+# literal match would let one unclosed delimiter swallow real DDL below it —
+# a masked-away routine (false negative) is recoverable by fixing the file, a
+# swallowed one is silent. A comment opener inside a multi-line string
+# therefore still masks to end-of-line, which can only hide a routine, never
+# fabricate one. DOTALL so a block comment may span lines.
+_SQL_COMMENT_OR_LITERAL_RX = re.compile(
+    r"'(?:[^'\n]|'')*'"          # single-quoted string, '' escape (one line)
+    r"|\"[^\"\n]*\""             # double-quoted identifier (one line)
+    r"|\[(?:[^\]\n]|\]\])*\]"   # bracket-delimited identifier, ]] escape
+    r"|(--[^\n]*|/\*.*?\*/)",    # group 1: the comment span to blank
+    re.DOTALL,
+)
 
 
 def _mask_sql_comments(text: str) -> str:
@@ -46,12 +60,19 @@ def _mask_sql_comments(text: str) -> str:
 
     Non-newline characters inside a comment become spaces and newlines are
     kept, so positions and line numbers computed against the masked text are
-    valid against the original. Used by the whole-file routine recovery so
-    commented-out CREATE PROCEDURE/FUNCTION DDL in a file that has an
-    unrelated parse error cannot fabricate a routine node.
+    valid against the original. String and identifier literals are preserved
+    verbatim, so a `--` or `/*` inside one does not start a comment. Used by
+    the whole-file routine recovery so commented-out CREATE PROCEDURE/FUNCTION
+    DDL in a file that has an unrelated parse error cannot fabricate a routine
+    node.
     """
-    return _SQL_COMMENT_RX.sub(
-        lambda m: "".join("\n" if c == "\n" else " " for c in m.group(0)), text
+    return _SQL_COMMENT_OR_LITERAL_RX.sub(
+        lambda m: (
+            "".join("\n" if c == "\n" else " " for c in m.group(0))
+            if m.group(1)
+            else m.group(0)
+        ),
+        text,
     )
 
 
@@ -304,8 +325,11 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
             #
             # Name and keyword shapes accepted here are defined once in
             # _ROUTINE_RECOVERY_RX, shared with the whole-file fallback below —
-            # see the comment on the constant.
-            text = _read(node)
+            # see the comment on the constant. Comments are masked the same
+            # way too: an ERROR blob can swallow commented-out DDL along with
+            # the statements around it, and unmasked text would fabricate a
+            # routine node from it exactly as the whole-file scan once did.
+            text = _mask_sql_comments(_read(node))
             for m in _ROUTINE_RECOVERY_RX.finditer(text):
                 name = m.group(1)
                 m_line = line + text[: m.start()].count("\n")

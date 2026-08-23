@@ -582,6 +582,13 @@ def test_sql_commented_ddl_is_not_fabricated_by_error_recovery(tmp_path):
         "/*\nCREATE OR ALTER PROC dbo.usp_BlockComment AS\nBEGIN SELECT 1; END;\n*/\n"
         "CREATE PROCEDURE [dbo].[usp_Real]\nAS\nBEGIN\n    SELECT 1;\nEND;\n"
         "THIS IS NOT SQL AT ALL %%%;\n"
+        # Sandwiched between broken segments so one ERROR blob's byte span
+        # covers the comment: the walk-time ERROR scan sees it too (the
+        # leading comments above land in proper comment nodes instead, and a
+        # trailing comment falls outside the ERROR span):
+        "%%% BROKEN JUNK\n"
+        "-- CREATE PROC [dbo].[usp_ErrComment] AS BEGIN SELECT 1; END;\n"
+        "%%% MORE BROKEN JUNK\n"
     )
     r = extract_sql(p)
     labels = [n["label"] for n in r["nodes"] if n["label"] != "broken.sql"]
@@ -589,6 +596,54 @@ def test_sql_commented_ddl_is_not_fabricated_by_error_recovery(tmp_path):
     assert not any("Comment" in l for l in labels), (
         f"commented-out DDL fabricated a node: {labels}"
     )
+
+
+def test_sql_comment_openers_inside_string_literals_do_not_hide_ddl(tmp_path):
+    """A `--` or `/*` inside a string literal is data, not a comment opener.
+
+    Both recovery scans mask comments before matching, and a mask that reads
+    `'-- note'` as a line comment blanks to end-of-line — hiding a routine
+    declared after the literal — while a `/*` inside a string blanks
+    everything through the next real `*/`, swallowing whole statements
+    between. Both must recover normally. This is behavior coverage: the
+    grammar's own fb_proc_or_trigger recovery can rescue these shapes even
+    under a literal-blind mask, so the mutation-killing pin for the mask
+    itself is test_mask_sql_comments_preserves_literals_and_blanks_comments.
+    """
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "strings.sql"
+    # The lines carrying the literals start with junk so they cannot parse as
+    # proper statements: literal and routine land in the SAME ERROR blob, and
+    # only the mask decides whether the routine survives. (A literal in a
+    # statement that parses never reaches the masked scans at all.)
+    p.write_text(
+        "%%% INSERT INTO log VALUES ('-- note'); "
+        "CREATE PROCEDURE [dbo].[usp_AfterLineString] AS BEGIN SELECT 1; END;\n"
+        "%%% SELECT 'open /* here' AS x; "
+        "CREATE PROCEDURE [dbo].[usp_AfterBlockString] AS BEGIN SELECT 1; END;\n"
+        "/* a real comment, giving the false opener a closer to reach */\n"
+    )
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"] if n["label"] != "strings.sql"]
+    assert "[dbo].[usp_AfterLineString]()" in labels, labels
+    assert "[dbo].[usp_AfterBlockString]()" in labels, labels
+
+
+def test_mask_sql_comments_preserves_literals_and_blanks_comments():
+    """Unit pin for _mask_sql_comments: comment openers inside string or
+    identifier literals are data; real comments blank to spaces with newlines
+    and offsets preserved."""
+    from graphify.extractors.sql import _mask_sql_comments as mask
+
+    assert mask("select '-- x' from t") == "select '-- x' from t"
+    assert mask("select 'it''s -- ok'") == "select 'it''s -- ok'"
+    assert mask('select "a--b" from t') == 'select "a--b" from t'
+    assert mask("select [a--b] from t") == "select [a--b] from t"
+    assert mask("select 'a /* b' as x") == "select 'a /* b' as x"
+    assert mask("a -- b") == "a     "
+    assert mask("x /* y */ z") == "x         z"
+    masked = mask("a /* m\nl */ b")
+    assert masked == "a     \n     b" and len(masked) == len("a /* m\nl */ b")
 
 
 def test_sql_cte_is_not_read_as_a_table():
