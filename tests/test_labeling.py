@@ -503,6 +503,119 @@ def _two_community_graph(out):
     (out / "graph.json").write_text(json.dumps(graph), encoding="utf-8")
 
 
+@pytest.mark.parametrize(
+    ("extra_args", "force"),
+    [
+        ([], False),
+        (["--force"], True),
+        (["--backend", "--force"], False),
+    ],
+)
+def test_label_force_controls_graph_growth_after_load(
+    tmp_path, monkeypatch, extra_args, force,
+):
+    """#2976: a long label run may observe graph.json grow after loading it."""
+    import graphify.__main__ as cli
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    _two_community_graph(out)
+    graph_path = out / "graph.json"
+    report_path = out / "GRAPH_REPORT.md"
+    labels_path = out / ".graphify_labels.json"
+    analysis_path = out / ".graphify_analysis.json"
+    report_path.write_text("previous report", encoding="utf-8")
+    labels_path.write_text(json.dumps({"0": "Old orders"}), encoding="utf-8")
+    analysis_path.write_text(json.dumps({"previous": True}), encoding="utf-8")
+
+    def grow_graph_during_labeling(G, communities, **kwargs):
+        persisted = json.loads(graph_path.read_text(encoding="utf-8"))
+        persisted["nodes"].append(
+            {"id": "concurrent", "label": "ConcurrentNode", "community": 2},
+        )
+        graph_path.write_text(json.dumps(persisted), encoding="utf-8")
+        return {cid: f"Fresh community {cid}" for cid in communities}, "test"
+
+    monkeypatch.setattr(cli, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        "graphify.llm.generate_community_labels",
+        grow_graph_during_labeling,
+    )
+    argv = ["graphify", "label", str(tmp_path), "--no-viz", *extra_args]
+    monkeypatch.setattr(sys, "argv", argv)
+
+    if force:
+        cli.main()
+    else:
+        with pytest.raises(SystemExit) as stopped:
+            cli.main()
+        assert stopped.value.code == 1
+
+    persisted = json.loads(graph_path.read_text(encoding="utf-8"))
+    persisted_ids = {node["id"] for node in persisted["nodes"]}
+    if force:
+        assert persisted_ids == {"orders", "order_db", "payments", "pay_db"}
+        assert all(
+            node["community_name"].startswith("Fresh community ")
+            for node in persisted["nodes"]
+        )
+        assert json.loads(labels_path.read_text(encoding="utf-8")) == {
+            "0": "Fresh community 0",
+            "1": "Fresh community 1",
+        }
+    else:
+        assert "concurrent" in persisted_ids
+        assert report_path.read_text(encoding="utf-8") == "previous report"
+        assert json.loads(labels_path.read_text(encoding="utf-8")) == {
+            "0": "Old orders",
+        }
+        assert json.loads(analysis_path.read_text(encoding="utf-8")) == {
+            "previous": True,
+        }
+
+
+def test_label_force_rejects_a_detached_graph_source(tmp_path, monkeypatch):
+    """A forced label run must not load one graph and overwrite another."""
+    import graphify.__main__ as cli
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    _two_community_graph(out)
+    current_path = out / "graph.json"
+    current_before = current_path.read_bytes()
+
+    backup = tmp_path / "backup"
+    backup.mkdir()
+    _two_community_graph(backup)
+    backup_path = backup / "graph.json"
+    backup_before = backup_path.read_bytes()
+
+    monkeypatch.setattr(cli, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        "graphify.llm.generate_community_labels",
+        lambda *args, **kwargs: pytest.fail("labeling must not start"),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "graphify",
+            "label",
+            str(tmp_path),
+            "--graph",
+            str(backup_path),
+            "--force",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as stopped:
+        cli.main()
+
+    assert stopped.value.code == 2
+    assert current_path.read_bytes() == current_before
+    assert backup_path.read_bytes() == backup_before
+
+
 @pytest.mark.parametrize("command", ["cluster-only", "label"])
 def test_cluster_commands_render_aggregated_html_above_viz_limit(
     tmp_path, monkeypatch, capsys, command,
