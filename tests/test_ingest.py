@@ -5,7 +5,12 @@ import json
 import re
 from pathlib import Path
 import pytest
-from graphify.ingest import _fetch_tweet, _fetch_xquik_tweet, save_query_result
+from graphify.ingest import (
+    _detect_url_type,
+    _fetch_tweet,
+    _fetch_xquik_tweet,
+    save_query_result,
+)
 
 
 TWEET_URL = "https://x.com/example/status/1893456789012345678"
@@ -60,7 +65,7 @@ def test_fetch_tweet_falls_back_to_oembed(monkeypatch):
 
     content, _ = _fetch_tweet(TWEET_URL, None, None)
 
-    assert "Fallback text & context" in content
+    assert "Fallback text &amp; context" in content
     assert "test-key" not in content
     assert len(requests) == 2
     assert requests[1][1] is None
@@ -98,6 +103,78 @@ def test_fetch_xquik_tweet_rejects_wrong_post(monkeypatch):
 
     with pytest.raises(ValueError, match="wrong post"):
         _fetch_xquik_tweet(TWEET_URL, "test-key")
+
+
+def test_detect_url_type_requires_an_exact_x_or_twitter_host():
+    assert _detect_url_type(TWEET_URL) == "tweet"
+    assert _detect_url_type("https://mobile.twitter.com/user/status/123") == "tweet"
+    assert _detect_url_type("https://notx.com/user/status/123") == "webpage"
+    assert _detect_url_type("https://example.com/x.com/user/status/123") == "webpage"
+
+
+def test_fetch_tweet_rejects_non_x_host_without_requesting_oembed(monkeypatch):
+    requests = []
+    monkeypatch.delenv("XQUIK_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "graphify.ingest.safe_fetch_text",
+        lambda *args, **kwargs: requests.append((args, kwargs)),
+    )
+
+    content, _ = _fetch_tweet(
+        "https://example.com/x.com/user/status/123",
+        None,
+        None,
+    )
+
+    assert "could not fetch content" in content
+    assert requests == []
+
+
+@pytest.mark.parametrize("provider", ["xquik", "oembed"])
+def test_fetch_tweet_escapes_raw_html_from_provider_content(monkeypatch, provider):
+    def fake_fetch(url, max_bytes=10_485_760, timeout=15, headers=None):
+        if provider == "xquik":
+            return json.dumps(
+                {
+                    "tweet": {
+                        "id": "1893456789012345678",
+                        "text": "<script>alert(1)</script> & context",
+                    },
+                    "author": {"username": "example_user"},
+                }
+            )
+        return json.dumps(
+            {
+                "html": (
+                    "<blockquote>&lt;script&gt;alert(1)&lt;/script&gt; "
+                    "&amp; context</blockquote>"
+                ),
+                "author_name": "<b>Example</b>",
+            }
+        )
+
+    if provider == "xquik":
+        monkeypatch.setenv("XQUIK_API_KEY", "test-key")
+    else:
+        monkeypatch.delenv("XQUIK_API_KEY", raising=False)
+    monkeypatch.setattr("graphify.ingest.safe_fetch_text", fake_fetch)
+
+    content, _ = _fetch_tweet(TWEET_URL, None, None)
+
+    assert "<script>" not in content
+    assert "&lt;script&gt;alert(1)&lt;/script&gt; &amp; context" in content
+    if provider == "oembed":
+        assert "# Tweet by @&lt;b&gt;Example&lt;/b&gt;" in content
+
+
+@pytest.mark.parametrize("payload", ["[]", "{}", '{"html": 7}'])
+def test_fetch_tweet_falls_back_when_oembed_json_has_wrong_shape(monkeypatch, payload):
+    monkeypatch.delenv("XQUIK_API_KEY", raising=False)
+    monkeypatch.setattr("graphify.ingest.safe_fetch_text", lambda *args, **kwargs: payload)
+
+    content, _ = _fetch_tweet(TWEET_URL, None, None)
+
+    assert "could not fetch content" in content
 
 
 def test_file_created(tmp_path):

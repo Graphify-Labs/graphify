@@ -13,6 +13,14 @@ from graphify.security import safe_fetch, safe_fetch_text, validate_url
 
 
 _XQUIK_TWEET_ENDPOINT = "https://xquik.com/api/v1/x/tweets/{tweet_id}"
+_TWEET_HOSTS = {
+    "x.com",
+    "www.x.com",
+    "mobile.x.com",
+    "twitter.com",
+    "www.twitter.com",
+    "mobile.twitter.com",
+}
 
 
 def _yaml_str(s: str) -> str:
@@ -69,7 +77,8 @@ def _safe_filename(url: str, suffix: str) -> str:
 def _detect_url_type(url: str) -> str:
     """Classify the URL for targeted extraction."""
     lower = url.lower()
-    if "twitter.com" in lower or "x.com" in lower:
+    hostname = (urllib.parse.urlparse(url).hostname or "").lower()
+    if hostname in _TWEET_HOSTS:
         return "tweet"
     if "arxiv.org" in lower:
         return "arxiv"
@@ -109,15 +118,10 @@ def _tweet_id(url: str) -> str:
     """Extract the numeric status ID from an X or Twitter URL."""
     parsed = urllib.parse.urlparse(url)
     hostname = (parsed.hostname or "").lower()
-    if hostname not in {
-        "x.com",
-        "www.x.com",
-        "mobile.x.com",
-        "twitter.com",
-        "www.twitter.com",
-        "mobile.twitter.com",
-    }:
+    if parsed.scheme.lower() not in {"http", "https"} or hostname not in _TWEET_HOSTS:
         raise ValueError("not an X or Twitter status URL")
+    if parsed.username is not None or parsed.password is not None or parsed.port is not None:
+        raise ValueError("X or Twitter status URL has invalid authority")
     match = re.search(r"/status(?:es)?/(\d+)(?:/|$)", parsed.path)
     if not match:
         raise ValueError("X or Twitter URL has no numeric status ID")
@@ -150,32 +154,60 @@ def _fetch_xquik_tweet(url: str, api_key: str) -> tuple[str, str]:
 
 def _fetch_oembed_tweet(url: str) -> tuple[str, str]:
     """Fetch the public oEmbed representation for an X post."""
-    oembed_url = url.replace("x.com", "twitter.com")
+    _tweet_id(url)
+    parsed = urllib.parse.urlparse(url)
+    oembed_url = parsed._replace(
+        scheme="https",
+        netloc="twitter.com",
+        fragment="",
+    ).geturl()
     oembed_api = (
         f"https://publish.twitter.com/oembed?url={urllib.parse.quote(oembed_url)}&omit_script=true"
     )
     data = json.loads(safe_fetch_text(oembed_api))
-    tweet_text = html.unescape(re.sub(r"<[^>]+>", "", data.get("html", ""))).strip()
-    tweet_author = data.get("author_name", "unknown")
+    if not isinstance(data, dict):
+        raise ValueError("oEmbed returned a non-object response")
+    embed_html = data.get("html")
+    if not isinstance(embed_html, str):
+        raise ValueError("oEmbed returned no post HTML")
+    tweet_text = html.unescape(re.sub(r"<[^>]+>", "", embed_html)).strip()
+    if not tweet_text:
+        raise ValueError("oEmbed returned no post text")
+    author_name = data.get("author_name")
+    tweet_author = (
+        " ".join(author_name.split())
+        if isinstance(author_name, str) and author_name.strip()
+        else "unknown"
+    )
     return tweet_text, tweet_author
+
+
+def _fetch_tweet_data(url: str) -> tuple[str, str]:
+    """Fetch through Xquik when configured, then the public oEmbed fallback."""
+    api_key = os.environ.get("XQUIK_API_KEY", "").strip()
+    if api_key:
+        try:
+            return _fetch_xquik_tweet(url, api_key)
+        except (OSError, TypeError, ValueError, urllib.error.URLError):
+            pass
+
+    try:
+        return _fetch_oembed_tweet(url)
+    except (OSError, TypeError, ValueError, urllib.error.URLError):
+        return f"Tweet at {url} (could not fetch content)", "unknown"
+
+
+def _markdown_text(value: str) -> str:
+    """Escape raw HTML while preserving readable Markdown text."""
+    return html.escape(value, quote=False)
 
 
 def _fetch_tweet(url: str, author: str | None, contributor: str | None) -> tuple[str, str]:
     """Fetch a tweet URL. Returns (content, filename)."""
-    api_key = os.environ.get("XQUIK_API_KEY", "").strip()
-    if api_key:
-        try:
-            tweet_text, tweet_author = _fetch_xquik_tweet(url, api_key)
-        except (OSError, TypeError, ValueError, urllib.error.URLError):
-            api_key = ""
-
-    if not api_key:
-        # X oEmbed is the zero-configuration path and the fallback when Xquik fails.
-        try:
-            tweet_text, tweet_author = _fetch_oembed_tweet(url)
-        except (OSError, TypeError, ValueError, urllib.error.URLError):
-            tweet_text = f"Tweet at {url} (could not fetch content)"
-            tweet_author = "unknown"
+    tweet_text, tweet_author = _fetch_tweet_data(url)
+    markdown_text = _markdown_text(tweet_text)
+    markdown_author = _markdown_text(tweet_author)
+    markdown_url = _markdown_text(url)
 
     now = datetime.now(timezone.utc).isoformat()
     content = f"""---
@@ -186,11 +218,11 @@ captured_at: {now}
 contributor: "{_yaml_str(contributor or author or "unknown")}"
 ---
 
-# Tweet by @{tweet_author}
+# Tweet by @{markdown_author}
 
-{tweet_text}
+{markdown_text}
 
-Source: {url}
+Source: {markdown_url}
 """
     filename = _safe_filename(url, ".md")
     return content, filename
