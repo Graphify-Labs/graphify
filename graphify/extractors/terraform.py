@@ -127,8 +127,40 @@ def extract_terraform(path: Path) -> dict:
             key_node = node.child_by_field_name("key") or (
                 node.children[0] if node.children else None
             )
-            if key_node is not None and _read(key_node) == "depends_on":
-                rel = "depends_on"
+            if key_node is not None:
+                key_text = _read(key_node)
+                if key_text == "depends_on":
+                    rel = "depends_on"
+                elif key_text in ("filename", "source", "user_data"):
+                    val_node = node.children[2] if len(node.children) > 2 else None
+                    if val_node and val_node.type == "expression" and val_node.children:
+                        lit_node = val_node.children[0]
+                        if lit_node.type == "literal_value" and lit_node.children:
+                            str_node = lit_node.children[0]
+                            if str_node.type == "string_lit":
+                                import os
+                                str_val = _label_text(str_node)
+                                print(f"DEBUG: Found attribute {key_text} with value {str_val}")
+                                if not str_val.startswith(("git::", "http://", "https://", "github.com", "terraform-aws-modules")):
+                                    try:
+                                        rel_path = os.path.normpath(os.path.join(str(path.parent), str_val))
+                                        tgt_id = _make_id(rel_path)
+                                        print(f"DEBUG: Created tgt_id {tgt_id} from {rel_path}")
+                                        if tgt_id not in seen_ids:
+                                            seen_ids.add(tgt_id)
+                                            nodes.append({"id": tgt_id, "label": os.path.basename(rel_path), "file_type": "code",
+                                                          "source_file": rel_path, "source_location": None})
+                                        
+                                        edge_rel = "executes" if key_text in ("filename", "user_data") else "contains"
+                                        key_edge = (owner_nid, tgt_id, edge_rel)
+                                        if key_edge not in seen_edges:
+                                            seen_edges.add(key_edge)
+                                            edges.append({"source": owner_nid, "target": tgt_id, "relation": edge_rel,
+                                                          "confidence": "EXTRACTED", "source_file": str_path,
+                                                          "source_location": f"L{node.start_point[0] + 1}", "weight": 1.0})
+                                    except Exception as e:
+                                        print(f"DEBUG Exception: {e}")
+                                        pass
         if node.type == "variable_expr":
             addr = _ref_address(node)
             if addr:
