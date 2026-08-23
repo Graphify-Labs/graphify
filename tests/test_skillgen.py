@@ -687,6 +687,27 @@ def test_generated_runbooks_pass_root_to_save_manifest():
     assert checked >= 4, f"expected save_manifest calls across the runbooks, found {checked}"
 
 
+def test_update_runbooks_stamp_manifest_from_semantic_only():
+    """#2844: --update must stamp semantic_hash from .graphify_semantic.json only.
+
+    Passing the AST+semantic merge marks docs with heading nodes as semantically
+    done even when no subagent extracted them.
+    """
+    targets = sorted((REPO_ROOT / "graphify" / "skills").glob("*/references/update.md"))
+    assert targets, "expected shipped update.md runbooks"
+    for path in targets:
+        body = path.read_text(encoding="utf-8")
+        assert ".graphify_semantic.json" in body, (
+            f"{path.relative_to(REPO_ROOT)}: missing .graphify_semantic.json (#2844)"
+        )
+        assert "_stamped_manifest_files(incremental['files'], _semantic," in body, (
+            f"{path.relative_to(REPO_ROOT)}: must pass _semantic, not new_extraction (#2844)"
+        )
+        assert "_stamped_manifest_files(incremental['files'], new_extraction," not in body, (
+            f"{path.relative_to(REPO_ROOT)}: still stamps from new_extraction (#2844)"
+        )
+
+
 def test_devin_keeps_its_multi_field_frontmatter():
     """devin renders inline, so its 4+-field frontmatter is preserved verbatim."""
     platforms = gen.load_platforms()
