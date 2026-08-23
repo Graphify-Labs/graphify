@@ -1,6 +1,8 @@
 # fetch URLs (tweet/arxiv/pdf/web) and save as annotated markdown
 from __future__ import annotations
+import html
 import json
+import os
 import re
 import urllib.error
 import urllib.parse
@@ -8,6 +10,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from graphify.security import safe_fetch, safe_fetch_text, validate_url
+
+
+_XQUIK_TWEET_ENDPOINT = "https://xquik.com/api/v1/x/tweets/{tweet_id}"
 
 
 def _yaml_str(s: str) -> str:
@@ -100,19 +105,77 @@ def _html_to_markdown(html: str, url: str) -> str:
         return text[:8000]
 
 
+def _tweet_id(url: str) -> str:
+    """Extract the numeric status ID from an X or Twitter URL."""
+    parsed = urllib.parse.urlparse(url)
+    hostname = (parsed.hostname or "").lower()
+    if hostname not in {
+        "x.com",
+        "www.x.com",
+        "mobile.x.com",
+        "twitter.com",
+        "www.twitter.com",
+        "mobile.twitter.com",
+    }:
+        raise ValueError("not an X or Twitter status URL")
+    match = re.search(r"/status(?:es)?/(\d+)(?:/|$)", parsed.path)
+    if not match:
+        raise ValueError("X or Twitter URL has no numeric status ID")
+    return match.group(1)
+
+
+def _fetch_xquik_tweet(url: str, api_key: str) -> tuple[str, str]:
+    """Fetch normalized full post text and username from Xquik."""
+    tweet_id = _tweet_id(url)
+    endpoint = _XQUIK_TWEET_ENDPOINT.format(tweet_id=tweet_id)
+    data = json.loads(safe_fetch_text(endpoint, headers={"x-api-key": api_key}))
+    if not isinstance(data, dict):
+        raise ValueError("Xquik returned a non-object response")
+
+    tweet = data.get("tweet")
+    author = data.get("author")
+    if not isinstance(tweet, dict) or str(tweet.get("id", "")) != tweet_id:
+        raise ValueError("Xquik returned the wrong post")
+    if not isinstance(author, dict):
+        raise ValueError("Xquik returned no author")
+
+    text = tweet.get("text")
+    username = author.get("username")
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("Xquik returned no post text")
+    if not isinstance(username, str) or not re.fullmatch(r"[A-Za-z0-9_]{1,15}", username):
+        raise ValueError("Xquik returned an invalid author username")
+    return text.strip(), username
+
+
+def _fetch_oembed_tweet(url: str) -> tuple[str, str]:
+    """Fetch the public oEmbed representation for an X post."""
+    oembed_url = url.replace("x.com", "twitter.com")
+    oembed_api = (
+        f"https://publish.twitter.com/oembed?url={urllib.parse.quote(oembed_url)}&omit_script=true"
+    )
+    data = json.loads(safe_fetch_text(oembed_api))
+    tweet_text = html.unescape(re.sub(r"<[^>]+>", "", data.get("html", ""))).strip()
+    tweet_author = data.get("author_name", "unknown")
+    return tweet_text, tweet_author
+
+
 def _fetch_tweet(url: str, author: str | None, contributor: str | None) -> tuple[str, str]:
     """Fetch a tweet URL. Returns (content, filename)."""
-    # Normalize to twitter.com for oEmbed
-    oembed_url = url.replace("x.com", "twitter.com")
-    oembed_api = f"https://publish.twitter.com/oembed?url={urllib.parse.quote(oembed_url)}&omit_script=true"
-    try:
-        data = json.loads(safe_fetch_text(oembed_api))
-        tweet_text = re.sub(r"<[^>]+>", "", data.get("html", "")).strip()
-        tweet_author = data.get("author_name", "unknown")
-    except Exception:
-        # oEmbed failed - save URL stub
-        tweet_text = f"Tweet at {url} (could not fetch content)"
-        tweet_author = "unknown"
+    api_key = os.environ.get("XQUIK_API_KEY", "").strip()
+    if api_key:
+        try:
+            tweet_text, tweet_author = _fetch_xquik_tweet(url, api_key)
+        except (OSError, TypeError, ValueError, urllib.error.URLError):
+            api_key = ""
+
+    if not api_key:
+        # X oEmbed is the zero-configuration path and the fallback when Xquik fails.
+        try:
+            tweet_text, tweet_author = _fetch_oembed_tweet(url)
+        except (OSError, TypeError, ValueError, urllib.error.URLError):
+            tweet_text = f"Tweet at {url} (could not fetch content)"
+            tweet_author = "unknown"
 
     now = datetime.now(timezone.utc).isoformat()
     content = f"""---
@@ -120,7 +183,7 @@ source_url: "{_yaml_str(url)}"
 type: tweet
 author: "{_yaml_str(tweet_author)}"
 captured_at: {now}
-contributor: "{_yaml_str(contributor or author or 'unknown')}"
+contributor: "{_yaml_str(contributor or author or "unknown")}"
 ---
 
 # Tweet by @{tweet_author}

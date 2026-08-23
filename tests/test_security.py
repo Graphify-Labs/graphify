@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -20,6 +21,7 @@ from graphify.security import (
     _MAX_FETCH_BYTES,
     _MAX_GRAPH_FILE_BYTES,
     _MAX_TEXT_BYTES,
+    _NoFileRedirectHandler,
     _max_graph_file_bytes,
     _METADATA_MAX_LIST_ITEMS,
     _METADATA_MAX_VALUE_LEN,
@@ -86,6 +88,56 @@ def test_safe_fetch_returns_bytes(tmp_path):
         mock_opener_fn.return_value = mock_opener
         result = safe_fetch("https://example.com/")
     assert result == b"hello world"
+
+def test_safe_fetch_passes_custom_headers():
+    mock_resp = _make_mock_response(b"hello world")
+    with patch("graphify.security._build_opener") as mock_opener_fn:
+        mock_opener = MagicMock()
+        mock_opener.open.return_value = mock_resp
+        mock_opener_fn.return_value = mock_opener
+        safe_fetch("https://example.com/", headers={"x-api-key": "test-key"})
+
+    request = mock_opener.open.call_args.args[0]
+    assert request.get_header("X-api-key") == "test-key"
+    assert request.get_header("User-agent") == "Mozilla/5.0 graphify/1.0"
+
+
+def test_redirect_removes_sensitive_headers_from_new_origin():
+    request = urllib.request.Request(
+        "https://xquik.com/api/v1/x/tweets/123",
+        headers={"x-api-key": "test-key", "User-Agent": "graphify"},
+    )
+    with patch("graphify.security.validate_url"):
+        redirected = _NoFileRedirectHandler().redirect_request(
+            request,
+            None,
+            302,
+            "Found",
+            {},
+            "https://example.com/elsewhere",
+        )
+
+    assert redirected.get_header("X-api-key") is None
+    assert redirected.get_header("User-agent") == "graphify"
+
+
+def test_redirect_keeps_sensitive_headers_on_same_origin():
+    request = urllib.request.Request(
+        "https://xquik.com/api/v1/x/tweets/123",
+        headers={"x-api-key": "test-key"},
+    )
+    with patch("graphify.security.validate_url"):
+        redirected = _NoFileRedirectHandler().redirect_request(
+            request,
+            None,
+            302,
+            "Found",
+            {},
+            "https://xquik.com/api/v1/x/tweets/123/",
+        )
+
+    assert redirected.get_header("X-api-key") == "test-key"
+
 
 def test_safe_fetch_raises_on_non_2xx():
     mock_resp = _make_mock_response(b"Not Found", status=404)

@@ -237,7 +237,22 @@ class _NoFileRedirectHandler(urllib.request.HTTPRedirectHandler):
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         validate_url(newurl)          # raises ValueError if scheme is wrong
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is not None and _url_origin(req.full_url) != _url_origin(newurl):
+            sensitive = {"authorization", "cookie", "proxy-authorization", "x-api-key"}
+            for header, _value in redirected.header_items():
+                if header.lower() in sensitive:
+                    redirected.remove_header(header)
+        return redirected
+
+
+def _url_origin(url: str) -> tuple[str, str, int | None]:
+    """Return a normalized origin tuple for redirect credential checks."""
+    parsed = urllib.parse.urlsplit(url)
+    port = parsed.port
+    if port is None:
+        port = {"http": 80, "https": 443}.get(parsed.scheme.lower())
+    return parsed.scheme.lower(), (parsed.hostname or "").lower(), port
 
 
 def _build_opener() -> urllib.request.OpenerDirector:
@@ -255,7 +270,12 @@ def _build_opener() -> urllib.request.OpenerDirector:
 # Safe fetch
 # ---------------------------------------------------------------------------
 
-def safe_fetch(url: str, max_bytes: int = _MAX_FETCH_BYTES, timeout: int = 30) -> bytes:
+def safe_fetch(
+    url: str,
+    max_bytes: int = _MAX_FETCH_BYTES,
+    timeout: int = 30,
+    headers: Mapping[str, str] | None = None,
+) -> bytes:
     """Fetch *url* and return raw bytes.
 
     Protections applied:
@@ -264,6 +284,7 @@ def safe_fetch(url: str, max_bytes: int = _MAX_FETCH_BYTES, timeout: int = 30) -
     - Response body capped at *max_bytes* (streaming read)
     - Non-2xx status raises urllib.error.HTTPError
     - Network errors propagate as urllib.error.URLError / OSError
+    - Caller headers are removed from cross-origin redirects when sensitive
 
     Raises:
         ValueError        - disallowed scheme or redirect target
@@ -273,7 +294,9 @@ def safe_fetch(url: str, max_bytes: int = _MAX_FETCH_BYTES, timeout: int = 30) -
     """
     validate_url(url)
     opener = _build_opener()
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 graphify/1.0"})
+    request_headers = {"User-Agent": "Mozilla/5.0 graphify/1.0"}
+    request_headers.update(headers or {})
+    req = urllib.request.Request(url, headers=request_headers)
 
     with opener.open(req, timeout=timeout) as resp:
         # urllib raises HTTPError for non-2xx when using urlopen directly;
@@ -299,12 +322,17 @@ def safe_fetch(url: str, max_bytes: int = _MAX_FETCH_BYTES, timeout: int = 30) -
     return b"".join(chunks)
 
 
-def safe_fetch_text(url: str, max_bytes: int = _MAX_TEXT_BYTES, timeout: int = 15) -> str:
+def safe_fetch_text(
+    url: str,
+    max_bytes: int = _MAX_TEXT_BYTES,
+    timeout: int = 15,
+    headers: Mapping[str, str] | None = None,
+) -> str:
     """Fetch *url* and return decoded text (UTF-8, replacing bad bytes).
 
     Wraps safe_fetch with tighter defaults for HTML / text content.
     """
-    raw = safe_fetch(url, max_bytes=max_bytes, timeout=timeout)
+    raw = safe_fetch(url, max_bytes=max_bytes, timeout=timeout, headers=headers)
     return raw.decode("utf-8", errors="replace")
 
 

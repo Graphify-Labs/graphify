@@ -1,9 +1,103 @@
-"""Tests for graphify.ingest.save_query_result"""
+"""Tests for graphify.ingest."""
+
 from __future__ import annotations
+import json
 import re
 from pathlib import Path
 import pytest
-from graphify.ingest import save_query_result
+from graphify.ingest import _fetch_tweet, _fetch_xquik_tweet, save_query_result
+
+
+TWEET_URL = "https://x.com/example/status/1893456789012345678"
+
+
+def test_fetch_tweet_uses_xquik_when_configured(monkeypatch):
+    requests = []
+
+    def fake_fetch(url, max_bytes=10_485_760, timeout=15, headers=None):
+        requests.append((url, headers))
+        return json.dumps(
+            {
+                "tweet": {
+                    "id": "1893456789012345678",
+                    "text": "Complete post text from Xquik.",
+                },
+                "author": {"username": "example_user"},
+            }
+        )
+
+    monkeypatch.setenv("XQUIK_API_KEY", "test-key")
+    monkeypatch.setattr("graphify.ingest.safe_fetch_text", fake_fetch)
+
+    content, _ = _fetch_tweet(TWEET_URL, None, None)
+
+    assert "Complete post text from Xquik." in content
+    assert "# Tweet by @example_user" in content
+    assert requests == [
+        (
+            "https://xquik.com/api/v1/x/tweets/1893456789012345678",
+            {"x-api-key": "test-key"},
+        )
+    ]
+
+
+def test_fetch_tweet_falls_back_to_oembed(monkeypatch):
+    requests = []
+
+    def fake_fetch(url, max_bytes=10_485_760, timeout=15, headers=None):
+        requests.append((url, headers))
+        if url.startswith("https://xquik.com/"):
+            return '{"tweet": {"id": "wrong"}, "author": {}}'
+        return json.dumps(
+            {
+                "html": "<blockquote>Fallback text &amp; context</blockquote>",
+                "author_name": "Example",
+            }
+        )
+
+    monkeypatch.setenv("XQUIK_API_KEY", "test-key")
+    monkeypatch.setattr("graphify.ingest.safe_fetch_text", fake_fetch)
+
+    content, _ = _fetch_tweet(TWEET_URL, None, None)
+
+    assert "Fallback text & context" in content
+    assert "test-key" not in content
+    assert len(requests) == 2
+    assert requests[1][1] is None
+
+
+def test_fetch_tweet_uses_oembed_without_xquik_key(monkeypatch):
+    requests = []
+
+    def fake_fetch(url, max_bytes=10_485_760, timeout=15, headers=None):
+        requests.append((url, headers))
+        return json.dumps(
+            {
+                "html": "<blockquote>Public text &mdash; Example</blockquote>",
+                "author_name": "Example",
+            }
+        )
+
+    monkeypatch.delenv("XQUIK_API_KEY", raising=False)
+    monkeypatch.setattr("graphify.ingest.safe_fetch_text", fake_fetch)
+
+    content, _ = _fetch_tweet(TWEET_URL, None, None)
+
+    assert "Public text — Example" in content
+    assert len(requests) == 1
+    assert requests[0][0].startswith("https://publish.twitter.com/oembed?")
+
+
+def test_fetch_xquik_tweet_rejects_wrong_post(monkeypatch):
+    monkeypatch.setattr(
+        "graphify.ingest.safe_fetch_text",
+        lambda *args, **kwargs: (
+            '{"tweet": {"id": "123", "text": "wrong"}, "author": {"username": "example_user"}}'
+        ),
+    )
+
+    with pytest.raises(ValueError, match="wrong post"):
+        _fetch_xquik_tweet(TWEET_URL, "test-key")
 
 
 def test_file_created(tmp_path):
