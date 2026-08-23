@@ -77,7 +77,11 @@ def _safe_filename(url: str, suffix: str) -> str:
 def _detect_url_type(url: str) -> str:
     """Classify the URL for targeted extraction."""
     lower = url.lower()
-    hostname = (urllib.parse.urlparse(url).hostname or "").lower()
+    parsed = urllib.parse.urlparse(url)
+    hostname = parsed.hostname
+    if hostname is None and "://" not in url:
+        hostname = urllib.parse.urlparse(f"//{url}").hostname
+    hostname = (hostname or "").lower()
     if hostname in _TWEET_HOSTS:
         return "tweet"
     if "arxiv.org" in lower:
@@ -86,7 +90,6 @@ def _detect_url_type(url: str) -> str:
         return "github"
     if "youtube.com" in lower or "youtu.be" in lower:
         return "youtube"
-    parsed = urllib.parse.urlparse(url)
     path = parsed.path.lower()
     if path.endswith(".pdf"):
         return "pdf"
@@ -184,6 +187,7 @@ def _fetch_oembed_tweet(url: str) -> tuple[str, str]:
 
 def _fetch_tweet_data(url: str) -> tuple[str, str]:
     """Fetch through Xquik when configured, then the public oEmbed fallback."""
+    _tweet_id(url)
     api_key = os.environ.get("XQUIK_API_KEY", "").strip()
     if api_key:
         try:
@@ -203,12 +207,18 @@ def _markdown_text(value: str) -> str:
     return html.escape(escaped, quote=False)
 
 
+def _markdown_autolink(url: str) -> str:
+    """Render a URL as a clickable link without Markdown control characters."""
+    encoded = urllib.parse.quote(url, safe=":/?#@!$&'()*+,;=%")
+    return f"<{encoded}>"
+
+
 def _fetch_tweet(url: str, author: str | None, contributor: str | None) -> tuple[str, str]:
     """Fetch a tweet URL. Returns (content, filename)."""
     tweet_text, tweet_author = _fetch_tweet_data(url)
     markdown_text = _markdown_text(tweet_text)
     markdown_author = _markdown_text(tweet_author)
-    markdown_url = _markdown_text(url)
+    markdown_url = _markdown_autolink(url)
 
     now = datetime.now(timezone.utc).isoformat()
     content = f"""---
@@ -321,9 +331,11 @@ def ingest(url: str, target_dir: Path, author: str | None = None, contributor: s
 
     try:
         validate_url(url)
+        url_type = _detect_url_type(url)
+        if url_type == "tweet":
+            _tweet_id(url)
     except ValueError as exc:
         raise ValueError(f"ingest: {exc}") from exc
-    url_type = _detect_url_type(url)
 
     try:
         if url_type == "pdf":

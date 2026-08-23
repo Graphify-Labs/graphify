@@ -142,12 +142,17 @@ def test_fetch_xquik_tweet_rejects_wrong_post(monkeypatch):
 
 def test_detect_url_type_requires_an_exact_x_or_twitter_host():
     assert _detect_url_type(TWEET_URL) == "tweet"
+    assert _detect_url_type("x.com/user/status/123") == "tweet"
     assert _detect_url_type("https://mobile.twitter.com/user/status/123") == "tweet"
     assert _detect_url_type("https://notx.com/user/status/123") == "webpage"
     assert _detect_url_type("https://example.com/x.com/user/status/123") == "webpage"
 
 
-def test_fetch_tweet_rejects_non_x_host_without_requesting_oembed(monkeypatch):
+@pytest.mark.parametrize(
+    "url",
+    ["https://example.com/x.com/user/status/123", "https://x.com/example"],
+)
+def test_fetch_tweet_rejects_invalid_status_url_without_requesting_oembed(monkeypatch, url):
     requests = []
     monkeypatch.delenv("XQUIK_API_KEY", raising=False)
     monkeypatch.setattr(
@@ -155,13 +160,9 @@ def test_fetch_tweet_rejects_non_x_host_without_requesting_oembed(monkeypatch):
         lambda *args, **kwargs: requests.append((args, kwargs)),
     )
 
-    content, _ = _fetch_tweet(
-        "https://example.com/x.com/user/status/123",
-        None,
-        None,
-    )
+    with pytest.raises(ValueError):
+        _fetch_tweet(url, None, None)
 
-    assert "could not fetch content" in content
     assert requests == []
 
 
@@ -233,9 +234,32 @@ def test_fetch_tweet_escapes_markdown_links_and_images(monkeypatch):
     assert r"\[run\]\(javascript\:alert\(1\)\)" in content
 
 
+def test_fetch_tweet_emits_safe_clickable_source_url(monkeypatch):
+    url = f"{TWEET_URL}?note=<script>\n[unsafe]"
+    monkeypatch.delenv("XQUIK_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "graphify.ingest.safe_fetch_text",
+        lambda *args, **kwargs: json.dumps(
+            {"html": "<blockquote>Post text</blockquote>", "author_name": "Example"}
+        ),
+    )
+
+    content, _ = _fetch_tweet(url, None, None)
+
+    assert (
+        "Source: <https://x.com/example/status/1893456789012345678"
+        "?note=%3Cscript%3E%0A%5Bunsafe%5D>"
+    ) in content
+
+
 def test_ingest_wraps_malformed_url_validation_error(tmp_path):
     with pytest.raises(ValueError, match=r"^ingest:"):
         ingest("https://[::1", tmp_path)
+
+
+def test_ingest_wraps_invalid_tweet_status_url(tmp_path):
+    with pytest.raises(ValueError, match=r"^ingest:"):
+        ingest("https://x.com/example", tmp_path)
 
 
 def test_file_created(tmp_path):
