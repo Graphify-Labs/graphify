@@ -1200,6 +1200,16 @@ def test_query_terms_janome_content_keeps_content_parts(monkeypatch):
     ]
 
 
+def test_query_terms_janome_content_real_library():
+    pytest.importorskip("janome")
+    terms = _query_terms("日本語の検索を改善する", tokenizer="janome_content")
+    assert "日本語" in terms
+    assert "検索" in terms
+    assert "改善" in terms
+    assert "の" not in terms
+    assert "を" not in terms
+
+
 def test_query_terms_janome_content_requires_optional_extra(monkeypatch):
     import graphify.serve as serve_mod
 

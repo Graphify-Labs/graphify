@@ -29,6 +29,9 @@ except ImportError:
 
 _QUERY_TOKENIZERS = ("baseline", "janome_content")
 _JANOME_CONTENT_PARTS = frozenset({"名詞", "動詞", "形容詞", "副詞"})
+_JANOME_TOKENIZER_INSTANCE = None
+_JANOME_TOKENIZER_FACTORY = None
+_JANOME_TOKENIZER_LOCK = threading.Lock()
 
 
 def _load_graph(graph_path: str) -> nx.Graph:
@@ -207,16 +210,29 @@ def _segment_chinese(text: str) -> list[str]:
     return segments
 
 
-def _segment_japanese_content(text: str) -> list[str]:
-    """Return Janome surface forms for Japanese content words."""
-    if _JanomeTokenizer is None:
+def _get_janome_tokenizer():
+    """Return the lazily initialized Janome tokenizer singleton."""
+    global _JANOME_TOKENIZER_FACTORY, _JANOME_TOKENIZER_INSTANCE
+
+    tokenizer_factory = _JanomeTokenizer
+    if tokenizer_factory is None:
         raise ImportError(
             'The "janome_content" tokenizer requires the optional Japanese extra. '
             'Install it with: uv tool install "graphifyy[japanese]"'
         )
 
+    if _JANOME_TOKENIZER_INSTANCE is None or _JANOME_TOKENIZER_FACTORY is not tokenizer_factory:
+        with _JANOME_TOKENIZER_LOCK:
+            if _JANOME_TOKENIZER_INSTANCE is None or _JANOME_TOKENIZER_FACTORY is not tokenizer_factory:
+                _JANOME_TOKENIZER_INSTANCE = tokenizer_factory()
+                _JANOME_TOKENIZER_FACTORY = tokenizer_factory
+    return _JANOME_TOKENIZER_INSTANCE
+
+
+def _segment_japanese_content(text: str) -> list[str]:
+    """Return Janome surface forms for Japanese content words."""
     terms: list[str] = []
-    for token in _JanomeTokenizer().tokenize(text):
+    for token in _get_janome_tokenizer().tokenize(text):
         part = str(getattr(token, "part_of_speech", "")).split(",", 1)[0]
         surface = str(getattr(token, "surface", "")).strip().lower()
         if part in _JANOME_CONTENT_PARTS and surface:
