@@ -529,7 +529,7 @@ Most variables are only needed for **headless / CI extraction** (`graphify extra
 | `GRAPHIFY_FORCE` | Force graph rebuild even with fewer nodes | optional — also `--force` flag |
 | `GRAPHIFY_GOOGLE_WORKSPACE` | Auto-enable Google Workspace export | optional — set to `1` |
 | `GRAPHIFY_TRIAGE_BACKEND` | Backend for `graphify prs --triage` | optional — auto-detected from available keys |
-| `XQUIK_API_KEY` | Full text and author data for `graphify add` X post URLs | optional — [1 credit per post](https://docs.xquik.com/api-reference/x/get-tweet); falls back to oEmbed |
+| `XQUIK_API_KEY` | Full text and author data for `graphify add` X post URLs | optional — falls back to public oEmbed |
 | `GRAPHIFY_TRIAGE_MODEL` | Model override for triage | optional — e.g. `claude-opus-4-7` |
 | `GRAPHIFY_QUERY_LOG_ENABLE` | Set to `1` to turn on the local query log at `~/.cache/graphify-queries.log` (records each query/path/explain question + corpus path). Off by default — nothing is written unless you opt in (#1797) | optional |
 | `GRAPHIFY_QUERY_LOG` | Enable the query log and write it to this path instead of the default | optional — off unless this or `_ENABLE` is set |

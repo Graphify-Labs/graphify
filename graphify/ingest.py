@@ -188,12 +188,12 @@ def _fetch_tweet_data(url: str) -> tuple[str, str]:
     if api_key:
         try:
             return _fetch_xquik_tweet(url, api_key)
-        except (OSError, RuntimeError, TypeError, ValueError, urllib.error.URLError):
+        except Exception:
             pass
 
     try:
         return _fetch_oembed_tweet(url)
-    except (OSError, RuntimeError, TypeError, ValueError, urllib.error.URLError):
+    except Exception:
         return f"Tweet at {url} (could not fetch content)", "unknown"
 
 

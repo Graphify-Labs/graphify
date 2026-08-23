@@ -72,10 +72,11 @@ def test_fetch_tweet_falls_back_to_oembed(monkeypatch):
     assert requests[1][1] is None
 
 
-def test_fetch_tweet_falls_back_when_xquik_fetch_raises_runtime_error(monkeypatch):
+@pytest.mark.parametrize("error_type", [RuntimeError, LookupError])
+def test_fetch_tweet_falls_back_when_xquik_fetch_fails(monkeypatch, error_type):
     def fake_fetch(url, max_bytes=10_485_760, timeout=15, headers=None):
         if url.startswith("https://xquik.com/"):
-            raise RuntimeError("request transport failed")
+            raise error_type("request transport failed")
         return json.dumps(
             {
                 "html": "<blockquote>Fallback text</blockquote>",
@@ -92,9 +93,10 @@ def test_fetch_tweet_falls_back_when_xquik_fetch_raises_runtime_error(monkeypatc
     assert "# Tweet by @Fallback Author" in content
 
 
-def test_fetch_tweet_uses_stub_when_oembed_fetch_raises_runtime_error(monkeypatch):
+@pytest.mark.parametrize("error_type", [RuntimeError, LookupError])
+def test_fetch_tweet_uses_stub_when_oembed_fetch_fails(monkeypatch, error_type):
     def fail_fetch(*args, **kwargs):
-        raise RuntimeError("request transport failed")
+        raise error_type("request transport failed")
 
     monkeypatch.delenv("XQUIK_API_KEY", raising=False)
     monkeypatch.setattr("graphify.ingest.safe_fetch_text", fail_fetch)
