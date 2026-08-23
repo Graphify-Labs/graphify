@@ -1833,6 +1833,38 @@ def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bo
     return result
 
 
+def _codex_disable_mcp_args(codex_cmd: str) -> list[str]:
+    """`-c mcp_servers.<name>.enabled=false` for every server Codex has configured.
+
+    Extraction never calls a tool, and each configured MCP server is started per
+    `codex exec` invocation. Codex config overrides deep-merge, so a blanket
+    `-c mcp_servers={}` leaves the servers enabled; its per-server `enabled` field
+    (visible in `codex mcp get <name>`) is the switch that works. The server list
+    comes from `codex mcp list --json`, so no server name is hardcoded. Best effort:
+    if that call is unavailable (older Codex, no config), extraction proceeds with
+    whatever the user configured.
+    """
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            [codex_cmd, "mcp", "list", "--json"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=30, check=False, **_no_window_kwargs(),
+        )
+        if proc.returncode != 0 or not proc.stdout.strip():
+            return []
+        servers = json.loads(proc.stdout)
+    except Exception:
+        return []
+    args: list[str] = []
+    for entry in servers if isinstance(servers, list) else []:
+        name = (entry or {}).get("name") if isinstance(entry, dict) else None
+        if isinstance(name, str) and name and all(ch.isalnum() or ch in "-_" for ch in name):
+            args += ["-c", f"mcp_servers.{name}.enabled=false"]
+    return args
+
+
 def _call_openai_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bool = False, images: list[_ImageRef] | None = None) -> dict:
     """Call OpenAI through the locally authenticated Codex CLI."""
     # PATCHED FOR TELB-COCKPIT (2026-08-19). This keeps semantic extraction on
@@ -1886,13 +1918,14 @@ def _call_openai_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bo
             "--sandbox",
             "read-only",
             # Extraction is text-to-JSON: it asks no questions of any tool. Without
-            # this override every `codex exec` inherits ~/.codex/config.toml's
-            # mcp_servers and spawns them per call (measured on this box 2026-08-20:
-            # two concurrent execs spawned four graph servers at ~160-300 MB each,
-            # more memory than the extraction itself). Codex's own -c mechanism
-            # disables them for exactly this invocation, nothing else.
-            "-c",
-            "mcp_servers={}",
+            # this, every `codex exec` starts the user's configured MCP servers per
+            # call (measured: four graph servers at ~152 MB each during one run,
+            # more memory than the extraction itself). `-c mcp_servers={}` does NOT
+            # work — Codex merges config overrides into the table rather than
+            # replacing it, so the servers stay enabled (verified with
+            # `codex mcp list -c mcp_servers={}`). The mechanism that does work is
+            # Codex's own per-server `enabled` field, one override per server.
+            *_codex_disable_mcp_args(codex_cmd),
             # Reasoning effort for the extraction calls (owner's setting; the env
             # var overrides without a source edit, mirroring GRAPHIFY_KIMI_EFFORT).
             "-c",
