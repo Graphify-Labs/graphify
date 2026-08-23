@@ -40,7 +40,9 @@ def _project(tmp_path):
     return f
 
 
-def _invoke(kind, payload, tmp_path, monkeypatch, *, env=None):
+def _invoke(kind, payload, tmp_path, monkeypatch, *, env=None, strict=False):
+    """The single seam these tests drive the guard through — every case goes via
+    here rather than growing its own copy of the stdin/stdout plumbing."""
     monkeypatch.chdir(tmp_path)
     for k, v in (env or {}).items():
         monkeypatch.setenv(k, v)
@@ -50,8 +52,12 @@ def _invoke(kind, payload, tmp_path, monkeypatch, *, env=None):
     monkeypatch.setattr(sys, "stdin", _Stdin())
     buf = io.StringIO()
     monkeypatch.setattr(sys, "stdout", buf)
-    cli._run_hook_guard(kind)
+    cli._run_hook_guard(kind, strict=strict)
     return buf.getvalue()
+
+
+def _decision(out):
+    return json.loads(out)["hookSpecificOutput"].get("permissionDecision")
 
 
 def _read(fpath, sid="s1"):
@@ -142,38 +148,22 @@ def test_an_ineligible_read_does_not_burn_the_strict_claim(tmp_path, monkeypatch
     unindexed.write_text("y = 2\n", encoding="utf-8")
     time.sleep(0.02)  # keep the graph newer than both files, so neither is stale
     (tmp_path / "graphify-out" / "graph.json").write_text('{"nodes":[],"links":[]}', encoding="utf-8")
-    monkeypatch.chdir(tmp_path)
 
-    def _run(path):
-        class _Stdin:
-            buffer = io.BytesIO(json.dumps(_read(path)).encode())
-        monkeypatch.setattr(sys, "stdin", _Stdin())
-        buf = io.StringIO()
-        monkeypatch.setattr(sys, "stdout", buf)
-        cli._run_hook_guard("read", strict=True)
-        return buf.getvalue()
-
-    assert "MANDATORY" in _run(unindexed)  # nudge, not a deny
+    out = _invoke("read", _read(unindexed), tmp_path, monkeypatch, strict=True)
+    assert "MANDATORY" in out  # the soft nudge, not a deny
     assert not (tmp_path / "graphify-out" / "cache" / "hook_sessions" / "s1.denied").exists()
-    assert json.loads(_run(f))["hookSpecificOutput"]["permissionDecision"] == "deny"
+    # the claim was not spent, so the next eligible read still denies
+    assert _decision(_invoke("read", _read(f), tmp_path, monkeypatch, strict=True)) == "deny"
 
 
 def test_the_strict_deny_keeps_its_own_budget(tmp_path, monkeypatch):
     """The strict block already fires once per session off its own marker; it must
     not also eat the soft nudge that follows it."""
     f = _project(tmp_path)
-    monkeypatch.chdir(tmp_path)
 
-    def _run(strict):
-        class _Stdin:
-            buffer = io.BytesIO(json.dumps(_read(f)).encode())
-        monkeypatch.setattr(sys, "stdin", _Stdin())
-        buf = io.StringIO()
-        monkeypatch.setattr(sys, "stdout", buf)
-        cli._run_hook_guard("read", strict=strict)
-        return buf.getvalue()
+    def _run():
+        return _invoke("read", _read(f), tmp_path, monkeypatch, strict=True)
 
-    denied = _run(True)
-    assert json.loads(denied)["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert "MANDATORY" in _run(True)
-    assert _run(True) == ""
+    assert _decision(_run()) == "deny"
+    assert "MANDATORY" in _run()  # the deny did not eat the session's nudge
+    assert _run() == ""
