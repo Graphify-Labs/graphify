@@ -237,22 +237,7 @@ class _NoFileRedirectHandler(urllib.request.HTTPRedirectHandler):
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         validate_url(newurl)          # raises ValueError if scheme is wrong
-        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
-        if redirected is not None and _url_origin(req.full_url) != _url_origin(newurl):
-            sensitive = {"authorization", "cookie", "proxy-authorization", "x-api-key"}
-            for header, _value in redirected.header_items():
-                if header.lower() in sensitive:
-                    redirected.remove_header(header)
-        return redirected
-
-
-def _url_origin(url: str) -> tuple[str, str, int | None]:
-    """Return a normalized origin tuple for redirect credential checks."""
-    parsed = urllib.parse.urlsplit(url)
-    port = parsed.port
-    if port is None:
-        port = {"http": 80, "https": 443}.get(parsed.scheme.lower())
-    return parsed.scheme.lower(), (parsed.hostname or "").lower(), port
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 def _build_opener() -> urllib.request.OpenerDirector:
@@ -284,7 +269,7 @@ def safe_fetch(
     - Response body capped at *max_bytes* (streaming read)
     - Non-2xx status raises urllib.error.HTTPError
     - Network errors propagate as urllib.error.URLError / OSError
-    - Caller headers are removed from cross-origin redirects when sensitive
+    - Caller headers are sent only to the original URL
 
     Raises:
         ValueError        - disallowed scheme or redirect target
@@ -294,9 +279,9 @@ def safe_fetch(
     """
     validate_url(url)
     opener = _build_opener()
-    request_headers = {"User-Agent": "Mozilla/5.0 graphify/1.0"}
-    request_headers.update(headers or {})
-    req = urllib.request.Request(url, headers=request_headers)
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 graphify/1.0"})
+    for header, value in (headers or {}).items():
+        req.add_unredirected_header(header, value)
 
     with opener.open(req, timeout=timeout) as resp:
         # urllib raises HTTPError for non-2xx when using urlopen directly;

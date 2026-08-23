@@ -198,8 +198,9 @@ def _fetch_tweet_data(url: str) -> tuple[str, str]:
 
 
 def _markdown_text(value: str) -> str:
-    """Escape raw HTML while preserving readable Markdown text."""
-    return html.escape(value, quote=False)
+    """Render untrusted provider text without creating Markdown constructs."""
+    escaped = re.sub(r"""([!"#$%'()*+,\-./:;=?@\[\]\\^_`{|}~])""", r"\\\1", value)
+    return html.escape(escaped, quote=False)
 
 
 def _fetch_tweet(url: str, author: str | None, contributor: str | None) -> tuple[str, str]:
@@ -317,12 +318,12 @@ def ingest(url: str, target_dir: Path, author: str | None = None, contributor: s
     Returns the path of the saved file.
     """
     target_dir.mkdir(parents=True, exist_ok=True)
-    url_type = _detect_url_type(url)
 
     try:
         validate_url(url)
     except ValueError as exc:
         raise ValueError(f"ingest: {exc}") from exc
+    url_type = _detect_url_type(url)
 
     try:
         if url_type == "pdf":

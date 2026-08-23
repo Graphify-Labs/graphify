@@ -9,6 +9,7 @@ from graphify.ingest import (
     _detect_url_type,
     _fetch_tweet,
     _fetch_xquik_tweet,
+    ingest,
     save_query_result,
 )
 
@@ -36,8 +37,8 @@ def test_fetch_tweet_uses_xquik_when_configured(monkeypatch):
 
     content, _ = _fetch_tweet(TWEET_URL, None, None)
 
-    assert "Complete post text from Xquik." in content
-    assert "# Tweet by @example_user" in content
+    assert r"Complete post text from Xquik\." in content
+    assert r"# Tweet by @example\_user" in content
     assert requests == [
         (
             "https://xquik.com/api/v1/x/tweets/1893456789012345678",
@@ -194,9 +195,9 @@ def test_fetch_tweet_escapes_raw_html_from_provider_content(monkeypatch, provide
     content, _ = _fetch_tweet(TWEET_URL, None, None)
 
     assert "<script>" not in content
-    assert "&lt;script&gt;alert(1)&lt;/script&gt; &amp; context" in content
+    assert r"&lt;script&gt;alert\(1\)&lt;\/script&gt; &amp; context" in content
     if provider == "oembed":
-        assert "# Tweet by @&lt;b&gt;Example&lt;/b&gt;" in content
+        assert r"# Tweet by @&lt;b&gt;Example&lt;\/b&gt;" in content
 
 
 @pytest.mark.parametrize("payload", ["[]", "{}", '{"html": 7}'])
@@ -207,6 +208,32 @@ def test_fetch_tweet_falls_back_when_oembed_json_has_wrong_shape(monkeypatch, pa
     content, _ = _fetch_tweet(TWEET_URL, None, None)
 
     assert "could not fetch content" in content
+
+
+def test_fetch_tweet_escapes_markdown_links_and_images(monkeypatch):
+    monkeypatch.setenv("XQUIK_API_KEY", "test-key")
+    monkeypatch.setattr(
+        "graphify.ingest.safe_fetch_text",
+        lambda *args, **kwargs: json.dumps(
+            {
+                "tweet": {
+                    "id": "1893456789012345678",
+                    "text": "![proof](https://attacker.example/pixel) [run](javascript:alert(1))",
+                },
+                "author": {"username": "example_user"},
+            }
+        ),
+    )
+
+    content, _ = _fetch_tweet(TWEET_URL, None, None)
+
+    assert r"\!\[proof\]\(https\:\/\/attacker\.example\/pixel\)" in content
+    assert r"\[run\]\(javascript\:alert\(1\)\)" in content
+
+
+def test_ingest_wraps_malformed_url_validation_error(tmp_path):
+    with pytest.raises(ValueError, match=r"^ingest:"):
+        ingest("https://[::1", tmp_path)
 
 
 def test_file_created(tmp_path):
