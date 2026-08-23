@@ -146,6 +146,7 @@ def test_detect_url_type_requires_an_exact_x_or_twitter_host():
     assert _detect_url_type("https://mobile.twitter.com/user/status/123") == "tweet"
     assert _detect_url_type("https://notx.com/user/status/123") == "webpage"
     assert _detect_url_type("https://example.com/x.com/user/status/123") == "webpage"
+    assert _detect_url_type("']") == "webpage"
 
 
 @pytest.mark.parametrize(

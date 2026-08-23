@@ -77,10 +77,13 @@ def _safe_filename(url: str, suffix: str) -> str:
 def _detect_url_type(url: str) -> str:
     """Classify the URL for targeted extraction."""
     lower = url.lower()
-    parsed = urllib.parse.urlparse(url)
-    hostname = parsed.hostname
-    if hostname is None and "://" not in url:
-        hostname = urllib.parse.urlparse(f"//{url}").hostname
+    try:
+        parsed = urllib.parse.urlparse(url)
+        hostname = parsed.hostname
+        if hostname is None and "://" not in url:
+            hostname = urllib.parse.urlparse(f"//{url}").hostname
+    except ValueError:
+        return "webpage"
     hostname = (hostname or "").lower()
     if hostname in _TWEET_HOSTS:
         return "tweet"
