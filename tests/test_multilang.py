@@ -336,6 +336,31 @@ def test_rust_no_dangling_edges():
             assert e["source"] in node_ids
 
 
+def test_rust_self_return_type_does_not_create_phantom_node(tmp_path):
+    """`-> Self` is the enclosing-type keyword, not a referenceable type.
+
+    Emitting it minted a SOURCELESS stub whose id normalises to a single
+    global `self` node, so every constructor and builder across a crate
+    rewired onto it -- a false god node. The keyword must be skipped.
+    """
+    src = tmp_path / "shape.rs"
+    src.write_text(
+        "pub struct Circle { r: f64 }\n"
+        "impl Circle {\n"
+        "    pub fn new(r: f64) -> Self { Circle { r } }\n"
+        "    pub fn scaled(&self, k: f64) -> Self { Circle { r: self.r * k } }\n"
+        "}\n"
+    )
+    r = extract_rust(src)
+    assert "error" not in r
+    # No node is the bare `Self` keyword...
+    assert "Self" not in _labels(r)
+    # ...and nothing references the normalised `self` stub id.
+    assert not any(e["target"] == "self" for e in r["edges"])
+    # The genuine type is still extracted.
+    assert "Circle" in _labels(r)
+
+
 def test_rust_trait_impl_emits_implements():
     r = extract_rust(FIXTURES / "sample.rs")
     assert ("DataProcessor", "Processor") in _edge_labels(r, "implements")
