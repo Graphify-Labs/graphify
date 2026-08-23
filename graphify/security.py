@@ -255,6 +255,19 @@ def _build_opener() -> urllib.request.OpenerDirector:
 # Safe fetch
 # ---------------------------------------------------------------------------
 
+_DISALLOWED_CALLER_HEADERS = {
+    "connection",
+    "content-length",
+    "host",
+    "proxy-authorization",
+    "proxy-connection",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+}
+
+
 def safe_fetch(
     url: str,
     max_bytes: int = _MAX_FETCH_BYTES,
@@ -270,6 +283,7 @@ def safe_fetch(
     - Non-2xx status raises urllib.error.HTTPError
     - Network errors propagate as urllib.error.URLError / OSError
     - Caller headers are sent only to the original URL
+    - Routing, framing, and hop-by-hop caller headers are rejected
 
     Raises:
         ValueError        - disallowed scheme or redirect target
@@ -278,11 +292,13 @@ def safe_fetch(
         OSError               - size cap exceeded
     """
     validate_url(url)
-    opener = _build_opener()
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 graphify/1.0"})
     for header, value in (headers or {}).items():
+        if header.strip().casefold() in _DISALLOWED_CALLER_HEADERS:
+            raise ValueError(f"caller header is not allowed: {header}")
         req.add_unredirected_header(header, value)
 
+    opener = _build_opener()
     with opener.open(req, timeout=timeout) as resp:
         # urllib raises HTTPError for non-2xx when using urlopen directly;
         # with a custom opener we check manually to be safe.

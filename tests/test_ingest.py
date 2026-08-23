@@ -144,6 +144,8 @@ def test_detect_url_type_requires_an_exact_x_or_twitter_host():
     assert _detect_url_type(TWEET_URL) == "tweet"
     assert _detect_url_type("x.com/user/status/123") == "tweet"
     assert _detect_url_type("https://mobile.twitter.com/user/status/123") == "tweet"
+    assert _detect_url_type("https://x.com/example") == "webpage"
+    assert _detect_url_type("https://twitter.com/example") == "webpage"
     assert _detect_url_type("https://notx.com/user/status/123") == "webpage"
     assert _detect_url_type("https://example.com/x.com/user/status/123") == "webpage"
     assert _detect_url_type("']") == "webpage"
@@ -260,7 +262,7 @@ def test_ingest_wraps_malformed_url_validation_error(tmp_path):
 
 def test_ingest_wraps_invalid_tweet_status_url(tmp_path):
     with pytest.raises(ValueError, match=r"^ingest:"):
-        ingest("https://x.com/example", tmp_path)
+        ingest("https://x.com/example/status/not-a-number", tmp_path)
 
 
 def test_file_created(tmp_path):

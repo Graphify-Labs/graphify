@@ -131,6 +131,18 @@ def test_safe_fetch_limits_custom_headers_to_initial_request():
     assert redirected.get_header("X-auth-token") is None
 
 
+@pytest.mark.parametrize(
+    "header",
+    ["Host", "Content-Length", "Transfer-Encoding", "Connection", "Proxy-Authorization"],
+)
+def test_safe_fetch_rejects_transport_control_headers(header):
+    with patch("graphify.security._build_opener") as mock_opener_fn:
+        with pytest.raises(ValueError, match="caller header is not allowed"):
+            safe_fetch("https://example.com/", headers={header: "attacker.example"})
+
+    mock_opener_fn.assert_not_called()
+
+
 def test_redirect_revalidates_target_before_following():
     request = urllib.request.Request("https://xquik.com/api/v1/x/tweets/123")
     request.add_unredirected_header("x-api-key", "test-key")

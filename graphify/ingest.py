@@ -85,7 +85,7 @@ def _detect_url_type(url: str) -> str:
     except ValueError:
         return "webpage"
     hostname = (hostname or "").lower()
-    if hostname in _TWEET_HOSTS:
+    if hostname in _TWEET_HOSTS and re.search(r"/status(?:es)?(?:/|$)", parsed.path):
         return "tweet"
     if "arxiv.org" in lower:
         return "arxiv"
