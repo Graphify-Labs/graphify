@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -128,6 +129,21 @@ def test_safe_fetch_limits_custom_headers_to_initial_request():
 
     assert redirected.get_header("X-api-key") is None
     assert redirected.get_header("X-auth-token") is None
+
+
+def test_redirect_revalidates_target_before_following():
+    request = urllib.request.Request("https://xquik.com/api/v1/x/tweets/123")
+    request.add_unredirected_header("x-api-key", "test-key")
+
+    with pytest.raises(ValueError, match="file"):
+        _NoFileRedirectHandler().redirect_request(
+            request,
+            None,
+            302,
+            "Found",
+            {},
+            "file:///etc/passwd",
+        )
 
 
 def test_safe_fetch_raises_on_non_2xx():
