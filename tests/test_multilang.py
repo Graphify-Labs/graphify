@@ -531,7 +531,7 @@ def test_sql_escaped_closing_bracket_in_routine_name_is_consumed(tmp_path):
     [a]]b] names the identifier a]b. A pattern that stops at the first ]
     truncated the name to [dbo].[a] — a phantom that could collide with a
     genuinely-named [dbo].[a]."""
-    import tree_sitter_sql  # noqa: F401 — required by the recovery path under test
+    pytest.importorskip("tree_sitter_sql")
     p = tmp_path / "proc.sql"
     p.write_text("CREATE PROCEDURE [dbo].[a]]b]\nAS\nBEGIN\n    SELECT 1;\nEND;\n")
     r = extract_sql(p)
@@ -629,21 +629,76 @@ def test_sql_comment_openers_inside_string_literals_do_not_hide_ddl(tmp_path):
     assert "[dbo].[usp_AfterBlockString]()" in labels, labels
 
 
-def test_mask_sql_comments_preserves_literals_and_blanks_comments():
-    """Unit pin for _mask_sql_comments: comment openers inside string or
-    identifier literals are data; real comments blank to spaces with newlines
-    and offsets preserved."""
+def test_mask_sql_comments_literal_and_comment_handling():
+    """Unit pin for _mask_sql_comments: comment openers inside literals are
+    data, not comment starts; single-quoted strings are blanked (dynamic SQL
+    must not be recoverable); double-quoted and bracket identifiers are
+    preserved verbatim (they carry recoverable names); comments blank to
+    spaces with newlines and offsets preserved, an unclosed block comment
+    running to end-of-file."""
     from graphify.extractors.sql import _mask_sql_comments as mask
 
-    assert mask("select '-- x' from t") == "select '-- x' from t"
-    assert mask("select 'it''s -- ok'") == "select 'it''s -- ok'"
+    # a comment opener inside a literal never blanks past the literal
+    assert mask("select '-- x' from t") == "select        from t"
+    assert mask("select 'a /* b' as x, 1") == "select          as x, 1"
+    # '' escape is consumed as one literal (no blanking past the string)
+    src = "select 'it''s -- ok', 1"
+    expected = "select " + " " * len("'it''s -- ok'") + ", 1"
+    assert mask(src) == expected and len(mask(src)) == len(src)
+    # identifier literals are preserved verbatim, escapes included
     assert mask('select "a--b" from t') == 'select "a--b" from t'
+    assert mask('CREATE FUNCTION "public"."a""b"()') == 'CREATE FUNCTION "public"."a""b"()'
     assert mask("select [a--b] from t") == "select [a--b] from t"
-    assert mask("select 'a /* b' as x") == "select 'a /* b' as x"
+    # dynamic SQL contents cannot survive the mask
+    dyn = "EXEC(N'CREATE PROC [dbo].[Fake] AS BEGIN SELECT 1; END');"
+    assert "CREATE" not in mask(dyn) and len(mask(dyn)) == len(dyn)
+    # comments blank to spaces, newlines kept, offsets stable
     assert mask("a -- b") == "a     "
     assert mask("x /* y */ z") == "x         z"
     masked = mask("a /* m\nl */ b")
     assert masked == "a     \n     b" and len(masked) == len("a /* m\nl */ b")
+    # an unclosed block comment masks to end-of-file, newlines kept
+    unclosed = "/* CREATE PROC [dbo].[Ghost] AS\nBEGIN SELECT 1; END"
+    assert "CREATE" not in mask(unclosed) and len(mask(unclosed)) == len(unclosed)
+
+
+def test_sql_dynamic_sql_and_unclosed_comment_do_not_fabricate_routines(tmp_path):
+    """DDL text reachable only through a single-quoted string (dynamic SQL) or
+    an unterminated block comment must not mint routine nodes when an
+    unrelated parse error arms the recovery scans."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "dynamic.sql"
+    p.write_text(
+        "THIS IS NOT SQL AT ALL %%%;\n"
+        "EXEC(N'CREATE OR ALTER PROC [dbo].[usp_Dynamic] AS BEGIN SELECT 1; END');\n"
+        "CREATE PROCEDURE [dbo].[usp_Real]\nAS\nBEGIN\n    SELECT 1;\nEND;\n"
+        "/* an unterminated comment swallows the rest of the file\n"
+        "CREATE PROC [dbo].[usp_Unterminated] AS BEGIN SELECT 1; END;\n"
+    )
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"] if n["label"] != "dynamic.sql"]
+    assert "[dbo].[usp_Real]()" in labels, labels
+    assert not any("Dynamic" in label or "Unterminated" in label for label in labels), (
+        f"string-embedded or comment-swallowed DDL fabricated a node: {labels}"
+    )
+
+
+def test_sql_escaped_double_quote_in_routine_name_is_consumed(tmp_path):
+    """ANSI SQL escapes a literal double quote inside a delimited identifier
+    by doubling it: "a""b" names the identifier a"b. A pattern that stops at
+    the first closing quote truncated the recovered name to "dbo"."a" — the
+    "" twin of the bracket ]] escape handled above.
+
+    The AS BEGIN body idiom keeps the whole statement in ERROR recovery: for a
+    statement the grammar CAN parse, tree-sitter-sql itself truncates the
+    object_reference at the "" escape (emitting `"b"` as a stray ERROR child),
+    which is an upstream grammar defect this extractor cannot repair."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "fn.sql"
+    p.write_text('CREATE PROCEDURE "dbo"."a""b"\nAS\nBEGIN\n    SELECT 1;\nEND;\n')
+    r = extract_sql(p)
+    routine = [n["label"] for n in r["nodes"] if n["label"] != "fn.sql"]
+    assert routine == ['"dbo"."a""b"()'], routine
 
 
 def test_sql_cte_is_not_read_as_a_table():

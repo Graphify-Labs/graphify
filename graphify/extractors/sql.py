@@ -31,45 +31,59 @@ from graphify.extractors.base import _file_stem, _make_id
 _ROUTINE_RECOVERY_RX = re.compile(
     r"CREATE\s+(?:OR\s+(?:REPLACE|ALTER)\s+)?(?:FUNCTION|PROC(?:EDURE)?)\s+"
     r"(?:IF\s+NOT\s+EXISTS\s+)?"
-    r"((?:\"[^\"\n]+\"|\[(?:[^\]\n]|\]\])+\]|[\w$]+)"
-    r"(?:\s*\.\s*(?:\"[^\"\n]+\"|\[(?:[^\]\n]|\]\])+\]|[\w$]+))*)",
+    r"((?:\"(?:[^\"\n]|\"\")+\"|\[(?:[^\]\n]|\]\])+\]|[\w$]+)"
+    r"(?:\s*\.\s*(?:\"(?:[^\"\n]|\"\")+\"|\[(?:[^\]\n]|\]\])+\]|[\w$]+))*)",
     re.IGNORECASE,
 )
 
-# Matches string/identifier literals (preserved) or comments (blanked) for
-# _mask_sql_comments. Literals are matched first so a comment opener INSIDE a
-# literal ('-- not a comment', [a--b]) is not treated as a comment. Literal
-# patterns are deliberately single-line: this mask only runs on files that
-# already failed to parse, where an unclosed quote is likely, and a multi-line
-# literal match would let one unclosed delimiter swallow real DDL below it —
-# a masked-away routine (false negative) is recoverable by fixing the file, a
-# swallowed one is silent. A comment opener inside a multi-line string
-# therefore still masks to end-of-line, which can only hide a routine, never
-# fabricate one. DOTALL so a block comment may span lines.
+# Matches literals or comments for _mask_sql_comments. Literals are matched
+# first so a comment opener INSIDE a literal ('-- not a comment', [a--b]) is
+# not treated as a comment — but they are not all treated alike:
+#
+# - single-quoted strings are BLANKED like comments: routine names never live
+#   in single quotes, and dynamic SQL (EXEC(N'CREATE PROC [dbo].[Fake] ...'))
+#   would otherwise fabricate a routine node whenever an unrelated parse
+#   error arms the whole-file scan;
+# - double-quoted and bracket-delimited identifiers are PRESERVED verbatim —
+#   they are exactly the delimited names the recovery regex must see ("" and
+#   ]] escapes consumed, mirroring _ROUTINE_RECOVERY_RX).
+#
+# Literal patterns are deliberately single-line: this mask only runs on files
+# that already failed to parse, where an unclosed quote is likely, and a
+# multi-line literal match would let one unclosed delimiter swallow real DDL
+# below it — a masked-away routine (false negative) is recoverable by fixing
+# the file, a swallowed one is silent. A comment opener inside a multi-line
+# string therefore still masks to end-of-line, which can only hide a routine,
+# never fabricate one. DOTALL so a block comment may span lines; an UNCLOSED
+# block comment runs to end-of-file (matching SQL semantics) — requiring the
+# closing */ left everything after an unterminated /* unmasked, and an
+# unterminated comment is exactly the kind of error that arms recovery.
 _SQL_COMMENT_OR_LITERAL_RX = re.compile(
-    r"'(?:[^'\n]|'')*'"          # single-quoted string, '' escape (one line)
-    r"|\"[^\"\n]*\""             # double-quoted identifier (one line)
-    r"|\[(?:[^\]\n]|\]\])*\]"   # bracket-delimited identifier, ]] escape
-    r"|(--[^\n]*|/\*.*?\*/)",    # group 1: the comment span to blank
+    r"('(?:[^'\n]|'')*')"        # group 1: single-quoted string — blanked
+    r"|\"(?:[^\"\n]|\"\")*\""    # double-quoted identifier — preserved
+    r"|\[(?:[^\]\n]|\]\])*\]"   # bracket-delimited identifier — preserved
+    r"|(--[^\n]*|/\*.*?(?:\*/|\Z))",  # group 2: comment — blanked
     re.DOTALL,
 )
 
 
 def _mask_sql_comments(text: str) -> str:
-    """Blank out comment spans, preserving every character offset.
+    """Blank comment and string-literal spans, preserving every offset.
 
-    Non-newline characters inside a comment become spaces and newlines are
-    kept, so positions and line numbers computed against the masked text are
-    valid against the original. String and identifier literals are preserved
-    verbatim, so a `--` or `/*` inside one does not start a comment. Used by
-    the whole-file routine recovery so commented-out CREATE PROCEDURE/FUNCTION
-    DDL in a file that has an unrelated parse error cannot fabricate a routine
-    node.
+    Non-newline characters inside a blanked span become spaces and newlines
+    are kept, so positions and line numbers computed against the masked text
+    are valid against the original. Double-quoted and bracket-delimited
+    identifiers are preserved verbatim (they carry recoverable routine
+    names); single-quoted strings are blanked (they can carry dynamic SQL
+    that must not be recovered), and a `--` or `/*` inside any literal does
+    not start a comment. Used by both routine-recovery scans so commented-out
+    or string-embedded CREATE PROCEDURE/FUNCTION DDL in a file that has an
+    unrelated parse error cannot fabricate a routine node.
     """
     return _SQL_COMMENT_OR_LITERAL_RX.sub(
         lambda m: (
             "".join("\n" if c == "\n" else " " for c in m.group(0))
-            if m.group(1)
+            if m.group(1) or m.group(2)
             else m.group(0)
         ),
         text,
