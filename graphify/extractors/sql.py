@@ -36,58 +36,109 @@ _ROUTINE_RECOVERY_RX = re.compile(
     re.IGNORECASE,
 )
 
-# Matches literals or comments for _mask_sql_comments. Literals are matched
-# first so a comment opener INSIDE a literal ('-- not a comment', [a--b]) is
-# not treated as a comment — but they are not all treated alike:
+# _mask_sql_comments is a linear character scanner, not a regex: the four
+# span kinds interact in ways a single pattern cannot express safely —
+# comment-opener parity inside strings, nested block comments, and
+# end-of-line abandonment of unclosed literals. Span handling:
 #
-# - single-quoted strings are BLANKED like comments: routine names never live
-#   in single quotes, and dynamic SQL (EXEC(N'CREATE PROC [dbo].[Fake] ...'))
-#   would otherwise fabricate a routine node whenever an unrelated parse
-#   error arms the whole-file scan;
+# - single-quoted strings are BLANKED like comments: routine names never
+#   live in single quotes, and dynamic SQL (EXEC(N'CREATE PROC [dbo].[Fake]
+#   ...')) would otherwise fabricate a routine node whenever an unrelated
+#   parse error arms the whole-file scan. (Dialects where other quoting
+#   carries strings — MySQL double quotes, PostgreSQL dollar-quoting — are
+#   NOT modelled; DDL inside those still reaches the scan.)
 # - double-quoted and bracket-delimited identifiers are PRESERVED verbatim —
 #   they are exactly the delimited names the recovery regex must see ("" and
 #   ]] escapes consumed, mirroring _ROUTINE_RECOVERY_RX).
+# - line comments blank to end-of-line; block comments blank to their
+#   matching */ with NESTING tracked (SQL Server and PostgreSQL both nest
+#   /* */, and a lazy first-*/ match let commented-out DDL inside a nested
+#   comment fabricate nodes). An UNCLOSED block comment blanks to
+#   end-of-file, matching SQL semantics.
 #
-# Literal patterns are deliberately single-line: this mask only runs on files
-# that already failed to parse, where an unclosed quote is likely, and a
-# multi-line literal match would let one unclosed delimiter swallow real DDL
+# Literals are deliberately abandoned at end-of-line: this mask only runs on
+# files that already failed to parse, where an unclosed delimiter is likely,
+# and a multi-line literal span would let one unclosed quote swallow real DDL
 # below it — a masked-away routine (false negative) is recoverable by fixing
 # the file, a swallowed one is silent. A comment opener inside a multi-line
-# string therefore still masks to end-of-line, which can only hide a routine,
-# never fabricate one. DOTALL so a block comment may span lines; an UNCLOSED
-# block comment runs to end-of-file (matching SQL semantics) — requiring the
-# closing */ left everything after an unterminated /* unmasked, and an
-# unterminated comment is exactly the kind of error that arms recovery.
-_SQL_COMMENT_OR_LITERAL_RX = re.compile(
-    r"('(?:[^'\n]|'')*')"        # group 1: single-quoted string — blanked
-    r"|\"(?:[^\"\n]|\"\")*\""    # double-quoted identifier — preserved
-    r"|\[(?:[^\]\n]|\]\])*\]"   # bracket-delimited identifier — preserved
-    r"|(--[^\n]*|/\*.*?(?:\*/|\Z))",  # group 2: comment — blanked
-    re.DOTALL,
-)
+# string is therefore consumed as (blanked) string content up to the
+# newline and never opens a comment — so it can neither fabricate nor mask
+# anything beyond its own line.
 
 
 def _mask_sql_comments(text: str) -> str:
     """Blank comment and string-literal spans, preserving every offset.
 
-    Non-newline characters inside a blanked span become spaces and newlines
-    are kept, so positions and line numbers computed against the masked text
-    are valid against the original. Double-quoted and bracket-delimited
-    identifiers are preserved verbatim (they carry recoverable routine
-    names); single-quoted strings are blanked (they can carry dynamic SQL
-    that must not be recovered), and a `--` or `/*` inside any literal does
-    not start a comment. Used by both routine-recovery scans so commented-out
-    or string-embedded CREATE PROCEDURE/FUNCTION DDL in a file that has an
-    unrelated parse error cannot fabricate a routine node.
+    One output character per input character: non-newline characters inside
+    a blanked span become spaces and newlines are kept, so positions and
+    line numbers computed against the masked text are valid against the
+    original. Double-quoted and bracket-delimited identifiers are preserved
+    verbatim (they carry recoverable routine names); single-quoted strings,
+    line comments, and (nesting-aware) block comments are blanked. Used by
+    both routine-recovery scans so CREATE PROCEDURE/FUNCTION DDL reachable
+    only through a comment or a single-quoted string cannot fabricate a
+    routine node when an unrelated parse error arms recovery.
     """
-    return _SQL_COMMENT_OR_LITERAL_RX.sub(
-        lambda m: (
-            "".join("\n" if c == "\n" else " " for c in m.group(0))
-            if m.group(1) or m.group(2)
-            else m.group(0)
-        ),
-        text,
-    )
+    out: list[str] = []
+    i, n = 0, len(text)
+
+    def _blank(upto: int) -> int:
+        """Blank [i, upto), keeping newlines; return upto."""
+        for c in text[i:upto]:
+            out.append("\n" if c == "\n" else " ")
+        return upto
+
+    while i < n:
+        c = text[i]
+        if c == "'":
+            # Single-quoted string: blank it. '' is an escaped quote; a
+            # newline abandons the literal (see the comment above).
+            j = i + 1
+            while j < n and text[j] != "\n":
+                if text[j] == "'":
+                    if j + 1 < n and text[j + 1] == "'":
+                        j += 2
+                        continue
+                    j += 1
+                    break
+                j += 1
+            i = _blank(j)
+        elif c == '"' or c == "[":
+            # Delimited identifier: preserve verbatim. Doubled closers are
+            # escapes; a newline abandons the literal.
+            closer = '"' if c == '"' else "]"
+            j = i + 1
+            while j < n and text[j] != "\n":
+                if text[j] == closer:
+                    if j + 1 < n and text[j + 1] == closer:
+                        j += 2
+                        continue
+                    j += 1
+                    break
+                j += 1
+            out.append(text[i:j])
+            i = j
+        elif c == "-" and i + 1 < n and text[i + 1] == "-":
+            j = i
+            while j < n and text[j] != "\n":
+                j += 1
+            i = _blank(j)
+        elif c == "/" and i + 1 < n and text[i + 1] == "*":
+            depth, j = 1, i + 2
+            while j < n and depth:
+                if text[j] == "/" and j + 1 < n and text[j + 1] == "*":
+                    depth += 1
+                    j += 2
+                elif text[j] == "*" and j + 1 < n and text[j + 1] == "/":
+                    depth -= 1
+                    j += 2
+                else:
+                    j += 1
+            i = _blank(j)  # unclosed comment: j == n, blanks to end-of-file
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
 
 
 def _norm_ident(name: str) -> str:
@@ -327,28 +378,16 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                     tbl_nid = table_nids.get(_norm_ident(tbl_name)) or _ref_stub(tbl_name)
                     _add_edge(trig_nid, tbl_nid, "triggers", line)
 
-        elif t == "ERROR":
-            # tree-sitter-sql cannot parse PL/pgSQL CREATE FUNCTION/PROCEDURE
-            # bodies (OUT/INOUT params, tagged dollar quotes, PERFORM, :=) and
-            # emits an ERROR node instead, silently dropping the object.
-            # Regex-scan the raw text as fallback, mirroring the
-            # fb_proc_or_trigger recovery below. One ERROR blob can swallow
-            # several statements, so scan for every CREATE in it. We deliberately
-            # do not scan the body for FROM/JOIN references: PL/pgSQL loop
-            # variables and locals would produce junk reads_from targets.
-            #
-            # Name and keyword shapes accepted here are defined once in
-            # _ROUTINE_RECOVERY_RX, shared with the whole-file fallback below —
-            # see the comment on the constant. Comments are masked the same
-            # way too: an ERROR blob can swallow commented-out DDL along with
-            # the statements around it, and unmasked text would fabricate a
-            # routine node from it exactly as the whole-file scan once did.
-            text = _mask_sql_comments(_read(node))
-            for m in _ROUTINE_RECOVERY_RX.finditer(text):
-                name = m.group(1)
-                m_line = line + text[: m.start()].count("\n")
-                nid = _make_id(stem, name)
-                _add_node(nid, f"{name}()", m_line)
+        # NOTE: there is deliberately NO recovery scan on individual ERROR
+        # nodes. Any ERROR node anywhere makes root.has_error true, so the
+        # whole-file masked scan below this walk already recovers everything
+        # a per-node scan could — from the SAME shared _ROUTINE_RECOVERY_RX,
+        # with _add_node deduping by id. A per-node scan is not just
+        # redundant, it is unsound: _mask_sql_comments needs file-level
+        # context, and an ERROR fragment can begin MID-comment (tree-sitter's
+        # lexer does not nest /* */, so the text after an inner */ parses as
+        # code and lands in an ERROR blob with no comment opener in sight),
+        # which let commented-out DDL fabricate routine nodes.
 
         elif t == "fb_proc_or_trigger":
             text = _read(node)
@@ -516,14 +555,17 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
     # routines already recovered from the tree are not emitted twice.
     #
     # Gate on a failed parse: a cleanly-parsing file must NOT have routines
-    # fabricated from commented-out DDL, DDL inside EXECUTE '...' string bodies,
-    # or MySQL `CREATE FUNCTION IF NOT EXISTS` (which would capture `IF`). Every
+    # fabricated from MySQL `CREATE FUNCTION IF NOT EXISTS` (which would
+    # capture `IF`) or other shapes the mask does not model (double-quoted
+    # strings in MySQL's default mode, PostgreSQL dollar-quoted bodies). Every
     # observed drop shape leaves an ERROR node in the tree, so has_error loses
     # nothing while protecting clean corpora (#2180 follow-up).
     if root.has_error:
-        # Comments are masked (offset-preserving) so commented-out DDL cannot
-        # fabricate a routine when an unrelated error arms this scan; DDL
-        # inside string bodies remains covered only by the has_error gate.
+        # The mask blanks comments (nesting-aware) and single-quoted strings
+        # (offset-preserving), so commented-out DDL and single-quoted dynamic
+        # SQL cannot fabricate a routine when an unrelated error arms this
+        # scan; string shapes the mask does not model rely on the has_error
+        # gate alone.
         for m in _ROUTINE_RECOVERY_RX.finditer(_mask_sql_comments(src_text)):
             fn_name = m.group(1)
             fn_line = src_text[: m.start()].count("\n") + 1

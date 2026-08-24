@@ -583,9 +583,9 @@ def test_sql_commented_ddl_is_not_fabricated_by_error_recovery(tmp_path):
         "CREATE PROCEDURE [dbo].[usp_Real]\nAS\nBEGIN\n    SELECT 1;\nEND;\n"
         "THIS IS NOT SQL AT ALL %%%;\n"
         # Sandwiched between broken segments so one ERROR blob's byte span
-        # covers the comment: the walk-time ERROR scan sees it too (the
-        # leading comments above land in proper comment nodes instead, and a
-        # trailing comment falls outside the ERROR span):
+        # covers the comment — the shape that made a per-ERROR-node scan
+        # unsound (a fragment can lack the comment opener entirely) and is
+        # why recovery scans only the whole masked file:
         "%%% BROKEN JUNK\n"
         "-- CREATE PROC [dbo].[usp_ErrComment] AS BEGIN SELECT 1; END;\n"
         "%%% MORE BROKEN JUNK\n"
@@ -660,6 +660,19 @@ def test_mask_sql_comments_literal_and_comment_handling():
     # an unclosed block comment masks to end-of-file, newlines kept
     unclosed = "/* CREATE PROC [dbo].[Ghost] AS\nBEGIN SELECT 1; END"
     assert "CREATE" not in mask(unclosed) and len(mask(unclosed)) == len(unclosed)
+    # a /* inside a MULTI-LINE string is consumed as (blanked, line-scoped)
+    # string content — it must NOT open a comment that swallows the file
+    multi = (
+        "SET @sql = N'SELECT a /* c1\n , b FROM t';\nGO\n"
+        "CREATE PROCEDURE dbo.usp_Real AS BEGIN SELECT 1; END;\n"
+    )
+    out = mask(multi)
+    assert "CREATE PROCEDURE dbo.usp_Real" in out and len(out) == len(multi)
+    # block comments NEST (SQL Server and PostgreSQL both nest /* */): DDL
+    # commented out inside a nested comment must not survive the mask
+    nested = "/* outer\n   /* inner */\n   CREATE PROC dbo.usp_Fake AS BEGIN SELECT 1; END;\n*/\n"
+    out = mask(nested)
+    assert "CREATE" not in out and len(out) == len(nested)
 
 
 def test_sql_dynamic_sql_and_unclosed_comment_do_not_fabricate_routines(tmp_path):
@@ -671,6 +684,10 @@ def test_sql_dynamic_sql_and_unclosed_comment_do_not_fabricate_routines(tmp_path
     p.write_text(
         "THIS IS NOT SQL AT ALL %%%;\n"
         "EXEC(N'CREATE OR ALTER PROC [dbo].[usp_Dynamic] AS BEGIN SELECT 1; END');\n"
+        "SET @sql = N'SELECT 1 /* opener inside a multi-line string\n"
+        " must not swallow what follows';\n"
+        "/* nested /* comments */ hide this:\n"
+        "CREATE PROC [dbo].[usp_Nested] AS BEGIN SELECT 1; END;\n*/\n"
         "CREATE PROCEDURE [dbo].[usp_Real]\nAS\nBEGIN\n    SELECT 1;\nEND;\n"
         "/* an unterminated comment swallows the rest of the file\n"
         "CREATE PROC [dbo].[usp_Unterminated] AS BEGIN SELECT 1; END;\n"
@@ -678,7 +695,11 @@ def test_sql_dynamic_sql_and_unclosed_comment_do_not_fabricate_routines(tmp_path
     r = extract_sql(p)
     labels = [n["label"] for n in r["nodes"] if n["label"] != "dynamic.sql"]
     assert "[dbo].[usp_Real]()" in labels, labels
-    assert not any("Dynamic" in label or "Unterminated" in label for label in labels), (
+    fabricated = [
+        label for label in labels
+        if "Dynamic" in label or "Nested" in label or "Unterminated" in label
+    ]
+    assert not fabricated, (
         f"string-embedded or comment-swallowed DDL fabricated a node: {labels}"
     )
 
