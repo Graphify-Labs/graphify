@@ -2,6 +2,11 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Fix: `--graph=PATH` is now honored by `query`/`path`/`explain`, not just `affected`. The three surfaces parsed only the space-separated `--graph PATH` form, so the `=` form was silently dropped and the user queried the default graph with no warning. All four surfaces now share one option parser.
+- Fix: a valueless `--graph` (trailing, or the empty `--graph=`) on `query`/`path`/`explain`/`affected` now exits 2 with an actionable message instead of being silently ignored — the same silent-selection-loss class as the `=` form.
+
 ## 0.9.56 (unreleased)
 
 - Fix: Rust trait method declarations (signature-only, and default-bodied) are now extracted as nodes — trait bodies were never walked, so both were silently dropped; a trait-declared method stays a distinct node from its impl definition (#3366, thanks @santoshpy).
