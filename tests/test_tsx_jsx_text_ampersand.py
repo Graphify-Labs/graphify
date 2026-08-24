@@ -323,6 +323,29 @@ def test_mask_source_round_trips_non_utf8_bytes():
     assert b"caf\xe9" in out
 
 
+@pytest.mark.parametrize('src,expected', [
+    (b'<Box>a & b</Box>', b'<Box>a   b</Box>'),
+    ('<Box>Conexões & Integrações</Box>'.encode('utf-8'),
+     '<Box>Conexões   Integrações</Box>'.encode('utf-8')),
+    (b'<Box>a & b</Box>  // caf\xe9 latin-1 comment\n',
+     b'<Box>a   b</Box>  // caf\xe9 latin-1 comment\n'),
+    (b'<Box>a & b</Box> \xff\xfe',
+     b'<Box>a   b</Box> \xff\xfe'),
+    (b'const x = 1 & 2;', b'const x = 1 & 2;'),
+])
+def test_mask_source_preserves_byte_length(src, expected):
+    """The ``_tsx_mask_source`` contract is ``bytes -> bytes`` and must be
+    byte-length-preserving. Every non-ampersand byte survives the round trip,
+    and a bare ``&`` in JSX text is replaced by a single ASCII space so the
+    parser sees the same offsets as the original file. This covers multibyte
+    UTF-8 JSX text and invalid-UTF-8 bytes that round-trip via
+    ``surrogateescape``."""
+    out = _tsx_mask_source(src)
+    assert isinstance(out, bytes)
+    assert len(out) == len(src)
+    assert out == expected
+
+
 def test_code_after_jsx_element_is_not_masked(tmp_path, capsys):
     """A closing tag must exit the element's ``jsx_text`` context: code
     after ``</div>`` is TS code again, so a bitwise ``&`` there must not
