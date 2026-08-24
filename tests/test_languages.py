@@ -2065,6 +2065,35 @@ def test_powershell_class_base_type_emits_inherits_edge():
     assert ("Circle", "Shape") in _edge_labels(r, "inherits")
 
 
+def test_powershell_enum_is_extracted_and_reference_resolves(tmp_path):
+    """A PowerShell enum must be a real definition, and `[Enum]` refs resolve to it.
+
+    Enums were not extracted at all, so `[Color]$c` produced a `references` edge to
+    a sourceless phantom stub instead of the enum, and the enum's members were lost.
+    """
+    f = tmp_path / "colors.ps1"
+    f.write_text(
+        "enum Color {\n    Red\n    Green = 5\n    Blue\n}\n\n"
+        "class Widget {\n    [Color]$color\n}\n"
+    )
+    r = extract_powershell(f)
+    assert "error" not in r
+    color = next((n for n in r["nodes"] if n["label"] == "Color"), None)
+    assert color is not None, "enum definition dropped"
+    assert color["source_file"] != "", "enum must be a real sourced definition, not a phantom stub"
+    # members are captured
+    contained = {
+        n["label"] for n in r["nodes"]
+        for e in r["edges"]
+        if e["relation"] == "contains" and e["source"] == color["id"] and e["target"] == n["id"]
+    }
+    assert {"Red", "Green", "Blue"} <= contained, f"enum members missing: {contained}"
+    # the field type reference resolves to the real enum node
+    ref_targets = {e["target"] for e in r["edges"]
+                   if e["relation"] == "references" and e.get("context") == "field"}
+    assert color["id"] in ref_targets, "[Color] field reference did not resolve to the enum"
+
+
 def test_powershell_property_field_type_context():
     r = extract_powershell(FIXTURES / "sample.ps1")
     assert ("DataProcessor", "string") in _edge_labels(r, "references", "field")
