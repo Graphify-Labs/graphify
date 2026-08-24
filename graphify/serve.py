@@ -170,8 +170,17 @@ def _strip_diacritics(text: str | None) -> str:
 
 
 def _search_tokens(text: str) -> list[str]:
-    """Split text into word tokens, stripping punctuation and diacritics."""
-    return re.findall(r"\w+", _strip_diacritics(str(text)).lower())
+    """Split text into word tokens, stripping punctuation and diacritics.
+
+    `_` is a separator, exactly like `-`. `\\w` counts underscore as a word
+    character but not hyphen, so `graph_first_guard` stayed one token while the
+    label `graph-first-guard.py` split into three — and the query matched
+    nothing. Both the query and the node label pass through here, so splitting
+    on `_` keeps the two sides consistent and snake_case lookups still resolve
+    (their tokens simply match the same way). Found 2026-07-29: the graph could
+    not find the underscore spelling of its own `local_id`.
+    """
+    return re.findall(r"[^\W_]+", _strip_diacritics(str(text)).lower())
 
 
 def _has_chinese(text: str) -> bool:
@@ -1086,11 +1095,30 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
         # lost. Announcing "showing N of N nodes … among the 0 cut nodes" then
         # reads as a false truncation warning that teaches an agent to distrust a
         # complete answer and burn follow-up narrowing calls for nodes that were
-        # never cut (#2601). When every node is shown the answer is complete:
-        # return the full output with no banner rather than silently dropping
-        # edges under a misleading notice.
+        # never cut (#2601). When every node is shown the answer is complete, so
+        # edges are never dropped either (returning output[:cut_at] here would
+        # silently truncate them) — but that completeness guarantee is exactly
+        # why a query can quietly cost 4-6x its requested budget once the last
+        # node crosses the fit line (#2784): the check above only ever compared
+        # the FULL output (nodes+edges) against char_budget, so this branch was
+        # already known to be over budget, yet said nothing about it. Report the
+        # real size instead of silence — still the complete, non-truncated
+        # answer, just an honest one.
         if cut_count == 0:
-            return output
+            # Reached only inside `len(output) > char_budget`, so every node
+            # fits but the full nodes+edges output does not: an honest
+            # over-budget notice, never a truncation.
+            total_edges = sum(1 for l in lines if l.startswith("EDGE "))
+            est_tokens = len(output) // 3
+            return (
+                f"[i] Complete answer over budget: all {total_nodes} nodes and "
+                f"{total_edges} edges shown (~{est_tokens} tokens vs the "
+                f"requested ~{token_budget}-token budget). Edges are never "
+                f"dropped once every node fits, so this is already the full "
+                f"answer — raising --budget further will not shrink it. Narrow "
+                f"with context_filter=['call'] or use get_node for a specific "
+                f"symbol to reduce size instead.\n\n"
+            ) + output
         # Prominent notice at the TOP so a truncated answer can never be mistaken
         # for a complete one — silence used to read as absence (#BUG2). The
         # notice + end marker sit OUTSIDE char_budget by design (two bounded
@@ -1134,6 +1162,27 @@ def _cut_lines_to_budget(lines: list[str], token_budget: int, narrow_hint: str) 
     )
 
 
+def _display_graph_path(graph_path: str) -> str:
+    """Render a graph path for the query header.
+
+    Relative to the CWD when it sits underneath it — `graphify-out/graph.json`,
+    which is the ordinary case and stays short. Absolute otherwise, because a
+    graph outside the directory you are standing in is precisely the situation
+    the header exists to make visible (#2789). Always POSIX separators so the
+    line reads the same on either platform. Falls back to the path as given if
+    it cannot be resolved; this is a display helper and must never be the reason
+    a query fails.
+    """
+    try:
+        p = Path(graph_path).resolve()
+        try:
+            return p.relative_to(Path.cwd().resolve()).as_posix()
+        except ValueError:
+            return p.as_posix()
+    except (OSError, RuntimeError, ValueError):
+        return str(graph_path)
+
+
 def _query_graph_text(
     G: nx.Graph,
     question: str,
@@ -1142,6 +1191,7 @@ def _query_graph_text(
     depth: int = 3,
     token_budget: int = 2000,
     context_filters: list[str] | None = None,
+    graph_path: str | None = None,
 ) -> str:
     terms = _query_terms(question)
     # One graph scoring pass produces both the combined ranking (used to drive
@@ -1174,6 +1224,17 @@ def _query_graph_text(
         f"Traversal: {mode.upper()} depth={depth}",
         f"Start: {[G.nodes[n].get('label', n) for n in start_nodes]}",
     ]
+    # Name the graph this answer came from. `graphify-out/` resolves against the
+    # CWD, so running a query from a parent project while thinking about a
+    # vendored subproject silently answers from the wrong corpus — the output is
+    # well-formed and confidently wrong, and nothing in it said which graph was
+    # opened (#2789). Shown relative when the graph is under the CWD (the normal
+    # case, and short), absolute when it is not — which is exactly the case worth
+    # noticing. The node count travels with it because "355 nodes" vs "3178
+    # nodes" is often the first thing that looks wrong.
+    if graph_path:
+        header_parts.insert(0, f"Graph: {_display_graph_path(graph_path)} "
+                               f"({G.number_of_nodes()} nodes)")
     if resolved_filters:
         header_parts.append(f"Context: {', '.join(resolved_filters)} ({filter_source})")
     header_parts.append(f"{len(nodes)} nodes found")
@@ -1762,6 +1823,7 @@ def _build_server(graph_path: str):
             depth=depth,
             token_budget=budget,
             context_filters=context_filter,
+            graph_path=str(active_graph_path),
         )
         if result.startswith("No matching nodes found."):
             # Same cluster-membership note the other no-match tools append,
@@ -1791,6 +1853,12 @@ def _build_server(graph_path: str):
             f"Node: {sanitize_label(d.get('label', nid))}",
             f"  ID: {sanitize_label(nid)}",
             f"  Source: {sanitize_label(str(d.get('source_file', '')))} {sanitize_label(str(d.get('source_location', '')))}",
+            # A C/C++/ObjC symbol declared in a header and defined in the sibling
+            # impl file is ONE node keyed to the header, so Source alone points at
+            # the declaration. Name where it is implemented too, when known.
+            *([f"  Defined in: {sanitize_label(str(d.get('definition_file', '')))} "
+               f"{sanitize_label(str(d.get('definition_location', '')))}"]
+              if d.get("definition_file") else []),
             f"  Type: {sanitize_label(str(d.get('file_type', '')))}",
             f"  Community: {sanitize_label(str(d.get('community_name') or d.get('community', '')))}",
             f"  Degree: {G.degree(nid)}",

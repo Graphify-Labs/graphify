@@ -172,6 +172,84 @@ def test_legacy_edge_type_confidence_score_aliases_folded():
     assert "type" not in data
 
 
+def test_legacy_numeric_confidence_normalized_to_inferred(capsys):
+    """Pre-enum graphs stored the LLM pass's float directly in `confidence`
+    (1.0/0.95/0.9/0.85). Reloading such a graph must not warn once per edge on
+    every load — the number normalizes to INFERRED (numeric confidences only
+    ever came from the LLM semantic pass, and LLM-derived edges are INFERRED
+    by definition) with the original float preserved in confidence_score."""
+    ext = {"nodes": [{"id": "n1", "label": "A", "file_type": "code", "source_file": "a.py"},
+                     {"id": "n2", "label": "B", "file_type": "code", "source_file": "b.py"},
+                     {"id": "n3", "label": "C", "file_type": "code", "source_file": "c.py"}],
+           "edges": [{"source": "n1", "target": "n2", "relation": "calls",
+                      "confidence": 0.95, "source_file": "a.py"},
+                     {"source": "n2", "target": "n3", "relation": "references",
+                      "confidence": 1.0, "source_file": "b.py"}],
+           "input_tokens": 0, "output_tokens": 0}
+    G = build_from_json(ext)
+    err = capsys.readouterr().err
+    assert "invalid confidence" not in err
+    assert "Extraction warning" not in err
+    d12 = edge_data(G, "n1", "n2")
+    assert d12["confidence"] == "INFERRED"
+    assert d12["confidence_score"] == 0.95
+    d23 = edge_data(G, "n2", "n3")
+    assert d23["confidence"] == "INFERRED"
+    assert d23["confidence_score"] == 1.0
+
+
+def test_legacy_numeric_confidence_existing_score_wins():
+    """A numeric `confidence` next to an explicit `confidence_score` must not
+    overwrite the explicit score — the companion field is the authority."""
+    ext = {"nodes": [{"id": "n1", "label": "A", "file_type": "code", "source_file": "a.py"},
+                     {"id": "n2", "label": "B", "file_type": "code", "source_file": "b.py"}],
+           "edges": [{"source": "n1", "target": "n2", "relation": "calls",
+                      "confidence": 0.9, "confidence_score": 0.4, "source_file": "a.py"}],
+           "input_tokens": 0, "output_tokens": 0}
+    G = build_from_json(ext)
+    data = edge_data(G, "n1", "n2")
+    assert data["confidence"] == "INFERRED"
+    assert data["confidence_score"] == 0.4
+
+
+def test_legacy_numeric_confidence_links_spelling_reload(capsys):
+    """The on-disk shape of the defect: a NetworkX-serialized graph.json
+    (`links` spelling) from a pre-enum version reloads without a validator
+    warning per edge and its edges land INFERRED."""
+    raw = {"nodes": [{"id": "n1", "label": "A", "file_type": "code", "source_file": "a.py"},
+                     {"id": "n2", "label": "B", "file_type": "code", "source_file": "b.py"}],
+           "links": [{"source": "n1", "target": "n2", "relation": "calls",
+                      "confidence": 0.85, "source_file": "a.py"}]}
+    G = build_from_json(raw)
+    err = capsys.readouterr().err
+    assert "invalid confidence" not in err
+    data = edge_data(G, "n1", "n2")
+    assert data["confidence"] == "INFERRED"
+    assert data["confidence_score"] == 0.85
+
+
+def test_legacy_numeric_confidence_normalization_is_idempotent(capsys):
+    """Healing must survive a round-trip: after the first load rewrites the tag to
+    INFERRED (with the float in confidence_score), a second load of the persisted
+    graph must stay silent and leave the score stable — otherwise the warning
+    would just move one run later."""
+    from networkx.readwrite import json_graph
+    raw = {"nodes": [{"id": "n1", "label": "A", "file_type": "code", "source_file": "a.py"},
+                     {"id": "n2", "label": "B", "file_type": "code", "source_file": "b.py"}],
+           "links": [{"source": "n1", "target": "n2", "relation": "calls",
+                      "confidence": 0.85, "source_file": "a.py"}]}
+    G1 = build_from_json(raw)
+    capsys.readouterr()
+    # persist exactly as graph.json would, then reload
+    persisted = json_graph.node_link_data(G1, edges="links")
+    G2 = build_from_json(persisted)
+    err = capsys.readouterr().err
+    assert "invalid confidence" not in err
+    d = edge_data(G2, "n1", "n2")
+    assert d["confidence"] == "INFERRED"
+    assert d["confidence_score"] == 0.85
+
+
 def test_node_alias_canonical_field_wins():
     """#2194: when both the canonical field and its alias are present, the
     canonical value wins and the alias key is left untouched."""

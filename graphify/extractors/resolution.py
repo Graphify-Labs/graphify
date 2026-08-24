@@ -209,7 +209,9 @@ def _load_tsconfig_aliases(start_dir: Path) -> dict[str, list[str]]:
     Follows extends chains so SvelteKit/Nuxt/NestJS inherited aliases are included.
     Returns a dict mapping alias patterns to ordered resolved target patterns;
     wildcard tokens remain intact for substitution during resolution (#927).
-    Result is cached by config path string.
+    Result is cached by config path string. The cache has no mtime/content
+    component, so extract() clears it per run (#2917); do not assume the entry
+    survives a config edit within a long-lived process.
     """
     found = _find_js_config(start_dir)
     if found is None:
@@ -227,7 +229,8 @@ def _load_tsconfig_base_url(start_dir: Path) -> "Path | None":
     so a config declaring baseUrl and NO paths yielded an empty alias map and
     every non-relative import went unresolved (#2153). Exposed separately so it
     can act as a resolution root of last resort, after all declared aliases miss.
-    Returns None when no config declares baseUrl.
+    Returns None when no config declares baseUrl. Cached by config path with no
+    mtime component, so extract() clears it per run (#2917).
     """
     found = _find_js_config(start_dir)
     if found is None:
@@ -2062,6 +2065,12 @@ def _resolve_cross_file_imports(
                     "target": tgt_nid,
                     "relation": "uses",
                     "confidence": "INFERRED",
+                    # 0.95 = "direct structural evidence (named cross-file
+                    # reference)" from the extraction-spec rubric, which is
+                    # exactly what this edge is: a name this file imports, then
+                    # references. Omitting the score entirely fell through to the
+                    # 0.5 default the same rubric forbids outright (#2813).
+                    "confidence_score": 0.95,
                     "source_file": str_path,
                     "source_location": f"L{line}",
                     "weight": 0.8,
@@ -2123,7 +2132,10 @@ def _merge_decl_def_classes(
     and leaves it alone, and the downstream resolvers see ONE definition. Because
     the colliding nodes already share an id, no edge re-pointing is needed: every
     edge that referenced the impl symbol already points at the surviving id. We
-    only drop the redundant duplicate node and prefer the header's label.
+    only drop the redundant duplicate node and prefer the header's label — but
+    the dropped impl node's provenance is preserved on the survivor as
+    ``definition_file`` / ``definition_location``, so the definition site is
+    still reachable from the merged node.
 
     GOD-NODE GUARDS (false merges are the main risk):
 
@@ -2194,6 +2206,30 @@ def _merge_decl_def_classes(
             if len(base_headers) > 1:
                 continue
             keeper = base_headers[0] if base_headers else min(headers, key=_source_stem)
+        # The keeper is the DECLARATION, so without this the graph reports the
+        # header as the symbol's only location and the definition site — the file
+        # and line a reader actually wants — is discarded with the dropped node.
+        # Recorded as separate attributes: the survivor's id, label and
+        # source_file are untouched, so no existing graph is re-keyed, no edge
+        # moves, and the single-definition guarantee downstream resolvers rely on
+        # is unchanged. Chosen deterministically (lowest source_file, then
+        # location) so an ObjC class whose members are split across several
+        # category impls does not depend on node arrival order.
+        impls = sorted(
+            (n for n in group
+             if n is not keeper
+             and Path(str(n.get("source_file", ""))).suffix.lower()
+             in _DECLDEF_IMPL_SUFFIXES),
+            key=lambda n: (str(n.get("source_file", "")),
+                           str(n.get("source_location", ""))),
+        )
+        if impls:
+            definition = impls[0]
+            if definition.get("source_file"):
+                keeper["definition_file"] = definition["source_file"]
+            if definition.get("source_location"):
+                keeper["definition_location"] = definition["source_location"]
+
         for node in group:
             if node is not keeper:
                 drop_objs.add(id(node))
@@ -2202,7 +2238,8 @@ def _merge_decl_def_classes(
         return
 
     # Drop the redundant duplicate nodes. The surviving (header) node keeps its
-    # own label/source_file; edges are unchanged because the id is identical. Then
+    # own label/source_file (and now carries the impl's definition_file/
+    # definition_location); edges are unchanged because the id is identical. Then
     # de-dup any now-identical edges (e.g. the impl file's `contains`/`method`
     # edge that duplicates the header's after the collapse).
     all_nodes[:] = [n for n in all_nodes if id(n) not in drop_objs]
@@ -2491,6 +2528,7 @@ def _resolve_go_type_references(
 
     if new_nodes:
         all_nodes.extend(new_nodes)
+
     if not repointed_from:
         return
     referenced = {endpoint for edge in all_edges
@@ -2574,8 +2612,31 @@ def _resolve_java_type_references(
             pkg_by_file[s] = pkg
             imports_by_file[s] = imps
 
-    # FQN (package.Class) -> definition node id, for type-like defs with a source.
+    # FQN (package.Class or package.Outer.Inner) -> definition node id, for
+    # type-like defs with a source. Nested declarations need their containing
+    # type path because qualified annotation references preserve it.
     fqn_to_id: dict[str, str] = {}
+    node_by_id = {
+        node.get("id"): node for node in all_nodes if node.get("id")
+    }
+    type_parent_by_id: dict[str, str] = {}
+    for edge in all_edges:
+        if edge.get("relation") != "contains":
+            continue
+        child = node_by_id.get(edge.get("target"))
+        parent = node_by_id.get(edge.get("source"))
+        if not child or not parent:
+            continue
+        child_src = child.get("source_file", "")
+        parent_label = parent.get("label", "")
+        if (
+            child_src
+            and parent.get("source_file") == child_src
+            and parent_label[:1].isupper()
+            and not parent_label.endswith(".java")
+        ):
+            type_parent_by_id[child["id"]] = parent["id"]
+
     for node in all_nodes:
         label = node.get("label", "")
         src = node.get("source_file", "")
@@ -2586,6 +2647,20 @@ def _resolve_java_type_references(
             continue
         pkg = pkg_by_file[src]
         fqn_to_id.setdefault(f"{pkg}.{label}" if pkg else label, nid)
+        type_path = [label]
+        seen = {nid}
+        parent_id = type_parent_by_id.get(nid)
+        while parent_id and parent_id not in seen:
+            seen.add(parent_id)
+            parent = node_by_id[parent_id]
+            type_path.append(parent["label"])
+            parent_id = type_parent_by_id.get(parent_id)
+        if len(type_path) > 1:
+            nested_name = ".".join(reversed(type_path))
+            fqn_to_id.setdefault(
+                f"{pkg}.{nested_name}" if pkg else nested_name,
+                nid,
+            )
 
     # Shadow stubs: no source_file, type-like label. Dotted labels are included
     # for qualified inline annotations (`@com.example.anno.Loggable`), which the
@@ -2676,6 +2751,32 @@ def _resolve_java_type_references(
 
     if new_nodes:
         all_nodes.extend(new_nodes)
+
+    # Bare imported and inline-qualified annotation references can start on
+    # different stubs, then converge on one source-backed node above. Collapse
+    # only indistinguishable Java attribute-reference facts after that rewire.
+    seen_attribute_refs: set[tuple] = set()
+    deduped_edges: list[dict] = []
+    for edge in all_edges:
+        if (
+            edge.get("relation") == "references"
+            and edge.get("context") == "attribute"
+            and edge.get("source_file", "") in pkg_by_file
+        ):
+            key = (
+                edge.get("source"),
+                edge.get("target"),
+                edge.get("relation"),
+                edge.get("context"),
+                edge.get("source_file"),
+                edge.get("source_location"),
+            )
+            if key in seen_attribute_refs:
+                continue
+            seen_attribute_refs.add(key)
+        deduped_edges.append(edge)
+    all_edges[:] = deduped_edges
+
     if not repointed_from:
         return
 

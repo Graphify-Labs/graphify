@@ -42,7 +42,7 @@ _MANIFEST_PATH = str(out_path("manifest.json"))
 _MTIME_COARSE_S = 2.0
 _MTIME_SUBSECOND_S = 0.05
 
-CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.ejs', '.ets', '.go', '.rs', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.cu', '.cuh', '.metal', '.rb', '.rake', '.swift', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.psm1', '.psd1', '.ex', '.exs', '.m', '.mm', '.ml', '.mli', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.tf', '.tfvars', '.hcl', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.slnx', '.csproj', '.fsproj', '.vbproj', '.xaml', '.razor', '.cshtml', '.cls', '.trigger'}
+CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.ejs', '.ets', '.go', '.rs', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.cu', '.cuh', '.metal', '.rb', '.rake', '.swift', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.psm1', '.psd1', '.ex', '.exs', '.m', '.mm', '.ml', '.mli', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.tf', '.tfvars', '.hcl', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.slnx', '.csproj', '.fsproj', '.vbproj', '.xaml', '.razor', '.cshtml', '.cls', '.trigger', '.lisp', '.cl', '.lsp', '.asd'}
 DOC_EXTENSIONS = {'.md', '.mdx', '.qmd', '.skill', '.txt', '.rst', '.html', '.yaml', '.yml'}
 PAPER_EXTENSIONS = {'.pdf'}
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'}
@@ -1122,6 +1122,61 @@ def _git_info_exclude(vcs_root: Path) -> Path | None:
     return exclude if exclude.is_file() else None
 
 
+_warned_ignore_encodings: set[str] = set()
+
+
+def _read_ignore_text(path: Path) -> str:
+    """Read an ignore file, preferring UTF-8 but never silently dropping a rule.
+
+    These files were read with ``errors="ignore"``, which turns a mis-encoded
+    byte into *no* byte. An ignore file saved in the host's ANSI codepage — the
+    historical Notepad default on Windows, and still what ``Set-Content`` writes
+    without ``-Encoding`` — is not valid UTF-8, so ``Or\xe7amento/`` decoded to
+    the pattern ``Oramento/``. That matches nothing, and nothing said so: the
+    directory was scanned despite an explicit exclusion, which for a rule
+    covering documents or PDFs means they reach the semantic pass anyway.
+
+    So: UTF-8 (BOM-tolerant) first, since that is what the format should be and
+    what every other reader here assumes. Only if that fails do we fall back to
+    the host encoding, then to latin-1, which cannot fail and maps every byte to
+    a codepoint — a rule spelled in some third encoding still comes out wrong,
+    but it comes out *whole*, and the warning names the file so it is fixable.
+    Decoding never raises, matching the previous contract.
+    """
+    raw = path.read_bytes()
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        pass
+    # A BOM'd UTF-16 file (common from PowerShell `Set-Content` / Notepad "Unicode")
+    # is not valid UTF-8, and latin-1 would map its interleaved NUL bytes to a
+    # wall of \x00, garbling every rule. Decode it as UTF-16 by its BOM first.
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        try:
+            return raw.decode("utf-16")
+        except UnicodeDecodeError:
+            pass
+    import locale
+    import sys as _sys
+    fallback = locale.getpreferredencoding(False) or "latin-1"
+    for enc in (fallback, "latin-1"):
+        try:
+            text = raw.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+        key = str(path)
+        if key not in _warned_ignore_encodings:
+            _warned_ignore_encodings.add(key)
+            print(
+                f"[graphify] WARNING: {path} is not valid UTF-8; read it as "
+                f"{enc} instead. Re-save it as UTF-8 — patterns with non-ASCII "
+                "characters may not match as written.",
+                file=_sys.stderr,
+            )
+        return text
+    return raw.decode("utf-8", errors="ignore")
+
+
 def _load_dir_own_ignore(d: Path, *, gitignore: bool = True) -> list[tuple[Path, str]]:
     """Read .gitignore/.graphifyignore directly inside *d* (not its ancestors).
 
@@ -1142,7 +1197,7 @@ def _load_dir_own_ignore(d: Path, *, gitignore: bool = True) -> list[tuple[Path,
     for fname in ((".gitignore", ".graphifyignore") if gitignore else (".graphifyignore",)):
         ignore_file = d / fname
         if ignore_file.exists():
-            for raw in ignore_file.read_text(encoding="utf-8-sig", errors="ignore").splitlines():
+            for raw in _read_ignore_text(ignore_file).splitlines():
                 line = _parse_gitignore_line(raw)
                 if line:
                     patterns.append((d, line))
@@ -1184,7 +1239,7 @@ def _load_graphifyignore(root: Path, *, gitignore: bool = True) -> list[tuple[Pa
     # re-include still override it (#1810).
     info_exclude = _git_info_exclude(ceiling) if gitignore else None
     if info_exclude is not None:
-        for raw in info_exclude.read_text(encoding="utf-8-sig", errors="ignore").splitlines():
+        for raw in _read_ignore_text(info_exclude).splitlines():
             line = _parse_gitignore_line(raw)
             if line:
                 patterns.append((ceiling, line))
@@ -1644,7 +1699,8 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
 
     all_files.sort(key=lambda p: str(p))
 
-    converted_dir = root / GRAPHIFY_OUT / "converted"
+    out_base = Path(cache_root).resolve() if cache_root is not None else root
+    converted_dir = out_base / GRAPHIFY_OUT / "converted"
 
     for p in all_files:
         # For memory dir files, skip hidden/noise filtering
@@ -2070,20 +2126,33 @@ def save_manifest(
         mtime, h = hashed[f]
         key = _nfc(f)
         prev = _normalise_entry(existing.get(key, {})) or {}
-        # seen: when this row was written. If the file's mtime sits inside the
-        # same filesystem tick, a later same-length edit can land in that tick
-        # without moving mtime, so the mtime-unchanged fastpath cannot prove
-        # the content is still current and detect_incremental re-hashes.
-        entry: dict = {"mtime": mtime, "seen": time.time()}
         if kind in ("ast", "both"):
-            entry["ast_hash"] = h
+            ast_h = h
         else:
-            entry["ast_hash"] = prev.get("ast_hash", "")
+            ast_h = prev.get("ast_hash", "")
         if kind in ("semantic", "both"):
-            entry["semantic_hash"] = h
+            sem_h = h
         else:
             # Preserve semantic_hash only when content is unchanged
-            entry["semantic_hash"] = prev.get("semantic_hash", "") if h == prev.get("ast_hash", "") else ""
+            sem_h = prev.get("semantic_hash", "") if h == prev.get("ast_hash", "") else ""
+
+        # Preserve previous seen timestamp if the entry's mtime and target hash(es)
+        # are genuinely unchanged and no clear was requested for this file.
+        prev_seen = prev.get("seen")
+        is_unchanged = (
+            isinstance(prev_seen, (int, float))
+            and mtime == prev.get("mtime")
+            and (ast_h == prev.get("ast_hash", "") if kind in ("ast", "both") else True)
+            and (sem_h == prev.get("semantic_hash", "") if kind in ("semantic", "both") else True)
+            and not _in_clear_ast(f)
+            and not _in_clear(f)
+        )
+        entry: dict = {
+            "mtime": mtime,
+            "seen": prev_seen if is_unchanged else time.time(),
+            "ast_hash": ast_h,
+            "semantic_hash": sem_h,
+        }
         manifest[key] = entry
     if root is not None:
         # Persist in portable form: forward-slash relative paths. Keys outside
@@ -2095,6 +2164,17 @@ def save_manifest(
         manifest = {_nfc(_to_relative_for_storage(k, root)): v for k, v in manifest.items()}
     else:
         manifest = {_nfc(k): v for k, v in manifest.items()}
+
+    # Avoid rewriting manifest.json when the serialized payload is identical (#2838).
+    manifest_p = Path(manifest_path)
+    if manifest_p.is_file():
+        try:
+            disk_raw = json.loads(manifest_p.read_text(encoding="utf-8"))
+            if isinstance(disk_raw, dict) and disk_raw == manifest:
+                return
+        except Exception:
+            pass
+
     from graphify.paths import write_json_atomic
     # Atomic write: a crash mid-write must not leave a truncated manifest that
     # detect_incremental then fails to parse.

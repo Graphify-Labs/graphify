@@ -124,6 +124,12 @@ def extract_zig(path: Path) -> dict:
                     type_nid = _make_id(stem, type_name)
                     add_node(type_nid, type_name, line)
                     add_edge(file_nid, type_nid, "contains", line)
+                    # Zig enums and tagged unions can declare methods just like
+                    # structs (`pub fn ...` inside the container). Recurse so those
+                    # methods — and the calls made from their bodies — are captured
+                    # rather than dropped along with the whole method layer.
+                    for child in value_node.children:
+                        walk(child, parent_struct_nid=type_nid)
                 return
 
             if value_node and value_node.type in ("builtin_function", "field_expression"):
