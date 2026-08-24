@@ -1026,7 +1026,19 @@ def _mask_tsx_ampersands(src: str) -> str:
                     k += 1
                 nxt_after = src[k:k + 1] if k < n else ''
                 after_word = src[k:k + 8]
-                if nxt_after == ',' or after_word.startswith('extends') or nxt_after == '=':
+                is_extends_generic = False
+                if after_word.startswith('extends'):
+                    # ``extends`` can be a generic constraint (``<T extends X>``)
+                    # or a JSX attribute (``<Foo extends={...}>``). An attribute
+                    # has its value assignment ``=`` immediately after the name
+                    # (with optional spaces); a generic constraint has a type
+                    # expression. Treat ``>``/``/``/EOF after ``extends`` as JSX
+                    # boolean attributes as well.
+                    p = k + len('extends')
+                    while p < n and src[p].isspace():
+                        p += 1
+                    is_extends_generic = p < n and src[p] not in ('=', '>', '/')
+                if nxt_after == ',' or is_extends_generic or nxt_after == '=':
                     # ``<T,>`` / ``<T extends X>`` / ``<T = X>``: generic.
                     push = None
                 elif nxt_after == '(':
@@ -1051,7 +1063,7 @@ def _mask_tsx_ampersands(src: str) -> str:
                     push = None if (
                         m < n
                         and src[m] == '('
-                        and src[b + 1].isupper()
+                        and nxt.isupper()
                         and _generic_arrow_tail(src, m)
                     ) else 'tag'
                 else:

@@ -279,6 +279,17 @@ _MASK_CASES = [
      'const a = foo() / 2;'),
     ('const a = <div/> / 2;',
      'const a = <div/> / 2;'),
+    # --- ``extends`` as a JSX attribute must not be misread as a generic
+    # constraint; the element's children are still JSX text.
+    ('const a = <Foo extends="a & b">t & v</Foo>;',
+     'const a = <Foo extends="a & b">t   v</Foo>;'),
+    ('const a = <Foo extends={a & b}>t & v</Foo>;',
+     'const a = <Foo extends={a & b}>t   v</Foo>;'),
+    ('const a = <Foo extends>t & v</Foo>;',
+     'const a = <Foo extends>t   v</Foo>;'),
+    # A real generic constraint ``<T extends X>`` still stays code.
+    ('function f<T extends X>() { return 1 & 2; }',
+     'function f<T extends X>() { return 1 & 2; }'),
     # --- Fast-path: sources without ``&`` (or empty) are a no-op.
     ('', ''),
     ('// nothing here\nconst x = 1;\n',
