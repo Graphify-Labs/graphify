@@ -109,6 +109,23 @@ def test_al_fallback_preserves_spelling_and_casefolds_lookup(monkeypatch, tmp_pa
     assert callable_node["lookup_key"] == "dowork"
 
 
+def test_al_fallback_preserves_duplicate_triggers(monkeypatch):
+    monkeypatch.setitem(sys.modules, "tree_sitter_al", None)
+    fixture = Path(__file__).parent / "fixtures" / "semantic.al"
+
+    result = extract_al(fixture)
+    triggers = [node for node in result["nodes"] if node["label"] == "OnValidate()"]
+    trigger_ids = {node["id"] for node in triggers}
+    trigger_edges = [
+        edge for edge in result["edges"]
+        if edge["relation"] == "contains" and edge["target"] in trigger_ids
+    ]
+
+    assert len(triggers) == 2
+    assert len(trigger_ids) == 2
+    assert len(trigger_edges) == 2
+
+
 def test_al_fallback_reports_read_errors(monkeypatch, tmp_path):
     monkeypatch.setitem(sys.modules, "tree_sitter_al", None)
     result = extract_al(tmp_path / "missing.al")

@@ -697,15 +697,25 @@ class _ALFallbackExtractor:
         closing = _matching_brace(self.masked, opening)
         body = self.masked[opening + 1:closing]
         body_offset = opening + 1
+        occurrences: dict[tuple[str, str], int] = {}
         for callable_match in _AL_CALLABLE_RE.finditer(body):
-            info = self._callable_info(callable_match, object_nid, body_offset)
+            kind = callable_match.group("callable_kind").casefold()
+            name = _decode_al_identifier(callable_match.group("name"))
+            key = (kind, _al_lookup_key(name))
+            occurrences[key] = occurrences.get(key, 0) + 1
+            info = self._callable_info(
+                callable_match, object_nid, body_offset, occurrences[key]
+            )
             self._emit_callable(info)
 
-    def _callable_info(self, match, object_nid: str, body_offset: int) -> dict:
+    def _callable_info(
+        self, match, object_nid: str, body_offset: int, occurrence: int
+    ) -> dict:
         name = _decode_al_identifier(match.group("name"))
         kind = match.group("callable_kind").casefold()
+        identity = (name,) if occurrence == 1 else (name, str(occurrence))
         return {
-            "nid": _make_id(object_nid, kind, name),
+            "nid": _make_id(object_nid, kind, *identity),
             "parent": object_nid,
             "name": name,
             "kind": kind,
