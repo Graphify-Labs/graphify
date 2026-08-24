@@ -2543,6 +2543,13 @@ def dispatch_command(cmd: str) -> None:
             if isinstance(hes, list):
                 collected_hyperedges.extend(h for h in hes if isinstance(h, dict))
             merged = _nx.compose(merged, prefixed)
+        # A contract type both repos declare arrives as two unconnected nodes,
+        # since every id is repo-prefixed. Link them so a traversal can cross
+        # the repo boundary (#3007).
+        from graphify.cross_repo_types import link_shared_type_declarations as _link_shared
+        shared_links = _link_shared(merged)
+        if shared_links:
+            print(f"  linked {shared_links} type declaration(s) shared across repos")
         # Drop whatever compose left behind (the last input's list, possibly
         # with internal duplicates) so attach_hyperedges dedups the full
         # collection by id from a clean slate.
