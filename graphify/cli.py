@@ -2188,6 +2188,10 @@ def dispatch_command(cmd: str) -> None:
         # Interactive CLI: block on the per-repo lock rather than skip, so the
         # user sees their explicit `graphify update` complete instead of
         # exiting silently when a hook-driven rebuild happens to be running.
+        # #3011: honor GRAPHIFY_MEMORY_LIMIT_MB for `update` too (no flag
+        # surface here; the rebuild runs inline in this same process tree).
+        from graphify.memory_budget import start_memory_budget_monitor as _start_memory_budget
+        _start_memory_budget(label="update")
         ok = _rebuild_code(watch_path, force=force, no_cluster=no_cluster, block_on_lock=True)
         if ok:
             print("Code graph updated. For doc/paper/image changes run /graphify --update in your AI assistant.")
@@ -2932,6 +2936,8 @@ def dispatch_command(cmd: str) -> None:
         cli_token_budget: int | None = None
         cli_max_concurrency: int | None = None
         cli_api_timeout: float | None = None
+        # Memory budget (#3011): None = unset -> GRAPHIFY_MEMORY_LIMIT_MB env -> off.
+        cli_memory_limit_mb: int | None = None
         # Clustering tuning knobs
         cli_resolution: float = 1.0
         cli_exclude_hubs: float | None = None
@@ -3018,6 +3024,10 @@ def dispatch_command(cmd: str) -> None:
                 cli_api_timeout = _parse_float("--api-timeout", args[i + 1]); i += 2
             elif a.startswith("--api-timeout="):
                 cli_api_timeout = _parse_float("--api-timeout", a.split("=", 1)[1]); i += 1
+            elif a == "--memory-limit-mb" and i + 1 < len(args):
+                cli_memory_limit_mb = _parse_int("--memory-limit-mb", args[i + 1]); i += 2
+            elif a.startswith("--memory-limit-mb="):
+                cli_memory_limit_mb = _parse_int("--memory-limit-mb", a.split("=", 1)[1]); i += 1
             elif a == "--resolution" and i + 1 < len(args):
                 cli_resolution = _parse_float("--resolution", args[i + 1]); i += 2
             elif a.startswith("--resolution="):
@@ -3078,6 +3088,15 @@ def dispatch_command(cmd: str) -> None:
             os.environ["GRAPHIFY_API_TIMEOUT"] = str(cli_api_timeout)
         if cli_max_workers is not None:
             os.environ["GRAPHIFY_MAX_WORKERS"] = str(cli_max_workers)
+
+        # #3011: arm the process-tree memory budget before any heavy stage runs.
+        # Flag wins over GRAPHIFY_MEMORY_LIMIT_MB; absent both, this is a no-op.
+        from graphify.memory_budget import (
+            set_extraction_phase as _set_extraction_phase,
+            start_memory_budget_monitor as _start_memory_budget,
+        )
+        _start_memory_budget(cli_memory_limit_mb)
+        _set_extraction_phase("scan")
 
         # Resolve output dir. The user-facing contract is "<out>/graphify-out/"
         # so a fresh checkout writes graphify-out/ at the project root, matching
@@ -3494,6 +3513,7 @@ def dispatch_command(cmd: str) -> None:
                     ast_kwargs["resolution_context_nodes"] = _ctx_nodes
                 if _ctx_edges:
                     ast_kwargs["resolution_context_edges"] = _ctx_edges
+            _set_extraction_phase("ast-extraction")
             print(f"[graphify extract] AST extraction on {len(code_files)} code files...")
             try:
                 ast_result = _ast_extract(code_files, **ast_kwargs)
@@ -3558,6 +3578,7 @@ def dispatch_command(cmd: str) -> None:
                 print(f"[graphify extract] semantic cache: {sem_cache_hits} hit / {sem_cache_misses} miss")
 
             if uncached_paths:
+                _set_extraction_phase("semantic-extraction")
                 print(f"[graphify extract] semantic extraction on {len(uncached_paths)} files via {backend}...")
                 corpus_kwargs: dict = {
                     "backend": backend,
@@ -3722,6 +3743,7 @@ def dispatch_command(cmd: str) -> None:
             "output_tokens": ast_result.get("output_tokens", 0) + sem_result.get("output_tokens", 0),
         }
 
+        _set_extraction_phase("graph-build")
         graph_json_path = graphify_out / "graph.json"
         analysis_path = graphify_out / ".graphify_analysis.json"
 
