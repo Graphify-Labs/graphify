@@ -2,6 +2,11 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Fix: `--graph=PATH` is now honored by `query`/`path`/`explain`, not just `affected`. The three surfaces parsed only the space-separated `--graph PATH` form, so the `=` form was silently dropped and the user queried the default graph with no warning. All four surfaces now share one option parser.
+- Fix: a valueless `--graph` (trailing, or the empty `--graph=`) on `query`/`path`/`explain`/`affected` now exits 2 with an actionable message instead of being silently ignored — the same silent-selection-loss class as the `=` form.
+
 ## 0.9.53 (2026-08-30)
 
 - Fix: a batch of cross-language inheritance-edge corrections (thanks @Synvoya): JavaScript `class X extends Y` now emits an `inherits` edge (#1790); PHP interfaces, enums, and traits are captured as class-like nodes with their heritage (#1791); Scala `trait` declarations become class-like nodes (#1792) and qualified `extends`/`with` bases resolve to the tail type (#1794); a qualified Kotlin supertype resolves to its tail type instead of the package head (#1793); a C# interface extending an interface is classified as `inherits`, not `implements` (#1817); and a Go interface type-set constraint no longer emits a spurious `embeds` edge (#1818).

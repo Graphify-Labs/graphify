@@ -85,6 +85,54 @@ def _default_graph_path() -> str:
     return str(Path(_GRAPHIFY_OUT) / "graph.json")
 
 
+def _parse_graph_option(args: list[str]) -> "tuple[str, bool, list[str]]":
+    """Strip the --graph selection out of ``args``.
+
+    Returns ``(graph_path, graph_given, remaining)``. ``remaining`` keeps every
+    other token in order so each command can run its own flag loop over it
+    (``--budget``/``--context``, ``--depth``/``--relation``,
+    ``--directed``/``--undirected``).
+
+    query/path/explain/affected each grew their own copy of this parsing in two
+    different styles, and only ``affected`` ever handled the ``--graph=PATH``
+    form — the others silently dropped the token, so an explicitly selected
+    graph was ignored and the user queried the default graph with no warning.
+    A valueless ``--graph`` (trailing, or the empty ``--graph=``) was likewise
+    silently dropped; it now exits 2, because an empty path resolves to the
+    cwd — a directory — which only two of the four commands guard with a .json
+    suffix check. One parser keeps the four surfaces honest.
+
+    ``graph_given`` is unused by the callers today but is part of the contract:
+    a later ``--cluster`` option needs it for its mutual-exclusion check.
+    """
+    graph_path = _default_graph_path()
+    graph_given = False
+    remaining: list[str] = []
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        value: "str | None" = None
+        if arg == "--graph":
+            if i + 1 < len(args):
+                value = args[i + 1]
+                i += 2
+            else:
+                i += 1
+        elif arg.startswith("--graph="):
+            value = arg.split("=", 1)[1]
+            i += 1
+        else:
+            remaining.append(arg)
+            i += 1
+            continue
+        if not value:
+            print("error: --graph requires a path", file=sys.stderr)
+            sys.exit(2)
+        graph_path = value
+        graph_given = True
+    return graph_path, graph_given, remaining
+
+
 def _stamped_manifest_files(
     files_by_type: dict[str, list[str]],
     sem_result: dict,
@@ -1211,9 +1259,8 @@ def dispatch_command(cmd: str) -> None:
         question = sys.argv[2]
         use_dfs = "--dfs" in sys.argv
         budget = 2000
-        graph_path = _default_graph_path()
         context_filters: list[str] = []
-        args = sys.argv[3:]
+        graph_path, _graph_given, args = _parse_graph_option(sys.argv[3:])
         i = 0
         while i < len(args):
             if args[i] == "--budget" and i + 1 < len(args):
@@ -1236,9 +1283,6 @@ def dispatch_command(cmd: str) -> None:
             elif args[i].startswith("--context="):
                 context_filters.append(args[i].split("=", 1)[1])
                 i += 1
-            elif args[i] == "--graph" and i + 1 < len(args):
-                graph_path = args[i + 1]
-                i += 2
             else:
                 i += 1
         gp = Path(graph_path).resolve()
@@ -1326,19 +1370,12 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(1)
         from graphify.affected import DEFAULT_AFFECTED_RELATIONS, format_affected, load_graph
         query = sys.argv[2]
-        graph_path = _default_graph_path()
         depth = 2
         relations: list[str] = []
-        args = sys.argv[3:]
+        graph_path, _graph_given, args = _parse_graph_option(sys.argv[3:])
         i = 0
         while i < len(args):
-            if args[i] == "--graph" and i + 1 < len(args):
-                graph_path = args[i + 1]
-                i += 2
-            elif args[i].startswith("--graph="):
-                graph_path = args[i].split("=", 1)[1]
-                i += 1
-            elif args[i] == "--depth" and i + 1 < len(args):
+            if args[i] == "--depth" and i + 1 < len(args):
                 try:
                     depth = int(args[i + 1])
                 except ValueError:
@@ -1545,13 +1582,10 @@ def dispatch_command(cmd: str) -> None:
 
         source_label = sys.argv[2]
         target_label = sys.argv[3]
-        graph_path = _default_graph_path()
-        args = sys.argv[4:]
+        graph_path, _graph_given, args = _parse_graph_option(sys.argv[4:])
         direction_flag = None
-        for i, a in enumerate(args):
-            if a == "--graph" and i + 1 < len(args):
-                graph_path = args[i + 1]
-            elif a == "--directed":
+        for a in args:
+            if a == "--directed":
                 if direction_flag == "undirected":
                     print(
                         "error: --directed and --undirected are mutually exclusive",
@@ -1706,11 +1740,7 @@ def dispatch_command(cmd: str) -> None:
         from networkx.readwrite import json_graph
 
         label = sys.argv[2]
-        graph_path = _default_graph_path()
-        args = sys.argv[3:]
-        for i, a in enumerate(args):
-            if a == "--graph" and i + 1 < len(args):
-                graph_path = args[i + 1]
+        graph_path, _graph_given, _rest = _parse_graph_option(sys.argv[3:])
         gp = Path(graph_path).resolve()
         if not gp.exists():
             print(f"error: graph file not found: {gp}", file=sys.stderr)
