@@ -162,6 +162,30 @@ def test_preserve_type_keeps_stored_digraph(tmp_path):
     assert isinstance(G, nx.DiGraph)
 
 
+@pytest.mark.parametrize(
+    ("directed", "expected_type"),
+    [(False, nx.MultiGraph), (True, nx.MultiDiGraph)],
+)
+def test_preserve_type_keeps_keyed_parallel_edges(tmp_path, directed, expected_type):
+    data = _minimal(
+        multigraph=True,
+        links=[
+            {"source": "a", "target": "b", "key": "calls", "relation": "calls"},
+            {
+                "source": "a",
+                "target": "b",
+                "key": "references",
+                "relation": "references",
+            },
+        ],
+    )
+    G = load_graph_json(
+        _write(tmp_path, data), preserve_type=True, directed=directed
+    )
+    assert type(G) is expected_type
+    assert set(G["a"]["b"]) == {"calls", "references"}
+
+
 def test_size_cap_enforced(tmp_path, monkeypatch):
     monkeypatch.setenv("GRAPHIFY_MAX_GRAPH_BYTES", "10")
     path = _write(tmp_path, _minimal())
