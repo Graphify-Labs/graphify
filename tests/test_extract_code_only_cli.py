@@ -460,9 +460,38 @@ def test_filter_payload_sources_drops_hyperedges_with_removed_members():
             "malformed",
         ],
     }
+    payload["graph"] = {"hyperedges": list(payload["hyperedges"])}
 
     assert _filter_payload_sources(payload, {"stale.py"}) == 1
     assert payload["nodes"] == [{"id": "kept", "source_file": "live.py"}]
-    assert payload["hyperedges"] == [
-        {"id": "kept", "nodes": ["kept"], "source_file": "live.py"}
-    ]
+    expected = [{"id": "kept", "nodes": ["kept"], "source_file": "live.py"}]
+    assert payload["hyperedges"] == expected
+    assert payload["graph"]["hyperedges"] == expected
+
+
+def test_prune_graph_json_sources_writes_nested_only_hyperedge_removal(tmp_path):
+    """A nested-only hyperedge change must bypass the no-change early return."""
+    from graphify.cli import _prune_graph_json_sources
+
+    graph_path = tmp_path / "graph.json"
+    payload = {
+        "nodes": [{"id": "kept", "source_file": "live.py"}],
+        "links": [],
+        "graph": {
+            "hyperedges": [
+                {
+                    "id": "stale",
+                    "nodes": ["kept"],
+                    "source_file": "stale.py",
+                }
+            ],
+        },
+    }
+    graph_path.write_text(
+        json.dumps(payload),
+        encoding="utf-8",
+    )
+
+    assert _prune_graph_json_sources(graph_path, ["stale.py"]) == 0
+    payload = json.loads(graph_path.read_text(encoding="utf-8"))
+    assert payload["graph"]["hyperedges"] == []

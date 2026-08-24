@@ -97,10 +97,10 @@ def _parse_graph_option(args: list[str]) -> "tuple[str, bool, list[str]]":
     different styles, and only ``affected`` ever handled the ``--graph=PATH``
     form — the others silently dropped the token, so an explicitly selected
     graph was ignored and the user queried the default graph with no warning.
-    A valueless ``--graph`` (trailing, or the empty ``--graph=``) was likewise
-    silently dropped; it now exits 2, because an empty path resolves to the
-    cwd — a directory — which only two of the four commands guard with a .json
-    suffix check. One parser keeps the four surfaces honest.
+    A trailing valueless ``--graph`` was likewise silently dropped by all four
+    commands. The empty ``--graph=`` form was ignored by three commands and
+    reached a less-useful file-type error in ``affected``. Both now exit 2 at
+    parse time. One parser keeps the four surfaces honest.
 
     ``graph_given`` is unused by the callers today but is part of the contract:
     a later ``--cluster`` option needs it for its mutual-exclusion check.
@@ -630,7 +630,8 @@ def _zero_node_stamped_semantic_sources(
 
 def _filter_payload_sources(data: dict, stale: set) -> int:
     """Drop nodes/edges/hyperedges owned by ``stale`` source spellings from a
-    raw graph payload IN MEMORY, mutating ``data``. Returns nodes removed.
+    raw graph payload IN MEMORY, mutating ``data``. Both serialized hyperedge
+    slots are filtered. Returns nodes removed.
 
     Exact string matching against ``source_file`` — callers pass spellings the
     graph itself uses (or every plausible spelling of a path).
@@ -650,9 +651,10 @@ def _filter_payload_sources(data: dict, stale: set) -> int:
         and e.get("source") not in removed_ids
         and e.get("target") not in removed_ids
     ]
-    if "hyperedges" in data:
-        data["hyperedges"] = [
-            h for h in data.get("hyperedges", [])
+
+    def _kept_hyperedges(items: list) -> list:
+        return [
+            h for h in items
             if isinstance(h, dict)
             and h.get("source_file") not in stale
             and not (
@@ -660,6 +662,14 @@ def _filter_payload_sources(data: dict, stale: set) -> int:
                 and any(member in removed_ids for member in h["nodes"])
             )
         ]
+
+    if "hyperedges" in data:
+        data["hyperedges"] = _kept_hyperedges(data.get("hyperedges", []))
+    graph_meta = data.get("graph")
+    if isinstance(graph_meta, dict) and "hyperedges" in graph_meta:
+        graph_meta["hyperedges"] = _kept_hyperedges(
+            graph_meta.get("hyperedges", [])
+        )
     return n_removed
 
 
@@ -683,11 +693,24 @@ def _prune_graph_json_sources(graph_path: Path, stale_sources: list[str]) -> int
     links_key = "links" if "links" in data else "edges"
     n_edges_before = len(data.get(links_key, []))
     n_hyper_before = len(data.get("hyperedges", []))
+    graph_meta = data.get("graph")
+    n_nested_hyper_before = (
+        len(graph_meta.get("hyperedges", []))
+        if isinstance(graph_meta, dict)
+        else 0
+    )
     n_removed = _filter_payload_sources(data, set(stale_sources))
+    graph_meta = data.get("graph")
+    n_nested_hyper_after = (
+        len(graph_meta.get("hyperedges", []))
+        if isinstance(graph_meta, dict)
+        else 0
+    )
     if (
         n_removed == 0
         and len(data.get(links_key, [])) == n_edges_before
         and len(data.get("hyperedges", [])) == n_hyper_before
+        and n_nested_hyper_after == n_nested_hyper_before
     ):
         return 0
     from graphify.export import backup_if_protected as _backup

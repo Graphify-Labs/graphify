@@ -5,7 +5,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 ## Unreleased
 
 - Fix: `--graph=PATH` is now honored by `query`/`path`/`explain`, not just `affected`. The three surfaces parsed only the space-separated `--graph PATH` form, so the `=` form was silently dropped and the user queried the default graph with no warning. All four surfaces now share one option parser.
-- Fix: a valueless `--graph` (trailing, or the empty `--graph=`) on `query`/`path`/`explain`/`affected` now exits 2 with an actionable message instead of being silently ignored — the same silent-selection-loss class as the `=` form.
+- Fix: a valueless `--graph` on `query`/`path`/`explain`/`affected` now exits 2 with an actionable message. A trailing flag was silently ignored by all four commands; the empty `--graph=` form was ignored by three and reached a less-useful file-type error in `affected`.
 - Fix: `graphify watch` / `update` rebuilds now pass the project root through to the graph builder, so absolute `source_file` paths from semantic fragments are relativized the same way `graphify build` does instead of persisting machine-absolute paths (#932).
 - Fix: pruning a stale source file now also drops hyperedges that reference a removed node, not just hyperedges owned by the stale file — a hyperedge can no longer outlive its members.
 - Fix: community detection now repairs a non-numeric, NaN, infinite, or negative edge `weight` to 1.0 before it reaches Leiden/Louvain, matching the normalization the graph builder already applies; hand-edited or LLM-produced graph.json files loaded from disk bypassed that path.
