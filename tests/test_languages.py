@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import pytest
 from graphify.extract import (
+    extract_python,
     extract_java, extract_c, extract_cpp, extract_ruby,
     extract_csharp, extract_kotlin, extract_scala, extract_php,
     extract_swift, extract_go, extract_julia, extract_js, extract_fortran,
@@ -388,6 +389,39 @@ def test_ruby_inherits_edge():
         for e in r["edges"] if e["relation"] == "inherits"
     )
     assert found, "TimeoutApiClient should have inherits edge to ApiClient"
+
+
+# ── Python ──────────────────────────────────────────────────────────────────
+
+def test_python_parameterized_base_inherits_edge(tmp_path):
+    """`class C(Base[T])` must still emit an inherits edge to the base type.
+
+    The Python heritage handler only matched bare `identifier` bases in the
+    `superclasses` list. A parameterized base parses as a `subscript` node
+    (its `value` field is the base type; the `[...]` holds only type params),
+    so it fell through and the heritage edge was silently dropped -- every
+    `Generic[T]` / `Repo[User]` base lost its `inherits` edge.
+    """
+    source = tmp_path / "heritage.py"
+    source.write_text(
+        "class Base: pass\n"
+        "class Mixin: pass\n"
+        "class Repo(Base[int]): pass\n"
+        "class Multi(Mixin, Base[list[str]]): pass\n"
+        "def make_base(): return Base\n"
+        "class Dynamic(make_base()): pass\n"
+    )
+    result = extract_python(source)
+    inherits = _edge_labels(result, "inherits")
+    # Parameterized base must resolve to the base type, not be dropped.
+    assert ("Repo", "Base") in inherits
+    assert ("Multi", "Base") in inherits
+    # Bare-identifier bases must keep working (regression guard).
+    assert ("Multi", "Mixin") in inherits
+    # Generic arguments and dynamic base factories are not concrete parents.
+    assert ("Multi", "list") not in inherits
+    assert ("Multi", "str") not in inherits
+    assert ("Dynamic", "make_base") not in inherits
 
 
 # ── C# ───────────────────────────────────────────────────────────────────────

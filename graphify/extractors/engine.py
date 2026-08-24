@@ -3080,8 +3080,16 @@ def _extract_generic(
                 args = node.child_by_field_name("superclasses")
                 if args:
                     for arg in args.children:
-                        if arg.type == "identifier":
-                            base = _read_text(arg, source)
+                        base_node = arg
+                        # A parameterized base (`Base[T]`, `Generic[T]`,
+                        # `Repo[User]`) parses as a `subscript` whose `value`
+                        # field is the actual base type; the `[...]` holds only
+                        # type parameters. Unwrap to the value so the heritage
+                        # edge points at the base instead of being dropped.
+                        if base_node.type == "subscript":
+                            base_node = base_node.child_by_field_name("value") or base_node
+                        if base_node.type == "identifier":
+                            base = _read_text(base_node, source)
                             base_nid = ensure_named_node(base, line)
                             add_edge(class_nid, base_nid, "inherits", line)
 
