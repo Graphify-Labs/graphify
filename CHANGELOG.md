@@ -4,6 +4,12 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.49 (unreleased)
 
+- Feature: C# object-creation expressions (`new Foo()`) now emit a `calls` edge to the constructed type, so constructor usage is visible in the graph; built-in and out-of-corpus types are not fabricated and a qualified construction resolves against declared namespaces (#2997, thanks @durmazoguzhan).
+- Feature: when a C# interface has exactly one implementing class, its methods are now linked to that implementation with a `dispatches_to` edge, so a call through an injected dependency reaches the implementation; guarded against false links (single implementer, single case-sensitively same-named method, both ends C#) (#3003, thanks @durmazoguzhan).
+- Fix: Zig methods declared on enums and unions (not just structs) are now extracted, along with the calls in their bodies (#2999, thanks @rajatnagda45).
+- Fix: a Julia abstract type declared with a supertype (`abstract type Dog <: Animal end`) is now extracted with its `inherits` edge instead of being dropped (#3000, thanks @rajatnagda45).
+- Fix: a Common Lisp `defclass` whose superclass lives in another file now keeps its `inherits` edge — the cross-file base is a sourceless stub that the corpus rewire collapses onto the real definition (#3001, thanks @rajatnagda45).
+- Fix: PowerShell `enum` definitions and their members are now extracted as a real sourced node, so a `[Color]` type reference resolves to the enum instead of a phantom stub (#3002, thanks @rajatnagda45).
 - Fix: a semantic result with no nodes and no hyperedges is no longer cached and stamped into the manifest, so an empty or degenerate LLM reply for a file no longer freezes it out of future re-dispatch; an existing manifest carrying such a stamp is healed by re-queueing those files (#2927, thanks @hopstreax).
 - Fix: fresh semantic results are now scoped to the files actually dispatched before they reach the graph merge, so a stray fragment the model misattributes to a non-dispatched file can no longer replace that file's prior contribution (this also silences the "skipped out-of-scope source_file" warning) (#2926, thanks @SinghAman21).
 - Fix: `graphify extract --code-only --force` over an existing graph now preserves the document/paper/image semantic layer instead of dropping it; files deleted from disk are still pruned (#2923, thanks @santhiprakash).
