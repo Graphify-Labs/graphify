@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Feature: `graphify export neo4j|falkordb --push` now sends nodes and edges in UNWIND batches (`--batch-size`, default 100) instead of one query per entry, so a remote push stops spending nearly all its time on round trips (~100x fewer for the default); rows are grouped by sanitized node label / relationship type first (those are baked into the Cypher text and cannot be parameters), the row payloads are exactly the old per-entry params, and UNWIND processes rows in order, so the MERGE/SET upsert semantics — including idempotent re-runs — are unchanged.
+
 ## 0.9.48 (2026-08-20)
 
 - Fix: a control character in a node label or id no longer aborts the whole export; the GraphML and Obsidian exporters scrub only the characters those formats forbid (tab, newline, and non-ASCII letters are preserved), and `graph.json` and its byte-identity round-trip are untouched (#2897, thanks @abhay-codes07).

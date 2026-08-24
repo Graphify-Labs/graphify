@@ -2509,9 +2509,9 @@ def dispatch_command(cmd: str) -> None:
             print("  wiki      [--graph PATH] [--labels PATH]", file=sys.stderr)
             print("  svg       [--graph PATH] [--labels PATH]", file=sys.stderr)
             print("  graphml   [--graph PATH]", file=sys.stderr)
-            print("  neo4j     [--graph PATH] [--push URI] [--user U] [--password P]", file=sys.stderr)
+            print("  neo4j     [--graph PATH] [--push URI] [--user U] [--password P] [--batch-size N]", file=sys.stderr)
             print("            (or set NEO4J_PASSWORD instead of --password to keep it off argv)", file=sys.stderr)
-            print("  falkordb  [--graph PATH] [--push URI] [--user U] [--password P]", file=sys.stderr)
+            print("  falkordb  [--graph PATH] [--push URI] [--user U] [--password P] [--batch-size N]", file=sys.stderr)
             print("            (or set FALKORDB_PASSWORD instead of --password to keep it off argv)", file=sys.stderr)
             sys.exit(1)
 
@@ -2546,6 +2546,9 @@ def dispatch_command(cmd: str) -> None:
             os.environ.get("FALKORDB_PASSWORD") if subcmd == "falkordb"
             else os.environ.get("NEO4J_PASSWORD")
         ) or None
+        # UNWIND rows per round trip for the push sinks; the per-entry queries
+        # made a remote push spend nearly all its time on round trips.
+        push_batch_size = 100
         i = 0
         while i < len(args):
             a = args[i]
@@ -2601,6 +2604,16 @@ def dispatch_command(cmd: str) -> None:
                 push_user = args[i + 1]; i += 2
             elif a == "--password" and i + 1 < len(args):
                 push_password = args[i + 1]; i += 2
+            elif a == "--batch-size" and i + 1 < len(args):
+                try:
+                    push_batch_size = int(args[i + 1])
+                except ValueError:
+                    print("error: --batch-size must be an integer", file=sys.stderr)
+                    sys.exit(2)
+                if push_batch_size < 1:
+                    print("error: --batch-size must be a positive integer", file=sys.stderr)
+                    sys.exit(2)
+                i += 2
             elif subcmd == "callflow-html" and not a.startswith("-") and not graph_path_explicit:
                 candidate = Path(a)
                 if candidate.name == "graph.json" or candidate.suffix.lower() == ".json":
@@ -2784,7 +2797,8 @@ def dispatch_command(cmd: str) -> None:
                     print("error: --password required for --push", file=sys.stderr)
                     sys.exit(1)
                 result = _push(G, uri=push_uri, user=push_user,
-                               password=push_password, communities=communities)
+                               password=push_password, communities=communities,
+                               batch_size=push_batch_size)
                 print(f"Pushed to Neo4j: {result['nodes']} nodes, {result['edges']} edges")
             else:
                 from graphify.export import to_cypher as _to_cypher
@@ -2795,7 +2809,8 @@ def dispatch_command(cmd: str) -> None:
             if push_uri:
                 from graphify.export import push_to_falkordb as _push
                 result = _push(G, uri=push_uri, user=push_user,
-                               password=push_password, communities=communities)
+                               password=push_password, communities=communities,
+                               batch_size=push_batch_size)
                 print(f"Pushed to FalkorDB: {result['nodes']} nodes, {result['edges']} edges")
             else:
                 from graphify.export import to_cypher as _to_cypher
