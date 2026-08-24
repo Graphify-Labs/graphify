@@ -2728,6 +2728,46 @@ def dispatch_command(cmd: str) -> None:
             else:
                 print(f"error: {_cap_err}", file=sys.stderr)
                 sys.exit(1)
+
+        # DB push (neo4j/falkordb --push): stream graph.json straight into
+        # the batched UNWIND writers WITHOUT json.loads-ing the whole file or
+        # building a NetworkX graph. A push only ever iterates nodes then
+        # edges, but the full load was the memory wall: a 1.87GB graph.json
+        # peaked at ~5.3GB RSS and was OOM-killed on a 7.6GB box before a
+        # single row went out. Note the size cap above still applies to this
+        # path, but here it guards disk-read volume, not RAM. The cypher.txt
+        # (no --push) route below keeps the in-memory graph, as do all other
+        # export subcommands.
+        if push_uri and subcmd in ("neo4j", "falkordb"):
+            # Communities come from the analysis sidecar alone. When it is
+            # missing, the per-node `community` attribute (written by to_json
+            # on every node) already travels inside each streamed node's
+            # props, so the old reconstruct-from-the-graph fallback is moot.
+            communities = {}
+            if analysis_path.exists():
+                _an = json.loads(analysis_path.read_text(encoding="utf-8"))
+                communities = {int(k): v for k, v in _an.get("communities", {}).items()}
+            try:
+                if subcmd == "neo4j":
+                    from graphify.export import stream_push_to_neo4j as _stream_push
+                    if push_password is None:
+                        print("error: --password required for --push", file=sys.stderr)
+                        sys.exit(1)
+                    result = _stream_push(graph_path, uri=push_uri, user=push_user,
+                                          password=push_password, communities=communities,
+                                          batch_size=push_batch_size)
+                    print(f"Pushed to Neo4j: {result['nodes']} nodes, {result['edges']} edges")
+                else:
+                    from graphify.export import stream_push_to_falkordb as _stream_push
+                    result = _stream_push(graph_path, uri=push_uri, user=push_user,
+                                          password=push_password, communities=communities,
+                                          batch_size=push_batch_size)
+                    print(f"Pushed to FalkorDB: {result['nodes']} nodes, {result['edges']} edges")
+            except ValueError as _push_err:
+                print(f"error: {_push_err}", file=sys.stderr)
+                sys.exit(1)
+            sys.exit(0)
+
         _raw = json.loads(graph_path.read_text(encoding="utf-8"))
         if "links" not in _raw and "edges" in _raw:
             _raw = dict(_raw, links=_raw["edges"])
@@ -2834,34 +2874,20 @@ def dispatch_command(cmd: str) -> None:
             print(f"graph.graphml written - open in Gephi, yEd, or any GraphML tool")
 
         elif subcmd == "neo4j":
-            if push_uri:
-                from graphify.export import push_to_neo4j as _push
-                if push_password is None:
-                    print("error: --password required for --push", file=sys.stderr)
-                    sys.exit(1)
-                result = _push(G, uri=push_uri, user=push_user,
-                               password=push_password, communities=communities,
-                               batch_size=push_batch_size)
-                print(f"Pushed to Neo4j: {result['nodes']} nodes, {result['edges']} edges")
-            else:
-                from graphify.export import to_cypher as _to_cypher
-                _to_cypher(G, str(out_dir / "cypher.txt"))
-                print(f"cypher.txt written - import with: cypher-shell < {out_dir}/cypher.txt")
+            # --push was already handled by the streaming path above (before
+            # the in-memory graph was built); only the cypher.txt route lands
+            # here, and it keeps the in-memory graph on purpose.
+            from graphify.export import to_cypher as _to_cypher
+            _to_cypher(G, str(out_dir / "cypher.txt"))
+            print(f"cypher.txt written - import with: cypher-shell < {out_dir}/cypher.txt")
 
         elif subcmd == "falkordb":
-            if push_uri:
-                from graphify.export import push_to_falkordb as _push
-                result = _push(G, uri=push_uri, user=push_user,
-                               password=push_password, communities=communities,
-                               batch_size=push_batch_size)
-                print(f"Pushed to FalkorDB: {result['nodes']} nodes, {result['edges']} edges")
-            else:
-                from graphify.export import to_cypher as _to_cypher
-                _to_cypher(G, str(out_dir / "cypher.txt"))
-                print(f"cypher.txt written ({out_dir}/cypher.txt) - statements are OpenCypher. "
-                      f"FalkorDB's GRAPH.QUERY runs one statement at a time (no bulk script "
-                      f"import), so load a graph with: graphify export falkordb --push "
-                      f"falkordb://localhost:6379")
+            from graphify.export import to_cypher as _to_cypher
+            _to_cypher(G, str(out_dir / "cypher.txt"))
+            print(f"cypher.txt written ({out_dir}/cypher.txt) - statements are OpenCypher. "
+                  f"FalkorDB's GRAPH.QUERY runs one statement at a time (no bulk script "
+                  f"import), so load a graph with: graphify export falkordb --push "
+                  f"falkordb://localhost:6379")
 
     elif cmd == "benchmark":
         from graphify.benchmark import run_benchmark, print_benchmark
