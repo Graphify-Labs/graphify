@@ -976,6 +976,25 @@ def test_sql_ddl_keywords_inside_delimited_identifiers_do_not_fabricate(tmp_path
     assert labels == ["[dbo].[usp_Real]()"], labels
 
 
+def test_sql_create_inside_a_bare_word_does_not_fabricate(tmp_path):
+    """CREATE must match as a word: without a leading boundary the recovery
+    regex matched CREATE inside a bare identifier, so 'SELECT AUTOCREATE
+    PROCEDURE x FROM t;' in an error-bearing file minted a phantom x().
+    (Delimited identifiers are span-skipped at the scan site; a bare word
+    has no span, so the regex itself must refuse.)"""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "bare.sql"
+    p.write_text(
+        "THIS IS NOT SQL AT ALL %%%;\n"
+        "SELECT AUTOCREATE PROCEDURE x FROM t;\n"
+        "EXEC dbo.PRECREATE FUNCTION y;\n"
+        "CREATE PROCEDURE [dbo].[usp_Real]\nAS\nBEGIN\n    SELECT 1;\nEND;\n"
+    )
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"] if n["label"] != "bare.sql"]
+    assert labels == ["[dbo].[usp_Real]()"], labels
+
+
 def test_sql_escaped_double_quote_in_routine_name_is_consumed(tmp_path):
     """ANSI SQL escapes a literal double quote inside a delimited identifier
     by doubling it: "a""b" names the identifier a"b. A pattern that stops at

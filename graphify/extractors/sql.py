@@ -28,8 +28,12 @@ from graphify.extractors.base import _file_stem, _make_id
 # PROC is T-SQL's official shorthand for PROCEDURE and equally common in the
 # wild; the optional (?:EDURE)? still requires trailing whitespace, so a word
 # that merely starts with PROC cannot match.
+# \bCREATE: without the boundary, CREATE matched inside a bare word, so
+# 'SELECT AUTOCREATE PROCEDURE x FROM t;' in an error-bearing file minted a
+# phantom routine x() (delimited identifiers are span-skipped at the scan
+# site, but a bare word has no span).
 _ROUTINE_RECOVERY_RX = re.compile(
-    r"CREATE\s+(?:OR\s+(?:REPLACE|ALTER)\s+)?(?:FUNCTION|PROC(?:EDURE)?)\s+"
+    r"\bCREATE\s+(?:OR\s+(?:REPLACE|ALTER)\s+)?(?:FUNCTION|PROC(?:EDURE)?)\s+"
     r"(?:IF\s+NOT\s+EXISTS\s+)?"
     r"((?:\"(?:[^\"\n]|\"\")+\"|\[(?:[^\]\n]|\]\])+\]|[\w$]+)"
     r"(?:\s*\.\s*(?:\"(?:[^\"\n]|\"\")+\"|\[(?:[^\]\n]|\]\])+\]|[\w$]+))*)",
