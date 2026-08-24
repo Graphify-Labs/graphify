@@ -121,3 +121,25 @@ def test_sourceless_stub_is_not_linked(tmp_path):
         [_type_node("evt", "OrderPlaced", "Contracts.Events")],
     )
     assert links == []
+
+
+def test_same_namespace_and_name_link_even_when_the_declarations_drift(tmp_path):
+    """The join key is namespace+name, deliberately NOT structural. Two repos
+    whose shared contract type has drifted (different source files, different
+    surrounding members) still link — a shared contract navigable across repos is
+    the point, and requiring structural equality would defeat it. This pins that
+    boundary so a future change that tried to gate on member equality fails here."""
+    links, _ = _merge(
+        tmp_path,
+        [
+            _type_node("evt", "OrderPlaced", "Contracts.Events", "v1/order.cs"),
+            _type_node("extra_a", "AuditLog", "Contracts.Events", "v1/audit.cs"),
+        ],
+        [
+            _type_node("evt", "OrderPlaced", "Contracts.Events", "v2/order_placed.cs"),
+            _type_node("extra_b", "Telemetry", "Contracts.Events", "v2/telemetry.cs"),
+        ],
+    )
+    # Only the shared name links; the repo-unique AuditLog/Telemetry do not.
+    assert len(links) == 1, links
+    assert {links[0]["source"], links[0]["target"]} == {"svc_a::evt", "svc_b::evt"}
