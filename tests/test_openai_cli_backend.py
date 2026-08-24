@@ -1,5 +1,7 @@
-"""Tests for the openai-cli backend (_call_openai_cli): argv contract only.
+"""Tests for the openai-cli backend (_call_openai_cli).
 
+Covers the argv contract, the happy JSON parse, the failure paths (non-zero
+exit, missing/empty -o output, hollow graph), and turn-usage accounting.
 No network, no Codex binary: shutil.which and subprocess.run are monkeypatched.
 """
 import json
@@ -16,17 +18,18 @@ class _Captured:
         self.calls = []
 
 
-def _arm(monkeypatch, response=None, servers=("graphify", "docs")):
+def _arm(monkeypatch, response=None, servers=("graphify", "docs"),
+         exec_returncode=0, exec_stdout="", exec_stderr="", write_output=True):
     """Fake a Codex CLI: `mcp list --json` returns servers, `exec` writes the -o file."""
     cap = _Captured()
     import shutil
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/codex" if name == "codex" else None)
 
     class P:
-        def __init__(self, stdout=""):
-            self.returncode = 0
+        def __init__(self, stdout="", returncode=0, stderr=""):
+            self.returncode = returncode
             self.stdout = stdout
-            self.stderr = ""
+            self.stderr = stderr
 
     def fake_run(args, **kwargs):
         cap.calls.append(list(args))
@@ -36,10 +39,23 @@ def _arm(monkeypatch, response=None, servers=("graphify", "docs")):
         cap.kwargs = kwargs
         # write the -o file the way codex exec does
         out_idx = args.index("-o") + 1
-        payload = response if response is not None else {"nodes": [{"id": "f", "type": "function"}], "edges": []}
-        with open(args[out_idx], "w", encoding="utf-8") as fh:
-            json.dump(payload, fh)
-        return P()
+        if write_output:
+            payload = response if response is not None else {"nodes": [{"id": "f", "type": "function"}], "edges": []}
+            if isinstance(payload, str):
+                with open(args[out_idx], "w", encoding="utf-8") as fh:
+                    fh.write(payload)
+            else:
+                with open(args[out_idx], "w", encoding="utf-8") as fh:
+                    json.dump(payload, fh)
+        else:
+            # simulate codex never producing the file (the backend pre-creates
+            # the temp path, so "missing" means it is gone by the time we look)
+            import os as _os
+            try:
+                _os.unlink(args[out_idx])
+            except OSError:
+                pass
+        return P(stdout=exec_stdout, returncode=exec_returncode, stderr=exec_stderr)
 
     import subprocess as _sp
     monkeypatch.setattr(_sp, "run", fake_run)
@@ -95,3 +111,109 @@ def test_missing_binary_raises(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda name: None)
     with pytest.raises(RuntimeError, match="Codex CLI not found"):
         llm._call_openai_cli("x", max_tokens=16)
+
+
+# ---------------------------------------------------------------------------
+# Happy path: the -o JSON becomes the result dict, usage rides the JSONL stdout
+# ---------------------------------------------------------------------------
+
+def test_happy_parse_returns_graph_and_usage(monkeypatch):
+    monkeypatch.delenv("GRAPHIFY_OPENAI_CLI_MODEL", raising=False)
+    stdout = "\n".join([
+        json.dumps({"type": "turn.started"}),
+        "not-json diagnostics line",
+        json.dumps({"type": "turn.completed",
+                    "usage": {"input_tokens": 1200, "cached_input_tokens": 1000,
+                              "output_tokens": 345}}),
+    ])
+    payload = {"nodes": [{"id": "acme.f", "type": "function"}],
+               "edges": [{"source": "acme.f", "target": "acme.g", "relation": "calls"}]}
+    _arm(monkeypatch, response=payload, exec_stdout=stdout)
+    result = llm._call_openai_cli("def f(): g()", max_tokens=64)
+    assert result["nodes"] == payload["nodes"]
+    assert result["edges"] == payload["edges"]
+    # input_tokens already includes cached_input_tokens; must not be re-added
+    assert result["input_tokens"] == 1200
+    assert result["output_tokens"] == 345
+    assert result["model"] == "gpt-5.6-sol"
+    assert result["finish_reason"] == "stop"
+
+
+# ---------------------------------------------------------------------------
+# Failure paths: every raise carries the vendor detail (stderr + stdout tail)
+# ---------------------------------------------------------------------------
+
+def test_nonzero_exit_raises_with_vendor_detail(monkeypatch):
+    _arm(monkeypatch, exec_returncode=2,
+         exec_stderr="ERROR: 400 Bad Request: model not found",
+         exec_stdout=json.dumps({"type": "error", "message": "http 400"}))
+    with pytest.raises(RuntimeError) as exc:
+        llm._call_openai_cli("x", max_tokens=16)
+    msg = str(exc.value)
+    assert "codex exec exited 2" in msg
+    assert "400 Bad Request" in msg           # stderr preserved
+    assert "http 400" in msg                  # JSONL stdout tail preserved
+
+
+def test_missing_output_file_raises(monkeypatch):
+    _arm(monkeypatch, write_output=False, exec_stderr="boom")
+    with pytest.raises(RuntimeError, match="produced no -o output file"):
+        llm._call_openai_cli("x", max_tokens=16)
+
+
+def test_empty_output_file_raises(monkeypatch):
+    _arm(monkeypatch, response="   \n", exec_stderr="quota hint on stderr")
+    with pytest.raises(RuntimeError) as exc:
+        llm._call_openai_cli("x", max_tokens=16)
+    msg = str(exc.value)
+    assert "empty -o output file" in msg
+    assert "quota hint on stderr" in msg
+
+
+def test_empty_graph_raises_instead_of_hollow_bisect(monkeypatch):
+    # An empty-but-valid graph must raise, or _response_is_hollow would bisect
+    # the chunk into up to 15 more subscription calls.
+    _arm(monkeypatch, response={"nodes": [], "edges": []})
+    with pytest.raises(RuntimeError, match="returned no graph content"):
+        llm._call_openai_cli("x", max_tokens=16)
+
+
+# ---------------------------------------------------------------------------
+# _openai_cli_turn_usage: JSONL accounting
+# ---------------------------------------------------------------------------
+
+def test_turn_usage_reads_last_completed_event():
+    stdout = "\n".join([
+        json.dumps({"type": "turn.completed", "usage": {"input_tokens": 1, "output_tokens": 2}}),
+        json.dumps({"type": "turn.completed", "usage": {"input_tokens": 30, "output_tokens": 40}}),
+    ])
+    assert llm._openai_cli_turn_usage(stdout) == (30, 40)
+
+
+def test_turn_usage_tolerates_malformed_lines():
+    stdout = "\n".join([
+        "plain diagnostics",
+        "{not json",
+        json.dumps({"type": "turn.completed", "usage": {"input_tokens": 7, "output_tokens": 8}}),
+    ])
+    assert llm._openai_cli_turn_usage(stdout) == (7, 8)
+
+
+def test_turn_usage_without_completed_event_reports_zero():
+    assert llm._openai_cli_turn_usage("") == (0, 0)
+    assert llm._openai_cli_turn_usage(json.dumps({"type": "turn.started"})) == (0, 0)
+
+
+def test_turn_usage_non_numeric_counts_are_zero():
+    stdout = json.dumps({"type": "turn.completed",
+                         "usage": {"input_tokens": "many", "output_tokens": None}})
+    assert llm._openai_cli_turn_usage(stdout) == (0, 0)
+
+
+def test_vendor_detail_bounds_and_labels():
+    detail = llm._openai_cli_vendor_detail("E" * 1000, "O" * 1000)
+    assert detail.startswith("stderr: ")
+    assert "stdout tail: " in detail
+    # both sides bounded to their last 400 chars
+    assert len(detail) < 900
+    assert llm._openai_cli_vendor_detail("", "") == "(no stderr or stdout)"
