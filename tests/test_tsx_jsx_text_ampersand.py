@@ -287,6 +287,16 @@ _MASK_CASES = [
      'const a = <Foo extends={a & b}>t   v</Foo>;'),
     ('const a = <Foo extends>t & v</Foo>;',
      'const a = <Foo extends>t   v</Foo>;'),
+    # --- Generic arrow / function-type tails keep ``&`` in code even when
+    # the return type or default parameter contains a ``;`` or ``)``.
+    ('const pick = <TKey>(x: TKey): { a: number; b: string } => x;\nconst b = 1 & 2;\n',
+     'const pick = <TKey>(x: TKey): { a: number; b: string } => x;\nconst b = 1 & 2;\n'),
+    ('const f = <T>(x: T = ")") => x;\nconst b = 1 & 2;\n',
+     'const f = <T>(x: T = ")") => x;\nconst b = 1 & 2;\n'),
+    ('const f = <T>(x: T = /a\\/b/g) => x;\nconst b = 1 & 2;\n',
+     'const f = <T>(x: T = /a\\/b/g) => x;\nconst b = 1 & 2;\n'),
+    ('const f = <T>(x: T): "a; b" => x;\nconst b = 1 & 2;\n',
+     'const f = <T>(x: T): "a; b" => x;\nconst b = 1 & 2;\n'),
     # A real generic constraint ``<T extends X>`` still stays code.
     ('function f<T extends X>() { return 1 & 2; }',
      'function f<T extends X>() { return 1 & 2; }'),
