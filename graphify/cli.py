@@ -2606,45 +2606,29 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(1)
         import networkx as _nx
         from networkx.readwrite import json_graph as _jg
-        from graphify.build import prefix_graph_for_global as _prefix, distinct_repo_tags as _repo_tags
+        from graphify.build import (
+            prefix_graph_for_global as _prefix,
+            distinct_repo_tags as _repo_tags,
+            load_graph_json as _load_graph,
+        )
         graphs = []
         for gp in graph_paths:
             if not gp.exists():
                 print(f"error: not found: {gp}", file=sys.stderr)
                 sys.exit(1)
-            _enforce_graph_size_cap_or_exit(gp)
-            data = json.loads(gp.read_text(encoding="utf-8"))
-            # Normalize edges/links key before loading — graphify writes "links"
-            # via node_link_data but older runs may have used "edges" (#738).
-            if "links" not in data and "edges" in data:
-                data = dict(data, links=data["edges"])
-            # Preserve stored edge direction across undirected node_link_graph (#2261).
-            # Mirrors cli.py's query pattern and export.py's _src/_tgt restoration.
-            # Keep in-file markers when present (#2309): unconditionally
-            # overwriting them with source/target would clobber the true
-            # direction of a link persisted in flipped endpoint order.
-            data = dict(
-                data,
-                links=[
-                    {
-                        **link,
-                        "_src": link.get("_src", link.get("source")),
-                        "_tgt": link.get("_tgt", link.get("target")),
-                    }
-                    for link in data.get("links", [])
-                ],
-            )
+            # load_graph_json enforces the size cap, normalizes the legacy
+            # "edges" key (#738), and coerces directed/multi inputs to a plain
+            # undirected Graph so nx.compose never sees mixed types (#1606).
+            # preserve_direction stashes the stored endpoints as _src/_tgt so
+            # the undirected round-trip can't flip caller/callee (#2261),
+            # keeping in-file markers when present (#2309) — the merged graph
+            # stays a plain Graph, as compose requires. Top-level-only
+            # hyperedges are restored onto G.graph there too (#2484/#2485).
             try:
-                G = _jg.node_link_graph(data, edges="links")
-            except TypeError:
-                G = _jg.node_link_graph(data)
-            # node_link_graph restores only the nested `graph.hyperedges` slot;
-            # a graph.json whose hyperedges live only at the top level (the
-            # other half of to_json's dual-slot shape, #2485) would silently
-            # lose them here. Fall back to the top-level key (#2484).
-            if "hyperedges" not in G.graph and isinstance(data.get("hyperedges"), list):
-                G.graph["hyperedges"] = data["hyperedges"]
-            graphs.append(G)
+                graphs.append(_load_graph(gp, preserve_direction=True))
+            except ValueError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                sys.exit(1)
         # nx.compose requires all graphs to be the same type.  When input graphs
         # come from different sources (e.g. an AST-only run vs a full LLM run) one
         # may be a MultiGraph and another a Graph.  Normalise everything to Graph
