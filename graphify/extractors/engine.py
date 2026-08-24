@@ -4963,6 +4963,7 @@ def _extract_generic(
             swift_receiver: str | None = None
             member_receiver: str | None = None
             kotlin_qualified_prefix: str | None = None
+            csharp_qualified_prefix: str | None = None
 
             # Special handling per language
             if config.ts_module == "tree_sitter_swift":
@@ -5039,9 +5040,15 @@ def _extract_generic(
                 # Target-typed `new()` parses as `implicit_object_creation_expression`
                 # and stays out of `call_types`: naming it needs the declared type of
                 # whatever it is being assigned to, which is a separate problem.
+                # A qualifier written in source is kept for
+                # `_resolve_csharp_qualified_calls`, so `new A.B.Cache()` can still
+                # pick one of several `Cache` classes instead of hitting the
+                # ambiguity guard on the bare name.
                 type_info = _read_csharp_type_name(node.child_by_field_name("type"), source)
                 if type_info and type_info[0]:
                     callee_name = type_info[0]
+                    if type_info[1] and type_info[2]:
+                        csharp_qualified_prefix = type_info[2]
             elif config.ts_module == "tree_sitter_c_sharp" and node.type == "invocation_expression":
                 # C#: the invoked function is the `function` field. A member call
                 # `recv.Method(...)` is a member_access_expression (receiver in its
@@ -5328,6 +5335,8 @@ def _extract_generic(
                     # class fields/properties are the base scope.
                     if config.ts_module == "tree_sitter_c_sharp":
                         rc_entry["lang"] = "csharp"
+                        if csharp_qualified_prefix:
+                            rc_entry["qualified_prefix"] = csharp_qualified_prefix
                         receiver_type = _csharp_scoped_receiver_type(
                             receiver_types, member_receiver, node.start_byte
                         )

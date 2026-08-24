@@ -3770,6 +3770,72 @@ def _resolve_kotlin_import_targets(
             e["target"] = candidates[0]
 
 
+def _resolve_csharp_qualified_calls(
+    per_file: list[dict],
+    all_nodes: list[dict],
+    all_edges: list[dict],
+) -> None:
+    """Resolve C# constructions that name their namespace (#2997).
+
+    `new Infra.Data.Cache()` reaches the shared pass as the bare name `Cache`,
+    so a second `Cache` in another namespace makes it ambiguous and it gets no
+    edge, even though the source says which one it means. The reference paths
+    (field, property, parameter, return) already honour the qualifier through
+    `CsharpNameResolver`; this is the construction twin, built the way
+    `_resolve_kotlin_qualified_calls` handles the same shape in Kotlin.
+
+    The prefix must equal a declared namespace exactly. A partially qualified
+    `new Data.Cache()` under `using Infra;` stays unresolved rather than
+    guessing at the using directives in scope. Exactly one candidate produces an
+    edge; zero or several leave the call alone. The pass is additive: an
+    ambiguous bare name never had an edge to overwrite.
+    """
+    raw = [
+        rc
+        for result in per_file
+        for rc in result.get("raw_calls", [])
+        if rc.get("lang") == "csharp" and rc.get("qualified_prefix")
+        and rc.get("callee") and rc.get("caller_nid")
+    ]
+    if not raw:
+        return
+
+    # (namespace, type name) -> nids, over sourced type declarations only, so a
+    # sourceless stub minted for a dangling reference cannot win the match.
+    by_namespace: dict[tuple[str, str], list[str]] = {}
+    for n in all_nodes:
+        if not n.get("_callable_class") or not n.get("source_file"):
+            continue
+        namespace = str((n.get("metadata") or {}).get("namespace") or "")
+        label = str(n.get("label", "")).strip("()")
+        if namespace and label:
+            by_namespace.setdefault((namespace, label), []).append(n["id"])
+    if not by_namespace:
+        return
+
+    existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
+    for rc in raw:
+        candidates = by_namespace.get((rc["qualified_prefix"], rc["callee"]), [])
+        if len(candidates) != 1:
+            continue
+        caller = rc["caller_nid"]
+        tgt = candidates[0]
+        if tgt == caller or (caller, tgt) in existing_pairs:
+            continue
+        existing_pairs.add((caller, tgt))
+        all_edges.append({
+            "source": caller,
+            "target": tgt,
+            "relation": "calls",
+            "context": "call",
+            "confidence": "EXTRACTED",  # the namespace is written verbatim in source
+            "confidence_score": 1.0,
+            "source_file": rc.get("source_file", ""),
+            "source_location": rc.get("source_location"),
+            "weight": 1.0,
+        })
+
+
 def _resolve_kotlin_qualified_calls(
     per_file: list[dict],
     all_nodes: list[dict],
@@ -3954,6 +4020,14 @@ register_language_resolver(
 register_language_resolver(
     LanguageResolver(
         "kotlin_qualified_calls", frozenset({".kt", ".kts"}), _resolve_kotlin_qualified_calls
+    )
+)
+# C# qualified construction (#2997): `new A.B.Cache()` arrives as the bare name,
+# so a colliding `Cache` elsewhere makes it ambiguous. Runs in the tail registry
+# beside csharp_member_calls and matches the prefix against declared namespaces.
+register_language_resolver(
+    LanguageResolver(
+        "csharp_qualified_calls", frozenset({".cs"}), _resolve_csharp_qualified_calls
     )
 )
 

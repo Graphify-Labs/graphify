@@ -157,16 +157,45 @@ def test_ambiguous_type_name_produces_no_edge(tmp_path):
     assert not any(target in caches for _, target in calls)
 
 
-def test_qualified_construction_with_a_colliding_name_stays_unresolved(tmp_path):
-    # Known limit, pinned so it cannot change silently. The construction site
-    # names only the last segment, so a colliding name hits the guard above even
-    # though the qualifier written in source would have picked one. The field and
-    # return paths do use the qualifier, which makes this an inconsistency rather
-    # than a rule; wiring construction into C# qualified resolution is follow-up
-    # work, not a behaviour this test endorses.
+_COLLIDING_CACHES = {
+    "Left.cs": "namespace Infra.Data;\npublic class Cache { }\n",
+    "Right.cs": "namespace Other;\npublic class Cache { }\n",
+}
+
+
+def test_qualified_construction_picks_the_named_namespace(tmp_path):
+    # The bare name is ambiguous, but the source says which Cache it means.
+    calls, r = _extract(tmp_path, {**_COLLIDING_CACHES, "Caller.cs": (
+        "public class Caller {\n"
+        "    public void Go() { var c = new Infra.Data.Cache(); }\n"
+        "}\n"
+    )})
+    wanted = _find(r, "Cache", "left")
+    other = _find(r, "Cache", "right")
+    go = _find(r, ".Go()", "go")
+    assert (go, wanted) in calls
+    assert (go, other) not in calls
+
+
+def test_partially_qualified_construction_stays_unresolved(tmp_path):
+    # `new Data.Cache()` under `using Infra;` would need the using directives in
+    # scope to become a namespace. Resolving it by suffix would be a guess.
+    calls, r = _extract(tmp_path, {**_COLLIDING_CACHES, "Caller.cs": (
+        "using Infra;\n"
+        "public class Caller {\n"
+        "    public void Go() { var c = new Data.Cache(); }\n"
+        "}\n"
+    )})
+    caches = {n["id"] for n in r["nodes"] if n["label"] == "Cache"}
+    assert not any(target in caches for _, target in calls)
+
+
+def test_qualified_construction_with_two_candidates_in_one_namespace(tmp_path):
+    # Same namespace declared in two files, both holding a Cache: the qualifier
+    # cannot separate them either, so the guard still applies.
     calls, r = _extract(tmp_path, {
-        "Left.cs": "namespace Infra.Data;\npublic class Cache { }\n",
-        "Right.cs": "namespace Other;\npublic class Cache { }\n",
+        "One.cs": "namespace Infra.Data;\npublic class Cache { }\n",
+        "Two.cs": "namespace Infra.Data;\npublic class Cache { }\n",
         "Caller.cs": (
             "public class Caller {\n"
             "    public void Go() { var c = new Infra.Data.Cache(); }\n"
@@ -174,7 +203,6 @@ def test_qualified_construction_with_a_colliding_name_stays_unresolved(tmp_path)
         ),
     })
     caches = {n["id"] for n in r["nodes"] if n["label"] == "Cache"}
-    assert len(caches) == 2
     assert not any(target in caches for _, target in calls)
 
 
