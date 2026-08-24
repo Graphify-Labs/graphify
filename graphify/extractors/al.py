@@ -109,6 +109,8 @@ def _mask_al_string(chars: list[str], index: int, char: str, following: str) -> 
 def _mask_al_comments_and_strings(source: str) -> str:
     """Mask comments and string literals without changing offsets or newlines."""
     chars = list(source)
+    if chars and chars[0] == "\ufeff":
+        chars[0] = " "
     index = 0
     state = "code"
     handlers = {

@@ -123,6 +123,26 @@ def test_al_fallback_preserves_spelling_and_casefolds_lookup(monkeypatch, tmp_pa
     assert callable_node["lookup_key"] == "dowork"
 
 
+def test_al_fallback_accepts_utf8_bom(monkeypatch, tmp_path):
+    monkeypatch.setitem(sys.modules, "tree_sitter_al", None)
+    source = tmp_path / "Bom.Codeunit.al"
+    source.write_text(
+        '\ufeffcodeunit 70220 "Posting Sample"\n'
+        "{\n"
+        "    procedure Execute()\n"
+        "    begin\n"
+        "    end;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    result = extract_al(source)
+    labels = {node["label"] for node in result["nodes"]}
+
+    assert "Posting Sample" in labels
+    assert "Execute()" in labels
+
+
 def test_al_fallback_preserves_quoted_special_identifiers(monkeypatch):
     monkeypatch.setitem(sys.modules, "tree_sitter_al", None)
     fixture = Path(__file__).parent / "fixtures" / "special_identifiers.al"
