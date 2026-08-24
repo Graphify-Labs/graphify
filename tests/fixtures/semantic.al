@@ -48,6 +48,7 @@ permissionset 75112 "Work Permissions"
     Assignable = true;
     Permissions = tabledata "Work Item" = R;
 }
+permissionsetextension 75113 "Extra Work Permissions" extends "Work Permissions" { }
 
 codeunit 75110 "Worker Impl" implements "IWorker"
 {

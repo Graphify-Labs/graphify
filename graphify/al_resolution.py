@@ -11,6 +11,7 @@ _EXTENSION_BASE_KINDS = {
     "pageextension": "page",
     "enumextension": "enum",
     "reportextension": "report",
+    "permissionsetextension": "permissionset",
 }
 _APP_MANIFEST = "app.json"
 

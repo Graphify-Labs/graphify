@@ -10,7 +10,8 @@ from graphify.extractors.base import _file_stem, _make_id
 _AL_IDENTIFIER = r'(?P<name>"(?:[^"]|"")+"|[A-Za-z_][\w.]*)'
 _AL_OBJECT_RE = re.compile(
     rf"(?im)^\s*(?P<kind>codeunit|tableextension|table|pageextension|page|"
-    rf"enumextension|enum|interface|reportextension|report|query|xmlport|permissionset)\s+"
+    rf"enumextension|enum|interface|reportextension|report|query|xmlport|"
+    rf"permissionsetextension|permissionset)\s+"
     rf"(?:(?P<object_id>\d+)\s+)?{_AL_IDENTIFIER}\s*"
     rf"(?:extends\s+(?P<base>\"(?:[^\"]|\"\")+\"|[A-Za-z_][\w.]*))?"
     rf"(?:implements\s+(?P<interfaces>[^{{]+))?\s*{{"
@@ -35,6 +36,7 @@ _AL_OBJECT_TYPES = {
     "query_declaration": "query",
     "xmlport_declaration": "xmlport",
     "permissionset_declaration": "permissionset",
+    "permissionsetextension_declaration": "permissionsetextension",
 }
 _AL_CALLABLE_TYPES = {
     "procedure": "procedure",
@@ -764,6 +766,12 @@ def _extract_al_fallback(path: Path, source: str) -> dict:
     return _ALFallbackExtractor(path, source).extract()
 
 
+def _al_fallback_result(path: Path, source: str, warning: str) -> dict:
+    result = _extract_al_fallback(path, source)
+    result["dependency_warning"] = warning
+    return result
+
+
 def extract_al(path: Path, source_override: str | None = None) -> dict:
     """Extract Business Central AL, falling back to structural regex parsing."""
     try:
@@ -776,33 +784,26 @@ def extract_al(path: Path, source_override: str | None = None) -> dict:
     try:
         from tree_sitter import Language, Parser
     except ImportError as exc:
-        result = _extract_al_fallback(path, source)
-        result["dependency_warning"] = f"tree_sitter failed to load: {exc}"
-        return result
+        return _al_fallback_result(path, source, f"tree_sitter failed to load: {exc}")
     try:
         import tree_sitter_al
     except ImportError as exc:
         import importlib.util
 
         if importlib.util.find_spec("tree_sitter_al") is None:
-            result = _extract_al_fallback(path, source)
-            result["dependency_warning"] = (
-                "tree_sitter_al not installed. Run: pip install tree-sitter-al"
+            return _al_fallback_result(
+                path, source,
+                "tree_sitter_al not installed. Run: pip install tree-sitter-al",
             )
-            return result
-        return {
-            "nodes": [],
-            "edges": [],
-            "error": f"tree_sitter_al is installed but failed to load: {exc}",
-        }
+        return _al_fallback_result(
+            path, source, f"tree_sitter_al failed to load: {exc}"
+        )
     try:
         language = Language(tree_sitter_al.language())
         parser = Parser(language)
         tree = parser.parse(source.encode("utf-8"))
     except Exception as exc:
-        return {
-            "nodes": [],
-            "edges": [],
-            "error": f"tree_sitter_al is installed but failed to load: {exc}",
-        }
+        return _al_fallback_result(
+            path, source, f"tree_sitter_al failed to initialize: {exc}"
+        )
     return _extract_al_tree_sitter(path, source, tree)

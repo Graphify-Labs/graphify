@@ -94,7 +94,7 @@ def test_al_missing_tree_sitter_core_uses_fallback(tmp_path, monkeypatch):
     assert any(node.get("object_kind") == "codeunit" for node in result["nodes"])
 
 
-def test_al_parser_load_failure_is_not_reported_as_missing(tmp_path, monkeypatch):
+def test_al_parser_load_failure_uses_fallback(tmp_path, monkeypatch):
     source = tmp_path / "Comment.Codeunit.al"
     source.write_text('codeunit 75000 "Comment Mgt." { }', encoding="utf-8")
     original_import = builtins.__import__
@@ -113,11 +113,29 @@ def test_al_parser_load_failure_is_not_reported_as_missing(tmp_path, monkeypatch
     monkeypatch.setattr(builtins, "__import__", broken_import)
     monkeypatch.setattr(importlib.util, "find_spec", installed_spec)
 
-    error = extract_al(source).get("error") or ""
-    assert "installed but failed to load" in error
-    assert "incompatible AL parser binary" in error
-    assert "not installed" not in error
-    assert "pip install" not in error
+    result = extract_al(source)
+    warning = result.get("dependency_warning") or ""
+    assert "tree_sitter_al failed to load" in warning
+    assert "incompatible AL parser binary" in warning
+    assert not result.get("error")
+    assert any(node.get("object_kind") == "codeunit" for node in result["nodes"])
+
+
+def test_al_parser_initialization_failure_uses_fallback(tmp_path, monkeypatch):
+    source = tmp_path / "Comment.Codeunit.al"
+    source.write_text('codeunit 75000 "Comment Mgt." { }', encoding="utf-8")
+
+    class BrokenLanguage:
+        def __init__(self, *_args, **_kwargs):
+            raise TypeError("incompatible language capsule")
+
+    monkeypatch.setattr("tree_sitter.Language", BrokenLanguage)
+
+    result = extract_al(source)
+
+    assert "failed to initialize" in result.get("dependency_warning", "")
+    assert not result.get("error")
+    assert any(node.get("object_kind") == "codeunit" for node in result["nodes"])
 
 
 def test_al_fallback_extracts_objects_procedures_and_triggers(monkeypatch):
@@ -148,6 +166,22 @@ def test_al_fallback_extracts_permission_sets():
     )
     assert permission_set["label"] == "Sample Admin"
     assert permission_set["object_id"] == "70000"
+
+
+def test_al_fallback_extracts_permission_set_extensions():
+    result = _extract_al_fallback(
+        Path("Sample.permissionsetextension.al"),
+        'permissionsetextension 70001 "Extra Sample Rights" '
+        'extends "Sample Rights"\n{\n}\n',
+    )
+
+    extension = next(
+        node
+        for node in result["nodes"]
+        if node.get("object_kind") == "permissionsetextension"
+    )
+    assert extension["label"] == "Extra Sample Rights"
+    assert extension["object_id"] == "70001"
 
 
 def test_al_fallback_preserves_spelling_and_casefolds_lookup(monkeypatch, tmp_path):
@@ -244,7 +278,7 @@ def test_al_tree_sitter_extracts_supported_objects_and_members():
     assert kinds == {
         "codeunit", "table", "tableextension", "page", "pageextension",
         "enum", "enumextension", "interface", "report", "reportextension",
-        "query", "xmlport", "permissionset",
+        "query", "xmlport", "permissionset", "permissionsetextension",
     }
     assert {"procedure", "field", "enum_value"} <= member_kinds
     on_validate = [node for node in result["nodes"] if node["label"] == "OnValidate()"]
@@ -351,6 +385,12 @@ def test_al_resolver_emits_language_relationships(tmp_path):
     }
 
     assert (nodes["Work Item Ext"], nodes["Work Item"], "extends", "extension") in relations
+    assert (
+        nodes["Extra Work Permissions"],
+        nodes["Work Permissions"],
+        "extends",
+        "extension",
+    ) in relations
     assert (nodes["Worker Impl"], nodes["IWorker"], "implements", "interface") in relations
     assert (nodes["Standard"], nodes["IWorker"], "implements", "enum_implementation") in relations
     assert (nodes["Standard"], nodes["Worker Impl"], "references", "enum_implementation") in relations
