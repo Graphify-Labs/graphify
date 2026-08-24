@@ -117,9 +117,12 @@ def test_al_tree_sitter_extracts_supported_objects_and_members():
     assert kinds == {
         "codeunit", "table", "tableextension", "page", "pageextension",
         "enum", "enumextension", "interface", "report", "reportextension",
-        "query", "xmlport",
+        "query", "xmlport", "permissionset",
     }
     assert {"procedure", "field", "enum_value"} <= member_kinds
+    on_validate = [node for node in result["nodes"] if node["label"] == "OnValidate()"]
+    assert len(on_validate) == 2
+    assert len({node["id"] for node in on_validate}) == 2
     assert all(node["extraction_tier"] == "tree_sitter" for node in result["nodes"])
     assert not result.get("syntax_errors")
 
@@ -206,6 +209,43 @@ def test_al_resolver_is_case_insensitive_and_avoids_ambiguous_targets(tmp_path):
     assert not any(edge["source"] == start and edge["relation"] == "calls" for edge in result["edges"])
 
 
+def test_al_resolver_preserves_and_resolves_procedure_overloads(tmp_path):
+    pytest.importorskip("tree_sitter_al")
+    source = tmp_path / "overloads.al"
+    source.write_text(
+        '''codeunit 1 Worker
+{
+    procedure Start()
+    begin
+        Run(1);
+    end;
+
+    local procedure Run()
+    begin
+    end;
+
+    local procedure Run(Value: Integer)
+    begin
+    end;
+}''',
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+    run_nodes = [node for node in result["nodes"] if node["label"] == "Run()"]
+    start = next(node for node in result["nodes"] if node["label"] == "Start()")
+    one_parameter = next(node for node in run_nodes if len(node["parameters"]) == 1)
+
+    assert len(run_nodes) == 2
+    assert len({node["id"] for node in run_nodes}) == 2
+    assert any(
+        edge["source"] == start["id"]
+        and edge["target"] == one_parameter["id"]
+        and edge["relation"] == "calls"
+        for edge in result["edges"]
+    )
+
+
 def test_al_resolver_uses_namespace_imports_and_manifest_context(tmp_path):
     pytest.importorskip("tree_sitter_al")
     (tmp_path / "app.json").write_text(
@@ -229,6 +269,73 @@ def test_al_resolver_uses_namespace_imports_and_manifest_context(tmp_path):
         edge["source"] == nodes["Start()"]["id"]
         and edge["target"] == nodes["Run()"]["id"]
         and edge["relation"] == "calls"
+        for edge in result["edges"]
+    )
+
+
+def test_al_resolver_connects_test_app_targets_handlers_and_dependency(tmp_path):
+    pytest.importorskip("tree_sitter_al")
+    main = tmp_path / "MainApp"
+    tests = tmp_path / "TestApp"
+    main.mkdir()
+    tests.mkdir()
+    (main / "app.json").write_text(
+        '{"id":"main-id","name":"Main App","dependencies":[]}', encoding="utf-8"
+    )
+    (tests / "app.json").write_text(
+        '{"id":"test-id","name":"Test App","dependencies":'
+        '[{"id":"main-id","name":"Main App"}]}',
+        encoding="utf-8",
+    )
+    (main / "Card.Page.al").write_text(
+        'page 1 "Example Card" { }', encoding="utf-8"
+    )
+    (tests / "CardTest.Codeunit.al").write_text(
+        '''codeunit 2 "Example Tests"
+{
+    Subtype = Test;
+
+    [Test]
+    [HandlerFunctions('ConfirmHandler')]
+    procedure OpensCard()
+    var
+        Card: TestPage "Example Card";
+    begin
+        Card.OpenView();
+    end;
+
+    [ConfirmHandler]
+    procedure ConfirmHandler(Question: Text; var Reply: Boolean)
+    begin
+        Reply := false;
+    end;
+}''',
+        encoding="utf-8",
+    )
+
+    files = sorted(path for path in tmp_path.rglob("*") if path.is_file())
+    result = extract(files, cache_root=tmp_path)
+    nodes = {node["label"]: node["id"] for node in result["nodes"]}
+    relations = {
+        (edge["source"], edge["target"], edge["relation"], edge.get("context"))
+        for edge in result["edges"]
+    }
+    manifests = {
+        Path(node["source_file"]).parent.name: node["id"]
+        for node in result["nodes"]
+        if str(node.get("source_file", "")).endswith("app.json")
+        and str(node.get("label", "")).endswith("app.json")
+    }
+
+    assert (nodes["OpensCard()"], nodes["Example Card"], "references", "test_target") in relations
+    assert (
+        nodes["OpensCard()"], nodes["ConfirmHandler()"], "references", "test_handler"
+    ) in relations
+    assert (
+        manifests["TestApp"], manifests["MainApp"], "depends_on", "application"
+    ) in relations
+    assert not any(
+        edge["source"] == nodes["OpensCard()"] and edge["relation"] == "calls"
         for edge in result["edges"]
     )
 

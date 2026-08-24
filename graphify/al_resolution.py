@@ -116,6 +116,7 @@ def resolve_al_symbols(per_file: list[dict], all_nodes: list[dict], all_edges: l
                 if node.get("member_kind") == fact.get("kind")
                 and _key(str(node.get("label", "")).removesuffix("()")) == _key(fact.get("name"))
                 and parent_of.get(node.get("id")) == final_parent
+                and str(node.get("signature", "")) == str(fact.get("signature", ""))
             ]
             if len(candidates) == 1:
                 member_fact_to_nid[str(fact.get("nid"))] = candidates[0]["id"]
@@ -133,11 +134,13 @@ def resolve_al_symbols(per_file: list[dict], all_nodes: list[dict], all_edges: l
             object_by_kind_name.setdefault((str(fact.get("kind", "")), name), []).append(fact)
 
     members_by_parent_name: dict[tuple[str, str], list[str]] = {}
+    member_parameter_counts: dict[str, int] = {}
     for fact in member_facts:
         parent = object_fact_to_nid.get(str(fact.get("parent")))
         target = fact.get("final_nid")
         if parent and target:
             members_by_parent_name.setdefault((parent, _key(fact.get("name"))), []).append(target)
+            member_parameter_counts[target] = int(fact.get("parameter_count", 0))
 
     def visible(candidate: dict, context: dict) -> bool:
         candidate_namespace = _key(candidate.get("namespace"))
@@ -158,6 +161,8 @@ def resolve_al_symbols(per_file: list[dict], all_nodes: list[dict], all_edges: l
         normalized_kind = str(kind or "").casefold().removesuffix("_keyword")
         if normalized_kind == "record":
             normalized_kind = "table"
+        elif normalized_kind == "testpage":
+            normalized_kind = "page"
         candidates = (
             object_by_kind_name.get((normalized_kind, lookup), [])
             if normalized_kind else object_by_name.get(lookup, [])
@@ -210,7 +215,13 @@ def resolve_al_symbols(per_file: list[dict], all_nodes: list[dict], all_edges: l
                 str(reference.get("source"))
             )
             target = resolve_object(reference.get("name"), str(reference.get("kind", "")), context)
-            add_edge(source, target and target["final_nid"], "references", "type", reference.get("line"))
+            reference_context = (
+                "test_target" if str(reference.get("kind", "")).casefold() == "testpage" else "type"
+            )
+            add_edge(
+                source, target and target["final_nid"], "references",
+                reference_context, reference.get("line"),
+            )
 
         for call in facts.get("calls", []):
             source = member_fact_to_nid.get(str(call.get("source")))
@@ -220,6 +231,11 @@ def resolve_al_symbols(per_file: list[dict], all_nodes: list[dict], all_edges: l
                 target_object = resolve_object(call["receiver_type"], call.get("receiver_kind"), context)
                 target_owner = target_object and target_object["final_nid"]
             candidates = members_by_parent_name.get((str(target_owner), _key(call.get("name"))), [])
+            if call.get("argument_count") is not None:
+                candidates = [
+                    candidate for candidate in candidates
+                    if member_parameter_counts.get(candidate) == call["argument_count"]
+                ]
             target = candidates[0] if len(set(candidates)) == 1 else None
             add_edge(source, target, "calls", "call", call.get("line"))
 
@@ -254,3 +270,42 @@ def resolve_al_symbols(per_file: list[dict], all_nodes: list[dict], all_edges: l
                 source, implementation and implementation["final_nid"], "references",
                 "enum_implementation", mapping.get("line"),
             )
+
+        for binding in facts.get("test_handlers", []):
+            source = member_fact_to_nid.get(str(binding.get("source")))
+            owner = parent_of.get(source)
+            for argument in binding.get("arguments", []):
+                for handler_name in _reference_name(argument).split(","):
+                    candidates = members_by_parent_name.get((str(owner), _key(handler_name)), [])
+                    target = candidates[0] if len(set(candidates)) == 1 else None
+                    add_edge(source, target, "references", "test_handler", binding.get("line"))
+
+    manifest_nodes = [
+        node for node in all_nodes
+        if str(node.get("source_file", "")).casefold().endswith("app.json")
+        and str(node.get("label", "")).casefold().endswith("app.json")
+    ]
+    apps_by_id: dict[str, list[dict]] = {}
+    for app in manifest_cache.values():
+        if app.get("id"):
+            apps_by_id.setdefault(_key(app["id"]), []).append(app)
+    for app in manifest_cache.values():
+        source_nodes = [
+            node for node in manifest_nodes
+            if _same_source(node.get("source_file"), app.get("manifest"))
+        ]
+        if len(source_nodes) != 1:
+            continue
+        for dependency_id in app.get("dependencies", set()):
+            targets = apps_by_id.get(_key(dependency_id), [])
+            if len(targets) != 1:
+                continue
+            target_nodes = [
+                node for node in manifest_nodes
+                if _same_source(node.get("source_file"), targets[0].get("manifest"))
+            ]
+            if len(target_nodes) == 1:
+                add_edge(
+                    source_nodes[0]["id"], target_nodes[0]["id"],
+                    "depends_on", "application", 1,
+                )

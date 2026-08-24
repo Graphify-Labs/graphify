@@ -21,7 +21,18 @@ table 75102 "Work Item"
 {
     fields
     {
-        field(1; "Entry No."; Integer) { }
+        field(1; "Entry No."; Integer)
+        {
+            trigger OnValidate()
+            begin
+            end;
+        }
+        field(2; Description; Text[100])
+        {
+            trigger OnValidate()
+            begin
+            end;
+        }
     }
 }
 
@@ -32,6 +43,11 @@ report 75106 "Work Report" { }
 reportextension 75107 "Work Report Ext" extends "Work Report" { }
 query 75108 "Work Query" { }
 xmlport 75109 "Work Export" { }
+permissionset 75112 "Work Permissions"
+{
+    Assignable = true;
+    Permissions = tabledata "Work Item" = R;
+}
 
 codeunit 75110 "Worker Impl" implements "IWorker"
 {

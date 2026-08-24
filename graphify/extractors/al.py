@@ -34,6 +34,7 @@ _AL_OBJECT_TYPES = {
     "reportextension_declaration": "reportextension",
     "query_declaration": "query",
     "xmlport_declaration": "xmlport",
+    "permissionset_declaration": "permissionset",
 }
 _AL_CALLABLE_TYPES = {
     "procedure": "procedure",
@@ -193,6 +194,18 @@ def _type_reference(type_node, source: bytes) -> tuple[str, str] | None:
     return object_type, reference
 
 
+def _member_scope_seed(member_node, source: bytes) -> str | None:
+    current = member_node.parent
+    while current is not None and current.type not in _AL_OBJECT_TYPES:
+        if current.type in {"field_declaration", "page_field", "action_declaration"}:
+            name = _decode_al_identifier(_field_text(current, "name", source))
+            identifier = _field_text(current, "id", source)
+            if name or identifier:
+                return f"{current.type}:{identifier}:{name}"
+        current = current.parent
+    return None
+
+
 def _extract_al_tree_sitter(path: Path, source: str, tree) -> dict:
     source_bytes = source.encode("utf-8")
     str_path = str(path)
@@ -228,6 +241,7 @@ def _extract_al_tree_sitter(path: Path, source: str, tree) -> dict:
         "event_subscribers": [],
         "event_publishers": [],
         "enum_mappings": [],
+        "test_handlers": [],
     }
 
     def add_node(node: dict) -> None:
@@ -297,6 +311,13 @@ def _extract_al_tree_sitter(path: Path, source: str, tree) -> dict:
 
         variable_types: dict[str, tuple[str, str]] = {}
         for declaration in (node for node in _walk_al(object_node) if node.type == "variable_declaration"):
+            ancestor = declaration.parent
+            while ancestor is not None and ancestor is not object_node:
+                if ancestor.type in _AL_CALLABLE_TYPES:
+                    break
+                ancestor = ancestor.parent
+            if ancestor is not object_node:
+                continue
             variable_name = _decode_al_identifier(_field_text(declaration, "name", source_bytes))
             type_node = declaration.child_by_field_name("type")
             reference = _type_reference(type_node, source_bytes) if type_node else None
@@ -313,6 +334,13 @@ def _extract_al_tree_sitter(path: Path, source: str, tree) -> dict:
             node for node in _walk_al(object_node)
             if node.type in _AL_CALLABLE_TYPES or node.type in {"field_declaration", "enum_value_declaration"}
         ]
+        member_name_counts: dict[tuple[str, str], int] = {}
+        for candidate in member_nodes:
+            if candidate.type not in _AL_CALLABLE_TYPES:
+                continue
+            candidate_name = _decode_al_identifier(_field_text(candidate, "name", source_bytes))
+            key = (_AL_CALLABLE_TYPES[candidate.type], _al_lookup_key(candidate_name))
+            member_name_counts[key] = member_name_counts.get(key, 0) + 1
         for member_node in member_nodes:
             if member_node.type in _AL_CALLABLE_TYPES:
                 member_kind = _AL_CALLABLE_TYPES[member_node.type]
@@ -330,9 +358,17 @@ def _extract_al_tree_sitter(path: Path, source: str, tree) -> dict:
             if not member_name:
                 continue
             member_line = member_node.start_point.row + 1
-            member_nid = _make_id(object_nid, member_kind, member_name)
             attributes = _attribute_metadata(member_node, source_bytes)
             parameters = _parameter_metadata(member_node, source_bytes)
+            signature = ",".join(
+                f"{parameter.get('modifier') or ''}:{parameter.get('type') or ''}"
+                for parameter in parameters
+            )
+            scope_seed = _member_scope_seed(member_node, source_bytes)
+            identity_seeds = [scope_seed] if scope_seed else []
+            if member_name_counts.get((member_kind, _al_lookup_key(member_name)), 0) > 1:
+                identity_seeds.append(f"signature:{signature}")
+            member_nid = _make_id(object_nid, member_kind, *identity_seeds, member_name)
             return_type_node = member_node.child_by_field_name("return_type")
             if return_type_node is None and member_node.type == "interface_procedure":
                 suffix = _first_descendant(member_node, {"interface_procedure_suffix"})
@@ -357,6 +393,7 @@ def _extract_al_tree_sitter(path: Path, source: str, tree) -> dict:
                     "parameters": parameters,
                     "return_type": _node_text(return_type_node, source_bytes).strip() if return_type_node else None,
                     "attributes": attributes,
+                    "signature": signature,
                     "_callable": True,
                 })
             else:
@@ -373,11 +410,27 @@ def _extract_al_tree_sitter(path: Path, source: str, tree) -> dict:
                 "name": member_name,
                 "lookup_key": _al_lookup_key(member_name),
                 "kind": member_kind,
+                "signature": signature,
+                "parameter_count": len(parameters),
                 "line": member_line,
             })
 
             if member_kind in _AL_CALLABLE_TYPES.values():
                 callable_types = dict(variable_types)
+                for declaration in (
+                    node for node in _walk_al(member_node) if node.type == "variable_declaration"
+                ):
+                    variable_name = _decode_al_identifier(_field_text(declaration, "name", source_bytes))
+                    type_node = declaration.child_by_field_name("type")
+                    reference = _type_reference(type_node, source_bytes) if type_node else None
+                    if variable_name and reference:
+                        callable_types[_al_lookup_key(variable_name)] = reference
+                        facts["references"].append({
+                            "source": member_nid,
+                            "name": reference[1],
+                            "kind": reference[0],
+                            "line": declaration.start_point.row + 1,
+                        })
                 for parameter, parameter_data in zip(
                     (node for node in _walk_al(member_node) if node.type == "parameter"),
                     parameters,
@@ -410,6 +463,9 @@ def _extract_al_tree_sitter(path: Path, source: str, tree) -> dict:
                         "receiver": receiver or None,
                         "receiver_kind": receiver_type[0] if receiver_type else None,
                         "receiver_type": receiver_type[1] if receiver_type else None,
+                        "argument_count": len(
+                            call.child_by_field_name("arguments").named_children
+                        ) if call.child_by_field_name("arguments") else 0,
                         "line": call.start_point.row + 1,
                     })
 
@@ -429,6 +485,15 @@ def _extract_al_tree_sitter(path: Path, source: str, tree) -> dict:
                         "object": object_nid,
                         "name": member_name,
                         "lookup_key": _al_lookup_key(member_name),
+                    })
+                if "handlerfunctions" in attribute_names:
+                    handler_attribute = next(
+                        item for item in attributes if _al_lookup_key(item["name"]) == "handlerfunctions"
+                    )
+                    facts["test_handlers"].append({
+                        "source": member_nid,
+                        "arguments": handler_attribute["arguments"],
+                        "line": member_line,
                     })
 
             if member_kind == "enum_value":
