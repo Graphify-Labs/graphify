@@ -619,14 +619,12 @@ def _al_postprocess_member(
         _al_extract_enum_mappings(context, member_node, member_nid)
 
 
-def _al_extract_member(
-    context: _ALTreeContext, member_node, object_nid: str, counts: dict, object_types: dict
+def _al_emit_member(
+    context: _ALTreeContext, member_node, object_nid: str, member_nid: str, info: dict
 ) -> None:
-    info = _al_member_declaration(context, member_node)
-    if info is None:
-        return
-    member_nid = _al_member_nid(context, member_node, object_nid, info, counts)
-    context.add_node(_al_member_metadata(context, member_node, object_nid, member_nid, info))
+    context.add_node(
+        _al_member_metadata(context, member_node, object_nid, member_nid, info)
+    )
     context.add_edge(object_nid, member_nid, "contains", info["line"])
     context.facts["members"].append({
         "nid": member_nid,
@@ -638,10 +636,17 @@ def _al_extract_member(
         "parameter_count": len(info["parameters"]),
         "line": info["line"],
     })
+
+
+def _al_controladdin_name(context: _ALTreeContext, node) -> str:
+    return _decode_al_identifier(_field_text(node, "source", context.source))
+
+
+def _al_collect_member_control_facts(
+    context: _ALTreeContext, member_node, member_nid: str, info: dict
+) -> None:
     if info["kind"] == "usercontrol":
-        controladdin = _decode_al_identifier(
-            _field_text(member_node, "source", context.source)
-        )
+        controladdin = _al_controladdin_name(context, member_node)
         if controladdin:
             context.facts["references"].append({
                 "source": member_nid,
@@ -649,23 +654,48 @@ def _al_extract_member(
                 "kind": "controladdin",
                 "line": info["line"],
             })
-    elif info["kind"] == "trigger":
-        parent = member_node.parent
-        while parent is not None and parent.type not in _AL_OBJECT_TYPES:
-            if parent.type == "usercontrol_section":
-                controladdin = _decode_al_identifier(
-                    _field_text(parent, "source", context.source)
-                )
-                if controladdin:
-                    context.facts["control_addin_events"].append({
-                        "source": member_nid,
-                        "controladdin": controladdin,
-                        "event": info["name"],
-                        "line": info["line"],
-                    })
-                break
-            parent = parent.parent
+        return
+    if info["kind"] != "trigger":
+        return
+    parent = member_node.parent
+    while parent is not None and parent.type not in _AL_OBJECT_TYPES:
+        if parent.type == "usercontrol_section":
+            controladdin = _al_controladdin_name(context, parent)
+            if controladdin:
+                context.facts["control_addin_events"].append({
+                    "source": member_nid,
+                    "controladdin": controladdin,
+                    "event": info["name"],
+                    "line": info["line"],
+                })
+            return
+        parent = parent.parent
+
+
+def _al_extract_member(
+    context: _ALTreeContext, member_node, object_nid: str, counts: dict, object_types: dict
+) -> None:
+    info = _al_member_declaration(context, member_node)
+    if info is None:
+        return
+    member_nid = _al_member_nid(context, member_node, object_nid, info, counts)
+    _al_emit_member(context, member_node, object_nid, member_nid, info)
+    _al_collect_member_control_facts(context, member_node, member_nid, info)
     _al_postprocess_member(context, member_node, object_nid, member_nid, info, object_types)
+
+
+def _al_register_usercontrol_types(
+    context: _ALTreeContext, members: list, object_types: dict
+) -> None:
+    for usercontrol in (
+        node for node in members if node.type == "usercontrol_section"
+    ):
+        name = _decode_al_identifier(_field_text(usercontrol, "name", context.source))
+        controladdin = _al_controladdin_name(context, usercontrol)
+        if name and controladdin:
+            reference = ("controladdin", controladdin)
+            object_types[_al_lookup_key(name)] = reference
+            object_types[_al_lookup_key(f"CurrPage.{name}")] = reference
 
 
 def _al_extract_members(
@@ -673,17 +703,7 @@ def _al_extract_members(
 ) -> None:
     members = _al_member_nodes(object_node)
     counts = _al_member_name_counts(context, members)
-    for usercontrol in (
-        node for node in members if node.type == "usercontrol_section"
-    ):
-        name = _decode_al_identifier(_field_text(usercontrol, "name", context.source))
-        controladdin = _decode_al_identifier(
-            _field_text(usercontrol, "source", context.source)
-        )
-        if name and controladdin:
-            reference = ("controladdin", controladdin)
-            object_types[_al_lookup_key(name)] = reference
-            object_types[_al_lookup_key(f"CurrPage.{name}")] = reference
+    _al_register_usercontrol_types(context, members, object_types)
     for member_node in members:
         _al_extract_member(context, member_node, object_nid, counts, object_types)
 
