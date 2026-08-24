@@ -480,6 +480,44 @@ def test_sql_create_table_inside_transaction_block():
         for s, t in refs
     )
 
+def test_sql_qualified_fk_resolves_to_unqualified_table():
+    """drizzle emits unqualified CREATE + public-qualified FK; they must connect."""
+    r = _extract_sql_or_skip("sample_schema_qualified_fk.sql")
+    by_id = {n["id"]: n for n in r["nodes"]}
+    refs = [
+        (by_id[e["source"]]["label"], by_id[e["target"]])
+        for e in r["edges"]
+        if e["relation"] == "references"
+    ]
+
+    hit = [t for src, t in refs if "children" in src and "companies" in t["label"]]
+    assert hit, "the public-qualified FK must reach the companies table"
+    assert hit[0].get("source_file"), (
+        "it must land on the real definition, not a sourceless stub"
+    )
+
+    # A non-default schema keeps its own stub: archive.companies is a different table.
+    other = [t for src, t in refs if "audit_log" in src and "companies" in t["label"]]
+    assert other, "the archive-qualified FK must still emit an edge"
+    assert not other[0].get("source_file"), (
+        "archive.companies must NOT bind to the bare companies definition"
+    )
+
+
+def test_sql_explicit_qualified_definition_is_not_shadowed():
+    """An explicit public.x definition must be preferred over the bare alias."""
+    r = _extract_sql_or_skip("sample_schema_explicit.sql")
+    by_id = {n["id"]: n for n in r["nodes"]}
+    hit = [
+        by_id[e["target"]]
+        for e in r["edges"]
+        if e["relation"] == "references" and "accounts_mirror" in by_id[e["source"]]["label"]
+    ]
+    assert hit
+    assert hit[0]["label"] == '"public"."accounts"'
+    assert hit[0].get("source_file")
+
+
 def test_sql_finds_view():
     r = _extract_sql_or_skip()
     labels = [n["label"] for n in r["nodes"]]
