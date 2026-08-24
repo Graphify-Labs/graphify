@@ -628,6 +628,41 @@ def _zero_node_stamped_semantic_sources(
     return healed
 
 
+def _filter_payload_sources(data: dict, stale: set) -> int:
+    """Drop nodes/edges/hyperedges owned by ``stale`` source spellings from a
+    raw graph payload IN MEMORY, mutating ``data``. Returns nodes removed.
+
+    Exact string matching against ``source_file`` — callers pass spellings the
+    graph itself uses (or every plausible spelling of a path).
+    """
+    links_key = "links" if "links" in data else "edges"
+    nodes = [n for n in data.get("nodes", []) if isinstance(n, dict)]
+    kept_nodes = [n for n in nodes if n.get("source_file") not in stale]
+    removed_ids = {
+        n.get("id") for n in nodes if n.get("source_file") in stale
+    }
+    n_removed = len(nodes) - len(kept_nodes)
+    data["nodes"] = kept_nodes
+    data[links_key] = [
+        e for e in data.get(links_key, [])
+        if isinstance(e, dict)
+        and e.get("source_file") not in stale
+        and e.get("source") not in removed_ids
+        and e.get("target") not in removed_ids
+    ]
+    if "hyperedges" in data:
+        data["hyperedges"] = [
+            h for h in data.get("hyperedges", [])
+            if isinstance(h, dict)
+            and h.get("source_file") not in stale
+            and not (
+                isinstance(h.get("nodes"), list)
+                and any(member in removed_ids for member in h["nodes"])
+            )
+        ]
+    return n_removed
+
+
 def _prune_graph_json_sources(graph_path: Path, stale_sources: list[str]) -> int:
     """Drop nodes/edges/hyperedges owned by ``stale_sources`` from graph.json
     in place. Returns the number of nodes removed.
@@ -645,33 +680,16 @@ def _prune_graph_json_sources(graph_path: Path, stale_sources: list[str]) -> int
         return 0
     if not isinstance(data, dict):
         return 0
-    stale = set(stale_sources)
     links_key = "links" if "links" in data else "edges"
-    nodes = [n for n in data.get("nodes", []) if isinstance(n, dict)]
-    kept_nodes = [n for n in nodes if n.get("source_file") not in stale]
-    removed_ids = {
-        n.get("id") for n in nodes if n.get("source_file") in stale
-    }
-    n_removed = len(nodes) - len(kept_nodes)
-    kept_edges = [
-        e for e in data.get(links_key, [])
-        if isinstance(e, dict)
-        and e.get("source_file") not in stale
-        and e.get("source") not in removed_ids
-        and e.get("target") not in removed_ids
-    ]
-    kept_hyper = [
-        h for h in data.get("hyperedges", [])
-        if isinstance(h, dict) and h.get("source_file") not in stale
-    ]
-    if n_removed == 0 and len(kept_edges) == len(data.get(links_key, [])) and (
-        len(kept_hyper) == len(data.get("hyperedges", []))
+    n_edges_before = len(data.get(links_key, []))
+    n_hyper_before = len(data.get("hyperedges", []))
+    n_removed = _filter_payload_sources(data, set(stale_sources))
+    if (
+        n_removed == 0
+        and len(data.get(links_key, [])) == n_edges_before
+        and len(data.get("hyperedges", [])) == n_hyper_before
     ):
         return 0
-    data["nodes"] = kept_nodes
-    data[links_key] = kept_edges
-    if "hyperedges" in data:
-        data["hyperedges"] = kept_hyper
     from graphify.export import backup_if_protected as _backup
     _backup(graph_path.parent)
     from graphify.paths import write_json_atomic

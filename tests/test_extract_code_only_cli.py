@@ -431,3 +431,38 @@ def test_code_only_force_rescan_re_resolves_tsconfig_paths_and_preserves_semanti
     assert "doc_arch" in nodes2, (
         "existing semantic nodes must survive --code-only --force (#2923/#3125)"
     )
+
+
+def test_filter_payload_sources_drops_hyperedges_with_removed_members():
+    """A hyperedge must not outlive its members: pruning a stale source used
+    to drop only hyperedges whose own source_file was stale, leaving danglers
+    that referenced removed node ids."""
+    from graphify.cli import _filter_payload_sources
+
+    payload = {
+        "nodes": [
+            {"id": "removed", "source_file": "stale.py"},
+            {"id": "kept", "source_file": "live.py"},
+        ],
+        "links": [],
+        "hyperedges": [
+            {
+                "id": "dangling",
+                "nodes": ["removed", "kept"],
+                "source_file": "live.py",
+            },
+            {
+                "id": "owned-by-stale",
+                "nodes": ["kept"],
+                "source_file": "stale.py",
+            },
+            {"id": "kept", "nodes": ["kept"], "source_file": "live.py"},
+            "malformed",
+        ],
+    }
+
+    assert _filter_payload_sources(payload, {"stale.py"}) == 1
+    assert payload["nodes"] == [{"id": "kept", "source_file": "live.py"}]
+    assert payload["hyperedges"] == [
+        {"id": "kept", "nodes": ["kept"], "source_file": "live.py"}
+    ]
