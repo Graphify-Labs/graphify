@@ -1886,6 +1886,24 @@ def test_julia_abstract_concrete_hierarchy_inherits():
     assert ("Circle", "Shape") in _edge_labels(r, "inherits")
 
 
+def test_julia_abstract_type_with_supertype_is_extracted(tmp_path):
+    """`abstract type Dog <: Animal end` must yield a node and an inherits edge.
+
+    The abstract-type path only matched a bare `identifier` type_head, so the
+    subtyping form (a `binary_expression`) dropped the type entirely — losing an
+    intermediate node in the dispatch hierarchy and the inheritance edge with it.
+    """
+    f = tmp_path / "types.jl"
+    f.write_text(
+        "abstract type Animal end\n"
+        "abstract type Dog <: Animal end\n"
+    )
+    r = extract_julia(f)
+    assert "error" not in r
+    assert "Dog" in [n["label"] for n in r["nodes"]], "abstract subtype node dropped"
+    assert ("Dog", "Animal") in _edge_labels(r, "inherits"), "abstract inherits edge dropped"
+
+
 def test_julia_struct_field_type_context():
     r = extract_julia(FIXTURES / "sample.jl")
     assert ("Point", "Float64") in _edge_labels(r, "references", "field")
