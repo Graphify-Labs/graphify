@@ -55,9 +55,9 @@ def validate_extraction(data: dict) -> list[str]:
                     f"Edge {i} has invalid confidence '{edge['confidence']}' "
                     f"- must be one of {sorted(VALID_CONFIDENCES)}"
                 )
-            if "source" in edge and node_ids and edge["source"] not in node_ids:
+            if "source" in edge and edge["source"] not in node_ids:
                 errors.append(f"Edge {i} source '{edge['source']}' does not match any node id")
-            if "target" in edge and node_ids and edge["target"] not in node_ids:
+            if "target" in edge and edge["target"] not in node_ids:
                 errors.append(f"Edge {i} target '{edge['target']}' does not match any node id")
 
     return errors
