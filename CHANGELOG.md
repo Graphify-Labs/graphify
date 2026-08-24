@@ -2,7 +2,7 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
-## 0.9.49 (unreleased)
+## 0.9.49 (2026-08-24)
 
 - Feature: `graphify merge-graphs` now links a type declaration that two repos share — same fully-qualified namespace and name, from different repos — with a `same_type_as` edge, so a shared contract type is navigable across the repo boundary; two unrelated types that merely share a short name are not linked (#3007, thanks @durmazoguzhan).
 - Feature: C# properties now emit a member node per property, so a property is visible as a class member alongside fields and methods; the property's type still emits its references edge and no built-in types are fabricated (#3006, thanks @durmazoguzhan).
