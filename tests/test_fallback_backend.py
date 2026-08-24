@@ -225,6 +225,33 @@ def test_primary_import_error_falls_back_instead_of_dying(monkeypatch, tmp_path,
     assert "requires the anthropic package" in capsys.readouterr().err
 
 
+def test_partial_primary_success_does_not_fire_fallback(monkeypatch, tmp_path, capsys):
+    # The fallback exists for TOTAL failure only. When the primary got at
+    # least one chunk through, retrying the whole set on a second backend
+    # would re-spend on the chunks that already succeeded — so a partial
+    # pass keeps its result (and the incomplete-build guard), no retry.
+    calls = []
+
+    def _partial_stub(paths, **kwargs):
+        calls.append({"backend": kwargs.get("backend")})
+        on_chunk = kwargs.get("on_chunk_done")
+        if on_chunk:
+            # 1 of 2 chunks succeeded; the second never reports.
+            on_chunk(0, 2, {"nodes": [], "edges": [], "hyperedges": []})
+        return {"nodes": [], "edges": [], "hyperedges": [],
+                "input_tokens": 10, "output_tokens": 5}
+
+    _arm(monkeypatch, tmp_path, _partial_stub,
+         extra_argv=["--fallback-backend", "openai"])
+
+    _run_ok()
+
+    assert [c["backend"] for c in calls] == ["claude"], (
+        "a partially-succeeded primary pass must not re-dispatch on the fallback"
+    )
+    assert "retrying once with fallback backend" not in capsys.readouterr().out
+
+
 def test_import_error_without_fallback_stays_fatal(monkeypatch, tmp_path, capsys):
     calls = []
     stub = _recording_stub(
