@@ -4037,3 +4037,145 @@ def test_cl_ids_are_path_qualified_across_directories(tmp_path):
         f"same-named .lisp files in different dirs must not share ids, "
         f"got overlap {sorted(ids_a & ids_b)}"
     )
+# ---------------------------------------------------------------------------
+# Perl (slice 1: packages + subs)
+# ---------------------------------------------------------------------------
+
+def test_perl_no_error():
+    from graphify.extract import extract_perl
+    r = extract_perl(FIXTURES / "sample_module.pm")
+    assert "error" not in r
+
+def test_perl_finds_packages():
+    """Both the leading `package Acme::Widget` and the mid-file
+    `package Acme::Widget::Inner` switch must surface as nodes."""
+    from graphify.extract import extract_perl
+    r = extract_perl(FIXTURES / "sample_module.pm")
+    labels = _labels(r)
+    assert any("Acme::Widget" in l for l in labels)
+    assert any("Acme::Widget::Inner" in l for l in labels)
+
+def test_perl_finds_subs():
+    from graphify.extract import extract_perl
+    r = extract_perl(FIXTURES / "sample_module.pm")
+    labels = _labels(r)
+    for name in ("new", "render", "format_line", "update", "tick"):
+        assert any(name in l for l in labels), f"missing sub {name!r}"
+
+def test_perl_block_scoped_package(tmp_path):
+    """Block-form `package Foo { ... }` scopes Foo to the block only: subs inside
+    the block belong to Foo, and a sub AFTER the block belongs to the package that
+    was current before the block (no state leak)."""
+    from graphify.extract import extract_perl
+    src = tmp_path / "block.pm"
+    src.write_text(
+        "package Outer;\n"
+        "sub outer_sub { }\n"
+        "package Acme::Block {\n"
+        "    sub inner { }\n"
+        "}\n"
+        "sub after_block { }\n"
+        "1;\n"
+    )
+    r = extract_perl(src)
+    label = {n["id"]: n["label"] for n in r["nodes"]}
+    container_of = {
+        label.get(e["target"]): label.get(e["source"])
+        for e in r["edges"] if e["relation"] == "contains"
+    }
+    assert "Acme::Block" in label.values(), "block-form package node must be emitted"
+    assert container_of.get("inner()") == "Acme::Block", (
+        f"sub inside a block package must belong to it, got {container_of.get('inner()')!r}"
+    )
+    assert container_of.get("after_block()") == "Outer", (
+        f"block-form package must not leak: after_block belongs to Outer, "
+        f"got {container_of.get('after_block()')!r}"
+    )
+
+def test_perl_main_package_node_emitted_for_packageless_sub(tmp_path):
+    """The lazily-created `main` package node contains the package-less sub (the
+    `contains` edge is main -> sub, not file -> sub)."""
+    from graphify.extract import extract_perl
+    src = tmp_path / "s.pl"
+    src.write_text("sub helper { return 1; }\n")
+    r = extract_perl(src)
+    label = {n["id"]: n.get("label", "") for n in r["nodes"]}
+    container_of = {
+        label.get(e["target"]): label.get(e["source"])
+        for e in r["edges"] if e["relation"] == "contains"
+    }
+    assert "main" in label.values(), "a package-less sub must materialize a main package node"
+    assert container_of.get("helper()") == "main", \
+        f"package-less helper must be contained by main, got {container_of.get('helper()')!r}"
+
+def test_perl_deeply_nested_expression_does_not_crash(tmp_path):
+    """A pathologically deep expression nest must not RecursionError (which would
+    make _safe_extract drop the whole file); the iterative walk keeps the file node
+    and the sub."""
+    from graphify.extract import extract_perl
+    depth = 12000  # > _RECURSION_LIMIT (10_000): the old recursive walk would blow up
+    body = "[" * depth + "1" + "]" * depth
+    src = tmp_path / "deep.pl"
+    src.write_text(f"sub f {{ my $x = {body}; }}\n")
+    r = extract_perl(src)
+    assert not r.get("error"), f"deep nest must not error out, got {r.get('error')!r}"
+    labels = {n["label"] for n in r["nodes"]}
+    assert "deep.pl" in labels, "file node must survive deep nesting"
+    assert "f()" in labels, "the sub must still be extracted despite deep nesting"
+
+@pytest.mark.parametrize("bad", [
+    "Acme::Basé",      # accented letter — Unicode \w matched, ASCII must not
+    "Acme::Ｂase",      # fullwidth latin letter — Unicode \w matched, ASCII must not
+    "Acme::1x",        # component starting with a digit after ::
+    "1Acme",           # leading digit
+    "Acme::Bar\n",     # trailing newline (a bare $ anchor would let this through)
+])
+def test_perl_label_validator_rejects_non_ascii_component(bad):
+    """The package-name validator is ASCII-only and anchors every `::` component to
+    a letter/underscore start. Python `\\w` is Unicode-default, so accented,
+    fullwidth and digit-start names would otherwise pass and land in graph.json /
+    the Obsidian export."""
+    from graphify.extractors.perl import _is_valid_perl_package_name
+    assert not _is_valid_perl_package_name(bad), \
+        f"{bad!r} must be rejected by the ASCII package-name validator"
+
+
+@pytest.mark.parametrize("ok", ["Foo", "_priv", "Acme::Base", "A::B::C", "F0o::B4r"])
+def test_perl_label_validator_accepts_ascii_package(ok):
+    """Legitimate ASCII package names (including digits after the first char of a
+    component) still validate — the tightening must not over-reject."""
+    from graphify.extractors.perl import _is_valid_perl_package_name
+    assert _is_valid_perl_package_name(ok), f"{ok!r} must validate"
+
+def test_perl_statement_walk_charges_budget_per_sibling(tmp_path, monkeypatch):
+    """A broad, flat file (many sibling statements under one frame) must charge the
+    traversal budget per sibling, not once per stack frame. Under a tiny budget
+    the walk stops early and emits a PARTIAL graph; the old code drained every
+    sibling on one charge, so all subs surfaced regardless of budget. Asserting the
+    partial output isolates walk_statements (the shared budget is also spent by
+    later walks, so a warning alone would not discriminate)."""
+    from graphify.extractors import perl
+    monkeypatch.setattr(perl, "_MAX_PERL_TRAVERSAL_NODES", 3)
+    src = tmp_path / "flat.pl"
+    src.write_text("package Wide;\n" + "".join(
+        f"sub s{i} {{ 1; }}\n" for i in range(30)))
+    r = perl.extract_perl(src)
+    sub_nodes = [n for n in r["nodes"] if n.get("label", "").endswith("()")]
+    assert len(sub_nodes) < 30, (
+        "walk_statements must charge per sibling and stop early under a tiny budget; "
+        f"emitting all {len(sub_nodes)} subs means siblings were traversed for free")
+
+def test_perl_statement_walk_no_warning_within_budget(tmp_path, caplog):
+    """Guard against a vacuous pass: a small file under the default budget extracts
+    fully and emits no traversal warning."""
+    import logging
+    from graphify.extractors import perl
+    src = tmp_path / "small.pl"
+    src.write_text("package Wide;\n" + "".join(
+        f"sub s{i} {{ return {i}; }}\n" for i in range(20)))
+    with caplog.at_level(logging.WARNING, logger="graphify.extractors.perl"):
+        r = perl.extract_perl(src)
+    assert not any("traversal budget" in rec.message for rec in caplog.records), \
+        "a small file must not trip the budget"
+    assert sum(1 for n in r["nodes"] if n.get("label", "").endswith("()")) == 20, \
+        "all 20 subs extract when the budget is ample"
