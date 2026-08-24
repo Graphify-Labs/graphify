@@ -2132,7 +2132,10 @@ def _merge_decl_def_classes(
     and leaves it alone, and the downstream resolvers see ONE definition. Because
     the colliding nodes already share an id, no edge re-pointing is needed: every
     edge that referenced the impl symbol already points at the surviving id. We
-    only drop the redundant duplicate node and prefer the header's label.
+    only drop the redundant duplicate node and prefer the header's label — but
+    the dropped impl node's provenance is preserved on the survivor as
+    ``definition_file`` / ``definition_location``, so the definition site is
+    still reachable from the merged node.
 
     GOD-NODE GUARDS (false merges are the main risk):
 
@@ -2203,6 +2206,30 @@ def _merge_decl_def_classes(
             if len(base_headers) > 1:
                 continue
             keeper = base_headers[0] if base_headers else min(headers, key=_source_stem)
+        # The keeper is the DECLARATION, so without this the graph reports the
+        # header as the symbol's only location and the definition site — the file
+        # and line a reader actually wants — is discarded with the dropped node.
+        # Recorded as separate attributes: the survivor's id, label and
+        # source_file are untouched, so no existing graph is re-keyed, no edge
+        # moves, and the single-definition guarantee downstream resolvers rely on
+        # is unchanged. Chosen deterministically (lowest source_file, then
+        # location) so an ObjC class whose members are split across several
+        # category impls does not depend on node arrival order.
+        impls = sorted(
+            (n for n in group
+             if n is not keeper
+             and Path(str(n.get("source_file", ""))).suffix.lower()
+             in _DECLDEF_IMPL_SUFFIXES),
+            key=lambda n: (str(n.get("source_file", "")),
+                           str(n.get("source_location", ""))),
+        )
+        if impls:
+            definition = impls[0]
+            if definition.get("source_file"):
+                keeper["definition_file"] = definition["source_file"]
+            if definition.get("source_location"):
+                keeper["definition_location"] = definition["source_location"]
+
         for node in group:
             if node is not keeper:
                 drop_objs.add(id(node))
@@ -2211,7 +2238,8 @@ def _merge_decl_def_classes(
         return
 
     # Drop the redundant duplicate nodes. The surviving (header) node keeps its
-    # own label/source_file; edges are unchanged because the id is identical. Then
+    # own label/source_file (and now carries the impl's definition_file/
+    # definition_location); edges are unchanged because the id is identical. Then
     # de-dup any now-identical edges (e.g. the impl file's `contains`/`method`
     # edge that duplicates the header's after the collapse).
     all_nodes[:] = [n for n in all_nodes if id(n) not in drop_objs]
