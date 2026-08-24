@@ -4,6 +4,11 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.49 (unreleased)
 
+- Feature: `graphify merge-graphs` now links a type declaration that two repos share — same fully-qualified namespace and name, from different repos — with a `same_type_as` edge, so a shared contract type is navigable across the repo boundary; two unrelated types that merely share a short name are not linked (#3007, thanks @durmazoguzhan).
+- Feature: C# properties now emit a member node per property, so a property is visible as a class member alongside fields and methods; the property's type still emits its references edge and no built-in types are fabricated (#3006, thanks @durmazoguzhan).
+- Fix: when a C/C++/Objective-C declaration and its definition merge into one node, the node now points at the definition site (the implementation body) instead of the header prototype; the pick is deterministic regardless of file order, and a declaration with no definition keeps its own site (#2990, thanks @winesoft-namjin-yun).
+- Fix: a bash command substitution on the right of an assignment (`x=$(fn)`) now emits a `calls` edge like a bare `$(fn)`, while argument-position and process substitutions stay suppressed (#2978, thanks @akshitj11).
+- Fix: a SQL `CREATE TABLE` wrapped in a `BEGIN`/`COMMIT` transaction is now extracted, not just top-level DDL (#2953, thanks @akshitj11).
 - Feature: C# object-creation expressions (`new Foo()`) now emit a `calls` edge to the constructed type, so constructor usage is visible in the graph; built-in and out-of-corpus types are not fabricated and a qualified construction resolves against declared namespaces (#2997, thanks @durmazoguzhan).
 - Feature: when a C# interface has exactly one implementing class, its methods are now linked to that implementation with a `dispatches_to` edge, so a call through an injected dependency reaches the implementation; guarded against false links (single implementer, single case-sensitively same-named method, both ends C#) (#3003, thanks @durmazoguzhan).
 - Fix: Zig methods declared on enums and unions (not just structs) are now extracted, along with the calls in their bodies (#2999, thanks @rajatnagda45).
