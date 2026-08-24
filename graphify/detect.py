@@ -1975,6 +1975,11 @@ def save_manifest(
                       Stamps semantic_hash; preserves existing ast_hash.
     kind="both"     — full pipeline: stamps both hashes (default).
 
+    Volatile fields are stamped only on real change (#2988): a row whose
+    freshly computed hashes equal its stored ones inherits the previous
+    ``mtime`` / ``seen`` VERBATIM, so repeated saves over an untouched corpus
+    leave manifest.json byte-identical — safe to commit behind a rebuild hook.
+
     When ``root`` is provided, keys are relativized against it before write
     (forward-slash, posix-style) so the on-disk manifest is portable across
     machines and checkout locations (#777). Out-of-root entries are written
@@ -2136,20 +2141,35 @@ def save_manifest(
             # Preserve semantic_hash only when content is unchanged
             sem_h = prev.get("semantic_hash", "") if h == prev.get("ast_hash", "") else ""
 
-        # Preserve previous seen timestamp if the entry's mtime and target hash(es)
-        # are genuinely unchanged and no clear was requested for this file.
-        prev_seen = prev.get("seen")
-        is_unchanged = (
-            isinstance(prev_seen, (int, float))
-            and mtime == prev.get("mtime")
-            and (ast_h == prev.get("ast_hash", "") if kind in ("ast", "both") else True)
-            and (sem_h == prev.get("semantic_hash", "") if kind in ("semantic", "both") else True)
+        # Idempotent volatile fields (#2988): mtime/seen are cache-invalidation
+        # state, not graph content — but manifest.json is an artifact teams are
+        # told to COMMIT, so restamping them on every run keeps the working
+        # tree dirty forever (a committed graphify-out/ can never present a
+        # clean status, and committing the restamp fires the hook again).
+        # When the freshly computed hashes equal the stored ones, the content
+        # is unchanged: inherit the previous mtime/seen VERBATIM so a rebuild
+        # over an untouched corpus leaves manifest.json byte-identical and the
+        # #2838 skip below can fire. Only a real hash change (or a requested
+        # clear) earns fresh stamps. Keying on hashes instead of mtime equality
+        # also survives benign mtime motion (checkout / copy / touch) that used
+        # to churn dozens of unchanged rows per run; detection stays correct
+        # either way, because detect_incremental's hash comparison remains
+        # authoritative whenever the stored mtime drifts from disk.
+        inherits_volatile = (
+            bool(prev)
+            and ast_h == prev.get("ast_hash", "")
+            and sem_h == prev.get("semantic_hash", "")
             and not _in_clear_ast(f)
             and not _in_clear(f)
         )
+        prev_seen = prev.get("seen")
         entry: dict = {
-            "mtime": mtime,
-            "seen": prev_seen if is_unchanged else time.time(),
+            "mtime": prev.get("mtime", mtime) if inherits_volatile else mtime,
+            "seen": (
+                prev_seen
+                if inherits_volatile and isinstance(prev_seen, (int, float))
+                else time.time()
+            ),
             "ast_hash": ast_h,
             "semantic_hash": sem_h,
         }
