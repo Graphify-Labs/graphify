@@ -93,6 +93,59 @@ def _mask_sql_comments(text: str) -> str:
             out.append("\n" if c == "\n" else " ")
         return upto
 
+    def _blank_tail_and_carry(start: int) -> int:
+        """Blank from start to end-of-line, carrying comment state forward.
+
+        The union-of-readings blank for an ambiguous stretch: the rest of the
+        line is blanked outright; if the raw text of that stretch leaves a /*
+        unclosed on its own line (the maximum comment depth any reading could
+        be left holding), blanking continues, nesting-aware, to the closing
+        */ or EOF. Where a carry closes MID-line the same rule applies to the
+        remainder of that line — under the reading where the carry never
+        opened, that whole line may be a comment or a string, so emitting the
+        post-*/ text verbatim exposed it (found by differential fuzzing).
+        Repeats until a line ends with no carry pending. Appends one output
+        character per input character; returns the resume index.
+        """
+        k = start
+        while True:
+            eol = text.find("\n", k)
+            eol = n if eol == -1 else eol
+            depth = 0
+            m2 = k
+            while m2 < eol:
+                if text.startswith("/*", m2):
+                    depth += 1
+                    m2 += 2
+                elif text.startswith("*/", m2):
+                    if depth:
+                        depth -= 1
+                    m2 += 2
+                else:
+                    m2 += 1
+            for ch in text[k:eol]:
+                out.append("\n" if ch == "\n" else " ")
+            k = eol
+            if not depth:
+                return k
+            j2 = k
+            while j2 < n and depth:
+                if text.startswith("/*", j2):
+                    depth += 1
+                    j2 += 2
+                elif text.startswith("*/", j2):
+                    depth -= 1
+                    j2 += 2
+                else:
+                    j2 += 1
+            for ch in text[k:j2]:
+                out.append("\n" if ch == "\n" else " ")
+            k = j2
+            if k >= n:
+                return k
+            # the carry closed mid-line: the remainder of THIS line is the
+            # same ambiguous stretch — loop and blank it too
+
     while i < n:
         c = text[i]
         if c == "'":
@@ -124,10 +177,15 @@ def _mask_sql_comments(text: str) -> str:
             # every reading: the rest of the line is blanked outright, and
             # any raw /* on it with no later */ on the same line carries
             # forward as (nesting-aware) comment state, since some reading
-            # may have left it open. Over-blanking loses at most routines on
-            # a line that was already broken (a conservative false negative,
-            # and a routine named like [a--b] is inside that loss);
-            # under-blanking is what fabricates, and cannot happen here.
+            # may have left it open — and where that carry closes mid-line,
+            # the remainder of THAT line gets the same treatment, repeated
+            # until a line ends carry-free (under the no-carry reading the
+            # close line may itself be all comment or string, so emitting its
+            # post-*/ tail verbatim was an exposure). Over-blanking loses at
+            # most routines on lines already entangled with the broken one (a
+            # conservative false negative; a routine named like [a--b] is
+            # inside that loss); under-blanking is what fabricates, and every
+            # reading's blank set stays a subset of this one.
             closer = '"' if c == '"' else "]"
             j = i + 1
             closed = False
@@ -145,33 +203,7 @@ def _mask_sql_comments(text: str) -> str:
                 out.append(span)
                 i = j
             else:
-                eol = text.find("\n", i)
-                eol = n if eol == -1 else eol
-                depth = 0
-                m2 = i
-                while m2 < eol:
-                    if text.startswith("/*", m2):
-                        depth += 1
-                        m2 += 2
-                    elif text.startswith("*/", m2):
-                        if depth:
-                            depth -= 1
-                        m2 += 2
-                    else:
-                        m2 += 1
-                i = _blank(eol)
-                if depth:
-                    j2 = eol
-                    while j2 < n and depth:
-                        if text.startswith("/*", j2):
-                            depth += 1
-                            j2 += 2
-                        elif text.startswith("*/", j2):
-                            depth -= 1
-                            j2 += 2
-                        else:
-                            j2 += 1
-                    i = _blank(j2)
+                i = _blank_tail_and_carry(i)
         elif c == "-" and i + 1 < n and text[i + 1] == "-":
             j = i
             while j < n and text[j] != "\n":

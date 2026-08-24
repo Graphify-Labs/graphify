@@ -670,8 +670,17 @@ def test_mask_sql_comments_literal_and_comment_handling():
     # some reading of the broken line left it open
     carry = "SELECT [a--b] /*\nCREATE PROC dbo.Fake AS BEGIN SELECT 1; END\n"
     assert "CREATE" not in mask(carry) and len(mask(carry)) == len(carry)
-    carry_closed = "SELECT [a--b] /*\nx */ CREATE PROC dbo.Kept AS x\n"
-    assert "CREATE PROC dbo.Kept" in mask(carry_closed)
+    # where a carry closes MID-line, the remainder of that line is blanked
+    # too (under the no-carry reading the whole line may be comment or
+    # string — emitting the post-*/ tail verbatim was an exposure, found by
+    # differential fuzzing); recovery resumes on the NEXT line
+    carry_closed = "SELECT [a--b] /*\nx */ CREATE PROC dbo.Lost AS x\nCREATE PROC dbo.Kept AS x\n"
+    out = mask(carry_closed)
+    assert "dbo.Lost" not in out and len(out) == len(carry_closed)
+    assert "CREATE PROC dbo.Kept" in out
+    # and a fresh /* after the close carries again
+    recarry = "SELECT [a--b] /*\nx */ y /*\nCREATE PROC dbo.Ghost3 AS x\n"
+    assert "Ghost3" not in mask(recarry)
     # dynamic SQL contents cannot survive the mask
     dyn = "EXEC(N'CREATE PROC [dbo].[Fake] AS BEGIN SELECT 1; END');"
     assert "CREATE" not in mask(dyn) and len(mask(dyn)) == len(dyn)
@@ -721,6 +730,194 @@ def test_mask_sql_comments_invariants_fuzz():
             assert (a == "\n") == (b == "\n"), (s, out)
             assert b == a or b == " ", (s, out)
         assert mask(out) == out, (s, out)
+
+
+# Frozen copy of _mask_sql_comments as of the 2026-08-24 hardening series,
+# for the differential monotonicity fuzz below. Deliberately NOT imported
+# from graphify: the point is that future edits to the live mask are
+# compared against this fixed baseline. Update it only when a deliberate,
+# reviewed decision changes what the mask must blank.
+def _frozen_mask_2026_08_24(text: str) -> str:
+    """Blank comment and string-literal spans, preserving every offset.
+
+    One output character per input character: non-newline characters inside
+    a blanked span become spaces and newlines are kept, so positions and
+    line numbers computed against the masked text are valid against the
+    original. Double-quoted and bracket-delimited identifiers are preserved
+    verbatim (they carry recoverable routine names); single-quoted strings,
+    line comments, and (nesting-aware) block comments are blanked. Used by
+    both routine-recovery scans so CREATE PROCEDURE/FUNCTION DDL reachable
+    only through a comment or a single-quoted string cannot fabricate a
+    routine node when an unrelated parse error arms recovery.
+    """
+    out: list[str] = []
+    i, n = 0, len(text)
+
+    def _blank(upto: int) -> int:
+        """Blank [i, upto), keeping newlines; return upto."""
+        for c in text[i:upto]:
+            out.append("\n" if c == "\n" else " ")
+        return upto
+
+    def _blank_tail_and_carry(start: int) -> int:
+        """Blank from start to end-of-line, carrying comment state forward.
+
+        The union-of-readings blank for an ambiguous stretch: the rest of the
+        line is blanked outright; if the raw text of that stretch leaves a /*
+        unclosed on its own line (the maximum comment depth any reading could
+        be left holding), blanking continues, nesting-aware, to the closing
+        */ or EOF. Where a carry closes MID-line the same rule applies to the
+        remainder of that line — under the reading where the carry never
+        opened, that whole line may be a comment or a string, so emitting the
+        post-*/ text verbatim exposed it (found by differential fuzzing).
+        Repeats until a line ends with no carry pending. Appends one output
+        character per input character; returns the resume index.
+        """
+        k = start
+        while True:
+            eol = text.find("\n", k)
+            eol = n if eol == -1 else eol
+            depth = 0
+            m2 = k
+            while m2 < eol:
+                if text.startswith("/*", m2):
+                    depth += 1
+                    m2 += 2
+                elif text.startswith("*/", m2):
+                    if depth:
+                        depth -= 1
+                    m2 += 2
+                else:
+                    m2 += 1
+            for ch in text[k:eol]:
+                out.append("\n" if ch == "\n" else " ")
+            k = eol
+            if not depth:
+                return k
+            j2 = k
+            while j2 < n and depth:
+                if text.startswith("/*", j2):
+                    depth += 1
+                    j2 += 2
+                elif text.startswith("*/", j2):
+                    depth -= 1
+                    j2 += 2
+                else:
+                    j2 += 1
+            for ch in text[k:j2]:
+                out.append("\n" if ch == "\n" else " ")
+            k = j2
+            if k >= n:
+                return k
+            # the carry closed mid-line: the remainder of THIS line is the
+            # same ambiguous stretch — loop and blank it too
+
+    while i < n:
+        c = text[i]
+        if c == "'":
+            # Single-quoted string: blank it. '' is an escaped quote; a
+            # newline abandons the literal (see the comment above).
+            j = i + 1
+            while j < n and text[j] != "\n":
+                if text[j] == "'":
+                    if j + 1 < n and text[j + 1] == "'":
+                        j += 2
+                        continue
+                    j += 1
+                    break
+                j += 1
+            i = _blank(j)
+        elif c == '"' or c == "[":
+            # Delimited identifier: preserve verbatim. Doubled closers are
+            # escapes. A span is DISTRUSTED when it is unterminated (no
+            # closer before the newline) or would swallow a comment opener
+            # on its way to the closer ('SELECT [Col FROM t -- CREATE PROC
+            # [dbo]' closes on [dbo]'s bracket) — a stray delimiter is
+            # ordinary in exactly the broken files this mask runs on.
+            #
+            # A distrusted span is irreducibly ambiguous (identifier data vs
+            # stray delimiter before real comments/strings), and any attempt
+            # to pick one reading exposed text the other reading blanks —
+            # re-emitting the delimiter and rescanning even re-paired later
+            # single quotes and uncovered dynamic SQL. So blank the UNION of
+            # every reading: the rest of the line is blanked outright, and
+            # any raw /* on it with no later */ on the same line carries
+            # forward as (nesting-aware) comment state, since some reading
+            # may have left it open — and where that carry closes mid-line,
+            # the remainder of THAT line gets the same treatment, repeated
+            # until a line ends carry-free (under the no-carry reading the
+            # close line may itself be all comment or string, so emitting its
+            # post-*/ tail verbatim was an exposure). Over-blanking loses at
+            # most routines on lines already entangled with the broken one (a
+            # conservative false negative; a routine named like [a--b] is
+            # inside that loss); under-blanking is what fabricates, and every
+            # reading's blank set stays a subset of this one.
+            closer = '"' if c == '"' else "]"
+            j = i + 1
+            closed = False
+            while j < n and text[j] != "\n":
+                if text[j] == closer:
+                    if j + 1 < n and text[j + 1] == closer:
+                        j += 2
+                        continue
+                    j += 1
+                    closed = True
+                    break
+                j += 1
+            span = text[i:j]
+            if closed and "--" not in span and "/*" not in span:
+                out.append(span)
+                i = j
+            else:
+                i = _blank_tail_and_carry(i)
+        elif c == "-" and i + 1 < n and text[i + 1] == "-":
+            j = i
+            while j < n and text[j] != "\n":
+                j += 1
+            i = _blank(j)
+        elif c == "/" and i + 1 < n and text[i + 1] == "*":
+            depth, j = 1, i + 2
+            while j < n and depth:
+                if text[j] == "/" and j + 1 < n and text[j + 1] == "*":
+                    depth += 1
+                    j += 2
+                elif text[j] == "*" and j + 1 < n and text[j + 1] == "/":
+                    depth -= 1
+                    j += 2
+                else:
+                    j += 1
+            i = _blank(j)  # unclosed comment: j == n, blanks to end-of-file
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
+def test_mask_sql_comments_monotone_against_frozen_baseline():
+    """Differential fuzz: the live mask must never EXPOSE a character the
+    frozen baseline blanks. Blanking more is allowed (conservative); blanking
+    less is the fabrication channel — every masking defect in the 2026-08-24
+    series (quote re-pairing, carry-close exposure) was a monotonicity
+    violation of exactly this kind, and none was caught by hand-written
+    shapes first.
+    """
+    import random
+
+    from graphify.extractors.sql import _mask_sql_comments as mask
+
+    rng = random.Random(0xBA5E11E)
+    alphabet = "ab[]\"'-*/ \n;.$"
+    for _ in range(20_000):
+        s = "".join(rng.choice(alphabet) for _ in range(rng.randint(1, 40)))
+        live = mask(s)
+        base = _frozen_mask_2026_08_24(s)
+        assert len(live) == len(base) == len(s)
+        for idx, (b, lv, orig) in enumerate(zip(base, live, s)):
+            if b == " " and orig != " ":
+                assert lv == " ", (
+                    f"live mask exposes char {idx} ({orig!r}) that the frozen "
+                    f"baseline blanks:\n input={s!r}\n base={base!r}\n live={live!r}"
+                )
 
 
 def test_sql_dynamic_sql_and_unclosed_comment_do_not_fabricate_routines(tmp_path):
