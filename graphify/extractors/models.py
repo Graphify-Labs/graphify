@@ -54,8 +54,10 @@ class LanguageConfig:
     extra_walk_fn: Callable | None = None
 
     # Optional bytes transform applied to the source right before parsing
-    # (e.g. the TSX bare-``&`` JSX-text mask, #2922). Runs on the bytes that
-    # are actually parsed, after any ``source_override`` substitution.
+    # (e.g. the TSX bare-``&`` JSX-text mask, #2922). It MUST preserve the
+    # total UTF-8 byte length so tree-sitter's start_byte/end_byte slices stay
+    # aligned with the original file. Runs on the bytes that are actually
+    # parsed, after any ``source_override`` substitution.
     source_transform: Callable[[bytes], bytes] | None = None
 
 @dataclass(frozen=True)

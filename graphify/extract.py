@@ -825,9 +825,10 @@ _TS_CONFIG = LanguageConfig(
 # partial-extraction warning fires (#2551, #2922). ``&`` inside JSX tag
 # attribute values, JSX expression containers ``{ ... }``, string literals,
 # comments, and TS code is already accepted by tree-sitter-typescript — only
-# JSX text content is strict. Mask bare ``&`` to ``&amp;`` so the TSX grammar
-# parses the file cleanly; the entity serializes back to a single ``&`` so
-# the visible text is byte-identical to the user-written source.
+# JSX text content is strict. A bare ``&`` in JSX text is replaced with a
+# single ASCII space so the TSX grammar parses the file cleanly; the one-byte
+# placeholder keeps the transformed source byte-aligned with the original file
+# so ``source[start_byte:end_byte]`` slices stay accurate.
 _TSX_ENTITY_RE = re.compile(r'&(?:#[xX][0-9a-fA-F]+|#[0-9]+|[A-Za-z][A-Za-z0-9]*);')
 
 # Characters whose preceding position puts ``<`` at expression position (so it
@@ -867,35 +868,146 @@ def _generic_arrow_tail(src: str, m: int) -> bool:
 
     Used by the ``<`` disambiguation in :func:`_mask_tsx_ampersands`:
     classifying a generic arrow as a JSX tag would strand the walker in
-    ``jsx_text`` and corrupt a later bitwise ``a & b`` into ``a &amp; b``
-    (a parse error — the very bug class this mask removes), so an
+    ``jsx_text`` and corrupt a later bitwise ``a & b`` into ``a   b``
+    (a parse error — the very bug class this fix removes), so an
     uppercase ``<TKey>`` directly followed by ``>(`` is only treated as a
     tag when no arrow tail follows the balanced parameter list. The scan
     is bounded so pathological input cannot make the walker quadratic.
+
+    The scan skips over string literals, comments, and regex literals so
+    that ``)`` / ``;`` characters inside them do not break the parameter
+    list balance or prematurely end the return-type search.
     """
     n = len(src)
-    limit = min(n, m + 600)
-    depth = 0
+    limit = min(n, m + 800)
     i = m
+    paren_depth = 0
+    return_depth = 0
+    mode = 'params'
+    prev: str | None = None
+    keyword: str | None = None
+
+    def _set_prev(c: str) -> None:
+        nonlocal prev, keyword
+        prev = c
+        if not (c.isalnum() or c == '_' or c == '$'):
+            keyword = None
+
+    def _extend_keyword(c: str) -> None:
+        nonlocal keyword
+        keyword = (keyword or '') + c
+
+    def _skip_string(i: int, quote: str) -> int:
+        i += 1
+        while i < limit:
+            if src[i] == '\\' and i + 1 < n:
+                i += 2
+                continue
+            if src[i] == quote:
+                return i + 1
+            i += 1
+        return i
+
+    def _skip_comment(i: int) -> int:
+        if src[i + 1] == '/':
+            while i < limit and src[i] != '\n':
+                i += 1
+        else:
+            i += 2
+            while i + 1 < limit and not (src[i] == '*' and src[i + 1] == '/'):
+                i += 1
+            i += 2
+        return i
+
+    def _skip_regex(i: int) -> int:
+        nonlocal prev, keyword
+        i += 1
+        in_class = False
+        class_open = -1
+        while i < limit:
+            c = src[i]
+            if c == '\\' and i + 1 < n:
+                i += 2
+                continue
+            if in_class:
+                if c == ']':
+                    if i == class_open + 1 or (i == class_open + 2 and src[class_open + 1] == '^'):
+                        i += 1
+                        continue
+                    in_class = False
+                i += 1
+                continue
+            if c == '[':
+                in_class = True
+                class_open = i
+                i += 1
+                continue
+            if c == '/':
+                i += 1
+                while i < n and src[i].isalpha():
+                    i += 1
+                break
+            i += 1
+        prev, keyword = 'a', None
+        return i
+
     while i < limit:
         c = src[i]
+        c2 = src[i:i + 2] if i + 1 < n else ''
+        if c in '"\'`':
+            i = _skip_string(i, c)
+            _set_prev(c)
+            continue
+        if c2 == '//' or c2 == '/*':
+            i = _skip_comment(i)
+            continue
+        if c == '/' and c2 not in ('//', '/*') and (
+            prev is None
+            or prev in _TSX_REGEX_START_PREV
+            or keyword in _TSX_REGEX_START_KEYWORDS
+        ):
+            i = _skip_regex(i)
+            continue
         if c == '(':
-            depth += 1
+            if mode == 'params':
+                paren_depth += 1
+            else:
+                return_depth += 1
         elif c == ')':
-            depth -= 1
-            if depth == 0:
-                j = i + 1
-                while j < n and src[j].isspace():
-                    j += 1
-                if src[j:j + 2] == '=>':
+            if mode == 'params':
+                paren_depth -= 1
+                if paren_depth == 0:
+                    i += 1
+                    while i < n and src[i].isspace():
+                        i += 1
+                    if src[i:i + 2] == '=>':
+                        return True
+                    if i < n and src[i] == ':':
+                        mode = 'return'
+                        return_depth = 0
+                        i += 1
+                        continue
+                    return False
+            else:
+                return_depth -= 1
+        elif mode == 'return':
+            if c == '=' and c2 == '=>':
+                if return_depth == 0:
                     return True
-                if j < n and src[j] == ':':
-                    # ``(x: TKey): TResult => x`` — return-type annotation
-                    # between the parameter list and the arrow.
-                    end = src.find(';', j)
-                    stop = end if end != -1 else min(n, j + 200)
-                    return '=>' in src[j:stop]
+                i += 2
+                continue
+            if c in '[{<':
+                return_depth += 1
+            elif c in ']}>':
+                return_depth -= 1
+            elif c == ';' and return_depth == 0:
                 return False
+        if not c.isspace():
+            if c.isalnum() or c == '_' or c == '$':
+                _extend_keyword(c)
+            else:
+                keyword = None
+            prev = c
         i += 1
     return False
 
