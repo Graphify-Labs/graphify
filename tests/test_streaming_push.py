@@ -87,16 +87,20 @@ def _build_graph(raw: dict):
 
 # ---------------------------------------------------------------------------
 # Capture helpers - both fakes record (cypher, {"rows": batch}) pairs.
+# Setup queries (CREATE INDEX / legacy adoption) carry no UNWIND and fall
+# through both filters; test_indexed_push.py owns their contract.
 # ---------------------------------------------------------------------------
 
 def _split(recorded):
     node_q = [(c, p) for c, p in recorded if "MERGE (n:" in c]
-    edge_q = [(c, p) for c, p in recorded if "MATCH (a {id: row.src})" in c]
+    edge_q = [(c, p) for c, p in recorded
+              if "MATCH (a:GraphifyNode {id: row.src})" in c]
     return node_q, edge_q
 
 
 def _node_group(cypher: str) -> str:
-    return cypher.split("MERGE (n:")[1].split(" ")[0]
+    # Nodes merge on the shared label; the per-type group is the SET n:<Type>.
+    return cypher.split("SET n:")[1].split(" ")[0]
 
 
 def _edge_group(cypher: str) -> str:
@@ -220,7 +224,12 @@ def test_stream_empty_graph_object(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "falkordb", _fake_falkordb_module(recorded))
     from graphify.export import stream_push_to_falkordb
     assert stream_push_to_falkordb(path, uri="localhost:6379") == {"nodes": 0, "edges": 0}
-    assert recorded == []
+    # No writes at all - only the always-run setup pair (shared-label index +
+    # legacy adoption), which is a no-op on an empty graph.
+    assert [c for c, _ in recorded] == [
+        "CREATE INDEX FOR (n:GraphifyNode) ON (n.id)",
+        "MATCH (n) WHERE n.id IS NOT NULL SET n:GraphifyNode",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -239,7 +248,8 @@ def test_nodes_fully_precede_edges_even_when_links_come_first(tmp_path, monkeypa
     result = stream_push_to_falkordb(path, uri="localhost:6379", batch_size=3)
 
     assert result == {"nodes": 12, "edges": 11}
-    kinds = ["node" if "MERGE (n:" in c else "edge" for c, _ in recorded]
+    writes = [(c, p) for c, p in recorded if "UNWIND $rows AS row" in c]
+    kinds = ["node" if "MERGE (n:" in c else "edge" for c, _ in writes]
     first_edge = kinds.index("edge")
     assert all(k == "node" for k in kinds[:first_edge])
     assert all(k == "edge" for k in kinds[first_edge:])
@@ -255,7 +265,7 @@ def _discarding_falkordb_module():
     import types
 
     class _Graph:
-        def query(self, cypher, params):
+        def query(self, cypher, params=None):
             pass
 
     class FalkorDB:
