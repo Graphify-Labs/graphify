@@ -71,7 +71,7 @@ _ROUTINE_RECOVERY_RX = re.compile(
 # quote), judged not worth the swallow risk in a recovery-only path.
 
 
-def _mask_sql_comments(text: str) -> str:
+def _scan_sql(text: str) -> tuple[str, list[tuple[int, int]]]:
     """Blank comment and string-literal spans, preserving every offset.
 
     One output character per input character: non-newline characters inside
@@ -80,10 +80,18 @@ def _mask_sql_comments(text: str) -> str:
     original. Double-quoted and bracket-delimited identifiers are preserved
     verbatim (they carry recoverable routine names); single-quoted strings,
     line comments, and (nesting-aware) block comments are blanked. Used by
-    both routine-recovery scans so CREATE PROCEDURE/FUNCTION DDL reachable
+    the routine-recovery scan so CREATE PROCEDURE/FUNCTION DDL reachable
     only through a comment or a single-quoted string cannot fabricate a
     routine node when an unrelated parse error arms recovery.
+
+    Returns (masked_text, ident_spans) where ident_spans holds the [start,
+    end) of every PRESERVED delimited identifier: preserved spans keep their
+    text verbatim, so DDL keywords inside one are still visible in the
+    masked text, and the recovery scan must skip a match that starts there
+    (identifier data, not DDL — 'SELECT 1 AS [CREATE PROCEDURE x pending]'
+    must not mint a routine).
     """
+    ident_spans: list[tuple[int, int]] = []
     out: list[str] = []
     i, n = 0, len(text)
 
@@ -204,6 +212,7 @@ def _mask_sql_comments(text: str) -> str:
                 j += 1
             span = text[i:j]
             if closed and "--" not in span and "/*" not in span:
+                ident_spans.append((i, j))
                 out.append(span)
                 i = j
             else:
@@ -228,7 +237,12 @@ def _mask_sql_comments(text: str) -> str:
         else:
             out.append(c)
             i += 1
-    return "".join(out)
+    return "".join(out), ident_spans
+
+
+def _mask_sql_comments(text: str) -> str:
+    """Masked text only — see _scan_sql for the span-reporting form."""
+    return _scan_sql(text)[0]
 
 
 def _norm_ident(name: str) -> str:
@@ -655,8 +669,16 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         # (offset-preserving), so commented-out DDL and single-quoted dynamic
         # SQL cannot fabricate a routine when an unrelated error arms this
         # scan; string shapes the mask does not model rely on the has_error
-        # gate alone.
-        for m in _ROUTINE_RECOVERY_RX.finditer(_mask_sql_comments(src_text)):
+        # gate alone. Preserved delimited identifiers keep their text
+        # verbatim (they carry the recoverable names), so a match whose
+        # CREATE keyword STARTS inside one is identifier data, not DDL
+        # ('SELECT 1 AS [CREATE PROCEDURE x pending]') and is skipped — the
+        # name a genuine statement captures is allowed to be a delimited
+        # identifier; its CREATE never is.
+        masked_src, ident_spans = _scan_sql(src_text)
+        for m in _ROUTINE_RECOVERY_RX.finditer(masked_src):
+            if any(s <= m.start() < e for s, e in ident_spans):
+                continue
             fn_name = m.group(1)
             fn_line = src_text[: m.start()].count("\n") + 1
             _add_node(_make_id(stem, fn_name), f"{fn_name}()", fn_line)

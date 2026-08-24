@@ -956,6 +956,26 @@ def test_sql_dynamic_sql_and_unclosed_comment_do_not_fabricate_routines(tmp_path
     )
 
 
+def test_sql_ddl_keywords_inside_delimited_identifiers_do_not_fabricate(tmp_path):
+    """A preserved delimited identifier keeps its text verbatim in the masked
+    scan (it may BE a recoverable name), so DDL keywords occurring inside one
+    ('SELECT 1 AS [CREATE PROCEDURE dbo.usp_Phantom pending]') were matched
+    by the recovery regex and minted a phantom routine. Recovery now skips a
+    match whose CREATE starts inside a preserved identifier span — a genuine
+    statement's NAME may be a delimited identifier; its CREATE never is."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "alias.sql"
+    p.write_text(
+        "THIS IS NOT SQL AT ALL %%%;\n"
+        "SELECT 1 AS [CREATE PROCEDURE dbo.usp_Phantom pending];\n"
+        'SELECT 2 AS "CREATE PROC dbo.usp_Phantom2 queued";\n'
+        "CREATE PROCEDURE [dbo].[usp_Real]\nAS\nBEGIN\n    SELECT 1;\nEND;\n"
+    )
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"] if n["label"] != "alias.sql"]
+    assert labels == ["[dbo].[usp_Real]()"], labels
+
+
 def test_sql_escaped_double_quote_in_routine_name_is_consumed(tmp_path):
     """ANSI SQL escapes a literal double quote inside a delimited identifier
     by doubling it: "a""b" names the identifier a"b. A pattern that stops at
