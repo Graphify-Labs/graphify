@@ -1142,6 +1142,23 @@ def _is_community_label_export_fix_line(line: str) -> bool:
     )
 
 
+def _is_query_budget_default_line(line: str) -> bool:
+    """Whether a line states the query token-budget default (2000 -> 20000).
+
+    Owner's order 2026-08-24: the default token budget for graph answers is
+    20000 — the old 2000 default starved multi-node answers, cutting most of a
+    scoped subgraph before it reached the caller. Exactly two monolith lines
+    state the default (the ``token_budget = BUDGET`` assignment comment and the
+    "Replace ``QUESTION`` ..." instruction naming the default); both are
+    sanctioned in their old and new forms so the renumbering round-trips
+    without opening those lines to other edits.
+    """
+    stripped = line.strip()
+    return stripped.startswith("token_budget = BUDGET  # default ") or (
+        "`BUDGET` with the token budget (default `" in line
+    )
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -1163,6 +1180,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_uv_from_interpreter_fix_line,
     _is_semantic_cache_scope_fix_line,
     _is_community_label_export_fix_line,
+    _is_query_budget_default_line,
 )
 
 

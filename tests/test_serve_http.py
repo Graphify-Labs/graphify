@@ -170,6 +170,36 @@ def test_tools_list_over_http(tmp_path):
         assert {"query_graph", "get_node", "graph_stats"} <= names
 
 
+def test_tools_list_token_budget_default_is_20000(tmp_path):
+    """Owner's order 2026-08-24: the default graph-answer budget is 20000
+    tokens (2000 starved multi-node answers). Every tool that advertises a
+    token_budget input must carry the new default in its schema."""
+    app = serve_mod._build_http_app(_graph_file(tmp_path), json_response=True)
+    with _client(app) as client:
+        init = client.post("/mcp", headers=_MCP_HEADERS, json=_INIT_BODY)
+        assert init.status_code == 200
+        session_id = init.headers.get("mcp-session-id")
+        notify_headers = {**_MCP_HEADERS, "mcp-session-id": session_id}
+        client.post(
+            "/mcp",
+            headers=notify_headers,
+            json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+        )
+        resp = client.post(
+            "/mcp",
+            headers=notify_headers,
+            json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+        )
+        assert resp.status_code == 200
+        budget_defaults = {
+            t["name"]: t["inputSchema"]["properties"]["token_budget"]["default"]
+            for t in resp.json()["result"]["tools"]
+            if "token_budget" in t.get("inputSchema", {}).get("properties", {})
+        }
+        assert set(budget_defaults) == {"query_graph", "get_neighbors", "get_community"}
+        assert all(v == 20000 for v in budget_defaults.values()), budget_defaults
+
+
 def _project_with_graph(tmp_path, node_count: int, name: str = "proj") -> str:
     """Create ``<proj>/graphify-out/graph.json`` and return the project dir."""
     proj = tmp_path / name

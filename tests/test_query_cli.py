@@ -106,6 +106,44 @@ def test_query_cli_preserves_calls_direction_when_seeded_on_caller(monkeypatch, 
     assert "callee_fn --calls" not in out
 
 
+def test_query_cli_default_budget_is_20000(monkeypatch, tmp_path, capsys):
+    """`graphify query` without --budget must pass the 20000-token default.
+
+    Owner's order 2026-08-24: the old 2000-token default starved multi-node
+    answers. --budget N must still override it.
+    """
+    import graphify.serve as serve_mod
+
+    graph_path = _write_graph(tmp_path)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    captured: list[int] = []
+    real_query_graph_text = serve_mod._query_graph_text
+
+    def spy(G, question, **kwargs):
+        captured.append(kwargs.get("token_budget"))
+        return real_query_graph_text(G, question, **kwargs)
+
+    monkeypatch.setattr(serve_mod, "_query_graph_text", spy)
+
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "query", "extract", "--graph", str(graph_path)],
+    )
+    mainmod.main()
+    capsys.readouterr()
+    assert captured == [20000]
+
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "query", "extract", "--budget", "1500", "--graph", str(graph_path)],
+    )
+    mainmod.main()
+    capsys.readouterr()
+    assert captured == [20000, 1500]
+
+
 def test_query_cli_rejects_oversized_graph(monkeypatch, tmp_path, capsys):
     """#F4: query CLI must refuse to parse a graph.json that exceeds the cap."""
     import pytest

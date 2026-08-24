@@ -978,7 +978,7 @@ def dispatch_command(cmd: str) -> None:
 
         question = sys.argv[2]
         use_dfs = "--dfs" in sys.argv
-        budget = 2000
+        budget = 20000
         graph_path = _default_graph_path()
         context_filters: list[str] = []
         args = sys.argv[3:]
