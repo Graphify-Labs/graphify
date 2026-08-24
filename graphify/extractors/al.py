@@ -693,7 +693,7 @@ class _ALFallbackExtractor:
         self._add_contains(self.file_nid, info["nid"], info["line"])
 
     def _extract_callables(self, match, object_nid: str) -> None:
-        opening = self.masked.find("{", match.start(), match.end())
+        opening = match.end() - 1
         closing = _matching_brace(self.masked, opening)
         body = self.masked[opening + 1:closing]
         body_offset = opening + 1

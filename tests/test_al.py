@@ -7,6 +7,7 @@ import pytest
 
 from graphify.detect import CODE_EXTENSIONS, FileType, classify_file
 from graphify.extract import _get_extractor, extract
+from graphify.al_resolution import _same_source, _unique_member_id
 from graphify.extractors.al import _mask_al_comments_and_strings, extract_al
 
 
@@ -19,6 +20,19 @@ def test_al_extension_is_detected_case_insensitively():
 def test_al_extension_dispatches_to_al_extractor():
     assert _get_extractor(Path("Comment.Codeunit.al")) is extract_al
     assert _get_extractor(Path("Comment.Codeunit.AL")) is extract_al
+
+
+def test_al_source_matching_uses_complete_path_components():
+    assert _same_source("app/foo.al", "C:/repo/app/foo.al")
+    assert _same_source("APP\\FOO.AL", "c:/repo/app/foo.al")
+    assert not _same_source("app/foo.al", "C:/repo/myapp/foo.al")
+    assert not _same_source("foo.al", "C:/repo/notfoo.al")
+
+
+def test_al_unique_member_id_deduplicates_string_ids_without_selecting_ambiguity():
+    assert _unique_member_id(["member", "member"]) == "member"
+    assert _unique_member_id(["first", "second"]) is None
+    assert _unique_member_id([]) is None
 
 
 def test_al_mask_preserves_offsets_and_newlines_across_lexical_states():
@@ -325,7 +339,7 @@ def test_al_resolver_connects_test_app_targets_handlers_and_dependency(tmp_path)
     Subtype = Test;
 
     [Test]
-    [HandlerFunctions('ConfirmHandler')]
+    [HandlerFunctions('ConfirmHandler, SecondHandler')]
     procedure OpensCard()
     var
         Card: TestPage "Example Card";
@@ -337,6 +351,12 @@ def test_al_resolver_connects_test_app_targets_handlers_and_dependency(tmp_path)
     procedure ConfirmHandler(Question: Text; var Reply: Boolean)
     begin
         Reply := false;
+    end;
+
+    [ConfirmHandler]
+    procedure SecondHandler(Question: Text; var Reply: Boolean)
+    begin
+        Reply := true;
     end;
 }''',
         encoding="utf-8",
@@ -359,6 +379,9 @@ def test_al_resolver_connects_test_app_targets_handlers_and_dependency(tmp_path)
     assert (nodes["OpensCard()"], nodes["Example Card"], "references", "test_target") in relations
     assert (
         nodes["OpensCard()"], nodes["ConfirmHandler()"], "references", "test_handler"
+    ) in relations
+    assert (
+        nodes["OpensCard()"], nodes["SecondHandler()"], "references", "test_handler"
     ) in relations
     assert (
         manifests["TestApp"], manifests["MainApp"], "depends_on", "application"

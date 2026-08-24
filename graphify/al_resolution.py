@@ -20,9 +20,24 @@ def _key(value: object) -> str:
 
 
 def _same_source(node_source: object, fact_source: object) -> bool:
-    node_path = str(node_source or "").replace("\\", "/").casefold()
-    fact_path = str(fact_source or "").replace("\\", "/").casefold()
-    return bool(node_path and fact_path and (node_path == fact_path or fact_path.endswith("/" + node_path)))
+    node_parts = tuple(
+        part for part in str(node_source or "").replace("\\", "/").casefold().split("/")
+        if part and part != "."
+    )
+    fact_parts = tuple(
+        part for part in str(fact_source or "").replace("\\", "/").casefold().split("/")
+        if part and part != "."
+    )
+    return bool(
+        node_parts
+        and len(node_parts) <= len(fact_parts)
+        and fact_parts[-len(node_parts):] == node_parts
+    )
+
+
+def _unique_member_id(candidates: list[str]) -> str | None:
+    unique = set(candidates)
+    return next(iter(unique)) if len(unique) == 1 else None
 
 
 def _manifest_context(source_file: str, cache: dict[Path, dict]) -> dict:
@@ -284,7 +299,7 @@ class _ALSymbolResolver:
                     candidate for candidate in candidates
                     if self.member_parameter_counts.get(candidate) == call["argument_count"]
                 ]
-            target = candidates[0] if len(set(candidates)) == 1 else None
+            target = _unique_member_id(candidates)
             self._add_edge(source, target, "calls", "call", call.get("line"))
 
     def _emit_subscribers(self, facts: dict, context: dict) -> None:
@@ -298,7 +313,7 @@ class _ALSymbolResolver:
             candidates = self.members_by_parent_name.get(
                 (str(publisher_object and publisher_object["final_nid"]), _key(event_name)), []
             )
-            target = candidates[0] if len(set(candidates)) == 1 else None
+            target = _unique_member_id(candidates)
             self._add_edge(
                 self.member_fact_to_nid.get(str(subscriber.get("source"))),
                 target,
@@ -326,11 +341,14 @@ class _ALSymbolResolver:
             source = self.member_fact_to_nid.get(str(binding.get("source")))
             owner = self.parent_of.get(source)
             for argument in binding.get("arguments", []):
-                for handler_name in _reference_name(argument).split(","):
+                handler_names = (
+                    name.strip() for name in _reference_name(argument).split(",")
+                )
+                for handler_name in filter(None, handler_names):
                     candidates = self.members_by_parent_name.get(
                         (str(owner), _key(handler_name)), []
                     )
-                    target = candidates[0] if len(set(candidates)) == 1 else None
+                    target = _unique_member_id(candidates)
                     self._add_edge(
                         source, target, "references", "test_handler", binding.get("line")
                     )
