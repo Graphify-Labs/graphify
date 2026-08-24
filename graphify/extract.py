@@ -964,7 +964,12 @@ _KOTLIN_CONFIG = LanguageConfig(
 
 _SCALA_CONFIG = LanguageConfig(
     ts_module="tree_sitter_scala",
-    class_types=frozenset({"class_definition", "object_definition"}),
+    # `trait_definition` is a first-class Scala type declaration (interface-like,
+    # but may carry concrete method bodies). It shares the identifier +
+    # template_body + extends_clause shape of class/object, so omitting it dropped
+    # every trait as a definition — its methods, their calls, and its `contains`
+    # edge — leaving traits visible only as sourceless inherit-stub targets.
+    class_types=frozenset({"class_definition", "object_definition", "trait_definition"}),
     function_types=frozenset({"function_definition"}),
     import_types=frozenset({"import_declaration"}),
     call_types=frozenset({"call_expression"}),
