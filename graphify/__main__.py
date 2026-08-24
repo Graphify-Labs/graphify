@@ -552,6 +552,8 @@ def _run_cli() -> None:
         print("    --model=<name>          model to use for community naming")
         print("    --max-concurrency=N     parallel labeling LLM calls (default 4; forced to 1 for ollama/claude-cli)")
         print("    --batch-size=N          communities per labeling LLM call (default 100)")
+        print("  cypher \"MATCH ...\"       execute a Cypher query against graph.db (requires neug)")
+        print("    --db <path>             path to graph.db (default graphify-out/graph.db)")
         print("  query \"<question>\"       BFS traversal of graph.json for a question")
         print("    --dfs                   use depth-first instead of breadth-first")
         print("    --context C             explicit edge-context filter (repeatable)")
