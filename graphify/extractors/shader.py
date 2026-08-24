@@ -649,7 +649,10 @@ class _Extractor:
         if self.language != "hlsl":
             return
         # ponytail: flat cbuffer syntax only; compiler reflection is the upgrade path for macro-generated layouts.
-        pattern = re.compile(r"\b(cbuffer|tbuffer)\s+(\w+)\s*([^\{;]*)\{([^{}]*)\}\s*;?", re.DOTALL)
+        pattern = re.compile(
+            r"\b(cbuffer|tbuffer)\s+(\$?[A-Za-z_]\w*)\s*([^\{;]*)\{([^{}]*)\}\s*;?",
+            re.DOTALL,
+        )
         for match in pattern.finditer(self.masked):
             block_kind, name, suffix, body = match.groups()
             line = self.text.count("\n", 0, match.start()) + 1

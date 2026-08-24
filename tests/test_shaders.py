@@ -293,3 +293,18 @@ def test_shader_cross_file_calls_follow_reexports_and_nested_includes(tmp_path: 
     }
     assert ("main()", "from_nested()") in call_pairs
     assert ("mainCS()", "from_export()") in call_pairs
+
+
+def test_hlsl_recovers_dollar_prefixed_decompiler_cbuffer(tmp_path: Path) -> None:
+    shader = tmp_path / "globals.hlsl"
+    shader.write_text(
+        "cbuffer $Globals : register(b0) { float Exposure : packoffset(c0.x); };",
+        encoding="utf-8",
+    )
+
+    result = extract_hlsl(shader)
+
+    globals_node = _node(result, "$Globals")["metadata"]["shader"]
+    assert globals_node["kind"] == "uniform_buffer"
+    assert globals_node["bindings"] == [{"kind": "register", "register": "b0"}]
+    assert _node(result, "Exposure")["metadata"]["shader"]["layout"]["packoffset"] == "c0.x"
