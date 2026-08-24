@@ -182,7 +182,6 @@ def test_watch_raises_without_watchdog(tmp_path, monkeypatch):
 # --- _rebuild_lock (GH-858) ---
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="fcntl-only (POSIX)")
 def test_rebuild_lock_writes_pid_with_newline(tmp_path):
     out = tmp_path / "graphify-out"
     lock_path = out / ".rebuild.lock"
@@ -190,10 +189,13 @@ def test_rebuild_lock_writes_pid_with_newline(tmp_path):
         assert got is True
         assert lock_path.exists()
         contents = lock_path.read_text(encoding="utf-8")
-        assert contents == f"{os.getpid()}\n", contents
+        lines = contents.splitlines()
+        assert len(lines) >= 1
+        assert lines[0] == str(os.getpid())
+        assert contents.startswith(f"{os.getpid()}\n")
+        assert any(line.startswith("token=") for line in lines[1:])
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="fcntl-only (POSIX)")
 def test_rebuild_lock_removed_after_release(tmp_path):
     """GH-858: lock file must be unlinked once the rebuild completes so
     downstream waiters that poll for its absence unblock promptly."""
@@ -204,17 +206,20 @@ def test_rebuild_lock_removed_after_release(tmp_path):
     assert not lock_path.exists(), "lock file should be unlinked after release"
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="fcntl-only (POSIX)")
 def test_rebuild_lock_does_not_accumulate_pids_across_runs(tmp_path):
-    """GH-858: each acquisition truncates and rewrites the PID line rather
-    than appending, so the file never grows into a digit-concatenation."""
+    """GH-858: each acquisition rewrites the lock metadata cleanly rather
+    than appending, so the file never accumulates multiple PID lines."""
     out = tmp_path / "graphify-out"
     lock_path = out / ".rebuild.lock"
-    expected = f"{os.getpid()}\n"
     for _ in range(5):
         with _rebuild_lock(out) as got:
             assert got is True
-            assert lock_path.read_text(encoding="utf-8") == expected
+            contents = lock_path.read_text(encoding="utf-8")
+            lines = contents.splitlines()
+            assert lines[0] == str(os.getpid())
+            numeric_lines = [line for line in lines if line.strip().isdigit()]
+            assert len(numeric_lines) == 1
+            assert any(line.startswith("token=") for line in lines[1:])
         assert not lock_path.exists()
 
 
@@ -1139,7 +1144,6 @@ def test_rebuild_code_preupgrade_marker_less_node_one_cycle_lag(tmp_path):
     assert "bar()" in labels(healed), "surviving symbol must be kept throughout"
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="fcntl-only (POSIX)")
 def test_rebuild_lock_non_blocking_does_not_clobber_holder(tmp_path):
     """GH-858: a non-blocking caller that fails to acquire the lock must not
     truncate the holder's PID payload."""

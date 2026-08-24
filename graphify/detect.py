@@ -10,10 +10,16 @@ import subprocess
 import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
+import contextlib
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
+import errno
 from functools import lru_cache
 from pathlib import Path
-from typing import Callable
+import sys
+from typing import Callable, Any
+import uuid
 
 from graphify.google_workspace import (
     GOOGLE_WORKSPACE_EXTENSIONS,
@@ -2349,3 +2355,688 @@ def detect_incremental(
     full["deleted_files"] = deleted_files
     full["excluded_files"] = excluded_files
     return full
+
+
+class GraphState(str, Enum):
+    ABSENT = "ABSENT"
+    BUILDING = "BUILDING"
+    INCOMPLETE = "INCOMPLETE"
+    UNVERIFIABLE = "UNVERIFIABLE"
+    STALE = "STALE"
+    FRESH = "FRESH"
+
+
+class StalenessReason(str, Enum):
+    HEAD_MISMATCH = "HEAD_MISMATCH"
+    DIRTY_WORKTREE = "DIRTY_WORKTREE"
+
+
+@dataclass(frozen=True)
+class GraphStateResult:
+    state: GraphState
+    graph_path: Path | None = None
+    built_at_commit: str | None = None
+    current_head: str | None = None
+    staleness_reasons: tuple[StalenessReason, ...] = ()
+    intermediate_artifacts: tuple[str, ...] = ()
+    active_build: bool = False
+    unverifiable_reason: str | None = None
+    dirty_files: tuple[str, ...] = ()
+    active_pid: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "state": self.state.value,
+            "graph_path": str(self.graph_path) if self.graph_path else None,
+            "built_at_commit": self.built_at_commit,
+            "current_head": self.current_head,
+            "staleness_reasons": [r.value for r in self.staleness_reasons],
+            "intermediate_artifacts": list(self.intermediate_artifacts),
+            "active_build": self.active_build,
+            "unverifiable_reason": self.unverifiable_reason,
+            "dirty_files": list(self.dirty_files),
+            "active_pid": self.active_pid,
+        }
+
+
+class LockResult(str, Enum):
+    ACQUIRED = "ACQUIRED"
+    ALREADY_ACTIVE = "ALREADY_ACTIVE"
+    RECLAIMED_STALE = "RECLAIMED_STALE"
+
+
+@dataclass(frozen=True)
+class BuildLockStatus:
+    result: LockResult
+    active_pid: int | None = None
+    lock_path: Path | None = None
+    token: str | None = None
+    details: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "result": self.result.value,
+            "active_pid": self.active_pid,
+            "lock_path": str(self.lock_path) if self.lock_path else None,
+            "token": self.token,
+            "details": self.details,
+        }
+
+
+@dataclass
+class _LockFileContent:
+    pid: int
+    token: str | None = None
+    create_time: float | None = None
+    acquired_at: str | None = None
+    raw_lines: list[str] = field(default_factory=list)
+
+
+EPHEMERAL_ARTIFACT_PATTERNS = (
+    ".graphify_extract.json",
+    ".graphify_ast.json",
+    ".graphify_semantic.json",
+    ".graphify_chunk_*.json",
+    ".graphify_detect.json",
+    ".graphify_analysis.json",
+    ".graphify_cached.json",
+    ".graphify_uncached.txt",
+    ".graphify_semantic_new.json",
+)
+
+PERSISTENT_SIDECAR_FILENAMES = frozenset({
+    ".graphify_labels.json",
+    ".graphify_labels.json.sig",
+    ".graphify_python",
+    ".graphify_root",
+    "manifest.json",
+    "cost.json",
+    "graph.html",
+    ".graphify_version",
+    "graph.json",
+    "GRAPH_REPORT.md",
+    ".rebuild.lock",
+    ".rebuild.lock.mutex",
+    ".graphify_build_token",
+})
+
+
+def _resolve_out_dir(target_path: Path | str) -> Path:
+    p = Path(target_path)
+    if p.name == GRAPHIFY_OUT:
+        return p
+    return p / GRAPHIFY_OUT
+
+
+def _get_process_create_time(pid: int) -> float | None:
+    """Return process creation time as a timestamp, or None if unavailable."""
+    if pid <= 0:
+        return None
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+            kernel32 = ctypes.windll.kernel32
+            h = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+            if not h:
+                return None
+            try:
+                class FILETIME(ctypes.Structure):
+                    _fields_ = [("dwLowDateTime", wintypes.DWORD), ("dwHighDateTime", wintypes.DWORD)]
+                creation, exit_t, kernel_t, user_t = FILETIME(), FILETIME(), FILETIME(), FILETIME()
+                if kernel32.GetProcessTimes(h, ctypes.byref(creation), ctypes.byref(exit_t), ctypes.byref(kernel_t), ctypes.byref(user_t)):
+                    ft = (creation.dwHighDateTime << 32) + creation.dwLowDateTime
+                    if ft == 0:
+                        return None
+                    return (ft - 116444736000000000) / 10000000.0
+                return None
+            finally:
+                kernel32.CloseHandle(h)
+        except Exception:
+            return None
+    elif sys.platform.startswith("linux"):
+        try:
+            stat_parts = Path(f"/proc/{pid}/stat").read_text().split()
+            start_ticks = int(stat_parts[21])
+            clk_tck = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
+            btime = 0.0
+            for line in Path("/proc/stat").read_text().splitlines():
+                if line.startswith("btime "):
+                    btime = float(line.split()[1])
+                    break
+            return btime + (start_ticks / clk_tck)
+        except Exception:
+            return None
+    else:
+        # macOS / BSD fallback via ps -p <pid> -o lstart= in C locale
+        try:
+            env = dict(os.environ, LC_ALL="C")
+            out = subprocess.check_output(
+                ["ps", "-p", str(pid), "-o", "lstart="],
+                text=True,
+                env=env,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+            if out:
+                import time as _time
+                parsed = _time.strptime(out)
+                return _time.mktime(parsed)
+        except Exception:
+            pass
+        return None
+
+
+_LOCK_CONTENTION_ERRNOS = frozenset({
+    errno.EACCES,
+    errno.EAGAIN,
+    errno.EWOULDBLOCK,
+    getattr(errno, "EDEADLK", 36),
+})
+
+
+@contextlib.contextmanager
+def _mutex_lock(out_dir: Path, *, timeout_s: float = 2.0):
+    """Acquire a short-lived OS advisory lock on .rebuild.lock.mutex."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    mutex_path = out_dir / ".rebuild.lock.mutex"
+    fh = open(mutex_path, "a+b")
+    start = time.monotonic()
+    acquired = False
+    try:
+        while True:
+            try:
+                if sys.platform == "win32":
+                    import msvcrt
+                    fh.seek(0)
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                break
+            except (BlockingIOError, PermissionError):
+                if time.monotonic() - start > timeout_s:
+                    raise TimeoutError(f"Timed out after {timeout_s}s waiting for {mutex_path}")
+                time.sleep(0.025)
+            except OSError as e:
+                if e.errno in _LOCK_CONTENTION_ERRNOS:
+                    if time.monotonic() - start > timeout_s:
+                        raise TimeoutError(f"Timed out after {timeout_s}s waiting for {mutex_path}")
+                    time.sleep(0.025)
+                else:
+                    raise
+        yield
+    finally:
+        if acquired:
+            try:
+                if sys.platform == "win32":
+                    import msvcrt
+                    fh.seek(0)
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+        fh.close()
+
+
+def _parse_lock_file(lock_path: Path) -> _LockFileContent | None:
+    try:
+        if lock_path.is_symlink():
+            return None
+        text = lock_path.read_text(encoding="utf-8").strip()
+        if not text:
+            return None
+        lines = text.splitlines()
+        pid = int(lines[0].strip())
+        token = None
+        create_time = None
+        acquired_at = None
+        for line in lines[1:]:
+            line_s = line.strip()
+            if line_s.startswith("token="):
+                token = line_s.split("=", 1)[1].strip() or None
+            elif line_s.startswith("create_time="):
+                try:
+                    create_time = float(line_s.split("=", 1)[1].strip())
+                except ValueError:
+                    pass
+            elif line_s.startswith("acquired_at="):
+                acquired_at = line_s.split("=", 1)[1].strip() or None
+        return _LockFileContent(pid=pid, token=token, create_time=create_time, acquired_at=acquired_at, raw_lines=lines)
+    except Exception:
+        return None
+
+
+def _safe_write_file(dest_path: Path, content: str) -> None:
+    """Atomically write *content* to *dest_path* without following symlinks."""
+    parent = dest_path.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = parent / f".{dest_path.name}.{uuid.uuid4().hex}.tmp"
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(str(tmp_path), flags, 0o600)
+        with open(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.replace(str(tmp_path), str(dest_path))
+    finally:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+
+def _write_lock_file(lock_path: Path, pid: int, token: str, create_time: float | None = None) -> None:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    lines = [f"{pid}", f"token={token}"]
+    if create_time is not None:
+        lines.append(f"create_time={create_time:.6f}")
+    lines.append(f"acquired_at={now_iso}")
+    _safe_write_file(lock_path, "\n".join(lines) + "\n")
+
+
+def acquire_build_lock(
+    target_path: Path | str = ".",
+    *,
+    pid: int | None = None,
+) -> BuildLockStatus:
+    """Atomically acquire or reclaim the build lock for *target_path*."""
+    out_dir = _resolve_out_dir(target_path)
+    lock_path = out_dir / ".rebuild.lock"
+    token_file = out_dir / ".graphify_build_token"
+    my_pid = pid if pid is not None else os.getpid()
+    my_create_time = _get_process_create_time(my_pid)
+
+    with _mutex_lock(out_dir):
+        if lock_path.exists():
+            lock_content = _parse_lock_file(lock_path)
+            if lock_content is None:
+                # Malformed, empty, or symlinked lock file
+                new_token = str(uuid.uuid4())
+                _write_lock_file(lock_path, my_pid, new_token, my_create_time)
+                _safe_write_file(token_file, new_token)
+                return BuildLockStatus(
+                    result=LockResult.RECLAIMED_STALE,
+                    active_pid=my_pid,
+                    lock_path=lock_path,
+                    token=new_token,
+                    details="Reclaimed corrupt or empty lock file",
+                )
+
+            existing_pid = lock_content.pid
+            if _is_pid_alive(existing_pid):
+                if lock_content.create_time is not None:
+                    current_create_time = _get_process_create_time(existing_pid)
+                    if current_create_time is not None and abs(current_create_time - lock_content.create_time) > 2.0:
+                        # PID was recycled by the OS
+                        new_token = str(uuid.uuid4())
+                        _write_lock_file(lock_path, my_pid, new_token, my_create_time)
+                        _safe_write_file(token_file, new_token)
+                        return BuildLockStatus(
+                            result=LockResult.RECLAIMED_STALE,
+                            active_pid=my_pid,
+                            lock_path=lock_path,
+                            token=new_token,
+                            details=f"Reclaimed recycled PID {existing_pid}",
+                        )
+                # Active owner is alive and verified
+                return BuildLockStatus(
+                    result=LockResult.ALREADY_ACTIVE,
+                    active_pid=existing_pid,
+                    lock_path=lock_path,
+                    token=None,
+                    details=f"Active build owned by PID {existing_pid}",
+                )
+            else:
+                # Dead PID
+                new_token = str(uuid.uuid4())
+                _write_lock_file(lock_path, my_pid, new_token, my_create_time)
+                _safe_write_file(token_file, new_token)
+                return BuildLockStatus(
+                    result=LockResult.RECLAIMED_STALE,
+                    active_pid=my_pid,
+                    lock_path=lock_path,
+                    token=new_token,
+                    details=f"Reclaimed dead PID {existing_pid}",
+                )
+        else:
+            # Fresh acquisition
+            new_token = str(uuid.uuid4())
+            _write_lock_file(lock_path, my_pid, new_token, my_create_time)
+            _safe_write_file(token_file, new_token)
+            return BuildLockStatus(
+                result=LockResult.ACQUIRED,
+                active_pid=my_pid,
+                lock_path=lock_path,
+                token=new_token,
+                details="Acquired new build lock",
+            )
+
+
+def release_build_lock(
+    target_path: Path | str = ".",
+    *,
+    token: str | None = None,
+) -> bool:
+    """Safely release the build lock for *target_path* if token matches."""
+    out_dir = _resolve_out_dir(target_path)
+    lock_path = out_dir / ".rebuild.lock"
+    token_file = out_dir / ".graphify_build_token"
+
+    expected_token = token
+
+    with _mutex_lock(out_dir):
+        if not lock_path.exists():
+            if expected_token is not None and token_file.exists():
+                try:
+                    if token_file.read_text(encoding="utf-8").strip() == expected_token:
+                        token_file.unlink(missing_ok=True)
+                except Exception:
+                    pass
+            elif expected_token is None and token_file.exists():
+                token_file.unlink(missing_ok=True)
+            return False
+
+        lock_content = _parse_lock_file(lock_path)
+        if lock_content is None:
+            return False
+
+        if expected_token is not None and lock_content.token == expected_token:
+            lock_path.unlink(missing_ok=True)
+            if token_file.exists():
+                try:
+                    if token_file.read_text(encoding="utf-8").strip() == expected_token:
+                        token_file.unlink(missing_ok=True)
+                except Exception:
+                    token_file.unlink(missing_ok=True)
+            return True
+        elif expected_token is None and lock_content.token is None and lock_content.pid == os.getpid():
+            lock_path.unlink(missing_ok=True)
+            token_file.unlink(missing_ok=True)
+            return True
+        else:
+            return False
+
+
+def _is_pid_alive(pid: int) -> bool:
+    """Check if a process with *pid* is currently running."""
+    if pid <= 0:
+        return False
+    try:
+        if os.name == "nt":
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            # SYNCHRONIZE (0x00100000) | PROCESS_QUERY_LIMITED_INFORMATION (0x1000)
+            handle = kernel32.OpenProcess(0x00101000, False, pid)
+            if not handle:
+                handle = kernel32.OpenProcess(0x1000, False, pid)
+            if not handle:
+                handle = kernel32.OpenProcess(0x0400, False, pid)
+            if not handle:
+                err = kernel32.GetLastError()
+                return err == 5  # ERROR_ACCESS_DENIED means process is running
+            try:
+                wait_res = kernel32.WaitForSingleObject(handle, 0)
+                if wait_res == 0:  # WAIT_OBJECT_0: process terminated
+                    return False
+                if wait_res == 258:  # WAIT_TIMEOUT (0x102): process still active
+                    return True
+                exit_code = ctypes.c_ulong()
+                if kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                    return exit_code.value == 259
+                return False
+            finally:
+                kernel32.CloseHandle(handle)
+        else:
+            os.kill(pid, 0)
+            return True
+    except PermissionError:
+        return True
+    except (ProcessLookupError, OSError):
+        return False
+    except Exception:
+        return False
+
+
+def _find_intermediate_artifacts(out_dir: Path) -> list[str]:
+    """Return sorted list of ephemeral artifact filenames present in *out_dir*."""
+    if not out_dir.is_dir():
+        return []
+    found = set()
+    for item in out_dir.iterdir():
+        name = item.name
+        if name in PERSISTENT_SIDECAR_FILENAMES:
+            continue
+        for pattern in EPHEMERAL_ARTIFACT_PATTERNS:
+            if fnmatch.fnmatch(name, pattern):
+                found.add(name)
+                break
+    return sorted(found)
+
+
+def _parse_porcelain_z(raw_bytes: bytes) -> list[tuple[str, str, str | None]]:
+    """Parse git status --porcelain -z byte stream."""
+    entries = []
+    i = 0
+    n = len(raw_bytes)
+    while i < n:
+        if i + 3 > n:
+            break
+        status = raw_bytes[i:i+2].decode("latin1", errors="replace")
+        if raw_bytes[i+2:i+3] != b" ":
+            break
+        path_start = i + 3
+        nul_idx = raw_bytes.find(b"\x00", path_start)
+        if nul_idx == -1:
+            break
+        path_str = raw_bytes[path_start:nul_idx].decode("utf-8", errors="replace")
+        i = nul_idx + 1
+        orig_path = None
+        if status[0] in ("R", "C") or status[1] in ("R", "C"):
+            nul_idx2 = raw_bytes.find(b"\x00", i)
+            if nul_idx2 != -1:
+                orig_path = raw_bytes[i:nul_idx2].decode("utf-8", errors="replace")
+                i = nul_idx2 + 1
+        entries.append((status, path_str, orig_path))
+    return entries
+
+
+def _inspect_git_dirty(target_path: Path, repo_root: Path) -> list[str]:
+    """Return list of relative file paths within *target_path* with uncommitted changes."""
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(repo_root), "status", "--porcelain", "-z", "-uall"],
+            capture_output=True,
+            timeout=10,
+        )
+        if r.returncode != 0:
+            return []
+    except Exception:
+        return []
+
+    entries = _parse_porcelain_z(r.stdout)
+    if not entries:
+        return []
+
+    target_resolved = target_path.resolve()
+    out_dir_resolved = (target_resolved / GRAPHIFY_OUT).resolve()
+    dirty_files = []
+    ignore_patterns = _load_graphifyignore(target_resolved, gitignore=True)
+    supported_exts = (
+        CODE_EXTENSIONS
+        | DOC_EXTENSIONS
+        | PAPER_EXTENSIONS
+        | IMAGE_EXTENSIONS
+        | VIDEO_EXTENSIONS
+        | OFFICE_EXTENSIONS
+    )
+
+    for status, path_str, orig_path in entries:
+        candidate_paths = [repo_root / path_str]
+        if orig_path:
+            candidate_paths.append(repo_root / orig_path)
+
+        for p in candidate_paths:
+            try:
+                p_resolved = p.resolve()
+                rel_target = p_resolved.relative_to(target_resolved)
+            except ValueError:
+                continue
+
+            # Exclude graphify-out output directory
+            try:
+                p_resolved.relative_to(out_dir_resolved)
+                continue
+            except ValueError:
+                pass
+
+            rel_str = str(rel_target).replace(os.sep, "/")
+
+            suffix = p_resolved.suffix.lower() or Path(path_str).suffix.lower()
+            if suffix not in supported_exts:
+                if not (p_resolved.exists() and classify_file(p_resolved) is not None):
+                    continue
+            if _is_ignored(p_resolved, target_resolved, ignore_patterns):
+                continue
+            if rel_str not in dirty_files:
+                dirty_files.append(rel_str)
+
+    return sorted(dirty_files)
+
+
+def inspect_graph_state(
+    target_path: Path | str = ".",
+    *,
+    current_token: str | None = None,
+) -> GraphStateResult:
+    """Inspect the state of graphify-out/ for *target_path*.
+
+    Precedence:
+      1. graph.json missing -> ABSENT
+      2. active .rebuild.lock PID is alive (and not matching *current_token*) -> BUILDING
+      3. ephemeral intermediate artifacts exist -> INCOMPLETE
+      4. freshness cannot be established -> UNVERIFIABLE
+      5. HEAD mismatch and/or relevant dirty working tree -> STALE
+      6. otherwise -> FRESH
+    """
+    target = Path(target_path)
+    out_dir = _resolve_out_dir(target)
+    graph_path = out_dir / "graph.json"
+
+    if not graph_path.exists() or not graph_path.is_file():
+        return GraphStateResult(state=GraphState.ABSENT, graph_path=graph_path)
+
+    # 1. Check for active build via .rebuild.lock
+    lock_file = out_dir / ".rebuild.lock"
+    active_build = False
+    active_pid = None
+    if lock_file.exists():
+        lock_content = _parse_lock_file(lock_file)
+        if lock_content is not None:
+            # If current_token is provided and matches, the caller owns this lock
+            if current_token is not None and lock_content.token == current_token:
+                active_build = False
+            else:
+                active_pid = lock_content.pid
+                if _is_pid_alive(lock_content.pid):
+                    if lock_content.create_time is not None:
+                        current_create_time = _get_process_create_time(lock_content.pid)
+                        if current_create_time is None or abs(current_create_time - lock_content.create_time) <= 2.0:
+                            active_build = True
+                    else:
+                        active_build = True
+
+    if active_build:
+        return GraphStateResult(
+            state=GraphState.BUILDING,
+            graph_path=graph_path,
+            active_build=True,
+            active_pid=active_pid,
+        )
+
+    # 2. Check for intermediate artifacts (abandoned/interrupted build)
+    intermediates = _find_intermediate_artifacts(out_dir)
+    if intermediates:
+        return GraphStateResult(
+            state=GraphState.INCOMPLETE,
+            graph_path=graph_path,
+            intermediate_artifacts=tuple(intermediates),
+            active_build=False,
+            active_pid=active_pid,
+        )
+
+    # 3. Read graph.json metadata for built_at_commit
+    built_at_commit = None
+    try:
+        graph_data = json.loads(graph_path.read_text(encoding="utf-8"))
+        if isinstance(graph_data, dict):
+            built_at_commit = graph_data.get("built_at_commit")
+    except Exception:
+        pass
+
+    # 4. Resolve git repository and HEAD
+    from graphify.export import _git_head
+    current_head = _git_head(cwd=target)
+
+    if not built_at_commit:
+        return GraphStateResult(
+            state=GraphState.UNVERIFIABLE,
+            graph_path=graph_path,
+            built_at_commit=built_at_commit,
+            current_head=current_head,
+            unverifiable_reason="missing_built_at_commit" if current_head else "not_a_git_repo",
+        )
+
+    if not current_head:
+        return GraphStateResult(
+            state=GraphState.UNVERIFIABLE,
+            graph_path=graph_path,
+            built_at_commit=built_at_commit,
+            current_head=None,
+            unverifiable_reason="not_a_git_repo",
+        )
+
+    # Find repo root for status inspection
+    repo_root = None
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(target), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            repo_root = Path(r.stdout.strip())
+    except Exception:
+        repo_root = None
+
+    if not repo_root:
+        repo_root = target.resolve()
+
+    # 5. Check staleness (HEAD mismatch and/or dirty working tree)
+    staleness_reasons: list[StalenessReason] = []
+    if built_at_commit != current_head:
+        staleness_reasons.append(StalenessReason.HEAD_MISMATCH)
+
+    dirty_files = _inspect_git_dirty(target, repo_root)
+    if dirty_files:
+        staleness_reasons.append(StalenessReason.DIRTY_WORKTREE)
+
+    if staleness_reasons:
+        return GraphStateResult(
+            state=GraphState.STALE,
+            graph_path=graph_path,
+            built_at_commit=built_at_commit,
+            current_head=current_head,
+            staleness_reasons=tuple(staleness_reasons),
+            dirty_files=tuple(dirty_files),
+        )
+
+    return GraphStateResult(
+        state=GraphState.FRESH,
+        graph_path=graph_path,
+        built_at_commit=built_at_commit,
+        current_head=current_head,
+    )

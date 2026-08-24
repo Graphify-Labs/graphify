@@ -50,7 +50,39 @@ Drop any folder of code, docs, papers, images, or video into graphify and get a 
 
 If the user invoked `/graphify --help` or `/graphify -h` (with no other arguments), print the contents of the `## Usage` section above verbatim and stop. Do not run any commands, do not detect files, do not default the path to `.`. Just print the Usage block and return.
 
-**Fast path — existing graph:** Before doing anything else, check whether `graphify-out/graph.json` exists. The expected location is `graphify-out/graph.json` relative to the **current working directory** (i.e. the project root where you are running commands). If it exists AND the user's request is a natural-language question about the codebase (e.g. "How does X work?", "What calls Y?", "Trace the data flow through Z") and NOT an explicit rebuild command (`--update`, `--cluster-only`, or a bare path/URL that implies fresh extraction): **skip Steps 1–5 entirely and jump straight to `## For /graphify query`.** Run `graphify query "<question>"` immediately. Do not run detect. Do not check corpus size. Do not ask the user to narrow. The graph is already built — use it.
+**Fast path — existing graph:** Before doing anything else, check whether `graphify-out/graph.json` exists. If `graphify-out/graph.json` exists, resolve the Python interpreter if missing, then inspect the graph state:
+
+```bash
+if [ ! -f graphify-out/.graphify_python ]; then
+    GRAPHIFY_BIN=$(which graphify 2>/dev/null)
+    if [ -n "$GRAPHIFY_BIN" ]; then
+        PYTHON=$(head -1 "$GRAPHIFY_BIN" | tr -d '#!')
+        case "$PYTHON" in *[!a-zA-Z0-9/_.@-]*) PYTHON="python3" ;; esac
+    else
+        PYTHON="python3"
+    fi
+    mkdir -p graphify-out
+    "$PYTHON" -c "import sys; open('graphify-out/.graphify_python', 'w', encoding='utf-8').write(sys.executable)"
+fi
+```
+
+```bash
+"$(cat graphify-out/.graphify_python)" -c "
+import json
+from graphify.detect import inspect_graph_state
+res = inspect_graph_state('.')
+print(json.dumps(res.to_dict()))
+"
+```
+
+Act based on the returned `state`:
+
+* **`FRESH`**: The graph is clean and matches git HEAD. If the user's request is a natural-language question about the codebase (e.g. "How does X work?", "What calls Y?", "Trace the data flow through Z") and NOT an explicit rebuild command (`--update`, `--cluster-only`, or a bare path/URL that implies fresh extraction): **skip Steps 1–5 entirely and jump straight to `## For /graphify query`.** Run `graphify query "<question>"` immediately. Do not run detect. Do not check corpus size. Do not ask the user to narrow. The graph is already built — use it.
+* **`STALE`**: The graph was built from an older commit or the working tree contains uncommitted changes (`HEAD_MISMATCH` and/or `DIRTY_WORKTREE`). **Do NOT silently take the query fast path.** Surface that the existing graph is stale (report `built_at_commit`, current HEAD, and the reason: different commit or uncommitted modifications). Recommend updating the graph with `/graphify <path> --update` (or a full rebuild `/graphify <path>` if major structural changes occurred). Do not automatically execute `--update`.
+* **`INCOMPLETE`**: Intermediate artifacts (e.g. `.graphify_extract.json`, `.graphify_ast.json`, `.graphify_chunk_*.json`) were left behind by a previous interrupted or crashed build. **Do NOT query the existing graph.** Warn the user that intermediate artifacts were detected and recommend running a fresh full rebuild (`/graphify <path>`). Do not recommend `--update` as the primary recovery mechanism, and do not automatically delete the artifacts.
+* **`BUILDING`**: Another Graphify build process is currently running (active PID in `.rebuild.lock`). **Do NOT start another build or query the graph.** Inform the user that another Graphify rebuild is currently active.
+* **`UNVERIFIABLE`**: The graph exists but freshness cannot be established (e.g. not a git repository or missing `built_at_commit`). Print a concise provenance warning explaining why freshness could not be confirmed. To preserve compatibility, if the user asked a natural-language question, you may proceed to `## For /graphify query` with that notice, but do not claim the graph is fresh.
+* **`ABSENT`**: `graphify-out/graph.json` does not exist. Proceed with the normal full build workflow (Step 1 below).
 
 If no path was given, use `.` (current directory). Do not ask the user for a path.
 
@@ -106,18 +138,37 @@ If the import succeeds, print nothing and move straight to Step 2.
 
 ### Step 2 - Detect files
 
+Before starting the build, acquire the build lock, re-inspect the graph state, and detect files:
+
 ```bash
-$(cat graphify-out/.graphify_python) -c "
-import json
-from graphify.detect import detect
+"$(cat graphify-out/.graphify_python)" -c "
+import sys, json
+from graphify.detect import acquire_build_lock, inspect_graph_state, release_build_lock, detect, LockResult, GraphState
 from pathlib import Path
+
+status = acquire_build_lock('.')
+if status.result == LockResult.ALREADY_ACTIVE:
+    print(f'Another Graphify build is currently active (PID {status.active_pid}). Halting.')
+    sys.exit(1)
+re_state = inspect_graph_state('.', current_token=status.token)
+if re_state.state == GraphState.FRESH:
+    release_build_lock('.', token=status.token)
+    print('Graph is already fresh. Skipping build.')
+    sys.exit(2)
+
 result = detect(Path('INPUT_PATH'))
+if result['total_files'] == 0:
+    release_build_lock('.', token=status.token)
 # Write the sidecar from Python, not a shell redirect, so the same block renders
 # on PowerShell hosts without console-encoding drift (#2528).
 Path('graphify-out/.graphify_detect.json').write_text(json.dumps(result, ensure_ascii=False), encoding=\"utf-8\")
-print(f'Detected {result[\"total_files\"]} files')
+print(f'Detected {result[\"total_files\"]} files (build token: {status.token})')
 "
 ```
+
+If another build is active or the graph is already fresh, stop and do not proceed with the build.
+
+**Session token retention:** Retain the `build token: <token>` printed by Step 2. You MUST pass this exact token string into `release_build_lock('.', token='<BUILD_TOKEN>')` in Step 9 or upon abort. Never read `.graphify_build_token` from disk during cleanup, as a newer build could have superseded a stalled session.
 
 Replace INPUT_PATH with the actual path the user provided. Do NOT cat or print the JSON - read it silently and present a clean summary instead:
 
@@ -143,6 +194,17 @@ Then act on it:
   - If all files are in `(root)` with no subdirectories, do not ask to narrow — no subfolders exist. Instead suggest `--no-cluster` to skip the expensive clustering step and proceed.
   - Otherwise rank by count, show the top 5 with file counts, then ask which subfolder to run on. Wait for the user's answer before proceeding.
 - Otherwise: proceed directly to Step 2.5 if video files were detected, or Step 3 if not.
+
+> **Lock release on abort:** If the build fails, is cancelled, or aborts at any point before Step 9, release the build lock using the exact session token retained from Step 2:
+
+```bash
+"$(cat graphify-out/.graphify_python)" -c "
+from graphify.detect import release_build_lock
+release_build_lock('.', token='BUILD_TOKEN')
+"
+```
+
+Replace `BUILD_TOKEN` with the exact token printed in Step 2.
 
 ### Step 2.5 - Video and audio (only if video files detected)
 
@@ -612,6 +674,9 @@ cost['total_input_tokens'] += input_tok
 cost['total_output_tokens'] += output_tok
 cost_path.write_text(json.dumps(cost, indent=2, ensure_ascii=False), encoding=\"utf-8\")
 
+from graphify.detect import release_build_lock
+release_build_lock('.', token='BUILD_TOKEN')
+
 print(f'This run: {input_tok:,} input tokens, {output_tok:,} output tokens')
 print(f'All time: {cost[\"total_input_tokens\"]:,} input, {cost[\"total_output_tokens\"]:,} output ({len(cost[\"runs\"])} runs)')
 "
@@ -620,7 +685,7 @@ find graphify-out -maxdepth 1 -name '.graphify_chunk_*.json' -delete 2>/dev/null
 rm -f graphify-out/.needs_update 2>/dev/null || true
 ```
 
-Replace INPUT_PATH with the actual path (same value used in Steps 4-5) so the manifest is relativized to the scan root.
+Replace `BUILD_TOKEN` with the exact session token retained from Step 2, and `INPUT_PATH` with the actual path (same value used in Steps 4-5) so the manifest is relativized to the scan root.
 
 Tell the user (omit the obsidian line unless --obsidian was given):
 ```
