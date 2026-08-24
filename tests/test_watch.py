@@ -4203,3 +4203,29 @@ def test_markdown_reconcile_does_not_suffix_match_top_level_target(tmp_path):
     assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
     links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
     assert not any(edge.get("relation") == "references" for edge in links)
+
+
+def test_rebuild_code_passes_project_root_to_builder(tmp_path, monkeypatch):
+    """#932: the update-path build must receive the project root so absolute
+    source_file paths from semantic fragments are relativized the same way
+    `graphify build` does. Without it a watch rebuild writes machine-absolute
+    paths that break sharing and path-based selectors."""
+    import graphify.build as buildmod
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "app.py").write_text("def run(): pass\n", encoding="utf-8")
+
+    captured = {}
+    real_build_from_json = buildmod.build_from_json
+
+    def capturing(extraction, **kwargs):
+        captured.update(kwargs)
+        return real_build_from_json(extraction, **kwargs)
+
+    monkeypatch.setattr(buildmod, "build_from_json", capturing)
+
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+    assert captured.get("root") is not None, "build_from_json was called without root"
+    assert Path(captured["root"]).resolve() == corpus.resolve()

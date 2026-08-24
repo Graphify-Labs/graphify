@@ -1,9 +1,11 @@
 import json
+import math
 import sys
 import networkx as nx
+import pytest
 from pathlib import Path
 from graphify.build import build_from_json
-from graphify.cluster import cluster, cohesion_score, remap_communities_to_previous, score_all
+from graphify.cluster import _partition, cluster, cohesion_score, remap_communities_to_previous, score_all
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -177,3 +179,53 @@ def test_partition_is_invariant_to_edge_endpoint_orientation():
     assert _grouping(_partition(forward, 1.0)) == _grouping(_partition(flipped, 1.0)), (
         "partition drifted with edge-endpoint orientation / insertion order"
     )
+
+
+@pytest.mark.parametrize(
+    "weight", [math.nan, math.inf, -math.inf, -1.0, "abc", None, [1]]
+)
+def test_partition_repairs_invalid_edge_weights(monkeypatch, weight):
+    """The partitioners consume `weight` unvalidated: a non-numeric, NaN,
+    infinite, or negative value in a hand-edited or LLM-produced graph.json
+    reached Leiden/Louvain as-is. _partition now repairs each to 1.0 — the
+    same contract build_from_json enforces on edge attrs, which graphs loaded
+    from disk bypass."""
+    graph = nx.Graph()
+    graph.add_edge("a", "b", weight=weight)
+    captured = {}
+
+    import graphify.cluster as cl
+    # Both Leiden paths must be out of the way for the Louvain fallback to run:
+    # _native_leiden (graspologic_native, tried first) and the graspologic wrapper.
+    monkeypatch.setattr(cl, "_native_leiden", lambda *a, **k: None)
+    monkeypatch.setitem(sys.modules, "graspologic.partition", None)
+
+    def fake_louvain(projected, **_kwargs):
+        captured["weight"] = projected["a"]["b"]["weight"]
+        return [{"a", "b"}]
+
+    monkeypatch.setattr(nx.community, "louvain_communities", fake_louvain)
+
+    assert _partition(graph) == {"a": 0, "b": 0}
+    assert captured["weight"] == 1.0, f"weight {weight!r} was not repaired"
+
+
+def test_partition_keeps_valid_edge_weights(monkeypatch):
+    graph = nx.Graph()
+    graph.add_edge("a", "b", weight=2.5)
+    captured = {}
+
+    import graphify.cluster as cl
+    # Both Leiden paths must be out of the way for the Louvain fallback to run:
+    # _native_leiden (graspologic_native, tried first) and the graspologic wrapper.
+    monkeypatch.setattr(cl, "_native_leiden", lambda *a, **k: None)
+    monkeypatch.setitem(sys.modules, "graspologic.partition", None)
+
+    def fake_louvain(projected, **_kwargs):
+        captured["weight"] = projected["a"]["b"]["weight"]
+        return [{"a", "b"}]
+
+    monkeypatch.setattr(nx.community, "louvain_communities", fake_louvain)
+
+    _partition(graph)
+    assert captured["weight"] == 2.5, "a valid weight must pass through unchanged"

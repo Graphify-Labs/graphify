@@ -4,6 +4,7 @@ import contextlib
 import inspect
 import io
 import json
+import math
 import sys
 import networkx as nx
 
@@ -127,7 +128,21 @@ def _partition(G: nx.Graph, resolution: float = 1.0) -> dict[str, int]:
         ),
     )
     for src, tgt, attrs in edge_rows:
-        stable.add_edge(src, tgt, **attrs)
+        # The partitioners consume `weight` unvalidated: a NaN/inf, negative,
+        # or non-numeric value in a hand-edited or LLM-produced graph.json
+        # reaches Leiden/Louvain as-is. Repair to 1.0 — the same contract
+        # build_from_json enforces when it normalizes edge attrs, but graphs
+        # loaded from disk bypass that path.
+        weight = attrs.get("weight", 1.0)
+        try:
+            weight = float(weight)
+            if not math.isfinite(weight) or weight < 0:
+                raise ValueError("edge weight must be finite and non-negative")
+        except (TypeError, ValueError):
+            weight = 1.0
+        projected = dict(attrs)
+        projected["weight"] = weight
+        stable.add_edge(src, tgt, **projected)
 
     native_result = _native_leiden(stable, resolution)
     if native_result is not None:
