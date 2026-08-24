@@ -5290,6 +5290,16 @@ def _extract_generic(
                     tgt_nid = None
                 else:
                     tgt_nid = label_to_nid.get(callee_name)
+                    # A qualified `new A.B.Foo()` whose bare name matches only a
+                    # sourceless stub in this file would bind the call to the stub
+                    # and never reach _resolve_csharp_qualified_calls, the one pass
+                    # that can honour the namespace. Defer so it can.
+                    if (
+                        csharp_qualified_prefix
+                        and tgt_nid
+                        and not nid_to_sf.get(tgt_nid)
+                    ):
+                        tgt_nid = None
                 if tgt_nid and tgt_nid != caller_nid:
                     pair = (caller_nid, tgt_nid)
                     if pair not in seen_call_pairs:

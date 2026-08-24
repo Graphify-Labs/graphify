@@ -220,3 +220,31 @@ def test_receiver_typed_member_call_still_resolves(tmp_path):
     commit = _find(r, ".Commit()", "commit")
     assert (commit, _find(r, ".Save()", "server")) in calls
     assert (commit, _find(r, ".Save()", "cache")) not in calls
+
+def test_qualified_construction_resolves_when_the_method_also_declares_the_type(tmp_path):
+    # The method takes the type as a parameter and constructs it. The declared
+    # position mints a bare-name stub in this file, and binding the construction
+    # to that stub would keep it away from the namespace resolver, so the call
+    # would land on a sourceless node instead of the class.
+    calls, r = _extract(tmp_path, {**_COLLIDING_CACHES, "Caller.cs": (
+        "public class Caller {\n"
+        "    public void Go(Infra.Data.Cache existing) { var c = new Infra.Data.Cache(); }\n"
+        "}\n"
+    )})
+    go = _find(r, ".Go()", "go")
+    assert (go, _find(r, "Cache", "left")) in calls
+    sourceless = {n["id"] for n in r["nodes"]
+                  if n["label"] == "Cache" and not n.get("source_file")}
+    assert not any(target in sourceless for _, target in calls)
+
+
+def test_qualified_construction_of_a_foreign_type_makes_no_stub_edge(tmp_path):
+    # `new System.Text.StringBuilder()` has no declaration in the corpus. No edge
+    # beats an edge into a sourceless placeholder that stands for nothing.
+    calls, r = _extract(tmp_path, {"Caller.cs": (
+        "public class Caller {\n"
+        "    public void Go() { var b = new System.Text.StringBuilder(); }\n"
+        "}\n"
+    )})
+    builders = {n["id"] for n in r["nodes"] if n["label"] == "StringBuilder"}
+    assert not any(target in builders for _, target in calls)

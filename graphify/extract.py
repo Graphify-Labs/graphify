@@ -3813,7 +3813,14 @@ def _resolve_csharp_qualified_calls(
     if not by_namespace:
         return
 
-    existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
+    # Scoped to `calls`: a method that both takes a type as a parameter and
+    # constructs it already has a `references` edge to it, and that edge says
+    # nothing about whether the construction was resolved.
+    existing_pairs = {
+        (e.get("source"), e.get("target"))
+        for e in all_edges
+        if e.get("relation") == "calls"
+    }
     for rc in raw:
         candidates = by_namespace.get((rc["qualified_prefix"], rc["callee"]), [])
         if len(candidates) != 1:
