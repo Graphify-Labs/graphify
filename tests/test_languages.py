@@ -3788,3 +3788,62 @@ def test_markdown_heading_id_is_stable_regardless_of_frontmatter():
     stem = _file_stem(Path(src_file))
     assert _make_id(stem, "Overview") in heading_ids
     assert _make_id(stem, "Details") in heading_ids
+
+
+# ── Zig ───────────────────────────────────────────────────────────────────────
+from graphify.extract import extract_zig
+
+_needs_zig = pytest.mark.skipif(
+    _ilu.find_spec("tree_sitter_zig") is None,
+    reason="tree-sitter-zig not installed",
+)
+
+
+@_needs_zig
+def test_zig_enum_and_union_methods_are_extracted(tmp_path):
+    """Methods declared inside a Zig enum or tagged union must be captured.
+
+    Only `struct` containers recursed into their members, so `pub fn` methods on
+    an `enum`/`union` — and every call made from those method bodies — were
+    dropped along with the whole method layer of the type.
+    """
+    src = (
+        "const Color = enum {\n"
+        "    red,\n"
+        "    green,\n"
+        "    pub fn isRed(self: Color) bool {\n"
+        "        return self == .red;\n"
+        "    }\n"
+        "};\n"
+        "\n"
+        "const Shape = union(enum) {\n"
+        "    circle: f32,\n"
+        "    pub fn area(self: Shape) f32 {\n"
+        "        return helper();\n"
+        "    }\n"
+        "};\n"
+        "\n"
+        "fn helper() f32 {\n"
+        "    return 1.0;\n"
+        "}\n"
+    )
+    f = tmp_path / "shapes.zig"
+    f.write_text(src)
+    r = extract_zig(f)
+    assert "error" not in r
+
+    method_targets = {
+        e["target"] for e in r["edges"] if e["relation"] == "method"
+    }
+    id_to_label = {n["id"]: n["label"] for n in r["nodes"]}
+    method_labels = {id_to_label[t] for t in method_targets}
+    assert ".isRed()" in method_labels, "enum method dropped"
+    assert ".area()" in method_labels, "union method dropped"
+
+    # A call made from an enum/union method body must resolve too.
+    calls = {
+        (id_to_label.get(e["source"], e["source"]),
+         id_to_label.get(e["target"], e["target"]))
+        for e in r["edges"] if e["relation"] == "calls"
+    }
+    assert (".area()", "helper()") in calls, "call from union method body dropped"
