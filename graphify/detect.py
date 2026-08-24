@@ -1339,6 +1339,19 @@ def _is_ignored(
                 rel_anchor = _nfc(str(target.relative_to(anchor)).replace(os.sep, "/"))
             except ValueError:
                 continue  # target outside this pattern's anchor: cannot match
+
+            # #2358: when the scan root is a descendant of the anchor (e.g. the
+            # user passed a gitignored `corpus/` directory as the scan target),
+            # rebase the relative path so that only the portion *below* the scan
+            # root is matched.  Without this, unanchored patterns match the scan
+            # root's own directory name in the prefix, silently pruning nested
+            # content while leaving top-level files unaffected.
+            if root != anchor:
+                try:
+                    rel_anchor = str(target.relative_to(root)).replace(os.sep, "/")
+                except ValueError:
+                    pass  # target outside root — keep anchor-relative path
+
             if rel_anchor != ".":
                 rel = rel_anchor
                 if not path_relative:

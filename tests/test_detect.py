@@ -605,6 +605,36 @@ def test_gitignore_nested_negation_overrides_broader_root_rule(tmp_path):
     assert not any(f.endswith("other.py") for f in code)
 
 
+def test_ancestor_gitignore_matching_scan_root_does_not_prune_nested(tmp_path):
+    """When the scan root itself is listed in an ancestor .gitignore, nested
+    files must not be silently pruned (#2358).  The user explicitly pointed
+    detect() at this directory — that is a stronger signal than an inherited
+    ignore rule.  Before the fix, top-level files survived but anything one
+    level deeper was silently dropped."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    (repo / ".gitignore").write_text("corpus/\n")
+
+    corpus = repo / "corpus"
+    corpus.mkdir()
+    (corpus / "manifest.md").write_text("# top-level file\n")
+    subdir = corpus / "subdir"
+    subdir.mkdir()
+    (subdir / "notes.md").write_text("# nested file\n")
+    (subdir / "more.md").write_text("# nested file 2\n")
+
+    result = detect(corpus)
+    all_files: list[str] = []
+    for cat_files in result["files"].values():
+        all_files.extend(cat_files)
+
+    assert any("manifest.md" in f for f in all_files), "top-level file must survive"
+    assert any("notes.md" in f for f in all_files), "nested file must survive (#2358)"
+    assert any("more.md" in f for f in all_files), "nested file 2 must survive (#2358)"
+    assert result["total_files"] >= 3, f"expected >=3 files, got {result['total_files']}"
+
+
 def test_nested_ignore_overrides_git_info_exclude_and_root(tmp_path):
     """Precedence across all three sources: a nested `.gitignore` `!` re-include
     outranks both a root `.gitignore` and `.git/info/exclude` (lowest, from
