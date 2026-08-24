@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Fix: a C/C++/ObjC symbol declared in a header and defined in the sibling impl file is merged into one node keyed to the header (#1547, #1556), and the dropped impl node took the definition's file and line with it — the graph reported the declaration as the symbol's only location, so "where is this implemented?" answered with a header line and the reader had to scan the `.cpp` by hand. The survivor now carries `definition_file`/`definition_location` and `get_node` names it ("Defined in:"); ids, labels, `source_file`, node count and edges are all unchanged, so existing graphs are not re-keyed and the single-definition guarantee the resolvers rely on is untouched. Several impls folding onto one header (ObjC categories) pick deterministically by lowest `(source_file, source_location)` (#2990).
+
 ## 0.9.48 (2026-08-20)
 
 - Fix: a control character in a node label or id no longer aborts the whole export; the GraphML and Obsidian exporters scrub only the characters those formats forbid (tab, newline, and non-ASCII letters are preserved), and `graph.json` and its byte-identity round-trip are untouched (#2897, thanks @abhay-codes07).

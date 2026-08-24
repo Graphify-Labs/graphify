@@ -3308,6 +3308,28 @@ def test_cpp_paired_method_decl_and_def_are_one_node():
     assert bar_nodes, "the merged bar node should be a member of Foo"
 
 
+def test_cpp_paired_merged_node_records_definition_site():
+    """The decl/def merge keeps the header node, so `source_file` names the
+    DECLARATION. The survivor must still carry where the symbol is implemented,
+    or the definition site is lost with the dropped impl node."""
+    r = _corpus("cpp_paired/Foo.h", "cpp_paired/Foo.cpp", "cpp_paired/Main.cpp")
+    bars = [n for n in r["nodes"] if n["label"] in ("bar", "Foo::bar()")]
+    assert len(bars) == 1, f"bar decl/def should be one node, got {bars}"
+    bar = bars[0]
+    assert str(bar["source_file"]).endswith("Foo.h"), bar
+    assert str(bar.get("definition_file", "")).endswith("Foo.cpp"), bar
+    assert bar.get("definition_location"), bar
+
+
+def test_cpp_unpaired_symbol_has_no_definition_site():
+    """A symbol that was never merged must not grow the new attributes — they mark
+    a collapsed decl/def pair, not every node."""
+    r = _corpus("cpp_paired/Foo.h", "cpp_paired/Foo.cpp", "cpp_paired/Main.cpp")
+    for n in r["nodes"]:
+        if str(n.get("source_file", "")).endswith("Main.cpp"):
+            assert "definition_file" not in n, n
+
+
 def test_cpp_paired_includes_resolve_to_real_header():
     """Foo.cpp and Main.cpp `#include "Foo.h"` must resolve to the real Foo.h file
     node (no dangling import)."""
