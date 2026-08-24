@@ -3687,18 +3687,12 @@ def _extract_generic(
                         type_node = child.child_by_field_name("type")
                         if type_node is not None:
                             break
-            type_info = _read_csharp_type_name(type_node, source)
-            if type_info:
-                type_name, qualified, qualifier = type_info
+            if type_node is not None:
                 csharp_type_params = _csharp_type_parameters_in_scope(
-                    type_node if type_node is not None else node, source
+                    type_node, source
                 )
-                if not type_name or type_name in csharp_type_params:
-                    return
-                # Record the field's declared type for the method-scoped
-                # receiver tables (#2299) — the C# twin of java_field_types.
-                # Pascal-case only: primitives never own a resolvable method.
-                if type_name[:1].isupper():
+                receiver_type = _csharp_receiver_type_name(type_node, source)
+                if receiver_type and receiver_type[:1].isupper() and receiver_type not in csharp_type_params:
                     fields = csharp_field_types.setdefault(parent_class_nid, {})
                     for child in node.children:
                         if child.type != "variable_declaration":
@@ -3712,15 +3706,23 @@ def _extract_generic(
                                 None,
                             )
                             if name_node is not None:
-                                fields[_read_text(name_node, source)] = type_name
+                                fields[_read_text(name_node, source)] = receiver_type
                 line = node.start_point[0] + 1
-                metadata = {"ref_token": type_name}
-                if qualified:
-                    metadata["qualified"] = True
-                if qualifier:
-                    metadata["ref_qualifier"] = qualifier
-                add_edge(parent_class_nid, ensure_named_node(type_name, line),
-                         "references", line, context="field", metadata=metadata)
+                refs: list[tuple[str, str, bool, str]] = []
+                _csharp_collect_type_refs(
+                    type_node, source, False, refs, csharp_type_params
+                )
+                for ref_name, role, qualified, qualifier in refs:
+                    ctx = "generic_arg" if role == "generic_arg" else "field"
+                    target_nid = ensure_named_node(ref_name, line)
+                    if target_nid != parent_class_nid:
+                        metadata = {"ref_token": ref_name}
+                        if qualified:
+                            metadata["qualified"] = True
+                        if qualifier:
+                            metadata["ref_qualifier"] = qualifier
+                        add_edge(parent_class_nid, target_nid, "references",
+                                 line, context=ctx, metadata=metadata)
             return
 
         if (config.ts_module == "tree_sitter_c_sharp"

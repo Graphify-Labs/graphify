@@ -442,6 +442,36 @@ def test_csharp_parameter_return_and_generic_contexts():
     assert ("Build", "DataProcessor") in _edge_labels(result, "references", "generic_arg")
 
 
+def test_csharp_field_generic_type_arguments_emit_references(tmp_path):
+    """#2911: Box<IAlpha> on a field must emit references[generic_arg] like properties."""
+    source = tmp_path / "FieldGeneric.cs"
+    source.write_text(
+        "public interface IAlpha { }\n"
+        "public class Box<T> { }\n"
+        "public class Probe\n"
+        "{\n"
+        "    private Box<IAlpha> _field = null!;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    result = extract_csharp(source)
+    assert ("Probe", "Box") in _edge_labels(result, "references", "field")
+    assert ("Probe", "IAlpha") in _edge_labels(result, "references", "generic_arg")
+
+
+def test_csharp_field_type_parameter_emits_no_reference(tmp_path):
+    source = tmp_path / "TypeParamField.cs"
+    source.write_text(
+        "public class Box<T>\n"
+        "{\n"
+        "    private T _value;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    result = extract_csharp(source)
+    assert ("Box", "T") not in _edge_labels(result, "references")
+
+
 def test_java_normalizes_inherits_and_implements():
     result = extract_java(FIXTURES / "sample.java")
     assert ("DataProcessor", "BaseProcessor") in _edge_labels(result, "inherits")
