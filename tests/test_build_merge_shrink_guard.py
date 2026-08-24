@@ -235,3 +235,112 @@ def test_merge_raw_extraction_absolute_prune_custom_layout(tmp_path):
     merged = merge_raw_extraction(new, gp, prune_sources=[str(root / "b.md")])
     sfs = {n.get("source_file") for n in merged["nodes"]}
     assert sfs == {"a.md"}, "raw path must prune the absolute entry too (#2446)"
+
+
+# ── #3004: per-source semantic coverage gate ──────────────────────────────────
+
+def _sem_node(i: int, sf: str) -> dict:
+    """Semantic-tier node dict (unstamped: no _origin, no L-loc), as the LLM
+    spec emits — _is_ast_tier's shape fallback classifies these as semantic."""
+    stem = sf.replace("/", "_").replace(".", "_")
+    return {
+        "id": f"{stem}_s{i}",
+        "label": f"{sf} entity {i}",
+        "file_type": "document",
+        "type": "entity",
+        "source_file": sf,
+    }
+
+
+def test_underproducing_semantic_source_held_back(tmp_path, capsys):
+    """The #3004 repro: 8 semantic nodes on disk, re-extraction yields 2.
+    Pre-fix, replace-on-re-extract deleted all 8 and merged back 2 (7 lost,
+    exit 0) — including under dedup=True, the default, where the #479 guard
+    skipped itself. The gate holds the source back instead: nothing lost."""
+    gp = tmp_path / "graphify-out" / "graph.json"
+    _write_graph(gp, [_sem_node(i, "areas/long-chronology.md") for i in range(8)])
+    poor = {
+        "nodes": [
+            _sem_node(0, "areas/long-chronology.md"),
+            _sem_node(99, "areas/long-chronology.md"),
+        ],
+        "edges": [],
+    }
+    G = build_merge([poor], gp)  # dedup=True default — guard used to be off here
+    ids = set(G.nodes)
+    assert all(f"areas_long-chronology_md_s{i}" in ids for i in range(8)), (
+        f"prior contribution destroyed despite the gate: {sorted(ids)}"
+    )
+    assert "areas_long-chronology_md_s99" not in ids, "held chunk leaked through"
+    err = capsys.readouterr().err
+    assert "HELD BACK" in err and "#3004" in err
+    assert "Replaced" not in err
+
+
+def test_equal_and_growing_semantic_replace_still_replaces(tmp_path, capsys):
+    """Healthy extractions must replace exactly as before — the gate only
+    fires on shrink."""
+    gp = tmp_path / "graphify-out" / "graph.json"
+    _write_graph(gp, [_sem_node(i, "chron.md") for i in range(8)])
+    equal = {"nodes": [_sem_node(i, "chron.md") for i in range(8)], "edges": []}
+    assert build_merge([equal], gp).number_of_nodes() == 8
+    grow = {"nodes": [_sem_node(i, "chron.md") for i in range(10)], "edges": []}
+    G = build_merge([grow], gp)
+    assert G.number_of_nodes() == 10
+    assert "#3004" not in capsys.readouterr().err
+
+
+def test_allow_shrink_override_accepts_the_loss(tmp_path, capsys):
+    """Escape hatch: sources listed in allow_shrink shrink deliberately
+    (rewritten documents) and are replaced like pre-gate behaviour."""
+    gp = tmp_path / "graphify-out" / "graph.json"
+    _write_graph(gp, [_sem_node(i, "rewritten.md") for i in range(8)])
+    poor = {"nodes": [_sem_node(i, "rewritten.md") for i in range(2)], "edges": []}
+    G = build_merge([poor], gp, allow_shrink=["rewritten.md"])
+    assert G.number_of_nodes() == 2
+    assert "HELD BACK" not in capsys.readouterr().err
+
+
+def test_gate_is_semantic_tier_only_ast_shrink_still_replaces(tmp_path):
+    """AST extraction legitimately shrinks when symbols are removed (#1116):
+    an AST 4->4 re-extract of a mixed file must replace normally while its
+    under-producing SEMANTIC layer is held back."""
+    gp = tmp_path / "graphify-out" / "graph.json"
+    _write_graph(
+        gp,
+        [_sem_node(i, "mix.md") for i in range(6)]
+        + [_node(i, "mix.md") for i in range(4)],
+    )
+    chunk = {
+        "nodes": [_sem_node(0, "mix.md")] + [_node(i, "mix.md") for i in range(4)],
+        "edges": [],
+    }
+    G = build_merge([chunk], gp)
+    ids = set(G.nodes)
+    assert all(f"mix_md_n{i}" in ids for i in range(4)), "AST tier was gated"
+    assert all(f"mix_md_s{i}" in ids for i in range(6)), "semantic tier was replaced"
+    assert len(ids) == 10
+
+
+def test_zero_node_production_never_trips_the_gate(tmp_path, capsys):
+    """A dispatched file producing ZERO nodes never enters the replace sets;
+    pin that long-standing asymmetry (total failure stays non-destructive)."""
+    gp = tmp_path / "graphify-out" / "graph.json"
+    _write_graph(gp, [_sem_node(i, "chron.md") for i in range(8)] + [_node(0, "b.md")])
+    other = {"nodes": [_node(0, "b.md")], "edges": []}
+    G = build_merge([other], gp)
+    assert sum(1 for n in G.nodes if str(n).endswith(("_s0", "_s7"))) >= 2
+    assert "HELD BACK" not in capsys.readouterr().err
+
+
+def test_merge_raw_extraction_holds_back_underproducing_source(tmp_path, capsys):
+    """Raw --no-cluster path shares the coverage gate (#3004 parity): the held
+    source keeps its on-disk contribution instead of being half-replaced."""
+    gp = tmp_path / "proj" / "graph.json"
+    _write_graph(gp, [_sem_node(i, "r.md") for i in range(6)])
+    new = {"nodes": [_sem_node(0, "r.md")], "edges": [], "hyperedges": []}
+    merged = merge_raw_extraction(new, gp)
+    ids = {n["id"] for n in merged["nodes"]}
+    assert all(f"r_md_s{i}" in ids for i in range(6)), sorted(ids)
+    assert "r_md_s99" not in ids
+    assert "HELD BACK" in capsys.readouterr().err
