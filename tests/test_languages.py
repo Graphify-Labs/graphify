@@ -3498,6 +3498,39 @@ def test_cl_inherits():
     assert any("ssl_server" in e["source"] and "server" in e["target"] for e in inherit_edges)
 
 @_needs_commonlisp
+def test_cl_crossfile_superclass_inherits_edge_survives(tmp_path):
+    """A superclass defined in another file must still yield an inherits edge.
+
+    The edge target was a file-scoped id with no backing node, so when the
+    parent class lived in a different file the dangling-edge filter pruned the
+    inherits edge entirely. Cross-file references must resolve to a sourceless
+    stub (like imports do) so the corpus rewire can collapse it onto the real
+    defclass — while a same-file parent still binds to its local node.
+    """
+    f = tmp_path / "dogs.lisp"
+    f.write_text(
+        "(defclass animal () ())\n"
+        "(defclass dog (animal) ())\n"
+        "(defclass service-dog (base-animal) ())\n"
+    )
+    r = extract_commonlisp(f)
+    assert "error" not in r
+    id_to_node = {n["id"]: n for n in r["nodes"]}
+    inherits = {
+        (id_to_node[e["source"]]["label"], id_to_node[e["target"]]["label"])
+        for e in r["edges"]
+        if e["relation"] == "inherits"
+        and e["source"] in id_to_node and e["target"] in id_to_node
+    }
+    # same-file parent binds locally
+    assert ("dog", "animal") in inherits
+    # cross-file parent survives via a sourceless stub instead of being dropped
+    assert ("service-dog", "base-animal") in inherits
+    base = next(n for n in r["nodes"] if n["label"] == "base-animal")
+    assert base["source_file"] == "", "cross-file superclass must be a sourceless stub"
+
+
+@_needs_commonlisp
 def test_cl_imports():
     r = extract_commonlisp(FIXTURES / "sample.lisp")
     import_edges = [e for e in r["edges"] if e["relation"] == "imports"]
