@@ -11,7 +11,7 @@ _AL_IDENTIFIER = r'(?P<name>"(?:[^"]|"")+"|[A-Za-z_][\w.]*)'
 _AL_OBJECT_RE = re.compile(
     rf"(?im)^\s*(?P<kind>codeunit|tableextension|table|pageextension|page|"
     rf"enumextension|enum|interface|reportextension|report|query|xmlport|"
-    rf"permissionsetextension|permissionset)\s+"
+    rf"permissionsetextension|permissionset|controladdin)\s+"
     rf"(?:(?P<object_id>\d+)\s+)?{_AL_IDENTIFIER}\s*"
     rf"(?:extends\s+(?P<base>\"(?:[^\"]|\"\")+\"|[A-Za-z_][\w.]*))?"
     rf"(?:implements\s+(?P<interfaces>[^{{]+))?\s*{{"
@@ -37,6 +37,7 @@ _AL_OBJECT_TYPES = {
     "xmlport_declaration": "xmlport",
     "permissionset_declaration": "permissionset",
     "permissionsetextension_declaration": "permissionsetextension",
+    "controladdin_declaration": "controladdin",
 }
 _AL_CALLABLE_TYPES = {
     "procedure": "procedure",
@@ -54,6 +55,7 @@ _AL_MEMBER_SCOPE_TYPES = {
     "query_dataitem",
     "request_page",
     "request_page_section",
+    "usercontrol_section",
 }
 
 
@@ -272,6 +274,7 @@ class _ALTreeContext:
             "event_publishers": [],
             "enum_mappings": [],
             "test_handlers": [],
+            "control_addin_events": [],
         }
 
     def add_node(self, node: dict) -> None:
@@ -390,7 +393,11 @@ def _al_member_nodes(object_node) -> list:
     return [
         node for node in _walk_al(object_node)
         if node.type in _AL_CALLABLE_TYPES
-        or node.type in {"field_declaration", "enum_value_declaration"}
+        or node.type in {
+            "field_declaration",
+            "enum_value_declaration",
+            "usercontrol_section",
+        }
     ]
 
 
@@ -410,8 +417,10 @@ def _al_member_declaration(context: _ALTreeContext, member_node) -> dict | None:
         kind, name_field, suffix = _AL_CALLABLE_TYPES[member_node.type], "name", "()"
     elif member_node.type == "field_declaration":
         kind, name_field, suffix = "field", "name", ""
-    else:
+    elif member_node.type == "enum_value_declaration":
         kind, name_field, suffix = "enum_value", "value_name", ""
+    else:
+        kind, name_field, suffix = "usercontrol", "name", ""
     name = _decode_al_identifier(_field_text(member_node, name_field, context.source))
     if not name:
         return None
@@ -441,6 +450,36 @@ def _al_member_nid(
     return _make_id(object_nid, info["kind"], *identity_seeds, info["name"])
 
 
+def _al_callable_metadata(context: _ALTreeContext, member_node, info: dict) -> dict:
+    return_type = member_node.child_by_field_name("return_type")
+    if return_type is None and member_node.type == "interface_procedure":
+        suffix = _first_descendant(member_node, {"interface_procedure_suffix"})
+        return_type = suffix.child_by_field_name("return_type") if suffix else None
+    modifier = member_node.child_by_field_name("modifier")
+    return {
+        "visibility": _node_text(modifier, context.source).strip() if modifier else None,
+        "parameters": info["parameters"],
+        "return_type": _node_text(return_type, context.source).strip()
+        if return_type else None,
+        "attributes": info["attributes"],
+        "signature": info["signature"],
+        "_callable": True,
+    }
+
+
+def _al_data_member_metadata(
+    context: _ALTreeContext, member_node, info: dict
+) -> dict:
+    data_type = member_node.child_by_field_name(
+        "source" if info["kind"] == "usercontrol" else "type"
+    )
+    return {
+        "member_id": _field_text(member_node, "id", context.source)
+        or _field_text(member_node, "value_id", context.source) or None,
+        "data_type": _node_text(data_type, context.source).strip() if data_type else None,
+    }
+
+
 def _al_member_metadata(
     context: _ALTreeContext, member_node, object_nid: str, member_nid: str, info: dict
 ) -> dict:
@@ -457,26 +496,9 @@ def _al_member_metadata(
         "extraction_tier": "tree_sitter",
     }
     if info["kind"] in _AL_CALLABLE_TYPES.values():
-        return_type = member_node.child_by_field_name("return_type")
-        if return_type is None and member_node.type == "interface_procedure":
-            suffix = _first_descendant(member_node, {"interface_procedure_suffix"})
-            return_type = suffix.child_by_field_name("return_type") if suffix else None
-        modifier = member_node.child_by_field_name("modifier")
-        metadata.update({
-            "visibility": _node_text(modifier, context.source).strip() if modifier else None,
-            "parameters": info["parameters"],
-            "return_type": _node_text(return_type, context.source).strip() if return_type else None,
-            "attributes": info["attributes"],
-            "signature": info["signature"],
-            "_callable": True,
-        })
+        metadata.update(_al_callable_metadata(context, member_node, info))
     else:
-        data_type = member_node.child_by_field_name("type")
-        metadata.update({
-            "member_id": _field_text(member_node, "id", context.source)
-            or _field_text(member_node, "value_id", context.source) or None,
-            "data_type": _node_text(data_type, context.source).strip() if data_type else None,
-        })
+        metadata.update(_al_data_member_metadata(context, member_node, info))
     return metadata
 
 
@@ -616,6 +638,33 @@ def _al_extract_member(
         "parameter_count": len(info["parameters"]),
         "line": info["line"],
     })
+    if info["kind"] == "usercontrol":
+        controladdin = _decode_al_identifier(
+            _field_text(member_node, "source", context.source)
+        )
+        if controladdin:
+            context.facts["references"].append({
+                "source": member_nid,
+                "name": controladdin,
+                "kind": "controladdin",
+                "line": info["line"],
+            })
+    elif info["kind"] == "trigger":
+        parent = member_node.parent
+        while parent is not None and parent.type not in _AL_OBJECT_TYPES:
+            if parent.type == "usercontrol_section":
+                controladdin = _decode_al_identifier(
+                    _field_text(parent, "source", context.source)
+                )
+                if controladdin:
+                    context.facts["control_addin_events"].append({
+                        "source": member_nid,
+                        "controladdin": controladdin,
+                        "event": info["name"],
+                        "line": info["line"],
+                    })
+                break
+            parent = parent.parent
     _al_postprocess_member(context, member_node, object_nid, member_nid, info, object_types)
 
 
@@ -624,6 +673,17 @@ def _al_extract_members(
 ) -> None:
     members = _al_member_nodes(object_node)
     counts = _al_member_name_counts(context, members)
+    for usercontrol in (
+        node for node in members if node.type == "usercontrol_section"
+    ):
+        name = _decode_al_identifier(_field_text(usercontrol, "name", context.source))
+        controladdin = _decode_al_identifier(
+            _field_text(usercontrol, "source", context.source)
+        )
+        if name and controladdin:
+            reference = ("controladdin", controladdin)
+            object_types[_al_lookup_key(name)] = reference
+            object_types[_al_lookup_key(f"CurrPage.{name}")] = reference
     for member_node in members:
         _al_extract_member(context, member_node, object_nid, counts, object_types)
 

@@ -222,6 +222,24 @@ def test_al_fallback_extracts_permission_set_extensions():
     assert extension["object_id"] == "70001"
 
 
+def test_al_fallback_extracts_controladdins():
+    result = _extract_al_fallback(
+        Path("Sample.ControlAddin.al"),
+        "controladdin SampleControl\n"
+        "{\n"
+        "    procedure Run(Value: Text);\n"
+        "}\n",
+    )
+
+    controladdin = next(
+        node for node in result["nodes"]
+        if node.get("object_kind") == "controladdin"
+    )
+
+    assert controladdin["label"] == "SampleControl"
+    assert "Run()" in {node["label"] for node in result["nodes"]}
+
+
 def test_al_fallback_preserves_spelling_and_casefolds_lookup(monkeypatch, tmp_path):
     monkeypatch.setitem(sys.modules, "tree_sitter_al", None)
     source = tmp_path / "Mixed.AL"
@@ -459,6 +477,85 @@ def test_al_resolver_preserves_all_implemented_interfaces(tmp_path):
     }
 
     assert implemented == {nodes["FirstContract"], nodes["SecondContract"]}
+
+
+def test_al_resolves_usercontrols_and_controladdin_calls(tmp_path):
+    pytest.importorskip("tree_sitter_al")
+    source = tmp_path / "controls.al"
+    source.write_text(
+        "controladdin DemoAddIn\n"
+        "{\n"
+        "    procedure Run(Value: Text);\n"
+        "    event OnRaised(Value: Text);\n"
+        "}\n"
+        "page 1 DemoPage\n"
+        "{\n"
+        "    layout\n"
+        "    {\n"
+        "        area(Content)\n"
+        "        {\n"
+        "            usercontrol(FirstHost; DemoAddIn)\n"
+        "            {\n"
+        "                trigger OnRaised(Value: Text)\n"
+        "                begin\n"
+        "                    CurrPage.FirstHost.Run(Value);\n"
+        "                end;\n"
+        "            }\n"
+        "            usercontrol(SecondHost; DemoAddIn)\n"
+        "            {\n"
+        "                trigger OnRaised(Value: Text)\n"
+        "                begin\n"
+        "                end;\n"
+        "            }\n"
+        "        }\n"
+        "    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+    controladdin = next(
+        node for node in result["nodes"]
+        if node.get("object_kind") == "controladdin"
+    )
+    usercontrols = [
+        node for node in result["nodes"]
+        if node.get("member_kind") == "usercontrol"
+    ]
+    triggers = [
+        node for node in result["nodes"]
+        if node["label"] == "OnRaised()" and node.get("member_kind") == "trigger"
+    ]
+    run = next(node for node in result["nodes"] if node["label"] == "Run()")
+    event = next(
+        node for node in result["nodes"]
+        if node["label"] == "OnRaised()" and node.get("member_kind") == "event"
+    )
+    relations = {
+        (edge["source"], edge["target"], edge["relation"], edge.get("context"))
+        for edge in result["edges"]
+    }
+
+    assert {node["label"] for node in usercontrols} == {"FirstHost", "SecondHost"}
+    assert all(node["data_type"] == "DemoAddIn" for node in usercontrols)
+    assert len({node["id"] for node in triggers}) == 2
+    assert all(
+        (node["id"], controladdin["id"], "references", "type") in relations
+        for node in usercontrols
+    )
+    assert any(
+        (trigger["id"], run["id"], "calls", "call") in relations
+        for trigger in triggers
+    )
+    assert all(
+        (
+            trigger["id"],
+            event["id"],
+            "references",
+            "control_addin_event",
+        ) in relations
+        for trigger in triggers
+    )
 
 
 def test_al_resolver_is_case_insensitive_and_avoids_ambiguous_targets(tmp_path):

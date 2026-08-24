@@ -357,6 +357,27 @@ class _ALSymbolResolver:
                         source, target, "references", "test_handler", binding.get("line")
                     )
 
+    def _emit_control_addin_events(self, facts: dict, context: dict) -> None:
+        for binding in facts.get("control_addin_events", []):
+            controladdin = self._resolve_object(
+                binding.get("controladdin"), "controladdin", context
+            )
+            candidates = self.members_by_parent_name.get(
+                (
+                    str(controladdin and controladdin["final_nid"]),
+                    _key(binding.get("event")),
+                ),
+                [],
+            )
+            target = _unique_member_id(candidates)
+            self._add_edge(
+                self.member_fact_to_nid.get(str(binding.get("source"))),
+                target,
+                "references",
+                "control_addin_event",
+                binding.get("line"),
+            )
+
     def _emit_core_facts(self, facts: dict, context: dict) -> None:
         self._emit_objects(facts, context)
         self._emit_references(facts, context)
@@ -366,6 +387,7 @@ class _ALSymbolResolver:
         self._emit_subscribers(facts, context)
         self._emit_enum_mappings(facts, context)
         self._emit_test_handlers(facts)
+        self._emit_control_addin_events(facts, context)
 
     def _emit_results(self) -> None:
         for result in self.results:
