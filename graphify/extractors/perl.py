@@ -52,6 +52,7 @@ _PERL_PRAGMAS: frozenset[str] = frozenset({
     "strict", "warnings", "utf8", "constant", "vars", "lib", "feature",
     "integer", "bytes", "overload", "mro", "autodie", "diagnostics",
     "sort", "subs", "attributes", "fields", "encoding", "if", "less",
+    "open", "locale", "re", "experimental", "charnames", "sigtrap",
 })
 
 # ``use parent`` / ``use base`` declare inheritance, not an import.
@@ -158,14 +159,25 @@ def extract_perl(path: Path) -> dict:
     def _package_name(node) -> str | None:
         """`package Foo::Bar;` -> the second `package`-typed child is the name."""
         names = [c for c in node.children if c.type == "package"]
-        return _text(names[1]) if len(names) >= 2 else None
+        name = _text(names[1]) if len(names) >= 2 else None
+        # Root-qualified spelling `::Outer` is the same package as `Outer`
+        # (::Name == main::Name in Perl); canonicalize so both spellings key to
+        # one package node instead of diverging on an empty qualifier.
+        if name and name.startswith("::"):
+            name = name[2:]
+        # The name comes from arbitrary source text; validate before it becomes a
+        # label (zero-node over a malformed or crafted package statement).
+        return name if _is_valid_perl_package_name(name or "") else None
 
     def _string_parents(node) -> list[str]:
-        """Every string / qw-word parent named under an inheritance construct.
+        """Every parent package named under an inheritance construct.
 
-        Reads string_literal (`'Foo'`) and quoted_word_list (`qw(Foo Bar)`)
-        content anywhere below ``node``; autoquoted barewords like ``-norequire``
-        are a different node type and are intentionally skipped.
+        A ``quoted_word_list`` (``qw(Foo Bar)``) is whitespace-separated and
+        yields one name per word. Ordinary string literals are SINGLE scalar
+        package names — their content is validated intact, never split (a
+        literal ``'Foo Bar'`` is one malformed name, not two parents).
+        Autoquoted barewords like ``-norequire`` are skipped here; bareword
+        parents are collected separately by ``handle_use``.
         """
         out: list[str] = []
         stack = [node]
@@ -173,11 +185,16 @@ def extract_perl(path: Path) -> dict:
             if not _spend():
                 break
             n = stack.pop()
-            if n.type in ("string_literal", "interpolated_string_literal", "quoted_word_list"):
+            if n.type == "quoted_word_list":
                 for c in n.children:
                     if c.type == "string_content":
                         out.extend(_text(c).split())
-                continue  # an inheritance string's own children are not parents
+                continue  # a qw-list's own children are not parents
+            if n.type in ("string_literal", "interpolated_string_literal"):
+                for c in n.children:
+                    if c.type == "string_content":
+                        out.append(_text(c))
+                continue
             stack.extend(reversed(n.children))
         return out
 
@@ -235,10 +252,38 @@ def extract_perl(path: Path) -> dict:
         if not pkgs:
             return
         module = _text(pkgs[0])
+        if module == "if":
+            # `use if CONDITION, 'Foo::Compat';` delegates the load to the `if`
+            # pragma, but the module argument is statically named — emit its
+            # import. The condition's scalar/number tokens don't match the
+            # collected shapes.
+            for parent in _string_parents(node):
+                if _is_valid_perl_package_name(parent):
+                    add_edge(file_nid, _make_id(parent), "imports", line,
+                             context="import")
+            return
         if module in _PERL_INHERIT_PRAGMAS:
-            if current_pkg_nid:
-                for parent in _string_parents(node):
-                    add_inherits(current_pkg_nid, parent, line)
+            # `use parent 'Foo'` in a package-less file applies to the implicit
+            # `main` package — materialize it rather than dropping the edge.
+            target_pkg = current_pkg_nid or _ensure_main_pkg()
+            parents = _string_parents(node)
+            # Bareword form: `use parent -norequire, Foo;` exposes Foo as a
+            # bareword — possibly nested in a list_expression. Collect validating
+            # barewords from the whole argument subtree; the -norequire flag is
+            # an autoquoted_bareword node (different type) and never matches.
+            bw_stack = [node]
+            while bw_stack:
+                if not _spend():
+                    break
+                bn = bw_stack.pop()
+                if bn.type == "bareword":
+                    bw = _text(bn)
+                    if not bw.startswith("-") and _is_valid_perl_package_name(bw):
+                        parents.append(bw)
+                else:
+                    bw_stack.extend(bn.children)
+            for parent in parents:
+                add_inherits(target_pkg, parent, line)
             return
         if module in _PERL_PRAGMAS:
             return
@@ -249,21 +294,83 @@ def extract_perl(path: Path) -> dict:
             if c.type == "bareword":
                 add_edge(file_nid, _make_id(_text(c)), "imports", line, context="import")
                 return
+            if c.type in ("string_literal", "interpolated_string_literal"):
+                # Constant literal path: require "Foo/Bar.pm"; — normalize to the
+                # module-name spelling. Interpolated content ($x) stays skipped:
+                # it is not a static dependency.
+                for sc in c.children:
+                    if sc.type != "string_content":
+                        continue
+                    text_ = _text(sc)
+                    if "$" in text_ or "@" in text_:
+                        return
+                    name = text_
+                    if name.endswith(".pm"):
+                        name = name[:-3]
+                    name = name.replace("/", "::")
+                    if _is_valid_perl_package_name(name):
+                        add_edge(file_nid, _make_id(name), "imports", line,
+                                 context="import")
+                    # File-style literals (require "config.pl", "./Foo.pm")
+                    # would need file-node targets with corpus-relative path
+                    # resolution — deliberately deferred, not silently
+                    # mis-shaped into a package import.
+                return
 
     def handle_isa(assign_node, line: int) -> None:
-        """`our @ISA = (...)` -> inherits edges to each named parent."""
-        if not current_pkg_nid:
-            return
+        """`our @ISA = (...)` / bare `@ISA = (...)` -> inherits edges."""
         is_isa = False
         for child in assign_node.children:
             if child.type == "variable_declaration":
                 for sub in child.children:
                     if sub.type == "array" and _text(sub) == "@ISA":
                         is_isa = True
+            elif child.type == "array" and _text(child) == "@ISA":
+                # Without `our` (or split `our @ISA; @ISA = ...`), the array sits
+                # directly under the assignment.
+                is_isa = True
         if not is_isa:
             return
+        # Materialize implicit main only AFTER the assignment is confirmed as
+        # @ISA, so ordinary assignments in package-less files create no node.
+        target_pkg = current_pkg_nid or _ensure_main_pkg()
         for parent in _string_parents(assign_node):
-            add_inherits(current_pkg_nid, parent, line)
+            add_inherits(target_pkg, parent, line)
+
+    def _scan_inner_imports(block_node) -> None:
+        """Collect use/require statements nested INSIDE a sub body (lazy-loading).
+
+        ``sub load { require Foo::Bar; }`` is a static dependency even though the
+        walker deliberately does not descend into sub bodies for declarations.
+        Walks all nested nodes iteratively under the shared budget, without
+        changing package scope — an inner statement's imports edge is sourced by
+        the file either way."""
+        stack = [block_node]
+        while stack:
+            if not _spend():
+                return
+            n = stack.pop()
+            if n is not block_node and n.type == "use_statement":
+                handle_use(n, n.start_point[0] + 1)
+            elif n.type == "require_expression":
+                handle_require(n, n.start_point[0] + 1)
+            else:
+                stack.extend(reversed(n.children))
+
+    def _scan_anonymous_subs(node) -> None:
+        """Find anonymous_subroutine_expression blocks anywhere under ``node``
+        and run the inner import scan on each."""
+        stack = [node]
+        while stack:
+            if not _spend():
+                return
+            n = stack.pop()
+            if n.type == "anonymous_subroutine_expression":
+                blk = next((g for g in n.children if g.type == "block"), None)
+                if blk is not None:
+                    _scan_inner_imports(blk)
+            else:
+                stack.extend(n.children)
 
     def walk_statements(root_node) -> None:
         nonlocal current_pkg_nid, current_pkg_name
@@ -308,6 +415,32 @@ def extract_perl(path: Path) -> dict:
                         else:
                             current_pkg_nid = pkg_nid
                             current_pkg_name = name
+                elif child.type in ("block_statement", "block"):
+                    # A bare `{ ... }` scope, a conditional/loop body block, or an
+                    # else-clause may itself contain declarations and imports
+                    # (`{ package Inner; sub f {...} }`, `if ($x) { require X; }`);
+                    # descend without changing scope — the frame restores whatever
+                    # the enclosing package was once the block ends.
+                    stack.append((iter(child.children), current_pkg_nid, current_pkg_name))
+                    descended = True
+                    break
+                elif child.type in ("conditional_statement", "while_statement",
+                                    "until_statement", "for_statement",
+                                    "foreach_statement", "c_style_for_statement"):
+                    # Compound constructs own their blocks as children; iterate the
+                    # construct so the block above picks up its body.
+                    stack.append((iter(child.children), current_pkg_nid, current_pkg_name))
+                    descended = True
+                    break
+                elif child.type == "phaser_statement":
+                    # BEGIN/CHECK/INIT/END/UNITCHECK blocks compile their bodies
+                    # at the surrounding scope, so declarations inside define real
+                    # symbols; descend into the phaser's block like any scope.
+                    blk = next((c for c in child.children if c.type == "block"), None)
+                    if blk is not None:
+                        stack.append((iter(blk.children), current_pkg_nid, current_pkg_name))
+                        descended = True
+                        break
                 elif child.type == "use_statement":
                     handle_use(child, line)
                 elif child.type == "subroutine_declaration_statement":
@@ -326,10 +459,16 @@ def extract_perl(path: Path) -> dict:
                             # of its own); the body's caller-package is the qualifier
                             # so its calls resolve against Pkg.
                             pkg_qual, _, sub_name = name.rpartition("::")
-                            container = _make_id(stem, pkg_qual)
-                            add_node(container, pkg_qual, line)
-                            add_edge(file_nid, container, "contains", line)
-                            sub_package = pkg_qual
+                            if pkg_qual:
+                                container = _make_id(stem, pkg_qual)
+                                add_node(container, pkg_qual, line)
+                                add_edge(file_nid, container, "contains", line)
+                                sub_package = pkg_qual
+                            else:
+                                # Root-qualified `sub ::foo {...}` declares
+                                # main::foo (::Name == main::Name).
+                                container = _ensure_main_pkg()
+                                sub_package = "main"
                         else:
                             # Package-less sub → Perl's `main` (not the file node), so
                             # `main::sub()` binds and bare same-file calls resolve.
@@ -341,12 +480,16 @@ def extract_perl(path: Path) -> dict:
                         add_edge(container, sub_nid, "contains", line)
                         if block is not None:
                             sub_bodies.append((sub_nid, block, sub_package))
+                            _scan_inner_imports(block)
                 elif child.type == "expression_statement":
                     for c in child.children:
                         if c.type == "require_expression":
                             handle_require(c, line)
                         elif c.type == "assignment_expression":
                             handle_isa(c, line)
+                            # An assignment can wrap an anonymous sub whose body
+                            # lazy-requires (`my $loader = sub { require X; }`).
+                            _scan_anonymous_subs(c)
             if descended:
                 continue
             stack.pop()
@@ -491,10 +634,23 @@ def _resolve_perl_imports(
     # same label across files (e.g. `package Assert;` in both AssertOn.pm and
     # AssertOff.pm), so we re-point ONLY when exactly one package node matches;
     # >1 candidate stays dangling (zero-edge over a guessed cross-file binding).
+    #
+    # Candidate eligibility: provenance set OR suffix. On an incremental rebuild
+    # the resolver's view includes UNCHANGED files' nodes (resolution context),
+    # which are not in `perl_source_files` (that set holds only the re-extracted
+    # paths) — a changed caller's `use` must still resolve against an unchanged
+    # package. The .pl/.pm suffix fallback admits those; an extensionless
+    # shebang-dispatched unchanged file remains covered by the caller-side
+    # provenance scan over resolution-context source files (extract.py).
+    def _is_candidate_source(src: str) -> bool:
+        if perl_source_files is not None and src in resolved_perl_sources:
+            return True
+        return src.endswith((".pl", ".pm"))
+
     pkg_ids_by_label_id: dict[str, list[str]] = {}
     for node in all_nodes:
         src = str(node.get("source_file") or "")
-        if not _is_perl_source(src):
+        if not _is_candidate_source(src):
             continue
         label = node.get("label", "")
         nid = node.get("id", "")

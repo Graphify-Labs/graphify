@@ -4783,3 +4783,233 @@ def test_perl_string_parents_charges_budget(tmp_path, monkeypatch, caplog):
         perl.extract_perl(src)
     assert any("traversal budget exhausted" in rec.message for rec in caplog.records), \
         "a wide @ISA literal array must charge the shared budget via _string_parents"
+def test_perl_package_inside_bare_block(tmp_path):
+    """`{ package Inner; sub f {...} }` — a bare scope block containing
+    declarations must be traversed; its subs belong to Inner and the enclosing
+    scope resumes after the block."""
+    from graphify.extract import extract_perl
+    src = tmp_path / "scoped.pm"
+    src.write_text(
+        "package Outer;\n"
+        "{ package Inner; sub f { 42 } }\n"
+        "sub after { 1 }\n"
+    )
+    r = extract_perl(src)
+    label = {n["id"]: n["label"] for n in r["nodes"]}
+    container_of = {
+        label.get(e["target"]): label.get(e["source"])
+        for e in r["edges"] if e["relation"] == "contains"
+    }
+    assert "Inner" in label.values(), "package inside a bare block must be emitted"
+    assert container_of.get("f()") == "Inner", \
+        f"sub inside a block-scoped package must belong to it, got {container_of.get('f()')!r}"
+    assert container_of.get("after()") == "Outer", "enclosing scope must resume"
+
+
+def test_perl_phaser_block_declarations(tmp_path):
+    """BEGIN { package Tmp; sub g {...} } — phaser blocks compile their bodies at
+    the surrounding scope, so declarations inside define real symbols."""
+    from graphify.extract import extract_perl
+    src = tmp_path / "phaser.pl"
+    src.write_text("BEGIN { package Tmp; sub g { 1 } }\n")
+    r = extract_perl(src)
+    label = {n["id"]: n["label"] for n in r["nodes"]}
+    container_of = {
+        label.get(e["target"]): label.get(e["source"])
+        for e in r["edges"] if e["relation"] == "contains"
+    }
+    assert "Tmp" in label.values(), "package inside a phaser must be emitted"
+    assert container_of.get("g()") == "Tmp", \
+        f"phaser-declared sub must attach to its package, got {container_of.get('g()')!r}"
+
+
+def test_perl_root_qualified_sub_attaches_to_main(tmp_path):
+    """`sub ::foo {...}` declares main::foo (::Name == main::Name); it must not
+    mint an empty-label package node."""
+    from graphify.extract import extract_perl
+    src = tmp_path / "rootqual.pm"
+    src.write_text("sub ::foo { 1 }\n")
+    r = extract_perl(src)
+    labels = [n.get("label") for n in r["nodes"]]
+    assert "" not in labels, "no empty-label package node for a root-qualified name"
+    assert "foo()" in labels, "the root-qualified sub must still be extracted"
+
+
+def test_perl_root_qualified_package_normalizes(tmp_path):
+    """`package ::Outer;` is the same package as `Outer`; both spellings must key
+    to one package node carrying the canonical label."""
+    from graphify.extract import extract_perl
+    src = tmp_path / "rootpkg.pm"
+    src.write_text("package ::Outer;\nsub h { 2 }\n")
+    r = extract_perl(src)
+    labels = [n.get("label") for n in r["nodes"]]
+    assert "::Outer" not in labels, "root-qualified spelling must be canonicalized"
+    assert "Outer" in labels, "the package must surface under its canonical label"
+
+def test_perl_scalar_isa_string_is_one_name(tmp_path):
+    """A plain string literal is ONE scalar package name: `'Foo Bar'` is a single
+    malformed name and must yield no inherits edge — not two fabricated parents
+    (only qw(...) is whitespace-split)."""
+    from graphify.extract import extract_perl
+    src = tmp_path / "scalar.pm"
+    src.write_text("package C;\nour @ISA = ('Foo Bar');\n1;\n")
+    r = extract_perl(src)
+    assert [e for e in r["edges"] if e["relation"] == "inherits"] == [], \
+        "a malformed scalar parent must not fabricate inheritance"
+
+
+def test_perl_qw_still_splits(tmp_path):
+    from graphify.extract import extract_perl
+    src = tmp_path / "qw.pm"
+    src.write_text("package C;\nour @ISA = qw(Acme::A Acme::B);\n1;\n")
+    r = extract_perl(src)
+    parents = {e["target"] for e in r["edges"] if e["relation"] == "inherits"}
+    assert len(parents) == 2, "qw() content is whitespace-split into parents"
+
+
+def test_perl_require_inside_sub_body(tmp_path):
+    """Lazy loading — `sub load { require Foo::Bar; }` — is a static dependency
+    and must emit an imports edge even though the walker does not descend into
+    sub bodies for declarations."""
+    from graphify.extract import extract_perl
+    src = tmp_path / "lazy.pm"
+    src.write_text("package L;\nsub load { require Foo::Bar; return 1; }\n1;\n")
+    r = extract_perl(src)
+    imports = [e for e in r["edges"] if e["relation"] == "imports"]
+    assert any("foo_bar" in e["target"].lower() for e in imports), \
+        "a nested require must surface as a static dependency"
+
+
+def test_perl_packageless_use_parent_attaches_main(tmp_path):
+    """`use parent 'Foo'` in a package-less file applies to implicit main: the
+    main package node materializes and inherits, instead of the edge being dropped."""
+    from graphify.extract import extract_perl
+    src = tmp_path / "pkgless.pm"
+    src.write_text("use parent 'Acme::Base';\nsub helper { 1 }\n")
+    r = extract_perl(src)
+    inh = [e for e in r["edges"] if e["relation"] == "inherits"]
+    assert inh, "package-less use parent must not be dropped"
+    labels = {n["id"]: n.get("label") for n in r["nodes"]}
+    main_ids = {nid for nid, lb in labels.items() if lb == "main"}
+    assert any(e["source"] in main_ids for e in inh), "inheritance attaches to main"
+
+
+def test_perl_bareword_parent_form(tmp_path):
+    """`use parent -norequire, Foo;` exposes the parent as a bareword (nested in
+    a list_expression), not a string; the -norequire flag stays excluded."""
+    from graphify.extract import extract_perl
+    src = tmp_path / "bare.pm"
+    src.write_text("package C;\nuse parent -norequire, Acme::Base;\n1;\n")
+    r = extract_perl(src)
+    labels = {n["id"]: n.get("label") for n in r["nodes"]}
+    parents = {labels[e["target"]] for e in r["edges"] if e["relation"] == "inherits"}
+    assert "Acme::Base" in parents, f"bareword parent must be collected, got {parents}"
+    assert "-norequire" not in parents, "the autoquoted flag is not a parent"
+
+
+def test_perl_extended_pragmas_not_imported(tmp_path):
+    """open/locale/re/experimental/charnames are compiler pragmas, not deps."""
+    from graphify.extract import extract_perl
+    src = tmp_path / "pragma.pm"
+    src.write_text(
+        "package P;\n"
+        "use open ':std';\n"
+        "use re 'taint';\n"
+        "use experimental 'signatures';\n"
+        "use charnames ':full';\n"
+        "1;\n"
+    )
+    r = extract_perl(src)
+    targets = " ".join(e["target"] for e in r["edges"] if e["relation"] == "imports").lower()
+    for pragma in ("open", "re", "experimental", "charnames"):
+        assert pragma not in targets.split(), f"{pragma} is a pragma, not an import"
+
+
+def test_perl_repoint_admits_suffix_context_candidates(tmp_path):
+    """On an incremental rebuild the resolver sees unchanged files' nodes as
+    resolution context — outside perl_source_files. A changed caller's `use`
+    must still re-point onto such an unchanged package (suffix fallback)."""
+    from pathlib import Path as _P
+    from graphify.extractors.perl import _resolve_perl_imports
+    from graphify.extractors.base import _make_id
+    # Mirror the real id scheme: the bare `use` target is _make_id(label); the
+    # unchanged package node's id is _make_id(stem, label).
+    ctx_pkg_nid = _make_id("helper", "Acme::Helper")
+    nodes = [
+        {"id": "f1", "label": "main.pl", "source_file": "/abs/main.pl"},
+        # unchanged context node: NOT in perl_source_files below
+        {"id": ctx_pkg_nid, "label": "Acme::Helper", "source_file": "/abs/helper.pm"},
+    ]
+    edges = [{"source": "f1", "target": _make_id("Acme::Helper"), "relation": "imports",
+              "context": "import", "source_file": "/abs/main.pl"}]
+    _resolve_perl_imports(nodes, edges, {"/abs/main.pl"})
+    assert edges[0]["target"] == ctx_pkg_nid, \
+        "an unchanged .pm package must remain a valid re-point candidate"
+
+
+def test_perl_bare_isa_assignment(tmp_path):
+    """`@ISA = qw(Base);` without `our` — the array sits directly under the
+    assignment — must still emit inherits."""
+    from graphify.extract import extract_perl
+    src = tmp_path / "bareisa.pm"
+    src.write_text("package C;\n@ISA = qw(Acme::Base);\n1;\n")
+    r = extract_perl(src)
+    assert any(e["relation"] == "inherits" for e in r["edges"]), \
+        "bare @ISA assignment must emit inheritance"
+
+
+def test_perl_literal_path_require(tmp_path):
+    """`require \"Foo/Bar.pm\";` normalizes to the Foo::Bar module dependency."""
+    from graphify.extract import extract_perl
+    src = tmp_path / "lit.pm"
+    src.write_text('package L;\nrequire "Foo/Bar.pm";\n1;\n')
+    r = extract_perl(src)
+    imports = [e for e in r["edges"] if e["relation"] == "imports"]
+    assert any("foo_bar" in e["target"].lower() for e in imports), \
+        "constant literal-path require must normalize to a module import"
+
+
+def test_perl_conditional_require(tmp_path):
+    """`if ($x) { require Foo::Bar; }` at top level surfaces as an import."""
+    from graphify.extract import extract_perl
+    src = tmp_path / "cond.pl"
+    src.write_text("if ($x) { require Foo::Bar; }\n")
+    r = extract_perl(src)
+    imports = [e for e in r["edges"] if e["relation"] == "imports"]
+    assert any("foo_bar" in e["target"].lower() for e in imports), \
+        "a conditional lazy require must surface as a static dependency"
+
+
+def test_perl_anonymous_sub_require(tmp_path):
+    """`my $loader = sub { require Foo::Bar; };` surfaces as an import."""
+    from graphify.extract import extract_perl
+    src = tmp_path / "anon.pm"
+    src.write_text("package A;\nmy $loader = sub { require Foo::Bar; };\n1;\n")
+    r = extract_perl(src)
+    imports = [e for e in r["edges"] if e["relation"] == "imports"]
+    assert any("foo_bar" in e["target"].lower() for e in imports), \
+        "an anonymous-sub lazy require must surface as a static dependency"
+
+
+def test_perl_no_main_for_ordinary_packageless_assignment(tmp_path):
+    """A package-less file with only ordinary assignments must not mint an empty
+    `main` node (main is deferred until something needs it)."""
+    from graphify.extract import extract_perl
+    src = tmp_path / "plain.pl"
+    src.write_text("$x = 1;\nprint $x;\n")
+    r = extract_perl(src)
+    labels = [n.get("label") for n in r["nodes"]]
+    assert "main" not in labels, "ordinary assignments must not materialize main"
+
+
+def test_perl_use_if_delegates_import(tmp_path):
+    """`use if CONDITION, 'Foo::Compat';` — the `if` pragma's statically named
+    module argument becomes an import; the condition tokens don't."""
+    from graphify.extract import extract_perl
+    src = tmp_path / "useif.pm"
+    src.write_text("package U;\nuse if $] >= 5.010, 'Foo::Compat';\n1;\n")
+    r = extract_perl(src)
+    imports = [e for e in r["edges"] if e["relation"] == "imports"]
+    assert any("foo_compat" in e["target"].lower() for e in imports), \
+        "the if-pragma's module argument must surface as an import"
+

@@ -4156,16 +4156,25 @@ register_language_resolver(
 def _resolve_perl_imports_pass(per_file, all_nodes, all_edges, paths) -> None:
     """Re-point dangling in-corpus Perl ``imports`` edges onto the real package node.
 
-    Registered LAST so it runs after the shared cross-file call pass (which reads
-    the bare module-label ``use`` targets via ``_has_package_import_evidence``) and
-    after the member-call resolvers — the same position as its former inline call at
-    the tail of ``extract()``. Scoped by extractor PROVENANCE, not suffix: an
-    extensionless ``#!/usr/bin/perl`` script is dispatched to ``extract_perl`` by
-    shebang and must be re-pointed too, which is why it declares a custom
-    ``activate`` predicate (a shebang-only corpus has no ``.pl``/``.pm`` suffix) and
-    takes ``paths`` (``wants_paths``) to recompute that provenance set.
+    Registered LAST so it runs after the shared cross-file call pass — which reads
+    the bare module-label ``use`` targets via ``_has_package_import_evidence`` —
+    and after the member-call resolvers. Scoped by extractor provenance over BOTH
+    this run's paths AND the resolution context's source files: on an incremental
+    rebuild an unchanged package (extensionless shebang-Perl included) must stay a
+    re-point candidate, or full and incremental graphs diverge.
     """
     perl_sources = {str(p) for p in paths if _get_extractor(p) is extract_perl}
+    seen_sf: set[str] = set()
+    for n in all_nodes:
+        sf = str(n.get("source_file") or "")
+        if not sf or sf in seen_sf:
+            continue
+        seen_sf.add(sf)
+        try:
+            if _get_extractor(Path(sf)) is extract_perl:
+                perl_sources.add(sf)
+        except Exception:
+            continue
     _resolve_perl_imports(all_nodes, all_edges, perl_sources)
 
 
