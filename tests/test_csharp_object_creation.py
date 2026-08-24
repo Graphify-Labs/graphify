@@ -157,6 +157,27 @@ def test_ambiguous_type_name_produces_no_edge(tmp_path):
     assert not any(target in caches for _, target in calls)
 
 
+def test_qualified_construction_with_a_colliding_name_stays_unresolved(tmp_path):
+    # Known limit, pinned so it cannot change silently. The construction site
+    # names only the last segment, so a colliding name hits the guard above even
+    # though the qualifier written in source would have picked one. The field and
+    # return paths do use the qualifier, which makes this an inconsistency rather
+    # than a rule; wiring construction into C# qualified resolution is follow-up
+    # work, not a behaviour this test endorses.
+    calls, r = _extract(tmp_path, {
+        "Left.cs": "namespace Infra.Data;\npublic class Cache { }\n",
+        "Right.cs": "namespace Other;\npublic class Cache { }\n",
+        "Caller.cs": (
+            "public class Caller {\n"
+            "    public void Go() { var c = new Infra.Data.Cache(); }\n"
+            "}\n"
+        ),
+    })
+    caches = {n["id"] for n in r["nodes"] if n["label"] == "Cache"}
+    assert len(caches) == 2
+    assert not any(target in caches for _, target in calls)
+
+
 def test_receiver_typed_member_call_still_resolves(tmp_path):
     # Guard for #1609: adding a node type to call_types must not disturb the
     # invocation path that binds a call to its receiver's declared type.
