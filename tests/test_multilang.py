@@ -480,6 +480,35 @@ def test_sql_create_table_inside_transaction_block():
         for s, t in refs
     )
 
+def test_sql_extracts_rls_policies():
+    """CREATE POLICY has no tree-sitter-sql rule; it must still be recovered."""
+    r = _extract_sql_or_skip("sample_rls.sql")
+    node_by_id = {n["id"]: n["label"] for n in r["nodes"]}
+    labels = list(node_by_id.values())
+    assert labels.count("tenant_isolation") == 2, (
+        "a policy name is unique only per table; both must survive"
+    )
+    assert "invoices_admin_write" in labels
+    assert "commented_out" not in labels
+
+    secures = [
+        (node_by_id[e["source"]], node_by_id.get(e["target"], ""))
+        for e in r["edges"]
+        if e["relation"] == "secures"
+    ]
+    assert ("tenant_isolation", "tenants") in secures
+    assert ("tenant_isolation", "invoices") in secures
+    assert any(
+        src == "invoices_admin_write" and "invoices" in tgt for src, tgt in secures
+    ), "a quoted, schema-qualified table must resolve to the same table node"
+
+
+def test_sql_policies_are_not_fabricated_in_a_clean_file():
+    """sample.sql parses cleanly, so the policy fallback must stay silent."""
+    r = _extract_sql_or_skip()
+    assert not [e for e in r["edges"] if e["relation"] == "secures"]
+
+
 def test_sql_finds_view():
     r = _extract_sql_or_skip()
     labels = [n["label"] for n in r["nodes"]]
