@@ -1699,7 +1699,8 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
 
     all_files.sort(key=lambda p: str(p))
 
-    converted_dir = root / GRAPHIFY_OUT / "converted"
+    out_base = Path(cache_root).resolve() if cache_root is not None else root
+    converted_dir = out_base / GRAPHIFY_OUT / "converted"
 
     for p in all_files:
         # For memory dir files, skip hidden/noise filtering
@@ -2125,20 +2126,33 @@ def save_manifest(
         mtime, h = hashed[f]
         key = _nfc(f)
         prev = _normalise_entry(existing.get(key, {})) or {}
-        # seen: when this row was written. If the file's mtime sits inside the
-        # same filesystem tick, a later same-length edit can land in that tick
-        # without moving mtime, so the mtime-unchanged fastpath cannot prove
-        # the content is still current and detect_incremental re-hashes.
-        entry: dict = {"mtime": mtime, "seen": time.time()}
         if kind in ("ast", "both"):
-            entry["ast_hash"] = h
+            ast_h = h
         else:
-            entry["ast_hash"] = prev.get("ast_hash", "")
+            ast_h = prev.get("ast_hash", "")
         if kind in ("semantic", "both"):
-            entry["semantic_hash"] = h
+            sem_h = h
         else:
             # Preserve semantic_hash only when content is unchanged
-            entry["semantic_hash"] = prev.get("semantic_hash", "") if h == prev.get("ast_hash", "") else ""
+            sem_h = prev.get("semantic_hash", "") if h == prev.get("ast_hash", "") else ""
+
+        # Preserve previous seen timestamp if the entry's mtime and target hash(es)
+        # are genuinely unchanged and no clear was requested for this file.
+        prev_seen = prev.get("seen")
+        is_unchanged = (
+            isinstance(prev_seen, (int, float))
+            and mtime == prev.get("mtime")
+            and (ast_h == prev.get("ast_hash", "") if kind in ("ast", "both") else True)
+            and (sem_h == prev.get("semantic_hash", "") if kind in ("semantic", "both") else True)
+            and not _in_clear_ast(f)
+            and not _in_clear(f)
+        )
+        entry: dict = {
+            "mtime": mtime,
+            "seen": prev_seen if is_unchanged else time.time(),
+            "ast_hash": ast_h,
+            "semantic_hash": sem_h,
+        }
         manifest[key] = entry
     if root is not None:
         # Persist in portable form: forward-slash relative paths. Keys outside
@@ -2150,6 +2164,17 @@ def save_manifest(
         manifest = {_nfc(_to_relative_for_storage(k, root)): v for k, v in manifest.items()}
     else:
         manifest = {_nfc(k): v for k, v in manifest.items()}
+
+    # Avoid rewriting manifest.json when the serialized payload is identical (#2838).
+    manifest_p = Path(manifest_path)
+    if manifest_p.is_file():
+        try:
+            disk_raw = json.loads(manifest_p.read_text(encoding="utf-8"))
+            if isinstance(disk_raw, dict) and disk_raw == manifest:
+                return
+        except Exception:
+            pass
+
     from graphify.paths import write_json_atomic
     # Atomic write: a crash mid-write must not leave a truncated manifest that
     # detect_incremental then fails to parse.

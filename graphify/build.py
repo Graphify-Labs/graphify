@@ -210,9 +210,23 @@ def _fold_edge_aliases(edge: dict) -> None:
     is not provenance) and never a threshold mapping of the float. The
     ``confidence_score`` key itself is NOT popped: it is a legitimate companion
     field that the edge loop sanitizes and to_json round-trips.
+
+    A NUMERIC ``confidence`` (pre-enum graphs stored the LLM pass's float —
+    1.0/0.95/0.9/0.85 — directly in the field) normalizes to ``INFERRED``:
+    numeric confidences only ever came from the LLM semantic pass, and
+    LLM-derived edges are INFERRED by definition. The original float moves to
+    ``confidence_score`` unless an explicit one is already present (the
+    companion field is the authority). Without this fold, every reload of a
+    pre-enum graph re-warns once per legacy edge, forever. ``bool`` is
+    excluded despite subclassing ``int``: ``True`` is not a score.
     """
     if not edge.get("relation") and isinstance(edge.get("type"), str) and edge["type"]:
         edge["relation"] = edge.pop("type")
+    _conf = edge.get("confidence")
+    if isinstance(_conf, (int, float)) and not isinstance(_conf, bool):
+        if edge.get("confidence_score") is None:
+            edge["confidence_score"] = float(_conf)
+        edge["confidence"] = "INFERRED"
     if not edge.get("confidence") and edge.get("confidence_score") is not None:
         edge["confidence"] = "INFERRED"
 

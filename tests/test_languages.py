@@ -1886,6 +1886,24 @@ def test_julia_abstract_concrete_hierarchy_inherits():
     assert ("Circle", "Shape") in _edge_labels(r, "inherits")
 
 
+def test_julia_abstract_type_with_supertype_is_extracted(tmp_path):
+    """`abstract type Dog <: Animal end` must yield a node and an inherits edge.
+
+    The abstract-type path only matched a bare `identifier` type_head, so the
+    subtyping form (a `binary_expression`) dropped the type entirely — losing an
+    intermediate node in the dispatch hierarchy and the inheritance edge with it.
+    """
+    f = tmp_path / "types.jl"
+    f.write_text(
+        "abstract type Animal end\n"
+        "abstract type Dog <: Animal end\n"
+    )
+    r = extract_julia(f)
+    assert "error" not in r
+    assert "Dog" in [n["label"] for n in r["nodes"]], "abstract subtype node dropped"
+    assert ("Dog", "Animal") in _edge_labels(r, "inherits"), "abstract inherits edge dropped"
+
+
 def test_julia_struct_field_type_context():
     r = extract_julia(FIXTURES / "sample.jl")
     assert ("Point", "Float64") in _edge_labels(r, "references", "field")
@@ -2045,6 +2063,35 @@ def test_powershell_class_base_type_emits_inherits_edge():
     # because the handler only read the first simple_name (the class name).
     r = extract_powershell(FIXTURES / "sample.ps1")
     assert ("Circle", "Shape") in _edge_labels(r, "inherits")
+
+
+def test_powershell_enum_is_extracted_and_reference_resolves(tmp_path):
+    """A PowerShell enum must be a real definition, and `[Enum]` refs resolve to it.
+
+    Enums were not extracted at all, so `[Color]$c` produced a `references` edge to
+    a sourceless phantom stub instead of the enum, and the enum's members were lost.
+    """
+    f = tmp_path / "colors.ps1"
+    f.write_text(
+        "enum Color {\n    Red\n    Green = 5\n    Blue\n}\n\n"
+        "class Widget {\n    [Color]$color\n}\n"
+    )
+    r = extract_powershell(f)
+    assert "error" not in r
+    color = next((n for n in r["nodes"] if n["label"] == "Color"), None)
+    assert color is not None, "enum definition dropped"
+    assert color["source_file"] != "", "enum must be a real sourced definition, not a phantom stub"
+    # members are captured
+    contained = {
+        n["label"] for n in r["nodes"]
+        for e in r["edges"]
+        if e["relation"] == "contains" and e["source"] == color["id"] and e["target"] == n["id"]
+    }
+    assert {"Red", "Green", "Blue"} <= contained, f"enum members missing: {contained}"
+    # the field type reference resolves to the real enum node
+    ref_targets = {e["target"] for e in r["edges"]
+                   if e["relation"] == "references" and e.get("context") == "field"}
+    assert color["id"] in ref_targets, "[Color] field reference did not resolve to the enum"
 
 
 def test_powershell_property_field_type_context():
@@ -2626,6 +2673,121 @@ def test_markdown_link_edges_resolve_to_real_nodes(tmp_path):
     assert len(index_refs) == 3, f"hub doc under-connected: {index_refs}"
 
 
+def _vault_extract(vault, paths):
+    """Serial extract() anchored at *vault*, returning (node_ids, ref_edges,
+    page-id lookup keyed by vault-relative posix path)."""
+    from graphify.extract import extract
+    res = extract(sorted(paths), cache_root=vault, root=vault, parallel=False)
+    node_ids = {n["id"] for n in res["nodes"]}
+    refs = [e for e in res["edges"] if e["relation"] == "references"]
+    by_sf = {n["source_file"]: n["id"] for n in res["nodes"]
+             if n.get("node_kind") == "page"}
+
+    def page_id(path):
+        return by_sf[path.relative_to(vault).as_posix()]
+
+    return node_ids, refs, page_id
+
+
+def test_markdown_wikilink_vault_fallback(tmp_path):
+    """A subfolder note's [[wikilink]] to a root-level doc resolves vault-wide
+    when sibling resolution misses, instead of silently dropping at build."""
+    vault = tmp_path / "vault"
+    (vault / "log").mkdir(parents=True)
+    (vault / "hub.md").write_text("# Hub\nContent.\n")
+    (vault / "log" / "entry.md").write_text("# Entry\nSee [[hub]].\n")
+    node_ids, refs, page_id = _vault_extract(
+        vault, [vault / "hub.md", vault / "log" / "entry.md"])
+    entry_id = page_id(vault / "log" / "entry.md")
+    hub_id = page_id(vault / "hub.md")
+    assert any(e["source"] == entry_id and e["target"] == hub_id
+               for e in refs), f"vault link lost: {refs}"
+    for e in refs:
+        assert e["target"] in node_ids, f"link target is a ghost node: {e}"
+
+
+def test_markdown_wikilink_fallback_path_qualified(tmp_path):
+    """[[folder/name]] from a subfolder matches on the full segment suffix."""
+    vault = tmp_path / "vault"
+    (vault / "log").mkdir(parents=True)
+    (vault / "Materials").mkdir()
+    (vault / "Materials" / "ref.md").write_text("# Ref\n")
+    (vault / "log" / "entry.md").write_text("See [[Materials/ref]].\n")
+    _, refs, page_id = _vault_extract(
+        vault, [vault / "Materials" / "ref.md", vault / "log" / "entry.md"])
+    assert any(e["target"] == page_id(vault / "Materials" / "ref.md")
+               for e in refs), f"path-qualified vault link lost: {refs}"
+
+
+def test_markdown_wikilink_fallback_root_wins(tmp_path):
+    """On a bare-name collision the shallowest match wins — Obsidian resolves
+    a bare wikilink to the root-level file over a same-named subfolder file."""
+    vault = tmp_path / "vault"
+    (vault / "log").mkdir(parents=True)
+    (vault / "sub").mkdir()
+    (vault / "hub.md").write_text("# Root hub\n")
+    (vault / "sub" / "hub.md").write_text("# Sub hub\n")
+    (vault / "log" / "entry.md").write_text("See [[hub]].\n")
+    _, refs, page_id = _vault_extract(
+        vault, [vault / "hub.md", vault / "sub" / "hub.md",
+                vault / "log" / "entry.md"])
+    entry_id = page_id(vault / "log" / "entry.md")
+    targets = {e["target"] for e in refs if e["source"] == entry_id}
+    assert targets == {page_id(vault / "hub.md")}, (
+        f"expected the root-level hub only, got {targets}")
+
+
+def test_markdown_wikilink_sibling_still_wins(tmp_path):
+    """An existing sibling target keeps lexical resolution — the fallback only
+    fires when the resolved path is missing, so #1376 behavior is unchanged."""
+    vault = tmp_path / "vault"
+    (vault / "sub").mkdir(parents=True)
+    (vault / "hub.md").write_text("# Root hub\n")
+    (vault / "sub" / "hub.md").write_text("# Sub hub\n")
+    (vault / "sub" / "entry.md").write_text("See [[hub]].\n")
+    _, refs, page_id = _vault_extract(
+        vault, [vault / "hub.md", vault / "sub" / "hub.md",
+                vault / "sub" / "entry.md"])
+    entry_id = page_id(vault / "sub" / "entry.md")
+    targets = {e["target"] for e in refs if e["source"] == entry_id}
+    assert targets == {page_id(vault / "sub" / "hub.md")}, (
+        f"sibling must shadow the vault-wide match, got {targets}")
+
+
+def test_markdown_inline_link_keeps_relative_semantics(tmp_path):
+    """Inline [text](missing.md) links get no vault fallback: a missing
+    relative target stays dangling exactly as before."""
+    vault = tmp_path / "vault"
+    (vault / "log").mkdir(parents=True)
+    (vault / "hub.md").write_text("# Hub\n")
+    (vault / "log" / "entry.md").write_text("See [hub](hub.md).\n")
+    node_ids, refs, page_id = _vault_extract(
+        vault, [vault / "hub.md", vault / "log" / "entry.md"])
+    entry_id = page_id(vault / "log" / "entry.md")
+    entry_refs = [e for e in refs if e["source"] == entry_id]
+    for e in entry_refs:
+        assert e["target"] != page_id(vault / "hub.md"), (
+            f"inline link must not resolve vault-wide: {e}")
+
+
+def test_markdown_wikilink_fallback_unicode_normalization(tmp_path):
+    """A wikilink typed in NFD finds a file named in NFC (and spaces survive):
+    filesystems disagree on Unicode normalization, the index must not."""
+    import unicodedata
+    vault = tmp_path / "vault"
+    (vault / "log").mkdir(parents=True)
+    name_nfc = unicodedata.normalize("NFC", "어휘 노트")
+    (vault / f"{name_nfc}.md").write_text("# Term\n")
+    name_nfd = unicodedata.normalize("NFD", name_nfc)
+    (vault / "log" / "entry.md").write_text(f"See [[{name_nfd}]].\n")
+    _, refs, page_id = _vault_extract(
+        vault, [vault / f"{name_nfc}.md", vault / "log" / "entry.md"])
+    entry_id = page_id(vault / "log" / "entry.md")
+    target_id = page_id(vault / f"{name_nfc}.md")
+    assert any(e["source"] == entry_id and e["target"] == target_id
+               for e in refs), f"NFD wikilink missed the NFC file: {refs}"
+
+
 # ── Groovy ───────────────────────────────────────────────────────────────────
 
 
@@ -3193,6 +3355,28 @@ def test_cpp_paired_method_decl_and_def_are_one_node():
     assert bar_nodes, "the merged bar node should be a member of Foo"
 
 
+def test_cpp_paired_merged_node_records_definition_site():
+    """The decl/def merge keeps the header node, so `source_file` names the
+    DECLARATION. The survivor must still carry where the symbol is implemented,
+    or the definition site is lost with the dropped impl node."""
+    r = _corpus("cpp_paired/Foo.h", "cpp_paired/Foo.cpp", "cpp_paired/Main.cpp")
+    bars = [n for n in r["nodes"] if n["label"] in ("bar", "Foo::bar()")]
+    assert len(bars) == 1, f"bar decl/def should be one node, got {bars}"
+    bar = bars[0]
+    assert str(bar["source_file"]).endswith("Foo.h"), bar
+    assert str(bar.get("definition_file", "")).endswith("Foo.cpp"), bar
+    assert bar.get("definition_location"), bar
+
+
+def test_cpp_unpaired_symbol_has_no_definition_site():
+    """A symbol that was never merged must not grow the new attributes — they mark
+    a collapsed decl/def pair, not every node."""
+    r = _corpus("cpp_paired/Foo.h", "cpp_paired/Foo.cpp", "cpp_paired/Main.cpp")
+    for n in r["nodes"]:
+        if str(n.get("source_file", "")).endswith("Main.cpp"):
+            assert "definition_file" not in n, n
+
+
 def test_cpp_paired_includes_resolve_to_real_header():
     """Foo.cpp and Main.cpp `#include "Foo.h"` must resolve to the real Foo.h file
     node (no dangling import)."""
@@ -3363,6 +3547,39 @@ def test_cl_inherits():
     inherit_edges = [e for e in r["edges"] if e["relation"] == "inherits"]
     assert len(inherit_edges) >= 1
     assert any("ssl_server" in e["source"] and "server" in e["target"] for e in inherit_edges)
+
+@_needs_commonlisp
+def test_cl_crossfile_superclass_inherits_edge_survives(tmp_path):
+    """A superclass defined in another file must still yield an inherits edge.
+
+    The edge target was a file-scoped id with no backing node, so when the
+    parent class lived in a different file the dangling-edge filter pruned the
+    inherits edge entirely. Cross-file references must resolve to a sourceless
+    stub (like imports do) so the corpus rewire can collapse it onto the real
+    defclass — while a same-file parent still binds to its local node.
+    """
+    f = tmp_path / "dogs.lisp"
+    f.write_text(
+        "(defclass animal () ())\n"
+        "(defclass dog (animal) ())\n"
+        "(defclass service-dog (base-animal) ())\n"
+    )
+    r = extract_commonlisp(f)
+    assert "error" not in r
+    id_to_node = {n["id"]: n for n in r["nodes"]}
+    inherits = {
+        (id_to_node[e["source"]]["label"], id_to_node[e["target"]]["label"])
+        for e in r["edges"]
+        if e["relation"] == "inherits"
+        and e["source"] in id_to_node and e["target"] in id_to_node
+    }
+    # same-file parent binds locally
+    assert ("dog", "animal") in inherits
+    # cross-file parent survives via a sourceless stub instead of being dropped
+    assert ("service-dog", "base-animal") in inherits
+    base = next(n for n in r["nodes"] if n["label"] == "base-animal")
+    assert base["source_file"] == "", "cross-file superclass must be a sourceless stub"
+
 
 @_needs_commonlisp
 def test_cl_imports():
@@ -3673,3 +3890,62 @@ def test_markdown_heading_id_is_stable_regardless_of_frontmatter():
     stem = _file_stem(Path(src_file))
     assert _make_id(stem, "Overview") in heading_ids
     assert _make_id(stem, "Details") in heading_ids
+
+
+# ── Zig ───────────────────────────────────────────────────────────────────────
+from graphify.extract import extract_zig
+
+_needs_zig = pytest.mark.skipif(
+    _ilu.find_spec("tree_sitter_zig") is None,
+    reason="tree-sitter-zig not installed",
+)
+
+
+@_needs_zig
+def test_zig_enum_and_union_methods_are_extracted(tmp_path):
+    """Methods declared inside a Zig enum or tagged union must be captured.
+
+    Only `struct` containers recursed into their members, so `pub fn` methods on
+    an `enum`/`union` — and every call made from those method bodies — were
+    dropped along with the whole method layer of the type.
+    """
+    src = (
+        "const Color = enum {\n"
+        "    red,\n"
+        "    green,\n"
+        "    pub fn isRed(self: Color) bool {\n"
+        "        return self == .red;\n"
+        "    }\n"
+        "};\n"
+        "\n"
+        "const Shape = union(enum) {\n"
+        "    circle: f32,\n"
+        "    pub fn area(self: Shape) f32 {\n"
+        "        return helper();\n"
+        "    }\n"
+        "};\n"
+        "\n"
+        "fn helper() f32 {\n"
+        "    return 1.0;\n"
+        "}\n"
+    )
+    f = tmp_path / "shapes.zig"
+    f.write_text(src)
+    r = extract_zig(f)
+    assert "error" not in r
+
+    method_targets = {
+        e["target"] for e in r["edges"] if e["relation"] == "method"
+    }
+    id_to_label = {n["id"]: n["label"] for n in r["nodes"]}
+    method_labels = {id_to_label[t] for t in method_targets}
+    assert ".isRed()" in method_labels, "enum method dropped"
+    assert ".area()" in method_labels, "union method dropped"
+
+    # A call made from an enum/union method body must resolve too.
+    calls = {
+        (id_to_label.get(e["source"], e["source"]),
+         id_to_label.get(e["target"], e["target"]))
+        for e in r["edges"] if e["relation"] == "calls"
+    }
+    assert (".area()", "helper()") in calls, "call from union method body dropped"

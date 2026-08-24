@@ -1001,6 +1001,88 @@ def _stabilize_rebuild_cwd(watch_path: Path) -> bool:
         return False
 
 
+def _reconcile_graph_html(out: Path, graph_data: dict) -> str | None:
+    """Reconcile missing, stale, or explicitly disabled HTML visualization.
+
+    The unchanged-topology update path deliberately avoids clustering and
+    rewriting core artifacts. HTML is independently derivable, so rebuild it
+    from the communities and names already stored in graph.json when absent or
+    marked stale by a prior failed render.
+
+    Returns ``"rendered"`` or ``"removed"`` when it changed the HTML state,
+    otherwise ``None``.
+    """
+    html_target = out / "graph.html"
+    from graphify.exporters.html import _HTML_STALE_MARKER, _viz_node_limit
+    stale_marker = out / _HTML_STALE_MARKER
+
+    def clear_stale_marker() -> None:
+        try:
+            stale_marker.unlink(missing_ok=True)
+        except OSError as exc:
+            print(
+                "[graphify watch] graph.html stale marker could not be cleared; "
+                f"regeneration may be retried: {exc}"
+            )
+
+    limit = _viz_node_limit()
+    if limit <= 0:
+        changed = html_target.exists() or stale_marker.exists()
+        html_target.unlink(missing_ok=True)
+        clear_stale_marker()
+        return "removed" if changed else None
+    if html_target.exists() and not stale_marker.exists():
+        return None
+
+    had_html = html_target.exists()
+
+    node_communities = _node_community_map(graph_data)
+    communities: dict[int, list[str]] = {}
+    for node_id, cid in node_communities.items():
+        communities.setdefault(cid, []).append(node_id)
+
+    labels: dict[int, str] = {}
+    for node in graph_data.get("nodes", []):
+        cid = node_communities.get(str(node.get("id")))
+        name = node.get("community_name")
+        if cid is not None and isinstance(name, str) and name:
+            labels.setdefault(cid, name)
+
+    try:
+        from graphify.export import to_html
+        from graphify.paths import load_node_link_graph
+
+        persisted_graph = load_node_link_graph(graph_data)
+        written = to_html(
+            persisted_graph,
+            communities,
+            str(html_target),
+            community_labels=labels or None,
+            node_limit=limit,
+        )
+    except Exception as exc:
+        if had_html:
+            print(
+                "[graphify watch] Stale graph.html left unchanged; "
+                f"regeneration will be retried: {exc}"
+            )
+        else:
+            print(f"[graphify watch] Missing graph.html could not be regenerated: {exc}")
+        return None
+
+    if not written or not html_target.exists():
+        if had_html:
+            print(
+                "[graphify watch] Stale graph.html left unchanged; "
+                "no useful community view was generated."
+            )
+        else:
+            print("[graphify watch] Missing graph.html has no useful community view; skipped.")
+        return None
+    clear_stale_marker()
+    return "rendered"
+
+
 def _rebuild_code(
     watch_path: Path,
     *,
@@ -1103,7 +1185,7 @@ def _rebuild_code(
         from graphify.cluster import cluster, remap_communities_to_previous, score_all
         from graphify.analyze import god_nodes, surprising_connections, suggest_questions
         from graphify.report import generate
-        from graphify.export import to_json, to_html
+        from graphify.export import to_json
         from graphify.security import check_graph_file_size_cap
 
         # Re-apply the excludes the initial extract recorded, so an update/watch/
@@ -1609,7 +1691,19 @@ def _rebuild_code(
                 flag = out / "needs_update"
                 if flag.exists():
                     flag.unlink()
-                print("[graphify watch] No code-graph topology changes detected; outputs left untouched.")
+                html_action = _reconcile_graph_html(out, existing_graph_data)
+                if html_action == "rendered":
+                    print(
+                        "[graphify watch] No code-graph topology changes detected; "
+                        "regenerated missing or stale graph.html."
+                    )
+                elif html_action == "removed":
+                    print(
+                        "[graphify watch] No code-graph topology changes detected; "
+                        "removed graph.html because HTML visualization is disabled."
+                    )
+                else:
+                    print("[graphify watch] No code-graph topology changes detected; outputs left untouched.")
                 return True
 
         communities = cluster(G)
@@ -1730,6 +1824,10 @@ def _rebuild_code(
                 failed_sources=failed_sources,
             ):
                 return False
+            from graphify.exporters.html import _HTML_STALE_MARKER
+            # Mark before graph.json advances so an interruption cannot leave a
+            # previous visualization looking current to the fast path.
+            (out / _HTML_STALE_MARKER).touch()
             from graphify.export import backup_if_protected as _backup
             _backup(out)
             graph_tmp.replace(existing_graph)
@@ -1757,40 +1855,13 @@ def _rebuild_code(
         except Exception:
             pass
 
-        # to_html raises ValueError for graphs > the viz node limit.
-        # Wrap so core outputs (graph.json + GRAPH_REPORT.md) always land.
+        # Reconcile from the persisted graph. The stale marker was written
+        # before graph.json advanced, so a failed or interrupted atomic render
+        # remains retryable from the unchanged-topology fast path.
         html_written = False
         if not no_change:
-            html_target = out / "graph.html"
-            try:
-                to_html(G, communities, str(html_target), community_labels=labels or None)
-                html_written = True
-            except ValueError as viz_err:
-                # Over the cap. Deleting was defensible on its own — a kept
-                # graph.html would describe an older, smaller graph — but it
-                # leaves a project that crossed the threshold with no
-                # visualization at all, and the file is gone before the user
-                # sees the message. The export path (#1019) already re-renders
-                # the community-aggregation view in exactly this case, so do
-                # the same here: current AND present beats current OR present.
-                from graphify.exporters.html import _viz_node_limit
-                if html_target.exists():
-                    html_target.unlink()
-                limit = _viz_node_limit()
-                if limit <= 0:
-                    # GRAPHIFY_VIZ_NODE_LIMIT=0 means "no HTML viz" (CI runners),
-                    # so honour it rather than aggregating around it.
-                    print(f"[graphify watch] Skipped graph.html: {viz_err}")
-                else:
-                    try:
-                        to_html(G, communities, str(html_target),
-                                community_labels=labels or None, node_limit=limit)
-                        # The aggregator declines to write a single-community
-                        # graph, so trust the file rather than the call.
-                        html_written = html_target.exists()
-                    except Exception as fallback_err:
-                        print(f"[graphify watch] Skipped graph.html: {viz_err} "
-                              f"(aggregated view also failed: {fallback_err})")
+            html_action = _reconcile_graph_html(out, candidate_graph_data)
+            html_written = html_action == "rendered"
 
         # Regenerate callflow HTML if the user previously generated one —
         # opt-in by existence so users who never ran callflow-html aren't affected.

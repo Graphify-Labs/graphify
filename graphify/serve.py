@@ -1305,6 +1305,27 @@ def _cut_lines_to_budget(lines: list[str], token_budget: int, narrow_hint: str) 
     )
 
 
+def _display_graph_path(graph_path: str) -> str:
+    """Render a graph path for the query header.
+
+    Relative to the CWD when it sits underneath it — `graphify-out/graph.json`,
+    which is the ordinary case and stays short. Absolute otherwise, because a
+    graph outside the directory you are standing in is precisely the situation
+    the header exists to make visible (#2789). Always POSIX separators so the
+    line reads the same on either platform. Falls back to the path as given if
+    it cannot be resolved; this is a display helper and must never be the reason
+    a query fails.
+    """
+    try:
+        p = Path(graph_path).resolve()
+        try:
+            return p.relative_to(Path.cwd().resolve()).as_posix()
+        except ValueError:
+            return p.as_posix()
+    except (OSError, RuntimeError, ValueError):
+        return str(graph_path)
+
+
 def _query_graph_text(
     G: nx.Graph,
     question: str,
@@ -1313,6 +1334,7 @@ def _query_graph_text(
     depth: int = 3,
     token_budget: int = 2000,
     context_filters: list[str] | None = None,
+    graph_path: str | None = None,
 ) -> str:
     terms = _query_terms(question)
     # One graph scoring pass produces both the combined ranking (used to drive
@@ -1363,6 +1385,17 @@ def _query_graph_text(
         f"Traversal: {mode.upper()} depth={depth}",
         f"Start: {[G.nodes[n].get('label', n) for n in start_nodes]}",
     ]
+    # Name the graph this answer came from. `graphify-out/` resolves against the
+    # CWD, so running a query from a parent project while thinking about a
+    # vendored subproject silently answers from the wrong corpus — the output is
+    # well-formed and confidently wrong, and nothing in it said which graph was
+    # opened (#2789). Shown relative when the graph is under the CWD (the normal
+    # case, and short), absolute when it is not — which is exactly the case worth
+    # noticing. The node count travels with it because "355 nodes" vs "3178
+    # nodes" is often the first thing that looks wrong.
+    if graph_path:
+        header_parts.insert(0, f"Graph: {_display_graph_path(graph_path)} "
+                               f"({G.number_of_nodes()} nodes)")
     if resolved_filters:
         note = "; relaxed — no matches beyond seeds" if relaxed else ""
         header_parts.append(f"Context: {', '.join(resolved_filters)} ({filter_source}{note})")
@@ -1895,6 +1928,7 @@ def _build_server(graph_path: str):
             depth=depth,
             token_budget=budget,
             context_filters=context_filter,
+            graph_path=str(active_graph_path),
         )
         querylog.log_query(
             kind="mcp_query",
@@ -1920,6 +1954,12 @@ def _build_server(graph_path: str):
             f"Node: {sanitize_label(d.get('label', nid))}",
             f"  ID: {sanitize_label(nid)}",
             f"  Source: {sanitize_label(str(d.get('source_file', '')))} {sanitize_label(str(d.get('source_location', '')))}",
+            # A C/C++/ObjC symbol declared in a header and defined in the sibling
+            # impl file is ONE node keyed to the header, so Source alone points at
+            # the declaration. Name where it is implemented too, when known.
+            *([f"  Defined in: {sanitize_label(str(d.get('definition_file', '')))} "
+               f"{sanitize_label(str(d.get('definition_location', '')))}"]
+              if d.get("definition_file") else []),
             f"  Type: {sanitize_label(str(d.get('file_type', '')))}",
             f"  Community: {sanitize_label(str(d.get('community_name') or d.get('community', '')))}",
             f"  Degree: {G.degree(nid)}",

@@ -22,6 +22,7 @@ from .resolver_registry import (
     run_language_resolvers,
 )
 from .ruby_resolution import resolve_ruby_member_calls
+from .csharp_dispatch import resolve_csharp_interface_dispatch
 from .pascal_resolution import resolve_pascal_inherited_calls
 
 # --- migrated to graphify/extractors/ (see graphify/extractors/MIGRATION.md) ---
@@ -46,7 +47,7 @@ from graphify.extractors.fortran import _cpp_preprocess, extract_fortran  # noqa
 from graphify.extractors.go import _GO_PREDECLARED_FUNCS, extract_go  # noqa: F401
 from graphify.extractors.json_config import extract_json  # noqa: F401
 from graphify.extractors.commonlisp import extract_commonlisp  # noqa: F401
-from graphify.extractors.markdown import extract_markdown  # noqa: F401
+from graphify.extractors.markdown import extract_markdown, _MD_LINK_INDEX_CACHE  # noqa: F401
 from graphify.extractors.ocaml import extract_ocaml  # noqa: F401
 from graphify.extractors.pascal_forms import extract_delphi_form, extract_lazarus_form  # noqa: F401
 from graphify.extractors.php import (  # noqa: F401
@@ -74,6 +75,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _JS_PRIMITIVE_TYPES,
     _JS_RESOLVE_EXTS,
     _TSCONFIG_ALIAS_CACHE,
+    _TSCONFIG_BASEURL_CACHE,
     _VUE_SCRIPT_LANG_RE,
     _VUE_SCRIPT_RE,
     _WORKSPACE_MANIFEST_NAMES,
@@ -1069,7 +1071,9 @@ _CSHARP_CONFIG = LanguageConfig(
     }),
     function_types=frozenset({"method_declaration"}),
     import_types=frozenset({"using_directive"}),
-    call_types=frozenset({"invocation_expression"}),
+    # `object_creation_expression` joins the invocation node so `new Foo(...)`
+    # links the constructing method to Foo, the way Java has since #1373.
+    call_types=frozenset({"invocation_expression", "object_creation_expression"}),
     call_function_field="function",
     call_accessor_node_types=frozenset({"member_access_expression"}),
     call_accessor_field="name",
@@ -2115,13 +2119,111 @@ def _augment_cpp_string_tests(path: Path, result: dict) -> dict:
     return result
 
 
+# ── C++/CLI normalization (#2876) ────────────────────────────────────────────
+# tree-sitter-cpp implements none of `ref class`, `Type^`, `Type%`, `gcnew` or
+# `[assembly:…]`. The ERROR lands on the type header, which dissolves the whole
+# class body — a 141-method .NET interop wrapper yielded 12 junk symbols. These
+# rewrites map each spelling onto the nearest standard C++ one.
+
+# Only files carrying one of these engage the rewrite, so plain C/C++/CUDA is
+# parsed byte-for-byte as before. `^`/`%` alone are not markers: they are the
+# ordinary XOR and modulo operators.
+_CPP_CLI_MARKER_RE = re.compile(
+    rb"\b(?:ref|value)\s+(?:class|struct)\b"
+    rb"|\binterface\s+class\b"
+    rb"|\bgcnew\b"
+    rb"|\[\s*(?:assembly|module)\s*:"
+)
+
+# `public ref class Foo` / `value struct Bar` / `interface class Baz` → the
+# access specifier goes too: it is not legal at namespace scope, and leaving it
+# behind is what made recovery invent a stray `public` node.
+_CPP_CLI_CLASS_RE = re.compile(
+    rb"(?:\b(?:public|private|protected)\s+)?\b(?:ref|value)\s+(?=(?:class|struct)\b)"
+    rb"|(?:\b(?:public|private|protected)\s+)?\binterface\s+(?=class\b)"
+)
+# Handle (`String^ s`) and tracking-reference (`int% n`) suffixes.
+#
+# `^` and `%` are also XOR and modulo, and `String^ s` is lexically identical to
+# `a^ b` — attachment to the preceding token does not separate them, because
+# `a% b` and `hash^ mask` are attached too. Rewriting on attachment alone
+# corrupted those into `a  b` / `hash  mask`. So the rewrite is restricted to
+# the two positions where an operator reading is impossible or implausible.
+#
+# 1. Followed by a token that cannot begin an operand: `f(String^, int)`,
+#    `List<String^>`, `(String^)x`, `Object^;`. `a^,` is not valid C++, so
+#    there is no arithmetic to lose here. `*` and `&` are deliberately NOT in
+#    the set — `a^*p` and `a^&b` are valid XOR expressions, and `String^*` is
+#    rare enough not to be worth trading for them.
+_CPP_CLI_SUFFIX_UNAMBIGUOUS_RE = re.compile(rb"(?<=[A-Za-z0-9_>])[\^%](?=\s*[,)\]>;])")
+# 2. A type-shaped left side followed by a declarator: `System::String^ s`,
+#    `List<int>^ items`, `DataTable^ t`, `int% n`. Qualified names, a closing
+#    generic bracket, .NET's PascalCase convention and the primitive value
+#    types are all type positions; requiring one keeps lowercase operands like
+#    `count% 2` and `hash^ mask` as arithmetic. A capitalized name must also
+#    carry a lowercase letter, so SCREAMING_CASE constants stay arithmetic
+#    too (`MASK^ value`); a lone capital is exempt for generic parameters
+#    (`T^ x`). The type is captured and re-emitted so the substitution stays
+#    byte-length preserving.
+_CPP_CLI_SUFFIX_DECL_RE = re.compile(
+    rb"(\b[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)+"   # System::String
+    rb"|\b[A-Z][A-Za-z0-9_]*[a-z][A-Za-z0-9_]*"                   # String, DataTable
+    rb"|\b[A-Z](?=[\^%])"                                        # T
+    rb"|\b(?:bool|char|wchar_t|short|int|long|float|double|unsigned|signed)"
+    rb"|>)"                                                      # List<int>^
+    rb"[\^%](?=\s+[A-Za-z_])"
+)
+# `[assembly:AssemblyVersion("1.0")]` and friends.
+_CPP_CLI_ATTR_RE = re.compile(rb"\[\s*(?:assembly|module)\s*:[^\[\]]*\]", re.S)
+
+
+def _blank_keeping_newlines(m: "re.Match[bytes]") -> bytes:
+    """Replace a match with spaces, but keep its line breaks.
+
+    Byte length alone is not enough. Both the class-header and the attribute
+    pattern can span lines — ``[assembly:AssemblyVersion(\\n  "1.0"\\n)]`` is
+    ordinary formatting — and blanking a newline merges two source lines, which
+    shifts the reported line number of every symbol below it. Preserving CR and
+    LF in place keeps line and column stable as well as offset.
+    """
+    return re.sub(rb"[^\r\n]", b" ", m.group(0))
+
+
+def _normalize_cpp_cli(source: bytes) -> bytes | None:
+    """Rewrite C++/CLI spellings to standard C++ ones, or None if not C++/CLI.
+
+    The rewrite is **byte-length preserving** — dropped tokens are overwritten
+    with spaces, never deleted, and ``gcnew`` becomes ``new`` plus padding — and
+    line breaks inside a removed token are kept, so every offset, line and
+    column still points at the same place in the file on disk and reported
+    source locations stay accurate (#2876).
+    """
+    if not _CPP_CLI_MARKER_RE.search(source):
+        return None
+    out = _CPP_CLI_CLASS_RE.sub(_blank_keeping_newlines, source)
+    out = re.sub(rb"\bgcnew\b", b"new  ", out)
+    out = _CPP_CLI_SUFFIX_UNAMBIGUOUS_RE.sub(b" ", out)
+    out = _CPP_CLI_SUFFIX_DECL_RE.sub(rb"\1 ", out)
+    return _CPP_CLI_ATTR_RE.sub(_blank_keeping_newlines, out)
+
+
 def extract_cpp(path: Path) -> dict:
     """Extract functions, classes, and includes from a .cpp/.cc/.cxx/.hpp file.
+
+    C++/CLI sources are normalized to standard C++ first (#2876); see
+    :func:`_normalize_cpp_cli`.
 
     Recovers doctest/Catch2 ``TEST_CASE("name")`` test cases that tree-sitter-cpp
     drops as ERROR nodes (issue #2594), mirroring the Spock fallback for Groovy.
     """
-    result = _extract_generic(path, _CPP_CONFIG)
+    try:
+        source = path.read_bytes()
+    except OSError:
+        # Let _extract_generic report the read failure in its usual shape.
+        return _augment_cpp_string_tests(path, _extract_generic(path, _CPP_CONFIG))
+    result = _extract_generic(
+        path, _CPP_CONFIG, source_override=_normalize_cpp_cli(source) or source
+    )
     return _augment_cpp_string_tests(path, result)
 
 
@@ -2297,6 +2399,62 @@ def _lang_family(source_file: object) -> str | None:
     return _LANG_FAMILY_BY_EXT.get(Path(str(source_file)).suffix.lower())
 
 
+# A language's own built-in throwable hierarchy, keyed by the interop family of
+# the file that names it. `class FooApiException extends \Exception` in PHP means
+# PHP's global `Exception`, so a same-named class defined in a file of ANOTHER
+# family cannot be what it refers to (#2812). Scoped to built-in throwables on
+# purpose: they are the names every language ships and every corpus subclasses,
+# while a name a corpus commonly defines itself would suppress a real supertype
+# edge. `_LANGUAGE_BUILTIN_GLOBALS` covers the adjacent call-target case and is
+# deliberately separate — a flat set consulted at call sites, neither per-family
+# nor consulted by supertype resolution.
+_LANGUAGE_BUILTIN_BASE_CLASSES: dict[str, frozenset[str]] = {
+    "php": frozenset({
+        "Throwable", "Exception", "ErrorException", "Error", "TypeError",
+        "ValueError", "ArgumentCountError", "ArithmeticError",
+        "DivisionByZeroError", "RuntimeException", "LogicException",
+        "InvalidArgumentException", "DomainException", "LengthException",
+        "OutOfRangeException", "OutOfBoundsException", "RangeException",
+        "OverflowException", "UnderflowException", "UnexpectedValueException",
+        "BadFunctionCallException", "BadMethodCallException", "JsonException",
+    }),
+    "jvm": frozenset({
+        "Throwable", "Exception", "RuntimeException", "Error",
+        "IllegalArgumentException", "IllegalStateException",
+        "UnsupportedOperationException", "IndexOutOfBoundsException",
+        "NullPointerException", "IOException",
+    }),
+    "python": frozenset({
+        "BaseException", "Exception", "ValueError", "TypeError", "KeyError",
+        "IndexError", "RuntimeError", "NotImplementedError", "AttributeError",
+        "OSError", "IOError", "StopIteration", "Warning", "UserWarning",
+        "DeprecationWarning",
+    }),
+    "jsts": frozenset({
+        "Error", "TypeError", "RangeError", "SyntaxError", "ReferenceError",
+        "EvalError", "URIError", "AggregateError",
+    }),
+    "dotnet": frozenset({
+        "Exception", "ApplicationException", "SystemException",
+        "ArgumentException", "ArgumentNullException",
+        "ArgumentOutOfRangeException", "InvalidOperationException",
+        "NotImplementedException", "NotSupportedException",
+    }),
+    "ruby": frozenset({
+        "Exception", "StandardError", "RuntimeError", "ArgumentError",
+        "TypeError", "NameError", "NoMethodError", "IOError",
+    }),
+}
+
+# Folded companion, for referrers whose language resolves identifiers
+# case-insensitively (#1581) — PHP `extends \exception` names the same built-in
+# as `extends \Exception`. Mirrors the `real_by_label` / `real_by_label_ci` pair.
+_LANGUAGE_BUILTIN_BASE_CLASSES_CI: dict[str, frozenset[str]] = {
+    family: frozenset(name.lower() for name in names)
+    for family, names in _LANGUAGE_BUILTIN_BASE_CLASSES.items()
+}
+
+
 def _node_label_key(node: dict, fold: bool = False) -> str:
     label = str(node.get("label", "")).strip()
     key = re.sub(r"[^a-zA-Z0-9]+", "", label)
@@ -2399,6 +2557,37 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
 
     by_id = {node.get("id"): node for node in nodes if node.get("id")}
     csharp_scoped_relations = {"inherits", "implements", "references", "imports"}
+
+    def _names_own_builtin_base(edge: dict, stub_id: str, remapped_id: str) -> bool:
+        r"""#2812: `class FooApiException extends \Exception` names PHP's own global
+        built-in, so a same-named class defined in another language cannot be what
+        it refers to — yet the bare name was scoped by nothing and the unique
+        TypeScript `Exception` absorbed the stub, leaving a PHP class inheriting
+        from a TS one.
+
+        Decided per EDGE rather than per stub: one sourceless `Exception` stub
+        collects referrers from every language that names it, and the TypeScript
+        referrers must still rewire onto the TypeScript class.
+
+        Deliberately narrower than a blanket family gate on the type path: a
+        corpus really can declare its own `BookStore` in one language and subclass
+        it from another (`test_extract_rewires_unique_inheritance_stub_to_real_definition`).
+        """
+        if edge.get("relation") not in _SUPERTYPE_RELATIONS:
+            return False
+        edge_fam = _lang_family(edge.get("source_file"))
+        if edge_fam is None:
+            return False
+        label = str(by_id.get(stub_id, {}).get("label", "")).strip()
+        if _lang_is_case_insensitive(edge.get("source_file")):
+            builtins = _LANGUAGE_BUILTIN_BASE_CLASSES_CI.get(edge_fam, frozenset())
+            label = label.lower()
+        else:
+            builtins = _LANGUAGE_BUILTIN_BASE_CLASSES.get(edge_fam, frozenset())
+        if label not in builtins:
+            return False
+        target_fam = _lang_family(by_id.get(remapped_id, {}).get("source_file"))
+        return target_fam is not None and target_fam != edge_fam
     for edge in edges:
         is_csharp_scoped_edge = (
             str(edge.get("source_file", "")).endswith(".cs")
@@ -2418,7 +2607,7 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
             if not (
                 is_csharp_scoped_edge
                 and str(by_id.get(remapped_target, {}).get("source_file", "")).endswith(".cs")
-            ):
+            ) and not _names_own_builtin_base(edge, str(target), remapped_target):
                 edge["target"] = remapped_target
 
     referenced = {x for e in edges for x in (e.get("source"), e.get("target"))}
@@ -4187,6 +4376,79 @@ def _resolve_kotlin_import_targets(
             e["target"] = candidates[0]
 
 
+def _resolve_csharp_qualified_calls(
+    per_file: list[dict],
+    all_nodes: list[dict],
+    all_edges: list[dict],
+) -> None:
+    """Resolve C# constructions that name their namespace (#2997).
+
+    `new Infra.Data.Cache()` reaches the shared pass as the bare name `Cache`,
+    so a second `Cache` in another namespace makes it ambiguous and it gets no
+    edge, even though the source says which one it means. The reference paths
+    (field, property, parameter, return) already honour the qualifier through
+    `CsharpNameResolver`; this is the construction twin, built the way
+    `_resolve_kotlin_qualified_calls` handles the same shape in Kotlin.
+
+    The prefix must equal a declared namespace exactly. A partially qualified
+    `new Data.Cache()` under `using Infra;` stays unresolved rather than
+    guessing at the using directives in scope. Exactly one candidate produces an
+    edge; zero or several leave the call alone. The pass is additive: an
+    ambiguous bare name never had an edge to overwrite.
+    """
+    raw = [
+        rc
+        for result in per_file
+        for rc in result.get("raw_calls", [])
+        if rc.get("lang") == "csharp" and rc.get("qualified_prefix")
+        and rc.get("callee") and rc.get("caller_nid")
+    ]
+    if not raw:
+        return
+
+    # (namespace, type name) -> nids, over sourced type declarations only, so a
+    # sourceless stub minted for a dangling reference cannot win the match.
+    by_namespace: dict[tuple[str, str], list[str]] = {}
+    for n in all_nodes:
+        if not n.get("_callable_class") or not n.get("source_file"):
+            continue
+        namespace = str((n.get("metadata") or {}).get("namespace") or "")
+        label = str(n.get("label", "")).strip("()")
+        if namespace and label:
+            by_namespace.setdefault((namespace, label), []).append(n["id"])
+    if not by_namespace:
+        return
+
+    # Scoped to `calls`: a method that both takes a type as a parameter and
+    # constructs it already has a `references` edge to it, and that edge says
+    # nothing about whether the construction was resolved.
+    existing_pairs = {
+        (e.get("source"), e.get("target"))
+        for e in all_edges
+        if e.get("relation") == "calls"
+    }
+    for rc in raw:
+        candidates = by_namespace.get((rc["qualified_prefix"], rc["callee"]), [])
+        if len(candidates) != 1:
+            continue
+        caller = rc["caller_nid"]
+        tgt = candidates[0]
+        if tgt == caller or (caller, tgt) in existing_pairs:
+            continue
+        existing_pairs.add((caller, tgt))
+        all_edges.append({
+            "source": caller,
+            "target": tgt,
+            "relation": "calls",
+            "context": "call",
+            "confidence": "EXTRACTED",  # the namespace is written verbatim in source
+            "confidence_score": 1.0,
+            "source_file": rc.get("source_file", ""),
+            "source_location": rc.get("source_location"),
+            "weight": 1.0,
+        })
+
+
 def _resolve_kotlin_qualified_calls(
     per_file: list[dict],
     all_nodes: list[dict],
@@ -4400,6 +4662,23 @@ register_language_resolver(
 register_language_resolver(
     LanguageResolver(
         "kotlin_qualified_calls", frozenset({".kt", ".kts"}), _resolve_kotlin_qualified_calls
+    )
+)
+# C# qualified construction (#2997): `new A.B.Cache()` arrives as the bare name,
+# so a colliding `Cache` elsewhere makes it ambiguous. Runs in the tail registry
+# beside csharp_member_calls and matches the prefix against declared namespaces.
+register_language_resolver(
+    LanguageResolver(
+        "csharp_qualified_calls", frozenset({".cs"}), _resolve_csharp_qualified_calls
+    )
+)
+# C# member-level interface dispatch (#3003): a call through an injected
+# dependency lands on the interface's method, so the implementation sits in the
+# graph unreachable from the call site. Lives in graphify.csharp_dispatch;
+# registered here as a consumer of the framework, like the Pascal resolver.
+register_language_resolver(
+    LanguageResolver(
+        "csharp_interface_dispatch", frozenset({".cs"}), resolve_csharp_interface_dispatch
     )
 )
 
@@ -5975,7 +6254,16 @@ def extract(
     _raise_recursion_limit()
     # Workspace package manifests/globs can change during watch or repeated extraction.
     _WORKSPACE_PACKAGE_CACHE.clear()
+    # tsconfig/jsconfig compilerOptions are the same kind of state: keyed by
+    # config path with no mtime component, so an edit to `paths` or `baseUrl`
+    # was never observed again for the life of the process. `graphify watch`
+    # and the MCP server both call extract() repeatedly in one process, so
+    # every rebuild after the edit kept resolving through the stale alias map.
+    # Clearing per run, not per file, leaves within-run caching intact.
+    _TSCONFIG_ALIAS_CACHE.clear()
+    _TSCONFIG_BASEURL_CACHE.clear()
     _XAML_CSHARP_CLASS_CACHE.clear()
+    _MD_LINK_INDEX_CACHE.clear()
 
     # Infer a common root for cache keys (use first diverging segment, not sum of all matches)
     try:
@@ -6062,7 +6350,7 @@ def extract(
     _empty_sources: list[str] = []
     for i, _p in enumerate(paths):
         _res = per_file[i] or {}
-        if _res.get("nodes") or _res.get("error"):
+        if _res.get("nodes") or _res.get("error") or _res.get("skipped"):
             continue
         if _get_extractor(_p) is not None:
             _empty_sources.append(str(_p))
@@ -6093,6 +6381,12 @@ def extract(
             if _key not in _failed_seen:
                 _failed_sources.append(_key)
                 _failed_seen.add(_key)
+            continue
+        if _res.get("skipped"):
+            # The extractor declined this file by design (data JSON, #1224), so
+            # zero nodes is the intended outcome rather than a failure. Marking
+            # it failed keeps it out of the incremental manifest and re-queues
+            # it on every subsequent run, forever (#2879).
             continue
         if (not _res.get("nodes")) and _get_extractor(_p) is not None:
             if _key not in _failed_seen:
@@ -6180,19 +6474,36 @@ def extract(
         # results, so those fall back to the file-node-only arm.
         if len(_res.get("nodes", [])) <= 1 or _pe.get("multiline_error"):
             _rel = os.path.relpath(str(_p), str(root)).replace("\\", "/")
-            _syntax_error_files.append((_rel, _pe.get("first_error_line")))
+            # Symbols recovered from the file, excluding its own file node. This
+            # is what separates the two cases the warning otherwise blurs: a file
+            # that contributed nothing but its file node is a total loss, while
+            # one that yielded most of its symbols and lost an ERROR region is
+            # partial. "May be partially extracted" rendered both identically.
+            _kept = max(len(_res.get("nodes", [])) - 1, 0)
+            _syntax_error_files.append((_rel, _pe.get("first_error_line"), _kept))
     if _syntax_error_files:
+        def _describe_syntax_error(rel: str, line: "int | None", kept: int) -> str:
+            _where = f"first error at line {line}" if line else "syntax error"
+            _got = "no symbols extracted" if kept == 0 else f"{kept} symbol(s) extracted"
+            return f"{rel} ({_where}, {_got})"
+
         _shown = ", ".join(
-            f"{x} (first error at line {ln})" if ln else x
-            for x, ln in _syntax_error_files[:5]
+            _describe_syntax_error(*f) for f in _syntax_error_files[:5]
         )
         _more = (
             f" (+{len(_syntax_error_files) - 5} more)"
             if len(_syntax_error_files) > 5 else ""
         )
+        # No issue reference here. This message used to end in "(#2551)" for
+        # EVERY language, and #2551 is closed and Kotlin-specific ("bundled
+        # grammar rejects one-line type bodies"). It was the only lead the
+        # message offered, so a reader following it landed on a resolved problem
+        # in another language and concluded their own was already tracked
+        # (#2788). The file, the line and the symbol count are the actionable
+        # part; a single hardcoded number cannot be right for every grammar.
         print(
             f"  warning: {len(_syntax_error_files)} file(s) had syntax errors and "
-            f"may be partially extracted: {_shown}{_more} (#2551)",
+            f"may be partially extracted: {_shown}{_more}",
             file=sys.stderr, flush=True,
         )
 
@@ -7106,7 +7417,11 @@ def extract(
                     "relation": "indirect_call",
                     "context": rc.get("context", "argument"),
                     "confidence": "INFERRED",
-                    "confidence_score": 0.8,
+                    # 0.85, not 0.8: the rubric in references/extraction-spec.md
+                    # is a discrete set {0.55, 0.65, 0.75, 0.85, 0.95} and 0.8 is
+                    # not in it. Same tier, same meaning ("strong inference"),
+                    # now a value the documented scale actually contains (#2813).
+                    "confidence_score": 0.85,
                     "source_file": rc.get("source_file", ""),
                     "source_location": rc.get("source_location"),
                     "weight": 1.0,
@@ -7135,7 +7450,9 @@ def extract(
                 confidence_score = 1.0
             else:
                 confidence = "INFERRED"
-                confidence_score = 0.8
+                # 0.85 rather than 0.8 — the rubric's INFERRED set is discrete
+                # and does not contain 0.8 (#2813).
+                confidence_score = 0.85
             all_edges.append({
                 "source": caller,
                 "target": tgt,

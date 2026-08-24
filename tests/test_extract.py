@@ -878,6 +878,103 @@ def test_extract_js_this_assigned_methods(tmp_path):
     assert (owner, ".getUser()") in method_edges
 
 
+def test_extract_js_factory_object_assigned_methods(tmp_path):
+    """Methods assigned to a local object-literal factory API remain visible."""
+    from graphify.extract import extract_js
+    f = tmp_path / "factory.js"
+    f.write_text(
+        "function createApi(deps) {\n"
+        "  const api = {};\n"
+        "  api.sourceClips = async function sourceClips(topic) { return deps.fetch(topic); };\n"
+        "  api.renderVideo = function renderVideo(clips) { return api.sourceClips(clips); };\n"
+        "  return api;\n"
+        "}\n"
+    )
+
+    result = extract_js(f)
+    by_label = {n["label"]: n for n in result["nodes"]}
+    assert {"createApi()", "api", ".sourceClips()", ".renderVideo()"} <= set(by_label)
+
+    factory_nid = by_label["createApi()"]["id"]
+    api_nid = by_label["api"]["id"]
+    source_clips_nid = by_label[".sourceClips()"]["id"]
+    render_video_nid = by_label[".renderVideo()"]["id"]
+    edges = {(e["source"], e["relation"], e["target"]) for e in result["edges"]}
+    assert (factory_nid, "contains", api_nid) in edges
+    assert (api_nid, "method", source_clips_nid) in edges
+    assert (api_nid, "method", render_video_nid) in edges
+    assert (render_video_nid, "calls", source_clips_nid) in edges
+
+
+def test_extract_js_factory_object_contains_edge_not_duplicated(tmp_path):
+    """The factory-to-object `contains` edge is emitted once regardless of how
+    many methods hang off the object. add_edge does not dedup, so a per-method
+    emission would flood the graph with N identical `contains` edges."""
+    from graphify.extract import extract_js
+    f = tmp_path / "many.js"
+    f.write_text(
+        "function build() {\n"
+        "  const api = {};\n"
+        "  api.a = () => 1;\n"
+        "  api.b = () => 2;\n"
+        "  api.c = () => 3;\n"
+        "  api.d = () => 4;\n"
+        "  return api;\n"
+        "}\n"
+    )
+    result = extract_js(f)
+    api_nid = next(n["id"] for n in result["nodes"] if n["label"] == "api")
+    contains = [
+        e for e in result["edges"]
+        if e["relation"] == "contains" and e["target"] == api_nid
+    ]
+    assert len(contains) == 1, f"expected one contains edge, got {len(contains)}"
+    methods = [e for e in result["edges"]
+               if e["relation"] == "method" and e["source"] == api_nid]
+    assert len(methods) == 4
+
+
+def test_extract_js_factory_object_arrow_assigned_methods(tmp_path):
+    """Arrow functions assigned to a factory object are captured just like
+    function expressions (the dominant modern factory shape)."""
+    from graphify.extract import extract_js
+    f = tmp_path / "arrow_factory.js"
+    f.write_text(
+        "function makeStore() {\n"
+        "  const store = {};\n"
+        "  store.get = (k) => k;\n"
+        "  store.set = (k, v) => store.get(k);\n"
+        "  return store;\n"
+        "}\n"
+    )
+    result = extract_js(f)
+    by_label = {n["label"]: n for n in result["nodes"]}
+    assert {"makeStore()", "store", ".get()", ".set()"} <= set(by_label)
+    store_nid = by_label["store"]["id"]
+    edges = {(e["source"], e["relation"], e["target"]) for e in result["edges"]}
+    assert (store_nid, "method", by_label[".get()"]["id"]) in edges
+    assert (store_nid, "method", by_label[".set()"]["id"]) in edges
+    assert (by_label[".set()"]["id"], "calls", by_label[".get()"]["id"]) in edges
+
+
+def test_extract_js_bare_object_member_assignment_not_captured(tmp_path):
+    """An `obj.x = fn` where `obj` is NOT a local object-literal binding must be
+    skipped — capturing arbitrary receivers reintroduces the #1077 phantom-owner
+    flood the scope check exists to prevent."""
+    from graphify.extract import extract_js
+    f = tmp_path / "bare.js"
+    f.write_text(
+        "function wire(external) {\n"
+        "  external.handler = () => 1;\n"
+        "  return external;\n"
+        "}\n"
+    )
+    result = extract_js(f)
+    labels = {n["label"] for n in result["nodes"]}
+    assert "external" not in labels
+    assert ".handler()" not in labels
+
+
 def test_extract_js_commonjs_exports_assignment(tmp_path):
     """`exports.X = fn` and `module.exports.X = fn` must produce function nodes."""
     from graphify.extract import extract_js
@@ -2472,6 +2569,41 @@ def test_extract_bash_rejects_command_substitution_as_call(tmp_path):
     assert call_pairs == [], f"Command substitution erroneously emitted call edges: {call_pairs}"
 
 
+def test_extract_bash_command_substitution_in_assignment_emits_call(tmp_path):
+    """#2978: x=$(helper) inside a function must emit a calls edge to helper()."""
+    script = tmp_path / "a.sh"
+    script.write_text(
+        "#!/usr/bin/env bash\n"
+        "helper() { echo ok; }\n"
+        "bare()      { helper; }\n"
+        "subst()     { x=$(helper); echo \"$x\"; }\n"
+        "orlist()    { helper || return 1; }\n"
+        "andlist()   { true && helper; }\n"
+        "pipe()      { helper | cat; }\n"
+        "cond()      { if helper; then :; fi; }\n"
+        "loop()      { while helper; do break; done; }\n"
+        "redir()     { helper >/dev/null; }\n"
+        "neg()       { ! helper; }\n",
+        encoding="utf-8",
+    )
+    result = extract_bash(script)
+    labels = {n["id"]: n["label"] for n in result["nodes"]}
+    call_pairs = [
+        (labels.get(e["source"], e["source"]), labels.get(e["target"], e["target"]))
+        for e in result["edges"]
+        if e["relation"] == "calls"
+    ]
+    assert ("subst()", "helper()") in call_pairs
+    assert ("bare()", "helper()") in call_pairs
+    assert ("orlist()", "helper()") in call_pairs
+    assert ("andlist()", "helper()") in call_pairs
+    assert ("pipe()", "helper()") in call_pairs
+    assert ("cond()", "helper()") in call_pairs
+    assert ("loop()", "helper()") in call_pairs
+    assert ("redir()", "helper()") in call_pairs
+    assert ("neg()", "helper()") in call_pairs
+
+
 def test_extract_bash_process_substitution_not_recorded(tmp_path):
     """`<(helper)` (process substitution) must not be recorded as a call edge."""
     script = tmp_path / "process_substitution.sh"
@@ -3722,6 +3854,74 @@ def test_rewire_does_not_bind_supertype_stub_to_function():
     assert edges[0]["target"] == "BookStore"  # inherits stub not bound to function
 
 
+def test_rewire_does_not_bind_supertype_stub_across_language():
+    """#2812: a bare `extends Exception` in PHP is the language's own built-in.
+    It must not fuse onto a unique same-named TypeScript class."""
+    from graphify.extract import _rewire_unique_stub_nodes
+    nodes = [
+        {"id": "app_exception_Exception", "label": "Exception", "file_type": "code",
+         "source_file": "app/exception.ts", "source_location": "L1"},
+        {"id": "Exception", "label": "Exception", "file_type": "code", "source_file": ""},
+    ]
+    edges = [{"source": "pkg_FooApiException", "target": "Exception", "relation": "inherits",
+              "source_file": "pkg/FooApiException.php", "weight": 1.0}]
+    _rewire_unique_stub_nodes(nodes, edges)
+    assert edges[0]["target"] == "Exception"  # unchanged — cross-language blocked
+    assert "Exception" in {n["id"] for n in nodes}  # stub kept as the external base
+
+
+def test_rewire_binds_builtin_named_supertype_stub_within_same_language():
+    """#2812 control: the guard is per language family, not a name blocklist — a
+    PHP corpus that declares its own `Exception` must still absorb the stub."""
+    from graphify.extract import _rewire_unique_stub_nodes
+    nodes = [
+        {"id": "pkg_support_Exception", "label": "Exception", "file_type": "code",
+         "source_file": "pkg/Support/Exception.php", "source_location": "L1"},
+        {"id": "Exception", "label": "Exception", "file_type": "code", "source_file": ""},
+    ]
+    edges = [{"source": "pkg_FooApiException", "target": "Exception", "relation": "inherits",
+              "source_file": "pkg/FooApiException.php", "weight": 1.0}]
+    _rewire_unique_stub_nodes(nodes, edges)
+    assert edges[0]["target"] == "pkg_support_Exception"
+
+
+def test_rewire_builtin_supertype_guard_folds_case_insensitive_languages():
+    """#2812: PHP resolves class names case-insensitively, so `extends \\exception`
+    names the same built-in as `extends \\Exception` and must be blocked too."""
+    from graphify.extract import _rewire_unique_stub_nodes
+    nodes = [
+        {"id": "app_exception_exception", "label": "exception", "file_type": "code",
+         "source_file": "app/exception.ts", "source_location": "L1"},
+        {"id": "exception", "label": "exception", "file_type": "code", "source_file": ""},
+    ]
+    edges = [{"source": "pkg_FooApiException", "target": "exception", "relation": "inherits",
+              "source_file": "pkg/FooApiException.php", "weight": 1.0}]
+    _rewire_unique_stub_nodes(nodes, edges)
+    assert edges[0]["target"] == "exception"
+
+
+def test_rewire_builtin_supertype_guard_is_per_edge_not_per_stub():
+    """#2812: one sourceless `Exception` stub collects referrers from every
+    language that names it. A TypeScript referrer sharing the stub must not
+    re-open the cross-language bind for the PHP one — the guard reads the
+    referring file, not the union of the stub's referrer families."""
+    from graphify.extract import _rewire_unique_stub_nodes
+    nodes = [
+        {"id": "app_exception_Exception", "label": "Exception", "file_type": "code",
+         "source_file": "app/exception.ts", "source_location": "L1"},
+        {"id": "Exception", "label": "Exception", "file_type": "code", "source_file": ""},
+    ]
+    edges = [
+        {"source": "pkg_FooApiException", "target": "Exception", "relation": "inherits",
+         "source_file": "pkg/FooApiException.php", "weight": 1.0},
+        {"source": "app_http_HttpError", "target": "Exception", "relation": "inherits",
+         "source_file": "app/http.ts", "weight": 1.0},
+    ]
+    _rewire_unique_stub_nodes(nodes, edges)
+    assert edges[0]["target"] == "Exception"                 # PHP still blocked
+    assert edges[1]["target"] == "app_exception_Exception"   # TS still resolves
+
+
 def test_extract_emits_posix_source_file_for_relative_inputs(tmp_path):
     r"""source_file must be canonical POSIX on every node AND edge, whatever
     separator the caller's input paths used.
@@ -3869,3 +4069,42 @@ def test_inferred_uses_edge_dropped_for_module_top_level_reference(tmp_path):
     uses = _inferred_uses(result)
 
     assert not any(tgt == "helpers_helper" for _, tgt in uses)
+
+
+def test_extract_declined_data_json_is_not_failed(tmp_path, capsys):
+    """#2879: data JSON is declined by design (#1224), not failed.
+
+    A `.json` extractor is registered, so a declined file used to satisfy both
+    halves of the failed-source test (zero nodes + extractor exists) and was
+    re-queued on every incremental run because the CLI never stamped it as
+    processed.
+    """
+    pytest.importorskip("tree_sitter_json")
+    data = tmp_path / "meta.json"
+    data.write_text('{"pages": ["a", "b"], "title": "Docs"}\n')
+    cfg = tmp_path / "package.json"
+    cfg.write_text('{"dependencies": {"left-pad": "^1.0.0"}}\n')
+
+    result = extract([data, cfg], cache_root=tmp_path)
+    err = capsys.readouterr().err
+
+    assert result.get("failed_sources") == []
+    # ...and no "produced zero nodes" noise for a deliberate decline (#1666).
+    assert "zero nodes" not in err
+    # the config JSON still extracts normally
+    assert any(str(n.get("label", "")).startswith("package.json") for n in result["nodes"])
+
+
+def test_extract_genuinely_empty_json_still_failed(tmp_path, monkeypatch):
+    """#2879 guard: only an explicit `skipped` marker is exempt."""
+    pytest.importorskip("tree_sitter_json")
+    import graphify.extract as _ex
+
+    monkeypatch.setattr(
+        _ex, "_get_extractor",
+        lambda p: (lambda _p: {"nodes": [], "edges": []}) if p.suffix == ".json" else None,
+    )
+    p = tmp_path / "meta.json"
+    p.write_text("{}\n")
+    result = _ex.extract([p], cache_root=tmp_path)
+    assert [Path(x).name for x in result.get("failed_sources", [])] == ["meta.json"]

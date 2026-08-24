@@ -2648,9 +2648,11 @@ def _js_member_assignment_target(left, source: bytes):
       module.exports.foo = fn  → ("exports",   None,  "foo")
       Foo.prototype.bar = fn   → ("prototype", "Foo", "bar")
 
-    Any other shape (an arbitrary `obj.x = fn`) returns None and is skipped —
-    capturing those would reintroduce the bare-named / phantom-god-node class
-    of bug the module-level scope guard (#1077) exists to prevent.
+    An arbitrary identifier receiver is returned as ``("object", name, member)``.
+    It is only materialized after the caller proves that the identifier is a
+    direct object-literal binding in the enclosing function. Keeping that scope
+    check at the caller avoids the bare-named / phantom-god-node failure mode
+    that the module-level guard (#1077) prevents.
     """
     if left is None or left.type != "member_expression":
         return None
@@ -2668,7 +2670,7 @@ def _js_member_assignment_target(left, source: bytes):
     if obj.type == "identifier":
         if _read_text(obj, source) == "exports":
             return ("exports", None, member_name)
-        return None
+        return ("object", _read_text(obj, source), member_name)
     if obj.type == "member_expression":
         # module.exports.X  or  Foo.prototype.X
         inner_obj = obj.child_by_field_name("object")
@@ -4069,6 +4071,59 @@ def _extract_generic(
                                 add_edge(class_nid, target_nid, "references",
                                          cp_line, context=ctx)
 
+            # C#: a primary constructor (`class Foo(IBar bar)`, C# 12+) declares
+            # its dependencies on the type declaration itself rather than in a
+            # field or property, so neither the field_declaration nor the
+            # property_declaration handler ever sees them — the parameter type
+            # got no references edge, and because the name was never registered
+            # in csharp_field_types, _csharp_method_receiver_types could not type
+            # the receiver either, so calls through it (`bar.Baz()`) lost their
+            # calls edge as well. The Scala class_parameters branch directly
+            # above is the analogue; Kotlin's is #2063. Grammar note: the list is
+            # an UNNAMED child of the declaration, so child_by_field_name(
+            # "parameters") returns None and the children must be scanned.
+            if config.ts_module == "tree_sitter_c_sharp" and t in (
+                "class_declaration",
+                "record_declaration",
+                "struct_declaration",
+            ):
+                csharp_type_params = _csharp_type_parameters_in_scope(node, source)
+                for c in node.children:
+                    if c.type != "parameter_list":
+                        continue
+                    for param in c.children:
+                        if param.type != "parameter":
+                            continue
+                        ptype = param.child_by_field_name("type")
+                        if ptype is None:
+                            continue
+                        pname = param.child_by_field_name("name")
+                        p_line = param.start_point[0] + 1
+                        # Receiver binding mirrors the field_declaration rule:
+                        # Pascal-case only (a primitive owns no resolvable
+                        # method) and never a bare type parameter (`T item`).
+                        recv = _csharp_receiver_type_name(ptype, source)
+                        if (pname is not None and recv and recv[:1].isupper()
+                                and recv not in csharp_type_params):
+                            csharp_field_types.setdefault(class_nid, {})[
+                                _read_text(pname, source)
+                            ] = recv
+                        refs = []
+                        _csharp_collect_type_refs(
+                            ptype, source, False, refs, csharp_type_params
+                        )
+                        for ref_name, role, qualified, qualifier in refs:
+                            ctx = "generic_arg" if role == "generic_arg" else "field"
+                            target_nid = ensure_named_node(ref_name, p_line)
+                            if target_nid != class_nid:
+                                metadata = {"ref_token": ref_name}
+                                if qualified:
+                                    metadata["qualified"] = True
+                                if qualifier:
+                                    metadata["ref_qualifier"] = qualifier
+                                add_edge(class_nid, target_nid, "references",
+                                         p_line, context=ctx, metadata=metadata)
+
             # C++-specific: inheritance via base_class_clause (class and struct).
             # tree-sitter-cpp shape:
             #   class_specifier / struct_specifier
@@ -4228,13 +4283,29 @@ def _extract_generic(
                             if name_node is not None:
                                 fields[_read_text(name_node, source)] = type_name
                 line = node.start_point[0] + 1
-                metadata = {"ref_token": type_name}
-                if qualified:
-                    metadata["qualified"] = True
-                if qualifier:
-                    metadata["ref_qualifier"] = qualifier
-                add_edge(parent_class_nid, ensure_named_node(type_name, line),
-                         "references", line, context="field", metadata=metadata)
+                # Walk the whole type expression rather than only its outer name, so
+                # `Box<Widget>` yields the Box field ref AND the Widget generic_arg ref.
+                # Reading just the outer name left every generic argument in field
+                # position unlinked -- `IDbContextFactory<SomeContext>` lost SomeContext,
+                # and `Mock<IThing>` lost IThing across entire test suites. The C#
+                # property_declaration handler below and the tree_sitter_java
+                # field_declaration handler beside it already do exactly this; C# fields
+                # were the odd one out.
+                refs: list[tuple[str, str, bool, str]] = []
+                _csharp_collect_type_refs(
+                    type_node, source, False, refs, csharp_type_params
+                )
+                for ref_name, role, ref_qualified, ref_qualifier in refs:
+                    ctx = "generic_arg" if role == "generic_arg" else "field"
+                    target_nid = ensure_named_node(ref_name, line)
+                    if target_nid != parent_class_nid:
+                        metadata = {"ref_token": ref_name}
+                        if ref_qualified:
+                            metadata["qualified"] = True
+                        if ref_qualifier:
+                            metadata["ref_qualifier"] = ref_qualifier
+                        add_edge(parent_class_nid, target_nid, "references",
+                                 line, context=ctx, metadata=metadata)
             return
 
         if (config.ts_module == "tree_sitter_c_sharp"
@@ -4248,6 +4319,22 @@ def _extract_generic(
             # field. Use _csharp_collect_type_refs (like the Java/PHP/Kotlin
             # siblings) so `List<Widget>` yields both the List field ref and the
             # Widget generic_arg ref.
+            # A property becomes a node, the way a C++ data member does. Fields
+            # stay out: the id recipe casefolds and strips leading underscores, so
+            # `_count` and `Count` normalize to the same id, and emitting both
+            # would hand the node to whichever the parser reached first — in
+            # practice the private backing field, hiding the public member behind
+            # it. See #3006 for the follow-up.
+            prop_node_name = node.child_by_field_name("name")
+            if prop_node_name is not None:
+                property_name = _read_text(prop_node_name, source)
+                if property_name:
+                    property_line = node.start_point[0] + 1
+                    property_nid = _make_id(parent_class_nid, property_name)
+                    if property_nid not in seen_ids:
+                        add_node(property_nid, property_name, property_line)
+                        add_edge(parent_class_nid, property_nid, "defines",
+                                 property_line, context="field")
             type_node = node.child_by_field_name("type")
             if type_node is not None:
                 # Record the property's declared type for the method-scoped
@@ -4518,8 +4605,28 @@ def _extract_generic(
                     and any(c.type == "function_declarator" for c in d.children))
                 for d in decls
             )
-            if not is_method:
-                type_node = node.child_by_field_name("type")
+            type_node = node.child_by_field_name("type")
+            # A nested type (`class Inner { … };` inside a class body) is a
+            # field_declaration whose `type` field IS the class_specifier, so
+            # returning from this branch used to drop Inner and everything it
+            # declares — silently, with no parse error (#2876). Walk it as a
+            # class instead: the engine's existing nested-type handling gives
+            # it a `contains` edge from the enclosing type. The declarator loop
+            # below still runs, since `class Inner { } inst;` declares a member
+            # alongside the type.
+            # Only class/struct nested types are recovered here: `enum_specifier`
+            # is deliberately not in C++'s `class_types`, so a nested `enum` and
+            # its enumerators are still not emitted. That is outside #2876's scope
+            # (which is about nested class/struct and C++/CLI) and is left as a
+            # known gap rather than widened here.
+            is_nested_type = (
+                type_node is not None
+                and type_node.type in config.class_types
+                and type_node.child_by_field_name("body") is not None
+            )
+            if is_nested_type:
+                walk(type_node, parent_class_nid)
+            if not is_method and not is_nested_type:
                 if type_node is not None:
                     line = node.start_point[0] + 1
                     refs: list[tuple[str, str]] = []
@@ -4927,17 +5034,32 @@ def _extract_generic(
                                      line, context=ctx)
 
             body = _find_body(node, config)
-            # JS/TS: capture `this.X = () => {}` / `this.X = function(){}`
-            # assigned directly in this function/constructor body. They live
-            # inside the body (otherwise only walked for calls), so without this
-            # they are never emitted — the dominant miss on constructor-style
-            # ("function Foo(){ this.bar = () => {} }") and many CommonJS repos.
-            # Owner is the enclosing class when present (a constructor's methods
-            # belong to the class), else the function itself.
+            # JS/TS: capture callable members assigned directly in a function
+            # body. Besides constructor-style `this.X = fn`, factories commonly
+            # create an object literal and assign its public surface with
+            # `api.X = fn`. These statements otherwise live only in a body that
+            # is walked for calls, so their symbols vanish from the graph.
             if body is not None and config.ts_module in (
                 "tree_sitter_javascript", "tree_sitter_typescript"
             ):
-                this_owner_nid = parent_class_nid if parent_class_nid else func_nid
+                function_owner_nid = parent_class_nid if parent_class_nid else func_nid
+                object_bindings: dict[str, object] = {}
+                for stmt in body.children:
+                    if stmt.type not in ("lexical_declaration", "variable_declaration"):
+                        continue
+                    for declarator in stmt.children:
+                        if declarator.type != "variable_declarator":
+                            continue
+                        name = declarator.child_by_field_name("name")
+                        value = declarator.child_by_field_name("value")
+                        if name is not None and name.type == "identifier" \
+                                and value is not None and value.type == "object":
+                            object_bindings[_read_text(name, source)] = declarator
+                # A factory object gets one owner node and one `contains` edge no
+                # matter how many methods hang off it. add_node dedups on id, but
+                # add_edge does not, so without this guard N assigned methods would
+                # emit N identical `contains` edges (the flood #1077 warns against).
+                contained_owners: set[str] = set()
                 for stmt in body.children:
                     if stmt.type != "expression_statement":
                         continue
@@ -4950,13 +5072,25 @@ def _extract_generic(
                         continue
                     tgt = _js_member_assignment_target(
                         assign.child_by_field_name("left"), source)
-                    if tgt is None or tgt[0] != "this":
+                    if tgt is None:
+                        continue
+                    if tgt[0] == "this":
+                        owner_nid = function_owner_nid
+                    elif tgt[0] == "object" and tgt[1] in object_bindings:
+                        object_name = tgt[1]
+                        owner_nid = _make_id(function_owner_nid, object_name)
+                        owner_line = object_bindings[object_name].start_point[0] + 1
+                        add_node(owner_nid, object_name, owner_line)
+                        if owner_nid not in contained_owners:
+                            contained_owners.add(owner_nid)
+                            add_edge(function_owner_nid, owner_nid, "contains", owner_line)
+                    else:
                         continue
                     m_name = tgt[2]
                     m_line = stmt.start_point[0] + 1
-                    m_nid = _make_id(this_owner_nid, m_name)
+                    m_nid = _make_id(owner_nid, m_name)
                     add_node(m_nid, f".{m_name}()", m_line)
-                    add_edge(this_owner_nid, m_nid, "method", m_line)
+                    add_edge(owner_nid, m_nid, "method", m_line)
                     m_body = val.child_by_field_name("body")
                     if m_body:
                         function_bodies.append((m_nid, m_body))
@@ -5344,6 +5478,12 @@ def _extract_generic(
             "relation": "indirect_call",
             "context": context,
             "confidence": "INFERRED",
+            # 0.85 = "strong inference" on the extraction-spec rubric. The symbol
+            # link is direct — the function is named right here — but that it is
+            # ever INVOKED is the inference, which is why this is not the 0.95
+            # tier. Previously no score was emitted at all and the edge inherited
+            # the 0.5 default the rubric forbids (#2813).
+            "confidence_score": 0.85,
             "source_file": str_path,
             "source_location": f"L{loc_node.start_point[0] + 1}",
             "weight": 1.0,
@@ -5535,6 +5675,7 @@ def _extract_generic(
             # (which is also not a member call and names its scope as callee).
             php_function_call: bool = False
             kotlin_qualified_prefix: str | None = None
+            csharp_qualified_prefix: str | None = None
 
             # Special handling per language
             if config.ts_module == "tree_sitter_swift":
@@ -5599,6 +5740,27 @@ def _extract_generic(
                                 if child.type == "identifier":
                                     callee_name = _read_text(child, source)
                                     break
+            elif config.ts_module == "tree_sitter_c_sharp" and node.type == "object_creation_expression":
+                # `new Foo(...)` keeps the constructed type in the `type` field, so
+                # the invocation path below never sees it and a type a method only
+                # constructs stays unlinked — the C# twin of the Java gap in #1373.
+                # Types reached solely through a method body are exactly the ones
+                # this misses: message classes handed straight to a bus
+                # (`Send(new OrderPlaced { ... })`) and locally built collaborators.
+                # `_read_csharp_type_name` drops the generic arguments and the
+                # namespace qualifier, so `new A.B.Cache<string>()` names `Cache`.
+                # Target-typed `new()` parses as `implicit_object_creation_expression`
+                # and stays out of `call_types`: naming it needs the declared type of
+                # whatever it is being assigned to, which is a separate problem.
+                # A qualifier written in source is kept for
+                # `_resolve_csharp_qualified_calls`, so `new A.B.Cache()` can still
+                # pick one of several `Cache` classes instead of hitting the
+                # ambiguity guard on the bare name.
+                type_info = _read_csharp_type_name(node.child_by_field_name("type"), source)
+                if type_info and type_info[0]:
+                    callee_name = type_info[0]
+                    if type_info[1] and type_info[2]:
+                        csharp_qualified_prefix = type_info[2]
             elif config.ts_module == "tree_sitter_c_sharp" and node.type == "invocation_expression":
                 # C#: the invoked function is the `function` field. A member call
                 # `recv.Method(...)` is a member_access_expression (receiver in its
@@ -5657,6 +5819,60 @@ def _extract_generic(
                                 else:
                                     callee_name = raw
                                 break
+                # C#: emit a `references[generic_arg]` edge for every type
+                # argument at the call site (`recv.Do<T>()`, the
+                # `services.AddScoped<ISvc, Impl>()` DI shape, static
+                # `Foo<IBar>()`). The property/return/parameter branches
+                # already walk their declared type for the same reason; the
+                # call-site branch didn't, so the type arguments never
+                # became nodes and dependency edges were silently erased
+                # (#2911). The C# class_declaration's field_declaration and
+                # property_declaration branches above are the direct
+                # analogue. The call-site function carries its type-arg list
+                # either as a `type_argument_list` child on a `generic_name`
+                # (static call) or as the same child on the
+                # `member_access_expression`'s `name` `generic_name` (member
+                # call); the fallback path uses raw text and never sees the
+                # structured type-arg list. The class declaration's
+                # field_declaration case is closed by the parallel fix in
+                # #2913; this branch covers what that PR deliberately left
+                # out.
+                if fn_node is not None:
+                    call_tal = None
+                    if fn_node.type == "member_access_expression":
+                        ma_name = fn_node.child_by_field_name("name")
+                        if ma_name is not None and ma_name.type == "generic_name":
+                            for tal_child in ma_name.children:
+                                if tal_child.type == "type_argument_list":
+                                    call_tal = tal_child
+                                    break
+                    elif fn_node.type == "generic_name":
+                        for tal_child in fn_node.children:
+                            if tal_child.type == "type_argument_list":
+                                call_tal = tal_child
+                                break
+                    if call_tal is not None:
+                        call_type_params = _csharp_type_parameters_in_scope(node, source)
+                        call_line = node.start_point[0] + 1
+                        for call_arg in call_tal.children:
+                            if not call_arg.is_named:
+                                continue
+                            call_refs: list[tuple[str, str, bool, str]] = []
+                            _csharp_collect_type_refs(
+                                call_arg, source, True, call_refs, call_type_params
+                            )
+                            for call_ref_name, _call_role, call_qualified, call_qualifier in call_refs:
+                                call_target = ensure_named_node(call_ref_name, call_line)
+                                if call_target == caller_nid:
+                                    continue
+                                call_meta = {"ref_token": call_ref_name}
+                                if call_qualified:
+                                    call_meta["qualified"] = True
+                                if call_qualifier:
+                                    call_meta["ref_qualifier"] = call_qualifier
+                                add_edge(caller_nid, call_target, "references",
+                                         call_line, context="generic_arg",
+                                         metadata=call_meta)
             elif config.ts_module == "tree_sitter_php":
                 # PHP: distinguish call expression subtypes
                 if node.type == "function_call_expression":
@@ -5945,6 +6161,16 @@ def _extract_generic(
                     tgt_nid = None
                 else:
                     tgt_nid = label_to_nid.get(callee_name)
+                    # A qualified `new A.B.Foo()` whose bare name matches only a
+                    # sourceless stub in this file would bind the call to the stub
+                    # and never reach _resolve_csharp_qualified_calls, the one pass
+                    # that can honour the namespace. Defer so it can.
+                    if (
+                        csharp_qualified_prefix
+                        and tgt_nid
+                        and not nid_to_sf.get(tgt_nid)
+                    ):
+                        tgt_nid = None
                 if tgt_nid and tgt_nid != caller_nid:
                     pair = (caller_nid, tgt_nid)
                     if php_fcc:
@@ -6019,6 +6245,8 @@ def _extract_generic(
                     # class fields/properties are the base scope.
                     if config.ts_module == "tree_sitter_c_sharp":
                         rc_entry["lang"] = "csharp"
+                        if csharp_qualified_prefix:
+                            rc_entry["qualified_prefix"] = csharp_qualified_prefix
                         receiver_type = _csharp_scoped_receiver_type(
                             receiver_types, member_receiver, node.start_byte
                         )
