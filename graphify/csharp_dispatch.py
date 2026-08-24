@@ -32,8 +32,13 @@ DISPATCH_RELATION = "dispatches_to"
 
 
 def _method_label(node: dict) -> str:
-    """Normalize a method node's label to its bare name for matching."""
-    return str(node.get("label", "")).strip().removeprefix(".").removesuffix("()").lower()
+    """Return a method node's bare name, for matching.
+
+    Case is kept: C# is case sensitive, and an implementing member must spell the
+    interface member exactly, so folding case could only pair a declaration with
+    a member that does not implement it.
+    """
+    return str(node.get("label", "")).strip().removeprefix(".").removesuffix("()")
 
 
 def resolve_csharp_interface_dispatch(
@@ -77,7 +82,13 @@ def resolve_csharp_interface_dispatch(
     if not implementers or not methods_of:
         return
 
-    existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
+    # Scoped to this relation: another edge between the two members, whatever it
+    # is, says nothing about whether the dispatch link is already there.
+    existing_pairs = {
+        (e.get("source"), e.get("target"))
+        for e in all_edges
+        if e.get("relation") == DISPATCH_RELATION
+    }
     new_edges: list[dict] = []
 
     for interface_nid, impls in implementers.items():

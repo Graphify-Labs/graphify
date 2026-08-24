@@ -149,3 +149,54 @@ def test_java_interface_and_implementation_are_untouched(tmp_path):
         "Report.java": "public class Report implements IReport { public void build() { } }\n",
     })
     assert not dispatch
+
+def test_case_only_member_difference_is_not_a_match(tmp_path):
+    # C# is case sensitive: an implementation must spell the member exactly, so
+    # `build` does not implement `Build` and must not be linked to it.
+    dispatch, _ = _extract(tmp_path, {"S.cs": (
+        "public interface IR { void Build(); }\n"
+        "public class A : IR { public void build() { } }\n"
+    )})
+    assert not dispatch
+
+
+def test_an_unrelated_edge_between_the_members_does_not_suppress_the_link(tmp_path):
+    # The dedup is scoped to dispatches_to. Another relation between the two
+    # member nodes says nothing about whether the dispatch link is present.
+    from graphify.csharp_dispatch import resolve_csharp_interface_dispatch
+
+    nodes = [
+        {"id": "iface", "label": "IR", "source_file": "a.cs", "_callable_class": True},
+        {"id": "impl", "label": "A", "source_file": "a.cs", "_callable_class": True},
+        {"id": "iface_m", "label": ".M()", "source_file": "a.cs", "_callable": True},
+        {"id": "impl_m", "label": ".M()", "source_file": "a.cs", "_callable": True},
+    ]
+    edges = [
+        {"source": "impl", "target": "iface", "relation": "implements"},
+        {"source": "iface", "target": "iface_m", "relation": "method"},
+        {"source": "impl", "target": "impl_m", "relation": "method"},
+        {"source": "iface_m", "target": "impl_m", "relation": "references"},
+    ]
+    resolve_csharp_interface_dispatch([], nodes, edges)
+    assert ("iface_m", "impl_m", "dispatches_to") in {
+        (e["source"], e["target"], e["relation"]) for e in edges
+    }
+
+
+def test_an_existing_dispatch_edge_is_not_duplicated(tmp_path):
+    from graphify.csharp_dispatch import resolve_csharp_interface_dispatch
+
+    nodes = [
+        {"id": "iface", "label": "IR", "source_file": "a.cs", "_callable_class": True},
+        {"id": "impl", "label": "A", "source_file": "a.cs", "_callable_class": True},
+        {"id": "iface_m", "label": ".M()", "source_file": "a.cs", "_callable": True},
+        {"id": "impl_m", "label": ".M()", "source_file": "a.cs", "_callable": True},
+    ]
+    edges = [
+        {"source": "impl", "target": "iface", "relation": "implements"},
+        {"source": "iface", "target": "iface_m", "relation": "method"},
+        {"source": "impl", "target": "impl_m", "relation": "method"},
+        {"source": "iface_m", "target": "impl_m", "relation": "dispatches_to"},
+    ]
+    resolve_csharp_interface_dispatch([], nodes, edges)
+    assert sum(1 for e in edges if e["relation"] == "dispatches_to") == 1
