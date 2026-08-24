@@ -158,6 +158,7 @@ class _ALSymbolResolver:
             and _key(str(node.get("label", "")).removesuffix("()")) == _key(fact.get("name"))
             and self.parent_of.get(node.get("id")) == final_parent
             and str(node.get("signature", "")) == str(fact.get("signature", ""))
+            and node.get("source_location") == f"L{fact.get('line')}"
         ]
         if len(candidates) == 1:
             self.member_fact_to_nid[str(fact.get("nid"))] = candidates[0]["id"]

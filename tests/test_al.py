@@ -123,6 +123,20 @@ def test_al_fallback_preserves_spelling_and_casefolds_lookup(monkeypatch, tmp_pa
     assert callable_node["lookup_key"] == "dowork"
 
 
+def test_al_fallback_preserves_quoted_special_identifiers(monkeypatch):
+    monkeypatch.setitem(sys.modules, "tree_sitter_al", None)
+    fixture = Path(__file__).parent / "fixtures" / "special_identifiers.al"
+
+    result = extract_al(fixture)
+    labels = {node["label"] for node in result["nodes"]}
+
+    assert "Übernahme-Plan (Nord & Süd)" in labels
+    assert "Planübersicht (Täglich)" in labels
+    assert "Setze Prüfstatus()" in labels
+    assert "Prüfe & Starte (Auswahl)()" in labels
+    assert len([node for node in result["nodes"] if node["label"] == "OnAction()"]) == 2
+
+
 def test_al_fallback_preserves_duplicate_triggers(monkeypatch):
     monkeypatch.setitem(sys.modules, "tree_sitter_al", None)
     fixture = Path(__file__).parent / "fixtures" / "semantic.al"
@@ -168,6 +182,39 @@ def test_al_tree_sitter_extracts_supported_objects_and_members():
     assert len({node["id"] for node in on_validate}) == 2
     assert all(node["extraction_tier"] == "tree_sitter" for node in result["nodes"])
     assert not result.get("syntax_errors")
+
+
+def test_al_tree_sitter_resolves_quoted_special_identifiers():
+    pytest.importorskip("tree_sitter_al")
+    fixture = Path(__file__).parent / "fixtures" / "special_identifiers.al"
+
+    result = extract([fixture], cache_root=fixture.parent)
+    nodes = {node["label"]: node for node in result["nodes"]}
+    action_triggers = [node for node in result["nodes"] if node["label"] == "OnAction()"]
+    relations = {
+        (edge["source"], edge["target"], edge["relation"])
+        for edge in result["edges"]
+    }
+
+    assert nodes["Übernahme-Plan (Nord & Süd)"]["lookup_key"] == (
+        "übernahme-plan (nord & süd)"
+    )
+    assert nodes["Externe Nr. (Alt)"]["member_kind"] == "field"
+    assert nodes["Prüfe & Starte (Auswahl)()"]["lookup_key"] == (
+        "prüfe & starte (auswahl)"
+    )
+    assert len(action_triggers) == 2
+    assert len({node["id"] for node in action_triggers}) == 2
+    assert any(
+        (trigger["id"], nodes["Prüfe & Starte (Auswahl)()"]["id"], "calls")
+        in relations
+        for trigger in action_triggers
+    )
+    assert (
+        nodes["Prüfe & Starte (Auswahl)()"]["id"],
+        nodes["Setze Prüfstatus()"]["id"],
+        "calls",
+    ) in relations
 
 
 def test_al_tree_sitter_preserves_callable_and_field_metadata():
