@@ -194,6 +194,24 @@ def extract_bash(path: Path) -> dict:
             parent = parent.parent
         return False
 
+    def _bash_call_in_command_allowed(cmd_node) -> bool:
+        """Whether a command node should emit call edges.
+
+        Bare ``$(fn)`` at script level and process substitutions stay suppressed
+        (#2141). Value capture via ``x=$(fn)`` is a real invocation (#2978).
+        """
+        parent = cmd_node.parent
+        saw_command_substitution = False
+        while parent is not None:
+            if parent.type == "process_substitution":
+                return False
+            if parent.type == "command_substitution":
+                saw_command_substitution = True
+            if parent.type == "variable_assignment" and saw_command_substitution:
+                return True
+            parent = parent.parent
+        return not saw_command_substitution
+
     def literal(node) -> str | None:
         # Token-level filter: rejects names containing shell metacharacters.
         # Combined with `is_inside_expansion` for parent-context rejection.
@@ -223,7 +241,7 @@ def extract_bash(path: Path) -> dict:
                 # separately, so we don't attribute their calls to the
                 # enclosing scope.
                 continue
-            if child.type == "command" and not is_inside_expansion(child):
+            if child.type == "command" and _bash_call_in_command_allowed(child):
                 cmd_name_node = child.child_by_field_name("name")
                 if cmd_name_node is None and child.children:
                     cmd_name_node = child.children[0]
