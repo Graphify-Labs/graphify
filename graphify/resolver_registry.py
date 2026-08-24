@@ -75,7 +75,10 @@ def run_language_resolvers(
     exercise the driver in isolation.
     """
     active = _REGISTRY if resolvers is None else resolvers
-    suffixes_present = {p.suffix for p in paths}
+    # Honour project-level remaps (#2961): a `.inc` declared PHP must wake
+    # the PHP resolvers, not Pascal's.
+    from graphify.rcfile import effective_suffix
+    suffixes_present = {effective_suffix(p) for p in paths}
     for resolver in active:
         if not (resolver.suffixes & suffixes_present):
             continue

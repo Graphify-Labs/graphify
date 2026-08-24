@@ -26,6 +26,13 @@ from .csharp_dispatch import resolve_csharp_interface_dispatch
 from .pascal_resolution import resolve_pascal_inherited_calls
 
 # --- migrated to graphify/extractors/ (see graphify/extractors/MIGRATION.md) ---
+from graphify.rcfile import (
+    activate_language_overrides,
+    cache_salt,
+    effective_suffix,
+    get_language_overrides,
+    set_language_overrides,
+)
 from graphify.extractors.base import (  # noqa: F401
     _LANGUAGE_BUILTIN_GLOBALS,
     _file_stem,
@@ -2193,7 +2200,7 @@ def _lang_is_case_insensitive(source_file: object) -> bool:
     """True when the file's language resolves identifiers case-insensitively (#1581)."""
     if not source_file:
         return False
-    return Path(str(source_file)).suffix.lower() in _CASE_INSENSITIVE_EXTS
+    return effective_suffix(str(source_file)).lower() in _CASE_INSENSITIVE_EXTS
 
 
 # Language interop families for cross-file call resolution. A call in one language
@@ -2239,7 +2246,7 @@ def _lang_family(source_file: object) -> str | None:
     """Interop family of the file's language, or None when unknown/not code."""
     if not source_file:
         return None
-    return _LANG_FAMILY_BY_EXT.get(Path(str(source_file)).suffix.lower())
+    return _LANG_FAMILY_BY_EXT.get(effective_suffix(str(source_file)).lower())
 
 
 # A language's own built-in throwable hierarchy, keyed by the interop family of
@@ -5387,6 +5394,12 @@ def _get_extractor(path: Path) -> Any | None:
     # (#1377). apm.yml would otherwise be a .yml document handled by the LLM.
     if is_package_manifest_path(path):
         return extract_package_manifest
+    # A project-declared remap (.graphifyrc `language.inc=php`, #2961) wins
+    # over every sniff below: the user has said what the extension means in
+    # this repo, so a remapped `.h`/`.m` also skips the C++/ObjC probes.
+    remapped = effective_suffix(path)
+    if remapped != path.suffix:
+        return _DISPATCH.get(remapped) or _DISPATCH.get(remapped.lower())
     # `.h` is C/C++/ObjC-ambiguous; route Objective-C headers to extract_objc
     # (the suffix map sends `.h` to extract_c, which can't read @interface etc.).
     # ObjC sniffing has priority over the C++ sniff: an Objective-C++ header can
@@ -5429,6 +5442,13 @@ def _safe_extract_with_xaml_root(extractor, path: Path, root: Path) -> dict:
         _XAML_ACTIVE_EXTRACT_ROOT = previous_root
 
 
+def _worker_init(language_overrides: dict[str, str]) -> None:
+    """Pool initializer. Under ``spawn`` a worker re-imports the package and
+    starts with no overrides; hand it the parent's so `_get_extractor` and the
+    cache key agree across processes (#2961)."""
+    set_language_overrides(language_overrides)
+
+
 def _extract_single_file(args: tuple) -> tuple[int, dict]:
     """Worker function for parallel extraction. Runs in a subprocess.
 
@@ -5457,7 +5477,7 @@ def _extract_single_file(args: tuple) -> tuple[int, dict]:
 
     # Check cache first (avoid re-extraction)
     if not bypass_cache:
-        cached = load_cached(path, root, cache_root=cache_location)
+        cached = load_cached(path, root, cache_root=cache_location, salt=cache_salt(path))
         if cached is not None:
             return idx, cached
 
@@ -5472,7 +5492,7 @@ def _extract_single_file(args: tuple) -> tuple[int, dict]:
     # byte-stable across runs and silently blinds affected/explain to and
     # through the file (#1666); skipping the write lets a rerun self-heal.
     if not bypass_cache and "error" not in result and result.get("nodes"):
-        save_cached(path, result, root, cache_root=cache_location)
+        save_cached(path, result, root, cache_root=cache_location, salt=cache_salt(path))
     return idx, result
 
 
@@ -5538,7 +5558,11 @@ def _extract_parallel(
     failed: list[int] = []  # positions into uncached_work whose future failed
     _PROGRESS_INTERVAL = 100
     try:
-        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as pool:
+        with concurrent.futures.ProcessPoolExecutor(
+            max_workers=max_workers,
+            initializer=_worker_init,
+            initargs=(get_language_overrides(),),
+        ) as pool:
             futures = {
                 pool.submit(_extract_single_file, item): pos
                 for pos, item in enumerate(work_items)
@@ -5637,7 +5661,7 @@ def _extract_sequential(
         result = _safe_extract_with_xaml_root(extractor, path, root)
         # See _extract_single_file: don't cache an anomalous zero-node result (#1666).
         if not bypass_cache and "error" not in result and result.get("nodes"):
-            save_cached(path, result, root, cache_root=cache_location)
+            save_cached(path, result, root, cache_root=cache_location, salt=cache_salt(path))
         per_file[idx] = result
     if total_files >= _PROGRESS_INTERVAL:
         # Consistent denominator with the intermediate lines (#1693).
@@ -5742,6 +5766,17 @@ def extract(
         root = cache_root
     root = root.resolve()
 
+    # Project-level extension->language declarations (#2961). detect() has
+    # usually activated them for this root already; a direct library caller
+    # (the skill runbook, the MCP server, the issue's own repro) gets them here.
+    _overrides = activate_language_overrides(root)
+    if _overrides:
+        print(
+            "  language overrides (.graphifyrc): "
+            + ", ".join(f"{k} -> {v}" for k, v in sorted(_overrides.items())),
+            flush=True,
+        )
+
     # #1774: the cache is an OUTPUT, so when no explicit cache_root is given it is
     # written under the current working directory — never `root` (the inferred
     # common parent of the inputs), which would drop graphify-out/ inside a
@@ -5761,7 +5796,7 @@ def extract(
             continue
         bypass_cache = path.suffix in _JS_CACHE_BYPASS_SUFFIXES
         if not bypass_cache:
-            cached = load_cached(path, root, cache_root=cache_location)
+            cached = load_cached(path, root, cache_root=cache_location, salt=cache_salt(path))
             if cached is not None:
                 per_file[i] = cached
                 continue
@@ -6396,7 +6431,7 @@ def extract(
     _php_exts = {".php", ".phtml", ".php3", ".php4", ".php5", ".php7", ".phps"}
     _php_sel = [
         (r, p) for r, p in zip(per_file, paths)
-        if p.suffix.lower() in _php_exts and not p.name.lower().endswith(".blade.php")
+        if effective_suffix(p).lower() in _php_exts and not p.name.lower().endswith(".blade.php")
     ]
     if _php_sel:
         try:

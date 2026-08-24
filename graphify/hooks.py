@@ -416,39 +416,14 @@ echo "[graphify] Branch switched - launching background rebuild (log: $_GRAPHIFY
 """
 
 
-def _load_graphifyrc(root: Path) -> dict[str, str | int]:
-    """Load key/value options from <root>/.graphifyrc if present.
+def _load_graphifyrc(root: Path) -> dict:
+    """Load ``<root>/.graphifyrc``; the parser lives in :mod:`graphify.rcfile`.
 
-    Supported options:
-      viz_node_limit: integer >= 0 (e.g. viz_node_limit=0)
+    Kept as the hooks-side name so callers and tests need not move. Returns
+    ``viz_node_limit`` (used here) alongside any other option the file sets.
     """
-    rc_path = root / ".graphifyrc"
-    if not rc_path.is_file():
-        return {}
-
-    cfg: dict[str, str | int] = {}
-    content = rc_path.read_text(encoding="utf-8")
-    for line_num, raw in enumerate(content.splitlines(), 1):
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if "=" not in line:
-            raise ValueError(f"Invalid line {line_num} in {rc_path}: {raw!r} (expected key=value)")
-        key, val = line.split("=", 1)
-        key = key.strip()
-        val = val.strip()
-        if key == "viz_node_limit":
-            try:
-                parsed_val = int(val)
-                if parsed_val < 0:
-                    raise ValueError("must be a non-negative integer")
-                cfg["viz_node_limit"] = parsed_val
-            except ValueError as exc:
-                raise ValueError(
-                    f"Invalid viz_node_limit in {rc_path} at line {line_num}: {val!r}. "
-                    f"Must be a non-negative integer."
-                ) from exc
-    return cfg
+    from graphify.rcfile import load_graphifyrc
+    return load_graphifyrc(root)
 
 
 def _git_root(path: Path) -> Path | None:
