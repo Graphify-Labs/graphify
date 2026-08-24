@@ -955,11 +955,19 @@ def cache_dir(root: Path = Path("."), kind: str = "ast",
     return d
 
 
+def _salted_key(h: str, salt: str | None) -> str:
+    """Derive the on-disk key from a content hash plus optional salt."""
+    if not salt:
+        return h
+    return hashlib.sha256(f"{h}:{salt}".encode("utf-8")).hexdigest()
+
+
 def load_cached(path: Path, root: Path = Path("."), kind: str = "ast",
                 cache_root: Path | None = None, prompt: "str | Path | None" = None,
                 prompt_file: "str | Path | None" = None,
                 allow_legacy: bool = True,
-                allow_partial: bool = False) -> dict | None:
+                allow_partial: bool = False,
+                salt: str | None = None) -> dict | None:
     """Return cached extraction for this file if hash matches, else None.
 
     Cache key: SHA256 of file contents.
@@ -988,6 +996,10 @@ def load_cached(path: Path, root: Path = Path("."), kind: str = "ast",
     so :func:`check_semantic_cache` can report N to the user. Callers that must
     not mix vintages within one entry (see :func:`save_semantic_cache`'s
     ``merge_existing``) pass allow_legacy=False.
+    ``salt`` folds extra material into the key for an entry whose validity
+    depends on more than the file's bytes — a file the project remaps to
+    another language (#2961) parses to a different graph from the same
+    content, so it must not hit the entry produced under the old extractor.
     Returns None if no cache entry or file has changed.
     """
     global _legacy_semantic_hits, _corrupt_cache_entries
@@ -996,6 +1008,7 @@ def load_cached(path: Path, root: Path = Path("."), kind: str = "ast",
         h = file_hash(path, root, cache_root=cache_root)
     except OSError:
         return None
+    h = _salted_key(h, salt)
     prompt_fp = _resolve_prompt_fp(prompt, prompt_file)
     entry = cache_dir(location, kind, prompt_fp) / f"{h}.json"
     legacy_hit = False
@@ -1063,8 +1076,12 @@ def load_cached(path: Path, root: Path = Path("."), kind: str = "ast",
 
 def save_cached(path: Path, result: dict, root: Path = Path("."), kind: str = "ast",
                 cache_root: Path | None = None, prompt: "str | Path | None" = None,
-                prompt_file: "str | Path | None" = None) -> None:
+                prompt_file: "str | Path | None" = None,
+                salt: str | None = None) -> None:
     """Save extraction result for this file.
+
+    ``salt`` must match what the corresponding :func:`load_cached` passes
+    (see there); it namespaces the key, not the directory.
 
     Stores as graphify-out/cache/{kind}/{hash}.json where hash = SHA256 of current file contents.
     result should be a dict with 'nodes' and 'edges' lists.
@@ -1112,7 +1129,7 @@ def save_cached(path: Path, result: dict, root: Path = Path("."), kind: str = "a
         # the entry replays portably under any root (#2257). Strictly after the
         # source_file pass, which owns that field's bare-relative format.
         _relativize_ids_in(on_disk, p, root)
-    h = file_hash(p, root, cache_root=cache_root)
+    h = _salted_key(file_hash(p, root, cache_root=cache_root), salt)
     location = cache_root if cache_root is not None else root
     target_dir = cache_dir(location, kind, _resolve_prompt_fp(prompt, prompt_file))
     entry = target_dir / f"{h}.json"

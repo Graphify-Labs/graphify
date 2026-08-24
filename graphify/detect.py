@@ -20,6 +20,7 @@ from graphify.google_workspace import (
     google_workspace_enabled,
 )
 from graphify.paths import GRAPHIFY_OUT, out_path
+from graphify.rcfile import activate_language_overrides, effective_suffix
 
 
 class FileType(str, Enum):
@@ -511,7 +512,9 @@ def classify_file(path: Path) -> FileType | None:
     # Compound extensions must be checked before simple suffix lookup
     if path.name.lower().endswith(".blade.php"):
         return FileType.CODE
-    ext = path.suffix.lower()
+    # A project may declare what an ambiguous extension means to it
+    # (.graphifyrc `language.inc=php`, #2961); classify by the declared one.
+    ext = effective_suffix(path).lower()
     if not ext:
         return _shebang_file_type(path)
     if ext in CODE_EXTENSIONS:
@@ -1664,6 +1667,9 @@ def _resolves_under_root(path: Path, root: Path) -> bool:
 
 def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace: bool | None = None, extra_excludes: list[str] | None = None, cache_root: Path | None = None, gitignore: bool = True) -> dict:
     root = root.resolve()
+    # The project's extension->language declarations (#2961) shape
+    # classification for this scan.
+    activate_language_overrides(root)
     configured_out_dir = root / GRAPHIFY_OUT
     configured_out_names = {configured_out_dir.name}
     try:
