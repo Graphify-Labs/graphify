@@ -59,52 +59,58 @@ def _al_lookup_key(value: str) -> str:
     return _decode_al_identifier(value).casefold()
 
 
+def _mask_al_code(chars: list[str], index: int, char: str, following: str) -> tuple[int, str]:
+    if char == "/" and following in {"/", "*"}:
+        chars[index] = chars[index + 1] = " "
+        state = "line_comment" if following == "/" else "block_comment"
+        return index + 2, state
+    if char == "'":
+        chars[index] = " "
+        return index + 1, "string"
+    return index + 1, "code"
+
+
+def _mask_al_line_comment(chars: list[str], index: int, char: str, _following: str) -> tuple[int, str]:
+    if char == "\n":
+        return index + 1, "code"
+    chars[index] = " "
+    return index + 1, "line_comment"
+
+
+def _mask_al_block_comment(
+    chars: list[str], index: int, char: str, following: str
+) -> tuple[int, str]:
+    if char == "*" and following == "/":
+        chars[index] = chars[index + 1] = " "
+        return index + 2, "code"
+    if char != "\n":
+        chars[index] = " "
+    return index + 1, "block_comment"
+
+
+def _mask_al_string(chars: list[str], index: int, char: str, following: str) -> tuple[int, str]:
+    chars[index] = " " if char != "\n" else "\n"
+    if char == "'" and following == "'":
+        chars[index + 1] = " "
+        return index + 2, "string"
+    return index + 1, "code" if char == "'" else "string"
+
+
 def _mask_al_comments_and_strings(source: str) -> str:
     """Mask comments and string literals without changing offsets or newlines."""
     chars = list(source)
     index = 0
     state = "code"
+    handlers = {
+        "code": _mask_al_code,
+        "line_comment": _mask_al_line_comment,
+        "block_comment": _mask_al_block_comment,
+        "string": _mask_al_string,
+    }
     while index < len(source):
         char = source[index]
         following = source[index + 1] if index + 1 < len(source) else ""
-        if state == "code":
-            if char == "/" and following == "/":
-                chars[index] = chars[index + 1] = " "
-                index += 2
-                state = "line_comment"
-                continue
-            if char == "/" and following == "*":
-                chars[index] = chars[index + 1] = " "
-                index += 2
-                state = "block_comment"
-                continue
-            if char == "'":
-                chars[index] = " "
-                index += 1
-                state = "string"
-                continue
-        elif state == "line_comment":
-            if char == "\n":
-                state = "code"
-            else:
-                chars[index] = " "
-        elif state == "block_comment":
-            if char == "*" and following == "/":
-                chars[index] = chars[index + 1] = " "
-                index += 2
-                state = "code"
-                continue
-            if char != "\n":
-                chars[index] = " "
-        else:
-            chars[index] = " " if char != "\n" else "\n"
-            if char == "'" and following == "'":
-                chars[index + 1] = " "
-                index += 2
-                continue
-            if char == "'":
-                state = "code"
-        index += 1
+        index, state = handlers[state](chars, index, char, following)
     return "".join(chars)
 
 

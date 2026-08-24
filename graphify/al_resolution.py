@@ -12,6 +12,7 @@ _EXTENSION_BASE_KINDS = {
     "enumextension": "enum",
     "reportextension": "report",
 }
+_APP_MANIFEST = "app.json"
 
 
 def _key(value: object) -> str:
@@ -27,7 +28,7 @@ def _same_source(node_source: object, fact_source: object) -> bool:
 def _manifest_context(source_file: str, cache: dict[Path, dict]) -> dict:
     current = Path(source_file).resolve().parent
     for directory in (current, *current.parents):
-        manifest = directory / "app.json"
+        manifest = directory / _APP_MANIFEST
         if not manifest.is_file():
             continue
         if manifest not in cache:
@@ -361,8 +362,8 @@ class _ALSymbolResolver:
     def _emit_manifest_dependencies(self) -> None:
         manifest_nodes = [
             node for node in self.all_nodes
-            if str(node.get("source_file", "")).casefold().endswith("app.json")
-            and str(node.get("label", "")).casefold().endswith("app.json")
+            if str(node.get("source_file", "")).casefold().endswith(_APP_MANIFEST)
+            and str(node.get("label", "")).casefold().endswith(_APP_MANIFEST)
         ]
         apps_by_id: dict[str, list[dict]] = {}
         for app in self.manifest_cache.values():

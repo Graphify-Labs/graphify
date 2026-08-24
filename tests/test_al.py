@@ -7,7 +7,7 @@ import pytest
 
 from graphify.detect import CODE_EXTENSIONS, FileType, classify_file
 from graphify.extract import _get_extractor, extract
-from graphify.extractors.al import extract_al
+from graphify.extractors.al import _mask_al_comments_and_strings, extract_al
 
 
 def test_al_extension_is_detected_case_insensitively():
@@ -19,6 +19,18 @@ def test_al_extension_is_detected_case_insensitively():
 def test_al_extension_dispatches_to_al_extractor():
     assert _get_extractor(Path("Comment.Codeunit.al")) is extract_al
     assert _get_extractor(Path("Comment.Codeunit.AL")) is extract_al
+
+
+def test_al_mask_preserves_offsets_and_newlines_across_lexical_states():
+    source = "code // comment\nnext /* block\ncomment */ more 'it''s' end"
+
+    masked = _mask_al_comments_and_strings(source)
+
+    assert len(masked) == len(source)
+    assert [index for index, char in enumerate(masked) if char == "\n"] == [
+        index for index, char in enumerate(source) if char == "\n"
+    ]
+    assert masked.replace(" ", "") == "code\nnext\nmoreend"
 
 
 def test_al_missing_parser_reports_optional_extra(tmp_path, capsys, monkeypatch):
