@@ -1711,3 +1711,14 @@ def test_underscore_query_does_not_let_a_single_token_outrank_the_real_match():
     scored = _score_nodes(G, _query_terms("user_service_client"))
     assert scored, "the multi-token query must match the full-label node"
     assert scored[0][1] == "real", f"a single-token node out-ranked the real match: {scored}"
+
+
+def test_default_token_budget_is_20000():
+    """Owner's order 2026-08-24: the default graph-answer budget is 20000
+    tokens — the old 2000 default starved multi-node answers. Pin the
+    Python-level defaults here (no mcp package needed); the MCP schema
+    advertisement is pinned in test_serve_http.py."""
+    import inspect
+
+    assert inspect.signature(_query_graph_text).parameters["token_budget"].default == 20000
+    assert inspect.signature(_subgraph_to_text).parameters["token_budget"].default == 20000

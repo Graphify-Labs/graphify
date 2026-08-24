@@ -559,7 +559,7 @@ def _run_cli() -> None:
         print("  query \"<question>\"       BFS traversal of graph.json for a question")
         print("    --dfs                   use depth-first instead of breadth-first")
         print("    --context C             explicit edge-context filter (repeatable)")
-        print("    --budget N              cap output at N tokens (default 2000)")
+        print("    --budget N              cap output at N tokens (default 20000)")
         print("    --graph <path>          path to graph.json (default graphify-out/graph.json)")
         print("  affected \"X\"             reverse traversal to find nodes impacted by X")
         print("    --relation R            edge relation to traverse in reverse (repeatable)")

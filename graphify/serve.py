@@ -979,7 +979,7 @@ def _dfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], lis
     return visited, edges_seen
 
 
-def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_budget: int = 2000, *, seeds: list[str] | None = None) -> str:
+def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_budget: int = 20000, *, seeds: list[str] | None = None) -> str:
     """Render subgraph as text, cutting at token_budget (approx 3 chars/token).
 
     seeds: exact-match nodes rendered first before the degree-sorted expansion,
@@ -1190,7 +1190,7 @@ def _query_graph_text(
     *,
     mode: str = "bfs",
     depth: int = 3,
-    token_budget: int = 2000,
+    token_budget: int = 20000,
     context_filters: list[str] | None = None,
     graph_path: str | None = None,
 ) -> str:
@@ -1588,7 +1588,7 @@ def _build_server(graph_path: str):
                         "mode": {"type": "string", "enum": ["bfs", "dfs"], "default": "bfs",
                                  "description": "bfs=broad context, dfs=trace a specific path"},
                         "depth": {"type": "integer", "default": 3, "description": "Traversal depth (1-6)"},
-                        "token_budget": {"type": "integer", "default": 2000, "description": "Max output tokens"},
+                        "token_budget": {"type": "integer", "default": 20000, "description": "Max output tokens"},
                         "context_filter": {
                             "type": "array",
                             "items": {"type": "string"},
@@ -1615,7 +1615,7 @@ def _build_server(graph_path: str):
                     "properties": {
                         "label": {"type": "string"},
                         "relation_filter": {"type": "string", "description": "Optional: filter by relation type"},
-                        "token_budget": {"type": "integer", "default": 2000, "description": "Max output tokens"},
+                        "token_budget": {"type": "integer", "default": 20000, "description": "Max output tokens"},
                     },
                     "required": ["label"],
                 },
@@ -1627,7 +1627,7 @@ def _build_server(graph_path: str):
                     "type": "object",
                     "properties": {
                         "community_id": {"type": "integer", "description": "Community ID (0-indexed by size)"},
-                        "token_budget": {"type": "integer", "default": 2000, "description": "Max output tokens"},
+                        "token_budget": {"type": "integer", "default": 20000, "description": "Max output tokens"},
                     },
                     "required": ["community_id"],
                 },
@@ -1733,7 +1733,7 @@ def _build_server(graph_path: str):
         question = arguments["question"]
         mode = arguments.get("mode", "bfs")
         depth = min(int(arguments.get("depth", 3)), 6)
-        budget = int(arguments.get("token_budget", 2000))
+        budget = int(arguments.get("token_budget", 20000))
         context_filter = arguments.get("context_filter")
         _t0 = _time.perf_counter()
         result = _query_graph_text(
@@ -1818,7 +1818,7 @@ def _build_server(graph_path: str):
                 f"  <-- {sanitize_label(G.nodes[nb].get('label', nb))} "
                 f"[{sanitize_label(str(rel))}] [{sanitize_label(str(d.get('confidence', '')))}]{_edge_at(d)}"
             )
-        budget = int(arguments.get("token_budget", 2000))
+        budget = int(arguments.get("token_budget", 20000))
         return _cut_lines_to_budget(
             lines, budget, "Narrow with relation_filter or use get_node for a specific symbol"
         )
@@ -1837,7 +1837,7 @@ def _build_server(graph_path: str):
                 f"  {sanitize_label(d.get('label', n))} "
                 f"[{sanitize_label(str(d.get('source_file', '')))}]"
             )
-        budget = int(arguments.get("token_budget", 2000))
+        budget = int(arguments.get("token_budget", 20000))
         return _cut_lines_to_budget(
             lines, budget, "Raise token_budget or use get_node for specific members"
         )
