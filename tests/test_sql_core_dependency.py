@@ -85,10 +85,10 @@ def test_sql_corpus_produces_structural_nodes_and_edges(tmp_path):
         "END;\n"
     )
 
-    r = extract([schema])
+    r = extract([schema], cache_root=tmp_path)
     labels = {n["label"] for n in r["nodes"]}
     assert {"organizations", "users", "active_users"} <= labels, labels
-    assert any(l.startswith("prune_users") for l in labels), labels
+    assert any(label.startswith("prune_users") for label in labels), labels
 
     relations = {e["relation"] for e in r["edges"]}
     assert "contains" in relations, "file node must contain the SQL objects"

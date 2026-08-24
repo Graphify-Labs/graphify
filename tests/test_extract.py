@@ -3635,6 +3635,9 @@ def test_extract_warns_when_sql_grammar_missing(tmp_path, capsys, monkeypatch):
     assert "2 .sql file(s)" in err
     assert "tree_sitter_sql not installed" in err
     assert "core dependency" in err, "message must say the install is broken, not point at an extra"
+    assert "pip install 'tree-sitter-sql>=0.3.9,<0.4'" in err, (
+        "the direct repair must stay inside the supported grammar range"
+    )
     assert "graphifyy[sql]" not in err, ".sql must not be hinted as an optional extra any more"
     assert "#1745" in err
     # the Python file still extracts normally
