@@ -206,406 +206,531 @@ def _member_scope_seed(member_node, source: bytes) -> str | None:
     return None
 
 
-def _extract_al_tree_sitter(path: Path, source: str, tree) -> dict:
-    source_bytes = source.encode("utf-8")
-    str_path = str(path)
-    stem = _file_stem(path)
-    root = tree.root_node
-    namespace_node = next((node for node in root.named_children if node.type == "namespace_declaration"), None)
-    namespace = _field_text(namespace_node, "name", source_bytes) if namespace_node else ""
-    usings = [
-        _field_text(node, "namespace", source_bytes)
-        for node in root.named_children
-        if node.type == "using_statement"
-    ]
-    file_nid = _make_id(str_path)
-    nodes: list[dict] = [{
-        "id": file_nid,
-        "label": path.name,
-        "file_type": "code",
-        "source_file": str_path,
-        "source_location": "L1",
-        "language": "al",
-        "namespace": namespace or None,
-        "extraction_tier": "tree_sitter",
-    }]
-    edges: list[dict] = []
-    seen_ids = {file_nid}
-    facts: dict[str, object] = {
-        "namespace": namespace,
-        "usings": usings,
-        "objects": [],
-        "members": [],
-        "references": [],
-        "calls": [],
-        "event_subscribers": [],
-        "event_publishers": [],
-        "enum_mappings": [],
-        "test_handlers": [],
-    }
+class _ALTreeContext:
+    def __init__(self, path: Path, source: str, tree) -> None:
+        self.path = path
+        self.source = source.encode("utf-8")
+        self.str_path = str(path)
+        self.stem = _file_stem(path)
+        self.root = tree.root_node
+        self.namespace, usings = _al_namespace_and_usings(self.root, self.source)
+        self.file_nid = _make_id(self.str_path)
+        self.nodes: list[dict] = [{
+            "id": self.file_nid,
+            "label": path.name,
+            "file_type": "code",
+            "source_file": self.str_path,
+            "source_location": "L1",
+            "language": "al",
+            "namespace": self.namespace or None,
+            "extraction_tier": "tree_sitter",
+        }]
+        self.edges: list[dict] = []
+        self.seen_ids = {self.file_nid}
+        self.facts: dict[str, object] = {
+            "namespace": self.namespace,
+            "usings": usings,
+            "objects": [],
+            "members": [],
+            "references": [],
+            "calls": [],
+            "event_subscribers": [],
+            "event_publishers": [],
+            "enum_mappings": [],
+            "test_handlers": [],
+        }
 
-    def add_node(node: dict) -> None:
-        if node["id"] not in seen_ids:
-            seen_ids.add(node["id"])
-            nodes.append(node)
+    def add_node(self, node: dict) -> None:
+        if node["id"] not in self.seen_ids:
+            self.seen_ids.add(node["id"])
+            self.nodes.append(node)
 
-    def add_edge(parent: str, child: str, relation: str, line: int, context: str | None = None) -> None:
-        edge = {
+    def add_edge(self, parent: str, child: str, relation: str, line: int) -> None:
+        self.edges.append({
             "source": parent,
             "target": child,
             "relation": relation,
             "confidence": "EXTRACTED",
-            "source_file": str_path,
+            "source_file": self.str_path,
             "source_location": f"L{line}",
             "weight": 1.0,
-        }
-        if context:
-            edge["context"] = context
-        edges.append(edge)
-
-    for object_node in (node for node in _walk_al(root) if node.type in _AL_OBJECT_TYPES):
-        kind = _AL_OBJECT_TYPES[object_node.type]
-        name = _decode_al_identifier(_field_text(object_node, "object_name", source_bytes))
-        if not name:
-            continue
-        qualified_name = f"{namespace}.{name}" if namespace else name
-        object_id = _field_text(object_node, "object_id", source_bytes) or None
-        line = object_node.start_point.row + 1
-        object_nid = _make_id(stem, kind, qualified_name)
-        add_node({
-            "id": object_nid,
-            "label": name,
-            "file_type": "code",
-            "source_file": str_path,
-            "source_location": f"L{line}",
-            "language": "al",
-            "object_kind": kind,
-            "object_id": object_id,
-            "qualified_name": qualified_name,
-            "namespace": namespace or None,
-            "lookup_key": _al_lookup_key(qualified_name),
-            "extraction_tier": "tree_sitter",
         })
-        add_edge(file_nid, object_nid, "contains", line)
 
-        base = _decode_al_identifier(_field_text(object_node, "base_object", source_bytes))
-        interfaces = [
-            _decode_al_identifier(_field_text(clause, "interface", source_bytes))
-            for clause in object_node.named_children
-            if clause.type == "implements_clause"
+    def result(self) -> dict:
+        syntax_errors = [
+            {"line": node.start_point.row + 1, "type": node.type}
+            for node in _walk_al(self.root)
+            if node.type == "ERROR" or node.is_missing
         ]
-        object_fact = {
-            "nid": object_nid,
-            "name": name,
-            "qualified_name": qualified_name,
-            "lookup_key": _al_lookup_key(qualified_name),
-            "kind": kind,
-            "object_id": object_id,
-            "namespace": namespace,
-            "base": base or None,
-            "interfaces": [interface for interface in interfaces if interface],
-            "line": line,
-            "source_file": str_path,
-        }
-        facts["objects"].append(object_fact)
+        result = {"nodes": self.nodes, "edges": self.edges, "al_facts": self.facts}
+        if syntax_errors:
+            result["syntax_errors"] = syntax_errors
+        return result
 
-        variable_types: dict[str, tuple[str, str]] = {}
-        for declaration in (node for node in _walk_al(object_node) if node.type == "variable_declaration"):
-            ancestor = declaration.parent
-            while ancestor is not None and ancestor is not object_node:
-                if ancestor.type in _AL_CALLABLE_TYPES:
-                    break
-                ancestor = ancestor.parent
-            if ancestor is not object_node:
-                continue
-            variable_name = _decode_al_identifier(_field_text(declaration, "name", source_bytes))
-            type_node = declaration.child_by_field_name("type")
-            reference = _type_reference(type_node, source_bytes) if type_node else None
-            if variable_name and reference:
-                variable_types[_al_lookup_key(variable_name)] = reference
-                facts["references"].append({
-                    "source": object_nid,
-                    "name": reference[1],
-                    "kind": reference[0],
-                    "line": declaration.start_point.row + 1,
-                })
 
-        member_nodes = [
-            node for node in _walk_al(object_node)
-            if node.type in _AL_CALLABLE_TYPES or node.type in {"field_declaration", "enum_value_declaration"}
-        ]
-        member_name_counts: dict[tuple[str, str], int] = {}
-        for candidate in member_nodes:
-            if candidate.type not in _AL_CALLABLE_TYPES:
-                continue
-            candidate_name = _decode_al_identifier(_field_text(candidate, "name", source_bytes))
-            key = (_AL_CALLABLE_TYPES[candidate.type], _al_lookup_key(candidate_name))
-            member_name_counts[key] = member_name_counts.get(key, 0) + 1
-        for member_node in member_nodes:
-            if member_node.type in _AL_CALLABLE_TYPES:
-                member_kind = _AL_CALLABLE_TYPES[member_node.type]
-                name_field = "name"
-                label_suffix = "()"
-            elif member_node.type == "field_declaration":
-                member_kind = "field"
-                name_field = "name"
-                label_suffix = ""
-            else:
-                member_kind = "enum_value"
-                name_field = "value_name"
-                label_suffix = ""
-            member_name = _decode_al_identifier(_field_text(member_node, name_field, source_bytes))
-            if not member_name:
-                continue
-            member_line = member_node.start_point.row + 1
-            attributes = _attribute_metadata(member_node, source_bytes)
-            parameters = _parameter_metadata(member_node, source_bytes)
-            signature = ",".join(
-                f"{parameter.get('modifier') or ''}:{parameter.get('type') or ''}"
-                for parameter in parameters
-            )
-            scope_seed = _member_scope_seed(member_node, source_bytes)
-            identity_seeds = [scope_seed] if scope_seed else []
-            if member_name_counts.get((member_kind, _al_lookup_key(member_name)), 0) > 1:
-                identity_seeds.append(f"signature:{signature}")
-            member_nid = _make_id(object_nid, member_kind, *identity_seeds, member_name)
-            return_type_node = member_node.child_by_field_name("return_type")
-            if return_type_node is None and member_node.type == "interface_procedure":
-                suffix = _first_descendant(member_node, {"interface_procedure_suffix"})
-                return_type_node = suffix.child_by_field_name("return_type") if suffix else None
-            modifier = member_node.child_by_field_name("modifier")
-            data_type_node = member_node.child_by_field_name("type")
-            metadata = {
-                "id": member_nid,
-                "label": f"{member_name}{label_suffix}",
-                "file_type": "code",
-                "source_file": str_path,
-                "source_location": f"L{member_line}",
-                "language": "al",
-                "member_kind": member_kind,
-                "parent_object": object_nid,
-                "lookup_key": _al_lookup_key(member_name),
-                "extraction_tier": "tree_sitter",
-            }
-            if member_kind in _AL_CALLABLE_TYPES.values():
-                metadata.update({
-                    "visibility": _node_text(modifier, source_bytes).strip() if modifier else None,
-                    "parameters": parameters,
-                    "return_type": _node_text(return_type_node, source_bytes).strip() if return_type_node else None,
-                    "attributes": attributes,
-                    "signature": signature,
-                    "_callable": True,
-                })
-            else:
-                metadata.update({
-                    "member_id": _field_text(member_node, "id", source_bytes)
-                    or _field_text(member_node, "value_id", source_bytes) or None,
-                    "data_type": _node_text(data_type_node, source_bytes).strip() if data_type_node else None,
-                })
-            add_node(metadata)
-            add_edge(object_nid, member_nid, "contains", member_line)
-            facts["members"].append({
-                "nid": member_nid,
-                "parent": object_nid,
-                "name": member_name,
-                "lookup_key": _al_lookup_key(member_name),
-                "kind": member_kind,
-                "signature": signature,
-                "parameter_count": len(parameters),
-                "line": member_line,
-            })
-
-            if member_kind in _AL_CALLABLE_TYPES.values():
-                callable_types = dict(variable_types)
-                for declaration in (
-                    node for node in _walk_al(member_node) if node.type == "variable_declaration"
-                ):
-                    variable_name = _decode_al_identifier(_field_text(declaration, "name", source_bytes))
-                    type_node = declaration.child_by_field_name("type")
-                    reference = _type_reference(type_node, source_bytes) if type_node else None
-                    if variable_name and reference:
-                        callable_types[_al_lookup_key(variable_name)] = reference
-                        facts["references"].append({
-                            "source": member_nid,
-                            "name": reference[1],
-                            "kind": reference[0],
-                            "line": declaration.start_point.row + 1,
-                        })
-                for parameter, parameter_data in zip(
-                    (node for node in _walk_al(member_node) if node.type == "parameter"),
-                    parameters,
-                ):
-                    type_node = parameter.child_by_field_name("type")
-                    reference = _type_reference(type_node, source_bytes) if type_node else None
-                    if parameter_data["name"] and reference:
-                        callable_types[_al_lookup_key(parameter_data["name"])] = reference
-                        facts["references"].append({
-                            "source": member_nid,
-                            "name": reference[1],
-                            "kind": reference[0],
-                            "line": parameter.start_point.row + 1,
-                        })
-                for call in (node for node in _walk_al(member_node) if node.type == "call_expression"):
-                    function = call.child_by_field_name("function")
-                    if function is None:
-                        continue
-                    receiver = ""
-                    call_name = ""
-                    if function.type == "member_expression":
-                        receiver = _decode_al_identifier(_field_text(function, "object", source_bytes))
-                        call_name = _decode_al_identifier(_field_text(function, "member", source_bytes))
-                    else:
-                        call_name = _decode_al_identifier(_node_text(function, source_bytes))
-                    receiver_type = callable_types.get(_al_lookup_key(receiver)) if receiver else None
-                    facts["calls"].append({
-                        "source": member_nid,
-                        "name": call_name,
-                        "receiver": receiver or None,
-                        "receiver_kind": receiver_type[0] if receiver_type else None,
-                        "receiver_type": receiver_type[1] if receiver_type else None,
-                        "argument_count": len(
-                            call.child_by_field_name("arguments").named_children
-                        ) if call.child_by_field_name("arguments") else 0,
-                        "line": call.start_point.row + 1,
-                    })
-
-                attribute_names = {_al_lookup_key(item["name"]) for item in attributes}
-                if "eventsubscriber" in attribute_names:
-                    event_attribute = next(
-                        item for item in attributes if _al_lookup_key(item["name"]) == "eventsubscriber"
-                    )
-                    facts["event_subscribers"].append({
-                        "source": member_nid,
-                        "arguments": event_attribute["arguments"],
-                        "line": member_line,
-                    })
-                if attribute_names & {"integrationevent", "businessevent"}:
-                    facts["event_publishers"].append({
-                        "nid": member_nid,
-                        "object": object_nid,
-                        "name": member_name,
-                        "lookup_key": _al_lookup_key(member_name),
-                    })
-                if "handlerfunctions" in attribute_names:
-                    handler_attribute = next(
-                        item for item in attributes if _al_lookup_key(item["name"]) == "handlerfunctions"
-                    )
-                    facts["test_handlers"].append({
-                        "source": member_nid,
-                        "arguments": handler_attribute["arguments"],
-                        "line": member_line,
-                    })
-
-            if member_kind == "enum_value":
-                for prop in (node for node in _walk_al(member_node) if node.type == "property"):
-                    property_name = _node_text(prop.child_by_field_name("name"), source_bytes)
-                    if _al_lookup_key(property_name) != "implementation":
-                        continue
-                    comparison = _first_descendant(prop, {"comparison_expression"})
-                    if comparison is not None:
-                        facts["enum_mappings"].append({
-                            "source": member_nid,
-                            "interface": _decode_al_identifier(_field_text(comparison, "left", source_bytes)),
-                            "implementation": _decode_al_identifier(_field_text(comparison, "right", source_bytes)),
-                            "line": prop.start_point.row + 1,
-                        })
-
-    syntax_errors = [
-        {"line": node.start_point.row + 1, "type": node.type}
-        for node in _walk_al(root)
-        if node.type == "ERROR" or node.is_missing
+def _al_namespace_and_usings(root, source: bytes) -> tuple[str, list[str]]:
+    namespace_node = next(
+        (node for node in root.named_children if node.type == "namespace_declaration"), None
+    )
+    namespace = _field_text(namespace_node, "name", source) if namespace_node else ""
+    usings = [
+        _field_text(node, "namespace", source)
+        for node in root.named_children
+        if node.type == "using_statement"
     ]
-    result = {"nodes": nodes, "edges": edges, "al_facts": facts}
-    if syntax_errors:
-        result["syntax_errors"] = syntax_errors
-    return result
+    return namespace, usings
 
 
-def _extract_al_fallback(path: Path, source: str) -> dict:
-    str_path = str(path)
-    stem = _file_stem(path)
-    masked = _mask_al_comments_and_strings(source)
-    namespace_match = _AL_NAMESPACE_RE.search(masked)
-    namespace = namespace_match.group(1) if namespace_match else ""
-    file_nid = _make_id(str_path)
-    nodes: list[dict] = [{
-        "id": file_nid,
-        "label": path.name,
+def _al_object_info(context: _ALTreeContext, object_node) -> dict:
+    kind = _AL_OBJECT_TYPES[object_node.type]
+    name = _decode_al_identifier(_field_text(object_node, "object_name", context.source))
+    qualified_name = f"{context.namespace}.{name}" if context.namespace else name
+    interfaces = [
+        _decode_al_identifier(_field_text(clause, "interface", context.source))
+        for clause in object_node.named_children
+        if clause.type == "implements_clause"
+    ]
+    return {
+        "nid": _make_id(context.stem, kind, qualified_name),
+        "kind": kind,
+        "name": name,
+        "qualified_name": qualified_name,
+        "lookup_key": _al_lookup_key(qualified_name),
+        "object_id": _field_text(object_node, "object_id", context.source) or None,
+        "base": _decode_al_identifier(_field_text(object_node, "base_object", context.source)) or None,
+        "interfaces": [interface for interface in interfaces if interface],
+        "line": object_node.start_point.row + 1,
+    }
+
+
+def _al_emit_object(context: _ALTreeContext, info: dict) -> None:
+    context.add_node({
+        "id": info["nid"],
+        "label": info["name"],
         "file_type": "code",
-        "source_file": str_path,
-        "source_location": "L1",
+        "source_file": context.str_path,
+        "source_location": f"L{info['line']}",
         "language": "al",
-        "extraction_tier": "fallback",
-    }]
-    edges: list[dict] = []
-    seen_ids = {file_nid}
+        "object_kind": info["kind"],
+        "object_id": info["object_id"],
+        "qualified_name": info["qualified_name"],
+        "namespace": context.namespace or None,
+        "lookup_key": info["lookup_key"],
+        "extraction_tier": "tree_sitter",
+    })
+    context.add_edge(context.file_nid, info["nid"], "contains", info["line"])
+    context.facts["objects"].append({
+        **info,
+        "namespace": context.namespace,
+        "source_file": context.str_path,
+    })
 
-    def add_node(node: dict) -> None:
-        if node["id"] not in seen_ids:
-            seen_ids.add(node["id"])
-            nodes.append(node)
 
-    def add_contains(parent: str, child: str, line: int) -> None:
-        edges.append({
+def _al_object_variables(context: _ALTreeContext, object_node, object_nid: str) -> dict:
+    variable_types: dict[str, tuple[str, str]] = {}
+    for declaration in (node for node in _walk_al(object_node) if node.type == "variable_declaration"):
+        ancestor = declaration.parent
+        while ancestor is not None and ancestor is not object_node:
+            if ancestor.type in _AL_CALLABLE_TYPES:
+                break
+            ancestor = ancestor.parent
+        if ancestor is not object_node:
+            continue
+        variable_name = _decode_al_identifier(_field_text(declaration, "name", context.source))
+        type_node = declaration.child_by_field_name("type")
+        reference = _type_reference(type_node, context.source) if type_node else None
+        if variable_name and reference:
+            variable_types[_al_lookup_key(variable_name)] = reference
+            context.facts["references"].append({
+                "source": object_nid,
+                "name": reference[1],
+                "kind": reference[0],
+                "line": declaration.start_point.row + 1,
+            })
+    return variable_types
+
+
+def _al_member_nodes(object_node) -> list:
+    return [
+        node for node in _walk_al(object_node)
+        if node.type in _AL_CALLABLE_TYPES
+        or node.type in {"field_declaration", "enum_value_declaration"}
+    ]
+
+
+def _al_member_name_counts(context: _ALTreeContext, member_nodes: list) -> dict:
+    counts: dict[tuple[str, str], int] = {}
+    for candidate in member_nodes:
+        if candidate.type not in _AL_CALLABLE_TYPES:
+            continue
+        name = _decode_al_identifier(_field_text(candidate, "name", context.source))
+        key = (_AL_CALLABLE_TYPES[candidate.type], _al_lookup_key(name))
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def _al_member_declaration(context: _ALTreeContext, member_node) -> dict | None:
+    if member_node.type in _AL_CALLABLE_TYPES:
+        kind, name_field, suffix = _AL_CALLABLE_TYPES[member_node.type], "name", "()"
+    elif member_node.type == "field_declaration":
+        kind, name_field, suffix = "field", "name", ""
+    else:
+        kind, name_field, suffix = "enum_value", "value_name", ""
+    name = _decode_al_identifier(_field_text(member_node, name_field, context.source))
+    if not name:
+        return None
+    parameters = _parameter_metadata(member_node, context.source)
+    return {
+        "kind": kind,
+        "name": name,
+        "suffix": suffix,
+        "lookup_key": _al_lookup_key(name),
+        "attributes": _attribute_metadata(member_node, context.source),
+        "parameters": parameters,
+        "signature": ",".join(
+            f"{parameter.get('modifier') or ''}:{parameter.get('type') or ''}"
+            for parameter in parameters
+        ),
+        "line": member_node.start_point.row + 1,
+    }
+
+
+def _al_member_nid(
+    context: _ALTreeContext, member_node, object_nid: str, info: dict, counts: dict
+) -> str:
+    scope_seed = _member_scope_seed(member_node, context.source)
+    identity_seeds = [scope_seed] if scope_seed else []
+    if counts.get((info["kind"], info["lookup_key"]), 0) > 1:
+        identity_seeds.append(f"signature:{info['signature']}")
+    return _make_id(object_nid, info["kind"], *identity_seeds, info["name"])
+
+
+def _al_member_metadata(
+    context: _ALTreeContext, member_node, object_nid: str, member_nid: str, info: dict
+) -> dict:
+    metadata = {
+        "id": member_nid,
+        "label": f"{info['name']}{info['suffix']}",
+        "file_type": "code",
+        "source_file": context.str_path,
+        "source_location": f"L{info['line']}",
+        "language": "al",
+        "member_kind": info["kind"],
+        "parent_object": object_nid,
+        "lookup_key": info["lookup_key"],
+        "extraction_tier": "tree_sitter",
+    }
+    if info["kind"] in _AL_CALLABLE_TYPES.values():
+        return_type = member_node.child_by_field_name("return_type")
+        if return_type is None and member_node.type == "interface_procedure":
+            suffix = _first_descendant(member_node, {"interface_procedure_suffix"})
+            return_type = suffix.child_by_field_name("return_type") if suffix else None
+        modifier = member_node.child_by_field_name("modifier")
+        metadata.update({
+            "visibility": _node_text(modifier, context.source).strip() if modifier else None,
+            "parameters": info["parameters"],
+            "return_type": _node_text(return_type, context.source).strip() if return_type else None,
+            "attributes": info["attributes"],
+            "signature": info["signature"],
+            "_callable": True,
+        })
+    else:
+        data_type = member_node.child_by_field_name("type")
+        metadata.update({
+            "member_id": _field_text(member_node, "id", context.source)
+            or _field_text(member_node, "value_id", context.source) or None,
+            "data_type": _node_text(data_type, context.source).strip() if data_type else None,
+        })
+    return metadata
+
+
+def _al_callable_types(
+    context: _ALTreeContext, member_node, member_nid: str, info: dict, object_types: dict
+) -> dict:
+    callable_types = dict(object_types)
+    for declaration in (
+        node for node in _walk_al(member_node) if node.type == "variable_declaration"
+    ):
+        name = _decode_al_identifier(_field_text(declaration, "name", context.source))
+        type_node = declaration.child_by_field_name("type")
+        reference = _type_reference(type_node, context.source) if type_node else None
+        if name and reference:
+            callable_types[_al_lookup_key(name)] = reference
+            context.facts["references"].append({
+                "source": member_nid,
+                "name": reference[1],
+                "kind": reference[0],
+                "line": declaration.start_point.row + 1,
+            })
+    for parameter, parameter_data in zip(
+        (node for node in _walk_al(member_node) if node.type == "parameter"),
+        info["parameters"],
+    ):
+        type_node = parameter.child_by_field_name("type")
+        reference = _type_reference(type_node, context.source) if type_node else None
+        if parameter_data["name"] and reference:
+            callable_types[_al_lookup_key(parameter_data["name"])] = reference
+            context.facts["references"].append({
+                "source": member_nid,
+                "name": reference[1],
+                "kind": reference[0],
+                "line": parameter.start_point.row + 1,
+            })
+    return callable_types
+
+
+def _al_extract_calls(
+    context: _ALTreeContext, member_node, member_nid: str, callable_types: dict
+) -> None:
+    for call in (node for node in _walk_al(member_node) if node.type == "call_expression"):
+        function = call.child_by_field_name("function")
+        if function is None:
+            continue
+        if function.type == "member_expression":
+            receiver = _decode_al_identifier(_field_text(function, "object", context.source))
+            call_name = _decode_al_identifier(_field_text(function, "member", context.source))
+        else:
+            receiver = ""
+            call_name = _decode_al_identifier(_node_text(function, context.source))
+        receiver_type = callable_types.get(_al_lookup_key(receiver)) if receiver else None
+        arguments = call.child_by_field_name("arguments")
+        context.facts["calls"].append({
+            "source": member_nid,
+            "name": call_name,
+            "receiver": receiver or None,
+            "receiver_kind": receiver_type[0] if receiver_type else None,
+            "receiver_type": receiver_type[1] if receiver_type else None,
+            "argument_count": len(arguments.named_children) if arguments else 0,
+            "line": call.start_point.row + 1,
+        })
+
+
+def _al_extract_callable_attributes(
+    context: _ALTreeContext, member_nid: str, object_nid: str, info: dict
+) -> None:
+    attributes = {_al_lookup_key(item["name"]): item for item in info["attributes"]}
+    if event_attribute := attributes.get("eventsubscriber"):
+        context.facts["event_subscribers"].append({
+            "source": member_nid,
+            "arguments": event_attribute["arguments"],
+            "line": info["line"],
+        })
+    if attributes.keys() & {"integrationevent", "businessevent"}:
+        context.facts["event_publishers"].append({
+            "nid": member_nid,
+            "object": object_nid,
+            "name": info["name"],
+            "lookup_key": info["lookup_key"],
+        })
+    if handler_attribute := attributes.get("handlerfunctions"):
+        context.facts["test_handlers"].append({
+            "source": member_nid,
+            "arguments": handler_attribute["arguments"],
+            "line": info["line"],
+        })
+
+
+def _al_enum_mapping(context: _ALTreeContext, prop, member_nid: str) -> None:
+    comparison = _first_descendant(prop, {"comparison_expression"})
+    if comparison is None:
+        return
+    context.facts["enum_mappings"].append({
+        "source": member_nid,
+        "interface": _decode_al_identifier(_field_text(comparison, "left", context.source)),
+        "implementation": _decode_al_identifier(_field_text(comparison, "right", context.source)),
+        "line": prop.start_point.row + 1,
+    })
+
+
+def _al_extract_enum_mappings(context: _ALTreeContext, member_node, member_nid: str) -> None:
+    for prop in (node for node in _walk_al(member_node) if node.type == "property"):
+        property_name = _node_text(prop.child_by_field_name("name"), context.source)
+        if _al_lookup_key(property_name) == "implementation":
+            _al_enum_mapping(context, prop, member_nid)
+
+
+def _al_postprocess_member(
+    context: _ALTreeContext, member_node, object_nid: str, member_nid: str,
+    info: dict, object_types: dict,
+) -> None:
+    if info["kind"] in _AL_CALLABLE_TYPES.values():
+        callable_types = _al_callable_types(context, member_node, member_nid, info, object_types)
+        _al_extract_calls(context, member_node, member_nid, callable_types)
+        _al_extract_callable_attributes(context, member_nid, object_nid, info)
+    elif info["kind"] == "enum_value":
+        _al_extract_enum_mappings(context, member_node, member_nid)
+
+
+def _al_extract_member(
+    context: _ALTreeContext, member_node, object_nid: str, counts: dict, object_types: dict
+) -> None:
+    info = _al_member_declaration(context, member_node)
+    if info is None:
+        return
+    member_nid = _al_member_nid(context, member_node, object_nid, info, counts)
+    context.add_node(_al_member_metadata(context, member_node, object_nid, member_nid, info))
+    context.add_edge(object_nid, member_nid, "contains", info["line"])
+    context.facts["members"].append({
+        "nid": member_nid,
+        "parent": object_nid,
+        "name": info["name"],
+        "lookup_key": info["lookup_key"],
+        "kind": info["kind"],
+        "signature": info["signature"],
+        "parameter_count": len(info["parameters"]),
+        "line": info["line"],
+    })
+    _al_postprocess_member(context, member_node, object_nid, member_nid, info, object_types)
+
+
+def _al_extract_members(
+    context: _ALTreeContext, object_node, object_nid: str, object_types: dict
+) -> None:
+    members = _al_member_nodes(object_node)
+    counts = _al_member_name_counts(context, members)
+    for member_node in members:
+        _al_extract_member(context, member_node, object_nid, counts, object_types)
+
+
+def _al_extract_object(context: _ALTreeContext, object_node) -> None:
+    info = _al_object_info(context, object_node)
+    if not info["name"]:
+        return
+    _al_emit_object(context, info)
+    object_types = _al_object_variables(context, object_node, info["nid"])
+    _al_extract_members(context, object_node, info["nid"], object_types)
+
+
+def _extract_al_tree_sitter(path: Path, source: str, tree) -> dict:
+    context = _ALTreeContext(path, source, tree)
+    for object_node in (node for node in _walk_al(context.root) if node.type in _AL_OBJECT_TYPES):
+        _al_extract_object(context, object_node)
+    return context.result()
+
+
+class _ALFallbackExtractor:
+    def __init__(self, path: Path, source: str) -> None:
+        self.path = path
+        self.str_path = str(path)
+        self.stem = _file_stem(path)
+        self.masked = _mask_al_comments_and_strings(source)
+        namespace_match = _AL_NAMESPACE_RE.search(self.masked)
+        self.namespace = namespace_match.group(1) if namespace_match else ""
+        self.file_nid = _make_id(self.str_path)
+        self.nodes: list[dict] = [{
+            "id": self.file_nid,
+            "label": path.name,
+            "file_type": "code",
+            "source_file": self.str_path,
+            "source_location": "L1",
+            "language": "al",
+            "extraction_tier": "fallback",
+        }]
+        self.edges: list[dict] = []
+        self.seen_ids = {self.file_nid}
+
+    def extract(self) -> dict:
+        self._extract_objects()
+        return {"nodes": self.nodes, "edges": self.edges}
+
+    def _add_node(self, node: dict) -> None:
+        if node["id"] not in self.seen_ids:
+            self.seen_ids.add(node["id"])
+            self.nodes.append(node)
+
+    def _add_contains(self, parent: str, child: str, line: int) -> None:
+        self.edges.append({
             "source": parent,
             "target": child,
             "relation": "contains",
             "confidence": "EXTRACTED",
-            "source_file": str_path,
+            "source_file": self.str_path,
             "source_location": f"L{line}",
             "weight": 1.0,
         })
 
-    for match in _AL_OBJECT_RE.finditer(masked):
+    def _extract_objects(self) -> None:
+        for match in _AL_OBJECT_RE.finditer(self.masked):
+            info = self._object_info(match)
+            self._emit_object(info)
+            self._extract_callables(match, info["nid"])
+
+    def _object_info(self, match) -> dict:
         kind = match.group("kind").casefold()
         name = _decode_al_identifier(match.group("name"))
-        qualified_name = f"{namespace}.{name}" if namespace else name
-        object_id = match.group("object_id")
-        line = _line_number(masked, match.start())
-        object_nid = _make_id(stem, kind, qualified_name)
-        add_node({
-            "id": object_nid,
-            "label": name,
-            "file_type": "code",
-            "source_file": str_path,
-            "source_location": f"L{line}",
-            "language": "al",
-            "object_kind": kind,
-            "object_id": object_id,
+        qualified_name = f"{self.namespace}.{name}" if self.namespace else name
+        return {
+            "nid": _make_id(self.stem, kind, qualified_name),
+            "kind": kind,
+            "name": name,
             "qualified_name": qualified_name,
-            "namespace": namespace or None,
+            "object_id": match.group("object_id"),
+            "line": _line_number(self.masked, match.start()),
             "lookup_key": _al_lookup_key(qualified_name),
+        }
+
+    def _emit_object(self, info: dict) -> None:
+        self._add_node({
+            "id": info["nid"],
+            "label": info["name"],
+            "file_type": "code",
+            "source_file": self.str_path,
+            "source_location": f"L{info['line']}",
+            "language": "al",
+            "object_kind": info["kind"],
+            "object_id": info["object_id"],
+            "qualified_name": info["qualified_name"],
+            "namespace": self.namespace or None,
+            "lookup_key": info["lookup_key"],
             "extraction_tier": "fallback",
         })
-        add_contains(file_nid, object_nid, line)
+        self._add_contains(self.file_nid, info["nid"], info["line"])
 
-        opening = masked.find("{", match.start(), match.end())
-        closing = _matching_brace(masked, opening)
-        body = masked[opening + 1:closing]
+    def _extract_callables(self, match, object_nid: str) -> None:
+        opening = self.masked.find("{", match.start(), match.end())
+        closing = _matching_brace(self.masked, opening)
+        body = self.masked[opening + 1:closing]
         body_offset = opening + 1
         for callable_match in _AL_CALLABLE_RE.finditer(body):
-            callable_name = _decode_al_identifier(callable_match.group("name"))
-            callable_kind = callable_match.group("callable_kind").casefold()
-            callable_line = _line_number(masked, body_offset + callable_match.start())
-            callable_nid = _make_id(object_nid, callable_kind, callable_name)
-            add_node({
-                "id": callable_nid,
-                "label": f"{callable_name}()",
-                "file_type": "code",
-                "source_file": str_path,
-                "source_location": f"L{callable_line}",
-                "language": "al",
-                "member_kind": callable_kind,
-                "visibility": callable_match.group("visibility"),
-                "parameters": callable_match.group("parameters").strip(),
-                "return_type": (callable_match.group("return_type") or "").strip() or None,
-                "lookup_key": _al_lookup_key(callable_name),
-                "extraction_tier": "fallback",
-                "_callable": True,
-            })
-            add_contains(object_nid, callable_nid, callable_line)
+            info = self._callable_info(callable_match, object_nid, body_offset)
+            self._emit_callable(info)
 
-    return {"nodes": nodes, "edges": edges}
+    def _callable_info(self, match, object_nid: str, body_offset: int) -> dict:
+        name = _decode_al_identifier(match.group("name"))
+        kind = match.group("callable_kind").casefold()
+        return {
+            "nid": _make_id(object_nid, kind, name),
+            "parent": object_nid,
+            "name": name,
+            "kind": kind,
+            "line": _line_number(self.masked, body_offset + match.start()),
+            "visibility": match.group("visibility"),
+            "parameters": match.group("parameters").strip(),
+            "return_type": (match.group("return_type") or "").strip() or None,
+            "lookup_key": _al_lookup_key(name),
+        }
+
+    def _emit_callable(self, info: dict) -> None:
+        self._add_node({
+            "id": info["nid"],
+            "label": f"{info['name']}()",
+            "file_type": "code",
+            "source_file": self.str_path,
+            "source_location": f"L{info['line']}",
+            "language": "al",
+            "member_kind": info["kind"],
+            "visibility": info["visibility"],
+            "parameters": info["parameters"],
+            "return_type": info["return_type"],
+            "lookup_key": info["lookup_key"],
+            "extraction_tier": "fallback",
+            "_callable": True,
+        })
+        self._add_contains(info["parent"], info["nid"], info["line"])
+
+
+def _extract_al_fallback(path: Path, source: str) -> dict:
+    return _ALFallbackExtractor(path, source).extract()
 
 
 def extract_al(path: Path, source_override: str | None = None) -> dict:

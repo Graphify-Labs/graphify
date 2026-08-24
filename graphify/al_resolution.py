@@ -59,90 +59,128 @@ def _reference_name(value: object) -> str:
     return text.replace('""', '"').replace("''", "'")
 
 
-def resolve_al_symbols(per_file: list[dict], all_nodes: list[dict], all_edges: list[dict]) -> None:
-    """Resolve AL facts without guessing when multiple candidates remain."""
-    results = [result for result in per_file if isinstance(result, dict) and result.get("al_facts")]
-    if not results:
-        return
+class _ALSymbolResolver:
+    def __init__(self, per_file: list[dict], all_nodes: list[dict], all_edges: list[dict]) -> None:
+        self.results = [
+            result for result in per_file
+            if isinstance(result, dict) and result.get("al_facts")
+        ]
+        self.all_nodes = all_nodes
+        self.all_edges = all_edges
+        self.node_by_id = {node.get("id"): node for node in all_nodes}
+        self.object_nodes = [
+            node for node in all_nodes
+            if node.get("language") == "al" and node.get("object_kind")
+        ]
+        self.member_nodes = [
+            node for node in all_nodes
+            if node.get("language") == "al" and node.get("member_kind")
+        ]
+        self.parent_of = {
+            edge.get("target"): edge.get("source")
+            for edge in all_edges
+            if edge.get("relation") == "contains"
+        }
+        self.manifest_cache: dict[Path, dict] = {}
+        self.object_fact_to_nid: dict[str, str] = {}
+        self.member_fact_to_nid: dict[str, str] = {}
+        self.object_facts: list[dict] = []
+        self.member_facts: list[dict] = []
+        self.result_context: dict[int, dict] = {}
+        self.object_by_name: dict[str, list[dict]] = {}
+        self.object_by_kind_name: dict[tuple[str, str], list[dict]] = {}
+        self.members_by_parent_name: dict[tuple[str, str], list[str]] = {}
+        self.member_parameter_counts: dict[str, int] = {}
+        self.existing = {
+            (edge.get("source"), edge.get("target"), edge.get("relation"), edge.get("context"))
+            for edge in all_edges
+        }
 
-    node_by_id = {node.get("id"): node for node in all_nodes}
-    object_nodes = [node for node in all_nodes if node.get("language") == "al" and node.get("object_kind")]
-    member_nodes = [node for node in all_nodes if node.get("language") == "al" and node.get("member_kind")]
-    parent_of = {
-        edge.get("target"): edge.get("source")
-        for edge in all_edges
-        if edge.get("relation") == "contains"
-    }
-    manifest_cache: dict[Path, dict] = {}
-    app_by_source: dict[str, dict] = {}
+    def resolve(self) -> None:
+        if not self.results:
+            return
+        self._map_facts()
+        self._build_indexes()
+        self._emit_results()
+        self._emit_manifest_dependencies()
 
-    object_fact_to_nid: dict[str, str] = {}
-    member_fact_to_nid: dict[str, str] = {}
-    object_facts: list[dict] = []
-    member_facts: list[dict] = []
-    result_context: dict[int, dict] = {}
-
-    for result in results:
+    def _context_for_result(self, result: dict) -> dict:
         facts = result["al_facts"]
         first_object = next(iter(facts.get("objects", [])), {})
         source_file = str(first_object.get("source_file", ""))
-        app = _manifest_context(source_file, manifest_cache) if source_file else {}
-        result_context[id(result)] = {
+        app = _manifest_context(source_file, self.manifest_cache) if source_file else {}
+        context = {
             "namespace": str(facts.get("namespace", "")),
             "usings": {_key(value) for value in facts.get("usings", [])},
             "app": app,
         }
-        if source_file:
-            app_by_source[source_file] = app
-        for fact in facts.get("objects", []):
-            candidates = [
-                node for node in object_nodes
-                if node.get("object_kind") == fact.get("kind")
-                and _key(node.get("qualified_name")) == _key(fact.get("qualified_name"))
-                and _same_source(node.get("source_file"), fact.get("source_file"))
-            ]
-            if len(candidates) == 1:
-                object_fact_to_nid[str(fact.get("nid"))] = candidates[0]["id"]
-                fact["final_nid"] = candidates[0]["id"]
-                fact["app"] = app
-                if app:
-                    candidates[0]["application_id"] = app.get("id") or None
-                    candidates[0]["application_name"] = app.get("name") or None
-            object_facts.append(fact)
-        for fact in facts.get("members", []):
-            final_parent = object_fact_to_nid.get(str(fact.get("parent")))
-            candidates = [
-                node for node in member_nodes
-                if node.get("member_kind") == fact.get("kind")
-                and _key(str(node.get("label", "")).removesuffix("()")) == _key(fact.get("name"))
-                and parent_of.get(node.get("id")) == final_parent
-                and str(node.get("signature", "")) == str(fact.get("signature", ""))
-            ]
-            if len(candidates) == 1:
-                member_fact_to_nid[str(fact.get("nid"))] = candidates[0]["id"]
-                fact["final_nid"] = candidates[0]["id"]
-            member_facts.append(fact)
+        self.result_context[id(result)] = context
+        return context
 
-    object_by_name: dict[str, list[dict]] = {}
-    object_by_kind_name: dict[tuple[str, str], list[dict]] = {}
-    for fact in object_facts:
-        if not fact.get("final_nid"):
-            continue
-        names = {_key(fact.get("name")), _key(fact.get("qualified_name"))}
-        for name in names:
-            object_by_name.setdefault(name, []).append(fact)
-            object_by_kind_name.setdefault((str(fact.get("kind", "")), name), []).append(fact)
+    def _map_object_fact(self, fact: dict, app: dict) -> None:
+        candidates = [
+            node for node in self.object_nodes
+            if node.get("object_kind") == fact.get("kind")
+            and _key(node.get("qualified_name")) == _key(fact.get("qualified_name"))
+            and _same_source(node.get("source_file"), fact.get("source_file"))
+        ]
+        if len(candidates) == 1:
+            target = candidates[0]
+            self.object_fact_to_nid[str(fact.get("nid"))] = target["id"]
+            fact["final_nid"] = target["id"]
+            fact["app"] = app
+            if app:
+                target["application_id"] = app.get("id") or None
+                target["application_name"] = app.get("name") or None
+        self.object_facts.append(fact)
 
-    members_by_parent_name: dict[tuple[str, str], list[str]] = {}
-    member_parameter_counts: dict[str, int] = {}
-    for fact in member_facts:
-        parent = object_fact_to_nid.get(str(fact.get("parent")))
-        target = fact.get("final_nid")
-        if parent and target:
-            members_by_parent_name.setdefault((parent, _key(fact.get("name"))), []).append(target)
-            member_parameter_counts[target] = int(fact.get("parameter_count", 0))
+    def _map_member_fact(self, fact: dict) -> None:
+        final_parent = self.object_fact_to_nid.get(str(fact.get("parent")))
+        candidates = [
+            node for node in self.member_nodes
+            if node.get("member_kind") == fact.get("kind")
+            and _key(str(node.get("label", "")).removesuffix("()")) == _key(fact.get("name"))
+            and self.parent_of.get(node.get("id")) == final_parent
+            and str(node.get("signature", "")) == str(fact.get("signature", ""))
+        ]
+        if len(candidates) == 1:
+            self.member_fact_to_nid[str(fact.get("nid"))] = candidates[0]["id"]
+            fact["final_nid"] = candidates[0]["id"]
+        self.member_facts.append(fact)
 
-    def visible(candidate: dict, context: dict) -> bool:
+    def _map_facts(self) -> None:
+        for result in self.results:
+            context = self._context_for_result(result)
+            facts = result["al_facts"]
+            for fact in facts.get("objects", []):
+                self._map_object_fact(fact, context["app"])
+            for fact in facts.get("members", []):
+                self._map_member_fact(fact)
+
+    def _index_objects(self) -> None:
+        for fact in self.object_facts:
+            if not fact.get("final_nid"):
+                continue
+            names = {_key(fact.get("name")), _key(fact.get("qualified_name"))}
+            for name in names:
+                self.object_by_name.setdefault(name, []).append(fact)
+                key = (str(fact.get("kind", "")), name)
+                self.object_by_kind_name.setdefault(key, []).append(fact)
+
+    def _index_members(self) -> None:
+        for fact in self.member_facts:
+            parent = self.object_fact_to_nid.get(str(fact.get("parent")))
+            target = fact.get("final_nid")
+            if parent and target:
+                key = (parent, _key(fact.get("name")))
+                self.members_by_parent_name.setdefault(key, []).append(target)
+                self.member_parameter_counts[target] = int(fact.get("parameter_count", 0))
+
+    def _build_indexes(self) -> None:
+        self._index_objects()
+        self._index_members()
+
+    def _visible(self, candidate: dict, context: dict) -> bool:
         candidate_namespace = _key(candidate.get("namespace"))
         source_namespace = _key(context.get("namespace"))
         if candidate_namespace and candidate_namespace != source_namespace:
@@ -156,7 +194,7 @@ def resolve_al_symbols(per_file: list[dict], all_nodes: list[dict], all_edges: l
                     return False
         return True
 
-    def resolve_object(name: object, kind: str | None, context: dict) -> dict | None:
+    def _resolve_object(self, name: object, kind: str | None, context: dict) -> dict | None:
         lookup = _key(_reference_name(name))
         normalized_kind = str(kind or "").casefold().removesuffix("_keyword")
         if normalized_kind == "record":
@@ -164,27 +202,25 @@ def resolve_al_symbols(per_file: list[dict], all_nodes: list[dict], all_edges: l
         elif normalized_kind == "testpage":
             normalized_kind = "page"
         candidates = (
-            object_by_kind_name.get((normalized_kind, lookup), [])
-            if normalized_kind else object_by_name.get(lookup, [])
+            self.object_by_kind_name.get((normalized_kind, lookup), [])
+            if normalized_kind else self.object_by_name.get(lookup, [])
         )
-        visible_candidates = [candidate for candidate in candidates if visible(candidate, context)]
+        visible_candidates = [candidate for candidate in candidates if self._visible(candidate, context)]
         unique = {candidate["final_nid"]: candidate for candidate in visible_candidates}
         return next(iter(unique.values())) if len(unique) == 1 else None
 
-    existing = {
-        (edge.get("source"), edge.get("target"), edge.get("relation"), edge.get("context"))
-        for edge in all_edges
-    }
-
-    def add_edge(source: str | None, target: str | None, relation: str, context: str, line: object) -> None:
+    def _add_edge(
+        self, source: str | None, target: str | None,
+        relation: str, context: str, line: object,
+    ) -> None:
         if not source or not target or source == target:
             return
         key = (source, target, relation, context)
-        if key in existing:
+        if key in self.existing:
             return
-        existing.add(key)
-        source_node = node_by_id.get(source, {})
-        all_edges.append({
+        self.existing.add(key)
+        source_node = self.node_by_id.get(source, {})
+        self.all_edges.append({
             "source": source,
             "target": target,
             "relation": relation,
@@ -196,116 +232,158 @@ def resolve_al_symbols(per_file: list[dict], all_nodes: list[dict], all_edges: l
             "weight": 1.0,
         })
 
-    for result in results:
-        facts = result["al_facts"]
-        context = result_context[id(result)]
+    def _emit_objects(self, facts: dict, context: dict) -> None:
         for fact in facts.get("objects", []):
-            source = object_fact_to_nid.get(str(fact.get("nid")))
+            source = self.object_fact_to_nid.get(str(fact.get("nid")))
             if fact.get("base"):
-                target = resolve_object(
+                target = self._resolve_object(
                     fact["base"], _EXTENSION_BASE_KINDS.get(str(fact.get("kind"))), context
                 )
-                add_edge(source, target and target["final_nid"], "extends", "extension", fact.get("line"))
+                self._add_edge(
+                    source, target and target["final_nid"],
+                    "extends", "extension", fact.get("line"),
+                )
             for interface in fact.get("interfaces", []):
-                target = resolve_object(interface, "interface", context)
-                add_edge(source, target and target["final_nid"], "implements", "interface", fact.get("line"))
+                target = self._resolve_object(interface, "interface", context)
+                self._add_edge(
+                    source, target and target["final_nid"],
+                    "implements", "interface", fact.get("line"),
+                )
 
+    def _emit_references(self, facts: dict, context: dict) -> None:
         for reference in facts.get("references", []):
-            source = member_fact_to_nid.get(str(reference.get("source"))) or object_fact_to_nid.get(
-                str(reference.get("source"))
+            raw_source = str(reference.get("source"))
+            source = self.member_fact_to_nid.get(raw_source) or self.object_fact_to_nid.get(raw_source)
+            target = self._resolve_object(
+                reference.get("name"), str(reference.get("kind", "")), context
             )
-            target = resolve_object(reference.get("name"), str(reference.get("kind", "")), context)
             reference_context = (
                 "test_target" if str(reference.get("kind", "")).casefold() == "testpage" else "type"
             )
-            add_edge(
+            self._add_edge(
                 source, target and target["final_nid"], "references",
                 reference_context, reference.get("line"),
             )
 
+    def _emit_calls(self, facts: dict, context: dict) -> None:
         for call in facts.get("calls", []):
-            source = member_fact_to_nid.get(str(call.get("source")))
-            owner = parent_of.get(source)
+            source = self.member_fact_to_nid.get(str(call.get("source")))
+            owner = self.parent_of.get(source)
             target_owner = owner
             if call.get("receiver_type"):
-                target_object = resolve_object(call["receiver_type"], call.get("receiver_kind"), context)
+                target_object = self._resolve_object(
+                    call["receiver_type"], call.get("receiver_kind"), context
+                )
                 target_owner = target_object and target_object["final_nid"]
-            candidates = members_by_parent_name.get((str(target_owner), _key(call.get("name"))), [])
+            candidates = self.members_by_parent_name.get(
+                (str(target_owner), _key(call.get("name"))), []
+            )
             if call.get("argument_count") is not None:
                 candidates = [
                     candidate for candidate in candidates
-                    if member_parameter_counts.get(candidate) == call["argument_count"]
+                    if self.member_parameter_counts.get(candidate) == call["argument_count"]
                 ]
             target = candidates[0] if len(set(candidates)) == 1 else None
-            add_edge(source, target, "calls", "call", call.get("line"))
+            self._add_edge(source, target, "calls", "call", call.get("line"))
 
+    def _emit_subscribers(self, facts: dict, context: dict) -> None:
         for subscriber in facts.get("event_subscribers", []):
             arguments = subscriber.get("arguments", [])
             if len(arguments) < 3:
                 continue
             object_kind = _reference_name(arguments[0]).casefold()
-            publisher_object = resolve_object(arguments[1], object_kind, context)
+            publisher_object = self._resolve_object(arguments[1], object_kind, context)
             event_name = _reference_name(arguments[2])
-            candidates = members_by_parent_name.get(
+            candidates = self.members_by_parent_name.get(
                 (str(publisher_object and publisher_object["final_nid"]), _key(event_name)), []
             )
             target = candidates[0] if len(set(candidates)) == 1 else None
-            add_edge(
-                member_fact_to_nid.get(str(subscriber.get("source"))),
+            self._add_edge(
+                self.member_fact_to_nid.get(str(subscriber.get("source"))),
                 target,
                 "references",
                 "event_subscription",
                 subscriber.get("line"),
             )
 
+    def _emit_enum_mappings(self, facts: dict, context: dict) -> None:
         for mapping in facts.get("enum_mappings", []):
-            source = member_fact_to_nid.get(str(mapping.get("source")))
-            interface = resolve_object(mapping.get("interface"), "interface", context)
-            implementation = resolve_object(mapping.get("implementation"), "codeunit", context)
-            add_edge(
+            source = self.member_fact_to_nid.get(str(mapping.get("source")))
+            interface = self._resolve_object(mapping.get("interface"), "interface", context)
+            implementation = self._resolve_object(mapping.get("implementation"), "codeunit", context)
+            self._add_edge(
                 source, interface and interface["final_nid"], "implements",
                 "enum_implementation", mapping.get("line"),
             )
-            add_edge(
+            self._add_edge(
                 source, implementation and implementation["final_nid"], "references",
                 "enum_implementation", mapping.get("line"),
             )
 
+    def _emit_test_handlers(self, facts: dict) -> None:
         for binding in facts.get("test_handlers", []):
-            source = member_fact_to_nid.get(str(binding.get("source")))
-            owner = parent_of.get(source)
+            source = self.member_fact_to_nid.get(str(binding.get("source")))
+            owner = self.parent_of.get(source)
             for argument in binding.get("arguments", []):
                 for handler_name in _reference_name(argument).split(","):
-                    candidates = members_by_parent_name.get((str(owner), _key(handler_name)), [])
+                    candidates = self.members_by_parent_name.get(
+                        (str(owner), _key(handler_name)), []
+                    )
                     target = candidates[0] if len(set(candidates)) == 1 else None
-                    add_edge(source, target, "references", "test_handler", binding.get("line"))
+                    self._add_edge(
+                        source, target, "references", "test_handler", binding.get("line")
+                    )
 
-    manifest_nodes = [
-        node for node in all_nodes
-        if str(node.get("source_file", "")).casefold().endswith("app.json")
-        and str(node.get("label", "")).casefold().endswith("app.json")
-    ]
-    apps_by_id: dict[str, list[dict]] = {}
-    for app in manifest_cache.values():
-        if app.get("id"):
-            apps_by_id.setdefault(_key(app["id"]), []).append(app)
-    for app in manifest_cache.values():
-        source_nodes = [
+    def _emit_core_facts(self, facts: dict, context: dict) -> None:
+        self._emit_objects(facts, context)
+        self._emit_references(facts, context)
+        self._emit_calls(facts, context)
+
+    def _emit_attribute_facts(self, facts: dict, context: dict) -> None:
+        self._emit_subscribers(facts, context)
+        self._emit_enum_mappings(facts, context)
+        self._emit_test_handlers(facts)
+
+    def _emit_results(self) -> None:
+        for result in self.results:
+            facts = result["al_facts"]
+            context = self.result_context[id(result)]
+            self._emit_core_facts(facts, context)
+            self._emit_attribute_facts(facts, context)
+
+    def _manifest_node(self, manifest_nodes: list[dict], manifest: object) -> dict | None:
+        candidates = [
             node for node in manifest_nodes
-            if _same_source(node.get("source_file"), app.get("manifest"))
+            if _same_source(node.get("source_file"), manifest)
         ]
-        if len(source_nodes) != 1:
-            continue
-        for dependency_id in app.get("dependencies", set()):
-            targets = apps_by_id.get(_key(dependency_id), [])
-            if len(targets) != 1:
+        return candidates[0] if len(candidates) == 1 else None
+
+    def _emit_manifest_dependencies(self) -> None:
+        manifest_nodes = [
+            node for node in self.all_nodes
+            if str(node.get("source_file", "")).casefold().endswith("app.json")
+            and str(node.get("label", "")).casefold().endswith("app.json")
+        ]
+        apps_by_id: dict[str, list[dict]] = {}
+        for app in self.manifest_cache.values():
+            if app.get("id"):
+                apps_by_id.setdefault(_key(app["id"]), []).append(app)
+        for app in self.manifest_cache.values():
+            source_node = self._manifest_node(manifest_nodes, app.get("manifest"))
+            if source_node is None:
                 continue
-            target_nodes = [
-                node for node in manifest_nodes
-                if _same_source(node.get("source_file"), targets[0].get("manifest"))
-            ]
-            if len(target_nodes) == 1:
-                add_edge(
-                    source_nodes[0]["id"], target_nodes[0]["id"],
-                    "depends_on", "application", 1,
-                )
+            for dependency_id in app.get("dependencies", set()):
+                targets = apps_by_id.get(_key(dependency_id), [])
+                if len(targets) != 1:
+                    continue
+                target_node = self._manifest_node(manifest_nodes, targets[0].get("manifest"))
+                if target_node is not None:
+                    self._add_edge(
+                        source_node["id"], target_node["id"],
+                        "depends_on", "application", 1,
+                    )
+
+
+def resolve_al_symbols(per_file: list[dict], all_nodes: list[dict], all_edges: list[dict]) -> None:
+    """Resolve AL facts without guessing when multiple candidates remain."""
+    _ALSymbolResolver(per_file, all_nodes, all_edges).resolve()
