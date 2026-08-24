@@ -2569,6 +2569,41 @@ def test_extract_bash_rejects_command_substitution_as_call(tmp_path):
     assert call_pairs == [], f"Command substitution erroneously emitted call edges: {call_pairs}"
 
 
+def test_extract_bash_command_substitution_in_assignment_emits_call(tmp_path):
+    """#2978: x=$(helper) inside a function must emit a calls edge to helper()."""
+    script = tmp_path / "a.sh"
+    script.write_text(
+        "#!/usr/bin/env bash\n"
+        "helper() { echo ok; }\n"
+        "bare()      { helper; }\n"
+        "subst()     { x=$(helper); echo \"$x\"; }\n"
+        "orlist()    { helper || return 1; }\n"
+        "andlist()   { true && helper; }\n"
+        "pipe()      { helper | cat; }\n"
+        "cond()      { if helper; then :; fi; }\n"
+        "loop()      { while helper; do break; done; }\n"
+        "redir()     { helper >/dev/null; }\n"
+        "neg()       { ! helper; }\n",
+        encoding="utf-8",
+    )
+    result = extract_bash(script)
+    labels = {n["id"]: n["label"] for n in result["nodes"]}
+    call_pairs = [
+        (labels.get(e["source"], e["source"]), labels.get(e["target"], e["target"]))
+        for e in result["edges"]
+        if e["relation"] == "calls"
+    ]
+    assert ("subst()", "helper()") in call_pairs
+    assert ("bare()", "helper()") in call_pairs
+    assert ("orlist()", "helper()") in call_pairs
+    assert ("andlist()", "helper()") in call_pairs
+    assert ("pipe()", "helper()") in call_pairs
+    assert ("cond()", "helper()") in call_pairs
+    assert ("loop()", "helper()") in call_pairs
+    assert ("redir()", "helper()") in call_pairs
+    assert ("neg()", "helper()") in call_pairs
+
+
 def test_extract_bash_process_substitution_not_recorded(tmp_path):
     """`<(helper)` (process substitution) must not be recorded as a call edge."""
     script = tmp_path / "process_substitution.sh"
