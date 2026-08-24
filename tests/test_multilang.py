@@ -900,6 +900,12 @@ def test_mask_sql_comments_monotone_against_frozen_baseline():
     series (quote re-pairing, carry-close exposure) was a monotonicity
     violation of exactly this kind, and none was caught by hand-written
     shapes first.
+
+    If an INTENTIONAL over-blanking change lands (the live mask blanks more
+    than the baseline), this still passes; if an intentional EXPOSURE change
+    lands (the mask deliberately blanks less), refresh the frozen copy above
+    to the new revision as part of that reviewed change — do not delete the
+    test or loosen the property.
     """
     import random
 

@@ -185,7 +185,11 @@ def _mask_sql_comments(text: str) -> str:
             # most routines on lines already entangled with the broken one (a
             # conservative false negative; a routine named like [a--b] is
             # inside that loss); under-blanking is what fabricates, and every
-            # reading's blank set stays a subset of this one.
+            # reading's blank set stays a subset of this one — except where a
+            # */ + * versus * + /* token split makes two readings consume the
+            # same /, an irreducible divergence whose only closure would be
+            # blanking to EOF on every */* sequence (accepted, documented
+            # limitation; the token sequence appears in no dialect's idiom).
             closer = '"' if c == '"' else "]"
             j = i + 1
             closed = False
