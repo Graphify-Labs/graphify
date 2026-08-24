@@ -1912,6 +1912,51 @@ def _notify_only(watch_path: Path) -> None:
     print(f"[graphify watch] Flag written to {flag}")
 
 
+def _run_semantic_extract(
+    watch_path: Path,
+    *,
+    backend: str | None = None,
+    fallback_backend: str | None = None,
+) -> bool:
+    """Run LLM-backed semantic extraction over ``watch_path`` in a subprocess.
+
+    A subprocess, not an in-process call, on purpose: ``fcntl.flock`` is held
+    per open file description, so re-entering ``_rebuild_lock`` from the
+    watcher's own process would block against itself forever. A child process
+    contends on ``graphify-out/.rebuild.lock`` like any other invoker, which
+    is exactly the serialization we want against hook-driven rebuilds.
+
+    On success the ``needs_update`` flag is cleared here: extract never
+    touches the flag (only ``_rebuild_code`` does), so without this a
+    successful semantic run would leave a stale "run /graphify --update"
+    prompt behind. On any failure the flag is left for the caller to raise
+    via ``_notify_only`` — the user must never lose the manual instruction.
+
+    Returns True when the extract subprocess completed successfully.
+    """
+    import subprocess as _sp
+
+    cmd = [sys.executable, "-m", "graphify", "extract", str(watch_path)]
+    if backend:
+        cmd += ["--backend", backend]
+    if fallback_backend:
+        cmd += ["--fallback-backend", fallback_backend]
+    print(f"\n[graphify watch] Non-code files changed - running semantic extraction...")
+    try:
+        rc = _sp.run(cmd).returncode
+    except OSError as exc:
+        print(f"[graphify watch] Semantic extraction failed to start: {exc}")
+        return False
+    if rc != 0:
+        print(f"[graphify watch] Semantic extraction exited with code {rc}")
+        return False
+    flag = watch_path / _GRAPHIFY_OUT / "needs_update"
+    if flag.exists():
+        flag.unlink()
+    print("[graphify watch] Semantic extraction complete.")
+    return True
+
+
 def _has_non_code(changed_paths: list[Path]) -> bool:
     return any(p.suffix.lower() not in _CODE_EXTENSIONS for p in changed_paths)
 
@@ -1940,7 +1985,14 @@ def _batch_needs_llm_flag(batch: list[Path]) -> bool:
     return _has_non_code([p for p in batch if p.exists()])
 
 
-def watch(watch_path: Path, debounce: float = 3.0) -> None:
+def watch(
+    watch_path: Path,
+    debounce: float = 3.0,
+    *,
+    semantic: bool = False,
+    backend: str | None = None,
+    fallback_backend: str | None = None,
+) -> None:
     """
     Watch watch_path for new or modified files and auto-update the graph.
 
@@ -1950,6 +2002,17 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
 
     debounce: seconds to wait after the last change before triggering (avoids
     running on every keystroke when many files are saved at once).
+
+    semantic: run the LLM-backed extract automatically (as a subprocess — see
+    ``_run_semantic_extract`` for why in-process re-entry is forbidden) instead
+    of only writing the needs_update flag. The extract runs synchronously; the
+    observer thread keeps queueing events meanwhile, so nothing is lost — the
+    next debounce window picks them up. If the extract fails, the flag +
+    manual instruction are emitted exactly as without ``semantic``.
+
+    backend / fallback_backend: forwarded to the extract subprocess
+    (``--backend`` / ``--fallback-backend``) when set; only meaningful with
+    ``semantic=True``.
     """
     try:
         from watchdog.observers import Observer
@@ -2008,8 +2071,12 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
     observer.start()
 
     print(f"[graphify watch] Watching {watch_path.resolve()} - press Ctrl+C to stop")
-    print(f"[graphify watch] Code changes rebuild graph automatically. "
-          f"Doc/image changes require /graphify --update.")
+    if semantic:
+        print(f"[graphify watch] Code changes rebuild graph automatically. "
+              f"Doc/image changes run semantic extraction automatically (--semantic).")
+    else:
+        print(f"[graphify watch] Code changes rebuild graph automatically. "
+              f"Doc/image changes require /graphify --update.")
     print(f"[graphify watch] Debounce: {debounce}s")
 
     try:
@@ -2023,7 +2090,19 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
                 if _batch_triggers_rebuild(batch):
                     _rebuild_code(watch_path)
                 if _batch_needs_llm_flag(batch):
-                    _notify_only(watch_path)
+                    extracted = False
+                    if semantic:
+                        # At this point the watcher holds no rebuild lock —
+                        # _rebuild_code above acquired and released it
+                        # internally — so the extract subprocess can take
+                        # .rebuild.lock without deadlocking on us.
+                        extracted = _run_semantic_extract(
+                            watch_path,
+                            backend=backend,
+                            fallback_backend=fallback_backend,
+                        )
+                    if not extracted:
+                        _notify_only(watch_path)
     except KeyboardInterrupt:
         print("\n[graphify watch] Stopped.")
     finally:
@@ -2037,5 +2116,12 @@ if __name__ == "__main__":
     parser.add_argument("path", nargs="?", default=".", help="Folder to watch (default: .)")
     parser.add_argument("--debounce", type=float, default=3.0,
                         help="Seconds to wait after last change before updating (default: 3)")
+    parser.add_argument("--semantic", action="store_true",
+                        help="Run LLM-backed semantic extraction automatically on doc/image changes")
+    parser.add_argument("--backend", default=None,
+                        help="Extraction backend for --semantic (passed to graphify extract)")
+    parser.add_argument("--fallback-backend", default=None,
+                        help="Fallback extraction backend for --semantic (passed to graphify extract)")
     args = parser.parse_args()
-    watch(Path(args.path), debounce=args.debounce)
+    watch(Path(args.path), debounce=args.debounce, semantic=args.semantic,
+          backend=args.backend, fallback_backend=args.fallback_backend)

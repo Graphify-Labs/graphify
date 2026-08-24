@@ -1730,14 +1730,57 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(1)
 
     elif cmd == "watch":
-        watch_path = Path(sys.argv[2]) if len(sys.argv) > 2 else Path(".")
+        watch_semantic = False
+        watch_backend: str | None = None
+        watch_fallback_backend: str | None = None
+        watch_arg: str | None = None
+        args = sys.argv[2:]
+        i = 0
+        while i < len(args):
+            a = args[i]
+            if a == "--semantic":
+                watch_semantic = True; i += 1
+            elif a == "--backend" and i + 1 < len(args):
+                watch_backend = args[i + 1]; i += 2
+            elif a.startswith("--backend="):
+                watch_backend = a.split("=", 1)[1]; i += 1
+            elif a == "--fallback-backend" and i + 1 < len(args):
+                watch_fallback_backend = args[i + 1]; i += 2
+            elif a.startswith("--fallback-backend="):
+                watch_fallback_backend = a.split("=", 1)[1]; i += 1
+            elif a.startswith("-"):
+                print(f"error: unknown watch option: {a}", file=sys.stderr)
+                sys.exit(2)
+            else:
+                if watch_arg is not None:
+                    print("error: watch accepts at most one path argument", file=sys.stderr)
+                    sys.exit(2)
+                watch_arg = a; i += 1
+
+        if (watch_backend or watch_fallback_backend) and not watch_semantic:
+            # Without --semantic the watcher never runs an extract, so a
+            # backend flag would be a silent no-op the user believes took
+            # effect — reject it loudly instead.
+            print(
+                "error: --backend/--fallback-backend require --semantic "
+                "(they configure the automatic semantic extraction pass)",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+
+        watch_path = Path(watch_arg) if watch_arg is not None else Path(".")
         if not watch_path.exists():
             print(f"error: path not found: {watch_path}", file=sys.stderr)
             sys.exit(1)
         from graphify.watch import watch as _watch
 
         try:
-            _watch(watch_path)
+            _watch(
+                watch_path,
+                semantic=watch_semantic,
+                backend=watch_backend,
+                fallback_backend=watch_fallback_backend,
+            )
         except ImportError as exc:
             print(f"error: {exc}", file=sys.stderr)
             sys.exit(1)
