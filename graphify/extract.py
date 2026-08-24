@@ -980,7 +980,16 @@ _SCALA_CONFIG = LanguageConfig(
 _PHP_CONFIG = LanguageConfig(
     ts_module="tree_sitter_php",
     ts_language_fn="language_php",
-    class_types=frozenset({"class_declaration"}),
+    # interface/trait/enum are first-class PHP type declarations that share
+    # class_declaration's name + declaration_list body contract. Omitting them
+    # dropped every interface, trait and enum as a definition — and, worse,
+    # re-attributed their methods to the FILE as free functions instead of the
+    # type — erasing a load-bearing slice of the graph in interface/trait-heavy
+    # codebases (Laravel, Symfony, PSR). Mirrors Java's interface/enum handling.
+    class_types=frozenset({
+        "class_declaration", "interface_declaration",
+        "trait_declaration", "enum_declaration",
+    }),
     function_types=frozenset({"function_definition", "method_declaration"}),
     import_types=frozenset({"namespace_use_clause"}),
     call_types=frozenset({"function_call_expression", "member_call_expression", "scoped_call_expression", "class_constant_access_expression"}),
