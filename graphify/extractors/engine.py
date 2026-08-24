@@ -3687,30 +3687,6 @@ def _extract_generic(
                         type_node = child.child_by_field_name("type")
                         if type_node is not None:
                             break
-            # Emit a node per declared member, the way the C++ field branch does.
-            # Runs before the type checks below so a member keeps its node even
-            # when its type is a generic parameter or a primitive: the node is
-            # the class's state, independent of what that state is typed as.
-            for child in node.children:
-                if child.type != "variable_declaration":
-                    continue
-                for declarator in child.children:
-                    if declarator.type != "variable_declarator":
-                        continue
-                    member_name_node = declarator.child_by_field_name("name") or next(
-                        (g for g in declarator.children if g.type == "identifier"),
-                        None,
-                    )
-                    if member_name_node is None:
-                        continue
-                    member_name = _read_text(member_name_node, source)
-                    if not member_name:
-                        continue
-                    member_line = declarator.start_point[0] + 1
-                    member_nid = _make_id(parent_class_nid, member_name)
-                    add_node(member_nid, member_name, member_line)
-                    add_edge(parent_class_nid, member_nid, "defines",
-                             member_line, context="field")
             type_info = _read_csharp_type_name(type_node, source)
             if type_info:
                 type_name, qualified, qualifier = type_info
@@ -3758,15 +3734,22 @@ def _extract_generic(
             # field. Use _csharp_collect_type_refs (like the Java/PHP/Kotlin
             # siblings) so `List<Widget>` yields both the List field ref and the
             # Widget generic_arg ref.
+            # A property becomes a node, the way a C++ data member does. Fields
+            # stay out: the id recipe casefolds and strips leading underscores, so
+            # `_count` and `Count` normalize to the same id, and emitting both
+            # would hand the node to whichever the parser reached first — in
+            # practice the private backing field, hiding the public member behind
+            # it. See #3006 for the follow-up.
             prop_node_name = node.child_by_field_name("name")
             if prop_node_name is not None:
                 property_name = _read_text(prop_node_name, source)
                 if property_name:
                     property_line = node.start_point[0] + 1
                     property_nid = _make_id(parent_class_nid, property_name)
-                    add_node(property_nid, property_name, property_line)
-                    add_edge(parent_class_nid, property_nid, "defines",
-                             property_line, context="field")
+                    if property_nid not in seen_ids:
+                        add_node(property_nid, property_name, property_line)
+                        add_edge(parent_class_nid, property_nid, "defines",
+                                 property_line, context="field")
             type_node = node.child_by_field_name("type")
             if type_node is not None:
                 # Record the property's declared type for the method-scoped

@@ -1,14 +1,16 @@
-"""C# fields and properties get a node, like C++ data members (#3006).
+"""C# properties get a node, like C++ data members (#3006).
 
 `_CSHARP_CONFIG` emitted a `references` edge to a member's *type* and no node for
 the member, so C# was the only language with a class-shaped type layer whose
-state was absent from the graph. C++ has emitted a node per data member with a
-`defines` edge for a while, #2971 is adding the same for C structs, and Swift
-computed properties became nodes in #2220. This brings C# to that line.
+state was absent from the graph. C++ emits a node per data member with `defines`,
+#2971 is adding the same for C structs, and #2220 gave Swift computed properties
+nodes. This brings C# to that line.
 
-The node is the class's state, so it does not depend on what that state is typed
-as: a primitive and a generic parameter both leave a member behind, even though
-neither produces a type reference.
+Properties only, not fields. `ids.normalize_id` casefolds and strips leading
+underscores, so `_count` and `Count` are the same id: emitting both would hand
+the node to whichever the parser reached first, which is the private backing
+field, hiding the public member behind it. In C# the property is the state's
+public identity, so it is the half worth having first.
 """
 from __future__ import annotations
 
@@ -51,64 +53,71 @@ def test_auto_property_becomes_a_member_node(tmp_path):
     assert (_find(r, "Variant"), _find(r, "IsShowCategory")) in defines
 
 
-def test_field_becomes_a_member_node(tmp_path):
+def test_every_property_on_a_class_gets_its_own_node(tmp_path):
     defines, r = _extract(tmp_path, {"S.cs": (
         "public class Variant {\n"
-        "    private Widget _widget;\n"
-        "}\n"
-        "public class Widget { }\n"
-    )})
-    assert (_find(r, "Variant"), _find(r, "_widget")) in defines
-
-
-def test_one_declaration_with_several_names_leaves_one_node_each(tmp_path):
-    defines, r = _extract(tmp_path, {"S.cs": (
-        "public class Point {\n"
-        "    private int x, y;\n"
+        "    public bool IsShowCategory { get; set; }\n"
+        "    public bool ShowOnWeb { get; set; }\n"
         "}\n"
     )})
-    point = _find(r, "Point")
-    assert (point, _find(r, "x")) in defines
-    assert (point, _find(r, "y")) in defines
+    variant = _find(r, "Variant")
+    assert (variant, _find(r, "IsShowCategory")) in defines
+    assert (variant, _find(r, "ShowOnWeb")) in defines
 
 
-def test_a_primitive_member_still_gets_a_node(tmp_path):
-    # `int` produces no member-worthy type reference, and the member is still
+def test_a_primitive_property_still_gets_a_node(tmp_path):
+    # `int` produces no member-worthy type reference, and the property is still
     # part of the class's state.
     defines, r = _extract(tmp_path, {"S.cs": (
         "public class Counter {\n"
-        "    private int _count;\n"
-        "    public string Name { get; set; }\n"
+        "    public int Count { get; set; }\n"
         "}\n"
     )})
-    counter = _find(r, "Counter")
-    assert (counter, _find(r, "_count")) in defines
-    assert (counter, _find(r, "Name")) in defines
+    assert (_find(r, "Counter"), _find(r, "Count")) in defines
 
 
-def test_a_generic_parameter_typed_member_still_gets_a_node(tmp_path):
+def test_a_generic_parameter_typed_property_still_gets_a_node(tmp_path):
     # The type-reference path returns early for a type parameter, which is right
     # for a reference and wrong for the member itself.
     defines, r = _extract(tmp_path, {"S.cs": (
         "public class Box<T> {\n"
-        "    private T _value;\n"
+        "    public T Value { get; set; }\n"
         "}\n"
     )})
-    assert (_find(r, "Box"), _find(r, "_value")) in defines
+    assert (_find(r, "Box"), _find(r, "Value")) in defines
 
 
-def test_a_const_member_gets_a_node(tmp_path):
+def test_a_backing_field_does_not_take_the_property_node(tmp_path):
+    # `_count` and `Count` normalize to one id. The public member is the one to
+    # keep, and there is exactly one edge rather than two onto a shared node.
     defines, r = _extract(tmp_path, {"S.cs": (
-        "public class Limits {\n"
-        "    public const int Max = 100;\n"
+        "public class Counter {\n"
+        "    private int _count;\n"
+        "    public int Count { get; set; }\n"
         "}\n"
     )})
-    assert (_find(r, "Limits"), _find(r, "Max")) in defines
+    assert (_find(r, "Counter"), _find(r, "Count")) in defines
+    assert len(defines) == 1
+    assert "_count" not in _labels(r)
 
 
-def test_member_type_references_are_kept(tmp_path):
+def test_a_field_alone_makes_no_member_node_but_keeps_its_type_reference(tmp_path):
+    # Fields are out for now, and the reference to a field's type is untouched.
+    defines, r = _extract(tmp_path, {"S.cs": (
+        "public class Runner {\n"
+        "    private readonly Worker _worker;\n"
+        "}\n"
+        "public class Worker { }\n"
+    )})
+    assert defines == set()
+    references = {(e["source"], e["target"], e.get("context")) for e in r["edges"]
+                  if e["relation"] == "references"}
+    assert (_find(r, "Runner"), _find(r, "Worker"), "field") in references
+
+
+def test_property_type_references_are_kept(tmp_path):
     # Regression guard for #1591: the member node is additive, the reference to
-    # the member's type stays.
+    # the property's type stays.
     _, r = _extract(tmp_path, {"S.cs": (
         "public class Holder {\n"
         "    public Widget Main { get; set; }\n"
@@ -134,3 +143,15 @@ def test_methods_are_still_methods(tmp_path):
     assert (variant, _find(r, "Flag")) in defines
     assert (variant, _find(r, ".Touch()")) in methods
     assert (variant, _find(r, ".Touch()")) not in defines
+
+
+def test_case_only_sibling_properties_do_not_duplicate_an_edge(tmp_path):
+    # Legal C#, and one id after normalization. One node, one edge, rather than a
+    # second edge hung on the first property's node.
+    defines, r = _extract(tmp_path, {"S.cs": (
+        "public class Odd {\n"
+        "    public int Count { get; set; }\n"
+        "    public int count { get; set; }\n"
+        "}\n"
+    )})
+    assert len(defines) == 1
