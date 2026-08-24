@@ -648,19 +648,30 @@ def test_mask_sql_comments_literal_and_comment_handling():
     # identifier literals are preserved verbatim, escapes included
     assert mask('CREATE FUNCTION "public"."a""b"()') == 'CREATE FUNCTION "public"."a""b"()'
     assert mask("CREATE PROCEDURE [dbo].[a]]b] AS x") == "CREATE PROCEDURE [dbo].[a]]b] AS x"
-    # ...but a span that would swallow a comment opener is NOT trusted as an
-    # identifier: the delimiter is emitted alone and the comment fires, so a
-    # stray [ or " before a comment cannot shield commented-out DDL —
-    # `[Col FROM t -- CREATE PROC [dbo]` would otherwise close on [dbo]'s
-    # bracket and preserve the DDL. (The trade: a genuine [a--b] identifier
-    # is conservatively blanked past the --, losing that name, never
-    # fabricating one.)
+    # ...but a span that is unterminated or would swallow a comment opener is
+    # NOT trusted as an identifier. A distrusted span is irreducibly
+    # ambiguous, and any single reading exposed text another reading blanks
+    # (re-emitting the delimiter and rescanning even re-paired later single
+    # quotes, uncovering dynamic SQL), so the mask blanks the UNION of every
+    # reading: the rest of the line, plus carried comment state for a raw /*
+    # left open on it. The trade: a genuine [a--b] identifier loses its line,
+    # never fabricating anything.
     ghost = "SELECT [Col FROM t -- CREATE PROC [dbo].[usp_Ghost] AS BEGIN SELECT 1; END;"
     assert "CREATE" not in mask(ghost) and len(mask(ghost)) == len(ghost)
     ghost2 = 'SELECT "Col FROM t /* CREATE PROC dbo.usp_Ghost AS BEGIN SELECT 1; END */'
     assert "CREATE" not in mask(ghost2) and len(mask(ghost2)) == len(ghost2)
     out = mask("select [a--b] from t")
-    assert out.startswith("select [a") and "from t" not in out and len(out) == len("select [a--b] from t")
+    assert out == "select " + " " * len("[a--b] from t") and len(out) == len("select [a--b] from t")
+    # a distrusted span cannot re-pair later single quotes: the dynamic SQL
+    # after it stays masked (the re-emit-and-rescan defect, found by fuzzing)
+    repair = "SELECT [Col's -- x] ; EXEC(N'CREATE PROC [dbo].[usp_Fake] AS BEGIN SELECT 1; END');"
+    assert "CREATE" not in mask(repair) and len(mask(repair)) == len(repair)
+    # a raw /* on a distrusted line with no */ carries across the newline —
+    # some reading of the broken line left it open
+    carry = "SELECT [a--b] /*\nCREATE PROC dbo.Fake AS BEGIN SELECT 1; END\n"
+    assert "CREATE" not in mask(carry) and len(mask(carry)) == len(carry)
+    carry_closed = "SELECT [a--b] /*\nx */ CREATE PROC dbo.Kept AS x\n"
+    assert "CREATE PROC dbo.Kept" in mask(carry_closed)
     # dynamic SQL contents cannot survive the mask
     dyn = "EXEC(N'CREATE PROC [dbo].[Fake] AS BEGIN SELECT 1; END');"
     assert "CREATE" not in mask(dyn) and len(mask(dyn)) == len(dyn)
@@ -685,6 +696,31 @@ def test_mask_sql_comments_literal_and_comment_handling():
     nested = "/* outer\n   /* inner */\n   CREATE PROC dbo.usp_Fake AS BEGIN SELECT 1; END;\n*/\n"
     out = mask(nested)
     assert "CREATE" not in out and len(out) == len(nested)
+
+
+def test_mask_sql_comments_invariants_fuzz():
+    """Deterministic fuzz over the mask's structural invariants.
+
+    Both rounds of masking defects were shapes nobody thought to write down,
+    so pin properties instead: (1) one output character per input character,
+    (2) newlines exactly preserved, (3) blanked spans are spaces, (4) the
+    mask is idempotent — re-masking its own output changes nothing (the
+    quote re-pairing defect broke this: exposed text re-masked differently).
+    """
+    import random
+
+    from graphify.extractors.sql import _mask_sql_comments as mask
+
+    rng = random.Random(0xC0FFEE)
+    alphabet = "ab[]\"'-*/ \n;.$"
+    for _ in range(20_000):
+        s = "".join(rng.choice(alphabet) for _ in range(rng.randint(1, 26)))
+        out = mask(s)
+        assert len(out) == len(s), (s, out)
+        for a, b in zip(s, out):
+            assert (a == "\n") == (b == "\n"), (s, out)
+            assert b == a or b == " ", (s, out)
+        assert mask(out) == out, (s, out)
 
 
 def test_sql_dynamic_sql_and_unclosed_comment_do_not_fabricate_routines(tmp_path):

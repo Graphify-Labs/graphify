@@ -110,22 +110,24 @@ def _mask_sql_comments(text: str) -> str:
             i = _blank(j)
         elif c == '"' or c == "[":
             # Delimited identifier: preserve verbatim. Doubled closers are
-            # escapes. Two shapes are NOT trusted as identifiers — emit just
-            # the delimiter and rescan the rest of the line normally, so a
-            # `--` or `/*` inside the would-be span is recognized as the
-            # comment it almost certainly is:
+            # escapes. A span is DISTRUSTED when it is unterminated (no
+            # closer before the newline) or would swallow a comment opener
+            # on its way to the closer ('SELECT [Col FROM t -- CREATE PROC
+            # [dbo]' closes on [dbo]'s bracket) — a stray delimiter is
+            # ordinary in exactly the broken files this mask runs on.
             #
-            # - an UNTERMINATED opener (no closer before the newline);
-            # - a span that would swallow a comment opener on its way to the
-            #   closer (`[Col FROM t -- CREATE PROC [dbo]` closes on [dbo]'s
-            #   bracket) — a stray delimiter before a comment is ordinary in
-            #   exactly the broken files this mask runs on, and preserving
-            #   the span let the commented-out DDL after it fabricate nodes.
-            #
-            # The cost is that a genuine identifier CONTAINING a comment
-            # opener ([a--b]) is no longer preserved, so a routine so named
-            # loses recovery — a conservative false negative, traded for
-            # never fabricating.
+            # A distrusted span is irreducibly ambiguous (identifier data vs
+            # stray delimiter before real comments/strings), and any attempt
+            # to pick one reading exposed text the other reading blanks —
+            # re-emitting the delimiter and rescanning even re-paired later
+            # single quotes and uncovered dynamic SQL. So blank the UNION of
+            # every reading: the rest of the line is blanked outright, and
+            # any raw /* on it with no later */ on the same line carries
+            # forward as (nesting-aware) comment state, since some reading
+            # may have left it open. Over-blanking loses at most routines on
+            # a line that was already broken (a conservative false negative,
+            # and a routine named like [a--b] is inside that loss);
+            # under-blanking is what fabricates, and cannot happen here.
             closer = '"' if c == '"' else "]"
             j = i + 1
             closed = False
@@ -143,8 +145,33 @@ def _mask_sql_comments(text: str) -> str:
                 out.append(span)
                 i = j
             else:
-                out.append(c)
-                i += 1
+                eol = text.find("\n", i)
+                eol = n if eol == -1 else eol
+                depth = 0
+                m2 = i
+                while m2 < eol:
+                    if text.startswith("/*", m2):
+                        depth += 1
+                        m2 += 2
+                    elif text.startswith("*/", m2):
+                        if depth:
+                            depth -= 1
+                        m2 += 2
+                    else:
+                        m2 += 1
+                i = _blank(eol)
+                if depth:
+                    j2 = eol
+                    while j2 < n and depth:
+                        if text.startswith("/*", j2):
+                            depth += 1
+                            j2 += 2
+                        elif text.startswith("*/", j2):
+                            depth -= 1
+                            j2 += 2
+                        else:
+                            j2 += 1
+                    i = _blank(j2)
         elif c == "-" and i + 1 < n and text[i + 1] == "-":
             j = i
             while j < n and text[j] != "\n":
