@@ -6,6 +6,14 @@ fake in-memory drivers (no server, no network): rows are grouped by sanitized
 label/relation (labels cannot be Cypher parameters), chunked into batch_size
 rows per query, and the row payloads carry exactly the per-entry params so
 MERGE/SET upsert semantics are unchanged.
+
+The push is index-driven: before any write the pushers create the shared
+GraphifyNode-on-(id) index plus one per type label, and run the one-scan
+legacy adoption query; node MERGEs go through (:GraphifyNode {id}) + a
+`SET n:<Type>` clause, and edge endpoints MATCH via the shared label.
+tests/test_indexed_push.py holds the dedicated index/adoption contract
+tests; here the setup queries are split from the UNWIND writes by _writes /
+_setup.
 """
 from __future__ import annotations
 
@@ -58,7 +66,7 @@ def _fake_falkordb_module(recorded: list) -> types.ModuleType:
     """A stand-in for the `falkordb` package recording every graph.query call."""
 
     class _Graph:
-        def query(self, cypher, params):
+        def query(self, cypher, params=None):
             recorded.append((cypher, params))
 
     class FalkorDB:
@@ -81,6 +89,24 @@ def _make_graph(n_nodes: int = 0) -> nx.MultiDiGraph:
 
 
 # ---------------------------------------------------------------------------
+# Write/setup split - the pushers now emit index-creation and legacy-adoption
+# queries (no UNWIND) before the batched UNWIND writes.
+# ---------------------------------------------------------------------------
+
+def _writes(recorded):
+    return [(c, p) for c, p in recorded if "UNWIND $rows AS row" in c]
+
+
+def _setup(recorded):
+    return [(c, p) for c, p in recorded if "UNWIND $rows AS row" not in c]
+
+
+def _type_label(cypher: str) -> str:
+    """The per-type label a node write adds via its `SET n:<Type>` clause."""
+    return cypher.split("SET n:")[1].split(" ")[0]
+
+
+# ---------------------------------------------------------------------------
 # Neo4j
 # ---------------------------------------------------------------------------
 
@@ -94,16 +120,25 @@ def test_neo4j_nodes_are_chunked_by_batch_size(monkeypatch):
                            batch_size=100)
 
     assert result == {"nodes": 250, "edges": 0}
-    # One label -> ceil(250 / 100) = 3 round trips instead of 250.
-    assert len(recorded) == 3
-    assert [len(p["rows"]) for _, p in recorded] == [100, 100, 50]
-    for cypher, _ in recorded:
+    # Setup (indexes + legacy adoption) fully precedes every write.
+    assert [c for c, _ in recorded[:3]] == [
+        "CREATE INDEX IF NOT EXISTS FOR (n:GraphifyNode) ON (n.id)",
+        "MATCH (n) WHERE n.id IS NOT NULL SET n:GraphifyNode",
+        "CREATE INDEX IF NOT EXISTS FOR (n:Python) ON (n.id)",
+    ]
+    writes = _writes(recorded)
+    assert recorded[3:] == writes
+    # One label -> ceil(250 / 100) = 3 write round trips instead of 250.
+    assert len(writes) == 3
+    assert [len(p["rows"]) for _, p in writes] == [100, 100, 50]
+    for cypher, _ in writes:
         assert "UNWIND $rows AS row" in cypher
-        assert "MERGE (n:Python {id: row.id})" in cypher
+        assert "MERGE (n:GraphifyNode {id: row.id})" in cypher
+        assert "SET n:Python" in cypher
         assert "SET n += row.props" in cypher
     # Every node arrives exactly once, in graph order, with the id in props
     # exactly as the per-entry queries sent it.
-    all_rows = [r for _, p in recorded for r in p["rows"]]
+    all_rows = [r for _, p in writes for r in p["rows"]]
     assert [r["id"] for r in all_rows] == [f"node-{i}" for i in range(250)]
     assert all_rows[0]["props"]["id"] == "node-0"
     assert all_rows[0]["props"]["label"] == "Node 0"
@@ -124,10 +159,14 @@ def test_neo4j_nodes_are_grouped_by_sanitized_label(monkeypatch):
     result = push_to_neo4j(G, uri="bolt://x", user="neo4j", password="pw")
 
     assert result["nodes"] == 4
-    labels = sorted(c.split("MERGE (n:")[1].split(" ")[0] for c, _ in recorded)
+    writes = _writes(recorded)
+    labels = sorted(_type_label(c) for c, _ in writes)
     assert labels == ["Markdown", "Python", "Xdetachdeleten"]
-    by_label = {c.split("MERGE (n:")[1].split(" ")[0]: p["rows"] for c, p in recorded}
+    by_label = {_type_label(c): p["rows"] for c, p in writes}
     assert [r["id"] for r in by_label["Python"]] == ["a", "c"]
+    # The injection attempt is sanitized in the per-label index DDL too.
+    setup_cyphers = [c for c, _ in _setup(recorded)]
+    assert "CREATE INDEX IF NOT EXISTS FOR (n:Xdetachdeleten) ON (n.id)" in setup_cyphers
 
 
 def test_neo4j_edges_are_grouped_and_batched(monkeypatch):
@@ -144,7 +183,9 @@ def test_neo4j_edges_are_grouped_and_batched(monkeypatch):
                            batch_size=100)
 
     assert result == {"nodes": 3, "edges": 3}
-    edge_queries = [(c, p) for c, p in recorded if "MATCH (a {id: row.src})" in c]
+    edge_queries = [(c, p) for c, p in recorded
+                    if "MATCH (a:GraphifyNode {id: row.src}), "
+                       "(b:GraphifyNode {id: row.tgt})" in c]
     assert len(edge_queries) == 2  # one per relation: CALLS, IMPORTS
     by_rel = {c.split("MERGE (a)-[r:")[1].split("]")[0]: p["rows"]
               for c, p in edge_queries}
@@ -164,7 +205,7 @@ def test_neo4j_community_lands_in_props(monkeypatch):
     push_to_neo4j(G, uri="bolt://x", user="neo4j", password="pw",
                   communities={7: ["node-1"]})
 
-    rows = recorded[0][1]["rows"]
+    rows = _writes(recorded)[0][1]["rows"]
     by_id = {r["id"]: r["props"] for r in rows}
     assert by_id["node-1"]["community"] == 7
     assert "community" not in by_id["node-0"]
@@ -194,12 +235,23 @@ def test_falkordb_nodes_and_edges_are_batched(monkeypatch):
     result = push_to_falkordb(G, uri="localhost:6379", batch_size=100)
 
     assert result == {"nodes": 150, "edges": 1}
-    node_queries = [(c, p) for c, p in recorded if "MERGE (n:" in c]
-    edge_queries = [(c, p) for c, p in recorded if "MATCH (a {id: row.src})" in c]
+    # FalkorDB has no IF NOT EXISTS: plain CREATE INDEX, tolerance handles
+    # the "already indexed" reply on a re-push. Setup precedes every write.
+    assert [c for c, _ in recorded[:3]] == [
+        "CREATE INDEX FOR (n:GraphifyNode) ON (n.id)",
+        "MATCH (n) WHERE n.id IS NOT NULL SET n:GraphifyNode",
+        "CREATE INDEX FOR (n:Python) ON (n.id)",
+    ]
+    writes = _writes(recorded)
+    assert recorded[3:] == writes
+    node_queries = [(c, p) for c, p in writes if "MERGE (n:" in c]
+    edge_queries = [(c, p) for c, p in writes
+                    if "MATCH (a:GraphifyNode {id: row.src}), "
+                       "(b:GraphifyNode {id: row.tgt})" in c]
     assert len(node_queries) == 2  # 100 + 50
     assert [len(p["rows"]) for _, p in node_queries] == [100, 50]
     assert len(edge_queries) == 1
-    for cypher, params in recorded:
+    for cypher, params in writes:
         assert "UNWIND $rows AS row" in cypher
         assert set(params) == {"rows"}  # positional params dict, rows only
     assert edge_queries[0][1]["rows"] == [

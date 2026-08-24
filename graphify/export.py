@@ -19,6 +19,7 @@ from graphify.build import edge_data
 from graphify.paths import stem_filename_budget
 
 from graphify.exporters.graphdb import (  # noqa: E402,F401
+    SHARED_NODE_LABEL,
     push_to_falkordb,
     push_to_neo4j,
     stream_push_to_falkordb,
