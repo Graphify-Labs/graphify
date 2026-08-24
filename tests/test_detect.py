@@ -34,6 +34,12 @@ def test_classify_python():
 def test_classify_typescript():
     assert classify_file(Path("bar.ts")) == FileType.CODE
 
+
+@pytest.mark.parametrize("suffix", [".hlsl", ".hlsli", ".glsl", ".slang", ".spv"])
+def test_classify_shader_formats_case_insensitively(suffix):
+    assert classify_file(Path(f"shader{suffix}")) == FileType.CODE
+    assert classify_file(Path(f"shader{suffix.upper()}")) == FileType.CODE
+
 def test_classify_powershell_module():
     # #1315: .psm1 modules were never indexed (CODE_EXTENSIONS gap).
     assert classify_file(Path("Utils.psm1")) == FileType.CODE
@@ -72,6 +78,12 @@ def test_classify_image():
 def test_count_words_sample_md():
     words = count_words(FIXTURES / "sample.md")
     assert words > 5
+
+
+def test_spirv_binary_contributes_no_words(tmp_path):
+    shader = tmp_path / "shader.spv"
+    shader.write_bytes(b"\x03\x02\x23\x07binary words are not prose")
+    assert count_words(shader) == 0
 
 def test_detect_finds_fixtures():
     result = detect(FIXTURES)

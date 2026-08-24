@@ -63,6 +63,9 @@ Every extractor returns:
 ```
 
 `validate.py` enforces this schema before `build()` consumes it.
+Text extractors use `L<line>` provenance. Binary extractors may use a documented
+format-native location such as SPIR-V's `W<word-offset>` while keeping
+`source_file` anchored to the binary that owns the record.
 
 ## Confidence labels
 
@@ -74,10 +77,10 @@ Every extractor returns:
 
 ## Adding a new language extractor
 
-1. Add an `extract_<lang>(path: Path) -> dict` function following the existing pattern (tree-sitter parse → walk nodes → collect `nodes` and `edges` → call-graph second pass for INFERRED `calls` edges). New languages go in their own module under `graphify/extractors/` - see `graphify/extractors/MIGRATION.md`; `extract.py` re-exports them while the existing ones are ported out of it.
+1. Add an `extract_<lang>(path: Path) -> dict` function following the existing pattern (deterministic parse → walk records → collect `nodes` and `edges` → call-graph second pass for INFERRED `calls` edges). Source languages normally use tree-sitter; binary formats use a bounded native parser. New extractors go under `graphify/extractors/`; closely related grammars may share one walker/module. See `graphify/extractors/MIGRATION.md`; `extract.py` re-exports them while the existing ones are ported out of it.
 2. Register the file suffix in `extract()`'s dispatch table and in `collect_files()` (both in `extract.py`).
-3. Add the suffix to `CODE_EXTENSIONS` in `detect.py` and `_WATCHED_EXTENSIONS` in `watch.py`.
-4. Add the tree-sitter package to `pyproject.toml` dependencies.
+3. Add the suffix to `CODE_EXTENSIONS` in `detect.py`; watch support derives from that set automatically.
+4. Add any required parser package to `pyproject.toml` dependencies.
 5. Add a fixture file to `tests/fixtures/` and tests to `tests/test_languages.py`.
 
 ## Security
