@@ -843,6 +843,22 @@ _TSX_LT_EXPR_PREV = frozenset(
     # end-of-token check below, which keeps the set a flat char check.
 )
 
+# Characters that can precede a ``/`` which starts a regex literal in TS/JS.
+# ``/`` after a value token (identifier, number, closing paren, bracket, or
+# brace) is a division operator, not a regex; ``<`` and ``>`` are included
+# because they can be comparison operators (``a < /b/g``), but the tag ``>``
+# handler resets the previous-char tracker so a ``/`` directly after a JSX
+# tag is not mistaken for regex.
+_TSX_REGEX_START_PREV = frozenset(
+    '=(),?:;!&|^~+-*/%[]{}<>'
+)
+
+# Keywords that put the next token in expression position, so a following
+# ``/`` can be a regex literal (``return /a/g``, ``case /a/:``, ...).
+_TSX_REGEX_START_KEYWORDS = frozenset({
+    'return', 'yield', 'throw', 'typeof', 'void', 'delete', 'case',
+})
+
 
 def _generic_arrow_tail(src: str, m: int) -> bool:
     """True when ``src[m] == '('`` opens a parameter list followed by an
@@ -935,6 +951,11 @@ def _mask_tsx_ampersands(src: str) -> str:
     # ``<`` after them is JSX), the second opens declaration position (so
     # ``<`` after them is a generic, not JSX).
     prev_code_keyword: str | None = None
+    # When the active context is 'regex', whether we are inside a character
+    # class and the index where that class opened (so a leading ``]`` is
+    # treated as a literal, not the class close).
+    regex_class = False
+    regex_class_open = -1
 
     # Cheap fast-path: if there is no ``&`` in the source, the mask is a
     # no-op and we can skip the whole walk. Almost every real TSX file has
@@ -1049,6 +1070,48 @@ def _mask_tsx_ampersands(src: str) -> str:
         c2 = src[i:i + 2] if i + 1 < n else ''
         top = stack[-1] if stack else None
 
+        if top == 'regex':
+            if c == '\\' and i + 1 < n:
+                out.append(c)
+                out.append(src[i + 1])
+                i += 2
+                continue
+            if regex_class:
+                if c == ']':
+                    if (
+                        i == regex_class_open + 1
+                        or (i == regex_class_open + 2 and src[regex_class_open + 1] == '^')
+                    ):
+                        # A leading ``]`` immediately after ``[`` or ``[^``
+                        # is a literal, not the class close.
+                        out.append(c)
+                        i += 1
+                        continue
+                    regex_class = False
+                out.append(c)
+                i += 1
+                continue
+            if c == '[':
+                regex_class = True
+                regex_class_open = i
+                out.append(c)
+                i += 1
+                continue
+            if c == '/':
+                out.append(c)
+                i += 1
+                while i < n and src[i].isalpha():
+                    out.append(src[i])
+                    i += 1
+                stack.pop()
+                # The regex literal is a value token, so ``<`` after it is a
+                # comparison and ``/`` after it is division.
+                _set_prev(')')
+                continue
+            out.append(c)
+            i += 1
+            continue
+
         if top == 'string':
             if c == '\\' and i + 1 < n:
                 out.append(c)
@@ -1142,6 +1205,9 @@ def _mask_tsx_ampersands(src: str) -> str:
                 elif kind != 'self':
                     # Opening tag → enter JSX text for the element's children.
                     stack.append('jsx_text')
+                # A complete tag is a value token; reset the tracker so the
+                # next ``<``/``/`` is not misread as a JSX/regex start.
+                _set_prev(')')
                 i += 1
                 continue
             out.append(c)
@@ -1177,6 +1243,18 @@ def _mask_tsx_ampersands(src: str) -> str:
                 stack.append('comment')
                 i += 2
                 continue
+            if c == '/' and c2 not in ('//', '/*'):
+                if (
+                    prev_code_char is None
+                    or prev_code_char in _TSX_REGEX_START_PREV
+                    or prev_code_keyword in _TSX_REGEX_START_KEYWORDS
+                ):
+                    stack.append('regex')
+                    regex_class = False
+                    regex_class_open = -1
+                    out.append(c)
+                    i += 1
+                    continue
             if c == '<':
                 # Nested JSX inside a JSX expression container
                 # (``{ok ? <span>a & b</span> : null}``): run the shared
@@ -1238,6 +1316,18 @@ def _mask_tsx_ampersands(src: str) -> str:
             stack.append('comment')
             i += 2
             continue
+        if c == '/' and c2 not in ('//', '/*'):
+            if (
+                prev_code_char is None
+                or prev_code_char in _TSX_REGEX_START_PREV
+                or prev_code_keyword in _TSX_REGEX_START_KEYWORDS
+            ):
+                stack.append('regex')
+                regex_class = False
+                regex_class_open = -1
+                out.append(c)
+                i += 1
+                continue
         if c == '<':
             # JSX-vs-generic disambiguation (shared with expression
             # containers — see ``_lt``):

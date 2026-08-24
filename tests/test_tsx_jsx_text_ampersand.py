@@ -252,6 +252,33 @@ _MASK_CASES = [
     # Attribute strings still untouched, element text still masked.
     ('const a = <div title="x & y">t & v</div>;',
      'const a = <div title="x & y">t   v</div>;'),
+    # --- Regex literals: ``<``/``>``/``&`` inside a ``/.../`` body are not
+    # JSX and must not be masked. The walker enters a regex context so the
+    # ``/`` closing delimiter ends it, including unescaped ``/`` inside
+    # character classes and a trailing flag run.
+    ('const r = /<a>&b<\\/a>/;',
+     'const r = /<a>&b<\\/a>/;'),
+    ('const r = /a & b/gi;',
+     'const r = /a & b/gi;'),
+    ('const r = /[a&b]/;',
+     'const r = /[a&b]/;'),
+    ('const r = /[]]/;',
+     'const r = /[]]/;'),
+    ('const r = /[^]]/;',
+     'const r = /[^]]/;'),
+    ('const a = [<div/>, /<a>&b<\\/a>/];',
+     'const a = [<div/>, /<a>&b<\\/a>/];'),
+    ('const a = { r: /<a>&b<\\/a>/ };',
+     'const a = { r: /<a>&b<\\/a>/ };'),
+    ('return /<a>&b<\\/a>/;',
+     'return /<a>&b<\\/a>/;'),
+    # --- Division is not a regex (prev token is a value).
+    ('const a = 1 / 2 & 3;',
+     'const a = 1 / 2 & 3;'),
+    ('const a = foo() / 2;',
+     'const a = foo() / 2;'),
+    ('const a = <div/> / 2;',
+     'const a = <div/> / 2;'),
     # --- Fast-path: sources without ``&`` (or empty) are a no-op.
     ('', ''),
     ('// nothing here\nconst x = 1;\n',
