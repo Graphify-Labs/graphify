@@ -885,7 +885,7 @@ def _generic_arrow_tail(src: str, m: int) -> bool:
 
 
 def _mask_tsx_ampersands(src: str) -> str:
-    """Escape bare ``&`` in JSX text content of TSX source (#2922).
+    """Mask bare ``&`` in JSX text content of TSX source (#2922).
 
     Tree-sitter's TSX grammar requires ``&`` in JSX text (the run between
     ``>`` and ``<`` inside a JSX element) to begin an HTML entity reference
@@ -900,12 +900,14 @@ def _mask_tsx_ampersands(src: str) -> str:
 
     Walker: a stack of contexts — ``tag`` / ``close`` / ``self`` (opening,
     closing, and self-closing tags), ``expr``, ``string``, ``comment``,
-    ``line_comment``, ``jsx_text``. Bare ``&`` is replaced with ``&amp;``
-    only when the top of the stack is ``jsx_text``; already-formed entities
-    are passed through. A closing tag pops the element's ``jsx_text``
-    context — returning to code, an expression container, or the parent
-    element's JSX text — and a self-closing tag never opens one, so code
-    after an element (bitwise ``&`` included) is never masked. ``<`` at
+    ``line_comment``, ``jsx_text``. Bare ``&`` is replaced with a single
+    ASCII space only when the top of the stack is ``jsx_text``; already-formed
+    entities are passed through. A single-byte placeholder keeps the transformed
+    source byte-aligned with the original file, so tree-sitter byte offsets and
+    ``source[start_byte:end_byte]`` slices stay valid. A closing tag pops the
+    element's ``jsx_text`` context — returning to code, an expression container,
+    or the parent element's JSX text — and a self-closing tag never opens one,
+    so code after an element (bitwise ``&`` included) is never masked. ``<`` at
     code position is treated as a JSX tag start when its previous
     non-whitespace character is an expression-context operator or
     punctuation; an alphanumeric / ``_`` / ``$`` preceding character marks
@@ -1209,7 +1211,8 @@ def _mask_tsx_ampersands(src: str) -> str:
                     out.append(m.group(0))
                     i = m.end()
                     continue
-                out.append('&amp;')
+                # Single-byte placeholder keeps source byte offsets aligned.
+                out.append(' ')
                 i += 1
                 continue
             out.append(c)
@@ -1275,7 +1278,7 @@ def _tsx_mask_source(source: bytes) -> bytes:
     ``surrogateescape`` on both sides keeps the round trip byte-preserving
     for non-UTF-8 files (latin-1 comments, BOM-less legacy encodings): the
     only byte-level change the transform may make is the intentional
-    ``&`` → ``&amp;`` insertion, never a U+FFFD rewrite of unrelated bytes.
+    ``&`` → single-space substitution, never a U+FFFD rewrite of unrelated bytes.
     """
     if b"&" not in source:
         return source
