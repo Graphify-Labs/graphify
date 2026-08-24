@@ -156,12 +156,19 @@ def _merge_changed_paths(*sources: "list[Path] | None") -> list[Path]:
 
 
 @contextlib.contextmanager
-def _rebuild_lock(out_dir: Path, *, blocking: bool = False):
+def _rebuild_lock(out_dir: Path, *, blocking: bool = False, timeout: float | None = None):
     """Per-repo advisory lock around a rebuild.
 
     Yields True if acquired, False if another rebuild is already running and
     ``blocking`` is False. Uses fcntl.flock so the lock is released
     automatically if the process is killed (no stale-lock cleanup needed).
+
+    ``timeout`` (seconds) only applies when ``blocking`` is True. The kernel
+    offers just two modes — skip (LOCK_NB) or wait forever (LOCK_EX) — so a
+    bounded wait is done in userspace: non-blocking attempts with short
+    sleeps until the deadline, then yield False. Callers that must not hang
+    indefinitely behind a wedged rebuild (the headless ``extract`` CLI) pass
+    a timeout so they can report the holder and exit instead.
 
     While the lock is held, ``.rebuild.lock`` contains the owning PID followed
     by a newline so external pollers (publish scripts, etc.) can read it.
@@ -184,13 +191,25 @@ def _rebuild_lock(out_dir: Path, *, blocking: bool = False):
     fh = open(lock_path, "a+", encoding="utf-8")
     acquired = False
     try:
-        flags = fcntl.LOCK_EX if blocking else (fcntl.LOCK_EX | fcntl.LOCK_NB)
-        try:
-            fcntl.flock(fh.fileno(), flags)
-        except BlockingIOError:
-            yield False
-            return
-        acquired = True
+        if blocking and timeout is not None:
+            deadline = time.monotonic() + timeout
+            while not acquired:
+                try:
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquired = True
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        yield False
+                        return
+                    time.sleep(0.2)
+        else:
+            flags = fcntl.LOCK_EX if blocking else (fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:
+                fcntl.flock(fh.fileno(), flags)
+            except BlockingIOError:
+                yield False
+                return
+            acquired = True
         # Replace any prior owner's PID with ours so external readers see a
         # single parseable line, not a digit-concatenation across rebuilds.
         try:
