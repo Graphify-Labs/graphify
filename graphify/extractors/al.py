@@ -309,9 +309,11 @@ def _al_object_info(context: _ALTreeContext, object_node) -> dict:
     name = _decode_al_identifier(_field_text(object_node, "object_name", context.source))
     qualified_name = f"{context.namespace}.{name}" if context.namespace else name
     interfaces = [
-        _decode_al_identifier(_field_text(clause, "interface", context.source))
+        _decode_al_identifier(_node_text(child, context.source))
         for clause in object_node.named_children
         if clause.type == "implements_clause"
+        for index, child in enumerate(clause.children)
+        if clause.field_name_for_child(index) == "interface"
     ]
     return {
         "nid": _make_id(context.stem, kind, qualified_name),

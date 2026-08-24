@@ -401,6 +401,28 @@ def test_al_resolver_emits_language_relationships(tmp_path):
     )
 
 
+def test_al_resolver_preserves_all_implemented_interfaces(tmp_path):
+    pytest.importorskip("tree_sitter_al")
+    source = tmp_path / "interfaces.al"
+    source.write_text(
+        "interface FirstContract { }\n"
+        "interface SecondContract { }\n"
+        "codeunit 1 Worker implements FirstContract, SecondContract { }\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+    nodes = {node["label"]: node["id"] for node in result["nodes"]}
+    implemented = {
+        edge["target"]
+        for edge in result["edges"]
+        if edge["source"] == nodes["Worker"]
+        and edge["relation"] == "implements"
+    }
+
+    assert implemented == {nodes["FirstContract"], nodes["SecondContract"]}
+
+
 def test_al_resolver_is_case_insensitive_and_avoids_ambiguous_targets(tmp_path):
     pytest.importorskip("tree_sitter_al")
     first = tmp_path / "first.al"

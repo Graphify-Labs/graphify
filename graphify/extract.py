@@ -5701,7 +5701,10 @@ def extract(
             _ext = _p.suffix.lower()
             _missing_dep_count[_ext] = _missing_dep_count.get(_ext, 0) + 1
             _missing_dep_error.setdefault(_ext, _err)
-            _missing_dep_fallback[_ext] = bool(_result.get("dependency_warning"))
+            _missing_dep_fallback[_ext] = (
+                _missing_dep_fallback.get(_ext, False)
+                or bool(_result.get("dependency_warning"))
+            )
     for _ext, _n in sorted(_missing_dep_count.items(), key=lambda kv: (-kv[1], kv[0])):
         _extra = _EXTRA_FOR_EXTENSION.get(_ext)
         _err_text = _missing_dep_error[_ext]
