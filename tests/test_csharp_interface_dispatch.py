@@ -200,3 +200,25 @@ def test_an_existing_dispatch_edge_is_not_duplicated(tmp_path):
     ]
     resolve_csharp_interface_dispatch([], nodes, edges)
     assert sum(1 for e in edges if e["relation"] == "dispatches_to") == 1
+
+def test_a_non_csharp_implementer_is_not_dispatched_to(tmp_path):
+    # `implements` resolves by name, so in a mixed corpus a Java class declaring
+    # `implements IReport` binds to the C# IReport when that is the only node
+    # with the name. Linking a C# member to a Java method would be a wrong edge.
+    dispatch, _ = _extract(tmp_path, {
+        "IReport.cs": "public interface IReport { void Build(); }\n",
+        "Report.java": "public class Report implements IReport { public void Build() { } }\n",
+    })
+    assert not dispatch
+
+
+def test_mixed_corpus_links_only_the_csharp_pair(tmp_path):
+    dispatch, r = _extract(tmp_path, {
+        "IReport.cs": "public interface IReport { void Build(); }\n",
+        "Report.cs": "public class Report : IReport { public void Build() { } }\n",
+        "IJob.java": "public interface IJob { void run(); }\n",
+        "Job.java": "public class Job implements IJob { public void run() { } }\n",
+    })
+    by_id = {n["id"]: n for n in r["nodes"]}
+    linked = {(by_id[s].get("source_file"), by_id[t].get("source_file")) for s, t in dispatch}
+    assert linked == {("IReport.cs", "Report.cs")}

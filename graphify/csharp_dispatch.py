@@ -31,6 +31,22 @@ _CSHARP_SUFFIXES = (".cs",)
 DISPATCH_RELATION = "dispatches_to"
 
 
+def _is_csharp(node: dict | None) -> bool:
+    """True when the node is a declaration that lives in a C# file.
+
+    Every end of a dispatch pair has to pass this. `implements` is resolved by
+    name, so in a mixed corpus a Java class declaring `implements IReport` binds
+    to a C# `IReport` when that is the only node with the name, and linking a C#
+    interface member to a Java method would be a wrong edge rather than a missing
+    one. A non-C# implementation of a C# interface, from VB or a Razor component,
+    is a real thing, but claiming it needs its own extractor evidence.
+    """
+    if not node:
+        return False
+    source_file = node.get("source_file")
+    return bool(source_file) and str(source_file).endswith(_CSHARP_SUFFIXES)
+
+
 def _method_label(node: dict) -> str:
     """Return a method node's bare name, for matching.
 
@@ -71,7 +87,7 @@ def resolve_csharp_interface_dispatch(
         elif rel == "method":
             owner, method_nid = e.get("source"), e.get("target")
             mnode = node_by_id.get(method_nid)
-            if mnode is None:
+            if mnode is None or not _is_csharp(mnode):
                 continue
             name = _method_label(mnode)
             if name:
@@ -99,11 +115,10 @@ def resolve_csharp_interface_dispatch(
         impl_node = node_by_id.get(impl_nid)
         if interface_node is None or impl_node is None:
             continue
-        # Both ends must be real declarations: a sourceless stub minted for a
-        # dangling reference carries no members worth dispatching to.
-        if not interface_node.get("source_file") or not impl_node.get("source_file"):
-            continue
-        if not str(interface_node.get("source_file", "")).endswith(_CSHARP_SUFFIXES):
+        # Both ends must be C# declarations. A sourceless stub minted for a
+        # dangling reference carries no members worth dispatching to, and a
+        # cross-language pair is a name collision rather than an implementation.
+        if not _is_csharp(interface_node) or not _is_csharp(impl_node):
             continue
 
         impl_methods = methods_of.get(impl_nid, {})
