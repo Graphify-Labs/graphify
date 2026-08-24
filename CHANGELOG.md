@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Feature: `graphify extract` now holds the same per-repo rebuild lock the watcher and git-hook rebuilds take, for its whole pipeline, so two extracts (or an extract racing `graphify update`) on one `graphify-out/` serialize instead of interleaving cache saves and clobbering `graph.json`; a contended run names the holder's PID, waits up to `GRAPHIFY_LOCK_TIMEOUT` seconds (default 600), and exits with an error instead of hanging forever behind a wedged rebuild. The lock file's PID payload and unlink-on-release contracts are unchanged.
+
 ## 0.9.48 (2026-08-20)
 
 - Fix: a control character in a node label or id no longer aborts the whole export; the GraphML and Obsidian exporters scrub only the characters those formats forbid (tab, newline, and non-ASCII letters are preserved), and `graph.json` and its byte-identity round-trip are untouched (#2897, thanks @abhay-codes07).
