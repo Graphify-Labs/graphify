@@ -461,6 +461,25 @@ def test_sql_finds_tables():
     assert any("users" in l for l in labels)
     assert any("organizations" in l for l in labels)
 
+
+def test_sql_create_table_inside_transaction_block():
+    """#2953: DDL wrapped in BEGIN; ... COMMIT; must emit table nodes."""
+    r = _extract_sql_or_skip("sample_transaction.sql")
+    labels = [n["label"] for n in r["nodes"]]
+    assert any("alfa" in l for l in labels)
+    assert any("gamma" in l for l in labels)
+    assert any("delta" in l for l in labels)
+    refs = [
+        (e["source"], e["target"])
+        for e in r["edges"]
+        if e["relation"] == "references"
+    ]
+    node_by_id = {n["id"]: n["label"] for n in r["nodes"]}
+    assert any(
+        "delta" in node_by_id.get(s, "") and "alfa" in node_by_id.get(t, "")
+        for s, t in refs
+    )
+
 def test_sql_finds_view():
     r = _extract_sql_or_skip()
     labels = [n["label"] for n in r["nodes"]]
