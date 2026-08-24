@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import uuid
 from pathlib import Path
 
 _HOOK_MARKER = "# graphify-hook-start"
@@ -169,6 +170,14 @@ try:
         if _txt:
             _root = Path(_txt)
     _rebuild_code(_root, changed_paths=changed, force=_force)
+    # The AST timeout has served its purpose. Semantic extraction has its own
+    # subprocess timeout and can legitimately run much longer than an AST pass.
+    if sys.platform != 'win32':
+        signal.alarm(0)
+    elif '_watchdog' in globals():
+        _watchdog.cancel()
+    from graphify.hooks import _run_auto_semantic_update
+    _run_auto_semantic_update(_root, changed)
     # Refresh the work-memory lessons doc when saved Q&A outcomes exist
     # (best-effort; never fails the hook).
     try:
@@ -306,7 +315,7 @@ fi
 
 _HOOK_SCRIPT = """\
 # graphify-hook-start
-# Auto-rebuilds the knowledge graph after each commit (code files only, no LLM needed).
+# Auto-rebuilds the knowledge graph after each commit (AST by default; semantic by opt-in).
 # Installed by: graphify hook install
 
 # Deterministic clustering: networkx louvain iterates string-keyed sets whose
@@ -416,17 +425,69 @@ echo "[graphify] Branch switched - launching background rebuild (log: $_GRAPHIFY
 """
 
 
-def _load_graphifyrc(root: Path) -> dict[str, str | int]:
+_SEMANTIC_UPDATE_MODES = frozenset({"off", "on_commit"})
+_SEMANTIC_BACKENDS = frozenset(
+    {"azure", "bedrock", "claude", "claude-cli", "deepseek", "gemini", "kimi", "ollama", "openai"}
+)
+_SEMANTIC_ENV_KEYS: dict[str, frozenset[str]] = {
+    "azure": frozenset(
+        {
+            "AZURE_OPENAI_API_KEY",
+        }
+    ),
+    "bedrock": frozenset(
+        {
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
+            "AWS_PROFILE",
+            "AWS_REGION",
+            "AWS_DEFAULT_REGION",
+        }
+    ),
+    "claude": frozenset({"ANTHROPIC_API_KEY"}),
+    "claude-cli": frozenset(),
+    "deepseek": frozenset({"DEEPSEEK_API_KEY"}),
+    "gemini": frozenset({"GEMINI_API_KEY", "GOOGLE_API_KEY"}),
+    "kimi": frozenset({"MOONSHOT_API_KEY"}),
+    "ollama": frozenset({"OLLAMA_API_KEY"}),
+    "openai": frozenset({"OPENAI_API_KEY"}),
+}
+_SEMANTIC_PENDING_DIR = ".semantic_pending"
+
+
+def _validate_relative_config_path(value: str, *, option: str, rc_path: Path) -> str:
+    """Validate a portable, repo-relative config path without touching disk."""
+    from graphify.paths import is_absolute_any_platform
+
+    if not value or is_absolute_any_platform(value):
+        raise ValueError(f"Invalid {option} in {rc_path}: {value!r}. Must be a relative path.")
+    path = Path(value)
+    if ".." in path.parts or "\\" in value or "\x00" in value:
+        raise ValueError(
+            f"Invalid {option} in {rc_path}: {value!r}. "
+            "Must stay within the repository and use forward slashes."
+        )
+    return value
+
+
+def _load_graphifyrc(root: Path) -> dict[str, str | int | bool]:
     """Load key/value options from <root>/.graphifyrc if present.
 
     Supported options:
       viz_node_limit: integer >= 0 (e.g. viz_node_limit=0)
+      semantic_update: off | on_commit (default: off)
+      semantic_backend: explicit LLM backend required for on_commit
+      semantic_model: optional model override
+      semantic_env_file: optional repo-relative dotenv file; only credentials
+        for semantic_backend are loaded and shell syntax is never evaluated
+      semantic_google_workspace: true | false (default: false)
     """
     rc_path = root / ".graphifyrc"
     if not rc_path.is_file():
         return {}
 
-    cfg: dict[str, str | int] = {}
+    cfg: dict[str, str | int | bool] = {}
     content = rc_path.read_text(encoding="utf-8")
     for line_num, raw in enumerate(content.splitlines(), 1):
         line = raw.strip()
@@ -448,7 +509,280 @@ def _load_graphifyrc(root: Path) -> dict[str, str | int]:
                     f"Invalid viz_node_limit in {rc_path} at line {line_num}: {val!r}. "
                     f"Must be a non-negative integer."
                 ) from exc
+        elif key == "semantic_update":
+            if val not in _SEMANTIC_UPDATE_MODES:
+                raise ValueError(
+                    f"Invalid semantic_update in {rc_path} at line {line_num}: {val!r}. "
+                    "Must be 'off' or 'on_commit'."
+                )
+            cfg[key] = val
+        elif key == "semantic_backend":
+            if val not in _SEMANTIC_BACKENDS:
+                raise ValueError(
+                    f"Invalid semantic_backend in {rc_path} at line {line_num}: {val!r}. "
+                    f"Available: {', '.join(sorted(_SEMANTIC_BACKENDS))}."
+                )
+            cfg[key] = val
+        elif key == "semantic_model":
+            if not val or any(ord(char) < 32 for char in val):
+                raise ValueError(
+                    f"Invalid semantic_model in {rc_path} at line {line_num}: {val!r}."
+                )
+            cfg[key] = val
+        elif key == "semantic_env_file":
+            cfg[key] = _validate_relative_config_path(
+                val, option="semantic_env_file", rc_path=rc_path
+            )
+        elif key == "semantic_google_workspace":
+            if val not in {"true", "false"}:
+                raise ValueError(
+                    f"Invalid semantic_google_workspace in {rc_path} at line "
+                    f"{line_num}: {val!r}. Must be 'true' or 'false'."
+                )
+            cfg[key] = val == "true"
+
+    if cfg.get("semantic_update") == "on_commit" and not cfg.get("semantic_backend"):
+        raise ValueError(
+            f"Invalid semantic automation in {rc_path}: "
+            "semantic_backend is required when semantic_update=on_commit."
+        )
     return cfg
+
+
+def _semantic_out_dir(root: Path) -> Path:
+    out = Path(os.environ.get("GRAPHIFY_OUT", "graphify-out"))
+    return out if out.is_absolute() else root / out
+
+
+def _semantic_pending_requests(out_dir: Path) -> list[Path]:
+    pending_dir = out_dir / _SEMANTIC_PENDING_DIR
+    if not pending_dir.is_dir():
+        return []
+    try:
+        return sorted(path for path in pending_dir.iterdir() if path.is_file())
+    except OSError:
+        return []
+
+
+def _queue_semantic_request(root: Path) -> Path:
+    """Create one durable request token for the coalescing semantic worker."""
+    root = Path(root).resolve()
+    pending_dir = _semantic_out_dir(root) / _SEMANTIC_PENDING_DIR
+    pending_dir.mkdir(parents=True, exist_ok=True)
+    token = pending_dir / f"{os.getpid()}-{uuid.uuid4().hex}"
+    token.write_text("1\n", encoding="utf-8")
+    return token
+
+
+def _semantic_change_present(root: Path, changed_paths: list[Path]) -> bool:
+    """Return whether a commit includes a live semantic-corpus change.
+
+    Classification and ignore checks intentionally reuse the extraction layer,
+    so an ignored workbook cannot trigger a paid run and package manifests that
+    look like YAML remain on the free AST path.
+    """
+    from graphify.detect import FileType, classify_file, ignored_predicate
+    from graphify.watch import _read_build_excludes, _read_build_gitignore
+
+    root = Path(root).resolve()
+    out = _semantic_out_dir(root)
+    gitignore_enabled = _read_build_gitignore(out)
+    ignored = ignored_predicate(
+        root,
+        extra_excludes=_read_build_excludes(out) or None,
+        gitignore=gitignore_enabled,
+    )
+    cwd = Path.cwd().resolve()
+    semantic_types = {FileType.DOCUMENT, FileType.PAPER, FileType.IMAGE}
+    for raw in changed_paths:
+        path = Path(raw)
+        path = path if path.is_absolute() else cwd / path
+        try:
+            path = path.resolve()
+            path.relative_to(root)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if path.name == ".graphifyignore" or (
+            path.name == ".gitignore" and gitignore_enabled
+        ):
+            return True
+        if not path.is_file() or ignored(path):
+            continue
+        if classify_file(path) in semantic_types:
+            return True
+    return False
+
+
+def _dotenv_value(raw: str) -> str:
+    value = raw.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
+
+
+def _semantic_environment(
+    root: Path,
+    cfg: dict[str, str | int | bool],
+    base_env: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Build the semantic child's environment without evaluating dotenv code.
+
+    Only variables used by the selected backend are admitted. Existing process
+    values win, matching python-dotenv's safe default and preventing a project
+    file from overriding credentials explicitly supplied for one run.
+    """
+    env = dict(os.environ if base_env is None else base_env)
+    env_file = cfg.get("semantic_env_file")
+    if not isinstance(env_file, str):
+        return env
+
+    root = Path(root).resolve()
+    rc_path = root / ".graphifyrc"
+    relative = _validate_relative_config_path(
+        env_file, option="semantic_env_file", rc_path=rc_path
+    )
+    path = (root / relative).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"semantic_env_file resolves outside the repository: {relative!r}") from exc
+    if not path.is_file():
+        raise FileNotFoundError(f"semantic_env_file not found: {path}")
+
+    backend = str(cfg.get("semantic_backend", ""))
+    allowed = _SEMANTIC_ENV_KEYS.get(backend, frozenset())
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if key not in allowed:
+            continue
+        env.setdefault(key, _dotenv_value(value))
+    return env
+
+
+def _run_auto_semantic_update(root: Path, changed_paths: list[Path]) -> bool:
+    """Run a configured semantic update after a commit, coalescing overlap.
+
+    Git already detached the caller, so blocking on the graph rebuild lock here
+    never blocks ``git commit``. One token file is created per semantic commit.
+    A successful run removes only the tokens present when it started; tokens
+    created mid-run remain for the next pass, and failed/killed runs remain
+    durable for a later commit to retry.
+    """
+    import subprocess
+
+    root = Path(root).resolve()
+    try:
+        cfg = _load_graphifyrc(root)
+    except (OSError, ValueError) as exc:
+        print(f"[graphify hook] semantic automation disabled: {exc}")
+        return False
+    if cfg.get("semantic_update") != "on_commit":
+        return False
+
+    out = _semantic_out_dir(root)
+    existing_requests = _semantic_pending_requests(out)
+    if _semantic_change_present(root, changed_paths):
+        try:
+            _queue_semantic_request(root)
+        except OSError as exc:
+            print(f"[graphify hook] could not queue semantic update: {exc}")
+            return False
+    elif not existing_requests:
+        return False
+
+    from graphify.watch import (
+        _PENDING_DRAIN_MAX_PASSES,
+        _drain_pending,
+        _rebuild_code,
+        _rebuild_lock,
+    )
+
+    ran = False
+    with _rebuild_lock(out, blocking=True) as acquired:
+        if not acquired:  # Windows fallback currently always acquires; defensive.
+            return False
+        for _ in range(_PENDING_DRAIN_MAX_PASSES):
+            queued_ast = _drain_pending(out)
+            if queued_ast:
+                _rebuild_code(root, changed_paths=queued_ast, acquire_lock=False)
+
+            requests = _semantic_pending_requests(out)
+            if not requests:
+                return ran
+            try:
+                current_cfg = _load_graphifyrc(root)
+                if current_cfg.get("semantic_update") != "on_commit":
+                    return ran
+                env = _semantic_environment(root, current_cfg)
+            except (OSError, ValueError) as exc:
+                print(f"[graphify hook] semantic update remains queued: {exc}")
+                return False
+
+            command = [
+                sys.executable,
+                "-m",
+                "graphify",
+                "update",
+                str(root),
+                "--semantic",
+                "--backend",
+                str(current_cfg["semantic_backend"]),
+            ]
+            model = current_cfg.get("semantic_model")
+            if isinstance(model, str):
+                command.extend(("--model", model))
+            if current_cfg.get("semantic_google_workspace") is True:
+                command.append("--google-workspace")
+
+            print(
+                f"[graphify hook] running queued semantic update via "
+                f"{current_cfg['semantic_backend']}..."
+            )
+            try:
+                semantic_timeout = int(os.environ.get("GRAPHIFY_SEMANTIC_TIMEOUT", "3600"))
+            except ValueError:
+                semantic_timeout = 3600
+            if semantic_timeout <= 0:
+                semantic_timeout = 3600
+            try:
+                result = subprocess.run(
+                    command,
+                    cwd=str(root),
+                    env=env,
+                    check=False,
+                    timeout=semantic_timeout,
+                )
+            except subprocess.TimeoutExpired:
+                print(
+                    f"[graphify hook] semantic update exceeded {semantic_timeout}s; "
+                    "request remains queued"
+                )
+                return False
+            if result.returncode != 0:
+                print(
+                    f"[graphify hook] semantic update failed with exit "
+                    f"{result.returncode}; request remains queued"
+                )
+                return False
+
+            ran = True
+            for request in requests:
+                try:
+                    request.unlink()
+                except FileNotFoundError:
+                    pass
+
+        if _semantic_pending_requests(out):
+            print("[graphify hook] semantic update burst remains queued for the next commit")
+    return ran
 
 
 def _git_root(path: Path) -> Path | None:
@@ -802,6 +1136,8 @@ def status(path: Path = Path(".")) -> str:
         cfg = {}
         print(f"  warning: {exc}")
     cfg_limit = cfg.get("viz_node_limit")
+    cfg_semantic = cfg.get("semantic_update")
+    cfg_backend = cfg.get("semantic_backend")
 
     def _check(name: str, marker: str) -> str:
         p = hooks_dir / name
@@ -810,6 +1146,12 @@ def status(path: Path = Path(".")) -> str:
         text = p.read_text(encoding="utf-8")
         if marker not in text:
             return "not installed (hook exists but graphify not found)"
+        if (
+            name == "post-commit"
+            and cfg_semantic == "on_commit"
+            and "_run_auto_semantic_update(_root, changed)" not in text
+        ):
+            return "installed (out of date: semantic automation missing)"
         if cfg_limit is not None:
             # Baked as `"${GRAPHIFY_VIZ_NODE_LIMIT:-<n>}"` so a per-run override
             # wins; match the default <n>, and still accept the older bare
@@ -834,4 +1176,6 @@ def status(path: Path = Path(".")) -> str:
     res = f"post-commit: {commit}\npost-checkout: {checkout}\nmerge driver: {merge}"
     if cfg_limit is not None:
         res += f"\nviz node limit: {cfg_limit}"
+    if cfg_semantic == "on_commit":
+        res += f"\nsemantic update: on_commit ({cfg_backend})"
     return res

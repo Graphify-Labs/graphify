@@ -927,7 +927,138 @@ def _reenter_main() -> None:
     main()
 
 
+def _semantic_update_extract_argv(update_argv: list[str]) -> list[str]:
+    """Normalize update's flag-anywhere syntax for the extract parser."""
+    value_options = {
+        "--backend",
+        "--model",
+        "--mode",
+        "--out",
+        "--output",
+        "--as",
+        "--max-workers",
+        "--token-budget",
+        "--max-concurrency",
+        "--api-timeout",
+        "--resolution",
+        "--exclude-hubs",
+        "--exclude",
+        "--postgres",
+        "--batch-size",
+        "--min-community-size",
+    }
+    flag_options = {
+        "--dedup-llm",
+        "--no-dedup",
+        "--google-workspace",
+        "--no-gitignore",
+        "--global",
+        "--cargo",
+        "--force",
+        "--allow-partial",
+        "--timing",
+        "--no-viz",
+        "--no-label",
+        "--missing-only",
+    }
+    options: list[str] = []
+    paths: list[str] = []
+    args = update_argv[2:]
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "--semantic":
+            i += 1
+        elif arg in value_options:
+            if i + 1 >= len(args):
+                raise ValueError(f"semantic update option requires a value: {arg}")
+            options.extend((arg, args[i + 1]))
+            i += 2
+        elif arg in flag_options or any(
+            arg.startswith(f"{option}=") for option in value_options
+        ):
+            options.append(arg)
+            i += 1
+        elif arg.startswith("-"):
+            raise ValueError(f"unknown semantic update option: {arg}")
+        else:
+            paths.append(arg)
+            i += 1
+
+    if len(paths) > 1:
+        raise ValueError("update accepts at most one path argument")
+    if paths:
+        update_root = paths[0]
+    else:
+        saved_root = Path(_GRAPHIFY_OUT) / ".graphify_root"
+        update_root = (
+            saved_root.read_text(encoding="utf-8").strip()
+            if saved_root.exists()
+            else "."
+        )
+    return [update_argv[0], "extract", update_root, *options]
+
+
+def _semantic_update_cluster_argv(extract_argv: list[str], out_root: Path) -> list[str]:
+    """Build the report-stage argv for a semantic update.
+
+    Extraction and ``cluster-only`` intentionally have separate parsers. Keep
+    only their shared/report-specific options here so extraction-only flags do
+    not leak into the final stage.
+    """
+    value_options = {
+        "--backend",
+        "--model",
+        "--resolution",
+        "--exclude-hubs",
+        "--max-concurrency",
+        "--batch-size",
+        "--min-community-size",
+    }
+    flag_options = {"--no-viz", "--no-label", "--missing-only", "--timing"}
+    cluster_args: list[str] = []
+    args = extract_argv[2:]
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg in value_options and i + 1 < len(args):
+            cluster_args.extend((arg, args[i + 1]))
+            i += 2
+        elif arg in flag_options or any(
+            arg.startswith(f"{option}=") for option in value_options
+        ):
+            cluster_args.append(arg)
+            i += 1
+        else:
+            i += 1
+    return [extract_argv[0], "cluster-only", str(out_root), *cluster_args]
+
+
 def dispatch_command(cmd: str) -> None:
+    semantic_update = cmd == "update" and "--semantic" in sys.argv[2:]
+    if semantic_update:
+        incompatible = next(
+            (flag for flag in ("--no-cluster", "--code-only") if flag in sys.argv[2:]),
+            None,
+        )
+        if incompatible:
+            print(
+                f"error: --semantic and {incompatible} cannot be combined; "
+                "a semantic update refreshes documents and completes the report "
+                "and community outputs",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        # Reuse the native incremental extractor instead of maintaining a
+        # second mixed-corpus update pipeline. The report stage is completed at
+        # the end of the extract branch below.
+        try:
+            sys.argv = _semantic_update_extract_argv(sys.argv)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            sys.exit(2)
+        cmd = "extract"
+
     if cmd == "provider":
         from graphify.llm import _custom_providers_path, BACKENDS
         import json as _json
@@ -4287,14 +4418,29 @@ def dispatch_command(cmd: str) -> None:
                 f"{merged['output_tokens']:,} out, "
                 f"est. cost (~{backend}): ${cost:.4f}"
             )
-        # extract intentionally stops at graph.json + analysis; the report and
-        # community labels are produced by `cluster-only` (or an agent's Step 5).
-        # Point standalone users at it so communities get named (#1097).
-        print(
-            "[graphify extract] next: run "
-            f"`graphify cluster-only {graphify_out.parent}` "
-            "to generate GRAPH_REPORT.md and name communities"
-        )
+        if semantic_update:
+            # Complete the native update in-process so extraction monkeypatches,
+            # custom providers, and exit handling stay consistent with the
+            # command that produced graph.json.
+            extract_argv = sys.argv
+            try:
+                sys.argv = _semantic_update_cluster_argv(extract_argv, out_root)
+                dispatch_command("cluster-only")
+            finally:
+                sys.argv = extract_argv
+            print(
+                "[graphify update] semantic update complete: "
+                "graph, communities, and report are current"
+            )
+        else:
+            # extract intentionally stops at graph.json + analysis; the report
+            # and community labels are produced by `cluster-only` (or an agent's
+            # Step 5). Point standalone users at it so communities get named.
+            print(
+                "[graphify extract] next: run "
+                f"`graphify cluster-only {graphify_out.parent}` "
+                "to generate GRAPH_REPORT.md and name communities"
+            )
         stages.total()
 
     elif cmd == "cache-check":

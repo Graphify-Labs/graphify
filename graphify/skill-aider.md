@@ -1252,7 +1252,9 @@ graphify hook uninstall  # remove
 graphify hook status     # check
 ```
 
-After every `git commit`, the hook detects which code files changed (via `git diff HEAD~1`), re-runs AST extraction on those files, and rebuilds `graph.json` and `GRAPH_REPORT.md`. Doc/image changes are ignored by the hook - run `/graphify --update` manually for those.
+After every `git commit`, the hook detects which code files changed (via `git diff HEAD~1`), re-runs AST extraction on those files, and rebuilds `graph.json` and `GRAPH_REPORT.md`. This default path uses no LLM and has no API cost.
+
+To update docs, papers, and images automatically, set `semantic_update=on_commit` and an explicit `semantic_backend` in `.graphifyrc` before installing the hook. Optionally set `semantic_env_file` to a repo-relative, untracked env file. Graphify parses it without executing shell code and only admits credentials for the selected backend. Failed semantic work stays queued for retry.
 
 If a post-commit hook already exists, graphify appends to it rather than replacing it.
 

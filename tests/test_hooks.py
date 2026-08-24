@@ -1144,3 +1144,325 @@ def test_both_hooks_configured(tmp_path):
     for name in ("post-commit", "post-checkout"):
         hook_text = (repo / ".git" / "hooks" / name).read_text()
         assert 'export GRAPHIFY_VIZ_NODE_LIMIT="${GRAPHIFY_VIZ_NODE_LIMIT:-42}"' in hook_text
+
+
+# ── automatic semantic updates on commit ────────────────────────────────────
+
+def test_graphifyrc_parses_semantic_commit_automation(tmp_path):
+    from graphify.hooks import _load_graphifyrc
+
+    (tmp_path / ".graphifyrc").write_text(
+        "semantic_update=on_commit\n"
+        "semantic_backend=kimi\n"
+        "semantic_model=kimi-k2.6\n"
+        "semantic_env_file=.env.local\n"
+        "semantic_google_workspace=true\n",
+        encoding="utf-8",
+    )
+
+    cfg = _load_graphifyrc(tmp_path)
+
+    assert cfg["semantic_update"] == "on_commit"
+    assert cfg["semantic_backend"] == "kimi"
+    assert cfg["semantic_model"] == "kimi-k2.6"
+    assert cfg["semantic_env_file"] == ".env.local"
+    assert cfg["semantic_google_workspace"] is True
+
+
+@pytest.mark.parametrize(
+    "content,match",
+    [
+        ("semantic_update=always\nsemantic_backend=kimi\n", "semantic_update"),
+        ("semantic_update=on_commit\n", "semantic_backend"),
+        ("semantic_update=on_commit\nsemantic_backend=unknown\n", "semantic_backend"),
+        (
+            "semantic_update=on_commit\nsemantic_backend=kimi\nsemantic_env_file=../keys.env\n",
+            "semantic_env_file",
+        ),
+        (
+            "semantic_update=on_commit\nsemantic_backend=kimi\nsemantic_google_workspace=yes\n",
+            "semantic_google_workspace",
+        ),
+    ],
+)
+def test_graphifyrc_rejects_unsafe_semantic_automation(content, match, tmp_path):
+    from graphify.hooks import _load_graphifyrc
+
+    (tmp_path / ".graphifyrc").write_text(content, encoding="utf-8")
+
+    with pytest.raises(ValueError, match=match):
+        _load_graphifyrc(tmp_path)
+
+
+def test_semantic_env_loader_only_admits_selected_backend_keys(tmp_path):
+    from graphify.hooks import _semantic_environment
+
+    (tmp_path / ".env.local").write_text(
+        "MOONSHOT_API_KEY=file-key\n"
+        "KIMI_BASE_URL=https://attacker.invalid/v1\n"
+        "OPENAI_API_KEY=must-not-load\n"
+        "PYTHONPATH=/tmp/hostile\n"
+        "PATH=/tmp/hostile\n",
+        encoding="utf-8",
+    )
+    cfg = {
+        "semantic_backend": "kimi",
+        "semantic_env_file": ".env.local",
+    }
+
+    env = _semantic_environment(tmp_path, cfg, {"PATH": "/usr/bin"})
+
+    assert env["MOONSHOT_API_KEY"] == "file-key"
+    assert "KIMI_BASE_URL" not in env
+    assert "OPENAI_API_KEY" not in env
+    assert "PYTHONPATH" not in env
+    assert env["PATH"] == "/usr/bin"
+
+
+def test_semantic_env_loader_preserves_explicit_process_credentials(tmp_path):
+    from graphify.hooks import _semantic_environment
+
+    (tmp_path / ".env.local").write_text(
+        "export MOONSHOT_API_KEY=file-key\n",
+        encoding="utf-8",
+    )
+
+    env = _semantic_environment(
+        tmp_path,
+        {"semantic_backend": "kimi", "semantic_env_file": ".env.local"},
+        {"MOONSHOT_API_KEY": "process-key"},
+    )
+
+    assert env["MOONSHOT_API_KEY"] == "process-key"
+
+
+def test_auto_semantic_update_ignores_code_only_commits(tmp_path, monkeypatch):
+    from graphify.hooks import _run_auto_semantic_update
+
+    (tmp_path / ".graphifyrc").write_text(
+        "semantic_update=on_commit\nsemantic_backend=kimi\n",
+        encoding="utf-8",
+    )
+    source = tmp_path / "app.py"
+    source.write_text("x = 1\n", encoding="utf-8")
+    calls = []
+    monkeypatch.setattr("subprocess.run", lambda *a, **kw: calls.append((a, kw)))
+
+    assert _run_auto_semantic_update(tmp_path, [source]) is False
+    assert calls == []
+    assert not (tmp_path / "graphify-out" / ".semantic_pending").exists()
+
+
+def test_auto_semantic_update_honors_graphifyignore(tmp_path, monkeypatch):
+    from graphify.hooks import _run_auto_semantic_update
+
+    (tmp_path / ".graphifyrc").write_text(
+        "semantic_update=on_commit\nsemantic_backend=kimi\n",
+        encoding="utf-8",
+    )
+    (tmp_path / ".graphifyignore").write_text("private/\n", encoding="utf-8")
+    private = tmp_path / "private"
+    private.mkdir()
+    doc = private / "customer.md"
+    doc.write_text("restricted\n", encoding="utf-8")
+    calls = []
+    monkeypatch.setattr("subprocess.run", lambda *a, **kw: calls.append((a, kw)))
+
+    assert _run_auto_semantic_update(tmp_path, [doc]) is False
+    assert calls == []
+
+
+def test_gitignore_change_does_not_trigger_when_build_disabled_it(tmp_path, monkeypatch):
+    from graphify.hooks import _run_auto_semantic_update
+
+    (tmp_path / ".graphifyrc").write_text(
+        "semantic_update=on_commit\nsemantic_backend=kimi\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    (out / ".graphify_build.json").write_text(
+        '{"gitignore": false}', encoding="utf-8"
+    )
+    gitignore = tmp_path / ".gitignore"
+    gitignore.write_text("private/\n", encoding="utf-8")
+    calls = []
+    monkeypatch.setattr("subprocess.run", lambda *a, **kw: calls.append((a, kw)))
+
+    assert _run_auto_semantic_update(tmp_path, [gitignore]) is False
+    assert calls == []
+
+
+def test_auto_semantic_update_runs_native_command_with_safe_env(tmp_path, monkeypatch):
+    from graphify.hooks import _run_auto_semantic_update
+
+    (tmp_path / ".graphifyrc").write_text(
+        "semantic_update=on_commit\n"
+        "semantic_backend=kimi\n"
+        "semantic_model=kimi-k2.6\n"
+        "semantic_env_file=.env.local\n"
+        "semantic_google_workspace=true\n",
+        encoding="utf-8",
+    )
+    (tmp_path / ".env.local").write_text(
+        "MOONSHOT_API_KEY=secret\nPYTHONPATH=/tmp/hostile\n",
+        encoding="utf-8",
+    )
+    doc = tmp_path / "notes.md"
+    doc.write_text("# changed\n", encoding="utf-8")
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    assert _run_auto_semantic_update(tmp_path, [doc]) is True
+    assert len(calls) == 1
+    command, kwargs = calls[0]
+    assert command == [
+        os.sys.executable,
+        "-m",
+        "graphify",
+        "update",
+        str(tmp_path.resolve()),
+        "--semantic",
+        "--backend",
+        "kimi",
+        "--model",
+        "kimi-k2.6",
+        "--google-workspace",
+    ]
+    assert kwargs["cwd"] == str(tmp_path.resolve())
+    assert kwargs["check"] is False
+    assert kwargs["timeout"] == 3600
+    assert kwargs["env"]["MOONSHOT_API_KEY"] == "secret"
+    assert kwargs["env"].get("PYTHONPATH") != "/tmp/hostile"
+    pending = tmp_path / "graphify-out" / ".semantic_pending"
+    assert not pending.exists() or not any(pending.iterdir())
+
+
+def test_failed_auto_semantic_update_stays_queued_for_retry(tmp_path, monkeypatch):
+    from graphify.hooks import _run_auto_semantic_update
+
+    (tmp_path / ".graphifyrc").write_text(
+        "semantic_update=on_commit\nsemantic_backend=claude-cli\n",
+        encoding="utf-8",
+    )
+    doc = tmp_path / "notes.md"
+    doc.write_text("# changed\n", encoding="utf-8")
+    code = tmp_path / "app.py"
+    code.write_text("x = 1\n", encoding="utf-8")
+    results = iter((1, 0))
+    monkeypatch.setattr(
+        "subprocess.run",
+        lambda *a, **kw: SimpleNamespace(returncode=next(results)),
+    )
+
+    assert _run_auto_semantic_update(tmp_path, [doc]) is False
+    pending = tmp_path / "graphify-out" / ".semantic_pending"
+    assert pending.is_dir() and any(pending.iterdir())
+
+    # Any later commit retries durable semantic work; no person has to notice
+    # the failed background run or repeat the semantic command manually.
+    assert _run_auto_semantic_update(tmp_path, [code]) is True
+    assert not any(pending.iterdir())
+
+
+def test_timed_out_auto_semantic_update_stays_queued(tmp_path, monkeypatch):
+    from graphify.hooks import _run_auto_semantic_update
+
+    (tmp_path / ".graphifyrc").write_text(
+        "semantic_update=on_commit\nsemantic_backend=claude-cli\n",
+        encoding="utf-8",
+    )
+    doc = tmp_path / "notes.md"
+    doc.write_text("# changed\n", encoding="utf-8")
+
+    def time_out(*args, **kwargs):
+        raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+
+    monkeypatch.setattr("subprocess.run", time_out)
+
+    assert _run_auto_semantic_update(tmp_path, [doc]) is False
+    pending = tmp_path / "graphify-out" / ".semantic_pending"
+    assert pending.is_dir() and any(pending.iterdir())
+
+
+def test_auto_semantic_worker_coalesces_new_request_arriving_mid_run(tmp_path, monkeypatch):
+    from graphify.hooks import _run_auto_semantic_update
+
+    (tmp_path / ".graphifyrc").write_text(
+        "semantic_update=on_commit\nsemantic_backend=claude-cli\n",
+        encoding="utf-8",
+    )
+    first = tmp_path / "first.md"
+    second = tmp_path / "second.md"
+    first.write_text("first\n", encoding="utf-8")
+    second.write_text("second\n", encoding="utf-8")
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append(args)
+        if len(calls) == 1:
+            # A second hook can safely add work while this worker holds the
+            # graph rebuild lock. Model that arrival without recursively
+            # trying to acquire the same lock in this test process.
+            from graphify.hooks import _queue_semantic_request
+            _queue_semantic_request(tmp_path)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    assert _run_auto_semantic_update(tmp_path, [first]) is True
+    assert len(calls) == 2
+    pending = tmp_path / "graphify-out" / ".semantic_pending"
+    assert not any(pending.iterdir())
+
+
+def test_installed_post_commit_hook_invokes_auto_semantic_worker(tmp_path):
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+
+    commit_hook = (repo / ".git" / "hooks" / "post-commit").read_text()
+    checkout_hook = (repo / ".git" / "hooks" / "post-checkout").read_text()
+
+    assert "_run_auto_semantic_update(_root, changed)" in commit_hook
+    assert "_run_auto_semantic_update" not in checkout_hook
+
+
+def test_hook_status_reports_semantic_commit_automation(tmp_path):
+    repo = _make_git_repo(tmp_path)
+    (repo / ".graphifyrc").write_text(
+        "semantic_update=on_commit\nsemantic_backend=kimi\n",
+        encoding="utf-8",
+    )
+    install(repo)
+
+    result = status(repo)
+
+    assert "semantic update: on_commit (kimi)" in result
+    assert "out of date" not in result
+
+
+def test_hook_status_marks_pre_automation_post_commit_hook_out_of_date(tmp_path):
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    hook = repo / ".git" / "hooks" / "post-commit"
+    hook.write_text(
+        hook.read_text(encoding="utf-8").replace(
+            "    from graphify.hooks import _run_auto_semantic_update\n"
+            "    _run_auto_semantic_update(_root, changed)\n",
+            "",
+        ),
+        encoding="utf-8",
+    )
+    (repo / ".graphifyrc").write_text(
+        "semantic_update=on_commit\nsemantic_backend=kimi\n",
+        encoding="utf-8",
+    )
+
+    result = status(repo)
+
+    assert "post-commit: installed (out of date: semantic automation missing)" in result
