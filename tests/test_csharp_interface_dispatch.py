@@ -222,3 +222,13 @@ def test_mixed_corpus_links_only_the_csharp_pair(tmp_path):
     by_id = {n["id"]: n for n in r["nodes"]}
     linked = {(by_id[s].get("source_file"), by_id[t].get("source_file")) for s, t in dispatch}
     assert linked == {("IReport.cs", "Report.cs")}
+
+def test_member_name_is_read_up_to_the_first_parenthesis(tmp_path):
+    # The pair match is keyed on this string. C# labels are `.Name()` today, so
+    # this pins the reduction itself rather than a shape the extractor emits.
+    from graphify.csharp_dispatch import _method_label
+
+    assert _method_label({"label": ".Build()"}) == "Build"
+    assert _method_label({"label": "Build"}) == "Build"
+    assert _method_label({"label": ".Build(int, string)"}) == "Build"
+    assert _method_label({"label": ".build()"}) == "build"

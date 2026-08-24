@@ -53,8 +53,14 @@ def _method_label(node: dict) -> str:
     Case is kept: C# is case sensitive, and an implementing member must spell the
     interface member exactly, so folding case could only pair a declaration with
     a member that does not implement it.
+
+    The name is cut at the first parenthesis rather than by stripping a trailing
+    `()`. Today the C# extractor labels every method `.Name()`, so the two are the
+    same, but the pair match is keyed on this string and a label that ever carried
+    a signature would silently stop matching instead of failing visibly.
     """
-    return str(node.get("label", "")).strip().removeprefix(".").removesuffix("()")
+    label = str(node.get("label", "")).strip().removeprefix(".")
+    return label.split("(", 1)[0]
 
 
 def resolve_csharp_interface_dispatch(
