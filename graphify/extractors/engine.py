@@ -3750,6 +3750,22 @@ def _extract_generic(
             # field. Use _csharp_collect_type_refs (like the Java/PHP/Kotlin
             # siblings) so `List<Widget>` yields both the List field ref and the
             # Widget generic_arg ref.
+            # A property becomes a node, the way a C++ data member does. Fields
+            # stay out: the id recipe casefolds and strips leading underscores, so
+            # `_count` and `Count` normalize to the same id, and emitting both
+            # would hand the node to whichever the parser reached first — in
+            # practice the private backing field, hiding the public member behind
+            # it. See #3006 for the follow-up.
+            prop_node_name = node.child_by_field_name("name")
+            if prop_node_name is not None:
+                property_name = _read_text(prop_node_name, source)
+                if property_name:
+                    property_line = node.start_point[0] + 1
+                    property_nid = _make_id(parent_class_nid, property_name)
+                    if property_nid not in seen_ids:
+                        add_node(property_nid, property_name, property_line)
+                        add_edge(parent_class_nid, property_nid, "defines",
+                                 property_line, context="field")
             type_node = node.child_by_field_name("type")
             if type_node is not None:
                 # Record the property's declared type for the method-scoped
