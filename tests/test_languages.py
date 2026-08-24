@@ -954,6 +954,37 @@ def test_kotlin_emits_in_file_calls():
     assert ("createClient()", "HttpClient") in calls
 
 
+def test_kotlin_secondary_constructor_is_extracted_with_body_calls(tmp_path):
+    """A Kotlin secondary constructor must be a method node, and its body calls resolve.
+
+    secondary_constructor was missing from function_types, so every secondary
+    constructor was dropped along with all calls made from its body (field init,
+    validation, delegation).
+    """
+    f = tmp_path / "svc.kt"
+    f.write_text(
+        "class Service {\n"
+        "    var name: String = \"\"\n"
+        "    constructor(n: String) {\n"
+        "        name = n\n"
+        "        validate()\n"
+        "    }\n"
+        "    fun validate() { }\n"
+        "}\n"
+    )
+    r = extract_kotlin(f)
+    assert "error" not in r
+    by_label = {n["label"]: n for n in r["nodes"]}
+    service = by_label["Service"]
+    ctor = by_label.get(".constructor()")
+    assert ctor is not None, "secondary constructor node dropped"
+    assert any(e["relation"] == "method" and e["source"] == service["id"]
+               and e["target"] == ctor["id"] for e in r["edges"]), "constructor not linked to class"
+    validate = by_label[".validate()"]
+    assert any(e["relation"] == "calls" and e["source"] == ctor["id"]
+               and e["target"] == validate["id"] for e in r["edges"]), "call from constructor body dropped"
+
+
 def test_kotlin_splits_inherits_and_implements():
     r = extract_kotlin(FIXTURES / "sample.kt")
     assert ("DataProcessor", "BaseProcessor") in _edge_labels(r, "inherits")
