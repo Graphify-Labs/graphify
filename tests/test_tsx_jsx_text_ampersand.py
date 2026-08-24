@@ -35,9 +35,12 @@ Regression canaries cover every case the walker must keep stable:
 * Generic arrows and function types — single-letter or multi-character
   (``<TKey>(x: TKey) => x``, ``type F = <TKey>(x: TKey) => void``, with or
   without a return-type annotation) — stay code, so a later bitwise
-  ``a & b`` is never corrupted into ``a &amp; b``.
-* The bytes mask is byte-preserving outside the ``&`` → ``&amp;``
-  insertions (non-UTF-8 bytes round-trip unchanged).
+  ``a & b`` is never corrupted into ``a   b`` (which would reintroduce a
+  parse error).
+* The bytes mask is fully byte-preserving: every ``&`` in JSX text is
+  replaced by a single ASCII space, so tree-sitter byte offsets and
+  ``source[start_byte:end_byte]`` slices stay aligned with the original
+  source (non-UTF-8 bytes round-trip unchanged).
 """
 from __future__ import annotations
 
@@ -150,14 +153,16 @@ def test_existing_entity_in_jsx_text_is_passed_through(tmp_path, capsys):
 # the helper keeps exactly one production caller (its ``_tsx_mask_source``
 # wiring) — the afferent-coupling health gate counts direct test call sites.
 _MASK_CASES = [
-    # --- JSX text: bare ``&`` masked to ``&amp;``, byte-neutral.
+    # --- JSX text: bare ``&`` masked to a single ASCII space, keeping source
+    # byte offsets aligned with the original file.
     # Exact-output match covers: masked exactly once, no double-mask
-    # (``&amp;amp;``), surrounding text byte-identical.
+    # (``&amp;amp;``), surrounding text byte-identical except the one-byte
+    # placeholder.
     ('<div>VoIP & Chamadas</div>',
-     '<div>VoIP &amp; Chamadas</div>'),
+     '<div>VoIP   Chamadas</div>'),
     # Every bare ``&`` in one JSX-text run is masked independently.
     ('<p>Welcome & hello. Mixed & multiple & ampersands.</p>',
-     '<p>Welcome &amp; hello. Mixed &amp; multiple &amp; ampersands.</p>'),
+     '<p>Welcome   hello. Mixed   multiple   ampersands.</p>'),
     # --- Non-JSX-text ``&`` locations are left intact so the TSX grammar
     # still sees the same shape it always did.
     # JSX attribute string — grammar already accepts.
@@ -189,7 +194,7 @@ _MASK_CASES = [
      'let f: <T>(x: T) => void = null;\nconst b = 1 & 2;\n'),
     # Multi-character generic arrow — ``<TKey>(x: TKey) => x`` must stay
     # code: classifying it as JSX would strand jsx_text and corrupt the
-    # later bitwise ``1 & 2`` into ``1 &amp; 2`` (a parse error).
+    # later bitwise ``1 & 2`` into ``1   2`` (a parse error).
     ('const pick = <TKey>(x: TKey) => x;\nconst b = 1 & 2;\n',
      'const pick = <TKey>(x: TKey) => x;\nconst b = 1 & 2;\n'),
     # Return-type annotation between parameter list and arrow.
@@ -216,37 +221,37 @@ _MASK_CASES = [
     # elements unwind to the parent's text.
     # Closing tag pops jsx_text → later code ``&`` stays bitwise.
     ('const a = <div>x & y</div>;\nconst b = 1 & 2;\n',
-     'const a = <div>x &amp; y</div>;\nconst b = 1 & 2;\n'),
+     'const a = <div>x   y</div>;\nconst b = 1 & 2;\n'),
     # Self-closing (tight and spaced) never opens jsx_text.
     ('const a = <br/>;\nconst b = <br />;\nconst c = 1 & 2;\n',
      'const a = <br/>;\nconst b = <br />;\nconst c = 1 & 2;\n'),
     # Fragment open/close round-trips back to code.
     ('const a = <>x & y</>;\nconst b = 1 & 2;\n',
-     'const a = <>x &amp; y</>;\nconst b = 1 & 2;\n'),
+     'const a = <>x   y</>;\nconst b = 1 & 2;\n'),
     # Nested element: after the child closes, the parent's JSX text is
     # still masked; after the parent closes, code is not.
     ('const a = <p><b>q & r</b>t & u</p>;\nconst z = 1 & 2;\n',
-     'const a = <p><b>q &amp; r</b>t &amp; u</p>;\nconst z = 1 & 2;\n'),
+     'const a = <p><b>q   r</b>t   u</p>;\nconst z = 1 & 2;\n'),
     # --- Single-letter uppercase components (``<A>``, ``<I>`` — icon/nav
     # shorthand) are JSX, not generics: text is masked, the close tag
     # pops jsx_text, and an empty element leaves no stale context.
     ('export const nav = <A>VoIP & Chamadas</A>;',
-     'export const nav = <A>VoIP &amp; Chamadas</A>;'),
+     'export const nav = <A>VoIP   Chamadas</A>;'),
     ('const a = <A>x & y</A>;\nconst b = 1 & 2;\n',
-     'const a = <A>x &amp; y</A>;\nconst b = 1 & 2;\n'),
+     'const a = <A>x   y</A>;\nconst b = 1 & 2;\n'),
     ('const a = <A></A>;\nconst b = 1 & 2;\n',
      'const a = <A></A>;\nconst b = 1 & 2;\n'),
     # Paren-initial JSX text has no arrow tail, so an uppercase
     # component still masks (``_generic_arrow_tail`` returns False).
     ('const el = <Panel>(note) & more</Panel>;',
-     'const el = <Panel>(note) &amp; more</Panel>;'),
+     'const el = <Panel>(note)   more</Panel>;'),
     # Nested JSX inside an expression container is masked, the
     # container's own ``&&`` is not, and code after is not.
     ('const a = <div>{x && <i>i & j</i>}</div>;\nconst z = 1 & 2;\n',
-     'const a = <div>{x && <i>i &amp; j</i>}</div>;\nconst z = 1 & 2;\n'),
+     'const a = <div>{x && <i>i   j</i>}</div>;\nconst z = 1 & 2;\n'),
     # Attribute strings still untouched, element text still masked.
     ('const a = <div title="x & y">t & v</div>;',
-     'const a = <div title="x & y">t &amp; v</div>;'),
+     'const a = <div title="x & y">t   v</div>;'),
     # --- Fast-path: sources without ``&`` (or empty) are a no-op.
     ('', ''),
     ('// nothing here\nconst x = 1;\n',
@@ -256,9 +261,9 @@ _MASK_CASES = [
 
 @pytest.mark.parametrize('src,expected', _MASK_CASES)
 def test_mask_walker(src, expected):
-    """Walker unit checks: bare ``&`` is masked to ``&amp;`` only in JSX
-    text; attributes, ``{ ... }`` containers, strings, comments, and TS
-    code (bitwise AND, generics) are byte-identical."""
+    """Walker unit checks: bare ``&`` is masked to a single ASCII space
+    only in JSX text; attributes, ``{ ... }`` containers, strings, comments,
+    and TS code (bitwise AND, generics) are byte-identical."""
     got = _mask_tsx_ampersands(src)
     assert got == expected, (
         f"walker mangled {src!r}\n"
@@ -268,14 +273,15 @@ def test_mask_walker(src, expected):
 
 
 def test_mask_source_round_trips_non_utf8_bytes():
-    """``LanguageConfig.source_transform`` byte contract: apart from the
-    intentional ``&`` → ``&amp;`` insertions the transform must be
-    byte-preserving. Non-UTF-8 bytes (a latin-1 comment) round-trip
-    unchanged instead of being rewritten to U+FFFD, which would silently
-    alter the source the engine parses."""
+    """``LanguageConfig.source_transform`` byte contract: the transform
+    must be fully byte-preserving. A bare ``&`` in JSX text is replaced by
+    a single ASCII space, so tree-sitter offsets and ``source[start_byte:
+    end_byte]`` slices stay aligned with the original file. Non-UTF-8 bytes
+    (a latin-1 comment) round-trip unchanged instead of being rewritten to
+    U+FFFD, which would silently alter the source the engine parses."""
     src = b"<Box>a & b</Box>  // caf\xe9 latin-1 comment\n"
     out = _tsx_mask_source(src)
-    assert out.startswith(b"<Box>a &amp; b</Box>")
+    assert out.startswith(b"<Box>a   b</Box>")
     assert b"caf\xe9" in out
 
 
