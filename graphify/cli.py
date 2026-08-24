@@ -2888,6 +2888,7 @@ def dispatch_command(cmd: str) -> None:
         if len(sys.argv) < 3:
             print(
                 "Usage: graphify extract <path> [--backend gemini|kimi|claude|openai|deepseek|ollama] "
+                "[--fallback-backend B] "
                 "[--model M] [--mode deep] [--out DIR|--output DIR] [--google-workspace] [--no-cluster] "
                 "[--no-gitignore] [--code-only] [--no-dedup] "
                 "[--max-workers N] [--token-budget N] [--max-concurrency N] "
@@ -2940,6 +2941,12 @@ def dispatch_command(cmd: str) -> None:
         # --force parity with `graphify update`: the flag or GRAPHIFY_FORCE=1
         # disables the incremental gate and skips semantic-cache reads (#1894).
         force = os.environ.get("GRAPHIFY_FORCE", "").lower() in ("1", "true", "yes")
+        # --fallback-backend: a second backend to retry the semantic pass on
+        # when EVERY chunk fails on the primary (missing SDK, bad key, an
+        # outage). The CLI flag wins over GRAPHIFY_FALLBACK_BACKEND.
+        fallback_backend: str | None = (
+            os.environ.get("GRAPHIFY_FALLBACK_BACKEND", "").strip() or None
+        )
 
         def _parse_int(name: str, raw: str) -> int:
             try:
@@ -2971,6 +2978,10 @@ def dispatch_command(cmd: str) -> None:
                 backend = args[i + 1]; i += 2
             elif a.startswith("--backend="):
                 backend = a.split("=", 1)[1]; i += 1
+            elif a == "--fallback-backend" and i + 1 < len(args):
+                fallback_backend = args[i + 1]; i += 2
+            elif a.startswith("--fallback-backend="):
+                fallback_backend = a.split("=", 1)[1]; i += 1
             elif a == "--model" and i + 1 < len(args):
                 model = args[i + 1]; i += 2
             elif a.startswith("--model="):
@@ -3355,6 +3366,17 @@ def dispatch_command(cmd: str) -> None:
                     file=sys.stderr,
                 )
                 sys.exit(1)
+            # Validate the fallback's NAME upfront so a typo fails before any API
+            # spend; its key/credential check is deferred to fire time — if the
+            # retry then fails too, the total-failure error below already tells
+            # the user what to install or set.
+            if fallback_backend is not None and fallback_backend not in _BACKENDS:
+                print(
+                    f"error: unknown fallback backend '{fallback_backend}'. "
+                    f"Available: {', '.join(sorted(_BACKENDS))}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
             if needs_llm:
                 if backend is None:
                     reasons = []
@@ -3596,65 +3618,112 @@ def dispatch_command(cmd: str) -> None:
                     print(f"[graphify extract] semantic cache: {sem_cache_hits} hit / {sem_cache_misses} miss")
 
                 if uncached_paths:
-                    print(f"[graphify extract] semantic extraction on {len(uncached_paths)} files via {backend}...")
-                    corpus_kwargs: dict = {
-                        "backend": backend,
-                        "model": model,
-                        "root": target,
-                        "cache_root": out_root,
-                    }
-                    if deep_mode:
-                        corpus_kwargs["deep_mode"] = True
-                    if cli_token_budget is not None:
-                        corpus_kwargs["token_budget"] = cli_token_budget
-                    if cli_max_concurrency is not None:
-                        corpus_kwargs["max_concurrency"] = cli_max_concurrency
+                    def _dispatch_semantic(
+                        be: str, paths: list[str], *, last_resort: bool = True
+                    ) -> tuple[dict, dict]:
+                        """Run one semantic-extraction pass over ``paths`` via ``be``.
 
-                    # Minimal progress callback so the CLI is no longer silent
-                    # during long local-inference runs (issue #792 addendum).
-                    # Also track per-chunk success so we can fail loudly when
-                    # every chunk errors (e.g. missing backend SDK package).
-                    _chunk_stats = {"total": 0, "succeeded": 0}
-                    def _progress(idx: int, total: int, _result: dict) -> None:
-                        _chunk_stats["total"] = total
-                        _chunk_stats["succeeded"] += 1
-                        print(
-                            f"[graphify extract] chunk {idx + 1}/{total} done",
-                            flush=True,
-                        )
-                    corpus_kwargs["on_chunk_done"] = _progress
+                        Returns ``(fresh, chunk_stats)``. ``chunk_stats`` counts
+                        per-chunk successes via the progress callback (issue #792
+                        addendum: it also keeps the CLI from being silent during
+                        long local-inference runs) and records ``crashed`` when the
+                        whole pass raised. A crashed pass returns an empty
+                        accumulator instead of propagating, so the caller can retry
+                        the same paths on --fallback-backend before failing the
+                        build. ``last_resort=False`` softens a missing-SDK
+                        ImportError from fatal to a failed pass — with a fallback
+                        configured, a missing package on the primary is exactly the
+                        case the fallback exists for.
+                        """
+                        print(f"[graphify extract] semantic extraction on {len(paths)} files via {be}...")
+                        corpus_kwargs: dict = {
+                            "backend": be,
+                            # --model names a model on the PRIMARY backend; on the
+                            # fallback it would be an unknown name there, so the
+                            # fallback runs on its own default model.
+                            "model": model if be == backend else None,
+                            "root": target,
+                            "cache_root": out_root,
+                        }
+                        if deep_mode:
+                            corpus_kwargs["deep_mode"] = True
+                        if cli_token_budget is not None:
+                            corpus_kwargs["token_budget"] = cli_token_budget
+                        if cli_max_concurrency is not None:
+                            corpus_kwargs["max_concurrency"] = cli_max_concurrency
 
-                    try:
-                        fresh = _extract_corpus_parallel(
-                            [Path(p) for p in uncached_paths],
-                            **corpus_kwargs,
-                        )
-                    except ImportError as exc:
-                        print(f"error: {exc}", file=sys.stderr)
-                        sys.exit(1)
-                    except Exception as exc:
+                        chunk_stats = {"total": 0, "succeeded": 0, "crashed": False}
+                        def _progress(idx: int, total: int, _result: dict) -> None:
+                            chunk_stats["total"] = total
+                            chunk_stats["succeeded"] += 1
+                            print(
+                                f"[graphify extract] chunk {idx + 1}/{total} done",
+                                flush=True,
+                            )
+                        corpus_kwargs["on_chunk_done"] = _progress
+
+                        _empty = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0}
+                        try:
+                            fresh = _extract_corpus_parallel(
+                                [Path(p) for p in paths],
+                                **corpus_kwargs,
+                            )
+                        except ImportError as exc:
+                            print(f"error: {exc}", file=sys.stderr)
+                            if last_resort:
+                                sys.exit(1)
+                            fresh = dict(_empty)
+                            chunk_stats["crashed"] = True
+                        except Exception as exc:
+                            print(
+                                f"[graphify extract] semantic extraction failed: {exc}",
+                                file=sys.stderr,
+                            )
+                            fresh = dict(_empty)
+                            chunk_stats["crashed"] = True  # the semantic pass crashed
+                        return fresh, chunk_stats
+
+                    _fallback_eligible = (
+                        fallback_backend is not None and fallback_backend != backend
+                    )
+                    fresh, _chunk_stats = _dispatch_semantic(
+                        backend, uncached_paths, last_resort=not _fallback_eligible
+                    )
+                    _last_backend = backend
+                    if _fallback_eligible and _chunk_stats["succeeded"] == 0:
+                        # Nothing was cache-saved for a zero-success pass (the save
+                        # runs below), so the fallback retries exactly the same
+                        # still-uncached files, once.
                         print(
-                            f"[graphify extract] semantic extraction failed: {exc}",
-                            file=sys.stderr,
+                            f"[graphify extract] all semantic chunks failed for backend "
+                            f"'{backend}'; retrying once with fallback backend "
+                            f"'{fallback_backend}'..."
                         )
-                        fresh = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0}
-                        _extraction_incomplete = True  # the semantic pass crashed
+                        fresh, _chunk_stats = _dispatch_semantic(
+                            fallback_backend, uncached_paths
+                        )
+                        _last_backend = fallback_backend
 
                     # on_chunk_done only fires after a chunk succeeds. If fresh
-                    # semantic extraction was requested and no chunks completed,
-                    # fail instead of writing an AST-only graph with exit 0.
+                    # semantic extraction was requested and no chunks completed
+                    # (on the fallback either, when one was configured), fail
+                    # instead of writing an AST-only graph with exit 0.
                     if uncached_paths and _chunk_stats["succeeded"] == 0:
                         print(
                             f"[graphify extract] error: all semantic chunks failed "
-                            f"for backend '{backend}' ({len(uncached_paths)} uncached files) - "
+                            f"for backend '{_last_backend}' ({len(uncached_paths)} uncached files) - "
                             f"see per-chunk errors above. If you see 'requires the X package', "
                             f"run `pip install X` and retry.",
                             file=sys.stderr,
                         )
                         sys.exit(1)
-                    # Some (but not all) chunks failed — the graph is missing nodes
-                    # from the failed chunks, so it must not clobber a larger complete
-                    # graph without an explicit --allow-partial override.
+                    # Incompleteness is judged on the pass whose result we kept: a
+                    # crashed pass, or some (but not all) chunks failed — the graph
+                    # is missing nodes from the failed chunks, so it must not
+                    # clobber a larger complete graph without an explicit
+                    # --allow-partial override.
+                    if _chunk_stats["crashed"]:
+                        _extraction_incomplete = True
                     if _chunk_stats["total"] and _chunk_stats["succeeded"] < _chunk_stats["total"]:
                         _extraction_incomplete = True
                     # Which files truncated this run (item markers + the empty-parse
