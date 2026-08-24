@@ -81,7 +81,8 @@ def test_status_not_installed(tmp_path):
     assert "not installed" in result
 
 
-def test_no_git_repo_raises(tmp_path):
+def test_no_git_repo_raises(tmp_path, monkeypatch):
+    monkeypatch.setattr("graphify.hooks._git_root", lambda p: None)
     with pytest.raises(RuntimeError, match="No git repository"):
         install(tmp_path / "not_a_repo")
 
@@ -162,30 +163,32 @@ def test_hook_skips_head_on_exe():
     assert "*.exe) _SHEBANG=" in _PYTHON_DETECT or '*.exe)' in _PYTHON_DETECT
 
 
-def test_install_embeds_pinned_interpreter(tmp_path):
-    """Hook scripts must embed sys.executable so the hook works without the
-    graphify launcher on PATH (uv tool / pipx isolation, #1127).
+def test_install_records_interpreter_in_sidecar(tmp_path):
+    """Hook scripts must record sys.executable in graphify-out/.graphify_python
+    rather than baking it into tracked hook files (#2989, #1127).
 
     When graphify is installed via `uv tool install graphifyy` or `pipx install
     graphifyy`, the interpreter lives in an isolated venv and the launcher is in
-    ~/.local/bin.  GUI git clients and CI runners often run with a minimal PATH
-    that omits that directory, so `command -v graphify` fails, the python3/python
-    fallbacks cannot import graphify (wrong venv), and the hook silently exits 0.
-    Pinning sys.executable at install time makes the hook work regardless of PATH.
+    ~/.local/bin. GUI git clients and CI runners often run with a minimal PATH
+    that omits that directory. Recording the interpreter in the local gitignored
+    .graphify_python file allows Probe 2 to resolve it without churning tracked
+    hook files with machine-specific absolute paths.
     """
     import re, sys
     repo = _make_git_repo(tmp_path)
     install(repo)
-    commit_hook = (repo / ".git" / "hooks" / "post-commit").read_text()
-    checkout_hook = (repo / ".git" / "hooks" / "post-checkout").read_text()
-    # Compute the sanitized value the same way install() does.
-    expected = sys.executable if not re.search(r"[^a-zA-Z0-9/_.@:\\-]", sys.executable) else ""
+    commit_hook = (repo / ".git" / "hooks" / "post-commit").read_text(encoding="utf-8")
+    checkout_hook = (repo / ".git" / "hooks" / "post-checkout").read_text(encoding="utf-8")
+    expected = sys.executable if not re.search(r"[^a-zA-Z0-9/_.@: \\-]", sys.executable) else ""
     if expected:
-        assert expected in commit_hook, "sanitized sys.executable missing from post-commit"
-        assert expected in checkout_hook, "sanitized sys.executable missing from post-checkout"
-    # The placeholder must be fully substituted -- no __PINNED_PYTHON__ left.
-    assert "__PINNED_PYTHON__" not in commit_hook, "placeholder not substituted in post-commit"
-    assert "__PINNED_PYTHON__" not in checkout_hook, "placeholder not substituted in post-checkout"
+        py_file = repo / "graphify-out" / ".graphify_python"
+        assert py_file.exists(), "graphify-out/.graphify_python must be created by hook install"
+        assert py_file.read_text(encoding="utf-8") == expected, "recorded interpreter mismatch"
+        # The machine-specific absolute interpreter path must NOT be in the hook files:
+        assert expected not in commit_hook, "machine-specific interpreter leaked into post-commit"
+        assert expected not in checkout_hook, "machine-specific interpreter leaked into post-checkout"
+    assert "_PINNED=''" in commit_hook, "_PINNED must be empty in post-commit"
+    assert "_PINNED=''" in checkout_hook, "_PINNED must be empty in post-checkout"
 
 
 def test_install_fallback_is_loud_not_silent(tmp_path):
@@ -851,7 +854,7 @@ def test_merge_driver_quotes_interpreter_with_spaces(tmp_path, monkeypatch):
 
 
 def test_install_pins_interpreter_path_with_spaces(tmp_path, monkeypatch):
-    """#2166 end to end: the emitted hooks must carry the real interpreter, not ''."""
+    """#2166 / #2989: an interpreter path with spaces must be recorded in the sidecar."""
     import sys as _sys
 
     from graphify.hooks import install
@@ -861,10 +864,79 @@ def test_install_pins_interpreter_path_with_spaces(tmp_path, monkeypatch):
     monkeypatch.setattr(_sys, "executable", exe)
     install(repo)
 
+    py_file = repo / "graphify-out" / ".graphify_python"
+    assert py_file.exists()
+    assert py_file.read_text(encoding="utf-8") == exe
+
     for name in ("post-commit", "post-checkout"):
-        script = (repo / ".git" / "hooks" / name).read_text()
-        assert f"_PINNED='{exe}'" in script, f"{name} did not pin the spaced interpreter"
-        assert "_PINNED=''" not in script, f"{name} pinned an empty interpreter (#2166)"
+        script = (repo / ".git" / "hooks" / name).read_text(encoding="utf-8")
+        assert exe not in script, f"{name} must not contain machine-specific path"
+        assert "_PINNED=''" in script
+
+
+def test_hook_install_no_machine_specific_path_in_tracked_output(tmp_path, monkeypatch):
+    """#2989 Invariant 1: Simulated interpreter paths must never be baked into tracked hooks."""
+    import sys as _sys
+
+    from graphify.hooks import install
+
+    simulated_exes = [
+        "/Users/alice/.local/pipx/venvs/graphify/bin/python",
+        r"C:\Users\Bob\AppData\Roaming\uv\tools\graphifyy\Scripts\python.exe",
+    ]
+    for exe in simulated_exes:
+        repo = _make_git_repo(tmp_path / f"repo_{abs(hash(exe))}")
+        monkeypatch.setattr(_sys, "executable", exe)
+        install(repo)
+        for name in ("post-commit", "post-checkout"):
+            hook_text = (repo / ".git" / "hooks" / name).read_text(encoding="utf-8")
+            assert exe not in hook_text, f"{name} leaked machine-specific interpreter path {exe}"
+
+
+def test_hook_install_populates_local_interpreter_state(tmp_path, monkeypatch):
+    """#2989 Invariant 2: graphify-out/.graphify_python is populated and remains local."""
+    import sys as _sys
+
+    from graphify.hooks import install
+
+    exe = "/custom/isolated/venv/bin/python"
+    repo = _make_git_repo(tmp_path)
+    monkeypatch.setattr(_sys, "executable", exe)
+    install(repo)
+
+    py_file = repo / "graphify-out" / ".graphify_python"
+    assert py_file.exists()
+    assert py_file.read_text(encoding="utf-8") == exe
+
+
+def test_different_machines_do_not_churn_tracked_hooks(tmp_path, monkeypatch):
+    """#2989 Invariant 3: Different machine interpreters produce byte-identical hook scripts."""
+    import sys as _sys
+
+    from graphify.hooks import install
+
+    repo_a = _make_git_repo(tmp_path / "repo_a")
+    monkeypatch.setattr(_sys, "executable", "/machine/a/venv/bin/python")
+    install(repo_a)
+
+    repo_b = _make_git_repo(tmp_path / "repo_b")
+    monkeypatch.setattr(_sys, "executable", r"C:\machine\b\uv\Scripts\python.exe")
+    install(repo_b)
+
+    for name in ("post-commit", "post-checkout"):
+        script_a = (repo_a / ".git" / "hooks" / name).read_bytes()
+        script_b = (repo_b / ".git" / "hooks" / name).read_bytes()
+        assert script_a == script_b, f"{name} differed across machines with different interpreter paths"
+
+
+def test_checkout_script_contains_unicode_em_dash():
+    """#2989 Invariant 4: _CHECKOUT_SCRIPT must contain U+2014 em-dash and no mojibake."""
+    from graphify.hooks import _CHECKOUT_SCRIPT
+
+    assert "—" in _CHECKOUT_SCRIPT, "_CHECKOUT_SCRIPT must contain unicode em-dash (—)"
+    assert "\u2014" in _CHECKOUT_SCRIPT, "U+2014 em-dash missing from _CHECKOUT_SCRIPT"
+    assert "ΓÇö" not in _CHECKOUT_SCRIPT, "mojibake ΓÇö found in _CHECKOUT_SCRIPT"
+    assert "\u0393\u00c7\u00f6" not in _CHECKOUT_SCRIPT, "mojibake code points found in _CHECKOUT_SCRIPT"
 
 
 def test_graphifyrc_parsing(tmp_path):
@@ -1002,3 +1074,77 @@ def test_both_hooks_configured(tmp_path):
     for name in ("post-commit", "post-checkout"):
         hook_text = (repo / ".git" / "hooks" / name).read_text()
         assert 'export GRAPHIFY_VIZ_NODE_LIMIT="${GRAPHIFY_VIZ_NODE_LIMIT:-42}"' in hook_text
+
+
+def test_install_custom_relative_graphify_out(tmp_path, monkeypatch):
+    """#2989: install() and _PYTHON_DETECT must consistently use custom relative GRAPHIFY_OUT."""
+    import sys as _sys
+
+    from graphify.hooks import install, _PYTHON_DETECT
+
+    custom_out = "my-custom-graphify-out"
+    monkeypatch.setenv("GRAPHIFY_OUT", custom_out)
+    exe = "/custom/env/bin/python"
+    monkeypatch.setattr(_sys, "executable", exe)
+
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+
+    sidecar = repo / custom_out / ".graphify_python"
+    assert sidecar.exists(), f"{custom_out}/.graphify_python must be written by install()"
+    assert sidecar.read_text(encoding="utf-8") == exe
+
+    for name in ("post-commit", "post-checkout"):
+        script = (repo / ".git" / "hooks" / name).read_text(encoding="utf-8")
+        assert exe not in script, f"{name} must not contain machine-specific path"
+        assert "_PINNED=''" in script
+
+    # Verify template contains GRAPHIFY_OUT probe logic
+    assert '${GRAPHIFY_OUT:-graphify-out}/.graphify_python' in _PYTHON_DETECT or '_GFY_OUT_DIR="${GRAPHIFY_OUT:-graphify-out}"' in _PYTHON_DETECT
+
+
+def test_python_detect_runtime_probe_custom_graphify_out(tmp_path, monkeypatch):
+    """#2989: Test the shell probe logic when GRAPHIFY_OUT is set."""
+    import sys as _sys
+    from graphify.hooks import _PYTHON_DETECT
+
+    repo = _make_git_repo(tmp_path)
+    custom_dir = repo / "custom-graph"
+    custom_dir.mkdir(parents=True)
+    (custom_dir / ".graphify_python").write_text(_sys.executable, encoding="utf-8")
+
+    # Run the probe under sh with GRAPHIFY_OUT set
+    test_sh = f"""
+    cd "{repo.as_posix()}"
+    export GRAPHIFY_OUT="custom-graph"
+    {_PYTHON_DETECT}
+    echo "RESOLVED=$GRAPHIFY_PYTHON"
+    """
+    res = subprocess.run(["sh", "-c", test_sh], capture_output=True, text=True)
+    if res.returncode == 0 and "RESOLVED=" in res.stdout:
+        resolved = res.stdout.split("RESOLVED=")[1].strip()
+        assert resolved != "", "GRAPHIFY_PYTHON must not be empty"
+        assert "python" in resolved.lower()
+
+
+def test_python_detect_runtime_fallback_to_default_graphify_out(tmp_path):
+    """#2989: Probe falls back to graphify-out/.graphify_python if custom GRAPHIFY_OUT is missing."""
+    import sys as _sys
+    from graphify.hooks import _PYTHON_DETECT
+
+    repo = _make_git_repo(tmp_path)
+    default_dir = repo / "graphify-out"
+    default_dir.mkdir(parents=True)
+    (default_dir / ".graphify_python").write_text(_sys.executable, encoding="utf-8")
+
+    test_sh = f"""
+    cd "{repo.as_posix()}"
+    export GRAPHIFY_OUT="nonexistent-custom-dir"
+    {_PYTHON_DETECT}
+    echo "RESOLVED=$GRAPHIFY_PYTHON"
+    """
+    res = subprocess.run(["sh", "-c", test_sh], capture_output=True, text=True)
+    if res.returncode == 0 and "RESOLVED=" in res.stdout:
+        resolved = res.stdout.split("RESOLVED=")[1].strip()
+        assert resolved != "", "GRAPHIFY_PYTHON must not be empty"
+        assert "python" in resolved.lower()

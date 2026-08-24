@@ -10,12 +10,14 @@ _HOOK_MARKER_END = "# graphify-hook-end"
 _CHECKOUT_MARKER = "# graphify-checkout-hook-start"
 _CHECKOUT_MARKER_END = "# graphify-checkout-hook-end"
 
-# __PINNED_PYTHON__ is replaced at install time with the absolute path of the
-# Python interpreter that ran `graphify hook install`.  For uv-tool and pipx
-# installs the interpreter lives inside an isolated venv, so the launcher on
-# PATH is the only entry point — and GUI git clients / CI runners often have a
-# minimal PATH that omits ~/.local/bin.  Pinning sys.executable at install time
-# makes the hook work regardless of PATH at git-trigger time.
+# The Python interpreter running `graphify hook install` is recorded in the
+# gitignored graphify-out/.graphify_python sidecar rather than baked into the
+# hook script itself, so tracked .githooks files stay portable across machines.
+# For uv-tool and pipx installs the interpreter lives inside an isolated venv,
+# so the launcher on PATH is the only entry point — and GUI git clients / CI
+# runners often have a minimal PATH that omits ~/.local/bin. Recording the local
+# interpreter in graphify-out/.graphify_python makes the hook work regardless
+# of PATH at git-trigger time.
 _PYTHON_DETECT = """\
 # Detect the correct Python interpreter (handles uv tool, pipx, venv, system installs).
 # _PINNED was recorded at hook-install time; tried first so the hook works even
@@ -30,14 +32,18 @@ _PYTHON_DETECT = """\
 # fails loudly in the log if the package is broken under that interpreter.
 _GFY_PROBE="import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('graphify') else 1)"
 GRAPHIFY_PYTHON=""
-_PINNED='__PINNED_PYTHON__'
+_PINNED=''
 if [ -n "$_PINNED" ] && [ -x "$_PINNED" ] && "$_PINNED" -c "$_GFY_PROBE" 2>/dev/null; then
     GRAPHIFY_PYTHON="$_PINNED"
 fi
-# Second probe: read graphify-out/.graphify_python (written by the skill and
-# CLI; survives uv-tool reinstalls and is the same source the README documents).
+# Second probe: read ${GRAPHIFY_OUT:-graphify-out}/.graphify_python (written by the skill,
+# CLI, and hook install; survives uv-tool reinstalls and is machine-local).
 if [ -z "$GRAPHIFY_PYTHON" ]; then
-    _GFY_PYTHON_FILE="graphify-out/.graphify_python"
+    _GFY_OUT_DIR="${GRAPHIFY_OUT:-graphify-out}"
+    _GFY_PYTHON_FILE="${_GFY_OUT_DIR}/.graphify_python"
+    if [ ! -f "$_GFY_PYTHON_FILE" ] && [ -f "graphify-out/.graphify_python" ]; then
+        _GFY_PYTHON_FILE="graphify-out/.graphify_python"
+    fi
     if [ -f "$_GFY_PYTHON_FILE" ]; then
         _FROM_FILE=$(cat "$_GFY_PYTHON_FILE" 2>/dev/null | tr -d '[:space:]')
         case "$_FROM_FILE" in
@@ -356,7 +362,7 @@ if [ "$BRANCH_SWITCH" != "1" ]; then
 fi
 
 # A no-op checkout (e.g. `git checkout -b` with no start point) reports a
-# branch switch but leaves the tree unchanged ΓÇö nothing to rebuild (#2421).
+# branch switch but leaves the tree unchanged — nothing to rebuild (#2421).
 [ "$PREV_HEAD" = "$NEW_HEAD" ] && exit 0
 
 # Only run if graphify-out/ exists (graph has been built before)
@@ -582,8 +588,7 @@ def _merge_attr_line() -> str:
     absolute output-dir override cannot be expressed there — fall back to the
     default name in that case.
     """
-    from graphify.paths import GRAPHIFY_OUT
-    out = GRAPHIFY_OUT
+    out = os.environ.get("GRAPHIFY_OUT", "graphify-out")
     if not out or Path(out).is_absolute() or "\\" in out:
         out = "graphify-out"
     return f"{out.rstrip('/')}/graph.json merge=graphify"
@@ -734,8 +739,16 @@ def install(path: Path = Path(".")) -> str:
         viz_export = ""
 
     pinned = _pinned_python()
-    hook = _HOOK_SCRIPT.replace("__PINNED_PYTHON__", pinned).replace("__VIZ_LIMIT_EXPORT__", viz_export)
-    checkout = _CHECKOUT_SCRIPT.replace("__PINNED_PYTHON__", pinned).replace("__VIZ_LIMIT_EXPORT__", viz_export)
+    if pinned:
+        out_name = os.environ.get("GRAPHIFY_OUT", "graphify-out")
+        if not out_name or Path(out_name).is_absolute() or "\\" in out_name:
+            out_name = "graphify-out"
+        py_file = root / out_name / ".graphify_python"
+        py_file.parent.mkdir(parents=True, exist_ok=True)
+        py_file.write_text(pinned, encoding="utf-8")
+
+    hook = _HOOK_SCRIPT.replace("__VIZ_LIMIT_EXPORT__", viz_export)
+    checkout = _CHECKOUT_SCRIPT.replace("__VIZ_LIMIT_EXPORT__", viz_export)
 
     commit_msg = _install_hook(hooks_dir, "post-commit", hook, _HOOK_MARKER, _HOOK_MARKER_END)
     checkout_msg = _install_hook(hooks_dir, "post-checkout", checkout, _CHECKOUT_MARKER, _CHECKOUT_MARKER_END)
