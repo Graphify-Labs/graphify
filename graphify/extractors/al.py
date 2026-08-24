@@ -43,6 +43,16 @@ _AL_CALLABLE_TYPES = {
     "trigger_declaration": "trigger",
     "event_declaration": "event",
 }
+_AL_MEMBER_SCOPE_TYPES = {
+    "field_declaration",
+    "page_field",
+    "action_declaration",
+    "action_group_section",
+    "report_dataitem",
+    "query_dataitem",
+    "request_page",
+    "request_page_section",
+}
 
 
 def _decode_al_identifier(value: str | None) -> str:
@@ -201,15 +211,17 @@ def _type_reference(type_node, source: bytes) -> tuple[str, str] | None:
 
 
 def _member_scope_seed(member_node, source: bytes) -> str | None:
+    seeds: list[str] = []
     current = member_node.parent
     while current is not None and current.type not in _AL_OBJECT_TYPES:
-        if current.type in {"field_declaration", "page_field", "action_declaration"}:
+        if current.type in _AL_MEMBER_SCOPE_TYPES:
             name = _decode_al_identifier(_field_text(current, "name", source))
             identifier = _field_text(current, "id", source)
-            if name or identifier:
-                return f"{current.type}:{identifier}:{name}"
+            reference = _decode_al_identifier(_field_text(current, "source", source))
+            if name or identifier or reference:
+                seeds.append(f"{current.type}:{identifier}:{name}:{reference}")
         current = current.parent
-    return None
+    return "/".join(reversed(seeds)) or None
 
 
 class _ALTreeContext:

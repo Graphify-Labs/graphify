@@ -24,18 +24,24 @@ page 70211 "Planübersicht (Täglich)"
     {
         area(processing)
         {
-            action("Auswahl & starten (heute)")
+            group("Tägliche Auswahl")
             {
-                trigger OnAction()
-                begin
-                    "Prüfe & Starte (Auswahl)"();
-                end;
+                action("Auswahl & starten")
+                {
+                    trigger OnAction()
+                    begin
+                        "Prüfe & Starte (Auswahl)"();
+                    end;
+                }
             }
-            action("Auswahl & vormerken (später)")
+            group("Spätere Auswahl")
             {
-                trigger OnAction()
-                begin
-                end;
+                action("Auswahl & starten")
+                {
+                    trigger OnAction()
+                    begin
+                    end;
+                }
             }
         }
     }
@@ -45,5 +51,30 @@ page 70211 "Planübersicht (Täglich)"
         "Gewählter Plan": Record "Übernahme-Plan (Nord & Süd)";
     begin
         "Gewählter Plan"."Setze Prüfstatus"('Bereit');
+    end;
+}
+
+report 70212 "Prüfliste (Regionen)"
+{
+    dataset
+    {
+        dataitem("Nördliche Auswahl"; Customer)
+        {
+            trigger OnAfterGetRecord()
+            begin
+                "Sammle Ergebnis"();
+            end;
+        }
+        dataitem("Südliche Auswahl"; Vendor)
+        {
+            trigger OnAfterGetRecord()
+            begin
+                "Sammle Ergebnis"();
+            end;
+        }
+    }
+
+    procedure "Sammle Ergebnis"()
+    begin
     end;
 }

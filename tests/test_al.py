@@ -134,7 +134,12 @@ def test_al_fallback_preserves_quoted_special_identifiers(monkeypatch):
     assert "Planübersicht (Täglich)" in labels
     assert "Setze Prüfstatus()" in labels
     assert "Prüfe & Starte (Auswahl)()" in labels
+    assert "Prüfliste (Regionen)" in labels
+    assert "Sammle Ergebnis()" in labels
     assert len([node for node in result["nodes"] if node["label"] == "OnAction()"]) == 2
+    assert len(
+        [node for node in result["nodes"] if node["label"] == "OnAfterGetRecord()"]
+    ) == 2
 
 
 def test_al_fallback_preserves_duplicate_triggers(monkeypatch):
@@ -191,6 +196,9 @@ def test_al_tree_sitter_resolves_quoted_special_identifiers():
     result = extract([fixture], cache_root=fixture.parent)
     nodes = {node["label"]: node for node in result["nodes"]}
     action_triggers = [node for node in result["nodes"] if node["label"] == "OnAction()"]
+    dataitem_triggers = [
+        node for node in result["nodes"] if node["label"] == "OnAfterGetRecord()"
+    ]
     relations = {
         (edge["source"], edge["target"], edge["relation"])
         for edge in result["edges"]
@@ -205,6 +213,8 @@ def test_al_tree_sitter_resolves_quoted_special_identifiers():
     )
     assert len(action_triggers) == 2
     assert len({node["id"] for node in action_triggers}) == 2
+    assert len(dataitem_triggers) == 2
+    assert len({node["id"] for node in dataitem_triggers}) == 2
     assert any(
         (trigger["id"], nodes["Prüfe & Starte (Auswahl)()"]["id"], "calls")
         in relations
@@ -215,6 +225,10 @@ def test_al_tree_sitter_resolves_quoted_special_identifiers():
         nodes["Setze Prüfstatus()"]["id"],
         "calls",
     ) in relations
+    assert all(
+        (trigger["id"], nodes["Sammle Ergebnis()"]["id"], "calls") in relations
+        for trigger in dataitem_triggers
+    )
 
 
 def test_al_tree_sitter_preserves_callable_and_field_metadata():
