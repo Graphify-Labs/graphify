@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Feature: `graphify extract --fallback-backend <B>` (or `GRAPHIFY_FALLBACK_BACKEND`; the flag wins) retries the semantic pass once on a second backend when every chunk fails on the primary, so a missing SDK package, a bad key, or an outage no longer costs the whole build; the retry covers exactly the still-uncached files, `--model` stays with the primary backend (the fallback runs on its own default model), a typo'd fallback name is rejected before any API spend, and only a zero-success retry keeps the all-chunks-failed exit 1.
+
 ## 0.9.48 (2026-08-20)
 
 - Fix: a control character in a node label or id no longer aborts the whole export; the GraphML and Obsidian exporters scrub only the characters those formats forbid (tab, newline, and non-ASCII letters are preserved), and `graph.json` and its byte-identity round-trip are untouched (#2897, thanks @abhay-codes07).
