@@ -10,7 +10,7 @@ from graphify.extractors.base import _file_stem, _make_id
 _AL_IDENTIFIER = r'(?P<name>"(?:[^"]|"")+"|[A-Za-z_][\w.]*)'
 _AL_OBJECT_RE = re.compile(
     rf"(?im)^\s*(?P<kind>codeunit|tableextension|table|pageextension|page|"
-    rf"enumextension|enum|interface|reportextension|report|query|xmlport)\s+"
+    rf"enumextension|enum|interface|reportextension|report|query|xmlport|permissionset)\s+"
     rf"(?:(?P<object_id>\d+)\s+)?{_AL_IDENTIFIER}\s*"
     rf"(?:extends\s+(?P<base>\"(?:[^\"]|\"\")+\"|[A-Za-z_][\w.]*))?"
     rf"(?:implements\s+(?P<interfaces>[^{{]+))?\s*{{"
@@ -126,16 +126,17 @@ def _mask_al_comments_and_strings(source: str) -> str:
     return "".join(chars)
 
 
-def _matching_brace(source: str, opening: int) -> int:
+def _matching_brace(masked_source: str, opening: int) -> int:
+    """Find the closing brace in source with comments and strings already masked."""
     depth = 0
-    for index in range(opening, len(source)):
-        if source[index] == "{":
+    for index in range(opening, len(masked_source)):
+        if masked_source[index] == "{":
             depth += 1
-        elif source[index] == "}":
+        elif masked_source[index] == "}":
             depth -= 1
             if depth == 0:
                 return index
-    return len(source)
+    return len(masked_source)
 
 
 def _line_number(source: str, offset: int) -> int:
@@ -773,8 +774,13 @@ def extract_al(path: Path, source_override: str | None = None) -> dict:
         return {"nodes": [], "edges": [], "error": str(exc)}
 
     try:
-        import tree_sitter_al
         from tree_sitter import Language, Parser
+    except ImportError as exc:
+        result = _extract_al_fallback(path, source)
+        result["dependency_warning"] = f"tree_sitter failed to load: {exc}"
+        return result
+    try:
+        import tree_sitter_al
     except ImportError as exc:
         import importlib.util
 

@@ -49,6 +49,8 @@ def _manifest_context(source_file: str, cache: dict[Path, dict]) -> dict:
         if manifest not in cache:
             try:
                 data = json.loads(manifest.read_text(encoding="utf-8-sig"))
+                if not isinstance(data, dict):
+                    raise TypeError("app.json root must be an object")
                 dependencies = {
                     str(item.get("id", "")).casefold()
                     for item in data.get("dependencies", [])

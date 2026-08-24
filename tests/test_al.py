@@ -8,7 +8,12 @@ import pytest
 from graphify.detect import CODE_EXTENSIONS, FileType, classify_file
 from graphify.extract import _get_extractor, extract
 from graphify.al_resolution import _same_source, _unique_member_id
-from graphify.extractors.al import _mask_al_comments_and_strings, extract_al
+from graphify.extractors.al import (
+    _extract_al_fallback,
+    _mask_al_comments_and_strings,
+    _matching_brace,
+    extract_al,
+)
 
 
 def test_al_extension_is_detected_case_insensitively():
@@ -47,6 +52,15 @@ def test_al_mask_preserves_offsets_and_newlines_across_lexical_states():
     assert masked.replace(" ", "") == "code\nnext\nmoreend"
 
 
+def test_al_matching_brace_uses_masked_comments_and_strings():
+    source = "{ value := '{'; /* } */ nested { } } trailing"
+    masked = _mask_al_comments_and_strings(source)
+
+    closing = _matching_brace(masked, 0)
+
+    assert closing == source.index("} trailing")
+
+
 def test_al_missing_parser_reports_optional_extra(tmp_path, capsys, monkeypatch):
     monkeypatch.setitem(sys.modules, "tree_sitter_al", None)
     source = tmp_path / "Comment.Codeunit.al"
@@ -59,6 +73,24 @@ def test_al_missing_parser_reports_optional_extra(tmp_path, capsys, monkeypatch)
     assert "tree_sitter_al not installed" in err
     assert 'graphifyy[al]' in err
     assert result["failed_sources"] == []
+    assert any(node.get("object_kind") == "codeunit" for node in result["nodes"])
+
+
+def test_al_missing_tree_sitter_core_uses_fallback(tmp_path, monkeypatch):
+    source = tmp_path / "Comment.Codeunit.al"
+    source.write_text('codeunit 75000 "Comment Mgt." { }', encoding="utf-8")
+    original_import = builtins.__import__
+
+    def broken_import(name, *args, **kwargs):
+        if name == "tree_sitter":
+            raise ImportError("core unavailable")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", broken_import)
+
+    result = extract_al(source)
+
+    assert "tree_sitter failed to load" in result.get("dependency_warning", "")
     assert any(node.get("object_kind") == "codeunit" for node in result["nodes"])
 
 
@@ -103,6 +135,19 @@ def test_al_fallback_extracts_objects_procedures_and_triggers(monkeypatch):
     assert objects["Customer Comments"]["object_kind"] == "tableextension"
     assert all(node.get("extraction_tier") == "fallback" for node in result["nodes"])
     assert {edge["relation"] for edge in result["edges"]} == {"contains"}
+
+
+def test_al_fallback_extracts_permission_sets():
+    result = _extract_al_fallback(
+        Path("Sample.permissionset.al"),
+        'permissionset 70000 "Sample Admin"\n{\n}\n',
+    )
+
+    permission_set = next(
+        node for node in result["nodes"] if node.get("object_kind") == "permissionset"
+    )
+    assert permission_set["label"] == "Sample Admin"
+    assert permission_set["object_id"] == "70000"
 
 
 def test_al_fallback_preserves_spelling_and_casefolds_lookup(monkeypatch, tmp_path):
@@ -479,6 +524,18 @@ def test_al_resolver_tolerates_invalid_manifest(tmp_path):
     source = tmp_path / "simple.al"
     source.write_text('codeunit 1 Simple { procedure Run() begin end; }', encoding="utf-8")
     result = extract([source], cache_root=tmp_path)
+    assert any(node["label"] == "Simple" for node in result["nodes"])
+
+
+@pytest.mark.parametrize("manifest", ["[]", '"not-an-object"', "null"])
+def test_al_resolver_tolerates_non_object_manifest(tmp_path, manifest):
+    pytest.importorskip("tree_sitter_al")
+    (tmp_path / "app.json").write_text(manifest, encoding="utf-8")
+    source = tmp_path / "simple.al"
+    source.write_text('codeunit 1 Simple { procedure Run() begin end; }', encoding="utf-8")
+
+    result = extract([source], cache_root=tmp_path)
+
     assert any(node["label"] == "Simple" for node in result["nodes"])
 
 
