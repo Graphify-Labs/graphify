@@ -327,6 +327,10 @@ def test_mask_source_round_trips_non_utf8_bytes():
     (b'<Box>a & b</Box>', b'<Box>a   b</Box>'),
     ('<Box>Conexões & Integrações</Box>'.encode('utf-8'),
      '<Box>Conexões   Integrações</Box>'.encode('utf-8')),
+    # Non-BMP (4-byte UTF-8) emoji in JSX text: the replacement stays one
+    # byte, so offsets remain aligned with the original file.
+    ('<Box>🚀 & Chamadas</Box>'.encode('utf-8'),
+     '<Box>🚀   Chamadas</Box>'.encode('utf-8')),
     (b'<Box>a & b</Box>  // caf\xe9 latin-1 comment\n',
      b'<Box>a   b</Box>  // caf\xe9 latin-1 comment\n'),
     (b'<Box>a & b</Box> \xff\xfe',
@@ -375,6 +379,23 @@ def test_nested_jsx_in_expression_container_is_masked(tmp_path, capsys):
         ),
     })
     assert "view" in _labels(r)
+    _assert_silent(capsys.readouterr().err)
+    assert r.get("parse_errors") in (None, [])
+
+
+def test_non_bmp_jsx_text_ampersand_is_silent(tmp_path, capsys):
+    """A non-BMP character (e.g. U+1F680 🚀, 4 UTF-8 bytes) in JSX text
+    followed by a bare ``&`` must not shift parser offsets. The mask
+    replaces ``&`` with a single ASCII space, so the byte length of the
+    source stays identical before and after the transform."""
+    r = _extract(tmp_path, {
+        "page.tsx": (
+            "export function Page() {\n"
+            "    return <Box>🚀 & Chamadas</Box>;\n"
+            "}\n"
+        ),
+    })
+    assert "Page()" in _labels(r)
     _assert_silent(capsys.readouterr().err)
     assert r.get("parse_errors") in (None, [])
 
