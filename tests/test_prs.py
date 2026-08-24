@@ -16,11 +16,14 @@ from graphify.prs import (
     _parse_ci,
     _path_match,
     build_community_labels,
+    cmd_prs,
     compute_pr_impact,
     fetch_pr_files,
+    fetch_prs,
     fetch_worktrees,
     format_prs_text,
     _detect_default_branch,
+    last_gh_error,
 )
 
 
@@ -376,6 +379,22 @@ class TestDetectDefaultBranch:
         ):
             assert _detect_default_branch() == "main"
 
+    def test_another_repo_is_not_answered_from_the_local_clone(self):
+        """--repo names a repo the local clone knows nothing about (#2850)."""
+        with patch("graphify.prs._gh", return_value=None), patch(
+            "graphify.prs.subprocess.run"
+        ) as mock_run:
+            assert _detect_default_branch("cilium/cilium") == "main"
+        mock_run.assert_not_called()
+
+    def test_undetected_default_branch_is_flagged(self, capsys):
+        mock_result = MagicMock(returncode=0, stdout="")
+        with patch("graphify.prs._gh", return_value=None), patch(
+            "graphify.prs.subprocess.run", return_value=mock_result
+        ):
+            assert _detect_default_branch() == "main"
+        assert "assuming 'main'" in capsys.readouterr().err
+
 
 # ── build_community_labels ─────────────────────────────────────────────────────
 
@@ -462,3 +481,198 @@ class TestSubprocessOutputEncoding:
             _detect_default_branch()
         _args, kwargs = mock_run.call_args
         assert kwargs.get("encoding") == "utf-8"
+
+
+# ── gh failure reporting + page-size fallback (#2850) ─────────────────────────
+
+_GH_504 = (
+    "HTTP 504: We couldn't respond to your request in time. "
+    "(https://api.github.com/graphql)"
+)
+
+
+def _completed(returncode: int = 0, stdout: str = "", stderr: str = "") -> MagicMock:
+    return MagicMock(returncode=returncode, stdout=stdout, stderr=stderr)
+
+
+def _pr_payload(count: int) -> str:
+    return json.dumps([
+        {
+            "number": 100 + i,
+            "title": f"PR {i}",
+            "headRefName": f"feature-{i}",
+            "baseRefName": "v8",
+            "author": {"login": "alice"},
+            "isDraft": False,
+            "reviewDecision": "APPROVED",
+            "statusCheckRollup": [{"status": "COMPLETED", "conclusion": "SUCCESS"}],
+            "updatedAt": "2026-01-02T03:04:05Z",
+        }
+        for i in range(count)
+    ])
+
+
+def _gh_pr_list_runner(fails_at: set[int], stderr: str = _GH_504):
+    """Fake subprocess.run for `gh pr list`: fail for the given --limit values."""
+    calls: list[int] = []
+
+    def run(cmd, **kwargs):
+        page_size = int(cmd[cmd.index("--limit") + 1])
+        calls.append(page_size)
+        if page_size in fails_at:
+            return _completed(1, "", stderr)
+        return _completed(0, _pr_payload(page_size), "")
+
+    return run, calls
+
+
+class TestGhErrorReporting:
+    """_gh collapses every failure to None; last_gh_error() must say which one."""
+
+    def test_nonzero_exit_records_stderr(self):
+        with patch("subprocess.run", return_value=_completed(1, "", _GH_504)):
+            assert _gh("pr", "list") is None
+        assert "504" in last_gh_error()
+
+    def test_nonzero_exit_without_stderr_records_exit_code(self):
+        with patch("subprocess.run", return_value=_completed(2, "", "")):
+            assert _gh("pr", "list") is None
+        assert "2" in last_gh_error()
+
+    def test_timeout_is_reported_as_a_timeout(self):
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("gh", 30)):
+            assert _gh("pr", "list") is None
+        assert "timed out" in last_gh_error()
+
+    def test_missing_binary_is_reported_as_missing(self):
+        with patch("subprocess.run", side_effect=FileNotFoundError()):
+            assert _gh("pr", "list") is None
+        assert "not found" in last_gh_error()
+
+    def test_unparseable_output_is_reported_as_bad_json(self):
+        with patch("subprocess.run", return_value=_completed(0, "not json", "")):
+            assert _gh("pr", "list") is None
+        assert "JSON" in last_gh_error()
+
+    def test_success_clears_the_previous_error(self):
+        with patch("subprocess.run", return_value=_completed(1, "", _GH_504)):
+            _gh("pr", "list")
+        with patch("subprocess.run", return_value=_completed(0, "[]", "")):
+            assert _gh("pr", "list") == []
+        assert last_gh_error() == ""
+
+
+class TestFetchPrsPaging:
+    def test_full_page_succeeds_in_one_call(self):
+        run, calls = _gh_pr_list_runner(fails_at=set())
+        with patch("subprocess.run", side_effect=run):
+            prs = fetch_prs(base="v8", limit=50)
+        assert calls == [50]
+        assert len(prs) == 50
+
+    def test_504_on_the_full_page_falls_back_to_a_smaller_one(self):
+        """A 50-PR page 504s on a busy repo; 20 comes back — show those, not an error."""
+        run, calls = _gh_pr_list_runner(fails_at={50})
+        with patch("subprocess.run", side_effect=run):
+            prs = fetch_prs(base="v8", limit=50)
+        assert calls == [50, 20]
+        assert len(prs) == 20
+        assert prs[0].expected_base == "v8"
+
+    def test_fallback_walks_all_the_way_down(self):
+        run, calls = _gh_pr_list_runner(fails_at={50, 20, 10})
+        with patch("subprocess.run", side_effect=run):
+            prs = fetch_prs(base="v8", limit=50)
+        assert calls == [50, 20, 10, 5]
+        assert len(prs) == 5
+
+    def test_fallback_pages_never_exceed_the_requested_limit(self):
+        """--limit is a ceiling: a smaller request must not retry with a bigger page."""
+        run, calls = _gh_pr_list_runner(fails_at={12, 10})
+        with patch("subprocess.run", side_effect=run):
+            prs = fetch_prs(base="v8", limit=12)
+        assert calls == [12, 10, 5]  # never 20 or 50
+        assert len(prs) == 5
+
+    def test_non_retryable_error_is_not_retried(self):
+        """A bad repo name is not fixed by a smaller page — fail on the first call."""
+        run, calls = _gh_pr_list_runner(
+            fails_at={50, 20, 10, 5},
+            stderr="GraphQL: Could not resolve to a Repository with the name 'x/y'.",
+        )
+        with patch("subprocess.run", side_effect=run):
+            with pytest.raises(RuntimeError) as exc:
+                fetch_prs(base="v8", limit=50)
+        assert calls == [50]
+        assert "Could not resolve to a Repository" in str(exc.value)
+
+    def test_secondary_rate_limit_is_not_retried(self):
+        """A smaller page does not clear a rate limit, and retrying aggravates it."""
+        run, calls = _gh_pr_list_runner(
+            fails_at={50, 20, 10, 5},
+            stderr="You have exceeded a secondary rate limit. "
+                   "Please wait a few minutes before you try again.",
+        )
+        with patch("subprocess.run", side_effect=run):
+            with pytest.raises(RuntimeError) as exc:
+                fetch_prs(base="v8", limit=50)
+        assert calls == [50]
+        assert "secondary rate limit" in str(exc.value)
+
+    def test_failure_message_reports_gh_stderr_not_an_auth_guess(self):
+        run, _calls = _gh_pr_list_runner(fails_at={50, 20, 10, 5})
+        with patch("subprocess.run", side_effect=run):
+            with pytest.raises(RuntimeError) as exc:
+                fetch_prs(base="v8", limit=50)
+        message = str(exc.value)
+        assert "504" in message
+        assert "50, 20, 10, 5" in message
+        assert "gh auth login" not in message
+
+    def test_missing_gh_is_still_reported_plainly(self):
+        with patch("subprocess.run", side_effect=FileNotFoundError()):
+            with pytest.raises(RuntimeError) as exc:
+                fetch_prs(base="v8", limit=50)
+        assert "gh CLI not found" in str(exc.value)
+
+    def test_degraded_page_prints_a_notice(self, capsys):
+        run, _calls = _gh_pr_list_runner(fails_at={50})
+        with patch("subprocess.run", side_effect=run):
+            fetch_prs(base="v8", limit=50)
+        err = capsys.readouterr().err
+        assert "504" in err
+        assert "20" in err
+
+
+class TestCmdPrsLimitFlag:
+    def _run_cmd(self, argv: list[str]):
+        with patch("graphify.prs.fetch_prs", return_value=[]) as fetch, \
+             patch("graphify.prs.fetch_worktrees", return_value={}), \
+             patch("graphify.prs.render_dashboard"), \
+             patch("graphify.prs._detect_default_branch", return_value="v8"):
+            cmd_prs(argv)
+        return fetch
+
+    def test_default_limit_is_50(self):
+        fetch = self._run_cmd([])
+        assert fetch.call_args.kwargs["limit"] == 50
+
+    def test_space_separated_limit(self):
+        fetch = self._run_cmd(["--limit", "20"])
+        assert fetch.call_args.kwargs["limit"] == 20
+
+    def test_equals_form_limit(self):
+        fetch = self._run_cmd(["--limit=10"])
+        assert fetch.call_args.kwargs["limit"] == 10
+
+    def test_short_flag_limit(self):
+        fetch = self._run_cmd(["-n", "5"])
+        assert fetch.call_args.kwargs["limit"] == 5
+
+    def test_non_numeric_limit_exits(self):
+        with pytest.raises(SystemExit):
+            self._run_cmd(["--limit", "many"])
+
+    def test_zero_limit_exits(self):
+        with pytest.raises(SystemExit):
+            self._run_cmd(["--limit", "0"])

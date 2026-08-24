@@ -770,6 +770,7 @@ graphify prs --worktrees                  # worktree → branch → PR mapping
 graphify prs --conflicts                  # PRs sharing graph communities (merge-order risk)
 graphify prs --base main                  # filter to PRs targeting a specific base branch
 graphify prs --repo owner/repo            # run against a different GitHub repo
+graphify prs --limit 20                   # PRs per page (default 50; lower it if GitHub times out on a busy repo)
 GRAPHIFY_TRIAGE_BACKEND=kimi graphify prs --triage   # use a specific backend for triage
 
 graphify clone https://github.com/karpathy/nanoGPT
