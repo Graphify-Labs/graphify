@@ -226,21 +226,19 @@ def _apply_resource_limits() -> None:
         os.nice(10)
     except (OSError, AttributeError):
         pass
-    mb = os.environ.get("GRAPHIFY_REBUILD_MEMORY_LIMIT_MB", "").strip()
+    # The hook-specific variable keeps precedence; the general budget
+    # (#3011, `graphify extract --memory-limit-mb` / GRAPHIFY_MEMORY_LIMIT_MB)
+    # applies here too so one setting covers every rebuild path.
+    from graphify.memory_budget import ENV_VAR, REBUILD_ENV_VAR, apply_memory_budget
+    mb = os.environ.get(REBUILD_ENV_VAR, "").strip() or os.environ.get(ENV_VAR, "").strip()
     if not mb:
         return
     try:
-        limit = int(mb) * 1024 * 1024
+        limit_mb = int(mb)
     except ValueError:
         return
-    try:
-        import resource
-        which = resource.RLIMIT_DATA if sys.platform == "darwin" else resource.RLIMIT_AS
-        soft, hard = resource.getrlimit(which)
-        new_hard = hard if hard != resource.RLIM_INFINITY and hard < limit else limit
-        resource.setrlimit(which, (limit, new_hard))
-    except (ImportError, ValueError, OSError):
-        pass
+    if limit_mb > 0:
+        apply_memory_budget(limit_mb)
 
 
 def _git_head(cwd: Path | str | None = None) -> str | None:

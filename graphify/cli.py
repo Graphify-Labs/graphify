@@ -594,6 +594,47 @@ class _StageTimer:
     def total(self) -> None:
         if self.enabled:
             print(f"[graphify timing] total: {self._now() - self.start:.1f}s", file=sys.stderr)
+def _arm_memory_budget(command: str, flag_value: int | None) -> None:
+    """Put this process under the memory budget (#3011) before extraction.
+
+    ``flag_value`` (``--memory-limit-mb``) wins over ``GRAPHIFY_MEMORY_LIMIT_MB``
+    and is written back to the environment so pool workers and nested
+    rebuilds see the same cap. A malformed env value is refused (exit 2)
+    rather than ignored - a budget that silently vanished is the failure this
+    exists to prevent. Where the platform cannot enforce a limit, say so once
+    and continue; the run is otherwise identical.
+    """
+    from graphify.memory_budget import (
+        ENV_VAR,
+        apply_memory_budget,
+        configured_limit_mb,
+        supports_enforcement,
+    )
+    if flag_value is not None:
+        os.environ[ENV_VAR] = str(flag_value)
+    try:
+        limit = configured_limit_mb()
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(2)
+    if limit is None:
+        return
+    if not supports_enforcement():
+        print(
+            f"[{command}] warning: memory budget of {limit} MB cannot be enforced on "
+            f"this platform (no setrlimit); continuing without one",
+            file=sys.stderr,
+        )
+        return
+    if apply_memory_budget(limit):
+        print(f"[{command}] memory budget: {limit} MB (applies to this process and its extraction workers)")
+    else:
+        print(
+            f"[{command}] warning: could not apply the {limit} MB memory budget; continuing without one",
+            file=sys.stderr,
+        )
+
+
 def _enforce_graph_size_cap_or_exit(gp: Path) -> None:
     """Reject oversized graph files before parsing (CLI exit-on-fail flavor).
 
@@ -2253,12 +2294,33 @@ def dispatch_command(cmd: str) -> None:
         no_cluster = False
         args = sys.argv[2:]
         watch_arg: str | None = None
+        update_memory_limit_mb: int | None = None
+        _pending_flag: str | None = None
+
+        def _parse_mem_flag(raw: str) -> int:
+            from graphify.memory_budget import parse_limit_mb
+            try:
+                return parse_limit_mb(raw)
+            except ValueError as exc:
+                print(f"error: --memory-limit-mb {exc}", file=sys.stderr)
+                sys.exit(2)
+
         for a in args:
+            if _pending_flag == "--memory-limit-mb":
+                _pending_flag = None
+                update_memory_limit_mb = _parse_mem_flag(a)
+                continue
             if a == "--force":
                 force = True
                 continue
             if a == "--no-cluster":
                 no_cluster = True
+                continue
+            if a == "--memory-limit-mb":
+                _pending_flag = a
+                continue
+            if a.startswith("--memory-limit-mb="):
+                update_memory_limit_mb = _parse_mem_flag(a.split("=", 1)[1])
                 continue
             if a.startswith("-"):
                 print(f"error: unknown update option: {a}", file=sys.stderr)
@@ -2277,16 +2339,29 @@ def dispatch_command(cmd: str) -> None:
                 watch_path = Path(saved.read_text(encoding="utf-8").strip())
             else:
                 watch_path = Path(".")
+        if _pending_flag is not None:
+            print(f"error: {_pending_flag} requires a value", file=sys.stderr)
+            sys.exit(2)
         if not watch_path.exists():
             print(f"error: path not found: {watch_path}", file=sys.stderr)
             sys.exit(1)
+        _arm_memory_budget("graphify update", update_memory_limit_mb)
         from graphify.watch import _rebuild_code
 
         print(f"Re-extracting code files in {watch_path} (no LLM needed)...")
         # Interactive CLI: block on the per-repo lock rather than skip, so the
         # user sees their explicit `graphify update` complete instead of
         # exiting silently when a hook-driven rebuild happens to be running.
-        ok = _rebuild_code(watch_path, force=force, no_cluster=no_cluster, block_on_lock=True)
+        try:
+            ok = _rebuild_code(watch_path, force=force, no_cluster=no_cluster, block_on_lock=True)
+        except MemoryError as exc:
+            from graphify.memory_budget import (
+                EXIT_MEMORY_BUDGET as _exit_mem,
+                budget_error as _budget_error,
+                report as _report_mem,
+            )
+            _report_mem(_budget_error(exc, phase="code re-extraction"))
+            sys.exit(_exit_mem)
         if ok:
             print("Code graph updated. For doc/paper/image changes run /graphify --update in your AI assistant.")
             if not (
@@ -2995,7 +3070,7 @@ def dispatch_command(cmd: str) -> None:
                 "Usage: graphify extract <path> [--backend gemini|kimi|claude|openai|deepseek|ollama] "
                 "[--model M] [--mode deep] [--out DIR|--output DIR] [--google-workspace] [--no-cluster] "
                 "[--no-gitignore] [--code-only] [--no-dedup] "
-                "[--max-workers N] [--token-budget N] [--max-concurrency N] "
+                "[--max-workers N] [--memory-limit-mb N] [--token-budget N] [--max-concurrency N] "
                 "[--api-timeout S] [--postgres DSN] [--cargo] [--allow-partial] [--timing]",
                 file=sys.stderr,
             )
@@ -3034,6 +3109,7 @@ def dispatch_command(cmd: str) -> None:
         global_repo_tag: str | None = None
         # Performance/tuning knobs (issue #792). None means "use library default".
         cli_max_workers: int | None = None
+        cli_memory_limit_mb: int | None = None
         cli_token_budget: int | None = None
         cli_max_concurrency: int | None = None
         cli_api_timeout: float | None = None
@@ -3111,6 +3187,10 @@ def dispatch_command(cmd: str) -> None:
                 cli_max_workers = _parse_int("--max-workers", args[i + 1]); i += 2
             elif a.startswith("--max-workers="):
                 cli_max_workers = _parse_int("--max-workers", a.split("=", 1)[1]); i += 1
+            elif a == "--memory-limit-mb" and i + 1 < len(args):
+                cli_memory_limit_mb = _parse_int("--memory-limit-mb", args[i + 1]); i += 2
+            elif a.startswith("--memory-limit-mb="):
+                cli_memory_limit_mb = _parse_int("--memory-limit-mb", a.split("=", 1)[1]); i += 1
             elif a == "--token-budget" and i + 1 < len(args):
                 cli_token_budget = _parse_int("--token-budget", args[i + 1]); i += 2
             elif a.startswith("--token-budget="):
@@ -3183,6 +3263,10 @@ def dispatch_command(cmd: str) -> None:
             os.environ["GRAPHIFY_API_TIMEOUT"] = str(cli_api_timeout)
         if cli_max_workers is not None:
             os.environ["GRAPHIFY_MAX_WORKERS"] = str(cli_max_workers)
+        # Memory budget (#3011): the flag wins over the env var; either way it
+        # lands in the environment so the extraction workers (which start
+        # fresh under `spawn`) and any nested rebuild apply the same cap.
+        _arm_memory_budget("graphify extract", cli_memory_limit_mb)
 
         # Resolve output dir. The user-facing contract is "<out>/graphify-out/"
         # so a fresh checkout writes graphify-out/ at the project root, matching
@@ -3644,6 +3728,16 @@ def dispatch_command(cmd: str) -> None:
             print(f"[graphify extract] AST extraction on {len(code_files)} code files...")
             try:
                 ast_result = _ast_extract(code_files, **ast_kwargs)
+            except MemoryError as exc:
+                # The memory budget (#3011) was hit. Never a partial graph, never
+                # --allow-partial: the operator asked to be stopped here.
+                from graphify.memory_budget import (
+                    EXIT_MEMORY_BUDGET as _exit_mem,
+                    budget_error as _budget_error,
+                    report as _report_mem,
+                )
+                _report_mem(_budget_error(exc, phase="AST extraction"))
+                sys.exit(_exit_mem)
             except Exception as exc:
                 print(f"[graphify extract] AST extraction failed: {exc}", file=sys.stderr)
                 # #2445: losing the whole AST pass is fatal by default. The
