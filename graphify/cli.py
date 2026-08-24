@@ -81,8 +81,207 @@ _GEMINI_NUDGE_TEXT = (
 )
 
 
+def _hook_cluster_line() -> str:
+    """Member-of-cluster line for hook nudges, or ''. Never raises.
+
+    Reads graphify-out/cluster-ref.json (written by `graphify cluster build`)
+    via the stdlib-only cluster_ref module — the hook path must stay light.
+    The marker is committed, untrusted input, so assistant context contains
+    only static guidance and validated numeric counts: marker-controlled names,
+    tags, URLs, and paths are never interpolated here.
+    """
+    try:
+        from graphify.cluster_ref import load_cluster_refs, member_count
+
+        refs = load_cluster_refs(Path(_GRAPHIFY_OUT))
+        if not refs:
+            return ""
+        if len(refs) > 1:
+            return (
+                f" This repo belongs to {len(refs)} clusters; for "
+                "cross-repo questions add --cluster NAME to graphify "
+                "query/path/explain/affected."
+            )
+        ref = refs[0]
+        return (
+            f" This repo belongs to a cluster ({member_count(ref)} members); for "
+            f"cross-repo questions add --cluster to graphify "
+            f"query/path/explain/affected."
+        )
+    except Exception:
+        return ""
+
+
+def _nudge_with_cluster(nudge_json: str) -> str:
+    """Append the cluster line to a pre-serialized nudge payload, or return it as-is."""
+    line = _hook_cluster_line()
+    if not line:
+        return nudge_json
+    try:
+        payload = json.loads(nudge_json)
+        payload["hookSpecificOutput"]["additionalContext"] += line
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
+    except Exception:
+        return nudge_json
+
+
 def _default_graph_path() -> str:
     return str(Path(_GRAPHIFY_OUT) / "graph.json")
+
+
+def _resolve_cluster_graph_or_exit(cluster_name: str | None = None) -> str:
+    """--cluster: member marker -> local cluster dir -> its graph.json.
+
+    Every failure mode exits 1 with an actionable message — the user asked
+    for the cluster explicitly, so unlike the passive hints this is loud.
+    """
+    from graphify.cluster_ref import (
+        load_cluster_refs,
+        select_cluster_ref,
+        unresolvable_message,
+    )
+
+    out_dir = Path(_GRAPHIFY_OUT)
+    refs = load_cluster_refs(out_dir)
+    if not refs:
+        if (out_dir / "cluster-ref.json").is_file():
+            print(
+                f"error: {out_dir}/cluster-ref.json is unreadable; re-run "
+                f"'graphify cluster build' in the cluster to rewrite it",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"error: no cluster-ref.json in {out_dir}/ — this repo is not a "
+                f"known cluster member (or run this from the repo root); "
+                f"'graphify cluster build' writes the marker",
+                file=sys.stderr,
+            )
+        sys.exit(1)
+    try:
+        ref = select_cluster_ref(refs, cluster_name)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    from graphify.cluster_ref import resolve_cluster_dir
+
+    member_root = out_dir.resolve().parent
+    cluster_dir = resolve_cluster_dir(ref, member_root)
+    if cluster_dir is None:
+        print(f"error: {unresolvable_message(ref)}", file=sys.stderr)
+        sys.exit(1)
+    from graphify.cluster_graph import cluster_out_dir
+
+    cluster_graph = cluster_out_dir(cluster_dir) / "graph.json"
+    if not cluster_graph.is_file():
+        from graphify.security import sanitize_label
+
+        display_name = sanitize_label(str(ref["cluster_name"]))
+        print(
+            f"error: cluster '{display_name}' found at {cluster_dir} but has "
+            f"no built graph; run 'graphify cluster build' in {cluster_dir}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return str(cluster_graph)
+
+
+def _maybe_cluster_hint(graph_path: "Path | str") -> str:
+    """One-line member-of-cluster hint for no-match failures, or ''.
+
+    Only fires when querying the DEFAULT graph (a hint on an explicit
+    --graph/--cluster run would be noise or wrong). Never raises.
+    """
+    try:
+        if Path(graph_path).resolve() != Path(_default_graph_path()).resolve():
+            return ""
+        from graphify.cluster_ref import cluster_hint_line, load_cluster_refs
+
+        return cluster_hint_line(load_cluster_refs(Path(_GRAPHIFY_OUT)))
+    except Exception:
+        return ""
+
+
+def _parse_cluster_option(args: list[str], index: int) -> tuple[bool, str | None, int] | None:
+    """Parse ``--cluster``, ``--cluster NAME``, or ``--cluster=NAME``.
+
+    Returns ``(enabled, selected_name, consumed)`` when ``args[index]`` is a
+    cluster option, otherwise ``None``.  Command positional arguments are
+    consumed before this helper is used, so a following non-option is safely a
+    cluster name.
+    """
+    arg = args[index]
+    if arg.startswith("--cluster="):
+        name = arg.split("=", 1)[1]
+        if not name:
+            print("error: --cluster= requires a cluster name", file=sys.stderr)
+            sys.exit(1)
+        return True, name, 1
+    if arg != "--cluster":
+        return None
+    if index + 1 < len(args) and not args[index + 1].startswith("--"):
+        return True, args[index + 1], 2
+    return True, None, 1
+
+
+def _parse_graph_selection(
+    args: list[str],
+) -> tuple[str, bool, bool, "str | None", list[str]]:
+    """Strip the graph/cluster selection options out of ``args``.
+
+    Returns ``(graph_path, graph_given, use_cluster, cluster_name, remaining)``.
+    ``remaining`` keeps every other token in order so each command can run its
+    own flag loop over it (``--budget``/``--context``, ``--depth``/``--relation``).
+
+    query/path/explain/affected each grew their own copy of this parsing in two
+    different styles, and only ``affected`` ever handled the ``--graph=PATH``
+    form — the others silently dropped it, so an explicit graph was ignored AND
+    the ``--cluster`` exclusivity check never fired. One parser keeps the four
+    surfaces honest.
+
+    Positionals are sliced off by the caller before this runs, so a bare token
+    after ``--cluster`` is safely a cluster name (see _parse_cluster_option).
+    A trailing valueless ``--graph`` is passed through untouched, matching the
+    prior lenient behavior on every surface.
+    """
+    graph_path = _default_graph_path()
+    graph_given = False
+    use_cluster = False
+    cluster_name: "str | None" = None
+    remaining: list[str] = []
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "--graph" and i + 1 < len(args):
+            graph_path = args[i + 1]
+            graph_given = True
+            i += 2
+            continue
+        if arg.startswith("--graph="):
+            graph_path = arg.split("=", 1)[1]
+            graph_given = True
+            i += 1
+            continue
+        parsed_cluster = _parse_cluster_option(args, i)
+        if parsed_cluster is not None:
+            use_cluster, cluster_name, consumed = parsed_cluster
+            i += consumed
+            continue
+        remaining.append(arg)
+        i += 1
+    return graph_path, graph_given, use_cluster, cluster_name, remaining
+
+
+def _resolve_selected_graph_or_exit(
+    graph_path: str, graph_given: bool, use_cluster: bool, cluster_name: "str | None"
+) -> str:
+    """Enforce --graph/--cluster exclusivity, then resolve the cluster graph."""
+    if use_cluster and graph_given:
+        print("error: --graph and --cluster are mutually exclusive", file=sys.stderr)
+        sys.exit(1)
+    if use_cluster:
+        return _resolve_cluster_graph_or_exit(cluster_name)
+    return graph_path
 
 
 def _stamped_manifest_files(
@@ -342,6 +541,41 @@ def _stale_graph_sources(
     return stale
 
 
+def _filter_payload_sources(data: dict, stale: set) -> int:
+    """Drop nodes/edges/hyperedges owned by ``stale`` source spellings from a
+    raw graph payload IN MEMORY, mutating ``data``. Returns nodes removed.
+
+    Exact string matching against ``source_file`` — callers pass spellings the
+    graph itself uses (or every plausible spelling of a path).
+    """
+    links_key = "links" if "links" in data else "edges"
+    nodes = [n for n in data.get("nodes", []) if isinstance(n, dict)]
+    kept_nodes = [n for n in nodes if n.get("source_file") not in stale]
+    removed_ids = {
+        n.get("id") for n in nodes if n.get("source_file") in stale
+    }
+    n_removed = len(nodes) - len(kept_nodes)
+    data["nodes"] = kept_nodes
+    data[links_key] = [
+        e for e in data.get(links_key, [])
+        if isinstance(e, dict)
+        and e.get("source_file") not in stale
+        and e.get("source") not in removed_ids
+        and e.get("target") not in removed_ids
+    ]
+    if "hyperedges" in data:
+        data["hyperedges"] = [
+            h for h in data.get("hyperedges", [])
+            if isinstance(h, dict)
+            and h.get("source_file") not in stale
+            and not (
+                isinstance(h.get("nodes"), list)
+                and any(member in removed_ids for member in h["nodes"])
+            )
+        ]
+    return n_removed
+
+
 def _zero_node_stamped_code_sources(
     graph_path: Path,
     scan_root: Path,
@@ -536,33 +770,16 @@ def _prune_graph_json_sources(graph_path: Path, stale_sources: list[str]) -> int
         return 0
     if not isinstance(data, dict):
         return 0
-    stale = set(stale_sources)
     links_key = "links" if "links" in data else "edges"
-    nodes = [n for n in data.get("nodes", []) if isinstance(n, dict)]
-    kept_nodes = [n for n in nodes if n.get("source_file") not in stale]
-    removed_ids = {
-        n.get("id") for n in nodes if n.get("source_file") in stale
-    }
-    n_removed = len(nodes) - len(kept_nodes)
-    kept_edges = [
-        e for e in data.get(links_key, [])
-        if isinstance(e, dict)
-        and e.get("source_file") not in stale
-        and e.get("source") not in removed_ids
-        and e.get("target") not in removed_ids
-    ]
-    kept_hyper = [
-        h for h in data.get("hyperedges", [])
-        if isinstance(h, dict) and h.get("source_file") not in stale
-    ]
-    if n_removed == 0 and len(kept_edges) == len(data.get(links_key, [])) and (
-        len(kept_hyper) == len(data.get("hyperedges", []))
+    n_edges_before = len(data.get(links_key, []))
+    n_hyper_before = len(data.get("hyperedges", []))
+    n_removed = _filter_payload_sources(data, set(stale_sources))
+    if (
+        n_removed == 0
+        and len(data.get(links_key, [])) == n_edges_before
+        and len(data.get("hyperedges", [])) == n_hyper_before
     ):
         return 0
-    data["nodes"] = kept_nodes
-    data[links_key] = kept_edges
-    if "hyperedges" in data:
-        data["hyperedges"] = kept_hyper
     from graphify.export import backup_if_protected as _backup
     _backup(graph_path.parent)
     from graphify.paths import write_json_atomic
@@ -704,7 +921,7 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
         payload = {"decision": "allow"}
         try:
             if out_path("graph.json").is_file():
-                payload["additionalContext"] = _GEMINI_NUDGE_TEXT
+                payload["additionalContext"] = _GEMINI_NUDGE_TEXT + _hook_cluster_line()
         except Exception:
             pass
         sys.stdout.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
@@ -733,7 +950,7 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
             is_bash_search = any(tok in cmd_str for tok in (
                 "grep", "ripgrep", "rg ", "find ", "fd ", "ack ", "ag "))
             if (is_grep_tool or is_bash_search) and out_path("graph.json").is_file():
-                sys.stdout.write(_SEARCH_NUDGE)
+                sys.stdout.write(_nudge_with_cluster(_SEARCH_NUDGE))
         elif kind == "read":
             vals = [str(t.get("file_path") or ""), str(t.get("pattern") or ""), str(t.get("path") or "")]
             j = " ".join(vals).lower().replace("\\", "/")
@@ -1048,6 +1265,11 @@ def dispatch_command(cmd: str) -> None:
     elif cmd == "prs":
         from graphify.prs import cmd_prs
         cmd_prs(sys.argv[2:])
+    elif cmd == "cluster":
+        # Cluster graphs (multi-repo). Community detection on a single graph
+        # is `cluster-only`, not this.
+        from graphify.cluster_cli import cmd_cluster
+        cmd_cluster(sys.argv[2:])
     elif cmd == "hook":
         from graphify.hooks import (
             install as hook_install,
@@ -1067,7 +1289,7 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(1)
     elif cmd == "query":
         if len(sys.argv) < 3:
-            print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--budget N] [--graph path]", file=sys.stderr)
+            print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--budget N] [--graph path] [--cluster [NAME]]", file=sys.stderr)
             sys.exit(1)
         from graphify.serve import _query_graph_text
         from graphify.security import sanitize_label
@@ -1077,9 +1299,10 @@ def dispatch_command(cmd: str) -> None:
         question = sys.argv[2]
         use_dfs = "--dfs" in sys.argv
         budget = 2000
-        graph_path = _default_graph_path()
         context_filters: list[str] = []
-        args = sys.argv[3:]
+        graph_path, graph_given, use_cluster, cluster_name, args = (
+            _parse_graph_selection(sys.argv[3:])
+        )
         i = 0
         while i < len(args):
             if args[i] == "--budget" and i + 1 < len(args):
@@ -1102,11 +1325,11 @@ def dispatch_command(cmd: str) -> None:
             elif args[i].startswith("--context="):
                 context_filters.append(args[i].split("=", 1)[1])
                 i += 1
-            elif args[i] == "--graph" and i + 1 < len(args):
-                graph_path = args[i + 1]
-                i += 2
             else:
                 i += 1
+        graph_path = _resolve_selected_graph_or_exit(
+            graph_path, graph_given, use_cluster, cluster_name
+        )
         gp = Path(graph_path).resolve()
         if not gp.exists():
             print(f"error: graph file not found: {gp}", file=sys.stderr)
@@ -1130,11 +1353,14 @@ def dispatch_command(cmd: str) -> None:
             # a seed with no outgoing edges. Direction is instead preserved
             # per-edge below (mirrors graphify/build.py's _src/_tgt pattern)
             # so the *rendering* stays correct without narrowing traversal.
+            # Force the flag too: cluster graphs persist "directed": true, and
+            # honoring it here would narrow traversal exactly that way.
             # Keep in-file markers when present (#2309): unconditionally
             # overwriting them with source/target would clobber the true
             # direction of a link persisted in flipped endpoint order.
             _raw = dict(
                 _raw,
+                directed=False,
                 links=[
                     {
                         **link,
@@ -1174,6 +1400,13 @@ def dispatch_command(cmd: str) -> None:
             context_filters=context_filters,
             graph_path=str(gp),
         )
+        if _result.startswith("No matching nodes found."):
+            # Same cluster-membership breadcrumb the other query surfaces get
+            # (the hook text promises it for query too); logged with the
+            # result so the query log matches what was printed.
+            hint = _maybe_cluster_hint(gp)
+            if hint:
+                _result += "\n" + hint
         querylog.log_query(
             kind="query",
             question=question,
@@ -1188,23 +1421,18 @@ def dispatch_command(cmd: str) -> None:
         print(_result)
     elif cmd == "affected":
         if len(sys.argv) < 3:
-            print("Usage: graphify affected \"<node-or-label>\" [--relation R] [--depth N] [--graph path]", file=sys.stderr)
+            print("Usage: graphify affected \"<node-or-label>\" [--relation R] [--depth N] [--graph path] [--cluster [NAME]]", file=sys.stderr)
             sys.exit(1)
         from graphify.affected import DEFAULT_AFFECTED_RELATIONS, format_affected, load_graph
         query = sys.argv[2]
-        graph_path = _default_graph_path()
         depth = 2
         relations: list[str] = []
-        args = sys.argv[3:]
+        graph_path, graph_given, use_cluster, cluster_name, args = (
+            _parse_graph_selection(sys.argv[3:])
+        )
         i = 0
         while i < len(args):
-            if args[i] == "--graph" and i + 1 < len(args):
-                graph_path = args[i + 1]
-                i += 2
-            elif args[i].startswith("--graph="):
-                graph_path = args[i].split("=", 1)[1]
-                i += 1
-            elif args[i] == "--depth" and i + 1 < len(args):
+            if args[i] == "--depth" and i + 1 < len(args):
                 try:
                     depth = int(args[i + 1])
                 except ValueError:
@@ -1226,6 +1454,9 @@ def dispatch_command(cmd: str) -> None:
                 i += 1
             else:
                 i += 1
+        graph_path = _resolve_selected_graph_or_exit(
+            graph_path, graph_given, use_cluster, cluster_name
+        )
         gp = Path(graph_path).resolve()
         if not gp.exists():
             print(f"error: graph file not found: {gp}", file=sys.stderr)
@@ -1245,15 +1476,18 @@ def dispatch_command(cmd: str) -> None:
         # --graph falls back to its own directory.
         from graphify.paths import GRAPHIFY_OUT_NAME
         graph_root = gp.parent.parent if gp.parent.name == GRAPHIFY_OUT_NAME else gp.parent
-        print(
-            format_affected(
-                graph,
-                query,
-                relations=relations or DEFAULT_AFFECTED_RELATIONS,
-                depth=depth,
-                root=graph_root,
-            )
+        out = format_affected(
+            graph,
+            query,
+            relations=relations or DEFAULT_AFFECTED_RELATIONS,
+            depth=depth,
+            root=graph_root,
         )
+        if out.startswith("No unique node match") or out.rstrip().endswith("No affected nodes found."):
+            hint = _maybe_cluster_hint(gp)
+            if hint:
+                out = f"{out.rstrip()}\n{hint}"
+        print(out)
     elif cmd in ("god-nodes", "god_nodes"):
         # god_nodes has long been an analyzer (analyze.py), an MCP tool, and a
         # README-advertised capability, but never a CLI subcommand — `graphify
@@ -1401,7 +1635,7 @@ def dispatch_command(cmd: str) -> None:
         if len(sys.argv) < 4:
             print(
                 'Usage: graphify path "<source>" "<target>" [--graph path] '
-                "[--directed|--undirected]",
+                "[--cluster [NAME]] [--directed|--undirected]",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -1411,13 +1645,12 @@ def dispatch_command(cmd: str) -> None:
 
         source_label = sys.argv[2]
         target_label = sys.argv[3]
-        graph_path = _default_graph_path()
-        args = sys.argv[4:]
+        graph_path, graph_given, use_cluster, cluster_name, args = (
+            _parse_graph_selection(sys.argv[4:])
+        )
         direction_flag = None
-        for i, a in enumerate(args):
-            if a == "--graph" and i + 1 < len(args):
-                graph_path = args[i + 1]
-            elif a == "--directed":
+        for a in args:
+            if a == "--directed":
                 if direction_flag == "undirected":
                     print(
                         "error: --directed and --undirected are mutually exclusive",
@@ -1437,6 +1670,9 @@ def dispatch_command(cmd: str) -> None:
         # graph.json (arc order on post-#563 files, _src/_tgt markers on legacy
         # canonicalized files), so respect it unless the caller opts out.
         undirected = direction_flag == "undirected"
+        graph_path = _resolve_selected_graph_or_exit(
+            graph_path, graph_given, use_cluster, cluster_name
+        )
         gp = Path(graph_path).resolve()
         if not gp.exists():
             print(f"error: graph file not found: {gp}", file=sys.stderr)
@@ -1458,11 +1694,16 @@ def dispatch_command(cmd: str) -> None:
             G = json_graph.node_link_graph(_raw)
         src_scored = _score_nodes(G, [t.lower() for t in source_label.split()])
         tgt_scored = _score_nodes(G, [t.lower() for t in target_label.split()])
+        _hint = _maybe_cluster_hint(gp)
         if not src_scored:
             print(f"No node matching '{source_label}' found.", file=sys.stderr)
+            if _hint:
+                print(_hint, file=sys.stderr)
             sys.exit(1)
         if not tgt_scored:
             print(f"No node matching '{target_label}' found.", file=sys.stderr)
+            if _hint:
+                print(_hint, file=sys.stderr)
             sys.exit(1)
         src_nid = _pick_scored_endpoint(G, src_scored, source_label)
         tgt_nid = _pick_scored_endpoint(G, tgt_scored, target_label)
@@ -1521,6 +1762,8 @@ def dispatch_command(cmd: str) -> None:
                     f"'{target_label}'. Re-run with --undirected to search "
                     "ignoring edge direction."
                 )
+            if _hint:
+                print(_hint)
             sys.exit(0)
         hops = len(path_nodes) - 1
         segments = []
@@ -1566,17 +1809,18 @@ def dispatch_command(cmd: str) -> None:
 
     elif cmd == "explain":
         if len(sys.argv) < 3:
-            print('Usage: graphify explain "<node>" [--graph path]', file=sys.stderr)
+            print('Usage: graphify explain "<node>" [--graph path] [--cluster [NAME]]', file=sys.stderr)
             sys.exit(1)
         from graphify.serve import _find_node, find_node_ambiguity
         from networkx.readwrite import json_graph
 
         label = sys.argv[2]
-        graph_path = _default_graph_path()
-        args = sys.argv[3:]
-        for i, a in enumerate(args):
-            if a == "--graph" and i + 1 < len(args):
-                graph_path = args[i + 1]
+        graph_path, graph_given, use_cluster, cluster_name, _rest = (
+            _parse_graph_selection(sys.argv[3:])
+        )
+        graph_path = _resolve_selected_graph_or_exit(
+            graph_path, graph_given, use_cluster, cluster_name
+        )
         gp = Path(graph_path).resolve()
         if not gp.exists():
             print(f"error: graph file not found: {gp}", file=sys.stderr)
@@ -1594,6 +1838,9 @@ def dispatch_command(cmd: str) -> None:
         matches = _find_node(G, label)
         if not matches:
             print(f"No node matching '{label}' found.")
+            hint = _maybe_cluster_hint(gp)
+            if hint:
+                print(hint)
             sys.exit(0)
         rivals = find_node_ambiguity(G, label)
         if rivals:
@@ -1637,22 +1884,25 @@ def dispatch_command(cmd: str) -> None:
         except Exception:
             pass
         print(f"  Degree:    {G.degree(nid)}")
-        from graphify.build import edge_data
+        from graphify.build import edge_datas
         connections: list[tuple[str, str, dict]] = []  # (direction, neighbor_id, edge_data)
         # Classify by the edge's TRUE direction, not the loaded arc order:
         # a link persisted in flipped endpoint order carries its truth in the
         # per-edge _src marker (#2309). Markerless edges fall back to the arc
         # tail (today's behavior).
         for nb in G.successors(nid):
-            _ed = edge_data(G, nid, nb)
-            connections.append(
-                ("out" if _ed.get("_src", nid) == nid else "in", nb, _ed)
-            )
+            # One entry per parallel edge (edge_datas, not edge_data): on a
+            # multigraph a single arc can carry several relations, and picking
+            # an arbitrary one would drop the rest from the listing.
+            for _ed in edge_datas(G, nid, nb):
+                connections.append(
+                    ("out" if _ed.get("_src", nid) == nid else "in", nb, _ed)
+                )
         for nb in G.predecessors(nid):
-            _ed = edge_data(G, nb, nid)
-            connections.append(
-                ("in" if _ed.get("_src", nb) == nb else "out", nb, _ed)
-            )
+            for _ed in edge_datas(G, nb, nid):
+                connections.append(
+                    ("in" if _ed.get("_src", nb) == nb else "out", nb, _ed)
+                )
         if connections:
             print(f"\nConnections ({len(connections)}):")
             connections.sort(key=lambda c: G.degree(c[1]), reverse=True)
@@ -2468,45 +2718,29 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(1)
         import networkx as _nx
         from networkx.readwrite import json_graph as _jg
-        from graphify.build import prefix_graph_for_global as _prefix, distinct_repo_tags as _repo_tags
+        from graphify.build import (
+            prefix_graph_for_global as _prefix,
+            distinct_repo_tags as _repo_tags,
+            load_graph_json as _load_graph,
+        )
         graphs = []
         for gp in graph_paths:
             if not gp.exists():
                 print(f"error: not found: {gp}", file=sys.stderr)
                 sys.exit(1)
-            _enforce_graph_size_cap_or_exit(gp)
-            data = json.loads(gp.read_text(encoding="utf-8"))
-            # Normalize edges/links key before loading — graphify writes "links"
-            # via node_link_data but older runs may have used "edges" (#738).
-            if "links" not in data and "edges" in data:
-                data = dict(data, links=data["edges"])
-            # Preserve stored edge direction across undirected node_link_graph (#2261).
-            # Mirrors cli.py's query pattern and export.py's _src/_tgt restoration.
-            # Keep in-file markers when present (#2309): unconditionally
-            # overwriting them with source/target would clobber the true
-            # direction of a link persisted in flipped endpoint order.
-            data = dict(
-                data,
-                links=[
-                    {
-                        **link,
-                        "_src": link.get("_src", link.get("source")),
-                        "_tgt": link.get("_tgt", link.get("target")),
-                    }
-                    for link in data.get("links", [])
-                ],
-            )
+            # load_graph_json enforces the size cap, normalizes the legacy
+            # "edges" key (#738), and coerces directed/multi inputs to a plain
+            # undirected Graph so nx.compose never sees mixed types (#1606).
+            # preserve_direction stashes the stored endpoints as _src/_tgt so
+            # the undirected round-trip can't flip caller/callee (#2261),
+            # keeping in-file markers when present (#2309) — the merged graph
+            # stays a plain Graph, as compose requires. Top-level-only
+            # hyperedges are restored onto G.graph there too (#2484/#2485).
             try:
-                G = _jg.node_link_graph(data, edges="links")
-            except TypeError:
-                G = _jg.node_link_graph(data)
-            # node_link_graph restores only the nested `graph.hyperedges` slot;
-            # a graph.json whose hyperedges live only at the top level (the
-            # other half of to_json's dual-slot shape, #2485) would silently
-            # lose them here. Fall back to the top-level key (#2484).
-            if "hyperedges" not in G.graph and isinstance(data.get("hyperedges"), list):
-                G.graph["hyperedges"] = data["hyperedges"]
-            graphs.append(G)
+                graphs.append(_load_graph(gp, preserve_direction=True))
+            except ValueError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                sys.exit(1)
         # nx.compose requires all graphs to be the same type.  When input graphs
         # come from different sources (e.g. an AST-only run vs a full LLM run) one
         # may be a MultiGraph and another a Graph.  Normalise everything to Graph
@@ -2993,7 +3227,7 @@ def dispatch_command(cmd: str) -> None:
         if len(sys.argv) < 3:
             print(
                 "Usage: graphify extract <path> [--backend gemini|kimi|claude|openai|deepseek|ollama] "
-                "[--model M] [--mode deep] [--out DIR|--output DIR] [--google-workspace] [--no-cluster] "
+                "[--model M] [--mode deep] [--out DIR|--output DIR] [--google-workspace] [--no-cluster] [--multigraph|--no-multigraph] "
                 "[--no-gitignore] [--code-only] [--no-dedup] "
                 "[--max-workers N] [--token-budget N] [--max-concurrency N] "
                 "[--api-timeout S] [--postgres DSN] [--cargo] [--allow-partial] [--timing]",
@@ -3018,6 +3252,9 @@ def dispatch_command(cmd: str) -> None:
         cli_postgres_dsn: str | None = None
         cli_cargo: bool = False
         cli_allow_partial: bool = False
+        cli_multigraph: bool | None = None
+        saw_multigraph = False
+        saw_no_multigraph = False
         no_cluster = False
         dedup_llm = False
         # --no-dedup: skip entity deduplication entirely. On an incremental
@@ -3093,6 +3330,10 @@ def dispatch_command(cmd: str) -> None:
                 out_dir = Path(a.split("=", 1)[1]); i += 1
             elif a == "--no-cluster":
                 no_cluster = True; i += 1
+            elif a == "--multigraph":
+                cli_multigraph = True; saw_multigraph = True; i += 1
+            elif a == "--no-multigraph":
+                cli_multigraph = False; saw_no_multigraph = True; i += 1
             elif a == "--dedup-llm":
                 dedup_llm = True; i += 1
             elif a == "--no-dedup":
@@ -3150,6 +3391,13 @@ def dispatch_command(cmd: str) -> None:
                 cli_timing = True; i += 1
             else:
                 i += 1
+
+        if saw_multigraph and saw_no_multigraph:
+            print(
+                "error: --multigraph and --no-multigraph are mutually exclusive",
+                file=sys.stderr,
+            )
+            sys.exit(2)
 
         if not has_path and cli_postgres_dsn is None:
             print("error: must specify a path to scan or a --postgres DSN", file=sys.stderr)
@@ -3889,6 +4137,35 @@ def dispatch_command(cmd: str) -> None:
         }
 
         graph_json_path = graphify_out / "graph.json"
+        # The existing graph's format is read on EVERY rebuild, not just
+        # incremental ones: --force without a repeated --multigraph must not
+        # silently downgrade a multigraph back to simple (the only intended
+        # downgrade path is an explicit --no-multigraph).
+        existing_is_multigraph = False
+        if graph_json_path.is_file():
+            try:
+                existing_is_multigraph = bool(
+                    json.loads(graph_json_path.read_text(encoding="utf-8")).get(
+                        "multigraph", False
+                    )
+                )
+            except Exception:
+                pass
+        if cli_multigraph is None:
+            cli_multigraph = existing_is_multigraph
+        elif not cli_multigraph and existing_is_multigraph:
+            print(
+                "[graphify extract] warning: --no-multigraph converts the existing "
+                "multigraph to a simple graph, collapsing parallel relations; "
+                "re-run with --multigraph to restore them.",
+                file=sys.stderr,
+            )
+        # An explicit format flag that differs from the existing graph means a
+        # conversion is pending (either direction), so the no-change early
+        # exit must not fire.
+        multigraph_conversion = (
+            graph_json_path.is_file() and bool(cli_multigraph) != existing_is_multigraph
+        )
         analysis_path = graphify_out / ".graphify_analysis.json"
 
         # Build a manifest-safe files dict: only stamp semantic_hash for files
@@ -3968,6 +4245,7 @@ def dispatch_command(cmd: str) -> None:
                 and not pg_result.get("edges")
                 and not cargo_result.get("nodes")
                 and not cargo_result.get("edges")
+                and not multigraph_conversion
             ):
                 # An exclusion-only change reaches this gate (excluded files
                 # are deliberately NOT in deleted_files, #1908) but must still
@@ -4022,7 +4300,8 @@ def dispatch_command(cmd: str) -> None:
                     print(f"error: {exc}", file=sys.stderr)
                     sys.exit(1)
             merged["nodes"] = _dedupe_nodes(merged["nodes"])
-            merged["edges"] = _dedupe_edges(merged["edges"])
+            if not cli_multigraph:
+                merged["edges"] = _dedupe_edges(merged["edges"])
             # Disambiguate colliding-basename file-node labels (#2032). This raw
             # --no-cluster path bypasses build_from_json (where the clustered path
             # gets this), so apply it directly on the merged node list.
@@ -4065,7 +4344,19 @@ def dispatch_command(cmd: str) -> None:
             _backup(graphify_out)
             _invalidate_file_manifest_for_db_graph()
             from graphify.paths import write_json_atomic as _write_json_atomic
-            _write_json_atomic(graph_json_path, merged, indent=2)
+            if cli_multigraph:
+                from networkx.readwrite import json_graph as _json_graph
+                from graphify.build import build_from_json as _build_multigraph
+
+                _raw_graph = _build_multigraph(merged, multigraph=True, root=target)
+                try:
+                    _output_payload = _json_graph.node_link_data(_raw_graph, edges="links")
+                except TypeError:
+                    _output_payload = _json_graph.node_link_data(_raw_graph)
+                _output_payload["hyperedges"] = _raw_graph.graph.get("hyperedges", [])
+            else:
+                _output_payload = merged
+            _write_json_atomic(graph_json_path, _output_payload, indent=2)
             try:
                 # Record the scan root so a later build_merge / update runbook can
                 # relativize deleted-file paths correctly even for a custom --out
@@ -4082,7 +4373,8 @@ def dispatch_command(cmd: str) -> None:
             )
             print(
                 f"[graphify extract] wrote {graph_json_path} — "
-                f"{len(merged['nodes'])} nodes, {len(merged['edges'])} edges "
+                f"{len(_output_payload['nodes'])} nodes, "
+                f"{len(_output_payload.get('links', _output_payload.get('edges', [])))} edges "
                 f"(no clustering)"
             )
             if merged["input_tokens"] or merged["output_tokens"]:
@@ -4137,6 +4429,7 @@ def dispatch_command(cmd: str) -> None:
                     graph_path=existing_graph_path,
                     prune_sources=_prune_sources or None,
                     dedup=not no_dedup,
+                    multigraph=cli_multigraph,
                     dedup_llm_backend=dedup_backend,
                     root=target,
                 )
@@ -4148,7 +4441,13 @@ def dispatch_command(cmd: str) -> None:
                 print(f"[graphify extract] {exc}", file=sys.stderr)
                 sys.exit(1)
         else:
-            G = _build([merged], dedup=not no_dedup, dedup_llm_backend=dedup_backend, root=target)
+            G = _build(
+                [merged],
+                dedup=not no_dedup,
+                multigraph=cli_multigraph,
+                dedup_llm_backend=dedup_backend,
+                root=target,
+            )
         stages.mark("build")
         if G.number_of_nodes() == 0:
             print(

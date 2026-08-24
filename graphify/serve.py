@@ -9,7 +9,7 @@ from array import array
 from collections import OrderedDict
 from pathlib import Path
 import threading
-from typing import NamedTuple
+from typing import Callable, NamedTuple
 import networkx as nx
 from networkx.readwrite import json_graph
 from graphify.security import sanitize_label, check_graph_file_size_cap
@@ -1044,39 +1044,38 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
         lines.append(line)
     for u, v in edges:
         if u in nodes and v in nodes:
-            raw = G[u][v]
-            d = next(iter(raw.values()), {}) if isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)) else raw
+            for d in edge_datas(G, u, v):
             # (u, v) is BFS/DFS visit order, not necessarily the true edge
             # direction: on an undirected graph G.neighbors() walks callers
             # and callees alike, so a caller->callee edge renders backwards
             # whenever the callee is visited first. _src/_tgt (stashed on the
             # edge data by the `query` CLI loader) carry the real direction;
             # fall back to (u, v) for graphs/edges that don't set them.
-            src = d.get("_src", u)
-            tgt = d.get("_tgt", v)
+                src = d.get("_src", u)
+                tgt = d.get("_tgt", v)
             # Guard against a stray/dangling _src/_tgt (hand-edited or adversarial
             # graph.json): only trust them when they name exactly this edge's
             # endpoints, else fall back to (u, v). Without this, G.nodes[src]
             # would KeyError on an unknown id (#2080 review).
-            if {src, tgt} != {u, v}:
-                src, tgt = u, v
-            context = d.get("context")
-            context_suffix = f" context={sanitize_label(str(context))}" if context else ""
+                if {src, tgt} != {u, v}:
+                    src, tgt = u, v
+                context = d.get("context")
+                context_suffix = f" context={sanitize_label(str(context))}" if context else ""
             # The relation SITE (call/import/reference line in the source's
             # file), not a def line — so "who calls X" cites a clickable call
             # location, not the caller's def (#BUG1).
-            _loc = str(d.get("source_location") or "")
-            at_suffix = (
-                f" at={sanitize_label(str(d.get('source_file') or ''))}:{sanitize_label(_loc)}"
-                if _loc else ""
-            )
-            line = (
-                f"EDGE {sanitize_label(G.nodes[src].get('label', src))} "
-                f"--{sanitize_label(str(d.get('relation', '')))} "
-                f"[{sanitize_label(str(d.get('confidence', '')))}{context_suffix}]--> "
-                f"{sanitize_label(G.nodes[tgt].get('label', tgt))}{at_suffix}"
-            )
-            lines.append(line)
+                _loc = str(d.get("source_location") or "")
+                at_suffix = (
+                    f" at={sanitize_label(str(d.get('source_file') or ''))}:{sanitize_label(_loc)}"
+                    if _loc else ""
+                )
+                line = (
+                    f"EDGE {sanitize_label(G.nodes[src].get('label', src))} "
+                    f"--{sanitize_label(str(d.get('relation', '')))} "
+                    f"[{sanitize_label(str(d.get('confidence', '')))}{context_suffix}]--> "
+                    f"{sanitize_label(G.nodes[tgt].get('label', tgt))}{at_suffix}"
+                )
+                lines.append(line)
     output = "\n".join(lines)
     if len(output) > char_budget:
         cut_at = output[:char_budget].rfind("\n")
@@ -1246,6 +1245,40 @@ def _query_graph_text(
     return header + _subgraph_to_text(traversal_graph, nodes, edges, token_budget, seeds=start_nodes)
 
 
+def _neighbor_lines(G: nx.Graph, nid: str, rel_filter: str = "") -> list[str]:
+    """Per-edge neighbor lines for get_neighbors.
+
+    One line per parallel edge (edge_datas, matching the query surface):
+    edge_data would surface an arbitrary single relation on multigraphs, so a
+    relation_filter could return empty for relations that exist. Simple graphs
+    produce identical output (edge_datas returns a one-element list).
+    """
+    def _edge_at(d: dict) -> str:
+        # Edge location = the relation SITE (call/import line) in the source
+        # node's file, not a def line (#BUG1).
+        loc = str(d.get("source_location") or "")
+        return (
+            f" at={sanitize_label(str(d.get('source_file') or ''))}:{sanitize_label(loc)}"
+            if loc else ""
+        )
+
+    lines: list[str] = []
+    for arrow, pairs in (
+        ("-->", ((nid, nb, nb) for nb in G.successors(nid))),
+        ("<--", ((nb, nid, nb) for nb in G.predecessors(nid))),
+    ):
+        for u, v, nb in pairs:
+            for d in edge_datas(G, u, v):
+                rel = d.get("relation", "")
+                if rel_filter and rel_filter not in str(rel).lower():
+                    continue
+                lines.append(
+                    f"  {arrow} {sanitize_label(G.nodes[nb].get('label', nb))} "
+                    f"[{sanitize_label(str(rel))}] [{sanitize_label(str(d.get('confidence', '')))}]{_edge_at(d)}"
+                )
+    return lines
+
+
 def _find_node_tiers(
     G: nx.Graph, label: str
 ) -> tuple[list[str], list[str], list[str], list[str]]:
@@ -1362,19 +1395,30 @@ def find_node_ambiguity(G: nx.Graph, label: str) -> list[str]:
     return []
 
 
-def _shortest_path_text(G: nx.Graph, arguments: dict) -> str:
+def _shortest_path_text(
+    G: nx.Graph, arguments: dict, *, note: "Callable[[], str] | None" = None
+) -> str:
     """Body of the `shortest_path` MCP tool (module-level so tests can call it
     without an mcp install).
 
     Directed by default (#2487): the returned path must follow stored
     caller→callee direction; pass ``undirected=True`` to ignore it.
+
+    ``note`` is an optional zero-arg callable appended to the no-match answers
+    (the server passes its cluster hint, which needs the active graph path from
+    the enclosing closure). Called lazily so the marker read only happens on the
+    miss path.
     """
     src_scored = _score_nodes(G, [t.lower() for t in arguments["source"].split()])
     tgt_scored = _score_nodes(G, [t.lower() for t in arguments["target"].split()])
     if not src_scored:
-        return f"No node matching source '{arguments['source']}' found."
+        return f"No node matching source '{arguments['source']}' found." + (
+            note() if note else ""
+        )
     if not tgt_scored:
-        return f"No node matching target '{arguments['target']}' found."
+        return f"No node matching target '{arguments['target']}' found." + (
+            note() if note else ""
+        )
     src_nid = _pick_scored_endpoint(G, src_scored, arguments["source"])
     tgt_nid = _pick_scored_endpoint(G, tgt_scored, arguments["target"])
     # Ambiguity guard: when both queries resolve to the same node, the
@@ -1572,6 +1616,42 @@ def _build_server(graph_path: str):
         G, communities = _load_ctx(path)
         active_graph_path = str(Path(path).resolve())
 
+    def _cluster_note() -> str:
+        """Member-of-cluster hint appended to no-match answers, or ''.
+
+        Computed per call — active_graph_path rebinds per project_path. MCP has
+        no --cluster flag, so the wording points at the cluster dir instead.
+        Never raises.
+        """
+        try:
+            from graphify.cluster_ref import load_cluster_refs
+
+            refs = load_cluster_refs(Path(active_graph_path).parent)
+            if not refs:
+                return ""
+            # The marker is a committed file: its fields are untrusted input to
+            # assistant-facing output, so they pass sanitize_label like every
+            # other non-literal field this server emits.
+            if len(refs) == 1:
+                ref = refs[0]
+                return (
+                    f"\nnote: this repo is member '{sanitize_label(str(ref['self_tag']))}' of cluster "
+                    f"'{sanitize_label(str(ref['cluster_name']))}' "
+                    f"({sanitize_label(str(ref.get('member_count', '?')))} members) — "
+                    f"cross-repo answers live in the cluster graph (query it from the "
+                    f"cluster directory, or via `graphify ... --cluster` on the CLI)."
+                )
+            names = ", ".join(
+                sorted(sanitize_label(str(ref["cluster_name"])) for ref in refs)
+            )
+            return (
+                f"\nnote: this repo belongs to {len(refs)} clusters ({names}) — "
+                f"cross-repo answers live in a cluster graph (query it from that "
+                f"cluster's directory, or via `graphify ... --cluster NAME` on the CLI)."
+            )
+        except Exception:
+            return ""
+
     # NOTE: no decorators here — the handlers below are plain coroutines,
     # bound to the Server at the END of this function in a version-aware way:
     # mcp 1.x exposes the @server.list_tools()/... decorator API, mcp 2.x
@@ -1745,6 +1825,10 @@ def _build_server(graph_path: str):
             context_filters=context_filter,
             graph_path=str(active_graph_path),
         )
+        if result.startswith("No matching nodes found."):
+            # Same cluster-membership note the other no-match tools append,
+            # added before logging so the query log matches the response.
+            result += _cluster_note()
         querylog.log_query(
             kind="mcp_query",
             question=question,
@@ -1762,7 +1846,7 @@ def _build_server(graph_path: str):
         matches = [(nid, d) for nid, d in G.nodes(data=True)
                    if label in (d.get("label") or "").lower() or label == nid.lower()]
         if not matches:
-            return f"No node matching '{label}' found."
+            return f"No node matching '{label}' found." + _cluster_note()
         nid, d = matches[0]
         # Sanitise every LLM-derived field before concatenation (F-010).
         return "\n".join([
@@ -1785,7 +1869,7 @@ def _build_server(graph_path: str):
         rel_filter = arguments.get("relation_filter", "").lower()
         matches = _find_node(G, label)
         if not matches:
-            return f"No node matching '{label}' found."
+            return f"No node matching '{label}' found." + _cluster_note()
         rivals = find_node_ambiguity(G, label)
         if rivals:
             listing = "\n".join(
@@ -1798,32 +1882,7 @@ def _build_server(graph_path: str):
             )
         nid = matches[0]
         lines = [f"Neighbors of {sanitize_label(G.nodes[nid].get('label', nid))}:"]
-        def _edge_at(d: dict) -> str:
-            # Edge location = the relation SITE (call/import line) in the source
-            # node's file, not a def line (#BUG1).
-            loc = str(d.get("source_location") or "")
-            return (
-                f" at={sanitize_label(str(d.get('source_file') or ''))}:{sanitize_label(loc)}"
-                if loc else ""
-            )
-        for nb in G.successors(nid):
-            d = edge_data(G, nid, nb)
-            rel = d.get("relation", "")
-            if rel_filter and rel_filter not in rel.lower():
-                continue
-            lines.append(
-                f"  --> {sanitize_label(G.nodes[nb].get('label', nb))} "
-                f"[{sanitize_label(str(rel))}] [{sanitize_label(str(d.get('confidence', '')))}]{_edge_at(d)}"
-            )
-        for nb in G.predecessors(nid):
-            d = edge_data(G, nb, nid)
-            rel = d.get("relation", "")
-            if rel_filter and rel_filter not in rel.lower():
-                continue
-            lines.append(
-                f"  <-- {sanitize_label(G.nodes[nb].get('label', nb))} "
-                f"[{sanitize_label(str(rel))}] [{sanitize_label(str(d.get('confidence', '')))}]{_edge_at(d)}"
-            )
+        lines += _neighbor_lines(G, nid, rel_filter)
         budget = int(arguments.get("token_budget", 2000))
         return _cut_lines_to_budget(
             lines, budget, "Narrow with relation_filter or use get_node for a specific symbol"
@@ -1868,7 +1927,7 @@ def _build_server(graph_path: str):
         )
 
     def _tool_shortest_path(arguments: dict) -> str:
-        return _shortest_path_text(G, arguments)
+        return _shortest_path_text(G, arguments, note=_cluster_note)
 
     def _tool_list_prs(arguments: dict) -> str:
         from graphify.prs import fetch_prs, fetch_worktrees, format_prs_text, _detect_default_branch

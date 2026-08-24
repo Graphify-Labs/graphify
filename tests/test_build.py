@@ -794,6 +794,47 @@ def test_build_from_json_preserves_first_direction_on_bidirectional_pair(tmp_pat
     )
 
 
+def test_simple_edge_collapse_is_deterministic_across_input_order(tmp_path):
+    """Same-identity edges collapse in a simple graph, so their complete
+    attributes must break ties canonically rather than by fragment arrival."""
+    from graphify.export import to_json
+
+    nodes = [
+        {"id": "a", "label": "a", "file_type": "code", "source_file": "a.py"},
+        {"id": "b", "label": "b", "file_type": "code", "source_file": "b.py"},
+    ]
+    first = {
+        "source": "a",
+        "target": "b",
+        "relation": "calls",
+        "source_file": "a.py",
+        "source_location": "L10",
+        "confidence": "EXTRACTED",
+        "note": "first",
+    }
+    second = {
+        "source": "a",
+        "target": "b",
+        "relation": "calls",
+        "source_file": "a.py",
+        "source_location": "L20",
+        "confidence": "INFERRED",
+        "note": "second",
+    }
+    graphs = [
+        build_from_json({"nodes": nodes, "edges": order})
+        for order in ([dict(first), dict(second)], [dict(second), dict(first)])
+    ]
+
+    assert edge_data(graphs[0], "a", "b") == edge_data(graphs[1], "a", "b")
+    saved = []
+    for i, graph in enumerate(graphs):
+        path = tmp_path / f"graph-{i}.json"
+        assert to_json(graph, {}, str(path), force=True)
+        saved.append(json.loads(path.read_text(encoding="utf-8")))
+    assert saved[0] == saved[1]
+
+
 # Regression tests for #796 — edge_data / edge_datas helpers must tolerate
 # MultiGraph and MultiDiGraph, which networkx's node_link_graph() produces
 # whenever the loaded JSON has multigraph: true. Plain G.edges[u, v] crashes

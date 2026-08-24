@@ -152,6 +152,79 @@ def test_explain_connection_shows_call_site_line(monkeypatch, tmp_path, capsys):
     assert "state.py" in out and "L56" in out
 
 
+def test_explain_multigraph_shows_each_parallel_relation_and_source_site(
+    monkeypatch, tmp_path, capsys
+):
+    """Parallel relations on one node pair must render independently.
+
+    Real-world shape reported on #2134: one caller reaches the same destination
+    through both a direct call and an indirect call at different source sites.
+    """
+    source_file = "src/components/NotificationLifecycle.tsx"
+    graph_data = {
+        "directed": True,
+        "multigraph": True,
+        "graph": {},
+        "nodes": [
+            {
+                "id": "notification_lifecycle",
+                "label": "NotificationLifecycle",
+                "source_file": source_file,
+                "source_location": "L1",
+                "community": 0,
+            },
+            {
+                "id": "open_notification_destination",
+                "label": "openNotificationDestination()",
+                "source_file": source_file,
+                "source_location": "L80",
+                "community": 0,
+            },
+        ],
+        "links": [
+            {
+                "source": "notification_lifecycle",
+                "target": "open_notification_destination",
+                "key": "calls-L45",
+                "relation": "calls",
+                "confidence": "EXTRACTED",
+                "source_file": source_file,
+                "source_location": "L45",
+            },
+            {
+                "source": "notification_lifecycle",
+                "target": "open_notification_destination",
+                "key": "indirect-call-L63",
+                "relation": "indirect_call",
+                "confidence": "EXTRACTED",
+                "source_file": source_file,
+                "source_location": "L63",
+            },
+        ],
+    }
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(json.dumps(graph_data), encoding="utf-8")
+
+    out = _run(monkeypatch, graph_path, "NotificationLifecycle", capsys)
+
+    assert "Connections (2):" in out
+    rendered = {
+        line.strip()
+        for line in out.splitlines()
+        if "--> openNotificationDestination()" in line
+    }
+    assert rendered == {
+        (
+            "--> openNotificationDestination() [calls] [EXTRACTED] "
+            f"{source_file}:L45"
+        ),
+        (
+            "--> openNotificationDestination() [indirect_call] [EXTRACTED] "
+            f"{source_file}:L63"
+        ),
+    }
+
+
 # --- #2009: high-degree nodes must not silently hide the cut connections ------
 
 def _write_high_degree_graph(tmp_path, n_callers=30, files=None):

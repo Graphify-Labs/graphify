@@ -511,8 +511,10 @@ def _run_cli() -> None:
         print("    --purge                 also delete graphify-out/ directory")
         print("  path \"A\" \"B\"            shortest path between two nodes in graph.json")
         print("    --graph <path>          path to graph.json (default graphify-out/graph.json)")
+        print("    --cluster [NAME]        query this repo's cluster graph instead (from a member repo)")
         print("  explain \"X\"             plain-language explanation of a node and its neighbors")
         print("    --graph <path>          path to graph.json (default graphify-out/graph.json)")
+        print("    --cluster [NAME]        query this repo's cluster graph instead (from a member repo)")
         print("  diagnose multigraph    report same-endpoint edge collapse risk in graph.json")
         print("    --graph <path>          path to graph/extraction JSON")
         print("                            (default graphify-out/graph.json)")
@@ -557,10 +559,12 @@ def _run_cli() -> None:
         print("    --context C             explicit edge-context filter (repeatable)")
         print("    --budget N              cap output at N tokens (default 2000)")
         print("    --graph <path>          path to graph.json (default graphify-out/graph.json)")
+        print("    --cluster [NAME]        query this repo's cluster graph instead (from a member repo)")
         print("  affected \"X\"             reverse traversal to find nodes impacted by X")
         print("    --relation R            edge relation to traverse in reverse (repeatable)")
         print("    --depth N               reverse traversal depth (default 2)")
         print("    --graph <path>          path to graph.json (default graphify-out/graph.json)")
+        print("    --cluster [NAME]        query this repo's cluster graph instead (from a member repo)")
         print("  god-nodes               list the most connected nodes (architectural hubs)")
         print("    --top N                 how many to show (default 10)")
         print("    --graph <path>          path to graph.json (default graphify-out/graph.json)")
@@ -610,6 +614,9 @@ def _run_cli() -> None:
         print("    --google-workspace      export .gdoc/.gsheet/.gslides shortcuts via gws before extraction")
         print("    --no-gitignore         ignore .gitignore and .git/info/exclude (prioritizes .graphifyignore)")
         print("    --no-cluster            skip clustering, write raw extraction only")
+        print("    --multigraph            keyed MultiDiGraph output: keep parallel relations between")
+        print("                            the same node pair (persists across rebuilds)")
+        print("    --no-multigraph         convert a multigraph back to simple (collapses parallel relations)")
         print("    --code-only             index code (local AST, no API key) and skip doc/paper/image files")
         print("    --postgres DSN          extract schema from a live PostgreSQL database")
         print("                            maps tables, views, functions + FK relationships;")
@@ -622,6 +629,9 @@ def _run_cli() -> None:
         print("  global remove <tag>      remove a repo's nodes from the global graph")
         print("  global list              list repos in the global graph")
         print("  global path              print path to the global graph file")
+        print("  cluster <subcommand>    cluster graphs: link multiple repos into one connected graph")
+        print("                          (init/add/remove/locate/build/check/status; `graphify cluster` for details)")
+        print("                          (community detection on a single graph is `cluster-only`, above)")
         print("  benchmark [graph.json]  measure token reduction vs naive full-corpus approach")
         print("  export callflow-html    emit Mermaid-based architecture/call-flow HTML")
         print("  hook install            install post-commit/post-checkout git hooks (all platforms)")
@@ -699,9 +709,10 @@ def _run_cli() -> None:
     # Universal help guard: -h/--help/-? anywhere after the command shows help
     # and stops — prevents flags from silently triggering destructive subcommands
     # (e.g. "cursor install --help" was silently installing into Cursor, #821).
-    # Exempt: free-text commands (user string may contain these tokens), and
-    # "install"/"uninstall" which have their own per-subcommand help handlers.
-    _FREE_TEXT_CMDS = {"query", "explain", "path", "save-result", "install", "uninstall"}
+    # Exempt: free-text commands (user string may contain these tokens),
+    # "install"/"uninstall" which have their own per-subcommand help handlers,
+    # and "cluster" whose dispatcher answers help tokens with its own USAGE.
+    _FREE_TEXT_CMDS = {"query", "explain", "path", "save-result", "install", "uninstall", "cluster"}
     if cmd not in _FREE_TEXT_CMDS and any(a in {"-h", "--help", "-?"} for a in sys.argv[2:]):
         print(f"Run 'graphify --help' for full usage.")
         return

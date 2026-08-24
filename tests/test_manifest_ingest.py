@@ -8,6 +8,7 @@ from graphify.extract import extract
 from graphify.manifest_ingest import (
     extract_package_manifest,
     is_package_manifest_path,
+    normalize_package_identity,
 )
 
 
@@ -52,6 +53,18 @@ def test_pyproject_parses_pep508_deps(tmp_path):
     assert _pkg_nodes(r)[0]["label"] == "cool-lib"
     deps = {e["target"] for e in r["edges"]}
     assert {"pkg_requests", "pkg_rich", "pkg_tomli"} <= deps  # versions/extras/markers stripped
+    pkg = _pkg_nodes(r)[0]
+    assert pkg["package_key"] == "python:cool-lib"
+    assert pkg["dependency_keys"] == [
+        "python:requests", "python:rich", "python:tomli"
+    ]
+
+
+def test_package_identity_normalization_is_ecosystem_specific():
+    assert normalize_package_identity("python", "My_Pkg.Name") == "python:my-pkg-name"
+    assert normalize_package_identity("apm", "Shared-Pkg") == "apm:shared-pkg"
+    assert normalize_package_identity("go", "Example.com/Org/Mod") == "go:Example.com/Org/Mod"
+    assert normalize_package_identity("maven", "Com.Acme:Core") == "maven:Com.Acme:Core"
 
 
 def test_gomod_parses_module_and_requires(tmp_path):

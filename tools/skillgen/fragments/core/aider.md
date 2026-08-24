@@ -924,6 +924,8 @@ Then run Steps 5–9 as normal (label communities, generate viz, benchmark, clea
 
 ## For /graphify query
 
+**Cluster member?** If `graphify-out/cluster-ref.json` exists, its `clusters` list names every multi-repo cluster this repo belongs to. For a cross-repo question, use `--cluster` for one membership or `--cluster NAME` for several. If the selected cluster is unavailable, report the CLI's clone/build instructions.
+
 Two traversal modes - choose based on the question:
 
 | Mode | Flag | Best for |

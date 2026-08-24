@@ -318,6 +318,32 @@ def test_graph_diff_removed_nodes():
     assert "removed" in diff["summary"]
 
 
+def test_graph_diff_simple_graph_ignores_edge_attribute_churn():
+    """On simple graphs, edge identity stays (u, v, relation): a moved call
+    site (changed source_location) must not report edge removed + added.
+    Occurrence-level attributes only distinguish edges on multigraphs."""
+    nodes = [("n1", "Alpha"), ("n2", "Beta")]
+    G_old = _make_simple_graph(nodes, [("n1", "n2", "calls", "EXTRACTED")])
+    G_new = _make_simple_graph(nodes, [("n1", "n2", "calls", "EXTRACTED")])
+    G_old.edges["n1", "n2"]["source_location"] = "L10"
+    G_new.edges["n1", "n2"]["source_location"] = "L99"
+    diff = graph_diff(G_old, G_new)
+    assert diff["new_edges"] == [] and diff["removed_edges"] == []
+
+
+def test_graph_diff_multigraph_distinguishes_parallel_edges():
+    G_old = nx.MultiDiGraph()
+    G_new = nx.MultiDiGraph()
+    for G in (G_old, G_new):
+        G.add_node("n1", label="Alpha", source_file="test.py")
+        G.add_node("n2", label="Beta", source_file="test.py")
+        G.add_edge("n1", "n2", relation="calls", source_location="L10")
+    G_new.add_edge("n1", "n2", relation="calls", source_location="L99")
+    diff = graph_diff(G_old, G_new)
+    assert len(diff["new_edges"]) == 1
+    assert diff["removed_edges"] == []
+
+
 def test_graph_diff_new_edges():
     nodes = [("n1", "Alpha"), ("n2", "Beta"), ("n3", "Gamma")]
     G_old = _make_simple_graph(nodes, [("n1", "n2", "calls", "EXTRACTED")])

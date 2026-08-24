@@ -1555,16 +1555,31 @@ def _rebuild_code(
             # Dedupe parallel edges (the clustered path's DiGraph collapses them implicitly);
             # without it, --no-cluster + repeated `update` accumulate duplicates and edge
             # counts diverge across build modes (#1317).
-            from graphify.build import dedupe_edges as _dedupe_edges, dedupe_nodes as _dedupe_nodes
-            candidate_graph_data = {
-                **{k: v for k, v in result.items() if k not in ("edges", "nodes")},
-                "nodes": _dedupe_nodes(result.get("nodes", [])),
-                "links": _dedupe_edges(result.get("edges", [])),
-                # Inherit the existing graph's directed flag (#2342) so
-                # `graphify update --no-cluster` can't silently drop it -
-                # `result` (the raw merged extraction) never carries one.
-                "directed": bool((existing_graph_data or {}).get("directed", False)),
-            }
+            from graphify.build import (
+                build_from_json as _build_from_json,
+                dedupe_edges as _dedupe_edges,
+                dedupe_nodes as _dedupe_nodes,
+            )
+            # Inherit the existing graph's directed flag (#2342) so
+            # `graphify update --no-cluster` can't silently drop it -
+            # `result` (the raw merged extraction) never carries one.
+            _existing_directed = bool((existing_graph_data or {}).get("directed", False))
+            if (existing_graph_data or {}).get("multigraph"):
+                candidate_graph_data = _topology_from_graph(
+                    _build_from_json(
+                        result,
+                        directed=_existing_directed,
+                        multigraph=True,
+                        root=project_root,
+                    )
+                )
+            else:
+                candidate_graph_data = {
+                    **{k: v for k, v in result.items() if k not in ("edges", "nodes")},
+                    "nodes": _dedupe_nodes(result.get("nodes", [])),
+                    "links": _dedupe_edges(result.get("edges", [])),
+                    "directed": _existing_directed,
+                }
             candidate_graph_text = _json_text(candidate_graph_data)
             same_graph = False
             if existing_graph.exists():
@@ -1651,8 +1666,14 @@ def _rebuild_code(
 
         # Inherit the existing graph's directed flag (#2342) so `graphify
         # update` can't silently downgrade a directed graph to undirected -
-        # build_from_json defaults to directed=False otherwise.
-        G = build_from_json(result, directed=bool((existing_graph_data or {}).get("directed", False)))
+        # build_from_json defaults to directed=False otherwise. Same contract
+        # for the multigraph flag, so a keyed graph stays keyed.
+        G = build_from_json(
+            result,
+            directed=bool((existing_graph_data or {}).get("directed", False)),
+            multigraph=bool((existing_graph_data or {}).get("multigraph", False)),
+            root=project_root,
+        )
         candidate_topology = _topology_from_graph(G)
         if existing_graph_data:
             try:

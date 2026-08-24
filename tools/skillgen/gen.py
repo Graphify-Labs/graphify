@@ -1076,6 +1076,17 @@ def _is_shebang_allowlist_fix_line(line: str) -> bool:
     return "[!a-zA-Z0-9/_." in line
 
 
+def _is_cluster_member_note_line(line: str) -> bool:
+    """Whether a line is the cluster-membership awareness paragraph.
+
+    Cluster graphs (multi-repo) write a ``cluster-ref.json`` back-reference into
+    each member repo's graphify-out/; the skill bodies gained one paragraph
+    telling the assistant to check for it and to use ``--cluster`` (or the
+    cluster directory) for cross-repo questions. Added, never removed.
+    """
+    return "**Cluster member?**" in line
+
+
 def _is_obsidian_usage_comment_line(line: str) -> bool:
     """Whether a line is part of the ``/graphify`` usage-comment fix (#1681).
 
@@ -1162,6 +1173,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_obsidian_usage_comment_line,
     _is_uv_from_interpreter_fix_line,
     _is_semantic_cache_scope_fix_line,
+    _is_cluster_member_note_line,
     _is_community_label_export_fix_line,
 )
 

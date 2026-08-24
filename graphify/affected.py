@@ -29,6 +29,12 @@ DEFAULT_AFFECTED_RELATIONS = (
     "mixes_in",
     "embeds",
     "requires",
+    # Cross-repo relations added by `graphify cluster` link resolution: a
+    # change on one side of a declared contract affects the other repo.
+    # (`depends_on` is deliberately NOT here — it predates clusters and
+    # including it would change single-repo affected behavior.)
+    "calls_api",
+    "mirrors",
 )
 
 
@@ -42,6 +48,7 @@ class AffectedHit:
     # existing constructors/tests working; None falls back to the node's def line.
     via_file: "str | None" = None
     via_location: "str | None" = None
+    via_relations: tuple[str, ...] = ()
 
 
 def _node_label(graph: nx.Graph, node_id: str) -> str:
@@ -232,13 +239,26 @@ def affected_nodes(
                 for source, target, data in graph.edges(data=True)
                 if target == current
             )
+        grouped: dict[str, list[dict]] = {}
         for source, _target, data in incoming:
             relation = str(data.get("relation", ""))
-            if relation not in relation_set:
-                continue
+            if relation in relation_set:
+                grouped.setdefault(str(source), []).append(data)
+        for source in sorted(grouped):
             source = str(source)
             if source in seen:
                 continue
+            matching = sorted(
+                grouped[source],
+                key=lambda data: (
+                    str(data.get("relation", "")),
+                    str(data.get("source_file", "")),
+                    str(data.get("source_location", "")),
+                ),
+            )
+            data = matching[0]
+            matched_relations = tuple(sorted({str(d.get("relation", "")) for d in matching}))
+            relation = matched_relations[0]
             seen.add(source)
             # Carry the matched edge's location (taken from the SAME edge dict
             # whose relation passed the filter, so relation and location stay
@@ -248,6 +268,7 @@ def affected_nodes(
                 source, current_depth + 1, relation,
                 via_file=str(data.get("source_file") or "") or None,
                 via_location=str(data.get("source_location") or "") or None,
+                via_relations=matched_relations,
             )
             hits.append(hit)
             queue.append((source, current_depth + 1))
@@ -281,14 +302,16 @@ def format_affected(
     for hit in hits:
         data = graph.nodes[hit.node_id]
         if hit.via_location:
-            # The relation SITE in this node's file (call/import/reference line),
-            # labeled by [via_relation] so it's never mistaken for a def line.
+            # The relation SITE (call/import/reference line), labeled by
+            # [via_relation] so it's never mistaken for a def line. Gate on the
+            # LOCATION: an edge with source_file but a null source_location
+            # (allowed by the extraction schema) would render a non-clickable
+            # "file:-" — the node's own def line is the honest fallback there.
             location = f"{hit.via_file or data.get('source_file') or '-'}:{hit.via_location}"
         else:
             location = _format_location(data)  # honest fallback: the node's own def line
-        lines.append(
-            f"- {_node_label(graph, hit.node_id)} [{hit.via_relation}] {location}"
-        )
+        relations_text = ", ".join(hit.via_relations or (hit.via_relation,))
+        lines.append(f"- {_node_label(graph, hit.node_id)} [{relations_text}] {location}")
     return "\n".join(lines)
 
 

@@ -581,9 +581,21 @@ def graph_diff(G_old: nx.Graph, G_new: nx.Graph) -> dict:
     ]
 
     def edge_key(G: nx.Graph, u: str, v: str, data: dict) -> tuple:
+        semantic = (data.get("relation", ""),)
+        if G.is_multigraph():
+            # Parallel edges share (u, v, relation); only occurrence-level
+            # attributes tell them apart. Simple graphs keep the relation-only
+            # key so an attribute change (e.g. a moved call site) doesn't
+            # report as edge removed + added.
+            semantic += (
+                data.get("source_file", ""),
+                data.get("source_location", ""),
+                data.get("context", ""),
+                data.get("origin", ""),
+            )
         if G.is_directed():
-            return (u, v, data.get("relation", ""))
-        return (min(u, v), max(u, v), data.get("relation", ""))
+            return (u, v, *semantic)
+        return (min(u, v), max(u, v), *semantic)
 
     old_edge_keys = {
         edge_key(G_old, u, v, d)

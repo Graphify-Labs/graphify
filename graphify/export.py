@@ -482,7 +482,11 @@ def to_cypher(G: nx.Graph, output_path: str) -> None:
         )
         lines.append(f"MERGE (n:{ftype} {{id: '{node_id_esc}', label: '{label}'}});")
     lines.append("")
-    for u, v, data in G.edges(data=True):
+    if G.is_multigraph():
+        edge_rows = G.edges(keys=True, data=True)
+    else:
+        edge_rows = ((u, v, None, data) for u, v, data in G.edges(data=True))
+    for u, v, key, data in edge_rows:
         rel = _cypher_label(
             (data.get("relation", "RELATES_TO") or "RELATES_TO").upper(),
             "RELATES_TO",
@@ -490,10 +494,20 @@ def to_cypher(G: nx.Graph, output_path: str) -> None:
         conf = _cypher_escape(data.get("confidence", "EXTRACTED"))
         u_esc = _cypher_escape(u)
         v_esc = _cypher_escape(v)
-        lines.append(
-            f"MATCH (a {{id: '{u_esc}'}}), (b {{id: '{v_esc}'}}) "
-            f"MERGE (a)-[:{rel} {{confidence: '{conf}'}}]->(b);"
-        )
+        if key is None:
+            lines.append(
+                f"MATCH (a {{id: '{u_esc}'}}), (b {{id: '{v_esc}'}}) "
+                f"MERGE (a)-[:{rel} {{confidence: '{conf}'}}]->(b);"
+            )
+        else:
+            # MERGE on the stable per-occurrence key keeps re-runs of the
+            # script idempotent; CREATE would duplicate every parallel edge.
+            key_esc = _cypher_escape(str(key))
+            lines.append(
+                f"MATCH (a {{id: '{u_esc}'}}), (b {{id: '{v_esc}'}}) "
+                f"MERGE (a)-[:{rel} {{confidence: '{conf}', "
+                f"graphify_key: '{key_esc}'}}]->(b);"
+            )
     with open(output_path, "w", encoding="utf-8") as f:  # nosec
         f.write("\n".join(lines))
 
@@ -1190,9 +1204,9 @@ def to_canvas(
             all_edges_weighted.append((weight, u, v, label))
 
     all_edges_weighted.sort(key=lambda x: -x[0])
-    for weight, u, v, label in all_edges_weighted[:200]:
+    for index, (weight, u, v, label) in enumerate(all_edges_weighted[:200]):
         canvas_edges.append({
-            "id": f"e_{u}_{v}",
+            "id": f"e_{u}_{v}_{index}",
             "fromNode": f"n_{u}",
             "toNode": f"n_{v}",
             "label": label,
@@ -1259,9 +1273,14 @@ def to_graphml(
     for node_id in H.nodes():
         for key, val in list(H.nodes[node_id].items()):
             H.nodes[node_id][key] = _graphml_safe(val)
-    for u, v in H.edges():
-        for key, val in list(H.edges[u, v].items()):
-            H.edges[u, v][key] = _graphml_safe(val)
+    if H.is_multigraph():
+        for _u, _v, _key, attrs in H.edges(keys=True, data=True):
+            for attr, val in list(attrs.items()):
+                attrs[attr] = _graphml_safe(val)
+    else:
+        for _u, _v, attrs in H.edges(data=True):
+            for attr, val in list(attrs.items()):
+                attrs[attr] = _graphml_safe(val)
 
     # Write atomically: a mid-serialization error otherwise leaves a 0-byte
     # .graphml on disk that downstream tooling mistakes for a completed export

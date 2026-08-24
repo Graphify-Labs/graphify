@@ -30,6 +30,9 @@ Signatures below are the real ones - `tests/test_architecture_doc.py` imports ev
 | `security.py` | `validate_url`, `safe_fetch`, `validate_graph_path`, `sanitize_label` | URL / path / label → validated value, or raises |
 | `validate.py` | `validate_extraction(data)`, `assert_valid(data)` | extraction dict → **list of schema error strings** (`validate_extraction` returns them; `assert_valid` raises) |
 | `serve.py` | `serve(graph_path)`, `serve_http(graph_path, *, host, port, ...)` | graph file path → MCP stdio server / HTTP server |
+| `cluster_graph.py` | `build_cluster(cluster_dir, ...)`, `load_spec(cluster_dir)` | cluster.json + member graph.json files → one linked cross-repo graph (not community detection — that's `cluster.py`) |
+| `cluster_ref.py` | `load_cluster_refs(out_dir)`, `member_count(ref)` | a member's `graphify-out/` → its `cluster-ref.json` membership markers (stdlib only, fail-open) |
+| `cluster_cli.py` | `cmd_cluster(argv)` | `graphify cluster <sub>` CLI for cluster_graph.py |
 | `watch.py` | `watch(watch_path, debounce=3.0)`, `check_update(watch_path)` | directory → rebuild on change; `check_update` reports whether a re-extraction is pending |
 | `benchmark.py` | `run_benchmark(graph_path)` | graph file → corpus vs subgraph token comparison |
 

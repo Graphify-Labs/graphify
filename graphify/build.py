@@ -22,6 +22,7 @@
 #
 from __future__ import annotations
 import json
+import hashlib
 import math
 import os
 import re
@@ -594,6 +595,24 @@ def dedupe_edges(edges: list[dict]) -> list[dict]:
     return out
 
 
+def stable_edge_key(source: object, target: object, attrs: dict) -> str:
+    """Deterministic MultiDiGraph key for one semantic relation occurrence."""
+    identity = {
+        "source": source,
+        "target": target,
+        "relation": attrs.get("relation", "related_to"),
+        "source_file": attrs.get("source_file", ""),
+        "source_location": attrs.get("source_location", ""),
+        "context": attrs.get("context", ""),
+        "origin": attrs.get("origin", ""),
+    }
+    encoded = json.dumps(
+        identity, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str
+    ).encode("utf-8")
+    relation = _normalize_id(str(identity["relation"])) or "edge"
+    return f"{relation}:{hashlib.sha256(encoded).hexdigest()[:16]}"
+
+
 def _old_file_stems(rel: Path) -> list[str]:
     """Pre-migration stem forms a semantic fragment may have used for ``rel``.
 
@@ -795,10 +814,17 @@ def _doc_twin_remap(nodes: list) -> dict[str, str]:
     return remap
 
 
-def build_from_json(extraction: dict, *, directed: bool = False, root: str | Path | None = None) -> nx.Graph:
+def build_from_json(
+    extraction: dict,
+    *,
+    directed: bool = False,
+    multigraph: bool = False,
+    root: str | Path | None = None,
+) -> nx.Graph:
     """Build a NetworkX graph from an extraction dict.
 
     directed=True produces a DiGraph that preserves edge direction (source→target).
+    multigraph=True produces a keyed MultiDiGraph and implies directed=True.
     directed=False (default) produces an undirected Graph for backward compatibility.
     root: if given, absolute source_file paths from semantic subagents are made
         relative to root so all nodes share a consistent path key (#932).
@@ -952,7 +978,13 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                     _doc_remap.get(n, n) if _hashable(n) else n for n in he["nodes"]
                 ]
 
-    G: nx.Graph = nx.DiGraph() if directed else nx.Graph()
+    if multigraph:
+        from .multigraph_compat import require_multigraph_capabilities
+
+        require_multigraph_capabilities()
+        G: nx.Graph = nx.MultiDiGraph()
+    else:
+        G = nx.DiGraph() if directed else nx.Graph()
     for node in extraction.get("nodes", []):
         # Skip dict nodes with a missing or non-hashable id (e.g. a list emitted
         # by a buggy LLM extraction) so NetworkX add_node never raises
@@ -1126,14 +1158,32 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     # direction in _src/_tgt; when two edges collapse onto the same node pair the
     # last write wins, so an unstable iteration order flips _src/_tgt run-to-run
     # and makes the serialized graph churn. Sorting fixes the last-write outcome.
-    for edge in sorted(
-        extraction.get("edges", []),
-        key=lambda e: (
+    # Multigraphs additionally need a TOTAL order: parallel keyed edges share
+    # (src, tgt, relation), and their iteration order decides content-suffix
+    # key collisions. Simple graphs need the same tiebreak only when multiple
+    # inputs share that 3-tuple; unique edges avoid the json.dumps cost.
+    edge_rows = extraction.get("edges", [])
+
+    def _edge_identity(e: dict) -> tuple[str, str, str]:
+        return (
             str(e.get("source", e.get("from", ""))),
             str(e.get("target", e.get("to", ""))),
             str(e.get("relation", "")),
-        ),
-    ):
+        )
+
+    identity_counts: dict[tuple[str, str, str], int] = {}
+    for edge in edge_rows:
+        identity = _edge_identity(edge)
+        identity_counts[identity] = identity_counts.get(identity, 0) + 1
+
+    def _edge_sort_key(e: dict) -> tuple[str, str, str, str]:
+        identity = _edge_identity(e)
+        tiebreak = ""
+        if multigraph or identity_counts[identity] > 1:
+            tiebreak = json.dumps(e, sort_keys=True, ensure_ascii=False, default=str)
+        return (*identity, tiebreak)
+
+    for edge in sorted(edge_rows, key=_edge_sort_key):
         if "source" not in edge and "from" in edge:
             edge["source"] = edge["from"]
         if "target" not in edge and "to" in edge:
@@ -1181,7 +1231,11 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         # strings, NaN/inf, negatives — while numeric strings coerce cleanly.
         # Repair (not drop) the key so graph.json round-trips a clean value and a
         # cluster-only/--update reload never re-ingests the null.
-        attrs = {k: v for k, v in edge.items() if k not in ("source", "target", "target_file", "local_alias")}
+        requested_key = edge.get("key")
+        attrs = {
+            k: v for k, v in edge.items()
+            if k not in ("source", "target", "target_file", "local_alias", "key")
+        }
         for _num_key in ("weight", "confidence_score"):
             if _num_key in attrs:
                 try:
@@ -1254,6 +1308,25 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 existing.get("_src") == tgt and existing.get("_tgt") == src
             ):
                 continue
+        if G.is_multigraph():
+            edge_key = (
+                str(requested_key)
+                if isinstance(requested_key, (str, int)) and str(requested_key)
+                else stable_edge_key(src, tgt, attrs)
+            )
+            if G.has_edge(src, tgt, edge_key):
+                # A repeated semantic occurrence is idempotent. A malformed
+                # serialized key collision gets a deterministic content suffix
+                # rather than overwriting the existing edge.
+                existing = G.get_edge_data(src, tgt, edge_key) or {}
+                if existing == attrs:
+                    continue
+                suffix = hashlib.sha256(
+                    json.dumps(attrs, sort_keys=True, default=str).encode("utf-8")
+                ).hexdigest()[:8]
+                edge_key = f"{edge_key}:{suffix}"
+            G.add_edge(src, tgt, key=edge_key, **attrs)
+            continue
         # A pair that already carries a SPECIFIC relation must not be downgraded
         # to a generic one. Only one edge survives per pair here, and the sort
         # above orders same-pair edges by relation name, so "last write wins"
@@ -1265,6 +1338,8 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         # entirely. Alphabetical order carries no meaning; keeping the specific
         # fact does. The reverse (specific arriving after generic) still
         # overwrites, so the outcome no longer depends on edge order at all.
+        # (Multigraphs above are exempt: parallel keyed edges keep both the
+        # specific and the generic relation, so there is nothing to downgrade.)
         if G.has_edge(src, tgt):
             existing_rel = edge_data(G, src, tgt).get("relation")
             if (
@@ -1341,6 +1416,7 @@ def build(
     extractions: list[dict],
     *,
     directed: bool = False,
+    multigraph: bool = False,
     dedup: bool = True,
     dedup_llm_backend: str | None = None,
     root: str | Path | None = None,
@@ -1387,7 +1463,7 @@ def build(
             # survivor rewiring the edges get (#2805).
             hyperedges=combined.get("hyperedges"),
         )
-    return build_from_json(combined, directed=directed, root=root)
+    return build_from_json(combined, directed=directed, multigraph=multigraph, root=root)
 
 
 def _norm_label(label: str | None) -> str:
@@ -1452,9 +1528,14 @@ def deduplicate_by_label(nodes: list[dict], edges: list[dict]) -> tuple[list[dic
     return deduped_nodes, deduped_edges
 
 
-def _load_existing_graph(graph_path: Path) -> "tuple[list, list, list, bool] | None":
-    """Load (nodes, edges, hyperedges, directed) from an existing graph.json for
-    an incremental merge, accepting both the ``links`` and ``edges`` spellings.
+def _load_existing_graph(
+    graph_path: Path,
+) -> "tuple[list, list, list, bool, bool] | None":
+    """Load (nodes, edges, hyperedges, directed, multigraph) from an existing
+    graph.json for an incremental merge, accepting both the ``links`` and
+    ``edges`` spellings. The stored ``directed`` and ``multigraph`` flags come
+    back from the same read so callers can infer the format without parsing the
+    file twice.
 
     Reads the JSON directly instead of going through node_link_graph().
     The latter rebuilds an undirected nx.Graph and then enumerating
@@ -1499,6 +1580,7 @@ def _load_existing_graph(graph_path: Path) -> "tuple[list, list, list, bool] | N
         edges,
         list(data.get("hyperedges", [])),
         bool(data.get("directed", False)),
+        bool(data.get("multigraph", False)),
     )
 
 
@@ -1538,7 +1620,7 @@ def merge_raw_extraction(
     loaded = _load_existing_graph(graph_path)
     if loaded is None:
         return new
-    existing_nodes, existing_edges, existing_hyperedges, _ = loaded
+    existing_nodes, existing_edges, existing_hyperedges, _, _ = loaded
 
     _eff_root = (
         str(Path(root).resolve()) if root is not None
@@ -1629,6 +1711,7 @@ def build_merge(
     prune_sources: list[str] | None = None,
     *,
     directed: bool | None = None,
+    multigraph: bool | None = None,
     dedup: bool = True,
     dedup_llm_backend: str | None = None,
     root: str | Path | None = None,
@@ -1648,18 +1731,31 @@ def build_merge(
     graph undirected (#2342). Falls back to False when there is no existing
     graph to inherit from. An explicit True/False always overrides the on-disk
     flag.
+    multigraph: same inherit-from-disk contract as ``directed`` — None (default)
+    reuses the stored ``multigraph`` flag so a keyed multigraph stays keyed
+    across incremental rebuilds instead of collapsing parallel edges.
     """
     graph_path = Path(graph_path if graph_path is not None else _default_graph_json())
     _loaded = _load_existing_graph(graph_path)
     if _loaded is not None:
-        existing_nodes, existing_edges, existing_hyperedges, existing_directed = _loaded
+        (
+            existing_nodes,
+            existing_edges,
+            existing_hyperedges,
+            existing_directed,
+            _existing_multigraph,
+        ) = _loaded
         had_graph = True
+        if multigraph is None:
+            multigraph = _existing_multigraph
     else:
         existing_nodes = []
         existing_edges = []
         existing_hyperedges = []
         existing_directed = False
         had_graph = False
+        if multigraph is None:
+            multigraph = False
     if directed is None:
         directed = existing_directed if had_graph else False
 
@@ -1729,7 +1825,14 @@ def build_merge(
     base = [{"nodes": existing_nodes, "edges": existing_edges}] if had_graph else []
 
     all_chunks = base + list(new_chunks)
-    G = build(all_chunks, directed=directed, dedup=dedup, dedup_llm_backend=dedup_llm_backend, root=root)
+    G = build(
+        all_chunks,
+        directed=directed,
+        multigraph=bool(multigraph),
+        dedup=dedup,
+        dedup_llm_backend=dedup_llm_backend,
+        root=root,
+    )
 
     # Prune set for deleted source files — both the raw form (matches nodes that
     # kept absolute source_file) and the normalised relative form (matches nodes
@@ -1836,10 +1939,16 @@ def build_merge(
         G.remove_nodes_from(to_remove)
         n_nodes = len(to_remove)
 
-        edges_to_remove = [
-            (u, v) for u, v, d in G.edges(data=True)
-            if _prune_match(d.get("source_file"))
-        ]
+        if G.is_multigraph():
+            edges_to_remove = [
+                (u, v, key) for u, v, key, d in G.edges(keys=True, data=True)
+                if _prune_match(d.get("source_file"))
+            ]
+        else:
+            edges_to_remove = [
+                (u, v) for u, v, d in G.edges(data=True)
+                if _prune_match(d.get("source_file"))
+            ]
         if edges_to_remove:
             G.remove_edges_from(edges_to_remove)
 
@@ -2056,3 +2165,173 @@ def prune_repo_from_graph(G: nx.Graph, repo_tag: str) -> int:
     to_remove = [n for n, d in G.nodes(data=True) if d.get("repo") == repo_tag]
     G.remove_nodes_from(to_remove)
     return len(to_remove)
+
+
+def load_graph_json(
+    path: Path,
+    *,
+    preserve_type: bool = False,
+    directed: bool = False,
+    preserve_direction: bool = False,
+) -> nx.Graph:
+    """Load persisted node-link JSON, optionally preserving its graph type.
+
+    Shared by merge-graphs, the global graph, and cluster graphs. Applies the
+    graph-file size cap, normalizes the legacy ``edges`` key to ``links``
+    (#738). By default directed/multi inputs are coerced to a simple Graph for
+    established callers; MultiGraph-aware composition uses ``preserve_type``.
+
+    directed=True loads the stored source/target order into a directed graph.
+    Persisted simple graphs say ``"directed": false`` even though their edge
+    order is meaningful (export restores it from _src/_tgt and pops the
+    attrs), so an undirected round-trip re-emits endpoints by node insertion
+    order and silently flips caller/callee — the #760 failure mode. Callers
+    that re-serialize a composed graph must load members directed.
+
+    preserve_direction=True keeps the graph undirected but stashes the stored
+    endpoints on each edge as ``_src``/``_tgt`` first, so direction survives
+    the round-trip for callers that must compose into an undirected graph and
+    cannot switch type (#2261, merge-graphs). Mirrors export.py's marker
+    convention; use ``directed`` instead when the caller can hold a DiGraph.
+    """
+    from networkx.readwrite import json_graph as _jg
+    from .security import check_graph_file_size_cap
+
+    try:
+        check_graph_file_size_cap(path)
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("expected a mapping at the top level")
+
+        nodes = data.get("nodes")
+        if not isinstance(nodes, list):
+            raise ValueError("'nodes' must be a list")
+        for i, node in enumerate(nodes):
+            if not isinstance(node, dict):
+                raise ValueError(f"nodes[{i}] must be a mapping")
+            if "id" not in node:
+                raise ValueError(f"nodes[{i}] is missing required 'id'")
+            try:
+                hash(node["id"])
+            except TypeError as exc:
+                raise ValueError(f"nodes[{i}].id must be hashable") from exc
+
+        links_key = "links" if "links" in data else "edges" if "edges" in data else ""
+        if not links_key:
+            raise ValueError("expected a 'links' or legacy 'edges' list")
+        links = data[links_key]
+        if not isinstance(links, list):
+            raise ValueError(f"'{links_key}' must be a list")
+        for i, link in enumerate(links):
+            if not isinstance(link, dict):
+                raise ValueError(f"{links_key}[{i}] must be a mapping")
+            for endpoint in ("source", "target"):
+                if endpoint not in link:
+                    raise ValueError(
+                        f"{links_key}[{i}] is missing required '{endpoint}'"
+                    )
+                try:
+                    hash(link[endpoint])
+                except TypeError as exc:
+                    raise ValueError(
+                        f"{links_key}[{i}].{endpoint} must be hashable"
+                    ) from exc
+
+        if links_key == "edges":
+            data = dict(data, links=links)
+        if preserve_direction:
+            data = dict(
+                data,
+                links=[
+                    {
+                        **link,
+                        "_src": link.get("_src", link.get("source")),
+                        "_tgt": link.get("_tgt", link.get("target")),
+                    }
+                    for link in links
+                ],
+            )
+        if directed:
+            data = dict(data, directed=True)
+        try:
+            G = _jg.node_link_graph(data, edges="links")
+        except TypeError:
+            G = _jg.node_link_graph(data)
+        # node_link_graph restores only the nested `graph.hyperedges` slot; a
+        # graph.json whose hyperedges live only at the top level (the other
+        # half of to_json's dual-slot shape, #2485) would silently lose them
+        # here. Fall back to the top-level key (#2484).
+        if "hyperedges" not in G.graph and isinstance(data.get("hyperedges"), list):
+            G.graph["hyperedges"] = data["hyperedges"]
+    except (
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        AttributeError,
+        nx.NetworkXException,
+    ) as exc:
+        raise ValueError(f"cannot load graph {path}: {exc}") from exc
+
+    simple_type = nx.DiGraph if directed else nx.Graph
+    if not preserve_type and type(G) is not simple_type:
+        G = simple_type(G)
+    return G
+
+
+def promote_to_multidigraph(G: nx.Graph) -> nx.MultiDiGraph:
+    """Return ``G`` as a MultiDiGraph without dropping nodes or edge keys."""
+    if isinstance(G, nx.MultiDiGraph):
+        return G
+    promoted = nx.MultiDiGraph()
+    promoted.graph.update(G.graph)
+    promoted.add_nodes_from(G.nodes(data=True))
+    if G.is_multigraph():
+        for u, v, key, data in G.edges(keys=True, data=True):
+            promoted.add_edge(u, v, key=key, **data)
+    else:
+        for u, v, data in G.edges(data=True):
+            src = data.get("_src", u)
+            tgt = data.get("_tgt", v)
+            promoted.add_edge(src, tgt, key=stable_edge_key(src, tgt, data), **data)
+    return promoted
+
+
+def merge_prefixed_into(G: nx.Graph, prefixed: nx.Graph) -> int:
+    """Merge a repo_tag::-prefixed graph into G in-place. Returns nodes added.
+
+    External-library nodes (no ``source_file``) are deduplicated by label
+    against G's existing externals, with incident edges rewired onto the
+    shared node instead of dropped — the one place cross-repo identity is
+    established. Self-loops introduced by the rewiring are skipped.
+    """
+    external_labels = {
+        d.get("label", ""): n
+        for n, d in G.nodes(data=True)
+        if not d.get("source_file") and d.get("label")
+    }
+    # Map each deduplicated external onto the existing node so that edges
+    # incident to it can be rewired instead of dropped.
+    remap = {}
+    for node, data in prefixed.nodes(data=True):
+        if not data.get("source_file") and data.get("label") in external_labels:
+            remap[node] = external_labels[data["label"]]
+
+    for node, data in prefixed.nodes(data=True):
+        if node not in remap:
+            G.add_node(node, **data)
+    if prefixed.is_multigraph():
+        edge_rows = prefixed.edges(keys=True, data=True)
+    else:
+        edge_rows = ((u, v, None, data) for u, v, data in prefixed.edges(data=True))
+    for u, v, key, data in edge_rows:
+        u = remap.get(u, u)
+        v = remap.get(v, v)
+        if u != v:  # don't introduce self-loops via remapping
+            if G.is_multigraph():
+                edge_key = key if key is not None else stable_edge_key(u, v, data)
+                G.add_edge(u, v, key=edge_key, **data)
+            else:
+                G.add_edge(u, v, **data)
+
+    return prefixed.number_of_nodes() - len(remap)
