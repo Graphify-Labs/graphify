@@ -53,17 +53,22 @@ _ROUTINE_RECOVERY_RX = re.compile(
 # - line comments blank to end-of-line; block comments blank to their
 #   matching */ with NESTING tracked (SQL Server and PostgreSQL both nest
 #   /* */, and a lazy first-*/ match let commented-out DDL inside a nested
-#   comment fabricate nodes). An UNCLOSED block comment blanks to
-#   end-of-file, matching SQL semantics.
+#   comment fabricate nodes). MySQL and Oracle do NOT nest — there the
+#   depth tracking over-blanks, losing (never fabricating) a routine after
+#   an inner */; the primary T-SQL/PostgreSQL targets win that trade. An
+#   UNCLOSED block comment blanks to end-of-file, matching SQL semantics.
 #
-# Literals are deliberately abandoned at end-of-line: this mask only runs on
-# files that already failed to parse, where an unclosed delimiter is likely,
-# and a multi-line literal span would let one unclosed quote swallow real DDL
-# below it — a masked-away routine (false negative) is recoverable by fixing
-# the file, a swallowed one is silent. A comment opener inside a multi-line
-# string is therefore consumed as (blanked) string content up to the
-# newline and never opens a comment — so it can neither fabricate nor mask
-# anything beyond its own line.
+# Literals are deliberately line-scoped: this mask only runs on files that
+# already failed to parse, where an unclosed delimiter is likely, and a
+# multi-line literal span would let one unclosed quote swallow real DDL
+# below it. The cost is asymmetric by kind. A single-quoted string that
+# continues past its line is blanked only up to the newline, so a comment
+# opener inside it cannot fire on that line — but its CONTINUATION lines are
+# scanned as code, and DDL there fabricates: multi-line dynamic SQL
+# (SET @sql = N\'\n CREATE PROC ...\') is a KNOWN HOLE, alongside the
+# unmodelled quoting dialects above; only same-line dynamic SQL is blanked.
+# Closing it would need a real string heuristic (e.g. an end-of-line opening
+# quote), judged not worth the swallow risk in a recovery-only path.
 
 
 def _mask_sql_comments(text: str) -> str:
@@ -105,19 +110,41 @@ def _mask_sql_comments(text: str) -> str:
             i = _blank(j)
         elif c == '"' or c == "[":
             # Delimited identifier: preserve verbatim. Doubled closers are
-            # escapes; a newline abandons the literal.
+            # escapes. Two shapes are NOT trusted as identifiers — emit just
+            # the delimiter and rescan the rest of the line normally, so a
+            # `--` or `/*` inside the would-be span is recognized as the
+            # comment it almost certainly is:
+            #
+            # - an UNTERMINATED opener (no closer before the newline);
+            # - a span that would swallow a comment opener on its way to the
+            #   closer (`[Col FROM t -- CREATE PROC [dbo]` closes on [dbo]'s
+            #   bracket) — a stray delimiter before a comment is ordinary in
+            #   exactly the broken files this mask runs on, and preserving
+            #   the span let the commented-out DDL after it fabricate nodes.
+            #
+            # The cost is that a genuine identifier CONTAINING a comment
+            # opener ([a--b]) is no longer preserved, so a routine so named
+            # loses recovery — a conservative false negative, traded for
+            # never fabricating.
             closer = '"' if c == '"' else "]"
             j = i + 1
+            closed = False
             while j < n and text[j] != "\n":
                 if text[j] == closer:
                     if j + 1 < n and text[j + 1] == closer:
                         j += 2
                         continue
                     j += 1
+                    closed = True
                     break
                 j += 1
-            out.append(text[i:j])
-            i = j
+            span = text[i:j]
+            if closed and "--" not in span and "/*" not in span:
+                out.append(span)
+                i = j
+            else:
+                out.append(c)
+                i += 1
         elif c == "-" and i + 1 < n and text[i + 1] == "-":
             j = i
             while j < n and text[j] != "\n":

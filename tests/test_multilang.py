@@ -646,9 +646,21 @@ def test_mask_sql_comments_literal_and_comment_handling():
     expected = "select " + " " * len("'it''s -- ok'") + ", 1"
     assert mask(src) == expected and len(mask(src)) == len(src)
     # identifier literals are preserved verbatim, escapes included
-    assert mask('select "a--b" from t') == 'select "a--b" from t'
     assert mask('CREATE FUNCTION "public"."a""b"()') == 'CREATE FUNCTION "public"."a""b"()'
-    assert mask("select [a--b] from t") == "select [a--b] from t"
+    assert mask("CREATE PROCEDURE [dbo].[a]]b] AS x") == "CREATE PROCEDURE [dbo].[a]]b] AS x"
+    # ...but a span that would swallow a comment opener is NOT trusted as an
+    # identifier: the delimiter is emitted alone and the comment fires, so a
+    # stray [ or " before a comment cannot shield commented-out DDL —
+    # `[Col FROM t -- CREATE PROC [dbo]` would otherwise close on [dbo]'s
+    # bracket and preserve the DDL. (The trade: a genuine [a--b] identifier
+    # is conservatively blanked past the --, losing that name, never
+    # fabricating one.)
+    ghost = "SELECT [Col FROM t -- CREATE PROC [dbo].[usp_Ghost] AS BEGIN SELECT 1; END;"
+    assert "CREATE" not in mask(ghost) and len(mask(ghost)) == len(ghost)
+    ghost2 = 'SELECT "Col FROM t /* CREATE PROC dbo.usp_Ghost AS BEGIN SELECT 1; END */'
+    assert "CREATE" not in mask(ghost2) and len(mask(ghost2)) == len(ghost2)
+    out = mask("select [a--b] from t")
+    assert out.startswith("select [a") and "from t" not in out and len(out) == len("select [a--b] from t")
     # dynamic SQL contents cannot survive the mask
     dyn = "EXEC(N'CREATE PROC [dbo].[Fake] AS BEGIN SELECT 1; END');"
     assert "CREATE" not in mask(dyn) and len(mask(dyn)) == len(dyn)
@@ -688,6 +700,7 @@ def test_sql_dynamic_sql_and_unclosed_comment_do_not_fabricate_routines(tmp_path
         " must not swallow what follows';\n"
         "/* nested /* comments */ hide this:\n"
         "CREATE PROC [dbo].[usp_Nested] AS BEGIN SELECT 1; END;\n*/\n"
+        "SELECT [Col FROM t -- CREATE PROC [dbo].[usp_Bracketed] AS BEGIN SELECT 1; END;\n"
         "CREATE PROCEDURE [dbo].[usp_Real]\nAS\nBEGIN\n    SELECT 1;\nEND;\n"
         "/* an unterminated comment swallows the rest of the file\n"
         "CREATE PROC [dbo].[usp_Unterminated] AS BEGIN SELECT 1; END;\n"
@@ -697,7 +710,7 @@ def test_sql_dynamic_sql_and_unclosed_comment_do_not_fabricate_routines(tmp_path
     assert "[dbo].[usp_Real]()" in labels, labels
     fabricated = [
         label for label in labels
-        if "Dynamic" in label or "Nested" in label or "Unterminated" in label
+        if any(k in label for k in ("Dynamic", "Nested", "Bracketed", "Unterminated"))
     ]
     assert not fabricated, (
         f"string-embedded or comment-swallowed DDL fabricated a node: {labels}"
