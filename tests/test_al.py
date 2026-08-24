@@ -2,6 +2,7 @@ from pathlib import Path
 import builtins
 import importlib.util
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -50,6 +51,34 @@ def test_al_mask_preserves_offsets_and_newlines_across_lexical_states():
         index for index, char in enumerate(source) if char == "\n"
     ]
     assert masked.replace(" ", "") == "code\nnext\nmoreend"
+
+
+def test_al_mask_preserves_comment_markers_inside_quoted_identifiers():
+    source = (
+        'codeunit 1 "Name // Part" { } // comment\n'
+        'codeunit 2 "Name /* Part" { }\n'
+        'codeunit 3 "A""//""B" { }\n'
+    )
+
+    masked = _mask_al_comments_and_strings(source)
+
+    assert '"Name // Part"' in masked
+    assert '"Name /* Part"' in masked
+    assert '"A""//""B"' in masked
+    assert "// comment" not in masked
+
+
+def test_al_fallback_preserves_comment_markers_inside_quoted_identifiers():
+    result = _extract_al_fallback(
+        Path("quoted.al"),
+        'codeunit 1 "Name // Part" '
+        '{ procedure "Run /* Now"() begin end; }',
+    )
+
+    labels = {node["label"] for node in result["nodes"]}
+
+    assert "Name // Part" in labels
+    assert "Run /* Now()" in labels
 
 
 def test_al_matching_brace_uses_masked_comments_and_strings():
@@ -129,7 +158,16 @@ def test_al_parser_initialization_failure_uses_fallback(tmp_path, monkeypatch):
         def __init__(self, *_args, **_kwargs):
             raise TypeError("incompatible language capsule")
 
-    monkeypatch.setattr("tree_sitter.Language", BrokenLanguage)
+    monkeypatch.setitem(
+        sys.modules,
+        "tree_sitter",
+        SimpleNamespace(Language=BrokenLanguage, Parser=object),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tree_sitter_al",
+        SimpleNamespace(language=lambda: object()),
+    )
 
     result = extract_al(source)
 

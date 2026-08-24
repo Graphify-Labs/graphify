@@ -76,6 +76,8 @@ def _mask_al_code(chars: list[str], index: int, char: str, following: str) -> tu
         chars[index] = chars[index + 1] = " "
         state = "line_comment" if following == "/" else "block_comment"
         return index + 2, state
+    if char == '"':
+        return index + 1, "quoted_identifier"
     if char == "'":
         chars[index] = " "
         return index + 1, "string"
@@ -108,6 +110,14 @@ def _mask_al_string(chars: list[str], index: int, char: str, following: str) -> 
     return index + 1, "code" if char == "'" else "string"
 
 
+def _mask_al_quoted_identifier(
+    _chars: list[str], index: int, char: str, following: str
+) -> tuple[int, str]:
+    if char == '"' and following == '"':
+        return index + 2, "quoted_identifier"
+    return index + 1, "code" if char == '"' else "quoted_identifier"
+
+
 def _mask_al_comments_and_strings(source: str) -> str:
     """Mask comments and string literals without changing offsets or newlines."""
     chars = list(source)
@@ -120,6 +130,7 @@ def _mask_al_comments_and_strings(source: str) -> str:
         "line_comment": _mask_al_line_comment,
         "block_comment": _mask_al_block_comment,
         "string": _mask_al_string,
+        "quoted_identifier": _mask_al_quoted_identifier,
     }
     while index < len(source):
         char = source[index]
