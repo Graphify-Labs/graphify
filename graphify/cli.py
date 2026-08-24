@@ -3130,15 +3130,11 @@ def dispatch_command(cmd: str) -> None:
         # unchanged tree would otherwise dispatch zero files (#1894).
         incremental_mode = incremental_mode and not force
         # #2923: --force --code-only must NOT drop the existing semantic layer.
-        # The AST pass is fully replaced (full re-scan, semantic cache reads
-        # skipped), but the semantic pass is itself skipped entirely, so
-        # doc/paper/image nodes from the existing graph carry forward via the
-        # incremental merge (build_merge / merge_raw_extraction keep them
-        # because no new semantic-tier sources are dispatched). Without this,
-        # a single --code-only --force silently erases every doc/paper/image
-        # node plus its connected hyperedges.
-        if force and code_only and existing_graph_path.exists():
-            incremental_mode = True
+        # It still performs a full AST re-scan (so --force bypasses the
+        # manifest cache), but the semantic pass is itself skipped entirely, so
+        # the existing graph is merged instead of replaced.
+        preserve_semantic = force and code_only and existing_graph_path.exists()
+        if preserve_semantic:
             print(
                 "[graphify extract] --force --code-only: full AST re-scan, "
                 "existing semantic layer preserved (no semantic pass this run)"
@@ -3227,6 +3223,16 @@ def dispatch_command(cmd: str) -> None:
             excluded_files = []
             graph_stale_sources = []
             unchanged_total = 0
+            if preserve_semantic:
+                # A full scan re-extracts every code file, but doc/paper/image
+                # nodes are not re-dispatched, so the existing graph must still
+                # be merged. Compute stale sources (deleted/excluded files) so
+                # the merge can prune them while carrying the rest forward.
+                _seen_files = {f for _fl in files_by_type.values() for f in _fl}
+                _seen_files.update(detection.get("unclassified", []))
+                graph_stale_sources = _stale_graph_sources(
+                    existing_graph_path, target, _seen_files, detection=detection
+                )
 
         semantic_files = doc_files + paper_files + image_files
         # --code-only: index code (pure local AST, no key) and skip the semantic
@@ -3808,7 +3814,7 @@ def dispatch_command(cmd: str) -> None:
                 existing_graph_node_count as _existing_graph_node_count,
             )
             if (
-                incremental_mode
+                (incremental_mode or preserve_semantic)
                 and not code_files
                 and not semantic_files
                 and not deleted_files
@@ -3842,7 +3848,7 @@ def dispatch_command(cmd: str) -> None:
                 stages.total()
                 sys.exit(0)
 
-            if incremental_mode:
+            if incremental_mode or preserve_semantic:
                 # #2169: this raw path used to write ONLY this run's extraction
                 # over graph.json — on an incremental run that is just the
                 # changed files, silently dropping every node/edge owned by an
@@ -3970,7 +3976,7 @@ def dispatch_command(cmd: str) -> None:
         from graphify.export import to_json as _to_json
         from graphify.analyze import god_nodes as _god_nodes, surprising_connections as _surprising
         dedup_backend = backend if dedup_llm else None
-        if incremental_mode:
+        if incremental_mode or preserve_semantic:
             # Prune everything the current scan no longer covers: genuinely
             # deleted manifest rows, excluded-but-alive manifest rows (#1908),
             # and the graph's own stale sources — which catches files that

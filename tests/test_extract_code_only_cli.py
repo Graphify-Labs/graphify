@@ -373,3 +373,54 @@ def test_code_only_force_prunes_removed_semantic_files(tmp_path):
         "NOTES.txt was deleted from disk; its semantic nodes must be pruned "
         "(#2923 follow-up)"
     )
+
+
+def test_code_only_force_rescans_unchanged_code_with_manifest_and_preserves_seeded_semantic_nodes(tmp_path):
+    """#2923: --force --code-only must perform a full AST re-scan even when the
+    manifest reports no code changes. Without this, a warm unchanged tree causes
+    the old fix to dispatch zero code files, so the AST tier is not rebuilt and
+    the existing graph is only merged unchanged.
+    """
+    repo = _mixed_repo(tmp_path)
+    out = repo / "graphify-out"
+    out.mkdir()
+
+    # Initial code-only extract writes a manifest and AST-only graph.
+    r1 = _run(repo, "--code-only", "--no-cluster")
+    assert r1.returncode == 0, r1.stderr
+    graph_path = out / "graph.json"
+    manifest_path = out / "manifest.json"
+    assert manifest_path.exists(), "code-only run must write a manifest"
+    g = json.loads(graph_path.read_text())
+    assert any(n.get("label") == "hello()" for n in g["nodes"])
+
+    # Seed a semantic layer as if a prior full extract had produced it, then
+    # remove an unchanged AST node to verify the full re-scan restores it.
+    g["nodes"].extend([
+        {"id": "readme_md", "label": "README.md", "type": "file",
+         "source_file": "README.md", "origin": "SEMANTIC"},
+        {"id": "readme_design", "label": "Design", "type": "concept",
+         "source_file": "README.md", "origin": "SEMANTIC"},
+        {"id": "notes_txt", "label": "NOTES.txt", "type": "file",
+         "source_file": "NOTES.txt", "origin": "SEMANTIC"},
+        {"id": "notes_architecture", "label": "Architecture", "type": "concept",
+         "source_file": "NOTES.txt", "origin": "SEMANTIC"},
+    ])
+    g["nodes"] = [n for n in g["nodes"] if n.get("label") != "hello()"]
+    graph_path.write_text(json.dumps(g))
+
+    r2 = _run(repo, "--code-only", "--force", "--no-cluster")
+    assert r2.returncode == 0, r2.stderr
+    out_graph = json.loads(graph_path.read_text())
+    assert any(n.get("label") == "hello()" for n in out_graph["nodes"]), (
+        "--force --code-only must re-extract unchanged code and restore the AST node"
+    )
+    semantic_labels = {n["label"] for n in out_graph["nodes"]
+                       if n.get("origin") == "SEMANTIC"}
+    assert semantic_labels >= {"README.md", "Design", "NOTES.txt", "Architecture"}, (
+        "seeded semantic layer must survive the full AST re-scan: "
+        f"{semantic_labels}"
+    )
+    assert "existing semantic layer preserved" in r2.stdout + r2.stderr, (
+        "the --force --code-only print must announce the semantic-preserving branch"
+    )
