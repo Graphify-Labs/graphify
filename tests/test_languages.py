@@ -4179,3 +4179,63 @@ def test_perl_statement_walk_no_warning_within_budget(tmp_path, caplog):
         "a small file must not trip the budget"
     assert sum(1 for n in r["nodes"] if n.get("label", "").endswith("()")) == 20, \
         "all 20 subs extract when the budget is ample"
+
+def test_perl_package_inside_bare_block(tmp_path):
+    """`{ package Inner; sub f {...} }` — a bare scope block containing
+    declarations must be traversed; its subs belong to Inner and the enclosing
+    scope resumes after the block."""
+    from graphify.extract import extract_perl
+    src = tmp_path / "scoped.pm"
+    src.write_text(
+        "package Outer;\n"
+        "{ package Inner; sub f { 42 } }\n"
+        "sub after { 1 }\n"
+    )
+    r = extract_perl(src)
+    label = {n["id"]: n["label"] for n in r["nodes"]}
+    container_of = {
+        label.get(e["target"]): label.get(e["source"])
+        for e in r["edges"] if e["relation"] == "contains"
+    }
+    assert "Inner" in label.values(), "package inside a bare block must be emitted"
+    assert container_of.get("f()") == "Inner", \
+        f"sub inside a block-scoped package must belong to it, got {container_of.get('f()')!r}"
+    assert container_of.get("after()") == "Outer", "enclosing scope must resume"
+
+def test_perl_phaser_block_declarations(tmp_path):
+    """BEGIN { package Tmp; sub g {...} } — phaser blocks compile their bodies at
+    the surrounding scope, so declarations inside define real symbols."""
+    from graphify.extract import extract_perl
+    src = tmp_path / "phaser.pl"
+    src.write_text("BEGIN { package Tmp; sub g { 1 } }\n")
+    r = extract_perl(src)
+    label = {n["id"]: n["label"] for n in r["nodes"]}
+    container_of = {
+        label.get(e["target"]): label.get(e["source"])
+        for e in r["edges"] if e["relation"] == "contains"
+    }
+    assert "Tmp" in label.values(), "package inside a phaser must be emitted"
+    assert container_of.get("g()") == "Tmp", \
+        f"phaser-declared sub must attach to its package, got {container_of.get('g()')!r}"
+
+def test_perl_root_qualified_sub_attaches_to_main(tmp_path):
+    """`sub ::foo {...}` declares main::foo (::Name == main::Name); it must not
+    mint an empty-label package node."""
+    from graphify.extract import extract_perl
+    src = tmp_path / "rootqual.pm"
+    src.write_text("sub ::foo { 1 }\n")
+    r = extract_perl(src)
+    labels = [n.get("label") for n in r["nodes"]]
+    assert "" not in labels, "no empty-label package node for a root-qualified name"
+    assert "foo()" in labels, "the root-qualified sub must still be extracted"
+
+def test_perl_root_qualified_package_normalizes(tmp_path):
+    """`package ::Outer;` is the same package as `Outer`; both spellings must key
+    to one package node carrying the canonical label."""
+    from graphify.extract import extract_perl
+    src = tmp_path / "rootpkg.pm"
+    src.write_text("package ::Outer;\nsub h { 2 }\n")
+    r = extract_perl(src)
+    labels = [n.get("label") for n in r["nodes"]]
+    assert "::Outer" not in labels, "root-qualified spelling must be canonicalized"
+    assert "Outer" in labels, "the package must surface under its canonical label"

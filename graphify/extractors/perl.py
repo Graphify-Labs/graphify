@@ -90,6 +90,11 @@ def extract_perl(path: Path) -> dict:
         """`package Foo::Bar;` -> the second `package`-typed child is the name."""
         names = [c for c in node.children if c.type == "package"]
         name = _text(names[1]) if len(names) >= 2 else None
+        # Root-qualified spelling `::Outer` is the same package as `Outer`
+        # (::Name == main::Name in Perl); canonicalize so both spellings key to
+        # one package node instead of diverging on an empty qualifier.
+        if name and name.startswith("::"):
+            name = name[2:]
         # The name comes from arbitrary source text; validate before it becomes a
         # label (zero-node over a malformed or crafted package statement).
         return name if _is_valid_perl_package_name(name or "") else None
@@ -172,6 +177,23 @@ def extract_perl(path: Path) -> dict:
                         else:
                             current_pkg_nid = pkg_nid
                             current_pkg_name = name
+                elif child.type == "block_statement":
+                    # A bare `{ ... }` scope may itself contain package/sub
+                    # declarations (`{ package Inner; sub f {...} }` is valid
+                    # Perl); descend without changing scope — the frame restores
+                    # whatever the enclosing package was once the block ends.
+                    stack.append((iter(child.children), current_pkg_nid, current_pkg_name))
+                    descended = True
+                    break
+                elif child.type == "phaser_statement":
+                    # BEGIN/CHECK/INIT/END/UNITCHECK blocks compile their bodies
+                    # at the surrounding scope, so declarations inside define real
+                    # symbols; descend into the phaser's block like any scope.
+                    blk = next((c for c in child.children if c.type == "block"), None)
+                    if blk is not None:
+                        stack.append((iter(blk.children), current_pkg_nid, current_pkg_name))
+                        descended = True
+                        break
                 elif child.type == "subroutine_declaration_statement":
                     name = None
                     for c in child.children:
@@ -184,9 +206,14 @@ def extract_perl(path: Path) -> dict:
                             # = that package (created if it has no `package` statement
                             # of its own).
                             pkg_qual, _, sub_name = name.rpartition("::")
-                            container = _make_id(stem, pkg_qual)
-                            add_node(container, pkg_qual, line)
-                            add_edge(file_nid, container, "contains", line)
+                            if pkg_qual:
+                                container = _make_id(stem, pkg_qual)
+                                add_node(container, pkg_qual, line)
+                                add_edge(file_nid, container, "contains", line)
+                            else:
+                                # Root-qualified `sub ::foo {...}` declares
+                                # main::foo (::Name == main::Name).
+                                container = _ensure_main_pkg()
                         else:
                             # Package-less sub → Perl's `main` (not the file node).
                             container = current_pkg_nid or _ensure_main_pkg()
