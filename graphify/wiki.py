@@ -125,12 +125,24 @@ def _god_node_article(G: nx.Graph, nid: str, labels: dict[int, str]) -> str:
     return "\n".join(lines)
 
 
+def _unique_filename(base: str, used: set[str]) -> str:
+    name = base
+    idx = 2
+    while name in used:
+        name = f"{base}_{idx}"
+        idx += 1
+    used.add(name)
+    return name
+
+
 def _index_md(
     communities: dict[int, list[str]],
     labels: dict[int, str],
     god_nodes_data: list[dict],
     total_nodes: int,
     total_edges: int,
+    community_slugs: dict[int, str] | None = None,
+    god_slugs: list[tuple[dict, str]] | None = None,
 ) -> str:
     lines: list[str] = [
         "# Knowledge Graph Index",
@@ -148,13 +160,24 @@ def _index_md(
 
     for cid, nodes in sorted(communities.items(), key=lambda x: -len(x[1])):
         label = labels.get(cid, f"Community {cid}")
-        lines.append(f"- [[{label}]] — {len(nodes)} nodes")
+        slug = community_slugs.get(cid) if community_slugs else None
+        link_target = slug if slug and slug != _safe_filename(label) else label
+        lines.append(f"- [[{link_target}]] — {len(nodes)} nodes")
     lines.append("")
 
-    if god_nodes_data:
+    if god_slugs:
+        lines += ["## God Nodes", "(most connected concepts — the load-bearing abstractions)", ""]
+        for node, slug in god_slugs:
+            edges = node.get("edges") or node.get("degree") or 0
+            label = node.get("label", slug)
+            link_target = slug if slug != _safe_filename(label) else label
+            lines.append(f"- [[{link_target}]] — {edges} connections")
+        lines.append("")
+    elif god_nodes_data:
         lines += ["## God Nodes", "(most connected concepts — the load-bearing abstractions)", ""]
         for node in god_nodes_data:
-            lines.append(f"- [[{node['label']}]] — {node['edges']} connections")
+            edges = node.get("edges") or node.get("degree") or 0
+            lines.append(f"- [[{node['label']}]] — {edges} connections")
         lines.append("")
 
     lines += [
@@ -190,25 +213,41 @@ def to_wiki(
     god_nodes_data = god_nodes_data or []
 
     count = 0
+    used_slugs: set[str] = set()
 
     # Community articles
+    community_slugs: dict[int, str] = {}
     for cid, nodes in communities.items():
         label = labels.get(cid, f"Community {cid}")
+        slug = _unique_filename(_safe_filename(label), used_slugs)
+        community_slugs[cid] = slug
         article = _community_article(G, cid, nodes, label, labels, cohesion.get(cid))
-        (out / f"{_safe_filename(label)}.md").write_text(article)
+        (out / f"{slug}.md").write_text(article)
         count += 1
 
     # God node articles
+    god_slugs: list[tuple[dict, str]] = []
     for node_data in god_nodes_data:
         nid = node_data.get("id")
         if nid and nid in G:
+            label = node_data.get("label", nid)
+            slug = _unique_filename(_safe_filename(label), used_slugs)
+            god_slugs.append((node_data, slug))
             article = _god_node_article(G, nid, labels)
-            (out / f"{_safe_filename(node_data['label'])}.md").write_text(article)
+            (out / f"{slug}.md").write_text(article)
             count += 1
 
     # Index
     (out / "index.md").write_text(
-        _index_md(communities, labels, god_nodes_data, G.number_of_nodes(), G.number_of_edges())
+        _index_md(
+            communities,
+            labels,
+            god_nodes_data,
+            G.number_of_nodes(),
+            G.number_of_edges(),
+            community_slugs=community_slugs,
+            god_slugs=god_slugs,
+        )
     )
 
     return count

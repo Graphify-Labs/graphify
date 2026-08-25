@@ -137,3 +137,28 @@ def test_community_article_truncation_notice(tmp_path):
     to_wiki(G, communities, tmp_path, community_labels={0: "Big Community"})
     article = (tmp_path / "Big_Community.md").read_text()
     assert "and 5 more nodes" in article
+
+
+def test_to_wiki_same_labeled_god_nodes_disambiguated(tmp_path):
+    """Multiple god nodes sharing the same label write distinct files and link properly in index (#3033)."""
+    G = nx.Graph()
+    G.add_node("mod_a::GameState", label="GameState", source_file="mod_a.py", community=0)
+    G.add_node("mod_b::GameState", label="GameState", source_file="mod_b.py", community=0)
+    G.add_node("leaf1", label="leaf1", source_file="mod_a.py", community=0)
+    G.add_node("leaf2", label="leaf2", source_file="mod_b.py", community=0)
+    G.add_edge("mod_a::GameState", "leaf1", relation="calls", confidence="EXTRACTED")
+    G.add_edge("mod_b::GameState", "leaf2", relation="calls", confidence="EXTRACTED")
+
+    communities = {0: ["mod_a::GameState", "mod_b::GameState", "leaf1", "leaf2"]}
+    god_nodes = [
+        {"id": "mod_a::GameState", "label": "GameState", "edges": 1},
+        {"id": "mod_b::GameState", "label": "GameState", "edges": 1},
+    ]
+    n = to_wiki(G, communities, tmp_path, community_labels={0: "Main"}, god_nodes_data=god_nodes)
+    assert n == 3
+    assert (tmp_path / "GameState.md").exists()
+    assert (tmp_path / "GameState_2.md").exists()
+    index_text = (tmp_path / "index.md").read_text()
+    assert "[[GameState]]" in index_text
+    assert "[[GameState_2]]" in index_text
+
