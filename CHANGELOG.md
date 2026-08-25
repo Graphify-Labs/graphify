@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Fix: the MCP server's graph-context cache now fingerprints the learning sidecar, so a `graphify reflect` run shows up in a running server's answers. The cache keyed each context on graph.json's (mtime_ns, size) alone, but the `.graphify_learning.json` sidecar is baked into the cached graph object at load time (it becomes the `learning=` annotations) — and reflect rewrites only the sidecar, never graph.json, so a long-running server kept serving the old lessons (or none) until the graph itself changed. The sidecar's (mtime_ns, size) — (0, 0) when absent — is now part of the cache key for both the pinned default graph and `project_path` contexts: a sidecar appearing, changing, or vanishing invalidates exactly like a graph change, while an unchanged pair still hits the cache.
+
 ## 0.9.50 (2026-08-25)
 
 - Fix: Ruby methods whose names end in `!`, `?`, or `=` now keep distinct node ids, so `save` and `save!` (or `foo` and `foo=`) no longer collide into one node; the label keeps the raw spelling and member-call resolution still matches (#3077, thanks @hopstreax).
