@@ -9,7 +9,7 @@ import re
 import shutil
 import sys
 from collections import Counter
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 import networkx as nx
 from networkx.readwrite import json_graph
@@ -214,6 +214,17 @@ def _git_head(cwd: "str | Path | None" = None) -> str | None:
         return None
 
 
+def _utc_now_stamp() -> str:
+    """Current UTC time as ``YYYY-MM-DDTHH:MM:SSZ``.
+
+    Second precision, fixed width: the stamp answers "how stale is this graph",
+    where sub-second resolution is noise and a ragged field makes graph.json
+    diffs harder to read. UTC because a graph is routinely built on one machine
+    and queried from another.
+    """
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 # Sentinel: an existing graph.json is present and non-empty but cannot be parsed
 # into a node count (corrupt, mid-write, or structurally wrong). The caller must
 # fail CLOSED on this — the same way to_json's #479 guard refuses to overwrite
@@ -263,7 +274,7 @@ def existing_graph_node_count(path: "str | Path"):
     return len(nodes) if isinstance(nodes, list) else MALFORMED_GRAPH
 
 
-def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *, force: bool = False, built_at_commit: str | None = None, community_labels: dict[int, str] | None = None) -> bool:
+def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *, force: bool = False, built_at_commit: str | None = None, built_at: str | None = None, community_labels: dict[int, str] | None = None) -> bool:
     # Safety check: refuse to silently shrink an existing graph (#479)
     existing_path = Path(output_path)
     if not force and existing_path.exists():
@@ -405,6 +416,20 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
     commit = built_at_commit if built_at_commit is not None else _git_head(Path(output_path).resolve().parent)
     if commit:
         data["built_at_commit"] = commit
+    # When this graph.json was WRITTEN, as distinct from which revision it
+    # describes (built_at_commit). Consumers that can see the graph but not its
+    # file mtime — the MCP tools most of all — have no other way to judge how
+    # stale an answer is. Always present: unlike the commit, a clock reading
+    # never fails, so there is no "outside a repo" case to omit.
+    #
+    # Injectable for the same reason built_at_commit is: the round-trip tests
+    # assert graph.json is byte-identical across two writes, which no
+    # wall-clock field can satisfy unless the caller can pin it.
+    #
+    # Deliberately NOT preserved across a cluster-only rewrite the way #2534
+    # preserves the commit. The commit describes the extraction, which cluster
+    # does not redo; the stamp describes the file, which cluster does rewrite.
+    data["built_at"] = built_at if built_at is not None else _utc_now_stamp()
     from graphify.paths import write_json_atomic
     # Atomic write: a crash/ENOSPC mid-write must not truncate a good graph.json.
     write_json_atomic(output_path, data, indent=2)
