@@ -287,3 +287,20 @@ def test_merge_graphs_offsets_communities_so_repos_do_not_fuse(tmp_path):
     assert len({n["community"] for n in data["nodes"]}) == 5
     # the per-repo partition is preserved
     assert {n["local_community"] for n in b_nodes} == {0, 1, 2}
+
+
+def test_merge_graphs_community_offset_is_byte_reproducible(tmp_path):
+    """For a FIXED input order, the offset assignment must be deterministic:
+    merging the same inputs twice produces byte-identical output. (Offsets are
+    position-dependent by design — reordering inputs may renumber — so this pins
+    only same-order reproducibility, which is what consumers rely on. #3014.)"""
+    a = tmp_path / "alpha" / "graphify-out" / "graph.json"
+    b = tmp_path / "beta" / "graphify-out" / "graph.json"
+    _write_with_communities(a, [("a0", 0), ("a1", 0), ("a2", 1)])
+    _write_with_communities(b, [("b0", 0), ("b1", 1), ("b2", 2)])
+
+    out1 = tmp_path / "m1.json"
+    out2 = tmp_path / "m2.json"
+    assert _run(["merge-graphs", str(a), str(b), "--out", str(out1)], tmp_path).returncode == 0
+    assert _run(["merge-graphs", str(a), str(b), "--out", str(out2)], tmp_path).returncode == 0
+    assert out1.read_bytes() == out2.read_bytes(), "same-order merge is not byte-reproducible"
