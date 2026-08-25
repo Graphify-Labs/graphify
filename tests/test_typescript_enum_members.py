@@ -158,3 +158,17 @@ def test_an_empty_enum_emits_no_members(tmp_path):
     case_of, r = _extract(tmp_path, {"s.ts": "export enum Empty {\n}\n"})
     assert "Empty" in _labels(r)
     assert case_of == set()
+
+
+def test_claiming_a_member_does_not_swallow_its_initializer(tmp_path):
+    # An enum value can hold a whole expression. Handling the member must not
+    # stop the walk before it, or everything the initializer declares is lost:
+    # here the class expression's method disappeared until the `value` was
+    # walked explicitly.
+    case_of, r = _extract(tmp_path, {"s.ts": (
+        "export enum E {\n"
+        "    A = class Inner { m() { return 1; } }.name.length\n"
+        "}\n"
+    )})
+    assert (_find(r, "E"), _find(r, "A")) in case_of
+    assert "m()" in _labels(r), "the initializer's class expression was not walked"

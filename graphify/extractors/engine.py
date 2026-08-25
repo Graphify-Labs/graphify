@@ -2358,26 +2358,34 @@ def _ts_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
         # check is what keeps this off the `property_identifier` nodes that
         # appear all over a TS file.
         name_node = node if node.type == "property_identifier" else node.child_by_field_name("name")
-        if name_node is None:
-            return True
-        if name_node.type == "string":
-            # `"Odd Name" = 7`: read the fragment so the label is the member
-            # name rather than the quoted literal.
-            fragment = next(
-                (c for c in name_node.children if c.type == "string_fragment"), None)
-            member_name = _read_text(fragment, source) if fragment is not None else ""
-        else:
-            member_name = _read_text(name_node, source)
-        if not member_name:
-            return True
-        line = node.start_point[0] + 1
-        member_nid = _make_id(parent_class_nid, member_name)
-        # TS is case-sensitive while the id recipe casefolds, so `enum E { Value,
-        # value }` puts two legal members on one id. The first declaration keeps
-        # the node rather than a second edge hanging off it.
-        if member_nid not in seen_ids:
-            add_node_fn(member_nid, member_name, line)
-            add_edge_fn(parent_class_nid, member_nid, "case_of", line)
+        member_name = ""
+        if name_node is not None:
+            if name_node.type == "string":
+                # `"Odd Name" = 7`: read the fragment so the label is the member
+                # name rather than the quoted literal.
+                fragment = next(
+                    (c for c in name_node.children if c.type == "string_fragment"), None)
+                member_name = _read_text(fragment, source) if fragment is not None else ""
+            else:
+                member_name = _read_text(name_node, source)
+        if member_name:
+            line = node.start_point[0] + 1
+            member_nid = _make_id(parent_class_nid, member_name)
+            # TS is case-sensitive while the id recipe casefolds, so `enum E {
+            # Value, value }` puts two legal members on one id. The first
+            # declaration keeps the node rather than a second edge on it.
+            if member_nid not in seen_ids:
+                add_node_fn(member_nid, member_name, line)
+                add_edge_fn(parent_class_nid, member_nid, "case_of", line)
+        if node.type == "enum_assignment":
+            # Claiming the member must not swallow its initializer. An enum value
+            # can hold a whole expression, and `A = class Inner { m() {} }.name`
+            # loses Inner's method node if the walk stops here. Descend into the
+            # `value` only: the `name` is already read above, and walking it
+            # again would put the member through the default recurse as well.
+            value_node = node.child_by_field_name("value")
+            if value_node is not None:
+                walk_fn(value_node, parent_class_nid)
         return True
     if node.is_named and node.type in ("internal_module", "module"):
         name_node = node.child_by_field_name("name")
