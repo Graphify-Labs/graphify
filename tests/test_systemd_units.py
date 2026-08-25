@@ -190,6 +190,21 @@ def test_a_deploy_path_resolves_by_its_tail_walking_up_from_the_unit(deployment)
     assert _resolve_path_target(unit_dir, "$SCRIPT") is None
 
 
+def test_a_host_file_outside_the_scan_root_never_resolves(deployment, monkeypatch):
+    """On a Linux host `/usr/bin/python3.12` exists; an edge to it would point
+    at the machine graphify runs on, not the repo. Absolute paths resolve
+    only inside the scan root, and the tail walk stops there too."""
+    import graphify.extract as extractmod
+    outside = deployment.parent / "outside_tool.py"
+    outside.write_text("", encoding="utf-8")
+    monkeypatch.setattr(extractmod, "_XAML_ACTIVE_EXTRACT_ROOT", deployment.resolve(), raising=False)
+    unit_dir = deployment / "deploy" / "units"
+    assert _resolve_path_target(unit_dir, outside.as_posix()) is None
+    assert _resolve_path_target(unit_dir, "/nowhere/" + outside.name) is None
+    # and a file inside the root still does
+    assert _resolve_path_target(unit_dir, "/opt/sl/bin/backup.sh") == deployment / "deploy" / "bin" / "backup.sh"
+
+
 def test_a_posix_deploy_path_is_absolute_on_every_host(deployment):
     """Windows would call `/opt/x` relative and never try the tail walk."""
     unit_dir = deployment / "deploy" / "units"
