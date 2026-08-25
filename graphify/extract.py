@@ -2487,6 +2487,56 @@ def _augment_js_reexport_edges(
 # Header / implementation file-extension pairing for the decl/def class merge.
 
 
+
+def _bind_cross_file_value_refs(
+    per_file: list[dict],
+    all_nodes: list[dict],
+    all_edges: list[dict],
+) -> None:
+    """Bind value references that cross a file boundary.
+
+    An extractor sees one file. It can bind a constant only where that
+    constant is also declared, and reports the rest as ``raw_value_refs``
+    rather than guessing - the same split ``raw_calls`` already uses for
+    calls. Here every file is available.
+
+    Measured on a 59-file Go project: of fifteen constants each used in
+    exactly one function, three were used from a sibling file, and those
+    three stayed unreachable until this pass existed.
+
+    Only for an unambiguous name, the same god-node guard the call
+    resolver applies: two same-named constants in two packages would
+    otherwise wire a caller to the wrong one.
+    """
+    by_name: dict[str, list[str]] = {}
+    for n in all_nodes:
+        if n.get("value_kind"):
+            by_name.setdefault(str(n.get("label", "")), []).append(n["id"])
+    if not by_name:
+        return
+
+    have = {(e.get("source"), e.get("target")) for e in all_edges}
+    for result in per_file:
+        for rv in result.get("raw_value_refs") or []:
+            ids = by_name.get(rv.get("name", ""), [])
+            if len(ids) != 1:
+                continue
+            src, tgt = rv.get("caller_nid"), ids[0]
+            if not src or src == tgt or (src, tgt) in have:
+                continue
+            have.add((src, tgt))
+            all_edges.append({
+                "source": src,
+                "target": tgt,
+                "relation": "references",
+                "context": "value_use",
+                "confidence": "EXTRACTED",
+                "source_file": rv.get("source_file", ""),
+                "source_location": rv.get("source_location", ""),
+                "weight": 1.0,
+            })
+
+
 def _merge_swift_extensions(
     per_file: list[dict],
     all_nodes: list[dict],
@@ -6198,6 +6248,13 @@ def extract(
             cn = rc.get("caller_nid")
             if cn in id_remap:
                 rc["caller_nid"] = id_remap[cn]
+        # raw_value_refs carry the same kind of id and are consumed by
+        # _bind_cross_file_value_refs, so they need the same rewrite.
+        for result in per_file:
+            for rv in result.get("raw_value_refs") or []:
+                vn = rv.get("caller_nid")
+                if vn in id_remap:
+                    rv["caller_nid"] = id_remap[vn]
         # swift_extensions[].nid is the same kind of id carrier as caller_nid
         # above (cache.py remaps both), consumed by _merge_swift_extensions far
         # below. Left stale it matches no node, so whether the extension merge
@@ -6270,6 +6327,11 @@ def extract(
                 cn = rc.get("caller_nid")
                 if cn in sym_remap:
                     rc["caller_nid"] = sym_remap[cn]
+            for result in per_file:
+                for rv in result.get("raw_value_refs") or []:
+                    vn = rv.get("caller_nid")
+                    if vn in sym_remap:
+                        rv["caller_nid"] = sym_remap[vn]
             # Same for swift_extensions[].nid (see the id_remap pass above).
             for result in per_file:
                 for ext in result.get("swift_extensions", []) or []:
@@ -6400,6 +6462,7 @@ def extract(
     # (src/) package root before the resolver/import-evidence passes run, so the
     # graph is identical regardless of scan root (#2072).
     _repoint_python_package_imports(paths, all_nodes, all_edges, root)
+    _bind_cross_file_value_refs(per_file, all_nodes, all_edges)
     _merge_swift_extensions(per_file, all_nodes, all_edges)
     _merge_csharp_partial_class_nodes(per_file, all_nodes, all_edges, paths, root)
     _disambiguate_colliding_node_ids(all_nodes, all_edges, all_raw_calls, root)
