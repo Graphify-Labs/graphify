@@ -439,7 +439,7 @@ def _infer_merge_root(graph_path: Path) -> str | None:
     try:
         marker = parent / ".graphify_root"
         if marker.exists():
-            recorded = marker.read_text(encoding="utf-8").strip()
+            recorded = marker.read_text(encoding="utf-8-sig").strip()
             if recorded:
                 return str(Path(recorded).resolve())
     except OSError:
