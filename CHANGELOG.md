@@ -2,6 +2,13 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## 0.9.50 (unreleased)
+
+- Perf: ignore-pattern evaluation no longer builds a `Path` and calls `relative_to` per pattern per file — it computes the relative path lexically in string space, parses each pattern once into a bounded process cache, and memoizes per-entry work; ignore decisions are unchanged (differential-fuzz verified) and a pattern-heavy monorepo scans dramatically faster (#2226, thanks @Azeem1985). The `**`-aware matcher was also lifted out of a per-call cache closure that leaked a reference cycle each call.
+- Feature: C# and TypeScript enum members now each emit a graph node with a `case_of` edge to their enum (matching the existing Java/Kotlin/Swift enum handling), so an enum case is visible as a member; explicit and implicit values, `const enum`, and quoted TypeScript member names are all handled and no built-in types are fabricated (#3063, #3064, thanks @durmazoguzhan).
+- Fix: `graphify watch` no longer re-triggers on its own reads — read-only inotify events (`opened`, `closed_no_write`, emitted by the watcher's own AST rebuild) are dropped, while close-after-write and create/modify/move/delete still trigger; a no-op on the macOS/Windows backends that never emit them (thanks @Azeem1985).
+- Fix: `pip install graphifyy[postgres]` now carries the `tree-sitter-sql` grammar the introspection path needs, and a missing or ABI-incompatible grammar raises an actionable error instead of silently returning zero nodes (thanks @Azeem1985).
+
 ## 0.9.49 (2026-08-24)
 
 - Feature: `graphify merge-graphs` now links a type declaration that two repos share — same fully-qualified namespace and name, from different repos — with a `same_type_as` edge, so a shared contract type is navigable across the repo boundary; two unrelated types that merely share a short name are not linked (#3007, thanks @durmazoguzhan).
