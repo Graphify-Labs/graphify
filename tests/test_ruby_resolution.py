@@ -563,3 +563,90 @@ end
 
     assert node2_bang["id"] == id1, "foo!'s ID must remain unchanged when foo is added"
     assert node2_plain["id"] != node2_bang["id"], "foo and foo! must have distinct IDs"
+# ── #3078: a qualified receiver must respect its namespace ────────────────────
+
+
+_LOCAL_BASE_RB = """\
+class Thing
+  class Base
+    def self.call(x) = x
+  end
+end
+"""
+
+_BILLING_RB = """\
+module Billing
+  class Processor
+    def self.run(x) = x
+  end
+end
+"""
+
+_SOLO_RB = """\
+class Solo
+  def self.go = 1
+end
+"""
+
+
+def test_framework_qualified_receiver_does_not_bind_same_named_local_class(tmp_path: Path) -> None:
+    """`ActiveRecord::Base.transaction` must not bind to an unrelated local `Base`.
+
+    The receiver used to be truncated to its last constant, so any corpus with a
+    single class named `Base` collected every framework call as an EXTRACTED 1.0
+    edge — a false hub, not a missing edge. The namespace has to be part of the
+    match (#3078). `ActiveJob::Base` is here too because both namespaces used to
+    collapse onto the very same node.
+    """
+    _write(tmp_path, "thing.rb", _LOCAL_BASE_RB)
+    caller = _write(tmp_path, "other.rb", """\
+class Other
+  def framework_ar
+    ActiveRecord::Base.transaction { save! }
+  end
+
+  def framework_aj
+    ActiveJob::Base.default_queue_name
+  end
+end
+""")
+    graph = extract([caller, tmp_path / "thing.rb"], cache_root=tmp_path, parallel=False)
+    assert _has_call_edge(graph, "framework_ar", "Thing::Base") is None, \
+        "ActiveRecord::Base must not bind to an unrelated local Thing::Base"
+    assert _has_call_edge(graph, "framework_aj", "Thing::Base") is None, \
+        "ActiveJob::Base must not bind to an unrelated local Thing::Base"
+
+
+def test_qualified_receiver_still_resolves_inside_its_own_namespace(tmp_path: Path) -> None:
+    """The namespace check must not cost a genuine `Billing::Processor.run` edge."""
+    _write(tmp_path, "billing.rb", _BILLING_RB)
+    caller = _write(tmp_path, "other.rb", """\
+class Other
+  def qualified
+    Billing::Processor.run(1)
+  end
+end
+""")
+    graph = extract([caller, tmp_path / "billing.rb"], cache_root=tmp_path, parallel=False)
+    edge = _has_call_edge(graph, "qualified", ".run()")
+    assert edge is not None, "a correctly-namespaced receiver must still resolve"
+    assert edge["confidence"] == "EXTRACTED"
+
+
+def test_top_level_pinned_constant_receiver_still_resolves(tmp_path: Path) -> None:
+    """`::Solo.go` pins the constant to top level and must keep resolving.
+
+    Worth its own case: capturing the whole path means the receiver text now starts
+    with `::`, so the constant-receiver check has to look past the leading colons.
+    """
+    _write(tmp_path, "solo.rb", _SOLO_RB)
+    caller = _write(tmp_path, "other.rb", """\
+class Other
+  def pinned
+    ::Solo.go
+  end
+end
+""")
+    graph = extract([caller, tmp_path / "solo.rb"], cache_root=tmp_path, parallel=False)
+    assert _has_call_edge(graph, "pinned", ".go()") is not None, \
+        "a top-level-pinned constant receiver must still resolve"
