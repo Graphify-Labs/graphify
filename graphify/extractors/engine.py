@@ -2360,14 +2360,14 @@ def _ts_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
         name_node = node if node.type == "property_identifier" else node.child_by_field_name("name")
         member_name = ""
         if name_node is not None:
+            member_name = _read_text(name_node, source)
             if name_node.type == "string":
-                # `"Odd Name" = 7`: read the fragment so the label is the member
-                # name rather than the quoted literal.
-                fragment = next(
-                    (c for c in name_node.children if c.type == "string_fragment"), None)
-                member_name = _read_text(fragment, source) if fragment is not None else ""
-            else:
-                member_name = _read_text(name_node, source)
+                # `"Odd Name" = 7`: the label is the member name, not the quoted
+                # literal. Unquote the whole text the way the namespace handler
+                # below does rather than reading a `string_fragment`, because an
+                # escape splits the string into several fragments and the first
+                # one alone truncates the name (`"A\tB"` would become `A`).
+                member_name = member_name.strip("'\"`")
         if member_name:
             line = node.start_point[0] + 1
             member_nid = _make_id(parent_class_nid, member_name)

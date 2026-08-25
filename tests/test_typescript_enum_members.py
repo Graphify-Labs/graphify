@@ -81,6 +81,20 @@ def test_a_quoted_member_uses_its_name_not_the_literal(tmp_path):
     assert (_find(r, "Weird"), _find(r, "Odd Name")) in case_of
 
 
+def test_an_escape_in_a_quoted_member_does_not_truncate_the_name(tmp_path):
+    # An escape splits the string into several fragments, so reading the first
+    # fragment alone would label this member `A`. The whole text is unquoted
+    # instead, which keeps the escape as it was written.
+    case_of, r = _extract(tmp_path, {"s.ts": (
+        "export enum E {\n"
+        "    \"A\\tB\" = 1\n"
+        "}\n"
+    )})
+    assert "A\\tB" in _labels(r)
+    assert "A" not in _labels(r)
+    assert (_find(r, "E"), _find(r, "A\\tB")) in case_of
+
+
 def test_a_string_valued_enum_still_emits_members(tmp_path):
     # String enums are the common TS spelling and assign a string to a plain
     # identifier name; the value must not be mistaken for the name.
