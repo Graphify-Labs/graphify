@@ -4178,19 +4178,24 @@ def _extract_generic(
 
             if not func_name:
                 return
+            sanitized_name = (
+                config.sanitize_symbol_name_fn(func_name)
+                if config.sanitize_symbol_name_fn is not None
+                else func_name
+            )
             # A name that normalizes to nothing collapses `_make_id(prefix, name)`
             # onto the (absolute-path-derived) prefix, leaking the scan path and
             # colliding with the file/class node (#1899). No graph signal; skip.
-            if not normalize_id(func_name):
+            if not normalize_id(sanitized_name):
                 return
 
             line = node.start_point[0] + 1
             if parent_class_nid:
-                func_nid = _make_id(parent_class_nid, func_name)
+                func_nid = _make_id(parent_class_nid, sanitized_name)
                 add_node(func_nid, f".{func_name}()", line)
                 add_edge(parent_class_nid, func_nid, "method", line)
             else:
-                func_nid = _make_id(stem, func_name)
+                func_nid = _make_id(stem, sanitized_name)
                 add_node(func_nid, f"{func_name}()", line)
                 add_edge(file_nid, func_nid, "contains", line)
             callable_def_nids.add(func_nid)  # function / method def is callable

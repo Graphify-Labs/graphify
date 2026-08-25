@@ -390,6 +390,31 @@ def test_ruby_inherits_edge():
     assert found, "TimeoutApiClient should have inherits edge to ApiClient"
 
 
+def test_ruby_suffixed_methods_survive_extraction(tmp_path: Path):
+    """#3077: foo, foo!, foo?, and foo= must all survive extraction with distinct IDs."""
+    f = tmp_path / "service.rb"
+    f.write_text("""\
+class Service
+  def foo; end
+  def foo!; end
+  def foo?; end
+  def foo=(val); end
+end
+""")
+    r = extract_ruby(f)
+    assert "error" not in r
+    methods = [n for n in r["nodes"] if n["label"].startswith(".")]
+    assert len(methods) == 4
+    labels = {n["label"] for n in methods}
+    assert labels == {".foo()", ".foo!()", ".foo?()", ".foo=()"}
+    ids = {n["id"] for n in methods}
+    assert len(ids) == 4
+    assert any(i.endswith("_foo") for i in ids)
+    assert any(i.endswith("_foo_bang") for i in ids)
+    assert any(i.endswith("_foo_pred") for i in ids)
+    assert any(i.endswith("_foo_eq") for i in ids)
+
+
 # ── C# ───────────────────────────────────────────────────────────────────────
 
 def test_csharp_no_error():
