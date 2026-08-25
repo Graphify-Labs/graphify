@@ -83,9 +83,28 @@ if [ -z "$GRAPHIFY_PYTHON" ]; then
             */env\\ *) GRAPHIFY_PYTHON="${_SHEBANG#*/env }" ;;
             *)         GRAPHIFY_PYTHON="$_SHEBANG" ;;
         esac
+        # The launcher may be a /bin/sh wrapper (pipx via distlib's exec trick,
+        # emitted when the install path has spaces, e.g. macOS's
+        # "Application Support/pipx"): its shebang names the SHELL, and probing
+        # the shell with -c "import ..." runs whatever `import` is on PATH -
+        # ImageMagick's screenshot tool, which dumped its usage text on every
+        # commit (#3027). The wrapper's second line execs the real interpreter
+        # (exec' "/path/to/python" "$0" "$@"): take it from there, and never
+        # probe anything whose name is not a python.
+        case "$(basename "$GRAPHIFY_PYTHON" 2>/dev/null)" in
+            python*|pypy*) ;;
+            *) GRAPHIFY_PYTHON=$(printf '%s\\n' "$_GFY_HEAD" | sed -n '2s/^...exec. *"\\{0,1\\}\\([^"]*\\)"\\{0,1\\} .*/\\1/p') ;;
+        esac
+        case "$(basename "$GRAPHIFY_PYTHON" 2>/dev/null)" in
+            python*|pypy*) ;;
+            *) GRAPHIFY_PYTHON= ;;
+        esac
         # Allowlist: only keep characters valid in a filesystem path to prevent
-        # injection if the shebang contains shell metacharacters.
-        case "$GRAPHIFY_PYTHON" in
+        # injection if the shebang contains shell metacharacters. A space is
+        # not one - $GRAPHIFY_PYTHON is always expanded quoted - and a path
+        # that reaches this branch through a wrapper contains one by
+        # construction, so spaces are folded away before the check.
+        case "$(printf '%s' "$GRAPHIFY_PYTHON" | tr ' ' '_')" in
             *[!a-zA-Z0-9/_.@:\\\\-]*) GRAPHIFY_PYTHON="" ;;
         esac
         if [ -n "$GRAPHIFY_PYTHON" ] && ! "$GRAPHIFY_PYTHON" -c "$_GFY_PROBE" 2>/dev/null; then
