@@ -349,3 +349,111 @@ class TestCliMain:
             with pytest.raises(SystemExit) as exc_info:
                 cli_main(["--repo", "test-repo"])
             assert exc_info.value.code == 1
+
+
+# ---------------------------------------------------------------------------
+# Tests: Bug fixes
+# ---------------------------------------------------------------------------
+
+class TestBugFixes:
+    """Tests for specific bug fixes from PR review."""
+
+    def test_subdirectory_not_misclassified_as_cross_repo(self, tmp_path):
+        """Regression: same-repo subdirectories should not be treated as cross-repo.
+
+        Bug was: internal/servers/file.go was misclassified as cross-repo to "internal"
+        because the code checked `"/" not in potential_repo`, which was always true.
+        """
+        # Graph with files WITHOUT repo prefix (edge case)
+        G = nx.DiGraph()
+        G.add_node("n1", source_file="internal/servers/clusters.go", label="clusters.go")
+        G.add_node("n2", source_file="cmd/main.go", label="main.go")
+        G.add_edge("n2", "n1")
+
+        graph_path = tmp_path / "graph.json"
+        _save_graph(G, graph_path)
+
+        plan = ci_select(
+            graph_path=graph_path,
+            changed_files=["cmd/main.go"],
+            repo="my-service",
+            max_depth=1
+        )
+
+        # Should NOT detect "internal" or "cmd" as cross-repo
+        cross_repo_names = [cr["repo"] for cr in plan.cross_repo]
+        assert "internal" not in cross_repo_names
+        assert "cmd" not in cross_repo_names
+
+    def test_full_suite_fallback_schedules_all_jobs(self, tmp_path):
+        """Regression: when no files match graph, should schedule ALL jobs as fallback.
+
+        Bug was: fallback path returned empty must_run list despite claiming
+        "Falling back to full test suite."
+        """
+        # Minimal graph
+        G = nx.DiGraph()
+        G.add_node("n1", source_file="existing_file.go", label="existing")
+
+        graph_path = tmp_path / "graph.json"
+        _save_graph(G, graph_path)
+
+        # Test jobs
+        jobs_yaml = textwrap.dedent("""\
+            my-repo:
+              jobs:
+                unit-tests:
+                  graph_patterns: ["**/*.go"]
+                integration-tests:
+                  graph_patterns: ["**/*.go"]
+        """)
+        jobs_file = tmp_path / "test-jobs.yaml"
+        jobs_file.write_text(jobs_yaml)
+
+        plan = ci_select(
+            graph_path=graph_path,
+            changed_files=["unknown_file.xyz"],
+            repo="my-repo",
+            test_jobs_path=jobs_file
+        )
+
+        # Should schedule ALL jobs when falling back
+        assert plan.confidence == 0.0
+        assert "Falling back to full test suite" in plan.reasoning
+        assert len(plan.must_run) == 2
+        assert "unit-tests" in plan.must_run
+        assert "integration-tests" in plan.must_run
+
+    def test_yaml_parser_preserves_list_values(self, tmp_path):
+        """Regression: fallback YAML parser should preserve list values.
+
+        Bug was: when encountering a key with list children like:
+            graph_patterns:
+              - "foo/**"
+              - "bar/**"
+        The parser created an empty dict for graph_patterns, then failed to
+        append list items because the dict had no keys.
+        """
+        yaml_text = textwrap.dedent("""\
+            service-a:
+              jobs:
+                run-unit-tests:
+                  graph_patterns:
+                    - "internal/**"
+                    - "cmd/**"
+                  description: "Unit tests"
+        """)
+
+        yaml_file = tmp_path / "test-jobs.yaml"
+        yaml_file.write_text(yaml_text)
+
+        # Load using the function that internally uses _parse_simple_yaml when pyyaml unavailable
+        jobs = load_test_jobs(yaml_file)
+
+        # Should have parsed the list correctly
+        assert "run-unit-tests" in jobs
+        patterns = jobs["run-unit-tests"]["graph_patterns"]
+        assert isinstance(patterns, list)
+        assert len(patterns) == 2
+        assert "internal/**" in patterns
+        assert "cmd/**" in patterns

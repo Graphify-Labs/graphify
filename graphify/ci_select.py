@@ -141,12 +141,30 @@ def _parse_simple_yaml(text: str) -> dict[str, Any]:
         if stripped.startswith("- "):
             val = stripped[2:].strip().strip('"').strip("'")
             if isinstance(parent, dict):
-                for k in reversed(list(parent.keys())):
-                    if parent[k] is None or isinstance(parent[k], list):
-                        if parent[k] is None:
-                            parent[k] = []
-                        parent[k].append(val)
-                        break
+                # If parent is an empty dict, it was just created for a list key
+                # We need to replace it with a list in the grandparent
+                if not parent:
+                    if len(stack) >= 2:
+                        grandparent_indent, grandparent = stack[-2]
+                        # Find which key in grandparent points to this empty dict
+                        for gp_key in grandparent:
+                            if grandparent[gp_key] is parent:
+                                # Replace the empty dict with a list
+                                grandparent[gp_key] = [val]
+                                # Update stack to point to the new list
+                                stack[-1] = (stack[-1][0], grandparent[gp_key])
+                                break
+                else:
+                    # Normal case: find the last key that is None or a list
+                    for k in reversed(list(parent.keys())):
+                        if parent[k] is None or isinstance(parent[k], list):
+                            if parent[k] is None:
+                                parent[k] = []
+                            parent[k].append(val)
+                            break
+            elif isinstance(parent, list):
+                # Parent is already a list (from previous item), just append
+                parent.append(val)
             continue
 
         # Key-value or key-only
@@ -283,6 +301,42 @@ def ci_select(
     # Load graph
     G = load_graph(graph_path)
 
+    # Build set of known repo names for cross-repo detection
+    # Strategy: use test-jobs.yaml top-level keys as authoritative repo names,
+    # plus scan the graph for repo prefixes, then filter to only those that:
+    # 1. Match a test-jobs.yaml key (if available), OR
+    # 2. Differ from the current repo AND appear with deep paths (suggesting repo structure)
+    known_repos: set[str] = {repo}  # Always include current repo
+
+    # Extract repo names from test-jobs.yaml (authoritative source)
+    if test_jobs_path:
+        try:
+            import yaml  # type: ignore[import-untyped]
+            data = yaml.safe_load(Path(test_jobs_path).read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                known_repos.update(data.keys())
+        except ImportError:
+            data = _parse_simple_yaml(Path(test_jobs_path).read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                known_repos.update(data.keys())
+        except Exception:
+            pass  # If we can't load test-jobs.yaml, continue with graph-only detection
+
+    # Also scan graph for repo-prefixed paths to catch cross-repo refs
+    # even when test-jobs.yaml doesn't list all repos
+    graph_prefixes: dict[str, int] = {}  # prefix -> count of nodes with that prefix
+    for _, data in G.nodes(data=True):
+        source_file = data.get("source_file", "")
+        if "/" in source_file:
+            prefix = source_file.split("/")[0]
+            graph_prefixes[prefix] = graph_prefixes.get(prefix, 0) + 1
+
+    # Add graph prefixes that differ from current repo and have multiple occurrences
+    # (suggesting they're actual repos, not just single subdirectory names)
+    for prefix, count in graph_prefixes.items():
+        if prefix != repo and count >= 2:
+            known_repos.add(prefix)
+
     # Find seed nodes for changed files
     all_seeds: list[str] = []
     unknown_files: list[str] = []
@@ -311,6 +365,13 @@ def ci_select(
                 else ""
             )
         )
+
+        # Load test jobs and schedule all of them (fallback to full suite)
+        if test_jobs_path:
+            jobs = load_test_jobs(test_jobs_path)
+            for job_name in jobs.keys():
+                plan.must_run.append(job_name)
+
         return plan
 
     if unknown_files:
@@ -342,21 +403,24 @@ def ci_select(
             continue
 
         # Check if source_file starts with a repo name followed by a slash.
-        # Repo names are single path components (no slashes), while repo-relative
-        # paths like "internal/servers/file.go" have slashes throughout.
+        # Use known_repos set to distinguish repo names from subdirectories.
         # Cross-repo format: "other-repo/path/to/file.go"
-        # Same-repo format: "path/to/file.go" (no repo prefix)
+        # Same-repo format: "repo/path/to/file.go" or "path/to/file.go" (no repo prefix)
         first_slash = source_file.find("/")
         if first_slash > 0:
             potential_repo = source_file[:first_slash]
             potential_file = source_file[first_slash + 1:]
-            # If the potential_repo contains no path separators in its remainder
-            # AND differs from our repo, treat it as cross-repo
-            if "/" not in potential_repo and potential_repo != repo:
+
+            if potential_repo == repo:
+                # Same repo with explicit repo prefix - strip it
+                node_repo = repo
+                node_file = potential_file
+            elif potential_repo in known_repos:
+                # Different known repo - cross-repo reference
                 node_repo = potential_repo
                 node_file = potential_file
             else:
-                # It's a repo-relative path in the current repo
+                # Not a known repo name - treat as same-repo path without prefix
                 node_repo = repo
                 node_file = source_file
         else:
@@ -566,31 +630,59 @@ def cli_main(argv: list[str] | None = None) -> None:
     # Get changed files
     changed_files: list[str] = []
     if diff_cmd:
+        # Use Popen for proper timeout handling with process groups
+        # NOTE: shell=True with user-controlled diff_cmd is intentional for this local CLI tool.
+        # Users control the command they pass and could run it directly anyway - no injection risk.
+        import os
+        import signal
+
         try:
-            result = subprocess.run(
+            # Start process in its own process group (Unix) for clean timeout handling
+            process = subprocess.Popen(
                 diff_cmd,
                 shell=True,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=30,
+                preexec_fn=os.setsid if hasattr(os, 'setsid') else None,
             )
-            if result.returncode != 0:
-                print(
-                    f"error: diff command failed with exit code {result.returncode}",
-                    file=sys.stderr,
-                )
-                if result.stderr:
-                    print(result.stderr, file=sys.stderr)
-                sys.exit(1)
-            changed_files = parse_diff_files(result.stdout)
-        except subprocess.TimeoutExpired as exc:
-            print("error: diff command timed out", file=sys.stderr)
-            # Kill the process group to prevent orphaned child processes
-            if exc.args and hasattr(exc.args[0], "kill"):
+
+            try:
+                stdout, stderr = process.communicate(timeout=30)
+            except subprocess.TimeoutExpired:
+                print("error: diff command timed out", file=sys.stderr)
+                # Kill the entire process group to clean up shell and descendants
                 try:
-                    exc.args[0].kill()
+                    if hasattr(os, 'killpg') and hasattr(os, 'setsid'):
+                        # Unix: kill process group
+                        os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+                        try:
+                            process.wait(timeout=2)
+                        except subprocess.TimeoutExpired:
+                            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                    else:
+                        # Windows fallback: kill just the process
+                        process.terminate()
+                        try:
+                            process.wait(timeout=2)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                    process.wait()  # Clean up zombie
                 except (OSError, AttributeError):
                     pass
+                sys.exit(1)
+
+            if process.returncode != 0:
+                print(
+                    f"error: diff command failed with exit code {process.returncode}",
+                    file=sys.stderr,
+                )
+                if stderr:
+                    print(stderr, file=sys.stderr)
+                sys.exit(1)
+            changed_files = parse_diff_files(stdout)
+        except Exception as e:
+            print(f"error: failed to execute diff command: {e}", file=sys.stderr)
             sys.exit(1)
     elif files_str:
         changed_files = [f.strip() for f in files_str.split(",") if f.strip()]
