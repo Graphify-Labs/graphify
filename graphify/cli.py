@@ -1162,6 +1162,17 @@ def dispatch_command(cmd: str) -> None:
         except Exception as exc:
             print(f"error: could not load graph: {exc}", file=sys.stderr)
             sys.exit(1)
+        # Work-memory overlay: attach the .graphify_learning.json sidecar the
+        # same way the MCP loader does (serve._load_graph), so the renderer's
+        # learning=<status>[:stale] NODE annotations appear in CLI `query`
+        # output too — `explain` and MCP already surface them, and the docs
+        # promise `query` does as well. Empty overlay on any error, leaving
+        # un-annotated output byte-identical.
+        try:
+            from graphify.reflect import load_learning_overlay as _llo
+            G.graph["_learning_overlay"] = _llo(gp)
+        except Exception:
+            G.graph["_learning_overlay"] = {}
         import time as _time
         _t0 = _time.perf_counter()
         _mode = "dfs" if use_dfs else "bfs"
