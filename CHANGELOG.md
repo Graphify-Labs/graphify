@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Fix: the CLI `graphify affected` and `graphify god-nodes` verbs now count as orientation, exactly like `query` / `path` / `explain`: a successful run refreshes the strict read hook's "recently oriented" stamp (`graphify-out/cache/last_query_stamp`) and writes a query-ledger line (kind `affected` with the impacted-node count, kind `god_nodes` with the returned-hub count; both fail-silent, and the ledger stays opt-in via the usual `GRAPHIFY_QUERY_LOG*` gates). Before this, an agent that oriented through either verb was still treated as blind by the strict guard — its next raw read denied after it had already consulted the graph — and left no trace in the query audit trail. Orientation is orientation regardless of which door it comes through; the MCP tools' missing stamp is the same defect class, reported separately in #3039 / fixed by #3042.
+
 ## 0.9.50 (2026-08-25)
 
 - Fix: Ruby methods whose names end in `!`, `?`, or `=` now keep distinct node ids, so `save` and `save!` (or `foo` and `foo=`) no longer collide into one node; the label keeps the raw spelling and member-call resolution still matches (#3077, thanks @hopstreax).

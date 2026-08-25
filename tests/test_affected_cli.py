@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 import networkx as nx
 from networkx.readwrite import json_graph
@@ -423,3 +424,39 @@ def test_affected_absolute_seed_with_graph_not_under_out_dir(tmp_path, monkeypat
     assert "Affected nodes for Foo" in out
     assert "X()" in out
 
+
+
+def test_affected_cli_stamps_orientation_and_logs(monkeypatch, tmp_path, capsys):
+    """`affected` is orientation, same as query/path/explain (#3042's
+    "regardless of door" reasoning applied to the CLI): a successful run must
+    refresh the strict guard's freshness stamp AND write a query-ledger line,
+    so the orienting agent is neither blocked nor invisible to the audit trail.
+    """
+    graph_path = _write_graph(tmp_path)
+    stamp = tmp_path / "cache" / "last_query_stamp"
+    stamp.parent.mkdir(parents=True)
+    stamp.write_text("0")
+    os.utime(stamp, (0, 0))  # aged: the mtime must ADVANCE, not merely exist
+    log_file = tmp_path / "queries.jsonl"
+    monkeypatch.setenv("GRAPHIFY_QUERY_LOG", str(log_file))
+    monkeypatch.delenv("GRAPHIFY_QUERY_LOG_DISABLE", raising=False)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "affected", "Foo", "--graph", str(graph_path)],
+    )
+
+    mainmod.main()
+
+    assert "Affected nodes for Foo" in capsys.readouterr().out
+    assert stamp.stat().st_mtime > 0  # refreshed past the aged epoch mtime
+    lines = log_file.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    rec = json.loads(lines[0])
+    assert rec["kind"] == "affected"
+    assert rec["question"] == "Foo"
+    assert rec["corpus"] == str(graph_path.resolve())
+    assert rec["nodes_returned"] == 3  # caller + barrel + consumer
+    assert rec["depth"] == 2
+    assert rec["duration_ms"] >= 0

@@ -1245,15 +1245,31 @@ def dispatch_command(cmd: str) -> None:
         # --graph falls back to its own directory.
         from graphify.paths import GRAPHIFY_OUT_NAME
         graph_root = gp.parent.parent if gp.parent.name == GRAPHIFY_OUT_NAME else gp.parent
-        print(
-            format_affected(
-                graph,
-                query,
-                relations=relations or DEFAULT_AFFECTED_RELATIONS,
-                depth=depth,
-                root=graph_root,
-            )
+        import time as _time
+        from graphify import querylog
+        _t0 = _time.perf_counter()
+        _out = format_affected(
+            graph,
+            query,
+            relations=relations or DEFAULT_AFFECTED_RELATIONS,
+            depth=depth,
+            root=graph_root,
         )
+        # Orientation is orientation regardless of door (#3042): `affected`
+        # answers a graph question exactly like `query`/`path`/`explain`, so a
+        # successful run gets the same querylog line and strict-guard stamp.
+        # Each impacted node renders as exactly one "- " line (no header line
+        # starts with "- "), so the count is exact; both calls are fail-silent.
+        querylog.log_query(
+            kind="affected",
+            question=query,
+            corpus=str(gp),
+            nodes_returned=sum(1 for _l in _out.splitlines() if _l.startswith("- ")),
+            depth=depth,
+            duration_ms=(_time.perf_counter() - _t0) * 1000,
+        )
+        _touch_query_stamp(gp)
+        print(_out)
     elif cmd in ("god-nodes", "god_nodes"):
         # god_nodes has long been an analyzer (analyze.py), an MCP tool, and a
         # README-advertised capability, but never a CLI subcommand — `graphify
@@ -1303,6 +1319,17 @@ def dispatch_command(cmd: str) -> None:
             print(f"error: could not load graph: {exc}", file=sys.stderr)
             sys.exit(1)
         gods = _god_nodes(G, top_n=top_n)
+        # Same orientation contract as `affected` (#3042: orientation is
+        # orientation regardless of door): consulting the graph's hubs IS
+        # consulting the graph, so stamp + log the successful run. Fail-silent.
+        from graphify import querylog
+        querylog.log_query(
+            kind="god_nodes",
+            question=f"top {top_n}",
+            corpus=str(gp),
+            nodes_returned=len(gods),
+        )
+        _touch_query_stamp(gp)
         if as_json:
             print(json.dumps(gods, indent=2))
         else:

@@ -8,6 +8,7 @@ and that file nodes are excluded from the ranking.
 from __future__ import annotations
 
 import json
+import os
 
 import networkx as nx
 import pytest
@@ -74,3 +75,35 @@ def test_god_nodes_cli_missing_graph_errors(monkeypatch, tmp_path, capsys):
         _run(monkeypatch, ["graphify", "god-nodes", "--graph", str(tmp_path / "nope.json")])
     assert exc.value.code == 1
     assert "graph file not found" in capsys.readouterr().err
+
+
+def test_god_nodes_cli_stamps_orientation_and_logs(monkeypatch, tmp_path, capsys):
+    """`god-nodes` is orientation, same as query/path/explain (#3042's
+    "regardless of door" reasoning applied to the CLI): a successful run must
+    refresh the strict guard's freshness stamp AND write a query-ledger line.
+    """
+    gp = _write_graph(tmp_path)
+    stamp = tmp_path / "cache" / "last_query_stamp"
+    stamp.parent.mkdir(parents=True)
+    stamp.write_text("0")
+    os.utime(stamp, (0, 0))  # aged: the mtime must ADVANCE, not merely exist
+    log_file = tmp_path / "queries.jsonl"
+    monkeypatch.setenv("GRAPHIFY_QUERY_LOG", str(log_file))
+    monkeypatch.delenv("GRAPHIFY_QUERY_LOG_DISABLE", raising=False)
+
+    _run(monkeypatch, ["graphify", "god-nodes", "--graph", str(gp), "--top", "3"])
+
+    out = capsys.readouterr().out
+    assert "God nodes (most connected):" in out
+    assert stamp.stat().st_mtime > 0  # refreshed past the aged epoch mtime
+    lines = log_file.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    rec = json.loads(lines[0])
+    assert rec["kind"] == "god_nodes"
+    assert rec["question"] == "top 3"
+    assert rec["corpus"] == str(gp.resolve())
+    # The ledger count is exactly the number of hubs the run printed (one
+    # ranked line per hub, each ending "N edges") — not the --top ceiling.
+    printed = out.count(" edges")
+    assert printed >= 1
+    assert rec["nodes_returned"] == printed
