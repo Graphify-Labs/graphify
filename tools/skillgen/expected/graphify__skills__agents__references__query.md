@@ -64,8 +64,8 @@ Build the **expanded query string** by joining the selected tokens with spaces. 
 
 Prefer the CLI when it is installed:
 ```bash
-graphify query "QUESTION"
-# or: graphify query "QUESTION" --dfs --budget 3000
+graphify query 'QUESTION'
+# or: graphify query 'QUESTION' --dfs --budget 3000
 ```
 
 If the CLI is unavailable, load `graphify-out/graph.json` and run the traversal inline:
@@ -86,8 +86,8 @@ from pathlib import Path
 data = json.loads(Path('graphify-out/graph.json').read_text(encoding='utf-8'))
 G = json_graph.node_link_graph(data, edges='links')
 
-question = 'QUESTION'
-mode = 'MODE'  # 'bfs' or 'dfs'
+question = sys.argv[1]
+mode = sys.argv[2]  # 'bfs' or 'dfs'
 terms = [t.lower() for t in question.split() if len(t) >= 3]  # match the vocab threshold; keeps api/jwt/ios (#1392)
 
 # Find best-matching start nodes
@@ -137,7 +137,7 @@ else:
         frontier = next_frontier
 
 # Token-budget aware output: rank by relevance, cut at budget (~4 chars/token)
-token_budget = BUDGET  # default 2000
+token_budget = int(sys.argv[3])  # default 2000
 char_budget = token_budget * 4
 
 # Score each node by term overlap for ranked output
@@ -160,10 +160,10 @@ output = '\n'.join(lines)
 if len(output) > char_budget:
     output = output[:char_budget] + f'\n... (truncated at ~{token_budget} token budget - use --budget N for more)'
 print(output)
-"
+" 'QUESTION' 'MODE' 'BUDGET'
 ```
 
-Replace `QUESTION` with the **expanded** query string, `MODE` with `bfs` or `dfs`, and `BUDGET` with the token budget (default `2000`, or whatever `--budget N` specifies). Then answer based on the subgraph output above, using only what the graph contains.
+Pass `QUESTION`, `MODE`, and `BUDGET` as single-quoted shell arguments after the Python source. Replace `QUESTION` with the **expanded** query string, `MODE` with `bfs` or `dfs`, and `BUDGET` with the token budget (default `2000`, or whatever `--budget N` specifies). The single quotes keep the substitution injection-safe: any value containing a literal single quote must have it replaced with `'\''` (close-quote, escaped-quote, open-quote). Then answer based on the subgraph output above, using only what the graph contains.
 
 After writing the answer, save it back into the graph so it improves future queries. Include the expanded tokens inside the `--answer` text (e.g. `"Expanded from original query via vocab: [tokens]. Then traversed..."`) so the next `--update` extracts the expansion history as a graph node:
 
@@ -188,7 +188,7 @@ At the **start** of graph work, refresh and read the lessons: run `graphify refl
 Find the shortest path between two named concepts in the graph. Prefer the CLI when installed:
 
 ```bash
-graphify path "NODE_A" "NODE_B"
+graphify path 'NODE_A' 'NODE_B'
 ```
 
 If the CLI is unavailable, run it inline:
@@ -203,9 +203,6 @@ from pathlib import Path
 data = json.loads(Path('graphify-out/graph.json').read_text(encoding='utf-8'))
 G = json_graph.node_link_graph(data, edges='links')
 
-a_term = 'NODE_A'
-b_term = 'NODE_B'
-
 def find_node(term):
     term = term.lower()
     scored = sorted(
@@ -214,6 +211,9 @@ def find_node(term):
         reverse=True
     )
     return scored[0][1] if scored and scored[0][0] > 0 else None
+
+a_term = sys.argv[1]
+b_term = sys.argv[2]
 
 src = find_node(a_term)
 tgt = find_node(b_term)
@@ -238,10 +238,10 @@ except nx.NetworkXNoPath:
     print(f'No path found between {a_term!r} and {b_term!r}')
 except nx.NodeNotFound as e:
     print(f'Node not found: {e}')
-"
+" 'NODE_A' 'NODE_B'
 ```
 
-Replace `NODE_A` and `NODE_B` with the actual concept names from the user. Then explain the path in plain language - what each hop means, why it's significant.
+Pass `NODE_A` and `NODE_B` as single-quoted shell arguments after the Python source. Replace them with the actual concept names from the user. The single quotes keep the substitution injection-safe: any value containing a literal single quote must have it replaced with `'\''` (close-quote, escaped-quote, open-quote). Then explain the path in plain language - what each hop means, why it's significant.
 
 After writing the explanation, save it back (single quotes around the user-supplied values keep the substitution injection-safe; replace any literal `'` in the substituted text with `'\''`):
 
@@ -256,7 +256,7 @@ After writing the explanation, save it back (single quotes around the user-suppl
 Give a plain-language explanation of a single node - everything connected to it. Prefer the CLI when installed:
 
 ```bash
-graphify explain "NODE_NAME"
+graphify explain 'NODE_NAME'
 ```
 
 If the CLI is unavailable, run it inline:
@@ -271,7 +271,7 @@ from pathlib import Path
 data = json.loads(Path('graphify-out/graph.json').read_text(encoding='utf-8'))
 G = json_graph.node_link_graph(data, edges='links')
 
-term = 'NODE_NAME'
+term = sys.argv[1]
 term_lower = term.lower()
 
 # Find best matching node
@@ -299,10 +299,10 @@ for neighbor in G.neighbors(nid):
     conf = edge.get('confidence', '')
     src_file = G.nodes[neighbor].get('source_file', '')
     print(f'  --{rel}--> {nlabel} [{conf}] ({src_file})')
-"
+" 'NODE_NAME'
 ```
 
-Replace `NODE_NAME` with the concept the user asked about. Then write a 3-5 sentence explanation of what this node is, what it connects to, and why those connections are significant. Use the source locations as citations.
+Pass `NODE_NAME` as a single-quoted shell argument after the Python source. Replace it with the concept the user asked about. The single quotes keep the substitution injection-safe: any value containing a literal single quote must have it replaced with `'\''` (close-quote, escaped-quote, open-quote). Then write a 3-5 sentence explanation of what this node is, what it connects to, and why those connections are significant. Use the source locations as citations.
 
 After writing the explanation, save it back (single quotes around the user-supplied values keep the substitution injection-safe; replace any literal `'` in the substituted text with `'\''`):
 
