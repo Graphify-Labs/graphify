@@ -2385,7 +2385,30 @@ def _csharp_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: 
                        nodes: list, edges: list, seen_ids: set, function_bodies: list,
                        parent_class_nid: str | None, add_node_fn, add_edge_fn,
                        walk_fn, namespace_stack: list[str], scope_stack: list[str]) -> bool:
-    """Handle C# namespaces and transparent class-member wrappers."""
+    """Handle C# namespaces, enum members, and transparent class-member wrappers."""
+    if node.type == "enum_member_declaration" and parent_class_nid:
+        # `enum_declaration` is in C#'s class_types, so the enum type is a node
+        # but its members were not, leaving the type a leaf: "which value does
+        # this consumer branch on" had no answer. Java has emitted a node per
+        # `enum_constant` with a `case_of` edge since #1719, Kotlin since #1738,
+        # and Swift does the same for `enum_entry`; C# reaches the members
+        # through the same walk, so this is the Java shape applied here.
+        name_node = node.child_by_field_name("name")
+        if name_node is None:
+            return True
+        member_name = _read_text(name_node, source)
+        if not member_name:
+            return True
+        line = node.start_point[0] + 1
+        member_nid = _make_id(parent_class_nid, member_name)
+        # C# is case-sensitive, so `enum E { Value, value }` is legal, but the id
+        # recipe casefolds — both members normalize to one id. Emitting the
+        # second would hang a duplicate edge on the first member's node, so the
+        # first declaration keeps it (same guard as the property nodes in #3006).
+        if member_nid not in seen_ids:
+            add_node_fn(member_nid, member_name, line)
+            add_edge_fn(parent_class_nid, member_nid, "case_of", line)
+        return True
     if node.type == "namespace_declaration":
         ns_name = _csharp_namespace_name(node, source)
         pushed = False
