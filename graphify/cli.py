@@ -1730,14 +1730,59 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(1)
 
     elif cmd == "watch":
-        watch_path = Path(sys.argv[2]) if len(sys.argv) > 2 else Path(".")
+        args = sys.argv[2:]
+        watch_path: Path | None = None
+        debounce: float | None = None
+        i = 0
+        while i < len(args):
+            a = args[i]
+            if a == "--debounce":
+                if i + 1 >= len(args):
+                    print("error: --debounce requires a value", file=sys.stderr)
+                    sys.exit(2)
+                try:
+                    debounce = float(args[i + 1])
+                except ValueError:
+                    print(f"error: invalid debounce value: {args[i + 1]}", file=sys.stderr)
+                    sys.exit(2)
+                if debounce < 0:
+                    print("error: debounce must be non-negative", file=sys.stderr)
+                    sys.exit(2)
+                i += 2
+                continue
+            if a.startswith("--debounce="):
+                val = a.split("=", 1)[1]
+                try:
+                    debounce = float(val)
+                except ValueError:
+                    print(f"error: invalid debounce value: {val}", file=sys.stderr)
+                    sys.exit(2)
+                if debounce < 0:
+                    print("error: debounce must be non-negative", file=sys.stderr)
+                    sys.exit(2)
+                i += 1
+                continue
+            if a.startswith("-"):
+                print(f"error: unknown watch option: {a}", file=sys.stderr)
+                sys.exit(2)
+            if watch_path is not None:
+                print("error: watch accepts at most one path argument", file=sys.stderr)
+                sys.exit(2)
+            watch_path = Path(a)
+            i += 1
+
+        if watch_path is None:
+            watch_path = Path(".")
         if not watch_path.exists():
             print(f"error: path not found: {watch_path}", file=sys.stderr)
             sys.exit(1)
         from graphify.watch import watch as _watch
 
         try:
-            _watch(watch_path)
+            if debounce is not None:
+                _watch(watch_path, debounce=debounce)
+            else:
+                _watch(watch_path)
         except ImportError as exc:
             print(f"error: {exc}", file=sys.stderr)
             sys.exit(1)
