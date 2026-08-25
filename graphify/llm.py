@@ -1938,6 +1938,7 @@ def _vertex_client():
     """
     try:
         from google import genai
+        from google.genai import types
     except ImportError as exc:
         raise ImportError(_backend_pkg_hint("google-genai", "vertex")) from exc
 
@@ -1948,7 +1949,26 @@ def _vertex_client():
             "(the GCP project ID Vertex AI calls are billed/scoped to)."
         )
     location = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1").strip()
-    return genai.Client(vertexai=True, project=project, location=location)
+    # Every other backend in this module wires _resolve_max_retries() into its
+    # SDK client (see _azure_client, _call_bedrock) specifically so a burst of
+    # 429s during a large parallel run gets absorbed instead of dropping the
+    # chunk (see _resolve_max_retries' own docstring, #1523) -- google-genai
+    # needs this set explicitly via http_options.retry_options; confirmed live
+    # that an unconfigured client does NOT retry 429s at all (every field of an
+    # empty HttpRetryOptions() defaults to None, i.e. no retry behavior),
+    # which is exactly why a large first-run corpus (~1100 docs) surfaced
+    # "Resource exhausted" as hard chunk failures instead of transient delays.
+    return genai.Client(
+        vertexai=True,
+        project=project,
+        location=location,
+        http_options=types.HttpOptions(
+            retry_options=types.HttpRetryOptions(
+                attempts=_resolve_max_retries() + 1,
+                http_status_codes=[429, 500, 502, 503, 504],
+            )
+        ),
+    )
 
 
 def _call_vertex(model: str, user_message: str, max_tokens: int = 8192, *, deep_mode: bool = False, images: list[_ImageRef] | None = None) -> dict:
