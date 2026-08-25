@@ -119,6 +119,28 @@ def resolve_ruby_member_calls(
         nids = class_def_nids.get(_key(name), [])
         return nids[0] if len(nids) == 1 else None
 
+    def _class_by_const_path(raw: str) -> str | None:
+        """Resolve a qualified constant receiver (``Billing::Processor``) to one class.
+
+        Matches on the constant path rather than its tail: a class qualifies when its
+        own label ends with the referenced segments, so ``Billing::Processor`` still
+        finds an ``App::Billing::Processor`` while ``ActiveRecord::Base`` no longer
+        binds to an unrelated ``Thing::Base`` (#3078). A leading ``::`` pins the
+        reference to top level, so it must match the label whole. Ambiguous, or
+        matching nothing in the corpus (the usual case for a framework constant) ->
+        no edge, never a guess.
+        """
+        segs = tuple(_segment_path(raw))
+        if not segs:
+            return None
+        if raw.strip().startswith("::"):
+            nids = fq_label_map.get(segs, [])
+            return nids[0] if len(nids) == 1 else None
+        hits = {nid for path, nids in fq_label_map.items()
+                if len(path) >= len(segs) and path[-len(segs):] == segs
+                for nid in nids}
+        return next(iter(hits)) if len(hits) == 1 else None
+
     def _emit(caller: str, target: str, rc: dict[str, Any],
               relation: str = "calls", context: str = "call") -> None:
         if not caller or not target or caller == target:
@@ -187,8 +209,12 @@ def resolve_ruby_member_calls(
         # collide with unrelated same-named methods, so we resolve by the
         # receiver's class under the single-owning-class god-node guard.
         receiver = rc.get("receiver")
-        if receiver and str(receiver)[:1].isupper():
-            class_nid = _unique_class(str(receiver))
+        # `lstrip(":")` so a top-level-pinned `::Processor.call` is still recognised
+        # as a constant receiver now that the whole path is captured (#3078).
+        if receiver and str(receiver).lstrip(":")[:1].isupper():
+            recv_raw = str(receiver)
+            class_nid = (_class_by_const_path(recv_raw) if "::" in recv_raw
+                         else _unique_class(recv_raw))
             if class_nid is not None:
                 if callee == "new":
                     _emit(caller, class_nid, rc)

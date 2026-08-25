@@ -5282,10 +5282,13 @@ def _extract_generic(
                     if recv.type in ("identifier", "constant"):
                         member_receiver = _read_text(recv, source)
                     elif recv.type == "scope_resolution":
-                        # Namespaced receiver `Billing::Processor.call` — capture the
-                        # last constant so cross-file resolution can bind it by the
-                        # bare class name (the god-node guard bails if ambiguous).
-                        member_receiver = _ruby_const_last_name(recv, source) or None
+                        # Namespaced receiver `Billing::Processor.call` — keep the whole
+                        # constant path. Truncating to the last segment discarded the
+                        # namespace, so `ActiveRecord::Base.transaction` bound to
+                        # whatever single class named `Base` the corpus defined: the
+                        # god-node guard only catches an ambiguous match, not a
+                        # unique-but-wrong one (#3078).
+                        member_receiver = _ruby_const_full_name(recv, source) or None
             else:
                 # Generic: get callee from call_function_field
                 func_node = node.child_by_field_name(config.call_function_field) if config.call_function_field else None
