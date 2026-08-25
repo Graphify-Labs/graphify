@@ -361,3 +361,106 @@ def test_cli_api_key_from_env(monkeypatch):
     monkeypatch.setattr(serve_mod, "serve_http", lambda gp, **k: captured.update(**k))
     serve_mod._main(["g.json", "--transport", "http"])
     assert captured["api_key"] == "from-env"
+
+
+# --- orientation stamp: MCP graph reads refresh the strict-hook freshness stamp
+
+
+def _stamp_path(graph_file: str) -> Path:
+    """The 'recently oriented' stamp the strict read hook checks, next to the
+    graph that answered (same location cli._touch_query_stamp writes)."""
+    return Path(graph_file).parent / "cache" / "last_query_stamp"
+
+
+def _age_stamp(stamp: Path) -> None:
+    stamp.parent.mkdir(parents=True, exist_ok=True)
+    stamp.write_text("0")
+    import os
+
+    os.utime(stamp, (1000, 1000))
+
+
+def test_mcp_query_graph_touches_orientation_stamp(tmp_path):
+    """query_graph is orientation: an agent that consulted the graph through
+    the MCP server must be as 'recently oriented' as one that ran the CLI
+    `graphify query` — otherwise the strict read hook denies its next read."""
+    graph_file = _graph_file(tmp_path)
+    app = serve_mod._build_http_app(graph_file, json_response=True)
+    with _client(app) as client:
+        headers = _init_session(client)
+        assert not _stamp_path(graph_file).exists()
+        assert "Alpha" in _call_tool(client, headers, "query_graph", {"question": "Alpha"}, rid=2)
+        assert _stamp_path(graph_file).exists()
+
+
+@pytest.mark.parametrize(
+    ("tool", "arguments"),
+    [
+        ("query_graph", {"question": "Alpha"}),
+        ("get_node", {"label": "Alpha"}),
+        ("get_neighbors", {"label": "Alpha"}),
+        ("shortest_path", {"source": "Alpha", "target": "Beta"}),
+    ],
+)
+def test_mcp_orientation_tools_refresh_aged_stamp(tmp_path, tool, arguments):
+    """Each MCP twin of the stamping CLI commands (query/path/explain) must
+    refresh an existing-but-old stamp on a successful call."""
+    graph_file = _graph_file(tmp_path)
+    stamp = _stamp_path(graph_file)
+    _age_stamp(stamp)
+    app = serve_mod._build_http_app(graph_file, json_response=True)
+    with _client(app) as client:
+        headers = _init_session(client)
+        _call_tool(client, headers, tool, arguments, rid=2)
+    assert stamp.stat().st_mtime > 1000, f"{tool} did not refresh the stamp"
+
+
+@pytest.mark.parametrize(
+    ("tool", "arguments"),
+    [
+        ("graph_stats", {}),
+        ("god_nodes", {}),
+        ("get_community", {"community_id": 0}),
+    ],
+)
+def test_mcp_non_orientation_tools_leave_stamp_alone(tmp_path, tool, arguments):
+    """Graph-level browsing does not stamp on the CLI (`god-nodes` never
+    touches it) and must not stamp over MCP either."""
+    graph_file = _graph_file(tmp_path)
+    stamp = _stamp_path(graph_file)
+    _age_stamp(stamp)
+    app = serve_mod._build_http_app(graph_file, json_response=True)
+    with _client(app) as client:
+        headers = _init_session(client)
+        _call_tool(client, headers, tool, arguments, rid=2)
+    assert stamp.stat().st_mtime == 1000, f"{tool} unexpectedly refreshed the stamp"
+
+
+def test_mcp_project_path_query_stamps_that_project(tmp_path):
+    """A project_path call stamps next to the graph that answered — the
+    project's graphify-out/cache — not next to the server's default graph."""
+    proj = _project_with_graph(tmp_path, node_count=3)
+    default_graph = _graph_file(tmp_path)
+    app = serve_mod._build_http_app(default_graph, json_response=True)
+    with _client(app) as client:
+        headers = _init_session(client)
+        _call_tool(client, headers, "query_graph", {"question": "N1", "project_path": proj}, rid=2)
+    assert (Path(proj) / "graphify-out" / "cache" / "last_query_stamp").exists()
+    assert not _stamp_path(default_graph).exists()
+
+
+def test_mcp_failed_call_does_not_stamp(tmp_path):
+    """A tool error is not orientation: a query against a missing project graph
+    must leave no freshness stamp anywhere."""
+    default_graph = _graph_file(tmp_path)
+    missing = tmp_path / "no-such-project"
+    app = serve_mod._build_http_app(default_graph, json_response=True)
+    with _client(app) as client:
+        headers = _init_session(client)
+        out = _call_tool(
+            client, headers, "query_graph",
+            {"question": "Alpha", "project_path": str(missing)}, rid=2,
+        )
+    assert "not found" in out.lower()
+    assert not _stamp_path(default_graph).exists()
+    assert not (missing / "graphify-out" / "cache" / "last_query_stamp").exists()
