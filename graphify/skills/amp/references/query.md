@@ -137,7 +137,10 @@ else:
         frontier = next_frontier
 
 # Token-budget aware output: rank by relevance, cut at budget (~4 chars/token)
-token_budget = int(sys.argv[3])  # default 2000
+try:
+    token_budget = int(sys.argv[3])
+except (IndexError, ValueError):
+    token_budget = 2000
 char_budget = token_budget * 4
 
 # Score each node by term overlap for ranked output
