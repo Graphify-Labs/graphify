@@ -2616,8 +2616,11 @@ def dispatch_command(cmd: str) -> None:
             print("  graphml   [--graph PATH]", file=sys.stderr)
             print("  neo4j     [--graph PATH] [--push URI] [--user U] [--password P]", file=sys.stderr)
             print("            (or set NEO4J_PASSWORD instead of --password to keep it off argv)", file=sys.stderr)
-            print("  falkordb  [--graph PATH] [--push URI] [--user U] [--password P]", file=sys.stderr)
+            print("  falkordb  [--graph PATH] [--push URI] [--user U] [--password P] [--graph-name NAME]", file=sys.stderr)
+            print("            [--prune] [--allow-shrink]", file=sys.stderr)
             print("            (or set FALKORDB_PASSWORD instead of --password to keep it off argv)", file=sys.stderr)
+            print("            --graph-name selects the target graph in the instance (default \"graphify\");", file=sys.stderr)
+            print("            --prune deletes what the source no longer has so the target mirrors it.", file=sys.stderr)
             sys.exit(1)
 
         # Parse shared args
@@ -2651,6 +2654,12 @@ def dispatch_command(cmd: str) -> None:
             os.environ.get("FALKORDB_PASSWORD") if subcmd == "falkordb"
             else os.environ.get("NEO4J_PASSWORD")
         ) or None
+        # Target selection inside the server (falkordb only). Never exposed
+        # before, so every CLI push landed on the "graphify" key regardless of
+        # what that key already held (#3057).
+        push_graph_name = "graphify"   # falkordb: named graph in the instance
+        push_prune = False         # falkordb: delete what the source no longer has
+        push_allow_shrink = False  # falkordb: override the prune size guard
         i = 0
         while i < len(args):
             a = args[i]
@@ -2706,6 +2715,12 @@ def dispatch_command(cmd: str) -> None:
                 push_user = args[i + 1]; i += 2
             elif a == "--password" and i + 1 < len(args):
                 push_password = args[i + 1]; i += 2
+            elif a == "--graph-name" and i + 1 < len(args):
+                push_graph_name = args[i + 1]; i += 2
+            elif a == "--prune":
+                push_prune = True; i += 1
+            elif a == "--allow-shrink":
+                push_allow_shrink = True; i += 1
             elif subcmd == "callflow-html" and not a.startswith("-") and not graph_path_explicit:
                 candidate = Path(a)
                 if candidate.name == "graph.json" or candidate.suffix.lower() == ".json":
@@ -2883,6 +2898,24 @@ def dispatch_command(cmd: str) -> None:
             print(f"graph.graphml written - open in Gephi, yEd, or any GraphML tool")
 
         elif subcmd == "neo4j":
+            # --graph-name/--prune/--allow-shrink only exist on the FalkorDB
+            # writer. Refuse rather than ignore: silently accepting --prune here
+            # would report a converged push that never deleted anything.
+            _falkor_only = [
+                name for name, given in (
+                    ("--graph-name", push_graph_name != "graphify"),
+                    ("--prune", push_prune),
+                    ("--allow-shrink", push_allow_shrink),
+                ) if given
+            ]
+            if _falkor_only:
+                print(
+                    f"error: {', '.join(_falkor_only)} "
+                    f"{'is' if len(_falkor_only) == 1 else 'are'} supported only by "
+                    f"`graphify export falkordb`.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
             if push_uri:
                 from graphify.export import push_to_neo4j as _push
                 if push_password is None:
@@ -2899,9 +2932,27 @@ def dispatch_command(cmd: str) -> None:
         elif subcmd == "falkordb":
             if push_uri:
                 from graphify.export import push_to_falkordb as _push
-                result = _push(G, uri=push_uri, user=push_user,
-                               password=push_password, communities=communities)
-                print(f"Pushed to FalkorDB: {result['nodes']} nodes, {result['edges']} edges")
+                try:
+                    result = _push(G, uri=push_uri, user=push_user,
+                                   password=push_password, communities=communities,
+                                   graph_name=push_graph_name, prune=push_prune,
+                                   allow_shrink=push_allow_shrink)
+                except ValueError as exc:  # prune size guard
+                    print(f"error: {exc}", file=sys.stderr)
+                    sys.exit(1)
+                _summary = f"{result['nodes']} nodes, {result['edges']} edges"
+                if push_prune:
+                    _summary += (
+                        f" (pruned {result['deleted']} nodes, "
+                        f"{result['deleted_edges']} edges)"
+                    )
+                print(f"Pushed to FalkorDB [{push_graph_name}]: {_summary}")
+                if not push_prune and result.get("target_surplus"):
+                    print(
+                        f"  note: target has {result['target_surplus']} node(s) the "
+                        f"source does not; --prune converges it.",
+                        file=sys.stderr,
+                    )
             else:
                 from graphify.export import to_cypher as _to_cypher
                 _to_cypher(G, str(out_dir / "cypher.txt"))
@@ -2934,6 +2985,7 @@ def dispatch_command(cmd: str) -> None:
             global_remove as _global_remove,
             global_list as _global_list,
             global_path as _global_path,
+            global_push as _global_push,
         )
         if subcmd == "add":
             # graphify global add <graph.json> [--as <tag>]
@@ -2961,6 +3013,76 @@ def dispatch_command(cmd: str) -> None:
                           f"-{result['nodes_removed']} pruned. Global: {_global_path()}")
             except Exception as exc:
                 print(f"error: {exc}", file=sys.stderr); sys.exit(1)
+        elif subcmd == "push":
+            # graphify global push <URI> [--graph-name N] [--full] [--prune]
+            #                            [--allow-shrink] [--user U] [--password P]
+            args = sys.argv[3:]
+            uri = None
+            g_name = "graphify"
+            g_user = None
+            g_password = os.environ.get("FALKORDB_PASSWORD") or None
+            g_delta = True
+            g_prune = False
+            g_allow_shrink = False
+            i = 0
+            while i < len(args):
+                a = args[i]
+                if a == "--graph-name" and i + 1 < len(args):
+                    g_name = args[i + 1]; i += 2
+                elif a == "--user" and i + 1 < len(args):
+                    g_user = args[i + 1]; i += 2
+                elif a == "--password" and i + 1 < len(args):
+                    g_password = args[i + 1]; i += 2
+                elif a == "--full":
+                    g_delta = False; i += 1
+                elif a == "--prune":
+                    g_prune = True; i += 1
+                elif a == "--allow-shrink":
+                    g_allow_shrink = True; i += 1
+                elif not uri and not a.startswith("-"):
+                    uri = a; i += 1
+                else:
+                    i += 1
+            if not uri:
+                print(
+                    "Usage: graphify global push <URI> [--graph-name NAME] [--full] "
+                    "[--prune] [--allow-shrink]\n"
+                    "  Delta by default: only repos whose source changed (or whose "
+                    "count in the target drifted) are re-sent.\n"
+                    "  --full re-sends every repo; add --prune to make a full push "
+                    "converge instead of only adding.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            try:
+                res = _global_push(
+                    uri, graph_name=g_name, user=g_user, password=g_password,
+                    delta=g_delta, prune=g_prune, allow_shrink=g_allow_shrink,
+                )
+            except (ValueError, FileNotFoundError) as exc:
+                print(f"error: {exc}", file=sys.stderr); sys.exit(1)
+            if g_delta:
+                pushed = res.get("repos_pushed", [])
+                removed = res.get("repos_removed", [])
+                skipped = res.get("repos_skipped", [])
+                if not pushed and not removed:
+                    print(f"Global graph [{g_name}]: up to date, {len(skipped)} repo(s) unchanged.")
+                else:
+                    print(
+                        f"Global graph [{g_name}]: {res['nodes']} nodes, "
+                        f"{res['edges']} edges across {len(pushed)} repo(s); "
+                        f"{len(skipped)} unchanged, {res['deleted']} nodes pruned."
+                    )
+                    for tag in pushed:
+                        print(f"  re-pushed {tag} ({res.get('reasons', {}).get(tag, 'changed')})")
+                    for tag in removed:
+                        print(f"  removed   {tag} (no longer in the manifest)")
+            else:
+                line = f"Global graph [{g_name}]: {res['nodes']} nodes, {res['edges']} edges"
+                if g_prune:
+                    line += (f" (pruned {res['deleted']} nodes, "
+                             f"{res['deleted_edges']} edges)")
+                print(line)
         elif subcmd == "remove":
             tag = sys.argv[3] if len(sys.argv) > 3 else ""
             if not tag:
@@ -2981,7 +3103,7 @@ def dispatch_command(cmd: str) -> None:
         elif subcmd == "path":
             print(_global_path())
         else:
-            print("Usage: graphify global [add|remove|list|path]", file=sys.stderr); sys.exit(1)
+            print("Usage: graphify global [add|remove|list|path|push]", file=sys.stderr); sys.exit(1)
 
     elif cmd == "extract":
         # Headless full-pipeline extraction for CI / scripts (#698).

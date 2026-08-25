@@ -758,10 +758,17 @@ graphify export callflow-html --max-sections 8      # cap generated architecture
 graphify export callflow-html --output docs/arch.html
 graphify export callflow-html ./some-repo/graphify-out
 
+graphify export falkordb --push falkordb://localhost:6379                    # push this project's graph
+graphify export falkordb --push falkordb://localhost:6379 --graph-name stg   # choose the target graph
+graphify export falkordb --push falkordb://localhost:6379 --prune            # mirror: delete what the source dropped
+
 graphify global add graphify-out/graph.json --as myrepo   # register a project graph into ~/.graphify/global-graph.json
 graphify global remove myrepo                         # remove a project from the global graph
 graphify global list                                  # show all registered repos + node/edge counts
 graphify global path                                  # print path to the global graph file
+graphify global push falkordb://localhost:6379        # push the global graph to FalkorDB (delta by default)
+graphify global push falkordb://host:6379 --graph-name staging   # pick the target graph in the instance
+graphify global push falkordb://host:6379 --full --prune         # re-send every repo and converge the target
 
 graphify prs                              # PR dashboard: CI, review, worktree, graph impact
 graphify prs 42                           # deep dive on PR #42
