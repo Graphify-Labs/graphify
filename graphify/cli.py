@@ -4480,6 +4480,10 @@ def dispatch_command(cmd: str) -> None:
         _wja(out_path2, merged2, ensure_ascii=False)
         print(f"Merged: {len(merged2['nodes'])} nodes, {len(merged2['edges'])} edges")
 
+    elif cmd == "ci-select":
+        from graphify.ci_select import cli_main as _ci_select_main
+        _ci_select_main()
+
     elif Path(cmd).exists() or cmd in (".", "..") or cmd.startswith(("./", "../", "/", "~")):
         # User ran `graphify <path>` directly — treat as `graphify extract <path>`.
         # Common when following the PowerShell note in README (`graphify .`) or

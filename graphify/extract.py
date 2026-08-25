@@ -57,6 +57,7 @@ from graphify.extractors.sln import extract_sln  # noqa: F401
 from graphify.extractors.sql import extract_sql  # noqa: F401
 from graphify.extractors.terraform import extract_terraform  # noqa: F401
 from graphify.extractors.verilog import extract_verilog  # noqa: F401
+from graphify.extractors.github_actions import extract_github_actions  # noqa: F401
 from graphify.extractors.zig import extract_zig  # noqa: F401
 from graphify.security import sanitize_metadata
 from graphify.paths import disambiguate_ambiguous_candidates
@@ -5228,6 +5229,8 @@ _DISPATCH: dict[str, Any] = {
     ".sh": extract_bash,
     ".bash": extract_bash,
     ".json": extract_json,
+    ".yaml": extract_github_actions,
+    ".yml": extract_github_actions,
     ".tf": extract_terraform,
     ".tfvars": extract_terraform,
     ".hcl": extract_terraform,
@@ -5255,6 +5258,8 @@ _DISPATCH: dict[str, Any] = {
 # extract() to tell the user which extra restores the language.
 _EXTRA_FOR_EXTENSION = {
     ".sql": "sql",
+    ".yaml": "yaml",
+    ".yml": "yaml",
     ".tf": "terraform",
     ".tfvars": "terraform",
     ".hcl": "terraform",
@@ -5375,6 +5380,17 @@ def _is_cpp_header(path: Path) -> bool:
 
 def _get_extractor(path: Path) -> Any | None:
     """Return the correct extractor function for a file, or None if unsupported."""
+    # A real GitHub Actions workflow takes priority over filename-only carve-
+    # outs below (package manifests, e.g. .github/workflows/apm.yml would
+    # otherwise match is_package_manifest_path first and lose its job/needs/
+    # uses extraction entirely -- checked here, ahead of everything else,
+    # since is_github_actions_workflow_path's own path check already scopes
+    # this to .github/workflows/ and can never misfire for a real manifest
+    # sitting where manifests actually live).
+    if path.suffix.lower() in (".yaml", ".yml"):
+        from graphify.extractors.github_actions import is_github_actions_workflow_path, looks_like_workflow_shape
+        if is_github_actions_workflow_path(path) and looks_like_workflow_shape(path):
+            return extract_github_actions
     if path.name.lower().endswith(".blade.php"):
         return extract_blade
     # MCP config files (.mcp.json, claude_desktop_config.json, ...) are routed
@@ -5407,6 +5423,18 @@ def _get_extractor(path: Path) -> Any | None:
     # an extractor (surfaced by the no-AST-extractor warning, #1689) rather than
     # mis-parsed. `.mm` is unambiguously Objective-C++ and stays on extract_objc.
     if suffix == ".m" and not _is_objc_source(path):
+        return None
+    # Any other `.yaml`/`.yml` reaching this point already failed the
+    # workflow-shape check at the top of this function (real workflows
+    # return extract_github_actions there, before the manifest/MCP checks
+    # above get a chance to claim them by filename). Gating here too (not
+    # just leaving it to _DISPATCH) matters for callers that reach extract()
+    # directly: collect_files() collects every .yaml/.yml in a tree, not
+    # just workflow-shaped ones -- a stray docker-compose.yaml anywhere
+    # would otherwise dispatch to extract_github_actions, return empty, and
+    # get misreported as a failed/empty extraction rather than "no extractor
+    # for this file".
+    if suffix in (".yaml", ".yml"):
         return None
     # Extensionless files: resolve by shebang, mirroring detect.classify_file.
     # Without this, detect labels e.g. `#!/usr/bin/env bash` CLIs as code but

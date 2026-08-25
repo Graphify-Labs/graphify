@@ -13,12 +13,22 @@ reason: it is not a regular file.
 import os
 import socket
 import stat
+import sys
 import tempfile
 from pathlib import Path
 
 import pytest
 
 from graphify.detect import _is_regular_file
+
+# os.mkfifo/socket.AF_UNIX don't exist on Windows at all, and symlink()
+# creation there requires Developer Mode or an elevated shell -- gate on
+# actual capability rather than assuming every CI platform supports these.
+_HAS_MKFIFO = hasattr(os, "mkfifo")
+_HAS_AF_UNIX = hasattr(socket, "AF_UNIX")
+_reason_no_mkfifo = "os.mkfifo unavailable on this platform"
+_reason_no_af_unix = "socket.AF_UNIX unavailable on this platform"
+_reason_no_symlink = "unprivileged symlink creation unavailable on this platform"
 
 
 @pytest.fixture()
@@ -34,6 +44,7 @@ def test_regular_source_file_is_accepted(tree):
     assert _is_regular_file(tree / "src" / "module.py") is True
 
 
+@pytest.mark.skipif(not _HAS_MKFIFO, reason=_reason_no_mkfifo)
 def test_fifo_is_rejected(tree):
     """The shape that hangs the whole run."""
     fifo = tree / "src" / "pipe.py"
@@ -42,6 +53,7 @@ def test_fifo_is_rejected(tree):
     assert _is_regular_file(fifo) is False
 
 
+@pytest.mark.skipif(not _HAS_AF_UNIX, reason=_reason_no_af_unix)
 def test_unix_socket_is_rejected(tree):
     sock_path = tree / "src" / "sock.py"
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -58,6 +70,7 @@ def test_directory_named_like_a_source_file_is_rejected(tree):
     assert _is_regular_file(d) is False
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason=_reason_no_symlink)
 def test_symlink_to_a_regular_file_is_accepted(tree):
     target = tree / "src" / "module.py"
     link = tree / "src" / "alias.py"
@@ -65,6 +78,7 @@ def test_symlink_to_a_regular_file_is_accepted(tree):
     assert _is_regular_file(link) is True
 
 
+@pytest.mark.skipif(not _HAS_MKFIFO or sys.platform == "win32", reason=_reason_no_mkfifo)
 def test_symlink_pointing_at_a_fifo_is_rejected(tree):
     """A link to a FIFO blocks exactly like the FIFO, so stat must follow it."""
     fifo = tree / "src" / "real.py"
@@ -74,6 +88,7 @@ def test_symlink_pointing_at_a_fifo_is_rejected(tree):
     assert _is_regular_file(link) is False
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason=_reason_no_symlink)
 def test_broken_symlink_is_rejected_without_raising(tree):
     link = tree / "src" / "dangling.py"
     link.symlink_to(tree / "src" / "does-not-exist.py")

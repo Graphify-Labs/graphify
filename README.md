@@ -801,6 +801,7 @@ graphify label ./my-project --backend=openai --model gpt-4o   # force a specific
 - [How it works](docs/how-it-works.md) — the extraction pipeline, community detection, confidence scoring, benchmarks
 - [ARCHITECTURE.md](ARCHITECTURE.md) — module breakdown, how to add a language
 - [Optional integrations](docs/docker-mcp-sqlite.md) — Docker MCP Toolkit + SQLite
+- [Graph bundle metadata](docs/graph-bundle-metadata.md) — schema for `metadata.json` when a `graphify --update` output is published for other machines/CI to pull
 - [The Memory Layer](https://safishamsi.gumroad.com/l/qetvlo) — the book on the ideas behind graphify, the architecture end to end
 
 ---
@@ -870,7 +871,7 @@ is added to CI later. The Bandit and pip-audit CI steps currently use
 `continue-on-error`, so their findings are advisory rather than blocking.
 
 > macOS note: the test suite includes both `sample.f90` and `sample.F90` fixtures. These collide on case-insensitive HFS+ / APFS file systems. Run on Linux or in a Docker container if you need to test both Fortran variants simultaneously.
-
+>
 > Windows note: the native Windows test suite exercises symbolic links, long
 > paths, POSIX permissions, path separators, and UTF-8 filesystem behavior.
 > Enable Windows Developer Mode to allow unprivileged symbolic-link creation, or
