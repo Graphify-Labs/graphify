@@ -7,7 +7,8 @@ Load this only when the user passed `--update` or `--cluster-only`. A first-time
 Use when you've added or modified files since the last run. Only re-extracts changed files - saves tokens and time.
 
 ```bash
-"$(cat graphify-out/.graphify_python)" -c "
+readarray -t GFY_PYTHON < graphify-out/.graphify_python
+"${GFY_PYTHON[@]}" -c "
 import sys, json
 from graphify.detect import detect_incremental, save_manifest
 from pathlib import Path
@@ -30,7 +31,8 @@ if new_total > 0:
 Then populate `.graphify_detect.json` so Steps 3A–6 (which read it unconditionally) see the right state for an incremental run. `files` carries the changed subset (drives Step 3A AST + Step 3B0 cache check on only what changed); `all_files` carries the full corpus for any step that needs corpus-wide context:
 
 ```bash
-"$(cat graphify-out/.graphify_python)" -c "
+readarray -t GFY_PYTHON < graphify-out/.graphify_python
+"${GFY_PYTHON[@]}" -c "
 import json
 from pathlib import Path
 r = json.loads(Path('graphify-out/.graphify_incremental.json').read_text(encoding=\"utf-8\"))
@@ -48,7 +50,8 @@ Path('graphify-out/.graphify_detect.json').write_text(json.dumps({
 If new files exist, first check whether all changed files are code files:
 
 ```bash
-"$(cat graphify-out/.graphify_python)" -c "
+readarray -t GFY_PYTHON < graphify-out/.graphify_python
+"${GFY_PYTHON[@]}" -c "
 import json
 from pathlib import Path
 
@@ -71,7 +74,8 @@ If no new files exist (only deletions), create an empty extraction so the merge 
 ```bash
 if [ ! -f graphify-out/.graphify_extract.json ]; then
     echo '[graphify update] Only deletions -- creating empty extraction for merge.'
-    "$(cat graphify-out/.graphify_python)" -c "
+    readarray -t GFY_PYTHON < graphify-out/.graphify_python
+    "${GFY_PYTHON[@]}" -c "
 import json
 from pathlib import Path
 Path('graphify-out/.graphify_extract.json').write_text(json.dumps({'nodes':[],'edges':[],'hyperedges':[],'input_tokens':0,'output_tokens':0}), encoding='utf-8')
@@ -83,7 +87,8 @@ fi
 Then:
 
 ```bash
-"$(cat graphify-out/.graphify_python)" -c "
+readarray -t GFY_PYTHON < graphify-out/.graphify_python
+"${GFY_PYTHON[@]}" -c "
 import json
 from pathlib import Path
 from graphify.build import build_merge
@@ -170,7 +175,8 @@ Then run Steps 4–8 on the merged graph as normal.
 After Step 4, show the graph diff:
 
 ```bash
-"$(cat graphify-out/.graphify_python)" -c "
+readarray -t GFY_PYTHON < graphify-out/.graphify_python
+"${GFY_PYTHON[@]}" -c "
 import json
 from graphify.analyze import graph_diff
 from graphify.build import build_from_json

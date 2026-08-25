@@ -11,7 +11,8 @@ Two traversal modes - choose based on the question:
 
 First check the graph exists:
 ```bash
-"$(cat graphify-out/.graphify_python)" -c "
+readarray -t GFY_PYTHON < graphify-out/.graphify_python
+"${GFY_PYTHON[@]}" -c "
 from pathlib import Path
 if not Path('graphify-out/graph.json').exists():
     print('ERROR: No graph found. Run /graphify <path> first to build the graph.')
@@ -28,7 +29,8 @@ Fix this **without inventing tokens** by expanding the query against the actual 
 
 1. Extract the token vocabulary from node labels:
 ```bash
-"$(cat graphify-out/.graphify_python)" -c "
+readarray -t GFY_PYTHON < graphify-out/.graphify_python
+"${GFY_PYTHON[@]}" -c "
 import json, re
 from pathlib import Path
 data = json.loads(Path('graphify-out/graph.json').read_text(encoding='utf-8'))
@@ -77,7 +79,8 @@ If the CLI is unavailable, load `graphify-out/graph.json` and run the traversal 
 5. If the graph lacks enough information, say so - do not hallucinate edges.
 
 ```bash
-"$(cat graphify-out/.graphify_python)" -c "
+readarray -t GFY_PYTHON < graphify-out/.graphify_python
+"${GFY_PYTHON[@]}" -c "
 import sys, json
 from networkx.readwrite import json_graph
 import networkx as nx
@@ -171,7 +174,8 @@ Pass `QUESTION`, `MODE`, and `BUDGET` as single-quoted shell arguments after the
 After writing the answer, save it back into the graph so it improves future queries. Include the expanded tokens inside the `--answer` text (e.g. `"Expanded from original query via vocab: [tokens]. Then traversed..."`) so the next `--update` extracts the expansion history as a graph node:
 
 ```bash
-"$(cat graphify-out/.graphify_python)" -m graphify save-result --question 'ORIGINAL_QUESTION' --answer 'ANSWER' --type query --nodes 'NODE1' 'NODE2'
+readarray -t GFY_PYTHON < graphify-out/.graphify_python
+"${GFY_PYTHON[@]}" -m graphify save-result --question 'ORIGINAL_QUESTION' --answer 'ANSWER' --type query --nodes 'NODE1' 'NODE2'
 ```
 
 Replace `ORIGINAL_QUESTION` with the user's verbatim question, `ANSWER` with your full answer text (containing the expanded-token trace), `NODE1 NODE2` with the list of node labels you cited. The single quotes around every user-supplied value (including each `--nodes` argument) make the substitution injection-safe: a question like `hello"; rm -rf /` or a node label containing whitespace, single quotes, or shell metacharacters cannot escape the argument. If `ORIGINAL_QUESTION`, `ANSWER`, or any node label contains a literal single quote, replace it with `'\''` (close-quote, escaped-quote, open-quote) - the escape applies to every substituted value, not just node labels. This closes the feedback loop: the next `--update` will extract this Q&A as a node in the graph.
@@ -197,7 +201,8 @@ graphify path 'NODE_A' 'NODE_B'
 If the CLI is unavailable, run it inline:
 
 ```bash
-"$(cat graphify-out/.graphify_python)" -c "
+readarray -t GFY_PYTHON < graphify-out/.graphify_python
+"${GFY_PYTHON[@]}" -c "
 import json, sys
 import networkx as nx
 from networkx.readwrite import json_graph
@@ -249,7 +254,8 @@ Pass `NODE_A` and `NODE_B` as single-quoted shell arguments after the Python sou
 After writing the explanation, save it back (single quotes around the user-supplied values keep the substitution injection-safe; replace any literal `'` in the substituted text with `'\''`):
 
 ```bash
-"$(cat graphify-out/.graphify_python)" -m graphify save-result --question 'Path from NODE_A to NODE_B' --answer 'ANSWER' --type path_query --nodes 'NODE_A' 'NODE_B'
+readarray -t GFY_PYTHON < graphify-out/.graphify_python
+"${GFY_PYTHON[@]}" -m graphify save-result --question 'Path from NODE_A to NODE_B' --answer 'ANSWER' --type path_query --nodes 'NODE_A' 'NODE_B'
 ```
 
 ---
@@ -265,7 +271,8 @@ graphify explain 'NODE_NAME'
 If the CLI is unavailable, run it inline:
 
 ```bash
-"$(cat graphify-out/.graphify_python)" -c "
+readarray -t GFY_PYTHON < graphify-out/.graphify_python
+"${GFY_PYTHON[@]}" -c "
 import json, sys
 import networkx as nx
 from networkx.readwrite import json_graph
@@ -310,5 +317,6 @@ Pass `NODE_NAME` as a single-quoted shell argument after the Python source. Repl
 After writing the explanation, save it back (single quotes around the user-supplied values keep the substitution injection-safe; replace any literal `'` in the substituted text with `'\''`):
 
 ```bash
-"$(cat graphify-out/.graphify_python)" -m graphify save-result --question 'Explain NODE_NAME' --answer 'ANSWER' --type explain --nodes 'NODE_NAME'
+readarray -t GFY_PYTHON < graphify-out/.graphify_python
+"${GFY_PYTHON[@]}" -m graphify save-result --question 'Explain NODE_NAME' --answer 'ANSWER' --type explain --nodes 'NODE_NAME'
 ```

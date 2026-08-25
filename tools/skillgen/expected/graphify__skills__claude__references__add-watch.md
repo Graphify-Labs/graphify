@@ -7,7 +7,8 @@ Load this when the user ran `/graphify add <url>` or passed `--watch`. Neither i
 Fetch a URL and add it to the corpus, then update the graph.
 
 ```bash
-"$(cat graphify-out/.graphify_python)" -c "
+readarray -t GFY_PYTHON < graphify-out/.graphify_python
+"${GFY_PYTHON[@]}" -c "
 import sys
 from graphify.ingest import ingest
 from pathlib import Path
@@ -45,7 +46,8 @@ Supported URL types (auto-detected):
 Start a background watcher that monitors a folder and auto-updates the graph when files change.
 
 ```bash
-"$(cat graphify-out/.graphify_python)" -m graphify.watch INPUT_PATH --debounce 3
+readarray -t GFY_PYTHON < graphify-out/.graphify_python
+"${GFY_PYTHON[@]}" -m graphify.watch INPUT_PATH --debounce 3
 ```
 
 Replace INPUT_PATH with the folder to watch. Behavior depends on what changed:
