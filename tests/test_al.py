@@ -100,6 +100,7 @@ def test_al_missing_parser_reports_optional_extra(tmp_path, capsys, monkeypatch)
 
     assert "used fallback extraction" in err
     assert "tree_sitter_al not installed" in err
+    # The published distribution is intentionally named graphifyy.
     assert 'graphifyy[al]' in err
     assert result["failed_sources"] == []
     assert any(node.get("object_kind") == "codeunit" for node in result["nodes"])
