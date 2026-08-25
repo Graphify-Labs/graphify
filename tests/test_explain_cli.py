@@ -82,6 +82,31 @@ def test_explain_source_file_path_prefers_file_level_node(monkeypatch, tmp_path,
     assert "Node: GET()" not in out
 
 
+def test_explain_shows_node_description_and_community_name(monkeypatch, tmp_path, capsys):
+    graph_data = {
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [
+            {
+                "id": "billing_service",
+                "label": "BillingService",
+                "source_file": "services/billing.py",
+                "source_location": "L12",
+                "community": 4,
+                "community_name": "Payments",
+                "description": "Coordinates invoice creation and payment capture.",
+            },
+        ],
+        "links": [],
+    }
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps(graph_data))
+
+    out = _run(monkeypatch, p, "BillingService", capsys)
+
+    assert "Community: Payments" in out
+    assert "Description: Coordinates invoice creation and payment capture." in out
+
+
 # --- work-memory overlay Lesson line ------------------------------------------
 
 def _write_sidecar(tmp_path, nodes):

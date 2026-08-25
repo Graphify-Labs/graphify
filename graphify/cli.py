@@ -12,6 +12,7 @@ import re
 import sys
 import time
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
+import graphify.security as _security
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 
@@ -1612,6 +1613,8 @@ def dispatch_command(cmd: str) -> None:
         )
         print(f"  Type:      {d.get('file_type', '')}")
         print(f"  Community: {d.get('community_name') or d.get('community', '')}")
+        if d.get("description"):
+            print(f"  Description: {_security.sanitize_label(str(d['description']))}")
         # Work-memory overlay: a derived experiential hint from `graphify reflect`,
         # merged in display-only from the .graphify_learning.json sidecar next to
         # graph.json. No line when the node has no overlay entry.

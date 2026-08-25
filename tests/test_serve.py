@@ -1192,6 +1192,25 @@ def test_query_text_chinese_finds_routing_nodes():
     assert "路由" in text
 
 
+def test_query_text_includes_node_description_and_community_name():
+    """Live query output exposes the metadata already stored on graph nodes."""
+    G = nx.Graph()
+    G.add_node(
+        "billing_service",
+        label="BillingService",
+        source_file="services/billing.py",
+        source_location="L12",
+        community=4,
+        community_name="Payments",
+        description="Coordinates invoice creation and payment capture.",
+    )
+
+    text = _query_graph_text(G, "BillingService", mode="bfs", depth=1)
+
+    assert "community=Payments" in text
+    assert "description=Coordinates invoice creation and payment capture." in text
+
+
 # --- get_community header (#1448): show the community name, no placeholder doubling ---
 
 def test_community_header_shows_real_name():
