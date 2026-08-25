@@ -369,7 +369,7 @@ class _StoredSourcePaths:
         root_marker = out / ".graphify_root"
         if root_marker.exists():
             try:
-                saved_root = Path(root_marker.read_text(encoding="utf-8").strip())
+                saved_root = Path(root_marker.read_text(encoding="utf-8-sig").strip())
                 if saved_root.is_absolute():
                     # #2603: the marker holds the SCAN root, but stored
                     # source_file values are relative to the BUILD's cwd

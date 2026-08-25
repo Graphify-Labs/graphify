@@ -165,7 +165,7 @@ try:
     _out = os.environ.get('GRAPHIFY_OUT', 'graphify-out')
     _saved = Path(_out) / '.graphify_root'
     if _saved.exists():
-        _txt = _saved.read_text(encoding='utf-8').strip()
+        _txt = _saved.read_text(encoding='utf-8-sig').strip()
         if _txt:
             _root = Path(_txt)
     _rebuild_code(_root, changed_paths=changed, force=_force)
@@ -214,7 +214,7 @@ try:
     _out = os.environ.get('GRAPHIFY_OUT', 'graphify-out')
     _saved = Path(_out) / '.graphify_root'
     if _saved.exists():
-        _txt = _saved.read_text(encoding='utf-8').strip()
+        _txt = _saved.read_text(encoding='utf-8-sig').strip()
         if _txt:
             _root = Path(_txt)
     _rebuild_code(_root, force=_force)
