@@ -11,7 +11,6 @@ import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
-from functools import lru_cache
 from pathlib import Path
 from typing import Callable
 
@@ -32,6 +31,12 @@ class FileType(str, Enum):
 
 
 _MANIFEST_PATH = str(out_path("manifest.json"))
+
+#: Whether _is_ignored may use string-prefix path arithmetic instead of
+#: Path.relative_to(). POSIX only: on Windows relative_to() is case-insensitive
+#: and normalizes separators/drive-relative paths, so a string prefix is not an
+#: equivalent substitute there (see _relative_str).
+_FAST_RELATIVE_PATHS = os.name == "posix"
 
 #: Window in which a manifest row's own timestamp is too close to the file's
 #: mtime for "mtime unchanged" to prove the content is unchanged. Coarse for
@@ -1253,26 +1258,40 @@ def _match_anchored_ignore_pattern(path: str, pattern: str) -> bool:
     """Match an anchored gitignore pattern without letting ``*`` cross ``/``."""
     path_parts = tuple(path.split("/"))
     pattern_parts = tuple(pattern.split("/"))
+    # A plain dict memo instead of functools.lru_cache: the cache has to be
+    # rebuilt per call anyway (it is keyed on (path_idx, pattern_idx), which is
+    # only meaningful for THIS call's path_parts/pattern_parts), so lru_cache's
+    # per-call construction and wrapper bookkeeping is pure overhead at the call
+    # volume this sees (millions on a large repo).
+    memo: dict[tuple[int, int], bool] = {}
 
-    @lru_cache(maxsize=None)
     def _matches(path_idx: int, pattern_idx: int) -> bool:
+        cached = memo.get((path_idx, pattern_idx))
+        if cached is not None:
+            return cached
+
         if pattern_idx == len(pattern_parts):
-            return path_idx == len(path_parts)
+            result = path_idx == len(path_parts)
+            memo[(path_idx, pattern_idx)] = result
+            return result
 
         part = pattern_parts[pattern_idx]
         if part == "**":
             if pattern_idx == len(pattern_parts) - 1:
-                return path_idx < len(path_parts)
-            return _matches(path_idx, pattern_idx + 1) or (
+                result = path_idx < len(path_parts)
+            else:
+                result = _matches(path_idx, pattern_idx + 1) or (
+                    path_idx < len(path_parts)
+                    and _matches(path_idx + 1, pattern_idx)
+                )
+        else:
+            result = (
                 path_idx < len(path_parts)
-                and _matches(path_idx + 1, pattern_idx)
+                and fnmatch.fnmatchcase(path_parts[path_idx], part)
+                and _matches(path_idx + 1, pattern_idx + 1)
             )
-
-        return (
-            path_idx < len(path_parts)
-            and fnmatch.fnmatchcase(path_parts[path_idx], part)
-            and _matches(path_idx + 1, pattern_idx + 1)
-        )
+        memo[(path_idx, pattern_idx)] = result
+        return result
 
     return _matches(0, 0)
 
@@ -1300,10 +1319,47 @@ def _is_ignored(
     if not patterns:
         return False
 
+    def _relative_str(target_str: str, base: Path, base_str: str) -> str | None:
+        # `str(target.relative_to(base))`, without paying for relative_to()'s
+        # parts-parsing machinery. It runs len(patterns) times per file, and
+        # profiling a ~19,700-file corpus whose nested .gitignore files
+        # contribute ~1,000 patterns put ~65% of detect()'s total wall-clock in
+        # this one call — almost all of it in parses that then raise ValueError
+        # because the anchor is not an ancestor of the target.
+        #
+        # The string fast path is only taken where it is *provably* identical
+        # to relative_to(), i.e. POSIX with an absolute anchor:
+        #   - On Windows, PurePath.relative_to() compares case-INSENSITIVELY
+        #     (and normalizes separators and drive-relative forms), so a plain
+        #     startswith would silently stop matching ignore rules whenever the
+        #     caller's casing differs from the anchor's — and several callers
+        #     pass an abspath()'d (not resolve()'d) path, which preserves the
+        #     user's casing. Not worth emulating blind: use the real thing.
+        #   - A relative anchor ('.') is accepted by relative_to() but has no
+        #     meaningful string prefix. No current caller produces one (anchors
+        #     come from _load_graphifyignore, which resolves), but falling back
+        #     keeps this helper honest as a drop-in.
+        if not _FAST_RELATIVE_PATHS or not base_str.startswith("/"):
+            try:
+                return str(Path(target_str).relative_to(base))
+            except ValueError:
+                return None
+        if target_str == base_str:
+            return "."
+        sep_base = base_str if base_str.endswith("/") else base_str + "/"
+        if target_str.startswith(sep_base):
+            rest = target_str[len(sep_base):]
+            # A leftover leading separator means base was a '//'-style root,
+            # which relative_to() rejects — don't invent a match it wouldn't.
+            if not rest.startswith("/"):
+                return rest
+        return None
+
     def _eval(target: Path) -> bool:
         """Apply last-match-wins to a single target path."""
         if _cache is not None and target in _cache:
             return _cache[target]
+
         def _matches(rel: str, p: str, path_relative: bool) -> bool:
             if path_relative:
                 return _match_anchored_ignore_pattern(rel, p)
@@ -1318,6 +1374,17 @@ def _is_ignored(
                 if fnmatch.fnmatch("/".join(parts[:i + 1]), p):
                     return True
             return False
+
+        target_str = str(target)
+        root_str = str(root)
+        # rel_anchor depends only on (target, anchor), not on the pattern text,
+        # so a directory whose ignore file has many pattern lines (the common
+        # case) no longer repeats the same relative-path computation per line.
+        # Keyed by the anchor STRING, not the Path: Path equality/hashing is
+        # case-insensitive on Windows, so two anchors differing only in case
+        # would collide and the second would reuse the first's answer.
+        rel_anchor_cache: dict[str, str | None] = {}
+        rel_to_root_cache: list[str | None] = []  # lazy, computed at most once
 
         result = False
         for anchor, pattern in patterns:
@@ -1335,18 +1402,25 @@ def _is_ignored(
             # (detect() returned 0 files). The anchor dir itself is exempt — an
             # ignore file governs its directory's contents, not the directory.
             matched = False
-            try:
-                rel_anchor = _nfc(str(target.relative_to(anchor)).replace(os.sep, "/"))
-            except ValueError:
+            anchor_str = str(anchor)
+            if anchor_str not in rel_anchor_cache:
+                anchor_rel = _relative_str(target_str, anchor, anchor_str)
+                rel_anchor_cache[anchor_str] = (
+                    _nfc(anchor_rel.replace(os.sep, "/")) if anchor_rel is not None else None
+                )
+            rel_anchor = rel_anchor_cache[anchor_str]
+            if rel_anchor is None:
                 continue  # target outside this pattern's anchor: cannot match
             if rel_anchor != ".":
                 rel = rel_anchor
-                if not path_relative:
-                    try:
-                        if len(root.parts) > len(anchor.parts):
-                            rel = _nfc(str(target.relative_to(root)).replace(os.sep, "/"))
-                    except ValueError:
-                        pass
+                if not path_relative and len(root.parts) > len(anchor.parts):
+                    if not rel_to_root_cache:
+                        root_rel = _relative_str(target_str, root, root_str)
+                        rel_to_root_cache.append(
+                            _nfc(root_rel.replace(os.sep, "/")) if root_rel is not None else None
+                        )
+                    if rel_to_root_cache[0] is not None:
+                        rel = rel_to_root_cache[0]
                 matched = _matches(rel, p, path_relative=path_relative)
                 if matched and directory_only and not target.is_dir():
                     matched = False
