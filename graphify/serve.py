@@ -15,6 +15,7 @@ from networkx.readwrite import json_graph
 from graphify.security import sanitize_label, check_graph_file_size_cap
 from graphify.build import edge_data, edge_datas
 from graphify.paths import default_graph_json as _default_graph_json
+from graphify.reflect import LEARNING_SIDECAR_NAME
 
 try:
     import jieba as _jieba  # type: ignore[import-untyped]
@@ -108,7 +109,7 @@ class _GraphContextCache:
         self._pinned: dict[str, dict] = {}
         self._lock = threading.Lock()
 
-    def _load_entry(self, resolved_path: str, key: tuple[int, int]) -> dict:
+    def _load_entry(self, resolved_path: str, key: tuple[int, ...]) -> dict:
         """Build one entry for an already-resolved path and known file key.
 
         ``_load_graph`` is also used by the CLI, where invalid input terminates
@@ -144,7 +145,20 @@ class _GraphContextCache:
                 stat_result = Path(resolved_path).stat()
             except FileNotFoundError:
                 raise FileNotFoundError(f"graph.json not found: {resolved_path}") from None
-            key = (stat_result.st_mtime_ns, stat_result.st_size)
+            # The learning sidecar is baked into the cached graph object at
+            # load time (_load_graph attaches it as the learning= annotation
+            # overlay), so it is part of what the key must fingerprint: a
+            # sidecar-only change — a `graphify reflect` run touches only
+            # .graphify_learning.json, never graph.json — must miss the cache
+            # exactly like a graph change, or a running server keeps serving
+            # the stale lesson annotations. (0, 0) stands in when no sidecar
+            # exists, so one appearing or vanishing changes the key too.
+            try:
+                sidecar_stat = (Path(resolved_path).parent / LEARNING_SIDECAR_NAME).stat()
+                sidecar_key = (sidecar_stat.st_mtime_ns, sidecar_stat.st_size)
+            except OSError:
+                sidecar_key = (0, 0)
+            key = (stat_result.st_mtime_ns, stat_result.st_size, *sidecar_key)
             entries = self._pinned if pinned else self._entries
             entry = entries.get(resolved_path)
             if entry is not None and entry["key"] == key:
