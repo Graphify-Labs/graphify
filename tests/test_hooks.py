@@ -769,7 +769,8 @@ def test_checkout_hook_skips_same_head_noop_at_runtime():
     assert guard in _CHECKOUT_SCRIPT, "guard missing from the checkout script"
     # Real script through the same-head guard, then a sentinel — stops before the
     # graphify-out check / detached launch so nothing is actually rebuilt.
-    prefix = _CHECKOUT_SCRIPT.split(guard)[0] + guard + "\necho RAN\n"
+    # The block runs inside a subshell (#2986); close it after the sentinel.
+    prefix = _CHECKOUT_SCRIPT.split(guard)[0] + guard + "\necho RAN\n)\n"
 
     def run(prev, new, flag):
         # sh -c CMD name arg1 arg2 arg3  ->  $0=name $1=prev $2=new $3=flag

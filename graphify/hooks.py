@@ -304,10 +304,20 @@ fi
 """
 
 
+# Both hook bodies run inside a subshell `( ... )`. The generated block is
+# appended to whatever post-commit / post-checkout already exists, and other
+# tools chain their own logic after it; every skip condition in the block is a
+# bare `exit 0`, which in a flat script ends the WHOLE hook, silently dropping
+# anything after graphify's end marker - on every root commit (HEAD~1 does
+# not exist), every rebase/merge, every linked worktree, every
+# GRAPHIFY_SKIP_HOOK=1 (#2986). Inside the subshell an `exit` ends only
+# graphify's section; the detached rebuild launch is unaffected, and the
+# hook's own exit status stays 0 as before.
 _HOOK_SCRIPT = """\
 # graphify-hook-start
 # Auto-rebuilds the knowledge graph after each commit (code files only, no LLM needed).
 # Installed by: graphify hook install
+(
 
 # Deterministic clustering: networkx louvain iterates string-keyed sets whose
 # order is randomized per-process by PYTHONHASHSEED, so community assignments
@@ -355,7 +365,8 @@ _GRAPHIFY_LOG="${HOME}/.cache/graphify-rebuild.log"
 mkdir -p "$(dirname "$_GRAPHIFY_LOG")"
 export GRAPHIFY_REBUILD_LOG="$_GRAPHIFY_LOG"
 echo "[graphify hook] launching background rebuild (log: $_GRAPHIFY_LOG)"
-""" + _detached_launch(_REBUILD_BODY_COMMIT) + """# graphify-hook-end
+""" + _detached_launch(_REBUILD_BODY_COMMIT) + """)
+# graphify-hook-end
 """
 
 
@@ -363,6 +374,7 @@ _CHECKOUT_SCRIPT = """\
 # graphify-checkout-hook-start
 # Auto-rebuilds the knowledge graph (code only) when switching branches.
 # Installed by: graphify hook install
+(
 
 # Deterministic clustering: networkx louvain iterates string-keyed sets whose
 # order is randomized per-process by PYTHONHASHSEED, so community assignments
@@ -412,7 +424,8 @@ _GRAPHIFY_LOG="${HOME}/.cache/graphify-rebuild.log"
 mkdir -p "$(dirname "$_GRAPHIFY_LOG")"
 export GRAPHIFY_REBUILD_LOG="$_GRAPHIFY_LOG"
 echo "[graphify] Branch switched - launching background rebuild (log: $_GRAPHIFY_LOG)"
-""" + _detached_launch(_REBUILD_BODY_CHECKOUT) + """# graphify-checkout-hook-end
+""" + _detached_launch(_REBUILD_BODY_CHECKOUT) + """)
+# graphify-checkout-hook-end
 """
 
 
