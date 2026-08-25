@@ -1535,12 +1535,14 @@ def _resolve_rescued_specifier(
         resolved_file = (resolved_alias if resolved_alias is not None
                          and resolved_alias.is_file() else None)
         return _make_id(str(resolved_alias)), str(resolved_alias), resolved_file, False
-    # Bare/scoped import (node_modules) - use last segment;
-    # build_from_json drops as external if no matching node exists.
-    module_name = raw.split("/")[-1]
+    # Bare/scoped import (node_modules) - anchor to the PACKAGE, not the path
+    # leaf: `lodash/fp/map` is a dependency on `lodash`, and `@a/utils` and
+    # `@b/utils` are different packages that share a leaf.
+    parts = raw.split("/")
+    module_name = "/".join(parts[:2]) if raw.startswith("@") and len(parts) >= 2 else parts[0]
     if not module_name:
         return None
-    return _make_id(module_name), raw, None, True
+    return _make_id(module_name), module_name, None, True
 
 
 def _emit_rescued_import(
@@ -1605,6 +1607,11 @@ def _emit_rescued_import(
         # left on the dead id, so a declared dependency silently loses all of its
         # inbound edges while an undeclared one keeps them (#3084).
         stub["type"] = "module"
+        # For an external, `stub_source_file` is the package name (see
+        # _resolve_rescued_specifier) — and the node IS that package, so name it
+        # that way. `lodash/fp/map` and `lodash/debounce` are one `lodash` node,
+        # and neither subpath should end up titling it.
+        stub["label"] = stub_source_file
     result.setdefault("nodes", []).append(stub)
     result.setdefault("edges", []).append(edge)
     existing_ids.add(node_id)
