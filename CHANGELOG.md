@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Fix: `graphify watch` no longer counts read-only inotify events (`opened`, emitted by watchdog >= 2.3, and `closed_no_write`, emitted by watchdog >= 4) as file changes on Linux, so the watcher's own AST rebuild — which reads every watched file — no longer re-triggers the watcher in a permanent loop ("N file(s) changed" with nothing modified; measured at ~26 CPU-minutes per hour and 15 memory-kills in 3 days on a ~1.7k-file tree, with the `needs_update` flag re-written every 1-3 minutes). Creation, modification, move, deletion and close-after-write still count; macOS (PollingObserver) never emits these events, so nothing changes there.
+
 ## 0.9.49 (2026-08-24)
 
 - Feature: `graphify merge-graphs` now links a type declaration that two repos share — same fully-qualified namespace and name, from different repos — with a `same_type_as` edge, so a shared contract type is navigable across the repo boundary; two unrelated types that merely share a short name are not linked (#3007, thanks @durmazoguzhan).

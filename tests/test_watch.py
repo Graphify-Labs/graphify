@@ -3769,3 +3769,32 @@ def test_subfolder_marker_incremental_matches_cold_build(tmp_path, monkeypatch):
         f"incremental vs cold id drift: only-incremental={sorted(incremental_ids - cold_ids)[:5]}, "
         f"only-cold={sorted(cold_ids - incremental_ids)[:5]}"
     )
+
+
+# --- read-only inotify events must not count as changes (#watch-self-trigger) ---
+
+def test_read_only_events_are_ignored():
+    """``opened`` / ``closed_no_write`` mean a file was read, not changed."""
+    from graphify.watch import _is_read_only_event
+
+    class E:
+        def __init__(self, t):
+            self.event_type = t
+
+    assert _is_read_only_event(E("opened"))
+    assert _is_read_only_event(E("closed_no_write"))
+    for t in ("created", "modified", "deleted", "moved", "closed"):
+        assert not _is_read_only_event(E(t)), t
+
+
+def test_read_only_events_with_real_watchdog_classes():
+    pytest.importorskip("watchdog.events")
+    from watchdog import events as we
+    from graphify.watch import _is_read_only_event
+
+    assert _is_read_only_event(we.FileOpenedEvent("/tmp/x.py"))
+    if hasattr(we, "FileClosedNoWriteEvent"):
+        assert _is_read_only_event(we.FileClosedNoWriteEvent("/tmp/x.py"))
+    assert not _is_read_only_event(we.FileModifiedEvent("/tmp/x.py"))
+    assert not _is_read_only_event(we.FileCreatedEvent("/tmp/x.py"))
+    assert not _is_read_only_event(we.FileClosedEvent("/tmp/x.py"))
