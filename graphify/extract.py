@@ -7075,9 +7075,15 @@ def extract(
 
 def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | None = None) -> list[Path]:
     containment_root = root if root is not None else target
+    # follow_symlinks=True IS the caller's declaration of intent to follow links
+    # out of the root. Applying containment on top of it makes the flag inert for
+    # its only documented use case (a directory of links to scattered source
+    # dirs), so honour the explicit opt-in.
+    def _contained(_p):
+        return True if follow_symlinks else _resolves_under_root(_p, containment_root)
     from graphify.detect import _resolves_under_root
     if target.is_file():
-        return [target] if _resolves_under_root(target, containment_root) else []
+        return [target] if _contained(target) else []
     _EXTENSIONS = set(_DISPATCH.keys())
     from graphify.detect import _is_ignored, _is_noise_dir, _load_graphifyignore
     ignore_root = root if root is not None else target
@@ -7109,7 +7115,7 @@ def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | N
             for fname in filenames:
                 p = dp / fname
                 suffix = p.suffix
-                if (suffix in _EXTENSIONS or suffix.lower() in _EXTENSIONS) and not _ignored(p) and _resolves_under_root(p, containment_root):
+                if (suffix in _EXTENSIONS or suffix.lower() in _EXTENSIONS) and not _ignored(p) and _contained(p):
                     results.append(p)
         return sorted(results)
     # Walk with symlink following + cycle detection
@@ -7125,12 +7131,12 @@ def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | N
         dirnames[:] = [
             d for d in dirnames
             if not _is_noise_dir(d, dp)  # pass parent so "env"/"*_env" is marker-gated (#2058)
-            and (not (dp / d).is_symlink() or _resolves_under_root(dp / d, containment_root))
+            and (not (dp / d).is_symlink() or _contained(dp / d))
         ]
         for fname in filenames:
             p = dp / fname
             suffix = p.suffix
-            if (suffix in _EXTENSIONS or suffix.lower() in _EXTENSIONS) and not _ignored(p) and _resolves_under_root(p, containment_root):
+            if (suffix in _EXTENSIONS or suffix.lower() in _EXTENSIONS) and not _ignored(p) and _contained(p):
                 results.append(p)
     return sorted(results)
 
