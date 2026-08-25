@@ -1980,19 +1980,31 @@ def build_merge(
     return G
 
 
-def prefix_graph_for_global(G: nx.Graph, repo_tag: str) -> nx.Graph:
+def prefix_graph_for_global(
+    G: nx.Graph, repo_tag: str, community_offset: int = 0
+) -> nx.Graph:
     """Return a copy of G with all node IDs prefixed with repo_tag::.
 
     Labels are preserved unchanged (for display). A 'local_id' attribute
     is added to each node so the original ID can be recovered. Edges and
     their directional attributes (_src/_tgt) are rewritten to match the new
     prefixed IDs. The 'repo' attribute is set on every node.
+
+    community_offset shifts each node's integer 'community' id into a shared
+    id space and records the original in 'local_community': every input graph
+    numbers its communities from 0, so ids carried across a merge unchanged
+    collide and the aggregated community view fuses unrelated communities
+    into one meta-node (#3014). 0 (the default) leaves communities untouched.
     """
     relabel = {n: f"{repo_tag}::{n}" for n in G.nodes}
     H = nx.relabel_nodes(G, relabel, copy=True)
     for node, data in H.nodes(data=True):
         data["repo"] = repo_tag
         data.setdefault("local_id", node.split("::", 1)[1])
+        cid = data.get("community")
+        if community_offset and isinstance(cid, int):
+            data["local_community"] = cid
+            data["community"] = cid + community_offset
     for u, v, data in H.edges(data=True):
         if "_src" in data and data["_src"] in relabel:
             data["_src"] = relabel[data["_src"]]
