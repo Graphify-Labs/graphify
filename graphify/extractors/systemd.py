@@ -162,14 +162,16 @@ def _resolve_path_target(unit_dir: Path, raw: str) -> Path | None:
     # Deployment paths are POSIX by definition (systemd is Linux); parse them
     # as such so `/opt/app/run.py` is absolute on every host graphify runs on.
     p = PurePosixPath(raw)
-    if p.is_absolute():
-        direct = Path(raw)
-    else:
-        direct = unit_dir / Path(*p.parts)
-    if direct.is_file():
-        return direct
     if not p.is_absolute():
-        return None
+        direct = unit_dir / Path(*p.parts)
+        return direct if direct.is_file() else None
+    bases = _search_bases(unit_dir)
+    # An absolute path is a HOST path. It may only resolve to a file inside
+    # the corpus: on a Linux host `/usr/bin/mkdir` exists, and an edge to it
+    # would be an edge to the machine graphify happens to run on.
+    direct = Path(raw)
+    if direct.is_file() and any(_is_under(direct, b) for b in bases):
+        return direct
     # /opt/app/bin/run.py -> look for bin/run.py, then run.py, walking up
     # from the unit's directory; deepest match wins, shortest tail last.
     parts = p.parts[1:]  # drop the anchor
@@ -177,11 +179,40 @@ def _resolve_path_target(unit_dir: Path, raw: str) -> Path | None:
         return None
     for start in range(max(0, len(parts) - 3), len(parts)):
         tail = Path(*parts[start:])
-        for base in (unit_dir, *unit_dir.parents):
+        for base in bases:
             candidate = base / tail
             if candidate.is_file():
                 return candidate
     return None
+
+
+def _search_bases(unit_dir: Path) -> list[Path]:
+    """Directories a deployment path may resolve under: the unit's directory
+    and its ancestors up to the scan root. Outside a scan (a direct call)
+    the walk is bounded to a few levels so it can never reach the host's
+    ``/`` — where `usr/bin/python3.12` would otherwise match."""
+    try:
+        import graphify.extract as _extract
+        root = getattr(_extract, "_XAML_ACTIVE_EXTRACT_ROOT", None)
+    except Exception:  # pragma: no cover
+        root = None
+    bases = [unit_dir]
+    for parent in unit_dir.parents:
+        if root is not None:
+            if not _is_under(parent, Path(root)):
+                break
+        elif len(bases) > 3:
+            break
+        bases.append(parent)
+    return bases
+
+
+def _is_under(path: Path, base: Path) -> bool:
+    try:
+        path.resolve().relative_to(base.resolve())
+        return True
+    except (ValueError, OSError):
+        return False
 
 
 def _script_from_exec(value: str) -> str | None:
