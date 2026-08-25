@@ -134,7 +134,7 @@ def _community_article(
     )
     total_edges = sum(conf_counts.values()) or 1
 
-    sources = sorted({G.nodes[n].get("source_file") or "" for n in nodes} - {""})
+    sources = sorted({(G.nodes[n].get("source_file") or "").replace("\\", "/") for n in nodes} - {""})
 
     lines: list[str] = []
     lines += [f"# {label}", ""]
@@ -148,10 +148,11 @@ def _community_article(
     for nid in top_nodes:
         d = G.nodes[nid]
         node_label = d.get("label", nid)
-        src = d.get("source_file", "")
+        src = (d.get("source_file") or "").replace("\\", "/")
         degree = G.degree(nid)
         src_str = f" — `{src}`" if src else ""
-        lines.append(f"- **{node_label}** ({degree} connections){src_str}")
+        linked_label = _md_link(node_label, resolver)
+        lines.append(f"- **{linked_label}** ({degree} connections){src_str}")
     remaining = len(nodes) - len(top_nodes)
     if remaining > 0:
         lines.append(f"- *... and {remaining} more nodes in this community*")
@@ -186,7 +187,7 @@ def _god_node_article(G: nx.Graph, nid: str, labels: dict[int, str], node_commun
     resolver = resolver or {}
     d = G.nodes[nid]
     node_label = d.get("label", nid)
-    src = d.get("source_file", "")
+    src = (d.get("source_file") or "").replace("\\", "/")
     cid = (node_community or {}).get(nid)
     community_name = labels.get(cid, f"Community {cid}") if cid is not None else None
 
