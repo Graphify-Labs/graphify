@@ -3231,13 +3231,14 @@ def detect_backend() -> str | None:
     """Return the name of whichever backend has an API key set, or None.
 
     Priority: gemini → kimi → claude → openai → deepseek → azure → bedrock →
-    vertex → ollama (last, opt-in).
+    ollama → vertex (last).
 
-    Ollama is intentionally checked LAST so a paid API key (Anthropic/OpenAI/etc.)
-    is never silently shadowed by an incidental OLLAMA_BASE_URL in the environment
-    — see security finding F-002/F-029. Setting OLLAMA_BASE_URL alongside a paid
-    key now keeps you on the paid backend; remove the paid key (or pass
-    --backend ollama explicitly) to route to the local model.
+    Ollama is checked before Vertex because OLLAMA_BASE_URL/OLLAMA_HOST is an
+    explicit graphify-specific configuration, while GOOGLE_CLOUD_PROJECT is often
+    set globally for other GCP tools (gcloud, terraform, etc.). An explicit Ollama
+    configuration should not be shadowed by an ambient GCP environment variable.
+    Both are checked after paid API keys to avoid silently shadowing a paid key
+    with a free/local backend (security finding F-002/F-029).
     """
     for backend in ("gemini", "kimi", "claude", "openai", "deepseek"):
         if _get_backend_api_key(backend):
@@ -3246,12 +3247,6 @@ def detect_backend() -> str | None:
         return "azure"
     if os.environ.get("AWS_PROFILE") or os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION"):
         return "bedrock"
-    # GEMINI_API_KEY/GOOGLE_API_KEY (checked first, above) wins over this when
-    # both happen to be set -- vertex is the fallback for environments (e.g.
-    # under an org policy that disallows raw API keys) where a static Gemini
-    # key was never an option in the first place.
-    if os.environ.get("GOOGLE_CLOUD_PROJECT"):
-        return "vertex"
     # Honor Ollama's own OLLAMA_HOST here too, not just OLLAMA_BASE_URL (#1940) —
     # otherwise a user who set the standard Ollama var but no --backend still
     # gets "no LLM API key found". Empty default -> falsy when neither is set,
@@ -3260,6 +3255,14 @@ def detect_backend() -> str | None:
     if ollama_url:
         _validate_ollama_base_url(ollama_url)
         return "ollama"
+    # GEMINI_API_KEY/GOOGLE_API_KEY (checked first, above) wins over this when
+    # both happen to be set -- vertex is the fallback for environments (e.g.
+    # under an org policy that disallows raw API keys) where a static Gemini
+    # key was never an option in the first place. Checked after Ollama because
+    # GOOGLE_CLOUD_PROJECT is often ambient (set for gcloud/terraform/etc.),
+    # while OLLAMA_BASE_URL is graphify-specific.
+    if os.environ.get("GOOGLE_CLOUD_PROJECT"):
+        return "vertex"
     for name in BACKENDS:
         if name not in ("gemini", "kimi", "claude", "openai", "deepseek", "azure", "bedrock", "vertex", "ollama", "claude-cli"):
             if _get_backend_api_key(name):
