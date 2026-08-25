@@ -30,7 +30,8 @@ export GRAPHIFY_WHISPER_MODEL=base  # or whatever --whisper-model the user passe
 # or use a here-doc / printf %q pattern; the export must still happen for the child Python process to inherit it.
 GRAPHIFY_WHISPER_PROMPT='<the one-sentence domain hint you composed in Step 1>'
 export GRAPHIFY_WHISPER_PROMPT
-"$(cat graphify-out/.graphify_python)" -c "
+readarray -t GFY_PYTHON < graphify-out/.graphify_python
+"${GFY_PYTHON[@]}" -c "
 import json, os, sys
 from pathlib import Path
 from graphify.transcribe import transcribe_all
