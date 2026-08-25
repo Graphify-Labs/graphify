@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Fix: the scan's ignore evaluation no longer builds pathlib objects per pattern per file. `_is_ignored`'s matcher called `Path.relative_to(anchor)` (and often `relative_to(root)`) for EVERY pattern on EVERY walked entry, re-parsed each pattern's flags per entry, re-split the relative path per pattern, and re-`stat`ed `is_dir()` per matched directory-only pattern; on Python 3.12+ `relative_to` also walks `parents` quadratically in path depth, so a real 76,579-file vault whose 28,968-file `graphify-notes/` sits in `.graphifyignore` had `detect()` pinned at 99% CPU for 52+ minutes inside `pathlib._format_parsed_parts` (caught live with py-spy). The relative path is now computed once per entry per distinct anchor by a lexical parts-prefix helper (`_lexical_relative`, exactly `relative_to`'s comparison, Windows casefold included), pattern flags are parsed once and cached, segment/prefix splits and the `is_dir` stat happen at most once per entry, and directory-level pruning (one evaluation excludes a whole ignored subtree from the walk) is now pinned by regression tests counting walk descents and evaluation totals. Matching semantics are unchanged — verified by a 38,000-case differential fuzz of old vs new on Python 3.12 and 3.14, zero mismatches. Synthetic 300-pattern/deep-tree scan: 12.0s → 3.3s; per-pattern `relative_to` calls on the walk drop from ~65,700 to ~2,000 (one per entry) on a 1,000-file corpus with 61 patterns (#2226).
+
 ## 0.9.49 (2026-08-24)
 
 - Feature: `graphify merge-graphs` now links a type declaration that two repos share — same fully-qualified namespace and name, from different repos — with a `same_type_as` edge, so a shared contract type is navigable across the repo boundary; two unrelated types that merely share a short name are not linked (#3007, thanks @durmazoguzhan).
