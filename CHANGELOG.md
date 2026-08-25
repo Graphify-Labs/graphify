@@ -2,7 +2,7 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
-## 0.9.50 (unreleased)
+## 0.9.50 (2026-08-25)
 
 - Fix: Ruby methods whose names end in `!`, `?`, or `=` now keep distinct node ids, so `save` and `save!` (or `foo` and `foo=`) no longer collide into one node; the label keeps the raw spelling and member-call resolution still matches (#3077, thanks @hopstreax).
 - Fix: a Ruby call on a qualified constant receiver (`ActiveRecord::Base.transaction`) now matches the receiver's full constant path, so it no longer binds to an unrelated lone class named `Base`; an edge is emitted only on a single unambiguous match (#3078, thanks @rohit-jsfreaky).
