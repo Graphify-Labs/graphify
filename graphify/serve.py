@@ -653,6 +653,18 @@ def _pick_scored_endpoint(G: nx.Graph, scored: list[tuple[float, str]], query: s
     return scored[0][1]
 
 
+def _resolve_path_endpoint(
+    G: nx.Graph, query: str
+) -> tuple[str | None, list[tuple[float, str]]]:
+    """Resolve a path endpoint, giving an exact graph node ID absolute priority."""
+    if query in G:
+        return query, [(float("inf"), query)]
+    scored = _score_nodes(G, [t.lower() for t in query.split()])
+    if not scored:
+        return None, []
+    return _pick_scored_endpoint(G, scored, query), scored
+
+
 def _pick_seeds(
     scored: list[tuple[float, str]],
     max_k: int = 3,
@@ -1369,14 +1381,12 @@ def _shortest_path_text(G: nx.Graph, arguments: dict) -> str:
     Directed by default (#2487): the returned path must follow stored
     caller→callee direction; pass ``undirected=True`` to ignore it.
     """
-    src_scored = _score_nodes(G, [t.lower() for t in arguments["source"].split()])
-    tgt_scored = _score_nodes(G, [t.lower() for t in arguments["target"].split()])
-    if not src_scored:
+    src_nid, src_scored = _resolve_path_endpoint(G, arguments["source"])
+    tgt_nid, tgt_scored = _resolve_path_endpoint(G, arguments["target"])
+    if src_nid is None:
         return f"No node matching source '{arguments['source']}' found."
-    if not tgt_scored:
+    if tgt_nid is None:
         return f"No node matching target '{arguments['target']}' found."
-    src_nid = _pick_scored_endpoint(G, src_scored, arguments["source"])
-    tgt_nid = _pick_scored_endpoint(G, tgt_scored, arguments["target"])
     # Ambiguity guard: when both queries resolve to the same node, the
     # shortest path is trivially zero hops, which is almost never what the
     # caller wanted (see bug #828).
