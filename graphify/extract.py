@@ -5248,6 +5248,28 @@ _DISPATCH: dict[str, Any] = {
     ".trigger": extract_apex,
 }
 
+# webui: интерфейсные разборщики (стили, разметка) и связь кода с ними.
+from graphify.extractors.webui import extract_css, extract_html, selector_edges
+_DISPATCH['.css'] = extract_css
+_DISPATCH['.scss'] = extract_css
+_DISPATCH['.html'] = extract_html
+_DISPATCH['.htm'] = extract_html
+
+def _extract_js_with_ui(path):
+    """Обычный разбор JS плюс рёбра «функция трогает такой-то класс»."""
+    res = extract_js(path)
+    try:
+        extra = selector_edges(path, res.get('nodes') or [])
+        res.setdefault('nodes', []).extend(extra['nodes'])
+        res.setdefault('edges', []).extend(extra['edges'])
+    except Exception:
+        pass
+    return res
+
+for _ext in ('.js', '.jsx', '.mjs', '.cjs'):
+    if _DISPATCH.get(_ext) is extract_js:
+        _DISPATCH[_ext] = _extract_js_with_ui
+
 
 # Extensions whose extractor depends on an optional-dependency extra
 # (pyproject [project.optional-dependencies]) and hard-fails without it,
@@ -6206,7 +6228,9 @@ def extract(
             # stay identical across every manifest that references the package, so
             # they are exempt from the file-stem prefix remap (#1377), like the
             # type=module anchors (#1327).
-            if n.get("type") == "package":
+            # webui: узлы интерфейса (type="ui") тоже общие для файлов —
+            # один класс не должен распадаться на три узла.
+            if n.get("type") in ("package", "ui"):
                 continue
             try:
                 entry = prefix_remap.get(Path(sf).resolve())
