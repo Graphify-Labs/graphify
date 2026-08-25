@@ -55,6 +55,15 @@ def _load_graph(graph_path: str) -> nx.Graph:
         except TypeError:
             G = json_graph.node_link_graph(data)
         G.graph["_logical_directed"] = _logical_directed
+        # node_link_graph copies only data["graph"] onto G.graph and drops every
+        # other top-level key, so build provenance — which export.to_json writes
+        # at the top level — does not survive the load. Stash it the same way the
+        # logical-direction flag above is stashed, under private names so a graph
+        # loaded here can never round-trip these into a nested data["graph"].
+        for _prov in ("built_at", "built_at_commit"):
+            _val = data.get(_prov)
+            if isinstance(_val, str) and _val.strip():
+                G.graph["_" + _prov] = _val.strip()
         # Attach the work-memory overlay (derived sidecar next to graph.json) so
         # the query/MCP read surface can annotate NODE lines display-only. Empty
         # when no sidecar exists, leaving un-annotated output byte-identical.
@@ -1858,14 +1867,27 @@ def _build_server(graph_path: str):
     def _tool_graph_stats(_: dict) -> str:
         confs = [d.get("confidence", "EXTRACTED") for _, _, d in G.edges(data=True)]
         total = len(confs) or 1
-        return (
-            f"Nodes: {G.number_of_nodes()}\n"
-            f"Edges: {G.number_of_edges()}\n"
-            f"Communities: {len(communities)}\n"
-            f"EXTRACTED: {round(confs.count('EXTRACTED')/total*100)}%\n"
-            f"INFERRED: {round(confs.count('INFERRED')/total*100)}%\n"
-            f"AMBIGUOUS: {round(confs.count('AMBIGUOUS')/total*100)}%\n"
-        )
+        lines = [
+            f"Nodes: {G.number_of_nodes()}",
+            f"Edges: {G.number_of_edges()}",
+            f"Communities: {len(communities)}",
+            f"EXTRACTED: {round(confs.count('EXTRACTED')/total*100)}%",
+            f"INFERRED: {round(confs.count('INFERRED')/total*100)}%",
+            f"AMBIGUOUS: {round(confs.count('AMBIGUOUS')/total*100)}%",
+        ]
+        # Provenance, when the graph carries it. An agent reading these stats
+        # over MCP cannot stat the file, so without these lines it has no way to
+        # tell a graph built minutes ago from one built last month — and it will
+        # answer questions about today's code from either. Appended rather than
+        # prepended, and omitted entirely when absent, so a pre-provenance graph
+        # renders exactly as it did before.
+        built_at = G.graph.get("_built_at")
+        if built_at:
+            lines.append(f"Built at: {built_at}")
+        commit = G.graph.get("_built_at_commit")
+        if commit:
+            lines.append(f"Built from commit: {commit}")
+        return "\n".join(lines) + "\n"
 
     def _tool_shortest_path(arguments: dict) -> str:
         return _shortest_path_text(G, arguments)

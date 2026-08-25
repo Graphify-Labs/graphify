@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Feature: `graph_stats` now reports build provenance — `Built from commit:` and `Built at:` — so an agent querying over MCP can tell how stale the graph it is answering from actually is. `built_at_commit` was already written into `graph.json` and consumed by the HTML report and the CLI, but `node_link_graph` keeps only `data["graph"]` and dropped it on load, so the MCP surface never saw it; every existing graph gains the commit line without a rebuild. `graph.json` also records a new top-level `built_at` UTC stamp (`YYYY-MM-DDTHH:MM:SSZ`), which answers a different question than the commit — when the file was written, not which revision it describes — and is what a consumer that cannot stat the file needs in order to judge freshness. The stamp is injectable like the commit so byte-identity round-trips stay assertable, and it is excluded from the graph-comparison helpers, since a field that changes on every write would otherwise make every incremental rebuild look like a change and rewrite `graph.json` and `GRAPH_REPORT.md` forever.
+
 ## 0.9.49 (2026-08-24)
 
 - Feature: `graphify merge-graphs` now links a type declaration that two repos share — same fully-qualified namespace and name, from different repos — with a `same_type_as` edge, so a shared contract type is navigable across the repo boundary; two unrelated types that merely share a short name are not linked (#3007, thanks @durmazoguzhan).

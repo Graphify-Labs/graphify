@@ -3769,3 +3769,55 @@ def test_subfolder_marker_incremental_matches_cold_build(tmp_path, monkeypatch):
         f"incremental vs cold id drift: only-incremental={sorted(incremental_ids - cold_ids)[:5]}, "
         f"only-cold={sorted(cold_ids - incremental_ids)[:5]}"
     )
+
+
+# --- build stamp is provenance, not content ---------------------------------
+
+def _stamped(stamp: str, *, nodes=None) -> dict:
+    return {
+        "directed": False,
+        "nodes": nodes if nodes is not None else [{"id": "a", "label": "A"}],
+        "links": [],
+        "built_at": stamp,
+        "built_at_commit": "deadbeef",
+    }
+
+
+def test_graph_comparators_ignore_the_build_stamp():
+    """Two graphs identical but for `built_at` must compare EQUAL.
+
+    The stamp changes on every write by construction. If the comparators saw it,
+    "did the graph change?" would answer yes forever: every incremental run would
+    rewrite graph.json and GRAPH_REPORT.md, destroying the no-op skip that
+    _canonical_graph_for_compare exists to provide.
+    """
+    from graphify.watch import (
+        _canonical_graph_for_compare,
+        _canonical_topology_for_compare,
+    )
+
+    old = _stamped("2020-01-01T00:00:00Z")
+    new = _stamped("2026-08-25T09:15:42Z")
+
+    for fn in (_canonical_graph_for_compare, _canonical_topology_for_compare):
+        assert fn(old) == fn(new), f"{fn.__name__} treated the write stamp as content"
+        # The stamp is removed, not merely normalised to a shared value.
+        assert "built_at" not in fn(new), fn.__name__
+
+
+def test_graph_comparators_still_detect_a_real_change_alongside_a_new_stamp():
+    """The red half of the guard above: ignoring the stamp must not blind the
+    comparators to an actual topology change that arrives with it. A test that
+    can only ever pass is not a test."""
+    from graphify.watch import (
+        _canonical_graph_for_compare,
+        _canonical_topology_for_compare,
+    )
+
+    old = _stamped("2020-01-01T00:00:00Z")
+    changed = _stamped(
+        "2026-08-25T09:15:42Z",
+        nodes=[{"id": "a", "label": "A"}, {"id": "b", "label": "B"}],
+    )
+    for fn in (_canonical_graph_for_compare, _canonical_topology_for_compare):
+        assert fn(old) != fn(changed), f"{fn.__name__} missed a real node change"

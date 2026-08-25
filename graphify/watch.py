@@ -806,6 +806,11 @@ def _node_community_map(graph_data: dict) -> dict[str, int]:
 def _canonical_graph_for_compare(graph_data: dict) -> dict:
     canonical = dict(graph_data)
     canonical.pop("built_at_commit", None)
+    # Provenance is not content. The write stamp changes on every single write
+    # by construction, so leaving it in would make "did the graph change?"
+    # answer yes forever — rewriting graph.json and GRAPH_REPORT.md on every
+    # incremental run and destroying the no-op skip this comparison exists for.
+    canonical.pop("built_at", None)
     # A missing "directed" key means the same thing as "directed": false
     # everywhere else in the codebase (#2342's --no-cluster path only started
     # writing the key once it began inheriting it from the existing graph).
@@ -825,6 +830,7 @@ def _canonical_graph_for_compare(graph_data: dict) -> dict:
 def _canonical_topology_for_compare(graph_data: dict) -> dict:
     canonical = dict(graph_data)
     canonical.pop("built_at_commit", None)
+    canonical.pop("built_at", None)
 
     nodes = canonical.get("nodes")
     if isinstance(nodes, list):
