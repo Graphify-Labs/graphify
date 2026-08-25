@@ -341,10 +341,24 @@ def ci_select(
         if not source_file:
             continue
 
-        parts = source_file.split("/", 1)
-        if len(parts) == 2:
-            node_repo = parts[0]
-            node_file = parts[1]
+        # Check if source_file starts with a repo name followed by a slash.
+        # Repo names are single path components (no slashes), while repo-relative
+        # paths like "internal/servers/file.go" have slashes throughout.
+        # Cross-repo format: "other-repo/path/to/file.go"
+        # Same-repo format: "path/to/file.go" (no repo prefix)
+        first_slash = source_file.find("/")
+        if first_slash > 0:
+            potential_repo = source_file[:first_slash]
+            potential_file = source_file[first_slash + 1:]
+            # If the potential_repo contains no path separators in its remainder
+            # AND differs from our repo, treat it as cross-repo
+            if "/" not in potential_repo and potential_repo != repo:
+                node_repo = potential_repo
+                node_file = potential_file
+            else:
+                # It's a repo-relative path in the current repo
+                node_repo = repo
+                node_file = source_file
         else:
             node_repo = repo
             node_file = source_file
@@ -560,9 +574,23 @@ def cli_main(argv: list[str] | None = None) -> None:
                 text=True,
                 timeout=30,
             )
+            if result.returncode != 0:
+                print(
+                    f"error: diff command failed with exit code {result.returncode}",
+                    file=sys.stderr,
+                )
+                if result.stderr:
+                    print(result.stderr, file=sys.stderr)
+                sys.exit(1)
             changed_files = parse_diff_files(result.stdout)
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as exc:
             print("error: diff command timed out", file=sys.stderr)
+            # Kill the process group to prevent orphaned child processes
+            if exc.args and hasattr(exc.args[0], "kill"):
+                try:
+                    exc.args[0].kill()
+                except (OSError, AttributeError):
+                    pass
             sys.exit(1)
     elif files_str:
         changed_files = [f.strip() for f in files_str.split(",") if f.strip()]
