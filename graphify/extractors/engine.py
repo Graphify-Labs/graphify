@@ -2329,7 +2329,7 @@ def _ts_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                    nodes: list, edges: list, seen_ids: set, function_bodies: list,
                    parent_class_nid: str | None, add_node_fn, add_edge_fn,
                    walk_fn) -> bool:
-    """Emit a container node for a TS `namespace`/`module` declaration.
+    """Emit enum member nodes, and a container node for a TS `namespace`/`module`.
 
     `namespace Foo {}` parses as `internal_module` (with `name`/`body` fields);
     `module Bar {}` and ambient `declare module "pkg" {}` parse as a named
@@ -2343,6 +2343,42 @@ def _ts_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
     The guard requires `is_named` because the anonymous `module` keyword token
     shares the `module` type string and would otherwise match here.
     """
+    if (parent_class_nid
+            and node.parent is not None
+            and node.parent.type == "enum_body"
+            and node.type in ("property_identifier", "enum_assignment")):
+        # `enum_declaration` is in TS's class_types "parity with Java/C#", so the
+        # enum type is a node while its members were not, leaving the type a leaf.
+        # Java emits a node per `enum_constant` with a `case_of` edge (#1719),
+        # Kotlin per `enum_entry` (#1738), Swift the same; this is that shape.
+        #
+        # Two member spellings: a bare `Red` is a `property_identifier`, while
+        # `Green = 5` is an `enum_assignment` whose `name` is either a
+        # `property_identifier` or, for a quoted member, a `string`. The parent
+        # check is what keeps this off the `property_identifier` nodes that
+        # appear all over a TS file.
+        name_node = node if node.type == "property_identifier" else node.child_by_field_name("name")
+        if name_node is None:
+            return True
+        if name_node.type == "string":
+            # `"Odd Name" = 7`: read the fragment so the label is the member
+            # name rather than the quoted literal.
+            fragment = next(
+                (c for c in name_node.children if c.type == "string_fragment"), None)
+            member_name = _read_text(fragment, source) if fragment is not None else ""
+        else:
+            member_name = _read_text(name_node, source)
+        if not member_name:
+            return True
+        line = node.start_point[0] + 1
+        member_nid = _make_id(parent_class_nid, member_name)
+        # TS is case-sensitive while the id recipe casefolds, so `enum E { Value,
+        # value }` puts two legal members on one id. The first declaration keeps
+        # the node rather than a second edge hanging off it.
+        if member_nid not in seen_ids:
+            add_node_fn(member_nid, member_name, line)
+            add_edge_fn(parent_class_nid, member_nid, "case_of", line)
+        return True
     if node.is_named and node.type in ("internal_module", "module"):
         name_node = node.child_by_field_name("name")
         if name_node is None:
@@ -4602,7 +4638,7 @@ def _extract_generic(
                               closure_locals_by_body, config=config):
                 return
 
-        # TS namespace / module containers (internal_module, module)
+        # TS enum members, and namespace / module containers
         if config.ts_module == "tree_sitter_typescript":
             if _ts_extra_walk(node, source, file_nid, stem, str_path,
                               nodes, edges, seen_ids, function_bodies,
