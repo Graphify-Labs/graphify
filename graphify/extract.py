@@ -5696,7 +5696,18 @@ def extract(
     _missing_dep_fallback: dict[str, bool] = {}
     for i, _p in enumerate(paths):
         _result = per_file[i] or {}
-        _err = _result.get("error") or _result.get("dependency_warning") or ""
+        _diagnostics = (
+            str(_result.get("dependency_warning") or ""),
+            str(_result.get("error") or ""),
+        )
+        _err = next(
+            (
+                message for message in _diagnostics
+                if _DEP_MISSING_MARKER in message
+                or _DEP_LOAD_FAILED_MARKER in message
+            ),
+            "",
+        )
         if _DEP_MISSING_MARKER in _err or _DEP_LOAD_FAILED_MARKER in _err:
             _ext = _p.suffix.lower()
             _missing_dep_count[_ext] = _missing_dep_count.get(_ext, 0) + 1

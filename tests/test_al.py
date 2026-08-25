@@ -68,6 +68,17 @@ def test_al_mask_preserves_comment_markers_inside_quoted_identifiers():
     assert "// comment" not in masked
 
 
+def test_al_mask_preserves_every_quoted_identifier_character():
+    identifiers = ['"Name // Part"', '"Name /* Part"', '"A""//""B"']
+    source = " ".join(identifiers) + " // trailing comment"
+
+    masked = _mask_al_comments_and_strings(source)
+
+    for identifier in identifiers:
+        start = source.index(identifier)
+        assert masked[start:start + len(identifier)] == identifier
+
+
 def test_al_fallback_preserves_comment_markers_inside_quoted_identifiers():
     result = _extract_al_fallback(
         Path("quoted.al"),
@@ -638,6 +649,39 @@ def test_al_resolver_uses_namespace_imports_and_manifest_context(tmp_path):
         and edge["relation"] == "calls"
         for edge in result["edges"]
     )
+
+
+def test_al_resolution_is_independent_of_file_order(tmp_path):
+    pytest.importorskip("tree_sitter_al")
+    worker = tmp_path / "worker.al"
+    caller = tmp_path / "caller.al"
+    worker.write_text(
+        "namespace Shared; codeunit 1 Worker { procedure Run() begin end; }",
+        encoding="utf-8",
+    )
+    caller.write_text(
+        "namespace Main; using Shared; codeunit 2 Caller "
+        "{ procedure Start() var W: Codeunit Worker; begin W.Run(); end; }",
+        encoding="utf-8",
+    )
+
+    relationships = []
+    for index, files in enumerate(([worker, caller], [caller, worker])):
+        result = extract(files, cache_root=tmp_path / f"cache-{index}")
+        labels = {node["id"]: node["label"] for node in result["nodes"]}
+        relationships.append({
+            (
+                labels.get(edge["source"]),
+                labels.get(edge["target"]),
+                edge["relation"],
+                edge.get("context"),
+            )
+            for edge in result["edges"]
+            if edge["relation"] in {"calls", "references"}
+        })
+
+    assert relationships[0] == relationships[1]
+    assert ("Start()", "Run()", "calls", "call") in relationships[0]
 
 
 def test_al_resolver_connects_test_app_targets_handlers_and_dependency(tmp_path):
