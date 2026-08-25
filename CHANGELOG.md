@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Feature: the `kimi` backend now sends an explicit `reasoning_effort` (default `max`, overridable via `GRAPHIFY_KIMI_EFFORT`) for Kimi models that support it — K3 advertises `valid_efforts ["low","high","max"]` on `/models`, and sending nothing let the server default (`"high"` for K3) apply silently while the gemini backend already carried an effort setting. Forwarded by the existing request plumbing; no behaviour change for models that ignore the field.
+
 ## 0.9.49 (2026-08-24)
 
 - Feature: `graphify merge-graphs` now links a type declaration that two repos share — same fully-qualified namespace and name, from different repos — with a `same_type_as` edge, so a shared contract type is navigable across the repo boundary; two unrelated types that merely share a short name are not linked (#3007, thanks @durmazoguzhan).
