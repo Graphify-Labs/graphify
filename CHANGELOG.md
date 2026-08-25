@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Fix: the `postgres` extra now carries `tree-sitter-sql`, and `pg_introspect` reports the missing grammar instead of returning an empty graph. Installing exactly as the README documents (`pip install "graphifyy[postgres]"`) and pointing graphify at a live database returned "0 nodes, 0 edges" and exited 0: the extra pulled the `psycopg` driver but not the SQL grammar the synthesized DDL is parsed with, so every table, view and function silently produced nothing. Reproduced on `postgres:17-alpine` with 0.9.48 against a database with 3 tables, foreign keys, a view and a function. A silent empty result is worse than a failure, so a missing grammar now raises with the install hint rather than being swallowed.
+
 ## 0.9.49 (2026-08-24)
 
 - Feature: `graphify merge-graphs` now links a type declaration that two repos share — same fully-qualified namespace and name, from different repos — with a `same_type_as` edge, so a shared contract type is navigable across the repo boundary; two unrelated types that merely share a short name are not linked (#3007, thanks @durmazoguzhan).
