@@ -216,6 +216,18 @@ BACKENDS: dict[str, dict] = {
         # CLI's Read tool rather than as inline base64 (see `_call_claude_cli`).
         "vision": True,
     },
+    # Routes extraction and labeling through the locally authenticated Codex
+    # CLI, so the work rides a ChatGPT subscription instead of a metered
+    # OPENAI_API_KEY. Mirrors the claude-cli entry above.
+    "openai-cli": {
+        "default_model": "gpt-5.6-sol",
+        "model_env_key": "GRAPHIFY_OPENAI_CLI_MODEL",
+        # Subscription usage is not metered API spend; zero pricing is intentional.
+        "pricing": {"input": 0.0, "output": 0.0},
+        "temperature": None,
+        "max_tokens": 16384,
+        "vision": False,
+    },
 }
 
 
@@ -1628,6 +1640,52 @@ def _claude_cli_supports_json_schema(claude_cmd: str) -> bool:
     return supported
 
 
+def _openai_cli_turn_usage(stdout: str) -> tuple[int, int]:
+    """Return token counts from the last Codex ``turn.completed`` JSONL event."""
+    completed_usage: dict | None = None
+    for line in (stdout or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except (json.JSONDecodeError, TypeError):
+            # Codex stdout is JSONL, but tolerate diagnostics or malformed lines;
+            # losing accounting must never discard an otherwise valid extraction.
+            continue
+        if isinstance(event, dict) and event.get("type") == "turn.completed":
+            usage = event.get("usage")
+            completed_usage = usage if isinstance(usage, dict) else {}
+
+    if completed_usage is None:
+        # Without a completion event the exact counts are unknown; report zero
+        # rather than estimating or inventing usage.
+        return 0, 0
+
+    def _count(name: str) -> int:
+        try:
+            return int(completed_usage.get(name, 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    # Codex input_tokens already appears to include cached_input_tokens, so do
+    # not add the cached count again or usage will be double-counted.
+    return _count("input_tokens"), _count("output_tokens")
+
+
+def _openai_cli_vendor_detail(stderr: str, stdout: str) -> str:
+    """Return bounded Codex diagnostics, preserving stderr and stdout's tail."""
+    parts: list[str] = []
+    stderr_text = (stderr or "").strip()
+    stdout_text = (stdout or "").strip()
+    if stderr_text:
+        parts.append(f"stderr: {stderr_text[-400:]}")
+    if stdout_text:
+        # API errors, including HTTP 400 responses, can appear only in JSONL stdout.
+        parts.append(f"stdout tail: {stdout_text[-400:]}")
+    return " | ".join(parts) or "(no stderr or stdout)"
+
+
 def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bool = False, images: list[_ImageRef] | None = None) -> dict:
     """Call Claude via the locally-installed Claude Code CLI (`claude -p`).
 
@@ -1772,6 +1830,157 @@ def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bo
     result["finish_reason"] = "length" if stop_reason == "max_tokens" else "stop"
     _mark_hollow(result, raw_content, "claude-cli")
     return result
+
+
+def _codex_disable_mcp_args(codex_cmd: str) -> list[str]:
+    """`-c mcp_servers.<name>.enabled=false` for every server Codex has configured.
+
+    Extraction never calls a tool, and each configured MCP server is started per
+    `codex exec` invocation. Codex config overrides deep-merge, so a blanket
+    `-c mcp_servers={}` leaves the servers enabled; its per-server `enabled` field
+    (visible in `codex mcp get <name>`) is the switch that works. The server list
+    comes from `codex mcp list --json`, so no server name is hardcoded. Best effort:
+    if that call is unavailable (older Codex, no config), extraction proceeds with
+    whatever the user configured.
+    """
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            [codex_cmd, "mcp", "list", "--json"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=30, check=False, **_no_window_kwargs(),
+        )
+        if proc.returncode != 0 or not proc.stdout.strip():
+            return []
+        servers = json.loads(proc.stdout)
+    except Exception:
+        return []
+    args: list[str] = []
+    for entry in servers if isinstance(servers, list) else []:
+        name = (entry or {}).get("name") if isinstance(entry, dict) else None
+        if isinstance(name, str) and name and all(ch.isalnum() or ch in "-_" for ch in name):
+            args += ["-c", f"mcp_servers.{name}.enabled=false"]
+    return args
+
+
+def _call_openai_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bool = False, images: list[_ImageRef] | None = None) -> dict:
+    """Call OpenAI through the locally authenticated Codex CLI."""
+    import shutil
+    import subprocess
+    import tempfile
+
+    codex_cmd = shutil.which("codex")
+    if codex_cmd is None:
+        raise RuntimeError(
+            "OpenAI Codex CLI not found on $PATH. Install it with "
+            "`npm install -g @openai/codex` and run `codex` once to authenticate "
+            "with your ChatGPT account."
+        )
+
+    mdl = os.environ.get("GRAPHIFY_OPENAI_CLI_MODEL", "").strip() or "gpt-5.6-sol"
+    if images:
+        # This backend is text-only: preserve image source references without
+        # exposing absolute paths or claiming that Codex received pixel data.
+        user_message = _with_image_notes(user_message, images, with_paths=False)
+
+    # Deliver the schema and imperative together in the CLI's user turn, just as
+    # claude-cli does. An agentic CLI given only raw source may answer in prose;
+    # that would parse hollow and trigger the adaptive retry path.
+    combined_message = (
+        _extraction_system(deep=deep_mode)
+        + "\n\n"
+        + "Now extract the knowledge graph from the following source file(s) "
+        + "and output ONLY the JSON object described above. No prose, no "
+        + "preamble, no markdown fences.\n\n"
+        + user_message
+    )
+
+    output_file = tempfile.NamedTemporaryFile(delete=False, suffix=".json")
+    output_path = output_file.name
+    output_file.close()
+    try:
+        # Linux MAX_ARG_STRLEN caps a single argv entry at 128 KB. Real chunks
+        # reach 240-306 KB, well past that cap; putting the prompt in argv raises
+        # Errno 7 in subprocess before Codex starts, so there are no vendor
+        # diagnostics at all.
+        cli_args = [
+            codex_cmd,
+            "exec",
+            "--skip-git-repo-check",
+            "--json",
+            # Codex can execute shell commands. Extraction must not be able to
+            # write to the corpus it is reading, so the sandbox is read-only.
+            "--sandbox",
+            "read-only",
+            # Extraction is text-to-JSON: it asks no questions of any tool. Without
+            # this, every `codex exec` starts the user's configured MCP servers per
+            # call (measured: four graph servers at ~152 MB each during one run,
+            # more memory than the extraction itself). `-c mcp_servers={}` does NOT
+            # work — Codex merges config overrides into the table rather than
+            # replacing it, so the servers stay enabled (verified with
+            # `codex mcp list -c mcp_servers={}`). The mechanism that does work is
+            # Codex's own per-server `enabled` field, one override per server.
+            *_codex_disable_mcp_args(codex_cmd),
+            # Reasoning effort for the extraction calls. Defaults to "ultra";
+            # GRAPHIFY_OPENAI_CLI_EFFORT overrides it without a source edit.
+            "-c",
+            "model_reasoning_effort=%s" % (os.environ.get("GRAPHIFY_OPENAI_CLI_EFFORT", "").strip() or "ultra"),
+            "--model",
+            mdl,
+            "-o",
+            output_path,
+            "-",
+        ]
+        proc = subprocess.run(
+            cli_args,
+            # input= keeps the prompt out of argv and closes the pipe; the prompt
+            # cannot ride in argv, and an open harness pipe hangs Codex forever.
+            input=combined_message,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            # A measured single-document extraction took 361 seconds, so the
+            # 600-second default is tight; users should raise --api-timeout.
+            timeout=_resolve_api_timeout(),
+            check=False,
+            **_no_window_kwargs(),
+        )
+        if proc.returncode != 0:
+            detail = _openai_cli_vendor_detail(proc.stderr, proc.stdout)
+            raise RuntimeError(f"codex exec exited {proc.returncode}: {detail}")
+        if not os.path.exists(output_path):
+            detail = _openai_cli_vendor_detail(proc.stderr, proc.stdout)
+            raise RuntimeError(f"codex exec produced no -o output file: {detail}")
+        try:
+            raw_content = Path(output_path).read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            detail = _openai_cli_vendor_detail(proc.stderr, proc.stdout)
+            raise RuntimeError(f"codex exec could not read its -o output: {exc}; {detail}") from exc
+        if not raw_content.strip():
+            detail = _openai_cli_vendor_detail(proc.stderr, proc.stdout)
+            raise RuntimeError(f"codex exec produced an empty -o output file: {detail}")
+
+        result = _parse_llm_json(raw_content)
+        if not result.get("nodes") and not result.get("edges") and not result.get("hyperedges"):
+            # Never return an empty graph here: _response_is_hollow would treat it
+            # as truncation and bisect the chunk into as many as 15 more calls. That
+            # exact failure mode previously consumed 87% of an hourly backend quota.
+            vendor_text = raw_content.strip()[:800]
+            raise RuntimeError(f"codex exec returned no graph content: {vendor_text}")
+
+        input_tokens, output_tokens = _openai_cli_turn_usage(proc.stdout)
+        result["input_tokens"] = input_tokens
+        result["output_tokens"] = output_tokens
+        result["model"] = mdl
+        result["finish_reason"] = "stop"
+        return result
+    finally:
+        try:
+            os.unlink(output_path)
+        except OSError:
+            pass
 
 
 def _azure_client(api_key: str, endpoint: str):
@@ -1931,7 +2140,7 @@ def extract_files_direct(
             file=sys.stderr,
         )
         key = "ollama"
-    if not key and backend not in ("bedrock", "claude-cli"):
+    if not key and backend not in ("bedrock", "claude-cli", "openai-cli"):
         raise ValueError(
             f"No API key for backend '{backend}'. "
             f"Set {_format_backend_env_keys(backend)} or pass api_key=."
@@ -1955,6 +2164,8 @@ def extract_files_direct(
         result = _call_claude(key, mdl, user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
     elif backend == "claude-cli":
         result = _call_claude_cli(user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
+    elif backend == "openai-cli":
+        result = _call_openai_cli(user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
     elif backend == "bedrock":
         result = _call_bedrock(mdl, user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
     elif backend == "azure":
@@ -2613,6 +2824,8 @@ def extract_corpus_parallel(
     # over session state. Force serial unless the user explicitly opts in.
     if backend == "claude-cli" and os.environ.get("GRAPHIFY_CLAUDE_CLI_PARALLEL", "").strip() != "1":
         max_concurrency = 1
+    if backend == "openai-cli" and os.environ.get("GRAPHIFY_OPENAI_CLI_PARALLEL", "").strip() != "1":
+        max_concurrency = 1
     def _checkpoint_chunk(result: dict, chunk: "list[Path | FileSlice]") -> None:
         # Persist each chunk's semantic results to the cache as soon as it
         # completes. Without this, the semantic cache is only written once, at
@@ -2855,7 +3068,7 @@ def _call_llm(
         ollama_url = _resolve_ollama_base_url(cfg.get("base_url", ""))
         _validate_ollama_base_url(ollama_url)
         key = "ollama"
-    if not key and backend not in ("bedrock", "claude-cli"):
+    if not key and backend not in ("bedrock", "claude-cli", "openai-cli"):
         raise ValueError(
             f"No API key for backend '{backend}'. Set {_format_backend_env_keys(backend)}."
         )
@@ -2928,6 +3141,71 @@ def _call_llm(
                 cli_usage.get("output_tokens", 0),
             )
         return envelope.get("result", "")
+
+    if backend == "openai-cli":
+        import shutil, subprocess, tempfile
+
+        codex_cmd = shutil.which("codex")
+        if codex_cmd is None:
+            raise RuntimeError(
+                "OpenAI Codex CLI not found on $PATH. Install it with "
+                "`npm install -g @openai/codex` and run `codex` once to authenticate "
+                "with your ChatGPT account."
+            )
+        output_file = tempfile.NamedTemporaryFile(delete=False, suffix=".json")
+        output_path = output_file.name
+        output_file.close()
+        try:
+            cli_args = [
+                codex_cmd,
+                "exec",
+                "--skip-git-repo-check",
+                "--json",
+                # Labeling is also an agentic Codex pass, so it must not be able
+                # to mutate the corpus or any other file in the working tree.
+                "--sandbox",
+                "read-only",
+                "--model",
+                mdl,
+                "-o",
+                output_path,
+                "-",
+            ]
+            proc = subprocess.run(
+                cli_args,
+                # input= keeps the prompt out of argv and closes the pipe; the prompt
+                # cannot ride in argv, and an open harness pipe hangs Codex forever.
+                input=prompt,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=_resolve_api_timeout(),
+                check=False,
+                **_no_window_kwargs(),
+            )
+            if proc.returncode != 0:
+                detail = _openai_cli_vendor_detail(proc.stderr, proc.stdout)
+                raise RuntimeError(f"codex exec exited {proc.returncode}: {detail}")
+            if not os.path.exists(output_path):
+                detail = _openai_cli_vendor_detail(proc.stderr, proc.stdout)
+                raise RuntimeError(f"codex exec produced no -o output file: {detail}")
+            try:
+                raw_content = Path(output_path).read_text(encoding="utf-8", errors="replace")
+            except OSError as exc:
+                detail = _openai_cli_vendor_detail(proc.stderr, proc.stdout)
+                raise RuntimeError(f"codex exec could not read its -o output: {exc}; {detail}") from exc
+            if not raw_content.strip():
+                detail = _openai_cli_vendor_detail(proc.stderr, proc.stdout)
+                raise RuntimeError(f"codex exec produced an empty -o output file: {detail}")
+            input_tokens, output_tokens = _openai_cli_turn_usage(proc.stdout)
+            _rec(input_tokens, output_tokens)
+            return raw_content
+        finally:
+            try:
+                os.unlink(output_path)
+            except OSError:
+                pass
 
 
     if backend == "bedrock":
@@ -3127,7 +3405,7 @@ def detect_backend() -> str | None:
         _validate_ollama_base_url(ollama_url)
         return "ollama"
     for name in BACKENDS:
-        if name not in ("gemini", "kimi", "claude", "openai", "deepseek", "azure", "bedrock", "ollama", "claude-cli"):
+        if name not in ("gemini", "kimi", "claude", "openai", "deepseek", "azure", "bedrock", "ollama", "claude-cli", "openai-cli"):
             if _get_backend_api_key(name):
                 return name
     return None
@@ -3344,6 +3622,8 @@ def label_communities(
     if backend == "ollama" and os.environ.get("GRAPHIFY_OLLAMA_PARALLEL", "").strip() != "1":
         max_concurrency = 1
     if backend == "claude-cli" and os.environ.get("GRAPHIFY_CLAUDE_CLI_PARALLEL", "").strip() != "1":
+        max_concurrency = 1
+    if backend == "openai-cli" and os.environ.get("GRAPHIFY_OPENAI_CLI_PARALLEL", "").strip() != "1":
         max_concurrency = 1
     workers = max(1, min(max_concurrency, n_batches))
 

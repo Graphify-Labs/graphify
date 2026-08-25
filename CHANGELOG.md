@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Feature: a new `openai-cli` backend (`--backend openai-cli`) runs semantic extraction and community labeling through the locally authenticated OpenAI Codex CLI (`codex exec`), so the work rides a ChatGPT OAuth subscription instead of a metered `OPENAI_API_KEY`. The prompt travels via stdin (Linux caps a single argv entry at 128 KB; real chunks reach 240–306 KB), the sandbox is read-only so an agentic Codex cannot write to the corpus it reads, every configured MCP server is disabled per call through Codex's own per-server `enabled` override (a blanket `mcp_servers={}` deep-merges away; the measured cost was four ~152 MB servers per `codex exec`), token usage is read from the last `turn.completed` JSONL event without double-counting cached input, an empty-but-valid graph raises instead of triggering the hollow-response bisect (which once burned 87% of an hourly quota), and calls are forced serial unless `GRAPHIFY_OPENAI_CLI_PARALLEL=1`. `GRAPHIFY_OPENAI_CLI_MODEL` (default `gpt-5.6-sol`) and `GRAPHIFY_OPENAI_CLI_EFFORT` (default `ultra`) configure it; the credential gate accepts a present `codex` CLI in place of an API key, mirroring `claude-cli`.
+
 ## 0.9.49 (2026-08-24)
 
 - Feature: `graphify merge-graphs` now links a type declaration that two repos share — same fully-qualified namespace and name, from different repos — with a `same_type_as` edge, so a shared contract type is navigable across the repo boundary; two unrelated types that merely share a short name are not linked (#3007, thanks @durmazoguzhan).
