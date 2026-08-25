@@ -2274,7 +2274,11 @@ def dispatch_command(cmd: str) -> None:
             # Try to recover the scan root saved by the last full build
             saved = Path(_GRAPHIFY_OUT) / ".graphify_root"
             if saved.exists():
-                watch_path = Path(saved.read_text(encoding="utf-8").strip())
+                # utf-8-sig: a marker written by Windows PowerShell 5.1 carries a
+                # UTF-8 BOM that plain utf-8 keeps as U+FEFF (not stripped by
+                # .strip()), which would make this recovered path fail exists()
+                # (#3028). Match the other .graphify_root readers.
+                watch_path = Path(saved.read_text(encoding="utf-8-sig").strip())
             else:
                 watch_path = Path(".")
         if not watch_path.exists():

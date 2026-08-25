@@ -1107,10 +1107,10 @@ def test_windows_skill_writes_marker_files_without_a_bom():
     """
     core, _ = _platform_artifacts("windows")
     for marker in (".graphify_python", ".graphify_root"):
-        assert f"Out-File -FilePath graphify-out\{marker} -Encoding utf8" not in core, (
+        assert f"Out-File -FilePath graphify-out\\{marker} -Encoding utf8" not in core, (
             f"the windows render still writes {marker} with a BOM-emitting Out-File"
         )
-        assert f"WriteAllText((Join-Path $PWD 'graphify-out\{marker}')" in core, (
+        assert f"WriteAllText((Join-Path $PWD 'graphify-out\\{marker}')" in core, (
             f"{marker} must be written through WriteAllText with a BOM-less encoding"
         )
     assert "New-Object System.Text.UTF8Encoding $false" in core, \
