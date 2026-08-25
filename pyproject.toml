@@ -72,6 +72,12 @@ ollama = ["openai"]
 bedrock = ["boto3"]
 anthropic = ["anthropic"]
 gemini = ["openai", "tiktoken"]
+# Vertex AI (ADC/service-account/Workload-Identity-Federation auth) -- a
+# separate Google product from the "gemini" extra above, which only talks to
+# the API-key-only Generative Language API. google-genai's Vertex mode is the
+# only backend here with no API key at all, for orgs whose policy disallows
+# raw API keys outright.
+vertex = ["google-genai"]
 openai = ["openai", "tiktoken"]
 chinese = ["jieba"]
 sql = ["tree-sitter-sql"]
