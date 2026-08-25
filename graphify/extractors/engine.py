@@ -2149,33 +2149,59 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                        if c.type == "assignment_expression"), None)
         if assign is not None:
             value = assign.child_by_field_name("right")
-            if value is not None and value.type in _JS_FUNCTION_VALUE_TYPES:
+            if value is not None:
                 target = _js_member_assignment_target(
                     assign.child_by_field_name("left"), source)
                 if target is not None:
                     kind, owner_name, member_name = target
                     line = node.start_point[0] + 1
-                    handled = False
-                    if kind == "exports":
-                        nid = _make_id(stem, member_name)
-                        add_node_fn(nid, f"{member_name}()", line)
-                        add_edge_fn(file_nid, nid, "contains", line)
-                        handled = True
-                    elif kind == "prototype":
-                        owner_nid = _make_id(stem, owner_name)
-                        nid = _make_id(owner_nid, member_name)
-                        add_node_fn(nid, f".{member_name}()", line)
-                        add_edge_fn(owner_nid, nid, "method", line)
-                        handled = True
-                    if handled:
-                        if callable_def_nids is not None:
-                            callable_def_nids.add(nid)  # CJS/prototype fn is callable
-                        if local_bound_names is not None:
-                            local_bound_names[nid] = _js_local_bound_names(value, source)
-                        body = value.child_by_field_name("body")
-                        if body:
-                            function_bodies.append((nid, body))
-                        return True
+                    if value.type in _JS_FUNCTION_VALUE_TYPES:
+                        handled = False
+                        if kind == "exports":
+                            nid = _make_id(stem, member_name)
+                            add_node_fn(nid, f"{member_name}()", line)
+                            add_edge_fn(file_nid, nid, "contains", line)
+                            handled = True
+                        elif kind == "prototype":
+                            owner_nid = _make_id(stem, owner_name)
+                            nid = _make_id(owner_nid, member_name)
+                            add_node_fn(nid, f".{member_name}()", line)
+                            add_edge_fn(owner_nid, nid, "method", line)
+                            handled = True
+                        if handled:
+                            if callable_def_nids is not None:
+                                callable_def_nids.add(nid)  # CJS/prototype fn is callable
+                            if local_bound_names is not None:
+                                local_bound_names[nid] = _js_local_bound_names(value, source)
+                            body = value.child_by_field_name("body")
+                            if body:
+                                function_bodies.append((nid, body))
+                            return True
+                    elif kind == "exports":
+                        # #3035: `exports.handler = wrapper(async (req) => …)` or `module.exports.handler = wrapper(…)`
+                        inner = value
+                        while inner is not None and inner.type in (
+                                "as_expression", "satisfies_expression"):
+                            inner = (inner.named_children[0]
+                                     if inner.named_children else None)
+                        if inner is not None and inner.type in (
+                                "call_expression", "new_expression"):
+                            closures: list = []
+                            _js_topmost_closures(inner, closures)
+                            if closures:
+                                nid = _make_id(stem, member_name)
+                                add_node_fn(nid, f"{member_name}()", line)
+                                add_edge_fn(file_nid, nid, "contains", line)
+                                if callable_def_nids is not None:
+                                    callable_def_nids.add(nid)  # exported HOF is callable
+                                for closure in closures:
+                                    body = closure.child_by_field_name("body")
+                                    if body:
+                                        if closure_locals_by_body is not None:
+                                            closure_locals_by_body[id(body)] = (
+                                                _js_local_bound_names(closure, source))
+                                        function_bodies.append((nid, body))
+                                return True
 
     # Class fields whose value is a function:
     #   class C { handler = () => {} }   → method handler() owned by C

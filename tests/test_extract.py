@@ -988,6 +988,63 @@ def test_extract_js_commonjs_exports_assignment(tmp_path):
     assert "beta()" in labels
 
 
+def test_extract_js_commonjs_exports_hof_assignment(tmp_path):
+    """#3035: `exports.X = wrap(...)` and `module.exports.X = wrap(...)` must produce function nodes."""
+    from graphify.extract import extract_js
+    f = tmp_path / "mod.js"
+    f.write_text(
+        "function wrap(fn) { return fn; }\n"
+        "exports.assignedCall = wrap(async (x) => x);\n"
+        "module.exports.moduleAssignedCall = wrap(function(y) { return y; });\n"
+    )
+    res = extract_js(f)
+    by_label = {n["label"]: n for n in res["nodes"]}
+    assert "assignedCall()" in by_label
+    assert "moduleAssignedCall()" in by_label
+    assert by_label["assignedCall()"].get("_callable") is True
+    assert by_label["moduleAssignedCall()"].get("_callable") is True
+    file_nid = next(n["id"] for n in res["nodes"] if n["label"] == "mod.js")
+    edges = {(e["source"], e["relation"], e["target"]) for e in res["edges"]}
+    assert (file_nid, "contains", by_label["assignedCall()"]["id"]) in edges
+    assert (file_nid, "contains", by_label["moduleAssignedCall()"]["id"]) in edges
+
+
+def test_extract_js_commonjs_exports_hof_options_and_calls(tmp_path):
+    """#3035: Calls inside HOF-wrapped export callbacks (with options) are attributed to the exported node."""
+    from graphify.extract import extract_js
+    f = tmp_path / "handler.js"
+    f.write_text(
+        "function onCall(opts, fn) { return fn; }\n"
+        "function helperA() {}\n"
+        "function helperB() {}\n"
+        "exports.apiHandler = onCall({ cors: true }, async (req) => {\n"
+        "    helperA();\n"
+        "});\n"
+        "module.exports.otherHandler = onCall({ timeout: 5000 }, (req) => helperB());\n"
+    )
+    res = extract_js(f)
+    by_label = {n["label"]: n for n in res["nodes"]}
+    assert {"apiHandler()", "otherHandler()", "helperA()", "helperB()"} <= set(by_label)
+    edges = {(e["source"], e["relation"], e["target"]) for e in res["edges"]}
+    assert (by_label["apiHandler()"]["id"], "calls", by_label["helperA()"]["id"]) in edges
+    assert (by_label["otherHandler()"]["id"], "calls", by_label["helperB()"]["id"]) in edges
+
+
+def test_extract_js_arbitrary_member_hof_assignment_not_captured(tmp_path):
+    """#3035 / #1077: Arbitrary `obj.x = wrap(...)` must NOT produce a node."""
+    from graphify.extract import extract_js
+    f = tmp_path / "noise.js"
+    f.write_text(
+        "function wrap(fn) { return fn; }\n"
+        "const obj = {};\n"
+        "obj.assignedCall = wrap(async () => {});\n"
+    )
+    labels = [n["label"] for n in extract_js(f)["nodes"]]
+    assert "assignedCall()" not in labels
+    assert ".assignedCall()" not in labels
+    assert "assignedCall" not in labels
+
+
 def test_extract_js_prototype_method_assignment(tmp_path):
     """`Foo.prototype.bar = fn` must be captured as a method owned by Foo."""
     from graphify.extract import extract_js
