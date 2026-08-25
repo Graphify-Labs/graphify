@@ -852,6 +852,10 @@ _JAVA_CONFIG = LanguageConfig(
     }),
     function_types=frozenset({"method_declaration", "constructor_declaration"}),
     import_types=frozenset({"import_declaration"}),
+    # A Java constant is a field_declaration, which none of the sets above
+    # covers. See the value_types branch in engine.walk.
+    value_types=frozenset({"field_declaration"}),
+    value_kind="field",
     # object_creation_expression (`new Foo(...)`) is handled by a dedicated Java
     # branch in walk_calls below — its callee is in the `type` field, not `name`.
     call_types=frozenset({"method_invocation", "object_creation_expression"}),
