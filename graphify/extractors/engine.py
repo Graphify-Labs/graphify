@@ -239,6 +239,74 @@ def _csharp_collect_type_refs(
             if c.is_named:
                 _csharp_collect_type_refs(c, source, generic, out, skip)
 
+
+def _csharp_call_type_argument_list(fn_node):
+    """The type-argument list of a C# call target, or None.
+
+    A static call carries it on a `generic_name`; a member call carries it on the
+    `member_access_expression`'s `name`. Deliberately not a subtree search: the receiver of
+    `outer<A>.Inner<B>()` is inside this node too, and its arguments belong to the receiver.
+    """
+    if fn_node is None:
+        return None
+    if fn_node.type == "member_access_expression":
+        fn_node = fn_node.child_by_field_name("name")
+    if fn_node is not None and fn_node.type == "generic_name":
+        for child in fn_node.children:
+            if child.type == "type_argument_list":
+                return child
+    return None
+
+
+def _csharp_constructed_type_argument_list(type_node):
+    """The type-argument list of a `new T<...>()` constructed type, or None.
+
+    `new A.B.Wrapper<Widget>()` nests the `generic_name` inside a `qualified_name`, so this
+    descends rather than checking immediate children. Bounding the search to the `type` field
+    is what keeps constructor arguments out -- they are a sibling field, never inside the type.
+    """
+    if type_node is None:
+        return None
+    if type_node.type == "type_argument_list":
+        return type_node
+    for child in type_node.children:
+        found = _csharp_constructed_type_argument_list(child)
+        if found is not None:
+            return found
+    return None
+
+
+def _emit_csharp_generic_arg_edges(
+    call_node, tal, source: bytes, caller_nid: str, ensure_named_node, add_edge
+) -> None:
+    """Emit `references[generic_arg]` for each type argument of a call or a construction.
+
+    Shared by the invocation and object-creation branches so both positions of the same
+    language feature stay in step: `Do<T>()` and `new Wrapper<T>()` should not differ in
+    whether T becomes a dependency.
+    """
+    if tal is None:
+        return
+    type_params = _csharp_type_parameters_in_scope(call_node, source)
+    line = call_node.start_point[0] + 1
+    for arg in tal.children:
+        if not arg.is_named:
+            continue
+        refs: list[tuple[str, str, bool, str]] = []
+        _csharp_collect_type_refs(arg, source, True, refs, type_params)
+        for ref_name, _role, qualified, qualifier in refs:
+            target = ensure_named_node(ref_name, line)
+            if target == caller_nid:
+                continue
+            meta = {"ref_token": ref_name}
+            if qualified:
+                meta["qualified"] = True
+            if qualifier:
+                meta["ref_qualifier"] = qualifier
+            add_edge(caller_nid, target, "references", line,
+                     context="generic_arg", metadata=meta)
+
+
 def _csharp_attribute_names(method_node, source: bytes) -> list[tuple[str, bool, str]]:
     """Collect attribute names from a C# method/declaration's attribute_list children."""
     names: list[tuple[str, bool, str]] = []
@@ -5081,6 +5149,17 @@ def _extract_generic(
                     callee_name = type_info[0]
                     if type_info[1] and type_info[2]:
                         csharp_qualified_prefix = type_info[2]
+                # `_read_csharp_type_name` names only the constructed type, so the arguments
+                # it drops need the same treatment the invocation branch gives a call's type
+                # arguments (#2911). Without this `new Wrapper<Widget>()` linked `Wrapper` and
+                # lost `Widget`, which for a type only ever constructed -- a wrapper around a
+                # collaborator, a typed collection built from a literal -- was the sole edge
+                # recording the dependency.
+                _emit_csharp_generic_arg_edges(
+                    node,
+                    _csharp_constructed_type_argument_list(node.child_by_field_name("type")),
+                    source, caller_nid, ensure_named_node, add_edge,
+                )
             elif config.ts_module == "tree_sitter_c_sharp" and node.type == "invocation_expression":
                 # C#: the invoked function is the `function` field. A member call
                 # `recv.Method(...)` is a member_access_expression (receiver in its
@@ -5139,60 +5218,20 @@ def _extract_generic(
                                 else:
                                     callee_name = raw
                                 break
-                # C#: emit a `references[generic_arg]` edge for every type
-                # argument at the call site (`recv.Do<T>()`, the
-                # `services.AddScoped<ISvc, Impl>()` DI shape, static
-                # `Foo<IBar>()`). The property/return/parameter branches
-                # already walk their declared type for the same reason; the
-                # call-site branch didn't, so the type arguments never
-                # became nodes and dependency edges were silently erased
-                # (#2911). The C# class_declaration's field_declaration and
-                # property_declaration branches above are the direct
-                # analogue. The call-site function carries its type-arg list
-                # either as a `type_argument_list` child on a `generic_name`
-                # (static call) or as the same child on the
-                # `member_access_expression`'s `name` `generic_name` (member
-                # call); the fallback path uses raw text and never sees the
-                # structured type-arg list. The class declaration's
-                # field_declaration case is closed by the parallel fix in
-                # #2913; this branch covers what that PR deliberately left
-                # out.
-                if fn_node is not None:
-                    call_tal = None
-                    if fn_node.type == "member_access_expression":
-                        ma_name = fn_node.child_by_field_name("name")
-                        if ma_name is not None and ma_name.type == "generic_name":
-                            for tal_child in ma_name.children:
-                                if tal_child.type == "type_argument_list":
-                                    call_tal = tal_child
-                                    break
-                    elif fn_node.type == "generic_name":
-                        for tal_child in fn_node.children:
-                            if tal_child.type == "type_argument_list":
-                                call_tal = tal_child
-                                break
-                    if call_tal is not None:
-                        call_type_params = _csharp_type_parameters_in_scope(node, source)
-                        call_line = node.start_point[0] + 1
-                        for call_arg in call_tal.children:
-                            if not call_arg.is_named:
-                                continue
-                            call_refs: list[tuple[str, str, bool, str]] = []
-                            _csharp_collect_type_refs(
-                                call_arg, source, True, call_refs, call_type_params
-                            )
-                            for call_ref_name, _call_role, call_qualified, call_qualifier in call_refs:
-                                call_target = ensure_named_node(call_ref_name, call_line)
-                                if call_target == caller_nid:
-                                    continue
-                                call_meta = {"ref_token": call_ref_name}
-                                if call_qualified:
-                                    call_meta["qualified"] = True
-                                if call_qualifier:
-                                    call_meta["ref_qualifier"] = call_qualifier
-                                add_edge(caller_nid, call_target, "references",
-                                         call_line, context="generic_arg",
-                                         metadata=call_meta)
+                # C#: emit a `references[generic_arg]` edge for every type argument at the
+                # call site (`recv.Do<T>()`, the `services.AddScoped<ISvc, Impl>()` DI
+                # shape, static `Foo<IBar>()`). The property/return/parameter branches
+                # already walk their declared type for the same reason; the call-site
+                # branch didn't, so the type arguments never became nodes and dependency
+                # edges were silently erased (#2911). The class declaration's
+                # field_declaration case is closed by the parallel fix in #2913; this
+                # branch covers what that PR deliberately left out. Where the type-arg
+                # list lives for each call shape is documented on the helper, which the
+                # object-creation branch shares.
+                _emit_csharp_generic_arg_edges(
+                    node, _csharp_call_type_argument_list(fn_node),
+                    source, caller_nid, ensure_named_node, add_edge,
+                )
             elif config.ts_module == "tree_sitter_php":
                 # PHP: distinguish call expression subtypes
                 if node.type == "function_call_expression":
