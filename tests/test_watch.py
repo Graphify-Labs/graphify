@@ -265,6 +265,45 @@ def test_rebuild_code_writes_community_name(tmp_path):
     )
 
 
+def test_rebuild_code_reports_post_extraction_stage_progress(tmp_path, capsys):
+    """#3045: on a large corpus, `graphify update` finished AST extraction (100%)
+    and then went silent through build/cluster/analyze/report/export, which read
+    as a hang on a slow machine instead of a build still in progress. Above the
+    same 100-file threshold extract.py's own AST-extraction progress print uses,
+    _rebuild_code must announce each post-extraction stage."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    for i in range(100):
+        (corpus / f"m{i}.py").write_text(
+            f"def f{i}():\n    return f{(i + 1) % 100}()\n", encoding="utf-8"
+        )
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    out = capsys.readouterr().out
+    assert "[graphify watch] Building graph..." in out
+    assert "[graphify watch] Clustering graph (" in out
+    assert "[graphify watch] Analyzing graph structure..." in out
+    assert "[graphify watch] Generating report..." in out
+    assert "[graphify watch] Writing graph.json..." in out
+
+
+def test_rebuild_code_stays_quiet_on_a_small_corpus(tmp_path, capsys):
+    """The #3045 stage-progress prints are gated on corpus size so a normal-sized
+    rebuild's output is not cluttered with lines that only matter at scale."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "a.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    out = capsys.readouterr().out
+    assert "[graphify watch] Building graph..." not in out
+    assert "[graphify watch] Clustering graph (" not in out
+
+
 def test_rebuild_code_drops_labels_whose_community_changed(tmp_path):
     """An incremental rebuild must not reuse a saved label for a community whose
     membership changed. Labels are keyed by cid, but re-clustering reassigns cids,
