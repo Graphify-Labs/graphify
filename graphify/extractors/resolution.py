@@ -24,9 +24,22 @@ _TSCONFIG_BASEURL_CACHE: "dict[str, Path | None]" = {}
 
 _WORKSPACE_MANIFEST_NAMES = ("pnpm-workspace.yaml", "package.json")
 
-_JS_RESOLVE_EXTS = (".ts", ".tsx", ".mts", ".cts", ".svelte", ".js", ".jsx", ".mjs", ".cjs")
+_JS_RESOLVE_EXTS = (
+    ".ts", ".tsx", ".mts", ".cts", ".d.ts",
+    ".svelte", ".js", ".jsx", ".mjs", ".cjs",
+)
 
-_JS_INDEX_FILES = ("index.ts", "index.tsx", "index.svelte", "index.js", "index.jsx", "index.mjs")
+_JS_INDEX_FILES = (
+    "index.ts", "index.tsx", "index.mts", "index.cts", "index.d.ts",
+    "index.svelte", "index.js", "index.jsx", "index.mjs", "index.cjs",
+)
+
+_JS_SPECIFIER_REPLACEMENTS = {
+    ".js": (".ts", ".tsx", ".mts", ".cts", ".d.ts"),
+    ".jsx": (".tsx", ".ts", ".d.ts"),
+    ".mjs": (".mts", ".ts", ".tsx", ".d.mts", ".d.ts"),
+    ".cjs": (".cts", ".ts", ".tsx", ".d.cts", ".d.ts"),
+}
 
 def _resolve_js_import_path(candidate: Path) -> Path:
     """Resolve a JS/TS/Svelte import target to a local file when it exists."""
@@ -34,15 +47,12 @@ def _resolve_js_import_path(candidate: Path) -> Path:
     if candidate.is_file():
         return candidate
 
-    # TS ESM convention: imports often spell .js/.jsx while source is .ts/.tsx.
-    if candidate.suffix == ".js":
-        ts_candidate = candidate.with_suffix(".ts")
-        if ts_candidate.is_file():
-            return ts_candidate
-    elif candidate.suffix == ".jsx":
-        tsx_candidate = candidate.with_suffix(".tsx")
-        if tsx_candidate.is_file():
-            return tsx_candidate
+    # TypeScript ESM convention: source imports spell the runtime extension.
+    # Replace that extension rather than appending to it (`foo.js.tsx`).
+    for replacement in _JS_SPECIFIER_REPLACEMENTS.get(candidate.suffix.lower(), ()):
+        source_candidate = candidate.with_suffix(replacement)
+        if source_candidate.is_file():
+            return source_candidate
 
     # Append extensions to the full filename, which covers extensionless imports,
     # multi-dot helpers, and Svelte 5 rune files like Foo.svelte.ts.
@@ -409,25 +419,29 @@ def _load_workspace_packages(start_dir: Path) -> dict[str, Path]:
     return packages
 
 _EXPORT_CONDITION_PRIORITY = (
-    "source", "import", "module", "svelte", "types", "require", "default",
+    "source", "development", "types", "import", "module", "svelte", "require", "default",
 )
+
+
+def _resolve_export_targets(value: Any) -> list[str]:
+    """Return every eligible export target in source-analysis priority order."""
+    if isinstance(value, str):
+        return [value]
+    if not isinstance(value, dict):
+        return []
+    targets: list[str] = []
+    for condition in _EXPORT_CONDITION_PRIORITY:
+        for target in _resolve_export_targets(value.get(condition)):
+            if target not in targets:
+                targets.append(target)
+    return targets
 
 def _resolve_export_target(value: Any) -> str | None:
     """Resolve an `exports` map value (string or condition object) to a
     relative target string, honouring _EXPORT_CONDITION_PRIORITY for objects
     and recursing into nested condition objects."""
-    if isinstance(value, str):
-        return value
-    if isinstance(value, dict):
-        for cond in _EXPORT_CONDITION_PRIORITY:
-            v = value.get(cond)
-            if isinstance(v, str):
-                return v
-            if isinstance(v, dict):
-                nested = _resolve_export_target(v)
-                if nested:
-                    return nested
-    return None
+    targets = _resolve_export_targets(value)
+    return targets[0] if targets else None
 
 def _contained_in_package(resolved: Path, package_dir: Path) -> bool:
     """Guard against `exports` targets that escape the package directory
@@ -454,11 +468,14 @@ def _package_entry_candidates(package_dir: Path, subpath: str) -> list[Path]:
         exports = manifest_data.get("exports")
         if isinstance(exports, dict):
             subpath_key = "./" + subpath
-            target = _resolve_export_target(exports.get(subpath_key))
-            if target:
-                candidate = package_dir / target
-                if _contained_in_package(candidate, package_dir):
-                    return [candidate]
+            targets = _resolve_export_targets(exports.get(subpath_key))
+            candidates = [
+                package_dir / target
+                for target in targets
+                if _contained_in_package(package_dir / target, package_dir)
+            ]
+            if candidates:
+                return candidates
             else:
                 for pattern, pattern_value in exports.items():
                     if "*" in pattern and pattern.count("*") == 1:
@@ -466,20 +483,29 @@ def _package_entry_candidates(package_dir: Path, subpath: str) -> list[Path]:
                         if (subpath_key.startswith(prefix)
                                 and (not suffix or subpath_key.endswith(suffix))):
                             matched = subpath_key[len(prefix):len(subpath_key) - len(suffix) if suffix else None]
-                            resolved = _resolve_export_target(pattern_value)
-                            if resolved and "*" in resolved:
+                            candidates = []
+                            for resolved in _resolve_export_targets(pattern_value):
+                                if "*" not in resolved:
+                                    continue
                                 candidate = package_dir / resolved.replace("*", matched)
                                 if _contained_in_package(candidate, package_dir):
-                                    return [candidate]
+                                    candidates.append(candidate)
+                            if candidates:
+                                return candidates
         return [package_dir / subpath]
 
     exports = manifest_data.get("exports")
     if isinstance(exports, str):
         return [package_dir / exports]
     if isinstance(exports, dict):
-        dot_target = _resolve_export_target(exports.get("."))
-        if dot_target:
-            return [package_dir / dot_target]
+        dot_targets = _resolve_export_targets(exports.get("."))
+        candidates = [
+            package_dir / target
+            for target in dot_targets
+            if _contained_in_package(package_dir / target, package_dir)
+        ]
+        if candidates:
+            return candidates
 
     candidates: list[Path] = []
     for key in ("svelte", "module", "main", "types"):
@@ -505,6 +531,45 @@ def _resolve_workspace_import(raw: str, start_dir: Path) -> Path | None:
                 return resolved
     return None
 
+def _resolve_package_import(raw: str, start_dir: Path) -> Path | None:
+    """Resolve a package-local ``imports`` alias such as ``#/models``."""
+    if not raw.startswith("#"):
+        return None
+    for package_dir in (start_dir, *start_dir.parents):
+        manifest = package_dir / "package.json"
+        if not manifest.is_file():
+            continue
+        try:
+            imports = json.loads(manifest.read_text(encoding="utf-8")).get("imports")
+        except Exception:
+            return None
+        if not isinstance(imports, dict):
+            return None
+        matches: list[tuple[Any, str | None]] = []
+        if raw in imports:
+            matches.append((imports[raw], None))
+        for pattern, value in imports.items():
+            if not isinstance(pattern, str) or pattern.count("*") != 1:
+                continue
+            prefix, suffix = pattern.split("*", 1)
+            if raw.startswith(prefix) and (not suffix or raw.endswith(suffix)):
+                end = len(raw) - len(suffix) if suffix else None
+                matches.append((value, raw[len(prefix):end]))
+        for value, wildcard in matches:
+            for target in _resolve_export_targets(value):
+                if wildcard is not None:
+                    if "*" not in target:
+                        continue
+                    target = target.replace("*", wildcard)
+                candidate = package_dir / target
+                if not _contained_in_package(candidate, package_dir):
+                    continue
+                resolved = _resolve_js_import_path(candidate)
+                if resolved.is_file():
+                    return resolved
+        return None
+    return None
+
 def _resolve_js_module_path(raw: str | Path, start_dir: Path | None = None) -> Path | None:
     """Resolve a JS/TS module path or specifier to a local source file.
 
@@ -517,8 +582,19 @@ def _resolve_js_module_path(raw: str | Path, start_dir: Path | None = None) -> P
         return _resolve_js_import_path(raw)
     if start_dir is None:
         return _resolve_js_import_path(Path(raw))
+    # Bundlers attach loader/resource modifiers to the specifier, not the path.
+    # A leading ``#`` is instead a Node package-import-map key and must survive.
+    raw = raw.split("?", 1)[0]
+    if not raw.startswith("#"):
+        raw = raw.split("#", 1)[0]
+    if not raw:
+        return None
     if raw.startswith("."):
         return _resolve_js_import_path(start_dir / raw)
+
+    package_import = _resolve_package_import(raw, start_dir)
+    if package_import is not None:
+        return package_import
 
     aliases = _load_tsconfig_aliases(start_dir)
     hit = _resolve_tsconfig_alias(raw, aliases,
@@ -876,7 +952,7 @@ def _apply_symbol_resolution_facts(
         for edge in edges
     }
 
-    def add_edge(source: str, target: str, relation: str, context: str, line: int, source_path: Path, target_file: str | None = None, local_alias: str | None = None) -> None:
+    def add_edge(source: str, target: str, relation: str, context: str, line: int, source_path: Path, target_file: str | None = None, local_alias: str | None = None, resolved_specifier_file: str | None = None, resolved_specifier_symbol: str | None = None) -> None:
         key = (source, target, relation, context or "")
         if key in existing_edges:
             return
@@ -901,6 +977,10 @@ def _apply_symbol_resolution_facts(
         # cross-file member-call resolver match `alias.func()` (#2082).
         if local_alias is not None:
             edge["local_alias"] = local_alias
+        if resolved_specifier_file is not None:
+            edge["resolved_specifier_file"] = resolved_specifier_file
+        if resolved_specifier_symbol is not None:
+            edge["resolved_specifier_symbol"] = resolved_specifier_symbol
         edges.append(edge)
 
     for declaration in facts.declarations:
@@ -932,6 +1012,7 @@ def _apply_symbol_resolution_facts(
                     changed = True
 
     named_exports_by_file: dict[Path, dict[str, tuple[Path, str]]] = {}
+    ambiguous_named_exports: set[tuple[Path, str]] = set()
     star_exports_by_file: dict[Path, list[Path]] = {}
 
     for star_fact in facts.star_exports:
@@ -992,7 +1073,15 @@ def _apply_symbol_resolution_facts(
                 origin = (file_path, export_fact.local_name)
         if origin is None:
             continue
-        named_exports_by_file.setdefault(file_path, {})[export_fact.exported_name] = origin
+        export_key = (file_path, export_fact.exported_name)
+        prior_origin = named_exports_by_file.setdefault(file_path, {}).get(
+            export_fact.exported_name
+        )
+        if prior_origin is not None and prior_origin != origin:
+            ambiguous_named_exports.add(export_key)
+            named_exports_by_file[file_path].pop(export_fact.exported_name, None)
+        elif export_key not in ambiguous_named_exports:
+            named_exports_by_file[file_path][export_fact.exported_name] = origin
         if origin[0] != file_path:
             source_id = source_file_id.get(file_path)
             if source_id is not None:
@@ -1006,6 +1095,22 @@ def _apply_symbol_resolution_facts(
                     target_file=str(path_by_resolved.get(origin[0], origin[0])),
                 )
 
+    def declaration_companions(target_path: Path) -> list[Path]:
+        suffix = target_path.suffix.lower()
+        if suffix in (".js", ".jsx"):
+            return [target_path.with_suffix(".d.ts").resolve()]
+        if suffix == ".mjs":
+            return [
+                target_path.with_suffix(".d.mts").resolve(),
+                target_path.with_suffix(".d.ts").resolve(),
+            ]
+        if suffix == ".cjs":
+            return [
+                target_path.with_suffix(".d.cts").resolve(),
+                target_path.with_suffix(".d.ts").resolve(),
+            ]
+        return []
+
     def resolve_exported_origin(target_path: Path, imported_name: str, seen: set[tuple[Path, str]] | None = None) -> tuple[Path, str]:
         target_path = target_path.resolve()
         key = (target_path, imported_name)
@@ -1014,17 +1119,76 @@ def _apply_symbol_resolution_facts(
         if key in seen:
             return key
         seen.add(key)
+        if key in ambiguous_named_exports:
+            return key
         origin = named_exports_by_file.get(target_path, {}).get(imported_name)
         if origin is not None:
             return resolve_exported_origin(origin[0], origin[1], seen)
+        # A runtime JavaScript file and its generated declaration file form one
+        # module surface. Keep runtime declarations on the runtime node, but
+        # fall through to declaration-only members such as imported types.
+        for companion in declaration_companions(target_path):
+            companion_key = (companion, imported_name)
+            if companion_key in ambiguous_named_exports:
+                continue
+            if companion_key in symbol_nodes:
+                return companion_key
+            companion_origin = named_exports_by_file.get(companion, {}).get(imported_name)
+            if companion_origin is not None:
+                return resolve_exported_origin(
+                    companion_origin[0], companion_origin[1], seen
+                )
+        star_origins: set[tuple[Path, str]] = set()
         for star_target in star_exports_by_file.get(target_path, []):
             star_key = (star_target, imported_name)
             if star_key in symbol_nodes:
-                return star_key
+                star_origins.add(star_key)
+                continue
             resolved = resolve_exported_origin(star_target, imported_name, seen)
             if resolved in symbol_nodes:
-                return resolved
+                star_origins.add(resolved)
+        if len(star_origins) == 1:
+            return next(iter(star_origins))
         return key
+
+    # Emit the symbol-level half of named re-exports after the complete export
+    # table is known. The syntax extractor initially targets the immediate
+    # barrel; this pass follows star/named chains to the defining declaration.
+    for export_fact in facts.exports:
+        if export_fact.target_path is None or export_fact.target_name is None:
+            continue
+        source_id = source_file_id.get(export_fact.file_path.resolve())
+        if source_id is None:
+            continue
+        # The syntax pass may already point at an owned symbol. Preserve that
+        # authoritative edge, including the collision guard exercised by the
+        # existing alias-remap tests, instead of manufacturing a second target.
+        if any(
+            edge.get("source") == source_id
+            and edge.get("relation") == "re_exports"
+            and edge.get("source_location") == f"L{export_fact.line}"
+            and edge.get("specifier_symbol") == export_fact.target_name
+            and edge.get("target") in symbol_nodes.values()
+            for edge in edges
+        ):
+            continue
+        origin_path, origin_symbol = resolve_exported_origin(
+            export_fact.target_path,
+            export_fact.target_name,
+        )
+        target_id = symbol_nodes.get((origin_path, origin_symbol))
+        if target_id is None:
+            continue
+        add_edge(
+            source_id,
+            target_id,
+            "re_exports",
+            "re-export",
+            export_fact.line,
+            export_fact.file_path,
+            resolved_specifier_file=str(export_fact.target_path.resolve()),
+            resolved_specifier_symbol=export_fact.target_name,
+        )
 
     for import_fact in facts.imports:
         source_id = source_file_id.get(import_fact.file_path.resolve())
@@ -1044,6 +1208,8 @@ def _apply_symbol_resolution_facts(
             "import",
             import_fact.line,
             import_fact.file_path,
+            resolved_specifier_file=str(import_fact.target_path.resolve()),
+            resolved_specifier_symbol=import_fact.imported_name,
         )
 
     # #1146: emit file-to-file imports_from edges for package-form submodule imports.
@@ -1216,8 +1382,19 @@ def _js_exported_declaration_names(node, source: bytes) -> list[str]:
     if declaration is None:
         return names
 
+    if declaration.type == "ambient_declaration":
+        declaration = next(
+            (child for child in declaration.children if child.is_named),
+            declaration,
+        )
+
     if declaration.type == "lexical_declaration":
-        names.extend(alias for alias, _target in _js_lexical_aliases(declaration, source))
+        for child in declaration.children:
+            if child.type != "variable_declarator":
+                continue
+            name_node = child.child_by_field_name("name")
+            if name_node is not None:
+                names.append(_read_text(name_node, source))
         return names
 
     if declaration.type in (

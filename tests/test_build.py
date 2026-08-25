@@ -3,9 +3,149 @@ from pathlib import Path
 import networkx as nx
 import pytest
 from networkx.readwrite import json_graph
-from graphify.build import build_from_json, build, build_merge, edge_data, edge_datas, dedupe_edges, dedupe_nodes
+from graphify.build import (
+    analysis_projection,
+    build_from_json,
+    build,
+    build_merge,
+    edge_data,
+    edge_datas,
+    dedupe_edges,
+    dedupe_nodes,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def test_multigraph_preserves_distinct_parallel_records_and_counts_duplicates():
+    edge = {
+        "source": "a",
+        "target": "b",
+        "relation": "imports_from",
+        "source_location": "L1",
+    }
+    extraction = {
+        "nodes": [{"id": "a"}, {"id": "b"}],
+        "edges": [
+            edge,
+            dict(edge),
+            {
+                "source": "a",
+                "target": "b",
+                "relation": "re_exports",
+                "source_location": "L2",
+            },
+            {
+                "source": "a",
+                "target": "b",
+                "relation": "imports_from",
+                "source_location": "L3",
+            },
+        ],
+    }
+
+    graph = build_from_json(extraction, multigraph=True)
+
+    assert isinstance(graph, nx.MultiDiGraph)
+    assert graph.number_of_edges("a", "b") == 3
+    rows = edge_datas(graph, "a", "b")
+    assert {(row["relation"], row["source_location"]) for row in rows} == {
+        ("imports_from", "L1"),
+        ("re_exports", "L2"),
+        ("imports_from", "L3"),
+    }
+    assert next(row for row in rows if row["source_location"] == "L1")["occurrence_count"] == 2
+
+
+def test_multigraph_edge_keys_survive_node_link_roundtrip():
+    graph = build_from_json(
+        {
+            "nodes": [{"id": "a"}, {"id": "b"}],
+            "edges": [
+                {"source": "a", "target": "b", "relation": "calls", "source_location": "L1"},
+                {"source": "a", "target": "b", "relation": "calls", "source_location": "L2"},
+            ],
+        },
+        multigraph=True,
+    )
+
+    payload = json_graph.node_link_data(graph, edges="links")
+    restored = json_graph.node_link_graph(payload, edges="links")
+
+    assert payload["directed"] is True
+    assert payload["multigraph"] is True
+    assert set(graph["a"]["b"]) == set(restored["a"]["b"])
+
+
+def test_simple_graph_preserves_edge_attribute_named_key():
+    graph = build_from_json(
+        {
+            "nodes": [{"id": "a"}, {"id": "b"}],
+            "edges": [
+                {
+                    "source": "a",
+                    "target": "b",
+                    "relation": "calls",
+                    "key": "domain-key",
+                },
+            ],
+        }
+    )
+
+    assert graph["a"]["b"]["key"] == "domain-key"
+
+
+def test_analysis_projection_counts_each_directed_pair_once():
+    graph = nx.MultiDiGraph()
+    graph.add_nodes_from(["a", "b"])
+    graph.add_edge("a", "b", key="one")
+    graph.add_edge("a", "b", key="two")
+    graph.add_edge("b", "a", key="reverse")
+
+    projected = analysis_projection(graph)
+
+    assert isinstance(projected, nx.Graph)
+    assert projected.number_of_edges() == 1
+    assert projected["a"]["b"]["weight"] == 1.0
+
+
+def test_build_merge_inherits_existing_multigraph_mode(tmp_path):
+    graph_path = tmp_path / "graph.json"
+    existing = build_from_json(
+        {
+            "nodes": [{"id": "a"}, {"id": "b"}],
+            "edges": [
+                {"source": "a", "target": "b", "relation": "calls", "source_location": "L1"},
+                {"source": "a", "target": "b", "relation": "references", "source_location": "L2"},
+            ],
+        },
+        multigraph=True,
+    )
+    graph_path.write_text(
+        json.dumps(json_graph.node_link_data(existing, edges="links")),
+        encoding="utf-8",
+    )
+
+    merged = build_merge([], graph_path=graph_path, dedup=False)
+
+    assert isinstance(merged, nx.MultiDiGraph)
+    assert merged.number_of_edges("a", "b") == 2
+
+
+def test_build_merge_refuses_explicit_multigraph_downgrade(tmp_path):
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(
+        json.dumps({
+            "directed": True,
+            "multigraph": True,
+            "nodes": [{"id": "a"}],
+            "links": [],
+        }),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="refusing to simplify"):
+        build_merge([], graph_path=graph_path, multigraph=False, dedup=False)
 
 
 def test_dedupe_edges_collapses_exact_parallels():

@@ -6,6 +6,7 @@ import io
 import json
 import sys
 import networkx as nx
+from graphify.build import analysis_projection
 
 
 def _suppress_output():
@@ -95,6 +96,7 @@ def label_communities_by_hub(
     Used as the default (no-backend) labeler; an LLM naming pass, when configured,
     overrides these with richer names.
     """
+    topology = analysis_projection(G)
     labels: dict[int, str] = {}
     for cid, members in communities.items():
         present = [n for n in members if n in G]
@@ -102,7 +104,7 @@ def label_communities_by_hub(
             labels[cid] = f"Community {cid}"
             continue
         # highest degree wins; ties broken by node id (ascending) for determinism
-        hub = min(present, key=lambda n: (-G.degree(n), str(n)))
+        hub = min(present, key=lambda n: (-topology.degree(n), str(n)))
         name = str(G.nodes[hub].get("label") or hub).strip()
         if name.endswith("()"):
             name = name[:-2]
@@ -154,8 +156,7 @@ def cluster(
     """
     if G.number_of_nodes() == 0:
         return {}
-    if G.is_directed():
-        G = G.to_undirected()
+    G = analysis_projection(G)
     if G.number_of_edges() == 0:
         return {i: [n] for i, n in enumerate(sorted(G.nodes))}
 
@@ -259,14 +260,16 @@ def cohesion_score(G: nx.Graph, community_nodes: list[str]) -> float:
     n = len(community_nodes)
     if n <= 1:
         return 1.0
-    subgraph = G.subgraph(community_nodes)
+    topology = analysis_projection(G) if (G.is_directed() or G.is_multigraph()) else G
+    subgraph = topology.subgraph(community_nodes)
     actual = subgraph.number_of_edges()
     possible = n * (n - 1) / 2
     return actual / possible if possible > 0 else 0.0
 
 
 def score_all(G: nx.Graph, communities: dict[int, list[str]]) -> dict[int, float]:
-    return {cid: cohesion_score(G, nodes) for cid, nodes in communities.items()}
+    topology = analysis_projection(G)
+    return {cid: cohesion_score(topology, nodes) for cid, nodes in communities.items()}
 
 
 def remap_communities_to_previous(

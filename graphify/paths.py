@@ -16,6 +16,7 @@ flow) and every reader honours it.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -99,6 +100,117 @@ def write_json_atomic(path: "str | Path", obj, *, indent: "int | None" = None, e
     large graphs). ``ensure_ascii`` mirrors ``json.dump`` so callers that emit raw
     UTF-8 (non-ASCII labels/paths) keep byte-for-byte output. See :func:`_atomic_replace`."""
     _atomic_replace(path, lambda f: json.dump(obj, f, indent=indent, ensure_ascii=ensure_ascii))
+
+
+_OUTPUT_ROOT_BINDINGS_DIR = "output-roots"
+
+
+def _canonical_local_path(path: "str | Path") -> Path:
+    """Return a stable absolute identity for a path on this machine."""
+    return Path(path).expanduser().resolve()
+
+
+def _local_path_identity(path: "str | Path") -> str:
+    """Return a comparison/hash identity using the host filesystem's casing."""
+    return os.path.normcase(str(_canonical_local_path(path)))
+
+
+def _output_root_binding_path(source_root: "str | Path") -> Path:
+    source = _canonical_local_path(source_root)
+    digest = hashlib.sha256(_local_path_identity(source).encode("utf-8")).hexdigest()
+    return Path.home() / ".graphify" / _OUTPUT_ROOT_BINDINGS_DIR / f"{digest}.json"
+
+
+def remember_output_root(source_root: "str | Path", output_root: "str | Path") -> None:
+    """Remember the output root explicitly selected for one source tree.
+
+    One binding file per canonical source root avoids lost updates when separate
+    Graphify processes configure different repositories concurrently. Source
+    contents are never stored, only the two absolute directory paths.
+    """
+    source = _canonical_local_path(source_root)
+    output = _canonical_local_path(output_root)
+    write_json_atomic(
+        _output_root_binding_path(source),
+        {"source_root": str(source), "output_root": str(output)},
+        indent=2,
+    )
+
+
+def _persisted_output_binding(
+    source_root: "str | Path",
+) -> "tuple[Path, Path] | None":
+    """Return the nearest valid ``(source, output)`` binding."""
+    source = _canonical_local_path(source_root)
+    for candidate in (source, *source.parents):
+        path = _output_root_binding_path(candidate)
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            stored_source = _canonical_local_path(data["source_root"])
+            stored_output = _canonical_local_path(data["output_root"])
+        except (
+            OSError,
+            KeyError,
+            TypeError,
+            ValueError,
+            RuntimeError,
+            json.JSONDecodeError,
+        ):
+            continue
+        if _local_path_identity(stored_source) == _local_path_identity(candidate):
+            return candidate, stored_output
+    return None
+
+
+def resolve_output_binding(
+    source_root: "str | Path",
+) -> "tuple[Path, Path] | None":
+    """Return the remembered binding used by default output resolution.
+
+    A non-default ``GRAPHIFY_OUT`` is an explicit override and therefore has no
+    active remembered binding.
+    """
+    if os.environ.get("GRAPHIFY_OUT", "graphify-out") != "graphify-out":
+        return None
+    return _persisted_output_binding(source_root)
+
+
+def persisted_output_root(source_root: "str | Path") -> "Path | None":
+    """Return the nearest remembered output root for a source path.
+
+    Exact bindings win. Walking parents lets commands launched from a project
+    subdirectory find the output configured at the project root. Malformed or
+    mismatched binding files are ignored rather than redirecting output.
+    """
+    binding = _persisted_output_binding(source_root)
+    return binding[1] if binding is not None else None
+
+
+def resolve_output_root(
+    source_root: "str | Path",
+    explicit_output_root: "str | Path | None" = None,
+) -> Path:
+    """Resolve the parent directory that owns a source tree's Graphify output.
+
+    An explicit CLI selection wins and a non-default ``GRAPHIFY_OUT`` environment
+    override keeps its established behavior. Otherwise a remembered selection
+    is reused, falling back to the source root for an unconfigured project.
+    """
+    source = _canonical_local_path(source_root)
+    if explicit_output_root is not None:
+        return _canonical_local_path(explicit_output_root)
+    binding = resolve_output_binding(source)
+    if binding is None:
+        return source
+    return binding[1]
+
+
+def graphify_out_dir(
+    source_root: "str | Path",
+    explicit_output_root: "str | Path | None" = None,
+) -> Path:
+    """Return the effective Graphify artifact directory for a source tree."""
+    return resolve_output_root(source_root, explicit_output_root) / GRAPHIFY_OUT
 
 # Directory segments that, when they appear as a whole path component, mark the
 # whole path as a test location. Matched against path *segments* (not raw
@@ -293,12 +405,13 @@ GRAPHIFY_OUT_NAME = os.path.basename(os.path.normpath(GRAPHIFY_OUT))
 
 
 def out_path(*parts: str) -> Path:
-    """A path inside the configured output dir, e.g. ``out_path("cache")``.
+    """A path inside the effective output dir, e.g. ``out_path("cache")``.
 
-    ``Path(GRAPHIFY_OUT) / ...`` resolves correctly for both a relative name
-    ("graphify-out") and an absolute override ("/shared/graphify-out").
+    The current directory is treated as the source location, so project commands
+    reuse an output root previously selected with ``extract --out``. A custom
+    ``GRAPHIFY_OUT`` environment value keeps precedence.
     """
-    return Path(GRAPHIFY_OUT, *parts)
+    return graphify_out_dir(Path.cwd(), None).joinpath(*parts)
 
 
 def default_graph_json() -> str:

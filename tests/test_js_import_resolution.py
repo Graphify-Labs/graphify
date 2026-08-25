@@ -726,6 +726,105 @@ def test_workspace_subpath_export_condition_object_resolves(tmp_path: Path):
     assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/browser.ts")
 
 
+def test_workspace_export_prefers_source_when_runtime_dist_exists(tmp_path: Path):
+    _write(tmp_path / "pnpm-workspace.yaml", "packages:\n  - 'apps/*'\n  - 'packages/*'\n")
+    _write(
+        tmp_path / "packages/db/package.json",
+        json.dumps({
+            "name": "@acme/db",
+            "exports": {
+                ".": {
+                    "types": "./src/index.ts",
+                    "development": "./src/index.ts",
+                    "import": "./dist/index.js",
+                },
+            },
+        }),
+    )
+    source_entry = _write(
+        tmp_path / "packages/db/src/index.ts",
+        "export const value = 1\n",
+    )
+    dist_entry = _write(
+        tmp_path / "packages/db/dist/index.js",
+        "export const value = 1\n",
+    )
+    importer = _write(
+        tmp_path / "apps/bot/src/app.ts",
+        "import { value } from '@acme/db'\nexport const result = value\n",
+    )
+
+    result = _extract_for([source_entry, dist_entry, importer], tmp_path)
+
+    assert _has_edge(result, "apps/bot/src/app.ts", "packages/db/src/index.ts")
+    assert not _has_edge(result, "apps/bot/src/app.ts", "packages/db/dist/index.js")
+
+
+def test_runtime_module_uses_companion_declaration_exports(tmp_path: Path):
+    runtime = _write(
+        tmp_path / "generated/server.js",
+        "export const mutation = mutationGeneric\n",
+    )
+    declaration = _write(
+        tmp_path / "generated/server.d.ts",
+        "export declare const mutation: unknown\nexport type MutationCtx = object\n",
+    )
+    consumer = _write(
+        tmp_path / "consumer.ts",
+        "import { mutation, type MutationCtx } from './generated/server.js'\n"
+        "export type Ctx = MutationCtx\nexport const run = mutation\n",
+    )
+
+    result = _extract_for([runtime, declaration, consumer], tmp_path)
+
+    assert _has_symbol_edge(result, "consumer.ts", "generated/server.js", "mutation")
+    assert _has_symbol_edge(result, "consumer.ts", "generated/server.d.ts", "MutationCtx")
+    assert all("specifier_symbol" not in edge for edge in result["edges"])
+
+
+def test_ambient_const_declaration_is_a_resolvable_export(tmp_path: Path):
+    declaration = _write(
+        tmp_path / "generated/api.d.ts",
+        "export declare const api: Record<string, unknown>;\n",
+    )
+    consumer = _write(
+        tmp_path / "consumer.ts",
+        "import { api } from './generated/api.js'\nexport const value = api\n",
+    )
+
+    result = _extract_for([declaration, consumer], tmp_path)
+
+    assert _has_symbol_edge(result, "consumer.ts", "generated/api.d.ts", "api")
+
+
+def test_named_reexport_through_star_barrel_targets_defining_symbol(tmp_path: Path):
+    origin = _write(
+        tmp_path / "origin.ts",
+        "export function sourceName() { return 1 }\n",
+    )
+    barrel = _write(tmp_path / "index.ts", "export * from './origin.js'\n")
+    wrapper = _write(
+        tmp_path / "wrapper.ts",
+        "export { sourceName as publicName } from './index.js'\n",
+    )
+
+    result = _extract_for([origin, barrel, wrapper], tmp_path)
+    wrapper_id = _file_node_id(Path("wrapper.ts"))
+    origin_symbol = _make_id(_file_stem(Path("origin.ts")), "sourceName")
+    reexports = [
+        edge
+        for edge in result["edges"]
+        if edge.get("source") == wrapper_id
+        and edge.get("relation") == "re_exports"
+        and edge.get("source_location") == "L1"
+    ]
+
+    assert [
+        edge["target"] for edge in reexports if edge["target"] == origin_symbol
+    ] == [origin_symbol]
+    assert not any(edge.get("unresolved_internal") is True for edge in reexports)
+
+
 def test_workspace_subpath_export_wildcard_resolves(tmp_path: Path):
     _write(
         tmp_path / "pnpm-workspace.yaml",

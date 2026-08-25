@@ -157,6 +157,7 @@ def diagnose_extraction(
     extraction: dict[str, Any],
     *,
     directed: bool = True,
+    multigraph: bool = False,
     root: str | Path | None = None,
     max_examples: int = 5,
     extract_path: str | Path | None = None,
@@ -184,20 +185,36 @@ def diagnose_extraction(
     non_object_edges = 0
     missing_endpoint_edges = 0
     dangling_endpoint_edges = 0
+    external_endpoint_edges = 0
+    excluded_local_endpoint_edges = 0
+    unresolved_internal_endpoint_edges = 0
+    unclassified_endpoint_edges = 0
     self_loop_edges = 0
     valid_candidate_edges = 0
 
-    for edge in canonical_edges:
+    for raw_edge, edge in zip(raw_edges, canonical_edges):
         if edge["_invalid"]:
             non_object_edges += 1
             continue
         source = edge["source"]
         target = edge["target"]
+        if isinstance(raw_edge, dict):
+            if raw_edge.get("external") is True:
+                external_endpoint_edges += 1
+            elif raw_edge.get("excluded_local") is True:
+                excluded_local_endpoint_edges += 1
+            elif raw_edge.get("unresolved_internal") is True:
+                unresolved_internal_endpoint_edges += 1
         if not source or not target:
             missing_endpoint_edges += 1
             continue
         if source not in node_ids or target not in node_ids:
             dangling_endpoint_edges += 1
+            if not isinstance(raw_edge, dict) or not any(
+                raw_edge.get(flag) is True
+                for flag in ("external", "excluded_local", "unresolved_internal")
+            ):
+                unclassified_endpoint_edges += 1
             continue
         if source == target:
             self_loop_edges += 1
@@ -234,7 +251,12 @@ def diagnose_extraction(
     post_build_node_count: int | None = None
     try:
         graph_input = deepcopy(extraction)
-        graph: nx.Graph = build_from_json(graph_input, directed=directed, root=root)
+        graph: nx.Graph = build_from_json(
+            graph_input,
+            directed=directed,
+            multigraph=multigraph,
+            root=root,
+        )
         graph_type = type(graph).__name__
         post_build_edge_count = graph.number_of_edges()
         post_build_node_count = graph.number_of_nodes()
@@ -252,6 +274,10 @@ def diagnose_extraction(
         "non_object_edges": non_object_edges,
         "missing_endpoint_edges": missing_endpoint_edges,
         "dangling_endpoint_edges": dangling_endpoint_edges,
+        "external_endpoint_edges": external_endpoint_edges,
+        "excluded_local_endpoint_edges": excluded_local_endpoint_edges,
+        "unresolved_internal_endpoint_edges": unresolved_internal_endpoint_edges,
+        "unclassified_endpoint_edges": unclassified_endpoint_edges,
         "self_loop_edges": self_loop_edges,
         "valid_candidate_edges": valid_candidate_edges,
         "exact_duplicate_edges": _count_extra(exact_counts),
@@ -299,6 +325,7 @@ def diagnose_file(
     path: str | Path,
     *,
     directed: bool | None = None,
+    multigraph: bool | None = None,
     root: str | Path | None = None,
     max_examples: int = 5,
     extract_path: str | Path | None = None,
@@ -314,16 +341,22 @@ def diagnose_file(
         effective_directed = raw_directed if isinstance(raw_directed, bool) else True
     else:
         effective_directed = directed
+    if multigraph is None:
+        effective_multigraph = data.get("multigraph") is True
+    else:
+        effective_multigraph = multigraph
 
     summary = diagnose_extraction(
         data,
         directed=effective_directed,
+        multigraph=effective_multigraph,
         root=root,
         max_examples=max_examples,
         extract_path=extract_path,
     )
     summary["input_path"] = str(path)
     summary["effective_directed"] = effective_directed
+    summary["effective_multigraph"] = effective_multigraph
     return summary
 
 
@@ -352,12 +385,17 @@ def format_diagnostic_report(summary: dict[str, Any]) -> str:
         f"input: {summary.get('input_path', '<in-memory>')}",
         "input_stage: provided JSON (normal graph.json is post-build)",
         f"effective_directed: {summary.get('effective_directed', '<direct-call>')}",
+        f"effective_multigraph: {summary.get('effective_multigraph', '<direct-call>')}",
         f"nodes: {summary['node_count']}",
         f"unverified_code_nodes: {summary.get('unverified_node_count', 0)}",
         f"raw_edges: {summary['raw_edge_count']}",
         f"valid_candidate_edges: {summary['valid_candidate_edges']}",
         f"missing_endpoint_edges: {summary['missing_endpoint_edges']}",
         f"dangling_endpoint_edges: {summary['dangling_endpoint_edges']}",
+        f"external_endpoint_edges: {summary.get('external_endpoint_edges', 0)}",
+        f"excluded_local_endpoint_edges: {summary.get('excluded_local_endpoint_edges', 0)}",
+        f"unresolved_internal_endpoint_edges: {summary.get('unresolved_internal_endpoint_edges', 0)}",
+        f"unclassified_endpoint_edges: {summary.get('unclassified_endpoint_edges', 0)}",
         f"self_loop_edges: {summary['self_loop_edges']}",
         f"exact_duplicate_edges: {summary['exact_duplicate_edges']}",
         f"directed_unique_endpoint_pairs: {summary['directed_unique_endpoint_pairs']}",

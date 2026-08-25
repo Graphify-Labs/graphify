@@ -87,6 +87,27 @@ def test_surprising_connections_single_file_uses_community_bridges():
     assert len(surprises) > 0
 
 
+def test_surprising_connections_without_communities_preserves_directed_edge_order():
+    G = nx.MultiDiGraph()
+    G.add_node("z", label="Caller", file_type="code", source_file="single.py")
+    G.add_node("a", label="Callee", file_type="code", source_file="single.py")
+    G.add_edge(
+        "z",
+        "a",
+        relation="calls",
+        confidence="INFERRED",
+        source_file="single.py",
+    )
+
+    surprises = surprising_connections(G, {})
+
+    assert len(surprises) == 1
+    assert surprises[0]["source"] == "Caller"
+    assert surprises[0]["target"] == "Callee"
+    assert surprises[0]["relation"] == "calls"
+    assert surprises[0]["confidence"] == "INFERRED"
+
+
 def test_surprising_connections_ambiguous_scores_higher_than_extracted():
     """AMBIGUOUS edge should score higher than an otherwise identical EXTRACTED edge."""
     G = nx.Graph()

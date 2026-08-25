@@ -635,6 +635,30 @@ def test_rebuild_honors_persisted_no_gitignore(tmp_path):
     assert any(source.endswith("generated/gen.py") for source in sources)
 
 
+def test_rebuild_honors_persisted_multigraph_mode(tmp_path):
+    import json
+    from graphify.watch import _rebuild_code, _write_build_config
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "lib.py").write_text("def value(): return 1\n", encoding="utf-8")
+    _write_build_config(
+        corpus / "graphify-out", excludes=None, multigraph=True
+    )
+
+    assert _rebuild_code(
+        corpus,
+        no_cluster=True,
+        acquire_lock=False,
+    ) is True
+
+    graph = json.loads(
+        (corpus / "graphify-out" / "graph.json").read_text(encoding="utf-8")
+    )
+    assert graph["directed"] is True
+    assert graph["multigraph"] is True
+
+
 def test_graphify_root_preserves_absolute_when_user_supplied(tmp_path):
     """When the caller supplies an absolute path, ``.graphify_root`` stores
     that absolute form verbatim — preserving explicit-absolute intent."""
