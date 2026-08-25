@@ -11,7 +11,6 @@ import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
-from functools import lru_cache
 from pathlib import Path
 from typing import Callable
 
@@ -1253,8 +1252,12 @@ def _load_graphifyignore(root: Path, *, gitignore: bool = True) -> list[tuple[Pa
 # path_relative, stripped_pattern). Ignore patterns are re-evaluated for every
 # walked entry; parsing the same strings per entry per scan was pure waste.
 # Plain dict (no LRU): the universe of keys is the distinct pattern lines in
-# the corpus's ignore files, which is small and bounded per process.
+# the corpus's ignore files, which is small and bounded per scan. A long-lived
+# `graphify watch` process spanning many repos could still accumulate keys over
+# time, so cap it and clear wholesale on overflow (parsing is cheap, so a rare
+# full re-fill costs nothing that matters).
 _PARSED_PATTERN_CACHE: dict[str, tuple[bool, bool, bool, str]] = {}
+_PARSED_PATTERN_CACHE_MAX = 100_000
 
 
 def _parse_ignore_pattern(pattern: str) -> tuple[bool, bool, bool, str]:
@@ -1270,6 +1273,8 @@ def _parse_ignore_pattern(pattern: str) -> tuple[bool, bool, bool, str]:
         directory_only = raw.endswith("/")
         path_relative = "/" in raw.rstrip("/")
         got = (negated, directory_only, path_relative, raw.strip("/"))
+        if len(_PARSED_PATTERN_CACHE) >= _PARSED_PATTERN_CACHE_MAX:
+            _PARSED_PATTERN_CACHE.clear()
         _PARSED_PATTERN_CACHE[pattern] = got
     return got
 
@@ -1316,32 +1321,66 @@ def _lexical_relative(
     return _nfc("/".join(tail))
 
 
+def _match_globstar_parts(
+    path_parts: tuple[str, ...],
+    pattern_parts: tuple[str, ...],
+    path_idx: int,
+    pattern_idx: int,
+    memo: dict[tuple[int, int], bool],
+) -> bool:
+    """Recursive ``**``-aware segment match, memoized via an explicit dict.
+
+    Lifted out of ``_match_anchored_ignore_pattern`` (was a per-call
+    ``@lru_cache`` closure): the decorated inner closure referenced itself, so
+    every call leaked a reference cycle for the GC to reclaim on this hot path.
+    A plain dict passed in avoids both the cycle and the per-call cache setup.
+    """
+    key = (path_idx, pattern_idx)
+    cached = memo.get(key)
+    if cached is not None:
+        return cached
+
+    if pattern_idx == len(pattern_parts):
+        result = path_idx == len(path_parts)
+    else:
+        part = pattern_parts[pattern_idx]
+        if part == "**":
+            if pattern_idx == len(pattern_parts) - 1:
+                result = path_idx < len(path_parts)
+            else:
+                result = _match_globstar_parts(
+                    path_parts, pattern_parts, path_idx, pattern_idx + 1, memo
+                ) or (
+                    path_idx < len(path_parts)
+                    and _match_globstar_parts(
+                        path_parts, pattern_parts, path_idx + 1, pattern_idx, memo
+                    )
+                )
+        else:
+            result = (
+                path_idx < len(path_parts)
+                and fnmatch.fnmatchcase(path_parts[path_idx], part)
+                and _match_globstar_parts(
+                    path_parts, pattern_parts, path_idx + 1, pattern_idx + 1, memo
+                )
+            )
+    memo[key] = result
+    return result
+
+
 def _match_anchored_ignore_pattern(path: str, pattern: str) -> bool:
     """Match an anchored gitignore pattern without letting ``*`` cross ``/``."""
     path_parts = tuple(path.split("/"))
     pattern_parts = tuple(pattern.split("/"))
-
-    @lru_cache(maxsize=None)
-    def _matches(path_idx: int, pattern_idx: int) -> bool:
-        if pattern_idx == len(pattern_parts):
-            return path_idx == len(path_parts)
-
-        part = pattern_parts[pattern_idx]
-        if part == "**":
-            if pattern_idx == len(pattern_parts) - 1:
-                return path_idx < len(path_parts)
-            return _matches(path_idx, pattern_idx + 1) or (
-                path_idx < len(path_parts)
-                and _matches(path_idx + 1, pattern_idx)
-            )
-
-        return (
-            path_idx < len(path_parts)
-            and fnmatch.fnmatchcase(path_parts[path_idx], part)
-            and _matches(path_idx + 1, pattern_idx + 1)
+    # Fast path: with no ``**`` the match is a straight segment-wise fnmatch of
+    # equal-length paths, so skip the recursive matcher and its memo entirely.
+    if "**" not in pattern_parts:
+        if len(path_parts) != len(pattern_parts):
+            return False
+        return all(
+            fnmatch.fnmatchcase(pp, qp) for pp, qp in zip(path_parts, pattern_parts)
         )
-
-    return _matches(0, 0)
+    return _match_globstar_parts(path_parts, pattern_parts, 0, 0, {})
 
 
 def _is_ignored(

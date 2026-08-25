@@ -3397,3 +3397,47 @@ def test_sensitive_env_template_inside_secrets_dir_still_dropped(path):
     """Stage 1 dir guard runs before the Stage 2 template exemption: anything
     under a secrets/credentials dir stays excluded, template suffix or not."""
     assert _is_sensitive(Path(path)), f"{path} is under a secrets dir, must stay excluded (#2184)"
+
+
+def test_lexical_relative_matches_pathlib_relative_to():
+    """The string-space `_lexical_relative` must return exactly what
+    `_nfc(str(target.relative_to(anchor)).replace(os.sep, "/"))` would — including
+    None where relative_to raises (target not under anchor). Guards the
+    reimplemented relative_to against silent drift (#2226)."""
+    from pathlib import Path
+    from graphify.detect import _lexical_relative, _nfc
+
+    anchors = ["/a/b", "/a", "/a/b/c", "/x", "/"]
+    targets = [
+        "/a/b/c/d.py", "/a/b", "/a/b/c", "/a/x.py", "/a/b/c/d/e.py",
+        "/x/y.py", "/other/z.py", "/a/bb/c.py", "/a/b/c",
+    ]
+    for r in anchors:
+        anchor = Path(r)
+        for t in targets:
+            target = Path(t)
+            try:
+                expected = _nfc(str(target.relative_to(anchor)).replace(os.sep, "/"))
+            except ValueError:
+                expected = None
+            assert _lexical_relative(target, target.parts, anchor) == expected, (t, r)
+
+
+def test_globstar_matcher_leaves_no_reference_cycle():
+    """`_match_anchored_ignore_pattern` must not leak a reference cycle per call,
+    as the old per-call `@lru_cache` closure did (it referenced itself). With gc
+    disabled, a run of the matcher must leave nothing for the collector."""
+    import gc
+    from graphify.detect import _match_anchored_ignore_pattern
+
+    gc.collect()
+    gc.disable()
+    try:
+        for _ in range(500):
+            assert _match_anchored_ignore_pattern("docs/deep/guide.md", "docs/**")
+            assert not _match_anchored_ignore_pattern("src/app.py", "docs/**")
+            assert _match_anchored_ignore_pattern("a/b/c.py", "a/*/c.py")
+        collected = gc.collect()
+    finally:
+        gc.enable()
+    assert collected == 0, f"globstar matcher leaked {collected} cyclic objects per run"
