@@ -1366,7 +1366,7 @@ def _rescue_js_dynamic_imports(path: Path, result: dict) -> None:
             resolution = _resolve_rescued_specifier(path, raw, aliases, base_url)
             if resolution is None:
                 continue
-            node_id, _stub_sf, resolved_file = resolution
+            node_id, _stub_sf, resolved_file, _is_external = resolution
             # AST-captured already: same resolved target id, same resolved
             # on-disk file, or the engine's ref-namespaced external id.
             if node_id in deferred_ids or _make_id("ref", raw) in deferred_ids:
@@ -1508,10 +1508,10 @@ def _resolve_rescued_specifier(
     raw: str,
     aliases,
     base_url,
-) -> "tuple[str, str, Path | None] | None":
+) -> "tuple[str, str, Path | None, bool] | None":
     """Resolve a regex-rescued import specifier the way ``_import_js`` does.
 
-    Returns ``(node_id, stub_source_file, resolved_file)`` — ``resolved_file``
+    Returns ``(node_id, stub_source_file, resolved_file, is_external)`` — ``resolved_file``
     is the target as a real on-disk file, or None when the specifier is
     external or dangling. Returns None when no target can be minted at all
     (empty bare-import segment). Split out of :func:`_emit_rescued_import` so
@@ -1524,7 +1524,7 @@ def _resolve_rescued_specifier(
             Path(os.path.normpath(path.parent / raw))
         )
         resolved_file = resolved if resolved is not None and resolved.is_file() else None
-        return _make_id(str(resolved)), str(resolved), resolved_file
+        return _make_id(str(resolved)), str(resolved), resolved_file, False
     # Check tsconfig.json path aliases (e.g. "$lib/" -> "src/lib/",
     # "@/" -> "src/") before treating as external. Mirrors _import_js
     # logic so alias imports resolve to the same file node IDs the
@@ -1534,13 +1534,13 @@ def _resolve_rescued_specifier(
         resolved_alias = _resolve_js_module_path(resolved_alias)
         resolved_file = (resolved_alias if resolved_alias is not None
                          and resolved_alias.is_file() else None)
-        return _make_id(str(resolved_alias)), str(resolved_alias), resolved_file
+        return _make_id(str(resolved_alias)), str(resolved_alias), resolved_file, False
     # Bare/scoped import (node_modules) - use last segment;
     # build_from_json drops as external if no matching node exists.
     module_name = raw.split("/")[-1]
     if not module_name:
         return None
-    return _make_id(module_name), raw, None
+    return _make_id(module_name), raw, None, True
 
 
 def _emit_rescued_import(
@@ -1573,7 +1573,7 @@ def _emit_rescued_import(
     resolution = _resolve_rescued_specifier(path, raw, aliases, base_url)
     if resolution is None:
         return
-    node_id, stub_source_file, resolved_file = resolution
+    node_id, stub_source_file, resolved_file, is_external = resolution
     edge = {
         "source": file_node_id, "target": node_id,
         "relation": relation, "confidence": "EXTRACTED",
@@ -1589,11 +1589,23 @@ def _emit_rescued_import(
         # Edge target already a real node - just add the edge, don't add a node.
         result.setdefault("edges", []).append(edge)
         return
-    result.setdefault("nodes", []).append({
+    stub: dict = {
         "id": node_id, "label": raw,
         "file_type": "code", "source_file": stub_source_file,
         "confidence": "EXTRACTED",
-    })
+    }
+    if is_external:
+        # A bare/scoped specifier names a MODULE, not a path: the same package
+        # imported from N files is one node, and it is the same package a
+        # manifest in the corpus declares under that name. Mark it the way Swift
+        # module anchors are marked (#1327) — `file_type=code` keeps build.py
+        # validation happy, `type=module` exempts it from id-disambiguation — so
+        # it collapses with that declaration instead of being salted apart from
+        # it. Without this the salt renames the node and every importing edge is
+        # left on the dead id, so a declared dependency silently loses all of its
+        # inbound edges while an undeclared one keeps them (#3084).
+        stub["type"] = "module"
+    result.setdefault("nodes", []).append(stub)
     result.setdefault("edges", []).append(edge)
     existing_ids.add(node_id)
 

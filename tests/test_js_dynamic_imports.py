@@ -275,3 +275,79 @@ def test_dynamic_import_is_traversed_by_affected():
     g.add_edge("importer", "dep", relation="dynamic_import")
     hits = affected_nodes(g, "dep", depth=1)
     assert any(h.node_id == "importer" for h in hits)
+
+
+def test_declared_npm_dependency_keeps_its_import_edge(tmp_path, monkeypatch):
+    """A package declared in package.json must not lose its inbound import edges.
+
+    The bare specifier mints an external stub whose id is the package name; the
+    manifest in the same corpus produces a node under that same name. Two nodes,
+    one id, different source_files -> _disambiguate_colliding_node_ids salted both
+    apart, and the importing edge — which carries neither salt's source key —
+    was left on the now-dead id and dropped at build. The perverse result was
+    that an UNDECLARED package kept its edge (nothing to collide with) while a
+    properly declared dependency became invisible (#3084).
+
+    The stub is a module anchor, like the Swift ones (#1327), so it collapses onto
+    the declaration instead of being salted away from it.
+    """
+    _write(tmp_path / "package.json",
+           '{"name": "mre", "version": "1.0.0", "dependencies": {"postgres": "^3.4.0"}}\n')
+    _write(tmp_path / "app.mts",
+           "const postgres = (await import('postgres')).default;\n"
+           "export async function connect(url: string): Promise<void> {\n"
+           "  postgres(url, { max: 1 });\n"
+           "}\n")
+
+    monkeypatch.chdir(tmp_path)
+    result = extract([Path("app.mts"), Path("package.json")], cache_root=tmp_path / ".cache")
+
+    node_ids = {n["id"] for n in result["nodes"]}
+    pg_edges = [e for e in result["edges"]
+                if e["relation"] in ("dynamic_import", "imports_from")
+                and "postgres" in e["target"]]
+    assert pg_edges, "the dynamic import of a declared dependency must emit an edge"
+    for edge in pg_edges:
+        assert edge["target"] in node_ids, (
+            f"edge target {edge['target']!r} has no node — it would be dropped at build"
+        )
+
+
+def test_undeclared_npm_dependency_still_keeps_its_edge(tmp_path, monkeypatch):
+    """The no-manifest case must keep working: nothing to collapse onto, but the
+    stub still anchors the edge."""
+    _write(tmp_path / "app.mts",
+           "const postgres = (await import('postgres')).default;\n"
+           "export async function connect(url: string): Promise<void> {\n"
+           "  postgres(url, { max: 1 });\n"
+           "}\n")
+
+    monkeypatch.chdir(tmp_path)
+    result = extract([Path("app.mts")], cache_root=tmp_path / ".cache")
+
+    node_ids = {n["id"] for n in result["nodes"]}
+    pg_edges = [e for e in result["edges"]
+                if e["relation"] in ("dynamic_import", "imports_from")
+                and "postgres" in e["target"]]
+    assert pg_edges
+    for edge in pg_edges:
+        assert edge["target"] in node_ids
+
+
+def test_unresolved_relative_import_is_not_marked_a_module(tmp_path, monkeypatch):
+    """Only bare/scoped specifiers are module anchors.
+
+    An unresolved RELATIVE specifier names a path, not a module, so it must stay
+    subject to id-disambiguation — two `./helper` stubs in different directories
+    are different files and must not collapse onto one node.
+    """
+    _write(tmp_path / "app.mts", "const h = (await import('./missing-helper')).default;\n")
+
+    monkeypatch.chdir(tmp_path)
+    result = extract([Path("app.mts")], cache_root=tmp_path / ".cache")
+
+    for node in result["nodes"]:
+        if "missing" in str(node.get("label", "")) or "missing" in node["id"]:
+            assert node.get("type") != "module", (
+                "an unresolved relative import must not be exempted from disambiguation"
+            )
