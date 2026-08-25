@@ -494,3 +494,85 @@ def test_mcp_failed_call_does_not_stamp(tmp_path):
     assert "not found" in out.lower()
     assert not _stamp_path(default_graph).exists()
     assert not (missing / "graphify-out" / "cache" / "last_query_stamp").exists()
+
+
+# --- cache key: a sidecar-only change must invalidate the graph context --------
+
+
+def test_sidecar_only_change_invalidates_cached_context(tmp_path, monkeypatch):
+    """A `graphify reflect` run rewrites only .graphify_learning.json, never
+    graph.json. The context cache used to key on graph.json's (mtime_ns, size)
+    alone, so a running server kept serving lesson annotations from the old
+    sidecar until the graph itself changed. The sidecar's (mtime_ns, size) —
+    (0, 0) when absent — is now part of the key."""
+    graph_file = _graph_file(tmp_path)
+    sidecar = tmp_path / ".graphify_learning.json"
+
+    original_load = serve_mod._load_graph
+    loads = {"n": 0}
+
+    def counting_load(path: str):
+        loads["n"] += 1
+        return original_load(path)
+
+    monkeypatch.setattr(serve_mod, "_load_graph", counting_load)
+
+    app = serve_mod._build_http_app(graph_file, json_response=True)
+    with _client(app) as client:
+        headers = _init_session(client)
+        # 1. No sidecar: un-annotated answer. (The server start already loaded
+        #    the default graph once.)
+        out = _call_tool(client, headers, "query_graph", {"question": "Alpha"}, rid=2)
+        assert "learning=" not in out
+        assert loads["n"] == 1
+
+        # 2. Sidecar appears, graph.json untouched: the same running server
+        #    must reload and annotate.
+        sidecar.write_text(
+            json.dumps({"version": 1, "nodes": {"a": {"status": "preferred"}}}),
+            encoding="utf-8",
+        )
+        out = _call_tool(client, headers, "query_graph", {"question": "Alpha"}, rid=3)
+        assert "learning=preferred" in out
+        assert loads["n"] == 2
+
+        # 3. Nothing changed: still a cache hit.
+        out = _call_tool(client, headers, "query_graph", {"question": "Alpha"}, rid=4)
+        assert "learning=preferred" in out
+        assert loads["n"] == 2
+
+        # 4. Sidecar rewritten (a fresh reflect run): reload, new verdict.
+        sidecar.write_text(
+            json.dumps({"version": 1, "nodes": {"a": {"status": "contested"}}}),
+            encoding="utf-8",
+        )
+        out = _call_tool(client, headers, "query_graph", {"question": "Alpha"}, rid=5)
+        assert "learning=contested" in out
+        assert loads["n"] == 3
+
+        # 5. Sidecar vanishes: reload again, annotations gone.
+        sidecar.unlink()
+        out = _call_tool(client, headers, "query_graph", {"question": "Alpha"}, rid=6)
+        assert "learning=" not in out
+        assert loads["n"] == 4
+
+
+def test_sidecar_change_invalidates_project_context_too(tmp_path, monkeypatch):
+    """Same contract on the LRU (project_path) side of the cache."""
+    proj = _project_with_graph(tmp_path, node_count=3)
+    default_graph = _graph_file(tmp_path)
+    sidecar = Path(proj) / "graphify-out" / ".graphify_learning.json"
+
+    app = serve_mod._build_http_app(default_graph, json_response=True)
+    with _client(app) as client:
+        headers = _init_session(client)
+        out = _call_tool(client, headers, "query_graph",
+                         {"question": "N1", "project_path": proj}, rid=2)
+        assert "learning=" not in out
+        sidecar.write_text(
+            json.dumps({"version": 1, "nodes": {"n1": {"status": "preferred"}}}),
+            encoding="utf-8",
+        )
+        out = _call_tool(client, headers, "query_graph",
+                         {"question": "N1", "project_path": proj}, rid=3)
+        assert "learning=preferred" in out
