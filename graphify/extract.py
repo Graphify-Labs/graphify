@@ -901,6 +901,19 @@ _CPP_CONFIG = LanguageConfig(
     resolve_function_name_fn=_get_cpp_func_name,
 )
 
+def _ruby_sanitize_method_name(name: str) -> str:
+    """Encode trailing Ruby method suffixes (!, ?, =) into safe node ID components (#3077)."""
+    if not name:
+        return name
+    if name.endswith("!"):
+        return f"{name[:-1]}_bang"
+    if name.endswith("?"):
+        return f"{name[:-1]}_pred"
+    if name.endswith("="):
+        return f"{name[:-1]}_eq"
+    return name
+
+
 _RUBY_CONFIG = LanguageConfig(
     ts_module="tree_sitter_ruby",
     # `module Foo` is a container node just like `class Foo` in tree-sitter's
@@ -917,6 +930,7 @@ _RUBY_CONFIG = LanguageConfig(
     name_fallback_child_types=("constant", "scope_resolution", "identifier"),
     body_fallback_child_types=("body_statement",),
     function_boundary_types=frozenset({"method", "singleton_method"}),
+    sanitize_symbol_name_fn=_ruby_sanitize_method_name,
 )
 
 _CSHARP_CONFIG = LanguageConfig(

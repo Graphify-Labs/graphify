@@ -83,7 +83,8 @@ def resolve_ruby_member_calls(
                 class_def_nids.setdefault(_key(clabel.split("::")[-1]), []).append(str(src))
         tnode = node_by_id.get(tgt)
         if tnode is not None:
-            method_index[(str(src), _key(tnode.get("label", "")))] = str(tgt)
+            method_name = str(tnode.get("label", "")).strip("()").lstrip(".")
+            method_index[(str(src), method_name)] = str(tgt)
     # Also register class/module container nodes that own no `method` edge — a
     # method-less `Class.new(StandardError)` or an empty module — so a constant
     # receiver still resolves to a real node (#1640/#1634). External base stubs
@@ -198,7 +199,7 @@ def resolve_ruby_member_calls(
                     # to the class node itself, so inherited/dynamic class methods
                     # like ActiveRecord `where`/`find_by` still give correct
                     # blast-radius. An ambiguous receiver bails to nothing.
-                    method_nid = method_index.get((class_nid, _key(str(callee))))
+                    method_nid = method_index.get((class_nid, str(callee)))
                     _emit(caller, method_nid or class_nid, rc)
             continue
 
@@ -209,7 +210,7 @@ def resolve_ruby_member_calls(
         class_nid = _unique_class(str(receiver_type))
         if class_nid is None:
             continue
-        method_nid = method_index.get((class_nid, _key(str(callee))))
+        method_nid = method_index.get((class_nid, str(callee)))
         if method_nid is None:
             continue
         _emit(caller, method_nid, rc)
