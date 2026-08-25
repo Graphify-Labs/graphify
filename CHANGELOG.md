@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Fix: orienting through the MCP server now refreshes the strict read hook's "recently oriented" stamp, exactly like the CLI. `graphify query` / `path` / `explain` each touch `graphify-out/cache/last_query_stamp` so the strict hook lets the next raw file read through — but their MCP twins never did, so an agent that consulted the graph via `query_graph` was still treated as blind and had its first read denied. The stamp is now touched after every successful `query_graph`, `shortest_path`, `get_node`, or `get_neighbors` call (get_node + get_neighbors are the MCP split of `explain`), next to the graph that actually answered — a `project_path` call stamps that project's `graphify-out/cache`, which is the graph whose reads the guard gates. Browsing tools (`graph_stats`, `god_nodes`, `get_community`) and the PR tools don't stamp on the CLI and still don't over MCP; a failed call stamps nothing.
+
 ## 0.9.50 (2026-08-25)
 
 - Fix: Ruby methods whose names end in `!`, `?`, or `=` now keep distinct node ids, so `save` and `save!` (or `foo` and `foo=`) no longer collide into one node; the label keeps the raw spelling and member-call resolution still matches (#3077, thanks @hopstreax).

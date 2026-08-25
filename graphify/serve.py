@@ -1968,6 +1968,19 @@ def _build_server(graph_path: str):
         "triage_prs": _tool_triage_prs,
     }
 
+    # The MCP twins of the CLI commands whose runs refresh the "recently
+    # oriented" stamp that the strict read hook honours (`graphify query` /
+    # `path` / `explain` each call cli._touch_query_stamp). query_graph and
+    # shortest_path map 1:1 onto `query` and `path`; get_node + get_neighbors
+    # are the MCP split of `explain`. Graph-level browsing (god_nodes,
+    # graph_stats, get_community) and PR triage don't stamp on the CLI either,
+    # so they stay out. Without this set, an agent that orients through the
+    # MCP server is still treated as blind by the strict guard and gets its
+    # first raw read denied — after it already consulted the graph.
+    _ORIENTATION_TOOLS = frozenset(
+        {"query_graph", "get_node", "get_neighbors", "shortest_path"}
+    )
+
     def _load_community_labels() -> dict[int, str]:
         labels_path = Path(active_graph_path).parent / ".graphify_labels.json"
         if labels_path.exists():
@@ -2048,9 +2061,17 @@ def _build_server(graph_path: str):
             return [types.TextContent(type="text", text=f"Unknown tool: {name}")]
         try:
             _select_graph(project_path)  # bind G/communities to the target graph
-            return [types.TextContent(type="text", text=handler(arguments))]
+            text = handler(arguments)
         except Exception as exc:
             return [types.TextContent(type="text", text=f"Error executing {name}: {exc}")]
+        if name in _ORIENTATION_TOOLS:
+            # Same stamp, same location as the CLI: next to the graph that
+            # actually answered (so a project_path call stamps THAT project).
+            # _touch_query_stamp is fail-silent; a stamp failure never breaks
+            # the tool result.
+            from graphify.cli import _touch_query_stamp
+            _touch_query_stamp(Path(active_graph_path))
+        return [types.TextContent(type="text", text=text)]
 
     if hasattr(Server, "list_tools"):
         # mcp 1.x: decorator-based registration. The SDK wraps the raw returns
