@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## 0.9.52 (unreleased)
+
+- Feature: Perl support — `.pl`/`.pm` files (and `#!/usr/bin/perl` shebang scripts) extracted via tree-sitter-perl (#1788). Packages (including block form `package Foo { ... }` and mid-file package switches), subs, `use`/`require` imports with in-corpus re-pointing, and `@ISA`/`use parent`/`use base` inheritance are captured; calls resolve INFERRED through the shared package-aware second pass under a zero-edge ambiguity policy (a bare or same-named call that could bind to two packages emits no edge rather than a guess, mirroring the other cross-file resolvers' god-node guard). Method calls (`$obj->meth()`) and AUTOLOAD/symbolic refs are intentionally out of scope — without receiver types they are unresolvable and name-matching would wire spurious edges to same-named subs.
+
 ## 0.9.51 (2026-08-28)
 
 - Fix: the incomplete-build shrink guard now stays armed when a chunk came back hollow, unparseable, or omitting files, so a run that silently lost content can no longer overwrite the existing graph with a smaller one; a complete run and a retry-recovered chunk are unaffected, and `--allow-partial` still overrides (#3105, thanks @abhay-codes07).
@@ -105,7 +109,6 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.44 (2026-08-15)
 
-- Feature: Perl support — `.pl`/`.pm` files (and `#!/usr/bin/perl` shebang scripts) extracted via tree-sitter-perl (#1788). Packages (including block form `package Foo { ... }` and mid-file package switches), subs, `use`/`require` imports with in-corpus re-pointing, and `@ISA`/`use parent`/`use base` inheritance are captured; calls resolve INFERRED through the shared package-aware second pass under a zero-edge ambiguity policy (a bare or same-named call that could bind to two packages emits no edge rather than a guess, mirroring the other cross-file resolvers' god-node guard). Method calls (`$obj->meth()`) and AUTOLOAD/symbolic refs are intentionally out of scope — without receiver types they are unresolvable and name-matching would wire spurious edges to same-named subs.
 - Feature: `graphify hook install` reads a committed `.graphifyrc` (`viz_node_limit=<int>`) and bakes the visualization node limit into the generated git hooks, so a project-wide limit is shared via version control and survives hook regeneration; `hook status` reports it (#2760, thanks @hopstreax). The baked value uses a `${GRAPHIFY_VIZ_NODE_LIMIT:-<n>}` default so an explicit per-run env var still wins, and `hook status` degrades gracefully on a malformed `.graphifyrc`.
 - Fix: `graphify install` (Claude always-on) now writes the CLAUDE.md registration into `$CLAUDE_CONFIG_DIR` when that env var relocates the Claude profile, instead of always mutating the default `~/.claude/CLAUDE.md` (part of #2694, thanks @AromalBiju1).
 - Fix: a JS/TS inline or nested function expression — including a generator function expression (`function*(k){…}`) — no longer fabricates an INFERRED `indirect_call` when one of its parameters/locals shares a name with an unrelated callable; the expression's own bindings now shadow the name (#2752, thanks @imagineers-tyler), completing the shadow family alongside catch/arrow/loop/external-import (#2757).
