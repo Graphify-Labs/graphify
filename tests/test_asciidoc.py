@@ -197,3 +197,19 @@ def test_references_merge_into_the_linked_documents_own_nodes(docs):
     assert ("checklist.md", "guide.adoc") in refs  # markdown -> asciidoc link resolves too
     assert "DANGLING" not in {t for _, t in refs}
     assert not any("target_file" in e for e in g["edges"])
+
+
+def test_a_nested_block_closes_only_on_its_own_delimiter_length(tmp_path):
+    """`====` opens an example block; a `======` inside it is a nested block,
+    not the close - the outer block ends at the next `====`."""
+    p = tmp_path / "n.adoc"
+    p.write_text("== Real" + chr(10) + "====" + chr(10) + "== Inside outer" + chr(10) + "======" + chr(10)
+                 + "== Inside nested" + chr(10) + "======" + chr(10) + "== Still inside outer" + chr(10) + "====" + chr(10)
+                 + "== After" + chr(10), encoding="utf-8")
+    nodes, _ = _by(extract_asciidoc(p))
+    assert [n["label"] for n in nodes.values() if n["node_kind"] == "heading"] == ["Real", "After"]
+
+
+def test_both_extensions_are_in_the_hook_source_list():
+    from graphify.cli import _HOOK_SOURCE_EXTS
+    assert ".adoc" in _HOOK_SOURCE_EXTS and ".asciidoc" in _HOOK_SOURCE_EXTS
