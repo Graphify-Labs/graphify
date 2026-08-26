@@ -1533,6 +1533,21 @@ def _build_server(graph_path: str):
     _default_graph_path = str(Path(graph_path).resolve())
     _ctx_cache = _GraphContextCache(_max_server_contexts())
 
+    # NeuG embedded graph database for Cypher queries on graph.db
+    _neug_conn = None
+    _neug_db = None
+    _neug_execute = None
+    try:
+        from graphify.storage import init_db as _neug_init, execute_cypher as _neug_exec, close_db as _neug_close
+        _neug_db_path = str(Path(graph_path).parent / "graph.db")
+        if Path(_neug_db_path).exists():
+            _neug_db, _neug_conn = _neug_init(_neug_db_path)
+            _neug_execute = _neug_exec
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
     def _load_ctx(path: str):
         """Return the current default or project graph context as a tool error.
 
@@ -1704,6 +1719,20 @@ def _build_server(graph_path: str):
                         "base": {"type": "string", "description": "Base branch to filter PRs by (auto-detected if omitted)"},
                         "repo": {"type": "string", "description": "GitHub repo (owner/repo). Defaults to current repo."},
                     },
+                },
+            ),
+            types.Tool(
+                name="cypher_query",
+                description=(
+                    "Execute a Cypher query against the NeuG graph database. "
+                    "Returns tabular results. Requires neug to be installed and graph.db to exist."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Cypher query string"},
+                    },
+                    "required": ["query"],
                 },
             ),
         ]
@@ -1955,6 +1984,22 @@ def _build_server(graph_path: str):
             )
         return "\n\n".join(lines)
 
+    def _tool_cypher_query(arguments: dict) -> str:
+        if _neug_conn is None:
+            return "NeuG not available (not installed or graph.db not found)."
+        query = arguments["query"]
+        from graphify.storage import execute_cypher as _exec_cypher
+        try:
+            results = _exec_cypher(_neug_conn, query)
+        except RuntimeError as exc:
+            return f"Cypher error: {exc}"
+        if not results:
+            return "No results."
+        lines = []
+        for row in results:
+            lines.append("\t".join(str(v) for v in row))
+        return "\n".join(lines)
+
     _handlers = {
         "query_graph": _tool_query_graph,
         "get_node": _tool_get_node,
@@ -1966,6 +2011,7 @@ def _build_server(graph_path: str):
         "list_prs": _tool_list_prs,
         "get_pr_impact": _tool_get_pr_impact,
         "triage_prs": _tool_triage_prs,
+        "cypher_query": _tool_cypher_query,
     }
 
     def _load_community_labels() -> dict[int, str]:

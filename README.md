@@ -254,6 +254,7 @@ Codex users also need `multi_agent = true` under `[features]` in `~/.codex/confi
 | `mcp` | MCP stdio server | `uv tool install "graphifyy[mcp]"` |
 | `neo4j` | Neo4j push support | `uv tool install "graphifyy[neo4j]"` |
 | `falkordb` | FalkorDB push support | `uv tool install "graphifyy[falkordb]"` |
+| `neug` | [NeuG](https://github.com/alibaba/neug) embedded graph database — Cypher queries on your graph | `uv tool install "graphifyy[neug]"` |
 | `svg` | SVG graph export | `uv tool install "graphifyy[svg]"` |
 | `leiden` | Leiden community detection (Python < 3.13 only) | `uv tool install "graphifyy[leiden]"` |
 | `ollama` | Ollama local inference | `uv tool install "graphifyy[ollama]"` |
@@ -790,6 +791,15 @@ graphify cluster-only ./my-project --backend=gemini            # backend for com
 graphify cluster-only ./my-project --backend=gemini --model gemini-2.5-pro  # specific model
 graphify label ./my-project                                    # (re)name communities with the configured backend
 graphify label ./my-project --backend=openai --model gpt-4o   # force a specific backend and model
+
+# NeuG embedded graph DB (requires the neug extra)
+GRAPHIFY_NEUG=1 graphify extract ./raw   # opt-in NeuG pipeline: build graph.db + cluster with neug GDS Leiden (stays active once graph.db exists, no env var needed after that)
+GRAPHIFY_NEUG=1 graphify extract ./raw --resolution 1.2        # tune Leiden resolution
+GRAPHIFY_NEUG=1 graphify extract ./raw --cluster-on-files      # file-level communities
+graphify delta-cluster ./raw             # incremental community analysis on an existing graph.db
+graphify delta-cluster ./raw --baseline communities.json       # seed from an external clustering: old communities stay frozen, new nodes get assigned on top
+graphify cypher "MATCH (n) RETURN n LIMIT 10"    # query graph.db with Cypher
+graphify cypher "MATCH (n:node)-[e:edge]->(m:node) RETURN n.id, e.relation, m.id LIMIT 10" --db path/to/graph.db  # default: graphify-out/graph.db
 ```
 
 > **Community names:** inside an agent (Claude Code, Gemini CLI) the agent names communities itself. When you run the bare CLI, `cluster-only` auto-names them with the configured backend (built-in or custom OpenAI-compatible provider) — pass `--no-label` to keep `Community N`, or run `graphify label` to (re)generate names on demand.
