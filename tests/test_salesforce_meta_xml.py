@@ -189,3 +189,18 @@ def test_permission_set_reaches_the_real_apex_class(tmp_path: Path):
             and by_id.get(e["target"], {}).get("label") == "NotifyUser"]
     assert hits, "no reference edge to NotifyUser"
     assert Path(by_id[hits[0]["target"]]["source_file"]).name == "NotifyUser.cls"
+
+
+def test_metadata_is_collected_when_following_symlinks(tmp_path: Path):
+    """Regression: collect_files has two walks, and only one had the exception.
+
+    The symlink-following walk gated on extension alone, so with
+    follow_symlinks=True every `*-meta.xml` was silently dropped.
+    """
+    from graphify.extract import collect_files
+
+    _write(tmp_path / "objects/Memory__c/Memory__c.object-meta.xml",
+           '<?xml version="1.0"?><CustomObject/>')
+    for follow in (False, True):
+        found = {p.name for p in collect_files(tmp_path, follow_symlinks=follow)}
+        assert "Memory__c.object-meta.xml" in found, f"dropped with follow={follow}"

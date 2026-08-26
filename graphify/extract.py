@@ -7101,6 +7101,17 @@ def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | N
     if target.is_file():
         return [target] if _resolves_under_root(target, containment_root) else []
     _EXTENSIONS = set(_DISPATCH.keys())
+
+    def _claimed(p: Path) -> bool:
+        """Whether an extractor handles this file.
+
+        Salesforce metadata is dispatched by filename, not extension, so the
+        extension gate alone would never collect it. Shared by both walks below
+        — the symlink-following one used to miss the exception.
+        """
+        suffix = p.suffix
+        return (suffix in _EXTENSIONS or suffix.lower() in _EXTENSIONS
+                or is_salesforce_meta_xml_path(p))
     from graphify.detect import _is_ignored, _is_noise_dir, _load_graphifyignore
     ignore_root = root if root is not None else target
     patterns = _load_graphifyignore(ignore_root)
@@ -7130,12 +7141,7 @@ def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | N
             ]
             for fname in filenames:
                 p = dp / fname
-                suffix = p.suffix
-                # Salesforce metadata is dispatched by filename, not extension, so
-                # the extension gate alone would never collect it.
-                claimed = (suffix in _EXTENSIONS or suffix.lower() in _EXTENSIONS
-                           or is_salesforce_meta_xml_path(p))
-                if claimed and not _ignored(p) and _resolves_under_root(p, containment_root):
+                if _claimed(p) and not _ignored(p) and _resolves_under_root(p, containment_root):
                     results.append(p)
         return sorted(results)
     # Walk with symlink following + cycle detection
@@ -7155,8 +7161,7 @@ def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | N
         ]
         for fname in filenames:
             p = dp / fname
-            suffix = p.suffix
-            if (suffix in _EXTENSIONS or suffix.lower() in _EXTENSIONS) and not _ignored(p) and _resolves_under_root(p, containment_root):
+            if _claimed(p) and not _ignored(p) and _resolves_under_root(p, containment_root):
                 results.append(p)
     return sorted(results)
 
