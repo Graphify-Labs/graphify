@@ -1440,6 +1440,36 @@ def test_elixir_method_edges():
     assert len(methods) >= 3
 
 
+def test_elixir_single_line_do_body_emits_calls(tmp_path):
+    """`def f(x), do: g(x)` must still emit a call edge to g.
+
+    The keyword one-liner stores its body as a `do:` pair inside the call's
+    arguments, not a `do_block`; the body walker only visited do_block nodes, so
+    every call made from the (idiomatic, extremely common) one-line form was
+    dropped from the graph.
+    """
+    src = tmp_path / "calc.ex"
+    src.write_text(
+        "defmodule Calc do\n"
+        "  def add(a, b), do: a + b\n"
+        "  def line_caller(x), do: add(x, 1)\n"
+        "  def block_caller(x) do\n"
+        "    add(x, 2)\n"
+        "  end\n"
+        "end\n"
+    )
+    r = extract_elixir(src)
+    assert "error" not in r
+    labels = {n["id"]: n["label"] for n in r["nodes"]}
+    call_pairs = {
+        (labels.get(e["source"], ""), labels.get(e["target"], ""))
+        for e in r["edges"] if e["relation"] == "calls"
+    }
+    assert ("line_caller()", "add()") in call_pairs
+    # the do..end form kept working
+    assert ("block_caller()", "add()") in call_pairs
+
+
 # ── Objective-C ──────────────────────────────────────────────────────────────
 from graphify.extract import extract_objc
 

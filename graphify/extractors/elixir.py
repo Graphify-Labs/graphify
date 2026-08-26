@@ -87,6 +87,32 @@ def extract_elixir(path: Path) -> dict:
                 return [_text(child)]
         return []
 
+    def _keyword_do_body(arguments_node):
+        """Return the body expression of a single-line ``def f(...), do: expr``.
+
+        The keyword form stores the body as a ``do:`` pair inside the call's
+        ``arguments`` (``keywords`` -> ``pair`` -> ``keyword`` "do:" + value),
+        not as a ``do_block``. Without this the call graph loses every function
+        written in the (idiomatic, very common) one-line form.
+        """
+        for child in arguments_node.children:
+            if child.type != "keywords":
+                continue
+            for pair in child.children:
+                if pair.type != "pair":
+                    continue
+                kw = None
+                value = None
+                for sub in pair.children:
+                    if sub.type == "keyword":
+                        kw = source[sub.start_byte:sub.end_byte].decode(
+                            "utf-8", errors="replace").strip()
+                    elif sub.is_named:
+                        value = sub
+                if kw in ("do:", "do") and value is not None:
+                    return value
+        return None
+
     def walk(node, parent_module_nid: str | None = None) -> None:
         if node.type != "call":
             for child in node.children:
@@ -147,6 +173,12 @@ def extract_elixir(path: Path) -> dict:
                 add_edge(file_nid, func_nid, "contains", line)
             if do_block_node:
                 function_bodies.append((func_nid, do_block_node))
+            elif arguments_node is not None:
+                # Single-line keyword form: ``def f(x), do: g(x)``. The body is a
+                # ``do:`` pair inside the arguments rather than a do_block.
+                kw_body = _keyword_do_body(arguments_node)
+                if kw_body is not None:
+                    function_bodies.append((func_nid, kw_body))
             return
 
         if keyword in _IMPORT_KEYWORDS and arguments_node:
