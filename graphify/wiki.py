@@ -110,6 +110,7 @@ def _community_article(
     cohesion: float | None,
     node_community: dict[str, int] | None = None,
     resolver: dict[str, str] | None = None,
+    god_node_slugs: dict[str, str] | None = None,
 ) -> str:
     resolver = resolver or {}
     top_nodes = sorted(nodes, key=lambda n: G.degree(n), reverse=True)[:25]
@@ -134,7 +135,7 @@ def _community_article(
     )
     total_edges = sum(conf_counts.values()) or 1
 
-    sources = sorted({(G.nodes[n].get("source_file") or "").replace("\\", "/") for n in nodes} - {""})
+    sources = sorted({str(G.nodes[n].get("source_file") or "").replace("\\", "/") for n in nodes} - {""})
 
     lines: list[str] = []
     lines += [f"# {label}", ""]
@@ -148,10 +149,17 @@ def _community_article(
     for nid in top_nodes:
         d = G.nodes[nid]
         node_label = d.get("label", nid)
-        src = (d.get("source_file") or "").replace("\\", "/")
+        src = str(d.get("source_file") or "").replace("\\", "/")
         degree = G.degree(nid)
         src_str = f" — `{src}`" if src else ""
-        linked_label = _md_link(node_label, resolver)
+        
+        escaped_label = node_label.replace("[", r"\[").replace("]", r"\]")
+        slug = (god_node_slugs or {}).get(nid)
+        if slug:
+            linked_label = f"[{escaped_label}]({slug}.md)"
+        else:
+            linked_label = escaped_label
+            
         lines.append(f"- **{linked_label}** ({degree} connections){src_str}")
     remaining = len(nodes) - len(top_nodes)
     if remaining > 0:
@@ -187,7 +195,7 @@ def _god_node_article(G: nx.Graph, nid: str, labels: dict[int, str], node_commun
     resolver = resolver or {}
     d = G.nodes[nid]
     node_label = d.get("label", nid)
-    src = (d.get("source_file") or "").replace("\\", "/")
+    src = str(d.get("source_file") or "").replace("\\", "/")
     cid = (node_community or {}).get(nid)
     community_name = labels.get(cid, f"Community {cid}") if cid is not None else None
 
@@ -369,17 +377,19 @@ def to_wiki(
         resolver.setdefault(label, slug)
 
     god_articles: list[tuple[str, str]] = []  # (node_id, slug)
+    god_node_slugs: dict[str, str] = {}
     for node_data in god_nodes_data:
         nid = node_data.get("id")
         if nid and nid in G:
             slug = _unique_slug(_safe_filename(node_data['label'], _slug_limit))
             god_articles.append((nid, slug))
+            god_node_slugs[nid] = slug
             resolver.setdefault(node_data['label'], slug)
 
     # Second pass: render and write each article with the full resolver in hand.
     for cid, nodes in communities.items():
         label = labels.get(cid, f"Community {cid}")
-        article = _community_article(G, cid, nodes, label, labels, cohesion.get(cid), node_community, resolver)
+        article = _community_article(G, cid, nodes, label, labels, cohesion.get(cid), node_community, resolver, god_node_slugs)
         (out / f"{community_slugs[cid]}.md").write_text(article, encoding="utf-8")
         count += 1
 
