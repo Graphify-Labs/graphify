@@ -430,12 +430,23 @@ dist/
 `graphify-out/` is meant to be committed to git so everyone on the team starts with a map.
 
 **Recommended `.gitignore` additions:**
-```
-graphify-out/cost.json        # local only
-# graphify-out/cache/         # optional: commit for speed, skip to keep repo small
+
+```gitignore
+graphify-out/cost.json
+graphify-out/memory/
+graphify-out/reflections/
+graphify-out/.graphify_*
+graphify-out/????-??-??/
+
+# Optional: commit cache for speed, or ignore it to keep the repo small
+# graphify-out/cache/
+
+# Optional: uncomment if your team does not want to share labels
+# graphify-out/.graphify_labels.json
 ```
 
 > `manifest.json` is now portable — keys are stored as relative paths and re-anchored on load, so committing it is safe and avoids a full rebuild on first checkout.
+
 
 **Workflow:**
 1. One person runs `/graphify .` and commits `graphify-out/`.
