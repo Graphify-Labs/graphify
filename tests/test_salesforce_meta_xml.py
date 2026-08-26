@@ -204,3 +204,25 @@ def test_metadata_is_collected_when_following_symlinks(tmp_path: Path):
     for follow in (False, True):
         found = {p.name for p in collect_files(tmp_path, follow_symlinks=follow)}
         assert "Memory__c.object-meta.xml" in found, f"dropped with follow={follow}"
+
+
+def test_utf16_doctype_is_refused(tmp_path: Path):
+    """The DOCTYPE screen matches ASCII bytes, so UTF-16 would walk past it.
+
+    ElementTree honours the encoding declaration and would expand the entity,
+    which is the billion-laughs hole the screen exists to close.
+    """
+    f = tmp_path / "Evil.object-meta.xml"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_bytes(
+        '<?xml version="1.0" encoding="UTF-16"?>'
+        '<!DOCTYPE x [<!ENTITY a "boom">]><CustomObject/>'.encode("utf-16"))
+    result = extract_salesforce_meta_xml(f)
+    assert result["nodes"] == [] and "UTF-8" in result["error"]
+
+
+def test_ordinary_utf8_metadata_is_still_accepted(tmp_path: Path):
+    """Guard the other direction: the encoding check must not reject real files."""
+    f = _write(tmp_path / "Memory__c.object-meta.xml",
+               '<?xml version="1.0" encoding="UTF-8"?><CustomObject/>')
+    assert "Memory__c" in _labels(extract_salesforce_meta_xml(f))

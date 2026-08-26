@@ -34,9 +34,21 @@ _META_SUFFIX = "-meta.xml"
 _MAX_BYTES = 2 * 1024 * 1024
 
 
-def _is_safe(src: bytes) -> bool:
+def _unsafe_reason(src: bytes) -> str | None:
+    """Why this file must not be parsed, or None when it is fine.
+
+    The DOCTYPE/ENTITY screen matches ASCII bytes, so a UTF-16 encoded
+    declaration slips straight past it while ElementTree still honours the
+    encoding and expands the entity. A NUL byte is the reliable tell for
+    UTF-16/32, and Salesforce source format is always UTF-8, so refusing those
+    outright closes the hole without costing anything real.
+    """
+    if b"\x00" in src:
+        return "refusing non-UTF-8 XML (NUL byte: UTF-16/32)"
     lowered = src.lower()
-    return b"<!doctype" not in lowered and b"<!entity" not in lowered
+    if b"<!doctype" in lowered or b"<!entity" in lowered:
+        return "refusing XML with DOCTYPE/ENTITY declaration"
+    return None
 
 
 def _local(tag: str) -> str:
@@ -122,9 +134,9 @@ def extract_salesforce_meta_xml(path: Path) -> dict:
         return {"nodes": [], "edges": [], "error": f"cannot read {path}"}
     if len(src) > _MAX_BYTES:
         return {"nodes": [], "edges": [], "error": "metadata file too large"}
-    if not _is_safe(src):
-        return {"nodes": [], "edges": [],
-                "error": "refusing XML with DOCTYPE/ENTITY declaration"}
+    unsafe = _unsafe_reason(src)
+    if unsafe:
+        return {"nodes": [], "edges": [], "error": unsafe}
     try:
         root = ET.fromstring(src)
     except ET.ParseError as e:
