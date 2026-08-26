@@ -43,14 +43,15 @@ _ANGLE_XREF_RE = re.compile(r"<<([^>,\s]+)(?:,[^>]*)?>>")
 _ATTR_LINE_RE = re.compile(r"^:([A-Za-z0-9_][A-Za-z0-9_-]*):\s*(.*)$")
 
 # Delimiter lines that open/close a block whose body must be skipped. A block
-# closes on the same delimiter that opened it.
-_BLOCK_DELIMS = ("----", "....", "////", "++++", "====", "****", "____")
+# closes on the SAME delimiter that opened it - same character AND same
+# length, which is how AsciiDoc nests an example block inside an example
+# block (`====` ... `======` ... `======` ... `====`).
+_BLOCK_DELIM_CHARS = frozenset("-./+=*_")
 
 
 def _block_delim(stripped: str) -> str | None:
-    for d in _BLOCK_DELIMS:
-        if len(stripped) >= 4 and stripped == d[0] * len(stripped):
-            return d[0]
+    if len(stripped) >= 4 and stripped[0] in _BLOCK_DELIM_CHARS and stripped == stripped[0] * len(stripped):
+        return stripped
     return None
 
 
@@ -144,19 +145,19 @@ def extract_asciidoc(path: Path) -> dict:
     attributes: dict[str, str] = {}
     in_header = True
     heading_stack: list[tuple[int, str]] = []
-    block_char: str | None = None
+    block_delim: str | None = None
     doc_title: str | None = None
 
     for idx, line_text in enumerate(lines):
         line_num = idx + 1
         stripped = line_text.strip()
         delim = _block_delim(stripped)
-        if block_char is not None:
-            if delim == block_char:
-                block_char = None
+        if block_delim is not None:
+            if delim == block_delim:
+                block_delim = None
             continue
         if delim is not None:
-            block_char = delim
+            block_delim = delim
             continue
         if stripped.startswith("//"):
             continue  # line comment
