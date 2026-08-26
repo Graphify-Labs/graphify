@@ -3393,6 +3393,19 @@ def _resolve_csharp_member_calls(
         enclosing_type.setdefault(tgt, src)
         method_index[(src, _key(tnode.get("label", "")))] = tgt
 
+    # Properties and fields arrive as `defines`, not `method`, so they are absent from
+    # method_index and a member READ has nothing to bind to. Indexed separately rather than
+    # folded in: a call must never resolve to a property, nor a read to a method.
+    member_index: dict[tuple[str, str], str] = {}
+    for e in all_edges:
+        if e.get("relation") != "defines":
+            continue
+        src, tgt = e.get("source"), e.get("target")
+        tnode = node_by_id.get(tgt)
+        if tnode is None:
+            continue
+        member_index[(src, _key(tnode.get("label", "")))] = tgt
+
     # Base-class chain from `inherits` edges (C# files only). The type-reference
     # pass has already re-pointed each resolvable base to its real definition and
     # left unresolvable ones on dangling sourceless stubs — a stub target marks
@@ -3439,6 +3452,30 @@ def _resolve_csharp_member_calls(
                 continue  # an override shadows anything above it
             if nid in unresolved_base:
                 return None  # the method may live on the out-of-corpus base
+            frontier.extend(bases_of.get(nid, []))
+        return next(iter(hits)) if len(hits) == 1 else None
+
+    def _member_on_type_or_bases(type_nid: str, member_key: str) -> str | None:
+        """The property/field declaration on the type or its resolvable base chain.
+
+        Same walk and same guards as the method lookup -- a declaration on the type wins,
+        an unresolved base anywhere the walk reaches yields nothing, and anything other
+        than exactly one hit yields nothing.
+        """
+        hits: set[str] = set()
+        seen: set[str] = set()
+        frontier = [type_nid]
+        while frontier:
+            nid = frontier.pop()
+            if nid in seen:
+                continue
+            seen.add(nid)
+            member_nid = member_index.get((nid, member_key))
+            if member_nid:
+                hits.add(member_nid)
+                continue
+            if nid in unresolved_base:
+                return None
             frontier.extend(bases_of.get(nid, []))
         return next(iter(hits)) if len(hits) == 1 else None
 
@@ -3530,6 +3567,43 @@ def _resolve_csharp_member_calls(
             "source_location": rc.get("source_location"),
             "weight": 1.0,
         })
+
+    # Property/field reads on a typed receiver (`ctx.Items`). Same resolution path as a
+    # member call -- the extractor stamps the receiver's declared type, this resolves that
+    # name with the namespace/using/alias scoping above, then looks the member up on the
+    # type or its bases. Without it a property was reachable only from its own declaration,
+    # so "what reads this member" had no answer at all.
+    #
+    # The edge is `references[member_access]`, not `calls`: reading a property is not an
+    # invocation, and conflating the two would corrupt call-graph queries.
+    seen_member_reads: set[tuple[str, str]] = set()
+    for ma in all_raw_calls:
+        if ma.get("lang") != "csharp" or not ma.get("member_read"):
+            continue
+        caller = ma.get("caller_nid")
+        member = ma.get("member")
+        if not caller or not member:
+            continue
+        src_file = ma.get("source_file", "")
+        if ma.get("receiver_is_this"):
+            # `this.Member` -- the type is the class declaring the accessing method.
+            type_nid = enclosing_type.get(caller)
+        else:
+            type_name = ma.get("receiver_type")
+            if not type_name:
+                continue
+            type_nid = _resolve_type_name_nid(type_name, node_by_id.get(caller), src_file)
+        if not type_nid:
+            continue  # ambiguous or absent -> no edge, never a guess
+        member_nid = _member_on_type_or_bases(type_nid, _key(member))
+        if not member_nid or member_nid == caller:
+            continue
+        if (caller, member_nid) in seen_member_reads:
+            continue
+        seen_member_reads.add((caller, member_nid))
+        all_edges.append(_semantic_reference_edge(
+            caller, member_nid, "member_access", src_file, ma.get("source_location"),
+        ))
 
 
 def _resolve_java_member_calls(
