@@ -12,7 +12,7 @@ import re
 import subprocess
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -423,6 +423,30 @@ def _resolve_max_retries(default: int = 6) -> int:
     A higher cap lets a rate-limited chunk wait out the window instead of failing.
     Honour GRAPHIFY_MAX_RETRIES; 0 is allowed (disable retries)."""
     raw = os.environ.get("GRAPHIFY_MAX_RETRIES", "").strip()
+    if raw:
+        try:
+            v = int(raw)
+            if v >= 0:
+                return v
+        except ValueError:
+            pass
+    return default
+
+
+def _resolve_max_retry_depth(default: int = 3) -> int:
+    """How deep adaptive retry may bisect a truncated chunk.
+
+    A chunk of N files can split into up to ``2**depth`` pieces, so this is the
+    knob that bounds worst-case cost. It used to be a Python-API kwarg only,
+    with no way for a `graphify extract` operator to lower it — or set it to 0 —
+    as a mitigation (#2880). Honour GRAPHIFY_MAX_RETRY_DEPTH.
+
+    ``0`` means no retries of any kind: no bisection, and no same-chunk retry of
+    a hollow response either. It is set to cap spend, so it has to hold for
+    every retry path, not only the one it names — see
+    :func:`_extract_with_adaptive_retry`. One call per chunk, full stop.
+    """
+    raw = os.environ.get("GRAPHIFY_MAX_RETRY_DEPTH", "").strip()
     if raw:
         try:
             v = int(raw)
@@ -986,11 +1010,120 @@ def _sanitize_fragment(parsed: dict) -> dict:
     return parsed
 
 
+# Keys that identify an extraction fragment. Used to tell the graph object
+# apart from a brace that merely appeared in the model's narration (#2882).
+_FRAGMENT_KEYS = ("nodes", "edges", "hyperedges")
+_FRAGMENT_KEY_TOKENS = tuple(f'"{k}"' for k in _FRAGMENT_KEYS)
+# Bound on how many `{` positions are probed, so a pathological response with
+# thousands of braces cannot turn recovery into a quadratic scan. Applied to
+# the likely and the unlikely candidate lists separately, so a wall of noise
+# braces cannot crowd out an answer that comes after it.
+_MAX_OBJECT_CANDIDATES = 64
+# Reasoning models (nemotron, deepseek-r1, qwq, …) emit their chain of thought
+# in a <think> block ahead of the answer. It is prose, and it routinely
+# contains braces, so it is removed before any brace scanning.
+_THINK_BLOCK_RE = re.compile(r"<(think|thinking|reasoning)>.*?</\1>", re.S | re.I)
+_FENCE_RE = re.compile(r"```[ \t]*([A-Za-z0-9_+-]*)[ \t]*\r?\n(.*?)```", re.S)
+
+
+def _balanced_object(text: str, start: int) -> str | None:
+    """Return the balanced ``{...}`` substring starting at ``start``, else None."""
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+    return None
+
+
+def _json_object_candidates(text: str) -> list[int]:
+    """Indices of ``{`` that plausibly start an extraction fragment.
+
+    Braces followed shortly by one of ``_FRAGMENT_KEYS`` are tried first, so a
+    model that narrates before answering — "Here's a thinking process: 1.
+    **Analyze User Input:** …" with braces in the narration — does not have its
+    real answer masked by the first brace in the text (#2882).
+
+    Known limit: each bucket is capped at ``_MAX_OBJECT_CANDIDATES`` from the
+    front, so a reply with more than that many *keyed* braces before the real
+    answer (a very verbose model that emits a ``{"nodes": …}`` sketch per file)
+    could drop the true answer's brace. This needs an implausibly chatty
+    preamble and is left as a known gap rather than complicating the scan.
+    """
+    preferred: list[int] = []
+    rest: list[int] = []
+    idx = text.find("{")
+    while idx != -1:
+        bucket = (
+            preferred
+            if any(k in text[idx:idx + 200] for k in _FRAGMENT_KEY_TOKENS)
+            else rest
+        )
+        if len(bucket) < _MAX_OBJECT_CANDIDATES:
+            bucket.append(idx)
+        elif len(preferred) >= _MAX_OBJECT_CANDIDATES and len(rest) >= _MAX_OBJECT_CANDIDATES:
+            break
+        idx = text.find("{", idx + 1)
+    return preferred + rest
+
+
+def _json_fragment_candidates(text: str) -> "Iterator[str]":
+    """Yield candidate JSON texts from a model reply, most-likely first.
+
+    Two sources, in order:
+
+    * fenced blocks — every fence, not just the first in the text, since a
+      reasoning preamble often opens a ```python or ```text block of its own
+      before the answer's ```json block. JSON-tagged and untagged fences come
+      first; a fence in another language is still yielded, since models
+      mislabel the tag.
+    * balanced ``{...}`` objects lifted out of surrounding prose, at each
+      plausible start rather than only the first `{` in the text.
+
+    Both read the ORIGINAL text. Rewriting it in place — as the old fence
+    handling did, cutting from the first ``` to the last — let a fence in the
+    narration truncate the real answer before it was ever parsed (#2882).
+    """
+    for _lang, body in sorted(
+        _FENCE_RE.findall(text), key=lambda b: b[0].strip().lower() not in ("json", "")
+    ):
+        yield body.strip()
+    for start in _json_object_candidates(text):
+        blob = _balanced_object(text, start)
+        if blob is not None:
+            yield blob
+
+
 def _parse_llm_json(raw: str) -> dict:
     """Strip optional markdown fences and parse JSON. Returns empty fragment on failure.
 
     Caps the input at `_LLM_JSON_MAX_BYTES` so a hostile or runaway model
     response cannot exhaust memory inside `json.loads` (F-016).
+
+    Plenty of models will not return a bare JSON object no matter how the
+    prompt is worded: they think out loud first, wrap the answer in a fence, or
+    do both (#2882). So the whole reply is tried first, then each candidate
+    :func:`_json_fragment_candidates` finds. An object carrying none of the
+    extraction keys is kept only as a last resort — reasoning-first models
+    routinely restate the schema (``{"description": "graph fragment"}``) before
+    answering, and the narration must never shadow the answer that follows it.
     """
     if len(raw) > _LLM_JSON_MAX_BYTES:
         print(
@@ -999,65 +1132,55 @@ def _parse_llm_json(raw: str) -> dict:
             file=sys.stderr,
         )
         return {"nodes": [], "edges": [], "hyperedges": []}
-    # Strategy 1: strip whitespace, then handle markdown fences anywhere in the
-    # text (not only at offset 0 — the original code only stripped fences when
-    # `raw.startswith("```")`, missing the common case where Claude prepends a
-    # preamble like "Here's the extracted entities:\n\n```json\n{...}\n```").
-    stripped = raw.strip()
-    fence_start = stripped.find("```")
-    if fence_start != -1:
-        after_fence = stripped[fence_start + 3 :]
-        # Optional language tag (json, JSON, javascript, etc.) up to newline.
-        nl = after_fence.find("\n")
-        if nl != -1 and after_fence[:nl].strip().lower() in {"json", "javascript", "js", ""}:
-            after_fence = after_fence[nl + 1 :]
-        fence_end = after_fence.rfind("```")
-        if fence_end != -1:
-            stripped = after_fence[:fence_end].strip()
-        else:
-            stripped = after_fence.strip()
+
+    stripped = _THINK_BLOCK_RE.sub(" ", raw).strip()
+
     try:
         parsed = json.loads(stripped)
         if isinstance(parsed, dict):
             return _sanitize_fragment(parsed)
         # Top-level array/scalar (common LLM output) is not a usable graph
-        # fragment; fall through to the next strategy rather than returning a
-        # non-dict that callers will try to subscript (e.g. result["input_tokens"]).
+        # fragment; fall through rather than returning a non-dict that callers
+        # will try to subscript (e.g. result["input_tokens"]).
     except json.JSONDecodeError:
         pass
-    # Strategy 2: extract the first balanced JSON object found anywhere in
-    # the text. Handles the case where Claude wraps the JSON in prose without
-    # any markdown fence ("The extracted graph is { ... }. Hope this helps!").
-    start = stripped.find("{")
-    if start != -1:
-        depth = 0
-        in_string = False
-        escape = False
-        for i in range(start, len(stripped)):
-            ch = stripped[i]
-            if escape:
-                escape = False
-                continue
-            if ch == "\\":
-                escape = True
-                continue
-            if ch == '"':
-                in_string = not in_string
-                continue
-            if in_string:
-                continue
-            if ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    try:
-                        parsed = json.loads(stripped[start : i + 1])
-                        if isinstance(parsed, dict):
-                            return _sanitize_fragment(parsed)
-                        break
-                    except json.JSONDecodeError:
-                        break
+
+    # Preference ladder, weakest last. A model that restates the required shape
+    # before answering — "the schema is `{"nodes": [], "edges": []}`" — produces
+    # a candidate that carries the extraction keys but no content, and taking it
+    # would let the restatement shadow the answer just as surely as a prose
+    # object would (#2882).
+    empty_fragment: dict | None = None   # right shape, nothing in it
+    fallback: dict | None = None         # parses, but not a fragment at all
+    for candidate in _json_fragment_candidates(stripped):
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        if any(k in parsed for k in _FRAGMENT_KEYS):
+            # Gate on the SANITIZED content, not the raw value. A reasoning
+            # sketch commonly lists ids as bare strings — `{"nodes": ["A", "B"]}`
+            # — whose arrays are truthy but hold no edge/node objects. Testing
+            # the raw value would let that sketch win and then sanitize down to
+            # empty, shadowing the real answer that follows and re-triggering the
+            # #2880 hollow-response bisection. Sanitizing first demotes it to the
+            # empty-fragment tier so the genuine fragment below still wins.
+            cand = _sanitize_fragment(parsed)
+            if any(cand.get(k) for k in _FRAGMENT_KEYS):
+                return cand
+            if empty_fragment is None:
+                empty_fragment = cand
+        elif fallback is None:
+            fallback = parsed
+
+    # A genuinely empty extraction is still a valid answer, and still reads as
+    # hollow downstream, so it outranks an object that is not a fragment at all.
+    for weaker in (empty_fragment, fallback):
+        if weaker is not None:
+            return _sanitize_fragment(weaker)
+
     print(
         f"[graphify] LLM returned invalid JSON, skipping chunk "
         f"(first 200 chars: {raw[:200]!r})",
@@ -1093,9 +1216,10 @@ def _bedrock_response_text(resp: dict, default: str = "") -> str:
     API does not promise a text block is first: reasoning-capable models emit a
     ``reasoningContent`` block ahead of the answer, and ``toolUse`` or future
     block types can precede it too. Indexing position 0 therefore yields no text
-    at all for those models, which reads downstream as a hollow response, gets
-    reclassified as truncation, and sends the chunk into bisection that cannot
-    converge. Select on the block's shape instead of its position so this holds
+    at all for those models, which reads downstream as a hollow response and
+    costs the chunk a round of retries before it is failed (before #2880 it was
+    reclassified as truncation and bisected, which could not converge at all).
+    Select on the block's shape instead of its position so this holds
     for any model; a response whose first block is already text is unaffected.
     """
     content = resp.get("output", {}).get("message", {}).get("content", [])
@@ -1118,9 +1242,8 @@ def _response_is_hollow(raw_content: str | None, parsed: dict) -> bool:
     JSON prefix that fails to parse. All of these collapse to a "successful"
     call producing zero nodes and zero edges. Without this check the chunk
     is silently dropped from the corpus because no exception is raised and
-    `finish_reason` is `"stop"` rather than `"length"`. By flagging the
-    result as hollow, callers can re-route it through the same bisection
-    path used for context-window overflow and `finish_reason="length"`.
+    `finish_reason` is `"stop"` rather than `"length"`. Callers flag it with
+    :func:`_mark_hollow` so the adaptive-retry layer can recover it.
     """
     if raw_content is None or not raw_content.strip():
         return True
@@ -1128,6 +1251,42 @@ def _response_is_hollow(raw_content: str | None, parsed: dict) -> bool:
     edges = parsed.get("edges")
     hyperedges = parsed.get("hyperedges")
     return not nodes and not edges and not hyperedges
+
+
+# Backoff between same-chunk retries of a hollow response (#2880). Two entries
+# ⇒ at most three calls per chunk, versus the 15 the bisection path could spend.
+_HOLLOW_BACKOFF_S = (2.0, 8.0)
+
+
+def _mark_hollow(result: dict, raw_content: str | None, backend: str | None) -> dict:
+    """Label a hollow response so adaptive retry retries it, without bisecting.
+
+    Hollow and truncated are different failures with different remedies, and
+    labelling hollow as `finish_reason="length"` conflated them (#2880):
+
+    - **truncated** — the model ran out of `max_completion_tokens` mid-JSON.
+      Bisecting is the correct recovery: smaller input ⇒ shorter output.
+    - **hollow** — HTTP 200 with empty/null/whitespace content, or content that
+      parses to zero nodes and zero edges (a rate limit, a transport hiccup, a
+      refusal, an agentic prose reply, a reasoning-first content block).
+
+    Bisecting a hollow response cannot converge: both halves go to the same
+    misbehaving backend and come back hollow too, so one bad response cost
+    `2**max_retry_depth` billed calls — up to 15 per chunk at the default
+    depth, all of them failing. `_extract_with_adaptive_retry` retries the
+    *same* chunk with backoff instead.
+    """
+    if _response_is_hollow(raw_content, result) and result.get("finish_reason") != "length":
+        print(
+            f"[graphify] {backend or 'backend'} returned a hollow response "
+            f"(content={'empty' if not (raw_content or '').strip() else 'no nodes/edges'}, "
+            f"output_tokens={result.get('output_tokens', 0)}); "
+            "will retry the same chunk (a hollow response is not a size problem, "
+            "so the chunk is not bisected).",
+            file=sys.stderr,
+        )
+        result["finish_reason"] = "hollow"
+    return result
 
 
 def _backend_env_keys(backend: str) -> list[str]:
@@ -1308,17 +1467,9 @@ def _call_openai_compat(
     # An overwhelmed local model (typically Ollama) can return HTTP 200 with
     # empty / null content or unparseable half-generated JSON. The call looks
     # successful, `finish_reason` is `"stop"`, and the chunk would be silently
-    # dropped from the corpus. Re-label as `"length"` so the adaptive retry
-    # layer bisects the chunk — same recovery as a true truncation.
-    if _response_is_hollow(raw_content, result) and result["finish_reason"] != "length":
-        print(
-            f"[graphify] {backend or 'backend'} returned a hollow response "
-            f"(content={'empty' if not (raw_content or '').strip() else 'no nodes/edges'}, "
-            f"output_tokens={result['output_tokens']}); "
-            "treating as truncation so adaptive retry can bisect the chunk.",
-            file=sys.stderr,
-        )
-        result["finish_reason"] = "length"
+    # dropped from the corpus. Label it hollow so the adaptive retry layer
+    # retries the same chunk — see _mark_hollow for why not bisection.
+    _mark_hollow(result, raw_content, backend)
     output_tokens = result["output_tokens"]
     if output_tokens < 50 and backend == "ollama":
         print(
@@ -1361,13 +1512,7 @@ def _call_claude(api_key: str, model: str, user_message: str, max_tokens: int = 
     # vocabulary so the adaptive-retry layer doesn't have to know which
     # backend produced the result.
     result["finish_reason"] = "length" if resp.stop_reason == "max_tokens" else "stop"
-    if _response_is_hollow(raw_content, result) and result["finish_reason"] != "length":
-        print(
-            "[graphify] claude returned a hollow response; treating as "
-            "truncation so adaptive retry can bisect the chunk.",
-            file=sys.stderr,
-        )
-        result["finish_reason"] = "length"
+    _mark_hollow(result, raw_content, "claude")
     return result
 
 
@@ -1527,9 +1672,10 @@ def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bo
     # the user turn is only a raw file dump with no request, reply
     # conversationally ("I see the file, but there's no actual request
     # attached — what would you like me to do with it?"). That prose parses to
-    # zero nodes/edges, so _response_is_hollow flags it as truncation and the
-    # adaptive-retry path bisects the chunk indefinitely, never converging and
-    # never writing graph.json (verified against Claude Code 2.1.197).
+    # zero nodes/edges, so _response_is_hollow flags it and the chunk is
+    # retried and then failed rather than extracted (verified against Claude
+    # Code 2.1.197). Before #2880 it was misread as truncation and bisected
+    # indefinitely, never converging and never writing graph.json.
     #
     # Putting the full extraction schema plus an explicit imperative in the
     # user turn — and dropping --system-prompt — makes the CLI emit the JSON
@@ -1575,8 +1721,8 @@ def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bo
     # Claude Code releases increasingly treat a bare file-dump prompt as an
     # agentic task and REPORT the extraction in prose ("Knowledge graph
     # extracted — 21 nodes, 20 edges…") instead of returning it; that parses to
-    # zero nodes, reads as truncation, and gets bisected without ever
-    # converging (#2076). --json-schema pins the object shape regardless of
+    # zero nodes and reads as hollow (#2076 — and before #2880, as truncation
+    # to be bisected without ever converging). --json-schema pins the shape regardless of
     # that framing; the user-turn prompt above stays as the fallback for older
     # CLIs that predate the flag.
     if _claude_cli_supports_json_schema(claude_cmd):
@@ -1624,13 +1770,7 @@ def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bo
     result["model"] = next(iter(model_usage), "claude-code-plan")
     stop_reason = envelope.get("stop_reason", "")
     result["finish_reason"] = "length" if stop_reason == "max_tokens" else "stop"
-    if _response_is_hollow(raw_content, result) and result["finish_reason"] != "length":
-        print(
-            "[graphify] claude-cli returned a hollow response; treating as "
-            "truncation so adaptive retry can bisect the chunk.",
-            file=sys.stderr,
-        )
-        result["finish_reason"] = "length"
+    _mark_hollow(result, raw_content, "claude-cli")
     return result
 
 
@@ -1687,13 +1827,7 @@ def _call_azure(
     result["output_tokens"] = resp.usage.completion_tokens if resp.usage else 0
     result["model"] = model
     result["finish_reason"] = resp.choices[0].finish_reason
-    if _response_is_hollow(raw_content, result) and result["finish_reason"] != "length":
-        print(
-            "[graphify] azure returned a hollow response; treating as "
-            "truncation so adaptive retry can bisect the chunk.",
-            file=sys.stderr,
-        )
-        result["finish_reason"] = "length"
+    _mark_hollow(result, raw_content, "azure")
     return result
 
 
@@ -1744,13 +1878,7 @@ def _call_bedrock(model: str, user_message: str, max_tokens: int = 8192, *, deep
     result["output_tokens"] = usage.get("outputTokens", 0)
     result["model"] = model
     result["finish_reason"] = "length" if resp.get("stopReason") == "max_tokens" else "stop"
-    if _response_is_hollow(text, result) and result["finish_reason"] != "length":
-        print(
-            "[graphify] bedrock returned a hollow response; treating as "
-            "truncation so adaptive retry can bisect the chunk.",
-            file=sys.stderr,
-        )
-        result["finish_reason"] = "length"
+    _mark_hollow(result, text, "bedrock")
     return result
 
 
@@ -1884,6 +2012,33 @@ def extract_files_direct(
     return result
 
 
+# Estimating a PDF means extracting its text, and packing asks for the same
+# file repeatedly while it decides where a chunk ends. Memoise on
+# (path, size, mtime) so a corpus of papers is parsed once per run rather than
+# once per packing probe, and so a file rewritten mid-run is not served a stale
+# estimate. Bounded because a huge corpus should not pin every paper's text in
+# memory; the entries are cheap (an int) but the dict should not grow forever.
+_PDF_ESTIMATE_CACHE: "dict[tuple, str]" = {}
+_PDF_ESTIMATE_CACHE_MAX = 512
+
+
+def _pdf_text_for_estimate(path: Path) -> str:
+    """Extracted text of a PDF, memoised for the packing pass."""
+    try:
+        st = path.stat()
+        key = (str(path), st.st_size, st.st_mtime_ns)
+    except OSError:
+        return ""
+    hit = _PDF_ESTIMATE_CACHE.get(key)
+    if hit is not None:
+        return hit
+    text = _file_to_text(path)
+    if len(_PDF_ESTIMATE_CACHE) >= _PDF_ESTIMATE_CACHE_MAX:
+        _PDF_ESTIMATE_CACHE.clear()
+    _PDF_ESTIMATE_CACHE[key] = text
+    return text
+
+
 def _estimate_file_tokens(unit: "Path | FileSlice") -> int:
     """Estimate the prompt-token cost of a file or slice under `_read_files` rules.
 
@@ -1908,18 +2063,36 @@ def _estimate_file_tokens(unit: "Path | FileSlice") -> int:
     # fixed token cost, so estimate by image count rather than (binary) byte size.
     if _is_vision_image(path):
         return _IMAGE_TOKEN_ESTIMATE
-    if _TOKENIZER is None:
+
+    # A PDF's bytes are not what the prompt carries. `_read_files` sends it
+    # through `_file_to_text` -> `extract_pdf_text`, so estimating from the file
+    # instead measures a compressed binary: every real PDF Flate-compresses its
+    # text streams, so the estimate came out several times too SMALL and packing
+    # overfilled the chunk. On a 400-line fixture the same document estimated at
+    # 1,334 tokens uncompressed-vs-4,598 actual, and 1,334 vs 4,599 once
+    # FlateDecode was applied — a 3.45x undercount, which is what a real PDF
+    # looks like. The chunk then blows the context window and falls into
+    # adaptive bisection, paying for the same content several times (#2903).
+    if path.suffix.lower() == ".pdf":
+        try:
+            content = _pdf_text_for_estimate(path)[:_FILE_CHAR_CAP]
+        except Exception:
+            return 0
+    elif _TOKENIZER is None:
         try:
             size = path.stat().st_size
         except OSError:
             return 0
         chars = min(size, _FILE_CHAR_CAP) + _PER_FILE_OVERHEAD_CHARS
         return chars // _CHARS_PER_TOKEN
+    else:
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")[:_FILE_CHAR_CAP]
+        except OSError:
+            return 0
 
-    try:
-        content = path.read_text(encoding="utf-8", errors="replace")[:_FILE_CHAR_CAP]
-    except OSError:
-        return 0
+    if _TOKENIZER is None:
+        return (len(content) + _PER_FILE_OVERHEAD_CHARS) // _CHARS_PER_TOKEN
     return len(_TOKENIZER.encode(content, disallowed_special=())) + (_PER_FILE_OVERHEAD_CHARS // _CHARS_PER_TOKEN)
 
 
@@ -2112,9 +2285,11 @@ def _extract_with_adaptive_retry(
 
     - hollow successful responses — the model returned HTTP 200 with empty,
       null, or unparseable content (typical of a local Ollama under load).
-      `_call_openai_compat` re-labels these as `finish_reason="length"` so they
-      take the same recovery path; without that the chunk would be silently
-      dropped from the corpus.
+      These do NOT bisect: a hollow response is a backend problem, not a size
+      problem, and both halves come back hollow from the same backend, so
+      bisection cannot converge and costs `2**max_depth` billed calls (#2880).
+      The *same* chunk is retried with backoff instead, and the chunk fails
+      loudly if it is still hollow.
 
     - recognized timeout exceptions — dense chunks can take long enough to hit
       `GRAPHIFY_API_TIMEOUT` before returning output. For `claude-cli`,
@@ -2162,6 +2337,27 @@ def _extract_with_adaptive_retry(
         result = extract_files_direct(
             chunk, backend=backend, api_key=api_key, model=model, root=root, deep_mode=deep_mode
         )
+        # A hollow response is retried as-is, with backoff — see _mark_hollow.
+        # Bounded by a fixed number of attempts, so one misbehaving backend
+        # costs at most _HOLLOW_BACKOFF_S + 1 calls per chunk instead of the
+        # 2**max_depth the bisection path used to spend (#2880).
+        #
+        # max_depth=0 means "no retries", and an operator sets it to cap spend,
+        # so it has to hold for the hollow path too: one call per chunk, full
+        # stop. Bounding only the bisection depth would still let a misbehaving
+        # backend triple the call count of a run that asked for no retries.
+        for _delay in (_HOLLOW_BACKOFF_S if max_depth > 0 else ()):
+            if result.get("finish_reason") != "hollow":
+                break
+            print(
+                f"[graphify] retrying the same chunk of {len(chunk)} in {_delay:g}s "
+                f"after a hollow response",
+                file=sys.stderr,
+            )
+            time.sleep(_delay)
+            result = extract_files_direct(
+                chunk, backend=backend, api_key=api_key, model=model, root=root, deep_mode=deep_mode
+            )
     except Exception as exc:  # noqa: BLE001 — re-raise unless it's a known context overflow or timeout
         is_timeout = _looks_like_timeout(exc)
         if not (_looks_like_context_exceeded(exc) or is_timeout):
@@ -2213,6 +2409,27 @@ def _extract_with_adaptive_retry(
             "finish_reason": "stop",
             "_partial_files": _merged_partial_files(left, right),
         }
+
+    if result.get("finish_reason") == "hollow":
+        # Still hollow after every retry. Fail the chunk loudly rather than
+        # bisecting into a fan-out that cannot converge (#2880): the files are
+        # marked partial so the next run re-dispatches them, and they are not
+        # promoted to the semantic cache as authoritative.
+        _attempts = (len(_HOLLOW_BACKOFF_S) + 1) if max_depth > 0 else 1
+        print(
+            f"[graphify] chunk of {len(chunk)} still hollow after "
+            f"{_attempts} attempt(s) — giving up on this chunk. "
+            f"Its files are marked for re-extraction on the next run. A hollow "
+            f"response usually means a rate limit, a transport hiccup, a refusal, "
+            f"or a model that answered in prose rather than JSON.",
+            file=sys.stderr,
+        )
+        _mark_partial(result)
+        result["_partial_files"] = sorted(
+            set(_chunk_partial_files(chunk)) | set(result.get("_partial_files", []) or [])
+        )
+        result["finish_reason"] = "stop"
+        return result
 
     if result.get("finish_reason") != "length":
         return result
@@ -2296,7 +2513,7 @@ def extract_corpus_parallel(
     on_chunk_done: Callable | None = None,
     token_budget: int | None = 60_000,
     max_concurrency: int = 4,
-    max_retry_depth: int = 3,
+    max_retry_depth: int | None = None,
     deep_mode: bool = False,
     cache_root: "Path | None" = None,
 ) -> dict:
@@ -2319,10 +2536,16 @@ def extract_corpus_parallel(
         - When the LLM returns `finish_reason="length"` (output truncated at
           `max_completion_tokens`), the chunk is split in half and each half
           re-extracted recursively, up to `max_retry_depth` levels deep
-          (default 3 → max 8x expansion of one chunk).
+          (default 3 → max 8x expansion of one chunk). Leave it None to take
+          the default, overridable by GRAPHIFY_MAX_RETRY_DEPTH so an operator
+          can lower it without a code change (#2880).
         - This is signal-driven: chunks too dense to fit in one response
           self-heal by splitting until they do, while well-sized chunks pay
-          no extra cost. Set `max_retry_depth=0` to disable retries.
+          no extra cost.
+        - Hollow responses (HTTP 200, no usable content) are NOT bisected —
+          the same chunk is retried with backoff, then fails loudly.
+        - `max_retry_depth=0` disables retries of BOTH kinds: no bisection
+          and no same-chunk hollow retry, so a chunk costs exactly one call.
 
     `on_chunk_done(idx, total, chunk_result)` fires once per chunk as it
     completes (in completion order, not submission order). `idx` is the
@@ -2345,6 +2568,8 @@ def extract_corpus_parallel(
     Accepts ``str`` paths as well as ``Path``; string entries are coerced up
     front so packing/slicing helpers can rely on ``Path`` semantics (#1386).
     """
+    if max_retry_depth is None:
+        max_retry_depth = _resolve_max_retry_depth()
     files = [f if isinstance(f, (Path, FileSlice)) else Path(f) for f in files]
     # Split oversized splittable documents into slices that cover the whole file
     # before packing, so content past _FILE_CHAR_CAP is extracted instead of

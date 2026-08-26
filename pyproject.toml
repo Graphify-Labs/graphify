@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "graphifyy"
-version = "0.9.47"
+version = "0.9.50"
 description = "AI coding assistant skill (Claude Code, CodeBuddy, Codex, OpenCode, Kilo Code, Cursor, Gemini CLI, Aider, OpenClaw, Factory Droid, Trae, Hermes, Kiro, Pi, Devin CLI, Google Antigravity) - turn any folder of code, docs, papers, images, or videos into a queryable knowledge graph"
 readme = "README.md"
 license = "Apache-2.0"
@@ -65,7 +65,10 @@ svg = ["matplotlib", "numpy>=2.0; python_version >= '3.13'"]
 leiden = ["graspologic; python_version < '3.13'"]
 office = ["python-docx", "openpyxl"]
 google = ["openpyxl"]
-postgres = ["psycopg[binary]"]
+# --postgres reconstructs DDL and feeds it to extract_sql(), which needs the
+# tree-sitter-sql grammar; without it introspection silently returns 0 nodes,
+# so the postgres extra must carry the grammar too.
+postgres = ["psycopg[binary]", "tree-sitter-sql"]
 video = ["faster-whisper; python_version >= '3.11'", "yt-dlp>=2026.6.9"]
 kimi = ["openai", "tiktoken"]
 ollama = ["openai"]

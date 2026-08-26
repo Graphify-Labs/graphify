@@ -9,7 +9,7 @@ import re
 import tempfile
 import time
 import warnings
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 # Output directory name — override with GRAPHIFY_OUT env var for worktrees or
@@ -992,6 +992,18 @@ def load_cached(path: Path, root: Path = Path("."), kind: str = "ast",
         # across chunks without losing the truncated one (it stays partial).
         if not allow_partial and isinstance(result, dict) and result.get("partial"):
             return None
+        # A semantic entry with zero nodes and zero hyperedges is invalid (#2927):
+        # an edge-only or empty result (e.g. LLM omitted entities for the file)
+        # is not a valid standalone extraction. Treating it as a cache MISS
+        # ensures the file is re-dispatched and retried (#933/#1666).
+        if (
+            not allow_partial
+            and kind.startswith("semantic")
+            and isinstance(result, dict)
+            and not result.get("nodes")
+            and not result.get("hyperedges")
+        ):
+            return None
         if (
             kind.startswith("semantic")
             and isinstance(result, dict)
@@ -1286,6 +1298,50 @@ def _group_has_partial_marker(group: dict) -> bool:
     return False
 
 
+def _semantic_source_matcher(
+    root: Path,
+) -> tuple[Callable[[str | Path], Path], Callable[[str | Path], str]]:
+    """Shared path-identity machinery for the semantic-scope guards (#1757/#2926).
+
+    ``save_semantic_cache``'s write allowlist and ``scope_semantic_result``'s
+    graph-feed filter must agree on exactly which ``source_file`` values are in
+    scope, so both derive their matching from this one implementation rather
+    than parallel copies that could drift apart.
+
+    Returns ``(source_identity, normalize_value)`` closed over ``root``:
+
+    - ``normalize_value(src)`` maps a raw ``source_file`` to its portable
+      relative forward-slash form (#2197),
+    - ``source_identity(value)`` maps any form (relative or absolute, against
+      the walked or the resolved root) to the single canonical walked path
+      that identities are compared against.
+    """
+    root_walked = _normalize_path(Path(os.path.abspath(root)))
+    root_resolved = _normalize_path(Path(root).resolve())
+
+    def normalize_value(src: str | Path) -> str:
+        norm = _normalize_source_file_value(src, root_walked)
+        if Path(norm).is_absolute() and root_walked != root_resolved:
+            norm = _normalize_source_file_value(src, root_resolved)
+        return norm
+
+    def source_identity(value: str | Path) -> Path:
+        path = Path(value)
+        if not path.is_absolute():
+            path = root_walked / path
+        elif root_walked != root_resolved:
+            normalized = _normalize_path(Path(os.path.abspath(path)))
+            try:
+                relative = normalized.relative_to(root_resolved)
+            except ValueError:
+                pass
+            else:
+                path = root_walked / relative
+        return _normalize_path(Path(os.path.abspath(path)))
+
+    return source_identity, normalize_value
+
+
 def save_semantic_cache(
     nodes: list[dict],
     edges: list[dict],
@@ -1350,8 +1406,7 @@ def save_semantic_cache(
     from collections import defaultdict
 
     kind = "semantic" if mode is None else f"semantic-{mode}"
-    root_walked = _normalize_path(Path(os.path.abspath(root)))
-    root_resolved = _normalize_path(Path(root).resolve())
+    source_path, _normalize_value = _semantic_source_matcher(root)
 
     def _normalized(item: dict) -> dict:
         """Copy of ``item`` with a portable ``source_file`` (#2197).
@@ -1366,9 +1421,7 @@ def save_semantic_cache(
         src = item.get("source_file")
         if not src:
             return item
-        norm = _normalize_source_file_value(src, root_walked)
-        if Path(norm).is_absolute() and root_walked != root_resolved:
-            norm = _normalize_source_file_value(src, root_resolved)
+        norm = _normalize_value(src)
         if norm != src:
             item = {**item, "source_file": norm}
         return item
@@ -1389,21 +1442,6 @@ def save_semantic_cache(
         src = h.get("source_file", "")
         if src:
             by_file[src]["hyperedges"].append(h)
-
-    def source_path(value: str | Path) -> Path:
-        """Return the normalized walked identity for a semantic group."""
-        path = Path(value)
-        if not path.is_absolute():
-            path = root_walked / path
-        elif root_walked != root_resolved:
-            normalized = _normalize_path(Path(os.path.abspath(path)))
-            try:
-                relative = normalized.relative_to(root_resolved)
-            except ValueError:
-                pass
-            else:
-                path = root_walked / relative
-        return _normalize_path(Path(os.path.abspath(path)))
 
     def resolved_source_path(value: str | Path) -> Path:
         path = source_path(value)
@@ -1543,6 +1581,11 @@ def save_semantic_cache(
             )
             if is_partial:
                 result = {**result, "partial": True}
+            # A semantic extraction with zero nodes and zero hyperedges is not a valid
+            # standalone extraction (#2927): edge-only or empty results must not be
+            # cached, so that subsequent runs can re-dispatch and retry the file (#933/#1666).
+            if not is_partial and not (result.get("nodes") or result.get("hyperedges")):
+                continue
             save_cached(cache_path, result, root, kind=kind, cache_root=cache_root,
                         prompt=prompt, prompt_file=prompt_file)
             saved += 1
@@ -1559,3 +1602,105 @@ def save_semantic_cache(
             stacklevel=2,
         )
     return saved
+
+
+def scope_semantic_result(
+    result: dict,
+    root: Path = Path("."),
+    allowed_source_files: "Iterable[str | Path] | None" = None,
+) -> tuple[set[str], int]:
+    """Scope an extraction result in place to the files actually dispatched (#2926).
+
+    Graph-side mirror of the ``allowed_source_files`` write-guard in
+    :func:`save_semantic_cache` (#1757). A model can attribute stray
+    nodes/edges to a corpus file that was not part of the current extraction
+    batch; :func:`build_merge` derives its replace-set from the source_files
+    present in the new chunks, so such a stray fragment would REPLACE that
+    file's entire prior contribution in graph.json — while its manifest entry
+    still says unchanged, so no later incremental run re-dispatches it and the
+    loss is permanent until a full rebuild.
+
+    Items whose ``source_file`` resolves outside ``allowed_source_files`` are
+    dropped from ``result``'s ``nodes`` / ``edges`` / ``hyperedges`` lists
+    (mutated in place); items without a ``source_file`` pass through. An edge
+    or hyperedge that survives the scope filter but references a dropped node
+    id is dropped too (#1916 mirror), unless that id is also defined by a kept
+    node (duplicate attribution must not be over-pruned).
+
+    Path matching shares :func:`_semantic_source_matcher` with
+    :func:`save_semantic_cache` (relative against ``root``, walked-path
+    identity), so an item this function keeps can never still hit the save's
+    out-of-scope skip, and vice versa.
+
+    Returns ``(dropped_source_files, dropped_item_count)`` for logging;
+    ``dropped_source_files`` holds the normalized ``source_file`` strings of
+    every group that had at least one item removed.
+    """
+    if allowed_source_files is None:
+        return set(), 0
+
+    source_identity, normalize_value = _semantic_source_matcher(root)
+
+    def _item_identity(item: dict) -> tuple[str | None, Path | None]:
+        """(display form, walked identity) of an item's source_file."""
+        src = item.get("source_file")
+        if not src:
+            return None, None
+        norm = normalize_value(src)
+        return norm, source_identity(norm)
+
+    allowed_paths = {source_identity(str(path)) for path in allowed_source_files}
+
+    def _hashable(value) -> bool:
+        try:
+            hash(value)
+        except TypeError:
+            return False
+        return True
+
+    dropped_files: set[str] = set()
+    dropped_items = 0
+    dropped_ids: set = set()
+    kept_ids: set = set()
+    for bucket in ("nodes", "edges", "hyperedges"):
+        kept: list[dict] = []
+        for item in result.get(bucket) or []:
+            display, ident = _item_identity(item)
+            if ident is not None and ident not in allowed_paths:
+                dropped_files.add(display)
+                dropped_items += 1
+                if bucket == "nodes" and item.get("id") is not None:
+                    nid = item["id"]
+                    if _hashable(nid):
+                        dropped_ids.add(nid)
+                continue
+            if bucket == "nodes" and item.get("id") is not None and _hashable(item["id"]):
+                kept_ids.add(item["id"])
+            kept.append(item)
+        result[bucket] = kept
+
+    # A duplicate-attribution node (defined in a dropped AND a kept group)
+    # survives the filter — don't prune references to it.
+    dropped_ids -= kept_ids
+    if dropped_ids:
+
+        def edge_dangles(e: dict) -> bool:
+            try:
+                return e.get("source") in dropped_ids or e.get("target") in dropped_ids
+            except TypeError:
+                # Non-hashable endpoint from an untrusted result; leave it
+                # to build-time validation rather than fail here.
+                return False
+
+        def hyperedge_dangles(h: dict) -> bool:
+            try:
+                return bool(dropped_ids & set(h.get("nodes") or []))
+            except TypeError:
+                return False
+
+        result["edges"] = [e for e in result.get("edges") or [] if not edge_dangles(e)]
+        result["hyperedges"] = [
+            h for h in result.get("hyperedges") or [] if not hyperedge_dangles(h)
+        ]
+
+    return dropped_files, dropped_items

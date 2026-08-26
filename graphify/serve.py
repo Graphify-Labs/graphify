@@ -1769,6 +1769,12 @@ def _build_server(graph_path: str):
             f"Node: {sanitize_label(d.get('label', nid))}",
             f"  ID: {sanitize_label(nid)}",
             f"  Source: {sanitize_label(str(d.get('source_file', '')))} {sanitize_label(str(d.get('source_location', '')))}",
+            # A C/C++/ObjC symbol declared in a header and defined in the sibling
+            # impl file is ONE node keyed to the header, so Source alone points at
+            # the declaration. Name where it is implemented too, when known.
+            *([f"  Defined in: {sanitize_label(str(d.get('definition_file', '')))} "
+               f"{sanitize_label(str(d.get('definition_location', '')))}"]
+              if d.get("definition_file") else []),
             f"  Type: {sanitize_label(str(d.get('file_type', '')))}",
             f"  Community: {sanitize_label(str(d.get('community_name') or d.get('community', '')))}",
             f"  Degree: {G.degree(nid)}",

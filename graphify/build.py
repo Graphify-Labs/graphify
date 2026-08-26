@@ -439,7 +439,7 @@ def _infer_merge_root(graph_path: Path) -> str | None:
     try:
         marker = parent / ".graphify_root"
         if marker.exists():
-            recorded = marker.read_text(encoding="utf-8").strip()
+            recorded = marker.read_text(encoding="utf-8-sig").strip()
             if recorded:
                 return str(Path(recorded).resolve())
     except OSError:
@@ -1982,7 +1982,9 @@ def build_merge(
     return G
 
 
-def prefix_graph_for_global(G: nx.Graph, repo_tag: str) -> nx.Graph:
+def prefix_graph_for_global(
+    G: nx.Graph, repo_tag: str, community_offset: int = 0
+) -> nx.Graph:
     """Return a copy of G with all node IDs prefixed with repo_tag::.
 
     Labels are preserved unchanged (for display). A 'local_id' attribute
@@ -1990,15 +1992,11 @@ def prefix_graph_for_global(G: nx.Graph, repo_tag: str) -> nx.Graph:
     their directional attributes (_src/_tgt) are rewritten to match the new
     prefixed IDs. The 'repo' attribute is set on every node.
 
-    Nodes marked ``external`` (stdlib/third-party references materialized by
-    the #2873 dangling-edge-endpoint pass) are deliberately NOT namespaced:
-    they are not repo-local ids that happen to collide, they are external
-    identifiers that arrived through a repo-local path, so `typing` from repoA
-    and `typing` from repoB are the same node. Leaving the id bare lets
-    nx.compose unify them across inputs instead of manufacturing one
-    `repoX::typing` per repo (#2873). A 'repos' list (not the singular
-    'repo') accumulates every repo tag that referenced the node, since an
-    external node can now be shared by several inputs.
+    community_offset shifts each node's integer 'community' id into a shared
+    id space and records the original in 'local_community': every input graph
+    numbers its communities from 0, so ids carried across a merge unchanged
+    collide and the aggregated community view fuses unrelated communities
+    into one meta-node (#3014). 0 (the default) leaves communities untouched.
     """
     relabel = {
         n: f"{repo_tag}::{n}"
@@ -2007,11 +2005,12 @@ def prefix_graph_for_global(G: nx.Graph, repo_tag: str) -> nx.Graph:
     }
     H = nx.relabel_nodes(G, relabel, copy=True)
     for node, data in H.nodes(data=True):
-        if data.get("external"):
-            data["repos"] = sorted(set(data.get("repos", [])) | {repo_tag})
-        else:
-            data["repo"] = repo_tag
-            data.setdefault("local_id", node.split("::", 1)[1])
+        data["repo"] = repo_tag
+        data.setdefault("local_id", node.split("::", 1)[1])
+        cid = data.get("community")
+        if community_offset and isinstance(cid, int):
+            data["local_community"] = cid
+            data["community"] = cid + community_offset
     for u, v, data in H.edges(data=True):
         if "_src" in data and data["_src"] in relabel:
             data["_src"] = relabel[data["_src"]]
