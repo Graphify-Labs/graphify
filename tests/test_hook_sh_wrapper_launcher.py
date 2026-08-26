@@ -94,4 +94,4 @@ def test_a_plain_python_shebang_still_resolves_as_before(tmp_path):
 
 def test_only_python_like_interpreters_are_ever_probed():
     """The emitted script gates the probe on the interpreter's name."""
-    assert "python*|pypy*)" in _PYTHON_DETECT
+    assert "*python*|*pypy*)" in _PYTHON_DETECT

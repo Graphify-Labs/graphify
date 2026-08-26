@@ -90,13 +90,14 @@ if [ -z "$GRAPHIFY_PYTHON" ]; then
         # ImageMagick's screenshot tool, which dumped its usage text on every
         # commit (#3027). The wrapper's second line execs the real interpreter
         # (exec' "/path/to/python" "$0" "$@"): take it from there, and never
-        # probe anything whose name is not a python.
+        # probe anything whose name does not contain python (python3.12,
+        # python@3.12, cpython, pypy3 all pass; sh, bash, node do not).
         case "$(basename "$GRAPHIFY_PYTHON" 2>/dev/null)" in
-            python*|pypy*) ;;
+            *python*|*pypy*) ;;
             *) GRAPHIFY_PYTHON=$(printf '%s\\n' "$_GFY_HEAD" | sed -n '2s/^...exec. *"\\{0,1\\}\\([^"]*\\)"\\{0,1\\} .*/\\1/p') ;;
         esac
         case "$(basename "$GRAPHIFY_PYTHON" 2>/dev/null)" in
-            python*|pypy*) ;;
+            *python*|*pypy*) ;;
             *) GRAPHIFY_PYTHON= ;;
         esac
         # Allowlist: only keep characters valid in a filesystem path to prevent
