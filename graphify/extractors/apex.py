@@ -61,6 +61,12 @@ def _extract_apex_ast(path: Path) -> dict | None:
         root = parser.parse(source).root_node
     except Exception:
         return None
+    # tree-sitter is error-tolerant: it returns a tree with ERROR nodes instead of
+    # raising, so a file the grammar cannot handle would otherwise yield a
+    # confidently wrong AST. Hand those to the regex path, which degrades
+    # predictably rather than inventing structure.
+    if root.has_error:
+        return None
     _add_apex_specifics(path, root, source, result)
     raw_calls = result.get("raw_calls")
     if raw_calls:
@@ -284,8 +290,13 @@ def _extract_apex_regex(path: Path) -> dict:
 
 _DML_TYPES = frozenset({"insert", "update", "delete", "upsert", "merge", "undelete"})
 
-# Annotations that make a method an entry point reachable from outside Apex.
-_ENTRY_POINT_ANNOTATIONS = frozenset({"auraenabled", "invocablemethod"})
+# Annotations that make a method an entry point reachable from outside Apex —
+# Lightning, Flow, and the Apex REST verbs. Without the REST ones a
+# @RestResource class looks unreachable, since nothing in the corpus calls it.
+_ENTRY_POINT_ANNOTATIONS = frozenset({
+    "auraenabled", "invocablemethod", "remoteaction",
+    "httpget", "httppost", "httpput", "httpdelete", "httppatch",
+})
 
 # Collection and primitive constructors. `new List<Account>()` appears in nearly
 # every method, so treating it as a call site builds a god-node that collects an

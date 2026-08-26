@@ -288,3 +288,44 @@ def test_collection_constructor_is_not_a_call(tmp_path: Path):
         "    void run() { List<Account> rows = new List<Account>(); }\n"
         "}\n"))
     assert "List" not in {n["label"] for n in result["nodes"]}
+
+
+@_needs_grammar
+def test_unparsable_file_falls_back_to_regex(tmp_path: Path):
+    """tree-sitter is error-tolerant, so a broken parse must be caught explicitly.
+
+    It returns a tree containing ERROR nodes rather than raising, so without a
+    check the extractor would hand back a confidently wrong AST instead of
+    letting the regex path degrade predictably.
+    """
+    f = _write(tmp_path / "Broken.cls",
+               "public class Broken { void m() { if ( { } }} ### garbage\n")
+    assert _extract_apex_ast(f) is None
+    assert "Broken" in {n["label"] for n in extract_apex(f)["nodes"]}
+
+
+@_needs_grammar
+def test_valid_file_does_not_fall_back(tmp_path: Path):
+    """Guard the other direction: the error check must not reject good Apex."""
+    assert _extract_apex_ast(_write(tmp_path / "Svc.cls", SERVICE)) is not None
+
+
+@_needs_grammar
+def test_rest_verbs_are_entry_points(tmp_path: Path):
+    """A @HttpGet method is reachable from outside Apex, so the file contains it.
+
+    Without this a @RestResource class looks dead: nothing in the corpus calls
+    it, because the caller is an HTTP client.
+    """
+    result = extract_apex(_write(
+        tmp_path / "Api.cls",
+        "@RestResource(urlMapping='/api/*')\n"
+        "global with sharing class Api {\n"
+        "    @HttpGet\n"
+        "    global static String fetch() { return null; }\n"
+        "}\n"))
+    by_id = {n["id"]: n for n in result["nodes"]}
+    file_nid = next(n["id"] for n in result["nodes"] if n["label"] == "Api.cls")
+    contained = {by_id[e["target"]]["label"] for e in result["edges"]
+                 if e["relation"] == "contains" and e["source"] == file_nid}
+    assert ".fetch()" in contained
