@@ -47,6 +47,7 @@ the real file node; one that does not is skipped, not fabricated.
 from __future__ import annotations
 
 import re
+import shlex
 from pathlib import Path, PurePosixPath
 
 from graphify.extractors.base import _make_id
@@ -218,15 +219,22 @@ def _is_under(path: Path, base: Path) -> bool:
 def _script_from_exec(value: str) -> str | None:
     """The script a systemd ``Exec*=`` line runs, or None for a bare binary."""
     v = value.strip()
-    # systemd's executable prefixes: -, @, :, +, !, !! (any combination).
+    # systemd's executable prefixes: -, @, :, +, !, !! (any combination, any
+    # order). `@` changes the argument shape (argv[0] follows the executable),
+    # so remember whether it was among them.
+    argv0_follows = False
     while v and v[0] in "-@:+!":
+        argv0_follows = argv0_follows or v[0] == "@"
         v = v[1:]
-    tokens = _SPLIT_WS_RE.split(v.strip())
+    v = v.strip()
+    try:
+        tokens = shlex.split(v)  # a quoted "/opt/my app/run.py" stays one token
+    except ValueError:
+        tokens = _SPLIT_WS_RE.split(v)
     if not tokens or not tokens[0]:
         return None
     i = 0
-    # `@/path/to/prog argv0 ...` — with `@` the second token is argv[0], skip it.
-    if value.strip().startswith("@") and len(tokens) > 1:
+    if argv0_follows and len(tokens) > 1:
         tokens = [tokens[0]] + tokens[2:]
     while i < len(tokens):
         tok = tokens[i]
@@ -316,9 +324,15 @@ def extract_systemd(path: Path) -> dict:
                     _edge(target, "runs", line)
 
     # A timer/socket/path with no explicit Unit= activates the same-stem
-    # .service by systemd's own convention.
+    # .service by systemd's own convention - except a socket with Accept=yes,
+    # which spawns an instance of the TEMPLATE, `<stem>@.service`.
     if activates_key and not explicit_activation:
-        implied = _sibling_unit(unit_dir, path.stem + ".service")
+        accept = any(
+            section == "socket" and key == "accept" and value.strip().lower() in ("yes", "true", "1", "on")
+            for section, key, value, _line in entries
+        )
+        implied_name = path.stem + ("@.service" if unit_kind == "socket" and accept else ".service")
+        implied = _sibling_unit(unit_dir, implied_name)
         if implied is not None:
             _edge(implied, "activates", 1)
 

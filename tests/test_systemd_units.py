@@ -105,6 +105,18 @@ def test_a_timer_with_no_unit_key_activates_the_same_stem_service(deployment):
     assert _rels(r, "activates") == [("activates", "daily-audit.service")]
 
 
+def test_an_accept_yes_socket_activates_the_template_service(tmp_path):
+    """A socket with Accept=yes spawns `<stem>@.service` per connection, not
+    `<stem>.service`."""
+    (tmp_path / "echo@.service").write_text("[Service]\nExecStart=/bin/cat\n", encoding="utf-8")
+    (tmp_path / "echo.service").write_text("[Service]\nExecStart=/bin/true\n", encoding="utf-8")
+    sock = tmp_path / "echo.socket"
+    sock.write_text("[Socket]\nListenStream=7\nAccept=yes\n", encoding="utf-8")
+    assert _rels(extract_systemd(sock), "activates") == [("activates", "echo@.service")]
+    sock.write_text("[Socket]\nListenStream=7\n", encoding="utf-8")
+    assert _rels(extract_systemd(sock), "activates") == [("activates", "echo.service")]
+
+
 def test_an_instance_name_resolves_to_its_template(deployment):
     r = extract_systemd(deployment / "deploy" / "units" / "backup-nightly.timer")
     assert _rels(r, "activates") == [("activates", "backup@.service")]
@@ -172,6 +184,9 @@ def test_an_unreadable_unit_reports_an_error_not_a_crash(tmp_path):
     ("/usr/bin/python3 -m pkg.mod", None),
     ("/usr/bin/docker run image", "/usr/bin/docker"),
     ("", None),
+    ('/usr/bin/python3 "/opt/my app/run.py" --x', "/opt/my app/run.py"),  # quoted path with a space
+    ("-@/bin/bash backup /opt/app/backup.sh", "/opt/app/backup.sh"),  # combined prefixes: argv0 still skipped
+    ("@-/bin/bash backup /opt/app/backup.sh", "/opt/app/backup.sh"),
 ])
 def test_script_from_exec(value, expected):
     assert _script_from_exec(value) == expected
