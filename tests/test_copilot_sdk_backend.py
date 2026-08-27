@@ -420,6 +420,20 @@ def test_plain_completion_does_not_add_extraction_instruction(monkeypatch):
     assert state["sessions"][0].options["system_message"] is None
 
 
+def test_public_adapter_optional_settings_have_safe_defaults(monkeypatch):
+    state = _install_fake_copilot(monkeypatch, response=_assistant_event("label"))
+
+    result = backend.call_copilot_sdk("Name this community")
+
+    assert result["content"] == "label"
+    assert state["prompt"] == "Name this community"
+    options = state["sessions"][0].options
+    assert options["system_message"] is None
+    assert options["model"] is None
+    assert options["reasoning_effort"] is None
+    assert options["context_tier"] is None
+
+
 @pytest.mark.parametrize("stage", ["start", "create"])
 def test_pre_dispatch_timeout_is_retry_safe(monkeypatch, stage):
     monkeypatch.setattr(backend, "_STARTUP_TIMEOUT_SECONDS", 0.01)
@@ -702,6 +716,7 @@ def test_cleanup_waits_for_in_flight_force_stop():
 def test_cleanup_does_not_block_forever_behind_hung_force_stop(monkeypatch):
     monkeypatch.setattr(backend, "_CLEANUP_TIMEOUT_SECONDS", 0.01)
     started = asyncio.Event()
+    state = {"graceful_stops": 0}
 
     class Client:
         async def force_stop(self) -> None:
@@ -709,7 +724,7 @@ def test_cleanup_does_not_block_forever_behind_hung_force_stop(monkeypatch):
             await asyncio.Event().wait()
 
         async def stop(self) -> None:
-            return None
+            state["graceful_stops"] += 1
 
     async def run() -> None:
         resources = backend._CopilotResources()
@@ -724,6 +739,7 @@ def test_cleanup_does_not_block_forever_behind_hung_force_stop(monkeypatch):
             await stopping
 
     asyncio.run(run())
+    assert state["graceful_stops"] == 0
 
 
 def test_cancellation_during_force_stop_check_finishes_resource_cleanup():

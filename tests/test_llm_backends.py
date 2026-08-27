@@ -323,15 +323,24 @@ def test_adaptive_retry_splits_on_context_exceeded(tmp_path):
         # produce when a chunk overflows the model's context window.
         if len(chunk) == 4:
             raise RuntimeError("Error 400: Context size has been exceeded.")
-        return _ok(nodes=[{"id": f.stem} for f in chunk])
+        return _ok(
+            nodes=[{"id": f.stem} for f in chunk],
+            model="runtime-model",
+        )
 
     with patch("graphify.llm.extract_files_direct", side_effect=fake_extract):
         result = llm._extract_with_adaptive_retry(
-            files, backend="kimi", api_key="k", model="m", root=tmp_path, max_depth=3
+            files,
+            backend="kimi",
+            api_key="k",
+            model="requested-model",
+            root=tmp_path,
+            max_depth=3,
         )
 
     assert len(result["nodes"]) == 4
     assert calls["n"] == 3  # 1 failure + 2 halves
+    assert result["model"] == "runtime-model"
 
 
 def test_adaptive_retry_gives_up_on_single_file_overflow(tmp_path):
@@ -956,6 +965,7 @@ def test_adaptive_retry_bisects_on_truncated_response(tmp_path):
         "full chunk came back hollow"
     )
     assert calls["n"] == 3  # 1 hollow + 2 successful halves
+    assert result["model"] == "m"  # effective response model beats requested input
 
 
 # ---------------------------------------------------------------------------

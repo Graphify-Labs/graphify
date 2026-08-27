@@ -9,6 +9,7 @@ import queue
 import sys
 import tempfile
 import threading
+import time
 import warnings
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
@@ -108,6 +109,14 @@ class _DaemonThreadPoolExecutor(ThreadPoolExecutor):
         if wait:
             for worker in self._daemon_threads:
                 worker.join()
+
+    def shutdown_bounded(self, timeout: float) -> bool:
+        """Start shutdown, join workers to one deadline, and report completion."""
+        self.shutdown(wait=False, cancel_futures=True)
+        deadline = time.monotonic() + max(0.0, timeout)
+        for worker in self._daemon_threads:
+            worker.join(max(0.0, deadline - time.monotonic()))
+        return not any(worker.is_alive() for worker in self._daemon_threads)
 
 
 class CopilotSdkTimeoutError(TimeoutError):
@@ -452,17 +461,14 @@ class _CopilotResources:
                 self.session = None
                 self.client = None
 
-    async def _is_force_stopped(self) -> bool:
-        """Wait for an active force-stop before cleanup reads lifecycle state."""
-        async with self._force_stop_lock:
-            return self.force_stopped
-
-    async def _wait_for_force_stop(self) -> bool:
-        """Read force-stop state without letting a hung SDK call block cleanup."""
+    async def _acquire_cleanup_lock(self) -> bool:
+        """Serialize graceful cleanup with force-stop, bounded by the deadline."""
         try:
-            return await asyncio.wait_for(
-                self._is_force_stopped(), timeout=_CLEANUP_TIMEOUT_SECONDS
+            await asyncio.wait_for(
+                self._force_stop_lock.acquire(),
+                timeout=_CLEANUP_TIMEOUT_SECONDS,
             )
+            return True
         except asyncio.TimeoutError:
             return False
 
@@ -480,28 +486,48 @@ class _CopilotResources:
             elif cleanup_interrupt is None:
                 cleanup_interrupt = error
 
-        if self.session is not None and not await self._wait_for_force_stop():
+        force_stop_needed = False
+        lock_acquired = await self._acquire_cleanup_lock()
+        if lock_acquired:
+            try:
+                if self.session is not None and not self.force_stopped:
+                    try:
+                        await _run_bounded(
+                            self.session.disconnect(),
+                            timeout=_CLEANUP_TIMEOUT_SECONDS,
+                        )
+                        self.session = None
+                    except asyncio.TimeoutError as error:
+                        record_cleanup_failure(error)
+                        force_stop_needed = True
+                    except BaseException as error:
+                        record_cleanup_failure(error)
+                if (
+                    not force_stop_needed
+                    and self.client is not None
+                    and not self.force_stopped
+                ):
+                    try:
+                        await _run_bounded(
+                            self.client.stop(),
+                            timeout=_CLEANUP_TIMEOUT_SECONDS,
+                        )
+                        self.client = None
+                    except BaseException as error:
+                        record_cleanup_failure(error)
+                        force_stop_needed = True
+            finally:
+                self._force_stop_lock.release()
+        # A timed-out graceful call is no longer running cooperatively. Start
+        # terminal shutdown only after releasing the lifecycle lock; force_stop
+        # then owns that lock and cannot overlap another graceful cleanup path.
+        if force_stop_needed:
             try:
                 await _run_bounded(
-                    self.session.disconnect(),
-                    timeout=_CLEANUP_TIMEOUT_SECONDS,
-                    abort=self.force_stop,
+                    self.force_stop(), timeout=_CLEANUP_TIMEOUT_SECONDS
                 )
-            except BaseException as error:
-                record_cleanup_failure(error)
-        if self.client is not None and not await self._wait_for_force_stop():
-            try:
-                await _run_bounded(
-                    self.client.stop(),
-                    timeout=_CLEANUP_TIMEOUT_SECONDS,
-                    abort=self.force_stop,
-                )
-            except BaseException as error:
-                record_cleanup_failure(error)
-                try:
-                    await _run_bounded(self.force_stop(), timeout=0.1)
-                except BaseException as force_error:
-                    record_cleanup_failure(force_error)
+            except BaseException as force_error:
+                record_cleanup_failure(force_error)
         try:
             self.workspace.cleanup()
         except BaseException as error:
@@ -742,22 +768,7 @@ def _run_async(factory: Callable[[], Any]) -> Any:
             loop.run_until_complete(loop.shutdown_asyncgens())
             loop.run_until_complete(cancel_all_tasks())
 
-            executor_stopped = threading.Event()
-
-            def shutdown_default_executor() -> None:
-                try:
-                    default_executor.shutdown(wait=True, cancel_futures=True)
-                finally:
-                    executor_stopped.set()
-
-            executor_shutdown_thread = threading.Thread(
-                target=shutdown_default_executor,
-                name="graphify-copilot-executor-shutdown",
-                daemon=True,
-            )
-            executor_shutdown_thread.start()
-            executor_shutdown_thread.join(_CLEANUP_TIMEOUT_SECONDS)
-            if not executor_stopped.is_set():
+            if not default_executor.shutdown_bounded(_CLEANUP_TIMEOUT_SECONDS):
                 warnings.warn(
                     "Copilot SDK default executor did not shut down within the "
                     "cleanup deadline; running calls were detached.",
@@ -794,11 +805,11 @@ def _run_async(factory: Callable[[], Any]) -> Any:
 def call_copilot_sdk(
     prompt: str,
     *,
-    system_prompt: str,
-    model: str | None,
-    reasoning_effort: str | None,
-    context_tier: str | None,
-    timeout_seconds: float,
+    system_prompt: str = "",
+    model: str | None = None,
+    reasoning_effort: str | None = None,
+    context_tier: str | None = None,
+    timeout_seconds: float = 600.0,
     images: Iterable[CopilotImage] | None = None,
 ) -> dict[str, Any]:
     """Call Copilot and return response content plus safe usage metadata."""

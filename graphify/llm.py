@@ -2614,6 +2614,13 @@ def _extract_with_adaptive_retry(
         merged.update(_merged_provider_usage(*attempts))
         return merged
 
+    def _effective_model(*results: dict | None) -> str | None:
+        """Prefer the model reported by a real response over requested input."""
+        for response in results:
+            if response and response.get("model"):
+                return response["model"]
+        return model
+
     def _merge_two(
         left_units,
         right_units,
@@ -2637,7 +2644,7 @@ def _extract_with_adaptive_retry(
                 left.get("output_tokens", 0), right.get("output_tokens", 0)
             ),
             **_merged_provider_usage(left, right),
-            "model": model or left.get("model") or right.get("model"),
+            "model": _effective_model(prior_result, left, right),
             "finish_reason": "stop",
             "_partial_files": _merged_partial_files(left, right),
         }
@@ -2734,7 +2741,7 @@ def _extract_with_adaptive_retry(
                 left.get("output_tokens", 0), right.get("output_tokens", 0)
             ),
             **_merged_provider_usage(left, right),
-            "model": model or left.get("model") or right.get("model"),
+            "model": _effective_model(left, right),
             "finish_reason": "stop",
             "_partial_files": _merged_partial_files(left, right),
         }
@@ -2832,7 +2839,7 @@ def _extract_with_adaptive_retry(
             left.get("output_tokens", 0), right.get("output_tokens", 0)
         ),
         **_merged_provider_usage(left, right),
-        "model": result.get("model") or left.get("model") or right.get("model"),
+        "model": _effective_model(result, left, right),
         # Both halves either succeeded or have already surfaced their own
         # truncation warning; the merged result is no longer truncated as a
         # logical unit.
