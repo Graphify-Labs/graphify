@@ -90,6 +90,29 @@ def test_install_rejects_malformed_managed_section_without_writing(tmp_path, con
     assert hook.read_text(encoding="utf-8") == content
 
 
+def test_install_validates_both_hooks_before_writing(tmp_path):
+    repo = _make_git_repo(tmp_path)
+    hooks = repo / ".git" / "hooks"
+    post_commit = hooks / "post-commit"
+    post_checkout = hooks / "post-checkout"
+    post_commit.write_text(
+        f"#!/bin/sh\n{_HOOK_MARKER}\necho stale\n{_HOOK_MARKER_END}\n",
+        encoding="utf-8",
+    )
+    post_checkout.write_text(
+        f"#!/bin/sh\n{_CHECKOUT_MARKER}\necho incomplete\n",
+        encoding="utf-8",
+    )
+    original_commit = post_commit.read_text(encoding="utf-8")
+    original_checkout = post_checkout.read_text(encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="malformed Graphify section"):
+        install(repo)
+
+    assert post_commit.read_text(encoding="utf-8") == original_commit
+    assert post_checkout.read_text(encoding="utf-8") == original_checkout
+
+
 @pytest.mark.parametrize(
     ("hook_name", "hook_args"),
     [("post-commit", ()), ("post-checkout", ("old", "new", "1"))],

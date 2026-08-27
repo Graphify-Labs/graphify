@@ -534,6 +534,29 @@ def _hooks_dir(root: Path) -> Path:
     return d
 
 
+def _validated_hook_content(
+    hooks_dir: Path,
+    name: str,
+    marker: str,
+    marker_end: str,
+) -> str | None:
+    """Read a hook and reject malformed managed-section markers."""
+    hook_path = hooks_dir / name
+    if not hook_path.exists():
+        return None
+    with hook_path.open("r", encoding="utf-8", newline="") as stream:
+        content = stream.read()
+    if marker in content or marker_end in content:
+        valid_markers = (
+            content.count(marker) == 1
+            and content.count(marker_end) == 1
+            and content.index(marker) < content.index(marker_end)
+        )
+        if not valid_markers:
+            raise RuntimeError(f"malformed Graphify section in {hook_path}")
+    return content
+
+
 def _install_hook(
     hooks_dir: Path,
     name: str,
@@ -543,17 +566,9 @@ def _install_hook(
 ) -> str:
     """Install or update one managed Graphify section in a git hook."""
     hook_path = hooks_dir / name
-    if hook_path.exists():
-        with hook_path.open("r", encoding="utf-8", newline="") as stream:
-            content = stream.read()
-        if marker in content or marker_end in content:
-            valid_markers = (
-                content.count(marker) == 1
-                and content.count(marker_end) == 1
-                and content.index(marker) < content.index(marker_end)
-            )
-            if not valid_markers:
-                raise RuntimeError(f"malformed Graphify section in {hook_path}")
+    content = _validated_hook_content(hooks_dir, name, marker, marker_end)
+    if content is not None:
+        if marker in content:
             start = content.index(marker)
             end = content.index(marker_end, start) + len(marker_end)
             updated = content[:start] + script.rstrip("\r\n") + content[end:]
@@ -775,6 +790,15 @@ def install(path: Path = Path(".")) -> str:
     pinned = _pinned_python()
     hook = _HOOK_SCRIPT.replace("__PINNED_PYTHON__", pinned).replace("__VIZ_LIMIT_EXPORT__", viz_export)
     checkout = _CHECKOUT_SCRIPT.replace("__PINNED_PYTHON__", pinned).replace("__VIZ_LIMIT_EXPORT__", viz_export)
+
+    # Validate both managed sections before writing either hook.
+    _validated_hook_content(hooks_dir, "post-commit", _HOOK_MARKER, _HOOK_MARKER_END)
+    _validated_hook_content(
+        hooks_dir,
+        "post-checkout",
+        _CHECKOUT_MARKER,
+        _CHECKOUT_MARKER_END,
+    )
 
     commit_msg = _install_hook(
         hooks_dir,
