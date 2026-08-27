@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import gc
 import importlib
 import json
 import os
@@ -545,6 +546,29 @@ def test_timed_out_constructor_owns_workspace_until_worker_exits(monkeypatch):
     assert not paths[0].exists()
 
 
+def test_successful_constructor_never_joins_worker_on_event_loop(monkeypatch):
+    real_executor = backend._DaemonThreadPoolExecutor
+
+    class NoJoinExecutor(real_executor):
+        def shutdown_bounded(self, _timeout: float) -> bool:
+            raise AssertionError("constructor path must not join a worker")
+
+    class Client:
+        def __init__(self, **_options: Any):
+            pass
+
+    monkeypatch.setattr(backend, "_DaemonThreadPoolExecutor", NoJoinExecutor)
+
+    async def run() -> None:
+        resources = backend._CopilotResources()
+        client = await backend._construct_client(Client, resources, timeout=1)
+        assert isinstance(client, Client)
+        resources.client = None
+        await resources.__aexit__(RuntimeError, None, None)
+
+    asyncio.run(run())
+
+
 def test_constructor_failure_has_no_unbound_cleanup_state(monkeypatch):
     state = _install_fake_copilot(
         monkeypatch,
@@ -985,6 +1009,31 @@ def test_in_flight_session_creation_keeps_workspace_until_late_disconnect():
         assert not workspace.exists()
 
     asyncio.run(run())
+
+
+def test_unsafe_workspace_cleanup_survives_resource_garbage_collection():
+    async def quarantine() -> Path:
+        resources = backend._CopilotResources()
+        assert resources.workspace is not None
+        path = Path(resources.workspace.name)
+        resources._terminal_cleanup_started = True
+        resources._in_flight_session_creations = 1
+        async with resources._lifecycle_lock:
+            assert resources._cleanup_workspace_locked() is False
+        return path
+
+    path = asyncio.run(quarantine())
+    gc.collect()
+    assert path.exists()
+    with backend._QUARANTINED_WORKSPACES_LOCK:
+        quarantined = next(
+            workspace
+            for workspace in backend._QUARANTINED_WORKSPACES
+            if Path(workspace.name) == path
+        )
+        backend._QUARANTINED_WORKSPACES.remove(quarantined)
+    quarantined.cleanup()
+    assert not path.exists()
 
 
 def test_cleanup_waits_for_in_flight_force_stop():
@@ -1472,6 +1521,16 @@ def test_daemon_executor_serializes_submit_with_shutdown():
     assert not rejected
     assert accepted[0].result(timeout=1) == "second"
     assert executor.shutdown_bounded(1) is True
+
+
+def test_daemon_executor_starts_fixed_workers_before_shutdown():
+    executor = backend._DaemonThreadPoolExecutor(
+        max_workers=2, thread_name_prefix="graphify-eager-test"
+    )
+    assert len(executor._daemon_threads) == 2
+    assert all(worker.is_alive() for worker in executor._daemon_threads)
+    assert executor.shutdown_bounded(1) is True
+    assert not any(worker.is_alive() for worker in executor._daemon_threads)
 
 
 def test_daemon_executor_shutdown_bounded_does_not_join_current_worker():

@@ -1384,17 +1384,23 @@ def _anthropic_response_text(content, default: str | None = None) -> str | None:
             parts.append(text)
     if not parts:
         return default
-    if len(parts) > 1:
+    combined = ""
+    decoder = json.JSONDecoder()
+    for part in parts:
+        combined += part
         try:
-            json.loads(parts[0])
-        except (json.JSONDecodeError, TypeError):
-            pass
+            start = len(combined) - len(combined.lstrip())
+            value, end = decoder.raw_decode(combined, idx=start)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
         else:
-            # Preserve the historical first-block behavior when Anthropic
-            # already returned one complete JSON value followed by another
-            # text block. Joining is only needed when the value was split.
-            return parts[0]
-    combined = "".join(parts)
+            if not isinstance(value, dict):
+                continue
+            # Stop at the first complete JSON object. This preserves the legacy
+            # first-block behavior, supports split JSON, and excludes trailing
+            # prose or a second value even inside the same text block. JSON
+            # scalars can be the start of an ordinary plain-text response.
+            return combined[:end]
     return combined if combined.strip() else default
 
 

@@ -37,6 +37,8 @@ _USER_INSTRUCTION = (
 )
 _STARTUP_TIMEOUT_SECONDS = 15.0
 _CLEANUP_TIMEOUT_SECONDS = 5.0
+_QUARANTINED_WORKSPACES: set[tempfile.TemporaryDirectory[str]] = set()
+_QUARANTINED_WORKSPACES_LOCK = threading.Lock()
 
 
 class _DaemonThreadPoolExecutor(ThreadPoolExecutor):
@@ -56,9 +58,20 @@ class _DaemonThreadPoolExecutor(ThreadPoolExecutor):
         self._daemon_queue: queue.Queue[Any] = queue.Queue()
         self._daemon_lock = threading.Lock()
         self._daemon_shutdown = False
-        self._daemon_max_workers = max_workers
         self._daemon_name_prefix = thread_name_prefix
         self._daemon_threads: list[threading.Thread] = []
+        try:
+            for index in range(max_workers):
+                worker = threading.Thread(
+                    target=self._daemon_worker,
+                    name=f"{self._daemon_name_prefix}_{index}",
+                    daemon=True,
+                )
+                self._daemon_threads.append(worker)
+                worker.start()
+        except BaseException:
+            self.shutdown(wait=False, cancel_futures=True)
+            raise
 
     def _daemon_worker(self) -> None:
         while True:
@@ -81,16 +94,6 @@ class _DaemonThreadPoolExecutor(ThreadPoolExecutor):
                 raise RuntimeError("cannot schedule new futures after shutdown")
             future: Future[Any] = Future()
             self._daemon_queue.put((future, fn, args, kwargs))
-            if len(self._daemon_threads) < self._daemon_max_workers:
-                worker = threading.Thread(
-                    target=self._daemon_worker,
-                    name=(
-                        f"{self._daemon_name_prefix}_{len(self._daemon_threads)}"
-                    ),
-                    daemon=True,
-                )
-                self._daemon_threads.append(worker)
-                worker.start()
             return future
 
     def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
@@ -552,9 +555,18 @@ class _CopilotResources:
             or self.session is not None
             or self._in_flight_session_creations
         ):
+            # Keep a process-level strong reference. TemporaryDirectory cleans
+            # on garbage collection as well as process exit, so the resource
+            # object alone cannot quarantine a directory owned by stuck work.
+            workspace = self.workspace
+            if workspace is not None:
+                with _QUARANTINED_WORKSPACES_LOCK:
+                    _QUARANTINED_WORKSPACES.add(workspace)
             return False
         workspace = self.workspace
         if workspace is not None:
+            with _QUARANTINED_WORKSPACES_LOCK:
+                _QUARANTINED_WORKSPACES.discard(workspace)
             workspace.cleanup()
             self.workspace = None
         return True
@@ -764,7 +776,9 @@ async def _construct_client(
         )
         executor.shutdown(wait=False, cancel_futures=True)
         raise
-    executor.shutdown_bounded(_CLEANUP_TIMEOUT_SECONDS)
+    # The constructor future is complete. Queue worker termination without a
+    # synchronous join so this async function never blocks its event loop.
+    executor.shutdown(wait=False, cancel_futures=True)
     resources.workspace = workspace
     return client
 
