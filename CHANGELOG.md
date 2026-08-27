@@ -4,6 +4,9 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.51 (unreleased)
 
+- Fix: a TypeScript/JavaScript `new Foo()` now emits a `calls` edge to the constructed class (member, chained, and generic forms), so constructor usage is visible; built-in globals like `new Map()` / `new Promise()` are not fabricated (#3116, thanks @hopstreax).
+- Fix: an Elixir function whose only clause carries a `when` guard (`def foo(x) when is_integer(x), do: ...`) is now extracted, not dropped; multi-clause, multi-condition guards, and `defp` are handled (#3111, thanks @santhiprakash).
+- Fix: Common Lisp node ids are now derived from the full path stem like every other extractor, so two same-basename `.lisp` files in different directories no longer collide on merge (thanks @guitelesc).
 - Perf: Leiden clustering now calls the `graspologic_native` binding directly instead of importing the full `graspologic` package, avoiding its heavy import chain (umap / pynndescent / numba JIT); clustering output is unchanged, and it falls back to the `graspologic` wrapper and then NetworkX Louvain when the native binding is absent (#3104, thanks @Mohammad-Palla).
 - Docs: the README now documents the git workflow for keeping the graph in sync — commits and branch switches rebuild automatically via the installed hooks, while `git pull` / `git merge` need a manual `graphify update .` (thanks @Mohammad-Palla).
 
