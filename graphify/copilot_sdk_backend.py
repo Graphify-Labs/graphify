@@ -125,7 +125,12 @@ class _DaemonThreadPoolExecutor(ThreadPoolExecutor):
                     worker.join()
 
     def shutdown_bounded(self, timeout: float) -> bool:
-        """Start shutdown, join workers to one deadline, and report completion."""
+        """Start shutdown and report whether every joinable worker stopped.
+
+        A worker cannot join itself. If called by a worker, its queued stop
+        marker guarantees that it exits immediately after the current task
+        returns, so only the other workers are part of this bounded wait.
+        """
         self.shutdown(wait=False, cancel_futures=True)
         with self._daemon_lock:
             workers = tuple(self._daemon_threads)
@@ -134,7 +139,9 @@ class _DaemonThreadPoolExecutor(ThreadPoolExecutor):
         for worker in workers:
             if worker is not current:
                 worker.join(max(0.0, deadline - time.monotonic()))
-        return not any(worker.is_alive() for worker in workers)
+        return not any(
+            worker is not current and worker.is_alive() for worker in workers
+        )
 
 
 class CopilotSdkTimeoutError(TimeoutError):

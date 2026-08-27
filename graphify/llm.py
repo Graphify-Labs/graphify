@@ -1400,7 +1400,7 @@ def _anthropic_response_text(content, default: str | None = None) -> str | None:
             # first-block behavior, supports split JSON, and excludes trailing
             # prose or a second value even inside the same text block. JSON
             # scalars can be the start of an ordinary plain-text response.
-            return combined[:end]
+            return combined[start:end]
     return combined if combined.strip() else default
 
 

@@ -552,6 +552,13 @@ def test_anthropic_response_text_stops_at_json_prefix_in_same_block(trailing):
     assert llm._anthropic_response_text(content) == _NODE_JSON
 
 
+def test_anthropic_response_text_returns_json_without_leading_whitespace():
+    content = [
+        SimpleNamespace(type="text", text=" \n\t" + _NODE_JSON + " trailing prose")
+    ]
+    assert llm._anthropic_response_text(content) == _NODE_JSON
+
+
 @pytest.mark.parametrize(
     "text",
     ["1. yes\n2. no", "true story", "null result", '\"quoted\" trailing answer'],

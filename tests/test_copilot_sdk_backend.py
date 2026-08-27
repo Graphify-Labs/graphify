@@ -1557,12 +1557,13 @@ def test_daemon_executor_cancels_pending_work_without_losing_stop_marker():
     assert executor.shutdown_bounded(1) is True
 
 
-def test_daemon_executor_shutdown_bounded_does_not_join_current_worker():
+def test_daemon_executor_shutdown_bounded_guarantees_current_worker_exit():
     executor = backend._DaemonThreadPoolExecutor(
         max_workers=1, thread_name_prefix="graphify-test"
     )
     result = executor.submit(lambda: executor.shutdown_bounded(0.1))
-    assert result.result(timeout=1) is False
+    assert result.result(timeout=1) is True
+    assert executor.shutdown_bounded(1) is True
 
 
 def test_daemon_executor_rejects_submit_after_shutdown_snapshot():
