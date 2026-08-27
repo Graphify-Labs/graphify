@@ -6,6 +6,7 @@ import base64
 import importlib
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -212,8 +213,15 @@ def test_unsupported_python_error_is_actionable(monkeypatch):
 
 @pytest.mark.skipif(sys.version_info < (3, 11), reason="SDK extra requires Python 3.11+")
 def test_missing_optional_dependency_error_is_actionable(monkeypatch):
+    pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+    package_name = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"][
+        "name"
+    ]
     monkeypatch.setitem(sys.modules, "copilot", None)
-    with pytest.raises(ImportError, match=r'graphifyy\[copilot\]'):
+    with pytest.raises(
+        ImportError,
+        match=rf'{re.escape(package_name)}\[copilot\]',
+    ):
         _call()
 
 
@@ -541,6 +549,23 @@ def test_run_bounded_timeout_survives_synchronous_abort_failure():
     asyncio.run(run())
 
 
+def test_run_bounded_timeout_cancels_and_drains_operation():
+    async def run() -> None:
+        finished = asyncio.Event()
+
+        async def operation() -> None:
+            try:
+                await asyncio.Event().wait()
+            finally:
+                finished.set()
+
+        with pytest.raises(asyncio.TimeoutError):
+            await backend._run_bounded(operation(), timeout=0.01)
+        assert finished.is_set()
+
+    asyncio.run(run())
+
+
 def test_force_stop_is_idempotent_under_concurrent_cleanup():
     class Client:
         calls = 0
@@ -587,6 +612,33 @@ def test_cleanup_waits_for_in_flight_force_stop():
 
     asyncio.run(run())
     assert calls == ["force-start", "force-finish"]
+
+
+def test_cleanup_does_not_block_forever_behind_hung_force_stop(monkeypatch):
+    monkeypatch.setattr(backend, "_CLEANUP_TIMEOUT_SECONDS", 0.01)
+    started = asyncio.Event()
+
+    class Client:
+        async def force_stop(self) -> None:
+            started.set()
+            await asyncio.Event().wait()
+
+        async def stop(self) -> None:
+            return None
+
+    async def run() -> None:
+        resources = backend._CopilotResources()
+        resources.client = Client()
+        stopping = asyncio.create_task(resources.force_stop())
+        await started.wait()
+        await asyncio.wait_for(
+            resources.__aexit__(None, None, None), timeout=0.1
+        )
+        stopping.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await stopping
+
+    asyncio.run(run())
 
 
 def test_run_async_reports_tasks_that_ignore_bounded_cancellation(monkeypatch):

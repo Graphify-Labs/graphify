@@ -359,6 +359,15 @@ class _CopilotResources:
         async with self._force_stop_lock:
             return self.force_stopped
 
+    async def _wait_for_force_stop(self) -> bool:
+        """Read force-stop state without letting a hung SDK call block cleanup."""
+        try:
+            return await asyncio.wait_for(
+                self._is_force_stopped(), timeout=_CLEANUP_TIMEOUT_SECONDS
+            )
+        except asyncio.TimeoutError:
+            return False
+
     async def __aexit__(
         self,
         exc_type: type[BaseException] | None,
@@ -375,7 +384,7 @@ class _CopilotResources:
             elif cleanup_interrupt is None:
                 cleanup_interrupt = error
 
-        if self.session is not None and not await self._is_force_stopped():
+        if self.session is not None and not await self._wait_for_force_stop():
             try:
                 await _run_bounded(
                     self.session.disconnect(),
@@ -384,7 +393,7 @@ class _CopilotResources:
                 )
             except BaseException as error:
                 record_cleanup_failure(error)
-        if self.client is not None and not await self._is_force_stopped():
+        if self.client is not None and not await self._wait_for_force_stop():
             try:
                 await _run_bounded(
                     self.client.stop(),

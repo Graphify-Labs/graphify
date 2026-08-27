@@ -3774,17 +3774,20 @@ def label_communities(
 
     written = 0
     errors: dict[int, Exception] = {}
+    collected_usage: dict = {}
 
     def _merge(batch_idx: int, parsed, exc, batch_usage=None) -> None:
         nonlocal written
         # Count tokens even for a failed batch: the LLM call was billed whether
-        # or not the reply parsed.
+        # or not the reply parsed. Only merge into this caller-thread-local
+        # accumulator here. The shared caller result is updated after every
+        # worker has joined.
         if usage_out is not None and batch_usage:
-            usage_out["input"] = _usage_add(
-                usage_out.get("input", 0), batch_usage.get("input", 0)
+            collected_usage["input"] = _usage_add(
+                collected_usage.get("input", 0), batch_usage.get("input", 0)
             )
-            usage_out["output"] = _usage_add(
-                usage_out.get("output", 0), batch_usage.get("output", 0)
+            collected_usage["output"] = _usage_add(
+                collected_usage.get("output", 0), batch_usage.get("output", 0)
             )
             for key in (
                 "cache_read_tokens",
@@ -3793,8 +3796,8 @@ def label_communities(
                 "copilot_premium_request_cost",
             ):
                 if batch_usage.get(key):
-                    usage_out[key] = _usage_add(
-                        usage_out.get(key, 0), batch_usage[key]
+                    collected_usage[key] = _usage_add(
+                        collected_usage.get(key, 0), batch_usage[key]
                     )
             for key in (
                 "context_current_tokens",
@@ -3803,7 +3806,7 @@ def label_communities(
                 "finish_reason",
             ):
                 if batch_usage.get(key) not in (None, ""):
-                    usage_out[key] = batch_usage[key]
+                    collected_usage[key] = batch_usage[key]
         if exc is not None:
             errors[batch_idx] = exc
             start = batch_idx * batch_size
@@ -3827,6 +3830,31 @@ def label_communities(
             futures = [pool.submit(_run_batch, b) for b in range(n_batches)]
             for future in as_completed(futures):
                 _merge(*future.result())
+
+    # No worker is running past this point. Publish the accumulated counters to
+    # the caller once, after the executor has joined, so usage_out is never a
+    # concurrent read-modify-write target.
+    if usage_out is not None and collected_usage:
+        for key in (
+            "input",
+            "output",
+            "cache_read_tokens",
+            "cache_write_tokens",
+            "reasoning_tokens",
+            "copilot_premium_request_cost",
+        ):
+            if collected_usage.get(key):
+                usage_out[key] = _usage_add(
+                    usage_out.get(key, 0), collected_usage[key]
+                )
+        for key in (
+            "context_current_tokens",
+            "context_limit",
+            "model",
+            "finish_reason",
+        ):
+            if collected_usage.get(key) not in (None, ""):
+                usage_out[key] = collected_usage[key]
 
     if written == 0 and errors:
         # Every batch failed; propagate the lowest-index error so the message is
