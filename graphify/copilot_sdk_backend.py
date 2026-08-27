@@ -154,7 +154,9 @@ class _DaemonThreadPoolExecutor(ThreadPoolExecutor):
         deadline = time.monotonic() + max(0.0, timeout)
         current = threading.current_thread()
         if current in workers:
-            return True
+            raise RuntimeError(
+                "bounded executor shutdown must be called outside its workers"
+            )
         for worker in workers:
             if worker.is_alive():
                 worker.join(max(0.0, deadline - time.monotonic()))
@@ -622,7 +624,7 @@ class _CopilotResources:
                 )
             self._in_flight_session_creations += 1
 
-        async def release_failed_creation() -> None:
+        async def release_reservation() -> None:
             async with self._lifecycle_lock:
                 self._release_session_creation_locked()
                 if self._terminal_cleanup_started:
@@ -631,13 +633,8 @@ class _CopilotResources:
         try:
             operation = operation_factory()
             session = await operation
-        except BaseException:
-            await _finish_cleanup(release_failed_creation())
-            raise
-
-        async def publish_or_disconnect() -> CopilotSdkCleanupError | None:
-            async with self._lifecycle_lock:
-                try:
+            async def publish_or_disconnect() -> CopilotSdkCleanupError | None:
+                async with self._lifecycle_lock:
                     if self._terminal_cleanup_started:
                         # Publish ownership before any await. If disconnect cannot
                         # finish, normal resource cleanup still owns the handle.
@@ -658,17 +655,20 @@ class _CopilotResources:
                         )
                     self.session = session
                     return None
-                finally:
-                    self._release_session_creation_locked()
-                    if self._terminal_cleanup_started:
-                        self._cleanup_workspace_locked()
 
-        cleanup_error, interrupted = await _finish_cleanup(publish_or_disconnect())
-        if interrupted:
-            raise asyncio.CancelledError
-        if cleanup_error is not None:
-            raise cleanup_error
-        return session
+            cleanup_error, interrupted = await _finish_cleanup(publish_or_disconnect())
+            if interrupted:
+                raise asyncio.CancelledError
+            if cleanup_error is not None:
+                raise cleanup_error
+            return session
+        finally:
+            active_error = sys.exc_info()[1]
+            _released, release_interrupted = await _finish_cleanup(
+                release_reservation()
+            )
+            if release_interrupted and active_error is None:
+                raise asyncio.CancelledError
 
     async def _acquire_lifecycle_lock(self) -> bool:
         """Serialize graceful cleanup with force-stop, bounded by the deadline."""

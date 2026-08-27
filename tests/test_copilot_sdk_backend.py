@@ -1673,12 +1673,13 @@ def test_daemon_executor_cancel_callback_can_reenter_executor():
     assert executor.shutdown_bounded(1) is True
 
 
-def test_daemon_executor_shutdown_bounded_guarantees_current_worker_exit():
+def test_daemon_executor_rejects_bounded_shutdown_from_current_worker():
     executor = backend._DaemonThreadPoolExecutor(
         max_workers=1, thread_name_prefix="graphify-test"
     )
     result = executor.submit(lambda: executor.shutdown_bounded(0.1))
-    assert result.result(timeout=1) is True
+    with pytest.raises(RuntimeError, match="outside its workers"):
+        result.result(timeout=1)
     assert executor.shutdown_bounded(1) is True
 
 
@@ -1704,12 +1705,14 @@ def test_concurrent_worker_bounded_shutdown_does_not_join_peer_workers():
     )
     ready = threading.Barrier(2)
 
-    def stop_from_worker() -> bool:
+    def stop_from_worker() -> str:
         ready.wait(timeout=1)
-        return executor.shutdown_bounded(1)
+        with pytest.raises(RuntimeError, match="outside its workers"):
+            executor.shutdown_bounded(1)
+        return "rejected"
 
     futures = [executor.submit(stop_from_worker) for _ in range(2)]
-    assert [future.result(timeout=1) for future in futures] == [True, True]
+    assert [future.result(timeout=1) for future in futures] == ["rejected", "rejected"]
     assert executor.shutdown_bounded(1) is True
 
 
