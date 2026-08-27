@@ -261,7 +261,7 @@ Codex users also need `multi_agent = true` under `[features]` in `~/.codex/confi
 | `gemini` | Google Gemini API | `uv tool install "graphifyy[gemini]"` |
 | `anthropic` | Anthropic Claude API (`--backend claude`, uses `ANTHROPIC_API_KEY`) | `uv tool install "graphifyy[anthropic]"` |
 | `bedrock` | AWS Bedrock (uses IAM, no API key) | `uv tool install "graphifyy[bedrock]"` |
-| `copilot` | GitHub Copilot SDK backend (Python 3.11+) | `uv tool install --python 3.12 "graphifyy[copilot]"` |
+| `copilot` | GitHub Copilot SDK backend (`--backend copilot-sdk`, Python 3.11+) | `uv tool install --python 3.12 "graphifyy[copilot]"` |
 | `azure` | Azure OpenAI Service (`--backend azure`, uses `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT`) | `uv tool install "graphifyy[openai]"` |
 | `sql` | SQL schema extraction | `uv tool install "graphifyy[sql]"` |
 | `postgres` | Live PostgreSQL introspection (`--postgres DSN`) | `uv tool install "graphifyy[postgres]"` |

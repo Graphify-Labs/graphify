@@ -515,14 +515,12 @@ def test_anthropic_response_text_falls_back_without_text():
     assert llm._anthropic_response_text(content, default="SENTINEL") == "SENTINEL"
 
 
-def test_anthropic_response_text_returns_first_text_block_not_concatenation():
-    """Locks the first-wins semantics: graphify's claude calls return a single
-    JSON payload, so the helper must return the FIRST text block, never
-    concatenate multiple (which would corrupt the JSON)."""
+def test_anthropic_response_text_concatenates_text_blocks_in_order():
+    midpoint = len(_NODE_JSON) // 2
     content = [
         SimpleNamespace(type="thinking", thinking="planning"),
-        SimpleNamespace(type="text", text=_NODE_JSON),
-        SimpleNamespace(type="text", text='{"nodes": [], "edges": []}'),
+        SimpleNamespace(type="text", text=_NODE_JSON[:midpoint]),
+        SimpleNamespace(type="text", text=_NODE_JSON[midpoint:]),
     ]
     assert llm._anthropic_response_text(content) == _NODE_JSON
 

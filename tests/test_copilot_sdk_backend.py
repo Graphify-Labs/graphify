@@ -759,9 +759,10 @@ def test_cleanup_does_not_block_forever_behind_hung_force_stop(monkeypatch):
         resources.client = Client()
         stopping = asyncio.create_task(resources.force_stop())
         await started.wait()
-        await asyncio.wait_for(
-            resources.__aexit__(None, None, None), timeout=0.1
-        )
+        with pytest.warns(RuntimeWarning, match="cleanup did not finish cleanly"):
+            await asyncio.wait_for(
+                resources.__aexit__(None, None, None), timeout=0.1
+            )
         stopping.cancel()
         with pytest.raises(asyncio.CancelledError):
             await stopping

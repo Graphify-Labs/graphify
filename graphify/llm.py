@@ -1365,7 +1365,7 @@ def _parse_llm_json(raw: str) -> dict:
 
 
 def _anthropic_response_text(content, default: str | None = None) -> str | None:
-    """Return the first Anthropic content block that carries text.
+    """Return all Anthropic text blocks in their original order.
 
     Current Claude models emit a ``ThinkingBlock`` ahead of the ``TextBlock``
     when extended thinking is enabled (including the default-on path where the
@@ -1374,14 +1374,16 @@ def _anthropic_response_text(content, default: str | None = None) -> str | None:
     """
     if not content:
         return default
+    parts: list[str] = []
     for block in content:
         block_type = getattr(block, "type", None)
         if block_type is not None and block_type != "text":
             continue
         text = getattr(block, "text", None)
-        if isinstance(text, str) and text.strip():
-            return text
-    return default
+        if isinstance(text, str):
+            parts.append(text)
+    combined = "".join(parts)
+    return combined if combined.strip() else default
 
 
 def _bedrock_response_text(resp: dict, default: str = "") -> str:

@@ -489,42 +489,48 @@ class _CopilotResources:
         self.client: Any = None
         self.session: Any = None
         self.force_stopped = False
-        self._force_stop_lock = asyncio.Lock()
+        self._terminal_cleanup_started = False
+        self._lifecycle_lock = asyncio.Lock()
         self.workspace = tempfile.TemporaryDirectory(prefix="graphify-copilot-")
 
     async def __aenter__(self) -> "_CopilotResources":
         return self
 
+    async def _force_stop_locked(self) -> None:
+        """Run terminal SDK shutdown while the lifecycle lock is owned."""
+        if self.force_stopped:
+            return
+        self._terminal_cleanup_started = True
+        client = self.client
+        if client is not None and getattr(client, "force_stop", None) is not None:
+            await client.force_stop()
+            self.force_stopped = True
+            # force_stop is the terminal SDK lifecycle operation. Clear the
+            # handles so cleanup cannot treat the terminated runtime as a
+            # live session/client and attempt graceful calls against it.
+            self.session = None
+            self.client = None
+
     async def force_stop(self) -> None:
-        async with self._force_stop_lock:
-            if self.force_stopped:
-                return
-            client = self.client
-            if client is not None and getattr(client, "force_stop", None) is not None:
-                await client.force_stop()
-                self.force_stopped = True
-                # force_stop is the terminal SDK lifecycle operation. Clear the
-                # handles so cleanup cannot treat the terminated runtime as a
-                # live session/client and attempt graceful calls against it.
-                self.session = None
-                self.client = None
+        async with self._lifecycle_lock:
+            await self._force_stop_locked()
 
     async def track_created_session(self, operation: Awaitable[Any]) -> Any:
         """Publish a created session before a timeout can start cleanup."""
         session = await operation
-        async with self._force_stop_lock:
-            if self.force_stopped:
+        async with self._lifecycle_lock:
+            if self._terminal_cleanup_started:
                 raise CopilotSdkCleanupError(
-                    "Copilot SDK created a session after the runtime was stopped."
+                    "Copilot SDK created a session after terminal cleanup started."
                 )
             self.session = session
         return session
 
-    async def _acquire_cleanup_lock(self) -> bool:
+    async def _acquire_lifecycle_lock(self) -> bool:
         """Serialize graceful cleanup with force-stop, bounded by the deadline."""
         try:
             await asyncio.wait_for(
-                self._force_stop_lock.acquire(),
+                self._lifecycle_lock.acquire(),
                 timeout=_CLEANUP_TIMEOUT_SECONDS,
             )
             return True
@@ -546,9 +552,10 @@ class _CopilotResources:
                 cleanup_interrupt = error
 
         force_stop_needed = False
-        lock_acquired = await self._acquire_cleanup_lock()
+        lock_acquired = await self._acquire_lifecycle_lock()
         if lock_acquired:
             try:
+                self._terminal_cleanup_started = True
                 if self.session is not None and not self.force_stopped:
                     try:
                         await _run_bounded(
@@ -575,18 +582,24 @@ class _CopilotResources:
                     except BaseException as error:
                         record_cleanup_failure(error)
                         force_stop_needed = True
+                # A timed-out graceful SDK call is terminally aborted before
+                # releasing the lifecycle lock. This keeps all cleanup paths
+                # under one owner and prevents a second cleanup from starting.
+                if force_stop_needed:
+                    try:
+                        await _run_bounded(
+                            self._force_stop_locked(),
+                            timeout=_CLEANUP_TIMEOUT_SECONDS,
+                        )
+                    except BaseException as force_error:
+                        record_cleanup_failure(force_error)
             finally:
-                self._force_stop_lock.release()
-        # A timed-out graceful call is no longer running cooperatively. Start
-        # terminal shutdown only after releasing the lifecycle lock; force_stop
-        # then owns that lock and cannot overlap another graceful cleanup path.
-        if force_stop_needed:
-            try:
-                await _run_bounded(
-                    self.force_stop(), timeout=_CLEANUP_TIMEOUT_SECONDS
-                )
-            except BaseException as force_error:
-                record_cleanup_failure(force_error)
+                self._lifecycle_lock.release()
+        else:
+            # Another terminal or graceful cleanup owns the lifecycle. Do not
+            # start a competing operation, but surface that its completion
+            # exceeded this cleanup window.
+            cleanup_failed = True
         try:
             self.workspace.cleanup()
         except BaseException as error:
