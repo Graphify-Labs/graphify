@@ -535,6 +535,37 @@ def test_run_bounded_cancels_child_when_caller_is_cancelled():
     asyncio.run(run())
 
 
+def test_repeated_cancellation_cannot_interrupt_operation_cleanup():
+    async def run() -> None:
+        started = asyncio.Event()
+        cleanup_started = asyncio.Event()
+        release_cleanup = asyncio.Event()
+        finished = asyncio.Event()
+
+        async def operation() -> None:
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleanup_started.set()
+                await release_cleanup.wait()
+                finished.set()
+
+        caller = asyncio.create_task(
+            backend._run_bounded(operation(), timeout=10)
+        )
+        await started.wait()
+        caller.cancel()
+        await cleanup_started.wait()
+        caller.cancel()
+        release_cleanup.set()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        assert finished.is_set()
+
+    asyncio.run(run())
+
+
 def test_run_bounded_timeout_survives_synchronous_abort_failure():
     async def operation() -> None:
         await asyncio.Event().wait()
@@ -641,6 +672,36 @@ def test_cleanup_does_not_block_forever_behind_hung_force_stop(monkeypatch):
     asyncio.run(run())
 
 
+def test_cancellation_during_force_stop_check_finishes_resource_cleanup():
+    release = asyncio.Event()
+    force_started = asyncio.Event()
+
+    class Client:
+        async def force_stop(self) -> None:
+            force_started.set()
+            await release.wait()
+
+        async def stop(self) -> None:
+            raise AssertionError("completed force-stop must skip graceful stop")
+
+    async def run() -> None:
+        resources = backend._CopilotResources()
+        workspace = Path(resources.workspace.name)
+        resources.client = Client()
+        stopping = asyncio.create_task(resources.force_stop())
+        await force_started.wait()
+        cleanup = asyncio.create_task(resources.__aexit__(None, None, None))
+        await asyncio.sleep(0)
+        cleanup.cancel()
+        release.set()
+        await stopping
+        with pytest.raises(asyncio.CancelledError):
+            await cleanup
+        assert not workspace.exists()
+
+    asyncio.run(run())
+
+
 def test_run_async_reports_tasks_that_ignore_bounded_cancellation(monkeypatch):
     monkeypatch.setattr(backend, "_CLEANUP_TIMEOUT_SECONDS", 0.01)
 
@@ -707,7 +768,10 @@ def test_run_async_bounds_default_executor_shutdown(monkeypatch):
     started = threading.Event()
     release = threading.Event()
 
+    state = {"daemon": False}
+
     def work() -> None:
+        state["daemon"] = threading.current_thread().daemon
         started.set()
         release.wait()
 
@@ -720,6 +784,7 @@ def test_run_async_bounds_default_executor_shutdown(monkeypatch):
     try:
         with pytest.warns(RuntimeWarning, match="default executor"):
             assert backend._run_async(factory) == "ok"
+        assert state["daemon"] is True
     finally:
         release.set()
 

@@ -5,11 +5,12 @@ import asyncio
 import inspect
 import math
 import os
+import queue
 import sys
 import tempfile
 import threading
 import warnings
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable
@@ -34,6 +35,79 @@ _USER_INSTRUCTION = (
 )
 _STARTUP_TIMEOUT_SECONDS = 15.0
 _CLEANUP_TIMEOUT_SECONDS = 5.0
+
+
+class _DaemonThreadPoolExecutor(ThreadPoolExecutor):
+    """A small default executor whose stuck workers cannot hold process exit.
+
+    ``ThreadPoolExecutor`` workers are non-daemon and Python joins them during
+    interpreter shutdown. That is unsafe for an optional SDK boundary because
+    Python cannot kill a blocking worker. This implementation keeps the public
+    executor contract required by ``loop.set_default_executor`` while using a
+    fixed set of daemon workers and no private runtime hooks.
+    """
+
+    def __init__(self, *, max_workers: int, thread_name_prefix: str) -> None:
+        super().__init__(
+            max_workers=max_workers, thread_name_prefix=thread_name_prefix
+        )
+        self._daemon_queue: queue.Queue[Any] = queue.Queue()
+        self._daemon_lock = threading.Lock()
+        self._daemon_shutdown = False
+        self._daemon_max_workers = max_workers
+        self._daemon_name_prefix = thread_name_prefix
+        self._daemon_threads: list[threading.Thread] = []
+
+    def _daemon_worker(self) -> None:
+        while True:
+            item = self._daemon_queue.get()
+            if item is None:
+                return
+            future, function, args, kwargs = item
+            if not future.set_running_or_notify_cancel():
+                continue
+            try:
+                result = function(*args, **kwargs)
+            except BaseException as error:
+                future.set_exception(error)
+            else:
+                future.set_result(result)
+
+    def submit(self, fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Future[Any]:
+        with self._daemon_lock:
+            if self._daemon_shutdown:
+                raise RuntimeError("cannot schedule new futures after shutdown")
+            future: Future[Any] = Future()
+            self._daemon_queue.put((future, fn, args, kwargs))
+            if len(self._daemon_threads) < self._daemon_max_workers:
+                worker = threading.Thread(
+                    target=self._daemon_worker,
+                    name=(
+                        f"{self._daemon_name_prefix}_{len(self._daemon_threads)}"
+                    ),
+                    daemon=True,
+                )
+                self._daemon_threads.append(worker)
+                worker.start()
+            return future
+
+    def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
+        with self._daemon_lock:
+            if not self._daemon_shutdown:
+                self._daemon_shutdown = True
+                if cancel_futures:
+                    while True:
+                        try:
+                            item = self._daemon_queue.get_nowait()
+                        except queue.Empty:
+                            break
+                        if item is not None:
+                            item[0].cancel()
+                for _worker in self._daemon_threads:
+                    self._daemon_queue.put(None)
+        if wait:
+            for worker in self._daemon_threads:
+                worker.join()
 
 
 class CopilotSdkTimeoutError(TimeoutError):
@@ -255,6 +329,23 @@ def _consume_task(task: asyncio.Task[Any]) -> None:
         pass
 
 
+async def _finish_cleanup(operation: Awaitable[Any]) -> tuple[Any, bool]:
+    """Finish bounded cleanup despite repeated caller cancellation.
+
+    Returns the operation result and whether another cancellation arrived while
+    cleanup was running. The caller re-raises cancellation only after owned
+    resources have reached their bounded cleanup point.
+    """
+    task = asyncio.ensure_future(operation)
+    interrupted = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            interrupted = True
+    return task.result(), interrupted
+
+
 async def _run_bounded(
     operation: Awaitable[Any],
     *,
@@ -310,7 +401,7 @@ async def _run_bounded(
     try:
         done, _ = await asyncio.wait({task}, timeout=max(0.0, timeout))
     except asyncio.CancelledError:
-        pending = await cancel_and_drain()
+        pending, _interrupted = await _finish_cleanup(cancel_and_drain())
         if pending:
             warnings.warn(
                 "Copilot SDK operation remained pending after bounded cancellation; "
@@ -368,11 +459,9 @@ class _CopilotResources:
         except asyncio.TimeoutError:
             return False
 
-    async def __aexit__(
+    async def _cleanup(
         self,
         exc_type: type[BaseException] | None,
-        _exc: BaseException | None,
-        _traceback: Any,
     ) -> None:
         cleanup_failed = False
         cleanup_interrupt: BaseException | None = None
@@ -418,6 +507,16 @@ class _CopilotResources:
                 RuntimeWarning,
                 stacklevel=2,
             )
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        _exc: BaseException | None,
+        _traceback: Any,
+    ) -> None:
+        _result, interrupted = await _finish_cleanup(self._cleanup(exc_type))
+        if interrupted:
+            raise asyncio.CancelledError
 
 
 async def _call_once(
@@ -594,8 +693,9 @@ def _run_async(factory: Callable[[], Any]) -> Any:
 
     def run_isolated() -> Any:
         loop = asyncio.new_event_loop()
-        default_executor = ThreadPoolExecutor(
-            thread_name_prefix="graphify-copilot-sdk"
+        default_executor = _DaemonThreadPoolExecutor(
+            max_workers=4,
+            thread_name_prefix="graphify-copilot-sdk",
         )
         loop.set_default_executor(default_executor)
         try:
