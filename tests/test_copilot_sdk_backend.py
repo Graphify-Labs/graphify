@@ -472,6 +472,47 @@ def test_runtime_setup_cannot_dispatch_after_deadline(monkeypatch):
     assert state["stops"] == 0
 
 
+def test_timed_out_constructor_owns_workspace_until_worker_exits(monkeypatch):
+    monkeypatch.setattr(backend, "_CLEANUP_TIMEOUT_SECONDS", 0.01)
+    constructor_started = threading.Event()
+    release_constructor = threading.Event()
+    paths: list[Path] = []
+
+    class Client:
+        def __init__(self, **options: Any):
+            paths.append(Path(options["working_directory"]))
+            constructor_started.set()
+            release_constructor.wait()
+
+    real_executor = backend._DaemonThreadPoolExecutor
+
+    class StartedExecutor(real_executor):
+        def submit(self, fn: Any, /, *args: Any, **kwargs: Any) -> Any:
+            future = super().submit(fn, *args, **kwargs)
+            assert constructor_started.wait(timeout=1)
+            return future
+
+    monkeypatch.setattr(backend, "_DaemonThreadPoolExecutor", StartedExecutor)
+    module = types.ModuleType("copilot")
+    setattr(module, "CopilotClient", Client)
+    monkeypatch.setitem(sys.modules, "copilot", module)
+    monkeypatch.setattr(backend, "_supported_python", lambda: None)
+
+    try:
+        with pytest.raises(
+            backend.CopilotSdkTimeoutError, match="runtime setup exceeded"
+        ):
+            _call(timeout_seconds=0.01)
+        assert constructor_started.is_set()
+        assert paths[0].exists()
+    finally:
+        release_constructor.set()
+    deadline = time.monotonic() + 1
+    while paths[0].exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not paths[0].exists()
+
+
 def test_constructor_failure_has_no_unbound_cleanup_state(monkeypatch):
     state = _install_fake_copilot(
         monkeypatch,
@@ -751,6 +792,33 @@ def test_late_session_is_disconnected_after_terminal_cleanup_starts():
     assert state["disconnects"] == 1
 
 
+def test_session_transfer_finishes_when_cancelled_waiting_for_lifecycle_lock():
+    state = {"disconnects": 0}
+
+    class Session:
+        async def disconnect(self) -> None:
+            state["disconnects"] += 1
+
+    async def run() -> None:
+        resources = backend._CopilotResources()
+        await resources._lifecycle_lock.acquire()
+        tracking = asyncio.create_task(
+            resources.track_created_session(asyncio.sleep(0, result=Session()))
+        )
+        for _ in range(3):
+            await asyncio.sleep(0)
+        tracking.cancel()
+        resources._terminal_cleanup_started = True
+        resources._lifecycle_lock.release()
+        with pytest.raises(asyncio.CancelledError):
+            await tracking
+        assert resources.session is None
+        await resources.__aexit__(RuntimeError, None, None)
+
+    asyncio.run(run())
+    assert state["disconnects"] == 1
+
+
 def test_cleanup_waits_for_in_flight_force_stop():
     release = asyncio.Event()
     calls: list[str] = []
@@ -824,6 +892,7 @@ def test_cancellation_during_force_stop_check_finishes_resource_cleanup():
 
     async def run() -> None:
         resources = backend._CopilotResources()
+        assert resources.workspace is not None
         workspace = Path(resources.workspace.name)
         resources.client = Client()
         stopping = asyncio.create_task(resources.force_stop())
@@ -856,6 +925,55 @@ def test_run_async_reports_tasks_that_ignore_bounded_cancellation(monkeypatch):
 
     with pytest.warns(RuntimeWarning, match="remained pending"):
         assert backend._run_async(factory) == "ok"
+
+
+def test_timed_out_stubborn_operation_is_owned_by_loop_shutdown(monkeypatch):
+    monkeypatch.setattr(backend, "_CLEANUP_TIMEOUT_SECONDS", 0.01)
+    cancellations = 0
+
+    async def stubborn() -> None:
+        nonlocal cancellations
+        while True:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancellations += 1
+
+    async def run() -> None:
+        with pytest.warns(RuntimeWarning, match="operation remained pending"):
+            with pytest.raises(backend.CopilotSdkCleanupError):
+                await backend._run_bounded(stubborn(), timeout=0)
+
+    with pytest.warns(RuntimeWarning, match="tasks remained pending"):
+        backend._run_async(run)
+    assert cancellations >= 2
+
+
+def test_run_async_closes_loop_when_shutdown_fails(monkeypatch):
+    created: list[asyncio.AbstractEventLoop] = []
+    real_new_event_loop = asyncio.new_event_loop
+
+    def new_event_loop() -> asyncio.AbstractEventLoop:
+        loop = real_new_event_loop()
+        created.append(loop)
+        return loop
+
+    def fail_shutdown(
+        _executor: backend._DaemonThreadPoolExecutor, _timeout: float
+    ) -> bool:
+        raise RuntimeError("shutdown failed")
+
+    monkeypatch.setattr(asyncio, "new_event_loop", new_event_loop)
+    monkeypatch.setattr(
+        backend._DaemonThreadPoolExecutor,
+        "shutdown_bounded",
+        fail_shutdown,
+    )
+
+    with pytest.raises(RuntimeError, match="shutdown failed"):
+        backend._run_async(lambda: asyncio.sleep(0, result="ok"))
+    assert len(created) == 1
+    assert created[0].is_closed()
 
 
 def test_run_async_cancels_tasks_spawned_during_shutdown():

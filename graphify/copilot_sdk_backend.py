@@ -437,6 +437,9 @@ async def _run_bounded(
             _consume_task(completed)
         still_pending -= resolved_after_cancel
         for unfinished in still_pending:
+            # The isolated loop still owns these tasks. Its finalizer retries
+            # cancellation before closing the loop; this callback only consumes
+            # an exception if a task finishes between those two steps.
             unfinished.add_done_callback(_consume_task)
         if abort_interrupt is not None:
             raise abort_interrupt
@@ -491,7 +494,9 @@ class _CopilotResources:
         self.force_stopped = False
         self._terminal_cleanup_started = False
         self._lifecycle_lock = asyncio.Lock()
-        self.workspace = tempfile.TemporaryDirectory(prefix="graphify-copilot-")
+        self.workspace: tempfile.TemporaryDirectory[str] | None = (
+            tempfile.TemporaryDirectory(prefix="graphify-copilot-")
+        )
 
     async def __aenter__(self) -> "_CopilotResources":
         return self
@@ -521,22 +526,30 @@ class _CopilotResources:
     async def track_created_session(self, operation: Awaitable[Any]) -> Any:
         """Publish a created session before a timeout can start cleanup."""
         session = await operation
-        async with self._lifecycle_lock:
-            if self._terminal_cleanup_started:
-                try:
-                    await _run_bounded(
-                        session.disconnect(),
-                        timeout=_CLEANUP_TIMEOUT_SECONDS,
+        async def publish_or_disconnect() -> CopilotSdkCleanupError | None:
+            async with self._lifecycle_lock:
+                if self._terminal_cleanup_started:
+                    try:
+                        await _run_bounded(
+                            session.disconnect(),
+                            timeout=_CLEANUP_TIMEOUT_SECONDS,
+                        )
+                    except Exception:
+                        return CopilotSdkCleanupError(
+                            "Copilot SDK created a session after terminal cleanup "
+                            "started and late-session disconnect did not complete."
+                        )
+                    return CopilotSdkCleanupError(
+                        "Copilot SDK created a session after terminal cleanup started."
                     )
-                except Exception:
-                    raise CopilotSdkCleanupError(
-                        "Copilot SDK created a session after terminal cleanup "
-                        "started and late-session disconnect did not complete."
-                    ) from None
-                raise CopilotSdkCleanupError(
-                    "Copilot SDK created a session after terminal cleanup started."
-                )
-            self.session = session
+                self.session = session
+                return None
+
+        cleanup_error, interrupted = await _finish_cleanup(publish_or_disconnect())
+        if interrupted:
+            raise asyncio.CancelledError
+        if cleanup_error is not None:
+            raise cleanup_error
         return session
 
     async def _acquire_lifecycle_lock(self) -> bool:
@@ -610,10 +623,12 @@ class _CopilotResources:
             # start a competing operation, but surface that its completion
             # exceeded this cleanup window.
             cleanup_failed = True
-        try:
-            self.workspace.cleanup()
-        except BaseException as error:
-            record_cleanup_failure(error)
+        workspace = self.workspace
+        if workspace is not None:
+            try:
+                workspace.cleanup()
+            except BaseException as error:
+                record_cleanup_failure(error)
         if cleanup_interrupt is not None:
             raise cleanup_interrupt
         if exc_type is None and cleanup_failed:
@@ -632,6 +647,60 @@ class _CopilotResources:
         _result, interrupted = await _finish_cleanup(self._cleanup(exc_type))
         if interrupted:
             raise asyncio.CancelledError
+
+
+async def _construct_client(
+    client_type: Any,
+    resources: _CopilotResources,
+    *,
+    timeout: float,
+) -> Any:
+    """Construct a client without racing its temporary workspace cleanup."""
+    workspace = resources.workspace
+    if workspace is None:
+        raise CopilotSdkCleanupError("Copilot SDK workspace is unavailable.")
+    resources.workspace = None
+    executor = _DaemonThreadPoolExecutor(
+        max_workers=1,
+        thread_name_prefix="graphify-copilot-constructor",
+    )
+    try:
+        future = executor.submit(
+            client_type,
+            use_logged_in_user=True,
+            mode="empty",
+            enable_remote_sessions=False,
+            base_directory=os.path.expanduser(
+                os.environ.get("COPILOT_HOME", "~/.copilot")
+            ),
+            working_directory=workspace.name,
+        )
+    except BaseException:
+        resources.workspace = workspace
+        executor.shutdown(wait=False, cancel_futures=True)
+        raise
+
+    def clean_late_result(completed: Future[Any]) -> None:
+        try:
+            completed.result()
+        except BaseException:
+            pass
+        workspace.cleanup()
+
+    try:
+        client = await _run_bounded(
+            asyncio.wrap_future(future),
+            timeout=timeout,
+        )
+    except BaseException:
+        # A running thread cannot be killed safely. It retains exclusive
+        # ownership of the workspace and removes it when construction ends.
+        future.add_done_callback(clean_late_result)
+        executor.shutdown(wait=False, cancel_futures=True)
+        raise
+    executor.shutdown_bounded(_CLEANUP_TIMEOUT_SECONDS)
+    resources.workspace = workspace
+    return client
 
 
 async def _call_once(
@@ -659,17 +728,9 @@ async def _call_once(
                 "Copilot SDK request deadline expired before runtime setup."
             )
         try:
-            resources.client = await _run_bounded(
-                asyncio.to_thread(
-                    client_type,
-                    use_logged_in_user=True,
-                    mode="empty",
-                    enable_remote_sessions=False,
-                    base_directory=os.path.expanduser(
-                        os.environ.get("COPILOT_HOME", "~/.copilot")
-                    ),
-                    working_directory=resources.workspace.name,
-                ),
+            resources.client = await _construct_client(
+                client_type,
+                resources,
                 timeout=min(remaining(), _STARTUP_TIMEOUT_SECONDS),
             )
         except asyncio.TimeoutError:
@@ -684,6 +745,11 @@ async def _call_once(
             )
         startup_timed_out = False
         try:
+            if resources.workspace is None:
+                raise CopilotSdkCleanupError(
+                    "Copilot SDK workspace ownership was not transferred."
+                )
+            working_directory = resources.workspace.name
             await _run_bounded(
                 resources.client.start(),
                 timeout=min(remaining(), _STARTUP_TIMEOUT_SECONDS),
@@ -717,8 +783,8 @@ async def _call_once(
                 mcp_oauth_token_storage="in-memory",
                 skip_embedding_retrieval=True,
                 enable_mcp_apps=False,
-                working_directory=resources.workspace.name,
-                config_directory=resources.workspace.name,
+                working_directory=working_directory,
+                config_directory=working_directory,
                 system_message=_system_message(system_prompt),
                 on_event=collector,
             )
@@ -889,52 +955,58 @@ def _run_async(factory: Callable[[], Any]) -> Any:
                             task.cancel()
                         return unresolved
 
-            unresolved = loop.run_until_complete(cancel_all_tasks())
+            try:
+                unresolved = loop.run_until_complete(cancel_all_tasks())
 
-            async def shutdown_async_generators() -> None:
-                try:
-                    await _run_bounded(
-                        loop.shutdown_asyncgens(),
-                        timeout=_CLEANUP_TIMEOUT_SECONDS,
-                    )
-                except (asyncio.TimeoutError, CopilotSdkCleanupError):
+                async def shutdown_async_generators() -> None:
+                    try:
+                        await _run_bounded(
+                            loop.shutdown_asyncgens(),
+                            timeout=_CLEANUP_TIMEOUT_SECONDS,
+                        )
+                    except (asyncio.TimeoutError, CopilotSdkCleanupError):
+                        warnings.warn(
+                            "Copilot SDK async-generator shutdown exceeded the "
+                            "cleanup deadline.",
+                            RuntimeWarning,
+                            stacklevel=2,
+                        )
+
+                loop.run_until_complete(shutdown_async_generators())
+                unresolved |= loop.run_until_complete(cancel_all_tasks())
+
+                if unresolved:
                     warnings.warn(
-                        "Copilot SDK async-generator shutdown exceeded the "
-                        "cleanup deadline.",
+                        "Copilot SDK tasks remained pending after bounded loop "
+                        "shutdown; the runtime was already force-stopped.",
                         RuntimeWarning,
                         stacklevel=2,
                     )
 
-            loop.run_until_complete(shutdown_async_generators())
-            unresolved |= loop.run_until_complete(cancel_all_tasks())
+                    def suppress_destroyed_pending(
+                        event_loop: asyncio.AbstractEventLoop,
+                        context: dict[str, Any],
+                    ) -> None:
+                        if (
+                            context.get("message")
+                            == "Task was destroyed but it is pending!"
+                        ):
+                            return
+                        event_loop.default_exception_handler(context)
 
-            if unresolved:
-                warnings.warn(
-                    "Copilot SDK tasks remained pending after bounded loop "
-                    "shutdown; the runtime was already force-stopped.",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
+                    loop.set_exception_handler(suppress_destroyed_pending)
 
-                def suppress_destroyed_pending(
-                    event_loop: asyncio.AbstractEventLoop,
-                    context: dict[str, Any],
-                ) -> None:
-                    if context.get("message") == "Task was destroyed but it is pending!":
-                        return
-                    event_loop.default_exception_handler(context)
-
-                loop.set_exception_handler(suppress_destroyed_pending)
-
-            if not default_executor.shutdown_bounded(_CLEANUP_TIMEOUT_SECONDS):
-                warnings.warn(
-                    "Copilot SDK default executor did not shut down within the "
-                    "cleanup deadline; running calls were detached.",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
-            asyncio.set_event_loop(None)
-            loop.close()
+                if not default_executor.shutdown_bounded(_CLEANUP_TIMEOUT_SECONDS):
+                    warnings.warn(
+                        "Copilot SDK default executor did not shut down within the "
+                        "cleanup deadline; running calls were detached.",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+            finally:
+                # SDK shutdown failures cannot leave this thread's loop installed.
+                asyncio.set_event_loop(None)
+                loop.close()
 
     # Always create the SDK loop in a dedicated thread. Event-loop selection is
     # thread-local, so this never replaces a dormant or running caller loop.
