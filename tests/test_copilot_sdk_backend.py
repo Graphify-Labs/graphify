@@ -440,6 +440,41 @@ def test_post_dispatch_timeout_force_stops_without_graceful_replay(monkeypatch):
     assert state["disconnects"] == state["stops"] == 0
 
 
+def test_run_bounded_rejects_synchronous_callables_without_invoking_them():
+    called = False
+
+    def synchronous_operation() -> None:
+        nonlocal called
+        called = True
+
+    async def run() -> None:
+        with pytest.raises(TypeError, match="must be awaitable"):
+            await backend._run_bounded(
+                synchronous_operation,  # type: ignore[arg-type]
+                timeout=0.01,
+            )
+
+    asyncio.run(run())
+    assert called is False
+
+
+def test_run_async_reports_tasks_that_ignore_bounded_cancellation(monkeypatch):
+    monkeypatch.setattr(backend, "_CLEANUP_TIMEOUT_SECONDS", 0.01)
+
+    async def stubborn() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await asyncio.Event().wait()
+
+    async def factory() -> str:
+        asyncio.create_task(stubborn())
+        return "ok"
+
+    with pytest.warns(RuntimeWarning, match="remained pending"):
+        assert backend._run_async(factory) == "ok"
+
+
 def test_unknown_outcome_bypasses_graphify_adaptive_retry(monkeypatch, tmp_path):
     source = tmp_path / "a.md"
     source.write_text("Alpha", encoding="utf-8")

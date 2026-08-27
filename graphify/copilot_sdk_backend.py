@@ -11,7 +11,7 @@ import warnings
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Awaitable, Callable, Iterable
 
 COPILOT_DEFAULT_MODEL = "copilot-plan-default"
 _REASONING_VALUES = frozenset({"low", "medium", "high", "xhigh", "max"})
@@ -249,16 +249,15 @@ def _consume_task(task: asyncio.Task[Any]) -> None:
 
 
 async def _run_bounded(
-    call: Callable[[], Any],
+    operation: Awaitable[Any],
     *,
     timeout: float,
     abort: Callable[[], Any] | None = None,
 ) -> Any:
-    """Bound an SDK operation even if it resists cancellation."""
-    result = call()
-    if not inspect.isawaitable(result):
-        return result
-    task = asyncio.ensure_future(result)
+    """Bound one asynchronous SDK operation and its cancellation cleanup."""
+    if not inspect.isawaitable(operation):
+        raise TypeError("Copilot SDK operation must be awaitable")
+    task = asyncio.ensure_future(operation)
     done, pending = await asyncio.wait({task}, timeout=max(0.0, timeout))
     if done:
         return task.result()
@@ -267,17 +266,28 @@ async def _run_bounded(
         abort_result = abort()
         if inspect.isawaitable(abort_result):
             abort_task = asyncio.ensure_future(abort_result)
-            abort_done, abort_pending = await asyncio.wait({abort_task}, timeout=0.05)
+            abort_done, abort_pending = await asyncio.wait(
+                {abort_task}, timeout=_CLEANUP_TIMEOUT_SECONDS
+            )
             for completed in abort_done:
                 _consume_task(completed)
             for unfinished in abort_pending:
                 unfinished.cancel()
                 unfinished.add_done_callback(_consume_task)
-    drained, pending = await asyncio.wait({task}, timeout=0.05)
+    drained, pending = await asyncio.wait(
+        {task}, timeout=_CLEANUP_TIMEOUT_SECONDS
+    )
     for completed in drained:
         _consume_task(completed)
     for unfinished in pending:
         unfinished.add_done_callback(_consume_task)
+    if pending:
+        warnings.warn(
+            "Copilot SDK operation remained pending after bounded cancellation; "
+            "the runtime was force-stopped.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
     raise asyncio.TimeoutError
 
 
@@ -330,12 +340,12 @@ async def _call_once(
         startup_timed_out = False
         try:
             await _run_bounded(
-                client.start,
+                client.start(),
                 timeout=min(remaining(), _STARTUP_TIMEOUT_SECONDS),
                 abort=force_stop if getattr(client, "force_stop", None) else None,
             )
             session = await _run_bounded(
-                lambda: client.create_session(
+                client.create_session(
                     on_permission_request=_deny_permission,
                     model=model,
                     reasoning_effort=reasoning_effort,
@@ -382,7 +392,7 @@ async def _call_once(
         response: Any = None
         try:
             response = await _run_bounded(
-                lambda: session.send_and_wait(
+                session.send_and_wait(
                     user_prompt, attachments=attachments, timeout=remaining()
                 ),
                 timeout=remaining(),
@@ -419,16 +429,16 @@ async def _call_once(
 
         if session is not None and not force_stopped:
             try:
-                await _run_bounded(session.disconnect, timeout=_CLEANUP_TIMEOUT_SECONDS)
+                await _run_bounded(session.disconnect(), timeout=_CLEANUP_TIMEOUT_SECONDS)
             except BaseException as exc:
                 record_cleanup_failure(exc)
         if client is not None and not force_stopped:
             try:
-                await _run_bounded(client.stop, timeout=_CLEANUP_TIMEOUT_SECONDS)
+                await _run_bounded(client.stop(), timeout=_CLEANUP_TIMEOUT_SECONDS)
             except BaseException as exc:
                 record_cleanup_failure(exc)
                 try:
-                    await _run_bounded(force_stop, timeout=0.1)
+                    await _run_bounded(force_stop(), timeout=0.1)
                 except BaseException as force_exc:
                     record_cleanup_failure(force_exc)
         try:
@@ -500,7 +510,28 @@ def _run_async(factory: Callable[[], Any]) -> Any:
             for task in pending:
                 task.cancel()
             if pending:
-                loop.run_until_complete(asyncio.wait(pending, timeout=0.05))
+                resolved, unresolved = loop.run_until_complete(
+                    asyncio.wait(pending, timeout=_CLEANUP_TIMEOUT_SECONDS)
+                )
+                for task in resolved:
+                    _consume_task(task)
+                if unresolved:
+                    warnings.warn(
+                        "Copilot SDK tasks remained pending after bounded loop "
+                        "shutdown; the runtime was already force-stopped.",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+
+                    def suppress_destroyed_pending(
+                        event_loop: asyncio.AbstractEventLoop,
+                        context: dict[str, Any],
+                    ) -> None:
+                        if context.get("message") == "Task was destroyed but it is pending!":
+                            return
+                        event_loop.default_exception_handler(context)
+
+                    loop.set_exception_handler(suppress_destroyed_pending)
             if previous_loop is not None and not previous_loop.is_closed():
                 policy.set_event_loop(previous_loop)
             else:

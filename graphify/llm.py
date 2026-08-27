@@ -3137,10 +3137,15 @@ def _merge_into(merged: dict, result: dict) -> None:
         "context_current_tokens",
         "context_limit",
         "model",
-        "finish_reason",
     ):
         if result.get(key) not in (None, ""):
             merged[key] = result[key]
+    incoming_finish = result.get("finish_reason")
+    current_finish = merged.get("finish_reason")
+    if incoming_finish not in (None, "") and current_finish in (None, "", "stop"):
+        # Keep any non-success status seen in an earlier chunk. A later clean
+        # chunk must not make an aggregate partial run look fully complete.
+        merged["finish_reason"] = incoming_finish
     # Carry forward files a chunk truncated to an empty parse (#1950): these have
     # no items to ride the merge, so they'd otherwise be lost from the run-level
     # partial set the manifest stamp consults.

@@ -1543,3 +1543,22 @@ def test_truncated_split_usage_overflow_remains_strict_json(tmp_path):
     assert math.isfinite(result["input_tokens"])
     assert math.isfinite(result["output_tokens"])
     json.dumps(result, allow_nan=False)
+
+
+def test_merge_into_preserves_earlier_non_success_finish_reason():
+    merged = {
+        "nodes": [],
+        "edges": [],
+        "hyperedges": [],
+        "input_tokens": 0,
+        "output_tokens": 0,
+    }
+
+    llm._merge_into(
+        merged,
+        {"finish_reason": "length", "_partial_files": ["partial.md"]},
+    )
+    llm._merge_into(merged, {"finish_reason": "stop"})
+
+    assert merged["finish_reason"] == "length"
+    assert merged["_partial_files"] == ["partial.md"]
