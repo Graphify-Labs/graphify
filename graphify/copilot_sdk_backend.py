@@ -13,6 +13,7 @@ import time
 import warnings
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable
 
@@ -360,6 +361,19 @@ def _consume_task(task: asyncio.Task[Any]) -> None:
         pass
 
 
+def _cleanup_abandoned_workspace(
+    completed: Future[Any],
+    *,
+    workspace: tempfile.TemporaryDirectory[str],
+) -> None:
+    """Release a constructor-owned workspace after its worker exits."""
+    try:
+        completed.result()
+    except BaseException:
+        pass
+    workspace.cleanup()
+
+
 async def _finish_cleanup(operation: Awaitable[Any]) -> tuple[Any, bool]:
     """Finish bounded cleanup despite repeated caller cancellation.
 
@@ -493,6 +507,7 @@ class _CopilotResources:
         self.session: Any = None
         self.force_stopped = False
         self._terminal_cleanup_started = False
+        self._in_flight_session_creations = 0
         self._lifecycle_lock = asyncio.Lock()
         self.workspace: tempfile.TemporaryDirectory[str] | None = (
             tempfile.TemporaryDirectory(prefix="graphify-copilot-")
@@ -523,27 +538,65 @@ class _CopilotResources:
         async with self._lifecycle_lock:
             await self._force_stop_locked()
 
+    def _cleanup_workspace_locked(self) -> bool:
+        """Remove the workspace only after every SDK handle is terminal."""
+        if not self._lifecycle_lock.locked():
+            raise RuntimeError("Copilot SDK workspace cleanup requires lifecycle lock")
+        if (
+            self.client is not None
+            or self.session is not None
+            or self._in_flight_session_creations
+        ):
+            return False
+        workspace = self.workspace
+        if workspace is not None:
+            workspace.cleanup()
+            self.workspace = None
+        return True
+
     async def track_created_session(self, operation: Awaitable[Any]) -> Any:
         """Publish a created session before a timeout can start cleanup."""
-        session = await operation
+        self._in_flight_session_creations += 1
+
+        async def release_failed_creation() -> None:
+            async with self._lifecycle_lock:
+                self._in_flight_session_creations -= 1
+                if self._terminal_cleanup_started:
+                    self._cleanup_workspace_locked()
+
+        try:
+            session = await operation
+        except BaseException:
+            await _finish_cleanup(release_failed_creation())
+            raise
+
         async def publish_or_disconnect() -> CopilotSdkCleanupError | None:
             async with self._lifecycle_lock:
-                if self._terminal_cleanup_started:
-                    try:
-                        await _run_bounded(
-                            session.disconnect(),
-                            timeout=_CLEANUP_TIMEOUT_SECONDS,
-                        )
-                    except Exception:
+                try:
+                    if self._terminal_cleanup_started:
+                        # Publish ownership before any await. If disconnect cannot
+                        # finish, normal resource cleanup still owns the handle.
+                        self.session = session
+                        try:
+                            await _run_bounded(
+                                session.disconnect(),
+                                timeout=_CLEANUP_TIMEOUT_SECONDS,
+                            )
+                        except Exception:
+                            return CopilotSdkCleanupError(
+                                "Copilot SDK created a session after terminal cleanup "
+                                "started and late-session disconnect did not complete."
+                            )
+                        self.session = None
                         return CopilotSdkCleanupError(
-                            "Copilot SDK created a session after terminal cleanup "
-                            "started and late-session disconnect did not complete."
+                            "Copilot SDK created a session after terminal cleanup started."
                         )
-                    return CopilotSdkCleanupError(
-                        "Copilot SDK created a session after terminal cleanup started."
-                    )
-                self.session = session
-                return None
+                    self.session = session
+                    return None
+                finally:
+                    self._in_flight_session_creations -= 1
+                    if self._terminal_cleanup_started:
+                        self._cleanup_workspace_locked()
 
         cleanup_error, interrupted = await _finish_cleanup(publish_or_disconnect())
         if interrupted:
@@ -604,6 +657,9 @@ class _CopilotResources:
                             self.client.stop(),
                             timeout=_CLEANUP_TIMEOUT_SECONDS,
                         )
+                        # A stopped runtime owns no live session, even when an
+                        # earlier session.disconnect() raised control flow.
+                        self.session = None
                         self.client = None
                     except BaseException as error:
                         record_cleanup_failure(error)
@@ -616,6 +672,11 @@ class _CopilotResources:
                         await self._force_stop_locked()
                     except BaseException as force_error:
                         record_cleanup_failure(force_error)
+                try:
+                    if not self._cleanup_workspace_locked():
+                        cleanup_failed = True
+                except BaseException as error:
+                    record_cleanup_failure(error)
             finally:
                 self._lifecycle_lock.release()
         else:
@@ -623,12 +684,6 @@ class _CopilotResources:
             # start a competing operation, but surface that its completion
             # exceeded this cleanup window.
             cleanup_failed = True
-        workspace = self.workspace
-        if workspace is not None:
-            try:
-                workspace.cleanup()
-            except BaseException as error:
-                record_cleanup_failure(error)
         if cleanup_interrupt is not None:
             raise cleanup_interrupt
         if exc_type is None and cleanup_failed:
@@ -680,13 +735,6 @@ async def _construct_client(
         executor.shutdown(wait=False, cancel_futures=True)
         raise
 
-    def clean_late_result(completed: Future[Any]) -> None:
-        try:
-            completed.result()
-        except BaseException:
-            pass
-        workspace.cleanup()
-
     try:
         client = await _run_bounded(
             asyncio.wrap_future(future),
@@ -695,7 +743,9 @@ async def _construct_client(
     except BaseException:
         # A running thread cannot be killed safely. It retains exclusive
         # ownership of the workspace and removes it when construction ends.
-        future.add_done_callback(clean_late_result)
+        future.add_done_callback(
+            partial(_cleanup_abandoned_workspace, workspace=workspace)
+        )
         executor.shutdown(wait=False, cancel_futures=True)
         raise
     executor.shutdown_bounded(_CLEANUP_TIMEOUT_SECONDS)

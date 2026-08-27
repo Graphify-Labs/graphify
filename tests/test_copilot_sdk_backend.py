@@ -819,6 +819,85 @@ def test_session_transfer_finishes_when_cancelled_waiting_for_lifecycle_lock():
     assert state["disconnects"] == 1
 
 
+def test_cancelled_late_session_remains_owned_when_disconnect_times_out(monkeypatch):
+    monkeypatch.setattr(backend, "_CLEANUP_TIMEOUT_SECONDS", 0.01)
+    disconnect_started = asyncio.Event()
+    calls = 0
+
+    class Session:
+        async def disconnect(self) -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                disconnect_started.set()
+                await asyncio.Event().wait()
+
+    async def run() -> None:
+        resources = backend._CopilotResources()
+        session = Session()
+        resources._terminal_cleanup_started = True
+        tracking = asyncio.create_task(
+            resources.track_created_session(asyncio.sleep(0, result=session))
+        )
+        await disconnect_started.wait()
+        tracking.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await tracking
+        assert resources.session is session
+        await resources.__aexit__(RuntimeError, None, None)
+        assert resources.session is None
+
+    asyncio.run(run())
+    assert calls == 2
+
+
+def test_in_flight_session_creation_keeps_workspace_until_late_disconnect():
+    creation_started = asyncio.Event()
+    release_creation = asyncio.Event()
+    disconnect_workspace_states: list[bool] = []
+
+    async def run() -> None:
+        resources = backend._CopilotResources()
+        assert resources.workspace is not None
+        workspace = Path(resources.workspace.name)
+
+        class Client:
+            async def force_stop(self) -> None:
+                return None
+
+        class Session:
+            async def disconnect(self) -> None:
+                disconnect_workspace_states.append(workspace.exists())
+
+        async def create_session() -> Session:
+            creation_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await release_creation.wait()
+            return Session()
+
+        resources.client = Client()
+        tracking = asyncio.create_task(
+            resources.track_created_session(create_session())
+        )
+        await creation_started.wait()
+        tracking.cancel()
+        await resources.force_stop()
+        await resources.__aexit__(RuntimeError, None, None)
+        assert workspace.exists()
+
+        release_creation.set()
+        with pytest.raises(
+            backend.CopilotSdkCleanupError, match="after terminal cleanup"
+        ):
+            await tracking
+        assert disconnect_workspace_states == [True]
+        assert not workspace.exists()
+
+    asyncio.run(run())
+
+
 def test_cleanup_waits_for_in_flight_force_stop():
     release = asyncio.Event()
     calls: list[str] = []
@@ -863,6 +942,8 @@ def test_cleanup_does_not_block_forever_behind_hung_force_stop(monkeypatch):
 
     async def run() -> None:
         resources = backend._CopilotResources()
+        assert resources.workspace is not None
+        workspace = Path(resources.workspace.name)
         resources.client = Client()
         stopping = asyncio.create_task(resources.force_stop())
         await started.wait()
@@ -870,12 +951,16 @@ def test_cleanup_does_not_block_forever_behind_hung_force_stop(monkeypatch):
             await asyncio.wait_for(
                 resources.__aexit__(None, None, None), timeout=0.1
             )
+        assert workspace.exists()
+        assert state["graceful_stops"] == 0
         stopping.cancel()
         with pytest.raises(asyncio.CancelledError):
             await stopping
+        await resources.__aexit__(RuntimeError, None, None)
+        assert not workspace.exists()
 
     asyncio.run(run())
-    assert state["graceful_stops"] == 0
+    assert state["graceful_stops"] == 1
 
 
 def test_cancellation_during_force_stop_check_finishes_resource_cleanup():
