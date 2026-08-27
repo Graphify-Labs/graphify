@@ -133,12 +133,9 @@ BACKENDS: dict[str, dict] = {
         "max_tokens": 16384,
     },
     "gemini": {
-        # GEMINI_BASE_URL points the backend at any OpenAI-compatible server for
-        # Gemini models (LiteLLM, self-hosted proxy, ...). Falls back to Google's
-        # official OpenAI-compatible endpoint.
         "base_url": os.environ.get("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/"),
         "default_model": "gemini-3-flash-preview",
-        "env_keys": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+        "env_keys": ["GRAPHIFY_OPENROUTER_API_KEY", "OPENROUTER_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"],
         "model_env_key": "GRAPHIFY_GEMINI_MODEL",
         "pricing": {"input": 0.50, "output": 3.00},  # USD per 1M tokens
         "temperature": 0,
@@ -147,13 +144,9 @@ BACKENDS: dict[str, dict] = {
         "vision": True,
     },
     "openai": {
-        # OPENAI_BASE_URL points the backend at any OpenAI-compatible server
-        # (llama.cpp, vLLM, LM Studio, ...); OPENAI_MODEL overrides the default
-        # model. GRAPHIFY_OPENAI_MODEL still wins over OPENAI_MODEL when both
-        # are set (via model_env_key).
         "base_url": os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
         "default_model": os.environ.get("OPENAI_MODEL", "gpt-4.1-mini"),
-        "env_key": "OPENAI_API_KEY",
+        "env_keys": ["GRAPHIFY_OPENROUTER_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY"],
         "model_env_key": "GRAPHIFY_OPENAI_MODEL",
         "max_tokens": 16384,
         "pricing": {"input": 0.40, "output": 1.60},  # USD per 1M tokens
@@ -165,12 +158,9 @@ BACKENDS: dict[str, dict] = {
         "vision": True,
     },
     "deepseek": {
-        # DEEPSEEK_BASE_URL points the backend at any OpenAI-compatible server for
-        # DeepSeek models (LiteLLM, self-hosted proxy, ...). Falls back to DeepSeek's
-        # official API endpoint.
         "base_url": os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
         "default_model": "deepseek-v4-flash",
-        "env_key": "DEEPSEEK_API_KEY",
+        "env_keys": ["GRAPHIFY_OPENROUTER_API_KEY", "OPENROUTER_API_KEY", "DEEPSEEK_API_KEY"],
         "model_env_key": "GRAPHIFY_DEEPSEEK_MODEL",
         "pricing": {"input": 0.14, "output": 0.28},  # USD per 1M tokens (v4-flash)
         # deepseek-reasoner silently ignores temperature; deepseek-chat / v4-flash
@@ -1327,6 +1317,20 @@ def _default_model_for_backend(backend: str) -> str:
     return cfg["default_model"]
 
 
+def _openrouter_route(backend: str, api_key: str, model: str) -> tuple[str, str]:
+    """Route dedicated OpenRouter credentials without substituting the selected model."""
+    prefixes = {"gemini": "google", "openai": "openai", "deepseek": "deepseek"}
+    prefix = prefixes.get(backend)
+    openrouter_keys = {
+        os.environ.get("GRAPHIFY_OPENROUTER_API_KEY", ""),
+        os.environ.get("OPENROUTER_API_KEY", ""),
+    }
+    if not prefix or not api_key or api_key not in openrouter_keys:
+        return BACKENDS[backend].get("base_url", ""), model
+    routed_model = model if "/" in model else f"{prefix}/{model}"
+    return "https://openrouter.ai/api/v1", routed_model
+
+
 def _backend_pkg_hint(pkg: str, extra: str) -> str:
     """Package-missing message that works for the recommended `uv tool` install.
 
@@ -1908,8 +1912,8 @@ def extract_files_direct(
         backend = detect_backend()
         if backend is None:
             raise ValueError(
-                "No LLM backend configured. Set one of: GEMINI_API_KEY, ANTHROPIC_API_KEY, "
-                "OPENAI_API_KEY, DEEPSEEK_API_KEY, MOONSHOT_API_KEY, "
+                "No LLM backend configured. Set one of: GRAPHIFY_OPENROUTER_API_KEY, "
+                "OPENROUTER_API_KEY, ANTHROPIC_API_KEY, MOONSHOT_API_KEY, "
                 "AZURE_OPENAI_API_KEY+AZURE_OPENAI_ENDPOINT, OLLAMA_BASE_URL, "
                 "or AWS credentials. Pass backend= explicitly to select a provider."
             )
@@ -1937,6 +1941,7 @@ def extract_files_direct(
             f"Set {_format_backend_env_keys(backend)} or pass api_key=."
         )
     mdl = model or _default_model_for_backend(backend)
+    base_url, mdl = _openrouter_route(backend, key, mdl)
     # Separate raster images from text-like files. Text goes through _read_files
     # as before; images become structured refs the backend renders as pixels
     # (vision backends) or as a text reference node (everything else).
@@ -1975,7 +1980,7 @@ def extract_files_direct(
         )
     else:
         result = _call_openai_compat(
-            cfg["base_url"],
+            base_url,
             key,
             mdl,
             user_msg,
@@ -2860,6 +2865,7 @@ def _call_llm(
             f"No API key for backend '{backend}'. Set {_format_backend_env_keys(backend)}."
         )
     mdl = model or _default_model_for_backend(backend)
+    base_url, mdl = _openrouter_route(backend, key, mdl)
 
     def _rec(inp, out) -> None:
         if usage_out is not None:
@@ -2985,7 +2991,7 @@ def _call_llm(
         from openai import OpenAI
     except ImportError as exc:
         raise ImportError(_backend_pkg_hint("openai", "openai")) from exc
-    client = OpenAI(api_key=key, base_url=cfg["base_url"], timeout=_resolve_api_timeout(), max_retries=_resolve_max_retries())
+    client = OpenAI(api_key=key, base_url=base_url, timeout=_resolve_api_timeout(), max_retries=_resolve_max_retries())
     kwargs: dict = {
         "model": mdl,
         "messages": [{"role": "user", "content": prompt}],
@@ -3005,7 +3011,7 @@ def _call_llm(
     # to the moonshot default to preserve existing behavior.
     if cfg.get("extra_body") is not None:
         kwargs["extra_body"] = cfg["extra_body"]
-    elif "moonshot" in cfg["base_url"]:
+    elif "moonshot" in base_url:
         kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
     elif _thinking_disabled_via_env():
         kwargs["extra_body"] = {"thinking": {"type": "disabled"}}

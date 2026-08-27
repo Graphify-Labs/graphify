@@ -16,6 +16,8 @@ def _clear_backend_env(monkeypatch):
         "ANTHROPIC_API_KEY",
         "OPENAI_API_KEY",
         "DEEPSEEK_API_KEY",
+        "GRAPHIFY_OPENROUTER_API_KEY",
+        "OPENROUTER_API_KEY",
         "AZURE_OPENAI_API_KEY",
         "AZURE_OPENAI_ENDPOINT",
     ):
@@ -108,6 +110,33 @@ def test_extract_files_direct_routes_gemini_through_openai_compat(tmp_path, monk
     assert call.call_args.kwargs["temperature"] == 0
     assert call.call_args.kwargs["reasoning_effort"] == "low"
     assert call.call_args.kwargs["max_completion_tokens"] == 16384
+
+
+@pytest.mark.parametrize(
+    "backend,model,routed_model",
+    [
+        ("gemini", "gemini-3-flash-preview", "google/gemini-3-flash-preview"),
+        ("openai", "gpt-4.1-mini", "openai/gpt-4.1-mini"),
+        ("deepseek", "deepseek-v4-flash", "deepseek/deepseek-v4-flash"),
+    ],
+)
+def test_dedicated_openrouter_key_preserves_exact_provider_model(
+    tmp_path, monkeypatch, backend, model, routed_model
+):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("GRAPHIFY_OPENROUTER_API_KEY", "or-key")
+    source = tmp_path / "note.md"
+    source.write_text("# Architecture\n")
+    result = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 1, "output_tokens": 1}
+
+    with patch("graphify.llm._call_openai_compat", return_value=result) as call:
+        llm.extract_files_direct([source], backend=backend, model=model, root=tmp_path)
+
+    assert call.call_args.args[:3] == (
+        "https://openrouter.ai/api/v1",
+        "or-key",
+        routed_model,
+    )
 
 
 @pytest.mark.parametrize(

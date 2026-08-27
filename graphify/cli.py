@@ -2294,13 +2294,15 @@ def dispatch_command(cmd: str) -> None:
         if ok:
             print("Code graph updated. For doc/paper/image changes run /graphify --update in your AI assistant.")
             if not (
-                os.environ.get("GEMINI_API_KEY")
+                os.environ.get("GRAPHIFY_OPENROUTER_API_KEY")
+                or os.environ.get("OPENROUTER_API_KEY")
+                or os.environ.get("GEMINI_API_KEY")
                 or os.environ.get("GOOGLE_API_KEY")
                 or os.environ.get("MOONSHOT_API_KEY")
                 or os.environ.get("DEEPSEEK_API_KEY")
                 or os.environ.get("GRAPHIFY_NO_TIPS")
             ):
-                print("Tip: set GEMINI_API_KEY or GOOGLE_API_KEY to use Gemini for semantic extraction.")
+                print("Tip: set GRAPHIFY_OPENROUTER_API_KEY to use Gemini through OpenRouter for semantic extraction.")
         else:
             print(
                 "Nothing to update or rebuild failed — check output above.",
@@ -3497,7 +3499,7 @@ def dispatch_command(cmd: str) -> None:
                             "(local AST, no key) and skip the non-code files.")
                 print(
                     "error: no LLM API key found (" + "; ".join(reasons) + "). "
-                    "Set GEMINI_API_KEY or GOOGLE_API_KEY (gemini), MOONSHOT_API_KEY "
+                    "Set GRAPHIFY_OPENROUTER_API_KEY (Gemini/OpenAI/DeepSeek via OpenRouter), MOONSHOT_API_KEY "
                     "(kimi), ANTHROPIC_API_KEY (claude), OPENAI_API_KEY (openai), "
                     "DEEPSEEK_API_KEY (deepseek), or pass --backend. A code-only "
                     "corpus needs no key." + hint,
