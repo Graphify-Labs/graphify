@@ -33,11 +33,21 @@ def _partition(G: nx.Graph, resolution: float = 1.0) -> dict[str, int]:
     """
     stable = nx.Graph()
     stable.add_nodes_from(sorted(G.nodes(), key=str))
+    # Canonicalise the endpoint pair before sorting. On an undirected graph the
+    # (u, v) orientation each edge is yielded with comes from adjacency
+    # iteration, which follows CPython's per-process string-hash order - so the
+    # SAME edge appears as (A, B) in one run and (B, A) in the next. Sorting on
+    # the raw pair therefore does not canonicalise anything: the edge lands in a
+    # different position, `stable` is built in a different insertion order, and
+    # Louvain - order-sensitive even with a fixed seed - can return a different
+    # grouping. Measured on a 914-node graph: identical input, identical
+    # first-pass partition, but the cohesion-split pass produced 70 communities
+    # under PYTHONHASHSEED=1 and 69 under =2. Sorting the pair itself removes
+    # the dependency; for nx.Graph the orientation carries no meaning anyway.
     edge_rows = sorted(
         G.edges(data=True),
         key=lambda row: (
-            str(row[0]),
-            str(row[1]),
+            *sorted((str(row[0]), str(row[1]))),
             json.dumps(row[2], sort_keys=True, ensure_ascii=False, default=str),
         ),
     )
