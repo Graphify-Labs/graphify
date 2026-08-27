@@ -2625,18 +2625,16 @@ def _extract_with_adaptive_retry(
     """
     def _with_attempt_usage(payload: dict, *prior_attempts: dict) -> dict:
         """Keep the final payload while charging every consumed model attempt."""
-        attempts = (*prior_attempts, payload)
         merged = dict(payload)
-        merged["input_tokens"] = 0
-        merged["output_tokens"] = 0
-        for item in attempts:
-            merged["input_tokens"] = _usage_add(
-                merged["input_tokens"], item.get("input_tokens", 0)
-            )
-            merged["output_tokens"] = _usage_add(
-                merged["output_tokens"], item.get("output_tokens", 0)
-            )
-        merged.update(_merged_provider_usage(*attempts))
+        # ``payload`` contains the final response or the already-merged,
+        # disjoint child subtrees. Add only attempts made directly at this
+        # recursion node; never re-add a child summary at an ancestor.
+        for key in ("input_tokens", "output_tokens"):
+            total = payload.get(key, 0)
+            for attempt in prior_attempts:
+                total = _usage_add(total, attempt.get(key, 0))
+            merged[key] = total
+        merged.update(_merged_provider_usage(*prior_attempts, payload))
         return merged
 
     def _effective_model(*results: dict | None) -> str | None:

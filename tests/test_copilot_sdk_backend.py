@@ -1533,6 +1533,30 @@ def test_daemon_executor_starts_fixed_workers_before_shutdown():
     assert not any(worker.is_alive() for worker in executor._daemon_threads)
 
 
+def test_daemon_executor_cancels_pending_work_without_losing_stop_marker():
+    executor = backend._DaemonThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="graphify-cancel-test"
+    )
+    started = threading.Event()
+    release = threading.Event()
+
+    def running() -> str:
+        started.set()
+        release.wait()
+        return "done"
+
+    running_future = executor.submit(running)
+    assert started.wait(timeout=1)
+    pending = [executor.submit(lambda: "must not run") for _ in range(2)]
+
+    executor.shutdown(wait=False, cancel_futures=True)
+    assert all(future.cancelled() for future in pending)
+    release.set()
+
+    assert running_future.result(timeout=1) == "done"
+    assert executor.shutdown_bounded(1) is True
+
+
 def test_daemon_executor_shutdown_bounded_does_not_join_current_worker():
     executor = backend._DaemonThreadPoolExecutor(
         max_workers=1, thread_name_prefix="graphify-test"

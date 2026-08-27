@@ -37,6 +37,7 @@ _USER_INSTRUCTION = (
 )
 _STARTUP_TIMEOUT_SECONDS = 15.0
 _CLEANUP_TIMEOUT_SECONDS = 5.0
+_DAEMON_STOP = object()
 _QUARANTINED_WORKSPACES: set[tempfile.TemporaryDirectory[str]] = set()
 _QUARANTINED_WORKSPACES_LOCK = threading.Lock()
 
@@ -60,6 +61,7 @@ class _DaemonThreadPoolExecutor(ThreadPoolExecutor):
         self._daemon_shutdown = False
         self._daemon_name_prefix = thread_name_prefix
         self._daemon_threads: list[threading.Thread] = []
+        self._daemon_pending: set[Future[Any]] = set()
         try:
             for index in range(max_workers):
                 worker = threading.Thread(
@@ -67,8 +69,8 @@ class _DaemonThreadPoolExecutor(ThreadPoolExecutor):
                     name=f"{self._daemon_name_prefix}_{index}",
                     daemon=True,
                 )
-                self._daemon_threads.append(worker)
                 worker.start()
+                self._daemon_threads.append(worker)
         except BaseException:
             self.shutdown(wait=False, cancel_futures=True)
             raise
@@ -76,10 +78,13 @@ class _DaemonThreadPoolExecutor(ThreadPoolExecutor):
     def _daemon_worker(self) -> None:
         while True:
             item = self._daemon_queue.get()
-            if item is None:
+            if item is _DAEMON_STOP:
                 return
             future, function, args, kwargs = item
-            if not future.set_running_or_notify_cancel():
+            with self._daemon_lock:
+                self._daemon_pending.discard(future)
+                should_run = future.set_running_or_notify_cancel()
+            if not should_run:
                 continue
             try:
                 result = function(*args, **kwargs)
@@ -93,6 +98,7 @@ class _DaemonThreadPoolExecutor(ThreadPoolExecutor):
             if self._daemon_shutdown:
                 raise RuntimeError("cannot schedule new futures after shutdown")
             future: Future[Any] = Future()
+            self._daemon_pending.add(future)
             self._daemon_queue.put((future, fn, args, kwargs))
             return future
 
@@ -101,15 +107,13 @@ class _DaemonThreadPoolExecutor(ThreadPoolExecutor):
             if not self._daemon_shutdown:
                 self._daemon_shutdown = True
                 if cancel_futures:
-                    while True:
-                        try:
-                            item = self._daemon_queue.get_nowait()
-                        except queue.Empty:
-                            break
-                        if item is not None:
-                            item[0].cancel()
+                    # Cancel queued work without draining the queue. Workers
+                    # skip cancelled futures, then consume their stop markers.
+                    # This keeps task items and stop markers in one fixed order.
+                    for future in tuple(self._daemon_pending):
+                        future.cancel()
                 for _worker in self._daemon_threads:
-                    self._daemon_queue.put(None)
+                    self._daemon_queue.put(_DAEMON_STOP)
             # submit() uses this same lock and rejects after the shutdown flag
             # is set. This snapshot therefore contains every worker that can
             # exist, even when submit and shutdown calls race.
