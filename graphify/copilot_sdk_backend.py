@@ -519,32 +519,53 @@ def _run_async(factory: Callable[[], Any]) -> Any:
             policy.set_event_loop(loop)
             return loop.run_until_complete(factory())
         finally:
-            pending = asyncio.all_tasks(loop)
-            for task in pending:
-                task.cancel()
-            if pending:
-                resolved, unresolved = loop.run_until_complete(
-                    asyncio.wait(pending, timeout=_CLEANUP_TIMEOUT_SECONDS)
+            async def cancel_all_tasks() -> set[asyncio.Task[Any]]:
+                deadline = loop.time() + _CLEANUP_TIMEOUT_SECONDS
+                current = asyncio.current_task(loop)
+                while True:
+                    pending = {
+                        task
+                        for task in asyncio.all_tasks(loop)
+                        if task is not current and not task.done()
+                    }
+                    if not pending:
+                        return set()
+                    for task in pending:
+                        task.cancel()
+                    remaining = deadline - loop.time()
+                    if remaining <= 0:
+                        return pending
+                    resolved, _ = await asyncio.wait(pending, timeout=remaining)
+                    for task in resolved:
+                        _consume_task(task)
+                    if loop.time() >= deadline:
+                        unresolved = {
+                            task
+                            for task in asyncio.all_tasks(loop)
+                            if task is not current and not task.done()
+                        }
+                        for task in unresolved:
+                            task.cancel()
+                        return unresolved
+
+            unresolved = loop.run_until_complete(cancel_all_tasks())
+            if unresolved:
+                warnings.warn(
+                    "Copilot SDK tasks remained pending after bounded loop "
+                    "shutdown; the runtime was already force-stopped.",
+                    RuntimeWarning,
+                    stacklevel=2,
                 )
-                for task in resolved:
-                    _consume_task(task)
-                if unresolved:
-                    warnings.warn(
-                        "Copilot SDK tasks remained pending after bounded loop "
-                        "shutdown; the runtime was already force-stopped.",
-                        RuntimeWarning,
-                        stacklevel=2,
-                    )
 
-                    def suppress_destroyed_pending(
-                        event_loop: asyncio.AbstractEventLoop,
-                        context: dict[str, Any],
-                    ) -> None:
-                        if context.get("message") == "Task was destroyed but it is pending!":
-                            return
-                        event_loop.default_exception_handler(context)
+                def suppress_destroyed_pending(
+                    event_loop: asyncio.AbstractEventLoop,
+                    context: dict[str, Any],
+                ) -> None:
+                    if context.get("message") == "Task was destroyed but it is pending!":
+                        return
+                    event_loop.default_exception_handler(context)
 
-                    loop.set_exception_handler(suppress_destroyed_pending)
+                loop.set_exception_handler(suppress_destroyed_pending)
             if previous_loop is not None and not previous_loop.is_closed():
                 policy.set_event_loop(previous_loop)
             else:

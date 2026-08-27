@@ -522,6 +522,34 @@ def test_run_async_reports_tasks_that_ignore_bounded_cancellation(monkeypatch):
         assert backend._run_async(factory) == "ok"
 
 
+def test_run_async_cancels_tasks_spawned_during_shutdown():
+    state = {"child_started": False, "child_finished": False}
+
+    async def child() -> None:
+        state["child_started"] = True
+        try:
+            await asyncio.Event().wait()
+        finally:
+            state["child_finished"] = True
+
+    async def parent() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            asyncio.create_task(child())
+            await asyncio.sleep(0)
+            raise
+
+    async def factory() -> str:
+        asyncio.create_task(parent())
+        return "ok"
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", category=RuntimeWarning)
+        assert backend._run_async(factory) == "ok"
+    assert state == {"child_started": True, "child_finished": True}
+
+
 def test_unknown_outcome_bypasses_graphify_adaptive_retry(monkeypatch, tmp_path):
     source = tmp_path / "a.md"
     source.write_text("Alpha", encoding="utf-8")
