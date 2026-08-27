@@ -762,6 +762,26 @@ def test_run_bounded_rejects_synchronous_abort_without_invoking_it():
     assert abort_called is False
 
 
+def test_run_bounded_accepts_async_callable_abort():
+    class Abort:
+        def __init__(self) -> None:
+            self.called = False
+
+        async def __call__(self) -> None:
+            self.called = True
+
+    async def operation() -> None:
+        await asyncio.Event().wait()
+
+    async def run() -> None:
+        abort = Abort()
+        with pytest.raises(asyncio.TimeoutError):
+            await backend._run_bounded(operation(), timeout=0.01, abort=abort)
+        assert abort.called is True
+
+    asyncio.run(run())
+
+
 def test_run_bounded_timeout_cancels_and_drains_operation():
     async def run() -> None:
         finished = asyncio.Event()
@@ -909,6 +929,21 @@ def test_session_creation_is_rejected_after_terminal_cleanup_starts():
     assert factory_called is False
 
 
+def test_failed_session_creation_releases_reservation():
+    async def run() -> None:
+        resources = backend._CopilotResources()
+
+        async def create_session() -> None:
+            raise RuntimeError("creation failed")
+
+        with pytest.raises(RuntimeError, match="creation failed"):
+            await resources.track_created_session(create_session)
+        assert resources._in_flight_session_creations == 0
+        await resources.__aexit__(RuntimeError, None, None)
+
+    asyncio.run(run())
+
+
 def test_session_transfer_finishes_when_cancelled_waiting_for_lifecycle_lock():
     state = {"disconnects": 0}
     creation_started = asyncio.Event()
@@ -938,6 +973,7 @@ def test_session_transfer_finishes_when_cancelled_waiting_for_lifecycle_lock():
         with pytest.raises(asyncio.CancelledError):
             await tracking
         assert resources.session is None
+        assert resources._in_flight_session_creations == 0
         await resources.__aexit__(RuntimeError, None, None)
 
     asyncio.run(run())
@@ -979,6 +1015,7 @@ def test_cancelled_late_session_remains_owned_when_disconnect_times_out(monkeypa
         with pytest.raises(asyncio.CancelledError):
             await tracking
         assert resources.session is session
+        assert resources._in_flight_session_creations == 0
         await resources.__aexit__(RuntimeError, None, None)
         assert resources.session is None
 
@@ -1630,6 +1667,37 @@ def test_daemon_executor_shutdown_bounded_guarantees_current_worker_exit():
     )
     result = executor.submit(lambda: executor.shutdown_bounded(0.1))
     assert result.result(timeout=1) is True
+    assert executor.shutdown_bounded(1) is True
+
+
+def test_concurrent_worker_shutdown_does_not_join_peer_workers():
+    executor = backend._DaemonThreadPoolExecutor(
+        max_workers=2, thread_name_prefix="graphify-peer-shutdown-test"
+    )
+    ready = threading.Barrier(2)
+
+    def stop_from_worker() -> str:
+        ready.wait(timeout=1)
+        executor.shutdown(wait=True)
+        return "stopped"
+
+    futures = [executor.submit(stop_from_worker) for _ in range(2)]
+    assert [future.result(timeout=1) for future in futures] == ["stopped", "stopped"]
+    assert executor.shutdown_bounded(1) is True
+
+
+def test_concurrent_worker_bounded_shutdown_does_not_join_peer_workers():
+    executor = backend._DaemonThreadPoolExecutor(
+        max_workers=2, thread_name_prefix="graphify-peer-bounded-test"
+    )
+    ready = threading.Barrier(2)
+
+    def stop_from_worker() -> bool:
+        ready.wait(timeout=1)
+        return executor.shutdown_bounded(1)
+
+    futures = [executor.submit(stop_from_worker) for _ in range(2)]
+    assert [future.result(timeout=1) for future in futures] == [True, True]
     assert executor.shutdown_bounded(1) is True
 
 

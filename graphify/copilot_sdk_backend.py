@@ -133,28 +133,32 @@ class _DaemonThreadPoolExecutor(ThreadPoolExecutor):
             future.cancel()
         if wait:
             current = threading.current_thread()
-            for worker in workers:
-                if worker is not current:
+            # Worker-initiated shutdown must not join peer workers: two workers
+            # calling shutdown together would otherwise wait on each other.
+            # Their queued stop markers guarantee exit after each task returns.
+            if current not in workers:
+                for worker in workers:
                     worker.join()
 
     def shutdown_bounded(self, timeout: float) -> bool:
         """Start shutdown and report whether every joinable worker stopped.
 
-        A worker cannot join itself. If called by a worker, its queued stop
-        marker guarantees that it exits immediately after the current task
-        returns, so only the other workers are part of this bounded wait.
+        Workers cannot safely join one another because peers can request
+        shutdown at the same time. A worker call therefore reports successful
+        shutdown initiation; queued stop markers make every worker exit after
+        its current task. External callers perform the bounded joins.
         """
         self.shutdown(wait=False, cancel_futures=True)
         with self._daemon_lock:
             workers = tuple(self._daemon_threads)
         deadline = time.monotonic() + max(0.0, timeout)
         current = threading.current_thread()
+        if current in workers:
+            return True
         for worker in workers:
-            if worker is not current:
+            if worker.is_alive():
                 worker.join(max(0.0, deadline - time.monotonic()))
-        return not any(
-            worker is not current and worker.is_alive() for worker in workers
-        )
+        return not any(worker.is_alive() for worker in workers)
 
 
 class CopilotSdkTimeoutError(TimeoutError):
@@ -432,7 +436,10 @@ async def _run_bounded(
     """
     if not inspect.isawaitable(operation):
         raise TypeError("Copilot SDK operation must be awaitable")
-    if abort is not None and not inspect.iscoroutinefunction(abort):
+    if abort is not None and not (
+        inspect.iscoroutinefunction(abort)
+        or inspect.iscoroutinefunction(getattr(abort, "__call__", None))
+    ):
         close = getattr(operation, "close", None)
         if callable(close):
             close()
@@ -570,6 +577,14 @@ class _CopilotResources:
         async with self._lifecycle_lock:
             await self._force_stop_locked()
 
+    def _release_session_creation_locked(self) -> None:
+        """Release exactly one reservation while holding the lifecycle lock."""
+        if not self._lifecycle_lock.locked():
+            raise RuntimeError("Copilot SDK session release requires lifecycle lock")
+        if self._in_flight_session_creations <= 0:
+            raise RuntimeError("Copilot SDK session reservation was already released")
+        self._in_flight_session_creations -= 1
+
     def _cleanup_workspace_locked(self) -> bool:
         """Remove the workspace only after every SDK handle is terminal."""
         if not self._lifecycle_lock.locked():
@@ -609,7 +624,7 @@ class _CopilotResources:
 
         async def release_failed_creation() -> None:
             async with self._lifecycle_lock:
-                self._in_flight_session_creations -= 1
+                self._release_session_creation_locked()
                 if self._terminal_cleanup_started:
                     self._cleanup_workspace_locked()
 
@@ -644,7 +659,7 @@ class _CopilotResources:
                     self.session = session
                     return None
                 finally:
-                    self._in_flight_session_creations -= 1
+                    self._release_session_creation_locked()
                     if self._terminal_cleanup_started:
                         self._cleanup_workspace_locked()
 
