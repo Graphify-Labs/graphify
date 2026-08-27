@@ -307,8 +307,24 @@ def default_graph_json() -> str:
     The package-wide fallback used by serve/build/benchmark/prs and the CLI read
     commands so a ``GRAPHIFY_OUT`` override is honoured everywhere, not just where
     the path is passed explicitly (#1423).
+
+    When no graph exists at cwd, fall back to the nearest one in an ancestor.
+    Read-only callers reach this from wherever the user happens to be standing —
+    the MCP server inherits the client's cwd, which is routinely a git worktree
+    or a package subdirectory rather than the scan root — and returning a
+    non-existent relative path there makes them fail while the CLI, which
+    resolves upward separately, succeeds from the identical directory.
+
+    Only an existing ancestor graph substitutes. With no graph anywhere up the
+    tree the cwd-relative path is returned unchanged, so a caller that creates
+    the file (rather than reading it) still writes where it always did.
     """
-    return str(out_path("graph.json"))
+    direct = out_path("graph.json")
+    if not Path(direct).is_file():
+        found = find_graph_json_upward()
+        if found is not None:
+            return str(found)
+    return str(direct)
 
 
 def _usable_graph_json(candidate: Path) -> bool:
