@@ -469,7 +469,10 @@ def test_post_dispatch_failure_is_unknown_and_sanitized(monkeypatch, failure):
 
 def test_post_dispatch_timeout_force_stops_without_graceful_replay(monkeypatch):
     state = _install_fake_copilot(monkeypatch, send_wait=True)
-    with pytest.raises(backend.CopilotSdkUnknownOutcomeError):
+    with pytest.raises(
+        backend.CopilotSdkUnknownOutcomeError,
+        match="timed out after source dispatch",
+    ):
         _call(timeout_seconds=0.02)
     assert state["sends"] == 1
     assert state["force_stops"] == 1

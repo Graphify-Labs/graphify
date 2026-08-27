@@ -36,6 +36,13 @@ def test_untrusted_wrapper_escapes_filename_attribute_delimiters():
     assert ' injected="yes' not in opening_tag
 
 
+def test_untrusted_wrapper_intentionally_escapes_formal_verifier_input():
+    wrapped = llm._wrap_untrusted("'\"", "héllo wörld")
+
+    assert wrapped.startswith('<untrusted_source path="&#x27;&quot;" sha256="')
+    assert "\nhéllo wörld\n</untrusted_source>" in wrapped
+
+
 def test_escaped_prompt_path_is_restored_to_source_identifier(tmp_path):
     src = tmp_path / 'quote"&.md'
     src.write_text("content", encoding="utf-8")

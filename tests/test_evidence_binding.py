@@ -285,7 +285,9 @@ def test_extract_files_direct_repairs_unique_truncated_source_path(tmp_path):
 
 def test_extraction_prompt_requires_literal_source_path_copy():
     prompt = llm._extraction_system()
-    assert "Copy the path attribute exactly" in prompt
+    assert "Copy the path attribute from an enclosing <untrusted_source>" in prompt
+    assert "source_file attribute from an <untrusted_image>" in prompt
+    assert "Decode XML character references" in prompt
 
 
 def test_source_path_repair_rejects_parent_segments(tmp_path):

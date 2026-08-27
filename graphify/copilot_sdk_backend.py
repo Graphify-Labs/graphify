@@ -505,7 +505,7 @@ async def _call_once(
             if system_prompt and prompt
             else prompt or _USER_INSTRUCTION
         )
-        unknown_outcome = False
+        unknown_outcome_message: str | None = None
         response: Any = None
         try:
             response = await _run_bounded(
@@ -519,12 +519,24 @@ async def _call_once(
                     else None
                 ),
             )
+        except asyncio.TimeoutError:
+            # The prompt has already crossed the SDK boundary. The runtime may
+            # have completed it even though Graphify stopped waiting, so this is
+            # not a retry-safe timeout.
+            unknown_outcome_message = (
+                "Copilot SDK request timed out after source dispatch; its outcome "
+                "is unknown and Graphify did not replay it."
+            )
         except Exception:
-            unknown_outcome = True
-        if unknown_outcome:
-            raise CopilotSdkUnknownOutcomeError(
+            unknown_outcome_message = (
                 "Copilot SDK request outcome is unknown; Graphify did not replay it."
             )
+        # Raise outside the handler so a private SDK exception cannot remain in
+        # __context__ and leak corpus or authentication details through callers.
+        if unknown_outcome_message is not None:
+            raise CopilotSdkUnknownOutcomeError(
+                unknown_outcome_message
+            ) from None
 
         content = _content_from_event(response) if response is not None else None
         if not content or not content.strip():
