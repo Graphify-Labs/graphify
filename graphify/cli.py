@@ -11,6 +11,7 @@ import os
 import re
 import sys
 import time
+from importlib.metadata import PackageNotFoundError, version
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
@@ -50,6 +51,17 @@ _READ_NUDGE_STALE = json.dumps({
         ),
     }
 }, ensure_ascii=False, separators=(",", ":")) + "\n"
+
+
+def _copilot_sdk_installed() -> bool:
+    """Check package metadata without importing a corpus-local `copilot.py`."""
+    try:
+        version("github-copilot-sdk")
+    except PackageNotFoundError:
+        return False
+    return True
+
+
 # Strict-mode block (opt-in). Claude Code PreToolUse honors
 # hookSpecificOutput.permissionDecision == "deny" and shows permissionDecisionReason
 # to the model. Fires at most once per session (see _mark_session_denied) so it can
@@ -3010,7 +3022,7 @@ def dispatch_command(cmd: str) -> None:
         # has an API key set.
         if len(sys.argv) < 3:
             print(
-                "Usage: graphify extract <path> [--backend gemini|kimi|claude|openai|deepseek|ollama] "
+                "Usage: graphify extract <path> [--backend gemini|kimi|claude|openai|deepseek|ollama|bedrock|azure|claude-cli|copilot-sdk] "
                 "[--model M] [--mode deep] [--out DIR|--output DIR] [--google-workspace] [--no-cluster] "
                 "[--no-gitignore] [--code-only] [--no-dedup] "
                 "[--max-workers N] [--token-budget N] [--max-concurrency N] "
@@ -3469,6 +3481,7 @@ def dispatch_command(cmd: str) -> None:
             detect_backend as _detect_backend,
             estimate_cost as _estimate_cost,
             extract_corpus_parallel as _extract_corpus_parallel,
+            _backend_requires_api_key,
             _format_backend_env_keys,
             _get_backend_api_key,
         )
@@ -3499,7 +3512,8 @@ def dispatch_command(cmd: str) -> None:
                     "error: no LLM API key found (" + "; ".join(reasons) + "). "
                     "Set GEMINI_API_KEY or GOOGLE_API_KEY (gemini), MOONSHOT_API_KEY "
                     "(kimi), ANTHROPIC_API_KEY (claude), OPENAI_API_KEY (openai), "
-                    "DEEPSEEK_API_KEY (deepseek), or pass --backend. A code-only "
+                    "DEEPSEEK_API_KEY (deepseek), or pass --backend (including "
+                    "claude-cli or copilot-sdk). A code-only "
                     "corpus needs no key." + hint,
                     file=sys.stderr,
                 )
@@ -3513,7 +3527,7 @@ def dispatch_command(cmd: str) -> None:
                     print(f"error: {exc}", file=sys.stderr)
                     sys.exit(2)
             if not _get_backend_api_key(backend):
-                allow_no_key = False
+                allow_no_key = not _backend_requires_api_key(backend)
                 if backend == "ollama":
                     from urllib.parse import urlparse
                     ollama_url = os.environ.get(
@@ -3545,6 +3559,15 @@ def dispatch_command(cmd: str) -> None:
                             file=sys.stderr,
                         )
                         sys.exit(1)
+                elif backend == "copilot-sdk":
+                    if not _copilot_sdk_installed():
+                        print(
+                            'error: copilot-sdk requires Python 3.11+ and the '
+                            'optional dependency; install "graphifyy[copilot]".',
+                            file=sys.stderr,
+                        )
+                        sys.exit(1)
+                    allow_no_key = True
                 if not allow_no_key:
                     print(
                         f"error: backend '{backend}' requires {_format_backend_env_keys(backend)} to be set.",

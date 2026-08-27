@@ -33,7 +33,7 @@ The skill pipeline writes all intermediate and final outputs to `graphify-out/` 
 graphify extract ./core/     # → ./core/graphify-out/graph.json
 graphify extract ./service/  # → ./service/graphify-out/graph.json
 graphify extract ./platform/ # → ./platform/graphify-out/graph.json
-# Add --backend gemini|kimi|openai|deepseek|claude-cli depending on which API key you have set
+# Add --backend gemini|kimi|openai|deepseek|claude-cli|copilot-sdk for the configured provider or CLI
 
 # Then merge at the project root:
 graphify merge-graphs \

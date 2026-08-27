@@ -6,6 +6,7 @@ malformed replies, and the no-backend fallback.
 import json
 import re
 import sys
+import threading
 from pathlib import Path
 
 import networkx as nx
@@ -411,13 +412,28 @@ def test_label_communities_runs_batches_concurrently(monkeypatch):
 
 
 def test_label_communities_forces_serial_for_ollama(monkeypatch):
-    """ollama/claude-cli must stay serial regardless of --max-concurrency."""
+    """Ollama stays serial unless its explicit parallel opt-in is set."""
     G, communities = _many_communities(8)
     fake_batch, state = _peak_tracker()
     monkeypatch.setattr("graphify.llm._label_batch_with_retry", fake_batch)
     monkeypatch.delenv("GRAPHIFY_OLLAMA_PARALLEL", raising=False)
     label_communities(G, communities, backend="ollama", batch_size=1, max_concurrency=8)
     assert state["peak"] == 1, "ollama must be forced serial"
+
+
+def test_label_communities_forces_serial_for_copilot_sdk(monkeypatch):
+    G, communities = _many_communities(8)
+    fake_batch, state = _peak_tracker()
+    monkeypatch.setattr("graphify.llm._label_batch_with_retry", fake_batch)
+    monkeypatch.delenv("GRAPHIFY_COPILOT_SDK_PARALLEL", raising=False)
+    label_communities(
+        G,
+        communities,
+        backend="copilot-sdk",
+        batch_size=1,
+        max_concurrency=8,
+    )
+    assert state["peak"] == 1, "copilot-sdk must be forced serial"
 
 
 def test_label_communities_salvages_truncated_reply(monkeypatch):
@@ -458,6 +474,37 @@ def test_label_communities_accumulates_token_usage(monkeypatch):
     )
     assert len(labels) == 6
     assert usage == {"input": 300, "output": 30}  # 3 batches * (100, 10)
+
+
+def test_label_communities_merges_parallel_usage_on_caller_thread(monkeypatch):
+    G, communities = _many_communities(6)
+    barrier = threading.Barrier(3)
+
+    def fake_call(prompt, *, backend, max_tokens=200, usage_out=None):
+        barrier.wait(timeout=2)
+        usage_out["input"] = 7
+        usage_out["output"] = 2
+        cids = [
+            int(line.split()[1].rstrip(":"))
+            for line in prompt.splitlines()
+            if line.startswith("Community ")
+        ]
+        return json.dumps({str(cid): f"Name {cid}" for cid in cids})
+
+    monkeypatch.setattr("graphify.llm._call_llm", fake_call)
+    usage = {}
+
+    labels = label_communities(
+        G,
+        communities,
+        backend="gemini",
+        batch_size=2,
+        max_concurrency=3,
+        usage_out=usage,
+    )
+
+    assert len(labels) == 6
+    assert usage == {"input": 21, "output": 6}
 
 
 def test_label_communities_counts_tokens_for_failed_batch(monkeypatch):

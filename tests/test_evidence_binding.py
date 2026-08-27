@@ -9,6 +9,8 @@ rejects nodes attributed to a file that was NOT dispatched — cannot see.
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from graphify import llm
 
 
@@ -214,3 +216,142 @@ def test_diagnostics_reports_unverified_node_count():
     summary = diagnose_extraction(extraction)
     assert summary["unverified_node_count"] == 1
     assert "unverified_code_nodes: 1" in format_diagnostic_report(summary)
+
+
+def test_truncated_source_path_is_not_guessed_from_dispatched_files(tmp_path):
+    src = tmp_path / "project-a" / "docs" / "README.md"
+    src.parent.mkdir(parents=True)
+    src.write_text("# Architecture\n", encoding="utf-8")
+    result = {
+        "nodes": [
+            {"id": "architecture", "label": "Architecture", "file_type": "document",
+             "source_file": "docs/README.md"},
+        ],
+        "edges": [
+            {"source": "architecture", "target": "architecture", "relation": "references",
+             "source_file": "docs/README.md"},
+        ],
+        "hyperedges": [
+            {"id": "flow", "nodes": ["architecture"], "relation": "participates_in",
+             "source_file": "docs/README.md"},
+        ],
+    }
+
+    repaired = llm._canonicalize_result_source_files(result, [src], tmp_path)
+
+    assert repaired == 0
+    assert result["nodes"][0]["source_file"] == "docs/README.md"
+    assert result["edges"][0]["source_file"] == "docs/README.md"
+    assert result["hyperedges"][0]["source_file"] == "docs/README.md"
+
+
+def test_canonical_source_keeps_in_root_symlink_spelling(requires_symlinks, tmp_path):
+    actual = tmp_path / "actual"
+    actual.mkdir()
+    src = actual / "README.md"
+    src.write_text("# Architecture\n", encoding="utf-8")
+    alias = tmp_path / "alias"
+    alias.symlink_to(actual, target_is_directory=True)
+    dispatched = alias / "README.md"
+    result = {
+        "nodes": [
+            {
+                "id": "architecture",
+                "label": "Architecture",
+                "file_type": "document",
+                "source_file": "alias/README.md",
+            }
+        ]
+    }
+
+    repaired = llm._canonicalize_result_source_files(result, [dispatched], tmp_path)
+
+    assert repaired == 0
+    assert result["nodes"][0]["source_file"] == "alias/README.md"
+
+
+def test_extract_files_direct_does_not_guess_truncated_source_path(tmp_path):
+    src = tmp_path / "project-a" / "docs" / "README.md"
+    src.parent.mkdir(parents=True)
+    src.write_text("# Architecture\n", encoding="utf-8")
+    nodes = [
+        {"id": "architecture", "label": "Architecture", "file_type": "document",
+         "source_file": "docs/README.md"},
+    ]
+
+    result = _run([src], nodes, tmp_path)
+
+    assert result["nodes"][0]["source_file"] == "docs/README.md"
+
+
+def test_source_path_repair_preserves_existing_non_dispatched_file(tmp_path):
+    reported = tmp_path / "docs" / "README.md"
+    reported.parent.mkdir(parents=True)
+    reported.write_text("# Other project\n", encoding="utf-8")
+    dispatched = tmp_path / "project-a" / "docs" / "README.md"
+    dispatched.parent.mkdir(parents=True)
+    dispatched.write_text("# Dispatched project\n", encoding="utf-8")
+    result = {
+        "nodes": [
+            {
+                "id": "other",
+                "label": "Other",
+                "file_type": "document",
+                "source_file": "docs/README.md",
+            }
+        ]
+    }
+
+    repaired = llm._canonicalize_result_source_files(
+        result, [dispatched], tmp_path
+    )
+
+    assert repaired == 0
+    assert result["nodes"][0]["source_file"] == "docs/README.md"
+
+
+def test_extraction_prompt_requires_literal_source_path_copy():
+    prompt = llm._extraction_system()
+    assert "Copy the path attribute from an enclosing <untrusted_source>" in prompt
+    assert "source_file attribute from an <untrusted_image>" in prompt
+    assert "Decode XML character references" in prompt
+
+
+def test_source_path_repair_rejects_parent_segments(tmp_path):
+    src = tmp_path / "project-a" / "README.md"
+    src.parent.mkdir(parents=True)
+    src.write_text("# Architecture\n", encoding="utf-8")
+    result = {
+        "nodes": [
+            {"id": "architecture", "label": "Architecture", "file_type": "document",
+             "source_file": "../../README.md"},
+        ],
+    }
+
+    repaired = llm._canonicalize_result_source_files(result, [src], tmp_path)
+
+    assert repaired == 0
+    assert result["nodes"][0]["source_file"] == "../../README.md"
+
+
+@pytest.mark.parametrize(
+    "reported",
+    ["/outside/README.md", "https://example.com/README.md", "C:/outside/README.md"],
+)
+def test_source_path_repair_leaves_out_of_scope_paths_unchanged(tmp_path, reported):
+    src = tmp_path / "project-a" / "README.md"
+    src.parent.mkdir(parents=True)
+    src.write_text("# Architecture\n", encoding="utf-8")
+    result = {
+        "nodes": [
+            {
+                "id": "architecture",
+                "label": "Architecture",
+                "file_type": "document",
+                "source_file": reported,
+            }
+        ],
+    }
+
+    assert llm._canonicalize_result_source_files(result, [src], tmp_path) == 0
+    assert result["nodes"][0]["source_file"] == reported

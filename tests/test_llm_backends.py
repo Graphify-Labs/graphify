@@ -1,5 +1,7 @@
 """Tests for direct semantic-extraction backend selection."""
 
+import json
+import math
 from pathlib import Path
 from unittest.mock import patch
 
@@ -20,6 +22,47 @@ def _clear_backend_env(monkeypatch):
         "AZURE_OPENAI_ENDPOINT",
     ):
         monkeypatch.delenv(env_key, raising=False)
+
+
+def test_extract_files_direct_rejects_unknown_backend_before_key_lookup(tmp_path):
+    with pytest.raises(ValueError, match="Unknown backend 'not-a-backend'"):
+        llm.extract_files_direct([], backend="not-a-backend", root=tmp_path)
+
+
+def test_untrusted_wrapper_escapes_filename_attribute_delimiters():
+    wrapped = llm._wrap_untrusted('bad" injected="yes & <tag>', "content")
+    opening_tag = wrapped.splitlines()[0]
+    assert 'path="bad&quot; injected=&quot;yes &amp; &lt;tag&gt;"' in opening_tag
+    assert ' injected="yes' not in opening_tag
+
+
+def test_untrusted_wrapper_intentionally_escapes_formal_verifier_input():
+    wrapped = llm._wrap_untrusted("'\"", "héllo wörld")
+
+    assert wrapped.startswith('<untrusted_source path="&#x27;&quot;" sha256="')
+    assert "\nhéllo wörld\n</untrusted_source>" in wrapped
+
+
+def test_escaped_prompt_path_is_restored_to_source_identifier(tmp_path):
+    src = tmp_path / 'quote"&.md'
+    src.write_text("content", encoding="utf-8")
+    result = {
+        "nodes": [
+            {
+                "id": "quoted",
+                "label": "Quoted",
+                "file_type": "document",
+                "source_file": "quote&amp;quot;&amp;.md",
+            }
+        ]
+    }
+    # Use the real escaped attribute spelling rather than duplicating the
+    # escaping rules in this test.
+    wrapped = llm._wrap_untrusted(src.name, "content")
+    result["nodes"][0]["source_file"] = wrapped.split('path="', 1)[1].split('"', 1)[0]
+
+    assert llm._canonicalize_result_source_files(result, [src], tmp_path) == 1
+    assert result["nodes"][0]["source_file"] == src.name
 
 
 def test_resolve_ollama_base_url_prefers_base_url(monkeypatch):
@@ -280,15 +323,24 @@ def test_adaptive_retry_splits_on_context_exceeded(tmp_path):
         # produce when a chunk overflows the model's context window.
         if len(chunk) == 4:
             raise RuntimeError("Error 400: Context size has been exceeded.")
-        return _ok(nodes=[{"id": f.stem} for f in chunk])
+        return _ok(
+            nodes=[{"id": f.stem} for f in chunk],
+            model="runtime-model",
+        )
 
     with patch("graphify.llm.extract_files_direct", side_effect=fake_extract):
         result = llm._extract_with_adaptive_retry(
-            files, backend="kimi", api_key="k", model="m", root=tmp_path, max_depth=3
+            files,
+            backend="kimi",
+            api_key="k",
+            model="requested-model",
+            root=tmp_path,
+            max_depth=3,
         )
 
     assert len(result["nodes"]) == 4
     assert calls["n"] == 3  # 1 failure + 2 halves
+    assert result["model"] == "runtime-model"
 
 
 def test_adaptive_retry_gives_up_on_single_file_overflow(tmp_path):
@@ -913,6 +965,7 @@ def test_adaptive_retry_bisects_on_truncated_response(tmp_path):
         "full chunk came back hollow"
     )
     assert calls["n"] == 3  # 1 hollow + 2 successful halves
+    assert result["model"] == "m"  # effective response model beats requested input
 
 
 # ---------------------------------------------------------------------------
@@ -1475,3 +1528,88 @@ def test_max_retry_depth_reads_the_env_var(monkeypatch):
     assert llm._resolve_max_retry_depth() == 3
     monkeypatch.setenv("GRAPHIFY_MAX_RETRY_DEPTH", "-2")
     assert llm._resolve_max_retry_depth() == 3
+
+
+def test_hollow_retry_usage_overflow_remains_strict_json(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "_HOLLOW_BACKOFF_S", (0.0,))
+    source = tmp_path / "f.md"
+    source.write_text("hello")
+    calls = {"n": 0}
+
+    def fake_extract(chunk, *_, **__):
+        calls["n"] += 1
+        return {
+            "nodes": [] if calls["n"] == 1 else [{"id": "ok"}],
+            "edges": [],
+            "hyperedges": [],
+            "input_tokens": 1e308,
+            "output_tokens": 1e308,
+            "model": "m",
+            "finish_reason": "hollow" if calls["n"] == 1 else "stop",
+        }
+
+    with patch("graphify.llm.extract_files_direct", side_effect=fake_extract):
+        result = llm._extract_with_adaptive_retry(
+            [source],
+            backend="ollama",
+            api_key="ollama",
+            model="m",
+            root=tmp_path,
+            max_depth=1,
+        )
+
+    assert calls["n"] == 2
+    assert math.isfinite(result["input_tokens"])
+    assert math.isfinite(result["output_tokens"])
+    json.dumps(result, allow_nan=False)
+
+
+def test_truncated_split_usage_overflow_remains_strict_json(tmp_path):
+    files = [tmp_path / f"f{i}.md" for i in range(2)]
+    for source in files:
+        source.write_text("hello")
+
+    def fake_extract(chunk, *_, **__):
+        return {
+            "nodes": [] if len(chunk) == 2 else [{"id": Path(chunk[0]).stem}],
+            "edges": [],
+            "hyperedges": [],
+            "input_tokens": 1e308,
+            "output_tokens": 1e308,
+            "model": "m",
+            "finish_reason": "length" if len(chunk) == 2 else "stop",
+        }
+
+    with patch("graphify.llm.extract_files_direct", side_effect=fake_extract):
+        result = llm._extract_with_adaptive_retry(
+            files,
+            backend="ollama",
+            api_key="ollama",
+            model="m",
+            root=tmp_path,
+            max_depth=2,
+        )
+
+    assert len(result["nodes"]) == 2
+    assert math.isfinite(result["input_tokens"])
+    assert math.isfinite(result["output_tokens"])
+    json.dumps(result, allow_nan=False)
+
+
+def test_merge_into_preserves_earlier_non_success_finish_reason():
+    merged = {
+        "nodes": [],
+        "edges": [],
+        "hyperedges": [],
+        "input_tokens": 0,
+        "output_tokens": 0,
+    }
+
+    llm._merge_into(
+        merged,
+        {"finish_reason": "length", "_partial_files": ["partial.md"]},
+    )
+    llm._merge_into(merged, {"finish_reason": "stop"})
+
+    assert merged["finish_reason"] == "length"
+    assert merged["_partial_files"] == ["partial.md"]

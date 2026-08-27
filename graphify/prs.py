@@ -672,6 +672,32 @@ def triage_with_opus(prs: list[PRInfo], base: str) -> None:
                     print(f"  {line}")
                 print()
 
+        elif backend == "copilot-sdk":
+            from graphify.llm import _call_llm
+
+            usage: dict[str, object] = {}
+            result = _call_llm(
+                prompt,
+                backend=backend,
+                model=model,
+                max_tokens=1024,
+                usage_out=usage,
+            )
+            for line in result.splitlines():
+                print(f"  {line}")
+            print()
+            if usage:
+                print(
+                    dim(
+                        "  Usage: "
+                        f"{usage.get('input', 0)} input, "
+                        f"{usage.get('output', 0)} output, "
+                        "Copilot premium request multiplier "
+                        f"{usage.get('copilot_premium_request_cost', 0)}"
+                    )
+                )
+                print()
+
     except Exception as e:
         print(f"\n\n  {red(f'Triage failed: {e}')}", file=sys.stderr)
 

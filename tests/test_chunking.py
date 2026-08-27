@@ -690,6 +690,43 @@ def test_adaptive_retry_recurses_for_persistent_truncation(tmp_path):
     assert len(result["nodes"]) == 8
 
 
+def test_adaptive_retry_counts_each_nested_attempt_once(tmp_path):
+    """Parent merges must not re-charge usage already included by a child."""
+    from graphify.llm import _extract_with_adaptive_retry
+
+    files = [tmp_path / f"f{i}.py" for i in range(4)]
+    for file in files:
+        file.write_text("x")
+
+    calls = 0
+
+    def stub(chunk, **kwargs):
+        nonlocal calls
+        calls += 1
+        result = _stub_with_finish(
+            len(chunk), finish_reason="length" if len(chunk) > 1 else "stop"
+        )
+        result["input_tokens"] = 1
+        result["output_tokens"] = 2
+        result["copilot_premium_request_cost"] = 0.25
+        return result
+
+    with patch("graphify.llm.extract_files_direct", side_effect=stub):
+        result = _extract_with_adaptive_retry(
+            files,
+            backend="copilot-sdk",
+            api_key=None,
+            model=None,
+            root=tmp_path,
+            max_depth=3,
+        )
+
+    assert calls == 7
+    assert result["input_tokens"] == 7
+    assert result["output_tokens"] == 14
+    assert result["copilot_premium_request_cost"] == 1.75
+
+
 def test_adaptive_retry_caps_at_max_depth(tmp_path, capsys):
     """If everything truncates, retries stop at max_depth — partial result
     kept with a warning, no infinite loop."""
