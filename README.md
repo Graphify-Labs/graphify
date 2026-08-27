@@ -445,9 +445,11 @@ Set this up once per clone. From then on, three of your normal git commands keep
 |---|---|
 | `graphify hook install` (once, right after cloning) | installs the hooks below, plus a merge driver so `graph.json` never shows conflict markers |
 | `git commit` | rebuilds automatically — AST only, no API cost |
-| `git checkout` / `git switch` | rebuilds automatically |
+| `git checkout` / `git switch` (branches) | rebuilds automatically (a file-only `git checkout -- <path>` does not) |
 | `git pull` / `git merge` | run `graphify update .` right after |
 | `git push` | nothing to do |
+
+The commit and branch-switch rebuilds run in the background and return immediately, so on a large repo the graph can lag the commit by a few seconds — step 5 covers the rare case where you query before it catches up.
 
 **Step by step:**
 1. Clone the repo and run `graphify hook install` once.
