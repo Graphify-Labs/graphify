@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Feat: Jupyter notebooks (`.ipynb`) are indexed via markdown sidecars (#1497). Cell sources become fenced code (kernel language from notebook metadata, falling back to `code`) and verbatim markdown; outputs are stripped. Sidecar names use the scan-root-relative path (#2059); re-runs that only change outputs do not bump the sidecar or trigger re-extraction. No extra install.
+
 ## 0.9.55 (unreleased)
 
 - Fix: a module docstring preceded by a leading comment (shebang, `# -*- coding -*-`, or a license header) is now extracted instead of silently dropped — comments are skipped when locating the first statement, across module/class/function bodies (#3312, thanks @ayushcodes10).
