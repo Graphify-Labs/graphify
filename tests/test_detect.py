@@ -2778,6 +2778,24 @@ def test_ipynb_to_markdown_malformed_json(tmp_path):
     assert detect_mod.ipynb_to_markdown(nb_path) == ""
 
 
+def test_ipynb_to_markdown_lengthens_fence_when_cell_contains_backticks(tmp_path):
+    """A ``` line inside a code cell must not close the sidecar fence early."""
+    nb_path = tmp_path / "fence.ipynb"
+    nb_path.write_text(
+        _minimal_ipynb(
+            [
+                {"cell_type": "code", "source": "x = 1"},
+                {"cell_type": "code", "source": 'print("""\n```\n""")'},
+            ],
+            metadata={"language_info": {"name": "python"}},
+        ),
+        encoding="utf-8",
+    )
+    md = detect_mod.ipynb_to_markdown(nb_path)
+    assert "```python\nx = 1\n```" in md
+    assert "````python\nprint(\"\"\"\n```\n\"\"\")\n````" in md
+
+
 def test_detect_converts_notebook_to_sidecar(tmp_path):
     nb_path = tmp_path / "analysis.ipynb"
     nb_path.write_text(
