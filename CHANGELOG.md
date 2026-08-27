@@ -2,6 +2,11 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## 0.9.51 (unreleased)
+
+- Perf: Leiden clustering now calls the `graspologic_native` binding directly instead of importing the full `graspologic` package, avoiding its heavy import chain (umap / pynndescent / numba JIT); clustering output is unchanged, and it falls back to the `graspologic` wrapper and then NetworkX Louvain when the native binding is absent (#3104, thanks @Mohammad-Palla).
+- Docs: the README now documents the git workflow for keeping the graph in sync — commits and branch switches rebuild automatically via the installed hooks, while `git pull` / `git merge` need a manual `graphify update .` (thanks @Mohammad-Palla).
+
 ## 0.9.50 (2026-08-25)
 
 - Fix: Ruby methods whose names end in `!`, `?`, or `=` now keep distinct node ids, so `save` and `save!` (or `foo` and `foo=`) no longer collide into one node; the label keeps the raw spelling and member-call resolution still matches (#3077, thanks @hopstreax).
