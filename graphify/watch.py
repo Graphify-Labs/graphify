@@ -1142,6 +1142,7 @@ def _rebuild_code(
     no_cluster: bool = False,
     acquire_lock: bool = True,
     block_on_lock: bool = False,
+    publish_identity: bool = True,
 ) -> bool:
     """Re-run AST extraction + build + optional cluster + report for code files. No LLM needed.
 
@@ -1201,6 +1202,7 @@ def _rebuild_code(
                 force=force,
                 no_cluster=no_cluster,
                 acquire_lock=False,
+                publish_identity=publish_identity,
             )
             # Late-arrival drain: another hook may have queued work while we
             # were rebuilding. Loop up to _PENDING_DRAIN_MAX_PASSES times so a
@@ -1218,6 +1220,7 @@ def _rebuild_code(
                         force=force,
                         no_cluster=no_cluster,
                         acquire_lock=False,
+                        publish_identity=publish_identity,
                     ) and ok
             return ok
 
@@ -1694,14 +1697,15 @@ def _rebuild_code(
                     f"{len(candidate_graph_data.get('links', []))} edges"
                 )
                 print(f"[graphify watch] graph.json updated in {out}")
-            _publish_rebuilt_identity(
-                existing_graph,
-                watch_root,
-                out,
-                detected,
-                code_files,
-                semantic_doc_files,
-            )
+            if publish_identity:
+                _publish_rebuilt_identity(
+                    existing_graph,
+                    watch_root,
+                    out,
+                    detected,
+                    code_files,
+                    semantic_doc_files,
+                )
             return True
 
         detection = {
@@ -1752,14 +1756,15 @@ def _rebuild_code(
                     )
                 else:
                     print("[graphify watch] No code-graph topology changes detected; outputs left untouched.")
-                _publish_rebuilt_identity(
-                    existing_graph,
-                    watch_root,
-                    out,
-                    detected,
-                    code_files,
-                    semantic_doc_files,
-                )
+                if publish_identity:
+                    _publish_rebuilt_identity(
+                        existing_graph,
+                        watch_root,
+                        out,
+                        detected,
+                        code_files,
+                        semantic_doc_files,
+                    )
                 return True
 
         communities = cluster(G)
@@ -1948,14 +1953,15 @@ def _rebuild_code(
             if callflow_files:
                 products += f", {len(callflow_files)} callflow HTML"
             print(f"[graphify watch] {products} updated in {out}")
-        _publish_rebuilt_identity(
-            existing_graph,
-            watch_root,
-            out,
-            detected,
-            code_files,
-            semantic_doc_files,
-        )
+        if publish_identity:
+            _publish_rebuilt_identity(
+                existing_graph,
+                watch_root,
+                out,
+                detected,
+                code_files,
+                semantic_doc_files,
+            )
         return True
 
     except Exception as exc:
@@ -2038,6 +2044,18 @@ def _batch_needs_llm_flag(batch: list[Path]) -> bool:
     return _has_non_code([p for p in batch if p.exists()])
 
 
+def _process_watch_batch(watch_path: Path, batch: list[Path]) -> None:
+    semantic_pending = _batch_needs_llm_flag(batch)
+    if semantic_pending:
+        from graphify.source_identity import begin_reconciliation
+
+        begin_reconciliation(watch_path / _GRAPHIFY_OUT / "graph.json")
+    if _batch_triggers_rebuild(batch):
+        _rebuild_code(watch_path, publish_identity=not semantic_pending)
+    if semantic_pending:
+        _notify_only(watch_path)
+
+
 def watch(watch_path: Path, debounce: float = 3.0) -> None:
     """
     Watch watch_path for new or modified files and auto-update the graph.
@@ -2118,10 +2136,7 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
                 batch = list(changed)
                 changed.clear()
                 print(f"\n[graphify watch] {len(batch)} file(s) changed")
-                if _batch_triggers_rebuild(batch):
-                    _rebuild_code(watch_path)
-                if _batch_needs_llm_flag(batch):
-                    _notify_only(watch_path)
+                _process_watch_batch(watch_path, batch)
     except KeyboardInterrupt:
         print("\n[graphify watch] Stopped.")
     finally:

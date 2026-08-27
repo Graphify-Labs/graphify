@@ -12,6 +12,7 @@ import pytest
 from graphify.detect import detect
 from graphify.source_identity import (
     FreshnessReason,
+    FreshnessStatus,
     PENDING_FILENAME,
     SOURCE_MANIFEST_FILENAME,
     begin_reconciliation,
@@ -368,6 +369,42 @@ def test_watch_rebuild_reconciles_identity_after_a_code_change(tmp_path):
 
     assert freshness_status(repo, graph_path).eligible is True
     assert not (graph_path.parent / PENDING_FILENAME).exists()
+
+
+def test_mixed_watch_batch_stays_ineligible_between_code_and_semantic_reconciliation(
+    tmp_path, monkeypatch
+):
+    import graphify.watch as watch
+
+    repo = _repo(tmp_path)
+    readme = repo / "README.md"
+    readme.write_text("# First version\n", encoding="utf-8")
+    assert watch._rebuild_code(repo, acquire_lock=False) is True
+    graph_path = repo / "graphify-out" / "graph.json"
+    assert freshness_status(repo, graph_path).eligible is True
+
+    app = repo / "app.py"
+    app.write_text("def answer():\n    return 84\n", encoding="utf-8")
+    readme.write_text("# Second version\n", encoding="utf-8")
+    observed: dict[str, object] = {}
+    real_notify = watch._notify_only
+
+    def inspect_gap(watch_path: Path) -> None:
+        observed["status"] = freshness_status(repo, graph_path)
+        observed["query"] = _cli(repo, "query", "answer", "--graph", str(graph_path))
+        real_notify(watch_path)
+
+    monkeypatch.setattr(watch, "_notify_only", inspect_gap)
+
+    watch._process_watch_batch(repo, [app, readme])
+
+    status = observed["status"]
+    query = observed["query"]
+    assert isinstance(status, FreshnessStatus)
+    assert status.eligible is False
+    assert isinstance(query, subprocess.CompletedProcess)
+    assert query.returncode == 1
+    assert "pending_reconciliation" in query.stderr
 
 
 def test_failed_atomic_publication_leaves_the_artifact_pending(tmp_path, monkeypatch):
