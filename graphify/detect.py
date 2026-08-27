@@ -840,7 +840,12 @@ def ipynb_to_markdown(path: Path) -> str:
             if ct == "markdown":
                 lines.append(src)
             elif ct == "code":
-                lines.append(f"```{lang}\n{src}\n```")
+                # CommonMark closes a fence on a line of N+ backticks. Size the
+                # wrapper to one past the longest run in the cell so a ```
+                # (or longer) line inside the source cannot terminate it.
+                longest = max((len(m.group(0)) for m in re.finditer(r"`+", src)), default=0)
+                fence = "`" * max(3, longest + 1)
+                lines.append(f"{fence}{lang}\n{src}\n{fence}")
         return "\n\n".join(lines)
     except Exception:
         return ""
