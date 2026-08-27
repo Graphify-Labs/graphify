@@ -10,6 +10,7 @@ import graphify.__main__ as mainmod
 
 def _run(monkeypatch, corpus, out_dir):
     monkeypatch.setattr(mainmod, "_check_skill_version", lambda _path: None)
+    monkeypatch.setattr("graphify.cli._copilot_sdk_installed", lambda: True)
     monkeypatch.setattr(
         mainmod.sys,
         "argv",
@@ -26,8 +27,8 @@ def _run(monkeypatch, corpus, out_dir):
 
 def test_extract_copilot_sdk_mocked_pipeline_and_incremental_cache(monkeypatch, tmp_path):
     # Python 3.10 intentionally does not install the 3.11+ SDK extra. The CLI
-    # contract is otherwise version-independent, so provide only the import
-    # marker that its preflight check needs.
+    # contract is otherwise version-independent, so provide the module used by
+    # the mocked transport after the metadata preflight is patched in `_run`.
     monkeypatch.setitem(sys.modules, "copilot", types.ModuleType("copilot"))
     corpus = tmp_path / "corpus"
     corpus.mkdir()

@@ -11,6 +11,7 @@ import os
 import re
 import sys
 import time
+from importlib.metadata import PackageNotFoundError, version
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
@@ -50,6 +51,17 @@ _READ_NUDGE_STALE = json.dumps({
         ),
     }
 }, ensure_ascii=False, separators=(",", ":")) + "\n"
+
+
+def _copilot_sdk_installed() -> bool:
+    """Check package metadata without importing a corpus-local `copilot.py`."""
+    try:
+        version("github-copilot-sdk")
+    except PackageNotFoundError:
+        return False
+    return True
+
+
 # Strict-mode block (opt-in). Claude Code PreToolUse honors
 # hookSpecificOutput.permissionDecision == "deny" and shows permissionDecisionReason
 # to the model. Fires at most once per session (see _mark_session_denied) so it can
@@ -3548,9 +3560,7 @@ def dispatch_command(cmd: str) -> None:
                         )
                         sys.exit(1)
                 elif backend == "copilot-sdk":
-                    try:
-                        import copilot as _copilot_sdk  # noqa: F401  # pyright: ignore[reportMissingImports]
-                    except ImportError:
+                    if not _copilot_sdk_installed():
                         print(
                             'error: copilot-sdk requires Python 3.11+ and the '
                             'optional dependency; install "graphifyy[copilot]".',

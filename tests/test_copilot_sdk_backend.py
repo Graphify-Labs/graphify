@@ -307,7 +307,7 @@ def test_usage_collector_keeps_only_numeric_root_session_metadata():
             data=SimpleNamespace(current_tokens=20, token_limit=100),
         )
     )
-    assert collector.values == {
+    assert collector.snapshot() == {
         "input_tokens": 10,
         "output_tokens": 4,
         "cache_read_tokens": 2,
@@ -536,6 +536,25 @@ def test_run_bounded_timeout_survives_synchronous_abort_failure():
             await backend._run_bounded(operation(), timeout=0.01, abort=abort)
 
     asyncio.run(run())
+
+
+def test_force_stop_is_idempotent_under_concurrent_cleanup():
+    class Client:
+        calls = 0
+
+        async def force_stop(self) -> None:
+            self.calls += 1
+            await asyncio.sleep(0)
+
+    async def run() -> int:
+        resources = backend._CopilotResources()
+        client = Client()
+        resources.client = client
+        await asyncio.gather(resources.force_stop(), resources.force_stop())
+        await resources.__aexit__(None, None, None)
+        return client.calls
+
+    assert asyncio.run(run()) == 1
 
 
 def test_run_async_reports_tasks_that_ignore_bounded_cancellation(monkeypatch):

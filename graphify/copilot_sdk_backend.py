@@ -167,7 +167,7 @@ class _UsageCollector:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self.values: dict[str, Any] = {
+        self._values: dict[str, Any] = {
             "input_tokens": 0,
             "output_tokens": 0,
             "cache_read_tokens": 0,
@@ -192,28 +192,28 @@ class _UsageCollector:
                     "cache_write_tokens",
                     "reasoning_tokens",
                 ):
-                    self.values[field] = _add_numbers(
-                        self.values[field], _value(data, field, 0)
+                    self._values[field] = _add_numbers(
+                        self._values[field], _value(data, field, 0)
                     )
                 cost = _value(data, "cost")
-                self.values["copilot_premium_request_cost"] = _add_numbers(
-                    self.values["copilot_premium_request_cost"], cost
+                self._values["copilot_premium_request_cost"] = _add_numbers(
+                    self._values["copilot_premium_request_cost"], cost
                 )
                 for field in ("model", "finish_reason"):
                     value = _value(data, field)
                     if value:
-                        self.values[field] = value
+                        self._values[field] = value
             elif kind == "session.usage_info":
                 current = _value(data, "current_tokens", None)
                 limit = _value(data, "token_limit", None)
                 if current is not None:
-                    self.values["context_current_tokens"] = _number(current)
+                    self._values["context_current_tokens"] = _number(current)
                 if limit is not None:
-                    self.values["context_limit"] = _number(limit)
+                    self._values["context_limit"] = _number(limit)
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
-            return dict(self.values)
+            return dict(self._values)
 
 
 def _content_from_event(event: Any) -> str | None:
@@ -328,18 +328,20 @@ class _CopilotResources:
         self.client: Any = None
         self.session: Any = None
         self.force_stopped = False
+        self._force_stop_lock = asyncio.Lock()
         self.workspace = tempfile.TemporaryDirectory(prefix="graphify-copilot-")
 
     async def __aenter__(self) -> "_CopilotResources":
         return self
 
     async def force_stop(self) -> None:
-        if (
-            self.client is not None
-            and getattr(self.client, "force_stop", None) is not None
-        ):
-            await self.client.force_stop()
-            self.force_stopped = True
+        async with self._force_stop_lock:
+            if self.force_stopped:
+                return
+            client = self.client
+            if client is not None and getattr(client, "force_stop", None) is not None:
+                await client.force_stop()
+                self.force_stopped = True
 
     async def __aexit__(
         self,
