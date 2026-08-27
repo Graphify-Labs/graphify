@@ -5388,8 +5388,10 @@ def _extract_generic(
                         # unique-but-wrong one (#3078).
                         member_receiver = _ruby_const_full_name(recv, source) or None
             else:
-                # Generic: get callee from call_function_field
+                # Generic: get callee from call_function_field (or constructor on new_expression)
                 func_node = node.child_by_field_name(config.call_function_field) if config.call_function_field else None
+                if func_node is None and node.type == "new_expression":
+                    func_node = node.child_by_field_name("constructor")
                 if func_node:
                     if func_node.type == "identifier":
                         callee_name = _read_text(func_node, source)
