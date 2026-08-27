@@ -267,19 +267,24 @@ async def _run_bounded(
     task = asyncio.ensure_future(operation)
 
     async def cancel_and_drain() -> set[asyncio.Task[Any]]:
+        abort_interrupt: BaseException | None = None
         task.cancel()
         if abort is not None:
-            abort_result = abort()
-            if inspect.isawaitable(abort_result):
-                abort_task = asyncio.ensure_future(abort_result)
-                abort_done, abort_pending = await asyncio.wait(
-                    {abort_task}, timeout=_CLEANUP_TIMEOUT_SECONDS
-                )
-                for completed in abort_done:
-                    _consume_task(completed)
-                for unfinished in abort_pending:
-                    unfinished.cancel()
-                    unfinished.add_done_callback(_consume_task)
+            try:
+                abort_result = abort()
+                if inspect.isawaitable(abort_result):
+                    abort_task = asyncio.ensure_future(abort_result)
+                    abort_done, abort_pending = await asyncio.wait(
+                        {abort_task}, timeout=_CLEANUP_TIMEOUT_SECONDS
+                    )
+                    for completed in abort_done:
+                        _consume_task(completed)
+                    for unfinished in abort_pending:
+                        unfinished.cancel()
+                        unfinished.add_done_callback(_consume_task)
+            except BaseException as error:
+                if not isinstance(error, Exception):
+                    abort_interrupt = error
         drained, still_pending = await asyncio.wait(
             {task}, timeout=_CLEANUP_TIMEOUT_SECONDS
         )
@@ -287,6 +292,8 @@ async def _run_bounded(
             _consume_task(completed)
         for unfinished in still_pending:
             unfinished.add_done_callback(_consume_task)
+        if abort_interrupt is not None:
+            raise abort_interrupt
         return still_pending
 
     try:
@@ -353,14 +360,18 @@ class _CopilotResources:
         if self.session is not None and not self.force_stopped:
             try:
                 await _run_bounded(
-                    self.session.disconnect(), timeout=_CLEANUP_TIMEOUT_SECONDS
+                    self.session.disconnect(),
+                    timeout=_CLEANUP_TIMEOUT_SECONDS,
+                    abort=self.force_stop,
                 )
             except BaseException as error:
                 record_cleanup_failure(error)
         if self.client is not None and not self.force_stopped:
             try:
                 await _run_bounded(
-                    self.client.stop(), timeout=_CLEANUP_TIMEOUT_SECONDS
+                    self.client.stop(),
+                    timeout=_CLEANUP_TIMEOUT_SECONDS,
+                    abort=self.force_stop,
                 )
             except BaseException as error:
                 record_cleanup_failure(error)
@@ -553,6 +564,10 @@ def _run_async(factory: Callable[[], Any]) -> Any:
             except RuntimeError:
                 previous_loop = None
         loop = asyncio.new_event_loop()
+        default_executor = ThreadPoolExecutor(
+            thread_name_prefix="graphify-copilot-sdk"
+        )
+        loop.set_default_executor(default_executor)
         try:
             policy.set_event_loop(loop)
             return loop.run_until_complete(factory())
@@ -589,7 +604,29 @@ def _run_async(factory: Callable[[], Any]) -> Any:
             loop.run_until_complete(cancel_all_tasks())
             loop.run_until_complete(loop.shutdown_asyncgens())
             loop.run_until_complete(cancel_all_tasks())
-            loop.run_until_complete(loop.shutdown_default_executor())
+
+            executor_stopped = threading.Event()
+
+            def shutdown_default_executor() -> None:
+                try:
+                    default_executor.shutdown(wait=True, cancel_futures=True)
+                finally:
+                    executor_stopped.set()
+
+            executor_shutdown_thread = threading.Thread(
+                target=shutdown_default_executor,
+                name="graphify-copilot-executor-shutdown",
+                daemon=True,
+            )
+            executor_shutdown_thread.start()
+            executor_shutdown_thread.join(_CLEANUP_TIMEOUT_SECONDS)
+            if not executor_stopped.is_set():
+                warnings.warn(
+                    "Copilot SDK default executor did not shut down within the "
+                    "cleanup deadline; running calls were detached.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
             unresolved = loop.run_until_complete(cancel_all_tasks())
             if unresolved:
                 warnings.warn(

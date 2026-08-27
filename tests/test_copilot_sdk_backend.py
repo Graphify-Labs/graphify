@@ -7,6 +7,7 @@ import importlib
 import json
 import os
 import sys
+import threading
 import time
 import traceback
 import types
@@ -58,6 +59,7 @@ def _install_fake_copilot(
     create_error: BaseException | None = None,
     send_error: BaseException | None = None,
     disconnect_error: BaseException | None = None,
+    disconnect_wait: bool = False,
     stop_error: BaseException | None = None,
     constructor_error: BaseException | None = None,
     start_wait: bool = False,
@@ -100,6 +102,8 @@ def _install_fake_copilot(
 
         async def disconnect(self) -> None:
             state["disconnects"] += 1
+            if disconnect_wait:
+                await asyncio.Event().wait()
             if disconnect_error is not None:
                 raise disconnect_error
 
@@ -520,6 +524,20 @@ def test_run_bounded_cancels_child_when_caller_is_cancelled():
     asyncio.run(run())
 
 
+def test_run_bounded_timeout_survives_synchronous_abort_failure():
+    async def operation() -> None:
+        await asyncio.Event().wait()
+
+    def abort() -> None:
+        raise RuntimeError("abort failed")
+
+    async def run() -> None:
+        with pytest.raises(asyncio.TimeoutError):
+            await backend._run_bounded(operation(), timeout=0.01, abort=abort)
+
+    asyncio.run(run())
+
+
 def test_run_async_reports_tasks_that_ignore_bounded_cancellation(monkeypatch):
     monkeypatch.setattr(backend, "_CLEANUP_TIMEOUT_SECONDS", 0.01)
 
@@ -581,6 +599,28 @@ def test_run_async_drains_default_executor_before_returning():
     assert state["finished"] is True
 
 
+def test_run_async_bounds_default_executor_shutdown(monkeypatch):
+    monkeypatch.setattr(backend, "_CLEANUP_TIMEOUT_SECONDS", 0.01)
+    started = threading.Event()
+    release = threading.Event()
+
+    def work() -> None:
+        started.set()
+        release.wait()
+
+    async def factory() -> str:
+        asyncio.get_running_loop().run_in_executor(None, work)
+        while not started.is_set():
+            await asyncio.sleep(0)
+        return "ok"
+
+    try:
+        with pytest.warns(RuntimeWarning, match="default executor"):
+            assert backend._run_async(factory) == "ok"
+    finally:
+        release.set()
+
+
 def test_unknown_outcome_bypasses_graphify_adaptive_retry(monkeypatch, tmp_path):
     source = tmp_path / "a.md"
     source.write_text("Alpha", encoding="utf-8")
@@ -633,6 +673,16 @@ def test_valid_response_survives_cleanup_failure_with_safe_warning(monkeypatch):
     assert state["disconnects"] == state["stops"] == state["force_stops"] == 1
 
 
+def test_cleanup_timeout_force_stops_runtime(monkeypatch):
+    monkeypatch.setattr(backend, "_CLEANUP_TIMEOUT_SECONDS", 0.01)
+    state = _install_fake_copilot(monkeypatch, disconnect_wait=True)
+    with pytest.warns(RuntimeWarning, match="cleanup did not finish cleanly"):
+        assert _call()["content"] == _GRAPH_JSON
+    assert state["disconnects"] == 1
+    assert state["force_stops"] == 1
+    assert state["stops"] == 0
+
+
 def test_cleanup_failure_does_not_replace_primary_unknown_outcome(monkeypatch):
     _install_fake_copilot(
         monkeypatch,
@@ -652,7 +702,7 @@ def test_process_control_exceptions_propagate_from_cleanup(monkeypatch):
     state = _install_fake_copilot(monkeypatch, disconnect_error=KeyboardInterrupt())
     with pytest.raises(KeyboardInterrupt):
         _call()
-    assert state["stops"] == 1
+    assert state["stops"] + state["force_stops"] == 1
     workspace = Path(state["clients"][0].options["working_directory"])
     assert not workspace.exists()
 
