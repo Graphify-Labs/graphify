@@ -3974,3 +3974,25 @@ def test_zig_enum_and_union_methods_are_extracted(tmp_path):
         for e in r["edges"] if e["relation"] == "calls"
     }
     assert (".area()", "helper()") in calls, "call from union method body dropped"
+
+
+@_needs_commonlisp
+def test_cl_ids_are_path_qualified_across_directories(tmp_path):
+    """Two same-named .lisp files in DIFFERENT directories must mint distinct
+    ids (#1504). The prefix was derived from the bare `path.stem`, so both
+    `a/sample.lisp` and `b/sample.lisp` minted `sample` / `sample_init`; when
+    they land in separate extract batches (what `graphify update` does) build()
+    merges them and one file's nodes are dropped."""
+    a = tmp_path / "a" / "sample.lisp"
+    b = tmp_path / "b" / "sample.lisp"
+    for p in (a, b):
+        p.parent.mkdir(parents=True)
+        p.write_text("(defun init (x) (+ x 1))\n")
+
+    ids_a = {n["id"] for n in extract_commonlisp(a)["nodes"]}
+    ids_b = {n["id"] for n in extract_commonlisp(b)["nodes"]}
+
+    assert not (ids_a & ids_b), (
+        f"same-named .lisp files in different dirs must not share ids, "
+        f"got overlap {sorted(ids_a & ids_b)}"
+    )
