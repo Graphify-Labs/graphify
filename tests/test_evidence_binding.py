@@ -285,6 +285,32 @@ def test_extract_files_direct_repairs_unique_truncated_source_path(tmp_path):
     assert result["nodes"][0]["source_file"] == "project-a/docs/README.md"
 
 
+def test_source_path_repair_preserves_existing_non_dispatched_file(tmp_path):
+    reported = tmp_path / "docs" / "README.md"
+    reported.parent.mkdir(parents=True)
+    reported.write_text("# Other project\n", encoding="utf-8")
+    dispatched = tmp_path / "project-a" / "docs" / "README.md"
+    dispatched.parent.mkdir(parents=True)
+    dispatched.write_text("# Dispatched project\n", encoding="utf-8")
+    result = {
+        "nodes": [
+            {
+                "id": "other",
+                "label": "Other",
+                "file_type": "document",
+                "source_file": "docs/README.md",
+            }
+        ]
+    }
+
+    repaired = llm._canonicalize_result_source_files(
+        result, [dispatched], tmp_path
+    )
+
+    assert repaired == 0
+    assert result["nodes"][0]["source_file"] == "docs/README.md"
+
+
 def test_extraction_prompt_requires_literal_source_path_copy():
     prompt = llm._extraction_system()
     assert "Copy the path attribute from an enclosing <untrusted_source>" in prompt

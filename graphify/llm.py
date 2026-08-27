@@ -795,6 +795,13 @@ def _canonicalize_result_source_files(
                     item["source_file"] = normalized
                     repaired += 1
                 continue
+            # A real path that was not dispatched is not a shortened spelling.
+            # Preserve it so the normal scope guard rejects the attribution.
+            # Rewriting it to the only dispatched suffix match would hide a
+            # model's wrong-file claim.
+            reported_path = root.joinpath(*parts)
+            if reported_path.exists() or reported_path.is_symlink():
+                continue
             matches = [
                 candidate for candidate in canonical
                 if candidate.endswith("/" + normalized)

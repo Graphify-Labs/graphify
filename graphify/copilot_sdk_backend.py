@@ -59,6 +59,7 @@ class _DaemonThreadPoolExecutor(ThreadPoolExecutor):
         self._daemon_queue: queue.Queue[Any] = queue.Queue()
         self._daemon_lock = threading.Lock()
         self._daemon_shutdown = False
+        self._daemon_cancel_pending = False
         self._daemon_name_prefix = thread_name_prefix
         self._daemon_threads: list[threading.Thread] = []
         self._daemon_pending: set[Future[Any]] = set()
@@ -83,7 +84,17 @@ class _DaemonThreadPoolExecutor(ThreadPoolExecutor):
             future, function, args, kwargs = item
             with self._daemon_lock:
                 self._daemon_pending.discard(future)
-                should_run = future.set_running_or_notify_cancel()
+                cancel_pending = self._daemon_cancel_pending
+                should_run = (
+                    False
+                    if cancel_pending
+                    else future.set_running_or_notify_cancel()
+                )
+            if cancel_pending:
+                # Future callbacks are arbitrary user code. Never invoke them
+                # while holding the executor state lock.
+                future.cancel()
+                continue
             if not should_run:
                 continue
             try:
@@ -103,21 +114,23 @@ class _DaemonThreadPoolExecutor(ThreadPoolExecutor):
             return future
 
     def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
+        pending_to_cancel: tuple[Future[Any], ...] = ()
         with self._daemon_lock:
             if not self._daemon_shutdown:
                 self._daemon_shutdown = True
                 if cancel_futures:
-                    # Cancel queued work without draining the queue. Workers
-                    # skip cancelled futures, then consume their stop markers.
-                    # This keeps task items and stop markers in one fixed order.
-                    for future in tuple(self._daemon_pending):
-                        future.cancel()
+                    self._daemon_cancel_pending = True
+                    pending_to_cancel = tuple(self._daemon_pending)
                 for _worker in self._daemon_threads:
                     self._daemon_queue.put(_DAEMON_STOP)
             # submit() uses this same lock and rejects after the shutdown flag
             # is set. This snapshot therefore contains every worker that can
             # exist, even when submit and shutdown calls race.
             workers = tuple(self._daemon_threads)
+        # Future.cancel() invokes callbacks synchronously. Run those callbacks
+        # outside _daemon_lock so they can safely call submit() or shutdown().
+        for future in pending_to_cancel:
+            future.cancel()
         if wait:
             current = threading.current_thread()
             for worker in workers:
@@ -409,7 +422,7 @@ async def _run_bounded(
     operation: Awaitable[Any],
     *,
     timeout: float,
-    abort: Callable[[], Any] | None = None,
+    abort: Callable[[], Awaitable[Any]] | None = None,
 ) -> Any:
     """Bound an SDK call; report a distinct error if cancellation cannot finish.
 
@@ -419,6 +432,11 @@ async def _run_bounded(
     """
     if not inspect.isawaitable(operation):
         raise TypeError("Copilot SDK operation must be awaitable")
+    if abort is not None and not inspect.iscoroutinefunction(abort):
+        close = getattr(operation, "close", None)
+        if callable(close):
+            close()
+        raise TypeError("Copilot SDK abort callback must be async")
 
     async def capture_control_flow(awaitable: Awaitable[Any]) -> Any:
         try:
@@ -436,16 +454,11 @@ async def _run_bounded(
         deadline = asyncio.get_running_loop().time() + _CLEANUP_TIMEOUT_SECONDS
         task.cancel()
         if abort is not None:
-            try:
-                abort_result = abort()
-                if inspect.isawaitable(abort_result):
-                    abort_task = asyncio.ensure_future(
-                        capture_control_flow(abort_result)
-                    )
-                    cleanup_tasks.add(abort_task)
-            except BaseException as error:
-                if not isinstance(error, Exception):
-                    abort_interrupt = _ControlFlowInterrupt(error)
+            abort_result = abort()
+            if not inspect.isawaitable(abort_result):
+                raise TypeError("Copilot SDK abort callback must return an awaitable")
+            abort_task = asyncio.ensure_future(capture_control_flow(abort_result))
+            cleanup_tasks.add(abort_task)
         drained, still_pending = await asyncio.wait(
             cleanup_tasks,
             timeout=max(0.0, deadline - asyncio.get_running_loop().time()),

@@ -383,6 +383,8 @@ def test_success_uses_official_send_and_wait_and_locked_down_session(monkeypatch
     assert state["disconnects"] == state["stops"] == 1
     assert state["prompt"].startswith(backend._USER_INSTRUCTION)
     assert "<untrusted_source>source</untrusted_source>" in state["prompt"]
+    assert "{prompt}" not in state["prompt"]
+    assert "{system_prompt}" not in state["prompt"]
 
     client_options = state["clients"][0].options
     assert client_options["use_logged_in_user"] is True
@@ -678,7 +680,7 @@ def test_run_bounded_cancels_child_when_caller_is_cancelled():
             finally:
                 child_finished.set()
 
-        def abort() -> None:
+        async def abort() -> None:
             nonlocal abort_called
             abort_called = True
 
@@ -726,11 +728,11 @@ def test_repeated_cancellation_cannot_interrupt_operation_cleanup():
     asyncio.run(run())
 
 
-def test_run_bounded_timeout_survives_synchronous_abort_failure():
+def test_run_bounded_timeout_survives_async_abort_failure():
     async def operation() -> None:
         await asyncio.Event().wait()
 
-    def abort() -> None:
+    async def abort() -> None:
         raise RuntimeError("abort failed")
 
     async def run() -> None:
@@ -738,6 +740,26 @@ def test_run_bounded_timeout_survives_synchronous_abort_failure():
             await backend._run_bounded(operation(), timeout=0.01, abort=abort)
 
     asyncio.run(run())
+
+
+def test_run_bounded_rejects_synchronous_abort_without_invoking_it():
+    abort_called = False
+
+    async def operation() -> None:
+        await asyncio.Event().wait()
+
+    def abort() -> None:
+        nonlocal abort_called
+        abort_called = True
+
+    async def run() -> None:
+        with pytest.raises(TypeError, match="abort callback must be async"):
+            await backend._run_bounded(
+                operation(), timeout=0.01, abort=abort  # type: ignore[arg-type]
+            )
+
+    asyncio.run(run())
+    assert abort_called is False
 
 
 def test_run_bounded_timeout_cancels_and_drains_operation():
@@ -968,11 +990,19 @@ def test_in_flight_session_creation_keeps_workspace_until_late_disconnect():
     creation_started = asyncio.Event()
     release_creation = asyncio.Event()
     disconnect_workspace_states: list[bool] = []
+    cleanup_lock_states: list[bool] = []
 
     async def run() -> None:
         resources = backend._CopilotResources()
         assert resources.workspace is not None
         workspace = Path(resources.workspace.name)
+        cleanup_workspace_locked = resources._cleanup_workspace_locked
+
+        def record_cleanup_lock() -> bool:
+            cleanup_lock_states.append(resources._lifecycle_lock.locked())
+            return cleanup_workspace_locked()
+
+        resources._cleanup_workspace_locked = record_cleanup_lock  # type: ignore[method-assign]
 
         class Client:
             async def force_stop(self) -> None:
@@ -1006,6 +1036,7 @@ def test_in_flight_session_creation_keeps_workspace_until_late_disconnect():
         ):
             await tracking
         assert disconnect_workspace_states == [True]
+        assert cleanup_lock_states and all(cleanup_lock_states)
         assert not workspace.exists()
 
     asyncio.run(run())
@@ -1554,6 +1585,42 @@ def test_daemon_executor_cancels_pending_work_without_losing_stop_marker():
     release.set()
 
     assert running_future.result(timeout=1) == "done"
+    assert executor.shutdown_bounded(1) is True
+
+
+def test_daemon_executor_cancel_callback_can_reenter_executor():
+    executor = backend._DaemonThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="graphify-callback-test"
+    )
+    started = threading.Event()
+    release = threading.Event()
+
+    def running() -> None:
+        started.set()
+        release.wait()
+
+    executor.submit(running)
+    assert started.wait(timeout=1)
+    pending = executor.submit(lambda: None)
+    callback_finished = threading.Event()
+
+    def reenter(_future) -> None:
+        with pytest.raises(RuntimeError, match="after shutdown"):
+            executor.submit(lambda: None)
+        callback_finished.set()
+
+    pending.add_done_callback(reenter)
+    shutdown = threading.Thread(
+        target=executor.shutdown,
+        kwargs={"wait": False, "cancel_futures": True},
+        daemon=True,
+    )
+    shutdown.start()
+    shutdown.join(timeout=1)
+
+    assert not shutdown.is_alive()
+    assert callback_finished.wait(timeout=1)
+    release.set()
     assert executor.shutdown_bounded(1) is True
 
 
