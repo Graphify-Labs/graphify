@@ -113,6 +113,90 @@ def _resolve_graph_path(graph_path: str, *, explicit: bool) -> str:
     return str(found)
 
 
+def _top_level_segment(source_file: str) -> str:
+    """First path segment of a repo-relative ``source_file``, or "" if none.
+
+    Both separators are accepted: ``source_file`` values are stored as they were
+    extracted and travel between machines, so a graph built on Windows can carry
+    backslashes into a POSIX reader.
+    """
+    norm = str(source_file).replace("\\", "/").strip("/")
+    return norm.split("/", 1)[0] if norm else ""
+
+
+def _cwd_scope_segment(graph_path: Path) -> str:
+    """Top-level directory of cwd relative to the graph's scan root, or "".
+
+    Indexing git worktrees alongside their canonical repo puts the same symbol in
+    the graph twice under different top-level directories (``matching/Foo.cs`` and
+    ``matching-1234-ga-merge/Foo.cs``). Where the caller is standing is the only
+    signal that says which one they mean, so surface it as the segment to match.
+
+    Returns "" when cwd is outside the scan root (or is the root itself), which
+    leaves the caller with no preference rather than a wrong one.
+    """
+    from graphify.paths import GRAPHIFY_OUT_NAME
+    # The graph lives at <root>/<GRAPHIFY_OUT_NAME>/graph.json, so the scan root is
+    # the output dir's parent; a --graph pointed straight at a file falls back to
+    # its own directory. Same derivation as `affected` (#2706).
+    root = (
+        graph_path.parent.parent
+        if graph_path.parent.name == GRAPHIFY_OUT_NAME
+        else graph_path.parent
+    )
+    try:
+        rel = Path.cwd().resolve().relative_to(root.resolve())
+    except (OSError, ValueError):
+        return ""
+    return rel.parts[0] if rel.parts else ""
+
+
+def _disambiguate_explain_match(G, label: str, matches: list, rivals: list,
+                                graph_path: Path) -> str:
+    """Choose one node when several source files define ``label``.
+
+    Prefers the candidate whose top-level directory is the one the caller is
+    standing in, so `explain` inside a worktree answers about that worktree
+    instead of its canonical repo. When cwd does not single one out, warn on
+    stderr naming every alternative and proceed: erroring out would make the
+    command unusable once worktrees are indexed, and a silent pick would hide
+    in-flight branch edits behind an equally confident answer.
+
+    The fallback picks the lowest ``source_file`` rather than the first match, so
+    the answer is stable under graph iteration order (the ordering bug that made
+    the same query report a different file on a reordered graph).
+    """
+    by_source: dict[str, str] = {}
+    for rid in rivals:
+        by_source.setdefault(str(G.nodes[rid].get("source_file") or ""), rid)
+
+    def _first_match_in(source: str) -> str:
+        # Keep within-file precedence (a file node ahead of its members) by
+        # re-using the ranked `matches` order rather than the representative.
+        for mid in matches:
+            if str(G.nodes[mid].get("source_file") or "") == source:
+                return mid
+        return by_source[source]
+
+    scope = _cwd_scope_segment(graph_path)
+    if scope:
+        local = [s for s in by_source if _top_level_segment(s) == scope]
+        if len(local) == 1:
+            return _first_match_in(local[0])
+
+    chosen = min(by_source)
+    print(
+        f"warning: '{label}' match was ambiguous "
+        f"({len(by_source)} nodes in different files); using {chosen}",
+        file=sys.stderr,
+    )
+    for source in sorted(by_source):
+        if source != chosen:
+            print(f"warning:   alternative: {source} (id: {by_source[source]})",
+                  file=sys.stderr)
+    return _first_match_in(chosen)
+
+
 def _stamped_manifest_files(
     files_by_type: dict[str, list[str]],
     sem_result: dict,
@@ -1641,14 +1725,11 @@ def dispatch_command(cmd: str) -> None:
             print(f"No node matching '{label}' found.")
             sys.exit(0)
         rivals = find_node_ambiguity(G, label)
-        if rivals:
-            print(f"Ambiguous: '{label}' matches {len(rivals)} nodes in different files.")
-            for rival in rivals:
-                print(f"  {G.nodes[rival].get('source_file') or rival}")
-                print(f"    id: {rival}")
-            print("Retry with the repo-relative path or the full node id.")
-            sys.exit(1)
-        nid = matches[0]
+        nid = (
+            _disambiguate_explain_match(G, label, matches, rivals, gp)
+            if rivals
+            else matches[0]
+        )
         d = G.nodes[nid]
         print(f"Node: {d.get('label', nid)}")
         print(f"  ID:        {nid}")

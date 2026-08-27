@@ -265,40 +265,111 @@ def _write_ambiguous_graph(tmp_path, *, reverse: bool = False):
     return p
 
 
-def _run_expect_exit(monkeypatch, graph_path, label, capsys):
+def _run_capture(monkeypatch, graph_path, label, capsys):
+    """Run explain, returning (stdout, stderr). Ambiguity is reported on stderr."""
     monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
     monkeypatch.setattr(mainmod.sys, "argv",
         ["graphify", "explain", label, "--graph", str(graph_path)])
     try:
         mainmod.main()
-    except SystemExit as exc:
-        return capsys.readouterr().out, exc.code
-    return capsys.readouterr().out, None
+    except SystemExit:
+        pass
+    captured = capsys.readouterr()
+    return captured.out, captured.err
 
 
-def test_explain_ambiguous_label_lists_every_candidate(monkeypatch, tmp_path, capsys):
+def test_explain_ambiguous_label_warns_naming_every_candidate(monkeypatch, tmp_path, capsys):
+    """An unresolvable tie must name every candidate and still answer.
+
+    Erroring out instead would make `explain` unusable wherever ambiguity is the
+    normal case (worktrees indexed beside their canonical repo), so the contract
+    is: warn on stderr, answer on stdout.
+    """
     p = _write_ambiguous_graph(tmp_path)
-    out, code = _run_expect_exit(monkeypatch, p, "MetricsPort", capsys)
-    assert "Ambiguous" in out
-    assert "services/chat/src/application/ports/metrics.port.ts" in out
-    assert "services/scraping/src/application/ports/metrics.port.ts" in out
-    assert code == 1
-    # It must not present one file as the answer.
-    assert "Node: MetricsPort\n  ID:" not in out
+    out, err = _run_capture(monkeypatch, p, "MetricsPort", capsys)
+    assert "was ambiguous" in err
+    assert "services/chat/src/application/ports/metrics.port.ts" in err
+    assert "services/scraping/src/application/ports/metrics.port.ts" in err
+    # The answer still comes, and the ambiguity never leaks into stdout.
+    assert "Node: MetricsPort" in out
+    assert "ambiguous" not in out.lower()
 
 
 def test_explain_ambiguous_answer_does_not_depend_on_node_order(
     monkeypatch, tmp_path, capsys
 ):
     """The bug: reversing node order flipped which file was reported as fact."""
-    forward, _ = _run_expect_exit(
+    forward_out, forward_err = _run_capture(
         monkeypatch, _write_ambiguous_graph(tmp_path), "MetricsPort", capsys)
-    reverse, _ = _run_expect_exit(
+    reverse_out, reverse_err = _run_capture(
         monkeypatch, _write_ambiguous_graph(tmp_path, reverse=True), "MetricsPort", capsys)
-    assert "Ambiguous" in forward and "Ambiguous" in reverse
-    # Same candidate set either way, regardless of iteration order.
-    assert sorted(l.strip() for l in forward.splitlines() if "metrics.port.ts" in l) == \
-           sorted(l.strip() for l in reverse.splitlines() if "metrics.port.ts" in l)
+    # Same node chosen and same alternatives named, regardless of iteration order.
+    assert [l for l in forward_out.splitlines() if l.startswith("  ID:")] == \
+           [l for l in reverse_out.splitlines() if l.startswith("  ID:")]
+    assert sorted(l.strip() for l in forward_err.splitlines() if "metrics.port.ts" in l) == \
+           sorted(l.strip() for l in reverse_err.splitlines() if "metrics.port.ts" in l)
+
+
+# --- cwd tie-break: worktree indexed beside its canonical repo ---------------
+
+
+def _write_worktree_graph(tmp_path):
+    """Same symbol in two sibling TOP-LEVEL dirs: a repo and one of its worktrees.
+
+    The graph is written where a real build puts it (<root>/graphify-out/graph.json)
+    so the scan root is derived the same way the CLI derives it.
+    """
+    out_dir = tmp_path / "graphify-out"
+    out_dir.mkdir()
+    graph_data = {
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [
+            {"id": "canonical", "label": "shared_handler",
+             "source_file": "matching/svc.py", "community": 0},
+            {"id": "worktree", "label": "shared_handler",
+             "source_file": "matching-156294-ga-merge/svc.py", "community": 0},
+        ],
+        "links": [],
+    }
+    p = out_dir / "graph.json"
+    p.write_text(json.dumps(graph_data))
+    for sub in ("matching", "matching-156294-ga-merge"):
+        (tmp_path / sub).mkdir()
+    return p
+
+
+def test_explain_prefers_the_top_level_dir_the_caller_is_standing_in(
+    monkeypatch, tmp_path, capsys
+):
+    """Inside a worktree, `explain` must answer about THAT worktree, silently."""
+    p = _write_worktree_graph(tmp_path)
+    monkeypatch.chdir(tmp_path / "matching-156294-ga-merge")
+    out, err = _run_capture(monkeypatch, p, "shared_handler", capsys)
+    assert "ID:        worktree" in out
+    assert "matching-156294-ga-merge/svc.py" in out
+    # cwd resolved it, so there is nothing ambiguous left to report.
+    assert "was ambiguous" not in err
+
+
+def test_explain_cwd_tie_break_picks_the_canonical_repo_from_inside_it(
+    monkeypatch, tmp_path, capsys
+):
+    """Mirror case: the tie-break follows cwd, it does not favour one name."""
+    p = _write_worktree_graph(tmp_path)
+    monkeypatch.chdir(tmp_path / "matching")
+    out, err = _run_capture(monkeypatch, p, "shared_handler", capsys)
+    assert "ID:        canonical" in out
+    assert "was ambiguous" not in err
+
+
+def test_explain_warns_when_cwd_is_outside_every_candidate(monkeypatch, tmp_path, capsys):
+    """At the scan root, cwd singles out nothing -> warn and still answer."""
+    p = _write_worktree_graph(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    out, err = _run_capture(monkeypatch, p, "shared_handler", capsys)
+    assert "was ambiguous" in err
+    assert "matching/svc.py" in err
+    assert "Node: shared_handler" in out
 
 
 def test_explain_matches_within_one_file_are_not_ambiguous(monkeypatch, tmp_path, capsys):
