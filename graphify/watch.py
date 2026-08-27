@@ -806,6 +806,10 @@ def _node_community_map(graph_data: dict) -> dict[str, int]:
 def _canonical_graph_for_compare(graph_data: dict) -> dict:
     canonical = dict(graph_data)
     canonical.pop("built_at_commit", None)
+    canonical.pop("source_identity", None)
+    if isinstance(canonical.get("graph"), dict):
+        canonical["graph"] = dict(canonical["graph"])
+        canonical["graph"].pop("source_identity", None)
     # A missing "directed" key means the same thing as "directed": false
     # everywhere else in the codebase (#2342's --no-cluster path only started
     # writing the key once it began inheriting it from the existing graph).
@@ -825,6 +829,10 @@ def _canonical_graph_for_compare(graph_data: dict) -> dict:
 def _canonical_topology_for_compare(graph_data: dict) -> dict:
     canonical = dict(graph_data)
     canonical.pop("built_at_commit", None)
+    canonical.pop("source_identity", None)
+    if isinstance(canonical.get("graph"), dict):
+        canonical["graph"] = dict(canonical["graph"])
+        canonical["graph"].pop("source_identity", None)
 
     nodes = canonical.get("nodes")
     if isinstance(nodes, list):
@@ -885,6 +893,9 @@ def _topology_from_graph(G) -> dict:
         data = json_graph.node_link_data(G, edges="links")
     except TypeError:
         data = json_graph.node_link_data(G)
+    if isinstance(data.get("graph"), dict):
+        data["graph"] = dict(data["graph"])
+        data["graph"].pop("source_identity", None)
     data["hyperedges"] = getattr(G, "graph", {}).get("hyperedges", [])
     return data
 
@@ -1083,6 +1094,45 @@ def _reconcile_graph_html(out: Path, graph_data: dict) -> str | None:
     return "rendered"
 
 
+def _publish_rebuilt_identity(
+    graph_path: Path,
+    source_root: Path,
+    out: Path,
+    detected: dict,
+    code_files: list[Path],
+    semantic_doc_files: set[Path],
+) -> None:
+    from graphify.source_identity import publish_source_identity
+
+    semantic_paths = {str(path.resolve()) for path in semantic_doc_files}
+    ast_paths = {
+        str(path.resolve())
+        for path in code_files
+        if str(path.resolve()) not in semantic_paths
+    }
+    coverage_kinds: dict[str, str] = {}
+    raw_files = detected.get("files")
+    if isinstance(raw_files, dict):
+        for raw_entries in raw_files.values():
+            if not isinstance(raw_entries, list):
+                continue
+            for raw_path in raw_entries:
+                if not isinstance(raw_path, str):
+                    continue
+                resolved = str(Path(raw_path).resolve())
+                coverage_kinds[resolved] = "ast" if resolved in ast_paths else "semantic"
+    try:
+        publish_source_identity(
+            graph_path,
+            source_root,
+            detection=detected,
+            extraction_manifest_path=out / "manifest.json",
+            coverage_kinds=coverage_kinds,
+        )
+    except ValueError as exc:
+        print(f"[graphify watch] Source identity remains pending: {exc}", file=sys.stderr)
+
+
 def _rebuild_code(
     watch_path: Path,
     *,
@@ -1092,6 +1142,7 @@ def _rebuild_code(
     no_cluster: bool = False,
     acquire_lock: bool = True,
     block_on_lock: bool = False,
+    publish_identity: bool = True,
 ) -> bool:
     """Re-run AST extraction + build + optional cluster + report for code files. No LLM needed.
 
@@ -1151,6 +1202,7 @@ def _rebuild_code(
                 force=force,
                 no_cluster=no_cluster,
                 acquire_lock=False,
+                publish_identity=publish_identity,
             )
             # Late-arrival drain: another hook may have queued work while we
             # were rebuilding. Loop up to _PENDING_DRAIN_MAX_PASSES times so a
@@ -1168,6 +1220,7 @@ def _rebuild_code(
                         force=force,
                         no_cluster=no_cluster,
                         acquire_lock=False,
+                        publish_identity=publish_identity,
                     ) and ok
             return ok
 
@@ -1228,6 +1281,9 @@ def _rebuild_code(
         if not code_files and not existing_graph.exists():
             print("[graphify watch] No code files found - nothing to rebuild.")
             return False
+        from graphify.source_identity import begin_reconciliation
+
+        begin_reconciliation(existing_graph)
 
         # #1915: a document that already carries SEMANTIC (LLM) nodes in the
         # existing graph must not ALSO be AST-quick-scanned — otherwise every
@@ -1641,6 +1697,15 @@ def _rebuild_code(
                     f"{len(candidate_graph_data.get('links', []))} edges"
                 )
                 print(f"[graphify watch] graph.json updated in {out}")
+            if publish_identity:
+                _publish_rebuilt_identity(
+                    existing_graph,
+                    watch_root,
+                    out,
+                    detected,
+                    code_files,
+                    semantic_doc_files,
+                )
             return True
 
         detection = {
@@ -1691,6 +1756,15 @@ def _rebuild_code(
                     )
                 else:
                     print("[graphify watch] No code-graph topology changes detected; outputs left untouched.")
+                if publish_identity:
+                    _publish_rebuilt_identity(
+                        existing_graph,
+                        watch_root,
+                        out,
+                        detected,
+                        code_files,
+                        semantic_doc_files,
+                    )
                 return True
 
         communities = cluster(G)
@@ -1879,6 +1953,15 @@ def _rebuild_code(
             if callflow_files:
                 products += f", {len(callflow_files)} callflow HTML"
             print(f"[graphify watch] {products} updated in {out}")
+        if publish_identity:
+            _publish_rebuilt_identity(
+                existing_graph,
+                watch_root,
+                out,
+                detected,
+                code_files,
+                semantic_doc_files,
+            )
         return True
 
     except Exception as exc:
@@ -1905,6 +1988,9 @@ def _notify_only(watch_path: Path) -> None:
     """Write a flag file and print a notification (fallback for non-code-only corpora)."""
     flag = watch_path / _GRAPHIFY_OUT / "needs_update"
     flag.parent.mkdir(parents=True, exist_ok=True)
+    from graphify.source_identity import begin_reconciliation
+
+    begin_reconciliation(flag.parent / "graph.json")
     flag.write_text("1", encoding="utf-8")
     print(f"\n[graphify watch] New or changed files detected in {watch_path}")
     print("[graphify watch] Non-code files changed - semantic re-extraction requires LLM.")
@@ -1956,6 +2042,18 @@ def _batch_needs_llm_flag(batch: list[Path]) -> bool:
     reconcile sweep, so a pure-deletion batch must not leave a stale flag.
     """
     return _has_non_code([p for p in batch if p.exists()])
+
+
+def _process_watch_batch(watch_path: Path, batch: list[Path]) -> None:
+    semantic_pending = _batch_needs_llm_flag(batch)
+    if semantic_pending:
+        from graphify.source_identity import begin_reconciliation
+
+        begin_reconciliation(watch_path / _GRAPHIFY_OUT / "graph.json")
+    if _batch_triggers_rebuild(batch):
+        _rebuild_code(watch_path, publish_identity=not semantic_pending)
+    if semantic_pending:
+        _notify_only(watch_path)
 
 
 def watch(watch_path: Path, debounce: float = 3.0) -> None:
@@ -2038,10 +2136,7 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
                 batch = list(changed)
                 changed.clear()
                 print(f"\n[graphify watch] {len(batch)} file(s) changed")
-                if _batch_triggers_rebuild(batch):
-                    _rebuild_code(watch_path)
-                if _batch_needs_llm_flag(batch):
-                    _notify_only(watch_path)
+                _process_watch_batch(watch_path, batch)
     except KeyboardInterrupt:
         print("\n[graphify watch] Stopped.")
     finally:

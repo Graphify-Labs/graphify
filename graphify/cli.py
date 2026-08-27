@@ -1065,6 +1065,10 @@ def dispatch_command(cmd: str) -> None:
         else:
             print("Usage: graphify hook [install|uninstall|status]", file=sys.stderr)
             sys.exit(1)
+    elif cmd == "status":
+        from graphify.source_identity import status_command
+
+        sys.exit(status_command(sys.argv[2:]))
     elif cmd == "query":
         if len(sys.argv) < 3:
             print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--budget N] [--graph path]", file=sys.stderr)
@@ -1115,6 +1119,17 @@ def dispatch_command(cmd: str) -> None:
             print(f"error: graph file must be a .json file", file=sys.stderr)
             sys.exit(1)
         _enforce_graph_size_cap_or_exit(gp)
+        from graphify.source_identity import freshness_status, format_bound_identity
+
+        _source_status = freshness_status(Path.cwd(), gp)
+        if not _source_status.eligible:
+            _reason_codes = ", ".join(reason.value for reason in _source_status.reasons)
+            print(
+                f"error: graph source is stale: {_reason_codes}. "
+                "Run `graphify update .`; use a full extract if semantic coverage is missing.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         try:
             import json as _json
             import networkx as _nx
@@ -1174,6 +1189,17 @@ def dispatch_command(cmd: str) -> None:
             context_filters=context_filters,
             graph_path=str(gp),
         )
+        _final_source_status = freshness_status(Path.cwd(), gp)
+        if not _final_source_status.eligible:
+            _reason_codes = ", ".join(
+                reason.value for reason in _final_source_status.reasons
+            )
+            print(
+                f"error: graph source changed during query: {_reason_codes}. "
+                "Run `graphify update .` and retry.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         querylog.log_query(
             kind="query",
             question=question,
@@ -1185,6 +1211,11 @@ def dispatch_command(cmd: str) -> None:
             duration_ms=(_time.perf_counter() - _t0) * 1000,
         )
         _touch_query_stamp(gp)
+        if _final_source_status.source_identity is not None:
+            print(
+                f"[graphify] {format_bound_identity(_final_source_status.source_identity)}",
+                file=sys.stderr,
+            )
         print(_result)
     elif cmd == "affected":
         if len(sys.argv) < 3:
@@ -3240,6 +3271,10 @@ def dispatch_command(cmd: str) -> None:
         )
         manifest_path = graphify_out / "manifest.json"
         existing_graph_path = graphify_out / "graph.json"
+        if has_path:
+            from graphify.source_identity import begin_reconciliation
+
+            begin_reconciliation(existing_graph_path)
         # #1925: a missing manifest.json must not degrade to a full scan that
         # discards the existing graph's semantic layer. An existing graph.json
         # is a sufficient incremental baseline: detect_incremental treats an
@@ -3384,6 +3419,9 @@ def dispatch_command(cmd: str) -> None:
         # (doc/paper/image) pass entirely, so a mixed repo doesn't hard-fail when no
         # LLM backend is configured (#1734). Report what was skipped rather than
         # silently dropping it.
+        _code_only_omitted_on_new_graph = (
+            code_only and bool(semantic_files) and not existing_graph_path.exists()
+        )
         if code_only and semantic_files:
             print(
                 f"[graphify extract] --code-only: skipping {len(semantic_files)} "
@@ -3965,6 +4003,28 @@ def dispatch_command(cmd: str) -> None:
                 print(f"error: could not invalidate file manifest: {exc}", file=sys.stderr)
                 sys.exit(1)
 
+        def _publish_identity_if_complete() -> None:
+            if (
+                not has_path
+                or _extraction_incomplete
+                or _code_only_omitted_on_new_graph
+            ):
+                return
+            from graphify.source_identity import publish_source_identity
+
+            try:
+                publish_source_identity(
+                    graph_json_path,
+                    target,
+                    detection=detection,
+                    extraction_manifest_path=manifest_path,
+                )
+            except ValueError as exc:
+                print(
+                    f"[graphify extract] source identity remains pending: {exc}",
+                    file=sys.stderr,
+                )
+
         if no_cluster:
             # --no-cluster: dump the raw merged extraction as graph.json.
             # No NetworkX, no community detection, no analysis sidecar.
@@ -4009,6 +4069,7 @@ def dispatch_command(cmd: str) -> None:
                     _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic, clear_ast=_cleared_ast or None)
                 except Exception as exc:
                     print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
+                _publish_identity_if_complete()
                 stages.total()
                 sys.exit(0)
 
@@ -4115,6 +4176,7 @@ def dispatch_command(cmd: str) -> None:
                     _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic, clear_ast=_cleared_ast or None)
             except Exception as exc:
                 print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
+            _publish_identity_if_complete()
             if global_merge:
                 from graphify.global_graph import global_add as _global_add
                 _tag = global_repo_tag or target.name
@@ -4280,6 +4342,7 @@ def dispatch_command(cmd: str) -> None:
                 _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic, clear_ast=_cleared_ast or None)
         except Exception as exc:
             print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
+        _publish_identity_if_complete()
 
         cost = _estimate_cost(backend, merged["input_tokens"], merged["output_tokens"])
         print(

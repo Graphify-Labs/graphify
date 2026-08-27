@@ -12,6 +12,9 @@ from pathlib import Path
 
 import pytest
 
+from graphify.detect import detect
+from graphify.source_identity import publish_source_identity
+
 PYTHON = sys.executable
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -56,6 +59,17 @@ def _make_graph(tmp_path: Path) -> Path:
     (out / ".graphify_labels.json").write_text(
         json.dumps({str(k): v for k, v in labels.items()})
     )
+    return out
+
+
+def _make_query_graph(tmp_path: Path) -> Path:
+    (tmp_path / "model.py").write_text(
+        "class Transformer:\n    pass\n\nclass MultiHeadAttention:\n    pass\n\nclass LayerNorm:\n    pass\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "paper.md").write_text("# Attention mechanism\n", encoding="utf-8")
+    out = _make_graph(tmp_path)
+    publish_source_identity(out / "graph.json", tmp_path, detection=detect(tmp_path))
     return out
 
 
@@ -170,20 +184,20 @@ def test_export_falkordb_creates_cypher(tmp_path):
 # ── graphify query ───────────────────────────────────────────────────────────
 
 def test_query_returns_output(tmp_path):
-    _make_graph(tmp_path)
+    _make_query_graph(tmp_path)
     r = _run(["query", "test"], tmp_path)
     assert r.returncode == 0, r.stderr
     assert len(r.stdout) > 0
 
 
 def test_query_dfs_flag(tmp_path):
-    _make_graph(tmp_path)
+    _make_query_graph(tmp_path)
     r = _run(["query", "test", "--dfs"], tmp_path)
     assert r.returncode == 0, r.stderr
 
 
 def test_query_budget_flag(tmp_path):
-    _make_graph(tmp_path)
+    _make_query_graph(tmp_path)
     r = _run(["query", "test", "--budget", "500"], tmp_path)
     assert r.returncode == 0, r.stderr
 
@@ -194,7 +208,7 @@ def test_query_missing_graph_fails(tmp_path):
 
 
 def test_query_uses_graphify_out_env(tmp_path):
-    out = _make_graph(tmp_path)
+    out = _make_query_graph(tmp_path)
     custom_out = tmp_path / "custom-graph"
     out.rename(custom_out)
     env = os.environ.copy()
@@ -784,7 +798,7 @@ def test_query_command_header_names_the_graph(tmp_path):
     path into the header. The header logic is unit-tested in
     test_query_names_its_graph.py, but only a real subprocess run proves the CLI
     call site passes graph_path through (the wiring that was the point of #2789)."""
-    _make_graph(tmp_path)
+    _make_query_graph(tmp_path)
     r = _run(["query", "Transformer"], tmp_path)
     assert r.returncode == 0, r.stderr
     first_line = r.stdout.splitlines()[0]
@@ -793,16 +807,12 @@ def test_query_command_header_names_the_graph(tmp_path):
     assert "Traversal:" in first_line
 
 
-def test_query_command_names_a_graph_outside_the_cwd(tmp_path):
-    """The #2789 scenario: querying an explicit graph that sits outside the CWD
-    must show it in full so the operator can tell the answer came from elsewhere."""
+def test_query_command_rejects_a_graph_bound_to_another_cwd(tmp_path):
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
-    out = _make_graph(elsewhere)
+    out = _make_query_graph(elsewhere)
     here = tmp_path / "here"
     here.mkdir()
     r = _run(["query", "Transformer", "--graph", str(out / "graph.json")], here)
-    assert r.returncode == 0, r.stderr
-    first_line = r.stdout.splitlines()[0]
-    assert first_line.startswith("Graph: "), first_line
-    assert "elsewhere" in first_line, first_line
+    assert r.returncode != 0
+    assert "wrong_root" in r.stderr

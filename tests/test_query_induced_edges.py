@@ -13,7 +13,9 @@ import networkx as nx
 from networkx.readwrite import json_graph
 
 import graphify.__main__ as mainmod
+from graphify.detect import detect
 from graphify.serve import _bfs, _dfs, _filter_graph_by_context, _query_graph_text
+from graphify.source_identity import publish_source_identity
 
 # Hub suppression only kicks in at degree >= 50 (serve.py `hub_threshold`).
 _HUB_PADDING = 60
@@ -202,6 +204,11 @@ def test_directed_graph_renders_the_seed_to_seed_edge():
 
 def _write_two_seed_graph(tmp_path):
     """The reporter's shape: one `calls` edge whose endpoints are both seeds."""
+    (tmp_path / "app.py").write_text("def checkout():\n    pass\n", encoding="utf-8")
+    (tmp_path / "pricing.py").write_text(
+        "def discounted_total():\n    pass\n",
+        encoding="utf-8",
+    )
     G = nx.Graph()
     G.add_node(
         "app.py::checkout",
@@ -226,13 +233,16 @@ def _write_two_seed_graph(tmp_path):
         source_file="app.py",
         source_location="L5",
     )
-    graph_path = tmp_path / "graph.json"
+    graph_path = tmp_path / "graphify-out" / "graph.json"
+    graph_path.parent.mkdir()
     graph_path.write_text(json.dumps(json_graph.node_link_data(G, edges="links")))
+    publish_source_identity(graph_path, tmp_path, detection=detect(tmp_path))
     return graph_path
 
 
 def test_query_cli_renders_the_edge_between_two_seeds(monkeypatch, tmp_path, capsys):
     graph_path = _write_two_seed_graph(tmp_path)
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
     monkeypatch.setattr(
         mainmod.sys,

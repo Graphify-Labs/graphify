@@ -31,6 +31,7 @@ Signatures below are the real ones - `tests/test_architecture_doc.py` imports ev
 | `validate.py` | `validate_extraction(data)`, `assert_valid(data)` | extraction dict → **list of schema error strings** (`validate_extraction` returns them; `assert_valid` raises) |
 | `serve.py` | `serve(graph_path)`, `serve_http(graph_path, *, host, port, ...)` | graph file path → MCP stdio server / HTTP server |
 | `watch.py` | `watch(watch_path, debounce=3.0)`, `check_update(watch_path)` | directory → rebuild on change; `check_update` reports whether a re-extraction is pending |
+| `source_identity.py` | `freshness_status(root, graph_path)`, `publish_source_identity(graph_path, root)` | source tree + graph artifact → a stable eligibility result or a newly bound identity |
 | `benchmark.py` | `run_benchmark(graph_path)` | graph file → corpus vs subgraph token comparison |
 
 ### Calling `extract()` from your own code

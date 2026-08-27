@@ -322,10 +322,16 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
 
     node_community = _node_community_map(communities)
     _labels: dict[int, str] = {int(k): v for k, v in (community_labels or {}).items()}
+    from graphify.source_identity import SourceIdentity
+
+    source_identity = SourceIdentity.parse(getattr(G, "graph", {}).get("source_identity"))
     try:
         data = json_graph.node_link_data(G, edges="links")
     except TypeError:
         data = json_graph.node_link_data(G)
+    if isinstance(data.get("graph"), dict):
+        data["graph"] = dict(data["graph"])
+        data["graph"].pop("source_identity", None)
 
     def _json_sort_key(item: dict) -> str:
         return json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -399,6 +405,8 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
     if isinstance(data.get("graph"), dict) and "hyperedges" in data["graph"]:
         data["graph"]["hyperedges"] = hyperedges
     data["hyperedges"] = hyperedges
+    if source_identity is not None:
+        data["source_identity"] = source_identity.to_dict()
     # Fallback provenance comes from the repo the graph is being written INTO
     # (output_path lives in <target>/graphify-out/), never the shell's cwd —
     # the same cwd-anchoring mistake #2316 fixed for `update`.

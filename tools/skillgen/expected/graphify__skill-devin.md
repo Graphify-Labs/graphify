@@ -115,7 +115,9 @@ If the import succeeds, print nothing and move straight to Step 2.
 $(cat graphify-out/.graphify_python) -c "
 import json
 from graphify.detect import detect
+from graphify.source_identity import begin_reconciliation
 from pathlib import Path
+begin_reconciliation(Path('graphify-out/graph.json'))
 result = detect(Path('INPUT_PATH'))
 print(json.dumps(result))
 " > graphify-out/.graphify_detect.json
@@ -813,6 +815,8 @@ _stamped = {f for fl in _manifest_files.values() for f in fl}
 _cleared = _dispatched - _stamped
 _scan = {f for fl in _corpus.values() for f in fl}
 save_manifest(_manifest_files, root='INPUT_PATH', scan_corpus=_scan, clear_semantic=_cleared or None)
+from graphify.source_identity import publish_source_identity
+publish_source_identity(Path('graphify-out/graph.json'), Path('INPUT_PATH'), detection={'files': _corpus}, extraction_manifest_path=Path('graphify-out/manifest.json'))
 
 # Update cumulative cost tracker
 input_tok = extract.get('input_tokens', 0)
@@ -901,14 +905,17 @@ Use when you've added or modified files since the last run. Only re-extracts cha
 $(cat graphify-out/.graphify_python) -c "
 import sys, json
 from graphify.detect import detect_incremental, save_manifest
+from graphify.source_identity import begin_reconciliation, publish_source_identity
 from pathlib import Path
 
+begin_reconciliation(Path('graphify-out/graph.json'))
 result = detect_incremental(Path('INPUT_PATH'))
 new_total = result.get('new_total', 0)
 print(json.dumps(result, indent=2))
 Path('graphify-out/.graphify_incremental.json').write_text(json.dumps(result))
 deleted = list(result.get('deleted_files', []))
 if new_total == 0 and not deleted:
+    publish_source_identity(Path('graphify-out/graph.json'), Path('INPUT_PATH'), detection={'files': result.get('files', {})}, extraction_manifest_path=Path('graphify-out/manifest.json'))
     print('No files changed since last run. Nothing to update.')
     raise SystemExit(0)
 if deleted:
