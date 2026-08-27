@@ -24,6 +24,11 @@ def _clear_backend_env(monkeypatch):
         monkeypatch.delenv(env_key, raising=False)
 
 
+def test_extract_files_direct_rejects_unknown_backend_before_key_lookup(tmp_path):
+    with pytest.raises(ValueError, match="Unknown backend 'not-a-backend'"):
+        llm.extract_files_direct([], backend="not-a-backend", root=tmp_path)
+
+
 def test_resolve_ollama_base_url_prefers_base_url(monkeypatch):
     monkeypatch.setenv("OLLAMA_BASE_URL", "custom-base-url")
     monkeypatch.setenv("OLLAMA_HOST", "ignored-host:11434")

@@ -7,6 +7,7 @@ import math
 import os
 import sys
 import tempfile
+import threading
 import warnings
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -165,6 +166,7 @@ class _UsageCollector:
     """Collect numeric metadata without retaining prompt or error text."""
 
     def __init__(self) -> None:
+        self._lock = threading.Lock()
         self.values: dict[str, Any] = {
             "input_tokens": 0,
             "output_tokens": 0,
@@ -181,32 +183,37 @@ class _UsageCollector:
             return
         kind = _event_type(event)
         data = _value(event, "data", event)
-        if kind == "assistant.usage":
-            for field in (
-                "input_tokens",
-                "output_tokens",
-                "cache_read_tokens",
-                "cache_write_tokens",
-                "reasoning_tokens",
-            ):
-                self.values[field] = _add_numbers(
-                    self.values[field], _value(data, field, 0)
+        with self._lock:
+            if kind == "assistant.usage":
+                for field in (
+                    "input_tokens",
+                    "output_tokens",
+                    "cache_read_tokens",
+                    "cache_write_tokens",
+                    "reasoning_tokens",
+                ):
+                    self.values[field] = _add_numbers(
+                        self.values[field], _value(data, field, 0)
+                    )
+                cost = _value(data, "cost")
+                self.values["copilot_premium_request_cost"] = _add_numbers(
+                    self.values["copilot_premium_request_cost"], cost
                 )
-            cost = _value(data, "cost")
-            self.values["copilot_premium_request_cost"] = _add_numbers(
-                self.values["copilot_premium_request_cost"], cost
-            )
-            for field in ("model", "finish_reason"):
-                value = _value(data, field)
-                if value:
-                    self.values[field] = value
-        elif kind == "session.usage_info":
-            current = _value(data, "current_tokens", None)
-            limit = _value(data, "token_limit", None)
-            if current is not None:
-                self.values["context_current_tokens"] = _number(current)
-            if limit is not None:
-                self.values["context_limit"] = _number(limit)
+                for field in ("model", "finish_reason"):
+                    value = _value(data, field)
+                    if value:
+                        self.values[field] = value
+            elif kind == "session.usage_info":
+                current = _value(data, "current_tokens", None)
+                limit = _value(data, "token_limit", None)
+                if current is not None:
+                    self.values["context_current_tokens"] = _number(current)
+                if limit is not None:
+                    self.values["context_limit"] = _number(limit)
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            return dict(self.values)
 
 
 def _content_from_event(event: Any) -> str | None:
@@ -307,6 +314,74 @@ async def _run_bounded(
     raise asyncio.TimeoutError
 
 
+class _CopilotResources:
+    """Own one SDK client's lifecycle so cleanup state is always initialized."""
+
+    def __init__(self) -> None:
+        self.client: Any = None
+        self.session: Any = None
+        self.force_stopped = False
+        self.workspace = tempfile.TemporaryDirectory(prefix="graphify-copilot-")
+
+    async def __aenter__(self) -> "_CopilotResources":
+        return self
+
+    async def force_stop(self) -> None:
+        if (
+            self.client is not None
+            and getattr(self.client, "force_stop", None) is not None
+        ):
+            await self.client.force_stop()
+            self.force_stopped = True
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        _exc: BaseException | None,
+        _traceback: Any,
+    ) -> None:
+        cleanup_failed = False
+        cleanup_interrupt: BaseException | None = None
+
+        def record_cleanup_failure(error: BaseException) -> None:
+            nonlocal cleanup_failed, cleanup_interrupt
+            if isinstance(error, Exception):
+                cleanup_failed = True
+            elif cleanup_interrupt is None:
+                cleanup_interrupt = error
+
+        if self.session is not None and not self.force_stopped:
+            try:
+                await _run_bounded(
+                    self.session.disconnect(), timeout=_CLEANUP_TIMEOUT_SECONDS
+                )
+            except BaseException as error:
+                record_cleanup_failure(error)
+        if self.client is not None and not self.force_stopped:
+            try:
+                await _run_bounded(
+                    self.client.stop(), timeout=_CLEANUP_TIMEOUT_SECONDS
+                )
+            except BaseException as error:
+                record_cleanup_failure(error)
+                try:
+                    await _run_bounded(self.force_stop(), timeout=0.1)
+                except BaseException as force_error:
+                    record_cleanup_failure(force_error)
+        try:
+            self.workspace.cleanup()
+        except BaseException as error:
+            record_cleanup_failure(error)
+        if cleanup_interrupt is not None:
+            raise cleanup_interrupt
+        if exc_type is None and cleanup_failed:
+            warnings.warn(
+                "Copilot SDK cleanup did not finish cleanly after a valid response.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+
+
 async def _call_once(
     *,
     client_type: Any,
@@ -320,33 +395,22 @@ async def _call_once(
 ) -> dict[str, Any]:
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout_seconds
-    client: Any = None
-    session: Any = None
-    force_stopped = False
-    response_valid = False
-    workspace = tempfile.TemporaryDirectory(prefix="graphify-copilot-")
 
     def remaining() -> float:
         return max(0.0, deadline - loop.time())
 
-    async def force_stop() -> None:
-        nonlocal force_stopped
-        if client is not None and getattr(client, "force_stop", None) is not None:
-            await client.force_stop()
-            force_stopped = True
-
-    try:
+    async with _CopilotResources() as resources:
         collector = _UsageCollector()
         if remaining() <= 0:
             raise CopilotSdkTimeoutError(
                 "Copilot SDK request deadline expired before runtime setup."
             )
-        client = client_type(
+        resources.client = client_type(
             use_logged_in_user=True,
             mode="empty",
             enable_remote_sessions=False,
             base_directory=os.path.expanduser(os.environ.get("COPILOT_HOME", "~/.copilot")),
-            working_directory=workspace.name,
+            working_directory=resources.workspace.name,
         )
         if remaining() <= 0:
             raise CopilotSdkTimeoutError(
@@ -356,12 +420,16 @@ async def _call_once(
         startup_timed_out = False
         try:
             await _run_bounded(
-                client.start(),
+                resources.client.start(),
                 timeout=min(remaining(), _STARTUP_TIMEOUT_SECONDS),
-                abort=force_stop if getattr(client, "force_stop", None) else None,
+                abort=(
+                    resources.force_stop
+                    if getattr(resources.client, "force_stop", None)
+                    else None
+                ),
             )
-            session = await _run_bounded(
-                client.create_session(
+            resources.session = await _run_bounded(
+                resources.client.create_session(
                     on_permission_request=_deny_permission,
                     model=model,
                     reasoning_effort=reasoning_effort,
@@ -384,13 +452,17 @@ async def _call_once(
                     mcp_oauth_token_storage="in-memory",
                     skip_embedding_retrieval=True,
                     enable_mcp_apps=False,
-                    working_directory=workspace.name,
-                    config_directory=workspace.name,
+                    working_directory=resources.workspace.name,
+                    config_directory=resources.workspace.name,
                     system_message=_system_message(system_prompt),
                     on_event=collector,
                 ),
                 timeout=min(remaining(), _STARTUP_TIMEOUT_SECONDS),
-                abort=force_stop if getattr(client, "force_stop", None) else None,
+                abort=(
+                    resources.force_stop
+                    if getattr(resources.client, "force_stop", None)
+                    else None
+                ),
             )
         except asyncio.TimeoutError:
             startup_timed_out = True
@@ -408,11 +480,15 @@ async def _call_once(
         response: Any = None
         try:
             response = await _run_bounded(
-                session.send_and_wait(
+                resources.session.send_and_wait(
                     user_prompt, attachments=attachments, timeout=remaining()
                 ),
                 timeout=remaining(),
-                abort=force_stop if getattr(client, "force_stop", None) else None,
+                abort=(
+                    resources.force_stop
+                    if getattr(resources.client, "force_stop", None)
+                    else None
+                ),
             )
         except Exception:
             unknown_outcome = True
@@ -424,49 +500,11 @@ async def _call_once(
         content = _content_from_event(response) if response is not None else None
         if not content or not content.strip():
             raise RuntimeError("Copilot SDK returned no final assistant message.")
-        result = dict(collector.values)
+        result = collector.snapshot()
         result["content"] = content
         result.setdefault("model", model or COPILOT_DEFAULT_MODEL)
         result.setdefault("finish_reason", "stop")
-        response_valid = True
         return result
-    finally:
-        cleanup_failed = False
-        cleanup_interrupt: BaseException | None = None
-
-        def record_cleanup_failure(exc: BaseException) -> None:
-            nonlocal cleanup_failed, cleanup_interrupt
-            if isinstance(exc, Exception):
-                cleanup_failed = True
-            elif cleanup_interrupt is None:
-                cleanup_interrupt = exc
-
-        if session is not None and not force_stopped:
-            try:
-                await _run_bounded(session.disconnect(), timeout=_CLEANUP_TIMEOUT_SECONDS)
-            except BaseException as exc:
-                record_cleanup_failure(exc)
-        if client is not None and not force_stopped:
-            try:
-                await _run_bounded(client.stop(), timeout=_CLEANUP_TIMEOUT_SECONDS)
-            except BaseException as exc:
-                record_cleanup_failure(exc)
-                try:
-                    await _run_bounded(force_stop(), timeout=0.1)
-                except BaseException as force_exc:
-                    record_cleanup_failure(force_exc)
-        try:
-            workspace.cleanup()
-        except BaseException as exc:
-            record_cleanup_failure(exc)
-        if cleanup_interrupt is not None:
-            raise cleanup_interrupt
-        if response_valid and cleanup_failed:
-            warnings.warn(
-                "Copilot SDK cleanup did not finish cleanly after a valid response.",
-                RuntimeWarning,
-                stacklevel=2,
-            )
 
 
 async def _call_async(
@@ -548,6 +586,10 @@ def _run_async(factory: Callable[[], Any]) -> Any:
                             task.cancel()
                         return unresolved
 
+            loop.run_until_complete(cancel_all_tasks())
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            loop.run_until_complete(cancel_all_tasks())
+            loop.run_until_complete(loop.shutdown_default_executor())
             unresolved = loop.run_until_complete(cancel_all_tasks())
             if unresolved:
                 warnings.warn(

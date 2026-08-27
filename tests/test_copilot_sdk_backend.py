@@ -11,6 +11,7 @@ import time
 import traceback
 import types
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -316,6 +317,20 @@ def test_usage_collector_keeps_only_numeric_root_session_metadata():
     }
 
 
+def test_usage_collector_serializes_concurrent_callbacks():
+    collector = backend._UsageCollector()
+    event = SimpleNamespace(
+        type="assistant.usage",
+        data=SimpleNamespace(input_tokens=1, output_tokens=2, cost=0.25),
+    )
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(collector, [event] * 1000))
+    usage = collector.snapshot()
+    assert usage["input_tokens"] == 1000
+    assert usage["output_tokens"] == 2000
+    assert usage["copilot_premium_request_cost"] == 250
+
+
 def test_success_uses_official_send_and_wait_and_locked_down_session(monkeypatch, tmp_path):
     monkeypatch.setenv("COPILOT_HOME", str(tmp_path / "copilot-home"))
     usage = SimpleNamespace(
@@ -509,10 +524,11 @@ def test_run_async_reports_tasks_that_ignore_bounded_cancellation(monkeypatch):
     monkeypatch.setattr(backend, "_CLEANUP_TIMEOUT_SECONDS", 0.01)
 
     async def stubborn() -> None:
-        try:
-            await asyncio.Event().wait()
-        except asyncio.CancelledError:
-            await asyncio.Event().wait()
+        while True:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                continue
 
     async def factory() -> str:
         asyncio.create_task(stubborn())
@@ -548,6 +564,21 @@ def test_run_async_cancels_tasks_spawned_during_shutdown():
         warnings.filterwarnings("error", category=RuntimeWarning)
         assert backend._run_async(factory) == "ok"
     assert state == {"child_started": True, "child_finished": True}
+
+
+def test_run_async_drains_default_executor_before_returning():
+    state = {"finished": False}
+
+    def work() -> None:
+        time.sleep(0.02)
+        state["finished"] = True
+
+    async def factory() -> str:
+        asyncio.get_running_loop().run_in_executor(None, work)
+        return "ok"
+
+    assert backend._run_async(factory) == "ok"
+    assert state["finished"] is True
 
 
 def test_unknown_outcome_bypasses_graphify_adaptive_retry(monkeypatch, tmp_path):
