@@ -258,29 +258,45 @@ async def _run_bounded(
     if not inspect.isawaitable(operation):
         raise TypeError("Copilot SDK operation must be awaitable")
     task = asyncio.ensure_future(operation)
-    done, pending = await asyncio.wait({task}, timeout=max(0.0, timeout))
+
+    async def cancel_and_drain() -> set[asyncio.Task[Any]]:
+        task.cancel()
+        if abort is not None:
+            abort_result = abort()
+            if inspect.isawaitable(abort_result):
+                abort_task = asyncio.ensure_future(abort_result)
+                abort_done, abort_pending = await asyncio.wait(
+                    {abort_task}, timeout=_CLEANUP_TIMEOUT_SECONDS
+                )
+                for completed in abort_done:
+                    _consume_task(completed)
+                for unfinished in abort_pending:
+                    unfinished.cancel()
+                    unfinished.add_done_callback(_consume_task)
+        drained, still_pending = await asyncio.wait(
+            {task}, timeout=_CLEANUP_TIMEOUT_SECONDS
+        )
+        for completed in drained:
+            _consume_task(completed)
+        for unfinished in still_pending:
+            unfinished.add_done_callback(_consume_task)
+        return still_pending
+
+    try:
+        done, _ = await asyncio.wait({task}, timeout=max(0.0, timeout))
+    except asyncio.CancelledError:
+        pending = await cancel_and_drain()
+        if pending:
+            warnings.warn(
+                "Copilot SDK operation remained pending after bounded cancellation; "
+                "the runtime was force-stopped.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        raise
     if done:
         return task.result()
-    task.cancel()
-    if abort is not None:
-        abort_result = abort()
-        if inspect.isawaitable(abort_result):
-            abort_task = asyncio.ensure_future(abort_result)
-            abort_done, abort_pending = await asyncio.wait(
-                {abort_task}, timeout=_CLEANUP_TIMEOUT_SECONDS
-            )
-            for completed in abort_done:
-                _consume_task(completed)
-            for unfinished in abort_pending:
-                unfinished.cancel()
-                unfinished.add_done_callback(_consume_task)
-    drained, pending = await asyncio.wait(
-        {task}, timeout=_CLEANUP_TIMEOUT_SECONDS
-    )
-    for completed in drained:
-        _consume_task(completed)
-    for unfinished in pending:
-        unfinished.add_done_callback(_consume_task)
+    pending = await cancel_and_drain()
     if pending:
         warnings.warn(
             "Copilot SDK operation remained pending after bounded cancellation; "

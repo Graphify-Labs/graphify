@@ -458,6 +458,36 @@ def test_run_bounded_rejects_synchronous_callables_without_invoking_them():
     assert called is False
 
 
+def test_run_bounded_cancels_child_when_caller_is_cancelled():
+    async def run() -> None:
+        started = asyncio.Event()
+        child_finished = asyncio.Event()
+        abort_called = False
+
+        async def operation() -> None:
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                child_finished.set()
+
+        def abort() -> None:
+            nonlocal abort_called
+            abort_called = True
+
+        caller = asyncio.create_task(
+            backend._run_bounded(operation(), timeout=10, abort=abort)
+        )
+        await started.wait()
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        assert child_finished.is_set()
+        assert abort_called is True
+
+    asyncio.run(run())
+
+
 def test_run_async_reports_tasks_that_ignore_bounded_cancellation(monkeypatch):
     monkeypatch.setattr(backend, "_CLEANUP_TIMEOUT_SECONDS", 0.01)
 
