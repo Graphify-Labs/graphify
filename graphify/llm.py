@@ -1021,7 +1021,6 @@ def _image_notes(
     refs: list[_ImageRef],
     *,
     with_paths: bool = False,
-    file_attachments: bool = False,
 ) -> str:
     """Text block listing the images so the model emits one node per image.
 
@@ -1036,11 +1035,6 @@ def _image_notes(
         header = (
             "Use the Read tool to open and view each image file at the path below, "
             "then emit one node per image"
-        )
-    elif file_attachments:
-        header = (
-            "The following image file(s) are attached as visual input. Emit one "
-            "node per image"
         )
     else:
         header = (
@@ -1057,7 +1051,7 @@ def _image_notes(
         note = f"[image {i}] source_file: {r.rel}"
         if with_paths:
             note += f"  path: {r.path}"
-        if r.raw is None and not with_paths and not file_attachments:
+        if r.raw is None and not with_paths:
             note += " (not shown: unreadable or exceeds size limit)"
         lines.append(note)
     return "\n".join(lines)
@@ -1068,12 +1062,10 @@ def _with_image_notes(
     refs: list[_ImageRef],
     *,
     with_paths: bool = False,
-    file_attachments: bool = False,
 ) -> str:
     notes = _image_notes(
         refs,
         with_paths=with_paths,
-        file_attachments=file_attachments,
     )
     if not notes:
         return user_message

@@ -58,6 +58,7 @@ def _install_fake_copilot(
     send_error: BaseException | None = None,
     disconnect_error: BaseException | None = None,
     stop_error: BaseException | None = None,
+    constructor_error: BaseException | None = None,
     start_wait: bool = False,
     create_wait: bool = False,
     send_wait: bool = False,
@@ -105,6 +106,8 @@ def _install_fake_copilot(
         def __init__(self, **options: Any):
             if constructor_delay:
                 time.sleep(constructor_delay)
+            if constructor_error is not None:
+                raise constructor_error
             self.options = options
             state["clients"].append(self)
 
@@ -415,6 +418,20 @@ def test_runtime_setup_cannot_dispatch_after_deadline(monkeypatch):
     assert state["stops"] == 1
 
 
+def test_constructor_failure_has_no_unbound_cleanup_state(monkeypatch):
+    state = _install_fake_copilot(
+        monkeypatch,
+        constructor_error=RuntimeError("SECRET_CONSTRUCTOR"),
+    )
+    with pytest.raises(RuntimeError, match="Copilot SDK request failed") as exc_info:
+        _call()
+    assert "SECRET_CONSTRUCTOR" not in "".join(
+        traceback.format_exception(exc_info.value)
+    )
+    assert state["clients"] == []
+    assert state["sessions"] == []
+
+
 @pytest.mark.parametrize(
     "failure",
     [asyncio.TimeoutError("SECRET_AUTH_HEADER"), RuntimeError("SECRET_CORPUS")],
@@ -577,6 +594,19 @@ def test_process_control_exceptions_propagate_from_cleanup(monkeypatch):
     with pytest.raises(KeyboardInterrupt):
         _call()
     assert state["stops"] == 1
+    workspace = Path(state["clients"][0].options["working_directory"])
+    assert not workspace.exists()
+
+
+def test_cleanup_cancellation_replaces_a_primary_request_failure(monkeypatch):
+    state = _install_fake_copilot(
+        monkeypatch,
+        send_error=RuntimeError("SECRET_PRIMARY"),
+        disconnect_error=asyncio.CancelledError(),
+    )
+    with pytest.raises(asyncio.CancelledError):
+        _call()
+    assert state["disconnects"] == state["stops"] == 1
     workspace = Path(state["clients"][0].options["working_directory"])
     assert not workspace.exists()
 

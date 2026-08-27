@@ -323,7 +323,7 @@ async def _call_once(
     client: Any = None
     session: Any = None
     force_stopped = False
-    primary: BaseException | None = None
+    response_valid = False
     workspace = tempfile.TemporaryDirectory(prefix="graphify-copilot-")
 
     def remaining() -> float:
@@ -428,10 +428,8 @@ async def _call_once(
         result["content"] = content
         result.setdefault("model", model or COPILOT_DEFAULT_MODEL)
         result.setdefault("finish_reason", "stop")
+        response_valid = True
         return result
-    except BaseException as exc:
-        primary = exc
-        raise
     finally:
         cleanup_failed = False
         cleanup_interrupt: BaseException | None = None
@@ -461,15 +459,14 @@ async def _call_once(
             workspace.cleanup()
         except BaseException as exc:
             record_cleanup_failure(exc)
-        if primary is None:
-            if cleanup_interrupt is not None:
-                raise cleanup_interrupt
-            if cleanup_failed:
-                warnings.warn(
-                    "Copilot SDK cleanup did not finish cleanly after a valid response.",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
+        if cleanup_interrupt is not None:
+            raise cleanup_interrupt
+        if response_valid and cleanup_failed:
+            warnings.warn(
+                "Copilot SDK cleanup did not finish cleanly after a valid response.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
 
 async def _call_async(
