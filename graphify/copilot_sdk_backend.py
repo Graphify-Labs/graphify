@@ -412,7 +412,7 @@ async def _run_bounded(
         raise
     if done:
         return task.result()
-    pending = await cancel_and_drain()
+    pending, interrupted = await _finish_cleanup(cancel_and_drain())
     if pending:
         warnings.warn(
             "Copilot SDK operation remained pending after bounded cancellation; "
@@ -420,6 +420,8 @@ async def _run_bounded(
             RuntimeWarning,
             stacklevel=2,
         )
+    if interrupted:
+        raise asyncio.CancelledError
     raise asyncio.TimeoutError
 
 
@@ -444,6 +446,11 @@ class _CopilotResources:
             if client is not None and getattr(client, "force_stop", None) is not None:
                 await client.force_stop()
                 self.force_stopped = True
+                # force_stop is the terminal SDK lifecycle operation. Clear the
+                # handles so cleanup cannot treat the terminated runtime as a
+                # live session/client and attempt graceful calls against it.
+                self.session = None
+                self.client = None
 
     async def _is_force_stopped(self) -> bool:
         """Wait for an active force-stop before cleanup reads lifecycle state."""

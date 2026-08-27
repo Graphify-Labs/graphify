@@ -597,6 +597,40 @@ def test_run_bounded_timeout_cancels_and_drains_operation():
     asyncio.run(run())
 
 
+def test_late_cancellation_cannot_interrupt_timeout_abort_cleanup():
+    async def run() -> None:
+        abort_started = asyncio.Event()
+        release_abort = asyncio.Event()
+        operation_finished = asyncio.Event()
+        abort_finished = asyncio.Event()
+
+        async def operation() -> None:
+            try:
+                await asyncio.Event().wait()
+            finally:
+                operation_finished.set()
+
+        async def abort() -> None:
+            abort_started.set()
+            try:
+                await release_abort.wait()
+            finally:
+                abort_finished.set()
+
+        caller = asyncio.create_task(
+            backend._run_bounded(operation(), timeout=0.01, abort=abort)
+        )
+        await abort_started.wait()
+        caller.cancel()
+        release_abort.set()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        assert operation_finished.is_set()
+        assert abort_finished.is_set()
+
+    asyncio.run(run())
+
+
 def test_force_stop_is_idempotent_under_concurrent_cleanup():
     class Client:
         calls = 0
@@ -614,6 +648,26 @@ def test_force_stop_is_idempotent_under_concurrent_cleanup():
         return client.calls
 
     assert asyncio.run(run()) == 1
+
+
+def test_successful_force_stop_clears_terminated_runtime_handles():
+    class Client:
+        async def force_stop(self) -> None:
+            return None
+
+    async def run() -> None:
+        resources = backend._CopilotResources()
+        resources.client = Client()
+        resources.session = object()
+
+        await resources.force_stop()
+
+        assert resources.force_stopped is True
+        assert resources.client is None
+        assert resources.session is None
+        await resources.__aexit__(None, None, None)
+
+    asyncio.run(run())
 
 
 def test_cleanup_waits_for_in_flight_force_stop():
