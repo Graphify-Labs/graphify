@@ -98,3 +98,50 @@ def test_remap_communities_to_previous_assigns_deterministic_new_ids():
     assert list(remapped.keys()) == [0, 1]
     assert remapped[0] == ["x", "y", "z"]
     assert remapped[1] == ["m"]
+
+
+def _grouping(partition):
+    """Canonicalize {node: community_id} into a set of frozenset node-groups,
+    so two partitions compare equal regardless of the community-id labels."""
+    from collections import defaultdict
+    groups = defaultdict(set)
+    for node, cid in partition.items():
+        groups[cid].add(node)
+    return {frozenset(s) for s in groups.values()}
+
+
+def test_native_leiden_matches_graspologic_wrapper(monkeypatch):
+    """#3104: the direct graspologic_native path must produce the SAME partition
+    as the graspologic wrapper it replaces. Run _partition with the native path
+    active, then with _native_leiden forced to fall through to the wrapper, and
+    assert identical node groupings. Skips unless both are installed."""
+    import importlib.util
+    import pytest
+    if not (importlib.util.find_spec("graspologic_native")
+            and importlib.util.find_spec("graspologic")):
+        pytest.skip("graspologic / graspologic_native not installed")
+    import graphify.cluster as cl
+
+    # Two triangles joined by a single edge: an unambiguous 2-community split.
+    G = nx.Graph()
+    for a, b in [("a1", "a2"), ("a1", "a3"), ("a2", "a3"),
+                 ("b1", "b2"), ("b1", "b3"), ("b2", "b3"), ("a1", "b1")]:
+        G.add_edge(a, b)
+
+    native = cl._partition(G, 1.0)
+    monkeypatch.setattr(cl, "_native_leiden", lambda *a, **k: None)
+    wrapper = cl._partition(G, 1.0)
+
+    assert _grouping(native) == _grouping(wrapper), (
+        f"native path diverged from the wrapper: {native} vs {wrapper}"
+    )
+
+
+def test_native_leiden_returns_none_when_binding_absent(monkeypatch):
+    """When graspologic_native cannot be imported, _native_leiden must return
+    None so _partition falls through to the wrapper / Louvain, not crash."""
+    import graphify.cluster as cl
+    monkeypatch.setitem(sys.modules, "graspologic_native", None)  # import → ImportError
+    stable = nx.Graph()
+    stable.add_edge("x", "y")
+    assert cl._native_leiden(stable, 1.0) is None
