@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Feature: add an explicit, optional `copilot-sdk` semantic-extraction backend using the user's existing GitHub Copilot authentication. Requests use isolated no-tool sessions, support inline images, and are never replayed after an uncertain post-dispatch failure.
+
 ## 0.9.50 (2026-08-25)
 
 - Fix: Ruby methods whose names end in `!`, `?`, or `=` now keep distinct node ids, so `save` and `save!` (or `foo` and `foo=`) no longer collide into one node; the label keeps the raw spelling and member-call resolution still matches (#3077, thanks @hopstreax).

@@ -411,13 +411,28 @@ def test_label_communities_runs_batches_concurrently(monkeypatch):
 
 
 def test_label_communities_forces_serial_for_ollama(monkeypatch):
-    """ollama/claude-cli must stay serial regardless of --max-concurrency."""
+    """Ollama stays serial unless its explicit parallel opt-in is set."""
     G, communities = _many_communities(8)
     fake_batch, state = _peak_tracker()
     monkeypatch.setattr("graphify.llm._label_batch_with_retry", fake_batch)
     monkeypatch.delenv("GRAPHIFY_OLLAMA_PARALLEL", raising=False)
     label_communities(G, communities, backend="ollama", batch_size=1, max_concurrency=8)
     assert state["peak"] == 1, "ollama must be forced serial"
+
+
+def test_label_communities_forces_serial_for_copilot_sdk(monkeypatch):
+    G, communities = _many_communities(8)
+    fake_batch, state = _peak_tracker()
+    monkeypatch.setattr("graphify.llm._label_batch_with_retry", fake_batch)
+    monkeypatch.delenv("GRAPHIFY_COPILOT_SDK_PARALLEL", raising=False)
+    label_communities(
+        G,
+        communities,
+        backend="copilot-sdk",
+        batch_size=1,
+        max_concurrency=8,
+    )
+    assert state["peak"] == 1, "copilot-sdk must be forced serial"
 
 
 def test_label_communities_salvages_truncated_reply(monkeypatch):

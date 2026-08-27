@@ -880,11 +880,18 @@ def _llm_tiebreak(
 ) -> None:
     """Batch-resolve ambiguous pairs (score in [low, high)) via LLM."""
     try:
-        from graphify.llm import BACKENDS, _format_backend_env_keys, _get_backend_api_key
+        from graphify.llm import (
+            BACKENDS,
+            _backend_requires_api_key,
+            _format_backend_env_keys,
+            _get_backend_api_key,
+        )
         if backend not in BACKENDS:
             print(f"[graphify] --dedup-llm: unknown backend {backend!r}, skipping LLM tiebreaker.", flush=True)
             return
-        if not _get_backend_api_key(backend):
+        # Keyless providers authenticate through their own credential chain or
+        # signed-in runtime. Let the shared dispatcher validate that provider.
+        if not _get_backend_api_key(backend) and _backend_requires_api_key(backend):
             env_keys = _format_backend_env_keys(backend)
             print(f"[graphify] --dedup-llm: {env_keys} not set, skipping LLM tiebreaker.", flush=True)
             return

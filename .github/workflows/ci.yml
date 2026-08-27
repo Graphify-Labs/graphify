@@ -78,6 +78,41 @@ jobs:
           uv run --frozen graphify --help
           uv run --frozen graphify install
 
+  copilot-backend:
+    # The Copilot SDK is optional and requires Python 3.11+. Keep the full
+    # suite on Ubuntu, but prove the provider boundary and CLI path on every
+    # desktop platform Graphify supports.
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install Graphify with the Copilot SDK
+        run: uv sync --extra copilot --frozen
+
+      - name: Run the focused Copilot contract
+        env:
+          GRAPHIFY_COPILOT_RUNTIME_SMOKE: "1"
+        run: >-
+          uv run --frozen pytest -q --tb=short
+          tests/test_copilot_sdk_backend.py
+          tests/test_cli_extract_copilot_sdk.py
+          tests/test_dedup.py
+          tests/test_labeling.py
+          tests/test_prs.py
+
+      - name: Verify the CLI loads
+        run: uv run --frozen graphify --help
+
   security-scan:
     # The dev deps include bandit and pip-audit. Run them in CI so a new
     # HIGH-severity finding or vulnerable dependency is caught on the PR that
