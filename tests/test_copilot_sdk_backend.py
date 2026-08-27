@@ -249,6 +249,18 @@ def test_missing_optional_dependency_error_is_actionable(monkeypatch):
         _call()
 
 
+def test_missing_model_capability_types_error_is_actionable(monkeypatch):
+    pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+    package_name = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"][
+        "name"
+    ]
+    incomplete = types.ModuleType("copilot")
+    setattr(incomplete, "CopilotClient", object)
+    monkeypatch.setitem(sys.modules, "copilot", incomplete)
+    with pytest.raises(ImportError, match=rf"{re.escape(package_name)}\[copilot\]"):
+        _call(max_output_tokens=1234)
+
+
 def test_blob_attachments_are_inline_and_hide_host_paths():
     images = [
         backend.CopilotImage(b"one", "image/png", "/private/source/diagram.png"),

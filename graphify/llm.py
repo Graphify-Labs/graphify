@@ -750,13 +750,11 @@ def _canonicalize_result_source_files(
     units: "Sequence[Path | FileSlice]",
     root: Path,
 ) -> int:
-    """Restore a model-shortened ``source_file`` when the chunk proves one match.
+    """Normalize only an exact dispatched ``source_file`` identifier.
 
-    Models sometimes drop a leading project directory from the literal path in
-    an ``<untrusted_source>`` wrapper.  Repair only against files dispatched in
-    this call, and only when the reported POSIX suffix identifies exactly one
-    file.  Ambiguous and out-of-scope paths remain untouched for the existing
-    cache and scope guards to reject visibly.
+    Decode the prompt's XML attribute escaping and normalize path separators,
+    but never guess a shortened path. Out-of-scope values remain untouched for
+    the existing cache and scope guards to reject visibly.
     """
     canonical: set[str] = set()
     for unit in units:
@@ -794,21 +792,6 @@ def _canonicalize_result_source_files(
                 if reported != normalized:
                     item["source_file"] = normalized
                     repaired += 1
-                continue
-            # A real path that was not dispatched is not a shortened spelling.
-            # Preserve it so the normal scope guard rejects the attribution.
-            # Rewriting it to the only dispatched suffix match would hide a
-            # model's wrong-file claim.
-            reported_path = root.joinpath(*parts)
-            if reported_path.exists() or reported_path.is_symlink():
-                continue
-            matches = [
-                candidate for candidate in canonical
-                if candidate.endswith("/" + normalized)
-            ]
-            if len(matches) == 1:
-                item["source_file"] = matches[0]
-                repaired += 1
     return repaired
 
 

@@ -218,7 +218,7 @@ def test_diagnostics_reports_unverified_node_count():
     assert "unverified_code_nodes: 1" in format_diagnostic_report(summary)
 
 
-def test_unique_truncated_source_path_is_restored_from_dispatched_files(tmp_path):
+def test_truncated_source_path_is_not_guessed_from_dispatched_files(tmp_path):
     src = tmp_path / "project-a" / "docs" / "README.md"
     src.parent.mkdir(parents=True)
     src.write_text("# Architecture\n", encoding="utf-8")
@@ -239,11 +239,10 @@ def test_unique_truncated_source_path_is_restored_from_dispatched_files(tmp_path
 
     repaired = llm._canonicalize_result_source_files(result, [src], tmp_path)
 
-    assert repaired == 3
-    expected = "project-a/docs/README.md"
-    assert result["nodes"][0]["source_file"] == expected
-    assert result["edges"][0]["source_file"] == expected
-    assert result["hyperedges"][0]["source_file"] == expected
+    assert repaired == 0
+    assert result["nodes"][0]["source_file"] == "docs/README.md"
+    assert result["edges"][0]["source_file"] == "docs/README.md"
+    assert result["hyperedges"][0]["source_file"] == "docs/README.md"
 
 
 def test_canonical_source_keeps_in_root_symlink_spelling(requires_symlinks, tmp_path):
@@ -271,7 +270,7 @@ def test_canonical_source_keeps_in_root_symlink_spelling(requires_symlinks, tmp_
     assert result["nodes"][0]["source_file"] == "alias/README.md"
 
 
-def test_extract_files_direct_repairs_unique_truncated_source_path(tmp_path):
+def test_extract_files_direct_does_not_guess_truncated_source_path(tmp_path):
     src = tmp_path / "project-a" / "docs" / "README.md"
     src.parent.mkdir(parents=True)
     src.write_text("# Architecture\n", encoding="utf-8")
@@ -282,7 +281,7 @@ def test_extract_files_direct_repairs_unique_truncated_source_path(tmp_path):
 
     result = _run([src], nodes, tmp_path)
 
-    assert result["nodes"][0]["source_file"] == "project-a/docs/README.md"
+    assert result["nodes"][0]["source_file"] == "docs/README.md"
 
 
 def test_source_path_repair_preserves_existing_non_dispatched_file(tmp_path):

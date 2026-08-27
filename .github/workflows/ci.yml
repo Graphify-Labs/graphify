@@ -103,7 +103,7 @@ jobs:
         env:
           GRAPHIFY_COPILOT_RUNTIME_SMOKE: "1"
         run: >-
-          uv run --frozen pytest -q --tb=short
+          uv run --extra copilot --frozen pytest -q --tb=short
           tests/test_copilot_sdk_backend.py
           tests/test_cli_extract_copilot_sdk.py
           tests/test_dedup.py
@@ -111,7 +111,7 @@ jobs:
           tests/test_prs.py
 
       - name: Verify the CLI loads
-        run: uv run --frozen graphify --help
+        run: uv run --extra copilot --frozen graphify --help
 
   security-scan:
     # The dev deps include bandit and pip-audit. Run them in CI so a new

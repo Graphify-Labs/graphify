@@ -994,15 +994,15 @@ async def _call_async(
 ) -> dict[str, Any]:
     try:
         from copilot import CopilotClient  # pyright: ignore[reportMissingImports]
+        if max_output_tokens is not None:
+            from copilot import (  # pyright: ignore[reportMissingImports]
+                ModelCapabilitiesOverride,
+                ModelLimitsOverride,
+            )
     except ImportError as exc:
         raise ImportError(_INSTALL_HINT) from exc
     model_capabilities = None
     if max_output_tokens is not None:
-        from copilot import (  # pyright: ignore[reportMissingImports]
-            ModelCapabilitiesOverride,
-            ModelLimitsOverride,
-        )
-
         model_capabilities = ModelCapabilitiesOverride(
             limits=ModelLimitsOverride(max_output_tokens=max_output_tokens)
         )
