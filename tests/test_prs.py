@@ -439,6 +439,7 @@ class TestCopilotSdkTriage:
             "backend": "copilot-sdk",
             "model": "auto",
             "max_tokens": 1024,
+            "usage_out": {},
         }
         assert "Validate the enterprise authentication path" in capsys.readouterr().out
 

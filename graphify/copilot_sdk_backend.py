@@ -343,6 +343,11 @@ class _CopilotResources:
                 await client.force_stop()
                 self.force_stopped = True
 
+    async def _is_force_stopped(self) -> bool:
+        """Wait for an active force-stop before cleanup reads lifecycle state."""
+        async with self._force_stop_lock:
+            return self.force_stopped
+
     async def __aexit__(
         self,
         exc_type: type[BaseException] | None,
@@ -359,7 +364,7 @@ class _CopilotResources:
             elif cleanup_interrupt is None:
                 cleanup_interrupt = error
 
-        if self.session is not None and not self.force_stopped:
+        if self.session is not None and not await self._is_force_stopped():
             try:
                 await _run_bounded(
                     self.session.disconnect(),
@@ -368,7 +373,7 @@ class _CopilotResources:
                 )
             except BaseException as error:
                 record_cleanup_failure(error)
-        if self.client is not None and not self.force_stopped:
+        if self.client is not None and not await self._is_force_stopped():
             try:
                 await _run_bounded(
                     self.client.stop(),

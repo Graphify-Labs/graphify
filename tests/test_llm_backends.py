@@ -29,6 +29,13 @@ def test_extract_files_direct_rejects_unknown_backend_before_key_lookup(tmp_path
         llm.extract_files_direct([], backend="not-a-backend", root=tmp_path)
 
 
+def test_untrusted_wrapper_escapes_filename_attribute_delimiters():
+    wrapped = llm._wrap_untrusted('bad" injected="yes & <tag>', "content")
+    opening_tag = wrapped.splitlines()[0]
+    assert 'path="bad&quot; injected=&quot;yes &amp; &lt;tag&gt;"' in opening_tag
+    assert ' injected="yes' not in opening_tag
+
+
 def test_resolve_ollama_base_url_prefers_base_url(monkeypatch):
     monkeypatch.setenv("OLLAMA_BASE_URL", "custom-base-url")
     monkeypatch.setenv("OLLAMA_HOST", "ignored-host:11434")

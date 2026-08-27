@@ -557,6 +557,35 @@ def test_force_stop_is_idempotent_under_concurrent_cleanup():
     assert asyncio.run(run()) == 1
 
 
+def test_cleanup_waits_for_in_flight_force_stop():
+    release = asyncio.Event()
+    calls: list[str] = []
+
+    class Client:
+        async def force_stop(self) -> None:
+            calls.append("force-start")
+            await release.wait()
+            calls.append("force-finish")
+
+        async def stop(self) -> None:
+            calls.append("stop")
+
+    async def run() -> None:
+        resources = backend._CopilotResources()
+        resources.client = Client()
+        stopping = asyncio.create_task(resources.force_stop())
+        while calls != ["force-start"]:
+            await asyncio.sleep(0)
+        cleanup = asyncio.create_task(resources.__aexit__(None, None, None))
+        await asyncio.sleep(0)
+        assert not cleanup.done()
+        release.set()
+        await asyncio.gather(stopping, cleanup)
+
+    asyncio.run(run())
+    assert calls == ["force-start", "force-finish"]
+
+
 def test_run_async_reports_tasks_that_ignore_bounded_cancellation(monkeypatch):
     monkeypatch.setattr(backend, "_CLEANUP_TIMEOUT_SECONDS", 0.01)
 

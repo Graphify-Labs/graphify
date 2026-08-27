@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import html
 import json
 import math
 import os
@@ -668,9 +669,10 @@ def _wrap_untrusted(rel: str, content: str) -> str:
     reviewer correlate a suspicious node back to the exact bytes that produced it.
     """
     sha = hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()
+    safe_rel = html.escape(rel, quote=True)
     safe = _neutralise_injection_sentinels(content)
     return (
-        f'<untrusted_source path="{rel}" sha256="{sha}">\n'
+        f'<untrusted_source path="{safe_rel}" sha256="{sha}">\n'
         f"{safe}\n"
         f"</untrusted_source>"
     )
