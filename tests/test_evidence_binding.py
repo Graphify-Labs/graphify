@@ -244,6 +244,31 @@ def test_unique_truncated_source_path_is_restored_from_dispatched_files(tmp_path
     assert result["hyperedges"][0]["source_file"] == expected
 
 
+def test_canonical_source_keeps_in_root_symlink_spelling(requires_symlinks, tmp_path):
+    actual = tmp_path / "actual"
+    actual.mkdir()
+    src = actual / "README.md"
+    src.write_text("# Architecture\n", encoding="utf-8")
+    alias = tmp_path / "alias"
+    alias.symlink_to(actual, target_is_directory=True)
+    dispatched = alias / "README.md"
+    result = {
+        "nodes": [
+            {
+                "id": "architecture",
+                "label": "Architecture",
+                "file_type": "document",
+                "source_file": "alias/README.md",
+            }
+        ]
+    }
+
+    repaired = llm._canonicalize_result_source_files(result, [dispatched], tmp_path)
+
+    assert repaired == 0
+    assert result["nodes"][0]["source_file"] == "alias/README.md"
+
+
 def test_extract_files_direct_repairs_unique_truncated_source_path(tmp_path):
     src = tmp_path / "project-a" / "docs" / "README.md"
     src.parent.mkdir(parents=True)

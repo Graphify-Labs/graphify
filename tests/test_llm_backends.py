@@ -36,6 +36,28 @@ def test_untrusted_wrapper_escapes_filename_attribute_delimiters():
     assert ' injected="yes' not in opening_tag
 
 
+def test_escaped_prompt_path_is_restored_to_source_identifier(tmp_path):
+    src = tmp_path / 'quote"&.md'
+    src.write_text("content", encoding="utf-8")
+    result = {
+        "nodes": [
+            {
+                "id": "quoted",
+                "label": "Quoted",
+                "file_type": "document",
+                "source_file": "quote&amp;quot;&amp;.md",
+            }
+        ]
+    }
+    # Use the real escaped attribute spelling rather than duplicating the
+    # escaping rules in this test.
+    wrapped = llm._wrap_untrusted(src.name, "content")
+    result["nodes"][0]["source_file"] = wrapped.split('path="', 1)[1].split('"', 1)[0]
+
+    assert llm._canonicalize_result_source_files(result, [src], tmp_path) == 1
+    assert result["nodes"][0]["source_file"] == src.name
+
+
 def test_resolve_ollama_base_url_prefers_base_url(monkeypatch):
     monkeypatch.setenv("OLLAMA_BASE_URL", "custom-base-url")
     monkeypatch.setenv("OLLAMA_HOST", "ignored-host:11434")

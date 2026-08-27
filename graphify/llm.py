@@ -753,10 +753,10 @@ def _canonicalize_result_source_files(
         safe = _resolve_under_root(path, root)
         if safe is None:
             continue
-        try:
-            canonical.add(safe.relative_to(root.resolve()).as_posix())
-        except ValueError:
-            continue
+        # Keep the same spelling that was placed in the prompt. In particular,
+        # an in-root symlink may resolve to a different path, but source_file is
+        # a portable source identifier rather than a resolved filesystem path.
+        canonical.add(_prompt_path(path, root))
 
     repaired = 0
     for bucket in ("nodes", "edges", "hyperedges"):
@@ -766,7 +766,10 @@ def _canonicalize_result_source_files(
             reported = item.get("source_file")
             if not isinstance(reported, str) or not reported.strip():
                 continue
-            raw = reported.replace("\\", "/").strip()
+            # The prompt wrapper is HTML/XML escaped. Models commonly copy the
+            # attribute value literally, so decode it before matching it back
+            # to the canonical source identifier.
+            raw = html.unescape(reported).replace("\\", "/").strip()
             parts = [part for part in raw.split("/") if part not in ("", ".")]
             if (
                 raw.startswith("/")
@@ -1033,15 +1036,28 @@ def _image_notes(
     """
     if not refs:
         return ""
+    attached = [ref for ref in refs if ref.raw is not None]
+    reference_only = [ref for ref in refs if ref.raw is None]
     if with_paths:
         header = (
             "Use the Read tool to open and view each image file at the path below, "
             "then emit one node per image"
         )
-    else:
+    elif attached and reference_only:
+        header = (
+            "Some image files are attached as visual input. Others are listed as "
+            "reference-only because their pixels could not be attached. Emit one "
+            "node per image"
+        )
+    elif attached:
         header = (
             "The following image file(s) are attached as visual input. Emit one "
             "node per image"
+        )
+    else:
+        header = (
+            "The following image file(s) are reference-only because their pixels "
+            "could not be attached. Emit one node per image"
         )
     lines = [
         "=== IMAGES ===",
@@ -1053,8 +1069,8 @@ def _image_notes(
         note = f"[image {i}] source_file: {r.rel}"
         if with_paths:
             note += f"  path: {r.path}"
-        if r.raw is None and not with_paths:
-            note += " (not shown: unreadable or exceeds size limit)"
+        if not with_paths:
+            note += " (attached)" if r.raw is not None else " (reference-only: pixels unavailable)"
         lines.append(note)
     return "\n".join(lines)
 
@@ -1945,15 +1961,19 @@ def _run_copilot_sdk(
     """Complete through the isolated SDK adapter."""
     from graphify.copilot_sdk_backend import CopilotImage, call_copilot_sdk
 
-    inline_images = [
-        CopilotImage(
-            data=ref.raw,
-            mime_type=ref.media_type,
-            display_name=ref.rel,
+    inline_images: list[CopilotImage] = []
+    for ref in images or []:
+        if ref.raw is None:
+            raise ValueError(
+                "Copilot SDK transport received a reference-only image"
+            )
+        inline_images.append(
+            CopilotImage(
+                data=ref.raw,
+                mime_type=ref.media_type,
+                display_name=ref.rel,
+            )
         )
-        for ref in images or []
-        if ref.raw is not None
-    ]
     sdk_model = None if model in (None, "", "copilot-plan-default") else model
     return call_copilot_sdk(
         prompt,
@@ -1975,13 +1995,14 @@ def _call_copilot_sdk(
 ) -> dict:
     """Extract a graph through the isolated Copilot SDK."""
     refs = images or []
+    attached_refs = [ref for ref in refs if ref.raw is not None]
     sdk_user_message = _with_image_notes(user_message, refs)
     system_prompt = _extraction_system(deep=deep_mode)
     response = _run_copilot_sdk(
         sdk_user_message,
         system_prompt=system_prompt,
         model=model,
-        images=refs,
+        images=attached_refs,
     )
     raw_content = str(response.get("content") or "")
     result = _parse_llm_json(raw_content or "{}")

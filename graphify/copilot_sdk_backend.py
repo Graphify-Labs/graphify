@@ -268,28 +268,39 @@ async def _run_bounded(
 
     async def cancel_and_drain() -> set[asyncio.Task[Any]]:
         abort_interrupt: BaseException | None = None
+        cleanup_tasks = {task}
+        deadline = asyncio.get_running_loop().time() + _CLEANUP_TIMEOUT_SECONDS
         task.cancel()
         if abort is not None:
             try:
                 abort_result = abort()
                 if inspect.isawaitable(abort_result):
                     abort_task = asyncio.ensure_future(abort_result)
-                    abort_done, abort_pending = await asyncio.wait(
-                        {abort_task}, timeout=_CLEANUP_TIMEOUT_SECONDS
-                    )
-                    for completed in abort_done:
-                        _consume_task(completed)
-                    for unfinished in abort_pending:
-                        unfinished.cancel()
-                        unfinished.add_done_callback(_consume_task)
+                    cleanup_tasks.add(abort_task)
             except BaseException as error:
                 if not isinstance(error, Exception):
                     abort_interrupt = error
         drained, still_pending = await asyncio.wait(
-            {task}, timeout=_CLEANUP_TIMEOUT_SECONDS
+            cleanup_tasks,
+            timeout=max(0.0, deadline - asyncio.get_running_loop().time()),
         )
         for completed in drained:
+            try:
+                completed.result()
+            except BaseException as error:
+                if completed is not task and not isinstance(error, Exception):
+                    abort_interrupt = abort_interrupt or error
+        for unfinished in still_pending:
+            unfinished.cancel()
+        # Give cooperative cancellation one loop turn. Keep every task that
+        # still refuses cancellation in the returned set so the loop owner can
+        # report and drain it during final shutdown.
+        if still_pending:
+            await asyncio.sleep(0)
+        resolved_after_cancel = {task for task in still_pending if task.done()}
+        for completed in resolved_after_cancel:
             _consume_task(completed)
+        still_pending -= resolved_after_cancel
         for unfinished in still_pending:
             unfinished.add_done_callback(_consume_task)
         if abort_interrupt is not None:
@@ -561,22 +572,13 @@ def _run_async(factory: Callable[[], Any]) -> Any:
     """Run the async SDK from Graphify's synchronous provider interface."""
 
     def run_isolated() -> Any:
-        policy = asyncio.get_event_loop_policy()
-        policy_local = getattr(policy, "_local", None)
-        if policy_local is not None and hasattr(policy_local, "_loop"):
-            previous_loop = getattr(policy_local, "_loop", None)
-        else:
-            try:
-                previous_loop = policy.get_event_loop()
-            except RuntimeError:
-                previous_loop = None
         loop = asyncio.new_event_loop()
         default_executor = ThreadPoolExecutor(
             thread_name_prefix="graphify-copilot-sdk"
         )
         loop.set_default_executor(default_executor)
         try:
-            policy.set_event_loop(loop)
+            asyncio.set_event_loop(loop)
             return loop.run_until_complete(factory())
         finally:
             async def cancel_all_tasks() -> set[asyncio.Task[Any]]:
@@ -652,19 +654,11 @@ def _run_async(factory: Callable[[], Any]) -> Any:
                     event_loop.default_exception_handler(context)
 
                 loop.set_exception_handler(suppress_destroyed_pending)
-            if previous_loop is not None and not previous_loop.is_closed():
-                policy.set_event_loop(previous_loop)
-            else:
-                policy.set_event_loop(None)
+            asyncio.set_event_loop(None)
             loop.close()
 
-    running_loop: asyncio.AbstractEventLoop | None
-    try:
-        running_loop = asyncio.get_running_loop()
-    except RuntimeError:
-        running_loop = None
-    if running_loop is None:
-        return run_isolated()
+    # Always create the SDK loop in a dedicated thread. Event-loop selection is
+    # thread-local, so this never replaces a dormant or running caller loop.
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix="graphify-copilot") as pool:
         return pool.submit(run_isolated).result()
 

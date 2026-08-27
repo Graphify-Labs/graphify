@@ -150,6 +150,38 @@ def test_build_image_refs_drops_oversized(tmp_path, monkeypatch):
     assert ref.media_type == "image/jpeg"
 
 
+def test_image_notes_distinguish_attached_and_reference_only_images(tmp_path):
+    attached = llm._ImageRef(tmp_path / "shown.png", "shown.png", "image/png", b"pixels")
+    reference = llm._ImageRef(tmp_path / "large.png", "large.png", "image/png", None)
+
+    notes = llm._image_notes([attached, reference])
+
+    assert "Some image files are attached" in notes
+    assert "[image 1] source_file: shown.png (attached)" in notes
+    assert "[image 2] source_file: large.png (reference-only: pixels unavailable)" in notes
+
+
+def test_copilot_prompt_keeps_reference_only_image_without_transporting_it(
+    tmp_path, monkeypatch
+):
+    attached = llm._ImageRef(tmp_path / "shown.png", "shown.png", "image/png", b"pixels")
+    reference = llm._ImageRef(tmp_path / "large.png", "large.png", "image/png", None)
+    captured = {}
+
+    def fake_run(prompt, **kwargs):
+        captured["prompt"] = prompt
+        captured["images"] = kwargs["images"]
+        return {"content": _NODE_JSON}
+
+    monkeypatch.setattr(llm, "_run_copilot_sdk", fake_run)
+
+    llm._call_copilot_sdk("CORPUS", images=[attached, reference])
+
+    assert captured["images"] == [attached]
+    assert "shown.png (attached)" in captured["prompt"]
+    assert "large.png (reference-only: pixels unavailable)" in captured["prompt"]
+
+
 def test_path_backend_skips_byte_read_and_size_cap(tmp_path, monkeypatch):
     # Path-based backends such as claude-cli use the file path, so
     # _build_image_refs(read_bytes=False) loads no bytes and applies no size cap.

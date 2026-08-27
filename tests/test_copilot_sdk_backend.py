@@ -811,6 +811,44 @@ def test_run_async_restores_a_dormant_caller_loop():
         original.close()
 
 
+def test_run_async_never_changes_the_callers_event_loop_policy_state():
+    original = asyncio.new_event_loop()
+    asyncio.set_event_loop(original)
+    caller_thread = threading.get_ident()
+
+    async def identify_thread() -> int:
+        return threading.get_ident()
+
+    try:
+        worker_thread = backend._run_async(identify_thread)
+        assert worker_thread != caller_thread
+        assert asyncio.get_event_loop() is original
+    finally:
+        asyncio.set_event_loop(None)
+        original.close()
+
+
+def test_run_bounded_tracks_abort_task_that_ignores_cancellation(monkeypatch):
+    monkeypatch.setattr(backend, "_CLEANUP_TIMEOUT_SECONDS", 0.01)
+
+    async def stubborn() -> None:
+        while True:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                continue
+
+    async def run() -> None:
+        with pytest.warns(RuntimeWarning, match="remained pending"):
+            with pytest.raises(asyncio.TimeoutError):
+                await backend._run_bounded(
+                    asyncio.Event().wait(), timeout=0, abort=stubborn
+                )
+
+    with pytest.warns(RuntimeWarning, match="tasks remained pending"):
+        backend._run_async(run)
+
+
 def test_permission_handler_rejects_tool_requests(monkeypatch):
     generated = types.ModuleType("copilot.generated")
     rpc = types.ModuleType("copilot.generated.rpc")
