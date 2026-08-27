@@ -311,6 +311,61 @@ def default_graph_json() -> str:
     return str(out_path("graph.json"))
 
 
+def _usable_graph_json(candidate: Path) -> bool:
+    """Whether *candidate* is a graph.json we can actually read.
+
+    An output directory can exist while its graph.json is unusable: a dangling
+    junction/symlink (common when a worktree's ``graphify-out`` points at a
+    deleted sibling), a zero-byte file left by an interrupted write, or a file
+    the current user cannot read. Returning such a path from the ancestor walk
+    would replace "no graph found" with a confusing parse/permission failure, so
+    treat it as absent and keep walking.
+    """
+    try:
+        st = candidate.stat()  # follows links: a dangling link raises here
+    except OSError:
+        return False
+    if not stat.S_ISREG(st.st_mode) or st.st_size <= 0:
+        return False
+    return os.access(candidate, os.R_OK)
+
+
+def find_graph_json_upward(start: "str | Path | None" = None) -> "Path | None":
+    """Nearest readable ``<GRAPHIFY_OUT>/graph.json`` at *start* or an ancestor.
+
+    The read commands (``query``/``path``/``explain``/...) default to a graph
+    path relative to cwd, so running them from a subdirectory of the scan root —
+    a package subdir, a git worktree, anywhere below where the graph was built —
+    failed even though a perfectly good graph sat one or more levels up. Users
+    papered over this with a shell wrapper, which only ever worked in that one
+    shell. Resolving it here makes the behaviour native to every caller.
+
+    Returns the first usable candidate walking *start* then its parents, or
+    ``None`` when the filesystem root is reached without a hit. The directory
+    searched for is ``GRAPHIFY_OUT`` itself, so a relative override
+    (``GRAPHIFY_OUT=graphify-out-feature``, or even a nested ``build/gout``) is
+    honoured exactly as ``out_path`` honours it against cwd.
+
+    An ABSOLUTE ``GRAPHIFY_OUT`` disables the walk entirely (returns ``None``):
+    the override then names one fixed location rather than a per-root
+    convention, so every ancestor would resolve to the identical path and a hit
+    would say nothing about the caller's position in the tree.
+    """
+    if Path(GRAPHIFY_OUT).is_absolute():
+        return None
+    try:
+        base = Path(start).resolve() if start is not None else Path.cwd().resolve()
+    except OSError:
+        return None
+    # `parents` is finite and ends at the anchor, so this terminates at the
+    # filesystem root without a hand-rolled "did the parent change" guard.
+    for directory in (base, *base.parents):
+        candidate = Path(directory, GRAPHIFY_OUT, "graph.json")
+        if _usable_graph_json(candidate):
+            return candidate
+    return None
+
+
 def is_absolute_any_platform(p: "str | Path | None") -> bool:
     """Whether *p* is absolute under POSIX **or** Windows rules.
 

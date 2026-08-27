@@ -85,6 +85,34 @@ def _default_graph_path() -> str:
     return str(Path(_GRAPHIFY_OUT) / "graph.json")
 
 
+def _resolve_graph_path(graph_path: str, *, explicit: bool) -> str:
+    """Resolve a read command's graph path, walking up to an ancestor if needed.
+
+    The default is relative to cwd, so a read command run from any subdirectory
+    of the scan root (a package subdir, a git worktree) used to fail with "graph
+    file not found" while a usable graph sat one or more levels up. When the
+    configured path is not present here, fall back to the nearest ancestor that
+    has one.
+
+    An explicit ``--graph`` always wins and is returned untouched, including when
+    it does not exist: silently substituting a different graph for a path the
+    caller named would be worse than the error they get today.
+
+    When a graph IS present relative to cwd this returns it unchanged and does no
+    filesystem walk, so the common case behaves exactly as before. The note about
+    an ancestor hit goes to stderr -- stdout carries the command's answer and is
+    parsed by callers.
+    """
+    if explicit or Path(graph_path).exists():
+        return graph_path
+    from graphify.paths import find_graph_json_upward
+    found = find_graph_json_upward()
+    if found is None:
+        return graph_path
+    print(f"graphify: using graph from ancestor: {found}", file=sys.stderr)
+    return str(found)
+
+
 def _stamped_manifest_files(
     files_by_type: dict[str, list[str]],
     sem_result: dict,
@@ -1078,6 +1106,7 @@ def dispatch_command(cmd: str) -> None:
         use_dfs = "--dfs" in sys.argv
         budget = 2000
         graph_path = _default_graph_path()
+        graph_explicit = False
         context_filters: list[str] = []
         args = sys.argv[3:]
         i = 0
@@ -1104,9 +1133,11 @@ def dispatch_command(cmd: str) -> None:
                 i += 1
             elif args[i] == "--graph" and i + 1 < len(args):
                 graph_path = args[i + 1]
+                graph_explicit = True
                 i += 2
             else:
                 i += 1
+        graph_path = _resolve_graph_path(graph_path, explicit=graph_explicit)
         gp = Path(graph_path).resolve()
         if not gp.exists():
             print(f"error: graph file not found: {gp}", file=sys.stderr)
@@ -1193,6 +1224,7 @@ def dispatch_command(cmd: str) -> None:
         from graphify.affected import DEFAULT_AFFECTED_RELATIONS, format_affected, load_graph
         query = sys.argv[2]
         graph_path = _default_graph_path()
+        graph_explicit = False
         depth = 2
         relations: list[str] = []
         args = sys.argv[3:]
@@ -1200,9 +1232,11 @@ def dispatch_command(cmd: str) -> None:
         while i < len(args):
             if args[i] == "--graph" and i + 1 < len(args):
                 graph_path = args[i + 1]
+                graph_explicit = True
                 i += 2
             elif args[i].startswith("--graph="):
                 graph_path = args[i].split("=", 1)[1]
+                graph_explicit = True
                 i += 1
             elif args[i] == "--depth" and i + 1 < len(args):
                 try:
@@ -1226,6 +1260,7 @@ def dispatch_command(cmd: str) -> None:
                 i += 1
             else:
                 i += 1
+        graph_path = _resolve_graph_path(graph_path, explicit=graph_explicit)
         gp = Path(graph_path).resolve()
         if not gp.exists():
             print(f"error: graph file not found: {gp}", file=sys.stderr)
@@ -1263,6 +1298,7 @@ def dispatch_command(cmd: str) -> None:
         from graphify.analyze import god_nodes as _god_nodes
         from graphify.security import sanitize_label as _sanitize_label
         graph_path = _default_graph_path()
+        graph_explicit = False
         top_n = 10
         as_json = "--json" in sys.argv
         args = sys.argv[2:]
@@ -1270,9 +1306,11 @@ def dispatch_command(cmd: str) -> None:
         while i < len(args):
             if args[i] == "--graph" and i + 1 < len(args):
                 graph_path = args[i + 1]
+                graph_explicit = True
                 i += 2
             elif args[i].startswith("--graph="):
                 graph_path = args[i].split("=", 1)[1]
+                graph_explicit = True
                 i += 1
             elif args[i] == "--top" and i + 1 < len(args):
                 try:
@@ -1290,6 +1328,7 @@ def dispatch_command(cmd: str) -> None:
                 i += 1
             else:
                 i += 1
+        graph_path = _resolve_graph_path(graph_path, explicit=graph_explicit)
         gp = Path(graph_path).resolve()
         if not gp.exists():
             print(f"error: graph file not found: {gp}", file=sys.stderr)
@@ -1412,11 +1451,13 @@ def dispatch_command(cmd: str) -> None:
         source_label = sys.argv[2]
         target_label = sys.argv[3]
         graph_path = _default_graph_path()
+        graph_explicit = False
         args = sys.argv[4:]
         direction_flag = None
         for i, a in enumerate(args):
             if a == "--graph" and i + 1 < len(args):
                 graph_path = args[i + 1]
+                graph_explicit = True
             elif a == "--directed":
                 if direction_flag == "undirected":
                     print(
@@ -1437,6 +1478,7 @@ def dispatch_command(cmd: str) -> None:
         # graph.json (arc order on post-#563 files, _src/_tgt markers on legacy
         # canonicalized files), so respect it unless the caller opts out.
         undirected = direction_flag == "undirected"
+        graph_path = _resolve_graph_path(graph_path, explicit=graph_explicit)
         gp = Path(graph_path).resolve()
         if not gp.exists():
             print(f"error: graph file not found: {gp}", file=sys.stderr)
@@ -1573,10 +1615,13 @@ def dispatch_command(cmd: str) -> None:
 
         label = sys.argv[2]
         graph_path = _default_graph_path()
+        graph_explicit = False
         args = sys.argv[3:]
         for i, a in enumerate(args):
             if a == "--graph" and i + 1 < len(args):
                 graph_path = args[i + 1]
+                graph_explicit = True
+        graph_path = _resolve_graph_path(graph_path, explicit=graph_explicit)
         gp = Path(graph_path).resolve()
         if not gp.exists():
             print(f"error: graph file not found: {gp}", file=sys.stderr)
