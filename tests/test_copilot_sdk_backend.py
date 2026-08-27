@@ -622,6 +622,23 @@ def test_run_bounded_timeout_cancels_and_drains_operation():
     asyncio.run(run())
 
 
+def test_run_bounded_preserves_primary_control_flow_failure():
+    class ControlSignal(BaseException):
+        pass
+
+    async def operation() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            raise ControlSignal
+
+    async def run() -> None:
+        with pytest.raises(ControlSignal):
+            await backend._run_bounded(operation(), timeout=0.01)
+
+    asyncio.run(run())
+
+
 def test_late_cancellation_cannot_interrupt_timeout_abort_cleanup():
     async def run() -> None:
         abort_started = asyncio.Event()
@@ -932,6 +949,45 @@ def test_cleanup_timeout_force_stops_runtime(monkeypatch):
     assert state["stops"] == 0
 
 
+def test_session_created_during_timeout_is_tracked_for_cleanup(monkeypatch):
+    monkeypatch.setattr(backend, "_STARTUP_TIMEOUT_SECONDS", 0.01)
+    release = asyncio.Event()
+    state = {"disconnects": 0, "stops": 0}
+
+    class Session:
+        async def disconnect(self) -> None:
+            state["disconnects"] += 1
+
+    class Client:
+        async def start(self) -> None:
+            return None
+
+        async def create_session(self, **_kwargs: Any) -> Session:
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                release.set()
+            return Session()
+
+        async def stop(self) -> None:
+            state["stops"] += 1
+
+    with pytest.raises(backend.CopilotSdkTimeoutError):
+        backend._run_async(
+            lambda: backend._call_once(
+                client_type=lambda **_kwargs: Client(),
+                prompt="source",
+                system_prompt="system",
+                model=None,
+                reasoning_effort=None,
+                context_tier=None,
+                timeout_seconds=0.1,
+                attachments=[],
+            )
+        )
+    assert state == {"disconnects": 1, "stops": 1}
+
+
 def test_cleanup_failure_does_not_replace_primary_unknown_outcome(monkeypatch):
     _install_fake_copilot(
         monkeypatch,
@@ -1092,6 +1148,16 @@ def test_daemon_executor_shutdown_bounded_does_not_join_current_worker():
     )
     result = executor.submit(lambda: executor.shutdown_bounded(0.1))
     assert result.result(timeout=1) is False
+
+
+def test_daemon_executor_rejects_submit_after_shutdown_snapshot():
+    executor = backend._DaemonThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="graphify-test"
+    )
+    executor.shutdown(wait=False)
+    with pytest.raises(RuntimeError, match="after shutdown"):
+        executor.submit(lambda: None)
+    assert executor.shutdown_bounded(1) is True
 
 
 def test_max_output_tokens_use_official_model_capabilities(monkeypatch):

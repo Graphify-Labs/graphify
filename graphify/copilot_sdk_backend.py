@@ -106,21 +106,27 @@ class _DaemonThreadPoolExecutor(ThreadPoolExecutor):
                             item[0].cancel()
                 for _worker in self._daemon_threads:
                     self._daemon_queue.put(None)
+            # submit() uses this same lock and rejects after the shutdown flag
+            # is set. This snapshot therefore contains every worker that can
+            # exist, even when submit and shutdown calls race.
+            workers = tuple(self._daemon_threads)
         if wait:
             current = threading.current_thread()
-            for worker in self._daemon_threads:
+            for worker in workers:
                 if worker is not current:
                     worker.join()
 
     def shutdown_bounded(self, timeout: float) -> bool:
         """Start shutdown, join workers to one deadline, and report completion."""
         self.shutdown(wait=False, cancel_futures=True)
+        with self._daemon_lock:
+            workers = tuple(self._daemon_threads)
         deadline = time.monotonic() + max(0.0, timeout)
         current = threading.current_thread()
-        for worker in self._daemon_threads:
+        for worker in workers:
             if worker is not current:
                 worker.join(max(0.0, deadline - time.monotonic()))
-        return not any(worker.is_alive() for worker in self._daemon_threads)
+        return not any(worker.is_alive() for worker in workers)
 
 
 class CopilotSdkTimeoutError(TimeoutError):
@@ -133,6 +139,14 @@ class CopilotSdkUnknownOutcomeError(RuntimeError):
 
 class CopilotSdkCleanupError(RuntimeError):
     """An SDK operation did not stop within the bounded cleanup deadline."""
+
+
+class _ControlFlowInterrupt(Exception):
+    """Carry a BaseException through an asyncio task without stopping its loop."""
+
+    def __init__(self, interrupt: BaseException) -> None:
+        super().__init__(type(interrupt).__name__)
+        self.interrupt = interrupt
 
 
 @dataclass(frozen=True)
@@ -372,7 +386,16 @@ async def _run_bounded(
     """Bound one asynchronous SDK operation and its cancellation cleanup."""
     if not inspect.isawaitable(operation):
         raise TypeError("Copilot SDK operation must be awaitable")
-    task = asyncio.ensure_future(operation)
+
+    async def capture_control_flow(awaitable: Awaitable[Any]) -> Any:
+        try:
+            return await awaitable
+        except BaseException as error:
+            if isinstance(error, (Exception, asyncio.CancelledError, GeneratorExit)):
+                raise
+            raise _ControlFlowInterrupt(error) from None
+
+    task = asyncio.ensure_future(capture_control_flow(operation))
 
     async def cancel_and_drain() -> set[asyncio.Task[Any]]:
         abort_interrupt: BaseException | None = None
@@ -383,11 +406,13 @@ async def _run_bounded(
             try:
                 abort_result = abort()
                 if inspect.isawaitable(abort_result):
-                    abort_task = asyncio.ensure_future(abort_result)
+                    abort_task = asyncio.ensure_future(
+                        capture_control_flow(abort_result)
+                    )
                     cleanup_tasks.add(abort_task)
             except BaseException as error:
                 if not isinstance(error, Exception):
-                    abort_interrupt = error
+                    abort_interrupt = _ControlFlowInterrupt(error)
         drained, still_pending = await asyncio.wait(
             cleanup_tasks,
             timeout=max(0.0, deadline - asyncio.get_running_loop().time()),
@@ -395,9 +420,11 @@ async def _run_bounded(
         for completed in drained:
             try:
                 completed.result()
+            except _ControlFlowInterrupt as wrapped:
+                abort_interrupt = abort_interrupt or wrapped
             except BaseException as error:
-                if completed is not task and not isinstance(error, Exception):
-                    abort_interrupt = abort_interrupt or error
+                if not isinstance(error, (Exception, asyncio.CancelledError)):
+                    abort_interrupt = abort_interrupt or _ControlFlowInterrupt(error)
         for unfinished in still_pending:
             unfinished.cancel()
         # Give cooperative cancellation one loop turn. Keep every task that
@@ -415,10 +442,16 @@ async def _run_bounded(
             raise abort_interrupt
         return still_pending
 
+    async def finish_cancellation() -> tuple[set[asyncio.Task[Any]], bool]:
+        try:
+            return await _finish_cleanup(cancel_and_drain())
+        except _ControlFlowInterrupt as wrapped:
+            raise wrapped.interrupt
+
     try:
         done, _ = await asyncio.wait({task}, timeout=max(0.0, timeout))
     except asyncio.CancelledError:
-        pending, _interrupted = await _finish_cleanup(cancel_and_drain())
+        pending, _interrupted = await finish_cancellation()
         if pending:
             warnings.warn(
                 "Copilot SDK operation remained pending after bounded cancellation; "
@@ -428,8 +461,11 @@ async def _run_bounded(
             )
         raise
     if done:
-        return task.result()
-    pending, interrupted = await _finish_cleanup(cancel_and_drain())
+        try:
+            return task.result()
+        except _ControlFlowInterrupt as wrapped:
+            raise wrapped.interrupt
+    pending, interrupted = await finish_cancellation()
     if pending:
         warnings.warn(
             "Copilot SDK operation remained pending after bounded cancellation; "
@@ -472,6 +508,17 @@ class _CopilotResources:
                 # live session/client and attempt graceful calls against it.
                 self.session = None
                 self.client = None
+
+    async def track_created_session(self, operation: Awaitable[Any]) -> Any:
+        """Publish a created session before a timeout can start cleanup."""
+        session = await operation
+        async with self._force_stop_lock:
+            if self.force_stopped:
+                raise CopilotSdkCleanupError(
+                    "Copilot SDK created a session after the runtime was stopped."
+                )
+            self.session = session
+        return session
 
     async def _acquire_cleanup_lock(self) -> bool:
         """Serialize graceful cleanup with force-stop, bounded by the deadline."""
@@ -611,36 +658,37 @@ async def _call_once(
                     else None
                 ),
             )
-            resources.session = await _run_bounded(
-                resources.client.create_session(
-                    on_permission_request=_deny_permission,
-                    model=model,
-                    reasoning_effort=reasoning_effort,
-                    context_tier=context_tier,
-                    model_capabilities=model_capabilities,
-                    streaming=True,
-                    tools=[],
-                    available_tools=[],
-                    mcp_servers={},
-                    enable_session_telemetry=False,
-                    enable_file_change_tracking=False,
-                    enable_session_store=False,
-                    enable_skills=False,
-                    enable_config_discovery=False,
-                    enable_on_demand_instruction_discovery=False,
-                    enable_file_hooks=False,
-                    enable_host_git_operations=False,
-                    skip_custom_instructions=True,
-                    memory={"enabled": False},
-                    embedding_cache_storage="in-memory",
-                    mcp_oauth_token_storage="in-memory",
-                    skip_embedding_retrieval=True,
-                    enable_mcp_apps=False,
-                    working_directory=resources.workspace.name,
-                    config_directory=resources.workspace.name,
-                    system_message=_system_message(system_prompt),
-                    on_event=collector,
-                ),
+            session_operation = resources.client.create_session(
+                on_permission_request=_deny_permission,
+                model=model,
+                reasoning_effort=reasoning_effort,
+                context_tier=context_tier,
+                model_capabilities=model_capabilities,
+                streaming=True,
+                tools=[],
+                available_tools=[],
+                mcp_servers={},
+                enable_session_telemetry=False,
+                enable_file_change_tracking=False,
+                enable_session_store=False,
+                enable_skills=False,
+                enable_config_discovery=False,
+                enable_on_demand_instruction_discovery=False,
+                enable_file_hooks=False,
+                enable_host_git_operations=False,
+                skip_custom_instructions=True,
+                memory={"enabled": False},
+                embedding_cache_storage="in-memory",
+                mcp_oauth_token_storage="in-memory",
+                skip_embedding_retrieval=True,
+                enable_mcp_apps=False,
+                working_directory=resources.workspace.name,
+                config_directory=resources.workspace.name,
+                system_message=_system_message(system_prompt),
+                on_event=collector,
+            )
+            await _run_bounded(
+                resources.track_created_session(session_operation),
                 timeout=min(remaining(), _STARTUP_TIMEOUT_SECONDS),
                 abort=(
                     resources.force_stop
@@ -761,9 +809,21 @@ def _run_async(factory: Callable[[], Any]) -> Any:
             thread_name_prefix="graphify-copilot-sdk",
         )
         loop.set_default_executor(default_executor)
+
+        async def capture_factory_control_flow() -> Any:
+            try:
+                return await factory()
+            except BaseException as error:
+                if isinstance(error, (Exception, asyncio.CancelledError, GeneratorExit)):
+                    raise
+                raise _ControlFlowInterrupt(error) from None
+
         try:
             asyncio.set_event_loop(loop)
-            return loop.run_until_complete(factory())
+            try:
+                return loop.run_until_complete(capture_factory_control_flow())
+            except _ControlFlowInterrupt as wrapped:
+                raise wrapped.interrupt
         finally:
             async def cancel_all_tasks() -> set[asyncio.Task[Any]]:
                 deadline = loop.time() + _CLEANUP_TIMEOUT_SECONDS
@@ -794,18 +854,10 @@ def _run_async(factory: Callable[[], Any]) -> Any:
                             task.cancel()
                         return unresolved
 
-            loop.run_until_complete(cancel_all_tasks())
-            loop.run_until_complete(loop.shutdown_asyncgens())
-            loop.run_until_complete(cancel_all_tasks())
-
-            if not default_executor.shutdown_bounded(_CLEANUP_TIMEOUT_SECONDS):
-                warnings.warn(
-                    "Copilot SDK default executor did not shut down within the "
-                    "cleanup deadline; running calls were detached.",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
             unresolved = loop.run_until_complete(cancel_all_tasks())
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            unresolved |= loop.run_until_complete(cancel_all_tasks())
+
             if unresolved:
                 warnings.warn(
                     "Copilot SDK tasks remained pending after bounded loop "
@@ -823,6 +875,14 @@ def _run_async(factory: Callable[[], Any]) -> Any:
                     event_loop.default_exception_handler(context)
 
                 loop.set_exception_handler(suppress_destroyed_pending)
+
+            if not default_executor.shutdown_bounded(_CLEANUP_TIMEOUT_SECONDS):
+                warnings.warn(
+                    "Copilot SDK default executor did not shut down within the "
+                    "cleanup deadline; running calls were detached.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
             asyncio.set_event_loop(None)
             loop.close()
 

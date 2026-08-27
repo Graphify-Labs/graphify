@@ -9,6 +9,8 @@ rejects nodes attributed to a file that was NOT dispatched — cannot see.
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from graphify import llm
 
 
@@ -305,3 +307,26 @@ def test_source_path_repair_rejects_parent_segments(tmp_path):
 
     assert repaired == 0
     assert result["nodes"][0]["source_file"] == "../../README.md"
+
+
+@pytest.mark.parametrize(
+    "reported",
+    ["/outside/README.md", "https://example.com/README.md", "C:/outside/README.md"],
+)
+def test_source_path_repair_leaves_out_of_scope_paths_unchanged(tmp_path, reported):
+    src = tmp_path / "project-a" / "README.md"
+    src.parent.mkdir(parents=True)
+    src.write_text("# Architecture\n", encoding="utf-8")
+    result = {
+        "nodes": [
+            {
+                "id": "architecture",
+                "label": "Architecture",
+                "file_type": "document",
+                "source_file": reported,
+            }
+        ],
+    }
+
+    assert llm._canonicalize_result_source_files(result, [src], tmp_path) == 0
+    assert result["nodes"][0]["source_file"] == reported
