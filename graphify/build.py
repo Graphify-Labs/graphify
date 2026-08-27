@@ -1329,6 +1329,11 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 f"will be emptied on the next export.",
                 file=sys.stderr,
             )
+    from graphify.source_identity import SourceIdentity
+
+    source_identity = SourceIdentity.parse(extraction.get("source_identity"))
+    if source_identity is not None:
+        G.graph["source_identity"] = source_identity.to_dict()
     # Runs LAST, after the alias-competition above (which relies on file-node
     # labels still being bare basenames): give colliding-basename file nodes a
     # directory-qualified display label so lookup/discovery can disambiguate

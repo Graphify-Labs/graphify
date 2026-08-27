@@ -7,22 +7,30 @@ import networkx as nx
 from networkx.readwrite import json_graph
 
 import graphify.__main__ as mainmod
+from graphify.detect import detect
+from graphify.source_identity import publish_source_identity
 
 
 def _write_graph(tmp_path):
+    (tmp_path / "extract.py").write_text("def extract():\n    pass\n", encoding="utf-8")
+    (tmp_path / "cluster.py").write_text("def cluster():\n    pass\n", encoding="utf-8")
+    (tmp_path / "build.py").write_text("def build():\n    pass\n", encoding="utf-8")
     G = nx.Graph()
     G.add_node("n1", label="extract", source_file="extract.py", source_location="L10", community=0)
     G.add_node("n2", label="cluster", source_file="cluster.py", source_location="L5", community=0)
     G.add_node("n3", label="build", source_file="build.py", source_location="L1", community=1)
     G.add_edge("n1", "n2", relation="calls", confidence="EXTRACTED", context="call")
     G.add_edge("n2", "n3", relation="imports", confidence="EXTRACTED", context="import")
-    graph_path = tmp_path / "graph.json"
+    graph_path = tmp_path / "graphify-out" / "graph.json"
+    graph_path.parent.mkdir()
     graph_path.write_text(json.dumps(json_graph.node_link_data(G, edges="links")))
+    publish_source_identity(graph_path, tmp_path, detection=detect(tmp_path))
     return graph_path
 
 
 def test_query_cli_explicit_context_filter(monkeypatch, tmp_path, capsys):
     graph_path = _write_graph(tmp_path)
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
     monkeypatch.setattr(
         mainmod.sys,
@@ -38,6 +46,7 @@ def test_query_cli_explicit_context_filter(monkeypatch, tmp_path, capsys):
 
 def test_query_cli_heuristic_context_filter(monkeypatch, tmp_path, capsys):
     graph_path = _write_graph(tmp_path)
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
     monkeypatch.setattr(
         mainmod.sys,
@@ -61,8 +70,12 @@ def _write_calls_graph(tmp_path):
     G.add_node("caller", label="caller_fn", source_file="a.py", source_location="L1", community=0)
     G.add_node("callee", label="callee_fn", source_file="b.py", source_location="L1", community=1)
     G.add_edge("caller", "callee", relation="calls", confidence="EXTRACTED", context="call")
-    graph_path = tmp_path / "graph.json"
+    (tmp_path / "a.py").write_text("def caller_fn():\n    pass\n", encoding="utf-8")
+    (tmp_path / "b.py").write_text("def callee_fn():\n    pass\n", encoding="utf-8")
+    graph_path = tmp_path / "graphify-out" / "graph.json"
+    graph_path.parent.mkdir()
     graph_path.write_text(json.dumps(json_graph.node_link_data(G, edges="links")))
+    publish_source_identity(graph_path, tmp_path, detection=detect(tmp_path))
     return graph_path
 
 
@@ -79,6 +92,7 @@ def test_query_cli_preserves_calls_direction_when_seeded_on_callee(monkeypatch, 
     edge stay correct on disk either way; only the query rendering was wrong.
     """
     graph_path = _write_calls_graph(tmp_path)
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
     monkeypatch.setattr(
         mainmod.sys,
@@ -94,6 +108,7 @@ def test_query_cli_preserves_calls_direction_when_seeded_on_callee(monkeypatch, 
 def test_query_cli_preserves_calls_direction_when_seeded_on_caller(monkeypatch, tmp_path, capsys):
     """Same edge, seeded from the caller side — must stay correct too."""
     graph_path = _write_calls_graph(tmp_path)
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
     monkeypatch.setattr(
         mainmod.sys,
@@ -111,6 +126,7 @@ def test_query_cli_rejects_oversized_graph(monkeypatch, tmp_path, capsys):
     import pytest
 
     graph_path = _write_graph(tmp_path)
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
     monkeypatch.setattr("graphify.security._MAX_GRAPH_FILE_BYTES", 16)
     monkeypatch.setattr(

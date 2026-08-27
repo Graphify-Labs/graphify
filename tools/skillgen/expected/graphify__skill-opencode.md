@@ -110,7 +110,9 @@ If the import succeeds, print nothing and move straight to Step 2.
 $(cat graphify-out/.graphify_python) -c "
 import json
 from graphify.detect import detect
+from graphify.source_identity import begin_reconciliation
 from pathlib import Path
+begin_reconciliation(Path('graphify-out/graph.json'))
 result = detect(Path('INPUT_PATH'))
 # Write the sidecar from Python, not a shell redirect, so the same block renders
 # on PowerShell hosts without console-encoding drift (#2528).
@@ -586,6 +588,8 @@ _cleared = _dispatched - _stamped
 # deletions; untouched files' prior rows are still preserved (#1908).
 _scan = {f for fl in _corpus.values() for f in fl}
 save_manifest(_manifest_files, root='INPUT_PATH', scan_corpus=_scan, clear_semantic=_cleared or None)
+from graphify.source_identity import publish_source_identity
+publish_source_identity(Path('graphify-out/graph.json'), Path('INPUT_PATH'), detection={'files': _corpus}, extraction_manifest_path=Path('graphify-out/manifest.json'))
 
 # Update cumulative cost tracker
 input_tok = extract.get('input_tokens', 0)

@@ -439,7 +439,7 @@ graphify-out/cost.json        # local only
 
 **Workflow:**
 1. One person runs `/graphify .` and commits `graphify-out/`.
-2. Everyone pulls — their assistant reads the graph immediately.
+2. Everyone pulls and runs `graphify update .`. The update binds the copied graph to the new checkout before queries can use it.
 3. Run `graphify hook install` to auto-rebuild after each commit (AST only, no API cost). This also sets up a git merge driver so `graph.json` is never left with conflict markers — two devs committing in parallel get their graphs union-merged automatically.
 4. When docs or papers change, run `/graphify --update` to refresh those nodes.
 
@@ -449,6 +449,7 @@ graphify-out/cost.json        # local only
 
 ```bash
 # query the graph from the terminal
+graphify status . --json
 graphify query "show the auth flow"
 graphify query "what connects DigestAuth to Response?" --graph graphify-out/graph.json
 
@@ -463,6 +464,8 @@ kimi mcp add --transport stdio graphify -- python -m graphify.serve graphify-out
 python -m graphify.serve graphify-out/graph.json --transport http --port 8080
 python -m graphify.serve graphify-out/graph.json --transport http --host 0.0.0.0 --api-key "$SECRET"
 ```
+
+`graphify status` exits 0 only when the graph belongs to the requested source root, its Git revision matches, and its supported files match `source_manifest.json`. Exit 1 means the graph needs reconciliation. JSON responses use these stable reason codes: `missing_identity`, `wrong_root`, `revision_mismatch`, `missing_manifest`, `manifest_mismatch`, `changed_supported_files`, and `pending_reconciliation`. `graphify query` runs the same check before traversal and again before it prints a result.
 
 The MCP server gives your assistant structured access: `query_graph`, `get_node`, `get_neighbors`, `shortest_path`, `list_prs`, `get_pr_impact`, `triage_prs`.
 
@@ -666,6 +669,7 @@ graphify extract ./raw --code-only # index code only — local AST, no API key (
 
 /graphify query "what connects attention to the optimizer?"
 /graphify query "..." --dfs --budget 1500
+graphify status . --json
 /graphify path "DigestAuth" "Response"
 /graphify explain "SwinTransformer"
 

@@ -10,14 +10,17 @@ Use when you've added or modified files since the last run. Only re-extracts cha
 $(cat graphify-out/.graphify_python) -c "
 import sys, json
 from graphify.detect import detect_incremental, save_manifest
+from graphify.source_identity import begin_reconciliation, publish_source_identity
 from pathlib import Path
 
+begin_reconciliation(Path('graphify-out/graph.json'))
 result = detect_incremental(Path('INPUT_PATH'))
 new_total = result.get('new_total', 0)
 print(json.dumps(result, indent=2, ensure_ascii=False))
 Path('graphify-out/.graphify_incremental.json').write_text(json.dumps(result, ensure_ascii=False), encoding=\"utf-8\")
 deleted = list(result.get('deleted_files', []))
 if new_total == 0 and not deleted:
+    publish_source_identity(Path('graphify-out/graph.json'), Path('INPUT_PATH'), detection={'files': result.get('files', {})}, extraction_manifest_path=Path('graphify-out/manifest.json'))
     print('No files changed since last run. Nothing to update.')
     raise SystemExit(0)
 if deleted:
