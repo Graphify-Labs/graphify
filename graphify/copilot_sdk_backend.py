@@ -107,15 +107,19 @@ class _DaemonThreadPoolExecutor(ThreadPoolExecutor):
                 for _worker in self._daemon_threads:
                     self._daemon_queue.put(None)
         if wait:
+            current = threading.current_thread()
             for worker in self._daemon_threads:
-                worker.join()
+                if worker is not current:
+                    worker.join()
 
     def shutdown_bounded(self, timeout: float) -> bool:
         """Start shutdown, join workers to one deadline, and report completion."""
         self.shutdown(wait=False, cancel_futures=True)
         deadline = time.monotonic() + max(0.0, timeout)
+        current = threading.current_thread()
         for worker in self._daemon_threads:
-            worker.join(max(0.0, deadline - time.monotonic()))
+            if worker is not current:
+                worker.join(max(0.0, deadline - time.monotonic()))
         return not any(worker.is_alive() for worker in self._daemon_threads)
 
 
@@ -125,6 +129,10 @@ class CopilotSdkTimeoutError(TimeoutError):
 
 class CopilotSdkUnknownOutcomeError(RuntimeError):
     """A failure after dispatch where replay could duplicate the request."""
+
+
+class CopilotSdkCleanupError(RuntimeError):
+    """An SDK operation did not stop within the bounded cleanup deadline."""
 
 
 @dataclass(frozen=True)
@@ -431,6 +439,10 @@ async def _run_bounded(
         )
     if interrupted:
         raise asyncio.CancelledError
+    if pending:
+        raise CopilotSdkCleanupError(
+            "Copilot SDK operation did not stop within the cleanup deadline."
+        )
     raise asyncio.TimeoutError
 
 
@@ -497,7 +509,7 @@ class _CopilotResources:
                             timeout=_CLEANUP_TIMEOUT_SECONDS,
                         )
                         self.session = None
-                    except asyncio.TimeoutError as error:
+                    except (asyncio.TimeoutError, CopilotSdkCleanupError) as error:
                         record_cleanup_failure(error)
                         force_stop_needed = True
                     except BaseException as error:
@@ -562,6 +574,7 @@ async def _call_once(
     context_tier: str | None,
     timeout_seconds: float,
     attachments: list[dict[str, str]],
+    model_capabilities: Any = None,
 ) -> dict[str, Any]:
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout_seconds
@@ -604,6 +617,7 @@ async def _call_once(
                     model=model,
                     reasoning_effort=reasoning_effort,
                     context_tier=context_tier,
+                    model_capabilities=model_capabilities,
                     streaming=True,
                     tools=[],
                     available_tools=[],
@@ -696,6 +710,7 @@ async def _call_async(
     model: str | None,
     reasoning_effort: str | None,
     context_tier: str | None,
+    max_output_tokens: int | None,
     timeout_seconds: float,
     images: Iterable[CopilotImage] | None,
 ) -> dict[str, Any]:
@@ -703,6 +718,16 @@ async def _call_async(
         from copilot import CopilotClient  # pyright: ignore[reportMissingImports]
     except ImportError as exc:
         raise ImportError(_INSTALL_HINT) from exc
+    model_capabilities = None
+    if max_output_tokens is not None:
+        from copilot import (  # pyright: ignore[reportMissingImports]
+            ModelCapabilitiesOverride,
+            ModelLimitsOverride,
+        )
+
+        model_capabilities = ModelCapabilitiesOverride(
+            limits=ModelLimitsOverride(max_output_tokens=max_output_tokens)
+        )
     try:
         return await _call_once(
             client_type=CopilotClient,
@@ -713,8 +738,13 @@ async def _call_async(
             context_tier=context_tier,
             timeout_seconds=timeout_seconds,
             attachments=blob_attachments(images),
+            model_capabilities=model_capabilities,
         )
-    except (CopilotSdkTimeoutError, CopilotSdkUnknownOutcomeError):
+    except (
+        CopilotSdkCleanupError,
+        CopilotSdkTimeoutError,
+        CopilotSdkUnknownOutcomeError,
+    ):
         raise
     except Exception as exc:
         safe_error = _friendly_error(exc, model=model)
@@ -809,6 +839,7 @@ def call_copilot_sdk(
     model: str | None = None,
     reasoning_effort: str | None = None,
     context_tier: str | None = None,
+    max_output_tokens: int | None = None,
     timeout_seconds: float = 600.0,
     images: Iterable[CopilotImage] | None = None,
 ) -> dict[str, Any]:
@@ -819,6 +850,15 @@ def call_copilot_sdk(
         reasoning_effort=reasoning_effort,
         context_tier=context_tier,
     )
+    if (
+        max_output_tokens is not None
+        and (
+            isinstance(max_output_tokens, bool)
+            or not isinstance(max_output_tokens, int)
+            or max_output_tokens <= 0
+        )
+    ):
+        raise ValueError("Copilot max_output_tokens must be a positive integer.")
     return _run_async(
         lambda: _call_async(
             prompt=prompt,
@@ -826,6 +866,7 @@ def call_copilot_sdk(
             model=resolved_model,
             reasoning_effort=resolved_reasoning,
             context_tier=resolved_context,
+            max_output_tokens=max_output_tokens,
             timeout_seconds=timeout_seconds,
             images=images,
         )
@@ -835,6 +876,7 @@ def call_copilot_sdk(
 __all__ = [
     "COPILOT_DEFAULT_MODEL",
     "CopilotImage",
+    "CopilotSdkCleanupError",
     "CopilotSdkTimeoutError",
     "CopilotSdkUnknownOutcomeError",
     "blob_attachments",

@@ -1970,6 +1970,7 @@ def _run_copilot_sdk(
     *,
     system_prompt: str,
     model: str | None,
+    max_tokens: int | None = None,
     images: list[_ImageRef] | None = None,
 ) -> dict:
     """Complete through the isolated SDK adapter."""
@@ -1995,6 +1996,7 @@ def _run_copilot_sdk(
         model=sdk_model,
         reasoning_effort=None,
         context_tier=None,
+        max_output_tokens=max_tokens,
         timeout_seconds=_resolve_api_timeout(),
         images=inline_images,
     )
@@ -2005,6 +2007,7 @@ def _call_copilot_sdk(
     *,
     model: str | None = None,
     deep_mode: bool = False,
+    max_tokens: int | None = None,
     images: list[_ImageRef] | None = None,
 ) -> dict:
     """Extract a graph through the isolated Copilot SDK."""
@@ -2016,6 +2019,7 @@ def _call_copilot_sdk(
         sdk_user_message,
         system_prompt=system_prompt,
         model=model,
+        max_tokens=max_tokens,
         images=attached_refs,
     )
     raw_content = str(response.get("content") or "")
@@ -2231,6 +2235,7 @@ def extract_files_direct(
             user_msg,
             model=mdl,
             deep_mode=deep_mode,
+            max_tokens=max_out,
             images=image_refs,
         )
     elif backend == "bedrock":
@@ -3313,6 +3318,7 @@ def _call_llm(
             completion_prompt,
             system_prompt="",
             model=mdl,
+            max_tokens=max_tokens,
         )
         if usage_out is not None:
             usage_out["input"] = _usage_add(

@@ -141,7 +141,18 @@ def _install_fake_copilot(
             state["force_stops"] += 1
 
     module = types.ModuleType("copilot")
+    class ModelLimitsOverride:
+        def __init__(self, *, max_output_tokens: int | None = None):
+            self.max_output_tokens = max_output_tokens
+
+    class ModelCapabilitiesOverride:
+        def __init__(self, *, limits: Any = None):
+            self.supports = None
+            self.limits = limits
+
     setattr(module, "CopilotClient", FakeClient)
+    setattr(module, "ModelCapabilitiesOverride", ModelCapabilitiesOverride)
+    setattr(module, "ModelLimitsOverride", ModelLimitsOverride)
     monkeypatch.setitem(sys.modules, "copilot", module)
     # The real optional package is Python 3.11+, but these contract tests use a
     # local SDK double and must also run in Graphify's Python 3.10 CI job.
@@ -975,6 +986,7 @@ def test_task_cancellation_propagates(monkeypatch):
                 model=None,
                 reasoning_effort=None,
                 context_tier=None,
+                max_output_tokens=None,
                 timeout_seconds=1,
                 images=None,
             )
@@ -1030,13 +1042,69 @@ def test_run_bounded_tracks_abort_task_that_ignores_cancellation(monkeypatch):
 
     async def run() -> None:
         with pytest.warns(RuntimeWarning, match="remained pending"):
-            with pytest.raises(asyncio.TimeoutError):
+            with pytest.raises(backend.CopilotSdkCleanupError):
                 await backend._run_bounded(
                     asyncio.Event().wait(), timeout=0, abort=stubborn
                 )
 
     with pytest.warns(RuntimeWarning, match="tasks remained pending"):
         backend._run_async(run)
+
+
+def test_daemon_executor_serializes_submit_with_shutdown():
+    executor = backend._DaemonThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="graphify-test"
+    )
+    first_started = threading.Event()
+    release_first = threading.Event()
+
+    def first() -> str:
+        first_started.set()
+        release_first.wait()
+        return "first"
+
+    first_future = executor.submit(first)
+    assert first_started.wait(timeout=1)
+    accepted: list[Any] = []
+    rejected: list[BaseException] = []
+
+    def submit_second() -> None:
+        try:
+            accepted.append(executor.submit(lambda: "second"))
+        except BaseException as error:
+            rejected.append(error)
+
+    submitter = threading.Thread(target=submit_second)
+    submitter.start()
+    submitter.join(timeout=1)
+    executor.shutdown(wait=False)
+    release_first.set()
+
+    assert first_future.result(timeout=1) == "first"
+    assert not rejected
+    assert accepted[0].result(timeout=1) == "second"
+    assert executor.shutdown_bounded(1) is True
+
+
+def test_daemon_executor_shutdown_bounded_does_not_join_current_worker():
+    executor = backend._DaemonThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="graphify-test"
+    )
+    result = executor.submit(lambda: executor.shutdown_bounded(0.1))
+    assert result.result(timeout=1) is False
+
+
+def test_max_output_tokens_use_official_model_capabilities(monkeypatch):
+    state = _install_fake_copilot(monkeypatch)
+    assert _call(max_output_tokens=1234)["content"] == _GRAPH_JSON
+    capabilities = state["sessions"][0].options["model_capabilities"]
+    assert capabilities.limits.max_output_tokens == 1234
+
+
+@pytest.mark.parametrize("value", [0, -1, True, 1.5, "10"])
+def test_max_output_tokens_must_be_a_positive_integer(value):
+    with pytest.raises(ValueError, match="positive integer"):
+        _call(max_output_tokens=value)
 
 
 def test_permission_handler_rejects_tool_requests(monkeypatch):
@@ -1101,6 +1169,18 @@ def test_extraction_wrapper_parses_graph_and_preserves_usage(monkeypatch):
     assert result["output_tokens"] == 4
     assert result["copilot_premium_request_cost"] == pytest.approx(0.5)
     assert result["model"] == "gpt-test"
+
+
+def test_extraction_wrapper_forwards_max_output_tokens(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    def fake_call(*_args: Any, **kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        return {"content": _GRAPH_JSON}
+
+    monkeypatch.setattr(backend, "call_copilot_sdk", fake_call)
+    llm._call_copilot_sdk("source", max_tokens=4321)
+    assert captured["max_output_tokens"] == 4321
 
 
 def test_plain_llm_wrapper_preserves_fractional_usage(monkeypatch):
