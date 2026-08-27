@@ -503,7 +503,10 @@ class _CopilotResources:
         self._terminal_cleanup_started = True
         client = self.client
         if client is not None and getattr(client, "force_stop", None) is not None:
-            await client.force_stop()
+            await _run_bounded(
+                client.force_stop(),
+                timeout=_CLEANUP_TIMEOUT_SECONDS,
+            )
             self.force_stopped = True
             # force_stop is the terminal SDK lifecycle operation. Clear the
             # handles so cleanup cannot treat the terminated runtime as a
@@ -520,6 +523,16 @@ class _CopilotResources:
         session = await operation
         async with self._lifecycle_lock:
             if self._terminal_cleanup_started:
+                try:
+                    await _run_bounded(
+                        session.disconnect(),
+                        timeout=_CLEANUP_TIMEOUT_SECONDS,
+                    )
+                except Exception:
+                    raise CopilotSdkCleanupError(
+                        "Copilot SDK created a session after terminal cleanup "
+                        "started and late-session disconnect did not complete."
+                    ) from None
                 raise CopilotSdkCleanupError(
                     "Copilot SDK created a session after terminal cleanup started."
                 )
@@ -587,10 +600,7 @@ class _CopilotResources:
                 # under one owner and prevents a second cleanup from starting.
                 if force_stop_needed:
                     try:
-                        await _run_bounded(
-                            self._force_stop_locked(),
-                            timeout=_CLEANUP_TIMEOUT_SECONDS,
-                        )
+                        await self._force_stop_locked()
                     except BaseException as force_error:
                         record_cleanup_failure(force_error)
             finally:
@@ -648,13 +658,25 @@ async def _call_once(
             raise CopilotSdkTimeoutError(
                 "Copilot SDK request deadline expired before runtime setup."
             )
-        resources.client = client_type(
-            use_logged_in_user=True,
-            mode="empty",
-            enable_remote_sessions=False,
-            base_directory=os.path.expanduser(os.environ.get("COPILOT_HOME", "~/.copilot")),
-            working_directory=resources.workspace.name,
-        )
+        try:
+            resources.client = await _run_bounded(
+                asyncio.to_thread(
+                    client_type,
+                    use_logged_in_user=True,
+                    mode="empty",
+                    enable_remote_sessions=False,
+                    base_directory=os.path.expanduser(
+                        os.environ.get("COPILOT_HOME", "~/.copilot")
+                    ),
+                    working_directory=resources.workspace.name,
+                ),
+                timeout=min(remaining(), _STARTUP_TIMEOUT_SECONDS),
+            )
+        except asyncio.TimeoutError:
+            raise CopilotSdkTimeoutError(
+                "Copilot SDK runtime setup exceeded the request deadline. "
+                "Pre-download it with: python -m copilot download-runtime"
+            ) from None
         if remaining() <= 0:
             raise CopilotSdkTimeoutError(
                 "Copilot SDK runtime setup exceeded the request deadline. "
@@ -868,7 +890,22 @@ def _run_async(factory: Callable[[], Any]) -> Any:
                         return unresolved
 
             unresolved = loop.run_until_complete(cancel_all_tasks())
-            loop.run_until_complete(loop.shutdown_asyncgens())
+
+            async def shutdown_async_generators() -> None:
+                try:
+                    await _run_bounded(
+                        loop.shutdown_asyncgens(),
+                        timeout=_CLEANUP_TIMEOUT_SECONDS,
+                    )
+                except (asyncio.TimeoutError, CopilotSdkCleanupError):
+                    warnings.warn(
+                        "Copilot SDK async-generator shutdown exceeded the "
+                        "cleanup deadline.",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+
+            loop.run_until_complete(shutdown_async_generators())
             unresolved |= loop.run_until_complete(cancel_all_tasks())
 
             if unresolved:

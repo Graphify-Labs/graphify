@@ -463,11 +463,13 @@ def test_pre_dispatch_timeout_is_retry_safe(monkeypatch, stage):
 
 def test_runtime_setup_cannot_dispatch_after_deadline(monkeypatch):
     state = _install_fake_copilot(monkeypatch, constructor_delay=0.03)
+    started = time.monotonic()
     with pytest.raises(backend.CopilotSdkTimeoutError, match="runtime setup exceeded"):
         _call(timeout_seconds=0.01)
+    assert time.monotonic() - started < 0.1
     assert state["starts"] == 0
     assert state["sends"] == 0
-    assert state["stops"] == 1
+    assert state["stops"] == 0
 
 
 def test_constructor_failure_has_no_unbound_cleanup_state(monkeypatch):
@@ -710,6 +712,43 @@ def test_successful_force_stop_clears_terminated_runtime_handles():
         await resources.__aexit__(None, None, None)
 
     asyncio.run(run())
+
+
+def test_force_stop_is_bounded_while_holding_lifecycle_lock(monkeypatch):
+    monkeypatch.setattr(backend, "_CLEANUP_TIMEOUT_SECONDS", 0.01)
+
+    class Client:
+        async def force_stop(self) -> None:
+            await asyncio.Event().wait()
+
+    async def run() -> None:
+        resources = backend._CopilotResources()
+        resources.client = Client()
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(resources.force_stop(), timeout=0.1)
+        assert resources._lifecycle_lock.locked() is False
+        await resources.__aexit__(RuntimeError, None, None)
+
+    asyncio.run(run())
+
+
+def test_late_session_is_disconnected_after_terminal_cleanup_starts():
+    state = {"disconnects": 0}
+
+    class Session:
+        async def disconnect(self) -> None:
+            state["disconnects"] += 1
+
+    async def run() -> None:
+        resources = backend._CopilotResources()
+        resources._terminal_cleanup_started = True
+        with pytest.raises(backend.CopilotSdkCleanupError):
+            await resources.track_created_session(asyncio.sleep(0, result=Session()))
+        assert resources.session is None
+        await resources.__aexit__(RuntimeError, None, None)
+
+    asyncio.run(run())
+    assert state["disconnects"] == 1
 
 
 def test_cleanup_waits_for_in_flight_force_stop():

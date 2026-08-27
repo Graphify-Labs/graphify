@@ -1382,6 +1382,18 @@ def _anthropic_response_text(content, default: str | None = None) -> str | None:
         text = getattr(block, "text", None)
         if isinstance(text, str):
             parts.append(text)
+    if not parts:
+        return default
+    if len(parts) > 1:
+        try:
+            json.loads(parts[0])
+        except (json.JSONDecodeError, TypeError):
+            pass
+        else:
+            # Preserve the historical first-block behavior when Anthropic
+            # already returned one complete JSON value followed by another
+            # text block. Joining is only needed when the value was split.
+            return parts[0]
     combined = "".join(parts)
     return combined if combined.strip() else default
 
