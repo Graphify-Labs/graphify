@@ -397,7 +397,12 @@ async def _run_bounded(
     timeout: float,
     abort: Callable[[], Any] | None = None,
 ) -> Any:
-    """Bound one asynchronous SDK operation and its cancellation cleanup."""
+    """Bound an SDK call; report a distinct error if cancellation cannot finish.
+
+    ``TimeoutError`` means the operation stopped and the timeout is retry-safe
+    when the caller has not dispatched source. ``CopilotSdkCleanupError`` means
+    a task is still alive and the isolated event loop must be torn down instead.
+    """
     if not inspect.isawaitable(operation):
         raise TypeError("Copilot SDK operation must be awaitable")
 
@@ -554,9 +559,17 @@ class _CopilotResources:
             self.workspace = None
         return True
 
-    async def track_created_session(self, operation: Awaitable[Any]) -> Any:
-        """Publish a created session before a timeout can start cleanup."""
-        self._in_flight_session_creations += 1
+    async def track_created_session(
+        self,
+        operation_factory: Callable[[], Awaitable[Any]],
+    ) -> Any:
+        """Reserve workspace ownership, then create and publish one session."""
+        async with self._lifecycle_lock:
+            if self._terminal_cleanup_started or self.workspace is None:
+                raise CopilotSdkCleanupError(
+                    "Copilot SDK session creation started after terminal cleanup."
+                )
+            self._in_flight_session_creations += 1
 
         async def release_failed_creation() -> None:
             async with self._lifecycle_lock:
@@ -565,6 +578,7 @@ class _CopilotResources:
                     self._cleanup_workspace_locked()
 
         try:
+            operation = operation_factory()
             session = await operation
         except BaseException:
             await _finish_cleanup(release_failed_creation())
@@ -742,7 +756,9 @@ async def _construct_client(
         )
     except BaseException:
         # A running thread cannot be killed safely. It retains exclusive
-        # ownership of the workspace and removes it when construction ends.
+        # ownership of this quarantined workspace and removes it when
+        # construction ends. TemporaryDirectory also registers process-exit
+        # cleanup, so a permanently stuck daemon cannot leak across processes.
         future.add_done_callback(
             partial(_cleanup_abandoned_workspace, workspace=workspace)
         )
@@ -809,37 +825,38 @@ async def _call_once(
                     else None
                 ),
             )
-            session_operation = resources.client.create_session(
-                on_permission_request=_deny_permission,
-                model=model,
-                reasoning_effort=reasoning_effort,
-                context_tier=context_tier,
-                model_capabilities=model_capabilities,
-                streaming=True,
-                tools=[],
-                available_tools=[],
-                mcp_servers={},
-                enable_session_telemetry=False,
-                enable_file_change_tracking=False,
-                enable_session_store=False,
-                enable_skills=False,
-                enable_config_discovery=False,
-                enable_on_demand_instruction_discovery=False,
-                enable_file_hooks=False,
-                enable_host_git_operations=False,
-                skip_custom_instructions=True,
-                memory={"enabled": False},
-                embedding_cache_storage="in-memory",
-                mcp_oauth_token_storage="in-memory",
-                skip_embedding_retrieval=True,
-                enable_mcp_apps=False,
-                working_directory=working_directory,
-                config_directory=working_directory,
-                system_message=_system_message(system_prompt),
-                on_event=collector,
-            )
             await _run_bounded(
-                resources.track_created_session(session_operation),
+                resources.track_created_session(
+                    lambda: resources.client.create_session(
+                        on_permission_request=_deny_permission,
+                        model=model,
+                        reasoning_effort=reasoning_effort,
+                        context_tier=context_tier,
+                        model_capabilities=model_capabilities,
+                        streaming=True,
+                        tools=[],
+                        available_tools=[],
+                        mcp_servers={},
+                        enable_session_telemetry=False,
+                        enable_file_change_tracking=False,
+                        enable_session_store=False,
+                        enable_skills=False,
+                        enable_config_discovery=False,
+                        enable_on_demand_instruction_discovery=False,
+                        enable_file_hooks=False,
+                        enable_host_git_operations=False,
+                        skip_custom_instructions=True,
+                        memory={"enabled": False},
+                        embedding_cache_storage="in-memory",
+                        mcp_oauth_token_storage="in-memory",
+                        skip_embedding_retrieval=True,
+                        enable_mcp_apps=False,
+                        working_directory=working_directory,
+                        config_directory=working_directory,
+                        system_message=_system_message(system_prompt),
+                        on_event=collector,
+                    )
+                ),
                 timeout=min(remaining(), _STARTUP_TIMEOUT_SECONDS),
                 abort=(
                     resources.force_stop
@@ -881,7 +898,16 @@ async def _call_once(
                 "Copilot SDK request timed out after source dispatch; its outcome "
                 "is unknown and Graphify did not replay it."
             )
+        except CopilotSdkCleanupError:
+            # Cleanup failure after dispatch is also an unknown remote outcome.
+            # Keep that classification so adaptive timeout handling cannot replay.
+            unknown_outcome_message = (
+                "Copilot SDK cleanup did not complete after source dispatch; its "
+                "outcome is unknown and Graphify did not replay it."
+            )
         except Exception:
+            # Private SDK exceptions can contain source or authentication data.
+            # The public boundary deliberately exposes only replay safety.
             unknown_outcome_message = (
                 "Copilot SDK request outcome is unknown; Graphify did not replay it."
             )

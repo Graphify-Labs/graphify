@@ -64,8 +64,10 @@ def _install_fake_copilot(
     stop_error: BaseException | None = None,
     constructor_error: BaseException | None = None,
     start_wait: bool = False,
+    start_ignores_cancellation: bool = False,
     create_wait: bool = False,
     send_wait: bool = False,
+    send_ignores_cancellation: bool = False,
     constructor_delay: float = 0,
     usage_events: list[Any] | None = None,
 ) -> dict[str, Any]:
@@ -92,7 +94,12 @@ def _install_fake_copilot(
             state["prompt"] = prompt
             state["send_kwargs"] = kwargs
             if send_wait:
-                await asyncio.Event().wait()
+                while True:
+                    try:
+                        await asyncio.Event().wait()
+                    except asyncio.CancelledError:
+                        if not send_ignores_cancellation:
+                            raise
             if send_error is not None:
                 raise send_error
             handler = self.options.get("on_event")
@@ -120,7 +127,12 @@ def _install_fake_copilot(
         async def start(self) -> None:
             state["starts"] += 1
             if start_wait:
-                await asyncio.Event().wait()
+                while True:
+                    try:
+                        await asyncio.Event().wait()
+                    except asyncio.CancelledError:
+                        if not start_ignores_cancellation:
+                            raise
             if start_error is not None:
                 raise start_error
 
@@ -472,6 +484,26 @@ def test_runtime_setup_cannot_dispatch_after_deadline(monkeypatch):
     assert state["stops"] == 0
 
 
+def test_stubborn_pre_dispatch_start_is_cleanup_error_not_retryable_timeout(
+    monkeypatch,
+):
+    monkeypatch.setattr(backend, "_CLEANUP_TIMEOUT_SECONDS", 0.01)
+    state = _install_fake_copilot(
+        monkeypatch,
+        start_wait=True,
+        start_ignores_cancellation=True,
+    )
+    with pytest.warns(RuntimeWarning) as caught:
+        with pytest.raises(backend.CopilotSdkCleanupError):
+            _call(timeout_seconds=0.01)
+    warning_text = "\n".join(str(item.message) for item in caught)
+    assert "operation remained pending" in warning_text
+    assert "tasks remained pending" in warning_text
+    assert state["starts"] == 1
+    assert state["sends"] == 0
+    assert state["force_stops"] == 1
+
+
 def test_timed_out_constructor_owns_workspace_until_worker_exits(monkeypatch):
     monkeypatch.setattr(backend, "_CLEANUP_TIMEOUT_SECONDS", 0.01)
     constructor_started = threading.Event()
@@ -553,6 +585,42 @@ def test_post_dispatch_timeout_force_stops_without_graceful_replay(monkeypatch):
     assert state["sends"] == 1
     assert state["force_stops"] == 1
     assert state["disconnects"] == state["stops"] == 0
+
+
+def test_post_dispatch_cleanup_failure_remains_unknown_and_not_retryable(monkeypatch):
+    state = _install_fake_copilot(
+        monkeypatch,
+        send_error=backend.CopilotSdkCleanupError("SECRET_CLEANUP"),
+    )
+    with pytest.raises(
+        backend.CopilotSdkUnknownOutcomeError,
+        match="cleanup did not complete after source dispatch",
+    ) as exc_info:
+        _call()
+    assert "SECRET_CLEANUP" not in "".join(
+        traceback.format_exception(exc_info.value)
+    )
+    assert state["sends"] == 1
+
+
+def test_stubborn_post_dispatch_send_is_unknown_and_never_replayed(monkeypatch):
+    monkeypatch.setattr(backend, "_CLEANUP_TIMEOUT_SECONDS", 0.01)
+    state = _install_fake_copilot(
+        monkeypatch,
+        send_wait=True,
+        send_ignores_cancellation=True,
+    )
+    with pytest.warns(RuntimeWarning) as caught:
+        with pytest.raises(
+            backend.CopilotSdkUnknownOutcomeError,
+            match="cleanup did not complete after source dispatch",
+        ):
+            _call(timeout_seconds=0.01)
+    warning_text = "\n".join(str(item.message) for item in caught)
+    assert "operation remained pending" in warning_text
+    assert "tasks remained pending" in warning_text
+    assert state["sends"] == 1
+    assert state["force_stops"] == 1
 
 
 def test_run_bounded_rejects_synchronous_callables_without_invoking_them():
@@ -773,40 +841,51 @@ def test_force_stop_is_bounded_while_holding_lifecycle_lock(monkeypatch):
     asyncio.run(run())
 
 
-def test_late_session_is_disconnected_after_terminal_cleanup_starts():
-    state = {"disconnects": 0}
-
-    class Session:
-        async def disconnect(self) -> None:
-            state["disconnects"] += 1
+def test_session_creation_is_rejected_after_terminal_cleanup_starts():
+    factory_called = False
 
     async def run() -> None:
+        nonlocal factory_called
         resources = backend._CopilotResources()
         resources._terminal_cleanup_started = True
+
+        def create_session() -> Any:
+            nonlocal factory_called
+            factory_called = True
+            raise AssertionError("terminal cleanup must reject before creation")
+
         with pytest.raises(backend.CopilotSdkCleanupError):
-            await resources.track_created_session(asyncio.sleep(0, result=Session()))
+            await resources.track_created_session(create_session)
         assert resources.session is None
         await resources.__aexit__(RuntimeError, None, None)
 
     asyncio.run(run())
-    assert state["disconnects"] == 1
+    assert factory_called is False
 
 
 def test_session_transfer_finishes_when_cancelled_waiting_for_lifecycle_lock():
     state = {"disconnects": 0}
+    creation_started = asyncio.Event()
+    release_creation = asyncio.Event()
 
     class Session:
         async def disconnect(self) -> None:
             state["disconnects"] += 1
 
+    async def create_session() -> Session:
+        creation_started.set()
+        await release_creation.wait()
+        return Session()
+
     async def run() -> None:
         resources = backend._CopilotResources()
-        await resources._lifecycle_lock.acquire()
         tracking = asyncio.create_task(
-            resources.track_created_session(asyncio.sleep(0, result=Session()))
+            resources.track_created_session(create_session)
         )
-        for _ in range(3):
-            await asyncio.sleep(0)
+        await creation_started.wait()
+        await resources._lifecycle_lock.acquire()
+        release_creation.set()
+        await asyncio.sleep(0)
         tracking.cancel()
         resources._terminal_cleanup_started = True
         resources._lifecycle_lock.release()
@@ -835,10 +914,20 @@ def test_cancelled_late_session_remains_owned_when_disconnect_times_out(monkeypa
     async def run() -> None:
         resources = backend._CopilotResources()
         session = Session()
-        resources._terminal_cleanup_started = True
+        creation_started = asyncio.Event()
+        release_creation = asyncio.Event()
+
+        async def create_session() -> Session:
+            creation_started.set()
+            await release_creation.wait()
+            return session
+
         tracking = asyncio.create_task(
-            resources.track_created_session(asyncio.sleep(0, result=session))
+            resources.track_created_session(create_session)
         )
+        await creation_started.wait()
+        await resources.force_stop()
+        release_creation.set()
         await disconnect_started.wait()
         tracking.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -879,7 +968,7 @@ def test_in_flight_session_creation_keeps_workspace_until_late_disconnect():
 
         resources.client = Client()
         tracking = asyncio.create_task(
-            resources.track_created_session(create_session())
+            resources.track_created_session(create_session)
         )
         await creation_started.wait()
         tracking.cancel()
