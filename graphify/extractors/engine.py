@@ -2920,6 +2920,13 @@ def _extract_generic(
     nodes: list[dict] = []
     edges: list[dict] = []
     seen_ids: set[str] = set()
+    # Package/class-level value names declared in this file, and the reads
+    # this file cannot resolve. Same split as raw_calls: one file is not
+    # enough to bind a name declared in a sibling.
+    value_nids: dict[str, str] = {}
+    raw_value_refs: list[dict] = []
+    seen_value_refs: set[tuple[str, str]] = set()
+
     namespace_stack: list[str] = []
     # Ruby only: enclosing module/class segments, so `module Foo::Bar` (compact)
     # and `module Foo; module Bar` (nested) label the same node `Foo::Bar` and
@@ -3098,6 +3105,42 @@ def _extract_generic(
                     for child in node.children:
                         walk(child, parent_class_nid)
             return
+
+        # Value declarations: a name that is read rather than called.
+        #
+        # The dispatch below knows classes, functions, imports and calls. A
+        # Java constant is none of those, so it never became a node and
+        # nothing could point at it. Measured on a 14-file Java project
+        # using five constants each read in exactly one method: none of the
+        # five was a node, while all five reading methods were.
+        #
+        # Opt-in per language: value_types is empty unless a config sets it,
+        # which is what every language did implicitly before.
+        if config.value_types and t in config.value_types:
+            for decl in node.children:
+                if decl.type not in ("variable_declarator", "identifier"):
+                    continue
+                nm = decl.child_by_field_name("name") if decl.type == "variable_declarator" else decl
+                if nm is None:
+                    continue
+                vname = _read_text(nm, source)
+                if not vname or vname == "_":
+                    continue
+                vline = decl.start_point[0] + 1
+                vnid = _make_id(stem, vname)
+                add_node(vnid, vname, vline)
+                for n in nodes:
+                    if n["id"] == vnid:
+                        n["value_kind"] = config.value_kind
+                        break
+                add_edge(parent_class_nid or file_nid, vnid, "contains", vline,
+                         context=config.value_kind)
+                value_nids[vname] = vnid
+            # Deliberately no return: a field_declaration also carries its
+            # type, which the field-type-reference pass and the Java
+            # receiver-type table read from the same subtree. Returning
+            # here broke eight Java tests that had nothing to do with
+            # values.
 
         # Class types
         if t in config.class_types:
@@ -5044,6 +5087,33 @@ def _extract_generic(
         receiver_types: dict[str, str] | tuple | None = None,
         extra_locals: frozenset[str] = frozenset(),
     ) -> None:
+        # A read is a relation this engine did not record. "Where is this
+        # constant used" asks for exactly that, and without the edge the
+        # node exists but stays unreachable. Only names declared as values,
+        # so an ordinary local identifier produces nothing.
+        if config.value_types and node.type == "identifier":
+            vname = _read_text(node, source)
+            vtgt = value_nids.get(vname)
+            if vtgt is None and vname:
+                raw_value_refs.append({
+                    "caller_nid": caller_nid,
+                    "name": vname,
+                    "source_file": str_path,
+                    "source_location": f"L{node.start_point[0] + 1}",
+                })
+            elif vtgt and vtgt != caller_nid and (caller_nid, vtgt) not in seen_value_refs:
+                seen_value_refs.add((caller_nid, vtgt))
+                edges.append({
+                    "source": caller_nid,
+                    "target": vtgt,
+                    "relation": "references",
+                    "context": "value_use",
+                    "confidence": "EXTRACTED",
+                    "source_file": str_path,
+                    "source_location": f"L{node.start_point[0] + 1}",
+                    "weight": 1.0,
+                })
+
         if node.type in config.function_boundary_types:
             # JS/TS: an inline/returned closure not separately tracked in
             # function_bodies would otherwise drop its calls at this boundary.
@@ -5910,7 +5980,8 @@ def _extract_generic(
     # fold them in so the cross-file resolver sees them (#1668).
     if _ruby_mixin_calls:
         raw_calls.extend(_ruby_mixin_calls)
-    result = {"nodes": nodes, "edges": clean_edges, "raw_calls": raw_calls}
+    result = {"nodes": nodes, "edges": clean_edges, "raw_calls": raw_calls,
+              "raw_value_refs": raw_value_refs}
     # #2551: the parser recovered from syntax errors, so extraction may be
     # partial (in the worst case, nothing but the file node). Record the first
     # error's line so extract() can warn instead of reporting silent success.

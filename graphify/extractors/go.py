@@ -83,7 +83,7 @@ def _go_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[st
                 _go_collect_type_refs(c, source, generic, out)
 
 def extract_go(path: Path) -> dict:
-    """Extract functions, methods, type declarations, and imports from a .go file."""
+    """Extract functions, methods, types, values, and imports from a .go file."""
     try:
         import tree_sitter_go as tsgo
         from tree_sitter import Language, Parser
@@ -269,8 +269,50 @@ def extract_go(path: Path) -> dict:
         salt = hashlib.sha1(name.encode("utf-8"), usedforsecurity=False).hexdigest()[:6]
         return _make_id(plain_nid, salt)
 
+    # Package-level value names declared in this file. Kept separate from
+    # label_to_nid so the reference pass below binds only these and not
+    # every identifier it walks past.
+    value_nids: dict[str, str] = {}
+
+    def add_value_decl(node, kind: str) -> None:
+        """Emit a node per name in a const_declaration or var_declaration.
+
+        The dispatch below handled function_declaration,
+        method_declaration, type_declaration and import_declaration. Go's
+        grammar also has const_declaration and var_declaration, so a
+        package-level constant never became a node and nothing could
+        point at it.
+
+        Measured on a 59-file Go project: of fifteen constants each used
+        in exactly one function, none was a node, while all fifteen of
+        those functions were. Asked "which function uses X", the graph
+        had the answer but no way in.
+        """
+        for spec in node.children:
+            if spec.type not in ("const_spec", "var_spec"):
+                continue
+            line = spec.start_point[0] + 1
+            for child in spec.children:
+                if child.type != "identifier":
+                    continue
+                name = _read_text(child, source)
+                if not name or name == "_":
+                    continue
+                nid = _make_id(pkg_scope, name)
+                add_node(nid, name, line)
+                for n in nodes:
+                    if n["id"] == nid:
+                        n["value_kind"] = kind
+                        break
+                add_edge(file_nid, nid, "contains", line, context=kind)
+                value_nids[name] = nid
+
     def walk(node) -> None:
         t = node.type
+
+        if t in ("const_declaration", "var_declaration"):
+            add_value_decl(node, "const" if t == "const_declaration" else "var")
+            return
 
         if t == "function_declaration":
             name_node = node.child_by_field_name("name")
@@ -430,6 +472,8 @@ def extract_go(path: Path) -> dict:
         label_to_nid[normalised] = n["id"]
 
     seen_call_pairs: set[tuple[str, str]] = set()
+    seen_value_refs: set[tuple[str, str]] = set()
+    raw_value_refs: list[dict] = []
     raw_calls: list[dict] = []
 
     def walk_calls(node, caller_nid: str) -> None:
@@ -493,6 +537,40 @@ def extract_go(path: Path) -> dict:
                         "source_file": str_path,
                         "source_location": f"L{node.start_point[0] + 1}",
                     })
+        # Reading a value is a relation this extractor did not record.
+        # "Where is this constant used" asks for exactly that, and
+        # without the edge the node stays unreachable even once it
+        # exists. Restricted to names declared as package-level values,
+        # so a local identifier does not produce an edge.
+        if node.type == "identifier":
+            name = _read_text(node, source)
+            tgt = value_nids.get(name)
+            if tgt is None and name and name not in _LANGUAGE_BUILTIN_GLOBALS:
+                # Not declared in this file. It may be a constant from a
+                # sibling file or a local variable; only a pass that sees
+                # every file can tell, which is how cross-file calls are
+                # already resolved. See _bind_cross_file_value_refs.
+                raw_value_refs.append({
+                    "caller_nid": caller_nid,
+                    "name": name,
+                    "source_file": str_path,
+                    "source_location": f"L{node.start_point[0] + 1}",
+                })
+            elif tgt and tgt != caller_nid:
+                pair = (caller_nid, tgt)
+                if pair not in seen_value_refs:
+                    seen_value_refs.add(pair)
+                    edges.append({
+                        "source": caller_nid,
+                        "target": tgt,
+                        "relation": "references",
+                        "context": "value_use",
+                        "confidence": "EXTRACTED",
+                        "source_file": str_path,
+                        "source_location": f"L{node.start_point[0] + 1}",
+                        "weight": 1.0,
+                    })
+
         for child in node.children:
             walk_calls(child, caller_nid)
 
@@ -510,5 +588,6 @@ def extract_go(path: Path) -> dict:
         "nodes": nodes,
         "edges": clean_edges,
         "raw_calls": raw_calls,
+        "raw_value_refs": raw_value_refs,
         "go_imports": dict(go_imported_pkgs),
     }

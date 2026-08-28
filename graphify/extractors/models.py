@@ -20,6 +20,12 @@ class LanguageConfig:
     import_types: frozenset = frozenset()
     call_types: frozenset = frozenset()
     static_prop_types: frozenset = frozenset()
+    # Declarations that introduce a named value rather than a callable: a Java
+    # field, a Rust const_item. Empty means the language opts out, which is
+    # what every language did implicitly before the field existed.
+    value_types: frozenset = frozenset()
+    # What the value_kind marker on those nodes says.
+    value_kind: str = "value"
     helper_fn_names: frozenset = frozenset()
     container_bind_methods: frozenset = frozenset()
     event_listener_properties: frozenset = frozenset()
