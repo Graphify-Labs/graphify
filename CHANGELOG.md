@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## 0.9.52 (unreleased)
+
+- Feature: Perl `.pl`/`.pm` extraction via tree-sitter-perl — package declarations (statement form, block form `package Foo { ... }` with correct scope restore, and mid-file package switches), sub definitions including qualified `sub Pkg::sub` declarations, and Perl's implicit `main` package materialized lazily for package-less code; extensionless `#!/usr/bin/perl` scripts dispatch through the shebang map. Iterative, budget-bounded tree walks keep pathologically deep or wide files partial instead of crashing. Imports, inheritance, and call resolution follow in subsequent changes (#419).
+
 ## 0.9.51 (2026-08-28)
 
 - Fix: the incomplete-build shrink guard now stays armed when a chunk came back hollow, unparseable, or omitting files, so a run that silently lost content can no longer overwrite the existing graph with a smaller one; a complete run and a retry-recovered chunk are unaffected, and `--allow-partial` still overrides (#3105, thanks @abhay-codes07).

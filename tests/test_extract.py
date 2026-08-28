@@ -3448,9 +3448,19 @@ def test_extensionless_without_usable_shebang_stays_unsupported(tmp_path):
 
     # Interpreter known to detect but with no AST extractor: stays skipped
     # rather than being mis-parsed by a wrong grammar.
-    perl = tmp_path / "legacy"
-    perl.write_text("#!/usr/bin/env perl\nprint 1;\n")
-    assert _get_extractor(perl) is None
+    fish = tmp_path / "setup.fish"
+    fish.write_text("#!/usr/bin/env fish\necho hi\n")
+    assert _get_extractor(fish) is None
+
+
+def test_extract_extensionless_perl_shebang_dispatches(tmp_path):
+    """An extensionless `#!/usr/bin/perl` script now dispatches to the Perl
+    extractor via the shebang map (previously unmapped and silently skipped)."""
+    from graphify.extract import _get_extractor, extract_perl
+
+    legacy = tmp_path / "legacy"
+    legacy.write_text("#!/usr/bin/env perl\nprint 1;\n")
+    assert _get_extractor(legacy) is extract_perl
 
 
 def test_extract_extensionless_bash_cli_end_to_end(tmp_path):
