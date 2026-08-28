@@ -505,7 +505,7 @@ These are only needed for **headless / CI extraction** (`graphify extract`). Whe
 | `ANTHROPIC_API_KEY` | Claude (Anthropic) backend | `--backend claude` |
 | `ANTHROPIC_BASE_URL` | Anthropic-compatible endpoint URL (LiteLLM proxy, gateways, ...) | `--backend claude` (default: `https://api.anthropic.com`) |
 | `ANTHROPIC_MODEL` | Model name for the Claude backend — for custom endpoints, use the model name/alias your server exposes | `--backend claude` (default: `claude-sonnet-4-6`) |
-| `GRAPHIFY_OPENROUTER_API_KEY` or `OPENROUTER_API_KEY` | Gemini, OpenAI, or DeepSeek through OpenRouter; exact selected model is preserved | `--backend gemini\|openai\|deepseek` |
+| `GRAPHIFY_OPENROUTER_API_KEY` | Gemini, OpenAI, or DeepSeek through OpenRouter; exact selected model is preserved | `--backend gemini\|openai\|deepseek` |
 | `GEMINI_API_KEY` or `GOOGLE_API_KEY` | Direct Google Gemini backend (legacy-compatible) | `--backend gemini` |
 | `OPENAI_API_KEY` | OpenAI or OpenAI-compatible APIs | `--backend openai` (local servers accept any non-empty value) |
 | `OPENAI_BASE_URL` | OpenAI-compatible server URL (llama.cpp, vLLM, LM Studio, ...) | `--backend openai` (default: `https://api.openai.com/v1`) |

@@ -135,7 +135,7 @@ BACKENDS: dict[str, dict] = {
     "gemini": {
         "base_url": os.environ.get("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/"),
         "default_model": "gemini-3-flash-preview",
-        "env_keys": ["GRAPHIFY_OPENROUTER_API_KEY", "OPENROUTER_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"],
+        "env_keys": ["GRAPHIFY_OPENROUTER_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"],
         "model_env_key": "GRAPHIFY_GEMINI_MODEL",
         "pricing": {"input": 0.50, "output": 3.00},  # USD per 1M tokens
         "temperature": 0,
@@ -146,7 +146,7 @@ BACKENDS: dict[str, dict] = {
     "openai": {
         "base_url": os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
         "default_model": os.environ.get("OPENAI_MODEL", "gpt-4.1-mini"),
-        "env_keys": ["GRAPHIFY_OPENROUTER_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY"],
+        "env_keys": ["GRAPHIFY_OPENROUTER_API_KEY", "OPENAI_API_KEY"],
         "model_env_key": "GRAPHIFY_OPENAI_MODEL",
         "max_tokens": 16384,
         "pricing": {"input": 0.40, "output": 1.60},  # USD per 1M tokens
@@ -160,7 +160,7 @@ BACKENDS: dict[str, dict] = {
     "deepseek": {
         "base_url": os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
         "default_model": "deepseek-v4-flash",
-        "env_keys": ["GRAPHIFY_OPENROUTER_API_KEY", "OPENROUTER_API_KEY", "DEEPSEEK_API_KEY"],
+        "env_keys": ["GRAPHIFY_OPENROUTER_API_KEY", "DEEPSEEK_API_KEY"],
         "model_env_key": "GRAPHIFY_DEEPSEEK_MODEL",
         "pricing": {"input": 0.14, "output": 0.28},  # USD per 1M tokens (v4-flash)
         # deepseek-reasoner silently ignores temperature; deepseek-chat / v4-flash
@@ -1321,10 +1321,7 @@ def _openrouter_route(backend: str, api_key: str, model: str) -> tuple[str, str]
     """Route dedicated OpenRouter credentials without substituting the selected model."""
     prefixes = {"gemini": "google", "openai": "openai", "deepseek": "deepseek"}
     prefix = prefixes.get(backend)
-    openrouter_keys = {
-        os.environ.get("GRAPHIFY_OPENROUTER_API_KEY", ""),
-        os.environ.get("OPENROUTER_API_KEY", ""),
-    }
+    openrouter_keys = {os.environ.get("GRAPHIFY_OPENROUTER_API_KEY", "")}
     if not prefix or not api_key or api_key not in openrouter_keys:
         return BACKENDS[backend].get("base_url", ""), model
     routed_model = model if "/" in model else f"{prefix}/{model}"
@@ -1913,7 +1910,7 @@ def extract_files_direct(
         if backend is None:
             raise ValueError(
                 "No LLM backend configured. Set one of: GRAPHIFY_OPENROUTER_API_KEY, "
-                "OPENROUTER_API_KEY, ANTHROPIC_API_KEY, MOONSHOT_API_KEY, "
+                "ANTHROPIC_API_KEY, MOONSHOT_API_KEY, "
                 "AZURE_OPENAI_API_KEY+AZURE_OPENAI_ENDPOINT, OLLAMA_BASE_URL, "
                 "or AWS credentials. Pass backend= explicitly to select a provider."
             )

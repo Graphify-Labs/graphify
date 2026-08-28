@@ -139,6 +139,24 @@ def test_dedicated_openrouter_key_preserves_exact_provider_model(
     )
 
 
+def test_generic_openrouter_key_does_not_override_direct_provider_key(tmp_path, monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "generic-key")
+    monkeypatch.setenv("GEMINI_API_KEY", "direct-key")
+    source = tmp_path / "note.md"
+    source.write_text("# Architecture\n")
+    result = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 1, "output_tokens": 1}
+
+    with patch("graphify.llm._call_openai_compat", return_value=result) as call:
+        llm.extract_files_direct([source], backend="gemini", root=tmp_path)
+
+    assert call.call_args.args[:3] == (
+        "https://generativelanguage.googleapis.com/v1beta/openai/",
+        "direct-key",
+        "gemini-3-flash-preview",
+    )
+
+
 @pytest.mark.parametrize(
     "backend, env_key",
     [

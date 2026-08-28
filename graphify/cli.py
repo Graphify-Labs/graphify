@@ -2295,7 +2295,6 @@ def dispatch_command(cmd: str) -> None:
             print("Code graph updated. For doc/paper/image changes run /graphify --update in your AI assistant.")
             if not (
                 os.environ.get("GRAPHIFY_OPENROUTER_API_KEY")
-                or os.environ.get("OPENROUTER_API_KEY")
                 or os.environ.get("GEMINI_API_KEY")
                 or os.environ.get("GOOGLE_API_KEY")
                 or os.environ.get("MOONSHOT_API_KEY")
