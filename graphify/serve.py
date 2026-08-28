@@ -285,6 +285,11 @@ _EXACT_MATCH_BONUS = 1000.0
 _PREFIX_MATCH_BONUS = 100.0
 _SUBSTRING_MATCH_BONUS = 1.0
 _SOURCE_MATCH_BONUS = 0.5
+# Docstring/rationale labels start with natural-language action verbs (e.g.
+# "Computes ...", "Returns ...", "Creates ...") which would otherwise receive
+# the full 100x identifier-prefix bonus and out-seed production code symbols (#2962).
+_RATIONALE_PREFIX_FACTOR = 0.01
+
 
 
 def _compute_idf(G: nx.Graph, terms: list[str]) -> dict[str, float]:
@@ -529,6 +534,7 @@ def _score_query(
         # driver".
         label_tokens = " ".join(_search_tokens(data.get("label") or ""))
         source = (data.get("source_file") or "").lower()
+        prefix_factor = _RATIONALE_PREFIX_FACTOR if data.get("file_type") == "rationale" else 1.0
         # `nid_lower` is needed both by the full-query tier (`if joined`) and by
         # the per-token singleton tier (joined-singlet exact-match check). When
         # neither runs (`joined` empty AND not collecting seeds) skip the call;
@@ -549,7 +555,7 @@ def _score_query(
                 or bare_label.startswith(joined)
                 or label_tokens.startswith(joined)
             ):
-                score += _PREFIX_MATCH_BONUS * 10 * joined_w
+                score += _PREFIX_MATCH_BONUS * prefix_factor * 10 * joined_w
         # Term coverage (#1602): scale the per-term exact/prefix tiers by the
         # squared fraction of query terms the node's LABEL matches, so a lone
         # generic word that happens to equal a short label (query term "home"
@@ -579,7 +585,7 @@ def _score_query(
                 tier_value = _EXACT_MATCH_BONUS * w
                 matched += 1
             elif norm_label.startswith(t) or bare_label.startswith(t):
-                tier_value = _PREFIX_MATCH_BONUS * w
+                tier_value = _PREFIX_MATCH_BONUS * prefix_factor * w
                 matched += 1
             elif t in norm_label:
                 substr_value = _SUBSTRING_MATCH_BONUS * w
@@ -603,7 +609,7 @@ def _score_query(
                     or bare_label.startswith(t)
                     or label_tokens.startswith(t)
                 ):
-                    singleton = _PREFIX_MATCH_BONUS * 10 * w
+                    singleton = _PREFIX_MATCH_BONUS * prefix_factor * 10 * w
                 else:
                     singleton = 0.0
                 singleton += tier_value + substr_value + source_value
