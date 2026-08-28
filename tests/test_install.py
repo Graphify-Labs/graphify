@@ -145,6 +145,151 @@ def test_install_project_codex_writes_skill_and_agents(tmp_path, monkeypatch):
     assert not (home / ".codex" / "skills" / "graphify" / "SKILL.md").exists()
 
 
+@pytest.mark.parametrize(
+    "argv,hooks",
+    [
+        (["graphify", "install", "--project", "--platform", "codex"], b"{ not json"),
+        (
+            ["graphify", "codex", "install", "--project"],
+            b'{"hooks": {"PreToolUse": "not-a-list"}}',
+        ),
+    ],
+    ids=["invalid-json", "invalid-managed-collection"],
+)
+def test_codex_project_install_preflight_leaves_project_unchanged(
+    tmp_path, monkeypatch, capsys, argv, hooks
+):
+    """Both public Codex project forms must validate before any project write."""
+    from graphify.__main__ import main
+
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    project.mkdir()
+    hooks_path = project / ".codex" / "hooks.json"
+    hooks_path.parent.mkdir()
+    hooks_path.write_bytes(hooks)
+    agents = project / "AGENTS.md"
+    agents.write_bytes(b"# User instructions\\n")
+    (project / ".codex" / "user-settings.json").write_bytes(b'{"keep": true}\\n')
+
+    def snapshot(root):
+        return {
+            path.relative_to(root): (path.is_dir(), path.read_bytes() if path.is_file() else None)
+            for path in root.rglob("*")
+        }
+
+    before = snapshot(project)
+    global_skill = home / ".codex" / "skills" / "graphify" / "SKILL.md"
+    global_skill.parent.mkdir(parents=True)
+    global_skill.write_bytes(b"user global skill")
+    global_before = global_skill.read_bytes()
+
+    monkeypatch.chdir(project)
+    monkeypatch.setattr(sys, "argv", argv)
+    with patch("graphify.__main__.Path.home", return_value=home):
+        with pytest.raises(SystemExit) as excinfo:
+            main()
+
+    assert excinfo.value.code == 1
+    assert snapshot(project) == before
+    assert global_skill.read_bytes() == global_before
+    assert not hooks_path.with_name(hooks_path.name + ".graphify-bak").exists()
+    captured = capsys.readouterr()
+    assert str(hooks_path.relative_to(project)) in captured.err
+    assert "git add" not in captured.out
+
+
+@pytest.mark.parametrize(
+    "platform,config_rel,config_bytes,skill_rel,instruction_rel",
+    [
+        (
+            "claude",
+            Path(".claude") / "settings.json",
+            b'{"hooks": {"PreToolUse": "not-a-list"}}',
+            Path(".claude") / "skills" / "graphify" / "SKILL.md",
+            Path("CLAUDE.md"),
+        ),
+        (
+            "gemini",
+            Path(".gemini") / "settings.json",
+            b'{"hooks": {"BeforeTool": "not-a-list"}}',
+            Path(".gemini") / "skills" / "graphify" / "SKILL.md",
+            Path("GEMINI.md"),
+        ),
+    ],
+    ids=["claude-invalid-settings", "gemini-invalid-settings"],
+)
+def test_strict_project_install_preflight_leaves_project_unchanged(
+    tmp_path, monkeypatch, capsys, platform, config_rel, config_bytes, skill_rel, instruction_rel
+):
+    """Claude and Gemini must validate settings before project artifacts."""
+    from graphify.__main__ import main
+
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    project.mkdir()
+    config_path = project / config_rel
+    config_path.parent.mkdir()
+    config_path.write_bytes(config_bytes)
+    instruction = project / instruction_rel
+    instruction.write_bytes(b"# User instructions\\n")
+    before = {
+        path.relative_to(project): (path.is_dir(), path.read_bytes() if path.is_file() else None)
+        for path in project.rglob("*")
+    }
+    global_skill = home / skill_rel
+    global_skill.parent.mkdir(parents=True)
+    global_skill.write_bytes(b"user global skill")
+
+    monkeypatch.chdir(project)
+    monkeypatch.setattr(sys, "argv", ["graphify", "install", "--project", "--platform", platform])
+    with patch("graphify.__main__.Path.home", return_value=home):
+        with pytest.raises(SystemExit) as excinfo:
+            main()
+
+    assert excinfo.value.code == 1
+    after = {
+        path.relative_to(project): (path.is_dir(), path.read_bytes() if path.is_file() else None)
+        for path in project.rglob("*")
+    }
+    assert after == before
+    assert global_skill.read_bytes() == b"user global skill"
+    assert not config_path.with_name(config_path.name + ".graphify-bak").exists()
+    captured = capsys.readouterr()
+    assert str(config_path.relative_to(project)) in captured.err
+    assert "git add" not in captured.out
+    assert not (project / skill_rel).exists()
+
+
+def test_codebuddy_project_helper_preflight_leaves_project_unchanged(tmp_path, capsys):
+    """The explicit project-directory CodeBuddy helper must fail closed."""
+    from graphify.install import codebuddy_install
+
+    project = tmp_path / "project"
+    project.mkdir()
+    settings = project / ".codebuddy" / "settings.json"
+    settings.parent.mkdir()
+    settings.write_bytes(b'{"hooks": {"PreToolUse": "not-a-list"}}')
+    instruction = project / "CODEBUDDY.md"
+    instruction.write_bytes(b"# User instructions\\n")
+    before = {
+        path.relative_to(project): (path.is_dir(), path.read_bytes() if path.is_file() else None)
+        for path in project.rglob("*")
+    }
+
+    with pytest.raises(SystemExit) as excinfo:
+        codebuddy_install(project)
+
+    assert excinfo.value.code == 1
+    after = {
+        path.relative_to(project): (path.is_dir(), path.read_bytes() if path.is_file() else None)
+        for path in project.rglob("*")
+    }
+    assert after == before
+    assert not settings.with_name(settings.name + ".graphify-bak").exists()
+    assert str(settings) in capsys.readouterr().err
+
+
 def test_claude_subcommand_project_install_and_uninstall_are_project_scoped(tmp_path, monkeypatch):
     from graphify.__main__ import main
     home = tmp_path / "home"
@@ -784,6 +929,148 @@ def test_opencode_agents_install_registers_plugin_in_config(tmp_path):
     assert any("graphify.js" in p for p in config.get("plugin", []))
 
 
+def test_opencode_agents_install_preflights_before_agents_or_plugin(tmp_path):
+    config_file = tmp_path / ".opencode" / "opencode.json"
+    config_file.parent.mkdir(parents=True)
+    config_file.write_bytes(b"{ broken")
+    agents_file = tmp_path / "AGENTS.md"
+    original_agents = b"# User rules\n"
+    agents_file.write_bytes(original_agents)
+
+    with pytest.raises(SystemExit):
+        _agents_install(tmp_path, "opencode")
+
+    assert agents_file.read_bytes() == original_agents
+    assert not (tmp_path / ".opencode" / "plugins" / "graphify.js").exists()
+    assert config_file.read_bytes() == b"{ broken"
+
+
+def test_opencode_project_install_preflights_before_skill_or_agents(tmp_path):
+    from graphify.install import _project_install
+
+    config_file = tmp_path / ".opencode" / "opencode.json"
+    config_file.parent.mkdir(parents=True)
+    config_file.write_text('{"plugin": null}', encoding="utf-8")
+    agents_file = tmp_path / "AGENTS.md"
+    agents_file.write_text("# User rules\n", encoding="utf-8")
+
+    with pytest.raises(SystemExit):
+        _project_install("opencode", tmp_path)
+
+    assert agents_file.read_text(encoding="utf-8") == "# User rules\n"
+    assert not (tmp_path / ".opencode" / "skills").exists()
+    assert not (tmp_path / ".opencode" / "plugins").exists()
+
+
+def test_opencode_preflight_rejects_invalid_config_without_side_effects(tmp_path, capsys):
+    from graphify.install import _preflight_opencode_config
+
+    config_file = tmp_path / ".opencode" / "opencode.json"
+    config_file.parent.mkdir(parents=True)
+    original = b"{ not json"
+    config_file.write_bytes(original)
+
+    with pytest.raises(SystemExit) as excinfo:
+        _preflight_opencode_config(config_file)
+
+    assert excinfo.value.code == 1
+    assert str(config_file) in capsys.readouterr().err
+    assert config_file.read_bytes() == original
+    assert list(tmp_path.rglob("*")) == [config_file.parent, config_file]
+
+
+def test_opencode_preflight_rejects_non_list_plugins(tmp_path, capsys):
+    from graphify.install import _preflight_opencode_config
+
+    config_file = tmp_path / ".opencode" / "opencode.json"
+    config_file.parent.mkdir(parents=True)
+    config_file.write_text('{"plugin": "oops"}', encoding="utf-8")
+
+    with pytest.raises(SystemExit) as excinfo:
+        _preflight_opencode_config(config_file)
+
+    assert excinfo.value.code == 1
+    assert str(config_file) in capsys.readouterr().err
+
+
+def test_opencode_preflight_allows_missing_or_omitted_plugins(tmp_path):
+    from graphify.install import _preflight_opencode_config
+
+    config_file = tmp_path / ".opencode" / "opencode.json"
+    assert _preflight_opencode_config(config_file) == {}
+    assert not config_file.parent.exists()
+
+    config_file.parent.mkdir(parents=True)
+    config_file.write_text('{"model": "keep"}', encoding="utf-8")
+    assert _preflight_opencode_config(config_file) == {"model": "keep"}
+
+
+def test_kilo_preflight_rejects_invalid_jsonc_without_sibling(tmp_path, capsys):
+    from graphify.install import _preflight_kilo_config
+
+    config_file = tmp_path / ".kilo" / "kilo.jsonc"
+    config_file.parent.mkdir(parents=True)
+    original = b"// broken\n{"
+    config_file.write_bytes(original)
+
+    with pytest.raises(SystemExit) as excinfo:
+        _preflight_kilo_config(tmp_path)
+
+    assert excinfo.value.code == 1
+    assert str(config_file) in capsys.readouterr().err
+    assert config_file.read_bytes() == original
+    assert not (tmp_path / ".kilo" / "kilo.json").exists()
+    assert not (tmp_path / ".kilo" / "plugins").exists()
+
+
+def test_kilo_preflight_accepts_jsonc_without_mutating_source(tmp_path):
+    from graphify.install import _preflight_kilo_config
+
+    config_file = tmp_path / ".kilo" / "kilo.jsonc"
+    config_file.parent.mkdir(parents=True)
+    original = '// user comment\n{"model": "keep", "plugin": [],}\n'
+    config_file.write_text(original, encoding="utf-8")
+
+    result = _preflight_kilo_config(tmp_path)
+
+    assert result == {"model": "keep", "plugin": []}
+    assert config_file.read_text(encoding="utf-8") == original
+    assert not (tmp_path / ".kilo" / "kilo.json").exists()
+
+
+def test_kilo_preflight_rejects_non_list_plugins(tmp_path, capsys):
+    from graphify.install import _preflight_kilo_config
+
+    config_file = tmp_path / ".kilo" / "kilo.json"
+    config_file.parent.mkdir(parents=True)
+    config_file.write_text('{"plugin": null}', encoding="utf-8")
+
+    with pytest.raises(SystemExit) as excinfo:
+        _preflight_kilo_config(tmp_path)
+
+    assert excinfo.value.code == 1
+    assert str(config_file) in capsys.readouterr().err
+    assert config_file.read_text(encoding="utf-8") == '{"plugin": null}'
+
+
+def test_kilo_preflight_rejects_unterminated_block_comment(tmp_path, capsys):
+    from graphify.install import _preflight_kilo_config
+
+    config_file = tmp_path / ".kilo" / "kilo.jsonc"
+    config_file.parent.mkdir(parents=True)
+    original = b'{"plugin": []} /* unterminated'
+    config_file.write_bytes(original)
+
+    with pytest.raises(SystemExit) as excinfo:
+        _preflight_kilo_config(tmp_path)
+
+    assert excinfo.value.code == 1
+    assert str(config_file) in capsys.readouterr().err
+    assert config_file.read_bytes() == original
+    assert not (tmp_path / ".kilo" / "kilo.json").exists()
+    assert not (tmp_path / ".kilo" / "plugins").exists()
+
+
 def test_opencode_agents_install_merges_existing_config(tmp_path):
     """opencode install preserves existing .opencode/opencode.json keys."""
     import json as _json
@@ -849,6 +1136,41 @@ def test_kilo_agents_install_merges_existing_config(tmp_path):
     assert (
         tmp_path / ".kilo" / "plugins" / "graphify.js"
     ).resolve().as_uri() in config["plugin"]
+
+
+def test_kilo_agents_install_preflights_before_agents_or_plugin(tmp_path):
+    config_file = tmp_path / ".kilo" / "kilo.json"
+    config_file.parent.mkdir(parents=True)
+    config_file.write_bytes(b"{ broken")
+    agents_file = tmp_path / "AGENTS.md"
+    original_agents = b"# User rules\n"
+    agents_file.write_bytes(original_agents)
+
+    with pytest.raises(SystemExit):
+        _agents_install(tmp_path, "kilo")
+
+    assert agents_file.read_bytes() == original_agents
+    assert not (tmp_path / ".kilo" / "plugins" / "graphify.js").exists()
+    assert config_file.read_bytes() == b"{ broken"
+
+
+def test_kilo_install_preflights_before_global_or_project_mutation(tmp_path):
+    home_dir = tmp_path / "home"
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    home_dir.mkdir()
+    config_file = project_dir / ".kilo" / "kilo.jsonc"
+    config_file.parent.mkdir(parents=True)
+    original = b"// malformed JSONC\n{"
+    config_file.write_bytes(original)
+
+    with pytest.raises(SystemExit):
+        _kilo_install(project_dir, home_dir)
+
+    assert config_file.read_bytes() == original
+    assert not (project_dir / "AGENTS.md").exists()
+    assert not (project_dir / ".kilo" / "plugins").exists()
+    assert not (home_dir / ".config" / "kilo").exists()
 
 
 def test_kilo_agents_install_preserves_existing_jsonc_config(tmp_path):

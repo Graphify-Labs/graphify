@@ -24,6 +24,7 @@ from graphify.install import (
     _install_codebuddy_hook,
     _install_codex_hook,
     _install_gemini_hook,
+    _read_settings_for_merge,
 )
 
 # installer key -> (function, settings file relative to project dir, hooks section)
@@ -154,6 +155,38 @@ def test_non_dict_hooks_section_aborts(tmp_path, capsys):
     assert excinfo.value.code == 1
     assert str(settings_path) in capsys.readouterr().err
     assert settings_path.read_bytes() == original
+
+
+def test_preflight_missing_settings_is_empty_without_creating_parent(tmp_path):
+    settings_path = tmp_path / ".codex" / "hooks.json"
+
+    assert _read_settings_for_merge(settings_path, managed_collection="PreToolUse") == {}
+    assert not settings_path.parent.exists()
+
+
+def test_preflight_allows_omitted_managed_hook_collection(tmp_path):
+    settings_path = _seed(tmp_path, "codex", {"theme": "dark", "hooks": {}})
+
+    assert _read_settings_for_merge(settings_path, managed_collection="PreToolUse") == {
+        "theme": "dark",
+        "hooks": {},
+    }
+
+
+@ALL_INSTALLERS
+def test_preflight_rejects_non_list_managed_hook_collection(tmp_path, installer, capsys):
+    """Read-only hook preflight rejects a malformed managed collection."""
+    section = _INSTALLERS[installer][2]
+    settings_path = _seed(tmp_path, installer, {"hooks": {section: "oops"}})
+    original = settings_path.read_bytes()
+
+    with pytest.raises(SystemExit) as excinfo:
+        _read_settings_for_merge(settings_path, managed_collection=section)
+
+    assert excinfo.value.code == 1
+    assert str(settings_path) in capsys.readouterr().err
+    assert settings_path.read_bytes() == original
+    assert not settings_path.with_name(settings_path.name + ".graphify-bak").exists()
 
 
 # ---------------------------------------------------------------- backup

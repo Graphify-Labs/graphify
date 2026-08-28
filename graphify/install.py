@@ -605,17 +605,20 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
 
     cfg = _PLATFORM_CONFIG[platform]
     project_dir = project_dir or Path(".")
+    opencode_config = None
+    if platform == "opencode":
+        # The plugin writer mutates both the plugin file and opencode.json. Read
+        # and validate the existing config before any skill or project writes.
+        opencode_config = _preflight_opencode_config(
+            (project_dir if project else Path(".")) / _OPENCODE_CONFIG_PATH
+        )
+    if platform == "kilo":
+        # Kilo Code also supports a native /graphify command file. Check the
+        # packaged source before installing the skill or global command.
+        command_src = _kilo_command_source()
     skill_dst = _copy_skill_file(platform, project=project, project_dir=project_dir)
 
     if platform == "kilo":
-        # Kilo Code also supports a native /graphify command file.
-        command_src = Path(__file__).parent / "command-kilo.md"
-        if not command_src.exists():
-            print(
-                f"error: command-kilo.md not found in package - reinstall graphify",
-                file=sys.stderr,
-            )
-            sys.exit(1)
         command_dst = Path.home() / ".config" / "kilo" / "command" / "graphify.md"
         command_dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(command_src, command_dst)
@@ -666,7 +669,9 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
             print(f"  CODEBUDDY.md     ->  created at {codebuddy_md}")
 
     if platform == "opencode":
-        _install_opencode_plugin(project_dir if project else Path("."))
+        _install_opencode_plugin(
+            project_dir if project else Path("."), config=opencode_config
+        )
 
     if project:
         _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir)])
@@ -700,7 +705,14 @@ def _gemini_hook() -> dict:
     }
 def gemini_install(project_dir: Path | None = None, *, project: bool = False) -> None:
     """Copy skill file, write GEMINI.md section, and install BeforeTool hook."""
+    explicit_dir = project_dir is not None
     project_dir = project_dir or Path(".")
+    # Project installs must validate before copying the skill or editing GEMINI.md.
+    # Keep the global path's historical ordering and scope behavior unchanged.
+    if project or explicit_dir:
+        _read_settings_for_merge(
+            project_dir / ".gemini" / "settings.json", managed_collection="BeforeTool"
+        )
     skill_dst = _copy_skill_file("gemini", project=project, project_dir=project_dir)
 
     target = project_dir / "GEMINI.md"
@@ -728,31 +740,60 @@ def gemini_install(project_dir: Path | None = None, *, project: bool = False) ->
     print("Gemini CLI will now check the knowledge graph before answering")
     print("codebase questions and rebuild it after code changes.")
 def _refuse_to_modify(settings_path: Path) -> "NoReturn":
-    """Abort a hook install rather than clobber a config file we can't parse (#2167)."""
+    """Abort an install rather than clobber an invalid configuration (#2167)."""
     print(
-        f"[graphify] refusing to modify {settings_path}: not valid JSON "
-        "(fix or move it and re-run)",
+        f"[graphify] refusing to modify {settings_path}: not valid JSON or "
+        "expected structure (fix or move it and re-run)",
         file=sys.stderr,
     )
     sys.exit(1)
-def _read_settings_for_merge(settings_path: Path) -> dict:
+
+
+def _read_json_for_install(
+    config_file: Path, *, managed_collection: str | None = None, jsonc: bool = False
+) -> dict:
+    """Read and validate an install configuration without filesystem mutation.
+
+    Missing files are the valid empty first-install state. Existing files must be
+    objects, and an explicitly present managed collection must be a list. The
+    caller can therefore perform this read before creating any install artifact.
+    """
+    if not config_file.exists():
+        return {}
+    try:
+        raw = config_file.read_text(encoding="utf-8-sig")
+        if jsonc:
+            raw = _strip_json_comments(raw)
+        loaded = json.loads(raw)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        _refuse_to_modify(config_file)
+    if not isinstance(loaded, dict):
+        _refuse_to_modify(config_file)
+    if managed_collection is not None:
+        if managed_collection in loaded and not isinstance(loaded[managed_collection], list):
+            _refuse_to_modify(config_file)
+    return loaded
+
+
+def _read_settings_for_merge(
+    settings_path: Path, *, managed_collection: str | None = None
+) -> dict:
     """Load an existing settings/hooks JSON file for a read-modify-write merge.
 
     A missing file yields a fresh ``{}`` (first install). An existing file that
-    cannot be parsed as a JSON object aborts via ``_refuse_to_modify`` instead of
-    silently falling back to ``{}`` — the old fallback rewrote the whole file and
-    destroyed every setting the user had (#2167). Reads with ``utf-8-sig`` so a
-    UTF-8 BOM (the most likely parse-error trigger, same class as #2163) is
-    tolerated rather than fatal.
+    cannot be parsed as a JSON object, or has invalid hook structure, aborts via
+    ``_refuse_to_modify`` instead of silently falling back to ``{}`` — the old
+    fallback rewrote the whole file and destroyed every setting the user had
+    (#2167). Reads with ``utf-8-sig`` so a UTF-8 BOM (the most likely parse-error
+    trigger, same class as #2163) is tolerated rather than fatal.
     """
-    if not settings_path.exists():
-        return {}
-    try:
-        settings = json.loads(settings_path.read_text(encoding="utf-8-sig"))
-    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
-        settings = None
-    if not isinstance(settings, dict):
+    settings = _read_json_for_install(settings_path)
+    hooks = settings.get("hooks")
+    if "hooks" in settings and not isinstance(hooks, dict):
         _refuse_to_modify(settings_path)
+    if managed_collection is not None and isinstance(hooks, dict):
+        if managed_collection in hooks and not isinstance(hooks[managed_collection], list):
+            _refuse_to_modify(settings_path)
     return settings
 def _write_settings_with_backup(settings_path: Path, settings: dict) -> None:
     """Serialize ``settings`` to ``settings_path``, backing up the previous file.
@@ -771,8 +812,8 @@ def _write_settings_with_backup(settings_path: Path, settings: dict) -> None:
     settings_path.write_text(output, encoding="utf-8")
 def _install_gemini_hook(project_dir: Path) -> None:
     settings_path = project_dir / ".gemini" / "settings.json"
+    settings = _read_settings_for_merge(settings_path, managed_collection="BeforeTool")
     settings_path.parent.mkdir(parents=True, exist_ok=True)
-    settings = _read_settings_for_merge(settings_path)
     hooks = settings.setdefault("hooks", {})
     if not isinstance(hooks, dict):
         _refuse_to_modify(settings_path)
@@ -1188,6 +1229,20 @@ export const GraphifyPlugin = async ({ directory }) => {
 _KILO_PLUGIN_PATH = Path(".kilo") / "plugins" / "graphify.js"
 _KILO_CONFIG_JSON_PATH = Path(".kilo") / "kilo.json"
 _KILO_CONFIG_JSONC_PATH = Path(".kilo") / "kilo.jsonc"
+
+
+def _kilo_command_source() -> Path:
+    """Return the packaged native command, refusing incomplete installations."""
+    command_src = Path(__file__).parent / "command-kilo.md"
+    if not command_src.exists():
+        print(
+            "error: command-kilo.md not found in package - reinstall graphify",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return command_src
+
+
 def _strip_json_comments(raw: str) -> str:
     """Remove JSONC-style comments while leaving string content intact."""
     result: list[str] = []
@@ -1241,6 +1296,8 @@ def _strip_json_comments(raw: str) -> str:
             in_string = True
         i += 1
 
+    if block_comment:
+        raise json.JSONDecodeError("Unterminated block comment", raw, len(raw))
     return re.sub(r",(\s*[}\]])", r"\1", "".join(result))
 def _load_json_like(config_file: Path) -> dict:
     if not config_file.exists():
@@ -1262,12 +1319,26 @@ def _kilo_config_path(project_dir: Path) -> Path:
     if jsonc_path.exists():
         return jsonc_path
     return json_path
+
+
+def _preflight_kilo_config(project_dir: Path) -> dict:
+    """Read Kilo JSON/JSONC and validate its managed plugin collection."""
+    config_file = _kilo_config_path(project_dir)
+    return _read_json_for_install(
+        config_file,
+        managed_collection="plugin",
+        jsonc=config_file.suffix == ".jsonc",
+    )
+
+
 def _kilo_config_write_path(project_dir: Path) -> Path:
     """Write automated Kilo edits to kilo.json so existing JSONC stays untouched."""
     kilo_dir = (project_dir or Path(".")) / ".kilo"
     return kilo_dir / _KILO_CONFIG_JSON_PATH.name
-def _install_kilo_plugin(project_dir: Path) -> None:
+def _install_kilo_plugin(project_dir: Path, config: dict | None = None) -> None:
     """Write graphify.js plugin and register it without rewriting user JSONC."""
+    if config is None:
+        config = _preflight_kilo_config(project_dir)
     plugin_file = project_dir / _KILO_PLUGIN_PATH
     plugin_file.parent.mkdir(parents=True, exist_ok=True)
     plugin_file.write_text(_KILO_PLUGIN_JS, encoding="utf-8")
@@ -1276,9 +1347,10 @@ def _install_kilo_plugin(project_dir: Path) -> None:
     config_file = _kilo_config_path(project_dir)
     write_config_file = _kilo_config_write_path(project_dir)
     write_config_file.parent.mkdir(parents=True, exist_ok=True)
-    config = _load_json_like(config_file)
     plugins = config.get("plugin")
     if not isinstance(plugins, list):
+        # The preflight above rejects this for existing files. This default is
+        # only for a missing first-install config.
         plugins = []
         config["plugin"] = plugins
     entry = plugin_file.resolve().as_uri()
@@ -1351,22 +1423,23 @@ export const GraphifyPlugin = async ({ directory }) => {
 """
 _OPENCODE_PLUGIN_PATH = Path(".opencode") / "plugins" / "graphify.js"
 _OPENCODE_CONFIG_PATH = Path(".opencode") / "opencode.json"
-def _install_opencode_plugin(project_dir: Path) -> None:
+
+
+def _preflight_opencode_config(config_file: Path) -> dict:
+    """Read OpenCode JSON and validate its managed plugin collection."""
+    return _read_json_for_install(config_file, managed_collection="plugin")
+
+
+def _install_opencode_plugin(project_dir: Path, config: dict | None = None) -> None:
     """Write graphify.js plugin and register it in opencode.json."""
+    if config is None:
+        config = _preflight_opencode_config(project_dir / _OPENCODE_CONFIG_PATH)
     plugin_file = project_dir / _OPENCODE_PLUGIN_PATH
     plugin_file.parent.mkdir(parents=True, exist_ok=True)
     plugin_file.write_text(_OPENCODE_PLUGIN_JS, encoding="utf-8")
     print(f"  {_OPENCODE_PLUGIN_PATH}  ->  tool.execute.before hook written")
 
     config_file = project_dir / _OPENCODE_CONFIG_PATH
-    if config_file.exists():
-        try:
-            config = json.loads(config_file.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            config = {}
-    else:
-        config = {}
-
     plugins = config.setdefault("plugin", [])
     entry = _OPENCODE_PLUGIN_PATH.as_posix()
     if entry not in plugins:
@@ -1423,12 +1496,12 @@ def _resolve_graphify_exe() -> str:
                 found = str(candidate)
                 break
     return (found or "graphify").replace("\\", "/")
-def _install_codex_hook(project_dir: Path) -> None:
+def _install_codex_hook(project_dir: Path, existing: dict | None = None) -> None:
     """Add graphify PreToolUse hook to .codex/hooks.json."""
     hooks_path = project_dir / ".codex" / "hooks.json"
+    if existing is None:
+        existing = _read_settings_for_merge(hooks_path, managed_collection="PreToolUse")
     hooks_path.parent.mkdir(parents=True, exist_ok=True)
-
-    existing = _read_settings_for_merge(hooks_path)
 
     graphify_exe = _resolve_graphify_exe()
     hook_entry = {
@@ -1472,9 +1545,30 @@ def _uninstall_codex_hook(project_dir: Path) -> None:
     existing["hooks"]["PreToolUse"] = filtered
     hooks_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
     print(f"  .codex/hooks.json  ->  PreToolUse hook removed")
-def _agents_install(project_dir: Path, platform: str) -> None:
+def _agents_install(
+    project_dir: Path,
+    platform: str,
+    *,
+    codex_settings: dict | None = None,
+    opencode_config: dict | None = None,
+) -> None:
     """Write the graphify section to the local AGENTS.md for always-on platforms."""
-    target = (project_dir or Path(".")) / "AGENTS.md"
+    project_dir = project_dir or Path(".")
+    kilo_config = None
+    # These helpers are also called directly by platform-specific commands.
+    # Validate before touching AGENTS.md, not only inside the final plugin write.
+    if platform == "opencode" and opencode_config is None:
+        opencode_config = _preflight_opencode_config(
+            project_dir / _OPENCODE_CONFIG_PATH
+        )
+    elif platform == "kilo":
+        _kilo_command_source()
+        kilo_config = _preflight_kilo_config(project_dir)
+    if platform == "codex" and codex_settings is None:
+        codex_settings = _read_settings_for_merge(
+            project_dir / ".codex" / "hooks.json", managed_collection="PreToolUse"
+        )
+    target = project_dir / "AGENTS.md"
 
     if target.exists():
         content = target.read_text(encoding="utf-8")
@@ -1491,11 +1585,11 @@ def _agents_install(project_dir: Path, platform: str) -> None:
         print(f"graphify section written to {target.resolve()}")
 
     if platform == "codex":
-        _install_codex_hook(project_dir or Path("."))
+        _install_codex_hook(project_dir or Path("."), existing=codex_settings)
     elif platform == "opencode":
-        _install_opencode_plugin(project_dir or Path("."))
+        _install_opencode_plugin(project_dir or Path("."), config=opencode_config)
     elif platform == "kilo":
-        _install_kilo_plugin(project_dir or Path("."))
+        _install_kilo_plugin(project_dir or Path("."), config=kilo_config)
 
     print()
     print(
@@ -1554,6 +1648,10 @@ def _project_install(platform_name: str, project_dir: Path | None = None, strict
     project_dir = project_dir or Path(".")
     platform_name = _canonical_platform(platform_name)
     if platform_name in ("claude", "windows"):
+        # Validate before install() copies the skill or writes .claude/CLAUDE.md.
+        _read_settings_for_merge(
+            project_dir / ".claude" / "settings.json", managed_collection="PreToolUse"
+        )
         install(platform=platform_name, project=True, project_dir=project_dir)
         claude_install(project_dir, strict=strict)
         _print_project_git_add_hint([project_dir / ".claude", project_dir / "CLAUDE.md"])
@@ -1566,8 +1664,24 @@ def _project_install(platform_name: str, project_dir: Path | None = None, strict
         _kiro_install(project_dir)
         _print_project_git_add_hint([project_dir / ".kiro"])
     elif platform_name in ("aider", "amp", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes"):
+        codex_settings = None
+        opencode_config = None
+        if platform_name == "codex":
+            codex_settings = _read_settings_for_merge(
+                project_dir / ".codex" / "hooks.json", managed_collection="PreToolUse"
+            )
+        elif platform_name == "opencode":
+            # This must precede the skill and AGENTS.md writes below.
+            opencode_config = _preflight_opencode_config(
+                project_dir / _OPENCODE_CONFIG_PATH
+            )
         skill_dst = _copy_skill_file(platform_name, project=True, project_dir=project_dir)
-        _agents_install(project_dir, platform_name)
+        _agents_install(
+            project_dir,
+            platform_name,
+            codex_settings=codex_settings,
+            opencode_config=opencode_config,
+        )
         hint_paths = [_project_scope_root(skill_dst, project_dir), project_dir / "AGENTS.md"]
         if platform_name == "opencode":
             hint_paths.append(project_dir / ".opencode")
@@ -1701,8 +1815,13 @@ def _kilo_uninstall_global() -> list[str]:
     return removed
 def _kilo_install(project_dir: Path) -> None:
     """Install native Kilo skill + command globally and always-on project wiring locally."""
+    project_dir = project_dir or Path(".")
+    # This command combines global and project writes. Validate every input,
+    # including the packaged native command, before either scope is mutated.
+    _preflight_kilo_config(project_dir)
+    _kilo_command_source()
     install(platform="kilo")
-    _agents_install(project_dir or Path("."), "kilo")
+    _agents_install(project_dir, "kilo")
 def _kilo_uninstall(project_dir: Path) -> None:
     """Remove Kilo always-on project wiring and global skill/command files."""
     _agents_uninstall(project_dir or Path("."), platform="kilo")
@@ -1710,6 +1829,10 @@ def _kilo_uninstall(project_dir: Path) -> None:
     print("; ".join(removed) if removed else "nothing to remove")
 def claude_install(project_dir: Path | None = None, strict: bool = False) -> None:
     """Write the graphify section to the local CLAUDE.md."""
+    if project_dir is not None:
+        _read_settings_for_merge(
+            project_dir / ".claude" / "settings.json", managed_collection="PreToolUse"
+        )
     target = (project_dir or Path(".")) / "CLAUDE.md"
 
     if target.exists():
@@ -1739,9 +1862,8 @@ def claude_install(project_dir: Path | None = None, strict: bool = False) -> Non
 def _install_claude_hook(project_dir: Path, strict: bool = False) -> None:
     """Add graphify PreToolUse hook to .claude/settings.json."""
     settings_path = project_dir / ".claude" / "settings.json"
+    settings = _read_settings_for_merge(settings_path, managed_collection="PreToolUse")
     settings_path.parent.mkdir(parents=True, exist_ok=True)
-
-    settings = _read_settings_for_merge(settings_path)
 
     hooks = settings.setdefault("hooks", {})
     if not isinstance(hooks, dict):
@@ -1895,6 +2017,13 @@ def _strip_graphify_md_section(target: Path) -> bool:
     return True
 def codebuddy_install(project_dir: Path | None = None) -> None:
     """Install the graphify skill and CODEBUDDY.md section for CodeBuddy."""
+    # The CLI has no project-scoped CodeBuddy command, but callers may use this
+    # helper directly with a project directory. Validate before any project write.
+    existing_settings = None
+    if project_dir is not None:
+        existing_settings = _read_settings_for_merge(
+            project_dir / ".codebuddy" / "settings.json", managed_collection="PreToolUse"
+        )
     _copy_skill_file("codebuddy", project=bool(project_dir), project_dir=project_dir)
     target = (project_dir or Path(".")) / "CODEBUDDY.md"
 
@@ -1913,17 +2042,18 @@ def codebuddy_install(project_dir: Path | None = None) -> None:
         print(f"graphify section written to {target.resolve()}")
 
     # Also write CodeBuddy PreToolUse hook to .codebuddy/settings.json
-    _install_codebuddy_hook(project_dir or Path("."))
+    _install_codebuddy_hook(project_dir or Path("."), existing=existing_settings)
 
     print()
     print("CodeBuddy will now check the knowledge graph before answering")
     print("codebase questions and rebuild it after code changes.")
-def _install_codebuddy_hook(project_dir: Path) -> None:
+def _install_codebuddy_hook(project_dir: Path, existing: dict | None = None) -> None:
     """Add graphify PreToolUse hook to .codebuddy/settings.json."""
     settings_path = project_dir / ".codebuddy" / "settings.json"
+    if existing is None:
+        existing = _read_settings_for_merge(settings_path, managed_collection="PreToolUse")
+    settings = existing
     settings_path.parent.mkdir(parents=True, exist_ok=True)
-
-    settings = _read_settings_for_merge(settings_path)
 
     hooks = settings.setdefault("hooks", {})
     if not isinstance(hooks, dict):
