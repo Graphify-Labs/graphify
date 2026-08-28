@@ -439,7 +439,7 @@ def _infer_merge_root(graph_path: Path) -> str | None:
     try:
         marker = parent / ".graphify_root"
         if marker.exists():
-            recorded = marker.read_text(encoding="utf-8").strip()
+            recorded = marker.read_text(encoding="utf-8-sig").strip()
             if recorded:
                 return str(Path(recorded).resolve())
     except OSError:
@@ -1649,6 +1649,9 @@ def build_merge(
     graph to inherit from. An explicit True/False always overrides the on-disk
     flag.
     """
+    # Iterated more than once below (source sets, the hyperedge carry, the
+    # build itself), so a one-shot iterator must be materialised first.
+    new_chunks = list(new_chunks)
     graph_path = Path(graph_path if graph_path is not None else _default_graph_json())
     _loaded = _load_existing_graph(graph_path)
     if _loaded is not None:
@@ -1726,11 +1729,6 @@ def build_merge(
                 file=sys.stderr,
             )
 
-    base = [{"nodes": existing_nodes, "edges": existing_edges}] if had_graph else []
-
-    all_chunks = base + list(new_chunks)
-    G = build(all_chunks, directed=directed, dedup=dedup, dedup_llm_backend=dedup_llm_backend, root=root)
-
     # Prune set for deleted source files — both the raw form (matches nodes that
     # kept absolute source_file) and the normalised relative form (matches nodes
     # relativised by _norm_source_file at build time). .resolve() (via _eff_root)
@@ -1797,12 +1795,25 @@ def build_merge(
     # deleted (#1574). build() only sees the new chunks' hyperedges, so without
     # this every --update collapses the graph's hyperedge set down to just the
     # changed files'. Re-extracted files' prior hyperedges are dropped (their new
-    # version is already in G — replace-per-source, like nodes/edges); deleted
-    # files' are dropped via prune_set. id-dedup (attach_hyperedges) so a carried
-    # hyperedge never duplicates one the new chunks re-emitted. Mirrors watch.py,
-    # which already preserves existing hyperedges across a rebuild.
+    # version is already in the new chunks — replace-per-source, like
+    # nodes/edges); deleted files' are dropped via prune_set; id-dedup so a
+    # carried hyperedge never duplicates one the new chunks re-emitted. Mirrors
+    # watch.py, which already preserves existing hyperedges across a rebuild.
+    #
+    # The carried set rides INTO build() on the base chunk rather than being
+    # attached to G afterwards (#3102): entity dedup rewires every edge endpoint
+    # and every hyperedge member it sees onto the survivor (#2805), but a
+    # hyperedge attached after the fact kept naming the merged-away node — a
+    # dangling member with no backing node in the written graph.
+    carried_hyperedges: list[dict] = []
     if existing_hyperedges:
-        carried = []
+        carried = carried_hyperedges
+        _new_hyperedge_ids = {
+            he.get("id")
+            for chunk in new_chunks
+            for he in (chunk.get("hyperedges") or [])
+            if isinstance(he, dict) and he.get("id")
+        }
         for he in existing_hyperedges:
             if not isinstance(he, dict):
                 continue
@@ -1815,10 +1826,17 @@ def build_merge(
                 continue  # semantically re-extracted — replaced by the new chunk's version
             if _prune_match(sf):
                 continue  # deleted — pruned
+            if he.get("id") and he.get("id") in _new_hyperedge_ids:
+                continue  # the new chunks re-emitted it — theirs wins
             carried.append(he)
-        if carried:
-            from graphify.export import attach_hyperedges
-            attach_hyperedges(G, carried)
+
+    base = (
+        [{"nodes": existing_nodes, "edges": existing_edges, "hyperedges": carried_hyperedges}]
+        if had_graph else []
+    )
+
+    all_chunks = base + list(new_chunks)
+    G = build(all_chunks, directed=directed, dedup=dedup, dedup_llm_backend=dedup_llm_backend, root=root)
 
     # Prune nodes and edges from deleted source files
     if prune_sources:
@@ -1980,19 +1998,31 @@ def build_merge(
     return G
 
 
-def prefix_graph_for_global(G: nx.Graph, repo_tag: str) -> nx.Graph:
+def prefix_graph_for_global(
+    G: nx.Graph, repo_tag: str, community_offset: int = 0
+) -> nx.Graph:
     """Return a copy of G with all node IDs prefixed with repo_tag::.
 
     Labels are preserved unchanged (for display). A 'local_id' attribute
     is added to each node so the original ID can be recovered. Edges and
     their directional attributes (_src/_tgt) are rewritten to match the new
     prefixed IDs. The 'repo' attribute is set on every node.
+
+    community_offset shifts each node's integer 'community' id into a shared
+    id space and records the original in 'local_community': every input graph
+    numbers its communities from 0, so ids carried across a merge unchanged
+    collide and the aggregated community view fuses unrelated communities
+    into one meta-node (#3014). 0 (the default) leaves communities untouched.
     """
     relabel = {n: f"{repo_tag}::{n}" for n in G.nodes}
     H = nx.relabel_nodes(G, relabel, copy=True)
     for node, data in H.nodes(data=True):
         data["repo"] = repo_tag
         data.setdefault("local_id", node.split("::", 1)[1])
+        cid = data.get("community")
+        if community_offset and isinstance(cid, int):
+            data["local_community"] = cid
+            data["community"] = cid + community_offset
     for u, v, data in H.edges(data=True):
         if "_src" in data and data["_src"] in relabel:
             data["_src"] = relabel[data["_src"]]

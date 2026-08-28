@@ -390,7 +390,7 @@ graphify export callflow-html      # Mermaid architecture/call-flow HTML (auto-r
 /graphify add https://arxiv.org/abs/1706.03762   # fetch a paper and add it
 /graphify add <youtube-url>                       # transcribe and add a video
 
-graphify hook install              # auto-rebuild on git commit
+graphify hook install              # auto-rebuild on commit + branch checkout (run `graphify update .` after `git pull` — see "Recommended workflow" below)
 graphify merge-graphs a.json b.json              # combine two graphs
 
 graphify prs                       # PR dashboard: CI state, review status, worktree mapping
@@ -437,11 +437,29 @@ graphify-out/cost.json        # local only
 
 > `manifest.json` is now portable — keys are stored as relative paths and re-anchored on load, so committing it is safe and avoids a full rebuild on first checkout.
 
-**Workflow:**
-1. One person runs `/graphify .` and commits `graphify-out/`.
-2. Everyone pulls — their assistant reads the graph immediately.
-3. Run `graphify hook install` to auto-rebuild after each commit (AST only, no API cost). This also sets up a git merge driver so `graph.json` is never left with conflict markers — two devs committing in parallel get their graphs union-merged automatically.
-4. When docs or papers change, run `/graphify --update` to refresh those nodes.
+### Recommended workflow
+
+Set this up once per clone. From then on, three of your normal git commands keep the graph current by themselves, and one keeps it in sync with your team:
+
+| you do | graphify does |
+|---|---|
+| `graphify hook install` (once, right after cloning) | installs the hooks below, plus a merge driver so `graph.json` never shows conflict markers |
+| `git commit` | rebuilds automatically — AST only, no API cost |
+| `git checkout` / `git switch` (branches) | rebuilds automatically (a file-only `git checkout -- <path>` does not) |
+| `git pull` / `git merge` | run `graphify update .` right after |
+| `git push` | nothing to do |
+
+The commit and branch-switch rebuilds run in the background and return immediately, so on a large repo the graph can lag the commit by a few seconds — step 5 covers the rare case where you query before it catches up.
+
+**Step by step:**
+1. Clone the repo and run `graphify hook install` once.
+2. Commit and switch branches as normal — the graph stays current on its own.
+3. After every `git pull` (or merge), run `graphify update .` to bring the graph in sync with what you just pulled. On a large or active repo, put it on autopilot with a pull alias:
+   ```bash
+   git config --global alias.gpull '!git pull && graphify update .'
+   ```
+4. When docs or papers change, run `/graphify --update` to refresh those nodes too (code and docs update independently).
+5. If a query ever seems to be missing something you just added, run `graphify update .` first, then ask again.
 
 ---
 
@@ -613,6 +631,13 @@ graphify query "..."
 
 **`graph.json` has conflict markers after two devs commit at once**
 Run `graphify hook install` — it sets up a git merge driver that union-merges `graph.json` automatically so conflicts never happen.
+
+**Graph doesn't reflect a teammate's recent changes**
+Run `graphify update .` right after `git pull` or any merge — see [Recommended workflow](#recommended-workflow). Commits and branch switches update the graph automatically via the installed hooks; syncing with a pull is the one step you run yourself. Fold it into a pull alias so it's one command either way:
+```bash
+git config --global alias.gpull '!git pull && graphify update .'
+```
+Confirm the hooks are active with `graphify hook status`; re-run `graphify hook install` after an interpreter upgrade/reinstall to refresh them.
 
 **Extraction returns empty nodes/edges for docs or PDFs**
 Docs, PDFs, and images require an LLM call — code-only corpora need no key. Check that your API key is set and the backend is correct:

@@ -1523,6 +1523,194 @@ def test_is_ignored_cache_evaluates_each_dir_once():
         assert eval_counts[f] == 1
 
 
+# Regression tests for the per-file pathlib ignore-evaluation defect: a scan of
+# a 76k-file vault with a 29k-file directory listed in .graphifyignore pinned a
+# CPU for 50+ minutes inside _eval's per-pattern Path.relative_to calls. The
+# walk must pay ONE evaluation per ignored directory (pruning), and each
+# evaluated entry must pay string matching, not per-pattern Path construction.
+
+def test_ignored_dir_pruned_walk_never_lists_contents(tmp_path, monkeypatch):
+    """A dir matching an ignore pattern is pruned from os.walk in one evaluation.
+
+    The walk must never descend into it (its files are never listed), while
+    non-ignored siblings are still detected. Mirrors the real defect shape:
+    a regenerated notes/ dir listed in .graphifyignore.
+    """
+    import graphify.detect as det
+
+    (tmp_path / ".graphifyignore").write_text("graphify-notes/\n")
+    for d in range(5):
+        sub = tmp_path / "graphify-notes" / f"note-dir-{d}"
+        sub.mkdir(parents=True)
+        for f in range(4):
+            (sub / f"note-{f}.md").write_text("# note")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("y = 2")
+    (tmp_path / "notes.md").write_text("# kept")
+
+    visited: list[str] = []
+    real_walk = os.walk
+
+    def tracking_walk(top, *args, **kwargs):
+        for dirpath, dirnames, filenames in real_walk(top, *args, **kwargs):
+            visited.append(dirpath)
+            yield dirpath, dirnames, filenames
+
+    monkeypatch.setattr(det.os, "walk", tracking_walk)
+    result = det.detect(tmp_path)
+
+    assert not any("graphify-notes" in Path(v).parts for v in visited), (
+        "walk descended into the ignored dir — directory pruning regressed"
+    )
+    all_files = as_posix_list(p for cat in result["files"].values() for p in cat)
+    assert not any("graphify-notes" in p for p in all_files)
+    assert any(p.endswith("src/app.py") for p in all_files)
+    assert any(p.endswith("notes.md") for p in all_files)
+    # The pruned dir is reported once, as a directory entry.
+    ignored = as_posix_list(result["ignored"])
+    assert sum("graphify-notes" in p for p in ignored) == 1
+
+
+def test_scan_ignore_cost_is_per_directory_not_per_file(tmp_path, monkeypatch):
+    """On a 2,000-file tree under an ignored dir, ignore evaluation is O(dirs).
+
+    Counts _is_scan_ignored and _is_ignored invocations during detect(): the
+    ignored subtree must cost exactly one directory-level check — never one
+    per contained file (the 29k-file defect shape).
+    """
+    import graphify.detect as det
+
+    n_ignored_dirs, n_ignored_files_per_dir = 100, 20  # 2,000 ignored files
+    (tmp_path / ".graphifyignore").write_text("graphify-notes/\n")
+    for d in range(n_ignored_dirs):
+        sub = tmp_path / "graphify-notes" / f"note-dir-{d:03d}"
+        sub.mkdir(parents=True)
+        for f in range(n_ignored_files_per_dir):
+            (sub / f"note-{f:02d}.md").write_text("# note")
+    kept = 0
+    for d in range(5):
+        sub = tmp_path / "src" / f"pkg{d}"
+        sub.mkdir(parents=True)
+        for f in range(10):
+            (sub / f"mod{f}.py").write_text("x = 1")
+            kept += 1
+
+    scan_calls = {"total": 0, "under_ignored": 0}
+    real_scan = det._is_scan_ignored
+
+    def counting_scan(path, *args, **kwargs):
+        scan_calls["total"] += 1
+        if "graphify-notes" in path.parts:
+            scan_calls["under_ignored"] += 1
+        return real_scan(path, *args, **kwargs)
+
+    ignored_calls = {"total": 0}
+    real_is_ignored = det._is_ignored
+
+    def counting_is_ignored(*args, **kwargs):
+        ignored_calls["total"] += 1
+        return real_is_ignored(*args, **kwargs)
+
+    monkeypatch.setattr(det, "_is_scan_ignored", counting_scan)
+    monkeypatch.setattr(det, "_is_ignored", counting_is_ignored)
+    result = det.detect(tmp_path)
+
+    assert result["total_files"] == kept
+    # Exactly ONE ignore evaluation for the whole ignored subtree.
+    assert scan_calls["under_ignored"] == 1, (
+        f"{scan_calls['under_ignored']} evaluations under the ignored dir — "
+        "expected 1 (the directory itself); per-file evaluation regressed"
+    )
+    # Overall evaluation count scales with kept entries + dirs, not with the
+    # 2,000 files inside the ignored dir.
+    budget = 4 * (kept + n_ignored_dirs)
+    assert scan_calls["total"] < budget, (
+        f"{scan_calls['total']} _is_scan_ignored calls, expected < {budget}"
+    )
+    assert ignored_calls["total"] < 2 * budget, (
+        f"{ignored_calls['total']} _is_ignored calls, expected < {2 * budget}"
+    )
+
+
+def test_is_ignored_no_per_pattern_path_construction(monkeypatch):
+    """_eval must not build pathlib objects per pattern.
+
+    The old shape called target.relative_to(anchor) for EVERY pattern for
+    every entry (pathlib construction dominated a 52-minute scan, caught by
+    py-spy at detect.py's _eval). With N patterns, one _is_ignored call must
+    make O(1) relative_to calls — not O(N).
+    """
+    import pathlib
+
+    from graphify.detect import _is_ignored
+
+    root = Path("/repo")
+    patterns = [(root, f"*.zzz{i}") for i in range(200)]
+    patterns.append((root, "never-matches-dir/"))
+    target = root / "a" / "b" / "c" / "leaf.py"
+
+    counts = {"relative_to": 0}
+    real_relative_to = pathlib.PurePath.relative_to
+
+    def counting_relative_to(self, *args, **kwargs):
+        counts["relative_to"] += 1
+        return real_relative_to(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.PurePath, "relative_to", counting_relative_to)
+    assert not _is_ignored(target, root, patterns)
+
+    # One rel_parts computation for the ancestor walk; _eval itself must add
+    # none. Old code: ~200+ (one per pattern, per evaluated ancestor + leaf).
+    assert counts["relative_to"] <= 6, (
+        f"{counts['relative_to']} relative_to calls for 201 patterns — "
+        "per-pattern pathlib construction is back"
+    )
+
+
+def test_string_matcher_preserves_pattern_forms(tmp_path):
+    """Each supported pattern form matches/misses exactly as before the
+    string-space rewrite of _eval (rel computed once per entry, patterns
+    matched with fnmatch/segment logic on strings)."""
+    (tmp_path / "build").mkdir()
+    (tmp_path / "build" / "x.py").write_text("x=1")
+    (tmp_path / "notbuild").mkdir()
+    (tmp_path / "notbuild" / "build").write_text("plain file named build")
+    (tmp_path / "logs").mkdir()
+    (tmp_path / "logs" / "drop.log").write_text("x")
+    (tmp_path / "logs" / "keep.log").write_text("x")
+    (tmp_path / "anchored.md").write_text("x")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "anchored.md").write_text("x")
+    (tmp_path / "docs" / "deep").mkdir(parents=True)
+    (tmp_path / "docs" / "deep" / "guide.md").write_text("x")
+    (tmp_path / "x" / "cache" / "y").mkdir(parents=True)
+    (tmp_path / "x" / "cache" / "y" / "f.py").write_text("x=1")
+    (tmp_path / ".graphifyignore").write_text(
+        "build/\n*.log\n!keep.log\n/anchored.md\ndocs/**\ncache\n"
+    )
+    patterns = _load_graphifyignore(tmp_path)
+
+    # dir-only pattern: matches the dir and everything under it...
+    assert _is_ignored(tmp_path / "build", tmp_path, patterns)
+    assert _is_ignored(tmp_path / "build" / "x.py", tmp_path, patterns)
+    # ...but never a plain FILE of the same name
+    assert not _is_ignored(tmp_path / "notbuild" / "build", tmp_path, patterns)
+    # glob + basename negation, last match wins
+    assert _is_ignored(tmp_path / "logs" / "drop.log", tmp_path, patterns)
+    assert not _is_ignored(tmp_path / "logs" / "keep.log", tmp_path, patterns)
+    # anchored file pattern: root level only
+    assert _is_ignored(tmp_path / "anchored.md", tmp_path, patterns)
+    assert not _is_ignored(tmp_path / "sub" / "anchored.md", tmp_path, patterns)
+    # ** crosses path segments under its anchor
+    assert _is_ignored(tmp_path / "docs" / "deep" / "guide.md", tmp_path, patterns)
+    # bare segment pattern matches an intermediate directory anywhere
+    assert _is_ignored(tmp_path / "x" / "cache", tmp_path, patterns)
+    assert _is_ignored(tmp_path / "x" / "cache" / "y" / "f.py", tmp_path, patterns)
+    # unrelated paths untouched
+    assert not _is_ignored(tmp_path / "notbuild", tmp_path, patterns)
+    assert not _is_ignored(tmp_path / "sub", tmp_path, patterns)
+
+
 # Regression tests for #920 - sensitive pattern misses underscore-prefixed names
 def test_sensitive_flags_api_token_txt():
     assert _is_sensitive(Path("api_token.txt"))
@@ -3209,3 +3397,47 @@ def test_sensitive_env_template_inside_secrets_dir_still_dropped(path):
     """Stage 1 dir guard runs before the Stage 2 template exemption: anything
     under a secrets/credentials dir stays excluded, template suffix or not."""
     assert _is_sensitive(Path(path)), f"{path} is under a secrets dir, must stay excluded (#2184)"
+
+
+def test_lexical_relative_matches_pathlib_relative_to():
+    """The string-space `_lexical_relative` must return exactly what
+    `_nfc(str(target.relative_to(anchor)).replace(os.sep, "/"))` would — including
+    None where relative_to raises (target not under anchor). Guards the
+    reimplemented relative_to against silent drift (#2226)."""
+    from pathlib import Path
+    from graphify.detect import _lexical_relative, _nfc
+
+    anchors = ["/a/b", "/a", "/a/b/c", "/x", "/"]
+    targets = [
+        "/a/b/c/d.py", "/a/b", "/a/b/c", "/a/x.py", "/a/b/c/d/e.py",
+        "/x/y.py", "/other/z.py", "/a/bb/c.py", "/a/b/c",
+    ]
+    for r in anchors:
+        anchor = Path(r)
+        for t in targets:
+            target = Path(t)
+            try:
+                expected = _nfc(str(target.relative_to(anchor)).replace(os.sep, "/"))
+            except ValueError:
+                expected = None
+            assert _lexical_relative(target, target.parts, anchor) == expected, (t, r)
+
+
+def test_globstar_matcher_leaves_no_reference_cycle():
+    """`_match_anchored_ignore_pattern` must not leak a reference cycle per call,
+    as the old per-call `@lru_cache` closure did (it referenced itself). With gc
+    disabled, a run of the matcher must leave nothing for the collector."""
+    import gc
+    from graphify.detect import _match_anchored_ignore_pattern
+
+    gc.collect()
+    gc.disable()
+    try:
+        for _ in range(500):
+            assert _match_anchored_ignore_pattern("docs/deep/guide.md", "docs/**")
+            assert not _match_anchored_ignore_pattern("src/app.py", "docs/**")
+            assert _match_anchored_ignore_pattern("a/b/c.py", "a/*/c.py")
+        collected = gc.collect()
+    finally:
+        gc.enable()
+    assert collected == 0, f"globstar matcher leaked {collected} cyclic objects per run"
