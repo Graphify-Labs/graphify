@@ -277,8 +277,8 @@ def test_label_communities_batches_when_over_batch_size(monkeypatch):
     monkeypatch.setattr("graphify.llm._call_llm", fake_call)
     labels = label_communities(G, communities, backend="gemini", batch_size=100)
 
-    # 250 communities / 100 per batch -> 3 batches (100, 100, 50)
-    assert calls == [100, 100, 50]
+    # 250 communities / 100 per batch -> 3 batches; worker start order varies.
+    assert sorted(calls) == [50, 100, 100]
     # And every community got a real name, none left as a placeholder.
     assert all(name.startswith("Cluster ") for name in labels.values()), \
         f"some communities still have placeholders: {[k for k, v in labels.items() if not v.startswith('Cluster ')][:5]}"
