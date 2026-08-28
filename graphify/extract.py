@@ -997,7 +997,11 @@ _PHP_CONFIG = LanguageConfig(
     class_types=frozenset({"class_declaration"}),
     function_types=frozenset({"function_definition", "method_declaration"}),
     import_types=frozenset({"namespace_use_clause"}),
-    call_types=frozenset({"function_call_expression", "member_call_expression", "scoped_call_expression", "class_constant_access_expression"}),
+    # object_creation_expression joins the dispatch set so `new Foo(...)` links
+    # the constructing method to Foo (engine has a dedicated PHP branch: the
+    # class sits in a bare name/qualified_name child, not a field) - the PHP
+    # twin of Java #1373 / C# #2997 (#3115).
+    call_types=frozenset({"function_call_expression", "member_call_expression", "scoped_call_expression", "class_constant_access_expression", "object_creation_expression"}),
     static_prop_types=frozenset({"scoped_property_access_expression"}),
     helper_fn_names=frozenset({"config"}),
     container_bind_methods=frozenset({"bind", "singleton", "scoped", "instance"}),
