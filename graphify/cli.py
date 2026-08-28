@@ -3813,6 +3813,26 @@ def dispatch_command(cmd: str) -> None:
                     _strip_partial_markers as _strip_partial,
                 )
                 _partial_semantic_files = set(_partial_sf(fresh))
+                # A chunk that came back hollow after every retry, or as
+                # unparseable JSON, or that simply omitted some of its files,
+                # does not raise - it returns fewer nodes - so it counted as a
+                # SUCCEEDED chunk above and the run read as complete, force=True
+                # bypassed the shrink guard, and a 570-node graph was overwritten
+                # with 111 nodes without a word (#3105). With an LLM backend
+                # that is the normal way an extraction silently produces a
+                # fraction of the graph, so it must arm the guard exactly like a
+                # crashed chunk does. --allow-partial still overrides.
+                _omitted_files = list(fresh.get("uncovered_files") or [])
+                if _omitted_files or _partial_semantic_files:
+                    _extraction_incomplete = True
+                    print(
+                        f"[graphify extract] semantic extraction is incomplete: "
+                        f"{len(_omitted_files)} dispatched file(s) produced no nodes and "
+                        f"{len(_partial_semantic_files)} came back truncated or hollow. "
+                        f"The shrink guard stays armed for this write; pass "
+                        f"--allow-partial to overwrite a larger existing graph anyway.",
+                        file=sys.stderr,
+                    )
                 try:
                     _save_semantic_cache(
                         fresh.get("nodes", []),
