@@ -128,6 +128,19 @@ def extract_elixir(path: Path) -> dict:
             func_name = None
             if arguments_node:
                 for child in arguments_node.children:
+                    # tree-sitter-elixir wraps a guarded head
+                    # (`def f(x) when guard`) in `binary_operator`;
+                    # without unwrapping, a function whose only clause
+                    # carries `when` is dropped (#3111).
+                    while child.type == "binary_operator":
+                        head = None
+                        for sub in child.children:
+                            if sub.type in ("call", "identifier", "binary_operator"):
+                                head = sub
+                                break
+                        if head is None:
+                            break
+                        child = head
                     if child.type == "call":
                         for sub in child.children:
                             if sub.type == "identifier":

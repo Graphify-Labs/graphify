@@ -373,3 +373,61 @@ def test_code_only_force_prunes_removed_semantic_files(tmp_path):
         "NOTES.txt was deleted from disk; its semantic nodes must be pruned "
         "(#2923 follow-up)"
     )
+
+
+def test_code_only_force_rescan_re_resolves_tsconfig_paths_and_preserves_semantics(tmp_path: Path):
+    """#3125 regression: `extract --code-only --force` over an existing graph
+    must perform a full code/AST re-scan so updated tsconfig paths take effect on
+    unchanged .ts files, while preserving the existing semantic layer (#2923).
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    src = repo / "src"
+    src.mkdir()
+    (src / "utils.ts").write_text("export const helper = 42;\n")
+    (src / "index.ts").write_text("import { helper } from '@/utils';\nconsole.log(helper);\n")
+    (repo / "tsconfig.json").write_text(json.dumps({"compilerOptions": {"target": "es2020"}}))
+
+    # 1. Initial extract --code-only
+    r1 = _run(repo, "--code-only", "--no-cluster")
+    assert r1.returncode == 0, r1.stderr
+    graph_path = repo / "graphify-out" / "graph.json"
+    g1 = json.loads(graph_path.read_text(encoding="utf-8"))
+    edges1 = [(e["source"], e["target"]) for e in g1.get("edges", g1.get("links", []))]
+    assert not any(src == "src_index" and ("src_utils" in tgt or "helper" in tgt) for src, tgt in edges1), (
+        "alias import @/utils must not resolve without tsconfig paths mapping"
+    )
+
+    # 2. Seed a semantic file and node into graph.json to verify semantic preservation (#2923)
+    (repo / "ARCH.md").write_text("# Architecture\nDesign notes.\n")
+    g1["nodes"].append({
+        "id": "doc_arch", "label": "Architecture", "type": "concept",
+        "source_file": "ARCH.md", "origin": "SEMANTIC", "_origin": "semantic"
+    })
+    graph_path.write_text(json.dumps(g1), encoding="utf-8")
+
+    # 3. Modify only tsconfig.json to add baseUrl and paths alias
+    (repo / "tsconfig.json").write_text(json.dumps({
+        "compilerOptions": {
+            "target": "es2020",
+            "baseUrl": ".",
+            "paths": {"@/*": ["src/*"]}
+        }
+    }))
+
+    # 4. Run extract --code-only --force
+    r2 = _run(repo, "--code-only", "--force", "--no-cluster")
+    assert r2.returncode == 0, r2.stderr
+
+    g2 = json.loads(graph_path.read_text(encoding="utf-8"))
+    edges2 = [(e["source"], e["target"]) for e in g2.get("edges", g2.get("links", []))]
+    # Verify the import edge now exists
+    assert any(src == "src_index" and ("src_utils" in tgt or "helper" in tgt) for src, tgt in edges2), (
+        "extract --code-only --force must re-resolve alias imports after tsconfig paths change (#3125)"
+    )
+
+    # Verify the semantic entity was preserved
+    nodes2 = {n.get("id") for n in g2.get("nodes", [])}
+    assert "doc_arch" in nodes2, (
+        "existing semantic nodes must survive --code-only --force (#2923/#3125)"
+    )

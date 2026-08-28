@@ -4,7 +4,7 @@ from __future__ import annotations
 import warnings
 from pathlib import Path
 
-from graphify.extractors.base import _make_id
+from graphify.extractors.base import _file_stem, _make_id
 
 
 # Standard CL definer forms that introduce data/type/variable bindings
@@ -84,7 +84,11 @@ def extract_commonlisp(path: Path) -> dict:
     except Exception as e:
         return {"nodes": [], "edges": [], "error": str(e)}
 
-    stem = path.stem
+    # Path-qualified, not the bare `path.stem`: same-named .lisp files in
+    # different directories must not collide (#1504). Pre-collapsed through
+    # `_make_id` because `_cl_id` would otherwise map the `/` separators to
+    # `_slash` via _CL_CHAR_MAP.
+    stem = _make_id(_file_stem(path))
     str_path = str(path)
     nodes: list[dict] = []
     edges: list[dict] = []

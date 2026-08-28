@@ -379,6 +379,20 @@ def _flush_stat_index() -> None:
             continue
         dk = _stat_key_to_relative(k, _stat_index_anchor) if _stat_index_anchor is not None else k
         on_disk[dk] = v
+    # Never resurrect a corpus that was deleted while graphify was running
+    # (#2974): a hook-launched `graphify update . &` in a short-lived worktree
+    # outlives `git worktree remove`, and an unconditional `mkdir -p` here
+    # rebuilt the dead path as a husk holding nothing but this index. The
+    # index is a pure optimisation, so when its root is gone it is simply not
+    # written. Creating graphify-out/cache/ under a root that still exists is
+    # unchanged (a first run writes the index before anything else does).
+    try:
+        if not _stat_index_root.is_dir():
+            _stat_index_dirty = False
+            return
+    except OSError:
+        _stat_index_dirty = False
+        return
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=p.parent, prefix="stat-index.", suffix=".tmp")
