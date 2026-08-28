@@ -808,14 +808,31 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
     ignored, and a graph that is stale for the target file softens to a non-mandatory
     nudge instead of blocking or demanding.
     """
-    from graphify.paths import out_path, GRAPHIFY_OUT_NAME
+    from graphify.paths import out_path, GRAPHIFY_OUT_NAME, find_graph_json_upward
+
+    def _guard_graph():
+        """The graph this caller would actually query, or None.
+
+        Not cwd-only. Agents run from wherever they happen to be — a git
+        worktree, a package subdirectory — while the graph sits at the scan
+        root above them. A cwd-only check makes the guard silently never fire
+        in exactly those places, so the agent greps a codebase that has a
+        perfectly good graph one level up. Mirror what the read commands do.
+        """
+        try:
+            direct = out_path("graph.json")
+            if direct.is_file():
+                return direct
+            return find_graph_json_upward()
+        except Exception:
+            return None
     # Gemini's BeforeTool hook takes no stdin and must ALWAYS return a decision so
     # the tool is never blocked; the graph nudge is appended only when a graph
     # exists. Handled before the stdin read below (which the search/read guards need).
     if kind == "gemini":
         payload = {"decision": "allow"}
         try:
-            if out_path("graph.json").is_file():
+            if _guard_graph() is not None:
                 payload["additionalContext"] = _GEMINI_NUDGE_TEXT
         except Exception:
             pass
@@ -844,7 +861,7 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
             is_grep_tool = not cmd_str and bool(t.get("pattern"))
             is_bash_search = any(tok in cmd_str for tok in (
                 "grep", "ripgrep", "rg ", "find ", "fd ", "ack ", "ag "))
-            if (is_grep_tool or is_bash_search) and out_path("graph.json").is_file():
+            if (is_grep_tool or is_bash_search) and _guard_graph() is not None:
                 sys.stdout.write(_SEARCH_NUDGE)
         elif kind == "read":
             vals = [str(t.get("file_path") or ""), str(t.get("pattern") or ""), str(t.get("path") or "")]
@@ -886,7 +903,10 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
                     return
             # One stat for existence + mtime of the graph.
             try:
-                gmtime = os.stat(str(out_path("graph.json"))).st_mtime
+                _gp = _guard_graph()
+                if _gp is None:
+                    raise FileNotFoundError("no graph")
+                gmtime = os.stat(str(_gp)).st_mtime
             except OSError:
                 return
             # #1840 (b): stale-for-target -> soften, never block. The target file
