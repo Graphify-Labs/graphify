@@ -29,7 +29,17 @@ _MAX_TEXT_BYTES  = 10_485_760   # 10 MB hard cap for HTML / text
 # discoverable and so existing callers/tests that reference it directly keep
 # working; the effective cap is resolved at call time by
 # ``_max_graph_file_bytes`` (which lets ``GRAPHIFY_MAX_GRAPH_BYTES`` override it).
-_MAX_GRAPH_FILE_BYTES = 512 * 1024 * 1024   # 512 MiB
+# 512 MiB was comfortable when a graph covered one repository. A multi-root
+# workspace graph is routinely larger — indexing 23 repos plus the git worktrees
+# actively being worked in produces ~840 MB here — and the cap is a guard against
+# absurd input, not a statement about what a legitimate graph may weigh. Tripping
+# it fails BOTH the CLI and the MCP server with "could not load graph.json",
+# which reads as corruption rather than as a configurable limit.
+#
+# Relying on GRAPHIFY_MAX_GRAPH_BYTES instead is worse than it looks: a machine
+# env var is not picked up by processes already running, so the stack stays
+# broken until every client is restarted.
+_MAX_GRAPH_FILE_BYTES = 2 * 1024 * 1024 * 1024   # 2 GiB
 
 
 def _max_graph_file_bytes() -> int:
