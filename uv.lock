@@ -1090,7 +1090,7 @@ wheels = [
 
 [[package]]
 name = "graphifyy"
-version = "0.9.47"
+version = "0.9.51"
 source = { editable = "." }
 dependencies = [
     { name = "networkx", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -1216,6 +1216,7 @@ pdf = [
 ]
 postgres = [
     { name = "psycopg", extra = ["binary"] },
+    { name = "tree-sitter-sql" },
 ]
 sql = [
     { name = "tree-sitter-sql" },
@@ -1335,6 +1336,7 @@ requires-dist = [
     { name = "tree-sitter-rust", specifier = ">=0.23,<0.25" },
     { name = "tree-sitter-scala", specifier = ">=0.23,<0.27" },
     { name = "tree-sitter-sql", marker = "extra == 'all'" },
+    { name = "tree-sitter-sql", marker = "extra == 'postgres'" },
     { name = "tree-sitter-sql", marker = "extra == 'sql'" },
     { name = "tree-sitter-swift", specifier = ">=0.7,<0.9" },
     { name = "tree-sitter-typescript", specifier = ">=0.23,<0.25" },

@@ -461,6 +461,25 @@ def test_sql_finds_tables():
     assert any("users" in l for l in labels)
     assert any("organizations" in l for l in labels)
 
+
+def test_sql_create_table_inside_transaction_block():
+    """#2953: DDL wrapped in BEGIN; ... COMMIT; must emit table nodes."""
+    r = _extract_sql_or_skip("sample_transaction.sql")
+    labels = [n["label"] for n in r["nodes"]]
+    assert any("alfa" in l for l in labels)
+    assert any("gamma" in l for l in labels)
+    assert any("delta" in l for l in labels)
+    refs = [
+        (e["source"], e["target"])
+        for e in r["edges"]
+        if e["relation"] == "references"
+    ]
+    node_by_id = {n["id"]: n["label"] for n in r["nodes"]}
+    assert any(
+        "delta" in node_by_id.get(s, "") and "alfa" in node_by_id.get(t, "")
+        for s, t in refs
+    )
+
 def test_sql_finds_view():
     r = _extract_sql_or_skip()
     labels = [n["label"] for n in r["nodes"]]
@@ -561,6 +580,48 @@ def test_sql_subquery_cte_does_not_suppress_outer_real_table(tmp_path):
     assert (nid["v6"], nid["t2"]) in reads, (
         "outer reference to the real t2 table was wrongly suppressed"
     )
+
+def test_php_builtin_base_class_never_inherits_from_cross_language_class(tmp_path):
+    """#2812: `class FooApiException extends \\Exception` names PHP's global
+    built-in. The sourceless stub it mints was unique corpus-wide, so the rewire
+    bound it to an unrelated TypeScript `Exception` class and the PHP class
+    inherited across languages. No supertype edge may target a TypeScript node."""
+    ts = tmp_path / "app" / "exception.ts"
+    ts.parent.mkdir(parents=True)
+    ts.write_text(
+        "export class Exception extends Error {\n"
+        "  constructor(message: string) { super(message); }\n"
+        "}\n"
+    )
+    php = tmp_path / "packages" / "FooApiException.php"
+    php.parent.mkdir(parents=True)
+    php.write_text(
+        "<?php\n"
+        "\n"
+        "namespace Foo\\Exceptions;\n"
+        "\n"
+        "class FooApiException extends \\Exception\n"
+        "{\n"
+        "}\n"
+    )
+
+    r = extract([php, ts], root=tmp_path)
+    ts_nodes = {n["id"] for n in r["nodes"]
+                if str(n.get("source_file", "")).endswith(".ts")}
+    supertypes = [e for e in r["edges"]
+                  if e["relation"] in ("inherits", "implements", "extends")
+                  and str(e.get("source_file", "")).endswith(".php")]
+    assert supertypes, "PHP inheritance was not extracted at all"
+    for e in supertypes:
+        assert e["target"] not in ts_nodes, (
+            f"PHP supertype leaked cross-language: {e}"
+        )
+    # The base stays on its sourceless external stub rather than vanishing.
+    sourceless = {n["id"] for n in r["nodes"] if not n.get("source_file")}
+    assert any(e["target"] in sourceless for e in supertypes), (
+        f"PHP base class lost its external stub: {supertypes}"
+    )
+
 
 def test_sql_cte_never_binds_to_cross_language_symbol(tmp_path):
     """#2577: the reported leak — the CTE's sourceless stub was unique corpus-wide,

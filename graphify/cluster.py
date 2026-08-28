@@ -19,11 +19,86 @@ def _suppress_output():
     return contextlib.redirect_stdout(io.StringIO())
 
 
+def _native_leiden(stable: nx.Graph, resolution: float) -> dict[str, int] | None:
+    """Call graspologic_native.leiden() directly, bypassing graspologic's own
+    package import.
+
+    graspologic.partition.leiden() is a thin wrapper around exactly this
+    native (Rust) call. Importing the *package* — as opposed to the native
+    extension module it depends on — pulls in graspologic.layouts, which
+    imports umap, which imports pynndescent, which numba-JIT-compiles at
+    import time for a layout algorithm this function never calls: measured
+    at 7-19s of one-time import cost against a ~1s native call and a ~1.4s
+    full round trip (conversion + call + map-back) — see the "third update"
+    in GRAPHIFY_BUILD_PERF.md for the measurements this is based on.
+
+    Returns None (the caller falls through to the graspologic.partition.leiden
+    path, then to the networkx Louvain fallback) if graspologic_native isn't
+    installed, or if `stable` isn't the plain undirected, non-multigraph
+    input leiden actually supports — the same shape check
+    graspologic.partition.leiden itself makes before calling the same native
+    function.
+    """
+    try:
+        import graspologic_native as gn
+    except ImportError:
+        return None
+
+    if stable.is_directed() or stable.is_multigraph():
+        return None
+
+    # graspologic_native identifies nodes by their string form; two DISTINCT
+    # node objects that happen to stringify the same way would silently merge
+    # under it (this is exactly what graspologic.partition.leiden's own
+    # _IdentityMapper guards against). Graphify's own node IDs are already
+    # unique strings by construction — extractors/resolution.py's
+    # _disambiguate_colliding_node_ids salts any two distinct nodes that would
+    # otherwise share a string id before the graph is ever built — so this is
+    # a defensive check on an assumption that should never actually trip, not
+    # an expected path. One pass over the nodes, cheaper than an
+    # _IdentityMapper-style dict-store-per-edge-endpoint.
+    id_to_node: dict[str, object] = {}
+    for node in stable.nodes():
+        key = str(node)
+        existing = id_to_node.get(key)
+        if existing is not None and existing != node:
+            return None  # let graspologic.partition.leiden's own check handle/raise on this
+        id_to_node[key] = node
+
+    edges = [
+        (str(u), str(v), float(attrs.get("weight", 1.0)))
+        for u, v, attrs in stable.edges(data=True)
+    ]
+
+    try:
+        old_stderr = sys.stderr
+        try:
+            sys.stderr = io.StringIO()
+            with _suppress_output():
+                _quality, native_partitions = gn.leiden(
+                    edges=edges,
+                    starting_communities=None,
+                    resolution=resolution,
+                    randomness=0.001,
+                    iterations=1,
+                    use_modularity=True,
+                    seed=42,
+                    trials=1,
+                )
+        finally:
+            sys.stderr = old_stderr
+    except Exception:
+        return None
+
+    return {id_to_node[node_id]: community for node_id, community in native_partitions.items()}
+
+
 def _partition(G: nx.Graph, resolution: float = 1.0) -> dict[str, int]:
     """Run community detection. Returns {node_id: community_id}.
 
-    Tries Leiden (graspologic) first — best quality.
-    Falls back to Louvain (built into networkx) if graspologic is not installed.
+    Tries Leiden (graspologic_native directly, then graspologic) first — best
+    quality. Falls back to Louvain (built into networkx) if neither is
+    installed.
 
     resolution > 1.0 → more, smaller communities.
     resolution < 1.0 → fewer, larger communities.
@@ -33,16 +108,30 @@ def _partition(G: nx.Graph, resolution: float = 1.0) -> dict[str, int]:
     """
     stable = nx.Graph()
     stable.add_nodes_from(sorted(G.nodes(), key=str))
+    # Canonicalise the endpoint pair before sorting. On an undirected graph the
+    # (u, v) orientation each edge is yielded with comes from adjacency
+    # iteration, which follows CPython's per-process string-hash order - so the
+    # SAME edge appears as (A, B) in one run and (B, A) in the next. Sorting on
+    # the raw pair therefore does not canonicalise anything: the edge lands in a
+    # different position, `stable` is built in a different insertion order, and
+    # Louvain - order-sensitive even with a fixed seed - can return a different
+    # grouping. Measured on a 914-node graph: identical input, identical
+    # first-pass partition, but the cohesion-split pass produced 70 communities
+    # under PYTHONHASHSEED=1 and 69 under =2. Sorting the pair itself removes
+    # the dependency; for nx.Graph the orientation carries no meaning anyway.
     edge_rows = sorted(
         G.edges(data=True),
         key=lambda row: (
-            str(row[0]),
-            str(row[1]),
+            *sorted((str(row[0]), str(row[1]))),
             json.dumps(row[2], sort_keys=True, ensure_ascii=False, default=str),
         ),
     )
     for src, tgt, attrs in edge_rows:
         stable.add_edge(src, tgt, **attrs)
+
+    native_result = _native_leiden(stable, resolution)
+    if native_result is not None:
+        return native_result
 
     try:
         from graspologic.partition import leiden
