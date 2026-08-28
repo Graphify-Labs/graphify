@@ -288,14 +288,16 @@ def _print_project_git_add_hint(paths: list[Path]) -> None:
 def _claude_pretooluse_hooks(strict: bool = False) -> "list[dict]":
     """graphify's Claude/Codebuddy PreToolUse hooks, resolved at install time.
 
-    The command invokes `graphify hook-guard <search|read>` via the absolute exe
-    path (`_resolve_graphify_exe`), so it parses under sh, cmd.exe and PowerShell
+    The command invokes `graphify hook-guard <search|read|agent>` via the absolute
+    exe path (`_resolve_graphify_exe`), so it parses under sh, cmd.exe and PowerShell
     alike — this is the #522 fix, and mirrors the codex hook. Matchers are
-    "Bash|Grep" and "Read|Glob" and the command always contains "graphify", so the
-    existing install/uninstall filters find and replace both old bash hooks and
-    these. "Grep" is in the search matcher because current Claude Code routes
-    content search through its dedicated Grep tool, not Bash (#1986) — a
-    Bash-only matcher never fired on the agent's primary search path.
+    "Bash|Grep", "Read|Glob" and "Task|Agent", and the command always contains
+    "graphify", so the existing install/uninstall filters find and replace both old
+    bash hooks and these. "Grep" is in the search matcher because current Claude Code
+    routes content search through its dedicated Grep tool, not Bash (#1986) — a
+    Bash-only matcher never fired on the agent's primary search path. "Task|Agent"
+    covers subagent spawns, where most exploration actually happens (#2145): the
+    parent's spawn would otherwise never see the guard.
 
     When ``strict`` is set, the read hook carries ``--strict`` so it blocks the
     first raw read per session (Claude Code only). The ``GRAPHIFY_HOOK_STRICT`` env
@@ -310,6 +312,8 @@ def _claude_pretooluse_hooks(strict: bool = False) -> "list[dict]":
          "hooks": [{"type": "command", "command": f"{exe} hook-guard search"}]},
         {"matcher": "Read|Glob",
          "hooks": [{"type": "command", "command": read_cmd}]},
+        {"matcher": "Task|Agent",
+         "hooks": [{"type": "command", "command": f"{exe} hook-guard agent"}]},
     ]
 def _skill_registration(skill_path: str = "~/.claude/skills/graphify/SKILL.md") -> str:
     return (
@@ -1750,11 +1754,11 @@ def _install_claude_hook(project_dir: Path, strict: bool = False) -> None:
     if not isinstance(pre_tool, list):
         _refuse_to_modify(settings_path)
 
-    hooks["PreToolUse"] = [h for h in pre_tool if not (isinstance(h, dict) and h.get("matcher") in ("Glob|Grep", "Bash", "Bash|Grep", "Read|Glob") and "graphify" in str(h))]
+    hooks["PreToolUse"] = [h for h in pre_tool if not (isinstance(h, dict) and h.get("matcher") in ("Glob|Grep", "Bash", "Bash|Grep", "Read|Glob", "Task|Agent") and "graphify" in str(h))]
     hooks["PreToolUse"].extend(_claude_pretooluse_hooks(strict=strict))
     _write_settings_with_backup(settings_path, settings)
     _mode = " (strict)" if strict else ""
-    print(f"  .claude/settings.json  ->  PreToolUse hooks registered (Bash|Grep search + Read/Glob){_mode}")
+    print(f"  .claude/settings.json  ->  PreToolUse hooks registered (Bash|Grep search + Read/Glob + Task/Agent subagents){_mode}")
 def _uninstall_claude_hook(project_dir: Path) -> None:
     """Remove the graphify PreToolUse hook from .claude/settings.json and its
     local-only sibling .claude/settings.local.json.
@@ -1774,7 +1778,7 @@ def _strip_graphify_hook(settings_path: Path) -> None:
     except json.JSONDecodeError:
         return
     pre_tool = settings.get("hooks", {}).get("PreToolUse", [])
-    filtered = [h for h in pre_tool if not (h.get("matcher") in ("Glob|Grep", "Bash", "Bash|Grep", "Read|Glob") and "graphify" in str(h))]
+    filtered = [h for h in pre_tool if not (h.get("matcher") in ("Glob|Grep", "Bash", "Bash|Grep", "Read|Glob", "Task|Agent") and "graphify" in str(h))]
     if len(filtered) == len(pre_tool):
         return
     settings["hooks"]["PreToolUse"] = filtered
@@ -1932,7 +1936,7 @@ def _install_codebuddy_hook(project_dir: Path) -> None:
     if not isinstance(pre_tool, list):
         _refuse_to_modify(settings_path)
 
-    hooks["PreToolUse"] = [h for h in pre_tool if not (isinstance(h, dict) and h.get("matcher") in ("Glob|Grep", "Bash", "Bash|Grep", "Read|Glob") and "graphify" in str(h))]
+    hooks["PreToolUse"] = [h for h in pre_tool if not (isinstance(h, dict) and h.get("matcher") in ("Glob|Grep", "Bash", "Bash|Grep", "Read|Glob", "Task|Agent") and "graphify" in str(h))]
     hooks["PreToolUse"].extend(_claude_pretooluse_hooks())
     _write_settings_with_backup(settings_path, settings)
     print(f"  .codebuddy/settings.json  ->  PreToolUse hooks registered")
@@ -1946,7 +1950,7 @@ def _uninstall_codebuddy_hook(project_dir: Path) -> None:
     except json.JSONDecodeError:
         return
     pre_tool = settings.get("hooks", {}).get("PreToolUse", [])
-    filtered = [h for h in pre_tool if not (h.get("matcher") in ("Glob|Grep", "Bash", "Bash|Grep", "Read|Glob") and "graphify" in str(h))]
+    filtered = [h for h in pre_tool if not (h.get("matcher") in ("Glob|Grep", "Bash", "Bash|Grep", "Read|Glob", "Task|Agent") and "graphify" in str(h))]
     if len(filtered) == len(pre_tool):
         return
     settings["hooks"]["PreToolUse"] = filtered

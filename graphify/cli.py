@@ -50,6 +50,23 @@ _READ_NUDGE_STALE = json.dumps({
         ),
     }
 }, ensure_ascii=False, separators=(",", ":")) + "\n"
+# #2145: most code exploration happens inside spawned subagents (Task/Agent),
+# which the Bash/Grep and Read/Glob guards never see — the parent spawns an
+# "Explore" agent and that agent never sees the guard. Nudge the SPAWN so the
+# subagent carries graphify orientation. Advisory only (never blocks a spawn).
+_AGENT_NUDGE = json.dumps({
+    "hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "additionalContext": (
+            'MANDATORY: graphify-out/graph.json exists. This subagent MUST use '
+            'graphify before grepping or reading raw files: run '
+            '`graphify query "<question>"` (scoped subgraph), '
+            '`graphify explain "<concept>"`, or `graphify path "<A>" "<B>"` to '
+            'orient first. Only read/grep raw files after graphify has oriented '
+            'you, or to modify/debug specific lines.'
+        ),
+    }
+}, ensure_ascii=False, separators=(",", ":")) + "\n"
 # Strict-mode block (opt-in). Claude Code PreToolUse honors
 # hookSpecificOutput.permissionDecision == "deny" and shows permissionDecisionReason
 # to the model. Fires at most once per session (see _mark_session_denied) so it can
@@ -804,6 +821,23 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
                 sys.stdout.write(_READ_DENY)
                 return
             sys.stdout.write(_READ_NUDGE)
+        elif kind == "agent":
+            # #2145: matcher "Task|Agent". A subagent spawn carries its brief in
+            # `prompt` (+ optional `description`). When a graph exists, nudge the
+            # spawn to orient via graphify — unless the prompt is already
+            # graphify-aware (the parent pasted graph output or included the rule),
+            # in which case the subagent is covered and we stay quiet. Nudge-only:
+            # a spawn is never blocked. Fails open on an absent graph / empty brief.
+            if not out_path("graph.json").is_file():
+                return
+            brief = " ".join(str(t.get(k) or "") for k in ("prompt", "description"))
+            low = brief.lower()
+            if not low.strip():
+                return
+            # Already oriented -> the subagent will use graphify; don't nag.
+            if "graphify" in low or "connections (" in low or "[extracted]" in low:
+                return
+            sys.stdout.write(_AGENT_NUDGE)
     except Exception:
         pass
 

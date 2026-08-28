@@ -435,7 +435,9 @@ def test_claude_hook_install_idempotent_and_replaces_old_bash_hook(tmp_path):
     _install_claude_hook(tmp_path)  # second install must not duplicate
     hooks = _json.loads(settings_path.read_text())["hooks"]["PreToolUse"]
     graphify_hooks = [h for h in hooks if "graphify" in str(h)]
-    assert len(graphify_hooks) == 2, "exactly the Bash + Read|Glob guards, no dupes"
+    assert len(graphify_hooks) == 3, \
+        "exactly the Bash|Grep + Read|Glob + Task|Agent guards, no dupes"
+    assert {h["matcher"] for h in graphify_hooks} == {"Bash|Grep", "Read|Glob", "Task|Agent"}
     # the legacy bash payload must be gone
     assert not any("[ -f graphify-out" in h["hooks"][0]["command"] for h in graphify_hooks)
 
