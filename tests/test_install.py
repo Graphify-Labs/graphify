@@ -976,6 +976,51 @@ def test_cursor_uninstall_noop_if_not_installed(tmp_path):
     _cursor_uninstall(tmp_path)  # should not raise
 
 
+def test_cursor_install_writes_skill_command(tmp_path):
+    """cursor install writes .cursor/commands/graphify.md (issue #3158)."""
+    from graphify.__main__ import _cursor_install
+
+    _cursor_install(tmp_path)
+    skill = tmp_path / ".cursor" / "commands" / "graphify.md"
+    assert skill.exists()
+    content = skill.read_text()
+    assert "Step B2" in content
+    assert "graphify-out" in content
+
+
+def test_cursor_install_writes_skill_references(tmp_path):
+    """cursor install installs the references/ sidecar alongside the skill."""
+    from graphify.__main__ import _cursor_install
+
+    _cursor_install(tmp_path)
+    refs = tmp_path / ".cursor" / "commands" / "references"
+    assert refs.is_dir()
+    assert (refs / "extraction-spec.md").exists()
+
+
+def test_cursor_uninstall_removes_skill_command(tmp_path):
+    """cursor uninstall removes the skill command and its references."""
+    from graphify.__main__ import _cursor_install, _cursor_uninstall
+
+    _cursor_install(tmp_path)
+    _cursor_uninstall(tmp_path)
+    assert not (tmp_path / ".cursor" / "commands" / "graphify.md").exists()
+    assert not (tmp_path / ".cursor" / "commands" / "references").exists()
+
+
+def test_cursor_project_uninstall_removes_skill(tmp_path, monkeypatch):
+    """`graphify uninstall --project --platform cursor` removes rule and skill."""
+    from graphify.__main__ import main
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["graphify", "install", "--project", "--platform", "cursor"])
+    main()
+    monkeypatch.setattr(sys, "argv", ["graphify", "uninstall", "--project", "--platform", "cursor"])
+    main()
+    assert not (tmp_path / ".cursor" / "rules" / "graphify.mdc").exists()
+    assert not (tmp_path / ".cursor" / "commands" / "graphify.md").exists()
+
+
 # ── Gemini CLI ────────────────────────────────────────────────────────────────
 
 
