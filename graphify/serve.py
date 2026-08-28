@@ -2040,17 +2040,25 @@ def _build_server(graph_path: str):
                 return f"Could not generate questions: {exc}"
         raise ValueError(f"Unknown resource: {uri_str}")
 
-    async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
+    async def call_tool(name: str, arguments: dict) -> types.CallToolResult:
         arguments = dict(arguments or {})
         project_path = arguments.pop("project_path", None)
         handler = _handlers.get(name)
         if not handler:
-            return [types.TextContent(type="text", text=f"Unknown tool: {name}")]
+            return types.CallToolResult(
+                content=[types.TextContent(type="text", text=f"Unknown tool: {name}")],
+                isError=True,
+            )
         try:
             _select_graph(project_path)  # bind G/communities to the target graph
-            return [types.TextContent(type="text", text=handler(arguments))]
+            return types.CallToolResult(
+                content=[types.TextContent(type="text", text=handler(arguments))]
+            )
         except Exception as exc:
-            return [types.TextContent(type="text", text=f"Error executing {name}: {exc}")]
+            return types.CallToolResult(
+                content=[types.TextContent(type="text", text=f"Error executing {name}: {exc}")],
+                isError=True,
+            )
 
     if hasattr(Server, "list_tools"):
         # mcp 1.x: decorator-based registration. The SDK wraps the raw returns
@@ -2068,8 +2076,7 @@ def _build_server(graph_path: str):
             return types.ListToolsResult(tools=await list_tools())
 
         async def _on_call_tool(ctx, params) -> types.CallToolResult:
-            content = await call_tool(params.name, dict(params.arguments or {}))
-            return types.CallToolResult(content=content)
+            return await call_tool(params.name, dict(params.arguments or {}))
 
         async def _on_list_resources(ctx, params) -> types.ListResourcesResult:
             return types.ListResourcesResult(resources=await list_resources())
