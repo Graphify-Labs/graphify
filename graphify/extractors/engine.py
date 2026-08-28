@@ -5568,7 +5568,14 @@ def _extract_generic(
             #      `process(config)` can't point at a same-named non-callable node.
             if config.ts_module == "tree_sitter_python":
                 args_node = node.child_by_field_name("arguments")
-                if args_node is not None:
+                # These APIs receive an object to inspect or mutate; they do not
+                # dispatch it as a callback. Keep this receiver-qualified so a
+                # user-defined signature()/setattr() can still accept callbacks.
+                non_dispatch_member_call = (member_receiver, callee_name) in {
+                    ("inspect", "signature"),
+                    ("monkeypatch", "setattr"),
+                }
+                if args_node is not None and not non_dispatch_member_call:
                     enclosing_locals = local_bound_names.get(caller_nid, frozenset()) | extra_locals
                     for arg in args_node.children:
                         if arg.type == "identifier":

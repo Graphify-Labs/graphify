@@ -177,6 +177,28 @@ def test_genuine_module_function_still_emits_indirect_call(tmp_path):
     assert (nid["via"], nid["handler"]) in indirect
 
 
+def test_introspection_and_monkeypatch_targets_are_not_callbacks(tmp_path):
+    r, nid = _extract(tmp_path, '''\
+import inspect
+
+
+def handler():
+    return 1
+
+
+def inspect_handler():
+    return inspect.signature(handler)
+
+
+def patch_handler(monkeypatch):
+    monkeypatch.setattr(handler, "flag", True)
+''')
+
+    indirect = _rels(r, "indirect_call")
+    assert (nid["inspect_handler"], nid["handler"]) not in indirect
+    assert (nid["patch_handler"], nid["handler"]) not in indirect
+
+
 # ── Cross-file indirect dispatch ──────────────────────────────────────────────
 # The dominant real-world shape: the callback is defined in ANOTHER module and
 # imported. The in-file label map can't see it, so it is deferred to the
