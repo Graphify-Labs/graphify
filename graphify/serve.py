@@ -2040,21 +2040,39 @@ def _build_server(graph_path: str):
                 return f"Could not generate questions: {exc}"
         raise ValueError(f"Unknown resource: {uri_str}")
 
-    async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
+    async def call_tool(name: str, arguments: dict) -> types.CallToolResult:
+        # A CallToolResult with isError=True is a TOOL-level failure (a bad
+        # project_path, a missing graph): the model reads the same text either
+        # way, but isError is the signal a programmatic caller (health check,
+        # CI gate, rollout script) actually branches on. Returning a bare
+        # list[TextContent] here left isError unset — the mcp 1.x decorator
+        # (below) accepts a CallToolResult directly and forwards it as-is, and
+        # the mcp 2.x on_call_tool callback returns it unmodified too, so
+        # setting it once here reaches both SDK eras (#2714).
         arguments = dict(arguments or {})
         project_path = arguments.pop("project_path", None)
         handler = _handlers.get(name)
         if not handler:
-            return [types.TextContent(type="text", text=f"Unknown tool: {name}")]
+            return types.CallToolResult(
+                content=[types.TextContent(type="text", text=f"Unknown tool: {name}")],
+                isError=True,
+            )
         try:
             _select_graph(project_path)  # bind G/communities to the target graph
-            return [types.TextContent(type="text", text=handler(arguments))]
+            return types.CallToolResult(
+                content=[types.TextContent(type="text", text=handler(arguments))]
+            )
         except Exception as exc:
-            return [types.TextContent(type="text", text=f"Error executing {name}: {exc}")]
+            return types.CallToolResult(
+                content=[types.TextContent(type="text", text=f"Error executing {name}: {exc}")],
+                isError=True,
+            )
 
     if hasattr(Server, "list_tools"):
-        # mcp 1.x: decorator-based registration. The SDK wraps the raw returns
-        # (list[Tool] -> ListToolsResult, str -> resource contents) itself.
+        # mcp 1.x: decorator-based registration. The SDK wraps most raw
+        # returns itself (list[Tool] -> ListToolsResult, str -> resource
+        # contents), but a CallToolResult returned from the call_tool handler
+        # is recognized and forwarded as-is, isError included.
         server = Server("graphify")
         server.list_tools()(list_tools)
         server.call_tool()(call_tool)
@@ -2068,8 +2086,7 @@ def _build_server(graph_path: str):
             return types.ListToolsResult(tools=await list_tools())
 
         async def _on_call_tool(ctx, params) -> types.CallToolResult:
-            content = await call_tool(params.name, dict(params.arguments or {}))
-            return types.CallToolResult(content=content)
+            return await call_tool(params.name, dict(params.arguments or {}))
 
         async def _on_list_resources(ctx, params) -> types.ListResourcesResult:
             return types.ListResourcesResult(resources=await list_resources())
