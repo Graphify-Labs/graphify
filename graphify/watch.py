@@ -1422,7 +1422,20 @@ def _rebuild_code(
                     # #2438: the persisted callability markers are the only
                     # thing that lets an unchanged target pass the
                     # indirect_call guard — never re-derived from the label.
-                    for marker in ("_callable", "_callable_class"):
+                    # `_php_non_class_types` (#11, #12) rides the same channel:
+                    # it is the only record of which of an unchanged PHP file's
+                    # declarations are interfaces, enums or traits rather than
+                    # classes. It drove a receiver refusal until #53 lifted it;
+                    # it is still carried, and `_php_interfaces` — that marker's
+                    # pre-#12 spelling — with it, so a graph.json written before
+                    # enums and traits joined the set still round-trips.
+                    # `_php_class_fqns` (#23) is what resolution reads today:
+                    # the declared FQNs that let a claimed `use` import bind
+                    # into an unchanged defining file (#22) and let the guard
+                    # refuse a vendor import that merely shares a short name.
+                    for marker in ("_callable", "_callable_class",
+                                   "_php_non_class_types", "_php_interfaces",
+                                   "_php_class_fqns"):
                         if node.get(marker):
                             ctx_node[marker] = node[marker]
                     resolution_context_nodes.append(ctx_node)

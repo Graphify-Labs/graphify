@@ -3640,7 +3640,20 @@ def dispatch_command(cmd: str) -> None:
                             "file_type": _node.get("file_type"),
                             "type": _node.get("type"),
                         }
-                        for _marker in ("_callable", "_callable_class"):
+                        # `_php_non_class_types` (#11, #12) rides the same
+                        # marker channel as the callability flags: it records
+                        # which of an unchanged PHP file's declarations are
+                        # interfaces, enums or traits rather than classes. It
+                        # drove a receiver refusal until #53 lifted it, and is
+                        # still carried; `_php_interfaces` is the pre-#12
+                        # spelling, kept for older graphs. `_php_class_fqns`
+                        # (#23) is what resolution reads today: the declared
+                        # FQNs that let a claimed `use` import bind into an
+                        # unchanged defining file (#22), and let the guard
+                        # refuse a vendor import that only shares a short name.
+                        for _marker in ("_callable", "_callable_class",
+                                        "_php_non_class_types", "_php_interfaces",
+                                        "_php_class_fqns"):
                             if _node.get(_marker):
                                 _ctx_node[_marker] = _node[_marker]
                         _ctx_nodes.append(_ctx_node)

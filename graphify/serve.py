@@ -448,6 +448,21 @@ class _QueryScores(NamedTuple):
     best_seed_by_term: dict[str, str]
 
 
+def _is_sourceless(data: dict) -> bool:
+    """True when a node carries no `source_file` — extractor placeholder, not a
+    declaration.
+
+    A sourceless node is a stub the extractor minted for a reference it could not
+    resolve (an unresolved base type, a dangling import target); serve also
+    materializes attributeless nodes for dangling edge endpoints, which have no
+    `source_file` key at all. Either way, when a real sourced declaration carries
+    the same label the stub is a broken duplicate of it and never the better
+    answer — the same presence test (never a count threshold) `_find_node_tiers`
+    applies to its exact tier (#49).
+    """
+    return not str(data.get("source_file") or "")
+
+
 def _score_nodes(G: nx.Graph, terms: list[str]) -> list[tuple[float, str]]:
     """Combined query scorer returning the existing ranked `(score, node_id)` list.
 
@@ -465,9 +480,11 @@ def _score_query(
     """Single-pass combined scorer that optionally also records the best seed
     for each normalized query token.
 
-    The combined ranking is byte-identical to what `_score_nodes` produced
-    before the refactor; `_score_nodes` is now a thin wrapper that asks for
-    `collect_per_term_seeds=False` and returns only `.ranked`.
+    The combined ranking is the one `_score_nodes` has always returned — the
+    single-pass refactor left it byte-identical, and the only deliberate change
+    since is #54's sourced-preference tie-break in the sort below, which reorders
+    exact score ties and nothing else. `_score_nodes` is now a thin wrapper that
+    asks for `collect_per_term_seeds=False` and returns only `.ranked`.
 
     When `collect_per_term_seeds=True`, the per-token singleton winner is
     computed alongside the combined score in the *same* per-node visit (it
@@ -476,14 +493,17 @@ def _score_query(
     straight into `_pick_seeds` and skip the T additional whole-graph rescoring
     passes the old per-token `_score_nodes([token])` loop ran.
 
-    Singleton-winner semantics match the legacy per-token path exactly. The
-    score itself mirrors `_score_nodes([token])` with `n_terms == 1` (so the
-    coverage term is 1 and the per-token tier is unscaled) plus the broader
-    joined-singlet tier (which also checks `label_tokens` and `nid_lower`).
-    Tie-break order is (1) highest singleton score, (2) highest graph degree,
-    (3) shortest displayed label, (4) lexicographically smallest node id —
-    exactly what `max(tied, key=degree)` over a sort by `(-score, label_len,
-    nid)` produced in the legacy `_pick_seeds` per-token loop. The combined
+    Singleton-winner semantics match the legacy per-token path, with #54's
+    sourced preference layered on top of it. The score itself mirrors
+    `_score_nodes([token])` with `n_terms == 1` (so the coverage term is 1 and
+    the per-token tier is unscaled) plus the broader joined-singlet tier (which
+    also checks `label_tokens` and `nid_lower`). Tie-break order is (1) highest
+    singleton score, (2) a sourced node over a sourceless stub, (3) highest
+    graph degree, (4) shortest displayed label, (5) lexicographically smallest
+    node id. Everything but (2) is exactly what `max(tied, key=degree)` over a
+    sort by `(-score, label_len, nid)` produced in the legacy `_pick_seeds`
+    per-token loop; (2) is #54's, and sits where the combined sort below puts
+    it — directly under the score, above degree. The combined
     trigram candidate set (needles `norm_terms + [joined]`) is a superset of
     each per-token `[t]` candidate set, so iterating combined candidates
     discovers every non-zero singleton-score node for every term.
@@ -611,8 +631,14 @@ def _score_query(
                     # Tie-break key mirrors the legacy sort+max(degree):
                     # (-singleton, -degree, label_len, nid) — the minimum
                     # tuple wins, exactly matching max(tied, key=degree)
-                    # over (label_len asc, nid asc)-sorted ties.
-                    key = (-singleton, -G.degree(nid), len(data.get("label") or nid), nid)
+                    # over (label_len asc, nid asc)-sorted ties — with the
+                    # sourced preference (#54) inserted directly under the
+                    # score, exactly where the combined sort below puts it, so
+                    # a term's per-token winner cannot be a stub that a sourced
+                    # rival ties with. Same carve-out: an all-sourceless field
+                    # still yields a winner.
+                    key = (-singleton, _is_sourceless(data), -G.degree(nid),
+                           len(data.get("label") or nid), nid)
                     cur = best_by_term.get(t)
                     if cur is None or key < cur[0]:
                         best_by_term[t] = (key, nid)
@@ -620,9 +646,26 @@ def _score_query(
             score += tiered * (matched / n_terms) ** 2
         if score > 0:
             scored.append((score, nid))
-    # Sort by score desc; break ties toward the shorter label so a concise exact
-    # match beats a longer superset that happens to share the same score.
-    scored.sort(key=lambda s: (-s[0], len(G.nodes[s[1]].get("label") or s[1]), s[1]))
+    # Sort by score desc; among equal scores prefer a sourced declaration over a
+    # sourceless stub (#54), then break remaining ties toward the shorter label so
+    # a concise exact match beats a longer superset that happens to share the same
+    # score.
+    #
+    # The sourced preference sits directly under the score because a stub can
+    # never *out*-score an otherwise-identical sourced node — the source-file tier
+    # above only ever adds — so a shadowing stub always arrives here as an exact
+    # tie, and both remaining keys (label length, node id) are arbitrary with
+    # respect to which node is real: on the #54 repro two `FooRepository` nodes
+    # score 5619.08 apiece and the id sort answered with the stub, while
+    # `_find_node`/`resolve_seed` answered with the declaration. This is #49's rule
+    # applied to the tie the scored path actually produces; ordering it above the
+    # label-length key mirrors `_find_node_tiers`, which drops stubs from the tier
+    # outright rather than ranking them within it. Ties with no sourced candidate
+    # at all are untouched, so a lone stub still wins its query (#49's carve-out).
+    scored.sort(key=lambda s: (
+        -s[0], _is_sourceless(G.nodes[s[1]]),
+        len(G.nodes[s[1]].get("label") or s[1]), s[1],
+    ))
     best_seed_by_term: dict[str, str] = {}
     if collect_per_term_seeds and best_by_term:
         best_seed_by_term = {t: nid for t, (_key, nid) in best_by_term.items()}
@@ -660,6 +703,7 @@ def _pick_seeds(
     *,
     G: "nx.Graph | None" = None,
     best_seed_by_term: dict[str, str] | None = None,
+    skip_covered_terms: bool = False,
 ) -> list[str]:
     """Select BFS seed nodes, stopping when score drops too far below the top.
 
@@ -690,6 +734,28 @@ def _pick_seeds(
     nodes back inside the gap window; this per-term guarantee remains
     load-bearing for relevant nodes matched only via substrings, whose flat
     scores a dampened collision can still exceed.
+
+    `skip_covered_terms` (default off, opted into only by `_query_graph_text`)
+    refines that guarantee to *every term with any match is matched by the
+    top-ranked seed or by a seed of its own*, from *every term's own singleton
+    winner gets a slot*: a term that is a substring of the top-ranked seed's
+    normalized label — the same predicate as _score_nodes' weakest match tier,
+    and its label alone, so that seed provably would have matched the term in
+    scoring — is not starved, and starvation is the only thing the guarantee
+    exists to prevent. A seed with no label covers nothing. Without this skip, a
+    natural-language question's generic nouns each drag in their own hub: "what
+    code uses ChargeCustomerService to charge a customer" seeds the `Customer`
+    model and `.charge()` on top of `ChargeCustomerService`, whose label already
+    matches both terms, and the hub's member fan-out then floods the traversal
+    (#37/C2).
+
+    Only the TOP-ranked seed may make that claim, not any picked seed. Coverage
+    asserts "the query's dominant match already answers this term", which is a
+    statement about the query's subject; a lower-ranked seed that merely happens
+    to contain the term's letters (`ReportService` for "port") is asserting a
+    coincidence, and letting it skip the guarantee starves the term's real
+    winner — for a term whose winner sits outside the gap window, the guarantee
+    is the only way in (Graphify-Labs#2516 review).
     """
     if not scored:
         return []
@@ -707,6 +773,23 @@ def _pick_seeds(
         data = G.nodes[nid]
         return (data.get("norm_label")
                 or _strip_diacritics(data.get("label") or "").lower()) or nid
+
+    # The `skip_covered_terms` coverage predicate needs the seed's normalized
+    # LABEL alone — empty when the node has none — not `_seed_label_key`. That
+    # key's `or nid` tail is correct for the dedup gate above (a labelless node
+    # still needs something unique to dedup on) but wrong for coverage: a
+    # `norm_label == ""` node is real (build.py's `_fold_node_aliases`: an
+    # alias-only node enters the graph with no label) and is still seedable
+    # through _score_nodes' source-file tier, so the tail would let its node-id
+    # path fragments declare unrelated terms covered — a match _score_nodes never
+    # makes, since its substring tier reads `norm_label` only. That would starve
+    # the term's real winner and break the very invariant this flag refines.
+    def _seed_norm_label(nid: str) -> str:
+        if G is None:
+            return ""
+        data = G.nodes[nid]
+        return (data.get("norm_label")
+                or _strip_diacritics(data.get("label") or "").lower())
 
     top_score = scored[0][0]
     seeds: list[str] = []
@@ -739,33 +822,21 @@ def _pick_seeds(
             # Honor the same per-label cap so the per-term guarantee can't
             # reintroduce a second copy of an already-seeded generic label.
             key = _seed_label_key(best_nid)
-            if best_nid not in seeds and key not in seen_labels:
-                seen_labels.add(key)
-                seeds.append(best_nid)
+            if best_nid in seeds or key in seen_labels:
+                continue
+            # Layered after that dedup gate, but only the TOP-ranked seed — the
+            # query's dominant match, always `scored[0]` and so always already
+            # present here — can declare a term covered. Letting any picked seed
+            # make that claim lets a coincidental substring collision inside an
+            # unrelated, lower-ranked seed's label silently starve a distinct
+            # term's real winner: `ReportService` contains "port", which would
+            # cost a corpus symbol literally named `port` the only seat it can
+            # get (Graphify-Labs#2516 review; the #1597 concern one layer down).
+            if skip_covered_terms and seeds and term in _seed_norm_label(seeds[0]):
+                continue
+            seen_labels.add(key)
+            seeds.append(best_nid)
     return seeds
-
-
-# Verb-shaped tokens that express the RELATION a query asks about ("who calls
-# X", "what uses Y") rather than a symbol to look up. `_query_terms` keeps them
-# on purpose (a corpus can legitimately define an identifier named `calls`, see
-# #1597), but they must not be handed a guaranteed seed slot in `_pick_seeds`:
-# an incidental prefix match (e.g. "calls" prefixing `.callStoreWithAmount()`)
-# would otherwise seat an unrelated decoy as a BFS root (#2507). Demotion
-# happens at the `_query_graph_text` call site, so `_score_query`'s ranking —
-# where such a verb can still win a seat on merit via the gap window — is
-# untouched. Deliberately verbs only; relation NOUNS (module, field, return)
-# stay eligible for the guarantee.
-_RELATIONAL_INTENT_TERMS: frozenset[str] = frozenset({
-    "call", "calls", "called", "caller", "callers",
-    "invoke", "invokes", "invoked",
-    "use", "uses", "used", "using",
-    "import", "imports", "imported",
-    "export", "exports", "exported",
-    "extend", "extends", "extended",
-    "implement", "implements", "implemented",
-    "depend", "depends",
-    "reference", "references", "referenced",
-})
 
 
 _CONTEXT_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -814,6 +885,77 @@ _CONTEXT_FILTER_ALIASES: dict[str, str] = {
     "exports": "export",
     "exported": "export",
 }
+
+
+# Words that name the *relation* a question asks about ("who CALLS X", "CALLERS
+# of X", "what USES X") rather than naming a symbol in the corpus. They lose the
+# unconditional seat the #1445 per-term seed guarantee hands every query term —
+# and nothing else. They are NOT stopworded: they still score, still compete in
+# the gap window, so a corpus symbol literally named `calls`/`uses` keeps its
+# exact-match dominance and stays seedable on merit (and `explain`/`path`/
+# `find_node` never take this code path at all).
+#
+# Why: a relational verb's junk matches lose everywhere on merit, but the
+# guarantee hands them a seat anyway, so an incidental prefix decoy — a
+# `callStoreWithAmount()` test helper prefix-matching "calls" — enters the
+# traversal and spends the budget on an unrelated test neighborhood instead of
+# the queried identifier's. See fork #37 (C1) / upstream #2507 direction 2.
+#
+# The vocabulary is derived from the two tables that already encode relational
+# intent, so there is one auditable definition instead of a scattered word list:
+# every `_CONTEXT_HINTS` word plus every `_CONTEXT_FILTER_ALIASES` key. The
+# first extension group exists because "uses" appears in NEITHER table (it never
+# triggers the traversal-filter heuristic) yet carries exactly the same intent —
+# an intent-consumed-only rule misses two of the three measured phrasings. It
+# still lists "caller"/"callers" for the same reason; upstream 0.9.35 has since
+# added them to `_CONTEXT_HINTS`' `call` entry (adopted in the 0.9.37 sync), so
+# the derivation now yields them too and the listing is belt-and-braces against
+# that hint entry changing back. `_CONTEXT_HINTS` itself stays untouched on
+# purpose beyond what upstream ships in it: extending it further would change
+# which queries get context-filtered, a separate behavior change.
+#
+# The extension set also ABSORBS upstream 0.9.35's own verbs-only
+# `_RELATIONAL_INTENT_TERMS` (their #2507 direction 2), which the 0.9.37 sync
+# replaced with this derived definition: the second group below is exactly the
+# twelve words upstream demoted that neither table yields here — `depend(s)`,
+# `export`, `extend/extends/extended`, `implement/implements/implemented`,
+# `reference/references/referenced`. (`exports`/`exported` and the `use*` family
+# are already covered by `_CONTEXT_FILTER_ALIASES` and the first group.) So no
+# demotion either fork ever shipped is lost, and the union stays a superset of
+# both parents' vocabularies.
+_RELATIONAL_INTENT_TERMS: frozenset[str] = frozenset(
+    {word for _ctx, hints in _CONTEXT_HINTS for word in hints}
+    | set(_CONTEXT_FILTER_ALIASES)
+    | {"caller", "callers", "use", "uses", "used", "using", "usage",
+       "listen", "listens", "listener", "listeners"}
+    | {"depend", "depends", "export",
+       "extend", "extends", "extended",
+       "implement", "implements", "implemented",
+       "reference", "references", "referenced"}
+)
+
+
+def _demote_relational_intent_terms(best_seed_by_term: dict[str, str]) -> dict[str, str]:
+    """Drop relational-intent terms from the per-term seed guarantee map.
+
+    Applied by `_query_graph_text` between `_score_query` and `_pick_seeds`,
+    which is the whole point of the placement: `_score_query` stays
+    byte-identical (its legacy-equality property tests and the query-scoring
+    benchmark's equality gate hold untouched) and `_pick_seeds` keeps its
+    signature and semantics for every other caller, so the change is inert
+    outside the natural-language query pipeline.
+
+    All-relational fallback: if demotion would empty a non-empty map — the
+    query is nothing but relational words, e.g. `graphify query "calls"` — keep
+    it unfiltered, mirroring `_query_terms`' all-stopword fallback. Such a query
+    has no identifier to seed from, so the guarantee is all it has.
+    """
+    kept = {
+        term: nid
+        for term, nid in best_seed_by_term.items()
+        if term not in _RELATIONAL_INTENT_TERMS
+    }
+    return kept or best_seed_by_term
 
 
 def _normalize_context_filters(filters: list[str] | None) -> list[str]:
@@ -1202,25 +1344,43 @@ def _query_graph_text(
     # time; on a 100k-node, three-term benchmark ~71% of scoring time was
     # spent in those redundant per-term passes.
     qs = _score_query(G, terms, collect_per_term_seeds=True)
-    # Relational-intent verbs ("calls", "uses", ...) describe the relation the
-    # question asks about, not a symbol to seed from; drop them from the
-    # per-term seed GUARANTEE so an incidental verb match cannot seat a decoy
-    # BFS root (#2507). They keep their place in `qs.ranked`, so a genuine
-    # identifier named after a verb can still win a seat on merit via the gap
-    # window — and when the query consists ONLY of intent words (bare "calls"),
-    # the guarantee is left intact so such an identifier stays reachable.
-    best_seed_by_term = qs.best_seed_by_term
-    intent = {t for t in best_seed_by_term if t in _RELATIONAL_INTENT_TERMS}
-    if intent and any(t not in _RELATIONAL_INTENT_TERMS for t in terms):
-        best_seed_by_term = {
-            t: nid for t, nid in best_seed_by_term.items() if t not in intent
-        }
-    start_nodes = _pick_seeds(qs.ranked, G=G, best_seed_by_term=best_seed_by_term)
+    # A relational word ("calls", "callers", "uses") describes the question, not
+    # a symbol to start from, so it forfeits its unconditional per-term seed
+    # here — after scoring, before picking — while still competing for a seed on
+    # merit through the gap window below (#37/C1).
+    best_seed_by_term = _demote_relational_intent_terms(qs.best_seed_by_term)
+    # `skip_covered_terms` is the other half of the seed hygiene: a term an
+    # already-picked seed's label matches is not starved, so it claims no extra
+    # seed and a generic noun stops dragging in its own hub (#37/C2). Opted into
+    # here only, so every other `_pick_seeds` caller keeps the legacy guarantee.
+    start_nodes = _pick_seeds(
+        qs.ranked, G=G, best_seed_by_term=best_seed_by_term, skip_covered_terms=True
+    )
     if not start_nodes:
         return "No matching nodes found."
     resolved_filters, filter_source = _resolve_context_filters(question, context_filters)
     traversal_graph = _filter_graph_by_context(G, resolved_filters)
-    nodes, edges = _dfs(traversal_graph, start_nodes, depth) if mode == "dfs" else _bfs(traversal_graph, start_nodes, depth)
+    traverse = _dfs if mode == "dfs" else _bfs
+    nodes, edges = traverse(traversal_graph, start_nodes, depth)
+    # A guessed filter that reaches nothing is worse than no filter: "Who calls
+    # ChargeCustomerService?" infers a `call` filter, but a class node owns no
+    # call edges — calls land on its methods and the class->member edge carries
+    # `context=None` — so the filtered traversal cannot leave the seed and the
+    # answer comes back near-empty yet confident. Retraverse unfiltered instead,
+    # and say so in the header so a relaxed answer never reads as a filtered one
+    # (#37/C3).
+    #
+    # Both traversals visit every seed, so `nodes <= set(start_nodes)` means the
+    # traversal discovered nothing at all. That zero-expansion threshold is
+    # deliberate: "few nodes" would need a tuning constant, and a filter that
+    # found *something* is doing its job. Mode-independent by construction.
+    #
+    # Only the heuristic is second-guessed. An explicitly requested filter is an
+    # instruction, not a guess, and is honored even when it strands the seeds.
+    relaxed = filter_source == "heuristic" and nodes <= set(start_nodes)
+    if relaxed:
+        traversal_graph = G
+        nodes, edges = traverse(G, start_nodes, depth)
     header_parts = [
         f"Traversal: {mode.upper()} depth={depth}",
         f"Start: {[G.nodes[n].get('label', n) for n in start_nodes]}",
@@ -1237,7 +1397,8 @@ def _query_graph_text(
         header_parts.insert(0, f"Graph: {_display_graph_path(graph_path)} "
                                f"({G.number_of_nodes()} nodes)")
     if resolved_filters:
-        header_parts.append(f"Context: {', '.join(resolved_filters)} ({filter_source})")
+        note = "; relaxed — no matches beyond seeds" if relaxed else ""
+        header_parts.append(f"Context: {', '.join(resolved_filters)} ({filter_source}{note})")
     header_parts.append(f"{len(nodes)} nodes found")
     header = " | ".join(header_parts) + "\n\n"
     # Pass the seeds so the queried symbol renders first and survives truncation
@@ -1307,6 +1468,16 @@ def _find_node_tiers(
         elif term in norm_label or term in label_tokens or norm_query in norm_label:
             substring.append(nid)
 
+    # A sourceless node is a placeholder the extractor minted for a reference it
+    # could not resolve (an unresolved base type, a dangling import target). When
+    # a real, sourced declaration carries the same label, the stub is a broken
+    # duplicate of it — never the better answer, and never something the caller
+    # could disambiguate anyway, since it has no path to retry with. Drop the
+    # stubs so the exact tier holds only real declarations (#49, RC3 of #46).
+    sourced_exact = [nid for nid in exact if str(G.nodes[nid].get("source_file") or "")]
+    if sourced_exact:
+        exact = sourced_exact
+
     if source_exact:
         query_basename = _strip_diacritics(Path(label).name).lower()
         preferred = []
@@ -1348,6 +1519,19 @@ def find_node_ambiguity(G: nx.Graph, label: str) -> list[str]:
     tier is split that way, else `[]`. Several matches *within one file* (a file
     node plus its members) are ordinary precedence, not ambiguity, and return `[]`.
 
+    Sourceless nodes are the exception to the per-file grouping, in *every* tier:
+    each one counts as its own rival. They all carry `source_file == ""`, so keying
+    them by source made N unrelated stub nodes look like N members of a single
+    file — the 18 stubs shadowing `BalanceitemRepository` reported no ambiguity at
+    all, and the caller answered with `matches[0]` (#49, RC3 of #46).
+
+    Note the two halves of #49 have different reach. `_find_node_tiers` drops
+    stubs from a mixed tier only for the *exact* tier, so an exact tier arrives
+    here already reduced to real declarations and the per-stub keying changes
+    nothing for it. A winning prefix or substring tier is not reduced and can
+    still arrive mixed; there the keying is what stops its stubs from hiding
+    behind one another.
+
     `_disambiguate_file_node_labels` (#2032) already relabels colliding *file*
     nodes; this covers the symbol case it does not reach.
     """
@@ -1357,7 +1541,8 @@ def find_node_ambiguity(G: nx.Graph, label: str) -> list[str]:
         by_source: dict[str, str] = {}
         for nid in tier:
             source = str(G.nodes[nid].get("source_file") or "")
-            by_source.setdefault(source, nid)
+            # "\0" can't occur in a path, so a stub never joins a real file's group.
+            by_source.setdefault(source or "\0" + nid, nid)
         return list(by_source.values()) if len(by_source) > 1 else []
     return []
 

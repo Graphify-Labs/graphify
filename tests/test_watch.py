@@ -3647,6 +3647,257 @@ def test_incremental_indirect_call_parity_and_idempotency(tmp_path):
     assert sorted(_2438_indirects(_2406_graph(fresh))) == sorted(incremental)
 
 
+# --- #11: an interface-typed receiver survives an incremental rebuild --------
+# The wrong edge #11 closed: an `App\Contracts\Notifier`-typed receiver binding
+# to the unrelated `App\Support\Notifier` class because the interface's own file
+# was unchanged and therefore never re-dispatched, leaving the stranger as the
+# one visible definition. The facts the resolver needs about an undispatched
+# file come back through the persisted graph — the markers on its file node, the
+# same channel `_callable` uses (#2438).
+#
+# Post-#47/#53 the interface has a definition node and its own `notify()`, so
+# the receiver BINDS THE CONTRACT rather than refusing; the stranger is still
+# what must never be bound, and the rebuild must still agree with the full build
+# (now via the `_php_class_fqns` marker, #23, which carries the declared FQN the
+# `use`-claim guard compares against).
+
+_11_CALLER = (
+    "<?php\nnamespace App\\Http;\nuse App\\Contracts\\Notifier;\n"
+    "class Dispatcher {\n    private Notifier $notifier;\n"
+    "%s"
+    "    public function go(): void { $this->notifier->notify('x'); }\n}\n"
+)
+
+
+def _11_seed(tmp_path, caller_extra=""):
+    """PHP corpus: a Notifier INTERFACE, an unrelated same-short-named CLASS, and
+    a Dispatcher whose receiver is typed as the interface. Full-rebuild it."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    (corpus / "app" / "Contracts").mkdir(parents=True)
+    (corpus / "app" / "Support").mkdir(parents=True)
+    (corpus / "app" / "Http").mkdir(parents=True)
+    (corpus / "app" / "Contracts" / "Notifier.php").write_text(
+        "<?php\nnamespace App\\Contracts;\n"
+        "interface Notifier {\n    public function notify(string $m): void;\n}\n",
+        encoding="utf-8",
+    )
+    (corpus / "app" / "Support" / "Notifier.php").write_text(
+        "<?php\nnamespace App\\Support;\n"
+        "class Notifier {\n    public function notify(string $m): void {}\n}\n",
+        encoding="utf-8",
+    )
+    (corpus / "app" / "Http" / "Dispatcher.php").write_text(
+        _11_CALLER % caller_extra, encoding="utf-8"
+    )
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    return corpus
+
+
+def _11_notify_targets(graph):
+    """Target ids of every `calls` edge landing on a `notify()` method."""
+    return {
+        str(edge.get("target"))
+        for edge in graph.get("links", graph.get("edges", []))
+        if edge.get("relation") == "calls" and "notify" in str(edge.get("target")).lower()
+    }
+
+
+def test_incremental_rebuild_keeps_php_interface_binding(tmp_path):
+    """#11: only Dispatcher.php is re-extracted, so everything the resolver knows
+    about the interface comes from the persisted graph — and the receiver must
+    reach the same verdict it did on the full build."""
+    from graphify.watch import _rebuild_code
+
+    corpus = _11_seed(tmp_path)
+    graph = _2406_graph(corpus)
+    contract = _2406_nid(graph, ".notify()", "app/Contracts/Notifier.php")
+    stranger = _2406_nid(graph, ".notify()", "app/Support/Notifier.php")
+    assert _11_notify_targets(graph) == {contract}, \
+        "full-build baseline binds the contract and nothing else"
+
+    caller = corpus / "app" / "Http" / "Dispatcher.php"
+    caller.write_text(_11_CALLER % "    private int $seq = 1;\n", encoding="utf-8")
+    assert _rebuild_code(
+        corpus, changed_paths=[caller], no_cluster=True, acquire_lock=False
+    ) is True
+    targets = _11_notify_targets(_2406_graph(corpus))
+    assert stranger not in targets, \
+        "an undispatched interface file must not hand the edge to App\\Support\\Notifier"
+    assert targets == {contract}, "the rebuild must agree with the full build"
+
+
+def test_incremental_rebuild_persists_php_interface_marker(tmp_path):
+    """#11: the marker is what crosses the rebuild boundary — it must be written to
+    graph.json (like `_callable`, #2438) and name the interface, never be re-derived
+    from the file node's `Notifier.php` label."""
+    corpus = _11_seed(tmp_path)
+
+    stamped = {
+        node.get("source_file"): node["_php_non_class_types"]
+        for node in _2406_graph(corpus).get("nodes", [])
+        if node.get("_php_non_class_types")
+    }
+    assert stamped == {"app/Contracts/Notifier.php": ["Notifier"]}, \
+        "only the interface's own file carries the names"
+
+
+def test_incremental_rebuild_php_interface_legacy_graph_self_heals(tmp_path):
+    """#11 degradation contract, mirroring #2438's: a graph written before the
+    markers existed must not crash the rebuild, and a full rebuild restores
+    them. Both marker channels are stripped — the non-class-type names and the
+    declared FQNs (#23) the `use`-claim guard reads — since a pre-marker graph
+    carries neither."""
+    import json
+
+    from graphify.watch import _rebuild_code
+
+    corpus = _11_seed(tmp_path)
+    graph_path = corpus / "graphify-out" / "graph.json"
+    legacy = json.loads(graph_path.read_text(encoding="utf-8"))
+    for node in legacy.get("nodes", []):
+        node.pop("_php_non_class_types", None)
+        node.pop("_php_interfaces", None)
+        node.pop("_php_class_fqns", None)
+    graph_path.write_text(json.dumps(legacy), encoding="utf-8")
+
+    caller = corpus / "app" / "Http" / "Dispatcher.php"
+    caller.write_text(_11_CALLER % "    private int $seq = 1;\n", encoding="utf-8")
+    assert _rebuild_code(
+        corpus, changed_paths=[caller], no_cluster=True, acquire_lock=False
+    ) is True
+    graph = _2406_graph(corpus)
+    assert _2406_nid(graph, ".notify()", "app/Support/Notifier.php") \
+        not in _11_notify_targets(graph), \
+        "a marker-less graph must fail toward no edge, never toward the stranger"
+
+    # A full rebuild re-extracts the interface file and restores marker + binding.
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph = _2406_graph(corpus)
+    assert _11_notify_targets(graph) == {
+        _2406_nid(graph, ".notify()", "app/Contracts/Notifier.php")
+    }
+
+
+# --- #12: ENUM and TRAIT declarations get the same treatment -----------------
+# An unchanged `App\Enums\Status` file reaches the resolver through persisted
+# markers alone. Before #47 that left `App\Legacy\Status` as the one visible
+# definition and put the #12 wrong edge straight back on the incremental path.
+# The stranger classes are still what must never be bound; what the receivers
+# DO bind — the enum's and the trait's own methods (#47/#53) — must likewise
+# come out the same on a rebuild as on a full build.
+
+_12_RUNNER = (
+    "<?php\nnamespace App\\Http;\nuse App\\Enums\\Status;\nuse App\\Support\\Cache;\n"
+    "class Runner {\n    private Status $status;\n    private Cache $cache;\n"
+    "%s"
+    "    public function go(): void { $this->status->label(); $this->cache->flush(); }\n}\n"
+)
+
+
+def _12_seed(tmp_path, caller_extra=""):
+    """PHP corpus: a Status ENUM and a Cache TRAIT, each beside an unrelated
+    same-short-named CLASS, plus a Runner typed against both. Full-rebuild it."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    for sub in ("Enums", "Support", "Legacy", "Http"):
+        (corpus / "app" / sub).mkdir(parents=True)
+    (corpus / "app" / "Enums" / "Status.php").write_text(
+        "<?php\nnamespace App\\Enums;\n"
+        "enum Status: string {\n    case Active = 'a';\n"
+        "    public function label(): string { return 'ENUM'; }\n}\n",
+        encoding="utf-8",
+    )
+    (corpus / "app" / "Support" / "Cache.php").write_text(
+        "<?php\nnamespace App\\Support;\n"
+        "trait Cache {\n    public function flush(): void {}\n}\n",
+        encoding="utf-8",
+    )
+    (corpus / "app" / "Legacy" / "Status.php").write_text(
+        "<?php\nnamespace App\\Legacy;\n"
+        "class Status {\n    public function label(): string { return 'WRONG'; }\n}\n",
+        encoding="utf-8",
+    )
+    (corpus / "app" / "Legacy" / "Cache.php").write_text(
+        "<?php\nnamespace App\\Legacy;\n"
+        "class Cache {\n    public function flush(): void {}\n}\n",
+        encoding="utf-8",
+    )
+    (corpus / "app" / "Http" / "Runner.php").write_text(
+        _12_RUNNER % caller_extra, encoding="utf-8"
+    )
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    return corpus
+
+
+def _12_call_targets(graph):
+    """Target ids of every `calls` edge landing on a `label()` / `flush()`."""
+    return {
+        str(edge.get("target"))
+        for edge in graph.get("links", graph.get("edges", []))
+        if edge.get("relation") == "calls"
+        and any(m in str(edge.get("target")).lower() for m in ("label", "flush"))
+    }
+
+
+def _12_expected(graph):
+    """The enum's and the trait's own methods — what the Runner's receivers name."""
+    return {
+        _2406_nid(graph, ".label()", "app/Enums/Status.php"),
+        _2406_nid(graph, ".flush()", "app/Support/Cache.php"),
+    }
+
+
+def _12_strangers(graph):
+    return {
+        _2406_nid(graph, ".label()", "app/Legacy/Status.php"),
+        _2406_nid(graph, ".flush()", "app/Legacy/Cache.php"),
+    }
+
+
+def test_incremental_rebuild_keeps_php_enum_and_trait_binding(tmp_path):
+    """#12: only Runner.php is re-extracted, so what the resolver knows about the
+    enum and the trait comes from the persisted graph — both receivers must reach
+    the same verdict as on the full build, and neither may bind its stranger."""
+    from graphify.watch import _rebuild_code
+
+    corpus = _12_seed(tmp_path)
+    graph = _2406_graph(corpus)
+    assert _12_call_targets(graph) == _12_expected(graph), \
+        "full-build baseline binds the enum and the trait, nothing else"
+
+    caller = corpus / "app" / "Http" / "Runner.php"
+    caller.write_text(_12_RUNNER % "    private int $seq = 1;\n", encoding="utf-8")
+    assert _rebuild_code(
+        corpus, changed_paths=[caller], no_cluster=True, acquire_lock=False
+    ) is True
+    graph = _2406_graph(corpus)
+    targets = _12_call_targets(graph)
+    assert not (targets & _12_strangers(graph)), \
+        "an undispatched enum/trait file must not hand the edge to App\\Legacy\\*"
+    assert targets == _12_expected(graph), \
+        "the rebuild must agree with the full build"
+
+
+def test_incremental_rebuild_persists_php_enum_and_trait_markers(tmp_path):
+    """#12: the marker is what crosses the rebuild boundary, so it must name the
+    enum and the trait — never be re-derived from the `<Name>.php` label, which
+    cannot tell a declaration kind apart from the colliding class's file."""
+    corpus = _12_seed(tmp_path)
+
+    stamped = {
+        node.get("source_file"): node["_php_non_class_types"]
+        for node in _2406_graph(corpus).get("nodes", [])
+        if node.get("_php_non_class_types")
+    }
+    assert stamped == {
+        "app/Enums/Status.php": ["Status"],
+        "app/Support/Cache.php": ["Cache"],
+    }, "only the declaring files carry the names — the stranger classes carry none"
+
+
 # --- #2603: absolute .graphify_root must not re-anchor cwd-relative sources ---
 
 def test_subfolder_root_marker_preserves_unchanged_nodes(tmp_path, monkeypatch):

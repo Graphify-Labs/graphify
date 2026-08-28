@@ -2794,6 +2794,15 @@ def _resolve_java_type_references(
 _PHP_SUPERTYPE_RELATIONS = ("inherits", "implements", "mixes_in")
 _PHP_REPOINT_RELATIONS = frozenset({"inherits", "implements", "mixes_in", "imports", "references"})
 
+# Every PHP declaration kind that mints a definition node (`_PHP_CONFIG.class_types`)
+# and can therefore carry an extends/implements/`use`-trait clause. The raw-scan
+# below used to read `class_declaration` only, so `interface Reader extends
+# Sub\Repo` recorded no raw text and fell through to the same-namespace guess —
+# which resolves to the wrong `Repo` when both exist (#47).
+_PHP_DECLARATION_TYPES = frozenset({
+    "class_declaration", "interface_declaration", "trait_declaration", "enum_declaration",
+})
+
 
 def _php_fqn_from_raw(raw: str, ns: str, uses: dict[str, str]) -> str:
     """Resolve a raw (possibly qualified) PHP class reference to an FQN.
@@ -2820,6 +2829,102 @@ def _php_fqn_from_raw(raw: str, ns: str, uses: dict[str, str]) -> str:
     return f"{ns}\\{raw}" if ns else raw
 
 
+# ── Shared PHP `use`-statement parser (#19) ───────────────────────────────────
+# One parser for both consumers: the `uses_by_file` map below and the `imports`
+# edge capture in `_import_php` (extract.py). Group use `use A\{B, C as X};`,
+# aliases, leading-backslash absolutes and `use function` / `use const` are all
+# handled here so neither consumer has to re-derive them.
+
+def _php_use_clause_fact(
+    clause,
+    source: bytes,
+    prefix: str = "",
+    kind: str = "class",
+) -> tuple[str, str | None, str] | None:
+    """Parse one ``namespace_use_clause`` into ``(target_fqn, alias, use_kind)``.
+
+    ``prefix`` is the group-use prefix (empty for a standalone clause) and
+    ``kind`` the declaration-level ``function``/``const`` keyword, if any; a
+    clause-level keyword overrides it. Returns ``None`` when the clause names
+    no target (e.g. a parse error).
+    """
+    target: str | None = None
+    alias: str | None = None
+    saw_as = False
+    for c in clause.children:
+        if c.type in ("function", "const"):
+            kind = c.type
+        elif c.type == "as":
+            saw_as = True
+        elif c.type in ("qualified_name", "name"):
+            if saw_as:
+                alias = _read_text(c, source)
+            elif target is None:
+                target = _read_text(c, source)
+    if not target:
+        return None
+    fqn = (f"{prefix}\\{target}" if prefix else target).lstrip("\\")
+    return fqn, alias, kind
+
+
+def _php_use_clause_context(clause, source: bytes) -> tuple[str, str]:
+    """``(group prefix, use kind)`` a ``namespace_use_clause`` inherits from its
+    parent ``namespace_use_declaration``.
+
+    For consumers that are dispatched per clause and never see the declaration
+    (`_import_php`). The prefix only applies to clauses inside a
+    ``namespace_use_group``; a standalone clause carries its own full name.
+    """
+    parent = getattr(clause, "parent", None)
+    in_group = parent is not None and parent.type == "namespace_use_group"
+    decl = parent.parent if in_group else parent
+    prefix, kind = "", "class"
+    if decl is None or decl.type != "namespace_use_declaration":
+        return prefix, kind
+    for c in decl.children:
+        if c.type == "namespace_name" and in_group:
+            prefix = _read_text(c, source)
+        elif c.type in ("function", "const"):
+            kind = c.type
+    return prefix, kind
+
+
+def _php_use_declaration_facts(
+    decl,
+    source: bytes,
+) -> list[tuple[str, str | None, str]]:
+    """Every ``(target_fqn, alias, use_kind)`` a ``namespace_use_declaration`` declares.
+
+    ``use function A\\f;`` puts the keyword on the *clause*, while
+    ``use function A\\{f, g};`` puts it on the *declaration* — both spellings
+    yield ``use_kind == "function"`` here (#26).
+    """
+    prefix, kind, group = "", "class", None
+    direct = []
+    for c in decl.children:
+        if c.type == "namespace_name":
+            prefix = _read_text(c, source)
+        elif c.type in ("function", "const"):
+            kind = c.type
+        elif c.type == "namespace_use_group":
+            group = c
+        elif c.type == "namespace_use_clause":
+            direct.append(c)
+
+    facts: list[tuple[str, str | None, str]] = []
+    for c in direct:
+        fact = _php_use_clause_fact(c, source, "", kind)
+        if fact:
+            facts.append(fact)
+    if group is not None:
+        for c in group.children:
+            if c.type == "namespace_use_clause":
+                fact = _php_use_clause_fact(c, source, prefix, kind)
+                if fact:
+                    facts.append(fact)
+    return facts
+
+
 def _resolve_php_type_references(
     per_file: list[dict],
     paths: list[Path],
@@ -2837,7 +2942,12 @@ def _resolve_php_type_references(
     proven external by a ``use`` FQN or a qualified name are re-pointed to an
     FQN-labeled sourceless stub, which the bare-label rewire cannot collapse.
     References with no namespace facts are left untouched so the unique-label
-    rewire keeps handling plain (non-namespaced) PHP as before.
+    rewire keeps handling plain (non-namespaced) PHP as before — except for
+    class ``imports``, which carry their own ``target_fqn`` (#19) and so are
+    re-pointed off that even in a file with no ``namespace`` declaration (#48):
+    the ``use`` FQN is itself the namespace fact, and the edge's bare target was
+    never a rewire candidate anyway (``_rewire_unique_stub_nodes`` builds its
+    candidate list from nodes, and a ``Foo::class``-only import mints none).
     """
     try:
         import tree_sitter_php as tsphp
@@ -2879,27 +2989,6 @@ def _resolve_php_type_references(
             else:
                 raws.setdefault(key, raw)
 
-        def _record_use_clause(clause, prefix: str) -> None:
-            target = None
-            alias = None
-            saw_as = False
-            for c in clause.children:
-                if c.type in ("function", "const"):
-                    return  # not a class import
-                if c.type == "as":
-                    saw_as = True
-                elif c.type in ("qualified_name", "name"):
-                    if saw_as:
-                        alias = _read_text(c, source)
-                    elif target is None:
-                        target = _read_text(c, source)
-            if not target:
-                return
-            fqn = (f"{prefix}\\{target}" if prefix else target).lstrip("\\")
-            key = (alias or fqn.rsplit("\\", 1)[-1]).strip().lower()
-            if key:
-                uses.setdefault(key, fqn)
-
         def walk(n) -> None:
             t = n.type
             if t == "namespace_definition":
@@ -2908,21 +2997,14 @@ def _resolve_php_type_references(
                         namespaces.append(_read_text(c, source))
                         break
             elif t == "namespace_use_declaration":
-                prefix = ""
-                group = None
-                for c in n.children:
-                    if c.type == "namespace_name":
-                        prefix = _read_text(c, source)          # group-use prefix
-                    elif c.type == "namespace_use_group":
-                        group = c
-                    elif c.type == "namespace_use_clause":
-                        _record_use_clause(c, "")
-                if group is not None:
-                    for c in group.children:
-                        if c.type == "namespace_use_clause":
-                            _record_use_clause(c, prefix)
+                for fqn, alias, use_kind in _php_use_declaration_facts(n, source):
+                    if use_kind != "class":
+                        continue  # `use function` / `use const` are not class imports
+                    key = (alias or fqn.rsplit("\\", 1)[-1]).strip().lower()
+                    if key:
+                        uses.setdefault(key, fqn)
                 return
-            elif t == "class_declaration":
+            elif t in _PHP_DECLARATION_TYPES:
                 for child in n.children:
                     if child.type == "base_clause":
                         for sub in child.children:
@@ -2932,7 +3014,7 @@ def _resolve_php_type_references(
                         for sub in child.children:
                             if sub.type in ("name", "qualified_name"):
                                 _record_raw("implements", _read_text(sub, source))
-                    elif child.type == "declaration_list":
+                    elif child.type in ("declaration_list", "enum_declaration_list"):
                         for member in child.children:
                             if member.type != "use_declaration":
                                 continue
@@ -3005,41 +3087,66 @@ def _resolve_php_type_references(
         if ref_file not in ns_by_file:
             continue
         tgt = edge.get("target")
-        label = stub_label.get(tgt)
-        uses = uses_by_file.get(ref_file, {})
-        if not label and relation == "imports":
-            label = next((alias for alias in uses if _make_id(alias) == tgt), "")
-        if not label:
-            continue
-        bare = label.strip().lower()
         ns = ns_by_file[ref_file]
+        uses = uses_by_file.get(ref_file, {})
 
-        raw = None
-        if relation in _PHP_SUPERTYPE_RELATIONS:
-            raw = raw_by_file.get(ref_file, {}).get((relation, bare))
+        # An `imports` edge already spells its own FQN in metadata (stamped by
+        # `_import_php` since #19), so it resolves without a stub node to read a
+        # label from — the `Foo::class`-only import mints no stub at all, and
+        # the bare target used to dangle all the way into graph.json (#48).
+        # Only `use`d *types* belong in the type map: `use function`/`use const`
+        # name callables, not classes.
+        import_fqn = ""
+        if relation == "imports":
+            meta = edge.get("metadata") or {}
+            if meta.get("use_kind", "class") == "class":
+                import_fqn = str(meta.get("target_fqn") or "").strip().lstrip("\\")
 
-        explicit = False
-        if raw and "\\" in raw:
-            fqn = _php_fqn_from_raw(raw, ns, uses)
-            explicit = True
-        elif bare in uses:
-            fqn = uses[bare]
-            explicit = True
-        elif ns:
-            fqn = f"{ns}\\{label}"
+        if import_fqn:
+            fqn, explicit = import_fqn, True
         else:
-            continue  # no namespace facts: legacy unique-label rewire applies
+            label = stub_label.get(tgt)
+            if not label and relation == "imports":
+                # Prefixed use-imports mint no stub whose id matches the edge
+                # target, so recover the label from the alias map (#2661).
+                label = next((alias for alias in uses if _make_id(alias) == tgt), "")
+            if not label:
+                continue
+            bare = label.strip().lower()
+
+            raw = None
+            if relation in _PHP_SUPERTYPE_RELATIONS:
+                raw = raw_by_file.get(ref_file, {}).get((relation, bare))
+
+            explicit = False
+            if raw and "\\" in raw:
+                fqn = _php_fqn_from_raw(raw, ns, uses)
+                explicit = True
+            elif bare in uses:
+                fqn = uses[bare]
+                explicit = True
+            elif ns:
+                fqn = f"{ns}\\{label}"
+            else:
+                continue  # no namespace facts: legacy unique-label rewire applies
 
         resolved = fqn_to_id.get(fqn.lower())
         if resolved and resolved != tgt:
             edge["target"] = resolved
-            repointed_from.add(tgt)
         elif explicit and resolved is None:
             # Proven external: park the edge on an FQN-labeled stub the
             # bare-name rewire cannot collapse (this is the #1923 fix).
             edge["target"] = _external_stub(fqn)
+        else:
+            continue  # non-explicit miss: leave the bare stub for the legacy rewire
+
+        # Only a *stub* id is a candidate for the orphan prune below. Resolving
+        # an import off its own metadata means `tgt` may be a bare
+        # `_make_id(<short name>)` that never had a node of ours behind it — and
+        # that id can collide with an unrelated real one (a `Page.md` doc node
+        # vs `use Vendor\Pkg\Page;`). Vacating this edge must never orphan it.
+        if tgt in stub_label:
             repointed_from.add(tgt)
-        # non-explicit miss: leave the bare stub for the legacy rewire
 
     if new_nodes:
         all_nodes.extend(new_nodes)
