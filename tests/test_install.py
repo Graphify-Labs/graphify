@@ -7,6 +7,7 @@ import pytest
 
 
 PLATFORMS = {
+    "adal": (".adal/skills/graphify/SKILL.md",),
     "claude": (".claude/skills/graphify/SKILL.md",),
     "codebuddy": (".codebuddy/skills/graphify/SKILL.md",),
     "codex": (".codex/skills/graphify/SKILL.md",),
@@ -356,6 +357,7 @@ def test_all_skill_files_exist_in_package():
     pkg = Path(graphify.__file__).parent
     for name in (
         "skill.md",
+        "skill-adal.md",
         "skill-codex.md",
         "skill-opencode.md",
         "skill-kilo.md",

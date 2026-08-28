@@ -28,6 +28,9 @@ from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
 # `from graphify.__main__ import <name>` keeps working unchanged.
 from graphify.install import (  # noqa: E402,F401
     dispatch_install_cli,
+    _adal_install,
+    _adal_pretooluse_hooks,
+    _adal_uninstall,
     _agents_install,
     _agents_platform_install,
     _agents_platform_uninstall,
@@ -48,6 +51,7 @@ from graphify.install import (  # noqa: E402,F401
     _devin_rules_uninstall,
     _gemini_hook,
     _install_claude_hook,
+    _install_adal_hook,
     _install_codebuddy_hook,
     _install_codex_hook,
     _install_gemini_hook,
@@ -80,6 +84,7 @@ from graphify.install import (  # noqa: E402,F401
     _strip_graphify_md_section,
     _strip_json_comments,
     _uninstall_claude_hook,
+    _uninstall_adal_hook,
     _uninstall_codebuddy_hook,
     _uninstall_codex_hook,
     _uninstall_gemini_hook,

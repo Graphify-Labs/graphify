@@ -1,10 +1,11 @@
 """Strict-mode hook-guard: opt-in block-then-nudge + #1840 gating.
 
-The strict guard (Claude Code Read only) denies the FIRST raw read of an indexed,
-in-project, fresh source file per session, then downgrades to the soft nudge — so
-it can never strand an agent. #1840: out-of-project reads are ignored and a graph
-that is stale for the target softens to a non-mandatory nudge. Everything defaults
-to the historical soft nudge unless strict is explicitly enabled.
+The strict guard (Claude Code or AdaL source reads) denies the FIRST raw read of
+an indexed, in-project, fresh source file per session, then downgrades to the
+soft nudge — so it can never strand an agent. #1840: out-of-project reads are
+ignored and a graph that is stale for the target softens to a non-mandatory
+nudge. Everything defaults to the historical soft nudge unless strict is
+explicitly enabled.
 """
 import io
 import json

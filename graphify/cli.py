@@ -687,10 +687,11 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
     Fails open everywhere: any error, or a non-matching tool call, prints nothing
     and the caller exits 0, so a legitimate tool call is never blocked by a bug.
 
-    In strict mode (opt-in, Claude Code Read only) the FIRST raw read of indexed,
-    in-project, fresh code per session is DENIED with a redirect to `graphify query`
-    (permissionDecision), then downgrades to the soft nudge — it fires at most once
-    per session and can never strand the agent. Search (Bash) and Glob stay
+    In strict mode (opt-in, Claude Code or AdaL source reads) the FIRST raw read
+    of indexed, in-project, fresh code per session is DENIED with a redirect to
+    `graphify query` (permissionDecision), then downgrades to the soft nudge — it
+    fires at most once per session and can never strand the agent. Search (Bash)
+    and Glob stay
     nudge-only: a compound shell command has no single parseable target and blocking
     file listing would strand navigation. #1840: reads of out-of-project files are
     ignored, and a graph that is stale for the target file softens to a non-mandatory

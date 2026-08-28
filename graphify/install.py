@@ -16,6 +16,7 @@ import json
 import os
 import platform
 import re
+import shlex
 import shutil
 import stat
 import sys
@@ -298,8 +299,9 @@ def _claude_pretooluse_hooks(strict: bool = False) -> "list[dict]":
     Bash-only matcher never fired on the agent's primary search path.
 
     When ``strict`` is set, the read hook carries ``--strict`` so it blocks the
-    first raw read per session (Claude Code only). The ``GRAPHIFY_HOOK_STRICT`` env
-    var can force it on or off at runtime without a reinstall.
+    first raw read per session. Claude Code and AdaL both understand the guard's
+    deny response. The ``GRAPHIFY_HOOK_STRICT`` env var can force it on or off
+    at runtime without a reinstall.
     """
     exe = _resolve_graphify_exe()
     if " " in exe and not exe.startswith('"'):
@@ -325,6 +327,13 @@ _PLATFORM_CONFIG: dict[str, dict] = {
         "skill_dst": Path(".claude") / "skills" / "graphify" / "SKILL.md",
         "claude_md": True,
         "skill_refs": "claude",
+    },
+    "adal": {
+        # Thin AdaL adapter: the skill delegates to Graphify's stable CLI/query
+        # surface. Native semantic orchestration can be added independently.
+        "skill_file": "skill-adal.md",
+        "skill_dst": Path(".adal") / "skills" / "graphify" / "SKILL.md",
+        "claude_md": False,
     },
     "codex": {
         "skill_file": "skill-codex.md",
@@ -584,7 +593,13 @@ def _print_banner() -> None:
 """)
     except Exception:
         pass
-def install(platform: str = "claude", *, project: bool = False, project_dir: Path | None = None) -> None:
+def install(
+    platform: str = "claude",
+    *,
+    project: bool = False,
+    project_dir: Path | None = None,
+    strict: bool = False,
+) -> None:
     _print_banner()
     platform = _canonical_platform(platform)
     if platform == "gemini":
@@ -603,9 +618,19 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
         )
         sys.exit(1)
 
+    if platform == "adal" and not project:
+        # Fail before copying the skill if the shared settings file cannot be
+        # safely merged. Never leave a half-installed AdaL integration.
+        _load_adal_settings(Path.home() / ".adal" / "settings.json")
+
     cfg = _PLATFORM_CONFIG[platform]
     project_dir = project_dir or Path(".")
     skill_dst = _copy_skill_file(platform, project=project, project_dir=project_dir)
+
+    if platform == "adal" and not project:
+        # AdaL reads lifecycle hooks from the user-level settings file only.
+        # Project installs remain project-scoped and use AGENTS.md instead.
+        _install_adal_hook(strict=strict)
 
     if platform == "kilo":
         # Kilo Code also supports a native /graphify command file.
@@ -684,7 +709,7 @@ def _print_install_usage() -> None:
     print("Usage: graphify install [--project] [--strict] [--platform P|P]")
     print(f"Platforms: {platforms}")
     print("  --strict  block the first raw file read per session until one "
-          "`graphify query` runs (Claude Code project hook only; needs --project)")
+          "`graphify query` runs (Claude Code project hook or AdaL user hook)")
 _CLAUDE_MD_MARKER = "## graphify"
 _CODEBUDDY_MD_MARKER = "## graphify"
 _AGENTS_MD_MARKER = "## graphify"
@@ -1423,6 +1448,207 @@ def _resolve_graphify_exe() -> str:
                 found = str(candidate)
                 break
     return (found or "graphify").replace("\\", "/")
+
+
+def _adal_pretooluse_hooks(strict: bool = False) -> list[dict]:
+    """Return Graphify hooks using AdaL's native lowercase tool names."""
+    exe = _resolve_graphify_exe()
+    if " " in exe and not exe.startswith('"'):
+        exe = f'"{exe}"'
+    read_cmd = f"{exe} hook-guard read" + (" --strict" if strict else "")
+    return [
+        {
+            "matcher": "bash|grep",
+            "hooks": [
+                {"type": "command", "command": f"{exe} hook-guard search"}
+            ],
+        },
+        {
+            "matcher": "read_file|glob",
+            "hooks": [{"type": "command", "command": read_cmd}],
+        },
+    ]
+
+
+def _is_adal_graphify_hook(group: object) -> bool:
+    """Whether a matcher group is one of the lifecycle hooks Graphify owns."""
+    if not isinstance(group, dict):
+        return False
+    matcher = group.get("matcher")
+    if matcher not in ("bash|grep", "read_file|glob"):
+        return False
+    hooks = group.get("hooks")
+    if not isinstance(hooks, list) or len(hooks) != 1:
+        return False
+    hook = hooks[0]
+    if not isinstance(hook, dict) or hook.get("type") != "command":
+        return False
+    command = hook.get("command")
+    if not isinstance(command, str):
+        return False
+    try:
+        parts = shlex.split(command, posix=True)
+    except ValueError:
+        return False
+    if len(parts) not in (3, 4):
+        return False
+    executable = Path(parts[0].replace("\\", "/")).name.casefold()
+    if executable not in ("graphify", "graphify.exe") or parts[1] != "hook-guard":
+        return False
+    expected_kind = "search" if matcher == "bash|grep" else "read"
+    if parts[2] != expected_kind:
+        return False
+    return len(parts) == 3 or (
+        expected_kind == "read" and parts[3] == "--strict"
+    )
+
+
+def _load_adal_settings(settings_path: Path) -> dict:
+    """Load AdaL's shared settings without risking destructive replacement."""
+    if not settings_path.exists():
+        return {}
+    try:
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        print(
+            f"error: cannot update {settings_path}: {exc}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1) from exc
+    if not isinstance(settings, dict):
+        print(
+            f"error: cannot update {settings_path}: top-level JSON must be an object",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    hooks = settings.get("hooks")
+    if hooks is not None and not isinstance(hooks, dict):
+        print(
+            f"error: cannot update {settings_path}: 'hooks' must be an object",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    pre_tool = hooks.get("PreToolUse") if isinstance(hooks, dict) else None
+    if pre_tool is not None and not isinstance(pre_tool, list):
+        print(
+            f"error: cannot update {settings_path}: hooks.PreToolUse must be a list",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    return settings
+
+
+def _write_adal_settings(settings_path: Path, settings: dict) -> None:
+    """Atomically write AdaL's shared settings file."""
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    staged = settings_path.with_suffix(settings_path.suffix + ".tmp")
+    mode = (
+        settings_path.stat().st_mode & 0o777
+        if settings_path.exists()
+        else 0o600
+    )
+    try:
+        staged.write_text(
+            json.dumps(settings, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        try:
+            os.chmod(staged, mode)
+        except OSError:
+            pass
+        os.replace(staged, settings_path)
+    except Exception:
+        try:
+            staged.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
+def _install_adal_hook(strict: bool = False) -> None:
+    """Merge Graphify's hooks into AdaL's user-level settings.json."""
+    settings_path = Path.home() / ".adal" / "settings.json"
+    settings = _load_adal_settings(settings_path)
+    hooks = settings.setdefault("hooks", {})
+    pre_tool = hooks.setdefault("PreToolUse", [])
+    hooks["PreToolUse"] = [
+        group for group in pre_tool if not _is_adal_graphify_hook(group)
+    ]
+    hooks["PreToolUse"].extend(_adal_pretooluse_hooks(strict=strict))
+    _write_adal_settings(settings_path, settings)
+    mode = " (strict)" if strict else ""
+    print(
+        "  ~/.adal/settings.json  ->  PreToolUse hooks registered "
+        f"(bash/grep search + read_file/glob){mode}"
+    )
+
+
+def _uninstall_adal_hook() -> None:
+    """Remove only Graphify-owned hooks from AdaL's shared settings.json."""
+    settings_path = Path.home() / ".adal" / "settings.json"
+    if not settings_path.exists():
+        return
+    settings = _load_adal_settings(settings_path)
+    hooks = settings.get("hooks")
+    if not isinstance(hooks, dict):
+        return
+    pre_tool = hooks.get("PreToolUse")
+    if not isinstance(pre_tool, list):
+        return
+    filtered = [
+        group for group in pre_tool if not _is_adal_graphify_hook(group)
+    ]
+    if len(filtered) == len(pre_tool):
+        return
+    if filtered:
+        hooks["PreToolUse"] = filtered
+    else:
+        hooks.pop("PreToolUse", None)
+    if not hooks:
+        settings.pop("hooks", None)
+    _write_adal_settings(settings_path, settings)
+    print("  ~/.adal/settings.json  ->  PreToolUse hooks removed")
+
+
+def _adal_install(
+    project_dir: Path | None = None,
+    *,
+    project: bool = False,
+    strict: bool = False,
+) -> None:
+    """Install AdaL's skill plus native hook/AGENTS.md integration."""
+    project_dir = project_dir or Path(".")
+    if project:
+        if strict:
+            print(
+                "error: AdaL loads hooks only from ~/.adal/settings.json; "
+                "run `graphify adal install --strict` for strict mode",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+        _project_install("adal", project_dir)
+        return
+    install("adal", project_dir=project_dir, strict=strict)
+    _agents_install(project_dir, "adal")
+
+
+def _adal_uninstall(
+    project_dir: Path | None = None,
+    *,
+    project: bool = False,
+) -> None:
+    """Remove AdaL's project or user integration, preserving unrelated hooks."""
+    project_dir = project_dir or Path(".")
+    if project:
+        _project_uninstall("adal", project_dir)
+        return
+    removed = _remove_skill_file("adal")
+    if removed:
+        print("skill removed")
+    _agents_uninstall(project_dir, platform="adal")
+    _uninstall_adal_hook()
+
+
 def _install_codex_hook(project_dir: Path) -> None:
     """Add graphify PreToolUse hook to .codex/hooks.json."""
     hooks_path = project_dir / ".codex" / "hooks.json"
@@ -1498,16 +1724,13 @@ def _agents_install(project_dir: Path, platform: str) -> None:
         _install_kilo_plugin(project_dir or Path("."))
 
     print()
-    print(
-        f"{platform.capitalize()} will now check the knowledge graph before answering"
-    )
+    display_name = "AdaL" if platform == "adal" else platform.capitalize()
+    print(f"{display_name} will now check the knowledge graph before answering")
     print("codebase questions and rebuild it after code changes.")
-    if platform not in ("codex", "opencode", "kilo"):
+    if platform not in ("adal", "codex", "opencode", "kilo"):
         print()
         print("Note: unlike Claude Code, there is no PreToolUse hook equivalent for")
-        print(
-            f"{platform.capitalize()} — the AGENTS.md rules are the always-on mechanism."
-        )
+        print(f"{display_name} — the AGENTS.md rules are the always-on mechanism.")
 def _amp_legacy_cleanup() -> None:
     """Best-effort removal of the pre-fix ~/.amp/skills/graphify install dir.
 
@@ -1565,7 +1788,14 @@ def _project_install(platform_name: str, project_dir: Path | None = None, strict
     elif platform_name == "kiro":
         _kiro_install(project_dir)
         _print_project_git_add_hint([project_dir / ".kiro"])
-    elif platform_name in ("aider", "amp", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes"):
+    elif platform_name == "adal" and strict:
+        print(
+            "error: AdaL loads hooks only from ~/.adal/settings.json; "
+            "run `graphify adal install --strict` for strict mode",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    elif platform_name in ("adal", "aider", "amp", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes"):
         skill_dst = _copy_skill_file(platform_name, project=True, project_dir=project_dir)
         _agents_install(project_dir, platform_name)
         hint_paths = [_project_scope_root(skill_dst, project_dir), project_dir / "AGENTS.md"]
@@ -1606,7 +1836,7 @@ def _project_uninstall(platform_name: str, project_dir: Path | None = None) -> N
         _cursor_uninstall(project_dir)
     elif platform_name == "kiro":
         _kiro_uninstall(project_dir)
-    elif platform_name in ("aider", "amp", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes"):
+    elif platform_name in ("adal", "aider", "amp", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes"):
         _remove_skill_file(platform_name, project=True, project_dir=project_dir)
         _agents_uninstall(project_dir, platform=platform_name)
         if platform_name == "codex":
@@ -1803,8 +2033,10 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
     # The generic agents platform's user-scope skill lives at ~/.agents/skills,
     # which neither the AGENTS.md cleanup nor amp's removal reaches.
     _remove_skill_file("agents")
+    _remove_skill_file("adal")
     _uninstall_opencode_plugin(pd)
     _uninstall_codex_hook(pd)
+    _uninstall_adal_hook()
 
     # Git hook
     try:
@@ -1991,6 +2223,7 @@ def codebuddy_uninstall(project_dir: Path | None = None, *, project: bool = Fals
 
 
 _CLI_INSTALL_COMMANDS = frozenset({
+    "adal",
     "agents",
     "aider",
     "amp",
@@ -2075,13 +2308,16 @@ def dispatch_install_cli(cmd: str) -> bool:
         if project_scope:
             _project_install(chosen_platform, Path("."), strict=strict)
         else:
-            if strict:
+            if strict and _canonical_platform(chosen_platform) != "adal":
                 print(
                     "note: --strict applies to the project PreToolUse hook; run "
                     "`graphify install --project --strict` or `graphify claude install --strict`.",
                     file=sys.stderr,
                 )
-            install(platform=chosen_platform)
+            install(
+                platform=chosen_platform,
+                strict=(strict and _canonical_platform(chosen_platform) == "adal"),
+            )
     elif cmd == "uninstall":
         args = sys.argv[2:]
         purge = "--purge" in args
@@ -2129,6 +2365,17 @@ def dispatch_install_cli(cmd: str) -> bool:
                 claude_uninstall()
         else:
             print("Usage: graphify claude [install|uninstall]", file=sys.stderr)
+            sys.exit(1)
+    elif cmd == "adal":
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        project_scope = "--project" in sys.argv[3:]
+        strict = "--strict" in sys.argv[3:]
+        if subcmd == "install":
+            _adal_install(Path("."), project=project_scope, strict=strict)
+        elif subcmd == "uninstall":
+            _adal_uninstall(Path("."), project=project_scope)
+        else:
+            print("Usage: graphify adal [install|uninstall]", file=sys.stderr)
             sys.exit(1)
     elif cmd == "codebuddy":
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""

@@ -64,7 +64,7 @@ graphify-out/
 └── graph.json       the full graph — query it anytime without re-reading your files
 ```
 
-**Works in** Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot, and 15+ more — [pick your platform](#install).
+**Works in** Claude Code, [AdaL](https://github.com/SylphAI-Inc/adal), Cursor, Codex, Gemini CLI, GitHub Copilot, and 15+ more — [pick your platform](#install).
 
 ---
 
@@ -203,7 +203,7 @@ for example `graphify claude install --project` or `graphify codex install --pro
 
 > **Git hooks and uv tool / pipx:** `graphify hook install` embeds the current interpreter path directly into the hook scripts at install time, so the post-commit hook fires correctly even in GUI git clients and CI runners where `~/.local/bin` is not on PATH. If you reinstall or upgrade graphify, re-run `graphify hook install` to refresh the embedded path.
 
-> **Strict mode (Claude Code):** `graphify install --project --strict` makes the assistant actually use the graph. The default install *nudges* it to run `graphify query` before reading files; strict mode *blocks* the first raw source read of a session and redirects it to the graph, then reverts to the nudge (so it fires at most once per session and never gets stuck). Toggle at runtime with `GRAPHIFY_HOOK_STRICT=1`/`0`; the default install is unchanged (soft nudge).
+> **Strict mode (Claude Code and AdaL):** `graphify install --project --strict` (Claude Code) or `graphify adal install --strict` (AdaL) makes the assistant actually use the graph. The default install *nudges* it to run `graphify query` before reading files; strict mode *blocks* the first raw source read of a session and redirects it to the graph, then reverts to the nudge (so it fires at most once per session and never gets stuck). Toggle at runtime with `GRAPHIFY_HOOK_STRICT=1`/`0`; the default install is unchanged (soft nudge).
 
 <details>
 <summary><b>Pick your platform</b> (20+ assistants, click to expand)</summary>
@@ -212,6 +212,7 @@ for example `graphify claude install --project` or `graphify codex install --pro
 |----------|----------------|
 | Claude Code (Linux/Mac) | `graphify install` |
 | Claude Code (Windows) | `graphify install` (auto-detected) or `graphify install --platform windows` |
+| [AdaL](https://github.com/SylphAI-Inc/adal) | `graphify install --platform adal` |
 | CodeBuddy | `graphify install --platform codebuddy` |
 | Codex | `graphify install --platform codex` |
 | OpenCode | `graphify install --platform opencode` |
@@ -234,7 +235,7 @@ for example `graphify claude install --project` or `graphify codex install --pro
 | Devin CLI | `graphify devin install` |
 | Google Antigravity | `graphify antigravity install` |
 
-Codex users also need `multi_agent = true` under `[features]` in `~/.codex/config.toml` for parallel extraction. CodeBuddy uses the same Agent tool and PreToolUse hook mechanism as Claude Code. Factory Droid uses the `Task` tool for parallel subagent dispatch. OpenClaw and Aider use sequential extraction (parallel agent support is still early on those platforms). Trae uses the Agent tool for parallel subagent dispatch and does **not** support `PreToolUse` hooks, so AGENTS.md is the always-on mechanism.
+Codex users also need `multi_agent = true` under `[features]` in `~/.codex/config.toml` for parallel extraction. AdaL uses native lifecycle hooks for graph-first search/read reminders and a compact skill built on Graphify's CLI/query surface. CodeBuddy uses the same Agent tool and PreToolUse hook mechanism as Claude Code. Factory Droid uses the `Task` tool for parallel subagent dispatch. OpenClaw and Aider use sequential extraction (parallel agent support is still early on those platforms). Trae uses the Agent tool for parallel subagent dispatch and does **not** support `PreToolUse` hooks, so AGENTS.md is the always-on mechanism.
 
 `--platform agents` (alias `--platform skills`) targets the generic cross-framework [Agent-Skills](https://github.com/anthropics/skills) locations: the spec's user-global `~/.agents/skills/` (read by `npx skills` and spec-compliant frameworks) for a global install, and `./.agents/skills/` for a project (`--project`) install. The bare `graphify install` stays single-platform (Claude Code) by design — use the named `agents` platform when you want the skill discoverable by any framework that reads `.agents/skills`.
 
@@ -283,6 +284,7 @@ Run this once in your project after building a graph:
 | Platform | Command |
 |----------|---------|
 | Claude Code | `graphify claude install` |
+| [AdaL](https://github.com/SylphAI-Inc/adal) | `graphify adal install` |
 | CodeBuddy | `graphify codebuddy install` |
 | Codex | `graphify codex install` |
 | OpenCode | `graphify opencode install` |
@@ -307,14 +309,16 @@ Run this once in your project after building a graph:
 
 This writes a small config file that tells your assistant to consult the knowledge graph for codebase questions, preferring scoped queries like `graphify query "<question>"` over reading the full report or grepping raw files.
 
-- **Hook platforms** (Claude Code, Gemini CLI): a hook fires automatically before search-style tool calls (and, on Claude Code, before reading source files one by one via the Read/Glob tools) and nudges your assistant toward the graph path.
+- **Hook platforms** (Claude Code, AdaL, Gemini CLI): a hook fires automatically before search-style tool calls (and, on Claude Code and AdaL, before reading source files one by one) and nudges your assistant toward the graph path.
 - **Instruction-file platforms** (Codex, OpenCode, Cursor, etc.): persistent instruction files (`AGENTS.md`, `.cursor/rules/`, etc.) provide the same query-first guidance.
 
 `GRAPH_REPORT.md` is still available for broad architecture review.
 
 **CodeBuddy** does the same two things as Claude Code: writes a `CODEBUDDY.md` section telling CodeBuddy to read `graphify-out/GRAPH_REPORT.md` before answering architecture questions, and installs `PreToolUse` hooks (`.codebuddy/settings.json`) that fire before Bash search commands and file reads, nudging toward `graphify query` instead.
 
-**Codex** writes to `AGENTS.md`, which is what actually carries the always-on graph guidance on this platform. `graphify codex install` also registers a `PreToolUse` hook in `.codex/hooks.json` (`graphify hook-check`), but that entry is deliberately a **no-op**: Codex Desktop rejects `hookSpecificOutput.additionalContext` on `PreToolUse`, so emitting a nudge there would break Bash tool calls. Unlike Claude Code, where the hook (`graphify hook-guard`) does the nudging, on Codex the hook fires and intentionally does nothing, and `AGENTS.md` is the always-on mechanism.
+**AdaL** installs the skill at `~/.adal/skills/graphify/SKILL.md` and merges two `PreToolUse` groups into `~/.adal/settings.json`: `bash|grep` calls use Graphify's search guard, and `read_file|glob` calls use its source-read guard. Existing settings and non-Graphify hooks are preserved. Because AdaL currently loads lifecycle hooks from user settings, `--project` installs the project skill and `AGENTS.md` guidance without changing the user hook configuration.
+
+**Codex** writes to `AGENTS.md` and also installs a `PreToolUse` hook in `.codex/hooks.json` that fires before every Bash tool call, same always-on mechanism as Claude Code.
 
 **Kilo Code** installs the Graphify skill to `~/.config/kilo/skills/graphify/SKILL.md` and a native `/graphify` command to `~/.config/kilo/command/graphify.md`. `graphify kilo install` also writes `AGENTS.md` plus a native `tool.execute.before` plugin (`.kilo/plugins/graphify.js` + `.kilo/kilo.json` or `.kilo/kilo.jsonc` registration) so Kilo gets the same always-on graph reminder behavior through native `.kilo` config.
 
