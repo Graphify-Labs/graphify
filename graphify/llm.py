@@ -2265,6 +2265,7 @@ def _extract_with_adaptive_retry(
     _depth: int = 0,
     *,
     deep_mode: bool = False,
+    _deadline: float | None = None,
 ) -> dict:
     """Extract a chunk; if the response is truncated (`finish_reason="length"`),
     the API rejects the prompt as too large for the model's context window, or
@@ -2307,13 +2308,24 @@ def _extract_with_adaptive_retry(
     a splittable document: the slice is bisected and retried (#1369). A whole
     non-splittable file (e.g. one huge code file) can't be made smaller than
     itself, so we return what we got and warn.
+
+    Timeouts additionally carry a subtree wall-clock budget (``_deadline``): the
+    top-level call anchors it to one `GRAPHIFY_API_TIMEOUT` allowance, and every
+    split inherits the same absolute deadline rather than each getting a fresh
+    full timeout. Before #3142, a chunk that timed out at every depth re-paid
+    the full timeout on each of up to ``2**max_depth`` attempts — up to 2.5h for
+    the default 600s timeout at max_depth=3. Once the shared deadline passes,
+    a further timeout gives up immediately instead of splitting again.
     """
+    if _deadline is None:
+        _deadline = time.monotonic() + _resolve_api_timeout()
+
     def _merge_two(left_units, right_units) -> dict:
         left = _extract_with_adaptive_retry(
-            left_units, backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode
+            left_units, backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode, _deadline=_deadline
         )
         right = _extract_with_adaptive_retry(
-            right_units, backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode
+            right_units, backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode, _deadline=_deadline
         )
         return {
             "nodes": left.get("nodes", []) + right.get("nodes", []),
@@ -2363,6 +2375,19 @@ def _extract_with_adaptive_retry(
         if not (_looks_like_context_exceeded(exc) or is_timeout):
             raise
         reason = "timed out" if is_timeout else "exceeded context"
+        if is_timeout and time.monotonic() >= _deadline:
+            # The subtree's shared timeout budget is spent — every prior split
+            # in this cascade already re-paid the full per-attempt timeout, so
+            # granting yet another one here is how a single slow chunk used to
+            # burn up to 2**max_depth timeouts (#3142). Give up on whatever is
+            # left rather than committing to another full-length attempt.
+            print(
+                f"[graphify] chunk of {len(chunk)} timed out at depth {_depth} and "
+                f"the subtree's {_resolve_api_timeout():g}s timeout budget is spent "
+                f"— giving up on this chunk instead of splitting further",
+                file=sys.stderr,
+            )
+            return {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0, "model": model, "finish_reason": "stop"}
         if len(chunk) <= 1:
             halves = _split_lone_slice()
             if halves is not None:
@@ -2394,10 +2419,10 @@ def _extract_with_adaptive_retry(
         )
         mid = len(chunk) // 2
         left = _extract_with_adaptive_retry(
-            chunk[:mid], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode
+            chunk[:mid], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode, _deadline=_deadline
         )
         right = _extract_with_adaptive_retry(
-            chunk[mid:], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode
+            chunk[mid:], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode, _deadline=_deadline
         )
         return {
             "nodes": left.get("nodes", []) + right.get("nodes", []),
@@ -2482,10 +2507,10 @@ def _extract_with_adaptive_retry(
     )
     mid = len(chunk) // 2
     left = _extract_with_adaptive_retry(
-        chunk[:mid], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode
+        chunk[:mid], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode, _deadline=_deadline
     )
     right = _extract_with_adaptive_retry(
-        chunk[mid:], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode
+        chunk[mid:], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode, _deadline=_deadline
     )
 
     return {
