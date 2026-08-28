@@ -788,12 +788,30 @@ def _portability_anchors(path: "str | Path", root: "str | Path") -> tuple[list[s
     return id_anchors, id_restore, path_anchors, str(root_resolved)
 
 
+def _rewrite_id_keyed_table_keys(payload: object, fn) -> None:
+    """Apply ``fn`` to objc_field_types["tables"] KEYS (#3150).
+
+    That table is the one extractor bucket keyed BY node id, which
+    :func:`_rewrite_strings` deliberately never touches - so a cached ObjC
+    shard replayed under another root kept absolute-derived class ids as keys
+    while the node ids themselves were re-anchored, and the receiver-typing
+    pass missed every class.
+    """
+    ft = payload.get("objc_field_types") if isinstance(payload, dict) else None
+    tables = ft.get("tables") if isinstance(ft, dict) else None
+    if isinstance(tables, dict):
+        ft["tables"] = {
+            (fn(k) if isinstance(k, str) else k): v for k, v in tables.items()
+        }
+
+
 def _rewrite_strings(obj: object, fn) -> None:
     """Apply ``fn`` to every string VALUE reachable in ``obj``, in place.
 
-    Values only, never dict keys: no extractor bucket is keyed by a node id or a
-    path (the ``*_type_table`` maps are ``name -> type``), and rewriting keys
-    could silently collide two entries into one.
+    Values only, never dict keys: rewriting keys blindly could silently
+    collide two entries into one. The single id-keyed bucket -
+    ``objc_field_types["tables"]`` - is handled by
+    :func:`_rewrite_id_keyed_table_keys` beside each call to this (#3150).
     """
     if isinstance(obj, dict):
         items: "Iterable" = obj.items()
@@ -845,6 +863,7 @@ def _relativize_ids_in(payload: dict, path: "str | Path", root: Path) -> None:
         return value
 
     _rewrite_strings(payload, anchor)
+    _rewrite_id_keyed_table_keys(payload, anchor)
 
 
 def _absolutize_ids_in(payload: dict, path: "str | Path", root: Path) -> None:
@@ -873,6 +892,7 @@ def _absolutize_ids_in(payload: dict, path: "str | Path", root: Path) -> None:
         return value
 
     _rewrite_strings(payload, restore)
+    _rewrite_id_keyed_table_keys(payload, restore)
 
 
 def _absolutize_source_files_in(payload: dict, root: Path) -> None:
