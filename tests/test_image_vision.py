@@ -265,8 +265,12 @@ def _fake_openai(monkeypatch, captured):
                     message=SimpleNamespace(content=_NODE_JSON), finish_reason="stop")],
                 usage=SimpleNamespace(prompt_tokens=3, completion_tokens=4),
             )
+    def _client(**kw):
+        captured["client"] = kw
+        return SimpleNamespace(chat=SimpleNamespace(completions=_Completions()))
+
     mod = types.ModuleType("openai")
-    mod.OpenAI = lambda **kw: SimpleNamespace(chat=SimpleNamespace(completions=_Completions()))
+    mod.OpenAI = _client
     monkeypatch.setitem(sys.modules, "openai", mod)
 
 
@@ -562,3 +566,19 @@ def test_extract_files_direct_gates_pixels_by_capability(tmp_path, monkeypatch):
     llm.extract_files_direct([doc, img], backend="deepseek", root=tmp_path)
     content = captured["messages"][1]["content"]
     assert isinstance(content, str) and "sub/diagram.png" in content
+
+
+def test_dedicated_openrouter_gemini_keeps_vision_payload(tmp_path, monkeypatch):
+    img, _, doc = _make_corpus(tmp_path)
+    captured: dict = {}
+    _fake_openai(monkeypatch, captured)
+    monkeypatch.setenv("GRAPHIFY_OPENROUTER_API_KEY", "or-key")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+
+    llm.extract_files_direct([doc, img], backend="gemini", root=tmp_path)
+
+    assert captured["client"]["base_url"] == "https://openrouter.ai/api/v1"
+    assert captured["model"] == "google/gemini-3-flash-preview"
+    content = captured["messages"][1]["content"]
+    assert any(part.get("type") == "image_url" for part in content)
