@@ -1633,7 +1633,10 @@ def build_merge(
     dedup_llm_backend: str | None = None,
     root: str | Path | None = None,
 ) -> nx.Graph:
-    """Load existing graph.json, merge new chunks into it, and save back.
+    """Merge new chunks with an existing graph.json, when present.
+
+    Returns the merged graph without writing it to ``graph_path``. The caller
+    is responsible for persistence.
 
     Re-extracted files REPLACE their prior contribution per tier (#2333/#2336):
     a source_file present in new_chunks has its existing nodes/edges dropped
