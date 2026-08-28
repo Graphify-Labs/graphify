@@ -1229,7 +1229,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.7.15 (2026-05-11)
 
-- Fix: `-h`/`--help`/`-?` in any position now stops execution — previously `graphify cursor install --help` silently installed into Cursor; `graphify benchmark --help` crashed with FileNotFoundError (#821)
+- Fix: help tokens no longer trigger execution for commands routed through the universal help guard; free-text commands remain exempt so tokens such as `--help` can still be treated as input — previously `graphify cursor install --help` silently installed into Cursor; `graphify benchmark --help` crashed with FileNotFoundError (#821)
 - Fix: `--version`, `-v`, and `graphify version` now print the installed version and exit (#818)
 - Fix: `GRAPHIFY_OLLAMA_NUM_CTX=<invalid>` no longer falls back to hardcoded 131072 (which exhausted VRAM) — it now falls through to the auto-derived value and prints a warning (#820)
 - Fix: when `GRAPHIFY_OLLAMA_NUM_CTX` is set smaller than the estimated chunk size, graphify now warns explicitly that Ollama will silently truncate the prompt and suggests a corrected `--token-budget` (#820)

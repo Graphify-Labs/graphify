@@ -1359,6 +1359,9 @@ def dispatch_command(cmd: str) -> None:
         p.add_argument("--if-stale", action="store_true",
                        help="skip when LESSONS.md is already newer than every input "
                             "(e.g. the git hook just refreshed it)")
+        if any(arg in {"-h", "--help"} for arg in sys.argv[2:]):
+            p.print_help()
+            return
         opts = p.parse_args(sys.argv[2:])
         from graphify.reflect import reflect as _reflect, lessons_fresh as _lessons_fresh
 
@@ -2348,6 +2351,15 @@ def dispatch_command(cmd: str) -> None:
         top_k_edges = 0
         project_label: "_Opt[str]" = None
         args = sys.argv[2:]
+        if any(arg in ("-h", "--help") for arg in args):
+            print("Usage: graphify tree [--graph PATH] [--output HTML]")
+            print("  --graph PATH         path to graph.json (default graphify-out/graph.json)")
+            print("  --output HTML        output path (default graphify-out/GRAPH_TREE.html)")
+            print("  --root PATH          filesystem root (default: longest common dir of all source_files)")
+            print("  --max-children N     cap visible children per node (default 200)")
+            print("  --top-k-edges N      pre-compute top-K outbound edges per symbol (default 12)")
+            print("  --label NAME         project label shown in the page header")
+            return
         i_arg = 0
         while i_arg < len(args):
             a = args[i_arg]
@@ -2363,15 +2375,6 @@ def dispatch_command(cmd: str) -> None:
                 top_k_edges = int(args[i_arg + 1]); i_arg += 2
             elif a == "--label" and i_arg + 1 < len(args):
                 project_label = args[i_arg + 1]; i_arg += 2
-            elif a in ("-h", "--help"):
-                print("Usage: graphify tree [--graph PATH] [--output HTML]")
-                print("  --graph PATH         path to graph.json (default graphify-out/graph.json)")
-                print("  --output HTML        output path (default graphify-out/GRAPH_TREE.html)")
-                print("  --root PATH          filesystem root (default: longest common dir of all source_files)")
-                print("  --max-children N     cap visible children per node (default 200)")
-                print("  --top-k-edges N      pre-compute top-K outbound edges per symbol (default 12)")
-                print("  --label NAME         project label shown in the page header")
-                return
             else:
                 i_arg += 1
         if not graph_path.is_file():
@@ -2640,6 +2643,17 @@ def dispatch_command(cmd: str) -> None:
 
         # Parse shared args
         args = sys.argv[3:]
+        if subcmd == "callflow-html" and any(a in ("-h", "--help") for a in args):
+            print("Usage: graphify export callflow-html [GRAPH|DIR] [--graph PATH] [--labels PATH]")
+            print("  --report PATH          path to GRAPH_REPORT.md")
+            print("  --sections PATH        JSON section definitions")
+            print("  --output HTML          output path (default graphify-out/<project>-callflow.html)")
+            print("  --lang LANG            auto, zh-CN, en, etc. (default auto)")
+            print("  --max-sections N       maximum auto-derived sections (default 15)")
+            print("  --diagram-scale N      Mermaid diagram scale (default 1.0)")
+            print("  --max-diagram-nodes N  representative nodes per section (default 18)")
+            print("  --max-diagram-edges N  representative edges per section (default 24)")
+            return
         graph_path = Path(_GRAPHIFY_OUT) / "graph.json"
         graph_path_explicit = False
         labels_path = Path(_GRAPHIFY_OUT) / ".graphify_labels.json"
@@ -2701,17 +2715,6 @@ def dispatch_command(cmd: str) -> None:
                 callflow_max_diagram_nodes = int(args[i + 1]); i += 2
             elif a == "--max-diagram-edges" and i + 1 < len(args):
                 callflow_max_diagram_edges = int(args[i + 1]); i += 2
-            elif a in ("-h", "--help") and subcmd == "callflow-html":
-                print("Usage: graphify export callflow-html [GRAPH|DIR] [--graph PATH] [--labels PATH]")
-                print("  --report PATH          path to GRAPH_REPORT.md")
-                print("  --sections PATH        JSON section definitions")
-                print("  --output HTML          output path (default graphify-out/<project>-callflow.html)")
-                print("  --lang LANG            auto, zh-CN, en, etc. (default auto)")
-                print("  --max-sections N       maximum auto-derived sections (default 15)")
-                print("  --diagram-scale N      Mermaid diagram scale (default 1.0)")
-                print("  --max-diagram-nodes N  representative nodes per section (default 18)")
-                print("  --max-diagram-edges N  representative edges per section (default 24)")
-                sys.exit(0)
             elif a == "--node-limit" and i + 1 < len(args):
                 node_limit = int(args[i + 1]); i += 2
             elif a == "--no-viz":
