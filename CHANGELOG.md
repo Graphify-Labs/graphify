@@ -4,6 +4,11 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.51 (unreleased)
 
+- Fix: the incomplete-build shrink guard now stays armed when a chunk came back hollow, unparseable, or omitting files, so a run that silently lost content can no longer overwrite the existing graph with a smaller one; a complete run and a retry-recovered chunk are unaffected, and `--allow-partial` still overrides (#3105, thanks @abhay-codes07).
+- Fix: `graphify extract --force --code-only` now fully rescans code (instead of skipping unchanged files and keeping stale import/alias resolution) while still carrying the existing document/semantic tier forward (#3125, thanks @hopstreax).
+- Fix: a hyperedge carried from a prior `graph.json` now has its members routed through the dedup survivor remap, so it no longer dangles when one of its members is merged away; an unresolvable member is dropped gracefully (#3102, thanks @abhay-codes07).
+- Fix: the cache's atexit stat-index flush no longer recreates a `graphify-out/` tree that was deleted during the run, so a removed corpus stays removed (#2974, thanks @abhay-codes07).
+- Fix: Leiden clustering canonicalizes undirected edge endpoints before sorting, so community assignments no longer drift across builds or machines from networkx yielding an edge's endpoints in a different order (thanks @ErichKinuya).
 - Fix: a TypeScript/JavaScript `new Foo()` now emits a `calls` edge to the constructed class (member, chained, and generic forms), so constructor usage is visible; built-in globals like `new Map()` / `new Promise()` are not fabricated (#3116, thanks @hopstreax).
 - Fix: an Elixir function whose only clause carries a `when` guard (`def foo(x) when is_integer(x), do: ...`) is now extracted, not dropped; multi-clause, multi-condition guards, and `defp` are handled (#3111, thanks @santhiprakash).
 - Fix: Common Lisp node ids are now derived from the full path stem like every other extractor, so two same-basename `.lisp` files in different directories no longer collide on merge (thanks @guitelesc).
