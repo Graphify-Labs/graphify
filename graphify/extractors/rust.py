@@ -58,6 +58,187 @@ _RUST_TRAIT_METHOD_BLOCKLIST: frozenset[str] = frozenset({
     "ok", "err", "some", "none", "send", "recv", "lock", "read", "write",
 })
 
+# Rust module roots: a file that IS its module (rather than a child of one).
+_RUST_MODULE_ROOT_FILES = ("mod.rs", "lib.rs", "main.rs")
+
+
+def _rust_path_segments(node, source: bytes) -> list[str]:
+    """Flatten a use-path node into its segments.
+
+    ``crate::models::prelude`` parses as nested ``scoped_identifier``s; the
+    leading ``crate``/``super``/``self`` keywords are their own node types, not
+    ``identifier``, so read text rather than filtering on type.
+    """
+    if node is None:
+        return []
+    if node.type == "scoped_identifier":
+        segments: list[str] = []
+        for child in node.children:
+            if child.type == "::":
+                continue
+            segments.extend(_rust_path_segments(child, source))
+        return segments
+    text = _read_text(node, source).strip()
+    return [text] if text else []
+
+
+def _rust_use_leaves(node, source: bytes, prefix: tuple[str, ...] = ()) -> list[tuple[tuple[str, ...], str | None, bool]]:
+    """Flatten a ``use`` tree into ``(path_segments, alias, is_wildcard)`` leaves.
+
+    One declaration can bind many names —  ``use crate::x::{a, b::C, d as D}``
+    is three leaves, and lists nest arbitrarily. The previous string-splitting
+    approach took everything before the first ``{`` and kept the last ``::``
+    segment, so a braced list collapsed to a single edge naming the shared
+    prefix and every name inside it was lost. ``use_as_clause`` was not parsed
+    at all, leaving the alias glued to the symbol (``Entity as Risk``).
+    """
+    if node is None:
+        return []
+    t = node.type
+    if t == "use_as_clause":
+        path_node = node.child_by_field_name("path")
+        alias_node = node.child_by_field_name("alias")
+        if path_node is None or alias_node is None:
+            named = [c for c in node.named_children]
+            path_node = path_node or (named[0] if named else None)
+            alias_node = alias_node or (named[1] if len(named) > 1 else None)
+        segments = tuple(prefix) + tuple(_rust_path_segments(path_node, source))
+        alias = _read_text(alias_node, source).strip() if alias_node is not None else None
+        return [(segments, alias or None, False)] if segments else []
+    if t == "use_wildcard":
+        segments: tuple[str, ...] = tuple(prefix)
+        for child in node.children:
+            if child.type in ("::", "*"):
+                continue
+            segments = segments + tuple(_rust_path_segments(child, source))
+        return [(segments, None, True)] if segments else []
+    if t == "use_list":
+        leaves: list[tuple[tuple[str, ...], str | None, bool]] = []
+        for child in node.named_children:
+            leaves.extend(_rust_use_leaves(child, source, prefix))
+        return leaves
+    if t == "scoped_use_list":
+        inner_prefix = tuple(prefix)
+        list_node = None
+        for child in node.children:
+            if child.type == "::":
+                continue
+            if child.type == "use_list":
+                list_node = child
+            else:
+                inner_prefix = inner_prefix + tuple(_rust_path_segments(child, source))
+        return _rust_use_leaves(list_node, source, inner_prefix) if list_node else []
+    if t in ("scoped_identifier", "identifier", "crate", "super", "self", "metavariable"):
+        segments = tuple(prefix) + tuple(_rust_path_segments(node, source))
+        return [(segments, None, False)] if segments else []
+    return []
+
+
+def _rust_crate_src_root(path: Path) -> Path | None:
+    """The ``src`` directory of the crate owning ``path``, if there is one."""
+    probe = path.parent
+    while True:
+        if (probe / "Cargo.toml").is_file():
+            src = probe / "src"
+            return src if src.is_dir() else probe
+        if probe.parent == probe:
+            return None
+        probe = probe.parent
+
+
+def _rust_module_file(directory: Path, name: str) -> Path | None:
+    """Resolve one module segment inside ``directory``: ``name.rs`` or ``name/mod.rs``."""
+    candidate = directory / f"{name}.rs"
+    if candidate.is_file():
+        return candidate
+    candidate = directory / name / "mod.rs"
+    if candidate.is_file():
+        return candidate
+    return None
+
+
+def _rust_module_dirs(path: Path) -> tuple[Path, Path]:
+    """Return ``(self_dir, super_dir)`` for the module ``path`` defines.
+
+    ``mod.rs``/``lib.rs``/``main.rs`` ARE their module, so their own directory
+    holds their children and the parent directory is ``super``. Any other file
+    ``foo.rs`` is a module whose children live in a sibling ``foo/`` directory,
+    and whose ``super`` is the directory it sits in.
+    """
+    if path.name in _RUST_MODULE_ROOT_FILES:
+        return path.parent, path.parent.parent
+    sibling = path.parent / path.stem
+    return (sibling if sibling.is_dir() else path.parent), path.parent
+
+
+def _resolve_rust_use_path(
+    segments: tuple[str, ...], path: Path
+) -> "tuple[Path, str | None] | None":
+    """Resolve a ``use`` path to ``(module_file, symbol_name)`` on disk.
+
+    Walks ``crate``/``super``/``self``-anchored paths through the crate's module
+    tree. The trailing segment of a ``use`` is usually a SYMBOL rather than a
+    module (``crate::models::prelude::Risk``), so when the full path does not
+    name a file the last segment is retried as a symbol inside the module the
+    rest resolves to. Returns ``None`` for anything not on disk — an external
+    crate (``std``, ``sea_orm``) or a path this resolver cannot follow.
+    """
+    if not segments:
+        return None
+    self_dir, super_dir = _rust_module_dirs(path)
+    src_root = _rust_crate_src_root(path)
+
+    index = 0
+    anchor: Path | None = None
+    first = segments[0]
+    if first == "crate":
+        anchor, index = src_root, 1
+    elif first == "self":
+        anchor, index = self_dir, 1
+    elif first == "super":
+        anchor, index = super_dir, 1
+        # `super::super::x` walks further up one directory per keyword.
+        while index < len(segments) and segments[index] == "super":
+            anchor = anchor.parent if anchor is not None else None
+            index += 1
+    if anchor is None and first not in ("crate", "self", "super"):
+        # 2018-edition paths may be crate-relative without the `crate` prefix;
+        # try the crate root, then the current module. An external crate simply
+        # resolves to nothing at either.
+        for candidate_anchor in (src_root, self_dir):
+            if candidate_anchor is None:
+                continue
+            resolved = _walk_rust_segments(candidate_anchor, segments)
+            if resolved is not None:
+                return resolved
+        return None
+    if anchor is None:
+        return None
+    return _walk_rust_segments(anchor, segments[index:])
+
+
+def _walk_rust_segments(
+    anchor: Path, segments: tuple[str, ...]
+) -> "tuple[Path, str | None] | None":
+    """Walk module segments from ``anchor``; the tail may name a symbol."""
+    if not segments:
+        return None
+    directory = anchor
+    resolved: Path | None = None
+    for position, segment in enumerate(segments):
+        found = _rust_module_file(directory, segment)
+        if found is None:
+            # Not a module. If everything before it resolved, the remainder is a
+            # symbol path inside that module (`…::prelude::Risk` -> `Risk`), and
+            # only a single trailing segment is a name we can attribute.
+            if resolved is not None and position == len(segments) - 1:
+                return resolved, segment
+            return None
+        resolved = found
+        directory = found.parent if found.name == "mod.rs" else found.parent / found.stem
+    return (resolved, None) if resolved is not None else None
+
+
 def extract_rust(path: Path) -> dict:
     """Extract functions, structs, enums, traits, impl methods, and use declarations from a .rs file."""
     try:
@@ -159,6 +340,55 @@ def extract_rust(path: Path) -> dict:
                 tgt = ensure_named_node(ref_name, line)
                 if tgt != func_nid:
                     add_edge(func_nid, tgt, "references", line, context=ctx)
+
+    def emit_use_leaf(segments, alias, is_wildcard: bool, is_reexport: bool, line: int) -> None:
+        """Emit the edges for one resolved leaf of a ``use`` declaration.
+
+        Two edges where the path resolves on disk: a file-level ``imports_from``
+        so the module graph connects, and a symbol-level edge stamped with
+        ``target_file`` so the shared canonicalization repoints it at the real
+        definition. Unresolved paths (external crates) get a sourceless stub
+        rather than a bare-name target — the old code emitted an id no node ever
+        carried, so the edge dangled and was dropped at build time, which is why
+        a prelude showed inbound edges and no outbound ones.
+        """
+        if not segments:
+            return
+        resolution = _resolve_rust_use_path(tuple(segments), path)
+        if resolution is None:
+            # External crate or unresolvable path. Mint a sourceless stub for the
+            # leaf name so the edge has a real endpoint and the corpus-level
+            # rewire can still collapse it onto a definition if one shows up.
+            name = alias or segments[-1]
+            if not is_wildcard and name:
+                add_edge(file_nid, ensure_named_node(name, line), "imports_from",
+                         line, context="import")
+            return
+        module_file, symbol = resolution
+        module_nid = _make_id(str(module_file))
+        file_edge = {
+            "source": file_nid, "target": module_nid, "relation": "imports_from",
+            "confidence": "EXTRACTED", "source_file": str_path,
+            "source_location": f"L{line}", "weight": 1.0, "context": "import",
+            "target_file": str(module_file),
+        }
+        edges.append(file_edge)
+        if symbol is None or is_wildcard:
+            # `use super::risk;` names the module itself, and a glob re-export
+            # (`pub use super::risk::*;`) publishes an unknown set of names —
+            # neither identifies one symbol to point at.
+            return
+        # Build the id the DEFINING file gives its own symbols (`_make_id(stem,
+        # name)`), so this edge lands on that node rather than a look-alike the
+        # corpus rewire has to guess at.
+        symbol_nid = _make_id(_file_stem(module_file), symbol)
+        edges.append({
+            "source": file_nid, "target": symbol_nid,
+            "relation": "re_exports" if is_reexport else "imports",
+            "confidence": "EXTRACTED", "source_file": str_path,
+            "source_location": f"L{line}", "weight": 1.0,
+            "target_file": str(module_file),
+        })
 
     def walk(node, parent_impl_nid: str | None = None) -> None:
         t = node.type
@@ -323,12 +553,16 @@ def extract_rust(path: Path) -> dict:
         if t == "use_declaration":
             arg = node.child_by_field_name("argument")
             if arg:
-                raw = _read_text(arg, source)
-                clean = raw.split("{")[0].rstrip(":").rstrip("*").rstrip(":")
-                module_name = clean.split("::")[-1].strip()
-                if module_name:
-                    tgt_nid = _make_id(module_name)
-                    add_edge(file_nid, tgt_nid, "imports_from", node.start_point[0] + 1, context="import")
+                line = node.start_point[0] + 1
+                # `pub use` is a RE-EXPORT: the module publishes someone else's
+                # symbol under its own path. The corpus-level barrel collapse
+                # keys on this relation to follow consumers through to the
+                # defining file, so a prelude stops being a dead end.
+                is_reexport = any(
+                    child.type == "visibility_modifier" for child in node.children
+                )
+                for segments, alias, is_wildcard in _rust_use_leaves(arg, source):
+                    emit_use_leaf(segments, alias, is_wildcard, is_reexport, line)
             return
 
         for child in node.children:
@@ -404,7 +638,11 @@ def extract_rust(path: Path) -> dict:
     clean_edges = []
     for edge in edges:
         src, tgt = edge["source"], edge["target"]
-        if src in valid_ids and (tgt in valid_ids or edge["relation"] in ("imports", "imports_from")):
+        # A cross-file import target is not a node this file owns, so these
+        # relations are allowed to point outside `valid_ids` and are resolved
+        # corpus-wide later. `re_exports` belongs with them — a barrel names a
+        # symbol it does not define — and matches the shared engine filter.
+        if src in valid_ids and (tgt in valid_ids or edge["relation"] in ("imports", "imports_from", "re_exports")):
             clean_edges.append(edge)
 
     return {"nodes": nodes, "edges": clean_edges, "raw_calls": raw_calls}
