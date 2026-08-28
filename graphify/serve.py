@@ -1663,30 +1663,30 @@ def _build_server(graph_path: str):
             types.Tool(
                 name="list_prs",
                 description=(
-                    "List open GitHub PRs with CI status, review state, and graph impact "
-                    "(which communities each PR touches, blast radius). Use this before starting "
-                    "work to check if a PR already covers the area you're about to change."
+                    "List open pull or merge requests with CI status, review state, and graph "
+                    "impact (which communities each change touches, blast radius). Supports "
+                    "GitHub and GitLab based on configuration or the current origin remote."
                 ),
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "base": {"type": "string", "description": "Base branch to filter PRs by (auto-detected if omitted)"},
-                        "repo": {"type": "string", "description": "GitHub repo (owner/repo). Defaults to current repo."},
+                        "base": {"type": "string", "description": "Base branch to filter change requests by (auto-detected if omitted)"},
+                        "repo": {"type": "string", "description": "Repository/project path. Defaults to current repo."},
                     },
                 },
             ),
             types.Tool(
                 name="get_pr_impact",
                 description=(
-                    "Get detailed graph impact for a specific PR: which files it changes, "
+                    "Get detailed graph impact for a specific pull or merge request: which files it changes, "
                     "which knowledge-graph communities are affected, and how many nodes are touched. "
                     "Use this to assess merge risk or check for overlap with your current work."
                 ),
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "pr_number": {"type": "integer", "description": "PR number to analyse"},
-                        "repo": {"type": "string", "description": "GitHub repo (owner/repo). Defaults to current repo."},
+                        "pr_number": {"type": "integer", "description": "Pull or merge request number to analyse"},
+                        "repo": {"type": "string", "description": "Repository/project path. Defaults to current repo."},
                     },
                     "required": ["pr_number"],
                 },
@@ -1694,15 +1694,15 @@ def _build_server(graph_path: str):
             types.Tool(
                 name="triage_prs",
                 description=(
-                    "Return all actionable open PRs (correct base, not stale) with full graph impact data "
+                    "Return all actionable open pull or merge requests (correct base, not stale) with full graph impact data "
                     "so you can reason about review priority, merge order, and conflict risk. "
-                    "Call this when the user asks 'what PRs should I review?' or 'what's ready to merge?'"
+                    "Call this when the user asks which change requests are ready to review or merge."
                 ),
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "base": {"type": "string", "description": "Base branch to filter PRs by (auto-detected if omitted)"},
-                        "repo": {"type": "string", "description": "GitHub repo (owner/repo). Defaults to current repo."},
+                        "base": {"type": "string", "description": "Base branch to filter change requests by (auto-detected if omitted)"},
+                        "repo": {"type": "string", "description": "Repository/project path. Defaults to current repo."},
                     },
                 },
             ),
@@ -1884,26 +1884,21 @@ def _build_server(graph_path: str):
         return format_prs_text(prs, base)
 
     def _tool_get_pr_impact(arguments: dict) -> str:
-        from graphify.prs import fetch_pr_files, compute_pr_impact, _gh, _parse_ci
+        from graphify.prs import fetch_pr, fetch_pr_files, compute_pr_impact, change_request_reference
         number = int(arguments["pr_number"])
         repo = arguments.get("repo") or None
-        # Use gh pr view directly — works for any base branch, not just the default
-        view_args = ["pr", "view", str(number), "--json",
-                     "title,headRefName,baseRefName,author,isDraft,reviewDecision,statusCheckRollup,updatedAt"]
-        if repo:
-            view_args += ["--repo", repo]
-        pr_data = _gh(*view_args)
-        if pr_data is None:
-            return f"PR #{number} not found or gh not authenticated."
+        pr = fetch_pr(number, repo)
+        if pr is None:
+            return f"Change request {number} not found or provider authentication failed."
         files = fetch_pr_files(number, repo)
         if not files:
-            return f"PR #{number}: no changed files found (may require gh auth)."
+            return f"Change request {number}: no changed files found."
         comms, nodes = compute_pr_impact(files, G)
-        ci = _parse_ci(pr_data.get("statusCheckRollup") or [])
+        reference = change_request_reference(pr, qualified=True)
         lines = [
-            f"PR #{number}: {pr_data['title']}",
-            f"CI: {ci}  Review: {pr_data.get('reviewDecision') or 'none'}",
-            f"Base: {pr_data['baseRefName']}  Author: {(pr_data.get('author') or {}).get('login', '?')}",
+            f"{reference}: {pr.title}",
+            f"CI: {pr.ci_status}  Review: {pr.review_decision or 'none'}",
+            f"Base: {pr.base_branch}  Author: {pr.author}",
             f"\nGraph impact: {nodes} nodes across {len(comms)} communities",
             f"Communities touched: {comms}",
             f"Files changed ({len(files)}):",
@@ -1915,7 +1910,10 @@ def _build_server(graph_path: str):
 
     def _tool_triage_prs(arguments: dict) -> str:
         from concurrent.futures import ThreadPoolExecutor, as_completed
-        from graphify.prs import fetch_prs, fetch_worktrees, fetch_pr_files, compute_pr_impact, _STATUS_ORDER, _detect_default_branch
+        from graphify.prs import (
+            fetch_prs, fetch_worktrees, fetch_pr_files, compute_pr_impact,
+            change_request_reference, _STATUS_ORDER, _detect_default_branch,
+        )
         repo = arguments.get("repo") or None
         base = arguments.get("base") or _detect_default_branch(repo)
         try:
@@ -1927,7 +1925,7 @@ def _build_server(graph_path: str):
             pr.worktree_path = worktrees.get(pr.branch)
         actionable = [p for p in prs if p.base_branch == base and p.status not in ("WRONG-BASE", "STALE")]
         if not actionable:
-            return f"No actionable PRs targeting {base}."
+            return f"No actionable change requests targeting {base}."
         # Fetch diffs concurrently then compute graph impact using in-memory G
         workers = min(8, len(actionable))
         with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -1942,7 +1940,7 @@ def _build_server(graph_path: str):
                     pr.files_changed = files
                     pr.communities_touched, pr.nodes_affected = compute_pr_impact(files, G)
         header = (
-            f"Actionable PRs targeting {base}: {len(actionable)}\n"
+            f"Actionable change requests targeting {base}: {len(actionable)}\n"
             "Rank these by review priority. Higher blast_radius = more graph communities affected = higher merge risk.\n"
         )
         lines = [header]
@@ -1950,7 +1948,7 @@ def _build_server(graph_path: str):
             impact = f"  blast_radius={p.blast_radius}" if p.blast_radius else ""
             wt = f"  worktree={p.worktree_path}" if p.worktree_path else ""
             lines.append(
-                f"PR #{p.number} [{p.status}] CI={p.ci_status} review={p.review_decision or 'none'} "
+                f"{change_request_reference(p, qualified=True)} [{p.status}] CI={p.ci_status} review={p.review_decision or 'none'} "
                 f"age={p.days_old}d author={p.author}{impact}{wt}\n  title: {p.title}"
             )
         return "\n\n".join(lines)

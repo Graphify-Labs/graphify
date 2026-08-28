@@ -1,16 +1,15 @@
-"""graphify prs — graph-aware PR dashboard.
+"""graphify prs — graph-aware change-request dashboard.
 
-Fast terminal overview of open PRs with CI/review state, worktree mapping,
-and optional graph-impact analysis (which communities a PR touches) and
-Opus-powered triage ranking.
+Fast terminal overview of open pull or merge requests with CI/review state,
+worktree mapping, optional graph-impact analysis, and triage ranking.
 
 Usage:
-  graphify prs                   # dashboard of all open PRs
-  graphify prs <number>          # deep dive on one PR
-  graphify prs --triage          # Opus ranks your review queue
-  graphify prs --worktrees       # show worktree → branch → PR mapping
-  graphify prs --conflicts       # PRs sharing graph communities (merge-order risk)
-  graphify prs --base <branch>   # filter to PRs targeting this base (default: v8)
+  graphify prs                   # dashboard of all open change requests
+  graphify prs <number>          # deep dive on one change request
+  graphify prs --triage          # rank the review queue
+  graphify prs --worktrees       # show worktree → branch → change request mapping
+  graphify prs --conflicts       # requests sharing graph communities (merge-order risk)
+  graphify prs --base <branch>   # filter by target branch (default: v8)
 """
 
 from __future__ import annotations
@@ -77,6 +76,7 @@ class PRInfo:
     communities_touched: list[int] = field(default_factory=list)
     nodes_affected: int = 0
     files_changed: list[str] = field(default_factory=list)
+    provider: str = "github"
 
     @property
     def status(self) -> str:
@@ -138,6 +138,15 @@ def _ci_icon(status: str) -> str:
 
 # ── GitHub data fetching ──────────────────────────────────────────────────────
 
+def _detect_provider(repo: str | None = None) -> str:
+    """Resolve the VCS provider from environment or the current Git remote."""
+    explicit = os.environ.get("GRAPHIFY_VCS_PROVIDER", "").strip().lower()
+    if explicit in {"github", "gitlab"}:
+        return explicit
+    from graphify.gitlab import is_gitlab_repository
+    return "gitlab" if is_gitlab_repository(repo) else "github"
+
+
 def _gh(*args: str) -> list | dict | None:
     try:
         result = subprocess.run(
@@ -155,18 +164,27 @@ def _gh(*args: str) -> list | dict | None:
 
 
 def _detect_default_branch(repo: str | None = None) -> str:
-    """Auto-detect the repo's default branch via gh, then git, then fall back to 'main'."""
-    # Try gh first — works for any repo, not just the current directory
-    args = ["repo", "view", "--json", "defaultBranchRef"]
-    if repo:
-        args += ["--repo", repo]
-    data = _gh(*args)
-    if data and data.get("defaultBranchRef", {}).get("name"):
-        return data["defaultBranchRef"]["name"]
+    """Auto-detect the default branch via provider, then git, then main."""
+    provider = _detect_provider(repo)
+    if provider == "gitlab":
+        from graphify.gitlab import get_default_branch
+        try:
+            return get_default_branch(repo)
+        except RuntimeError:
+            pass
+    else:
+        # gh works for any GitHub repo, not just the current directory.
+        args = ["repo", "view", "--json", "defaultBranchRef"]
+        if repo:
+            args += ["--repo", repo]
+        data = _gh(*args)
+        if data and data.get("defaultBranchRef", {}).get("name"):
+            return data["defaultBranchRef"]["name"]
     # Fall back to git symbolic-ref for the current repo
     try:
         result = subprocess.run(
             ["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
+            stdin=subprocess.DEVNULL,
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5
         )
         if result.returncode == 0:
@@ -195,8 +213,42 @@ def _parse_ci(rollup: list) -> str:
     return "NONE"
 
 
+def _github_pr(item: dict, expected_base: str) -> PRInfo:
+    """Convert one GitHub API/CLI item into Graphify's provider-neutral model."""
+    updated = datetime.fromisoformat(item["updatedAt"].replace("Z", "+00:00"))
+    return PRInfo(
+        number=item["number"], title=item["title"], branch=item["headRefName"],
+        base_branch=item["baseRefName"],
+        author=item["author"]["login"] if item.get("author") else "?",
+        is_draft=item.get("isDraft", False),
+        review_decision=item.get("reviewDecision") or "",
+        ci_status=_parse_ci(item.get("statusCheckRollup") or []),
+        updated_at=updated, expected_base=expected_base, provider="github",
+    )
+
+
+def _gitlab_pr(item: dict, expected_base: str) -> PRInfo:
+    """Convert one GitLab merge request into Graphify's provider-neutral model."""
+    from graphify.gitlab import parse_pipeline_status
+    updated = datetime.fromisoformat(item["updated_at"].replace("Z", "+00:00"))
+    author = item.get("author") or {}
+    return PRInfo(
+        number=item["iid"], title=item["title"], branch=item["source_branch"],
+        base_branch=item["target_branch"],
+        author=author.get("username") or author.get("name") or "?",
+        is_draft=item.get("draft", item.get("work_in_progress", False)),
+        review_decision="APPROVED" if item.get("approved") is True else "",
+        ci_status=parse_pipeline_status(item), updated_at=updated,
+        expected_base=expected_base, provider="gitlab",
+    )
+
+
 def fetch_prs(repo: str | None = None, base: str | None = None, limit: int = 50) -> list[PRInfo]:
     resolved_base = base or _detect_default_branch(repo)
+    if _detect_provider(repo) == "gitlab":
+        from graphify.gitlab import list_open_merge_requests
+        return [_gitlab_pr(item, resolved_base) for item in list_open_merge_requests(repo, limit)]
+
     args = [
         "pr", "list", "--state", "open", "--limit", str(limit),
         "--json", "number,title,headRefName,baseRefName,author,isDraft,"
@@ -209,25 +261,37 @@ def fetch_prs(repo: str | None = None, base: str | None = None, limit: int = 50)
     if raw is None:
         raise RuntimeError("gh CLI not found or not authenticated. Run: gh auth login")
 
-    prs = []
-    for item in raw:
-        updated = datetime.fromisoformat(item["updatedAt"].replace("Z", "+00:00"))
-        prs.append(PRInfo(
-            number=item["number"],
-            title=item["title"],
-            branch=item["headRefName"],
-            base_branch=item["baseRefName"],
-            author=item["author"]["login"] if item.get("author") else "?",
-            is_draft=item.get("isDraft", False),
-            review_decision=item.get("reviewDecision") or "",
-            ci_status=_parse_ci(item.get("statusCheckRollup") or []),
-            updated_at=updated,
-            expected_base=resolved_base,
-        ))
-    return prs
+    return [_github_pr(item, resolved_base) for item in raw]
+
+
+def fetch_pr(number: int, repo: str | None = None) -> PRInfo | None:
+    """Fetch one GitHub PR or GitLab merge request by project-local number."""
+    base = _detect_default_branch(repo)
+    if _detect_provider(repo) == "gitlab":
+        from graphify.gitlab import get_merge_request
+        try:
+            return _gitlab_pr(get_merge_request(number, repo), base)
+        except RuntimeError:
+            return None
+    args = [
+        "pr", "view", str(number), "--json",
+        "number,title,headRefName,baseRefName,author,isDraft,"
+        "reviewDecision,statusCheckRollup,updatedAt",
+    ]
+    if repo:
+        args += ["--repo", repo]
+    data = _gh(*args)
+    return _github_pr(data, base) if isinstance(data, dict) else None
 
 
 def fetch_pr_files(number: int, repo: str | None = None) -> list[str]:
+    if _detect_provider(repo) == "gitlab":
+        from graphify.gitlab import get_merge_request_files
+        try:
+            return get_merge_request_files(number, repo)
+        except RuntimeError:
+            return []
+
     args = ["pr", "diff", str(number), "--name-only"]
     if repo:
         args += ["--repo", repo]
@@ -282,15 +346,23 @@ def compute_pr_impact(files: list[str], G: "nx.Graph") -> tuple[list[int], int]:
     return sorted(comms), nodes
 
 
+def change_request_reference(pr: PRInfo, *, qualified: bool = False) -> str:
+    """Return a provider-native pull/merge request reference."""
+    kind = "MR" if pr.provider == "gitlab" else "PR"
+    marker = "!" if pr.provider == "gitlab" else "#"
+    compact = f"{marker}{pr.number}"
+    return f"{kind} {compact}" if qualified else compact
+
+
 def format_prs_text(prs: list["PRInfo"], base: str) -> str:
     """Plain-text PR summary for MCP output (no ANSI)."""
     actionable = [p for p in prs if p.base_branch == base]
     wrong = len(prs) - len(actionable)
-    lines = [f"Open PRs targeting {base}: {len(actionable)}  ({wrong} on wrong base, not shown)\n"]
+    lines = [f"Open change requests targeting {base}: {len(actionable)}  ({wrong} on wrong base, not shown)\n"]
     for p in sorted(actionable, key=lambda x: (_STATUS_ORDER.index(x.status) if x.status in _STATUS_ORDER else 99, x.days_old)):
         impact = f"  blast_radius={p.blast_radius}" if p.blast_radius else ""
         lines.append(
-            f"#{p.number} [{p.status}] CI={p.ci_status} review={p.review_decision or 'none'} "
+            f"{change_request_reference(p)} [{p.status}] CI={p.ci_status} review={p.review_decision or 'none'} "
             f"age={p.days_old}d author={p.author}{impact}\n  {p.title}"
         )
     return "\n\n".join(lines)
@@ -303,6 +375,7 @@ def fetch_worktrees() -> dict[str, str]:
     try:
         result = subprocess.run(
             ["git", "worktree", "list", "--porcelain"],
+            stdin=subprocess.DEVNULL,
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10
         )
         if result.returncode != 0:
@@ -416,14 +489,14 @@ def render_dashboard(prs: list[PRInfo], base: str = "v8", show_wrong_base: bool 
     actionable.sort(key=lambda p: (_STATUS_ORDER.index(p.status) if p.status in _STATUS_ORDER else 99, p.days_old))
 
     print()
-    print(bold(f"  graphify prs  ·  base: {base}  ·  {len(actionable)} PRs"))
+    print(bold(f"  graphify prs  ·  base: {base}  ·  {len(actionable)} change requests"))
     print()
 
     if not actionable:
-        print(dim("  No open PRs targeting this base branch."))
+        print(dim("  No open change requests targeting this base branch."))
     else:
         # Header
-        print(f"  {'#':>4}  {'CI':2}  {'STATUS':13}  {'UPDATED':8}  {'IMPACT':22}  TITLE")
+        print(f"  {'ID':>4}  {'CI':2}  {'STATUS':13}  {'UPDATED':8}  {'IMPACT':22}  TITLE")
         print(f"  {'─'*4}  {'─'*2}  {'─'*13}  {'─'*8}  {'─'*22}  {'─'*40}")
 
         for pr in actionable:
@@ -434,7 +507,7 @@ def render_dashboard(prs: list[PRInfo], base: str = "v8", show_wrong_base: bool 
             wt = f" {cyan('⬡')}" if pr.worktree_path else "  "
             draft = dim(" [draft]") if pr.is_draft else ""
             title = _truncate(pr.title, 52)
-            num = _pad(bold(f"#{pr.number}"), 6)
+            num = _pad(bold(change_request_reference(pr)), 6)
             print(f"  {num}{wt}  {ci_str}  {status_str}  {age:>6}   {impact}  {title}{draft}")
 
     # Summary line
@@ -459,9 +532,9 @@ def render_dashboard(prs: list[PRInfo], base: str = "v8", show_wrong_base: bool 
     print()
 
     if wrong_base and show_wrong_base:
-        print(dim(f"  ── {len(wrong_base)} PRs targeting wrong base ──"))
+        print(dim(f"  ── {len(wrong_base)} change requests targeting wrong base ──"))
         for pr in sorted(wrong_base, key=lambda p: p.number, reverse=True):
-            print(dim(f"  #{pr.number:4}  base={pr.base_branch:12}  {_truncate(pr.title, 60)}"))
+            print(dim(f"  {change_request_reference(pr):>5}  base={pr.base_branch:12}  {_truncate(pr.title, 60)}"))
         print()
 
 
@@ -480,10 +553,10 @@ def render_worktrees(prs: list[PRInfo], worktrees: dict[str, str]) -> None:
         if pr:
             status = _status_color(pr.status)
             print(f"  {cyan(path)}")
-            print(f"    {dim('branch:')} {branch}  ->  PR {bold(f'#{pr.number}')}  [{status}]  {_truncate(pr.title, 50)}")
+            print(f"    {dim('branch:')} {branch}  ->  {bold(change_request_reference(pr, qualified=True))}  [{status}]  {_truncate(pr.title, 50)}")
         else:
             print(f"  {cyan(path)}")
-            print(f"    {dim('branch:')} {branch}  {dim('(no open PR)')}")
+            print(f"    {dim('branch:')} {branch}  {dim('(no open change request)')}")
         print()
 
 
@@ -505,26 +578,26 @@ def render_conflicts(
 
     conflicts = {c: ps for c, ps in comm_to_prs.items() if len(ps) > 1}
     if not conflicts:
-        print(green("\n  No community overlap between open PRs - safe to merge in any order.\n"))
+        print(green("\n  No community overlap between open change requests - safe to merge in any order.\n"))
         return
 
     print()
-    print(bold("  Community conflicts (PRs sharing the same graph community)"))
+    print(bold("  Community conflicts (change requests sharing the same graph community)"))
     print()
     labels = community_labels or {}
     for comm, ps in sorted(conflicts.items(), key=lambda x: -len(x[1])):
         comm_label_str = ""
         if comm in labels and labels[comm]:
             comm_label_str = dim("  — " + ", ".join(labels[comm]))
-        print(f"  {yellow(f'Community {comm}')}{comm_label_str}  ({len(ps)} PRs overlap)")
+        print(f"  {yellow(f'Community {comm}')}{comm_label_str}  ({len(ps)} change requests overlap)")
         for pr in ps:
-            print(f"    #{pr.number:4}  {_pad(_status_color(pr.status), 13)}  {_truncate(pr.title, 55)}")
+            print(f"    {change_request_reference(pr):>5}  {_pad(_status_color(pr.status), 13)}  {_truncate(pr.title, 55)}")
         print()
 
 
 def render_pr_detail(pr: PRInfo, repo: str | None = None) -> None:
     print()
-    print(bold(f"  PR #{pr.number}  ·  {_status_color(pr.status)}"))
+    print(bold(f"  {change_request_reference(pr, qualified=True)}  ·  {_status_color(pr.status)}"))
     print(f"  {pr.title}")
     print()
     print(f"  {dim('branch:')}  {pr.branch}  ->  {pr.base_branch}")
@@ -593,22 +666,22 @@ def triage_with_opus(prs: list[PRInfo], base: str) -> None:
 
     candidates = [p for p in prs if p.base_branch == base and p.status not in ("WRONG-BASE", "STALE")]
     if not candidates:
-        print(dim("  No actionable PRs to triage."))
+        print(dim("  No actionable change requests to triage."))
         return
 
     lines = []
     for pr in candidates:
         impact = f", blast_radius={pr.blast_radius}" if pr.blast_radius else ""
         lines.append(
-            f"PR #{pr.number} [{pr.status}] CI={pr.ci_status} review={pr.review_decision or 'none'} "
+            f"{change_request_reference(pr, qualified=True)} [{pr.status}] CI={pr.ci_status} review={pr.review_decision or 'none'} "
             f"age={pr.days_old}d author={pr.author}{impact}\n  title: {pr.title}"
         )
 
     prompt = (
-        "You are a senior engineer helping triage a PR review queue. "
-        "Given these open PRs, rank them by review priority for the repo maintainer. "
-        "For each PR give: priority number, one sentence on what action to take and why. "
-        "Be direct and specific. Format each as: #<number> — <action>.\n\n"
+        "You are a senior engineer helping triage a change-request review queue. "
+        "Given these open pull or merge requests, rank them by review priority for the repo maintainer. "
+        "For each change request give: priority number, one sentence on what action to take and why. "
+        "Be direct and specific. Preserve each supplied PR/MR reference in the response.\n\n"
         + "\n\n".join(lines)
     )
 
@@ -729,7 +802,7 @@ def cmd_prs(argv: list[str]) -> None:
     for pr in prs:
         pr.worktree_path = worktrees.get(pr.branch)
 
-    # Graph impact is expensive (concurrent gh pr diff calls) — only fetch when
+    # Graph impact is expensive (concurrent provider diff calls) — only fetch when
     # the user actually needs it: deep dive, triage, and conflict detection.
     community_labels: dict[int, list[str]] = {}
     needs_impact = graph_path.exists() and (pr_number is not None or do_triage or do_conflicts)
@@ -739,7 +812,7 @@ def cmd_prs(argv: list[str]) -> None:
     if pr_number is not None:
         match = next((p for p in prs if p.number == pr_number), None)
         if not match:
-            print(red(f"  PR #{pr_number} not found in open PRs."), file=sys.stderr)
+            print(red(f"  Change request {pr_number} not found in open change requests."), file=sys.stderr)
             sys.exit(1)
         render_pr_detail(match, repo)
         return

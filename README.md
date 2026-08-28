@@ -484,6 +484,35 @@ python -m graphify.serve graphify-out/graph.json --transport http --host 0.0.0.0
 
 The MCP server gives your assistant structured access: `query_graph`, `get_node`, `get_neighbors`, `shortest_path`, `list_prs`, `get_pr_impact`, `triage_prs`.
 
+### GitHub and GitLab change requests
+
+The change-request tools support GitHub pull requests and GitLab merge requests while
+keeping their existing MCP names for compatibility. Graphify uses
+`GRAPHIFY_VCS_PROVIDER` when set; otherwise it detects GitLab from the configured URL
+or the current `origin` remote. GitHub continues to use the `gh` CLI; GitLab uses
+the REST API directly and does not require `glab`.
+
+For a self-hosted or explicitly configured GitLab project:
+
+```bash
+GRAPHIFY_VCS_PROVIDER=gitlab \
+GITLAB_URL=https://gitlab.example.com \
+GITLAB_PROJECT=group/subgroup/project \
+GITLAB_TOKEN="${GITLAB_TOKEN}" \
+python -m graphify.serve --graph graphify-out/graph.json
+```
+
+`GITLAB_TOKEN`, `GL_TOKEN`, and `PRIVATE_TOKEN` are checked in that order. To reuse
+an existing Git Credential Manager entry without putting a token in the MCP
+configuration, opt in with `GRAPHIFY_GITLAB_USE_GIT_CREDENTIALS=true`. The credential
+is read non-interactively and cached only in memory for the lifetime of the server.
+
+The `repo` argument accepted by `list_prs`, `get_pr_impact`, and `triage_prs`
+overrides `GITLAB_PROJECT` for an individual call. Gitlink changes are expanded to
+the files changed inside a submodule when both referenced commits exist in the local
+submodule checkout; otherwise Graphify reports the submodule path itself.
+
+
 ### Shared HTTP server
 
 `--transport stdio` (the default) spawns one local server per developer. `--transport http` serves the same tools over the MCP Streamable HTTP transport, so a single shared process can serve the graph for the whole team — clients point their IDE MCP config at `http://<host>:8080/mcp` instead of running graphify locally.
@@ -547,6 +576,11 @@ These are only needed for **headless / CI extraction** (`graphify extract`). Whe
 | `GRAPHIFY_GOOGLE_WORKSPACE` | Auto-enable Google Workspace export | optional — set to `1` |
 | `GRAPHIFY_TRIAGE_BACKEND` | Backend for `graphify prs --triage` | optional — auto-detected from available keys |
 | `GRAPHIFY_TRIAGE_MODEL` | Model override for triage | optional — e.g. `claude-opus-4-7` |
+| `GRAPHIFY_VCS_PROVIDER` | Change-request provider: `github` or `gitlab` | optional — otherwise inferred from configuration/origin |
+| `GITLAB_URL` | GitLab base URL, including self-hosted instances | required for explicit GitLab configuration |
+| `GITLAB_PROJECT` | URL-style GitLab project path, e.g. `group/project` | required unless supplied via `repo` or inferred from origin |
+| `GITLAB_TOKEN`, `GL_TOKEN`, or `PRIVATE_TOKEN` | GitLab API token | required for private projects unless credential-manager fallback is enabled |
+| `GRAPHIFY_GITLAB_USE_GIT_CREDENTIALS` | Read an existing Git credential non-interactively and keep it only in memory | optional — `true`, `1`, or `yes` |
 | `GRAPHIFY_QUERY_LOG_ENABLE` | Set to `1` to turn on the local query log at `~/.cache/graphify-queries.log` (records each query/path/explain question + corpus path). Off by default — nothing is written unless you opt in (#1797) | optional |
 | `GRAPHIFY_QUERY_LOG` | Enable the query log and write it to this path instead of the default | optional — off unless this or `_ENABLE` is set |
 | `GRAPHIFY_QUERY_LOG_DISABLE` | Set to `1` to force the query log off (wins over the enable vars) | optional |
