@@ -2,7 +2,7 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
-## 0.9.51 (unreleased)
+## 0.9.51 (2026-08-28)
 
 - Fix: the incomplete-build shrink guard now stays armed when a chunk came back hollow, unparseable, or omitting files, so a run that silently lost content can no longer overwrite the existing graph with a smaller one; a complete run and a retry-recovered chunk are unaffected, and `--allow-partial` still overrides (#3105, thanks @abhay-codes07).
 - Fix: `graphify extract --force --code-only` now fully rescans code (instead of skipping unchanged files and keeping stale import/alias resolution) while still carrying the existing document/semantic tier forward (#3125, thanks @hopstreax).
