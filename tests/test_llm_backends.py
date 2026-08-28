@@ -182,6 +182,47 @@ def test_generic_openrouter_key_does_not_override_direct_provider_key(tmp_path, 
     )
 
 
+def test_call_llm_gemini_keeps_endpoint_and_model_route_together(monkeypatch):
+    import sys
+    import types
+
+    calls = []
+
+    class _FakeOpenAI:
+        def __init__(self, *_, **kwargs):
+            calls.append({"base_url": kwargs["base_url"]})
+            self.chat = self
+            self.completions = self
+
+        def create(self, **kwargs):
+            calls[-1]["model"] = kwargs["model"]
+            return _fake_openai_response("ok", finish_reason="stop", completion_tokens=1)
+
+    fake_module = types.ModuleType("openai")
+    fake_module.OpenAI = _FakeOpenAI
+    monkeypatch.setitem(sys.modules, "openai", fake_module)
+
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("GEMINI_API_KEY", "direct-key")
+    llm._call_llm("hi", backend="gemini")
+
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("GRAPHIFY_OPENROUTER_API_KEY", "or-key")
+    monkeypatch.setenv("GEMINI_API_KEY", "direct-key")
+    llm._call_llm("hi", backend="gemini")
+
+    assert calls == [
+        {
+            "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+            "model": "gemini-3-flash-preview",
+        },
+        {
+            "base_url": "https://openrouter.ai/api/v1",
+            "model": "google/gemini-3-flash-preview",
+        },
+    ]
+
+
 @pytest.mark.parametrize(
     "backend, env_key",
     [
