@@ -6,6 +6,12 @@ import re
 from pathlib import Path
 from graphify.extractors.base import _file_stem, _make_id
 
+# One dot-separated part of a table/view/routine name recovered from an ERROR
+# node's raw text: backtick-quoted (also matches a debracketed T-SQL name,
+# #2718), double-quoted (Postgres/ANSI, #2180), or bare. Shared by the
+# regex-fallback sites below so they can't drift apart.
+_SQL_NAME_PART = r'(?:`[^`\n]+`|"[^"\n]+"|[\w$]+)'
+
 
 def _norm_ident(name: str) -> str:
     """Normalize a SQL identifier for name-based reference resolution.
@@ -24,6 +30,112 @@ def _norm_ident(name: str) -> str:
                             or (p[0] == "[" and p[-1] == "]")):
             p = p[1:-1]
         parts.append(p.lower())
+    return ".".join(parts)
+
+
+def _debracket_tsql(source: bytes) -> tuple[bytes, bool]:
+    """Rewrite T-SQL `[bracket]`-quoted identifiers to `` `backtick` ``-quoted ones.
+
+    tree-sitter-sql has no grammar token for T-SQL bracket quoting: each `[`
+    and `]` lands as its own one-byte ERROR node, one character short of the
+    real pair. That shifts every subsequent token in the statement by one
+    byte, which corrupts the object_reference text — `[dbo].[Customer]` reads
+    back as `dbo].[Customer` — so the node label keeps a stray bracket
+    fragment on each side of the dot instead of the real name (#2712).
+
+    Backtick quoting parses as a clean atomic `identifier` token (the
+    grammar's MySQL-dialect support) and is not otherwise valid T-SQL syntax,
+    so substituting one for the other before parsing sidesteps the grammar
+    gap rather than trying to patch the corrupted text after the fact. `]]`
+    is T-SQL's escape for a literal `]` inside a bracketed name; it is
+    unescaped here and re-escaped as a doubled backtick if needed.
+
+    Only scans outside `'...'` string literals, `--` line comments, and
+    `/* */` block comments, so a literal `[` in either is left untouched. A
+    `[...]` span is left alone (not substituted) when it is unterminated,
+    empty, spans a newline, or its content is purely numeric — those are
+    Postgres/MySQL array-type syntax (`int[]`, `numeric(10)[3]`), never a
+    valid T-SQL identifier, and must not be corrupted.
+
+    Returns ``(source, False)`` unchanged if nothing qualified.
+    """
+    out = bytearray()
+    i, n = 0, len(source)
+    changed = False
+    while i < n:
+        c = source[i]
+        if c == ord("-") and i + 1 < n and source[i + 1] == ord("-"):
+            j = source.find(b"\n", i)
+            j = n if j == -1 else j
+            out += source[i:j]
+            i = j
+            continue
+        if c == ord("/") and i + 1 < n and source[i + 1] == ord("*"):
+            j = source.find(b"*/", i + 2)
+            j = n if j == -1 else j + 2
+            out += source[i:j]
+            i = j
+            continue
+        if c == ord("'"):
+            j = i + 1
+            while j < n:
+                if source[j] == ord("'"):
+                    if j + 1 < n and source[j + 1] == ord("'"):
+                        j += 2
+                        continue
+                    j += 1
+                    break
+                j += 1
+            out += source[i:j]
+            i = j
+            continue
+        if c == ord("["):
+            j = i + 1
+            content = bytearray()
+            terminated = False
+            while j < n:
+                if source[j] == ord("]"):
+                    if j + 1 < n and source[j + 1] == ord("]"):
+                        content.append(ord("]"))
+                        j += 2
+                        continue
+                    j += 1
+                    terminated = True
+                    break
+                if source[j] == ord("\n"):
+                    break
+                content.append(source[j])
+                j += 1
+            if not terminated or not content or content.strip().isdigit():
+                out.append(c)
+                i += 1
+                continue
+            changed = True
+            out.append(0x60)
+            out += bytes(content).replace(b"`", b"``")
+            out.append(0x60)
+            i = j
+            continue
+        out.append(c)
+        i += 1
+    return bytes(out), changed
+
+
+def _strip_backtick_parts(name: str) -> str:
+    """Undo `_debracket_tsql`'s synthetic backtick-quoting for a display label.
+
+    Splits on `.` and strips a matching pair of backticks (unescaping a
+    doubled backtick back to one) from each part. Only ever called on source
+    that `_debracket_tsql` has already confirmed contains no genuine
+    backtick, so every backtick encountered here is one it introduced;
+    double-quoted (ANSI/Postgres) identifiers are untouched either way.
+    """
+    parts = []
+    for part in name.split("."):
+        p = part.strip()
+        if len(p) >= 2 and p[0] == "`" and p[-1] == "`":
+            p = p[1:-1].replace("``", "`")
+        parts.append(p)
     return ".".join(parts)
 
 
@@ -53,6 +165,16 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
             else content if content is not None
             else path.read_bytes()
         )
+        # A backtick already in the source means it's either genuinely
+        # backtick-quoted (MySQL dialect) or mixes dialects in a way this
+        # module cannot safely disambiguate; skip debracketing rather than
+        # risk misreading a real backtick as one we introduced (#2712).
+        debracketed = False
+        if b"`" not in source:
+            _new_source, _changed = _debracket_tsql(source)
+            if _changed:
+                source = _new_source
+                debracketed = True
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:
@@ -71,10 +193,18 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
     def _read(n) -> str:
         return source[n.start_byte:n.end_byte].decode("utf-8", errors="replace")
 
+    def _clean_name(name: str) -> str:
+        """Strip synthetic backtick-quoting from a name, when this file was debracketed."""
+        return _strip_backtick_parts(name) if debracketed else name
+
+    def _ident(n) -> str:
+        """Read an identifier/object_reference node as a clean display name."""
+        return _clean_name(_read(n))
+
     def _obj_name(n) -> str | None:
         for c in n.children:
             if c.type == "object_reference":
-                return _read(c)
+                return _ident(c)
         return None
 
     def _add_node(nid: str, label: str, line: int) -> None:
@@ -138,7 +268,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                                     if cc.type == "keyword_references":
                                         found_ref = True
                                     elif found_ref and cc.type == "object_reference":
-                                        ref_name = _read(cc)
+                                        ref_name = _ident(cc)
                                         break
                                 if ref_name:
                                     ref_nid = table_nids.get(_norm_ident(ref_name)) or _ref_stub(ref_name)
@@ -155,7 +285,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                                         if cc.type == "keyword_references":
                                             found_ref = True
                                         elif found_ref and cc.type == "object_reference":
-                                            ref_name = _read(cc)
+                                            ref_name = _ident(cc)
                                             break
                                     if ref_name:
                                         ref_nid = table_nids.get(_norm_ident(ref_name)) or _ref_stub(ref_name)
@@ -216,7 +346,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                                 if ccc.type == "keyword_references":
                                     found_ref = True
                                 elif found_ref and ccc.type == "object_reference":
-                                    ref_name = _read(ccc)
+                                    ref_name = _ident(ccc)
                                     break
                             if ref_name:
                                 ref_nid = (table_nids.get(_norm_ident(ref_name))
@@ -232,11 +362,11 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                 if c.type == "keyword_trigger":
                     after_trigger = True
                 elif after_trigger and not trig_name and c.type == "object_reference":
-                    trig_name = _read(c)
+                    trig_name = _ident(c)
                 elif c.type == "keyword_for":
                     after_for = True
                 elif after_for and not tbl_name and c.type == "object_reference":
-                    tbl_name = _read(c)
+                    tbl_name = _ident(c)
             if trig_name:
                 trig_nid = _make_id(stem, trig_name)
                 _add_node(trig_nid, trig_name, line)
@@ -254,22 +384,48 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
             # do not scan the body for FROM/JOIN references: PL/pgSQL loop
             # variables and locals would produce junk reads_from targets.
             #
-            # Each name part is either a bare identifier or a double-quoted
-            # (delimited) one, so schema-qualified generated DDL such as
-            # CREATE OR REPLACE FUNCTION "public"."fn"(...) is recovered too.
-            # A bare [\w$.]+ stops dead at the leading quote, which silently
-            # dropped every quoted PL/pgSQL routine (#2180).
+            # Each name part is a bare identifier, a double-quoted (delimited)
+            # one, or a backtick-quoted one, so schema-qualified generated DDL
+            # such as CREATE OR REPLACE FUNCTION "public"."fn"(...) is
+            # recovered too. A bare [\w$.]+ stops dead at the leading quote,
+            # which silently dropped every quoted PL/pgSQL routine (#2180).
+            # The backtick alternative also recovers a bracket-quoted T-SQL
+            # name after `_debracket_tsql` has rewritten it (#2718) — this
+            # ERROR-node fallback is the ONLY path that ever sees a T-SQL
+            # CREATE PROCEDURE/FUNCTION, since this grammar has no rule at all
+            # for its `AS BEGIN ... END` body, bracketed name or not.
             text = _read(node)
             for m in re.finditer(
                 r"CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE)\s+"
                 r"(?:IF\s+NOT\s+EXISTS\s+)?"
-                r"((?:\"[^\"\n]+\"|[\w$]+)(?:\s*\.\s*(?:\"[^\"\n]+\"|[\w$]+))*)",
+                rf"({_SQL_NAME_PART}(?:\s*\.\s*{_SQL_NAME_PART})*)",
                 text, re.IGNORECASE,
             ):
-                name = m.group(1)
+                name = _clean_name(m.group(1))
                 m_line = line + text[: m.start()].count("\n")
                 nid = _make_id(stem, name)
                 _add_node(nid, f"{name}()", m_line)
+
+            # A CREATE FUNCTION/PROCEDURE whose body this grammar cannot parse
+            # (see above) does not just lose itself — its trailing ERROR span
+            # can absorb the NEXT statement too, e.g. a CREATE VIEW right
+            # after it, with no diagnostic (#2719). Recover at least a node
+            # for a swallowed CREATE VIEW/TABLE the same way; register it in
+            # table_nids so a later reference in this file resolves onto it
+            # instead of a same-name stub. Deliberately name-only, mirroring
+            # the routine recovery above: a table/view buried in a broken
+            # ERROR blob has no reliable column/FK structure to regex out.
+            for m in re.finditer(
+                r"CREATE\s+(?:OR\s+REPLACE\s+)?(VIEW|TABLE)\s+"
+                r"(?:IF\s+NOT\s+EXISTS\s+)?"
+                rf"({_SQL_NAME_PART}(?:\s*\.\s*{_SQL_NAME_PART})*)",
+                text, re.IGNORECASE,
+            ):
+                name = _clean_name(m.group(2))
+                m_line = line + text[: m.start()].count("\n")
+                nid = _make_id(stem, name)
+                _add_node(nid, name, m_line)
+                table_nids.setdefault(_norm_ident(name), nid)
 
         elif t == "fb_proc_or_trigger":
             text = _read(node)
@@ -357,7 +513,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                 if c.type == "relation":
                     for cc in c.children:
                         if cc.type == "object_reference":
-                            tbl = _read(cc)
+                            tbl = _ident(cc)
                             if _norm_ident(tbl) in cte_names:
                                 continue
                             tbl_nid = table_nids.get(_norm_ident(tbl)) or _ref_stub(tbl)
@@ -448,10 +604,10 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         for m in re.finditer(
             r"CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE)\s+"
             r"(?:IF\s+NOT\s+EXISTS\s+)?"
-            r"((?:\"[^\"\n]+\"|[\w$]+)(?:\s*\.\s*(?:\"[^\"\n]+\"|[\w$]+))*)",
+            rf"({_SQL_NAME_PART}(?:\s*\.\s*{_SQL_NAME_PART})*)",
             src_text, re.IGNORECASE,
         ):
-            fn_name = m.group(1)
+            fn_name = _clean_name(m.group(1))
             fn_line = src_text[: m.start()].count("\n") + 1
             _add_node(_make_id(stem, fn_name), f"{fn_name}()", fn_line)
 
