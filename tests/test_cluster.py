@@ -145,3 +145,35 @@ def test_native_leiden_returns_none_when_binding_absent(monkeypatch):
     stable = nx.Graph()
     stable.add_edge("x", "y")
     assert cl._native_leiden(stable, 1.0) is None
+
+
+def test_partition_is_invariant_to_edge_endpoint_orientation():
+    """#3146: for an undirected graph, (a,b) and (b,a) are the same edge, but the
+    orientation networkx yields can vary across builds/machines. _partition must
+    canonicalise endpoints so the ordering fed to the clusterer — and thus the
+    resulting communities — is identical regardless of how edges were inserted."""
+    import random
+    edges = [
+        ("a1", "a2"), ("a1", "a3"), ("a2", "a3"), ("a3", "a4"),
+        ("b1", "b2"), ("b1", "b3"), ("b2", "b3"), ("b3", "b4"),
+        ("a1", "b1"),
+    ]
+
+    def build(order, flip):
+        G = nx.Graph()
+        for n in order:
+            G.add_node(n)
+        for (u, v) in edges:
+            G.add_edge(v, u) if flip else G.add_edge(u, v)
+        return G
+
+    nodes = sorted({n for e in edges for n in e})
+    forward = build(nodes, flip=False)
+    shuffled = list(nodes)
+    random.Random(0).shuffle(shuffled)
+    flipped = build(shuffled, flip=True)
+
+    from graphify.cluster import _partition
+    assert _grouping(_partition(forward, 1.0)) == _grouping(_partition(flipped, 1.0)), (
+        "partition drifted with edge-endpoint orientation / insertion order"
+    )
