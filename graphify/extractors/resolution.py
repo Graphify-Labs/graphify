@@ -605,21 +605,29 @@ def _resolve_lua_import_target(raw_module: str, str_path: str) -> str:
             probe = probe.parent
     return _make_id(raw_module)
 
-_VUE_SCRIPT_RE = re.compile(
+_SFC_SCRIPT_RE = re.compile(
     r"""(<script\b(?:"[^"]*"|'[^']*'|[^>"'])*>)([\s\S]*?)(</script\s*>)""",
     re.IGNORECASE,
 )
 
-_VUE_SCRIPT_LANG_RE = re.compile(
+_SFC_SCRIPT_LANG_RE = re.compile(
     r"""\blang\s*=\s*['"]?([A-Za-z]+)['"]?""", re.IGNORECASE
 )
 
-def _vue_mask_non_script(src: str) -> tuple[str, str | None]:
+# Back-compat aliases: these were named for Vue before Svelte shared the masker.
+_VUE_SCRIPT_RE = _SFC_SCRIPT_RE
+_VUE_SCRIPT_LANG_RE = _SFC_SCRIPT_LANG_RE
+
+def _sfc_mask_non_script(src: str) -> tuple[str, str | None]:
     """Blank everything outside ``<script>`` bodies, keeping ``\\r``/``\\n``.
 
-    Replaces template/style/tags with spaces so a JS/TS grammar sees only the
-    script, while preserved newlines keep line numbers accurate. Returns
-    ``(masked_source, lang)``; ``lang`` is the first block's declared ``lang``.
+    Shared by the ``.vue`` and ``.svelte`` extractors: both wrap JS/TS in markup
+    a JS grammar cannot parse. Replaces template/style/tags with spaces so the
+    grammar sees only the script, while preserved newlines keep line numbers
+    accurate. Every ``<script>`` block is kept, so a Svelte 5 ``<script module>``
+    /instance pair (or a Vue ``setup``/options pair) is parsed as one unit.
+    Returns ``(masked_source, lang)``; ``lang`` is the first block's declared
+    ``lang``.
     """
     def _blank(s: str) -> str:
         return re.sub(r"[^\r\n]", " ", s)
@@ -627,18 +635,24 @@ def _vue_mask_non_script(src: str) -> tuple[str, str | None]:
     out: list[str] = []
     pos = 0
     lang: str | None = None
-    for m in _VUE_SCRIPT_RE.finditer(src):
+    for m in _SFC_SCRIPT_RE.finditer(src):
         out.append(_blank(src[pos:m.start()]))  # markup/style before this block
         out.append(_blank(m.group(1)))           # <script …> open tag
         out.append(m.group(2))                   # script body, verbatim
         out.append(_blank(m.group(3)))           # </script> close tag
         pos = m.end()
         if lang is None:
-            lang_m = _VUE_SCRIPT_LANG_RE.search(m.group(1))
+            lang_m = _SFC_SCRIPT_LANG_RE.search(m.group(1))
             if lang_m:
                 lang = lang_m.group(1).lower()
     out.append(_blank(src[pos:]))
     return "".join(out), lang
+
+_vue_mask_non_script = _sfc_mask_non_script
+
+# Single-file-component suffixes whose script blocks need masking before a
+# JS/TS grammar can parse them.
+_SFC_SUFFIXES = (".vue", ".svelte")
 
 def _source_key(source_file: str, root: Path) -> str:
     if not source_file:
@@ -1104,18 +1118,19 @@ def _apply_symbol_resolution_facts(
 def _parse_js_tree(path: Path):
     try:
         from tree_sitter import Language, Parser
-        # .vue embeds the script in non-JS markup; mask it out and parse the
-        # <script> with TS.
-        vue_lang: str | None = None
-        if path.suffix == ".vue":
-            masked, vue_lang = _vue_mask_non_script(
+        # .vue and .svelte embed the script in non-JS markup; mask it out and
+        # parse the <script> with TS. Without the mask the whole file is a
+        # top-level ERROR node, so this pass contributes no calls/type refs.
+        sfc_lang: str | None = None
+        if path.suffix in _SFC_SUFFIXES:
+            masked, sfc_lang = _sfc_mask_non_script(
                 path.read_text(encoding="utf-8", errors="replace")
             )
             source = masked.encode("utf-8")
         else:
             source = path.read_bytes()
         use_ts = path.suffix in (".ts", ".mts", ".cts") or (
-            path.suffix == ".vue" and vue_lang not in ("js", "jsx")
+            path.suffix in _SFC_SUFFIXES and sfc_lang not in ("js", "jsx")
         )
         if path.suffix == ".tsx":
             # .tsx must use the JSX-aware TSX grammar, mirroring the engine's

@@ -137,6 +137,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _ts_collect_type_refs,
     _ts_heritage_clause_entries,
     _ts_walk_class_members,
+    _sfc_mask_non_script,
     _vue_mask_non_script,
     _walk_js_tree,
     _walk_python_tree,
@@ -1599,16 +1600,40 @@ def _emit_rescued_import(
 
 
 def extract_svelte(path: Path) -> dict:
-    """Extract imports from .svelte files: script-block via JS AST + template regex fallback.
+    """Extract imports, symbols, and type refs from a ``.svelte`` component.
 
-    Tree-sitter only sees the <script> block. Svelte template syntax like
-    {#await import('./X.svelte')} lives in the markup layer and is invisible
-    to the JS parser, so a regex pass covers those dynamic imports.
+    Masks the non-``<script>`` regions and parses the script with the grammar
+    its ``lang`` implies (``tsx``->TSX, ``js``/``jsx``->JS, ``ts`` or unset->TS;
+    TS is a superset of JS so it is a safe default), mirroring
+    :func:`extract_vue`. Feeding the whole component to the JS grammar makes the
+    markup a top-level ERROR node, so ``import_statement`` and declaration nodes
+    are never reached and everything but a stray symbol is dropped (#713).
+
+    Both script blocks of a Svelte 5 component survive the mask, so a
+    ``<script module>`` block is parsed alongside the instance script.
+
+    A regex pass then recovers ``import('...')`` dynamic imports, which the AST
+    pass does not edge and which legally live in markup-layer template syntax
+    such as ``{#await import('./X.svelte')}`` — outside every script block, and
+    so blanked out of the masked source the AST sees.
     """
-    result = _extract_generic(path, _JS_CONFIG)
+    try:
+        src = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {"nodes": [], "edges": []}
+
+    masked, lang = _sfc_mask_non_script(src)
+    if lang == "tsx":
+        config = _TSX_CONFIG
+    elif lang in ("js", "jsx"):
+        config = _JS_CONFIG
+    else:  # "ts" or unspecified — default to the TS grammar (superset of JS)
+        config = _TS_CONFIG
+
+    result = _extract_generic(path, config, source_override=masked.encode("utf-8"))
+
     try:
         import re as _re
-        src = path.read_text(encoding="utf-8", errors="replace")
         existing_ids = {n["id"] for n in result.get("nodes", [])}
         # Source file node ID must match the one _extract_generic creates:
         # _make_id(str(path)) - single arg, no stem prefix. Otherwise the source
@@ -1616,39 +1641,19 @@ def extract_svelte(path: Path) -> dict:
         file_node_id = _make_id(str(path))
         aliases = _load_tsconfig_aliases(path.parent)
         base_url = _load_tsconfig_base_url(path.parent)
+        # Scanned over the raw source, not the masked one, so template-layer
+        # dynamic imports are seen. Resolution is shared with the static pass:
+        # relative paths and tsconfig aliases probe real on-disk extensions
+        # (#716, #701), and a target that IS a real file emits an edge stamped
+        # with target_file instead of an absolute-id ghost stub (#2195).
         for m in _re.finditer(r"""import\(\s*['"]([^'"]+)['"]\s*\)""", src):
             raw = m.group(1)
             if not raw:
                 continue
-            # Resolution + emit shared with the static pass below: relative
-            # paths and tsconfig aliases probe real on-disk extensions (#716,
-            # #701), and a target that IS a real file emits an edge stamped
-            # with target_file instead of an absolute-id ghost stub (#2195).
             _emit_rescued_import(
                 result, existing_ids, file_node_id, path, raw,
                 "dynamic_import", aliases, base_url,
             )
-        # Static imports inside <script> blocks. The JS tree-sitter parser fed
-        # the full .svelte file produces a top-level ERROR node (HTML markup
-        # is not valid JS), so import_statement nodes are never reached and
-        # static imports are silently dropped (#713). Regex over each script
-        # body recovers them.
-        script_re = _re.compile(
-            r"<script\b[^>]*>([\s\S]*?)</script\s*>", _re.IGNORECASE
-        )
-        static_import_re = _re.compile(
-            r"""import\s+(?:[^'"`;]+?\s+from\s+)?['"]([^'"]+)['"]"""
-        )
-        for script_match in script_re.finditer(src):
-            script_body = script_match.group(1)
-            for m in static_import_re.finditer(script_body):
-                raw = m.group(1)
-                if not raw:
-                    continue
-                _emit_rescued_import(
-                    result, existing_ids, file_node_id, path, raw,
-                    "imports_from", aliases, base_url,
-                )
     except Exception:
         pass
     return result
@@ -1735,7 +1740,7 @@ def extract_vue(path: Path) -> dict:
     except OSError:
         return {"nodes": [], "edges": []}
 
-    masked, lang = _vue_mask_non_script(src)
+    masked, lang = _sfc_mask_non_script(src)
     if lang == "tsx":
         config = _TSX_CONFIG
     elif lang in ("js", "jsx"):
