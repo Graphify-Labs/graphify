@@ -1912,6 +1912,20 @@ def _find_require_call(value_node):
         return _find_require_call(obj)
     return None
 
+def _is_require_initializer(value_node, source: bytes) -> bool:
+    """True when a declarator's initializer is a literal ``require(...)`` call.
+
+    ``_find_require_call`` matches the call *shape* only — any
+    ``identifier(...)`` — and leaves the callee-name check to its callers, so
+    it must not be used alone to recognise a CJS import.
+    """
+    call = _find_require_call(value_node)
+    if call is None:
+        return False
+    fn = call.child_by_field_name("function")
+    return fn is not None and _read_text(fn, source) == "require"
+
+
 def _require_imports_js(node, source: bytes, importer_nid: str, stem: str, edges: list, str_path: str) -> bool:
     """Detect CommonJS require imports inside lexical_declaration / variable_declaration.
 
@@ -2130,6 +2144,61 @@ def _js_member_assignment_target(left, source: bytes):
                 return ("prototype", inner_obj_name, member_name)
     return None
 
+_JS_PATTERN_TYPES = frozenset({"object_pattern", "array_pattern"})
+
+
+def _js_pattern_bound_names(name_node, source: bytes) -> list[str]:
+    """Return the identifiers a destructuring declarator actually binds.
+
+    ``const { a, b: renamed, c = 1, ...rest } = x`` binds ``a``, ``renamed``,
+    ``c`` and ``rest`` — not the text of the pattern. Reading the declarator's
+    ``name`` field verbatim instead mints one node labelled with the whole
+    pattern source (``{ a, b: renamed, c = 1, ...rest }``), which names no
+    symbol and can never be the target of a reference. Svelte 5 makes the shape
+    universal — every component destructures ``$props()`` — but the same
+    declarator shape is ordinary JS/TS.
+
+    Walks only the binding side: a ``pair_pattern``'s value (``b: renamed``
+    binds ``renamed``, not the property key ``b``) and an assignment pattern's
+    left operand (``c = $bindable()`` binds ``c``, not ``$bindable``). Nested
+    patterns recurse, so ``{ deep: { inner } }`` binds ``inner``. Returns an
+    empty list for a non-pattern node.
+    """
+    if name_node is None or name_node.type not in _JS_PATTERN_TYPES:
+        return []
+    names: list[str] = []
+
+    def visit(node) -> None:
+        t = node.type
+        if t in ("identifier", "shorthand_property_identifier_pattern"):
+            text = _read_text(node, source)
+            if text and text not in names:
+                names.append(text)
+            return
+        if t == "pair_pattern":
+            # `key: target` — only the value side is bound.
+            value = node.child_by_field_name("value")
+            if value is not None:
+                visit(value)
+            return
+        if t in ("object_assignment_pattern", "assignment_pattern"):
+            # `target = default` — the default is an expression, not a binding.
+            left = node.child_by_field_name("left")
+            if left is None:
+                left = node.named_children[0] if node.named_children else None
+            if left is not None:
+                visit(left)
+            return
+        if t in ("rest_pattern", "object_pattern", "array_pattern"):
+            for child in node.named_children:
+                visit(child)
+            return
+        # Anything else (type annotations, holes in `[a, , c]`) binds nothing.
+
+    visit(name_node)
+    return names
+
+
 def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                    nodes: list, edges: list, seen_ids: set, function_bodies: list,
                    parent_class_nid: str | None, add_node_fn, add_edge_fn,
@@ -2303,13 +2372,39 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                     ):
                         # Simple exported identifiers are part of the module API
                         # regardless of initializer shape. Keep other scalar noise suppressed.
+                        const_nid = None
                         if name_node:
-                            const_name = _read_text(name_node, source)
                             line = child.start_point[0] + 1
-                            const_nid = _make_id(stem, const_name)
-                            add_node_fn(const_nid, const_name, line)
-                            add_edge_fn(file_nid, const_nid, "contains", line)
-                            const_found = True
+                            # A destructuring declarator binds several names and
+                            # its `name` field is the pattern source, not a
+                            # symbol — node each identifier it actually binds.
+                            const_names = _js_pattern_bound_names(name_node, source)
+                            if const_names and _is_require_initializer(value, source):
+                                # `const { doWork } = require('./lib')` binds an
+                                # IMPORT, not a local definition. `_require_imports_js`
+                                # already edges those names at the file level; noding
+                                # them here would shadow the real cross-file target,
+                                # so a call to `doWork()` would resolve to this file's
+                                # stub instead of the callee's definition.
+                                const_names = []
+                            elif not const_names:
+                                const_names = [_read_text(name_node, source)]
+                            for const_name in const_names:
+                                # A name that normalizes to nothing would collapse
+                                # the id to the absolute file-stem and leak the
+                                # scan path (#1899); skip it, as the arrow branch does.
+                                if not const_name or not normalize_id(const_name):
+                                    continue
+                                nid = _make_id(stem, const_name)
+                                add_node_fn(nid, const_name, line)
+                                add_edge_fn(file_nid, nid, "contains", line)
+                                const_found = True
+                                if const_nid is None:
+                                    # Closures in the initializer are attributed to
+                                    # the first binding; a destructured initializer
+                                    # has no single owning symbol.
+                                    const_nid = nid
+                        if const_nid is not None:
                             # #2552: `const handler = wrapper(async (req) => …)`
                             # created the const node above but, unlike the arrow
                             # branch, never tracked the callback's body — so
