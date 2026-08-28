@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## 0.9.52 (unreleased)
+
+- Feature: Perl support — `.pl`/`.pm` files (and `#!/usr/bin/perl` shebang scripts) extracted via tree-sitter-perl (#1788). Packages (including block form `package Foo { ... }` and mid-file package switches), subs, `use`/`require` imports with in-corpus re-pointing, and `@ISA`/`use parent`/`use base` inheritance are captured; calls resolve INFERRED through the shared package-aware second pass under a zero-edge ambiguity policy (a bare or same-named call that could bind to two packages emits no edge rather than a guess, mirroring the other cross-file resolvers' god-node guard). Method calls (`$obj->meth()`) and AUTOLOAD/symbolic refs are intentionally out of scope — without receiver types they are unresolvable and name-matching would wire spurious edges to same-named subs.
+
 ## 0.9.51 (2026-08-28)
 
 - Fix: the incomplete-build shrink guard now stays armed when a chunk came back hollow, unparseable, or omitting files, so a run that silently lost content can no longer overwrite the existing graph with a smaller one; a complete run and a retry-recovered chunk are unaffected, and `--allow-partial` still overrides (#3105, thanks @abhay-codes07).

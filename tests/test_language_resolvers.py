@@ -72,3 +72,54 @@ def test_resolver_mutates_edges_in_place() -> None:
     edges: list[dict] = []
     run_language_resolvers([Path("a.rb")], [], [], edges, resolvers=resolvers)
     assert edges == [{"source": "x", "target": "y", "relation": "calls"}]
+
+
+def test_resolver_activate_predicate_overrides_suffix_gate() -> None:
+    # Provenance-gated pass: no matching suffix present, but the activate predicate
+    # opts it in anyway (e.g. an extensionless shebang script).
+    log: list[str] = []
+
+    def _resolve(per_file, all_nodes, all_edges):
+        log.append("ran")
+
+    resolver = LanguageResolver(
+        "prov", frozenset({".rb"}), _resolve,
+        activate=lambda paths: any(p.name == "runme" for p in paths),
+    )
+    run_language_resolvers([Path("runme")], [], [], [], resolvers=[resolver])
+    assert log == ["ran"]
+
+
+def test_resolver_activate_false_skips_even_with_matching_suffix() -> None:
+    log: list[str] = []
+
+    def _resolve(per_file, all_nodes, all_edges):
+        log.append("ran")
+
+    resolver = LanguageResolver(
+        "prov", frozenset({".rb"}), _resolve, activate=lambda paths: False,
+    )
+    run_language_resolvers([Path("a.rb")], [], [], [], resolvers=[resolver])
+    assert log == []  # activate wins over the suffix gate
+
+
+def test_resolver_wants_paths_receives_paths() -> None:
+    seen: list = []
+
+    def _resolve(per_file, all_nodes, all_edges, paths):
+        seen.append(list(paths))
+
+    resolver = LanguageResolver("wp", frozenset({".rb"}), _resolve, wants_paths=True)
+    run_language_resolvers([Path("a.rb")], [], [], [], resolvers=[resolver])
+    assert seen == [[Path("a.rb")]]
+
+
+def test_default_registry_contains_perl_import_repoint() -> None:
+    import graphify.extract  # noqa: F401  (registers resolvers on import)
+
+    perl = next(
+        (r for r in registered_resolvers() if r.name == "perl_import_repoint"), None
+    )
+    assert perl is not None, "perl_import_repoint must be registered in the shared registry"
+    assert perl.wants_paths, "the re-pointer needs paths to recompute Perl provenance"
+    assert perl.activate is not None, "the re-pointer activates by extractor provenance, not suffix"
