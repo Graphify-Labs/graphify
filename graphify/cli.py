@@ -2945,6 +2945,10 @@ def dispatch_command(cmd: str) -> None:
         result = run_benchmark(graph_path, corpus_words=corpus_words)
         print_benchmark(result)
 
+    elif cmd == "remote":
+        from graphify.remote import cmd_remote as _remote
+        _remote(sys.argv[2:])
+
     elif cmd == "global":
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
         from graphify.global_graph import (

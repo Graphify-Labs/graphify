@@ -617,6 +617,10 @@ def _run_cli() -> None:
         print("    --cargo                 extract crate→crate deps from Cargo.toml")
         print("    --global                also merge the resulting graph into the global graph")
         print("    --as <tag>              repo tag for --global (default: target directory name)")
+        print("  remote init              set up a central graph store: .graphify/ with config.json + push/pull hooks")
+        print("  remote push              run the push hook — upload the central graph store (docs/graph-store.md)")
+        print("  remote pull              run the pull hook — download the store + recreate graphify-out links")
+        print("  remote delete            leave the store — turn graphify-out links back into real local folders")
         print("  global add <graph.json>  add/update a project graph in the global graph (~/.graphify/global-graph.json)")
         print("    --as <tag>               repo tag (default: parent directory name)")
         print("  global remove <tag>      remove a repo's nodes from the global graph")
@@ -705,6 +709,19 @@ def _run_cli() -> None:
     if cmd not in _FREE_TEXT_CMDS and any(a in {"-h", "--help", "-?"} for a in sys.argv[2:]):
         print(f"Run 'graphify --help' for full usage.")
         return
+
+    # Central graph store (graphify.store): when .graphify/config.json selects a
+    # store folder, keep ./graphify-out linked into it before any command runs,
+    # so writes land in the store and literal graphify-out/... reads keep
+    # working. Skipped for the silent hook commands (must not print) and never
+    # blocks the actual command.
+    if cmd not in _silent_cmds:
+        try:
+            from graphify.store import ensure_out_link
+
+            ensure_out_link()
+        except Exception as exc:
+            print(f"warning: graph-store link upkeep failed: {exc}", file=sys.stderr)
 
     if dispatch_install_cli(cmd):
         return
