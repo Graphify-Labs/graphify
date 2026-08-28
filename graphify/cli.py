@@ -3252,16 +3252,17 @@ def dispatch_command(cmd: str) -> None:
         # --force: full scan, not the manifest-gated incremental diff — a warm
         # unchanged tree would otherwise dispatch zero files (#1894).
         incremental_mode = incremental_mode and not force
-        # #2923: --force --code-only must NOT drop the existing semantic layer.
-        # The AST pass is fully replaced (full re-scan, semantic cache reads
-        # skipped), but the semantic pass is itself skipped entirely, so
-        # doc/paper/image nodes from the existing graph carry forward via the
-        # incremental merge (build_merge / merge_raw_extraction keep them
-        # because no new semantic-tier sources are dispatched). Without this,
-        # a single --code-only --force silently erases every doc/paper/image
-        # node plus its connected hyperedges.
+        # #2923/#3125: --force --code-only must NOT drop the existing semantic layer.
+        # The AST pass is fully replaced (full code re-scan, AST extraction on all
+        # code files), but the semantic pass is skipped, so doc/paper/image nodes
+        # from the existing graph carry forward via the merge (build_merge /
+        # merge_raw_extraction keep them because no new semantic-tier sources
+        # are dispatched). We do NOT set incremental_mode = True here because that
+        # would run _detect_incremental and drop unchanged code files from the AST
+        # pass; instead we keep incremental_mode = False so all code files are
+        # scanned, while merge_existing_graph below ensures build_merge still runs.
+        merge_existing_graph = incremental_mode or (code_only and existing_graph_path.exists())
         if force and code_only and existing_graph_path.exists():
-            incremental_mode = True
             print(
                 "[graphify extract] --force --code-only: full AST re-scan, "
                 "existing semantic layer preserved (no semantic pass this run)"
@@ -3378,6 +3379,12 @@ def dispatch_command(cmd: str) -> None:
             excluded_files = []
             graph_stale_sources = []
             unchanged_total = 0
+            if existing_graph_path.exists():
+                _seen_files = {f for _fl in files_by_type.values() for f in _fl}
+                _seen_files.update(detection.get("unclassified", []))
+                graph_stale_sources = _stale_graph_sources(
+                    existing_graph_path, target, _seen_files, detection=detection
+                )
 
         semantic_files = doc_files + paper_files + image_files
         # --code-only: index code (pure local AST, no key) and skip the semantic
@@ -3826,6 +3833,26 @@ def dispatch_command(cmd: str) -> None:
                     _strip_partial_markers as _strip_partial,
                 )
                 _partial_semantic_files = set(_partial_sf(fresh))
+                # A chunk that came back hollow after every retry, or as
+                # unparseable JSON, or that simply omitted some of its files,
+                # does not raise - it returns fewer nodes - so it counted as a
+                # SUCCEEDED chunk above and the run read as complete, force=True
+                # bypassed the shrink guard, and a 570-node graph was overwritten
+                # with 111 nodes without a word (#3105). With an LLM backend
+                # that is the normal way an extraction silently produces a
+                # fraction of the graph, so it must arm the guard exactly like a
+                # crashed chunk does. --allow-partial still overrides.
+                _omitted_files = list(fresh.get("uncovered_files") or [])
+                if _omitted_files or _partial_semantic_files:
+                    _extraction_incomplete = True
+                    print(
+                        f"[graphify extract] semantic extraction is incomplete: "
+                        f"{len(_omitted_files)} dispatched file(s) produced no nodes and "
+                        f"{len(_partial_semantic_files)} came back truncated or hollow. "
+                        f"The shrink guard stays armed for this write; pass "
+                        f"--allow-partial to overwrite a larger existing graph anyway.",
+                        file=sys.stderr,
+                    )
                 try:
                     _save_semantic_cache(
                         fresh.get("nodes", []),
@@ -4025,7 +4052,7 @@ def dispatch_command(cmd: str) -> None:
                 stages.total()
                 sys.exit(0)
 
-            if incremental_mode:
+            if merge_existing_graph:
                 # #2169: this raw path used to write ONLY this run's extraction
                 # over graph.json — on an incremental run that is just the
                 # changed files, silently dropping every node/edge owned by an
@@ -4153,7 +4180,7 @@ def dispatch_command(cmd: str) -> None:
         from graphify.export import to_json as _to_json
         from graphify.analyze import god_nodes as _god_nodes, surprising_connections as _surprising
         dedup_backend = backend if dedup_llm else None
-        if incremental_mode:
+        if merge_existing_graph:
             # Prune everything the current scan no longer covers: genuinely
             # deleted manifest rows, excluded-but-alive manifest rows (#1908),
             # and the graph's own stale sources — which catches files that

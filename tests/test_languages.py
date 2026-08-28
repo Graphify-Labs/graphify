@@ -1440,6 +1440,47 @@ def test_elixir_method_edges():
     assert len(methods) >= 3
 
 
+def test_elixir_guarded_single_clause_is_extracted(tmp_path):
+    """A function whose only clause has a `when` guard must still get a node.
+
+    tree-sitter-elixir wraps `def f(x) when guard` in a `binary_operator`,
+    so the head is not a direct `call` child of `arguments`. Multi-clause
+    functions survive via an unguarded clause; a single guarded clause
+    was dropped entirely (#3111).
+    """
+    src = tmp_path / "demo.ex"
+    src.write_text(
+        "defmodule Demo do\n"
+        "  def plain(x) do\n"
+        "    x + 1\n"
+        "  end\n"
+        "\n"
+        "  def guarded(x) when is_integer(x) do\n"
+        "    x + 1\n"
+        "  end\n"
+        "\n"
+        "  def mixed(x) when is_integer(x) do\n"
+        "    x + 1\n"
+        "  end\n"
+        "\n"
+        "  def mixed(_), do: :error\n"
+        "\n"
+        "  defp guarded_private(x) when is_binary(x) do\n"
+        "    String.upcase(x)\n"
+        "  end\n"
+        "end\n"
+    )
+    r = extract_elixir(src)
+    assert "error" not in r
+    labels = {(n.get("label") or "").rstrip("()") for n in r["nodes"]}
+    assert "plain" in labels
+    assert "mixed" in labels
+    assert "guarded" in labels, f"single-clause guarded def dropped: {sorted(labels)}"
+    assert "guarded_private" in labels, (
+        f"single-clause guarded defp dropped: {sorted(labels)}"
+    )
+
+
 # ── Objective-C ──────────────────────────────────────────────────────────────
 from graphify.extract import extract_objc
 
@@ -3974,3 +4015,25 @@ def test_zig_enum_and_union_methods_are_extracted(tmp_path):
         for e in r["edges"] if e["relation"] == "calls"
     }
     assert (".area()", "helper()") in calls, "call from union method body dropped"
+
+
+@_needs_commonlisp
+def test_cl_ids_are_path_qualified_across_directories(tmp_path):
+    """Two same-named .lisp files in DIFFERENT directories must mint distinct
+    ids (#1504). The prefix was derived from the bare `path.stem`, so both
+    `a/sample.lisp` and `b/sample.lisp` minted `sample` / `sample_init`; when
+    they land in separate extract batches (what `graphify update` does) build()
+    merges them and one file's nodes are dropped."""
+    a = tmp_path / "a" / "sample.lisp"
+    b = tmp_path / "b" / "sample.lisp"
+    for p in (a, b):
+        p.parent.mkdir(parents=True)
+        p.write_text("(defun init (x) (+ x 1))\n")
+
+    ids_a = {n["id"] for n in extract_commonlisp(a)["nodes"]}
+    ids_b = {n["id"] for n in extract_commonlisp(b)["nodes"]}
+
+    assert not (ids_a & ids_b), (
+        f"same-named .lisp files in different dirs must not share ids, "
+        f"got overlap {sorted(ids_a & ids_b)}"
+    )

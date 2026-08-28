@@ -6,6 +6,19 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 - Feature: add an explicit, optional `copilot-sdk` semantic-extraction backend using the user's existing GitHub Copilot authentication. Requests use isolated no-tool sessions, support inline images, and are never replayed after an uncertain post-dispatch failure.
 
+## 0.9.51 (2026-08-28)
+
+- Fix: the incomplete-build shrink guard now stays armed when a chunk came back hollow, unparseable, or omitting files, so a run that silently lost content can no longer overwrite the existing graph with a smaller one; a complete run and a retry-recovered chunk are unaffected, and `--allow-partial` still overrides (#3105, thanks @abhay-codes07).
+- Fix: `graphify extract --force --code-only` now fully rescans code (instead of skipping unchanged files and keeping stale import/alias resolution) while still carrying the existing document/semantic tier forward (#3125, thanks @hopstreax).
+- Fix: a hyperedge carried from a prior `graph.json` now has its members routed through the dedup survivor remap, so it no longer dangles when one of its members is merged away; an unresolvable member is dropped gracefully (#3102, thanks @abhay-codes07).
+- Fix: the cache's atexit stat-index flush no longer recreates a `graphify-out/` tree that was deleted during the run, so a removed corpus stays removed (#2974, thanks @abhay-codes07).
+- Fix: Leiden clustering canonicalizes undirected edge endpoints before sorting, so community assignments no longer drift across builds or machines from networkx yielding an edge's endpoints in a different order (thanks @ErichKinuya).
+- Fix: a TypeScript/JavaScript `new Foo()` now emits a `calls` edge to the constructed class (member, chained, and generic forms), so constructor usage is visible; built-in globals like `new Map()` / `new Promise()` are not fabricated (#3116, thanks @hopstreax).
+- Fix: an Elixir function whose only clause carries a `when` guard (`def foo(x) when is_integer(x), do: ...`) is now extracted, not dropped; multi-clause, multi-condition guards, and `defp` are handled (#3111, thanks @santhiprakash).
+- Fix: Common Lisp node ids are now derived from the full path stem like every other extractor, so two same-basename `.lisp` files in different directories no longer collide on merge (thanks @guitelesc).
+- Perf: Leiden clustering now calls the `graspologic_native` binding directly instead of importing the full `graspologic` package, avoiding its heavy import chain (umap / pynndescent / numba JIT); clustering output is unchanged, and it falls back to the `graspologic` wrapper and then NetworkX Louvain when the native binding is absent (#3104, thanks @Mohammad-Palla).
+- Docs: the README now documents the git workflow for keeping the graph in sync — commits and branch switches rebuild automatically via the installed hooks, while `git pull` / `git merge` need a manual `graphify update .` (thanks @Mohammad-Palla).
+
 ## 0.9.50 (2026-08-25)
 
 - Fix: Ruby methods whose names end in `!`, `?`, or `=` now keep distinct node ids, so `save` and `save!` (or `foo` and `foo=`) no longer collide into one node; the label keeps the raw spelling and member-call resolution still matches (#3077, thanks @hopstreax).
