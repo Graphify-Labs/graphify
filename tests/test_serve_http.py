@@ -361,3 +361,37 @@ def test_cli_api_key_from_env(monkeypatch):
     monkeypatch.setattr(serve_mod, "serve_http", lambda gp, **k: captured.update(**k))
     serve_mod._main(["g.json", "--transport", "http"])
     assert captured["api_key"] == "from-env"
+
+
+def _ambiguous_graph_file(tmp_path: Path) -> str:
+    """A graph where the label 'extract' matches two nodes in different files."""
+    graph = {
+        "directed": True,
+        "nodes": [
+            {"id": "a", "label": "extract", "community": 0, "source_file": "a/x.py"},
+            {"id": "b", "label": "extract", "community": 0, "source_file": "b/y.py"},
+            {"id": "u", "label": "unique_helper", "community": 0, "source_file": "c/z.py"},
+        ],
+        "edges": [
+            {"source": "a", "target": "u", "relation": "calls", "confidence": "EXTRACTED"},
+        ],
+    }
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps(graph), encoding="utf-8")
+    return str(p)
+
+
+def test_get_node_and_get_neighbors_agree_on_ambiguous_label(tmp_path):
+    """ADR-0001 finding 1: get_node must not silently return a G.nodes()
+    iteration-order match for a hub name while get_neighbors reports the same
+    lookup as ambiguous. Both now route through the shared resolver."""
+    app = serve_mod._build_http_app(_ambiguous_graph_file(tmp_path), json_response=True)
+    with _client(app) as client:
+        headers = _init_session(client)
+        node = _call_tool(client, headers, "get_node", {"label": "extract"}, rid=2)
+        neighbors = _call_tool(client, headers, "get_neighbors", {"label": "extract"}, rid=3)
+        assert node.startswith("Ambiguous:"), node
+        assert neighbors.startswith("Ambiguous:"), neighbors
+        # A unique label still resolves cleanly on get_node.
+        unique = _call_tool(client, headers, "get_node", {"label": "unique_helper"}, rid=4)
+        assert "Node: unique_helper" in unique, unique
