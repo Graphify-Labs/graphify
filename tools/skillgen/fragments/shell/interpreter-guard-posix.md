@@ -9,6 +9,9 @@ if [ ! -f graphify-out/.graphify_python ]; then
         case "$PYTHON" in */env\ *) PYTHON="${PYTHON#*/env }" ;; esac
         PYTHON="${PYTHON%% *}"
         case "$PYTHON" in *[!a-zA-Z0-9/_.@-]*) PYTHON="python3" ;; esac
+        if [ "$PYTHON" != "python3" ] && ! "$PYTHON" -c "import graphify" 2>/dev/null; then
+            PYTHON="python3"
+        fi
     else
         PYTHON="python3"
     fi
