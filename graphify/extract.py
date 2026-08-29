@@ -54,6 +54,7 @@ from graphify.extractors.powershell import extract_powershell, extract_powershel
 from graphify.extractors.razor import extract_razor  # noqa: F401
 from graphify.extractors.rust import extract_rust  # noqa: F401
 from graphify.extractors.sln import extract_sln  # noqa: F401
+from graphify.extractors.systemd import SYSTEMD_UNIT_EXTENSIONS, extract_systemd  # noqa: F401
 from graphify.extractors.sql import extract_sql  # noqa: F401
 from graphify.extractors.terraform import extract_terraform  # noqa: F401
 from graphify.extractors.verilog import extract_verilog  # noqa: F401
@@ -5446,6 +5447,8 @@ _DISPATCH: dict[str, Any] = {
     ".dmf": extract_dmf,
     ".sln": extract_sln,
     ".slnx": extract_slnx,
+    # systemd units (#2848): .service .timer .socket .target .path .mount .slice
+    **{ext: extract_systemd for ext in sorted(SYSTEMD_UNIT_EXTENSIONS)},
     ".csproj": extract_csproj,
     ".fsproj": extract_csproj,
     ".vbproj": extract_csproj,

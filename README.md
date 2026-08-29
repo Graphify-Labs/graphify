@@ -343,6 +343,7 @@ To remove graphify from all platforms at once: `graphify uninstall` (add `--purg
 | Terraform / HCL | `.tf .tfvars .hcl` (requires `uv tool install graphifyy[terraform]`) |
 | OCaml | `.ml .mli` (requires `uv tool install graphifyy[ocaml]`) |
 | Common Lisp | `.lisp .cl .lsp .asd` (requires `uv tool install graphifyy[commonlisp]`) |
+| systemd units | `.service .timer .socket .target .path .mount .slice` (INI, no grammar) — a timer/socket/path `activates` its unit, a service `runs` the script named by `ExecStart=`, `Documentation=file://` becomes `documented_by`, and `After=`/`Wants=`/`Requires=`/`WantedBy=`… become unit→unit edges (only to units in the same directory, so the host's `network.target` is never fabricated) |
 | MCP configs | `.mcp.json` `mcp.json` `mcp_servers.json` `claude_desktop_config.json` — extracts server nodes, package refs, env var requirements |
 | Package manifests | `apm.yml` `pyproject.toml` `go.mod` `pom.xml` — one canonical package node per package (by name) plus `depends_on` edges, so a package referenced from many manifests is a single hub |
 | Docs | `.md .mdx .qmd .html .txt .rst .yaml .yml` (markdown `[text](./other.md)` links and `[[wikilinks]]` become `references` edges between docs) |
