@@ -506,6 +506,532 @@ def test_sql_no_dangling_edges():
     for e in r["edges"]:
         assert e["source"] in node_ids, f"dangling source: {e['source']}"
 
+def test_sql_tsql_bracketed_procedure_is_recovered(tmp_path):
+    """T-SQL CREATE PROCEDURE [Schema].[Name] ... AS BEGIN...END.
+
+    The grammar has no create_procedure parse for T-SQL's AS BEGIN...END body
+    idiom, so the statement lands in ERROR recovery — where a name pattern
+    without a bracket-delimited alternative recovered nothing. In a T-SQL
+    codebase that brackets every identifier (a common house standard), that
+    made every stored procedure invisible.
+    """
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "proc.sql"
+    p.write_text(
+        "CREATE PROCEDURE [dbo].[usp_LoadDebtors]\n"
+        "    @BatchId INT\n"
+        "AS\n"
+        "BEGIN\n"
+        "    SET NOCOUNT ON;\n"
+        "    INSERT INTO dbo.Debtors (Id) SELECT Id FROM staging.Debtors;\n"
+        "END;\n"
+    )
+    r = extract_sql(p)
+    routine = [n["label"] for n in r["nodes"] if n["label"] != "proc.sql"]
+    assert routine == ["[dbo].[usp_LoadDebtors]()"], routine
+
+
+def test_sql_tsql_create_or_alter_procedure_is_recovered(tmp_path):
+    """T-SQL spells idempotent re-creation CREATE OR ALTER (no OR REPLACE)."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "proc.sql"
+    p.write_text(
+        "CREATE OR ALTER PROCEDURE [Utils].[ValidateSourceView]\n"
+        "AS\nBEGIN\n    SELECT 1;\nEND;\n"
+        "CREATE OR ALTER PROCEDURE usp_Bare AS\nBEGIN\n SELECT 1;\nEND;\n"
+    )
+    r = extract_sql(p)
+    labels = sorted(n["label"] for n in r["nodes"] if n["label"] != "proc.sql")
+    assert labels == ["[Utils].[ValidateSourceView]()", "usp_Bare()"], labels
+
+
+def test_sql_escaped_closing_bracket_in_routine_name_is_consumed(tmp_path):
+    """T-SQL escapes a literal ] inside a bracketed identifier by doubling it:
+    [a]]b] names the identifier a]b. A pattern that stops at the first ]
+    truncated the name to [dbo].[a] — a phantom that could collide with a
+    genuinely-named [dbo].[a]."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "proc.sql"
+    p.write_text("CREATE PROCEDURE [dbo].[a]]b]\nAS\nBEGIN\n    SELECT 1;\nEND;\n")
+    r = extract_sql(p)
+    routine = [n["label"] for n in r["nodes"] if n["label"] != "proc.sql"]
+    assert routine == ["[dbo].[a]]b]()"], routine
+
+
+def test_sql_recovery_sites_agree_on_the_captured_name(tmp_path):
+    """A mixed-delimiter name (dbo.[usp_Mixed]) must yield exactly ONE node.
+
+    The walk-time ERROR scan and the whole-file has_error fallback recover the
+    same statement; when their patterns drifted, they captured different names
+    (`dbo.[usp_Mixed]` vs `dbo`), minted different ids, and _add_node's
+    id-dedupe never fired — one procedure became two nodes, one of them a
+    phantom named after the schema. Sharing _ROUTINE_RECOVERY_RX makes the
+    drift impossible; this pins the observable behaviour.
+    """
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "proc.sql"
+    p.write_text("CREATE PROCEDURE dbo.[usp_Mixed] AS\nBEGIN\n SELECT 1;\nEND;\n")
+    r = extract_sql(p)
+    routine = [n["label"] for n in r["nodes"] if n["label"] != "proc.sql"]
+    assert routine == ["dbo.[usp_Mixed]()"], routine
+
+
+def test_sql_tsql_proc_shorthand_is_recovered(tmp_path):
+    """T-SQL's official PROC shorthand, including CREATE OR ALTER PROC with a
+    qualified bracket-delimited name, must recover like the long form."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "proc.sql"
+    p.write_text(
+        "CREATE OR ALTER PROC [dbo].[usp_Short]\n"
+        "AS\nBEGIN\n    SELECT 1;\nEND;\n"
+        "CREATE PROC usp_BareShort AS\nBEGIN\n SELECT 1;\nEND;\n"
+    )
+    r = extract_sql(p)
+    labels = sorted(n["label"] for n in r["nodes"] if n["label"] != "proc.sql")
+    assert labels == ["[dbo].[usp_Short]()", "usp_BareShort()"], labels
+
+
+def test_sql_commented_ddl_is_not_fabricated_by_error_recovery(tmp_path):
+    """An unrelated syntax error arms the whole-file recovery scan; DDL that
+    exists only inside comments must not fabricate routine nodes from it."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "broken.sql"
+    p.write_text(
+        "-- CREATE PROCEDURE [dbo].[usp_LineComment] AS BEGIN SELECT 1; END;\n"
+        "/*\nCREATE OR ALTER PROC dbo.usp_BlockComment AS\nBEGIN SELECT 1; END;\n*/\n"
+        "CREATE PROCEDURE [dbo].[usp_Real]\nAS\nBEGIN\n    SELECT 1;\nEND;\n"
+        "THIS IS NOT SQL AT ALL %%%;\n"
+        # Sandwiched between broken segments so one ERROR blob's byte span
+        # covers the comment — the shape that made a per-ERROR-node scan
+        # unsound (a fragment can lack the comment opener entirely) and is
+        # why recovery scans only the whole masked file:
+        "%%% BROKEN JUNK\n"
+        "-- CREATE PROC [dbo].[usp_ErrComment] AS BEGIN SELECT 1; END;\n"
+        "%%% MORE BROKEN JUNK\n"
+    )
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"] if n["label"] != "broken.sql"]
+    assert "[dbo].[usp_Real]()" in labels, labels
+    assert not any("Comment" in l for l in labels), (
+        f"commented-out DDL fabricated a node: {labels}"
+    )
+
+
+def test_sql_comment_openers_inside_string_literals_do_not_hide_ddl(tmp_path):
+    """A `--` or `/*` inside a string literal is data, not a comment opener.
+
+    Both recovery scans mask comments before matching, and a mask that reads
+    `'-- note'` as a line comment blanks to end-of-line — hiding a routine
+    declared after the literal — while a `/*` inside a string blanks
+    everything through the next real `*/`, swallowing whole statements
+    between. Both must recover normally. This is behavior coverage: the
+    grammar's own fb_proc_or_trigger recovery can rescue these shapes even
+    under a literal-blind mask, so the mutation-killing pin for the mask
+    itself is test_mask_sql_comments_preserves_literals_and_blanks_comments.
+    """
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "strings.sql"
+    # The lines carrying the literals start with junk so they cannot parse as
+    # proper statements: literal and routine land in the SAME ERROR blob, and
+    # only the mask decides whether the routine survives. (A literal in a
+    # statement that parses never reaches the masked scans at all.)
+    p.write_text(
+        "%%% INSERT INTO log VALUES ('-- note'); "
+        "CREATE PROCEDURE [dbo].[usp_AfterLineString] AS BEGIN SELECT 1; END;\n"
+        "%%% SELECT 'open /* here' AS x; "
+        "CREATE PROCEDURE [dbo].[usp_AfterBlockString] AS BEGIN SELECT 1; END;\n"
+        "/* a real comment, giving the false opener a closer to reach */\n"
+    )
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"] if n["label"] != "strings.sql"]
+    assert "[dbo].[usp_AfterLineString]()" in labels, labels
+    assert "[dbo].[usp_AfterBlockString]()" in labels, labels
+
+
+def test_mask_sql_comments_literal_and_comment_handling():
+    """Unit pin for _mask_sql_comments: comment openers inside literals are
+    data, not comment starts; single-quoted strings are blanked (dynamic SQL
+    must not be recoverable); double-quoted and bracket identifiers are
+    preserved verbatim (they carry recoverable names); comments blank to
+    spaces with newlines and offsets preserved, an unclosed block comment
+    running to end-of-file."""
+    from graphify.extractors.sql import _mask_sql_comments as mask
+
+    # a comment opener inside a literal never blanks past the literal
+    assert mask("select '-- x' from t") == "select        from t"
+    assert mask("select 'a /* b' as x, 1") == "select          as x, 1"
+    # '' escape is consumed as one literal (no blanking past the string)
+    src = "select 'it''s -- ok', 1"
+    expected = "select " + " " * len("'it''s -- ok'") + ", 1"
+    assert mask(src) == expected and len(mask(src)) == len(src)
+    # identifier literals are preserved verbatim, escapes included
+    assert mask('CREATE FUNCTION "public"."a""b"()') == 'CREATE FUNCTION "public"."a""b"()'
+    assert mask("CREATE PROCEDURE [dbo].[a]]b] AS x") == "CREATE PROCEDURE [dbo].[a]]b] AS x"
+    # ...but a span that is unterminated or would swallow a comment opener is
+    # NOT trusted as an identifier. A distrusted span is irreducibly
+    # ambiguous, and any single reading exposed text another reading blanks
+    # (re-emitting the delimiter and rescanning even re-paired later single
+    # quotes, uncovering dynamic SQL), so the mask blanks the UNION of every
+    # reading: the rest of the line, plus carried comment state for a raw /*
+    # left open on it. The trade: a genuine [a--b] identifier loses its line,
+    # never fabricating anything.
+    ghost = "SELECT [Col FROM t -- CREATE PROC [dbo].[usp_Ghost] AS BEGIN SELECT 1; END;"
+    assert "CREATE" not in mask(ghost) and len(mask(ghost)) == len(ghost)
+    ghost2 = 'SELECT "Col FROM t /* CREATE PROC dbo.usp_Ghost AS BEGIN SELECT 1; END */'
+    assert "CREATE" not in mask(ghost2) and len(mask(ghost2)) == len(ghost2)
+    out = mask("select [a--b] from t")
+    assert out == "select " + " " * len("[a--b] from t") and len(out) == len("select [a--b] from t")
+    # a distrusted span cannot re-pair later single quotes: the dynamic SQL
+    # after it stays masked (the re-emit-and-rescan defect, found by fuzzing)
+    repair = "SELECT [Col's -- x] ; EXEC(N'CREATE PROC [dbo].[usp_Fake] AS BEGIN SELECT 1; END');"
+    assert "CREATE" not in mask(repair) and len(mask(repair)) == len(repair)
+    # a raw /* on a distrusted line with no */ carries across the newline —
+    # some reading of the broken line left it open
+    carry = "SELECT [a--b] /*\nCREATE PROC dbo.Fake AS BEGIN SELECT 1; END\n"
+    assert "CREATE" not in mask(carry) and len(mask(carry)) == len(carry)
+    # where a carry closes MID-line, the remainder of that line is blanked
+    # too (under the no-carry reading the whole line may be comment or
+    # string — emitting the post-*/ tail verbatim was an exposure, found by
+    # differential fuzzing); recovery resumes on the NEXT line
+    carry_closed = "SELECT [a--b] /*\nx */ CREATE PROC dbo.Lost AS x\nCREATE PROC dbo.Kept AS x\n"
+    out = mask(carry_closed)
+    assert "dbo.Lost" not in out and len(out) == len(carry_closed)
+    assert "CREATE PROC dbo.Kept" in out
+    # and a fresh /* after the close carries again
+    recarry = "SELECT [a--b] /*\nx */ y /*\nCREATE PROC dbo.Ghost3 AS x\n"
+    assert "Ghost3" not in mask(recarry)
+    # dynamic SQL contents cannot survive the mask
+    dyn = "EXEC(N'CREATE PROC [dbo].[Fake] AS BEGIN SELECT 1; END');"
+    assert "CREATE" not in mask(dyn) and len(mask(dyn)) == len(dyn)
+    # comments blank to spaces, newlines kept, offsets stable
+    assert mask("a -- b") == "a     "
+    assert mask("x /* y */ z") == "x         z"
+    masked = mask("a /* m\nl */ b")
+    assert masked == "a     \n     b" and len(masked) == len("a /* m\nl */ b")
+    # an unclosed block comment masks to end-of-file, newlines kept
+    unclosed = "/* CREATE PROC [dbo].[Ghost] AS\nBEGIN SELECT 1; END"
+    assert "CREATE" not in mask(unclosed) and len(mask(unclosed)) == len(unclosed)
+    # a /* inside a MULTI-LINE string is consumed as (blanked, line-scoped)
+    # string content — it must NOT open a comment that swallows the file
+    multi = (
+        "SET @sql = N'SELECT a /* c1\n , b FROM t';\nGO\n"
+        "CREATE PROCEDURE dbo.usp_Real AS BEGIN SELECT 1; END;\n"
+    )
+    out = mask(multi)
+    assert "CREATE PROCEDURE dbo.usp_Real" in out and len(out) == len(multi)
+    # block comments NEST (SQL Server and PostgreSQL both nest /* */): DDL
+    # commented out inside a nested comment must not survive the mask
+    nested = "/* outer\n   /* inner */\n   CREATE PROC dbo.usp_Fake AS BEGIN SELECT 1; END;\n*/\n"
+    out = mask(nested)
+    assert "CREATE" not in out and len(out) == len(nested)
+
+
+def test_mask_sql_comments_invariants_fuzz():
+    """Deterministic fuzz over the mask's structural invariants.
+
+    Both rounds of masking defects were shapes nobody thought to write down,
+    so pin properties instead: (1) one output character per input character,
+    (2) newlines exactly preserved, (3) blanked spans are spaces, (4) the
+    mask is idempotent — re-masking its own output changes nothing (the
+    quote re-pairing defect broke this: exposed text re-masked differently).
+    """
+    import random
+
+    from graphify.extractors.sql import _mask_sql_comments as mask
+
+    rng = random.Random(0xC0FFEE)
+    alphabet = "ab[]\"'-*/ \n;.$"
+    for _ in range(20_000):
+        s = "".join(rng.choice(alphabet) for _ in range(rng.randint(1, 26)))
+        out = mask(s)
+        assert len(out) == len(s), (s, out)
+        for a, b in zip(s, out):
+            assert (a == "\n") == (b == "\n"), (s, out)
+            assert b == a or b == " ", (s, out)
+        assert mask(out) == out, (s, out)
+
+
+# Frozen copy of _mask_sql_comments as of the 2026-08-24 hardening series,
+# for the differential monotonicity fuzz below. Deliberately NOT imported
+# from graphify: the point is that future edits to the live mask are
+# compared against this fixed baseline. Update it only when a deliberate,
+# reviewed decision changes what the mask must blank.
+def _frozen_mask_2026_08_24(text: str) -> str:
+    """Blank comment and string-literal spans, preserving every offset.
+
+    One output character per input character: non-newline characters inside
+    a blanked span become spaces and newlines are kept, so positions and
+    line numbers computed against the masked text are valid against the
+    original. Double-quoted and bracket-delimited identifiers are preserved
+    verbatim (they carry recoverable routine names); single-quoted strings,
+    line comments, and (nesting-aware) block comments are blanked. Used by
+    both routine-recovery scans so CREATE PROCEDURE/FUNCTION DDL reachable
+    only through a comment or a single-quoted string cannot fabricate a
+    routine node when an unrelated parse error arms recovery.
+    """
+    out: list[str] = []
+    i, n = 0, len(text)
+
+    def _blank(upto: int) -> int:
+        """Blank [i, upto), keeping newlines; return upto."""
+        for c in text[i:upto]:
+            out.append("\n" if c == "\n" else " ")
+        return upto
+
+    def _blank_tail_and_carry(start: int) -> int:
+        """Blank from start to end-of-line, carrying comment state forward.
+
+        The union-of-readings blank for an ambiguous stretch: the rest of the
+        line is blanked outright; if the raw text of that stretch leaves a /*
+        unclosed on its own line (the maximum comment depth any reading could
+        be left holding), blanking continues, nesting-aware, to the closing
+        */ or EOF. Where a carry closes MID-line the same rule applies to the
+        remainder of that line — under the reading where the carry never
+        opened, that whole line may be a comment or a string, so emitting the
+        post-*/ text verbatim exposed it (found by differential fuzzing).
+        Repeats until a line ends with no carry pending. Appends one output
+        character per input character; returns the resume index.
+        """
+        k = start
+        while True:
+            eol = text.find("\n", k)
+            eol = n if eol == -1 else eol
+            depth = 0
+            m2 = k
+            while m2 < eol:
+                if text.startswith("/*", m2):
+                    depth += 1
+                    m2 += 2
+                elif text.startswith("*/", m2):
+                    if depth:
+                        depth -= 1
+                    m2 += 2
+                else:
+                    m2 += 1
+            for ch in text[k:eol]:
+                out.append("\n" if ch == "\n" else " ")
+            k = eol
+            if not depth:
+                return k
+            j2 = k
+            while j2 < n and depth:
+                if text.startswith("/*", j2):
+                    depth += 1
+                    j2 += 2
+                elif text.startswith("*/", j2):
+                    depth -= 1
+                    j2 += 2
+                else:
+                    j2 += 1
+            for ch in text[k:j2]:
+                out.append("\n" if ch == "\n" else " ")
+            k = j2
+            if k >= n:
+                return k
+            # the carry closed mid-line: the remainder of THIS line is the
+            # same ambiguous stretch — loop and blank it too
+
+    while i < n:
+        c = text[i]
+        if c == "'":
+            # Single-quoted string: blank it. '' is an escaped quote; a
+            # newline abandons the literal (see the comment above).
+            j = i + 1
+            while j < n and text[j] != "\n":
+                if text[j] == "'":
+                    if j + 1 < n and text[j + 1] == "'":
+                        j += 2
+                        continue
+                    j += 1
+                    break
+                j += 1
+            i = _blank(j)
+        elif c == '"' or c == "[":
+            # Delimited identifier: preserve verbatim. Doubled closers are
+            # escapes. A span is DISTRUSTED when it is unterminated (no
+            # closer before the newline) or would swallow a comment opener
+            # on its way to the closer ('SELECT [Col FROM t -- CREATE PROC
+            # [dbo]' closes on [dbo]'s bracket) — a stray delimiter is
+            # ordinary in exactly the broken files this mask runs on.
+            #
+            # A distrusted span is irreducibly ambiguous (identifier data vs
+            # stray delimiter before real comments/strings), and any attempt
+            # to pick one reading exposed text the other reading blanks —
+            # re-emitting the delimiter and rescanning even re-paired later
+            # single quotes and uncovered dynamic SQL. So blank the UNION of
+            # every reading: the rest of the line is blanked outright, and
+            # any raw /* on it with no later */ on the same line carries
+            # forward as (nesting-aware) comment state, since some reading
+            # may have left it open — and where that carry closes mid-line,
+            # the remainder of THAT line gets the same treatment, repeated
+            # until a line ends carry-free (under the no-carry reading the
+            # close line may itself be all comment or string, so emitting its
+            # post-*/ tail verbatim was an exposure). Over-blanking loses at
+            # most routines on lines already entangled with the broken one (a
+            # conservative false negative; a routine named like [a--b] is
+            # inside that loss); under-blanking is what fabricates, and every
+            # reading's blank set stays a subset of this one.
+            closer = '"' if c == '"' else "]"
+            j = i + 1
+            closed = False
+            while j < n and text[j] != "\n":
+                if text[j] == closer:
+                    if j + 1 < n and text[j + 1] == closer:
+                        j += 2
+                        continue
+                    j += 1
+                    closed = True
+                    break
+                j += 1
+            span = text[i:j]
+            if closed and "--" not in span and "/*" not in span:
+                out.append(span)
+                i = j
+            else:
+                i = _blank_tail_and_carry(i)
+        elif c == "-" and i + 1 < n and text[i + 1] == "-":
+            j = i
+            while j < n and text[j] != "\n":
+                j += 1
+            i = _blank(j)
+        elif c == "/" and i + 1 < n and text[i + 1] == "*":
+            depth, j = 1, i + 2
+            while j < n and depth:
+                if text[j] == "/" and j + 1 < n and text[j + 1] == "*":
+                    depth += 1
+                    j += 2
+                elif text[j] == "*" and j + 1 < n and text[j + 1] == "/":
+                    depth -= 1
+                    j += 2
+                else:
+                    j += 1
+            i = _blank(j)  # unclosed comment: j == n, blanks to end-of-file
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
+def test_mask_sql_comments_monotone_against_frozen_baseline():
+    """Differential fuzz: the live mask must never EXPOSE a character the
+    frozen baseline blanks. Blanking more is allowed (conservative); blanking
+    less is the fabrication channel — every masking defect in the 2026-08-24
+    series (quote re-pairing, carry-close exposure) was a monotonicity
+    violation of exactly this kind, and none was caught by hand-written
+    shapes first.
+
+    If an INTENTIONAL over-blanking change lands (the live mask blanks more
+    than the baseline), this still passes; if an intentional EXPOSURE change
+    lands (the mask deliberately blanks less), refresh the frozen copy above
+    to the new revision as part of that reviewed change — do not delete the
+    test or loosen the property.
+    """
+    import random
+
+    from graphify.extractors.sql import _mask_sql_comments as mask
+
+    rng = random.Random(0xBA5E11E)
+    alphabet = "ab[]\"'-*/ \n;.$"
+    for _ in range(20_000):
+        s = "".join(rng.choice(alphabet) for _ in range(rng.randint(1, 40)))
+        live = mask(s)
+        base = _frozen_mask_2026_08_24(s)
+        assert len(live) == len(base) == len(s)
+        for idx, (b, lv, orig) in enumerate(zip(base, live, s)):
+            if b == " " and orig != " ":
+                assert lv == " ", (
+                    f"live mask exposes char {idx} ({orig!r}) that the frozen "
+                    f"baseline blanks:\n input={s!r}\n base={base!r}\n live={live!r}"
+                )
+
+
+def test_sql_dynamic_sql_and_unclosed_comment_do_not_fabricate_routines(tmp_path):
+    """DDL text reachable only through a single-quoted string (dynamic SQL) or
+    an unterminated block comment must not mint routine nodes when an
+    unrelated parse error arms the recovery scans."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "dynamic.sql"
+    p.write_text(
+        "THIS IS NOT SQL AT ALL %%%;\n"
+        "EXEC(N'CREATE OR ALTER PROC [dbo].[usp_Dynamic] AS BEGIN SELECT 1; END');\n"
+        "SET @sql = N'SELECT 1 /* opener inside a multi-line string\n"
+        " must not swallow what follows';\n"
+        "/* nested /* comments */ hide this:\n"
+        "CREATE PROC [dbo].[usp_Nested] AS BEGIN SELECT 1; END;\n*/\n"
+        "SELECT [Col FROM t -- CREATE PROC [dbo].[usp_Bracketed] AS BEGIN SELECT 1; END;\n"
+        "CREATE PROCEDURE [dbo].[usp_Real]\nAS\nBEGIN\n    SELECT 1;\nEND;\n"
+        "/* an unterminated comment swallows the rest of the file\n"
+        "CREATE PROC [dbo].[usp_Unterminated] AS BEGIN SELECT 1; END;\n"
+    )
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"] if n["label"] != "dynamic.sql"]
+    assert "[dbo].[usp_Real]()" in labels, labels
+    fabricated = [
+        label for label in labels
+        if any(k in label for k in ("Dynamic", "Nested", "Bracketed", "Unterminated"))
+    ]
+    assert not fabricated, (
+        f"string-embedded or comment-swallowed DDL fabricated a node: {labels}"
+    )
+
+
+def test_sql_ddl_keywords_inside_delimited_identifiers_do_not_fabricate(tmp_path):
+    """A preserved delimited identifier keeps its text verbatim in the masked
+    scan (it may BE a recoverable name), so DDL keywords occurring inside one
+    ('SELECT 1 AS [CREATE PROCEDURE dbo.usp_Phantom pending]') were matched
+    by the recovery regex and minted a phantom routine. Recovery now skips a
+    match whose CREATE starts inside a preserved identifier span — a genuine
+    statement's NAME may be a delimited identifier; its CREATE never is."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "alias.sql"
+    p.write_text(
+        "THIS IS NOT SQL AT ALL %%%;\n"
+        "SELECT 1 AS [CREATE PROCEDURE dbo.usp_Phantom pending];\n"
+        'SELECT 2 AS "CREATE PROC dbo.usp_Phantom2 queued";\n'
+        "CREATE PROCEDURE [dbo].[usp_Real]\nAS\nBEGIN\n    SELECT 1;\nEND;\n"
+    )
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"] if n["label"] != "alias.sql"]
+    assert labels == ["[dbo].[usp_Real]()"], labels
+
+
+def test_sql_create_inside_a_bare_word_does_not_fabricate(tmp_path):
+    """CREATE must match as a word: without a leading boundary the recovery
+    regex matched CREATE inside a bare identifier, so 'SELECT AUTOCREATE
+    PROCEDURE x FROM t;' in an error-bearing file minted a phantom x().
+    (Delimited identifiers are span-skipped at the scan site; a bare word
+    has no span, so the regex itself must refuse.)"""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "bare.sql"
+    p.write_text(
+        "THIS IS NOT SQL AT ALL %%%;\n"
+        "SELECT AUTOCREATE PROCEDURE x FROM t;\n"
+        "EXEC dbo.PRECREATE FUNCTION y;\n"
+        "CREATE PROCEDURE [dbo].[usp_Real]\nAS\nBEGIN\n    SELECT 1;\nEND;\n"
+    )
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"] if n["label"] != "bare.sql"]
+    assert labels == ["[dbo].[usp_Real]()"], labels
+
+
+def test_sql_escaped_double_quote_in_routine_name_is_consumed(tmp_path):
+    """ANSI SQL escapes a literal double quote inside a delimited identifier
+    by doubling it: "a""b" names the identifier a"b. A pattern that stops at
+    the first closing quote truncated the recovered name to "dbo"."a" — the
+    "" twin of the bracket ]] escape handled above.
+
+    The AS BEGIN body idiom keeps the whole statement in ERROR recovery: for a
+    statement the grammar CAN parse, tree-sitter-sql itself truncates the
+    object_reference at the "" escape (emitting `"b"` as a stray ERROR child),
+    which is an upstream grammar defect this extractor cannot repair."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "fn.sql"
+    p.write_text('CREATE PROCEDURE "dbo"."a""b"\nAS\nBEGIN\n    SELECT 1;\nEND;\n')
+    r = extract_sql(p)
+    routine = [n["label"] for n in r["nodes"] if n["label"] != "fn.sql"]
+    assert routine == ['"dbo"."a""b"()'], routine
+
+
 def test_sql_cte_is_not_read_as_a_table():
     """#2577: a name bound by WITH ... AS (...) is scoped to its statement, not a table.
 
