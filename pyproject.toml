@@ -83,6 +83,9 @@ sql = ["tree-sitter-sql"]
 # absent (#781), so this stays optional. Unlike tree-sitter-dm below, it ships
 # prebuilt wheels for every platform (win/macOS/Linux), so no C toolchain needed.
 pascal = ["tree-sitter-pascal"]
+# Current tree-sitter-al wheels require Python 3.12+, while graphify supports
+# Python 3.10+. The extractor provides a structural fallback on older runtimes.
+al = ["tree-sitter-al>=4,<5; python_version >= '3.12'"]
 # tree-sitter-dm (BYOND DreamMaker) ships only a Windows wheel, so on Linux/Mac it
 # must compile from source (needs a C toolchain + python3-dev). Keeping it optional
 # avoids breaking the default `uv tool install graphifyy` for everyone (#1104).
@@ -94,7 +97,7 @@ ocaml = ["tree-sitter-ocaml"]
 # tree-sitter-commonlisp ships prebuilt abi3 wheels for every platform; optional
 # because Common Lisp is a niche corpus language.
 commonlisp = ["tree-sitter-commonlisp"]
-all = ["mcp>=1,<3", "starlette>=1.3.1,<2", "neo4j", "falkordb", "pypdf>=6.12.0", "markdownify", "watchdog", "graspologic; python_version < '3.13'", "python-docx", "openpyxl", "faster-whisper; python_version >= '3.11'", "yt-dlp>=2026.6.9", "matplotlib", "numpy>=2.0; python_version >= '3.13'", "openai", "tiktoken", "boto3", "anthropic", "tree-sitter-sql", "jieba", "tree-sitter-dm", "tree-sitter-hcl", "tree-sitter-pascal", "tree-sitter-ocaml", "tree-sitter-commonlisp"]
+all = ["mcp>=1,<3", "starlette>=1.3.1,<2", "neo4j", "falkordb", "pypdf>=6.12.0", "markdownify", "watchdog", "graspologic; python_version < '3.13'", "python-docx", "openpyxl", "faster-whisper; python_version >= '3.11'", "yt-dlp>=2026.6.9", "matplotlib", "numpy>=2.0; python_version >= '3.13'", "openai", "tiktoken", "boto3", "anthropic", "tree-sitter-sql", "jieba", "tree-sitter-dm", "tree-sitter-hcl", "tree-sitter-pascal", "tree-sitter-al>=4,<5; python_version >= '3.12'", "tree-sitter-ocaml", "tree-sitter-commonlisp"]
 
 [project.scripts]
 graphify = "graphify.__main__:main"

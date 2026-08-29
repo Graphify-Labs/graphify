@@ -24,6 +24,7 @@ from .resolver_registry import (
 from .ruby_resolution import resolve_ruby_member_calls
 from .csharp_dispatch import resolve_csharp_interface_dispatch
 from .pascal_resolution import resolve_pascal_inherited_calls
+from .al_resolution import resolve_al_symbols
 
 # --- migrated to graphify/extractors/ (see graphify/extractors/MIGRATION.md) ---
 from graphify.extractors.base import (  # noqa: F401
@@ -62,6 +63,7 @@ from graphify.security import sanitize_metadata
 from graphify.paths import disambiguate_ambiguous_candidates
 
 from graphify.extractors.models import LanguageConfig, _JS_CACHE_BYPASS_SUFFIXES, _NamespaceExportFact, _StarExportFact, _SymbolAliasFact, _SymbolDeclarationFact, _SymbolExportFact, _SymbolImportFact, _SymbolResolutionFacts, _SymbolUseFact, _WORKSPACE_PACKAGE_CACHE  # noqa: E402,F401
+from graphify.extractors.al import extract_al  # noqa: E402,F401
 
 from graphify.extractors.resolution import (  # noqa: E402,F401
     _DECLDEF_HEADER_SUFFIXES,
@@ -4317,6 +4319,9 @@ register_language_resolver(
         resolve_pascal_inherited_calls,
     )
 )
+register_language_resolver(
+    LanguageResolver("al_symbols", frozenset({".al", ".AL"}), resolve_al_symbols)
+)
 # Kotlin fully-qualified call resolution (#2550): `com.pkg.Fn()` /
 # `com.pkg.Object.method()` raw_calls the shared pass skips (member calls with
 # no receiver). Runs in the tail registry like the other member-call resolvers;
@@ -5354,6 +5359,7 @@ def extract_xaml(path: Path) -> dict:
 
 
 _DISPATCH: dict[str, Any] = {
+    ".al": extract_al,
     ".py": extract_python,
     ".js": extract_js,
     ".jsx": extract_js,
@@ -5462,6 +5468,7 @@ _DISPATCH: dict[str, Any] = {
 # rather than falling back like Pascal does. Used by the #1745 warning in
 # extract() to tell the user which extra restores the language.
 _EXTRA_FOR_EXTENSION = {
+    ".al": "al",
     ".sql": "sql",
     ".tf": "terraform",
     ".tfvars": "terraform",
@@ -6083,12 +6090,29 @@ def extract(
     # dependency when there is one.
     _missing_dep_count: dict[str, int] = {}
     _missing_dep_error: dict[str, str] = {}
+    _missing_dep_fallback: dict[str, bool] = {}
     for i, _p in enumerate(paths):
-        _err = (per_file[i] or {}).get("error") or ""
+        _result = per_file[i] or {}
+        _diagnostics = (
+            str(_result.get("dependency_warning") or ""),
+            str(_result.get("error") or ""),
+        )
+        _err = next(
+            (
+                message for message in _diagnostics
+                if _DEP_MISSING_MARKER in message
+                or _DEP_LOAD_FAILED_MARKER in message
+            ),
+            "",
+        )
         if _DEP_MISSING_MARKER in _err or _DEP_LOAD_FAILED_MARKER in _err:
             _ext = _p.suffix.lower()
             _missing_dep_count[_ext] = _missing_dep_count.get(_ext, 0) + 1
             _missing_dep_error.setdefault(_ext, _err)
+            _missing_dep_fallback[_ext] = (
+                _missing_dep_fallback.get(_ext, False)
+                or bool(_result.get("dependency_warning"))
+            )
     for _ext, _n in sorted(_missing_dep_count.items(), key=lambda kv: (-kv[1], kv[0])):
         _extra = _EXTRA_FOR_EXTENSION.get(_ext)
         _err_text = _missing_dep_error[_ext]
@@ -6104,11 +6128,17 @@ def extract(
             _hint = ""
             _cause = ("a dependency is missing" if _DEP_MISSING_MARKER in _err_text
                       else "a dependency failed to load")
-        print(
-            f"  warning: {_n} {_ext} file(s) contributed nothing to the graph "
-            f"because {_cause}: {_reason}.{_hint} (#1745)",
-            file=sys.stderr, flush=True,
-        )
+        if _missing_dep_fallback.get(_ext):
+            _message = (
+                f"  warning: {_n} {_ext} file(s) used fallback extraction because "
+                f"{_cause}: {_reason}.{_hint} (#1745)"
+            )
+        else:
+            _message = (
+                f"  warning: {_n} {_ext} file(s) contributed nothing to the graph "
+                f"because {_cause}: {_reason}.{_hint} (#1745)"
+            )
+        print(_message, file=sys.stderr, flush=True)
 
     # #2551: a file the parser ACCEPTED but only with ERROR recovery (e.g. the
     # Kotlin grammar rejecting one-line `class C { val x }` bodies, or Luau

@@ -3801,6 +3801,61 @@ def test_extract_warns_sql_grammar_failed_to_load(tmp_path, capsys, monkeypatch)
     assert failed == {"schema.sql", "views.sql"}
 
 
+def test_extract_preserves_fallback_warning_across_same_extension(
+    tmp_path, capsys, monkeypatch
+):
+    first = tmp_path / "first.al"
+    second = tmp_path / "second.al"
+    first.write_text("codeunit 1 First { }", encoding="utf-8")
+    second.write_text("codeunit 2 Second { }", encoding="utf-8")
+
+    def mixed_extractor(path):
+        if path == first:
+            return {
+                "nodes": [{"id": "first", "label": "First"}],
+                "edges": [],
+                "dependency_warning": "tree_sitter_al failed to load",
+            }
+        return {
+            "nodes": [],
+            "edges": [],
+            "error": "tree_sitter_al failed to load",
+        }
+
+    monkeypatch.setitem(_DISPATCH, ".al", mixed_extractor)
+
+    extract([first, second], cache_root=tmp_path)
+    err = capsys.readouterr().err
+
+    assert "2 .al file(s) used fallback extraction" in err
+    assert "contributed nothing" not in err
+
+
+def test_extract_preserves_dependency_warning_when_result_also_has_error(
+    tmp_path, capsys, monkeypatch
+):
+    source = tmp_path / "broken.al"
+    source.write_text("codeunit 1 Broken { }", encoding="utf-8")
+
+    monkeypatch.setitem(
+        _DISPATCH,
+        ".al",
+        lambda _path: {
+            "nodes": [{"id": "broken", "label": "Broken"}],
+            "edges": [],
+            "error": "post-processing failed",
+            "dependency_warning": "tree_sitter_al failed to load",
+        },
+    )
+
+    extract([source], cache_root=tmp_path)
+    err = capsys.readouterr().err
+
+    assert "1 .al file(s) used fallback extraction" in err
+    assert "tree_sitter_al failed to load" in err
+    assert "post-processing failed" not in err
+
+
 def test_extract_progress_final_line_uses_consistent_denominator(tmp_path, capsys):
     # #1693: intermediate progress lines count against uncached_work; the final
     # "100%" line must NOT switch to total_files (which includes cached hits and
