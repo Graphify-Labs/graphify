@@ -172,7 +172,10 @@ BACKENDS: dict[str, dict] = {
         "default_model": "deepseek-v4-flash",
         "env_key": "DEEPSEEK_API_KEY",
         "model_env_key": "GRAPHIFY_DEEPSEEK_MODEL",
-        "pricing": {"input": 0.14, "output": 0.28},  # USD per 1M tokens (v4-flash)
+        "pricing": {"input": 0.44, "output": 1.32},  # USD per 1M tokens (v4-flash,
+        # peak, cache miss). Peak is 01:00-04:00 and 06:00-10:00 UTC Mon-Fri;
+        # all other hours are off-peak at half these rates. A cache hit is
+        # $0.014/1M in. Source: api-docs.deepseek.com/quick_start/pricing
         # deepseek-reasoner silently ignores temperature; deepseek-chat / v4-flash
         # accept 0-2, so sending 0 is safe. Note: deepseek-v4-flash (and v4-pro) have
         # thinking ENABLED by default (verified against the live API, #1621) — set
