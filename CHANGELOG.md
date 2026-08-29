@@ -4,6 +4,11 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.52 (unreleased)
 
+- Fix: Razor `@inject`/`@using` in `.razor`/`.cshtml` files now flow through the scope-aware C# type resolver, so an injected service type resolves to its cross-file definition; an external/undeclared type fabricates nothing (partially addresses #3187 — a bare inject of a file-scoped-namespace type still dangles, follow-up) (thanks @hopstreax).
+- Fix: the MCP `prs` tools (`list_prs`, `triage_prs`, `get_pr_impact`) now surface a genuine failure as an MCP error (`isError`) instead of success text, while an empty-but-successful result is unaffected (thanks @noQbot).
+- Fix: the MCP `get_node` tool now resolves a node through the same tiered resolver as `get_neighbors`, so the two agree deterministically instead of `get_node` returning an iteration-order substring match (thanks @noQbot).
+- Fix: a `graphify install --project` (committed/shared) install now emits a bare `graphify` hook command resolved at run time instead of pinning the absolute interpreter path, so the committed hook no longer churns across machines; the global install still pins the absolute path (thanks @davidbhoward).
+- Fix: a sourceless legacy node now backfills its `source_file` from incident-edge provenance, and a deliberately-declined data JSON emits a file-identity node, so freshness/affected checks can see those files; nothing is fabricated or resurrected (thanks @GmailTedam).
 - Fix: a PHP `new Foo()` now emits a `calls` edge to the constructed class (namespaced names resolve to the last segment), completing the object-creation modeling across C# (#2998), TypeScript (#3135), and now PHP; dynamic (`new $var()`), `self`/`static`/`parent`, and unknown external constructions fabricate nothing (#3115, thanks @abhay-codes07).
 - Fix: a method call through a field whose type is declared on an ancestor class now resolves from a subclass — the field-type lookup walks the inheritance chain (per-file for Java/C#, cross-file for Java/Objective-C), cycle-safe and without fabricating edges (#3151, thanks @abhay-codes07).
 - Fix: the Objective-C field-to-type table is now re-keyed alongside the node-id rewrites, so `self.field` / `obj.field` method calls still resolve after `graphify update` normalizes ids (#3150, thanks @abhay-codes07).
