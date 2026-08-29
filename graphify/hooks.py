@@ -246,7 +246,14 @@ except Exception as exc:
 # the real rebuild fully detached and returns immediately, so the hook never
 # blocks. POSIX uses start_new_session (the setsid equivalent); Windows uses
 # CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP, breaking away from any job object
-# when allowed. This payload is carried inside a shell double-quoted -c argument,
+# when allowed. Do NOT 'simplify' CREATE_NO_WINDOW back into DETACHED_PROCESS:
+# on Windows 11 with Windows Terminal as the default console host, a
+# console-less python still gets a VISIBLE console allocated when its runtime
+# touches the console API during startup (ctrl-handler installation), popping
+# an empty Terminal window over whatever the user is doing - once per commit,
+# for the whole rebuild. Reproduced via GetConsoleWindow(): DETACHED_PROCESS
+# child reports a visible hwnd, CREATE_NO_WINDOW child reports none (3bac3df).
+# This payload is carried inside a shell double-quoted -c argument,
 # so it deliberately uses only single-quoted Python strings (no ", $, ` or \\).
 _LAUNCHER_TEMPLATE = """\
 import os, subprocess, sys
