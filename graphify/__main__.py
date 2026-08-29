@@ -160,8 +160,26 @@ def __getattr__(name: str) -> str:
 
 
 
-def _check_skill_version(skill_dst: Path) -> None:
-    """Warn if the installed skill is from an older graphify version."""
+def _check_skill_version(skill_dst: Path, platform_names: "list[str] | None" = None) -> None:
+    """Warn if the installed skill is from an older graphify version.
+
+    ``platform_names`` are the platforms installing into this destination
+    (resolved here when not given - the call site passes one positional
+    argument only, because tests stub this function with one-arg lambdas), so
+    the warning can name the exact command that refreshes THIS copy (#3144):
+    a plain `graphify install` only refreshes the detected platform, and a
+    stale marker at another platform's destination made the warning permanent
+    - the user followed the advice, the warning stayed, and only editing the
+    marker by hand cleared it.
+    """
+    if platform_names is None:
+        try:
+            platform_names = [
+                name for name in _PLATFORM_CONFIG
+                if _platform_skill_destination(name) == skill_dst
+            ]
+        except Exception:
+            platform_names = []
     version_file = skill_dst.parent / ".graphify_version"
     try:
         if not version_file.exists():
@@ -203,7 +221,16 @@ def _check_skill_version(skill_dst: Path) -> None:
                 file=sys.stderr,
             )
         else:
-            print(f"  warning: skill is from graphify {installed}, package is {__version__}. Run 'graphify install' to update.", file=sys.stderr)
+            _cmd = (
+                f"graphify install --platform {platform_names[0]}"
+                if platform_names else "graphify install"
+            )
+            print(
+                f"  warning: skill at {skill_dst.parent} is from graphify {installed}, "
+                f"package is {__version__}. Run '{_cmd}' to update it "
+                f"(a plain 'graphify install' refreshes only the detected platform).",
+                file=sys.stderr,
+            )
 
 
 def _version_tuple(version: str) -> tuple[int, ...]:
