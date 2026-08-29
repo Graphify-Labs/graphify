@@ -2,6 +2,14 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## 0.9.52 (unreleased)
+
+- Fix: a PHP `new Foo()` now emits a `calls` edge to the constructed class (namespaced names resolve to the last segment), completing the object-creation modeling across C# (#2998), TypeScript (#3135), and now PHP; dynamic (`new $var()`), `self`/`static`/`parent`, and unknown external constructions fabricate nothing (#3115, thanks @abhay-codes07).
+- Fix: a method call through a field whose type is declared on an ancestor class now resolves from a subclass — the field-type lookup walks the inheritance chain (per-file for Java/C#, cross-file for Java/Objective-C), cycle-safe and without fabricating edges (#3151, thanks @abhay-codes07).
+- Fix: the Objective-C field-to-type table is now re-keyed alongside the node-id rewrites, so `self.field` / `obj.field` method calls still resolve after `graphify update` normalizes ids (#3150, thanks @abhay-codes07).
+- Fix: TypeScript type-only imports (`import type { T } from './m'`) no longer manufacture false import cycles; the type-only edge is marked and excluded from cycle detection while a mixed `import { type A, B }` keeps its real value-import edge (#3123, thanks @abhay-codes07).
+- Fix: an `import(...)` used as a call type-argument (`f<typeof import('mod')>()`) no longer causes declarations after it to be dropped; the construct is normalized before parsing with source locations preserved (#3185, thanks @hopstreax).
+
 ## 0.9.51 (2026-08-28)
 
 - Fix: the incomplete-build shrink guard now stays armed when a chunk came back hollow, unparseable, or omitting files, so a run that silently lost content can no longer overwrite the existing graph with a smaller one; a complete run and a retry-recovered chunk are unaffected, and `--allow-partial` still overrides (#3105, thanks @abhay-codes07).
