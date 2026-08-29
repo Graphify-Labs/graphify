@@ -1278,6 +1278,48 @@ def _extract_python_rationale(path: Path, result: dict) -> None:
             _add_rationale(stripped, lineno, file_nid)
 
 
+# ── TypeScript import type normalization (#3154) ──────────────────────────────
+# tree-sitter-typescript misparses `import(...)` types used inside explicit call-
+# expression type arguments (e.g. `f<typeof import("mod")>()` or
+# `f<import("mod").Foo>()`) as binary comparison expressions (`<` and `>`).
+# The trailing `();` generates an ERROR node, leaving an open `binary_expression`
+# that absorbs subsequent declarations as anonymous `function_expression` or `class`
+# expressions, silently dropping them from extraction. Normalizing `import(...)`
+# within generic call type arguments `<...>(...)` to a valid type identifier of
+# identical byte length keeps AST parsing clean while preserving source offsets.
+
+_TS_IMPORT_CALL_RE = re.compile(
+    rb"\bimport\s*\(\s*['\"][^'\"\r\n]+['\"]\s*\)"
+)
+_TS_IMPORT_TYPE_CALL_RE = re.compile(
+    rb"<((?:[^;{}]*?\bimport\s*\([^()]+\)[^;{}]*?)+)>(?=\s*\()"
+)
+
+
+def _normalize_ts_import_types(source: bytes) -> bytes | None:
+    """Rewrite TypeScript `import(...)` type arguments in call expressions
+    to standard type identifiers of identical byte length (#3154).
+
+    Preserves byte length, newlines, and source offsets so all downstream node
+    source_location metadata remains 100% accurate.
+    """
+    if rb"import(" not in source and rb"import (" not in source:
+        return None
+
+    def repl_type_args(m: "re.Match[bytes]") -> bytes:
+        type_arg_content = m.group(1)
+
+        def repl_import(im: "re.Match[bytes]") -> bytes:
+            matched = im.group(0)
+            return b"T" + re.sub(rb"[^\r\n]", b" ", matched[1:])
+
+        new_content = _TS_IMPORT_CALL_RE.sub(repl_import, type_arg_content)
+        return b"<" + new_content + b">"
+
+    norm = _TS_IMPORT_TYPE_CALL_RE.sub(repl_type_args, source)
+    return norm if norm != source else None
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def extract_python(path: Path) -> dict:
@@ -1291,13 +1333,21 @@ def extract_python(path: Path) -> dict:
 def extract_js(path: Path) -> dict:
     """Extract classes, functions, arrow functions, and imports from a .js/.ts/.tsx/.mts/.cts file."""
     suffix = path.suffix.lower()
+    is_ts = suffix in (".ts", ".tsx", ".mts", ".cts")
     if suffix == ".tsx":
         config = _TSX_CONFIG
     elif suffix in (".ts", ".mts", ".cts"):
         config = _TS_CONFIG
     else:
         config = _JS_CONFIG
-    result = _extract_generic(path, config)
+    source_override = None
+    if is_ts:
+        try:
+            source = path.read_bytes()
+            source_override = _normalize_ts_import_types(source)
+        except OSError:
+            pass
+    result = _extract_generic(path, config, source_override=source_override)
     if "error" not in result:
         _extract_js_rationale(path, result)
         _rescue_js_dynamic_imports(path, result)
@@ -1762,8 +1812,11 @@ def extract_vue(path: Path) -> dict:
         config = _JS_CONFIG
     else:  # "ts" or unspecified — default to the TS grammar (superset of JS)
         config = _TS_CONFIG
+    masked_bytes = masked.encode("utf-8")
+    if config in (_TS_CONFIG, _TSX_CONFIG):
+        masked_bytes = _normalize_ts_import_types(masked_bytes) or masked_bytes
 
-    result = _extract_generic(path, config, source_override=masked.encode("utf-8"))
+    result = _extract_generic(path, config, source_override=masked_bytes)
 
     # Dynamic `import('…')` calls aren't edged by the AST pass; recover by regex,
     # mirroring extract_svelte/extract_astro.
