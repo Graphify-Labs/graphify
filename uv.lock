@@ -1089,6 +1089,19 @@ wheels = [
 ]
 
 [[package]]
+name = "github-copilot-sdk"
+version = "1.0.11"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx", marker = "python_full_version >= '3.11'" },
+    { name = "pydantic", marker = "python_full_version >= '3.11'" },
+    { name = "python-dateutil", marker = "python_full_version >= '3.11'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/67/ac/175cbb71fe637d963a885248a421040c9d500ea6390ed3b88bc68ecf51ca/github_copilot_sdk-1.0.11-py3-none-any.whl", hash = "sha256:6f664c7b843c34ab5a7455f7effb4d339eae75969d2b72f43c2e6214c9c637dc", size = 486719, upload-time = "2026-08-14T16:12:20.01Z" },
+]
+
+[[package]]
 name = "graphifyy"
 version = "0.9.51"
 source = { editable = "." }
@@ -1132,6 +1145,7 @@ all = [
     { name = "boto3" },
     { name = "falkordb" },
     { name = "faster-whisper", marker = "python_full_version >= '3.11'" },
+    { name = "github-copilot-sdk", marker = "python_full_version >= '3.11'" },
     { name = "graspologic", marker = "python_full_version < '3.13'" },
     { name = "jieba" },
     { name = "markdownify" },
@@ -1162,6 +1176,9 @@ bedrock = [
 ]
 chinese = [
     { name = "jieba" },
+]
+copilot = [
+    { name = "github-copilot-sdk", marker = "python_full_version >= '3.11'" },
 ]
 commonlisp = [
     { name = "tree-sitter-commonlisp" },
@@ -1267,6 +1284,8 @@ requires-dist = [
     { name = "falkordb", marker = "extra == 'falkordb'" },
     { name = "faster-whisper", marker = "python_full_version >= '3.11' and extra == 'all'" },
     { name = "faster-whisper", marker = "python_full_version >= '3.11' and extra == 'video'" },
+    { name = "github-copilot-sdk", marker = "python_full_version >= '3.11' and extra == 'all'", specifier = ">=1.0.11,<2" },
+    { name = "github-copilot-sdk", marker = "python_full_version >= '3.11' and extra == 'copilot'", specifier = ">=1.0.11,<2" },
     { name = "graspologic", marker = "python_full_version < '3.13' and extra == 'all'" },
     { name = "graspologic", marker = "python_full_version < '3.13' and extra == 'leiden'" },
     { name = "jieba", marker = "extra == 'all'" },
@@ -1347,7 +1366,7 @@ requires-dist = [
     { name = "yt-dlp", marker = "extra == 'all'", specifier = ">=2026.6.9" },
     { name = "yt-dlp", marker = "extra == 'video'", specifier = ">=2026.6.9" },
 ]
-provides-extras = ["mcp", "neo4j", "falkordb", "pdf", "watch", "svg", "leiden", "office", "google", "postgres", "video", "kimi", "ollama", "bedrock", "anthropic", "gemini", "openai", "chinese", "sql", "pascal", "dm", "terraform", "ocaml", "commonlisp", "all"]
+provides-extras = ["mcp", "neo4j", "falkordb", "pdf", "watch", "svg", "leiden", "office", "google", "postgres", "video", "kimi", "ollama", "bedrock", "anthropic", "gemini", "openai", "copilot", "chinese", "sql", "pascal", "dm", "terraform", "ocaml", "commonlisp", "all"]
 
 [package.metadata.requires-dev]
 dev = [

@@ -1,5 +1,7 @@
 """Tests for direct semantic-extraction backend selection."""
 
+import json
+import math
 from pathlib import Path
 from unittest.mock import patch
 
@@ -1475,3 +1477,88 @@ def test_max_retry_depth_reads_the_env_var(monkeypatch):
     assert llm._resolve_max_retry_depth() == 3
     monkeypatch.setenv("GRAPHIFY_MAX_RETRY_DEPTH", "-2")
     assert llm._resolve_max_retry_depth() == 3
+
+
+def test_hollow_retry_usage_overflow_remains_strict_json(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "_HOLLOW_BACKOFF_S", (0.0,))
+    source = tmp_path / "f.md"
+    source.write_text("hello")
+    calls = {"n": 0}
+
+    def fake_extract(chunk, *_, **__):
+        calls["n"] += 1
+        return {
+            "nodes": [] if calls["n"] == 1 else [{"id": "ok"}],
+            "edges": [],
+            "hyperedges": [],
+            "input_tokens": 1e308,
+            "output_tokens": 1e308,
+            "model": "m",
+            "finish_reason": "hollow" if calls["n"] == 1 else "stop",
+        }
+
+    with patch("graphify.llm.extract_files_direct", side_effect=fake_extract):
+        result = llm._extract_with_adaptive_retry(
+            [source],
+            backend="ollama",
+            api_key="ollama",
+            model="m",
+            root=tmp_path,
+            max_depth=1,
+        )
+
+    assert calls["n"] == 2
+    assert math.isfinite(result["input_tokens"])
+    assert math.isfinite(result["output_tokens"])
+    json.dumps(result, allow_nan=False)
+
+
+def test_truncated_split_usage_overflow_remains_strict_json(tmp_path):
+    files = [tmp_path / f"f{i}.md" for i in range(2)]
+    for source in files:
+        source.write_text("hello")
+
+    def fake_extract(chunk, *_, **__):
+        return {
+            "nodes": [] if len(chunk) == 2 else [{"id": Path(chunk[0]).stem}],
+            "edges": [],
+            "hyperedges": [],
+            "input_tokens": 1e308,
+            "output_tokens": 1e308,
+            "model": "m",
+            "finish_reason": "length" if len(chunk) == 2 else "stop",
+        }
+
+    with patch("graphify.llm.extract_files_direct", side_effect=fake_extract):
+        result = llm._extract_with_adaptive_retry(
+            files,
+            backend="ollama",
+            api_key="ollama",
+            model="m",
+            root=tmp_path,
+            max_depth=2,
+        )
+
+    assert len(result["nodes"]) == 2
+    assert math.isfinite(result["input_tokens"])
+    assert math.isfinite(result["output_tokens"])
+    json.dumps(result, allow_nan=False)
+
+
+def test_merge_into_preserves_earlier_non_success_finish_reason():
+    merged = {
+        "nodes": [],
+        "edges": [],
+        "hyperedges": [],
+        "input_tokens": 0,
+        "output_tokens": 0,
+    }
+
+    llm._merge_into(
+        merged,
+        {"finish_reason": "length", "_partial_files": ["partial.md"]},
+    )
+    llm._merge_into(merged, {"finish_reason": "stop"})
+
+    assert merged["finish_reason"] == "length"
+    assert merged["_partial_files"] == ["partial.md"]

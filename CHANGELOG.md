@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Feature: add an explicit, optional `copilot-sdk` semantic-extraction backend using the user's existing GitHub Copilot authentication. Requests use isolated no-tool sessions, support inline images, and are never replayed after an uncertain post-dispatch failure.
+
 ## 0.9.51 (2026-08-28)
 
 - Fix: the incomplete-build shrink guard now stays armed when a chunk came back hollow, unparseable, or omitting files, so a run that silently lost content can no longer overwrite the existing graph with a smaller one; a complete run and a retry-recovered chunk are unaffected, and `--allow-partial` still overrides (#3105, thanks @abhay-codes07).
