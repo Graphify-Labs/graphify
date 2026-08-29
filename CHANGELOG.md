@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Fix: the git post-commit hook and skill interpreter probes now strip a shebang argument before using it as a path, so a pipx launcher (`#!/.../python -E`) resolves instead of silently falling back to a `python3` without graphify and printing "could not locate a Python with graphify installed" after every commit (#2629, thanks @hpstr5000).
+
 ## 0.9.53 (2026-08-30)
 
 - Fix: a batch of cross-language inheritance-edge corrections (thanks @Synvoya): JavaScript `class X extends Y` now emits an `inherits` edge (#1790); PHP interfaces, enums, and traits are captured as class-like nodes with their heritage (#1791); Scala `trait` declarations become class-like nodes (#1792) and qualified `extends`/`with` bases resolve to the tail type (#1794); a qualified Kotlin supertype resolves to its tail type instead of the package head (#1793); a C# interface extending an interface is classified as `inherits`, not `implements` (#1817); and a Go interface type-set constraint no longer emits a spurious `embeds` edge (#1818).
@@ -187,8 +191,6 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: a PHP `use` import written with a leading-backslash / fully-qualified prefix now resolves to its target definition instead of being dropped (#2661, thanks @ousamabenyounes).
 - Fix: an unresolved local JS/TS import (to a file absent from the scan) now emits a stable, portable `ref` target id instead of leaking a per-checkout absolute-path slug (#2457, thanks @rohit-jsfreaky).
 - Fix: `graphify benchmark` no longer crashes on a node whose label is `None` (#2674, thanks @Arthuro0103).
-- Fix: the git post-commit hook and skill interpreter probes now strip a shebang argument before using it as a path, so a pipx launcher (`#!/.../python -E`) resolves instead of silently falling back to a `python3` without graphify and printing "could not locate a Python with graphify installed" after every commit (#2629, thanks @hpstr5000).
-
 ## 0.9.40 (2026-08-11)
 
 - Fix: the 0.9.37 partial-parse warning no longer fires on valid TypeScript/TSX (#2610, #2599, thanks @Sid-AutoWisdom and @atlasplatformu-ai). tree-sitter-typescript sets an error flag on tiny fully-recovered constructs (a `&` in a JSX string attribute, a semicolon-less `in_*` interface member) that still extract completely; the warning now fires only when recovery plausibly cost symbols (the file yielded at most the file node, or an error region spans multiple lines), so the genuine Kotlin one-line-body and Luau cases still warn.

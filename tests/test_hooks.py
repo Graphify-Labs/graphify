@@ -233,6 +233,9 @@ from graphify.hooks import (  # noqa: E402
 )
 
 _HOOK_SCRIPTS = [("post-commit", _HOOK_SCRIPT), ("post-checkout", _CHECKOUT_SCRIPT)]
+SHEBANG_ARGUMENT_STRIP = '_SHEBANG="${_SHEBANG%% *}"'
+INTERPRETER_GUARD_ARGUMENT_STRIP = 'PYTHON="${PYTHON%% *}"'
+GRAPHIFY_PYTHON_MARKER = Path("graphify-out/.graphify_python")
 
 
 @pytest.mark.parametrize("name,script", _HOOK_SCRIPTS)
@@ -1208,7 +1211,66 @@ def test_generated_skill_probes_strip_shebang_argument():
     """#2629: both POSIX probe sites in the rendered skill (step-1 install and the
     subcommand interpreter guard) must strip a shebang argument, so pipx
     `#!/.../python -E` launchers resolve instead of silently reverting to python3."""
-    skill = (Path(__file__).resolve().parent.parent / "graphify" / "skill.md").read_text()
-    # Both sites keep only the leading word of the shebang.
-    assert skill.count('_SHEBANG="${_SHEBANG%% *}"') >= 1, "step-1 probe does not strip shebang argument"
-    assert 'PYTHON="${PYTHON%% *}"' in skill, "interpreter guard does not strip shebang argument"
+    skill_paths = sorted((Path(__file__).resolve().parent.parent / "graphify").glob("skill*.md"))
+    assert skill_paths
+    for skill_path in skill_paths:
+        if skill_path.name == "skill-windows.md":
+            continue
+        skill = skill_path.read_text()
+        assert SHEBANG_ARGUMENT_STRIP in skill, (
+            f"{skill_path.name} step-1 probe does not strip shebang argument"
+        )
+        if skill_path.name != "skill-aider.md":
+            assert INTERPRETER_GUARD_ARGUMENT_STRIP in skill, (
+                f"{skill_path.name} interpreter guard does not strip shebang argument"
+            )
+
+
+def test_monolith_sources_strip_shebang_argument():
+    """#2629: the aider/devin monolith sources also carry the POSIX probe and must
+    not preserve the pipx shebang-argument bug."""
+    fragment_root = Path(__file__).resolve().parent.parent / "tools" / "skillgen" / "fragments"
+    monolith_paths = [
+        fragment_root / "core" / "aider.md",
+        fragment_root / "core" / "devin.md",
+    ]
+    for monolith_path in monolith_paths:
+        monolith = monolith_path.read_text()
+        assert SHEBANG_ARGUMENT_STRIP in monolith, (
+            f"{monolith_path.name} probe does not strip shebang argument"
+        )
+    assert INTERPRETER_GUARD_ARGUMENT_STRIP in (fragment_root / "core" / "devin.md").read_text()
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="sh required to run emitted guard")
+def test_interpreter_guard_rejects_truncated_shebang_path(tmp_path):
+    """#2629: stripping a shebang argument must not adopt a truncated path when the
+    interpreter path itself contains a space. The guard must verify the candidate
+    and fall back to python3 instead of writing a broken .graphify_python marker."""
+    fragment = (
+        Path(__file__).resolve().parent.parent
+        / "tools"
+        / "skillgen"
+        / "fragments"
+        / "shell"
+        / "interpreter-guard-posix.md"
+    ).read_text()
+    guard = fragment.split("```bash", 1)[1].split("```", 1)[0]
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    launcher = bindir / "graphify"
+    launcher.write_text(f"#!{tmp_path / 'John Doe' / 'python'} -E\n", encoding="utf-8")
+    launcher.chmod(0o755)
+    fallback = bindir / "python3"
+    fallback.write_text(
+        "#!/bin/sh\nmkdir -p graphify-out\nprintf '%s' \"$0\" > graphify-out/.graphify_python\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    fallback.chmod(0o755)
+    env = dict(os.environ)
+    env["PATH"] = str(bindir) + os.pathsep + env["PATH"]
+    result = subprocess.run(["sh", "-c", guard], cwd=tmp_path, env=env, capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / GRAPHIFY_PYTHON_MARKER).read_text() == str(fallback)
