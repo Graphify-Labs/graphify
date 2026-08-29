@@ -99,15 +99,30 @@ class GenericLogExtractor:
                     args = args_nodes[0].text.decode("utf-8", errors="ignore")
                     
                     source_id = None
-                    possible_nodes = [n for n in graph_builder.result.get("nodes", []) if n.get("_callable")]
+                    # Search for callable node matching function name AND belonging to the same file
+                    possible_nodes = [
+                        n for n in graph_builder.result.get("nodes", []) 
+                        if n.get("_callable") or n.get("type") in ("function", "method")
+                    ]
                     for n in possible_nodes:
                         label = n.get("label", "")
-                        if label == func_name or label == f".{func_name}()" or label == f"{func_name}()":
+                        n_file = n.get("source_file", "")
+                        if n_file == file_path and (label == func_name or label == f".{func_name}()" or label == f"{func_name}()" or label.endswith(f"::{func_name}")):
                             source_id = n["id"]
                             break
                     if not source_id:
-                        nodes = graph_builder.result.get("nodes", [])
-                        source_id = nodes[0]["id"] if nodes else f"{file_path}::{func_name}"
+                        # Fallback 1: Any node in the same file matching the label
+                        for n in graph_builder.result.get("nodes", []):
+                            if n.get("source_file") == file_path and n.get("label") in (func_name, f".{func_name}()", f"{func_name}()"):
+                                source_id = n["id"]
+                                break
+                    if not source_id:
+                        # Fallback 2: File node for this file
+                        file_nodes = [n for n in graph_builder.result.get("nodes", []) if n.get("source_file") == file_path and n.get("type") == "file"]
+                        if file_nodes:
+                            source_id = file_nodes[0]["id"]
+                        else:
+                            source_id = graph_builder.file_path
                     
                     if log_level_nodes:
                         log_level = log_level_nodes[0].text.decode("utf-8", errors="ignore")

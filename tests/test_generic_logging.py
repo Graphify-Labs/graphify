@@ -127,3 +127,37 @@ void doCpp() {
     cpp_edge = next(e for e in prints_log_edges if e.get("metadata", {}).get("lang") == "cpp")
     assert cpp_edge["source"].endswith("_docpp")
     assert cpp_edge["target"] == 'LOG_WARN("Cpp log message")'
+
+def test_generic_logging_fallback_resolution(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    config_content = """
+logging_rules:
+  c:
+    query: |
+      (call_expression
+        function: (identifier) @log_obj (#match? @log_obj "{pattern}")
+        arguments: (argument_list) @args
+      )
+    pattern: "(?i)^(log_.*)$"
+"""
+    (tmp_path / "logging_config.yaml").write_text(config_content)
+    
+    # C file with log inside non-standard / macro or top-level structure
+    c_file = tmp_path / "toplevel.c"
+    c_file.write_text("""
+void top_log_test(void) {
+    log_debug("Top level debug log");
+}
+""")
+    
+    monkeypatch.setenv("GRAPHIFY_EXTRACT_LOGS", "1")
+    from graphify.generic_logger import GenericLogExtractor
+    monkeypatch.setattr(ex, "log_extractor", GenericLogExtractor("logging_config.yaml"))
+    ex.log_extractor._loaded = False
+    
+    result = ex.extract([c_file], cache_root=tmp_path / "cache_fallback", parallel=False)
+    edges = [e for e in result.get("edges", []) if e.get("relation") == "PRINTS_LOG"]
+    assert len(edges) == 1
+    assert edges[0]["source"].endswith("_top_log_test")
+    assert edges[0]["target"] == 'log_debug("Top level debug log")'
+
