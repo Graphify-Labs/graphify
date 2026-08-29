@@ -556,9 +556,14 @@ def _resolve_under_root(path: Path, root: Path) -> Path | None:
 # a file cannot forge an early `</untrusted_source>` and smuggle instructions out.
 _INJECTION_SENTINELS = re.compile(
     r"</?untrusted_source\b[^>]*>"
-    r"|<\|(?:im_start|im_end|system|user|assistant|endoftext)\|>"
+    # ANY <|token|> chat-template marker, not an enumerated few (#3183): the
+    # old list named six and missed <|start_header_id|>/<|eot_id|> (Llama 3),
+    # <|endofprompt|>, and whatever the next template calls its turns. The
+    # form itself is the hazard - no legitimate source construct needs an
+    # intact one, and defanging only inserts a zero-width space.
+    r"|<\|[A-Za-z0-9_.\-]{1,64}\|>"
     r"|<<SYS>>|<</SYS>>"
-    r"|\[/?INST\]"
+    r"|\[/?(?:INST|SYSTEM)\]"
     r"|^\s*###?\s*(?:system|instruction)s?\s*:?\s*$",
     re.IGNORECASE | re.MULTILINE,
 )
