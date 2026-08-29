@@ -978,3 +978,221 @@ def test_crossfile_concept_merge_is_transitive():
     ]
     result_nodes, _ = deduplicate_entities(nodes, [], communities={})
     assert len(result_nodes) == 1
+
+
+# ── #2576: same-file labels differing by a content-word swap ──────────────────
+# Guard adopted from @wilyan09007's PR #2587, hardened: any same-position
+# distinct-content-word pair blocks (not just exactly one), and the differing
+# tokens are judged by _same_word_variant instead of bare token-level JW.
+
+def test_dedup_does_not_merge_samefile_sibling_pipeline_stages():
+    """Sibling sections of one document, named from a template, share both
+    affixes and differ in a single content word, so Jaro-Winkler's prefix bonus
+    clears the threshold on the same-file path (92.74 with the bonus, 87.90 on
+    plain Jaro). The absorbed node's edges are re-pointed at the survivor, so
+    the graph asserts relationships the document never states (#2576)."""
+    src = "docs/pipeline.md"
+    nodes = [
+        {"id": "pipeline_asset_contribution_flow", "label": "Asset Contribution Flow",
+         "file_type": "concept", "source_file": src},
+        {"id": "pipeline_asset_consumption_flow", "label": "Asset Consumption Flow",
+         "file_type": "concept", "source_file": src},
+        {"id": "pipeline_producer_personas", "label": "Producer Personas",
+         "file_type": "concept", "source_file": src},
+        {"id": "pipeline_asset_review_flow", "label": "Asset Review & Approval Flow",
+         "file_type": "concept", "source_file": src},
+    ]
+    edges = [
+        {"source": "pipeline_producer_personas",
+         "target": "pipeline_asset_contribution_flow", "relation": "references"},
+        {"source": "pipeline_asset_contribution_flow",
+         "target": "pipeline_asset_review_flow", "relation": "references"},
+    ]
+    result_nodes, result_edges = deduplicate_entities(nodes, edges, communities={})
+    assert len(result_nodes) == 4, (
+        "contribution and consumption are distinct pipeline stages"
+    )
+    assert {(e["source"], e["target"]) for e in result_edges} == {
+        ("pipeline_producer_personas", "pipeline_asset_contribution_flow"),
+        ("pipeline_asset_contribution_flow", "pipeline_asset_review_flow"),
+    }, "edges must stay on the nodes the document actually connects"
+
+
+def test_dedup_still_merges_samefile_stopword_insertion():
+    """The pair #1243 was scoped around: swapping a function word is how a
+    restatement of the same entity differs, so a stopword in either differing
+    position exempts the pair and the merge still happens (#2576)."""
+    nodes = [
+        {"id": "m1", "file_type": "concept", "source_file": "docs/metrics.md",
+         "label": "Counts-only metrics export, a read-only aggregation service"},
+        {"id": "m2", "file_type": "concept", "source_file": "docs/metrics.md",
+         "label": "Counts-only metrics export, the read-only aggregation service"},
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert len(result_nodes) == 1
+
+
+def test_dedup_still_merges_samefile_normalization_variants():
+    """Punct/case variants norm-equal in one file (pass 1), and a fused
+    camelCase symbol vs its spaced spelling (token counts differ, so the
+    #2576 guard defers to whole-label scoring), both still merge."""
+    nodes = [
+        {"id": "am1", "label": "Authentication Manager",
+         "file_type": "concept", "source_file": "docs/auth.md"},
+        {"id": "am2", "label": "authentication-manager",
+         "file_type": "concept", "source_file": "docs/auth.md"},
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert len(result_nodes) == 1
+
+    nodes = [
+        {"id": "g1", "label": "getUserById",
+         "file_type": "concept", "source_file": "docs/api.md"},
+        {"id": "g2", "label": "get user by id",
+         "file_type": "concept", "source_file": "docs/api.md"},
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert len(result_nodes) == 1
+
+
+def test_dedup_still_merges_samefile_typo_in_one_token():
+    """A typo inside the differing token leaves it the same word: manager and
+    managr score 97.14 against each other, so the pair is not a content-word
+    swap and still merges (#2576)."""
+    nodes = [
+        {"id": "a1", "label": "Authentication Manager",
+         "file_type": "concept", "source_file": "docs/auth.md"},
+        {"id": "a2", "label": "Authentication Managr",
+         "file_type": "concept", "source_file": "docs/auth.md"},
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert len(result_nodes) == 1
+
+
+def test_dedup_still_merges_single_token_transposition_at_length_boundary():
+    """A single-token label at the 12-char _short_label_blocked boundary with a
+    trailing transposition is a typo: same length, Damerau-Levenshtein 1, so
+    _same_word_variant exempts it and the merge survives (#2576)."""
+    nodes = [
+        {"id": "gb1", "label": "GraphBuilder",
+         "file_type": "concept", "source_file": "docs/build.md"},
+        {"id": "gb2", "label": "GraphBuildre",
+         "file_type": "concept", "source_file": "docs/build.md"},
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert len(result_nodes) == 1
+
+
+def test_dedup_recovers_samefile_first_letter_typo():
+    """DELTA over #2587: token-level JW scores manager/nanager at 84.92 (the
+    prefix bonus is zero at position 0), so the PR's bare-JW token test would
+    have blocked a genuine typo. The same-length Damerau-Levenshtein<=1 branch
+    of _same_word_variant reads it as one word and the merge happens (#2576).
+    The label carries a third token so the pair clears MinHash/LSH candidacy
+    (the two-token pair's shingle Jaccard sits at 0.727, on the 0.7 blocking
+    threshold, and never reaches the comparator either way)."""
+    nodes = [
+        {"id": "a1", "label": "Authentication Session Manager",
+         "file_type": "concept", "source_file": "docs/auth.md"},
+        {"id": "a2", "label": "Authentication Session Nanager",
+         "file_type": "concept", "source_file": "docs/auth.md"},
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert len(result_nodes) == 1
+
+
+def test_dedup_does_not_merge_samefile_short_content_word_swap():
+    """DELTA over #2587: pane/plane scores 94.0 on token-level JW, above the
+    merge threshold, so the PR's bare-JW token test read two distinct short
+    words as a typo. Tokens under 6 chars never pass the JW fallback (#2576)."""
+    nodes = [
+        {"id": "p1", "label": "User Profile Pane",
+         "file_type": "concept", "source_file": "docs/ui.md"},
+        {"id": "p2", "label": "User Profile Plane",
+         "file_type": "concept", "source_file": "docs/ui.md"},
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert len(result_nodes) == 2
+
+
+def test_dedup_does_not_merge_two_position_content_swap():
+    """DELTA over #2587: the PR guard required exactly one differing token, so
+    a sibling pair that also drifts in a second position (Flow vs Flows) slid
+    back to whole-label JW (95.44) and merged. Any same-position distinct
+    content-word pair now blocks (#2576)."""
+    nodes = [
+        {"id": "h1", "label": "Customer Asset Contribution Flow Handler",
+         "file_type": "concept", "source_file": "docs/handlers.md"},
+        {"id": "h2", "label": "Customer Asset Consumption Flows Handler",
+         "file_type": "concept", "source_file": "docs/handlers.md"},
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert len(result_nodes) == 2
+
+
+def test_dedup_does_not_merge_samefile_sibling_packages():
+    """#1243's own first example, with the source file its repro used: two
+    dependencies both come from one package.json, so the cross-file scoring
+    change never applied to them and they still merged (#2576)."""
+    nodes = [
+        {"id": "jest_native", "label": "@testing-library/jest-native",
+         "file_type": "concept", "source_file": "package.json"},
+        {"id": "react_native", "label": "@testing-library/react-native",
+         "file_type": "concept", "source_file": "package.json"},
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert len(result_nodes) == 2
+
+
+def test_dedup_does_not_merge_same_community_dated_doc_slugs():
+    """#1243's fourth example, with the communities its repro used: the pair is
+    cross-file and scores 87.68 on plain Jaro, but both nodes sit in one
+    community and the +5 boost lifts it back to 92.68. Comparing the differing
+    tokens (fe/mob) blocks it before the boost applies (#2576)."""
+    nodes = [
+        {"id": "fe_doc", "label": "2026-05-17-phase4-fe-api-integration.md",
+         "file_type": "concept", "source_file": "a.md"},
+        {"id": "mob_doc", "label": "2026-05-17-phase4-mob-api-integration.md",
+         "file_type": "concept", "source_file": "b.md"},
+    ]
+    result_nodes, _ = deduplicate_entities(
+        nodes, [], communities={"fe_doc": 1, "mob_doc": 1}
+    )
+    assert len(result_nodes) == 2
+
+
+def test_content_token_swap_helper():
+    """_content_token_swap fires when any same-position pair is a swap of two
+    distinct content words (#2576)."""
+    from graphify.dedup import _content_token_swap
+    assert _content_token_swap("asset contribution flow", "asset consumption flow")
+    assert _content_token_swap("testing library jest native",
+                               "testing library react native")
+    # A function word is what a restatement swaps, so either side exempts.
+    assert not _content_token_swap("export a read only", "export the read only")
+    # A typo leaves the differing token the same word.
+    assert not _content_token_swap("graph extractor", "graph extractar")
+    # DELTA over #2587: two differing content-word positions block too (the PR
+    # exempted anything but exactly one).
+    assert _content_token_swap("alpha beta gamma", "alpha delta epsilon")
+    assert _content_token_swap("customer asset contribution flow handler",
+                               "customer asset consumption flows handler")
+    # Differing token counts belong to the prefix-extension guard.
+    assert not _content_token_swap("graph extractor", "graph extractor service")
+    assert not _content_token_swap("asset flow", "asset flow")
+
+
+def test_same_word_variant_helper():
+    """_same_word_variant separates one-word misspellings from two words
+    (#2576 DELTA over #2587's bare token-JW test)."""
+    from graphify.dedup import _same_word_variant
+    assert _same_word_variant("manager", "managr")     # JW 97.14, min len 6
+    assert _same_word_variant("manager", "nanager")    # JW 84.92 but same-len DL 1
+    assert _same_word_variant("builder", "buildre")    # trailing transposition
+    assert not _same_word_variant("pane", "plane")     # JW 94.0 but short
+    assert not _same_word_variant("flow", "flows")     # short inflection: under-merge
+    assert not _same_word_variant("contribution", "consumption")
+    assert not _same_word_variant("jest", "react")
+    # Accepted trade: a length-differing 5-char spelling variant reads as two
+    # words and stays unmerged, per the never-merge-distinct-entities bar.
+    assert not _same_word_variant("colour", "color")

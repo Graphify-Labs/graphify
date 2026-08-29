@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Callable
 
 # Single source of truth in graphify.paths (#1423); re-exported as _GRAPHIFY_OUT.
-from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
+from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT, is_absolute_any_platform
 _PENDING_FILENAME = ".pending_changes"
 _PENDING_DRAIN_MAX_PASSES = 20
 
@@ -369,9 +369,34 @@ class _StoredSourcePaths:
         root_marker = out / ".graphify_root"
         if root_marker.exists():
             try:
-                saved_root = Path(root_marker.read_text(encoding="utf-8").strip())
+                saved_root = Path(root_marker.read_text(encoding="utf-8-sig").strip())
                 if saved_root.is_absolute():
-                    self.existing_source_root = saved_root.resolve()
+                    # #2603: the marker holds the SCAN root, but stored
+                    # source_file values are relative to the BUILD's cwd
+                    # (the skill builds from the repo root scoped to a
+                    # subfolder). Trusting the marker blindly re-anchors
+                    # "src/mod.py" under src/, doubling the path; every
+                    # unchanged source is then judged deleted and evicted,
+                    # collapsing the graph. Only adopt an anchor the stored
+                    # paths actually resolve under; when none does, keep the
+                    # marker (previous behavior) so a fully-deleted corpus
+                    # still evicts.
+                    resolved = saved_root.resolve()
+                    if self._anchors_stored_sources(existing, resolved):
+                        self.existing_source_root = resolved
+                    else:
+                        # In the #2603 hook path watch_path is the absolute
+                        # marker, so project_root == watch_root == the bad
+                        # marker and the first candidate also fails to anchor;
+                        # Path.cwd() (the repo root a post-commit hook runs from)
+                        # is the load-bearing rescue candidate here. Keep both so
+                        # a relative-watch_path invocation is also covered.
+                        for candidate in (self.project_root, Path.cwd().resolve()):
+                            if self._anchors_stored_sources(existing, candidate):
+                                self.existing_source_root = candidate
+                                break
+                        else:
+                            self.existing_source_root = resolved
                 else:
                     invocation_root = Path.cwd().resolve()
                     if (invocation_root / saved_root).resolve() == watch_root:
@@ -398,6 +423,31 @@ class _StoredSourcePaths:
                 if has_project_relative_source:
                     break
             self.legacy_watch_relative = not has_project_relative_source
+
+    def _anchors_stored_sources(self, existing: dict, root: Path, sample: int = 25) -> bool:
+        """Whether stored relative source_file paths resolve under ``root``.
+
+        Samples the first ``sample`` relative entries: the first hit accepts
+        the anchor; ``sample`` consecutive misses reject it. A graph with no
+        relative sources returns True (any anchor is harmless there). The
+        bound keeps the check O(sample) on large graphs; its known limit is a
+        commit that deletes ``sample``-plus files whose nodes happen to sort
+        first — the anchor then falls back to the marker, matching the
+        pre-fix behavior (no worse).
+        """
+        checked = 0
+        for bucket in ("nodes", "links", "edges", "hyperedges"):
+            for item in existing.get(bucket, []):
+                raw = item.get("source_file") if isinstance(item, dict) else None
+                stored = self._normalize_source(raw) if raw else None
+                if not stored or is_absolute_any_platform(stored):
+                    continue
+                checked += 1
+                if (root / Path(posixpath.normpath(stored))).exists():
+                    return True
+                if checked >= sample:
+                    return False
+        return checked == 0
 
     def normalize(self, source_file: str | None) -> str | None:
         normalized = self._normalize_source(source_file, str(self.project_root))
@@ -847,6 +897,7 @@ def _check_shrink(
     *,
     had_explicit_deletions: bool = False,
     rebuilt_sources: "set[str] | None" = None,
+    failed_sources: "set[str] | None" = None,
 ) -> bool:
     """Return True (ok to proceed) or False (shrink refused).
 
@@ -866,6 +917,8 @@ def _check_shrink(
     NOT touch — e.g. a dropped semantic/doc node) refuses the write. This lets a
     plain ``graphify update`` after deleting a function refresh the graph without
     ``--force`` (#1116 left stale nodes write-blocked even though build dropped them).
+    Files in ``failed_sources`` never account for lost nodes: extraction did not
+    complete, so their disappearance is the silent shrink this guard protects.
     """
     if force or not existing_data:
         return True
@@ -890,6 +943,8 @@ def _check_shrink(
 
         def _accounted(n: dict) -> bool:
             sf = n.get("source_file")
+            if sf and failed_sources and _norm_source_file(sf) in failed_sources:
+                return False
             return (not sf
                     or sf in rebuilt_sources
                     or _norm_source_file(sf) in rebuilt_sources)
@@ -944,6 +999,88 @@ def _stabilize_rebuild_cwd(watch_path: Path) -> bool:
             "no longer exists and GRAPHIFY_REPO_ROOT is not set."
         )
         return False
+
+
+def _reconcile_graph_html(out: Path, graph_data: dict) -> str | None:
+    """Reconcile missing, stale, or explicitly disabled HTML visualization.
+
+    The unchanged-topology update path deliberately avoids clustering and
+    rewriting core artifacts. HTML is independently derivable, so rebuild it
+    from the communities and names already stored in graph.json when absent or
+    marked stale by a prior failed render.
+
+    Returns ``"rendered"`` or ``"removed"`` when it changed the HTML state,
+    otherwise ``None``.
+    """
+    html_target = out / "graph.html"
+    from graphify.exporters.html import _HTML_STALE_MARKER, _viz_node_limit
+    stale_marker = out / _HTML_STALE_MARKER
+
+    def clear_stale_marker() -> None:
+        try:
+            stale_marker.unlink(missing_ok=True)
+        except OSError as exc:
+            print(
+                "[graphify watch] graph.html stale marker could not be cleared; "
+                f"regeneration may be retried: {exc}"
+            )
+
+    limit = _viz_node_limit()
+    if limit <= 0:
+        changed = html_target.exists() or stale_marker.exists()
+        html_target.unlink(missing_ok=True)
+        clear_stale_marker()
+        return "removed" if changed else None
+    if html_target.exists() and not stale_marker.exists():
+        return None
+
+    had_html = html_target.exists()
+
+    node_communities = _node_community_map(graph_data)
+    communities: dict[int, list[str]] = {}
+    for node_id, cid in node_communities.items():
+        communities.setdefault(cid, []).append(node_id)
+
+    labels: dict[int, str] = {}
+    for node in graph_data.get("nodes", []):
+        cid = node_communities.get(str(node.get("id")))
+        name = node.get("community_name")
+        if cid is not None and isinstance(name, str) and name:
+            labels.setdefault(cid, name)
+
+    try:
+        from graphify.export import to_html
+        from graphify.paths import load_node_link_graph
+
+        persisted_graph = load_node_link_graph(graph_data)
+        written = to_html(
+            persisted_graph,
+            communities,
+            str(html_target),
+            community_labels=labels or None,
+            node_limit=limit,
+        )
+    except Exception as exc:
+        if had_html:
+            print(
+                "[graphify watch] Stale graph.html left unchanged; "
+                f"regeneration will be retried: {exc}"
+            )
+        else:
+            print(f"[graphify watch] Missing graph.html could not be regenerated: {exc}")
+        return None
+
+    if not written or not html_target.exists():
+        if had_html:
+            print(
+                "[graphify watch] Stale graph.html left unchanged; "
+                "no useful community view was generated."
+            )
+        else:
+            print("[graphify watch] Missing graph.html has no useful community view; skipped.")
+        return None
+    clear_stale_marker()
+    return "rendered"
 
 
 def _rebuild_code(
@@ -1048,7 +1185,7 @@ def _rebuild_code(
         from graphify.cluster import cluster, remap_communities_to_previous, score_all
         from graphify.analyze import god_nodes, surprising_connections, suggest_questions
         from graphify.report import generate
-        from graphify.export import to_json, to_html
+        from graphify.export import to_json
         from graphify.security import check_graph_file_size_cap
 
         # Re-apply the excludes the initial extract recorded, so an update/watch/
@@ -1325,6 +1462,41 @@ def _rebuild_code(
         }
         _rebase_relative_source_files(result, watch_root, project_root)
 
+        # #2543: AST sources that failed this run (error result, or extractor
+        # present but zero nodes) must not be stamped kind="ast" below, and any
+        # prior stamp must be blanked (clear_ast) — otherwise the incremental
+        # gate reports them unchanged forever and only deleting graphify-out/
+        # recovers. Mirrors the extract CLI's _stamped_manifest_files handling.
+        _failed_ast_sources = set(result.get("failed_sources") or [])
+
+        def _ast_manifest_files() -> dict[str, list[str]]:
+            """detected["files"] minus this run's failed AST sources (#2543).
+
+            Only the STAMPED set shrinks; scan_corpus at the save sites stays
+            the raw detect output so #1908 pruning is unaffected.
+            """
+            if not _failed_ast_sources:
+                return detected["files"]
+            failed_res = set(_failed_ast_sources)
+            for p in _failed_ast_sources:
+                try:
+                    failed_res.add(str(Path(p).resolve()))
+                except (OSError, RuntimeError):
+                    pass
+
+            def _failed(f: str) -> bool:
+                if f in failed_res:
+                    return True
+                try:
+                    return str(Path(f).resolve()) in failed_res
+                except (OSError, RuntimeError):
+                    return False
+
+            return {
+                ftype: [f for f in flist if not _failed(f)]
+                for ftype, flist in detected["files"].items()
+            }
+
         # Preserve semantic nodes/edges from a previous full run.
         # AST-only rebuild replaces nodes for changed files; everything else is kept.
         # Filter by node ID membership in the new AST output, not by file_type —
@@ -1372,6 +1544,10 @@ def _rebuild_code(
         else:
             rebuilt_sources = {(_nsf(str(p), _rebuilt_root) or str(p)) for p in extract_targets}
         rebuilt_sources |= set(deleted_paths)
+        failed_sources = {
+            _nsf(source, _rebuilt_root) or source
+            for source in _failed_ast_sources
+        }
         out.mkdir(exist_ok=True)
 
         if no_cluster:
@@ -1419,6 +1595,7 @@ def _rebuild_code(
                     force, existing_graph_data, candidate_graph_data,
                     had_explicit_deletions=bool(deleted_paths),
                     rebuilt_sources=rebuilt_sources,
+                    failed_sources=failed_sources,
                 ):
                     return False
                 from graphify.export import backup_if_protected as _backup
@@ -1439,10 +1616,13 @@ def _rebuild_code(
                 # pass it as the scan corpus too: rows for files that left the
                 # scan but still exist on disk (newly excluded) are pruned
                 # instead of surviving as phantom "deleted" entries (#1908).
+                # Failed AST sources are dropped from the stamped set and
+                # their prior hashes blanked (#2543).
                 save_manifest(
-                    detected["files"], manifest_path=str(out / "manifest.json"),
+                    _ast_manifest_files(), manifest_path=str(out / "manifest.json"),
                     kind="ast", root=watch_root,
                     scan_corpus={f for _fl in detected["files"].values() for f in _fl},
+                    clear_ast=_failed_ast_sources or None,
                 )
             except Exception:
                 pass
@@ -1485,18 +1665,32 @@ def _rebuild_code(
             if same_topology:
                 try:
                     from graphify.detect import save_manifest
-                    # Full-scan save: prune excluded-but-alive rows (#1908).
+                    # Full-scan save: prune excluded-but-alive rows (#1908);
+                    # leave failed AST sources unstamped (#2543).
                     save_manifest(
-                        detected["files"], manifest_path=str(out / "manifest.json"),
+                        _ast_manifest_files(), manifest_path=str(out / "manifest.json"),
                         kind="ast", root=watch_root,
                         scan_corpus={f for _fl in detected["files"].values() for f in _fl},
+                        clear_ast=_failed_ast_sources or None,
                     )
                 except Exception:
                     pass
                 flag = out / "needs_update"
                 if flag.exists():
                     flag.unlink()
-                print("[graphify watch] No code-graph topology changes detected; outputs left untouched.")
+                html_action = _reconcile_graph_html(out, existing_graph_data)
+                if html_action == "rendered":
+                    print(
+                        "[graphify watch] No code-graph topology changes detected; "
+                        "regenerated missing or stale graph.html."
+                    )
+                elif html_action == "removed":
+                    print(
+                        "[graphify watch] No code-graph topology changes detected; "
+                        "removed graph.html because HTML visualization is disabled."
+                    )
+                else:
+                    print("[graphify watch] No code-graph topology changes detected; outputs left untouched.")
                 return True
 
         communities = cluster(G)
@@ -1614,8 +1808,13 @@ def _rebuild_code(
                 tmp=graph_tmp,
                 had_explicit_deletions=bool(deleted_paths),
                 rebuilt_sources=rebuilt_sources,
+                failed_sources=failed_sources,
             ):
                 return False
+            from graphify.exporters.html import _HTML_STALE_MARKER
+            # Mark before graph.json advances so an interruption cannot leave a
+            # previous visualization looking current to the fast path.
+            (out / _HTML_STALE_MARKER).touch()
             from graphify.export import backup_if_protected as _backup
             _backup(out)
             graph_tmp.replace(existing_graph)
@@ -1632,49 +1831,24 @@ def _rebuild_code(
 
         try:
             from graphify.detect import save_manifest
-            # Full-scan save: prune excluded-but-alive rows (#1908).
+            # Full-scan save: prune excluded-but-alive rows (#1908);
+            # leave failed AST sources unstamped (#2543).
             save_manifest(
-                detected["files"], manifest_path=str(out / "manifest.json"),
+                _ast_manifest_files(), manifest_path=str(out / "manifest.json"),
                 kind="ast", root=watch_root,
                 scan_corpus={f for _fl in detected["files"].values() for f in _fl},
+                clear_ast=_failed_ast_sources or None,
             )
         except Exception:
             pass
 
-        # to_html raises ValueError for graphs > the viz node limit.
-        # Wrap so core outputs (graph.json + GRAPH_REPORT.md) always land.
+        # Reconcile from the persisted graph. The stale marker was written
+        # before graph.json advanced, so a failed or interrupted atomic render
+        # remains retryable from the unchanged-topology fast path.
         html_written = False
         if not no_change:
-            html_target = out / "graph.html"
-            try:
-                to_html(G, communities, str(html_target), community_labels=labels or None)
-                html_written = True
-            except ValueError as viz_err:
-                # Over the cap. Deleting was defensible on its own — a kept
-                # graph.html would describe an older, smaller graph — but it
-                # leaves a project that crossed the threshold with no
-                # visualization at all, and the file is gone before the user
-                # sees the message. The export path (#1019) already re-renders
-                # the community-aggregation view in exactly this case, so do
-                # the same here: current AND present beats current OR present.
-                from graphify.exporters.html import _viz_node_limit
-                if html_target.exists():
-                    html_target.unlink()
-                limit = _viz_node_limit()
-                if limit <= 0:
-                    # GRAPHIFY_VIZ_NODE_LIMIT=0 means "no HTML viz" (CI runners),
-                    # so honour it rather than aggregating around it.
-                    print(f"[graphify watch] Skipped graph.html: {viz_err}")
-                else:
-                    try:
-                        to_html(G, communities, str(html_target),
-                                community_labels=labels or None, node_limit=limit)
-                        # The aggregator declines to write a single-community
-                        # graph, so trust the file rather than the call.
-                        html_written = html_target.exists()
-                    except Exception as fallback_err:
-                        print(f"[graphify watch] Skipped graph.html: {viz_err} "
-                              f"(aggregated view also failed: {fallback_err})")
+            html_action = _reconcile_graph_html(out, candidate_graph_data)
+            html_written = html_action == "rendered"
 
         # Regenerate callflow HTML if the user previously generated one —
         # opt-in by existence so users who never ran callflow-html aren't affected.
@@ -1742,6 +1916,48 @@ def _has_non_code(changed_paths: list[Path]) -> bool:
     return any(p.suffix.lower() not in _CODE_EXTENSIONS for p in changed_paths)
 
 
+def _batch_triggers_rebuild(batch: list[Path]) -> bool:
+    """True when a debounced watch batch needs an immediate rebuild.
+
+    Code changes always rebuild (AST extraction needs no LLM). Deletions of
+    ANY watched file also rebuild: eviction needs no LLM either — the full
+    corpus reconcile drops nodes whose source is gone from disk. Without
+    this, a doc-only deletion batch would sit behind the needs_update flag
+    until the next code event or a manual `graphify update` (#2580).
+    """
+    has_code = any(p.suffix.lower() in _CODE_EXTENSIONS for p in batch)
+    has_deletion = any(not p.exists() for p in batch)
+    return has_code or has_deletion
+
+
+_READ_ONLY_EVENT_TYPES = frozenset({"opened", "closed_no_write"})
+
+
+def _is_read_only_event(event) -> bool:
+    """True for watchdog events that mean a file was merely READ, not changed.
+
+    On Linux, inotify (watchdog >= 2.3) reports ``opened`` and, since watchdog 4,
+    ``closed_no_write`` for every file open/close — including the watcher's own
+    AST rebuild reading the tree, hook guards stat-ing sources, and editors or
+    agents reading files. Counting those as changes makes the watcher re-trigger
+    itself forever ("N file(s) changed" while nothing was modified), burn CPU and
+    keep re-writing the ``needs_update`` flag. Only creation, modification, move,
+    deletion and close-after-write are changes; macOS (PollingObserver) never
+    emits these, so the filter is a no-op there.
+    """
+    return getattr(event, "event_type", None) in _READ_ONLY_EVENT_TYPES
+
+
+def _batch_needs_llm_flag(batch: list[Path]) -> bool:
+    """True when the batch contains a non-code file that still exists on disk.
+
+    Only surviving non-code files need the needs_update flag (LLM-backed
+    re-extraction); deleted ones are already handled by the rebuild's
+    reconcile sweep, so a pure-deletion batch must not leave a stale flag.
+    """
+    return _has_non_code([p for p in batch if p.exists()])
+
+
 def watch(watch_path: Path, debounce: float = 3.0) -> None:
     """
     Watch watch_path for new or modified files and auto-update the graph.
@@ -1779,7 +1995,7 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
     class Handler(FileSystemEventHandler):
         def on_any_event(self, event):
             nonlocal last_trigger, pending
-            if event.is_directory:
+            if event.is_directory or _is_read_only_event(event):
                 return
             path = Path(os.fsdecode(event.src_path))
             # Check .graphifyignore BEFORE the extension/dotfile/out filters so
@@ -1822,11 +2038,9 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
                 batch = list(changed)
                 changed.clear()
                 print(f"\n[graphify watch] {len(batch)} file(s) changed")
-                has_non_code = _has_non_code(batch)
-                has_code = any(p.suffix.lower() in _CODE_EXTENSIONS for p in batch)
-                if has_code:
+                if _batch_triggers_rebuild(batch):
                     _rebuild_code(watch_path)
-                if has_non_code:
+                if _batch_needs_llm_flag(batch):
                     _notify_only(watch_path)
     except KeyboardInterrupt:
         print("\n[graphify watch] Stopped.")

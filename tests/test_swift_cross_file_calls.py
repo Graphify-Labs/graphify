@@ -273,6 +273,184 @@ def test_extension_does_not_merge_into_same_named_foreign_type(tmp_path: Path):
             assert e.get("target") not in swift_nids, "the TS Store came to own a Swift node"
 
 
+# ── #2561: attribute-argument and factory-returned receiver types ─────────────
+
+def test_environment_attribute_typed_receiver_resolves(tmp_path: Path):
+    # @Environment(Store.self) names the property's type only inside the
+    # attribute argument (modifiers > attribute), which the direct-children
+    # scan never reached — store.reset() produced no edge at all.
+    base = tmp_path / "src"
+    _write(base / "Store.swift", "class Store {\n    func reset() {}\n}\n")
+    _write(base / "HomeView.swift", (
+        "struct HomeView {\n"
+        "    @Environment(Store.self) var store\n"
+        "    func go() {\n"
+        "        store.reset()\n"
+        "    }\n"
+        "}\n"
+    ))
+    result = extract(sorted(base.glob("*.swift")), cache_root=tmp_path / "cache",
+                     parallel=False)
+    edge = next((e for e in result["edges"] if e.get("relation") == "calls"
+                 and _label(result, e["target"]) == ".reset()"), None)
+    assert edge is not None, "store.reset() must resolve to Store.reset"
+    assert _label(result, edge["source"]) == ".go()"
+    assert edge["confidence"] == "INFERRED" and edge["confidence_score"] == 0.8
+
+
+def test_environment_keypath_and_dotted_forms_are_skipped(tmp_path: Path):
+    # @Environment(\.dismiss) (keypath head) and @Environment(MyModule.Store.self)
+    # (nested-navigation head) are undeterminable: skipping is a missed edge,
+    # typing them would be a WRONG edge (e.g. into a fabricated MyModule node).
+    base = tmp_path / "src"
+    _write(base / "Store.swift", "class Store {\n    func reset() {}\n}\n")
+    _write(base / "SheetView.swift", (
+        "struct SheetView {\n"
+        "    @Environment(\\.dismiss) var dismiss\n"
+        "    @Environment(MyModule.Store.self) var other\n"
+        "    func close() {\n"
+        "        other.reset()\n"
+        "    }\n"
+        "}\n"
+    ))
+    result = extract(sorted(base.glob("*.swift")), cache_root=tmp_path / "cache",
+                     parallel=False)
+    assert (".close()", "calls", ".reset()") not in _edge_labels(result, ("calls",))
+    for e in result["edges"]:
+        assert _label(result, e["source"]) != "MyModule"
+        assert _label(result, e["target"]) != "MyModule"
+
+
+def test_stateobject_annotated_receiver_still_resolves(tmp_path: Path):
+    # Regression pin: an explicitly-annotated wrapped property (@StateObject
+    # var vm: ViewModel) resolved before #2561 and must keep resolving — the
+    # attribute helper is a LAST resort behind the annotation.
+    base = tmp_path / "src"
+    _write(base / "ViewModel.swift", "class ViewModel {\n    func load() {}\n}\n")
+    _write(base / "RootView.swift", (
+        "struct RootView {\n"
+        "    @StateObject var vm: ViewModel\n"
+        "    func go() {\n"
+        "        vm.load()\n"
+        "    }\n"
+        "}\n"
+    ))
+    result = extract(sorted(base.glob("*.swift")), cache_root=tmp_path / "cache",
+                     parallel=False)
+    assert (".go()", "calls", ".load()") in _edge_labels(result, ("calls",))
+
+
+def test_factory_returned_receiver_resolves(tmp_path: Path):
+    # `let widget = ServiceFactory.make()` (make -> Widget): the receiver types
+    # as make's plain return type, for both a stored property and a local.
+    base = tmp_path / "src"
+    files = [
+        _write(base / "Widget.swift", "class Widget {\n    func go() {}\n}\n"),
+        _write(base / "ServiceFactory.swift",
+               "class ServiceFactory {\n    static func make() -> Widget {\n"
+               "        return Widget()\n    }\n}\n"),
+        _write(base / "Consumer.swift", (
+            "struct Consumer {\n"
+            "    let widget = ServiceFactory.make()\n"
+            "    func run() {\n"
+            "        widget.go()\n"
+            "    }\n"
+            "    func local() {\n"
+            "        let w = ServiceFactory.make()\n"
+            "        w.go()\n"
+            "    }\n"
+            "}\n"
+        )),
+    ]
+    result = extract(files, cache_root=tmp_path / "cache", parallel=False)
+    calls = _edge_labels(result, ("calls",))
+    assert (".run()", "calls", ".go()") in calls      # stored-property receiver
+    assert (".local()", "calls", ".go()") in calls    # method-local receiver
+    for e in result["edges"]:
+        if e.get("relation") == "calls" and _label(result, e["target"]) == ".go()":
+            assert e["confidence"] == "INFERRED" and e["confidence_score"] == 0.8
+
+
+def test_factory_receiver_resolves_through_cross_file_extension(tmp_path: Path):
+    # #2538 composition: the called method lives in a cross-file `extension
+    # Widget` — the extension merge runs before this resolver, so the factory
+    # receiver resolves through the merged method_index.
+    base = tmp_path / "src"
+    files = [
+        _write(base / "Widget.swift", "class Widget {\n    func spin() {}\n}\n"),
+        _write(base / "Widget+Ext.swift", "extension Widget {\n    func go() {}\n}\n"),
+        _write(base / "ServiceFactory.swift",
+               "class ServiceFactory {\n    static func make() -> Widget {\n"
+               "        return Widget()\n    }\n}\n"),
+        _write(base / "Consumer.swift", (
+            "struct Consumer {\n"
+            "    let widget = ServiceFactory.make()\n"
+            "    func run() {\n"
+            "        widget.go()\n"
+            "    }\n"
+            "}\n"
+        )),
+    ]
+    result = extract(files, cache_root=tmp_path / "cache", root=base, parallel=False)
+    assert (".run()", "calls", ".go()") in _edge_labels(result, ("calls",))
+
+
+def test_undeterminable_factory_returns_yield_no_edge(tmp_path: Path):
+    # `-> some P` (opaque), `-> [Widget]` (a COLLECTION of Widget, not a
+    # Widget), and an out-of-corpus `-> Ghost` are all undeterminable: the
+    # receiver stays untyped and no edge reaches Widget.go.
+    base = tmp_path / "src"
+    files = [
+        _write(base / "Widget.swift", "class Widget {\n    func go() {}\n}\n"),
+        _write(base / "ServiceFactory.swift", (
+            "class ServiceFactory {\n"
+            "    static func makeOpaque() -> some P {\n        return Widget()\n    }\n"
+            "    static func makeMany() -> [Widget] {\n        return []\n    }\n"
+            "    static func makeGhost() -> Ghost {\n        return Ghost()\n    }\n"
+            "}\n"
+        )),
+        _write(base / "Consumer.swift", (
+            "struct Consumer {\n"
+            "    let a = ServiceFactory.makeOpaque()\n"
+            "    let b = ServiceFactory.makeMany()\n"
+            "    let c = ServiceFactory.makeGhost()\n"
+            "    func run() {\n"
+            "        a.go()\n"
+            "        b.go()\n"
+            "        c.go()\n"
+            "    }\n"
+            "}\n"
+        )),
+    ]
+    result = extract(files, cache_root=tmp_path / "cache", parallel=False)
+    assert (".run()", "calls", ".go()") not in _edge_labels(result, ("calls",))
+
+
+def test_ambiguous_factory_type_yields_no_edge(tmp_path: Path):
+    # Two ServiceFactory definitions: the exactly-one-definition guard must
+    # refuse to pick a factory, so the receiver stays untyped.
+    base = tmp_path / "src"
+    files = [
+        _write(base / "Widget.swift", "class Widget {\n    func go() {}\n}\n"),
+        _write(base / "a/ServiceFactory.swift",
+               "class ServiceFactory {\n    static func make() -> Widget {\n"
+               "        return Widget()\n    }\n}\n"),
+        _write(base / "b/ServiceFactory.swift",
+               "class ServiceFactory {\n    static func make() -> Widget {\n"
+               "        return Widget()\n    }\n}\n"),
+        _write(base / "Consumer.swift", (
+            "struct Consumer {\n"
+            "    let widget = ServiceFactory.make()\n"
+            "    func run() {\n"
+            "        widget.go()\n"
+            "    }\n"
+            "}\n"
+        )),
+    ]
+    result = extract(files, cache_root=tmp_path / "cache", parallel=False)
+    assert (".run()", "calls", ".go()") not in _edge_labels(result, ("calls",))
+
+
 def test_extension_merge_does_not_prune_unrelated_edges(tmp_path: Path):
     # The post-merge edge rebuild dedups on a key that ignores confidence and
     # weight. It must only touch edges the merge actually rewrote, or a single

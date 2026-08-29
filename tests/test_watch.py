@@ -7,7 +7,15 @@ import time
 from pathlib import Path
 import pytest
 
-from graphify.watch import _notify_only, _WATCHED_EXTENSIONS, _rebuild_lock, _check_shrink
+from graphify.watch import (
+    _notify_only,
+    _rebuild_code,
+    _WATCHED_EXTENSIONS,
+    _rebuild_lock,
+    _check_shrink,
+    _batch_triggers_rebuild,
+    _batch_needs_llm_flag,
+)
 
 
 # --- _notify_only ---
@@ -54,6 +62,75 @@ def test_watched_extensions_excludes_noise():
     assert ".sh" in _WATCHED_EXTENSIONS
     assert ".pyc" not in _WATCHED_EXTENSIONS
     assert ".log" not in _WATCHED_EXTENSIONS
+
+
+# --- _batch_triggers_rebuild / _batch_needs_llm_flag: watch dispatch gating ---
+
+def test_batch_doc_only_deletion_triggers_rebuild(tmp_path):
+    """#2580: deleting ONLY doc files while `graphify watch` runs must trigger
+    an immediate full rebuild (eviction needs no LLM), not just the
+    needs_update flag deferred to the next code event."""
+    gone = tmp_path / "docs" / "x.md"
+    assert not gone.exists()
+    assert _batch_triggers_rebuild([gone]) is True
+
+def test_batch_doc_only_deletion_skips_llm_flag(tmp_path):
+    """A pure-deletion batch has nothing left needing LLM re-extraction —
+    the reconcile sweep inside the rebuild evicts it, so no needs_update flag."""
+    gone = tmp_path / "docs" / "x.md"
+    assert not gone.exists()
+    assert _batch_needs_llm_flag([gone]) is False
+
+def test_batch_modified_doc_only_does_not_rebuild(tmp_path):
+    """A doc that still exists needs LLM re-extraction, not an AST rebuild:
+    stays on the _notify_only path."""
+    doc = tmp_path / "docs" / "x.md"
+    doc.parent.mkdir()
+    doc.write_text("# heading\n", encoding="utf-8")
+    assert _batch_triggers_rebuild([doc]) is False
+    assert _batch_needs_llm_flag([doc]) is True
+
+def test_batch_code_file_still_triggers_rebuild(tmp_path):
+    """Regression: existing code-file batches keep rebuilding as before."""
+    code = tmp_path / "app.py"
+    code.write_text("x = 1\n", encoding="utf-8")
+    assert _batch_triggers_rebuild([code]) is True
+    assert _batch_needs_llm_flag([code]) is False
+
+def test_batch_mixed_deletion_and_modified_doc(tmp_path):
+    """Deleted doc + still-existing modified doc in one debounce window:
+    rebuild fires for the eviction AND the flag is kept for the survivor."""
+    survivor = tmp_path / "docs" / "kept.md"
+    survivor.parent.mkdir()
+    survivor.write_text("# kept\n", encoding="utf-8")
+    gone = tmp_path / "docs" / "gone.md"
+    batch = [survivor, gone]
+    assert _batch_triggers_rebuild(batch) is True
+    assert _batch_needs_llm_flag(batch) is True
+
+def test_doc_only_deletion_full_rebuild_evicts_md_nodes(tmp_path):
+    """End-to-end pin for #2580: the full rebuild the watcher now triggers on
+    a doc-only deletion actually evicts the deleted .md's nodes."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "app.py").write_text("def run(): pass\n", encoding="utf-8")
+    doc = corpus / "notes.md"
+    doc.write_text("# Notes\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    labels = {n["label"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+    assert "notes.md" in labels
+
+    doc.unlink()
+    batch = [doc]
+    assert _batch_triggers_rebuild(batch) is True
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+    labels = {n["label"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+    assert "notes.md" not in labels, "deleted doc's nodes must be evicted by the watch-triggered rebuild"
+    assert "run()" in labels
 
 
 # --- watch() import error without watchdog ---
@@ -304,6 +381,25 @@ def test_rebuild_code_keeps_a_visualization_when_over_the_viz_cap(tmp_path, monk
     assert len(communities) < cap < len(graph["nodes"]), "test corpus cannot exercise the cap"
     monkeypatch.setenv("GRAPHIFY_VIZ_NODE_LIMIT", str(cap))
     (corpus / "g9_extra.py").write_text("def extra():\n    return 1\n", encoding="utf-8")
+
+    real_replace = os.replace
+
+    def fail_html_publish(src, dst):
+        if Path(dst).name == "graph.html":
+            raise OSError("simulated atomic HTML publish failure")
+        return real_replace(src, dst)
+
+    with monkeypatch.context() as failed_render:
+        failed_render.setattr("graphify.paths.os.replace", fail_html_publish)
+        assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    assert html.read_text(encoding="utf-8") == before, (
+        "a failed aggregate publish must preserve the previous complete HTML"
+    )
+    assert (corpus / "graphify-out" / ".graph.html.stale").exists()
+
+    # With no further code change, the fast path consumes the stale marker and
+    # retries the current aggregate rather than trusting the preserved old file.
     assert _rebuild_code(corpus, acquire_lock=False) is True
 
     assert html.exists(), (
@@ -312,12 +408,122 @@ def test_rebuild_code_keeps_a_visualization_when_over_the_viz_cap(tmp_path, monk
     )
     after = html.read_text(encoding="utf-8")
     assert after != before, "graph.html must be re-rendered, not left stale"
+    assert not (corpus / "graphify-out" / ".graph.html.stale").exists()
 
-    # And the documented kill switch still means "no viz", not "aggregate".
+    # Missing derived output must be repaired by the unchanged-topology path.
+    # The repair must reuse persisted communities rather than reclustering or
+    # rewriting the graph, report, or label sidecars.
+    stable_paths = [
+        corpus / "graphify-out" / "graph.json",
+        corpus / "graphify-out" / "GRAPH_REPORT.md",
+        corpus / "graphify-out" / ".graphify_labels.json",
+        corpus / "graphify-out" / ".graphify_labels.json.sig",
+    ]
+    stable_bytes = {path: path.read_bytes() for path in stable_paths if path.exists()}
+    html.unlink()
+
+    def fail_cluster(*args, **kwargs):
+        raise AssertionError("unchanged update must not recluster to restore graph.html")
+
+    with monkeypatch.context() as recovery_patch:
+        recovery_patch.setattr("graphify.cluster.cluster", fail_cluster)
+        assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    assert html.exists(), "unchanged update did not restore missing graph.html"
+    assert html.read_text(encoding="utf-8") == after
+    for path, expected in stable_bytes.items():
+        assert path.read_bytes() == expected, f"recovery rewrote stable artifact {path.name}"
+
+    # The documented kill switch also applies on the unchanged-topology path.
     monkeypatch.setenv("GRAPHIFY_VIZ_NODE_LIMIT", "0")
-    (corpus / "g9_extra2.py").write_text("def extra2():\n    return 2\n", encoding="utf-8")
     assert _rebuild_code(corpus, acquire_lock=False) is True
     assert not html.exists(), "GRAPHIFY_VIZ_NODE_LIMIT=0 must disable the HTML viz outright"
+
+
+def test_missing_html_recovery_preserves_multigraph_edge_counts(tmp_path, monkeypatch):
+    """Aggregated recovery must count every parallel edge in persisted graphs."""
+    from graphify.watch import _reconcile_graph_html
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    graph = {
+        "directed": True,
+        "multigraph": True,
+        "nodes": [
+            {"id": "a", "label": "A", "community": 0, "community_name": "Left"},
+            {"id": "b", "label": "B", "community": 1, "community_name": "Right"},
+            {"id": "c", "label": "C", "community": 0, "community_name": "Left"},
+            {"id": "d", "label": "D", "community": 1, "community_name": "Right"},
+        ],
+        "links": [
+            {"source": "a", "target": "b", "key": "calls", "relation": "calls"},
+            {"source": "a", "target": "b", "key": "imports", "relation": "imports"},
+        ],
+    }
+    monkeypatch.setenv("GRAPHIFY_VIZ_NODE_LIMIT", "3")
+    original_touch = Path.touch
+
+    with monkeypatch.context() as failed_render:
+        def fail_replace(*args, **kwargs):
+            raise OSError("simulated atomic publish failure")
+
+        def fail_marker_touch(path, *args, **kwargs):
+            if path == out / ".graph.html.stale":
+                raise PermissionError("simulated marker write failure")
+            return original_touch(path, *args, **kwargs)
+
+        failed_render.setattr("graphify.paths.os.replace", fail_replace)
+        failed_render.setattr(Path, "touch", fail_marker_touch)
+        assert _reconcile_graph_html(out, graph) is None
+
+    assert not (out / "graph.html").exists()
+    # Missing HTML is itself the retry signal; recovery must not depend on a
+    # writable marker file.
+    assert not (out / ".graph.html.stale").exists()
+    assert _reconcile_graph_html(out, graph) == "rendered"
+    assert not (out / ".graph.html.stale").exists()
+
+    rendered = (out / "graph.html").read_text(encoding="utf-8")
+    assert "2 cross-community edges" in rendered
+
+
+def test_html_recovery_succeeds_when_stale_marker_cleanup_fails(
+    tmp_path, monkeypatch, capsys,
+):
+    """A current atomic HTML write must not be reported as a rebuild failure."""
+    from graphify.watch import _reconcile_graph_html
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    html = out / "graph.html"
+    html.write_text("stale visualization", encoding="utf-8")
+    marker = out / ".graph.html.stale"
+    marker.touch()
+    graph = {
+        "directed": False,
+        "multigraph": False,
+        "nodes": [
+            {"id": "a", "label": "A", "community": 0},
+            {"id": "b", "label": "B", "community": 0},
+            {"id": "c", "label": "C", "community": 1},
+            {"id": "d", "label": "D", "community": 1},
+        ],
+        "links": [],
+    }
+    original_unlink = Path.unlink
+
+    def reject_marker_unlink(path, *args, **kwargs):
+        if path == marker:
+            raise PermissionError("simulated marker cleanup failure")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setenv("GRAPHIFY_VIZ_NODE_LIMIT", "3")
+    monkeypatch.setattr(Path, "unlink", reject_marker_unlink)
+
+    assert _reconcile_graph_html(out, graph) == "rendered"
+    assert html.read_text(encoding="utf-8") != "stale visualization"
+    assert marker.exists()
+    assert "stale marker could not be cleared" in capsys.readouterr().out
 
 
 def test_update_rebuilds_with_nested_star_gitignore(tmp_path):
@@ -1180,6 +1386,61 @@ def test_check_shrink_blocks_shrink_outside_rebuilt_sources(capsys):
     assert "Refusing to overwrite" in capsys.readouterr().err
 
 
+def test_check_shrink_blocks_loss_from_failed_rebuilt_source(capsys):
+    """A failed extractor must not account for nodes it dropped during rebuild."""
+    existing = {"nodes": [
+        {"id": "app", "source_file": "app.py"},
+        {"id": "table", "source_file": "schema.sql"},
+    ], "links": []}
+    new = {"nodes": [{"id": "app", "source_file": "app.py"}], "links": []}
+
+    ok = _check_shrink(
+        False,
+        existing,
+        new,
+        rebuilt_sources={"app.py", "schema.sql"},
+        failed_sources={"schema.sql"},
+    )
+
+    assert ok is False
+    assert "Refusing to overwrite" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("no_cluster", [False, True])
+def test_rebuild_refuses_loss_from_failed_source(tmp_path, monkeypatch, no_cluster):
+    """A failed AST extractor must not overwrite its last good graph."""
+    previous_sql_node_count = 10
+    (tmp_path / "app.py").write_text(
+        "def alpha(): return beta()\ndef beta(): return 1\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "schema.sql").write_text(
+        "create table cliente (id int primary key);\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    graph_path = out / "graph.json"
+    existing_nodes = [
+        {"id": "app.py", "label": "app.py", "source_file": "app.py", "type": "file", "_origin": "ast"},
+        {"id": "app.py:alpha", "label": "alpha", "source_file": "app.py", "type": "function", "_origin": "ast"},
+        {"id": "app.py:beta", "label": "beta", "source_file": "app.py", "type": "function", "_origin": "ast"},
+        {"id": "schema.sql", "label": "schema.sql", "source_file": "schema.sql", "type": "file", "_origin": "ast"},
+    ]
+    existing_nodes.extend(
+        {"id": f"sql:table_{index}", "label": f"table_{index}", "source_file": "schema.sql", "type": "table", "_origin": "ast"}
+        for index in range(previous_sql_node_count)
+    )
+    existing = {"nodes": existing_nodes, "links": []}
+    graph_path.write_text(json.dumps(existing), encoding="utf-8")
+    monkeypatch.setitem(sys.modules, "tree_sitter_sql", None)
+
+    ok = _rebuild_code(tmp_path, force=False, no_cluster=no_cluster)
+
+    assert ok is False
+    assert json.loads(graph_path.read_text(encoding="utf-8")) == existing
+
+
 def test_check_shrink_allows_growth():
     """new > existing is always fine."""
     ok = _check_shrink(
@@ -1551,10 +1812,12 @@ def test_queue_and_drain_pending_round_trip(tmp_path):
 
     pending_file = out / _PENDING_FILENAME
     assert pending_file.exists()
-    # Each path written on its own line.
-    assert pending_file.read_text(encoding="utf-8").splitlines() == [
-        "a.py", "sub/b.py", "c.md",
-    ]
+    # Each path written on its own line. Compared as Paths, not as strings: the
+    # documented contract is "one path per line" (see _queue_pending), not a
+    # separator convention, and os.fspath emits the native one — so a literal
+    # "sub/b.py" fails on Windows without any real defect.
+    lines = pending_file.read_text(encoding="utf-8").splitlines()
+    assert [Path(line) for line in lines] == paths
 
     drained = _drain_pending(out)
     assert drained == paths
@@ -3382,3 +3645,156 @@ def test_incremental_indirect_call_parity_and_idempotency(tmp_path):
 
     fresh = _2438_seed(tmp_path / "fresh", caller_prefix="    x = 1\n")
     assert sorted(_2438_indirects(_2406_graph(fresh))) == sorted(incremental)
+
+
+# --- #2603: absolute .graphify_root must not re-anchor cwd-relative sources ---
+
+def test_subfolder_root_marker_preserves_unchanged_nodes(tmp_path, monkeypatch):
+    """End-to-end pin for #2603: a graph built from the repo root scoped to a
+    subfolder stores source_file relative to the repo root ("src/mod0.py"),
+    while the skill writes an ABSOLUTE subfolder path into .graphify_root.
+    _StoredSourcePaths then anchored the stored paths to the subfolder,
+    doubling them (src/src/...), judging every unchanged source deleted, and
+    collapsing the graph. The marker must be validated against the stored
+    paths before it is trusted as their anchor."""
+    from graphify.watch import _rebuild_code
+
+    repo = tmp_path / "repo"
+    src = repo / "src"
+    src.mkdir(parents=True)
+    for i in range(3):
+        (src / f"mod{i}.py").write_text(
+            f"class Thing{i}:\n    def run(self):\n        return {i}\n",
+            encoding="utf-8",
+        )
+    monkeypatch.chdir(repo)
+
+    # Build from the repo root scoped to the subfolder (the skill's shape):
+    # stored source_file values come out relative to the repo root.
+    assert _rebuild_code(Path("src"), acquire_lock=False) is True
+    out = src / "graphify-out"
+    graph_path = out / "graph.json"
+    baseline = json.loads(graph_path.read_text(encoding="utf-8"))
+    baseline_ids = {n["id"] for n in baseline["nodes"]}
+    assert any(
+        (n.get("source_file") or "").startswith("src/") for n in baseline["nodes"]
+    ), "precondition: stored sources are repo-root-relative"
+
+    # The skill's Step 1 marker: an absolute path to the SUBFOLDER. The build
+    # above wrote the safe relative form; overwrite with the absolute form
+    # that reproduces #2603.
+    (out / ".graphify_root").write_text(str(src.resolve()), encoding="utf-8")
+
+    # Incremental rebuild the way the post-commit hook calls it: absolute
+    # watch_path read from the marker, one changed file.
+    (src / "mod0.py").write_text(
+        "class Thing0:\n    def run(self):\n        return 100\n", encoding="utf-8"
+    )
+    assert _rebuild_code(
+        src.resolve(), changed_paths=[Path("src/mod0.py")], acquire_lock=False
+    ) is True
+
+    after_ids = {
+        n["id"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]
+    }
+    # mod0's nodes are re-minted by the re-extraction; nodes of the UNCHANGED
+    # files must all survive.
+    unchanged_lost = {i for i in baseline_ids - after_ids if "mod0" not in i}
+    assert not unchanged_lost, (
+        f"unchanged sources lost {len(unchanged_lost)} node(s) to marker "
+        f"re-anchoring: {sorted(unchanged_lost)[:5]}"
+    )
+
+
+def test_subfolder_marker_still_evicts_a_deleted_file(tmp_path, monkeypatch):
+    """The anchor validation must not over-preserve (#2603): once the correct
+    anchor is chosen, a genuinely deleted source is still evicted."""
+    from graphify.watch import _rebuild_code
+
+    repo = tmp_path / "repo"
+    src = repo / "src"
+    src.mkdir(parents=True)
+    for i in range(3):
+        (src / f"mod{i}.py").write_text(
+            f"class Thing{i}:\n    def run(self):\n        return {i}\n", encoding="utf-8"
+        )
+    monkeypatch.chdir(repo)
+    assert _rebuild_code(Path("src"), acquire_lock=False) is True
+    out = src / "graphify-out"
+    graph_path = out / "graph.json"
+    (out / ".graphify_root").write_text(str(src.resolve()), encoding="utf-8")
+
+    (src / "mod1.py").unlink()  # a genuine deletion
+    assert _rebuild_code(
+        src.resolve(), changed_paths=[Path("src/mod1.py")], acquire_lock=False
+    ) is True
+
+    after = json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]
+    assert not any("mod1" in n["id"] for n in after), "deleted file's nodes must be evicted"
+    assert any("mod2" in n["id"] for n in after), "unchanged file must survive"
+
+
+def test_subfolder_marker_incremental_matches_cold_build(tmp_path, monkeypatch):
+    """Incremental rebuild with the validated anchor produces the same node-id
+    set as a cold rebuild of the identical on-disk state (id parity, #2603)."""
+    from graphify.watch import _rebuild_code
+
+    repo = tmp_path / "repo"
+    src = repo / "src"
+    src.mkdir(parents=True)
+    for i in range(3):
+        (src / f"mod{i}.py").write_text(
+            f"class Thing{i}:\n    def run(self):\n        return {i}\n", encoding="utf-8"
+        )
+    monkeypatch.chdir(repo)
+    assert _rebuild_code(Path("src"), acquire_lock=False) is True
+    out = src / "graphify-out"
+    graph_path = out / "graph.json"
+    (out / ".graphify_root").write_text(str(src.resolve()), encoding="utf-8")
+
+    (src / "mod0.py").write_text(
+        "class Thing0:\n    def run(self):\n        return 100\n", encoding="utf-8"
+    )
+    assert _rebuild_code(
+        src.resolve(), changed_paths=[Path("src/mod0.py")], acquire_lock=False
+    ) is True
+    incremental_ids = {n["id"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+
+    import shutil
+    shutil.rmtree(out)
+    assert _rebuild_code(Path("src"), acquire_lock=False) is True
+    cold_ids = {n["id"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+
+    assert incremental_ids == cold_ids, (
+        f"incremental vs cold id drift: only-incremental={sorted(incremental_ids - cold_ids)[:5]}, "
+        f"only-cold={sorted(cold_ids - incremental_ids)[:5]}"
+    )
+
+
+# --- read-only inotify events must not count as changes (#watch-self-trigger) ---
+
+def test_read_only_events_are_ignored():
+    """``opened`` / ``closed_no_write`` mean a file was read, not changed."""
+    from graphify.watch import _is_read_only_event
+
+    class E:
+        def __init__(self, t):
+            self.event_type = t
+
+    assert _is_read_only_event(E("opened"))
+    assert _is_read_only_event(E("closed_no_write"))
+    for t in ("created", "modified", "deleted", "moved", "closed"):
+        assert not _is_read_only_event(E(t)), t
+
+
+def test_read_only_events_with_real_watchdog_classes():
+    pytest.importorskip("watchdog.events")
+    from watchdog import events as we
+    from graphify.watch import _is_read_only_event
+
+    assert _is_read_only_event(we.FileOpenedEvent("/tmp/x.py"))
+    if hasattr(we, "FileClosedNoWriteEvent"):
+        assert _is_read_only_event(we.FileClosedNoWriteEvent("/tmp/x.py"))
+    assert not _is_read_only_event(we.FileModifiedEvent("/tmp/x.py"))
+    assert not _is_read_only_event(we.FileCreatedEvent("/tmp/x.py"))
+    assert not _is_read_only_event(we.FileClosedEvent("/tmp/x.py"))

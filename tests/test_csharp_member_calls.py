@@ -668,3 +668,111 @@ def test_sibling_pattern_rebind_conflict_poisons(tmp_path):
     twig_go = _find(r, ".Go()", "twig")
     assert (r_a, sect_go) not in calls, "conflicting pattern bindings must poison the name"
     assert (r_a, twig_go) not in calls, "conflicting pattern bindings must poison the name"
+
+
+def _refs(r):
+    return {(e["source"], e["target"]) for e in r["edges"]
+            if e["relation"] == "references"}
+
+
+_PRIMARY_CTOR = {
+    "S.cs": (
+        "public interface IDep { bool Plain(); }\n"
+        "public class Holder(IDep dep) {\n"
+        "    public bool Run() { return dep.Plain(); }\n"
+        "}\n"
+    )
+}
+
+
+def test_primary_constructor_parameter_emits_references_edge(tmp_path):
+    """`class Holder(IDep dep)` declares its dependency on the type declaration
+    rather than in a field or property, so neither the field_declaration nor the
+    property_declaration handler sees it — the type still needs a references edge."""
+    _, r = _calls(tmp_path, _PRIMARY_CTOR)
+    holder = _find(r, "Holder", "holder")
+    idep = _find(r, "IDep", "idep")
+    assert (holder, idep) in _refs(r), \
+        "a primary-constructor parameter type must produce a references edge"
+
+
+def test_primary_constructor_parameter_resolves_member_calls(tmp_path):
+    """A call through a primary-constructor parameter must resolve to the
+    parameter's declared type, exactly as a field receiver does."""
+    calls, r = _calls(tmp_path, _PRIMARY_CTOR)
+    run = _find(r, ".Run()", "holder")
+    plain = _find(r, ".Plain()", "idep")
+    assert (run, plain) in calls, \
+        "dep.Plain() must resolve through the primary-constructor parameter"
+
+
+def test_record_positional_parameter_emits_references_edge(tmp_path):
+    """Positional record parameters use the same parameter_list shape."""
+    _, r = _calls(tmp_path, {
+        "S.cs": (
+            "public interface IDep { bool Plain(); }\n"
+            "public record Holder(IDep Dep) {\n"
+            "    public bool Run() { return Dep.Plain(); }\n"
+            "}\n"
+        )
+    })
+    holder = _find(r, "Holder", "holder")
+    idep = _find(r, "IDep", "idep")
+    assert (holder, idep) in _refs(r), \
+        "a positional record parameter type must produce a references edge"
+
+
+def test_primary_constructor_type_parameter_is_not_referenced(tmp_path):
+    """A bare type parameter (`T item`) names no real type — it must not be
+    emitted as a phantom referenced node."""
+    _, r = _calls(tmp_path, {
+        "S.cs": (
+            "public interface IDep { bool Plain(); }\n"
+            "public class Holder<T>(IDep dep, T item) {\n"
+            "    public bool Run() { return dep.Plain(); }\n"
+            "}\n"
+        )
+    })
+    holder = _find(r, "Holder", "holder")
+    idep = _find(r, "IDep", "idep")
+    refs = _refs(r)
+    assert (holder, idep) in refs, "the real dependency must still be referenced"
+    labels = {n["id"]: n["label"] for n in r["nodes"]}
+    assert not [t for s, t in refs if s == holder and labels.get(t) == "T"], \
+        "a type parameter must not be emitted as a referenced type"
+
+
+def test_primary_constructor_builtin_param_is_not_fabricated(tmp_path):
+    """A built-in-typed primary-ctor parameter (`int count`) must not fabricate a
+    referenced type node — only real type dependencies get a references edge."""
+    _, r = _calls(tmp_path, {
+        "S.cs": (
+            "public interface IDep { bool Plain(); }\n"
+            "public class Holder(IDep dep, int count) {\n"
+            "    public bool Run() { return dep.Plain(); }\n"
+            "}\n"
+        )
+    })
+    holder = _find(r, "Holder", "holder")
+    refs = _refs(r)
+    idep = _find(r, "IDep", "idep")
+    assert (holder, idep) in refs, "the real dependency must still be referenced"
+    labels = {n["id"]: n["label"] for n in r["nodes"]}
+    assert not [t for s, t in refs if s == holder and labels.get(t) in ("int", "Int32")], \
+        "a built-in parameter type must not become a referenced node"
+
+
+def test_struct_primary_constructor_parameter_emits_references_edge(tmp_path):
+    """The branch also covers `struct` primary constructors, not just class/record."""
+    _, r = _calls(tmp_path, {
+        "S.cs": (
+            "public interface IDep { bool Plain(); }\n"
+            "public struct Holder(IDep dep) {\n"
+            "    public bool Run() { return dep.Plain(); }\n"
+            "}\n"
+        )
+    })
+    holder = _find(r, "Holder", "holder")
+    idep = _find(r, "IDep", "idep")
+    assert (holder, idep) in _refs(r), \
+        "a struct primary-constructor parameter type must produce a references edge"

@@ -209,7 +209,9 @@ def _load_tsconfig_aliases(start_dir: Path) -> dict[str, list[str]]:
     Follows extends chains so SvelteKit/Nuxt/NestJS inherited aliases are included.
     Returns a dict mapping alias patterns to ordered resolved target patterns;
     wildcard tokens remain intact for substitution during resolution (#927).
-    Result is cached by config path string.
+    Result is cached by config path string. The cache has no mtime/content
+    component, so extract() clears it per run (#2917); do not assume the entry
+    survives a config edit within a long-lived process.
     """
     found = _find_js_config(start_dir)
     if found is None:
@@ -227,7 +229,8 @@ def _load_tsconfig_base_url(start_dir: Path) -> "Path | None":
     so a config declaring baseUrl and NO paths yielded an empty alias map and
     every non-relative import went unresolved (#2153). Exposed separately so it
     can act as a resolution root of last resort, after all declared aliases miss.
-    Returns None when no config declares baseUrl.
+    Returns None when no config declares baseUrl. Cached by config path with no
+    mtime component, so extract() clears it per run (#2917).
     """
     found = _find_js_config(start_dir)
     if found is None:
@@ -1724,6 +1727,8 @@ def _probe_python_module_candidate(candidate: Path) -> Path | None:
             return init_path
     if candidate.is_file():
         return candidate
+    if not candidate.name:
+        return None
     py_candidate = candidate.with_suffix(".py")
     if py_candidate.is_file():
         return py_candidate
@@ -1933,25 +1938,31 @@ def _resolve_cross_file_imports(
                 if src_path.stem not in bare_to_qualified:
                     bare_to_qualified[src_path.stem] = fq_stem
 
-    # Pass 2: for each file, find `from .X import A, B, C` and resolve
+    # Pass 2: for each file, find `from .X import A, B, C`, then attribute the
+    # `uses` edge to the specific local symbol (class OR function) whose body
+    # actually references the imported name — not to every class that merely
+    # shares the file (#2652). The edge is anchored at the real reference, not
+    # the import line, so `source_location` points at genuine corroboration.
     new_edges: list[dict] = []
-    stem_to_path: dict[str, Path] = {_file_stem(p): p for p in paths}
 
     for file_result, path in zip(per_file, paths):
-        stem = _file_stem(path)
         str_path = str(path)
 
-        # Find all classes defined in this file (the importers).
-        # Excludes rationale nodes whose labels happen not to end in ")" or ".py"
-        # but which must never be treated as importing entities (#563).
-        local_classes = [
-            n["id"] for n in file_result.get("nodes", [])
-            if n.get("source_file") == str_path
-            and not n["label"].endswith((")", ".py"))
-            and n["id"] != _make_id(stem)  # exclude file-level node
-            and n.get("file_type") != "rationale"
-        ]
-        if not local_classes:
+        # Map each local symbol (class or function) to its node id, keyed by the
+        # bare symbol name. Function labels end in "()"; the file node ends in
+        # ".py"; rationale nodes never import (#563). First writer wins on a
+        # name collision (inherently ambiguous within a file).
+        name_to_nid: dict[str, str] = {}
+        for n in file_result.get("nodes", []):
+            if n.get("source_file") != str_path or n.get("file_type") == "rationale":
+                continue
+            label = n.get("label", "")
+            if not label or label.endswith(".py"):
+                continue
+            sym_name = label[:-2] if label.endswith("()") else label
+            if sym_name and sym_name not in name_to_nid:
+                name_to_nid[sym_name] = n["id"]
+        if not name_to_nid:
             continue
 
         # Parse imports from this file
@@ -1961,75 +1972,109 @@ def _resolve_cross_file_imports(
         except Exception:
             continue
 
-        def walk_imports(node) -> None:
-            if node.type == "import_from_statement":
-                # Find the module name - handles both absolute and relative imports.
-                # Relative: `from .models import X` → relative_import → dotted_name
-                # Absolute: `from models import X`  → module_name field
-                # target_fq is the directory-qualified stem used as the key in
-                # stem_to_entities. Relative imports are resolved exactly via the
-                # importing file's directory; absolute imports fall back to the
-                # bare-stem secondary index (first-writer-wins when names collide).
-                target_fq: str | None = None
-                for child in node.children:
-                    if child.type == "relative_import":
-                        for sub in child.children:
-                            if sub.type == "dotted_name":
-                                raw = source[sub.start_byte:sub.end_byte].decode("utf-8", errors="replace")
-                                bare = raw.split(".")[-1]
-                                # Resolve relative import to exact qualified stem.
-                                candidate = path.parent / f"{bare}.py"
-                                target_fq = _file_stem(candidate)
-                                break
-                        break
-                    if child.type == "dotted_name" and target_fq is None:
-                        raw = source[child.start_byte:child.end_byte].decode("utf-8", errors="replace")
-                        bare = raw.split(".")[-1]
-                        target_fq = bare_to_qualified.get(bare)
+        # local_name -> target node id (local_name honours `import X as Y`, so a
+        # reference to the alias in the body still attributes correctly).
+        import_targets: dict[str, str] = {}
+        # referenced name -> {source symbol nid: first reference line}
+        ref_sources: dict[str, dict[str, int]] = {}
 
-                if not target_fq or target_fq not in stem_to_entities:
-                    return
+        def _text(n) -> str:
+            return source[n.start_byte:n.end_byte].decode("utf-8", errors="replace")
 
-                # Collect imported names: dotted_name children of import_from_statement
-                # that come AFTER the 'import' keyword token.
-                imported_names: list[str] = []
-                past_import_kw = False
-                for child in node.children:
-                    if child.type == "import":
-                        past_import_kw = True
-                        continue
-                    if not past_import_kw:
-                        continue
-                    if child.type == "dotted_name":
-                        imported_names.append(
-                            source[child.start_byte:child.end_byte].decode("utf-8", errors="replace")
-                        )
-                    elif child.type == "aliased_import":
-                        # `import X as Y` - take the original name
-                        name_node = child.child_by_field_name("name")
-                        if name_node:
-                            imported_names.append(
-                                source[name_node.start_byte:name_node.end_byte].decode("utf-8", errors="replace")
-                            )
-
-                line = node.start_point[0] + 1
-                for name in imported_names:
-                    tgt_nid = stem_to_entities[target_fq].get(name)
-                    if tgt_nid:
-                        for src_class_nid in local_classes:
-                            new_edges.append({
-                                "source": src_class_nid,
-                                "target": tgt_nid,
-                                "relation": "uses",
-                                "confidence": "INFERRED",
-                                "source_file": str_path,
-                                "source_location": f"L{line}",
-                                "weight": 0.8,
-                            })
+        def resolve_import(node) -> None:
+            # Find the module name - handles both absolute and relative imports.
+            # Relative: `from .models import X` → relative_import → dotted_name
+            # Absolute: `from models import X`  → module_name field
+            # target_fq is the directory-qualified stem used as the key in
+            # stem_to_entities. Relative imports are resolved exactly via the
+            # importing file's directory; absolute imports fall back to the
+            # bare-stem secondary index (first-writer-wins when names collide).
+            target_fq: str | None = None
             for child in node.children:
-                walk_imports(child)
+                if child.type == "relative_import":
+                    for sub in child.children:
+                        if sub.type == "dotted_name":
+                            bare = _text(sub).split(".")[-1]
+                            candidate = path.parent / f"{bare}.py"
+                            target_fq = _file_stem(candidate)
+                            break
+                    break
+                if child.type == "dotted_name" and target_fq is None:
+                    bare = _text(child).split(".")[-1]
+                    target_fq = bare_to_qualified.get(bare)
 
-        walk_imports(tree.root_node)
+            if not target_fq or target_fq not in stem_to_entities:
+                return
+
+            # Imported names come AFTER the 'import' keyword token. For
+            # `import X as Y` the target is found via X but the body uses Y.
+            past_import_kw = False
+            for child in node.children:
+                if child.type == "import":
+                    past_import_kw = True
+                    continue
+                if not past_import_kw:
+                    continue
+                imported_name: str | None = None
+                local_name: str | None = None
+                if child.type == "dotted_name":
+                    imported_name = local_name = _text(child)
+                elif child.type == "aliased_import":
+                    name_node = child.child_by_field_name("name")
+                    alias_node = child.child_by_field_name("alias")
+                    if name_node is not None:
+                        imported_name = _text(name_node)
+                        local_name = _text(alias_node) if alias_node is not None else imported_name
+                if not imported_name or not local_name:
+                    continue
+                tgt_nid = stem_to_entities[target_fq].get(imported_name)
+                if tgt_nid:
+                    import_targets[local_name] = tgt_nid
+
+        def visit(node, current_nid: str | None) -> None:
+            # Identifiers inside an import statement are the import itself, not a
+            # real use — resolve the import here and don't descend into it.
+            if node.type == "import_from_statement":
+                resolve_import(node)
+                return
+            # Attribute references to the top-level symbol that contains them: a
+            # class is a unit (a reference inside one of its methods counts for
+            # the class, matching the documented DigestAuth->Response edge), and
+            # a module-level function is its own source. Only set at module scope
+            # (current_nid is None) so nested defs never override the container.
+            if current_nid is None and node.type in ("class_definition", "function_definition"):
+                name_node = node.child_by_field_name("name")
+                if name_node is not None:
+                    mapped = name_to_nid.get(_text(name_node))
+                    if mapped is not None:
+                        current_nid = mapped
+            if node.type == "identifier" and current_nid is not None:
+                slot = ref_sources.setdefault(_text(node), {})
+                slot.setdefault(current_nid, node.start_point[0] + 1)
+            for child in node.children:
+                visit(child, current_nid)
+
+        visit(tree.root_node, None)
+
+        for name, tgt_nid in import_targets.items():
+            for src_nid, line in ref_sources.get(name, {}).items():
+                if src_nid == tgt_nid:
+                    continue
+                new_edges.append({
+                    "source": src_nid,
+                    "target": tgt_nid,
+                    "relation": "uses",
+                    "confidence": "INFERRED",
+                    # 0.95 = "direct structural evidence (named cross-file
+                    # reference)" from the extraction-spec rubric, which is
+                    # exactly what this edge is: a name this file imports, then
+                    # references. Omitting the score entirely fell through to the
+                    # 0.5 default the same rubric forbids outright (#2813).
+                    "confidence_score": 0.95,
+                    "source_file": str_path,
+                    "source_location": f"L{line}",
+                    "weight": 0.8,
+                })
 
     return new_edges
 
@@ -2055,6 +2100,11 @@ def _decldef_class_stem(source_file: str) -> tuple[str, str] | None:
     if not stem:
         return None
     return (str(p.parent), stem)
+
+def _source_stem(node: dict) -> str:
+    """Filename stem of a node's ``source_file`` (``""`` when it has none)."""
+    return Path(str(node.get("source_file", ""))).stem
+
 
 def _merge_decl_def_classes(
     all_nodes: list[dict],
@@ -2082,7 +2132,10 @@ def _merge_decl_def_classes(
     and leaves it alone, and the downstream resolvers see ONE definition. Because
     the colliding nodes already share an id, no edge re-pointing is needed: every
     edge that referenced the impl symbol already points at the surviving id. We
-    only drop the redundant duplicate node and prefer the header's label.
+    only drop the redundant duplicate node and prefer the header's label — but
+    the dropped impl node's provenance is preserved on the survivor as
+    ``definition_file`` / ``definition_location``, so the definition site is
+    still reachable from the merged node.
 
     GOD-NODE GUARDS (false merges are the main risk):
 
@@ -2137,10 +2190,46 @@ def _merge_decl_def_classes(
                 headers.append(node)
         if not ok:
             continue
-        # All from one (dir, base_stem) sibling family, with a UNIQUE header.
-        if len(sibling_keys) != 1 or len(headers) != 1:
+        # All from one (dir, base_stem) sibling family. Pick the declaring header.
+        # Usually there is exactly one. An ObjC class whose members are split across
+        # categories has several (`Foo.h`, `Foo+Cat.h`) — fold those too, keeping the
+        # BASE header (the stem with no `+`), or the lowest-sorting category header
+        # when the base class lives outside the corpus (`NSString+Trim.h`). Two
+        # NON-category headers still bail to disambiguation, as before, so an
+        # unrelated `Foo.h` / `Foo.hpp` pair is untouched.
+        if len(sibling_keys) != 1 or not headers:
             continue
-        keeper = headers[0]
+        if len(headers) == 1:
+            keeper = headers[0]
+        else:
+            base_headers = [h for h in headers if "+" not in _source_stem(h)]
+            if len(base_headers) > 1:
+                continue
+            keeper = base_headers[0] if base_headers else min(headers, key=_source_stem)
+        # The keeper is the DECLARATION, so without this the graph reports the
+        # header as the symbol's only location and the definition site — the file
+        # and line a reader actually wants — is discarded with the dropped node.
+        # Recorded as separate attributes: the survivor's id, label and
+        # source_file are untouched, so no existing graph is re-keyed, no edge
+        # moves, and the single-definition guarantee downstream resolvers rely on
+        # is unchanged. Chosen deterministically (lowest source_file, then
+        # location) so an ObjC class whose members are split across several
+        # category impls does not depend on node arrival order.
+        impls = sorted(
+            (n for n in group
+             if n is not keeper
+             and Path(str(n.get("source_file", ""))).suffix.lower()
+             in _DECLDEF_IMPL_SUFFIXES),
+            key=lambda n: (str(n.get("source_file", "")),
+                           str(n.get("source_location", ""))),
+        )
+        if impls:
+            definition = impls[0]
+            if definition.get("source_file"):
+                keeper["definition_file"] = definition["source_file"]
+            if definition.get("source_location"):
+                keeper["definition_location"] = definition["source_location"]
+
         for node in group:
             if node is not keeper:
                 drop_objs.add(id(node))
@@ -2149,7 +2238,8 @@ def _merge_decl_def_classes(
         return
 
     # Drop the redundant duplicate nodes. The surviving (header) node keeps its
-    # own label/source_file; edges are unchanged because the id is identical. Then
+    # own label/source_file (and now carries the impl's definition_file/
+    # definition_location); edges are unchanged because the id is identical. Then
     # de-dup any now-identical edges (e.g. the impl file's `contains`/`method`
     # edge that duplicates the header's after the collapse).
     all_nodes[:] = [n for n in all_nodes if id(n) not in drop_objs]
@@ -2297,6 +2387,158 @@ def _resolve_cross_file_java_imports(
 
     return new_edges
 
+
+def _go_import_path_for_file(
+    source_file: str | Path,
+    root: Path,
+    module_cache: dict[Path, str | None] | None = None,
+) -> str | None:
+    """Return the canonical Go import path for a source file inside a module."""
+    cache = module_cache if module_cache is not None else {}
+    path = Path(source_file)
+    if not path.is_absolute():
+        path = root / path
+    try:
+        directory = path.resolve().parent
+    except OSError:
+        directory = path.absolute().parent
+
+    module_dir: Path | None = None
+    module_path: str | None = None
+    for candidate in (directory, *directory.parents):
+        if candidate in cache:
+            cached = cache[candidate]
+            if cached:
+                module_dir, module_path = candidate, cached
+            break
+        go_mod = candidate / "go.mod"
+        if not go_mod.is_file():
+            continue
+        try:
+            match = re.search(
+                r"(?m)^\s*module\s+([^\s]+)",
+                go_mod.read_text(encoding="utf-8"),
+            )
+        except (OSError, UnicodeError):
+            match = None
+        module_dir = candidate
+        module_path = match.group(1) if match else None
+        cache[candidate] = module_path
+        break
+
+    if not module_dir or not module_path:
+        return None
+    try:
+        relative_dir = directory.relative_to(module_dir)
+    except ValueError:
+        return None
+    suffix = relative_dir.as_posix()
+    return module_path if suffix == "." else f"{module_path}/{suffix}"
+
+
+def _resolve_go_type_references(
+    per_file: list[dict],
+    paths: list[Path],
+    all_nodes: list[dict],
+    all_edges: list[dict],
+    root: Path,
+    resolution_context_nodes: list[dict] | None = None,
+    resolution_context_edges: list[dict] | None = None,
+) -> None:
+    """Resolve qualified Go types through aliases and exact module paths."""
+    imports_by_file: dict[str, dict[str, str]] = {}
+    actual_path_by_file: dict[str, Path] = {}
+    for path, result in zip(paths, per_file):
+        imports = result.get("go_imports") or {}
+        for node in result.get("nodes", []):
+            source_file = node.get("source_file")
+            if source_file:
+                imports_by_file[str(source_file)] = imports
+                actual_path_by_file[str(source_file)] = path
+
+    if not imports_by_file:
+        return
+
+    definition_nodes = all_nodes + (resolution_context_nodes or [])
+    definition_edges = all_edges + (resolution_context_edges or [])
+    contained = {edge.get("target") for edge in definition_edges
+                 if edge.get("relation") == "contains"}
+    module_cache: dict[Path, str | None] = {}
+    fqn_to_ids: dict[str, list[str]] = {}
+    for node in definition_nodes:
+        source_file = str(node.get("source_file") or "")
+        label = str(node.get("label") or "")
+        nid = node.get("id")
+        if (not source_file or not label or not nid or nid not in contained
+                or not _is_type_like_definition(node)):
+            continue
+        actual_path = actual_path_by_file.get(source_file, Path(source_file))
+        package_path = _go_import_path_for_file(actual_path, root, module_cache)
+        if package_path:
+            fqn_to_ids.setdefault(f"{package_path}.{label}", []).append(nid)
+
+    qualified_stubs = {
+        node["id"]: str(node.get("label") or "")
+        for node in all_nodes
+        if node.get("id") and not node.get("source_file")
+        and "." in str(node.get("label") or "")
+    }
+    if not qualified_stubs:
+        return
+
+    node_ids = {node.get("id") for node in all_nodes if node.get("id")}
+    external_stub_ids: dict[str, str] = {}
+    new_nodes: list[dict] = []
+
+    def external_stub(fqn: str) -> str:
+        existing = external_stub_ids.get(fqn)
+        if existing:
+            return existing
+        nid = _make_id("go", "type", fqn)
+        if nid not in node_ids:
+            new_nodes.append({
+                "id": nid,
+                "label": fqn,
+                "file_type": "code",
+                "source_file": "",
+                "source_location": "",
+            })
+            node_ids.add(nid)
+        external_stub_ids[fqn] = nid
+        return nid
+
+    repointed_from: set[str] = set()
+    for edge in all_edges:
+        if edge.get("relation") not in {"references", "embeds"}:
+            continue
+        target = edge.get("target")
+        qualified = qualified_stubs.get(target)
+        if not qualified:
+            continue
+        alias, _, type_name = qualified.rpartition(".")
+        import_path = imports_by_file.get(
+            str(edge.get("source_file") or ""), {}
+        ).get(alias)
+        if not import_path or not type_name:
+            continue
+        fqn = f"{import_path}.{type_name}"
+        candidates = fqn_to_ids.get(fqn, [])
+        edge["target"] = candidates[0] if len(candidates) == 1 else external_stub(fqn)
+        repointed_from.add(str(target))
+
+    if new_nodes:
+        all_nodes.extend(new_nodes)
+
+    if not repointed_from:
+        return
+    referenced = {endpoint for edge in all_edges
+                  for endpoint in (edge.get("source"), edge.get("target"))}
+    all_nodes[:] = [
+        node for node in all_nodes
+        if node.get("id") not in repointed_from or node.get("id") in referenced
+    ]
+
+
 def _resolve_java_type_references(
     per_file: list[dict],
     paths: list[Path],
@@ -2370,8 +2612,31 @@ def _resolve_java_type_references(
             pkg_by_file[s] = pkg
             imports_by_file[s] = imps
 
-    # FQN (package.Class) -> definition node id, for type-like defs with a source.
+    # FQN (package.Class or package.Outer.Inner) -> definition node id, for
+    # type-like defs with a source. Nested declarations need their containing
+    # type path because qualified annotation references preserve it.
     fqn_to_id: dict[str, str] = {}
+    node_by_id = {
+        node.get("id"): node for node in all_nodes if node.get("id")
+    }
+    type_parent_by_id: dict[str, str] = {}
+    for edge in all_edges:
+        if edge.get("relation") != "contains":
+            continue
+        child = node_by_id.get(edge.get("target"))
+        parent = node_by_id.get(edge.get("source"))
+        if not child or not parent:
+            continue
+        child_src = child.get("source_file", "")
+        parent_label = parent.get("label", "")
+        if (
+            child_src
+            and parent.get("source_file") == child_src
+            and parent_label[:1].isupper()
+            and not parent_label.endswith(".java")
+        ):
+            type_parent_by_id[child["id"]] = parent["id"]
+
     for node in all_nodes:
         label = node.get("label", "")
         src = node.get("source_file", "")
@@ -2382,6 +2647,20 @@ def _resolve_java_type_references(
             continue
         pkg = pkg_by_file[src]
         fqn_to_id.setdefault(f"{pkg}.{label}" if pkg else label, nid)
+        type_path = [label]
+        seen = {nid}
+        parent_id = type_parent_by_id.get(nid)
+        while parent_id and parent_id not in seen:
+            seen.add(parent_id)
+            parent = node_by_id[parent_id]
+            type_path.append(parent["label"])
+            parent_id = type_parent_by_id.get(parent_id)
+        if len(type_path) > 1:
+            nested_name = ".".join(reversed(type_path))
+            fqn_to_id.setdefault(
+                f"{pkg}.{nested_name}" if pkg else nested_name,
+                nid,
+            )
 
     # Shadow stubs: no source_file, type-like label. Dotted labels are included
     # for qualified inline annotations (`@com.example.anno.Loggable`), which the
@@ -2472,6 +2751,32 @@ def _resolve_java_type_references(
 
     if new_nodes:
         all_nodes.extend(new_nodes)
+
+    # Bare imported and inline-qualified annotation references can start on
+    # different stubs, then converge on one source-backed node above. Collapse
+    # only indistinguishable Java attribute-reference facts after that rewire.
+    seen_attribute_refs: set[tuple] = set()
+    deduped_edges: list[dict] = []
+    for edge in all_edges:
+        if (
+            edge.get("relation") == "references"
+            and edge.get("context") == "attribute"
+            and edge.get("source_file", "") in pkg_by_file
+        ):
+            key = (
+                edge.get("source"),
+                edge.get("target"),
+                edge.get("relation"),
+                edge.get("context"),
+                edge.get("source_file"),
+                edge.get("source_location"),
+            )
+            if key in seen_attribute_refs:
+                continue
+            seen_attribute_refs.add(key)
+        deduped_edges.append(edge)
+    all_edges[:] = deduped_edges
+
     if not repointed_from:
         return
 
@@ -2701,11 +3006,13 @@ def _resolve_php_type_references(
             continue
         tgt = edge.get("target")
         label = stub_label.get(tgt)
+        uses = uses_by_file.get(ref_file, {})
+        if not label and relation == "imports":
+            label = next((alias for alias in uses if _make_id(alias) == tgt), "")
         if not label:
             continue
         bare = label.strip().lower()
         ns = ns_by_file[ref_file]
-        uses = uses_by_file.get(ref_file, {})
 
         raw = None
         if relation in _PHP_SUPERTYPE_RELATIONS:

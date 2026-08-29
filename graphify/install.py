@@ -17,6 +17,7 @@ import os
 import platform
 import re
 import shutil
+import stat
 import sys
 from pathlib import Path
 from typing import NoReturn
@@ -54,17 +55,6 @@ def _always_on(basename: str) -> str:
             f"graphify install is incomplete: missing always-on block '{basename}' "
             f"at {path}. Reinstall graphifyy (e.g. `uv tool install --reinstall graphifyy`)."
         ) from exc
-def _refresh_all_version_stamps() -> None:
-    """After a successful install, update .graphify_version in all other known skill dirs.
-
-    Prevents stale-version warnings from platforms that were installed previously
-    but not explicitly re-installed during this upgrade.
-    """
-    for name in _PLATFORM_CONFIG:
-        skill_dst = _platform_skill_destination(name)
-        vf = skill_dst.parent / ".graphify_version"
-        if skill_dst.exists():
-            vf.write_text(__version__, encoding="utf-8")
 def _platform_skill_destination(platform_name: str, *, project: bool = False, project_dir: Path | None = None) -> Path:
     """Return the skill destination for a platform and scope."""
     if platform_name == "gemini":
@@ -165,6 +155,13 @@ def _install_skill_references(skill_dst: Path, refs_src: Path) -> None:
         shutil.rmtree(refs_staged)
     try:
         shutil.copytree(refs_src, refs_staged)
+        # copytree preserves the source's mode bits, and a packaged bundle can
+        # be read-only: a Nix store path, a root-owned site-packages, a
+        # container image layer. Renaming a directory needs write permission on
+        # the directory itself, to update its ".." entry, so the os.replace
+        # below would fail with EACCES. Restore owner-write on the staged copy.
+        for path in (refs_staged, *refs_staged.rglob("*")):
+            path.chmod(path.stat().st_mode | stat.S_IWUSR)
         if refs_dst.exists():
             shutil.rmtree(refs_dst)
         os.replace(refs_staged, refs_dst)
@@ -625,9 +622,21 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
         print(f"  command installed ->  {command_dst}")
 
     if cfg["claude_md"]:
-        # Register in the matching Claude Code scope.
-        claude_md = (project_dir / ".claude" / "CLAUDE.md") if project else Path.home() / ".claude" / "CLAUDE.md"
-        registration = _skill_registration(".claude/skills/graphify/SKILL.md" if project else "~/.claude/skills/graphify/SKILL.md")
+        # Register in the matching Claude Code scope. Honor CLAUDE_CONFIG_DIR
+        # for the global (non-project) case, same as _platform_skill_destination
+        # does for the skill copy path (#527) -- this always-on registration
+        # path was missed by that fix (#2694).
+        if project:
+            claude_md = project_dir / ".claude" / "CLAUDE.md"
+            skill_ref = ".claude/skills/graphify/SKILL.md"
+        elif os.environ.get("CLAUDE_CONFIG_DIR"):
+            config_dir = Path(os.environ["CLAUDE_CONFIG_DIR"])
+            claude_md = config_dir / "CLAUDE.md"
+            skill_ref = str(config_dir / "skills" / "graphify" / "SKILL.md")
+        else:
+            claude_md = Path.home() / ".claude" / "CLAUDE.md"
+            skill_ref = "~/.claude/skills/graphify/SKILL.md"
+        registration = _skill_registration(skill_ref)
         if claude_md.exists():
             content = claude_md.read_text(encoding="utf-8")
             if "graphify" in content:
@@ -659,12 +668,8 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
     if platform == "opencode":
         _install_opencode_plugin(project_dir if project else Path("."))
 
-    # Refresh version stamps in all other previously-installed skill dirs so
-    # stale-version warnings don't fire for platforms not explicitly re-installed.
     if project:
         _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir)])
-    else:
-        _refresh_all_version_stamps()
 
     print()
     print("Done. Open your AI coding assistant and type:")

@@ -519,6 +519,56 @@ def test_xaml_viewmodel_with_non_utf8_codebehind_does_not_crash(tmp_path):
     assert nodes[edges[0]["target"]]["label"] == "SettingsViewModel"
 
 
+def test_csharp_members_in_preprocessor_blocks_are_extracted_and_resolved(tmp_path):
+    """C# preprocessor wrappers must preserve class ownership for members (#2631)."""
+    helper = tmp_path / "Helper.cs"
+    helper.write_text(
+        """namespace Probe.Lib;
+public static class Gated
+{
+    public static void Outside(string a) { }
+#if NET8_0_OR_GREATER
+    public static void InsideIf(string a) { }
+#else
+    public static void InsideElse(string a) { }
+#endif
+#if DEBUG
+    public static void InsideDebug(string a) { }
+#endif
+}
+"""
+    )
+    caller = tmp_path / "Caller.cs"
+    caller.write_text(
+        """namespace Probe.Lib;
+public static class Caller
+{
+    public static void Drive()
+    {
+        Gated.Outside(\"x\");
+        Gated.InsideIf(\"x\");
+        Gated.InsideDebug(\"x\");
+    }
+}
+"""
+    )
+
+    result = extract([helper, caller], cache_root=tmp_path)
+    by_label = {node["label"]: node["id"] for node in result["nodes"]}
+
+    for label in (".Outside()", ".InsideIf()", ".InsideElse()", ".InsideDebug()"):
+        assert label in by_label
+
+    calls = {
+        (edge["source"], edge["target"])
+        for edge in result["edges"]
+        if edge["relation"] == "calls"
+    }
+    assert (by_label[".Drive()"], by_label[".Outside()"]) in calls
+    assert (by_label[".Drive()"], by_label[".InsideIf()"]) in calls
+    assert (by_label[".Drive()"], by_label[".InsideDebug()"]) in calls
+
+
 # ── .razor ───────────────────────────────────────────────────────────────────
 
 def test_razor_using_and_inject():
