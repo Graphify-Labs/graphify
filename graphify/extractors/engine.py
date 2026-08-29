@@ -5293,7 +5293,18 @@ def _extract_generic(
                                          metadata=call_meta)
             elif config.ts_module == "tree_sitter_php":
                 # PHP: distinguish call expression subtypes
-                if node.type == "function_call_expression":
+                if node.type == "object_creation_expression":
+                    # `new Foo(...)` — unlike Java's object_creation_expression,
+                    # tree-sitter-php exposes no named fields at all here (new,
+                    # name/qualified_name, and arguments are purely positional),
+                    # so the generic and Java branches' child_by_field_name calls
+                    # both come back empty and the construction site is dropped
+                    # (the PHP twin of the Java gap in #1373, and of the C# one).
+                    for child in node.children:
+                        if child.type in ("name", "qualified_name"):
+                            callee_name = _read_text(child, source).rsplit("\\", 1)[-1]
+                            break
+                elif node.type == "function_call_expression":
                     func_node = node.child_by_field_name("function")
                     if func_node:
                         callee_name = _read_text(func_node, source)
