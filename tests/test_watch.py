@@ -4051,3 +4051,155 @@ def test_markdown_reconcile_does_not_resurrect_a_deleted_target(tmp_path):
     assert not any(
         edge.get("target") == "b_sem" for edge in links
     ), "no edge should still point at the deleted document's node"
+def test_markdown_reconcile_preserves_case_different_unresolved_target(tmp_path):
+    """An unresolved authored site preserves its existing edge without guessing."""
+
+    original = _ast_reference(
+        "source_sem",
+        "target_sem",
+        "history/source.md",
+        sentinel="keep",
+        source_location="L3",
+    )
+    corpus, graph_path = _markdown_reconcile_fixture(
+        tmp_path,
+        {
+            "history/source.md": "# Source\n\nSee [[target]] for detail.\n",
+            "root/TARGET.md": "# Target\n\nBody.\n",
+        },
+        [
+            _semantic_doc("source_sem", "history/source.md"),
+            _semantic_doc("target_sem", "root/TARGET.md"),
+        ],
+        [original],
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+    references = [edge for edge in links if edge.get("relation") == "references"]
+
+    assert references == [original]
+
+
+def test_markdown_reconcile_prunes_removed_unresolved_link(tmp_path):
+    """Removing the unresolved authored link still prunes its existing edge."""
+
+    corpus, graph_path = _markdown_reconcile_fixture(
+        tmp_path,
+        {
+            "history/source.md": "# Source\n\nSee nothing.\n",
+            "root/TARGET.md": "# Target\n\nBody.\n",
+        },
+        [
+            _semantic_doc("source_sem", "history/source.md"),
+            _semantic_doc("target_sem", "root/TARGET.md"),
+        ],
+        [
+            _ast_reference(
+                "source_sem",
+                "target_sem",
+                "history/source.md",
+                sentinel="drop",
+                source_location="L3",
+            )
+        ],
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+    references = [edge for edge in links if edge.get("relation") == "references"]
+
+    assert len(references) == 0
+
+
+def test_markdown_reconcile_prunes_removed_colocated_unresolved_link(tmp_path):
+    """One unresolved link does not preserve a removed neighbor on the same line."""
+    keep = _ast_reference(
+        "source_sem",
+        "target_sem",
+        "history/source.md",
+        sentinel="keep",
+        source_location="L3",
+    )
+    removed = _ast_reference(
+        "source_sem",
+        "removed_sem",
+        "history/source.md",
+        sentinel="removed",
+        source_location="L3",
+    )
+    corpus, graph_path = _markdown_reconcile_fixture(
+        tmp_path,
+        {
+            "history/source.md": "# Source\n\nSee [[target]] for detail.\n",
+            "root/TARGET.md": "# Target\n",
+            "root/REMOVED.md": "# Removed\n",
+        },
+        [
+            _semantic_doc("source_sem", "history/source.md"),
+            _semantic_doc("target_sem", "root/TARGET.md"),
+            _semantic_doc("removed_sem", "root/REMOVED.md"),
+        ],
+        [keep, removed],
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+    references = [edge for edge in links if edge.get("relation") == "references"]
+    assert references == [keep]
+
+
+def test_markdown_reconcile_does_not_suffix_match_unresolved_target(tmp_path):
+    """An unresolved foo_target link does not preserve an old TARGET edge."""
+    stale = _ast_reference(
+        "source_sem",
+        "wrong_target_sem",
+        "history/source.md",
+        sentinel="must-prune",
+        source_location="L3",
+    )
+    corpus, graph_path = _markdown_reconcile_fixture(
+        tmp_path,
+        {
+            "history/source.md": "# Source\n\nSee [[foo_target]] for detail.\n",
+            "root/FOO_TARGET.md": "# Current target\n",
+            "root/TARGET.md": "# Removed target\n",
+        },
+        [
+            _semantic_doc("source_sem", "history/source.md"),
+            _semantic_doc("current_target_sem", "root/FOO_TARGET.md"),
+            _semantic_doc("wrong_target_sem", "root/TARGET.md"),
+        ],
+        [stale],
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+    assert not any(edge.get("relation") == "references" for edge in links)
+
+
+def test_markdown_reconcile_does_not_suffix_match_top_level_target(tmp_path):
+    """A top-level foo_target link does not preserve an old TARGET edge."""
+    stale = _ast_reference(
+        "source_sem",
+        "wrong_target_sem",
+        "source.md",
+        sentinel="must-prune",
+        source_location="L3",
+    )
+    corpus, graph_path = _markdown_reconcile_fixture(
+        tmp_path,
+        {
+            "source.md": "# Source\n\nSee [[foo_target]] for detail.\n",
+            "TARGET.md": "# Removed target\n",
+        },
+        [
+            _semantic_doc("source_sem", "source.md"),
+            _semantic_doc("wrong_target_sem", "TARGET.md"),
+        ],
+        [stale],
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+    assert not any(edge.get("relation") == "references" for edge in links)
