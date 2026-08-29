@@ -50,7 +50,7 @@ def test_new_in_argument_position_links_the_message_bus_shape(tmp_path):
 def test_qualified_new_names_the_last_segment(tmp_path):
     calls, _ = _extract(tmp_path, {"Bar.php": BAR, "Caller.php": (
         "<?php\nclass Caller {\n"
-        "    public function run(): void { $b = new \App\Bar(); }\n}\n")})
+        "    public function run(): void { $b = new \\App\\Bar(); }\n}\n")})
     assert (".run()", "Bar") in calls
 
 
@@ -80,10 +80,10 @@ def test_existing_static_call_edges_are_unchanged(tmp_path):
 def test_cross_file_dispatcher_reaches_the_command_class(tmp_path):
     calls, _ = _extract(tmp_path, {
         "Command/AttachRecord.php": (
-            "<?php\nnamespace App\Command;\n"
+            "<?php\nnamespace App\\Command;\n"
             "class AttachRecord { public function __construct(public int $id) {} }\n"),
         "Controller/Records.php": (
-            "<?php\nnamespace App\Controller;\nuse App\Command\AttachRecord;\n"
+            "<?php\nnamespace App\\Controller;\nuse App\\Command\\AttachRecord;\n"
             "class Records {\n"
             "    public function attach($bus): void { $bus->dispatch(new AttachRecord(7)); }\n}\n"),
     })
