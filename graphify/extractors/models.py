@@ -14,6 +14,11 @@ _JS_CACHE_BYPASS_SUFFIXES = {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts
 class LanguageConfig:
     ts_module: str                                   # e.g. "tree_sitter_python"
     ts_language_fn: str = "language"                 # attr to call: e.g. tslang.language()
+    # Some grammars ship no standalone PyPI module and are only reachable through
+    # tree_sitter_language_pack, which resolves them by name rather than by import
+    # (Apex, #APEXISSUE). When set, the language is loaded from the pack and
+    # ts_module names the pack itself.
+    ts_language_pack_name: str = ""
 
     class_types: frozenset = frozenset()
     function_types: frozenset = frozenset()

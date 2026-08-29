@@ -2876,15 +2876,20 @@ def _extract_generic(
     mask the wrapper and parse just the embedded ``<script>``.
     """
     try:
-        mod = importlib.import_module(config.ts_module)
         from tree_sitter import Language, Parser
-        lang_fn = getattr(mod, config.ts_language_fn, None)
-        if lang_fn is None:
-            # Fallback for PHP: try "language_php" then "language"
-            lang_fn = getattr(mod, "language", None)
-        if lang_fn is None:
-            return {"nodes": [], "edges": [], "error": f"No language function in {config.ts_module}"}
-        language = Language(lang_fn())
+        mod = importlib.import_module(config.ts_module)
+        if config.ts_language_pack_name:
+            # Grammar reachable only through tree_sitter_language_pack, which
+            # resolves by name and already returns a Language.
+            language = mod.get_language(config.ts_language_pack_name)
+        else:
+            lang_fn = getattr(mod, config.ts_language_fn, None)
+            if lang_fn is None:
+                # Fallback for PHP: try "language_php" then "language"
+                lang_fn = getattr(mod, "language", None)
+            if lang_fn is None:
+                return {"nodes": [], "edges": [], "error": f"No language function in {config.ts_module}"}
+            language = Language(lang_fn())
     except ImportError:
         return {"nodes": [], "edges": [], "error": f"{config.ts_module} not installed"}
     except TypeError as e:

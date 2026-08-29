@@ -94,7 +94,15 @@ ocaml = ["tree-sitter-ocaml"]
 # tree-sitter-commonlisp ships prebuilt abi3 wheels for every platform; optional
 # because Common Lisp is a niche corpus language.
 commonlisp = ["tree-sitter-commonlisp"]
-all = ["mcp>=1,<3", "starlette>=1.3.1,<2", "neo4j", "falkordb", "pypdf>=6.12.0", "markdownify", "watchdog", "graspologic; python_version < '3.13'", "python-docx", "openpyxl", "faster-whisper; python_version >= '3.11'", "yt-dlp>=2026.6.9", "matplotlib", "numpy>=2.0; python_version >= '3.13'", "openai", "tiktoken", "boto3", "anthropic", "tree-sitter-sql", "jieba", "tree-sitter-dm", "tree-sitter-hcl", "tree-sitter-pascal", "tree-sitter-ocaml", "tree-sitter-commonlisp"]
+# extract_apex() uses the sfapex grammar (aheber/tree-sitter-sfapex) for calls and
+# accurate declarations, and falls back to its regex extractor when absent (like
+# pascal above). The grammar publishes no standalone PyPI package, so it is only
+# reachable through tree-sitter-language-pack. Caveat worth knowing: that package
+# ships abi3 wheels but downloads the grammar's shared library on first use into a
+# user cache, so a fresh install needs network access once. Without it Apex still
+# extracts, minus `calls` edges.
+apex = ["tree-sitter-language-pack>=1.15,<2"]
+all = ["mcp>=1,<3", "starlette>=1.3.1,<2", "neo4j", "falkordb", "pypdf>=6.12.0", "markdownify", "watchdog", "graspologic; python_version < '3.13'", "python-docx", "openpyxl", "faster-whisper; python_version >= '3.11'", "yt-dlp>=2026.6.9", "matplotlib", "numpy>=2.0; python_version >= '3.13'", "openai", "tiktoken", "boto3", "anthropic", "tree-sitter-sql", "jieba", "tree-sitter-dm", "tree-sitter-hcl", "tree-sitter-pascal", "tree-sitter-ocaml", "tree-sitter-commonlisp", "tree-sitter-language-pack>=1.15,<2"]
 
 [project.scripts]
 graphify = "graphify.__main__:main"
