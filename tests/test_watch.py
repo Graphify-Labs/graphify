@@ -4027,3 +4027,27 @@ def test_markdown_reconcile_distinguishes_same_basename_paths(tmp_path):
     references = [edge for edge in links if edge.get("relation") == "references"]
     assert len(references) == 1
     assert {references[0]["source"], references[0]["target"]} == {"one_a", "two_a"}
+
+
+def test_markdown_reconcile_does_not_resurrect_a_deleted_target(tmp_path):
+    """#3190: the link text still points at b.md, but b.md was deleted from disk.
+    The extractor only stamps target_file when the target exists, so reconcile
+    must NOT repoint/keep the edge onto the now-stale semantic node — a genuinely
+    deleted target does not survive as a dangling reference."""
+    corpus, graph_path = _markdown_reconcile_fixture(
+        tmp_path,
+        {"a.md": "[link](b.md)\n"},  # b.md intentionally absent from disk
+        [_semantic_doc("a_sem", "a.md"), _semantic_doc("b_sem", "b.md")],
+        [_ast_reference("a_sem", "b_sem", "a.md")],
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    links = data["links"]
+    assert not any(edge.get("relation") == "references" for edge in links), (
+        "a reference to a deleted target must not be resurrected"
+    )
+    # the stale semantic node for the deleted file is not kept as a dangling target
+    assert not any(
+        edge.get("target") == "b_sem" for edge in links
+    ), "no edge should still point at the deleted document's node"
