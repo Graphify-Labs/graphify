@@ -677,6 +677,79 @@ def _mark_session_denied(session_id: str) -> bool:
         return False
 
 
+_SEARCH_COMMANDS = frozenset({
+    "grep", "egrep", "fgrep", "zgrep", "rg", "ripgrep", "find", "fd", "ack", "ag",
+})
+# Prefix words that wrap another command; the real executable follows them.
+_COMMAND_WRAPPERS = frozenset({
+    "sudo", "command", "exec", "nohup", "time", "nice", "ionice", "env",
+    "xargs", "timeout", "stdbuf", "doas",
+})
+_HEREDOC_OPEN_RE = re.compile(r"<<-?\s*(['\"]?)(\w+)\1")
+
+
+def _bash_invokes_search(cmd_str: str) -> bool:
+    """Whether a Bash command actually RUNS a search tool (#3121).
+
+    The old test was a plain substring scan over the whole command string,
+    including quoted arguments and heredoc bodies - so `git commit -m "add
+    flag support"` fired ("flag " contains "ag "), prose containing "find "
+    fired, and a design doc written via heredoc fired if its body mentioned
+    grep. Every false positive injects a nudge where graphify has nothing to
+    contribute and trains the agent to skim the line.
+
+    Decide on the command's executed tokens instead: drop heredoc bodies and
+    quoted spans, split on shell operators, and match the executable at each
+    command position (wrappers like sudo/xargs/env skipped; `git grep` and
+    `VAR=x grep ...` still count; a search-tool name inside prose does not).
+    """
+    text = cmd_str
+    # Drop heredoc bodies: from the line after `<<WORD` through the line that
+    # is exactly WORD. An unterminated heredoc drops to the end of the string.
+    m = _HEREDOC_OPEN_RE.search(text)
+    while m:
+        nl_idx = text.find("\n", m.end())
+        if nl_idx == -1:
+            break
+        term = re.compile(r"^\s*" + re.escape(m.group(2)) + r"\s*$", re.MULTILINE)
+        t = term.search(text, nl_idx + 1)
+        if t is None:
+            # Unterminated heredoc: everything after the opener line is body.
+            text = text[: nl_idx + 1]
+            break
+        text = text[: nl_idx + 1] + text[t.end():]
+        m = _HEREDOC_OPEN_RE.search(text, nl_idx + 1)
+    # Drop quoted spans (backslash escapes inside double quotes are irrelevant
+    # here - anything quoted is an argument, never the executable).
+    text = re.sub(r"'[^']*'", " ", text)
+    text = re.sub(r'"[^"]*"', " ", text)
+    # Split into command segments at shell operators / substitution boundaries.
+    for segment in re.split(r"[|;&\n]|\$\(|`|\(|\)|\{|\}", text):
+        tokens = segment.split()
+        i = 0
+        while i < len(tokens):
+            tok = tokens[i]
+            if "=" in tok.split("/")[-1] and not tok.startswith(("-", "/")):
+                i += 1  # VAR=value prefix
+                continue
+            name = tok.replace("\\", "/").rsplit("/", 1)[-1].lower()
+            name = name[:-4] if name.endswith(".exe") else name
+            if name in _COMMAND_WRAPPERS:
+                i += 1
+                # skip the wrapper's own flags (`xargs -0`, `env -i`)
+                while i < len(tokens) and tokens[i].startswith("-"):
+                    i += 1
+                continue
+            if name in _SEARCH_COMMANDS:
+                return True
+            if name == "git" and any(
+                t2 == "grep" for t2 in tokens[i + 1:i + 4] if not t2.startswith("-")
+            ):
+                return True
+            break  # first real token decides this segment
+    return False
+
+
 def _run_hook_guard(kind: str, strict: bool = False) -> None:
     """Shell-agnostic PreToolUse guard (#522).
 
@@ -725,13 +798,13 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
             # the Bash tool carries `command`, while Claude Code's dedicated
             # Grep tool carries `pattern` (plus optional path/glob) and no
             # command — a Grep call IS a content search by definition, so it
-            # nudges whenever a graph exists. For Bash, keep matching the same
-            # set the old `case` matched: *grep*, *ripgrep*, and rg/find/fd/
-            # ack/ag as a token (name followed by a space). Nudge-only, even in
-            # strict mode — see the docstring.
+            # nudges whenever a graph exists. For Bash, decide on the
+            # command's EXECUTED tokens (#3121): the old whole-string
+            # substring scan fired on quoted prose ('add flag support'
+            # contains "ag ") and on heredoc bodies that merely mention
+            # grep. Nudge-only, even in strict mode — see the docstring.
             is_grep_tool = not cmd_str and bool(t.get("pattern"))
-            is_bash_search = any(tok in cmd_str for tok in (
-                "grep", "ripgrep", "rg ", "find ", "fd ", "ack ", "ag "))
+            is_bash_search = bool(cmd_str) and _bash_invokes_search(cmd_str)
             if (is_grep_tool or is_bash_search) and out_path("graph.json").is_file():
                 sys.stdout.write(_SEARCH_NUDGE)
         elif kind == "read":
