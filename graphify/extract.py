@@ -2487,6 +2487,26 @@ def _augment_js_reexport_edges(
 # Header / implementation file-extension pairing for the decl/def class merge.
 
 
+def _remap_objc_field_tables(per_file: list, mapping: dict) -> None:
+    """Rewrite objc_field_types["tables"] KEYS through an id remap (#3150).
+
+    The #2591 field->type tables are the one extractor bucket keyed BY class
+    node id. The #1529 passes rewrote node ids, edge endpoints,
+    raw_calls[].caller_nid and swift_extensions[].nid but not these keys, so
+    whenever a common absolute prefix was stripped (always via
+    `graphify update <dir>`) the table keys went stale, every
+    field_types_by_class.get(cls) missed, and [self.<field> ...] sends
+    resolved to nothing - #2591 was inert through the CLI.
+    """
+    for result in per_file:
+        ft = result.get("objc_field_types") if isinstance(result, dict) else None
+        tables = ft.get("tables") if isinstance(ft, dict) else None
+        if not isinstance(tables, dict):
+            continue
+        if any(k in mapping for k in tables):
+            ft["tables"] = {mapping.get(k, k): v for k, v in tables.items()}
+
+
 def _merge_swift_extensions(
     per_file: list[dict],
     all_nodes: list[dict],
@@ -6209,6 +6229,9 @@ def extract(
                 en = ext.get("nid")
                 if en in id_remap:
                     ext["nid"] = id_remap[en]
+        # objc_field_types["tables"] is keyed BY class node id - the one bucket
+        # the #1529 rewrites missed (#3150).
+        _remap_objc_field_tables(per_file, id_remap)
     if prefix_remap:
         sym_remap: dict[str, str] = {}
         edge_alias_candidates: dict[str, set[str]] = {}
@@ -6276,6 +6299,7 @@ def extract(
                     en = ext.get("nid")
                     if en in sym_remap:
                         ext["nid"] = sym_remap[en]
+            _remap_objc_field_tables(per_file, sym_remap)
         if edge_alias_candidates:
             def _edge_key(edge: dict) -> str:
                 # target_file is a transient stamp (#1814/#1983); exclude it
