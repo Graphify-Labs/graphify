@@ -411,6 +411,19 @@ def _import_js(node, source: bytes, file_nid: str, stem: str, edges: list, str_p
             if not has_from:
                 return
 
+    # `import type {...} from` / `export type {...} from` are erased by the
+    # TypeScript compiler: no runtime emit, no module-graph edge. The
+    # dependency is still real for "what references this type", so the edge is
+    # stamped `type_only` rather than dropped, and Import Cycles excludes it
+    # the way it already excludes deferred `import(...)` (#1241) - on the
+    # reporter's corpus all 3 reported cycles closed only through these
+    # (#3123). The grammar keeps `import type from './x'` (a default binding
+    # NAMED type) distinct: there `type` sits inside the import_clause, not as
+    # a bare keyword child of the statement. A mixed `import { type B, C }`
+    # stays a runtime edge - C is a runtime import.
+    is_type_only = any(
+        child.type == "type" and not child.is_named for child in node.children
+    )
     resolved_path: "Path | None" = None
     module_string = None
     for child in node.children:
@@ -453,6 +466,8 @@ def _import_js(node, source: bytes, file_nid: str, stem: str, edges: list, str_p
             # back onto the importer's own variant, a phantom self-loop (#1814).
             if resolved_path is not None:
                 edge["target_file"] = str(resolved_path)
+            if is_type_only:
+                edge["type_only"] = True
             edges.append(edge)
 
     # Emit symbol-level edges for named imports/re-exports from local/aliased files.
@@ -478,6 +493,7 @@ def _import_js(node, source: bytes, file_nid: str, stem: str, edges: list, str_p
                                 if sym == "default":
                                     continue  # skip default re-exports for ID matching
                                 edges.append({
+                                    **({"type_only": True} if is_type_only else {}),
                                     "source": file_nid,
                                     "target": _make_id(target_stem, sym),
                                     "relation": "re_exports",
