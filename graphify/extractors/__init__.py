@@ -27,6 +27,7 @@ from graphify.extractors.pascal import extract_pascal
 from graphify.extractors.pascal_forms import extract_delphi_form, extract_lazarus_form
 from graphify.extractors.powershell import extract_powershell, extract_powershell_manifest
 from graphify.extractors.razor import extract_razor
+from graphify.extractors.r import extract_r
 from graphify.extractors.rust import extract_rust
 from graphify.extractors.sln import extract_sln
 from graphify.extractors.sql import extract_sql
@@ -57,6 +58,7 @@ LANGUAGE_EXTRACTORS: dict[str, Callable[[Path], dict]] = {
     "powershell": extract_powershell,
     "powershell_manifest": extract_powershell_manifest,
     "razor": extract_razor,
+    "r": extract_r,
     "rust": extract_rust,
     "sln": extract_sln,
     "sql": extract_sql,
