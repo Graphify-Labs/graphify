@@ -2,7 +2,7 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
-## 0.9.52 (unreleased)
+## 0.9.52 (2026-08-29)
 
 - Fix: `graphify watch`/`update` no longer silently drops a Markdown link to a semantic-backed document during a code-only rebuild — authored `[[wikilink]]` references are repointed onto the target file's representative node, preserving links to the semantic tier without resurrecting a deleted target (#3190, thanks @logan683).
 - Fix: T-SQL routines that parse to tree-sitter ERROR nodes — `CREATE OR ALTER`, the `PROC` shorthand, and bracket-delimited names like `[dbo].[Get Widgets]` — are now recovered by name over a comment/string-masked copy, so they appear in the graph without commented-out or dynamic SQL fabricating nodes (#3164, thanks @egarcia74).
