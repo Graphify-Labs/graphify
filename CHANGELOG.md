@@ -4,6 +4,10 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.52 (unreleased)
 
+- Fix: `graphify watch`/`update` no longer silently drops a Markdown link to a semantic-backed document during a code-only rebuild — authored `[[wikilink]]` references are repointed onto the target file's representative node, preserving links to the semantic tier without resurrecting a deleted target (#3190, thanks @logan683).
+- Fix: T-SQL routines that parse to tree-sitter ERROR nodes — `CREATE OR ALTER`, the `PROC` shorthand, and bracket-delimited names like `[dbo].[Get Widgets]` — are now recovered by name over a comment/string-masked copy, so they appear in the graph without commented-out or dynamic SQL fabricating nodes (#3164, thanks @egarcia74).
+- Fix: `graphify --help` now lists the `prs` and `provider` commands and the export formats it actually supports (thanks @SyedFahad7).
+- Fix: corrected the `deepseek-v4-flash` pricing entry and the `build_merge` docstring (which wrongly claimed it saved the graph; callers persist) (thanks @adrianengkh).
 - Fix: Razor `@inject`/`@using` in `.razor`/`.cshtml` files now flow through the scope-aware C# type resolver, so an injected service type resolves to its cross-file definition; an external/undeclared type fabricates nothing (partially addresses #3187 — a bare inject of a file-scoped-namespace type still dangles, follow-up) (thanks @hopstreax).
 - Fix: the MCP `prs` tools (`list_prs`, `triage_prs`, `get_pr_impact`) now surface a genuine failure as an MCP error (`isError`) instead of success text, while an empty-but-successful result is unaffected (thanks @noQbot).
 - Fix: the MCP `get_node` tool now resolves a node through the same tiered resolver as `get_neighbors`, so the two agree deterministically instead of `get_node` returning an iteration-order substring match (thanks @noQbot).
