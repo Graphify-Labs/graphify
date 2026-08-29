@@ -36,7 +36,7 @@ from pathlib import Path
 # ``tests/test_oversized_document_slicing.py`` pins the relationship so a future
 # addition to DOC_EXTENSIONS fails loudly instead of quietly losing content.
 _SPLITTABLE_TEXT_SUFFIXES = frozenset({
-    ".md", ".mdx", ".markdown", ".txt", ".rst",
+    ".md", ".mdx", ".markdown", ".txt", ".rst", ".adoc", ".asciidoc",
     ".qmd", ".skill", ".html", ".yaml", ".yml",
 })
 

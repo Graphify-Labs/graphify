@@ -33,6 +33,7 @@ from graphify.extractors.base import (  # noqa: F401
     _read_text,
 )
 from graphify.extractors.apex import extract_apex  # noqa: F401
+from graphify.extractors.asciidoc import extract_asciidoc  # noqa: F401
 from graphify.extractors.bash import extract_bash  # noqa: F401
 from graphify.extractors.blade import extract_blade  # noqa: F401
 from graphify.extractors.csharp import (
@@ -5422,6 +5423,8 @@ _DISPATCH: dict[str, Any] = {
     ".sql": extract_sql,
     ".md": extract_markdown,
     ".mdx": extract_markdown,
+    ".adoc": extract_asciidoc,
+    ".asciidoc": extract_asciidoc,
     ".qmd": extract_markdown,
     ".skill": extract_markdown,
     ".pas": extract_pascal,

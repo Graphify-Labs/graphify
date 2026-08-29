@@ -187,7 +187,7 @@ def normalize_node(raw: dict, index: int) -> dict:
     file_type = first_present(node, "file_type", "content_type", "artifact_type", default="")
     if not file_type:
         suffix = Path(str(source_file)).suffix.lower()
-        file_type = "document" if suffix in {".md", ".mdx", ".rst", ".txt"} else "code"
+        file_type = "document" if suffix in {".md", ".mdx", ".rst", ".txt", ".adoc", ".asciidoc"} else "code"
 
     node["id"] = str(node_id)
     node["label"] = str(label)
