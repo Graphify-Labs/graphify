@@ -1272,10 +1272,22 @@ def _extract_python_rationale(path: Path, result: dict) -> None:
 
     # Rationale comments (# NOTE:, # IMPORTANT:, etc.)
     source_text = source.decode("utf-8", errors="replace")
+    seen_doc_refs: set[str] = set()
     for lineno, line_text in enumerate(source_text.splitlines(), start=1):
         stripped = line_text.strip()
         if any(stripped.startswith(p) for p in _RATIONALE_PREFIXES):
             _add_rationale(stripped, lineno, file_nid)
+        # Architecture-decision references (ADR-0011, RFC 793) in comments, the same
+        # join point between code and design docs the JS/TS pass already first-classes.
+        # Only comments: a token inside a string literal or in executing code is data,
+        # not a citation.
+        if stripped.startswith("#"):
+            for m in _DOC_REF_RE.finditer(stripped):
+                _emit_doc_ref(
+                    m.group(1), lineno,
+                    nodes=nodes, edges=edges, seen_ids=seen_ids,
+                    seen_doc_refs=seen_doc_refs, file_nid=file_nid, str_path=str_path,
+                )
 
 
 # ── TypeScript import type normalization (#3154) ──────────────────────────────
@@ -1486,7 +1498,65 @@ _JS_RATIONALE_PREFIXES = (
 # Doc-reference tokens worth first-classing as graph nodes. Deliberately
 # conservative: ADR-NNNN (Architecture Decision Records, any zero padding)
 # and RFC NNNN / RFC-NNNN.
-_JS_DOC_REF_RE = re.compile(r"\b(ADR[- ]?\d{1,5}|RFC[- ]?\d{1,5})\b", re.IGNORECASE)
+#
+# Shared by the JS/TS and Python rationale post-passes: a citation means the same
+# thing in either language, and two copies of this pattern would drift.
+_DOC_REF_RE = re.compile(r"\b(ADR[- ]?\d{1,5}|RFC[- ]?\d{1,5})\b", re.IGNORECASE)
+_JS_DOC_REF_RE = _DOC_REF_RE  # retained name for the JS site
+
+
+def _doc_ref_label(token: str) -> str:
+    """Normalize "adr 11" / "ADR-0011" to one canonical label.
+
+    References to the same document must collapse to one node, so ADR numbers are
+    zero-padded to four digits and everything else (RFC) is left as written.
+    """
+    kind, num = re.match(r"([A-Za-z]+)[- ]?(\d+)", token).groups()
+    kind = kind.upper()
+    return f"{kind}-{num.zfill(4)}" if kind == "ADR" else f"{kind}-{num}"
+
+
+def _emit_doc_ref(
+    token: str,
+    line: int,
+    *,
+    nodes: list,
+    edges: list,
+    seen_ids: set,
+    seen_doc_refs: set,
+    file_nid: str,
+    str_path: str,
+) -> None:
+    """Append the doc_ref node and its ``cites`` edge, deduped per file.
+
+    Extracted from the JS post-pass so the Python one emits identical shapes rather
+    than a second implementation that could drift from it. Behaviour is unchanged:
+    one node per document, one edge per citing file, first occurrence wins the
+    source_location.
+    """
+    label = _doc_ref_label(token)
+    if label in seen_doc_refs:
+        return
+    seen_doc_refs.add(label)
+    rid = _make_id("docref", label)
+    if rid not in seen_ids:
+        seen_ids.add(rid)
+        nodes.append({
+            "id": rid,
+            "label": label,
+            "file_type": "doc_ref",
+            "source_file": str_path,
+            "source_location": f"L{line}",
+        })
+    edges.append({
+        "source": file_nid,
+        "target": rid,
+        "relation": "cites",
+        "confidence": "EXTRACTED",
+        "source_file": str_path,
+        "source_location": f"L{line}",
+        "weight": 1.0,
+    })
 
 # Only look for doc references inside comments, not string literals or code.
 _JS_COMMENT_LINE_RE = re.compile(r"^\s*(//|/\*|\*)")
@@ -1536,33 +1606,11 @@ def _extract_js_rationale(path: Path, result: dict) -> None:
         })
 
     def _add_doc_ref(token: str, line: int) -> None:
-        # Normalize "adr 11" / "ADR-0011" spellings to a canonical "ADR-0011"
-        # style label so references to the same document collapse to one node.
-        kind, num = re.match(r"([A-Za-z]+)[- ]?(\d+)", token).groups()
-        kind = kind.upper()
-        label = f"{kind}-{num.zfill(4)}" if kind == "ADR" else f"{kind}-{num}"
-        if label in seen_doc_refs:
-            return
-        seen_doc_refs.add(label)
-        rid = _make_id("docref", label)
-        if rid not in seen_ids:
-            seen_ids.add(rid)
-            nodes.append({
-                "id": rid,
-                "label": label,
-                "file_type": "doc_ref",
-                "source_file": str_path,
-                "source_location": f"L{line}",
-            })
-        edges.append({
-            "source": file_nid,
-            "target": rid,
-            "relation": "cites",
-            "confidence": "EXTRACTED",
-            "source_file": str_path,
-            "source_location": f"L{line}",
-            "weight": 1.0,
-        })
+        _emit_doc_ref(
+            token, line,
+            nodes=nodes, edges=edges, seen_ids=seen_ids,
+            seen_doc_refs=seen_doc_refs, file_nid=file_nid, str_path=str_path,
+        )
 
     for lineno, line_text in enumerate(source_text.splitlines(), start=1):
         stripped = line_text.strip()
