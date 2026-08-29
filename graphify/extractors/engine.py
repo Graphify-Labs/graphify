@@ -4853,11 +4853,36 @@ def _extract_generic(
     # populated before walk_calls runs. Lets member-call raw_calls carry a
     # receiver_type so the cross-file pass resolves `var.method` by type (#ruby).
     ruby_var_types: dict[str, dict[str, str | None]] = {}
+    # Fields declared on a SUPERCLASS type receivers in a subclass too (#3151):
+    # fold each class's table with its ancestors', nearest declaration winning.
+    # Local `inherits` edges only - the cross-file half lives in the corpus
+    # member-call resolvers, which see the whole graph.
+    _local_bases: dict[str, list[str]] = {}
+    for _e in edges:
+        if _e.get("relation") == "inherits":
+            _local_bases.setdefault(_e["source"], []).append(_e["target"])
+
+    def _fields_up_chain(tables: dict, class_nid) -> dict:
+        if not class_nid:
+            return {}
+        merged: dict = {}
+        seen: set = set()
+        queue = [class_nid]
+        while queue:
+            cls = queue.pop(0)
+            if cls in seen:
+                continue
+            seen.add(cls)
+            for _name, _tname in tables.get(cls, {}).items():
+                merged.setdefault(_name, _tname)
+            queue.extend(_local_bases.get(cls, []))
+        return merged
+
     java_receiver_types = {
         body_id: _java_method_receiver_types(
             method_node,
             source,
-            java_field_types.get(class_nid, {}),
+            _fields_up_chain(java_field_types, class_nid),
         )
         for body_id, (method_node, class_nid) in java_method_scopes.items()
     }
@@ -4865,7 +4890,7 @@ def _extract_generic(
         body_id: _csharp_method_receiver_types(
             method_node,
             source,
-            csharp_field_types.get(class_nid, {}),
+            _fields_up_chain(csharp_field_types, class_nid),
         )
         for body_id, (method_node, class_nid) in csharp_method_scopes.items()
     }
@@ -5911,6 +5936,23 @@ def _extract_generic(
     if _ruby_mixin_calls:
         raw_calls.extend(_ruby_mixin_calls)
     result = {"nodes": nodes, "edges": clean_edges, "raw_calls": raw_calls}
+    # Export the per-file field->type tables for the corpus member-call
+    # resolvers (#3151): a field declared on a superclass in ANOTHER file can
+    # only be typed once the whole graph is visible. Keyed by class label +
+    # source_file, never by node id - ids are rewritten by the #1529 remap
+    # passes and the cache portability rewrite, which is exactly how the
+    # id-keyed ObjC table went stale (#3150).
+    _field_table_export = [
+        {"lang": _lang, "class_label": _n.get("label"),
+         "source_file": _n.get("source_file"), "fields": dict(_tbl)}
+        for _lang, _tables in (("java", java_field_types), ("csharp", csharp_field_types))
+        for _cls, _tbl in _tables.items()
+        if _tbl
+        for _n in (next((x for x in nodes if x["id"] == _cls), None),)
+        if _n is not None and _n.get("label")
+    ]
+    if _field_table_export:
+        result["member_field_tables"] = _field_table_export
     # #2551: the parser recovered from syntax errors, so extraction may be
     # partial (in the worst case, nothing but the file node). Record the first
     # error's line so extract() can warn instead of reporting silent success.
