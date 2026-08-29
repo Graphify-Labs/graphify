@@ -5183,6 +5183,22 @@ def _extract_generic(
                                 if child.type == "identifier":
                                     callee_name = _read_text(child, source)
                                     break
+            elif config.ts_module == "tree_sitter_php" and node.type == "object_creation_expression":
+                # PHP `new Foo(...)` keeps the class in a bare name/qualified_name
+                # child (no field), so the generic call path never names it and a
+                # class a method only constructs stayed unlinked - the PHP twin of
+                # Java's #1373 and C#'s #2997. The types this loses are the ones
+                # handed straight to something else (`$bus->dispatch(new Cmd(...))`).
+                # A qualified `new \App\Bar()` names the last segment, matching how
+                # the PHP namespace pass keys classes; `new $cls()` is dynamic and
+                # `new self()`/`static`/`parent` name no other class - all stay
+                # unnamed rather than minting junk edges.
+                for _oce_child in node.children:
+                    if _oce_child.type in ("name", "qualified_name"):
+                        _oce_text = _read_text(_oce_child, source).rsplit("\\", 1)[-1]
+                        if _oce_text.lower() not in ("self", "static", "parent"):
+                            callee_name = _oce_text
+                        break
             elif config.ts_module == "tree_sitter_c_sharp" and node.type == "object_creation_expression":
                 # `new Foo(...)` keeps the constructed type in the `type` field, so
                 # the invocation path below never sees it and a type a method only
