@@ -10,6 +10,7 @@ import tempfile
 import warnings
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable
 
@@ -53,6 +54,56 @@ class CopilotImage:
 def _supported_python() -> None:
     if sys.version_info < (3, 11):
         raise RuntimeError(_INSTALL_HINT)
+
+
+@lru_cache(maxsize=1)
+def _load_copilot_client() -> Any:
+    """Load the SDK from its installed distribution, never from the corpus."""
+    from importlib import util
+    from importlib.metadata import PackageNotFoundError, distribution
+
+    try:
+        package_init = Path(
+            str(
+                distribution("github-copilot-sdk").locate_file(
+                    "copilot/__init__.py"
+                )
+            )
+        ).resolve()
+    except PackageNotFoundError as exc:
+        raise ImportError(_INSTALL_HINT) from exc
+    if not package_init.is_file():
+        raise ImportError(_INSTALL_HINT)
+
+    existing = sys.modules.get("copilot")
+    existing_path = getattr(existing, "__file__", None)
+    if existing_path and Path(existing_path).resolve() == package_init:
+        client = getattr(existing, "CopilotClient", None)
+        if client is not None:
+            return client
+
+    spec = util.spec_from_file_location(
+        "copilot",
+        package_init,
+        submodule_search_locations=[str(package_init.parent)],
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError(_INSTALL_HINT)
+    module = util.module_from_spec(spec)
+    previous = sys.modules.get("copilot")
+    sys.modules["copilot"] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        if previous is None:
+            sys.modules.pop("copilot", None)
+        else:
+            sys.modules["copilot"] = previous
+        raise
+    client = getattr(module, "CopilotClient", None)
+    if client is None:
+        raise ImportError(_INSTALL_HINT)
+    return client
 
 
 def _clean_display_name(name: str) -> str:
@@ -261,8 +312,19 @@ async def _run_bounded(
 
     async def cancel_and_drain() -> set[asyncio.Task[Any]]:
         task.cancel()
+        cleanup_pending: set[asyncio.Task[Any]] = set()
         if abort is not None:
-            abort_result = abort()
+            try:
+                abort_result = abort()
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except BaseException:
+                warnings.warn(
+                    "Copilot SDK abort cleanup failed; continuing bounded cancellation.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                abort_result = None
             if inspect.isawaitable(abort_result):
                 abort_task = asyncio.ensure_future(abort_result)
                 abort_done, abort_pending = await asyncio.wait(
@@ -272,7 +334,15 @@ async def _run_bounded(
                     _consume_task(completed)
                 for unfinished in abort_pending:
                     unfinished.cancel()
+                if abort_pending:
+                    cancelled_done, abort_pending = await asyncio.wait(
+                        abort_pending, timeout=_CLEANUP_TIMEOUT_SECONDS
+                    )
+                    for completed in cancelled_done:
+                        _consume_task(completed)
+                for unfinished in abort_pending:
                     unfinished.add_done_callback(_consume_task)
+                cleanup_pending.update(abort_pending)
         drained, still_pending = await asyncio.wait(
             {task}, timeout=_CLEANUP_TIMEOUT_SECONDS
         )
@@ -280,7 +350,7 @@ async def _run_bounded(
             _consume_task(completed)
         for unfinished in still_pending:
             unfinished.add_done_callback(_consume_task)
-        return still_pending
+        return cleanup_pending | still_pending
 
     try:
         done, _ = await asyncio.wait({task}, timeout=max(0.0, timeout))
@@ -482,10 +552,7 @@ async def _call_async(
     timeout_seconds: float,
     images: Iterable[CopilotImage] | None,
 ) -> dict[str, Any]:
-    try:
-        from copilot import CopilotClient  # pyright: ignore[reportMissingImports]
-    except ImportError as exc:
-        raise ImportError(_INSTALL_HINT) from exc
+    CopilotClient = _load_copilot_client()
     try:
         return await _call_once(
             client_type=CopilotClient,

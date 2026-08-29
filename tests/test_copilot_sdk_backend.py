@@ -131,9 +131,7 @@ def _install_fake_copilot(
         async def force_stop(self) -> None:
             state["force_stops"] += 1
 
-    module = types.ModuleType("copilot")
-    setattr(module, "CopilotClient", FakeClient)
-    monkeypatch.setitem(sys.modules, "copilot", module)
+    monkeypatch.setattr(backend, "_load_copilot_client", lambda: FakeClient)
     # The real optional package is Python 3.11+, but these contract tests use a
     # local SDK double and must also run in Graphify's Python 3.10 CI job.
     monkeypatch.setattr(backend, "_supported_python", lambda: None)
@@ -204,9 +202,44 @@ def test_unsupported_python_error_is_actionable(monkeypatch):
 
 @pytest.mark.skipif(sys.version_info < (3, 11), reason="SDK extra requires Python 3.11+")
 def test_missing_optional_dependency_error_is_actionable(monkeypatch):
-    monkeypatch.setitem(sys.modules, "copilot", None)
+    from importlib.metadata import PackageNotFoundError
+
+    backend._load_copilot_client.cache_clear()
+    monkeypatch.setattr(
+        "importlib.metadata.distribution",
+        lambda _name: (_ for _ in ()).throw(PackageNotFoundError),
+    )
     with pytest.raises(ImportError, match=r'graphifyy\[copilot\]'):
         _call()
+
+
+def test_sdk_loader_ignores_copilot_module_in_working_directory(monkeypatch, tmp_path):
+    trusted = tmp_path / "trusted" / "copilot"
+    trusted.mkdir(parents=True)
+    (trusted / "__init__.py").write_text(
+        "class CopilotClient:\n    pass\n", encoding="utf-8"
+    )
+    attacker = tmp_path / "attacker"
+    attacker.mkdir()
+    marker = attacker / "imported.txt"
+    (attacker / "copilot.py").write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('executed')\n",
+        encoding="utf-8",
+    )
+
+    class FakeDistribution:
+        def locate_file(self, _path):
+            return trusted / "__init__.py"
+
+    backend._load_copilot_client.cache_clear()
+    monkeypatch.chdir(attacker)
+    monkeypatch.setattr("importlib.metadata.distribution", lambda _name: FakeDistribution())
+    monkeypatch.delitem(sys.modules, "copilot", raising=False)
+
+    client = backend._load_copilot_client()
+    assert client.__name__ == "CopilotClient"
+    assert not marker.exists()
+    backend._load_copilot_client.cache_clear()
 
 
 def test_blob_attachments_are_inline_and_hide_host_paths():
@@ -488,6 +521,56 @@ def test_run_bounded_cancels_child_when_caller_is_cancelled():
     asyncio.run(run())
 
 
+def test_run_bounded_sync_abort_failure_does_not_mask_timeout():
+    async def run() -> None:
+        finished = asyncio.Event()
+
+        async def operation() -> None:
+            try:
+                await asyncio.Event().wait()
+            finally:
+                finished.set()
+
+        def abort() -> None:
+            raise RuntimeError("abort failed")
+
+        with pytest.warns(RuntimeWarning, match="abort cleanup failed"):
+            with pytest.raises(asyncio.TimeoutError):
+                await backend._run_bounded(operation(), timeout=0.01, abort=abort)
+        assert finished.is_set()
+
+    asyncio.run(run())
+
+
+def test_run_bounded_reports_abort_task_that_ignores_cancellation(monkeypatch):
+    monkeypatch.setattr(backend, "_CLEANUP_TIMEOUT_SECONDS", 0.01)
+
+    async def run() -> None:
+        release = asyncio.Event()
+        abort_finished = asyncio.Event()
+
+        async def operation() -> None:
+            await asyncio.Event().wait()
+
+        async def abort() -> None:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await release.wait()
+            finally:
+                abort_finished.set()
+
+        with pytest.warns(RuntimeWarning, match="remained pending"):
+            with pytest.raises(asyncio.TimeoutError):
+                await backend._run_bounded(operation(), timeout=0.01, abort=abort)
+        release.set()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert abort_finished.is_set()
+
+    asyncio.run(run())
+
+
 def test_run_async_reports_tasks_that_ignore_bounded_cancellation(monkeypatch):
     monkeypatch.setattr(backend, "_CLEANUP_TIMEOUT_SECONDS", 0.01)
 
@@ -582,9 +665,7 @@ def test_process_control_exceptions_propagate_from_cleanup(monkeypatch):
 
 
 def test_task_cancellation_propagates(monkeypatch):
-    module = types.ModuleType("copilot")
-    setattr(module, "CopilotClient", object)
-    monkeypatch.setitem(sys.modules, "copilot", module)
+    monkeypatch.setattr(backend, "_load_copilot_client", lambda: object)
 
     async def cancel(**_kwargs: Any) -> dict[str, Any]:
         raise asyncio.CancelledError

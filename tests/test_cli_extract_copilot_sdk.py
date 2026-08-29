@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import json
 import sys
-import types
 
 import graphify.__main__ as mainmod
+import graphify.cli as climod
 
 
 def _run(monkeypatch, corpus, out_dir):
@@ -26,9 +26,9 @@ def _run(monkeypatch, corpus, out_dir):
 
 def test_extract_copilot_sdk_mocked_pipeline_and_incremental_cache(monkeypatch, tmp_path):
     # Python 3.10 intentionally does not install the 3.11+ SDK extra. The CLI
-    # contract is otherwise version-independent, so provide only the import
-    # marker that its preflight check needs.
-    monkeypatch.setitem(sys.modules, "copilot", types.ModuleType("copilot"))
+    # contract is otherwise version-independent, so stub only its metadata
+    # preflight check.
+    monkeypatch.setattr(climod, "_copilot_sdk_available", lambda: True)
     corpus = tmp_path / "corpus"
     corpus.mkdir()
     (corpus / "README.md").write_text("# Alpha\nAlpha calls Beta.\n")
@@ -68,3 +68,20 @@ def test_extract_copilot_sdk_mocked_pipeline_and_incremental_cache(monkeypatch, 
     _run(monkeypatch, corpus, out_dir)
     assert calls["count"] == 1
     assert graph_path.exists()
+
+
+def test_copilot_preflight_does_not_import_from_scanned_working_directory(
+    monkeypatch, tmp_path
+):
+    marker = tmp_path / "imported.txt"
+    (tmp_path / "copilot.py").write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('executed')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delitem(sys.modules, "copilot", raising=False)
+    monkeypatch.setattr("importlib.metadata.version", lambda _name: "1.0.11")
+
+    assert climod._copilot_sdk_available() is True
+    assert "copilot" not in sys.modules
+    assert not marker.exists()

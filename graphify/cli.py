@@ -15,6 +15,17 @@ from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 
+def _copilot_sdk_available() -> bool:
+    """Check the installed distribution without importing repository code."""
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        version("github-copilot-sdk")
+    except PackageNotFoundError:
+        return False
+    return True
+
+
 _SEARCH_NUDGE = json.dumps({
     "hookSpecificOutput": {
         "hookEventName": "PreToolUse",
@@ -3555,9 +3566,7 @@ def dispatch_command(cmd: str) -> None:
                         )
                         sys.exit(1)
                 elif backend == "copilot-sdk":
-                    try:
-                        import copilot as _copilot_sdk  # noqa: F401  # pyright: ignore[reportMissingImports]
-                    except ImportError:
+                    if not _copilot_sdk_available():
                         print(
                             'error: copilot-sdk requires Python 3.11+ and the '
                             'optional dependency; install "graphifyy[copilot]".',
