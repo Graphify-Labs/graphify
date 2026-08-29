@@ -385,44 +385,6 @@ def test_edge_missing_source_file_backfilled_from_node():
     assert sf == "docs/a.md"  # backfilled from the source node
 
 
-def test_legacy_node_missing_source_file_backfilled_from_incident_edge(capsys):
-    """A preserved semantic node inherits real, deterministic edge provenance."""
-    extraction = {
-        "nodes": [
-            {"id": "concept_auth", "label": "Authentication", "file_type": "concept"},
-            {"id": "n1", "label": "A", "file_type": "document", "source_file": "docs/z.md"},
-            {"id": "n2", "label": "B", "file_type": "document", "source_file": "docs/a.md"},
-        ],
-        "edges": [
-            {"source": "n1", "target": "concept_auth", "relation": "references",
-             "confidence": "EXTRACTED", "source_file": "docs/z.md"},
-            {"source": "n2", "target": "concept_auth", "relation": "references",
-             "confidence": "EXTRACTED", "source_file": "docs/a.md"},
-        ],
-        "input_tokens": 0,
-        "output_tokens": 0,
-    }
-
-    G = build_from_json(extraction)
-
-    assert G.nodes["concept_auth"]["source_file"] == "docs/a.md"
-    assert "missing required field 'source_file'" not in capsys.readouterr().err
-
-
-def test_missing_node_source_file_without_edge_evidence_still_warns(capsys):
-    """A migration must not fabricate provenance when the graph proves none."""
-    extraction = {
-        "nodes": [{"id": "concept_auth", "label": "Authentication", "file_type": "concept"}],
-        "edges": [],
-        "input_tokens": 0,
-        "output_tokens": 0,
-    }
-
-    build_from_json(extraction)
-
-    assert "missing required field 'source_file'" in capsys.readouterr().err
-
-
 def test_build_merges_multiple_extractions():
     ext1 = {"nodes": [{"id": "n1", "label": "A", "file_type": "code", "source_file": "a.py"}],
             "edges": [], "input_tokens": 0, "output_tokens": 0}

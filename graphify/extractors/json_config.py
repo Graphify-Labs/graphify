@@ -58,26 +58,11 @@ def extract_json(path: Path) -> dict:
     (dependencies / extends / $ref / $schema / compilerOptions)."""
     _JSON_MAX_BYTES = 1_048_576  # 1 MiB — skip large fixture dumps / GeoJSON blobs
 
-    # Even deliberately-unexpanded data JSON must remain visible in the graph.
-    # Matrices, fixtures and datasets are real repository artefacts; returning no
-    # nodes made freshness/affected checks blind to thousands of files.  Emit the
-    # file identity independently of content parsing, while retaining the cap
-    # that prevents data keys from exploding into low-signal graph nodes.
-    str_path = str(path)
-    file_nid = _make_id(str_path)
-    file_node = {
-        "id": file_nid,
-        "label": path.name,
-        "file_type": "code",
-        "source_file": str_path,
-        "source_location": "L1",
-    }
-
     try:
         import tree_sitter_json as tsjson
         from tree_sitter import Language, Parser
     except ImportError:
-        return {"nodes": [file_node], "edges": [], "error": "tree-sitter-json not installed"}
+        return {"nodes": [], "edges": [], "error": "tree-sitter-json not installed"}
 
     try:
         # Bounded read instead of stat()+read() to eliminate TOCTOU (J-1):
@@ -86,22 +71,19 @@ def extract_json(path: Path) -> dict:
         with path.open("rb") as _f:
             source = _f.read(_JSON_MAX_BYTES + 1)
         if len(source) > _JSON_MAX_BYTES:
-            return {
-                "nodes": [file_node],
-                "edges": [],
-                "skipped": "data json content exceeds structural indexing cap",
-            }
+            return {"nodes": [], "edges": [], "error": "json file too large to index"}
         language = Language(tsjson.language())
         parser = Parser(language)
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:
-        return {"nodes": [file_node], "edges": [], "error": str(e)}
+        return {"nodes": [], "edges": [], "error": str(e)}
 
     stem = _file_stem(path)
-    nodes: list[dict] = [file_node]
+    str_path = str(path)
+    nodes: list[dict] = []
     edges: list[dict] = []
-    seen_ids: set[str] = {file_nid}
+    seen_ids: set[str] = set()
 
     # Keys whose string values become imports (package.json dep blocks)
     _DEP_KEYS = frozenset({
@@ -125,6 +107,9 @@ def extract_json(path: Path) -> dict:
         if context:
             edge["context"] = context
         edges.append(edge)
+
+    file_nid = _make_id(str(path))
+    add_node(file_nid, path.name, 1)
 
     def _key_text(pair_node) -> str | None:
         """Extract the string content of a pair's key."""
@@ -220,12 +205,12 @@ def extract_json(path: Path) -> dict:
     if doc.type == "object":
         # Only AST-extract recognized config/manifest JSON. Data JSON (fixtures,
         # datasets, GeoJSON, API dumps) is skipped so it doesn't explode into
-        # orphan key-nodes (#1224). The file node above preserves its existence.
+        # orphan key-nodes (#1224); it's left to the LLM semantic pass.
         if not _is_config_json(path, doc, source):
-            return {"nodes": nodes, "edges": [], "skipped": "data json (not a config/manifest)"}
+            return {"nodes": [], "edges": [], "skipped": "data json (not a config/manifest)"}
         walk_object(doc, file_nid, None, 0, [0])
     else:
         # Top-level array or scalar => data JSON, never a config/manifest.
-        return {"nodes": nodes, "edges": [], "skipped": "data json (non-object root)"}
+        return {"nodes": [], "edges": [], "skipped": "data json (non-object root)"}
 
     return {"nodes": nodes, "edges": edges}
