@@ -1,0 +1,146 @@
+{
+  "Assets/Editor/BuildScript.cs": {
+    "mtime": 1788021616.308101,
+    "seen": 1788033534.8206558,
+    "ast_hash": "8cd8f458de76210ed7f1fd3c7d485cfc",
+    "semantic_hash": "8cd8f458de76210ed7f1fd3c7d485cfc"
+  },
+  "Assets/Scripts/AI/AIKnowledge.cs": {
+    "mtime": 1788019296.9614623,
+    "seen": 1788033534.8206558,
+    "ast_hash": "b60559571002573987c5b36a3fd28d31",
+    "semantic_hash": "b60559571002573987c5b36a3fd28d31"
+  },
+  "Assets/Scripts/AI/AIPlan.cs": {
+    "mtime": 1788029912.7506814,
+    "seen": 1788033534.8206558,
+    "ast_hash": "7282bd597322a4e7b87203725e380c6c",
+    "semantic_hash": "7282bd597322a4e7b87203725e380c6c"
+  },
+  "Assets/Scripts/AI/AIPlayer.cs": {
+    "mtime": 1788029912.7538419,
+    "seen": 1788033534.8206558,
+    "ast_hash": "0fb01d3f8a5085b550c8fbfa49be0d75",
+    "semantic_hash": "0fb01d3f8a5085b550c8fbfa49be0d75"
+  },
+  "Assets/Scripts/AI/AIQueueManager.cs": {
+    "mtime": 1788029912.7527392,
+    "seen": 1788033534.8206558,
+    "ast_hash": "6be859979ab882462e2b2ec031e28493",
+    "semantic_hash": "6be859979ab882462e2b2ec031e28493"
+  },
+  "Assets/Scripts/AI/InfluenceMap.cs": {
+    "mtime": 1788025640.033059,
+    "seen": 1788033534.8206558,
+    "ast_hash": "8ab608096b18e03216503de7a75df13d",
+    "semantic_hash": "8ab608096b18e03216503de7a75df13d"
+  },
+  "Assets/Scripts/Buildings/Building.cs": {
+    "mtime": 1787978472.456153,
+    "seen": 1788033534.8206558,
+    "ast_hash": "03b9bdc3171c2bdacab7457bcbf56838",
+    "semantic_hash": "03b9bdc3171c2bdacab7457bcbf56838"
+  },
+  "Assets/Scripts/Core/EntityFactory.cs": {
+    "mtime": 1787978482.6044402,
+    "seen": 1788033534.8206558,
+    "ast_hash": "8738a877c0bb7ba4d8530cbbd6e659fb",
+    "semantic_hash": "8738a877c0bb7ba4d8530cbbd6e659fb"
+  },
+  "Assets/Scripts/Core/Faction.cs": {
+    "mtime": 1787977541.593979,
+    "seen": 1788033534.8206558,
+    "ast_hash": "eac0e92c3296baea5b9647ffda65268d",
+    "semantic_hash": "eac0e92c3296baea5b9647ffda65268d"
+  },
+  "Assets/Scripts/Core/IDamageable.cs": {
+    "mtime": 1787968862.8592243,
+    "seen": 1788033534.8206558,
+    "ast_hash": "346c2c8322d0145212f8b70ad33fe4e5",
+    "semantic_hash": "346c2c8322d0145212f8b70ad33fe4e5"
+  },
+  "Assets/Scripts/Core/MatchManager.cs": {
+    "mtime": 1787977731.1430147,
+    "seen": 1788033534.8206558,
+    "ast_hash": "d4c81cddc9fcf594226a67a9d4107be0",
+    "semantic_hash": "d4c81cddc9fcf594226a67a9d4107be0"
+  },
+  "Assets/Scripts/Core/ResourceTypes.cs": {
+    "mtime": 1787968642.5972917,
+    "seen": 1788033534.8206558,
+    "ast_hash": "a46a4443d6947c809ee0316bbac04dec",
+    "semantic_hash": "a46a4443d6947c809ee0316bbac04dec"
+  },
+  "Assets/Scripts/Data/Definitions.cs": {
+    "mtime": 1787968670.8492744,
+    "seen": 1788033534.8206558,
+    "ast_hash": "71eabc6aa9127d3aa3f82e0b2f2eb76b",
+    "semantic_hash": "71eabc6aa9127d3aa3f82e0b2f2eb76b"
+  },
+  "Assets/Scripts/Data/GameDatabase.cs": {
+    "mtime": 1787968749.1706376,
+    "seen": 1788033534.8206558,
+    "ast_hash": "d19a4efd342dc838c4fe60e0886bfdc9",
+    "semantic_hash": "d19a4efd342dc838c4fe60e0886bfdc9"
+  },
+  "Assets/Scripts/Player/PlayerController.cs": {
+    "mtime": 1787978783.2507055,
+    "seen": 1788033534.8206558,
+    "ast_hash": "06b688c6d1880886ad9ea756414300fd",
+    "semantic_hash": "06b688c6d1880886ad9ea756414300fd"
+  },
+  "Assets/Scripts/Player/RTSCamera.cs": {
+    "mtime": 1787977588.1528375,
+    "seen": 1788033534.8206558,
+    "ast_hash": "59640838ea0fc1cfbf91a3f70eec3b85",
+    "semantic_hash": "59640838ea0fc1cfbf91a3f70eec3b85"
+  },
+  "Assets/Scripts/UI/HudController.cs": {
+    "mtime": 1787977604.8427296,
+    "seen": 1788033534.8206558,
+    "ast_hash": "9b33f8a0f12f70c49e9caa69fab9e0f0",
+    "semantic_hash": "9b33f8a0f12f70c49e9caa69fab9e0f0"
+  },
+  "Assets/Scripts/Units/Unit.cs": {
+    "mtime": 1787978956.7855685,
+    "seen": 1788033534.8206558,
+    "ast_hash": "d9b29d3411bc11b9f4e416bab17fb9d5",
+    "semantic_hash": "d9b29d3411bc11b9f4e416bab17fb9d5"
+  },
+  "Assets/Scripts/World/GameBootstrap.cs": {
+    "mtime": 1788022931.771179,
+    "seen": 1788033534.8206558,
+    "ast_hash": "b0d1a2c431e76eb7e487e7bdd771dc82",
+    "semantic_hash": "b0d1a2c431e76eb7e487e7bdd771dc82"
+  },
+  "Assets/Scripts/World/ResourceNode.cs": {
+    "mtime": 1787978507.0456798,
+    "seen": 1788033534.8206558,
+    "ast_hash": "c059bca859cac7f60f5c08d3474cbdf3",
+    "semantic_hash": "c059bca859cac7f60f5c08d3474cbdf3"
+  },
+  "Packages/manifest.json": {
+    "mtime": 1787974578.2078774,
+    "seen": 1788033534.8206558,
+    "ast_hash": "19b88de57c99b0b3873cf0af18e4fcca",
+    "semantic_hash": "19b88de57c99b0b3873cf0af18e4fcca"
+  },
+  "Packages/packages-lock.json": {
+    "mtime": 1787974578.2179866,
+    "seen": 1788033534.8206558,
+    "ast_hash": "3586c0050b500cf66084d71710dda156",
+    "semantic_hash": "3586c0050b500cf66084d71710dda156"
+  },
+  "ProjectSettings/Packages/com.unity.ai.assistant/Settings.json": {
+    "mtime": 1787974730.8458743,
+    "seen": 1788033534.8206558,
+    "ast_hash": "4f9c21d5609f1a76712f4f1619c9291d",
+    "semantic_hash": "4f9c21d5609f1a76712f4f1619c9291d"
+  },
+  "ProjectSettings/SceneTemplateSettings.json": {
+    "mtime": 1787969347.7737348,
+    "seen": 1788033534.8206558,
+    "ast_hash": "eeb26e313b89cd9334b828428a4847ef",
+    "semantic_hash": "eeb26e313b89cd9334b828428a4847ef"
+  }
+}
