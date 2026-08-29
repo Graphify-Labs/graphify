@@ -27,6 +27,310 @@ class ImportedSymbol:
     source_location: str
 
 
+@dataclass(frozen=True)
+class PythonTypeAlias:
+    """A source-backed, module-level Python type alias definition."""
+
+    name: str
+    module_stem: str
+    source_file: str
+    source_location: str
+
+
+def _annotation_names(node: ast.AST | None) -> set[str]:
+    """Return unqualified names occurring in a type expression."""
+
+    if node is None:
+        return set()
+    return {
+        child.id
+        for child in ast.walk(node)
+        if isinstance(child, ast.Name)
+    }
+
+
+def parse_python_type_aliases(path: Path) -> list[PythonTypeAlias]:
+    """Discover conservative module-level aliases backed by typing forms."""
+
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, SyntaxError):
+        return []
+
+    result: list[PythonTypeAlias] = []
+    alias_value_names = {
+        "Callable",
+        "Union",
+        "Literal",
+        "Protocol",
+        "Type",
+        "Annotated",
+    }
+    for node in tree.body:
+        name: str | None = None
+        value: ast.AST | None = None
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+        ):
+            name = node.targets[0].id
+            value = node.value
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            if "TypeAlias" in _annotation_names(node.annotation):
+                name = node.target.id
+                value = node.value
+        elif hasattr(ast, "TypeAlias") and isinstance(node, ast.TypeAlias):
+            name_node = getattr(node, "name", None)
+            name = getattr(name_node, "id", None)
+            value = getattr(node, "value", None)
+        if not name or value is None:
+            continue
+        if not _annotation_names(value).intersection(alias_value_names):
+            continue
+        result.append(
+            PythonTypeAlias(
+                name=name,
+                module_stem=path.stem,
+                source_file=str(path),
+                source_location=f"L{getattr(node, 'lineno', 1)}",
+            )
+        )
+    return result
+
+
+def _resolved_source(value: object) -> Path | None:
+    """Resolve a graph source path defensively for equality/indexing."""
+
+    if not value:
+        return None
+    try:
+        return Path(str(value)).resolve()
+    except (OSError, RuntimeError):
+        return None
+
+
+def _file_node_ids_by_resolved_path(
+    nodes: Sequence[dict[str, Any]],
+) -> dict[Path, str]:
+    """Map source paths to their source-backed file-node IDs."""
+
+    result: dict[Path, str] = {}
+    for node in nodes:
+        source = _resolved_source(node.get("source_file"))
+        node_id = node.get("id")
+        if source is None or not node_id:
+            continue
+        if str(node.get("label", "")) == Path(str(node["source_file"])).name:
+            result[source] = str(node_id)
+    return result
+
+
+def _materialize_python_type_alias_nodes(
+    paths: Sequence[Path],
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    file_ids: dict[Path, str],
+) -> dict[tuple[str, str], list[str]]:
+    """Create source-backed alias nodes and return their strict lookup index."""
+
+    existing = {
+        (
+            _resolved_source(node.get("source_file")),
+            str(node.get("label", "")).lower(),
+        ): str(node["id"])
+        for node in nodes
+        if node.get("id") and node.get("node_kind") == "type_alias"
+    }
+    edge_keys = {
+        (str(edge.get("source")), str(edge.get("target")), edge.get("relation"))
+        for edge in edges
+    }
+    index: dict[tuple[str, str], list[str]] = {}
+    for path in paths:
+        if path.suffix.lower() not in {".py", ".pyw"}:
+            continue
+        source = _resolved_source(path)
+        if source is None:
+            continue
+        file_id = file_ids.get(source)
+        if file_id is None:
+            continue
+        for alias in parse_python_type_aliases(path):
+            key = (source, alias.name.lower())
+            alias_id = existing.get(key)
+            if alias_id is None:
+                alias_id = _shared_make_id(file_id, alias.name)
+                nodes.append(
+                    {
+                        "id": alias_id,
+                        "label": alias.name,
+                        "file_type": "code",
+                        "node_kind": "type_alias",
+                        "source_file": alias.source_file,
+                        "source_location": alias.source_location,
+                    }
+                )
+                existing[key] = alias_id
+            contains_key = (file_id, alias_id, "contains")
+            if contains_key not in edge_keys:
+                edges.append(
+                    {
+                        "source": file_id,
+                        "target": alias_id,
+                        "relation": "contains",
+                        "confidence": "EXTRACTED",
+                        "source_file": alias.source_file,
+                        "source_location": alias.source_location,
+                        "weight": 1.0,
+                    }
+                )
+                edge_keys.add(contains_key)
+            index.setdefault(
+                (alias.module_stem, alias.name.lower()), []
+            ).append(alias_id)
+    return index
+
+
+def canonicalize_python_type_aliases(
+    paths: Sequence[Path],
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+) -> None:
+    """Materialize aliases and rewire uniquely import-supported local stubs."""
+
+    file_ids = _file_node_ids_by_resolved_path(nodes)
+    alias_index = _materialize_python_type_alias_nodes(
+        paths, nodes, edges, file_ids
+    )
+    node_by_id = {
+        str(node.get("id")): node for node in nodes if node.get("id")
+    }
+    edges_by_source: dict[Path, list[dict[str, Any]]] = {}
+    for edge in edges:
+        edge_source = _resolved_source(edge.get("source_file"))
+        if edge_source is not None:
+            edges_by_source.setdefault(edge_source, []).append(edge)
+    rewired_stub_ids: set[str] = set()
+    for path in paths:
+        if path.suffix.lower() not in {".py", ".pyw"}:
+            continue
+        imports = parse_python_import_aliases(path)
+        source = _resolved_source(path)
+        if source is None:
+            continue
+        for edge in edges_by_source.get(source, ()):
+            stub = node_by_id.get(str(edge.get("target")))
+            if not stub or stub.get("source_file"):
+                continue
+            imported = imports.get(str(stub.get("label", "")))
+            if imported is None:
+                continue
+            candidates = alias_index.get(
+                (imported.module_stem, imported.imported_name.lower()), []
+            )
+            if len(candidates) != 1:
+                continue
+            edge["target"] = candidates[0]
+            rewired_stub_ids.add(str(stub["id"]))
+
+    referenced = {
+        str(edge.get(key))
+        for edge in edges
+        for key in ("source", "target")
+        if edge.get(key)
+    }
+    nodes[:] = [
+        node
+        for node in nodes
+        if str(node.get("id")) not in rewired_stub_ids
+        or str(node.get("id")) in referenced
+    ]
+
+
+_SOURCE_LINE_RE = re.compile(r"^L([1-9][0-9]*)")
+_SYMBOL_KIND_PRIORITY = {
+    "method": 0,
+    "function": 1,
+    "class": 2,
+    "type_alias": 3,
+}
+
+
+def _source_line(node: dict[str, Any]) -> int | None:
+    """Return a node's one-based starting line when present."""
+
+    match = _SOURCE_LINE_RE.match(str(node.get("source_location", "")))
+    return int(match.group(1)) if match else None
+
+
+def resolve_markdown_code_references(
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    root: Path | None = None,
+) -> None:
+    """Refine stamped Markdown code links to exact or preceding symbols.
+
+    The target path and optional line are deterministic extraction evidence.
+    When the line cannot identify a symbol, the canonical file node remains the
+    target. No node is fabricated for a missing file.
+    """
+
+    by_path: dict[Path, list[tuple[int, int, str]]] = {}
+    file_ids: dict[Path, str] = {}
+
+    def resolved_graph_path(value: object) -> Path:
+        path = Path(str(value))
+        if root is not None and not path.is_absolute():
+            path = root / path
+        return path.resolve()
+
+    for node in nodes:
+        source_file = node.get("source_file")
+        node_id = node.get("id")
+        if (
+            not source_file
+            or not node_id
+            or node.get("file_type") != "code"
+        ):
+            continue
+        try:
+            path = resolved_graph_path(source_file)
+        except (OSError, RuntimeError):
+            continue
+        label = str(node.get("label", ""))
+        if label == Path(str(source_file)).name:
+            file_ids[path] = str(node_id)
+            continue
+        line = _source_line(node)
+        if line is None:
+            continue
+        priority = _SYMBOL_KIND_PRIORITY.get(str(node.get("node_kind", "")), 10)
+        by_path.setdefault(path, []).append((line, priority, str(node_id)))
+    for candidates in by_path.values():
+        candidates.sort(key=lambda item: (item[0], item[1], item[2]))
+
+    for edge in edges:
+        if edge.get("relation") != "references" or not edge.get("target_file"):
+            continue
+        raw_line = edge.pop("target_line", None)
+        try:
+            path = resolved_graph_path(edge["target_file"])
+        except (OSError, RuntimeError):
+            continue
+        fallback = file_ids.get(path)
+        if fallback is not None:
+            edge["target"] = fallback
+        if not isinstance(raw_line, int) or raw_line < 1:
+            continue
+        preceding = [item for item in by_path.get(path, []) if item[0] <= raw_line]
+        if not preceding:
+            continue
+        best_line = preceding[-1][0]
+        same_line = [item for item in preceding if item[0] == best_line]
+        edge["target"] = min(same_line, key=lambda item: (item[1], item[2]))[2]
+
+
 def normalise_callable_label(label: str) -> str:
     """Normalize a node label into the key used for call resolution."""
 

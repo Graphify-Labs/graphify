@@ -7,8 +7,75 @@ from graphify.build import build_from_json
 from graphify.cluster import cluster
 from graphify.analyze import god_nodes, surprising_connections, _is_concept_node, graph_diff, _surprise_score, _file_category, _is_json_key_node, find_import_cycles, suggest_questions
 from graphify.extract import _make_id
+from graphify.gaps import GapCategory, classify_gap_node
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+@pytest.mark.parametrize(
+    "attrs",
+    [
+        {"external": True, "file_type": "code"},
+        {"node_kind": "external_symbol", "file_type": "code"},
+        {"metadata": {"scip_kind": "external"}, "file_type": "code"},
+    ],
+)
+def test_external_evidence_is_benign(attrs):
+    graph = nx.Graph()
+    graph.add_node("external", label="Flask", **attrs)
+
+    assert classify_gap_node(graph, "external") is GapCategory.EXTERNAL
+
+
+def test_sourceless_semantic_concept_is_not_external():
+    graph = nx.Graph()
+    graph.add_node("concept", label="Debt Strategy", file_type="concept")
+
+    assert classify_gap_node(graph, "concept") is GapCategory.STRUCTURAL
+
+
+def test_source_backed_leaf_is_actionable():
+    graph = nx.Graph()
+    graph.add_node(
+        "service",
+        label="Service",
+        file_type="code",
+        source_file="src/service.py",
+    )
+
+    assert classify_gap_node(graph, "service") is GapCategory.ACTIONABLE_LOCAL
+
+
+def test_suggest_questions_counts_only_actionable_local_leaves():
+    graph = nx.Graph()
+    graph.add_node(
+        "local",
+        label="LocalService",
+        file_type="code",
+        source_file="src/local.py",
+    )
+    graph.add_node("external", label="Flask", file_type="code", external=True)
+    graph.add_node(
+        "reason",
+        label="Why",
+        file_type="rationale",
+        source_file="src/local.py",
+    )
+    graph.add_node(
+        "json",
+        label="name",
+        file_type="code",
+        source_file="fixtures/data.json",
+    )
+
+    questions = suggest_questions(graph, {}, {}, top_n=10)
+    isolated = next(
+        item for item in questions if item["type"] == "isolated_nodes"
+    )
+
+    assert isolated["why"].startswith("1 weakly-connected node")
+    assert "LocalService" in isolated["question"]
+    assert "Flask" not in isolated["question"]
 
 
 def make_graph():

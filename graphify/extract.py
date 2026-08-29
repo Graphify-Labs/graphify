@@ -143,7 +143,11 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _workspace_globs,
 )
 
-from graphify.symbol_resolution import resolve_bash_source_edges  # noqa: E402
+from graphify.symbol_resolution import (  # noqa: E402
+    canonicalize_python_type_aliases,
+    resolve_bash_source_edges,
+    resolve_markdown_code_references,
+)
 
 from graphify.extractors.engine import REFERENCE_CONTEXTS, _CSHARP_TYPE_PARAMETER_SCOPE_DECLARATIONS, _C_PRIMITIVE_TYPE_NODES, _JAVA_BUILTIN_TYPES, _JAVA_TYPE_PARAMETER_SCOPE_DECLARATIONS, _JS_FUNCTION_VALUE_TYPES, _JS_SCOPE_BOUNDARY, _PYTHON_ANNOTATION_NOISE, _PYTHON_TYPE_CONTAINERS, _RUBY_CLASS_FACTORIES, _c_collect_type_refs, _cpp_collect_type_refs, _cpp_declarator_name, _cpp_local_var_types, _csharp_attribute_names, _csharp_classify_base, _csharp_collect_type_refs, _csharp_extra_walk, _csharp_namespace_id, _csharp_namespace_name, _csharp_pre_scan_interfaces, _csharp_type_parameters_in_scope, _dynamic_import_js, _extract_generic, _find_body, _find_require_call, _get_cpp_func_name, _java_annotation_names, _java_collect_type_refs, _java_extra_walk, _java_type_parameters_in_scope, _js_collect_pattern_idents, _js_dispatch_value_idents, _js_extra_walk, _js_local_bound_names, _js_member_assignment_target, _js_module_bound_names, _kotlin_collect_type_refs, _kotlin_function_return_type_node, _kotlin_property_type_node, _kotlin_user_type_name, _php_collect_type_refs, _php_method_return_type_node, _php_name_text, _python_collect_assignment_targets, _python_collect_param_refs, _python_collect_type_refs, _python_local_bound_names, _python_module_bound_names, _python_param_names, _read_csharp_type_name, _require_imports_js, _ruby_const_last_name, _ruby_extra_walk, _ruby_local_class_bindings, _ruby_new_class_name, _scala_collect_type_refs, _semantic_reference_edge, _source_location, _swift_classify_base, _swift_collect_type_refs, _swift_constructor_type, _swift_declaration_keyword, _swift_extra_walk, _swift_local_var_types, _swift_pre_scan, _swift_property_name, _swift_property_type_node, _swift_receiver_name, _swift_user_type_name, _ts_decorator_name, _ts_descendant_decorators, _ts_emit_decorator_edges, _ts_extra_walk, _ts_method_name, _ts_receiver_type_table  # noqa: E402,F401
 
@@ -5870,8 +5874,8 @@ def extract(
 
     Two-pass process:
     1. Per-file structural extraction (classes, functions, imports)
-    2. Cross-file import resolution: turns file-level imports into
-       class-level INFERRED edges (DigestAuth --uses--> Response)
+    2. Cross-file import resolution: emits source-backed runtime relationships
+       and deterministic Python ``uses_type`` edges.
 
     Args:
         paths: files to extract from
@@ -5889,15 +5893,12 @@ def extract(
             value of GRAPHIFY_MAX_WORKERS if set), bounded by len(uncached_work).
         resolution_context_nodes: read-only AST nodes from files that are NOT
             being extracted this run (an incremental rebuild's unchanged
-            corpus, #2406). They extend the cross-file resolution indexes —
-            the shared direct-call pass's label/file indexes, the
-            indirect_call callable guard (via the persisted `_callable` /
-            `_callable_class` markers, #2438), and the member-call resolvers
-            run by `run_language_resolvers` (#2437) — so a changed caller can
-            still bind `foo()`, `obj.method()`, or `submit(handler)` to an
-            unchanged callee. They are never parsed, mutated, or returned;
-            raw_calls come only from `paths`, so only edges sourced by the
-            re-extracted files are emitted.
+            corpus, #2406). They extend the Python import/type-use target index,
+            the shared direct-call label/file indexes, the indirect_call
+            callable guard (via persisted `_callable` / `_callable_class`
+            markers, #2438), and member-call resolvers run by
+            `run_language_resolvers` (#2437). They are never parsed, mutated,
+            or returned; only edges sourced by re-extracted files are emitted.
         resolution_context_edges: the `contains`/`method` edges of the same
             unchanged corpus (#2437). The member-call resolvers walk these to
             map a receiver type to the single class owning the called method;
@@ -6600,6 +6601,20 @@ def extract(
     _repoint_python_package_imports(paths, all_nodes, all_edges, root)
     _merge_swift_extensions(per_file, all_nodes, all_edges)
     _merge_csharp_partial_class_nodes(per_file, all_nodes, all_edges, paths, root)
+    canonicalize_python_type_aliases(paths, all_nodes, all_edges)
+    _markdown_resolution_nodes = all_nodes
+    if resolution_context_nodes:
+        _fresh_markdown_ids = {node.get("id") for node in all_nodes}
+        _markdown_resolution_nodes = all_nodes + [
+            node
+            for node in resolution_context_nodes
+            if node.get("id") and node.get("id") not in _fresh_markdown_ids
+        ]
+    resolve_markdown_code_references(
+        _markdown_resolution_nodes,
+        all_edges,
+        root=root,
+    )
     _disambiguate_colliding_node_ids(all_nodes, all_edges, all_raw_calls, root)
     _canonicalize_csharp_namespace_nodes(all_nodes, all_edges)
     # PHP namespace/use disambiguation must run BEFORE the unique-stub rewire:
@@ -6655,7 +6670,12 @@ def extract(
     if py_paths:
         py_results = [r for r, p in zip(per_file, paths) if p.suffix == ".py"]
         try:
-            cross_file_edges = _resolve_cross_file_imports(py_results, py_paths)
+            cross_file_edges = _resolve_cross_file_imports(
+                py_results,
+                py_paths,
+                resolution_context_nodes=resolution_context_nodes,
+                root=root,
+            )
             all_edges.extend(cross_file_edges)
         except Exception as exc:
             import logging

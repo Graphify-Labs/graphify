@@ -511,12 +511,13 @@ def suggest_questions(
             })
 
     # 4. Isolated or weakly-connected nodes → exploration questions
+    from .gaps import GapCategory, classify_gap_node, gap_breakdown
+
     isolated = [
-        n for n in G.nodes()
-        if G.degree(n) <= 1
-        and not _is_file_node(G, n)
-        and not _is_concept_node(G, n)
-        and G.nodes[n].get("file_type") != "rationale"
+        node_id
+        for node_id in G.nodes()
+        if G.degree(node_id) <= 1
+        and classify_gap_node(G, node_id) is GapCategory.ACTIONABLE_LOCAL
     ]
     if isolated:
         labels = [G.nodes[n].get("label", n) for n in isolated[:3]]
@@ -530,7 +531,12 @@ def suggest_questions(
     from .cluster import cohesion_score
     for cid, nodes in communities.items():
         score = cohesion_score(G, nodes)
-        if score < 0.15 and len(nodes) >= 5:
+        breakdown = gap_breakdown(G, nodes)
+        if (
+            score < 0.15
+            and len(nodes) >= 5
+            and breakdown[GapCategory.ACTIONABLE_LOCAL.value] > 0
+        ):
             label = community_labels.get(cid, f"Community {cid}")
             questions.append({
                 "type": "low_cohesion",

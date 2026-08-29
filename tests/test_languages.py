@@ -2597,6 +2597,70 @@ def test_ts_injected_field_ambiguous_type_emits_no_edge(tmp_path):
 # ── Markdown ─────────────────────────────────────────────────────────────────
 
 from graphify.extract import extract_markdown
+from graphify.extractors.markdown import (
+    ResolvedMarkdownTarget,
+    _resolve_markdown_target,
+)
+
+
+def test_markdown_target_keeps_code_line_anchor(tmp_path):
+    source_dir = tmp_path / "docs"
+    source_dir.mkdir()
+
+    target = _resolve_markdown_target(
+        "../src/service.py#L17", source_dir, wikilink=False
+    )
+
+    assert target == ResolvedMarkdownTarget(
+        path=tmp_path / "src" / "service.py",
+        line=17,
+    )
+
+
+@pytest.mark.parametrize("fragment", ["#L0", "#L-2", "#Labc", "#section"])
+def test_markdown_target_invalid_code_line_falls_back_to_file(
+    tmp_path, fragment
+):
+    target = _resolve_markdown_target(
+        f"../src/service.py{fragment}", tmp_path / "docs", wikilink=False
+    )
+
+    assert target == ResolvedMarkdownTarget(
+        path=tmp_path / "src" / "service.py",
+        line=None,
+    )
+
+
+def test_markdown_target_keeps_document_fragment_behavior(tmp_path):
+    target = _resolve_markdown_target(
+        "./architecture.md#decisions", tmp_path, wikilink=False
+    )
+
+    assert target == ResolvedMarkdownTarget(
+        path=tmp_path / "architecture.md",
+        line=None,
+    )
+
+
+def test_markdown_code_link_emits_target_file_and_line(tmp_path):
+    docs = tmp_path / "docs"
+    src = tmp_path / "src"
+    docs.mkdir()
+    src.mkdir()
+    target = src / "service.py"
+    target.write_text("def run():\n    return 1\n", encoding="utf-8")
+    page = docs / "architecture.md"
+    page.write_text(
+        "[implementation](../src/service.py#L2)\n", encoding="utf-8"
+    )
+
+    result = extract_markdown(page)
+    edge = next(
+        edge for edge in result["edges"] if edge["relation"] == "references"
+    )
+
+    assert edge["target_file"] == str(target)
+    assert edge["target_line"] == 2
 
 def test_markdown_no_error():
     r = extract_markdown(FIXTURES / "deploy_guide.md")

@@ -4039,6 +4039,142 @@ def _inferred_uses(result):
     }
 
 
+def _type_uses(result):
+    """Every deterministic cross-file Python type-use edge."""
+    return [e for e in result["edges"] if e.get("relation") == "uses_type"]
+
+
+def test_cross_file_annotations_emit_extracted_roles(tmp_path):
+    (tmp_path / "models.py").write_text(
+        "class Payload:\n    pass\n", encoding="utf-8"
+    )
+    (tmp_path / "api.py").write_text(
+        "from models import Payload as P\n\n\n"
+        "class Envelope:\n"
+        "    value: P\n\n\n"
+        "def convert(values: list[P | None]) -> \"P\":\n"
+        "    return values[0]\n\n\n"
+        "def build(value: P) -> P:\n"
+        "    return P()\n",
+        encoding="utf-8",
+    )
+
+    result = extract(
+        [tmp_path / "api.py", tmp_path / "models.py"],
+        cache_root=tmp_path,
+    )
+    by_source = {edge["source"]: edge for edge in _type_uses(result)}
+
+    envelope = by_source["api_envelope"]
+    assert envelope["target"] == "models_payload"
+    assert envelope["context"] == "type_annotation"
+    assert envelope["type_roles"] == ["field"]
+    assert envelope["confidence"] == "EXTRACTED"
+    assert envelope["confidence_score"] == 1.0
+    assert envelope["source_file"] == "api.py"
+    assert envelope["source_location"] == "L5"
+    assert envelope["weight"] == 1.0
+    assert envelope["_origin"] == "ast"
+    assert by_source["api_convert"]["target"] == "models_payload"
+    assert by_source["api_convert"]["type_roles"] == ["parameter", "return"]
+    assert by_source["api_convert"]["confidence"] == "EXTRACTED"
+    assert by_source["api_convert"]["confidence_score"] == 1.0
+    assert by_source["api_build"]["type_roles"] == ["parameter", "return"]
+    inferred_pairs = {
+        (edge["source"], edge["target"])
+        for edge in result["edges"]
+        if edge.get("relation") == "uses" and edge.get("confidence") == "INFERRED"
+    }
+    assert not inferred_pairs & {
+        ("api_envelope", "models_payload"),
+        ("api_convert", "models_payload"),
+    }
+    assert ("api_build", "models_payload") in inferred_pairs
+
+
+def test_nested_annotations_record_nested_roles_on_the_owner(tmp_path):
+    (tmp_path / "models.py").write_text("class Debt:\n    pass\n", encoding="utf-8")
+    (tmp_path / "order.py").write_text(
+        "from models import Debt\n\n\n"
+        "def order_custom():\n"
+        "    def key(debt: Debt) -> Debt:\n"
+        "        return debt\n"
+        "    return key\n\n\n"
+        "class Holder:\n"
+        "    class Inner:\n"
+        "        debt: Debt\n",
+        encoding="utf-8",
+    )
+
+    result = extract(
+        [tmp_path / "order.py", tmp_path / "models.py"],
+        cache_root=tmp_path,
+    )
+    by_source = {edge["source"]: edge for edge in _type_uses(result)}
+
+    assert by_source["order_order_custom"]["type_roles"] == [
+        "nested_parameter",
+        "nested_return",
+    ]
+    assert by_source["order_holder"]["type_roles"] == ["nested_field"]
+
+
+def test_local_annotation_and_body_reference_keep_conservative_uses(tmp_path):
+    (tmp_path / "models.py").write_text("class Helper:\n    pass\n", encoding="utf-8")
+    (tmp_path / "api.py").write_text(
+        "from models import Helper\n\n\n"
+        "def handler():\n"
+        "    local: Helper = Helper()\n"
+        "    return local\n",
+        encoding="utf-8",
+    )
+
+    result = extract(
+        [tmp_path / "api.py", tmp_path / "models.py"],
+        cache_root=tmp_path,
+    )
+
+    assert ("api_handler", "models_helper") in _inferred_uses(result)
+    assert not any(edge["source"] == "api_handler" for edge in _type_uses(result))
+
+
+def test_type_use_skips_ambiguous_and_external_targets(tmp_path):
+    for package in ("one", "two"):
+        folder = tmp_path / package
+        folder.mkdir()
+        (folder / "models.py").write_text(
+            "class Payload:\n    pass\n", encoding="utf-8"
+        )
+    api = tmp_path / "api.py"
+    api.write_text(
+        "from models import Payload\n"
+        "from pathlib import Path\n\n\n"
+        "def load(value: Payload, path: Path) -> Payload:\n"
+        "    return value\n",
+        encoding="utf-8",
+    )
+    star = tmp_path / "star.py"
+    star.write_text(
+        "from one.models import *\n\n\n"
+        "def load(value: Payload) -> Payload:\n"
+        "    return value\n",
+        encoding="utf-8",
+    )
+
+    result = extract(
+        [
+            api,
+            star,
+            tmp_path / "one" / "models.py",
+            tmp_path / "two" / "models.py",
+        ],
+        cache_root=tmp_path,
+    )
+
+    assert not any(edge["source"] == "api_load" for edge in _type_uses(result))
+    assert not any(edge["source"] == "star_load" for edge in _type_uses(result))
+
+
 def test_inferred_uses_edge_attributes_to_the_referencing_symbol(tmp_path):
     """A cross-file INFERRED `uses` edge binds to the symbol that actually
     references the import — a function is a valid source and a co-located class
