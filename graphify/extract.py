@@ -839,6 +839,687 @@ _TS_CONFIG = LanguageConfig(
     import_handler=_import_js,
 )
 
+# TSX JSX text requires ``&`` to start an HTML entity reference (``&amp;``,
+# ``&#NN;``, ``&lt;``, ...); a bare ``&`` produces an ERROR node and the
+# partial-extraction warning fires (#2551, #2922). ``&`` inside JSX tag
+# attribute values, JSX expression containers ``{ ... }``, string literals,
+# comments, and TS code is already accepted by tree-sitter-typescript — only
+# JSX text content is strict. A bare ``&`` in JSX text is replaced with a
+# single ASCII space so the TSX grammar parses the file cleanly; the one-byte
+# placeholder keeps the transformed source byte-aligned with the original file
+# so ``source[start_byte:end_byte]`` slices stay accurate.
+_TSX_ENTITY_RE = re.compile(r'&(?:#[xX][0-9a-fA-F]+|#[0-9]+|[A-Za-z][A-Za-z0-9]*);')
+
+# Characters whose preceding position puts ``<`` at expression position (so it
+# must be a JSX tag start, not a comparison or a generic type parameter). The
+# inverse — alphanumeric / ``_`` / ``$`` — marks ``<`` as a likely generic
+# type-parameter opener (``function f<T>``, ``class Foo<T>``, ``type Bar<T>``)
+# or part of a comparison (``a < b``); in those positions the source is TS
+# code, not JSX, and bare ``&`` there is bitwise AND and must not be masked.
+_TSX_LT_EXPR_PREV = frozenset(
+    '=(),?:;!&|^~+-*/%<>[]{}'  # operators and punctuation
+    # Keyword tails also act as expression context but are matched by the
+    # ``return``/``yield``/``new``/``as``/``typeof``/``void``/``delete``
+    # end-of-token check below, which keeps the set a flat char check.
+)
+
+# Characters that can precede a ``/`` which starts a regex literal in TS/JS.
+# ``/`` after a value token (identifier, number, closing paren, bracket, or
+# brace) is a division operator, not a regex; ``<`` and ``>`` are included
+# because they can be comparison operators (``a < /b/g``), but the tag ``>``
+# handler resets the previous-char tracker so a ``/`` directly after a JSX
+# tag is not mistaken for regex.
+_TSX_REGEX_START_PREV = frozenset(
+    '=(),?:;!&|^~+-*/%[]{}<>'
+)
+
+# Keywords that put the next token in expression position, so a following
+# ``/`` can be a regex literal (``return /a/g``, ``case /a/:``, ...).
+_TSX_REGEX_START_KEYWORDS = frozenset({
+    'return', 'yield', 'throw', 'typeof', 'void', 'delete', 'case',
+})
+
+
+def _generic_arrow_tail(src: str, m: int) -> bool:
+    """True when ``src[m] == '('`` opens a parameter list followed by an
+    ``=>`` — the tail of a generic arrow / function type such as
+    ``<TKey>(x: TKey) => x`` or ``<T>(x: T): T => x``.
+
+    Used by the ``<`` disambiguation in :func:`_mask_tsx_ampersands`:
+    classifying a generic arrow as a JSX tag would strand the walker in
+    ``jsx_text`` and corrupt a later bitwise ``a & b`` into ``a   b``
+    (a parse error — the very bug class this fix removes), so an
+    uppercase ``<TKey>`` directly followed by ``>(`` is only treated as a
+    tag when no arrow tail follows the balanced parameter list. The scan
+    is bounded so pathological input cannot make the walker quadratic.
+
+    The scan skips over string literals, comments, and regex literals so
+    that ``)`` / ``;`` characters inside them do not break the parameter
+    list balance or prematurely end the return-type search.
+    """
+    n = len(src)
+    limit = min(n, m + 800)
+    i = m
+    paren_depth = 0
+    return_depth = 0
+    mode = 'params'
+    prev: str | None = None
+    keyword: str | None = None
+
+    def _set_prev(c: str) -> None:
+        nonlocal prev, keyword
+        prev = c
+        if not (c.isalnum() or c == '_' or c == '$'):
+            keyword = None
+
+    def _extend_keyword(c: str) -> None:
+        nonlocal keyword
+        keyword = (keyword or '') + c
+
+    def _skip_string(i: int, quote: str) -> int:
+        i += 1
+        while i < limit:
+            if src[i] == '\\' and i + 1 < n:
+                i += 2
+                continue
+            if src[i] == quote:
+                return i + 1
+            i += 1
+        return i
+
+    def _skip_comment(i: int) -> int:
+        if src[i + 1] == '/':
+            while i < limit and src[i] != '\n':
+                i += 1
+        else:
+            i += 2
+            while i + 1 < limit and not (src[i] == '*' and src[i + 1] == '/'):
+                i += 1
+            i += 2
+        return i
+
+    def _skip_regex(i: int) -> int:
+        nonlocal prev, keyword
+        i += 1
+        in_class = False
+        class_open = -1
+        while i < limit:
+            c = src[i]
+            if c == '\\' and i + 1 < n:
+                i += 2
+                continue
+            if in_class:
+                if c == ']':
+                    if i == class_open + 1 or (i == class_open + 2 and src[class_open + 1] == '^'):
+                        i += 1
+                        continue
+                    in_class = False
+                i += 1
+                continue
+            if c == '[':
+                in_class = True
+                class_open = i
+                i += 1
+                continue
+            if c == '/':
+                i += 1
+                while i < n and src[i].isalpha():
+                    i += 1
+                break
+            i += 1
+        prev, keyword = 'a', None
+        return i
+
+    while i < limit:
+        c = src[i]
+        c2 = src[i:i + 2] if i + 1 < n else ''
+        if c in '"\'`':
+            i = _skip_string(i, c)
+            _set_prev(c)
+            continue
+        if c2 == '//' or c2 == '/*':
+            i = _skip_comment(i)
+            continue
+        if c == '/' and c2 not in ('//', '/*') and (
+            prev is None
+            or prev in _TSX_REGEX_START_PREV
+            or keyword in _TSX_REGEX_START_KEYWORDS
+        ):
+            i = _skip_regex(i)
+            continue
+        if c == '(':
+            if mode == 'params':
+                paren_depth += 1
+            else:
+                return_depth += 1
+        elif c == ')':
+            if mode == 'params':
+                paren_depth -= 1
+                if paren_depth == 0:
+                    i += 1
+                    while i < n and src[i].isspace():
+                        i += 1
+                    if src[i:i + 2] == '=>':
+                        return True
+                    if i < n and src[i] == ':':
+                        mode = 'return'
+                        return_depth = 0
+                        i += 1
+                        continue
+                    return False
+            else:
+                return_depth -= 1
+        elif mode == 'return':
+            if c == '=' and c2 == '=>':
+                if return_depth == 0:
+                    return True
+                i += 2
+                continue
+            if c in '[{<':
+                return_depth += 1
+            elif c in ']}>':
+                return_depth -= 1
+            elif c == ';' and return_depth == 0:
+                return False
+        if not c.isspace():
+            if c.isalnum() or c == '_' or c == '$':
+                _extend_keyword(c)
+            else:
+                keyword = None
+            prev = c
+        i += 1
+    return False
+
+
+def _mask_tsx_ampersands(src: str) -> str:
+    """Mask bare ``&`` in JSX text content of TSX source (#2922).
+
+    Tree-sitter's TSX grammar requires ``&`` in JSX text (the run between
+    ``>`` and ``<`` inside a JSX element) to begin an HTML entity reference
+    (``&amp;``, ``&#NN;``, ``&lt;``, ...). A bare ``&`` produces an ERROR node
+    and the parser returns a partial tree; the partial-extraction path
+    surfaces ``parse_errors`` metadata (#2551) that, while silenced by the
+    multiline-error gate for single-line cases (#2788), still drops the
+    symbol set the file actually contains. ``&`` inside JSX tags, JSX
+    expression containers ``{...}``, string literals, comments, and TS code
+    (where ``&`` is bitwise AND) is left alone because the grammar already
+    accepts it there.
+
+    Walker: a stack of contexts — ``tag`` / ``close`` / ``self`` (opening,
+    closing, and self-closing tags), ``expr``, ``string``, ``comment``,
+    ``line_comment``, ``jsx_text``. Bare ``&`` is replaced with a single
+    ASCII space only when the top of the stack is ``jsx_text``; already-formed
+    entities are passed through. A single-byte placeholder keeps the transformed
+    source byte-aligned with the original file, so tree-sitter byte offsets and
+    ``source[start_byte:end_byte]`` slices stay valid. A closing tag pops the
+    element's ``jsx_text`` context — returning to code, an expression container,
+    or the parent element's JSX text — and a self-closing tag never opens one,
+    so code after an element (bitwise ``&`` included) is never masked. ``<`` at
+    code position is treated as a JSX tag start when its previous
+    non-whitespace character is an expression-context operator or
+    punctuation; an alphanumeric / ``_`` / ``$`` preceding character marks
+    it as a generic type-parameter opener (``function f<T>``, ``type Bar<T>``)
+    or part of a comparison, in which case we stay in code mode. Inside
+    JSX expression containers the same shape disambiguation runs with
+    expression context forced on, so nested JSX
+    (``{ok ? <span>a & b</span> : null}``) is masked as well.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(src)
+    stack: list[str] = []
+    # When the active context is 'string', the matching quote character.
+    str_quote: str | None = None
+    # Previous non-whitespace character in the source (None at file start).
+    # Drives the ``<`` heuristic for JSX-vs-generic disambiguation at code
+    # position: alphanumeric / ``_`` / ``$`` means code (likely generic);
+    # operator/punctuation means expression position (likely JSX tag).
+    prev_code_char: str | None = None
+    # Last non-whitespace JS keyword encountered at code position. ``return``,
+    # ``yield``, ``throw``, ``new``, ``as``, ``typeof``, ``void``, ``delete``,
+    # ``function``, ``class``, ``type``, ``interface``, ``enum``, ``import``,
+    # ``export`` — the first group opens expression expression position (so
+    # ``<`` after them is JSX), the second opens declaration position (so
+    # ``<`` after them is a generic, not JSX).
+    prev_code_keyword: str | None = None
+    # When the active context is 'regex', whether we are inside a character
+    # class and the index where that class opened (so a leading ``]`` is
+    # treated as a literal, not the class close).
+    regex_class = False
+    regex_class_open = -1
+
+    # Cheap fast-path: if there is no ``&`` in the source, the mask is a
+    # no-op and we can skip the whole walk. Almost every real TSX file has
+    # at least one ``&`` (entity refs, JSX expression ``&&``, bitwise in code),
+    # so the walk runs — but the empty-source / no-ampersand case avoids the
+    # allocation when feeding test fixtures without ``&``.
+    if '&' not in src:
+        return src
+
+    def _set_prev(c: str) -> None:
+        nonlocal prev_code_char, prev_code_keyword
+        prev_code_char = c
+        # Reset keyword when a non-identifier character is emitted at code
+        # position. The keyword tracker is updated on identifier characters.
+        if not (c.isalnum() or c == '_' or c == '$'):
+            prev_code_keyword = None
+
+    def _extend_keyword(c: str) -> None:
+        nonlocal prev_code_keyword
+        # Extend a trailing identifier-shaped run with one more letter.
+        if prev_code_keyword is not None:
+            prev_code_keyword = prev_code_keyword + c
+        else:
+            prev_code_keyword = c
+
+    def _lt(expr_ctx: bool) -> None:
+        """Consume a ``<`` at code or expression position.
+
+        Shared by code mode and JSX expression containers so nested JSX
+        (``{ok ? <span>a & b</span> : null}``) is masked like top-level JSX.
+        ``expr_ctx`` forces expression position; code mode derives it from
+        the previous-character / keyword trackers. Tag-shaped ``<`` pushes
+        a ``tag`` (or ``close`` for ``</``) context; generic type parameters
+        and comparisons stay in the current mode.
+        """
+        nonlocal i
+        b = i
+        nxt = src[b + 1] if b + 1 < n else ''
+        push: str | None = None
+        if expr_ctx or prev_code_char is None or prev_code_char in _TSX_LT_EXPR_PREV or prev_code_keyword in (
+            'return', 'yield', 'throw', 'new', 'as', 'typeof',
+            'void', 'delete',
+        ):
+            if nxt == '>':
+                # Fragment ``<>``.
+                push = 'tag'
+            elif nxt == '/':
+                # Closing ``</x>`` (e.g. entered from code mode after the
+                # opening element was missed).
+                push = 'close'
+            elif nxt.isalpha() or nxt == '_' or nxt == '$':
+                # Look past the identifier to decide JSX vs generic.
+                # ``<T>`` / ``<T,>`` / ``<T extends X>`` / ``<T>(...)``
+                # are generic-arrow shapes (single-letter type-parameter
+                # list with optional constraint or default); treating
+                # those as JSX would push jsx_text mode for the rest
+                # of the file and incorrectly mask any subsequent
+                # bitwise ``&`` in code. The shape check classifies
+                # what comes after the identifier: ``,`` / ``extends``
+                # / ``=`` / ``(`` all signal a generic parameter
+                # list; ``<>``, ``/>``, attributes, or a multi-character
+                # identifier signal a JSX tag.
+                j = b + 1
+                while j < n and (src[j].isalnum() or src[j] in '_$'):
+                    j += 1
+                k = j
+                while k < n and src[k].isspace():
+                    k += 1
+                nxt_after = src[k:k + 1] if k < n else ''
+                after_word = src[k:k + 8]
+                is_extends_generic = False
+                if after_word.startswith('extends'):
+                    # ``extends`` can be a generic constraint (``<T extends X>``)
+                    # or a JSX attribute (``<Foo extends={...}>``). An attribute
+                    # has its value assignment ``=`` immediately after the name
+                    # (with optional spaces); a generic constraint has a type
+                    # expression. Treat ``>``/``/``/EOF after ``extends`` as JSX
+                    # boolean attributes as well.
+                    p = k + len('extends')
+                    while p < n and src[p].isspace():
+                        p += 1
+                    is_extends_generic = p < n and src[p] not in ('=', '>', '/')
+                if nxt_after == ',' or is_extends_generic or nxt_after == '=':
+                    # ``<T,>`` / ``<T extends X>`` / ``<T = X>``: generic.
+                    push = None
+                elif nxt_after == '(':
+                    # ``<T>(...) => ...`` is a generic arrow function.
+                    push = None
+                elif nxt_after == '>':
+                    # ``<T>`` / ``<TKey>``: identifier directly followed
+                    # by ``>``. What comes after the ``>`` disambiguates:
+                    # ``(`` opening a parameter list with an arrow tail
+                    # (see ``_generic_arrow_tail``) means a generic arrow /
+                    # function type (``<T>(x: T) => x``, ``<TKey>(x: TKey)
+                    # => x``, ``let f: <T>(x: T) => void``); anything else
+                    # (text, ``<``, ``{``, ``/``, end) means a JSX element
+                    # like ``<A>VoIP & Chamadas</A>`` — single-letter
+                    # components (icon/nav shorthand) and multi-letter ones
+                    # alike mask their JSX text like any other tag.
+                    # Uppercase-initial is required for the generic
+                    # reading; lowercase ``<foo>(...)`` stays JSX.
+                    m = k + 1
+                    while m < n and src[m].isspace():
+                        m += 1
+                    push = None if (
+                        m < n
+                        and src[m] == '('
+                        and nxt.isupper()
+                        and _generic_arrow_tail(src, m)
+                    ) else 'tag'
+                else:
+                    # Multi-character identifier, lowercase, or content
+                    # after ``>`` (``<TagName ...>``, ``<TagName/>``,
+                    # ``<tagname attr=...>``): JSX tag.
+                    push = 'tag'
+        out.append('<')
+        _set_prev('<')
+        if push is not None:
+            stack.append(push)
+        i += 1
+
+    while i < n:
+        c = src[i]
+        c2 = src[i:i + 2] if i + 1 < n else ''
+        top = stack[-1] if stack else None
+
+        if top == 'regex':
+            if c == '\\' and i + 1 < n:
+                out.append(c)
+                out.append(src[i + 1])
+                i += 2
+                continue
+            if regex_class:
+                if c == ']':
+                    if (
+                        i == regex_class_open + 1
+                        or (i == regex_class_open + 2 and src[regex_class_open + 1] == '^')
+                    ):
+                        # A leading ``]`` immediately after ``[`` or ``[^``
+                        # is a literal, not the class close.
+                        out.append(c)
+                        i += 1
+                        continue
+                    regex_class = False
+                out.append(c)
+                i += 1
+                continue
+            if c == '[':
+                regex_class = True
+                regex_class_open = i
+                out.append(c)
+                i += 1
+                continue
+            if c == '/':
+                out.append(c)
+                i += 1
+                while i < n and src[i].isalpha():
+                    out.append(src[i])
+                    i += 1
+                stack.pop()
+                # The regex literal is a value token, so ``<`` after it is a
+                # comparison and ``/`` after it is division.
+                _set_prev(')')
+                continue
+            out.append(c)
+            i += 1
+            continue
+
+        if top == 'string':
+            if c == '\\' and i + 1 < n:
+                out.append(c)
+                out.append(src[i + 1])
+                i += 2
+                continue
+            if c == str_quote:
+                out.append(c)
+                stack.pop()
+                str_quote = None
+                i += 1
+                continue
+            out.append(c)
+            i += 1
+            continue
+
+        if top == 'comment':
+            if c == '*' and i + 1 < n and src[i + 1] == '/':
+                out.append('*/')
+                stack.pop()
+                i += 2
+                continue
+            out.append(c)
+            i += 1
+            continue
+
+        if top == 'line_comment':
+            if c == '\n':
+                out.append(c)
+                stack.pop()
+                # Newline ends the code-level identifier run; reset keyword.
+                prev_code_char = c
+                prev_code_keyword = None
+                i += 1
+                continue
+            out.append(c)
+            i += 1
+            continue
+
+        if top in ('tag', 'close', 'self'):
+            if c in '"\'':
+                out.append(c)
+                stack.append('string')
+                str_quote = c
+                i += 1
+                continue
+            if c == '`':
+                out.append(c)
+                stack.append('string')
+                str_quote = c
+                i += 1
+                continue
+            if c == '/' and c2 == '//':
+                out.append('//')
+                stack.append('line_comment')
+                i += 2
+                continue
+            if c == '/' and c2 == '/*':
+                out.append('/*')
+                stack.append('comment')
+                i += 2
+                continue
+            if c == '/':
+                j = i + 1
+                while j < n and src[j].isspace():
+                    j += 1
+                if j < n and src[j] == '>' and stack[-1] == 'tag':
+                    # Self-closing ``/>`` (possibly spaced, opening tags
+                    # only — ``</>`` is a fragment close): the upcoming
+                    # ``>`` must not open a jsx_text context for this
+                    # childless element.
+                    stack[-1] = 'self'
+                out.append(c)
+                i += 1
+                continue
+            if c == '{':
+                out.append(c)
+                stack.append('expr')
+                i += 1
+                continue
+            if c == '>':
+                out.append(c)
+                kind = stack.pop()
+                if kind == 'close':
+                    # ``</tag>`` closes the element: drop the jsx_text
+                    # context for its children and return to whatever
+                    # surrounded the element (code, expr container, or the
+                    # parent element's JSX text).
+                    if stack and stack[-1] == 'jsx_text':
+                        stack.pop()
+                elif kind != 'self':
+                    # Opening tag → enter JSX text for the element's children.
+                    stack.append('jsx_text')
+                # A complete tag is a value token; reset the tracker so the
+                # next ``<``/``/`` is not misread as a JSX/regex start.
+                _set_prev(')')
+                i += 1
+                continue
+            out.append(c)
+            if not c.isspace():
+                _set_prev(c)
+            i += 1
+            continue
+
+        if top == 'expr':
+            if c == '{':
+                out.append(c)
+                stack.append('expr')
+                i += 1
+                continue
+            if c == '}':
+                out.append(c)
+                stack.pop()
+                i += 1
+                continue
+            if c == '"' or c == "'" or c == '`':
+                out.append(c)
+                stack.append('string')
+                str_quote = c
+                i += 1
+                continue
+            if c == '/' and c2 == '//':
+                out.append('//')
+                stack.append('line_comment')
+                i += 2
+                continue
+            if c == '/' and c2 == '/*':
+                out.append('/*')
+                stack.append('comment')
+                i += 2
+                continue
+            if c == '/' and c2 not in ('//', '/*'):
+                if (
+                    prev_code_char is None
+                    or prev_code_char in _TSX_REGEX_START_PREV
+                    or prev_code_keyword in _TSX_REGEX_START_KEYWORDS
+                ):
+                    stack.append('regex')
+                    regex_class = False
+                    regex_class_open = -1
+                    out.append(c)
+                    i += 1
+                    continue
+            if c == '<':
+                # Nested JSX inside a JSX expression container
+                # (``{ok ? <span>a & b</span> : null}``): run the shared
+                # tag/generic disambiguation with expression context
+                # forced on so the nested element's JSX text is masked.
+                _lt(True)
+                continue
+            out.append(c)
+            if not c.isspace():
+                _set_prev(c)
+            i += 1
+            continue
+
+        if top == 'jsx_text':
+            if c == '<':
+                out.append(c)
+                # ``</`` closes the element whose children we are walking;
+                # any other ``<`` opens a nested child element.
+                stack.append('close' if c2 == '</' else 'tag')
+                _set_prev(c)
+                i += 1
+                continue
+            if c == '{':
+                out.append(c)
+                stack.append('expr')
+                _set_prev(c)
+                i += 1
+                continue
+            if c == '&':
+                m = _TSX_ENTITY_RE.match(src, i)
+                if m:
+                    out.append(m.group(0))
+                    i = m.end()
+                    continue
+                # Single-byte placeholder keeps source byte offsets aligned.
+                out.append(' ')
+                i += 1
+                continue
+            out.append(c)
+            if not c.isspace():
+                _set_prev(c)
+            i += 1
+            continue
+
+        # Code mode: TS/JS at root or expression-container children.
+        if c == '"' or c == "'" or c == '`':
+            out.append(c)
+            stack.append('string')
+            str_quote = c
+            i += 1
+            continue
+        if c == '/' and c2 == '//':
+            out.append('//')
+            stack.append('line_comment')
+            i += 2
+            continue
+        if c == '/' and c2 == '/*':
+            out.append('/*')
+            stack.append('comment')
+            i += 2
+            continue
+        if c == '/' and c2 not in ('//', '/*'):
+            if (
+                prev_code_char is None
+                or prev_code_char in _TSX_REGEX_START_PREV
+                or prev_code_keyword in _TSX_REGEX_START_KEYWORDS
+            ):
+                stack.append('regex')
+                regex_class = False
+                regex_class_open = -1
+                out.append(c)
+                i += 1
+                continue
+        if c == '<':
+            # JSX-vs-generic disambiguation (shared with expression
+            # containers — see ``_lt``):
+            # - alphanumeric / _ / $ before <  → declaration position
+            #   (function/class/type/interface name + type parameters) or
+            #   a comparison; in either case ``<`` is NOT a JSX tag start.
+            # - operator / punctuation before <  → expression position;
+            #   ``<`` is a JSX tag start. The exception list also covers
+            #   ``return``/``yield``/``new`` etc. via the keyword tracker:
+            #   ``return <Foo/>`` puts ``<`` after ``n``, which is alpha, so
+            #   the bare-char check would misclassify it as code. The
+            #   keyword tracker catches the expression-position keywords.
+            # - declaration keywords (function/class/type/interface/enum/
+            #   import/export) + identifier + < → still a generic opener.
+            _lt(False)
+            continue
+        if c.isalpha() or c == '_' or c == '$':
+            out.append(c)
+            _extend_keyword(c)
+            prev_code_char = c
+            i += 1
+            continue
+        out.append(c)
+        if not c.isspace():
+            _set_prev(c)
+        i += 1
+
+    return ''.join(out)
+
+
+def _tsx_mask_source(source: bytes) -> bytes:
+    """Bytes form of the JSX-text ``&`` mask for ``LanguageConfig.source_transform``.
+
+    ``_extract_generic`` parses raw bytes, so the str walker is wrapped in a
+    decode/mask/encode round trip. The ``b"&"`` fast path keeps the common
+    no-ampersand file a true no-op (same bytes object, no allocation) so the
+    config hook adds no measurable cost to the languages that never mask.
+    ``surrogateescape`` on both sides keeps the round trip byte-preserving
+    for non-UTF-8 files (latin-1 comments, BOM-less legacy encodings): the
+    only byte-level change the transform may make is the intentional
+    ``&`` → single-space substitution, never a U+FFFD rewrite of unrelated bytes.
+    """
+    if b"&" not in source:
+        return source
+    return _mask_tsx_ampersands(
+        source.decode("utf-8", errors="surrogateescape")
+    ).encode("utf-8", errors="surrogateescape")
+
+
 # .tsx files must use the TSX grammar (JSX-aware), not the plain TypeScript grammar.
 # tree-sitter-typescript ships two languages: language_typescript (for .ts) and
 # language_tsx (for .tsx). Parsing .tsx with language_typescript silently fails on
@@ -856,6 +1537,10 @@ _TSX_CONFIG = LanguageConfig(
     call_accessor_object_field=_TS_CONFIG.call_accessor_object_field,
     function_boundary_types=_TS_CONFIG.function_boundary_types,
     import_handler=_TS_CONFIG.import_handler,
+    # Bare ``&`` in JSX text trips the TSX grammar (#2922); mask it at the
+    # engine's read path so every TSX parse (including embedded scripts)
+    # gets the fix. See :func:`_mask_tsx_ampersands`.
+    source_transform=_tsx_mask_source,
 )
 
 _JAVA_CONFIG = LanguageConfig(

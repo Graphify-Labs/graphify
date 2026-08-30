@@ -2911,7 +2911,16 @@ def _extract_generic(
     try:
         parser = Parser(language)
         source = path.read_bytes() if source_override is None else source_override
-        tree = parser.parse(source)
+        parse_source = source
+        if config.source_transform is not None:
+            # Per-language byte mask applied only to the bytes the parser sees —
+            # e.g. the TSX bare-``&``-in-JSX-text mask (#2922). The mask is
+            # byte-length-preserving, so the parse tree's offsets stay aligned
+            # with the original file. Keep the original source for downstream
+            # ``source[start_byte:end_byte]`` slices so snippets/locations are
+            # reported against the user's file, not the masked copy.
+            parse_source = config.source_transform(source)
+        tree = parser.parse(parse_source)
         root = tree.root_node
     except Exception as e:
         return {"nodes": [], "edges": [], "error": str(e)}
