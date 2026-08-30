@@ -650,6 +650,11 @@ def deduplicate_entities(
                     exact_merges += 1
 
     # ── pass 2: MinHash/LSH + Jaro-Winkler (high-entropy nodes only) ─────────
+    # AST-extracted nodes carry source_location (e.g. "L42") and are keyed by
+    # file+position, so they never need fuzzy cross-node merging.  Only include
+    # nodes WITHOUT source_location (semantic/LLM-generated) whose names may be
+    # inconsistently cased or spelled across extraction chunks.  This keeps the
+    # candidate set near-zero for pure-AST runs.
     candidates: list[dict] = []
     seen_norms: set[str] = set()
     for node in unique_nodes:
@@ -662,7 +667,8 @@ def deduplicate_entities(
         key = _norm(node.get("label", node.get("id", "")))
         if key and key not in seen_norms:
             seen_norms.add(key)
-            if _entropy(node.get("label", "")) >= _ENTROPY_THRESHOLD:
+            if (_entropy(node.get("label", "")) >= _ENTROPY_THRESHOLD
+                    and not node.get("source_location")):
                 candidates.append(node)
 
     fuzzy_merges = 0
