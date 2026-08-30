@@ -151,6 +151,75 @@ def _pascal_find_body(text: str, start: int) -> tuple[int, int]:
                 return (body_start, tok.start())
     return (body_start, len(text))
 
+
+# ---------------------------------------------------------------------------
+# Global singleton receivers (#3101)
+# ---------------------------------------------------------------------------
+#
+# `var mm: TMainModule;` in a unit's interface section, then `mm.ServerReport`
+# from any other unit, is the standard Delphi "shared main module" shape. The
+# per-file pass cannot bind it (the type lives in another file), so the call
+# is reported as a raw call carrying its RECEIVER, and the interface-section
+# globals are reported beside it; graphify.pascal_resolution joins the two
+# across the corpus. Only interface-section vars are collected: they are the
+# only ones another unit can see.
+
+_PAS_VAR_BLOCK_RE = re.compile(
+    r"^[ \t]*(?:var|threadvar)\b(.*?)(?=^[ \t]*(?:const|type|var|threadvar|procedure|"
+    r"function|constructor|destructor|class|implementation|begin|end|uses|resourcestring)\b|\Z)",
+    re.IGNORECASE | re.MULTILINE | re.DOTALL,
+)
+_PAS_VAR_DECL_RE = re.compile(
+    r"^[ \t]*([A-Za-z_][\w]*(?:[ \t]*,[ \t]*[A-Za-z_][\w]*)*)[ \t]*:[ \t]*([A-Za-z_][\w.]*)",
+    re.MULTILINE,
+)
+_PAS_RECEIVER_SKIP = frozenset({"self", "inherited", "result"})
+
+
+def _pascal_interface_globals(text: str) -> dict[str, str]:
+    """``{var_name_lower: type_name_lower}`` for every variable declared in
+    the unit's interface-section ``var``/``threadvar`` blocks.
+
+    ``text`` must already be comment-stripped. A name declared twice with
+    different types (it happens in generated units) is dropped rather than
+    guessed. Files without an interface section (programs, includes) export
+    nothing: nothing outside them can name their variables.
+    """
+    iface, _off, _impl, _impl_off = _pascal_split_sections(text)
+    if not iface:
+        return {}
+    found: dict[str, str] = {}
+    conflicting: set[str] = set()
+    for block in _PAS_VAR_BLOCK_RE.finditer(iface):
+        for decl in _PAS_VAR_DECL_RE.finditer(block.group(1)):
+            type_lower = decl.group(2).split(".")[-1].lower()
+            for raw_name in decl.group(1).split(","):
+                name = raw_name.strip().lower()
+                if not name:
+                    continue
+                prev = found.get(name)
+                if prev is not None and prev != type_lower:
+                    conflicting.add(name)
+                found[name] = type_lower
+    for name in conflicting:
+        found.pop(name, None)
+    return found
+
+
+def _pascal_call_parts(callee_text: str) -> tuple[str, str | None]:
+    """Split ``mm.ServerReport`` into ``("serverreport", "mm")``; an
+    unqualified call, or one qualified by ``Self``/``inherited``, has no
+    receiver worth reporting."""
+    parts = [p.strip() for p in callee_text.split(".") if p.strip()]
+    if not parts:
+        return "", None
+    name_lower = parts[-1].lower()
+    receiver = parts[-2].lower() if len(parts) >= 2 else None
+    if receiver in _PAS_RECEIVER_SKIP:
+        receiver = None
+    return name_lower, receiver
+
+
 def _resolve_pascal_callee_factory(
     records: list[tuple],
     edges: list[dict],
@@ -397,8 +466,8 @@ def _extract_pascal_regex(path: Path) -> dict:
     raw_calls: list[dict] = []
     for caller_nid, caller_line, body_text, _container, _name_lower in impl_records:
         for cm in _PAS_CALL_RE.finditer(body_text):
-            callee_name = cm.group(1).split(".")[-1].lower()
-            if callee_name in _PAS_KEYWORDS:
+            callee_name, receiver = _pascal_call_parts(cm.group(1))
+            if not callee_name or callee_name in _PAS_KEYWORDS:
                 continue
             call_line = caller_line + body_text.count("\n", 0, cm.start())
             target_nid = callee_nid(caller_nid, callee_name)
@@ -409,12 +478,15 @@ def _extract_pascal_regex(path: Path) -> dict:
                 # class declared in another file) -- report for the
                 # cross-file resolver (graphify.pascal_resolution) instead of
                 # guessing or dropping it silently.
-                raw_calls.append({
+                rc = {
                     "source_file": str_path,
                     "source_location": f"L{call_line}",
                     "caller_nid": caller_nid,
                     "callee": callee_name,
-                })
+                }
+                if receiver:
+                    rc["receiver"] = receiver
+                raw_calls.append(rc)
                 continue
             pair = (caller_nid, target_nid)
             if pair in seen_call_pairs:
@@ -425,6 +497,7 @@ def _extract_pascal_regex(path: Path) -> dict:
     return {
         "nodes": nodes, "edges": edges, "input_tokens": 0, "output_tokens": 0,
         "raw_calls": raw_calls,
+        "pascal_globals": _pascal_interface_globals(stripped),
     }
 
 def extract_pascal(path: Path) -> dict:
@@ -639,21 +712,26 @@ def extract_pascal(path: Path) -> dict:
     seen_call_pairs: set[tuple[str, str]] = set()
     raw_calls: list[dict] = []
 
-    def _emit_or_report(caller_nid: str, name_lower: str, line: int) -> None:
+    def _emit_or_report(caller_nid: str, name_lower: str, line: int,
+                        receiver: str | None = None) -> None:
         target = resolve_callee(caller_nid, name_lower)
         if target == caller_nid:
             return
         if not target:
             # Not resolvable within this file (e.g. inherited from a base
-            # class declared in another file) -- report for the cross-file
-            # resolver (graphify.pascal_resolution) instead of guessing or
-            # dropping it silently.
-            raw_calls.append({
+            # class declared in another file, or a method on a global
+            # singleton declared elsewhere, #3101) -- report for the
+            # cross-file resolver (graphify.pascal_resolution) instead of
+            # guessing or dropping it silently.
+            rc = {
                 "source_file": str_path,
                 "source_location": f"L{line}",
                 "caller_nid": caller_nid,
                 "callee": name_lower,
-            })
+            }
+            if receiver:
+                rc["receiver"] = receiver
+            raw_calls.append(rc)
             return
         pair = (caller_nid, target)
         if pair not in seen_call_pairs:
@@ -665,17 +743,23 @@ def extract_pascal(path: Path) -> dict:
             callee_text = None
             for child in node.children:
                 if child.is_named and child.type not in ("exprArgs",):
-                    callee_text = _read(child).split(".")[-1]
+                    callee_text = _read(child)
                     break
             if callee_text:
-                _emit_or_report(caller_nid, callee_text.lower(), node.start_point[0] + 1)
+                name_lower, receiver = _pascal_call_parts(callee_text)
+                if name_lower:
+                    _emit_or_report(caller_nid, name_lower, node.start_point[0] + 1, receiver)
         elif node.type == "statement":
             # Pascal bare procedure calls with no args: `Reset;`
             # tree-sitter represents these as statement → identifier (no exprCall wrapper)
+            # ... and the qualified form `om.Flush;` is statement -> exprDot
+            # (no exprCall either), which is exactly the global-singleton
+            # call shape (#3101).
             named = [c for c in node.children if c.is_named]
-            if len(named) == 1 and named[0].type == "identifier":
-                callee_text = _read(named[0])
-                _emit_or_report(caller_nid, callee_text.lower(), node.start_point[0] + 1)
+            if len(named) == 1 and named[0].type in ("identifier", "exprDot"):
+                name_lower, receiver = _pascal_call_parts(_read(named[0]))
+                if name_lower:
+                    _emit_or_report(caller_nid, name_lower, node.start_point[0] + 1, receiver)
         for child in node.children:
             walk_calls(child, caller_nid)
 
@@ -685,4 +769,7 @@ def extract_pascal(path: Path) -> dict:
     return {
         "nodes": nodes, "edges": edges, "input_tokens": 0, "output_tokens": 0,
         "raw_calls": raw_calls,
+        "pascal_globals": _pascal_interface_globals(
+            _pascal_strip_comments(source.decode("utf-8", errors="replace"))
+        ),
     }
