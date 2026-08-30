@@ -1102,6 +1102,48 @@ def test_php_finds_function():
     r = extract_php(FIXTURES / "sample.php")
     assert any("parseResponse" in l for l in _labels(r))
 
+def test_php_interface_trait_enum_are_definitions_with_methods(tmp_path):
+    """PHP interface/trait/enum must be real definitions, with methods attributed
+    to them (not the file), and implements/uses edges resolving to them.
+
+    Only `class_declaration` was in the PHP class_types, so interfaces, traits and
+    enums were dropped as definitions and their methods were re-attributed to the
+    FILE as free functions — and a class's `implements`/`use` resolved to a
+    sourceless stub instead of the real type.
+    """
+    f = tmp_path / "svc.php"
+    f.write_text(
+        "<?php\n"
+        "interface Logger { public function log(string $m): void; }\n"
+        "trait Timestamps { public function touch(): void { $this->t = time(); } }\n"
+        "enum Status { case Active; case Inactive; }\n"
+        "class Service implements Logger {\n"
+        "    use Timestamps;\n"
+        "    public function log(string $m): void { $this->touch(); }\n"
+        "}\n"
+    )
+    r = extract_php(f)
+    assert "error" not in r
+    by_label = {n["label"]: n for n in r["nodes"]}
+
+    for name in ("Logger", "Timestamps", "Status"):
+        assert name in by_label, f"{name} dropped as a definition"
+        assert by_label[name]["source_file"], f"{name} must be a real sourced definition"
+
+    def method_targets(owner_label):
+        owner = by_label[owner_label]["id"]
+        return {n["label"] for n in r["nodes"] for e in r["edges"]
+                if e["relation"] == "method" and e["source"] == owner and e["target"] == n["id"]}
+
+    # methods attributed to their type, not the file
+    assert ".log()" in method_targets("Logger"), "interface method not attributed to interface"
+    assert ".touch()" in method_targets("Timestamps"), "trait method not attributed to trait"
+
+    # class relationships resolve to the real interface/trait nodes
+    assert ("Service", "Logger") in _edge_labels(r, "implements")
+    assert ("Service", "Timestamps") in _edge_labels(r, "mixes_in")
+
+
 def test_php_finds_imports():
     r = extract_php(FIXTURES / "sample.php")
     assert "imports" in _relations(r)
