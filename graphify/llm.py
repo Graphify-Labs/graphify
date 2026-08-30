@@ -146,6 +146,31 @@ BACKENDS: dict[str, dict] = {
         "max_completion_tokens": 16384,
         "vision": True,
     },
+    "vertex": {
+        # Vertex AI via Application Default Credentials (service account,
+        # Workload Identity Federation, or `gcloud auth application-default
+        # login`) -- a different Google product from "gemini" above, which
+        # only talks to the API-key-only Generative Language API and cannot
+        # authenticate via ADC at all. Needed for orgs whose policy disallows
+        # raw API keys outright (confirmed live: Red Hat's GCP org policy).
+        # No env_key/env_keys -- like "bedrock", auth comes from the
+        # environment's credential chain, not a key graphify reads itself.
+        "default_model": "gemini-2.5-flash",
+        "model_env_key": "GRAPHIFY_VERTEX_MODEL",
+        "pricing": {"input": 0.50, "output": 3.00},  # USD per 1M tokens (gemini-2.5-flash)
+        "temperature": 0,
+        # Thinking tokens are billed but never appear in the extraction JSON,
+        # and can silently consume the entire max_output_tokens budget before
+        # any real output is emitted (confirmed live: a small max_output_tokens
+        # returned an empty response with the whole budget spent on thinking).
+        # Zeroed out by default for the same reason "gemini" above defaults to
+        # reasoning_effort="low" -- same model family, same rationale, just a
+        # harder cutoff since native Vertex offers an exact budget instead of
+        # a qualitative effort level.
+        "thinking_budget": 0,
+        "max_tokens": 8192,
+        "vision": True,
+    },
     "openai": {
         # OPENAI_BASE_URL points the backend at any OpenAI-compatible server
         # (llama.cpp, vLLM, LM Studio, ...); OPENAI_MODEL overrides the default
@@ -979,6 +1004,19 @@ def _bedrock_content(user_message: str, refs: list[_ImageRef]) -> list[dict]:
     return content
 
 
+def _vertex_content(user_message: str, refs: list[_ImageRef]):
+    """Build the google-genai `contents` value (list of Parts) for Vertex AI."""
+    from google.genai import types
+
+    parts = [
+        types.Part.from_bytes(data=r.raw, mime_type=r.media_type)
+        for r in refs
+        if r.raw
+    ]
+    parts.append(types.Part.from_text(text=_with_image_notes(user_message, refs)))
+    return parts
+
+
 _LLM_JSON_MAX_BYTES = 10 * 1024 * 1024  # 10 MB hard cap before json.loads (F-016)
 
 
@@ -1321,7 +1359,14 @@ def _get_backend_api_key(backend: str) -> str:
 def _format_backend_env_keys(backend: str) -> str:
     """Return user-facing accepted API-key variable names."""
     keys = _backend_env_keys(backend)
-    return " or ".join(keys) if keys else "AWS_PROFILE or AWS_REGION"
+    if keys:
+        return " or ".join(keys)
+    # Keyless backends authenticate via an ambient credential chain rather
+    # than a graphify-read env var, so there's no key list to print — name
+    # the actual credential signal instead.
+    if backend == "vertex":
+        return "GOOGLE_CLOUD_PROJECT (with Application Default Credentials configured)"
+    return "AWS_PROFILE or AWS_REGION"
 
 
 def _default_model_for_backend(backend: str) -> str:
@@ -1890,6 +1935,88 @@ def _call_bedrock(model: str, user_message: str, max_tokens: int = 8192, *, deep
     return result
 
 
+def _vertex_client():
+    """Construct a Vertex-AI-mode google-genai client using ADC.
+
+    Project/location come from GOOGLE_CLOUD_PROJECT / GOOGLE_CLOUD_LOCATION —
+    the same names google-genai's own Vertex mode and `gcloud` already use, so
+    a working `gcloud` environment (service account, Workload Identity
+    Federation, or a user's `gcloud auth application-default login`) needs no
+    graphify-specific config beyond selecting `--backend vertex`.
+    """
+    try:
+        from google import genai
+        from google.genai import types
+    except ImportError as exc:
+        raise ImportError(_backend_pkg_hint("google-genai", "vertex")) from exc
+
+    project = os.environ.get("GOOGLE_CLOUD_PROJECT", "").strip()
+    if not project:
+        raise ValueError(
+            "Vertex AI backend requires GOOGLE_CLOUD_PROJECT to be set "
+            "(the GCP project ID Vertex AI calls are billed/scoped to)."
+        )
+    location = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1").strip()
+    # Every other backend in this module wires _resolve_max_retries() into its
+    # SDK client (see _azure_client, _call_bedrock) specifically so a burst of
+    # 429s during a large parallel run gets absorbed instead of dropping the
+    # chunk (see _resolve_max_retries' own docstring, #1523) -- google-genai
+    # needs this set explicitly via http_options.retry_options; confirmed live
+    # that an unconfigured client does NOT retry 429s at all (every field of an
+    # empty HttpRetryOptions() defaults to None, i.e. no retry behavior),
+    # which is exactly why a large first-run corpus (~1100 docs) surfaced
+    # "Resource exhausted" as hard chunk failures instead of transient delays.
+    return genai.Client(
+        vertexai=True,
+        project=project,
+        location=location,
+        http_options=types.HttpOptions(
+            retry_options=types.HttpRetryOptions(
+                attempts=_resolve_max_retries() + 1,
+                http_status_codes=[429, 500, 502, 503, 504],
+            )
+        ),
+    )
+
+
+def _call_vertex(model: str, user_message: str, max_tokens: int = 8192, *, deep_mode: bool = False, images: list[_ImageRef] | None = None) -> dict:
+    """Call Vertex AI's Gemini models via google-genai, authenticated by ADC."""
+    from google.genai import errors as genai_errors, types
+
+    client = _vertex_client()
+    config = types.GenerateContentConfig(
+        system_instruction=_extraction_system(deep=deep_mode),
+        temperature=BACKENDS["vertex"].get("temperature", 0),
+        max_output_tokens=max_tokens,
+        thinking_config=types.ThinkingConfig(thinking_budget=BACKENDS["vertex"].get("thinking_budget", 0)),
+    )
+    try:
+        resp = client.models.generate_content(
+            model=model,
+            contents=_vertex_content(user_message, images or []),
+            config=config,
+        )
+    except genai_errors.APIError as exc:
+        raise RuntimeError(f"Vertex AI API error ({exc.code}): {exc.message}") from exc
+
+    raw_content = resp.text
+    result = _parse_llm_json(raw_content or "{}")
+    usage = resp.usage_metadata
+    result["input_tokens"] = (usage.prompt_token_count if usage else 0) or 0
+    result["output_tokens"] = (usage.candidates_token_count if usage else 0) or 0
+    result["model"] = model
+    finish_reason = resp.candidates[0].finish_reason if resp.candidates else None
+    result["finish_reason"] = "length" if finish_reason and finish_reason.name == "MAX_TOKENS" else "stop"
+    if _response_is_hollow(raw_content, result) and result["finish_reason"] != "length":
+        print(
+            "[graphify] vertex returned a hollow response; treating as "
+            "truncation so adaptive retry can bisect the chunk.",
+            file=sys.stderr,
+        )
+        result["finish_reason"] = "length"
+    return result
+
+
 def extract_files_direct(
     files: list[Path],
     backend: str | None = None,
@@ -1919,7 +2046,8 @@ def extract_files_direct(
                 "No LLM backend configured. Set one of: GEMINI_API_KEY, ANTHROPIC_API_KEY, "
                 "OPENAI_API_KEY, DEEPSEEK_API_KEY, MOONSHOT_API_KEY, "
                 "AZURE_OPENAI_API_KEY+AZURE_OPENAI_ENDPOINT, OLLAMA_BASE_URL, "
-                "or AWS credentials. Pass backend= explicitly to select a provider."
+                "AWS credentials, or GOOGLE_CLOUD_PROJECT+Application Default "
+                "Credentials (Vertex AI). Pass backend= explicitly to select a provider."
             )
     if backend not in BACKENDS:
         raise ValueError(f"Unknown backend {backend!r}. Available: {sorted(BACKENDS)}")
@@ -1939,7 +2067,7 @@ def extract_files_direct(
             file=sys.stderr,
         )
         key = "ollama"
-    if not key and backend not in ("bedrock", "claude-cli"):
+    if not key and backend not in ("bedrock", "vertex", "claude-cli"):
         raise ValueError(
             f"No API key for backend '{backend}'. "
             f"Set {_format_backend_env_keys(backend)} or pass api_key=."
@@ -1965,6 +2093,8 @@ def extract_files_direct(
         result = _call_claude_cli(user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
     elif backend == "bedrock":
         result = _call_bedrock(mdl, user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
+    elif backend == "vertex":
+        result = _call_vertex(mdl, user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
     elif backend == "azure":
         endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip()
         if not endpoint:
@@ -2863,7 +2993,7 @@ def _call_llm(
         ollama_url = _resolve_ollama_base_url(cfg.get("base_url", ""))
         _validate_ollama_base_url(ollama_url)
         key = "ollama"
-    if not key and backend not in ("bedrock", "claude-cli"):
+    if not key and backend not in ("bedrock", "vertex", "claude-cli"):
         raise ValueError(
             f"No API key for backend '{backend}'. Set {_format_backend_env_keys(backend)}."
         )
@@ -2964,6 +3094,23 @@ def _call_llm(
         if bu:
             _rec(bu.get("inputTokens", 0), bu.get("outputTokens", 0))
         return _bedrock_response_text(resp, default="")
+
+    if backend == "vertex":
+        from google.genai import types
+
+        client = _vertex_client()
+        resp = client.models.generate_content(
+            model=mdl,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                max_output_tokens=max_tokens,
+                thinking_config=types.ThinkingConfig(thinking_budget=BACKENDS["vertex"].get("thinking_budget", 0)),
+            ),
+        )
+        vu = resp.usage_metadata
+        if vu:
+            _rec(vu.prompt_token_count, vu.candidates_token_count)
+        return resp.text or ""
 
     if backend == "azure":
         endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip()
@@ -3111,13 +3258,15 @@ def _validate_ollama_base_url(url: str, *, warn: bool = True) -> None:
 def detect_backend() -> str | None:
     """Return the name of whichever backend has an API key set, or None.
 
-    Priority: gemini → kimi → claude → openai → deepseek → azure → bedrock → ollama (last, opt-in).
+    Priority: gemini → kimi → claude → openai → deepseek → azure → bedrock →
+    ollama → vertex (last).
 
-    Ollama is intentionally checked LAST so a paid API key (Anthropic/OpenAI/etc.)
-    is never silently shadowed by an incidental OLLAMA_BASE_URL in the environment
-    — see security finding F-002/F-029. Setting OLLAMA_BASE_URL alongside a paid
-    key now keeps you on the paid backend; remove the paid key (or pass
-    --backend ollama explicitly) to route to the local model.
+    Ollama is checked before Vertex because OLLAMA_BASE_URL/OLLAMA_HOST is an
+    explicit graphify-specific configuration, while GOOGLE_CLOUD_PROJECT is often
+    set globally for other GCP tools (gcloud, terraform, etc.). An explicit Ollama
+    configuration should not be shadowed by an ambient GCP environment variable.
+    Both are checked after paid API keys to avoid silently shadowing a paid key
+    with a free/local backend (security finding F-002/F-029).
     """
     for backend in ("gemini", "kimi", "claude", "openai", "deepseek"):
         if _get_backend_api_key(backend):
@@ -3134,8 +3283,16 @@ def detect_backend() -> str | None:
     if ollama_url:
         _validate_ollama_base_url(ollama_url)
         return "ollama"
+    # GEMINI_API_KEY/GOOGLE_API_KEY (checked first, above) wins over this when
+    # both happen to be set -- vertex is the fallback for environments (e.g.
+    # under an org policy that disallows raw API keys) where a static Gemini
+    # key was never an option in the first place. Checked after Ollama because
+    # GOOGLE_CLOUD_PROJECT is often ambient (set for gcloud/terraform/etc.),
+    # while OLLAMA_BASE_URL is graphify-specific.
+    if os.environ.get("GOOGLE_CLOUD_PROJECT"):
+        return "vertex"
     for name in BACKENDS:
-        if name not in ("gemini", "kimi", "claude", "openai", "deepseek", "azure", "bedrock", "ollama", "claude-cli"):
+        if name not in ("gemini", "kimi", "claude", "openai", "deepseek", "azure", "bedrock", "vertex", "ollama", "claude-cli"):
             if _get_backend_api_key(name):
                 return name
     return None

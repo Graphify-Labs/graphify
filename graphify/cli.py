@@ -3676,6 +3676,8 @@ def dispatch_command(cmd: str) -> None:
                         or os.environ.get("AWS_DEFAULT_REGION")
                         or os.environ.get("AWS_ACCESS_KEY_ID")
                     )
+                elif backend == "vertex":
+                    allow_no_key = bool(os.environ.get("GOOGLE_CLOUD_PROJECT"))
                 elif backend == "claude-cli":
                     import shutil as _shutil
                     allow_no_key = _shutil.which("claude") is not None
