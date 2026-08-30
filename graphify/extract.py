@@ -959,7 +959,12 @@ _CSHARP_CONFIG = LanguageConfig(
         "struct_declaration",
         "record_declaration",
     }),
-    function_types=frozenset({"method_declaration"}),
+    # constructor_declaration shares method_declaration's name/parameters/body
+    # contract (its name is the class name), so — like Java (#1373) — it must be
+    # a first-class function node. Omitting it dropped every C# constructor along
+    # with all calls made from its body (DI wiring, field initialization, etc.),
+    # a large and load-bearing slice of the call graph.
+    function_types=frozenset({"method_declaration", "constructor_declaration"}),
     import_types=frozenset({"using_directive"}),
     # `object_creation_expression` joins the invocation node so `new Foo(...)`
     # links the constructing method to Foo, the way Java has since #1373.
@@ -968,7 +973,7 @@ _CSHARP_CONFIG = LanguageConfig(
     call_accessor_node_types=frozenset({"member_access_expression"}),
     call_accessor_field="name",
     body_fallback_child_types=("declaration_list",),
-    function_boundary_types=frozenset({"method_declaration"}),
+    function_boundary_types=frozenset({"method_declaration", "constructor_declaration"}),
     import_handler=_import_csharp,
 )
 
