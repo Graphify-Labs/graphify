@@ -7,6 +7,7 @@ import pytest
 from graphify.paths import (
     _is_test_path,
     disambiguate_ambiguous_candidates,
+    nfc,
 )
 
 
@@ -144,3 +145,15 @@ def test_is_absolute_any_platform_is_host_independent():
     from graphify.paths import is_absolute_any_platform
     assert is_absolute_any_platform("/home/ci/x.md")
     assert is_absolute_any_platform("C:/Users/u/x.md")
+
+
+# --- NFC normalization for cross-platform path identity ---------------------
+# macOS reports filenames in NFD; manifests and graph source_file entries are
+# typically NFC. Path membership checks that skip normalization treat the same
+# file as two different paths (#2210, #2221/#2224).
+
+def test_nfc_normalizes_decomposed_unicode() -> None:
+    decomposed = "e\u0301"  # "e" + combining acute accent (NFD form)
+    composed = "\u00e9"  # "é" precomposed (NFC form)
+    assert nfc(decomposed) == composed
+    assert nfc(composed) == composed  # already-NFC input is a no-op
