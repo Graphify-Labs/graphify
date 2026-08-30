@@ -87,40 +87,55 @@ def _read_persisted_out_dir() -> str | None:
     the env var themselves — this refusal is specific to a value arriving
     from repo-committed content, not the feature.
     """
-    rc_path = _find_graphifyrc(Path.cwd())
-    if rc_path is None:
-        return None
+    # Everything below is wrapped in one outer guard rather than scattering
+    # per-call try/excepts: `Path.cwd()` raises OSError (FileNotFoundError)
+    # if the invocation directory itself has been deleted out from under the
+    # process (rarer, but real — a shell left open in a directory a script
+    # elsewhere just rm -rf'd, common in CI teardown), and building a path
+    # from a value containing an embedded NUL byte — a valid-UTF-8 string can
+    # still contain one — raises ValueError from the OS layer the first time
+    # it reaches a syscall (`.resolve()` below), not at the earlier
+    # `read_text()`/`Path(val).is_absolute()` checks. Both must degrade to
+    # "no override", per this function's own contract, not propagate and
+    # abort `graphify.paths` import for every command anywhere near the repo.
     try:
-        content = rc_path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return None
-    for raw in content.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, val = line.partition("=")
-        if key.strip() != "out_dir":
-            continue
-        val = val.strip()
-        if not val:
+        rc_path = _find_graphifyrc(Path.cwd())
+        if rc_path is None:
             return None
-        if Path(val).is_absolute():
-            return None  # repo-committed absolute path — refuse, don't honor
-        # Relative: anchor to the repo root (this .graphifyrc's own directory),
-        # not wherever this process happens to be invoked from — GRAPHIFY_OUT
-        # is otherwise always resolved relative to cwd, so re-express the
-        # repo-root-relative value in those terms when they differ.
-        repo_root = rc_path.parent.resolve()
-        target = (repo_root / val).resolve()
         try:
-            target.relative_to(repo_root)
-        except ValueError:
-            return None  # escapes the repo root via `..` — refuse, don't honor
-        try:
-            return os.path.relpath(target, Path.cwd())
-        except ValueError:
-            return str(target)  # e.g. different drives on Windows
-    return None
+            content = rc_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return None
+        for raw in content.splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            if key.strip() != "out_dir":
+                continue
+            val = val.strip()
+            if not val:
+                return None
+            if Path(val).is_absolute():
+                return None  # repo-committed absolute path — refuse, don't honor
+            # Relative: anchor to the repo root (this .graphifyrc's own
+            # directory), not wherever this process happens to be invoked
+            # from — GRAPHIFY_OUT is otherwise always resolved relative to
+            # cwd, so re-express the repo-root-relative value in those terms
+            # when they differ.
+            repo_root = rc_path.parent.resolve()
+            target = (repo_root / val).resolve()
+            try:
+                target.relative_to(repo_root)
+            except ValueError:
+                return None  # escapes the repo root via `..` — refuse, don't honor
+            try:
+                return os.path.relpath(target, Path.cwd())
+            except ValueError:
+                return str(target)  # e.g. different drives on Windows
+        return None
+    except (OSError, ValueError):
+        return None
 
 
 _env_graphify_out = os.environ.get("GRAPHIFY_OUT")

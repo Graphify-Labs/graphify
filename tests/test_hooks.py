@@ -1621,3 +1621,95 @@ def test_uninstall_survives_non_utf8_graphifyrc(tmp_path):
     result = uninstall(repo)  # must not raise
     assert "removed" in result.lower()
     assert not (repo / ".git" / "hooks" / "post-commit").exists()
+
+
+# --- fifth review round: hooks.py's out_dir reader kept in sync with paths.py's
+# refusal policy, idempotent persistence, cwd-unavailable and NUL-byte crashes
+# in module import (Graphify PR review round 5) ---
+
+def test_load_graphifyrc_ignores_absolute_out_dir(tmp_path):
+    """No current consumer reads cfg['out_dir'], but this parses the same
+    file/key graphify.paths._read_persisted_out_dir does, and that function
+    refuses an absolute value for a concrete reason — keep them in sync so a
+    future consumer doesn't silently reintroduce the vulnerability."""
+    from graphify.hooks import _load_graphifyrc
+
+    rc = tmp_path / ".graphifyrc"
+    rc.write_text("out_dir=/etc/shared-graphs\n", encoding="utf-8")
+    cfg = _load_graphifyrc(tmp_path)
+    assert "out_dir" not in cfg
+
+
+def test_load_graphifyrc_ignores_dotdot_out_dir(tmp_path):
+    from graphify.hooks import _load_graphifyrc
+
+    rc = tmp_path / ".graphifyrc"
+    rc.write_text("out_dir=../../etc/evil\n", encoding="utf-8")
+    cfg = _load_graphifyrc(tmp_path)
+    assert "out_dir" not in cfg
+
+
+def test_load_graphifyrc_accepts_safe_relative_out_dir(tmp_path):
+    from graphify.hooks import _load_graphifyrc
+
+    rc = tmp_path / ".graphifyrc"
+    rc.write_text("out_dir=.planning/graphs\n", encoding="utf-8")
+    cfg = _load_graphifyrc(tmp_path)
+    assert cfg.get("out_dir") == ".planning/graphs"
+
+
+def test_persist_out_dir_skips_rewrite_when_unchanged(tmp_path):
+    """A repeated `hook install` with the same GRAPHIFY_OUT must not rewrite
+    .graphifyrc every time (needless I/O/mtime churn on the common case)."""
+    from graphify.hooks import _persist_out_dir
+
+    _persist_out_dir(tmp_path, "custom-out")
+    rc = tmp_path / ".graphifyrc"
+    mtime_before = rc.stat().st_mtime_ns
+    _persist_out_dir(tmp_path, "custom-out")  # same value again
+    assert rc.stat().st_mtime_ns == mtime_before
+
+
+def test_persist_out_dir_still_rewrites_when_value_changes(tmp_path):
+    from graphify.hooks import _persist_out_dir, _load_graphifyrc
+
+    _persist_out_dir(tmp_path, "old-out")
+    _persist_out_dir(tmp_path, "new-out")
+    assert _load_graphifyrc(tmp_path).get("out_dir") == "new-out"
+
+
+def test_graphify_out_survives_cwd_deleted(tmp_path, monkeypatch):
+    """A shell left open in a directory something else deleted must not
+    crash graphify.paths import — Path.cwd() raises FileNotFoundError."""
+    import importlib
+    import graphify.paths as paths_mod
+
+    monkeypatch.delenv("GRAPHIFY_OUT", raising=False)
+    monkeypatch.setattr(
+        "pathlib.Path.cwd",
+        classmethod(lambda cls: (_ for _ in ()).throw(FileNotFoundError("cwd gone"))),
+    )
+    importlib.reload(paths_mod)  # must not raise
+    try:
+        assert paths_mod.GRAPHIFY_OUT == "graphify-out"
+    finally:
+        importlib.reload(paths_mod)
+
+
+def test_graphify_out_survives_embedded_null_byte_in_out_dir(tmp_path, monkeypatch):
+    """A valid-UTF-8 .graphifyrc value can still contain an embedded NUL
+    byte, which raises ValueError from the OS layer the first time it
+    reaches a real filesystem call (Path.resolve()) — must degrade to
+    'no override', not crash import."""
+    import importlib
+    import graphify.paths as paths_mod
+
+    monkeypatch.delenv("GRAPHIFY_OUT", raising=False)
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".graphifyrc").write_text("out_dir=bad\x00dir\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    importlib.reload(paths_mod)  # must not raise
+    try:
+        assert paths_mod.GRAPHIFY_OUT == "graphify-out"
+    finally:
+        importlib.reload(paths_mod)

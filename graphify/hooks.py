@@ -465,9 +465,17 @@ def _load_graphifyrc(root: Path) -> dict[str, str | int]:
             # hand-edits the file to clear an override, and this key is read
             # unconditionally by `install()`; raising here would make hook
             # install itself impossible to run over a harmless stale line.
-            # Matches graphify.paths._read_persisted_out_dir's own handling
-            # of the same file/key.
-            if val:
+            #
+            # No consumer reads cfg["out_dir"] today (install()/status() only
+            # use viz_node_limit) — but this parses the same file and key
+            # graphify.paths._read_persisted_out_dir does, and that function
+            # refuses an absolute or `..`-escaping value for a concrete
+            # reason (.graphifyrc is repo-committed, untrusted content). A
+            # future caller reading this dict must inherit that same
+            # refusal automatically rather than needing to remember to
+            # re-derive it, so it is enforced here too even though nothing
+            # currently depends on it.
+            if val and not Path(val).is_absolute() and ".." not in Path(val).parts:
                 cfg["out_dir"] = val
     return cfg
 
@@ -553,6 +561,7 @@ def _persist_out_dir(root: Path, out: str) -> None:
     if rc_path.is_symlink():
         raise ValueError(f"refusing to write through a symlinked .graphifyrc: {rc_path}")
     lines: list[str] = []
+    existing_value = None
     if rc_path.is_file():
         content = rc_path.read_text(encoding="utf-8")
         for raw in content.splitlines():
@@ -560,8 +569,14 @@ def _persist_out_dir(root: Path, out: str) -> None:
             if stripped and not stripped.startswith("#") and "=" in stripped:
                 key = stripped.split("=", 1)[0].strip()
                 if key == "out_dir":
+                    existing_value = stripped.split("=", 1)[1].strip()
                     continue  # replaced below with the current value
             lines.append(raw)
+    if existing_value == out:
+        # Nothing to do: `hook install` re-run with an unchanged GRAPHIFY_OUT
+        # (the common case once persisted) would otherwise rewrite .graphifyrc
+        # on every run with byte-identical content — needless I/O/mtime churn.
+        return
     lines.append(f"out_dir={out}")
     if not _write_text_no_symlink(rc_path, "\n".join(lines) + "\n"):
         raise ValueError(f"refusing to write through a symlinked .graphifyrc: {rc_path}")
