@@ -533,6 +533,11 @@ def _run_cli() -> None:
         print("    --author \"Name\"         tag the author of the content")
         print("    --contributor \"Name\"    tag who added it to the corpus")
         print("    --dir <path>            target directory (default: ./raw)")
+        print("  idea \"<text>\"            turn an idea into an Obsidian note + clickable Cytoscape graph")
+        print("    --vault PATH            Obsidian vault (or set GRAPHIFY_OBSIDIAN_VAULT)")
+        print("    --title TITLE           note and graph title")
+        print("    --response JSON         use a saved InfraNodus response instead of the API")
+        print("                            API token env: INFRANODUS_API_KEY")
         print("  watch <path>            watch a folder and rebuild the graph on code changes")
         print("  update <path>           re-extract code files and update the graph (no LLM needed)")
         print("    --force                 overwrite graph.json even if the rebuild has fewer nodes")
@@ -714,7 +719,9 @@ def _run_cli() -> None:
     # (e.g. "cursor install --help" was silently installing into Cursor, #821).
     # Exempt: free-text commands (user string may contain these tokens), and
     # "install"/"uninstall" which have their own per-subcommand help handlers.
-    _FREE_TEXT_CMDS = {"query", "explain", "path", "save-result", "install", "uninstall"}
+    _FREE_TEXT_CMDS = {
+        "query", "explain", "path", "save-result", "idea", "install", "uninstall"
+    }
     if cmd not in _FREE_TEXT_CMDS and any(a in {"-h", "--help", "-?"} for a in sys.argv[2:]):
         print(f"Run 'graphify --help' for full usage.")
         return

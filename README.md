@@ -689,6 +689,13 @@ graphify extract ./raw --code-only # index code only — local AST, no API key (
 /graphify add <video-url>
 /graphify add https://... --author "Name" --contributor "Name"
 
+# Capture a personal idea in Obsidian and analyze it as a clickable Cytoscape graph.
+# InfraNodus requests default to doNotSave=true; the API token stays in Python.
+INFRANODUS_API_KEY=... graphify idea "A neighborhood tool library with skill sharing" \
+  --title "Neighborhood tool library" --vault ~/Notes
+# Rebuild from a previously saved InfraNodus response without a network request:
+graphify idea --file idea.md --vault ~/Notes --response infranodus-response.json
+
 /graphify query "what connects attention to the optimizer?"
 /graphify query "..." --dfs --budget 1500
 /graphify path "DigestAuth" "Response"

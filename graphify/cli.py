@@ -928,7 +928,11 @@ def _reenter_main() -> None:
 
 
 def dispatch_command(cmd: str) -> None:
-    if cmd == "provider":
+    if cmd == "idea":
+        from graphify.idea import main as _idea_main
+        _idea_main(sys.argv[2:])
+
+    elif cmd == "provider":
         from graphify.llm import _custom_providers_path, BACKENDS
         import json as _json
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
