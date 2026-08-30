@@ -464,6 +464,35 @@ def test_csharp_splits_inherits_and_implements_edges():
     assert ("DataProcessor", "IProcessor") in _edge_labels(result, "implements")
 
 
+def test_csharp_interface_extends_is_inherits_not_implements(tmp_path):
+    # A C# `interface`'s base_list holds base interfaces, so extending another
+    # interface is interface *inheritance* -- mirroring how the Java extractor
+    # treats `extends_interfaces`. These edges used to be mislabeled `implements`,
+    # which is reserved for a class/struct/record realizing an interface.
+    source = tmp_path / "Interfaces.cs"
+    source.write_text(
+        "public interface IBase {}\n"
+        "public interface IOther {}\n"
+        "public interface IDerived : IBase {}\n"
+        "public interface IMulti : IBase, IOther {}\n"
+        "public class Impl : IBase {}\n"
+    )
+    result = extract_csharp(source)
+    inherits = _edge_labels(result, "inherits")
+    implements = _edge_labels(result, "implements")
+
+    # interface-extends-interface is inheritance, not implementation
+    assert ("IDerived", "IBase") in inherits
+    assert ("IMulti", "IBase") in inherits
+    assert ("IMulti", "IOther") in inherits
+    assert ("IDerived", "IBase") not in implements
+    assert ("IMulti", "IBase") not in implements
+
+    # a class realizing an interface is still `implements`
+    assert ("Impl", "IBase") in implements
+    assert ("Impl", "IBase") not in inherits
+
+
 def test_csharp_parameter_return_and_generic_contexts():
     result = extract_csharp(FIXTURES / "sample.cs")
     assert ("Build", "HttpClient") in _edge_labels(result, "references", "parameter_type")

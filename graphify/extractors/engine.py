@@ -3421,7 +3421,14 @@ def _extract_generic(
                                     "source_location": "",
                                 })
                                 seen_ids.add(base_nid)
-                        relation = _csharp_classify_base(base, csharp_interface_names)
+                        # An `interface`'s base_list holds base interfaces, so every
+                        # entry is interface inheritance (`inherits`) -- the same way the
+                        # Java extractor treats `extends_interfaces`. Only class/struct/
+                        # record declarations use the name-based class-vs-interface split.
+                        if t == "interface_declaration":
+                            relation = "inherits"
+                        else:
+                            relation = _csharp_classify_base(base, csharp_interface_names)
                         metadata = {"ref_token": base}
                         if qualified:
                             metadata["qualified"] = True
