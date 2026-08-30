@@ -1,4 +1,4 @@
-"""Tests for language extractors: Java, C, C++, Ruby, C#, Kotlin, Scala, PHP, Swift, Go, Julia, Fortran, JS/TS, .NET project files, XAML."""
+"""Tests for language extractors: Java, C, C++, Ruby, C#, Kotlin, Scala, PHP, Swift, Go, Julia, Fortran, JS/TS, .NET project files, XAML, Robot Framework."""
 from __future__ import annotations
 from pathlib import Path
 import pytest
@@ -9,7 +9,7 @@ from graphify.extract import (
     extract_groovy, extract_sln, extract_csproj, extract_xaml, extract_razor,
     extract_dm, extract_dmi, extract_dmm, extract_dmf,
     extract_powershell, extract_apex, extract_commonlisp, extract_verilog,
-    extract_powershell_manifest,
+    extract_powershell_manifest, extract_robot,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -25,6 +25,10 @@ _needs_dm = pytest.mark.skipif(
 _needs_commonlisp = pytest.mark.skipif(
     _ilu.find_spec("tree_sitter_commonlisp") is None,
     reason="tree-sitter-commonlisp not installed (optional [commonlisp] extra)",
+)
+_needs_robot = pytest.mark.skipif(
+    _ilu.find_spec("robot") is None,
+    reason="robotframework not installed (optional [robot] extra)",
 )
 
 
@@ -4037,3 +4041,95 @@ def test_cl_ids_are_path_qualified_across_directories(tmp_path):
         f"same-named .lisp files in different dirs must not share ids, "
         f"got overlap {sorted(ids_a & ids_b)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Robot Framework (.robot / .resource) - official robot.api parser (#3192)
+# ---------------------------------------------------------------------------
+
+@_needs_robot
+def test_robot_suite_tests_and_keywords_become_nodes():
+    r = extract_robot(FIXTURES / "sample.robot")
+    assert r.get("error") is None
+    labels = set(_labels(r))
+    assert "sample.robot" in labels  # file node
+    for expected in ("Login Works", "Retry Loop Case", "Data Driven Case",
+                     "Prepare Environment"):
+        assert expected in labels, f"missing node {expected!r}"
+    assert "contains" in _relations(r)
+
+
+@_needs_robot
+def test_robot_keyword_call_edges_incl_fixtures_and_loops():
+    from graphify.extract import _make_id
+    r = extract_robot(FIXTURES / "sample.robot")
+    call_targets = {e["target"] for e in r["edges"] if e["relation"] == "calls"}
+    # body call, [Setup]/[Teardown], [Template], suite fixtures - all keyed by
+    # bare keyword name so they land on the defining resource's node
+    for kw in ("Login As Admin", "Open Session", "Close All Sessions",
+               "Login As User", "Prepare Environment"):
+        assert _make_id(kw) in call_targets, f"missing call target {kw!r}"
+    # a call nested inside a FOR block is still extracted
+    retry_nid = next(n["id"] for n in r["nodes"] if n["label"] == "Retry Loop Case")
+    assert any(e["source"] == retry_nid and e["target"] == _make_id("Open Session")
+               for e in r["edges"] if e["relation"] == "calls")
+    # BuiltIn keyword calls emit edges too (dropped later as external refs)
+    assert _make_id("Should Be Equal") in call_targets
+
+
+@_needs_robot
+def test_robot_imports_resource_library_and_stdlib_filter():
+    from graphify.extract import _make_id
+    r = extract_robot(FIXTURES / "sample.robot")
+    labels = set(_labels(r))
+    import_targets = {e["target"] for e in r["edges"] if e["relation"] == "imports"}
+    # Resource and path-form Library imports (plain relative and ${CURDIR})
+    # resolve onto the imported file's own node id
+    assert _make_id(str(FIXTURES / "robot_keywords.resource")) in import_targets
+    assert _make_id(str(FIXTURES / "sample.py")) in import_targets
+    # third-party named library gets a stub node; an RF stdlib does not
+    assert "SeleniumLibrary" in labels
+    assert "Collections" not in labels
+    # an import with an unresolvable ${VARIABLE} path emits no edge at all
+    assert not any("vars_py" in t for t in import_targets)
+
+
+@_needs_robot
+def test_robot_resource_keywords_and_cross_file_ids():
+    res = extract_robot(FIXTURES / "robot_keywords.resource")
+    assert res.get("error") is None
+    labels = set(_labels(res))
+    for kw in ("Open Session", "Close All Sessions", "Login As Admin",
+               "Login As User"):
+        assert kw in labels, f"missing keyword node {kw!r}"
+    # resource-internal call
+    assert ("Login As Admin", "Open Session") in _calls(res)
+    # cross-file guarantee: the suite's call-edge target id equals the
+    # resource's definition node id, so the merged graph connects them
+    suite = extract_robot(FIXTURES / "sample.robot")
+    suite_call_targets = {e["target"] for e in suite["edges"]
+                          if e["relation"] == "calls"}
+    open_session_id = next(n["id"] for n in res["nodes"]
+                           if n["label"] == "Open Session")
+    assert open_session_id in suite_call_targets
+
+
+@_needs_robot
+def test_robot_suite_level_test_template(tmp_path):
+    from graphify.extract import _make_id
+    suite = tmp_path / "templated.robot"
+    suite.write_text(
+        "*** Settings ***\n"
+        "Test Template     Login As User\n"
+        "\n"
+        "*** Test Cases ***\n"
+        "All Users\n"
+        "    alice\n"
+        "    bob\n",
+        encoding="utf-8",
+    )
+    r = extract_robot(suite)
+    assert r.get("error") is None
+    file_nid = next(n["id"] for n in r["nodes"] if n["label"] == "templated.robot")
+    assert any(e["source"] == file_nid and e["target"] == _make_id("Login As User")
+               for e in r["edges"] if e["relation"] == "calls")
