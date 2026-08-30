@@ -1615,11 +1615,37 @@ def merge_raw_extraction(
             return False  # unowned — carry forward
         return _prune_hit(sf)
 
+    # #3203: Check for unverified semantic shrink on re-extracted sources.
+    unverified_semantic_shrink: dict[str, tuple[int, int]] = {}
+    if new_sem_sources:
+        prior_sem_counts: dict[str, int] = {}
+        for n in existing_nodes:
+            if isinstance(n, dict) and not _is_ast_tier(n):
+                sf = n.get("source_file")
+                if sf:
+                    canon = _norm_source_file(sf, _eff_root) or sf
+                    prior_sem_counts[canon] = prior_sem_counts.get(canon, 0) + 1
+
+        fresh_sem_counts: dict[str, int] = {}
+        for n in new.get("nodes", []):
+            if isinstance(n, dict) and not _is_ast_tier(n):
+                sf = n.get("source_file")
+                if sf:
+                    canon = _norm_source_file(sf, _eff_root) or sf
+                    fresh_sem_counts[canon] = fresh_sem_counts.get(canon, 0) + 1
+
+        for canon_sf, fresh_count in fresh_sem_counts.items():
+            prior_count = prior_sem_counts.get(canon_sf, 0)
+            if prior_count > 1 and fresh_count < prior_count:
+                unverified_semantic_shrink[canon_sf] = (prior_count, fresh_count)
+
     new["nodes"] = [n for n in existing_nodes if not _dropped(n)] + list(new.get("nodes", []))
     new["edges"] = [e for e in existing_edges if not _dropped(e)] + list(new.get("edges", []))
     carried_hyper = [he for he in existing_hyperedges if not _dropped(he)]
     if carried_hyper or new.get("hyperedges"):
         new["hyperedges"] = carried_hyper + list(new.get("hyperedges", []))
+    if unverified_semantic_shrink:
+        new["_unverified_semantic_shrink"] = unverified_semantic_shrink
     return new
 
 
@@ -1718,6 +1744,35 @@ def build_merge(
     # never see the loss it is meant to catch.
     _disk_nodes = existing_nodes
     _disk_n = len(existing_nodes)
+
+    # #3203: Check for unverified semantic shrink on re-extracted sources.
+    # An existing source with prior semantic nodes (> 1) that produces strictly
+    # fewer semantic nodes in this extraction is flagged on G.graph so the CLI
+    # can arm the shrink guard and leave the source unstamped in the manifest.
+    unverified_semantic_shrink: dict[str, tuple[int, int]] = {}
+    if had_graph and new_sem_sources:
+        prior_sem_counts: dict[str, int] = {}
+        for n in _disk_nodes:
+            if isinstance(n, dict) and not _is_ast_tier(n):
+                sf = n.get("source_file")
+                if sf:
+                    canon = _norm_source_file(sf, _replace_root) or sf
+                    prior_sem_counts[canon] = prior_sem_counts.get(canon, 0) + 1
+
+        fresh_sem_counts: dict[str, int] = {}
+        for ch in new_chunks:
+            for n in ch.get("nodes", []):
+                if isinstance(n, dict) and not _is_ast_tier(n):
+                    sf = n.get("source_file")
+                    if sf:
+                        canon = _norm_source_file(sf, _replace_root) or sf
+                        fresh_sem_counts[canon] = fresh_sem_counts.get(canon, 0) + 1
+
+        for canon_sf, fresh_count in fresh_sem_counts.items():
+            prior_count = prior_sem_counts.get(canon_sf, 0)
+            if prior_count > 1 and fresh_count < prior_count:
+                unverified_semantic_shrink[canon_sf] = (prior_count, fresh_count)
+
     if new_sources:
         def _kept(item: dict) -> bool:
             sf = item.get("source_file")
@@ -1998,6 +2053,9 @@ def build_merge(
                 f"{_disk_n} → {G.number_of_nodes()} nodes. "
                 f"Pass prune_sources explicitly if you intend to remove them. (#479)"
             )
+
+    if unverified_semantic_shrink:
+        G.graph["_unverified_semantic_shrink"] = unverified_semantic_shrink
 
     return G
 

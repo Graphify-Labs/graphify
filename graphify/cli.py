@@ -91,6 +91,7 @@ def _stamped_manifest_files(
     root: Path,
     partial_source_files: "set[str] | None" = None,
     failed_ast_sources: "set[str] | list[str] | None" = None,
+    unverified_semantic_sources: "set[str] | list[str] | None" = None,
 ) -> dict[str, list[str]]:
     """Manifest-safe files dict: only stamp semantic files that actually
     produced output (cache hit or fresh extraction). Files whose chunk failed
@@ -102,6 +103,11 @@ def _stamped_manifest_files(
     detect_incremental would see it "done" and never re-dispatch it, leaving the
     incomplete node set live forever on the warm-incremental path. Same #933
     mechanism: leave it unstamped and it is re-queued next run.
+
+    ``unverified_semantic_sources`` (#3203): files whose semantic extraction
+    under-produced compared to their prior representation (e.g. 3 -> 1 nodes).
+    They are excluded from stamping unless --allow-partial is set, so the next
+    incremental run retries them.
 
     Both sides of the membership test are resolved against the scan ``root``
     before comparing (#1897): node/edge/hyperedge ``source_file`` values are
@@ -142,6 +148,7 @@ def _stamped_manifest_files(
             if sf:
                 sem_extracted.add(_resolve(sf))
     partial_resolved = {_resolve(p) for p in (partial_source_files or set())}
+    unverified_resolved = {_resolve(p) for p in (unverified_semantic_sources or set())}
     failed_ast_resolved = {_resolve(p) for p in (failed_ast_sources or [])}
     sem_types = {"document", "paper", "image"}
     return {
@@ -150,7 +157,11 @@ def _stamped_manifest_files(
             if _resolve(f) not in failed_ast_resolved
             and (
                 ftype not in sem_types
-                or (_resolve(f) in sem_extracted and _resolve(f) not in partial_resolved)
+                or (
+                    _resolve(f) in sem_extracted
+                    and _resolve(f) not in partial_resolved
+                    and _resolve(f) not in unverified_resolved
+                )
             )
         ]
         for ftype, flist in files_by_type.items()
@@ -4139,6 +4150,33 @@ def dispatch_command(cmd: str) -> None:
                     # raw-dump this run's partial extraction over it.
                     print(f"error: {exc}", file=sys.stderr)
                     sys.exit(1)
+                _unverified_shrink = merged.get("_unverified_semantic_shrink")
+                if _unverified_shrink:
+                    if not cli_allow_partial:
+                        _extraction_incomplete = True
+                        _unverified_sources = set(_unverified_shrink.keys())
+                        _manifest_files = _stamped_manifest_files(
+                            files_by_type,
+                            sem_result,
+                            target,
+                            partial_source_files=_partial_semantic_files,
+                            failed_ast_sources=_failed_ast_sources,
+                            unverified_semantic_sources=_unverified_sources,
+                        )
+                        _stamped_semantic = {
+                            f for _flist in _manifest_files.values() for f in _flist
+                        }
+                        _cleared_semantic = {str(p) for p in semantic_files} - _stamped_semantic
+                    _shrink_details = ", ".join(
+                        f"'{sf}' ({prior} -> {fresh} nodes)"
+                        for sf, (prior, fresh) in sorted(_unverified_shrink.items())
+                    )
+                    print(
+                        f"[graphify extract] semantic extraction is incomplete: unverified semantic "
+                        f"shrink detected for {_shrink_details}. The shrink guard stays armed for "
+                        "this write; pass --allow-partial to overwrite a larger existing graph anyway.",
+                        file=sys.stderr,
+                    )
             merged["nodes"] = _dedupe_nodes(merged["nodes"])
             merged["edges"] = _dedupe_edges(merged["edges"])
             # Disambiguate colliding-basename file-node labels (#2032). This raw
@@ -4258,6 +4296,33 @@ def dispatch_command(cmd: str) -> None:
                     dedup_llm_backend=dedup_backend,
                     root=target,
                 )
+                _unverified_shrink = G.graph.get("_unverified_semantic_shrink") if hasattr(G, "graph") else None
+                if _unverified_shrink:
+                    if not cli_allow_partial:
+                        _extraction_incomplete = True
+                        _unverified_sources = set(_unverified_shrink.keys())
+                        _manifest_files = _stamped_manifest_files(
+                            files_by_type,
+                            sem_result,
+                            target,
+                            partial_source_files=_partial_semantic_files,
+                            failed_ast_sources=_failed_ast_sources,
+                            unverified_semantic_sources=_unverified_sources,
+                        )
+                        _stamped_semantic = {
+                            f for _flist in _manifest_files.values() for f in _flist
+                        }
+                        _cleared_semantic = {str(p) for p in semantic_files} - _stamped_semantic
+                    _shrink_details = ", ".join(
+                        f"'{sf}' ({prior} -> {fresh} nodes)"
+                        for sf, (prior, fresh) in sorted(_unverified_shrink.items())
+                    )
+                    print(
+                        f"[graphify extract] semantic extraction is incomplete: unverified semantic "
+                        f"shrink detected for {_shrink_details}. The shrink guard stays armed for "
+                        "this write; pass --allow-partial to overwrite a larger existing graph anyway.",
+                        file=sys.stderr,
+                    )
             except ValueError as exc:
                 # --no-dedup arms build_merge's #479 shrink guard, which refuses
                 # to drop nodes belonging to files this run neither re-extracted
