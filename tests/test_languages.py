@@ -1184,6 +1184,37 @@ def test_php_splits_inherits_implements_mixes_in():
     assert ("DataProcessor", "HasName") in _edge_labels(r, "mixes_in")
 
 
+def test_php_interface_enum_trait_heritage(tmp_path):
+    """Interfaces, enums, and traits must be captured as class-like nodes so
+    their heritage edges are emitted. Previously only `class_declaration` was a
+    class type, so interface/enum/trait declarations produced no node and their
+    extends/implements/use edges were dropped entirely. Enum members live under
+    an `enum_declaration_list` (not a `declaration_list`), so the body walk must
+    reach them too.
+    """
+    src = (
+        "<?php\n"
+        "interface Identifiable {}\n"
+        "interface Nameable extends Identifiable {}\n"
+        "enum Suit: string implements Nameable {\n"
+        "    case Hearts = 'H';\n"
+        "    public function label(): string { return 'x'; }\n"
+        "}\n"
+        "trait Named {}\n"
+        "trait Greets { use Named; }\n"
+    )
+    f = tmp_path / "heritage.php"
+    f.write_text(src)
+    r = extract_php(f)
+    labels = _labels(r)
+    assert "Nameable" in labels and "Suit" in labels and "Greets" in labels
+    assert ("Nameable", "Identifiable") in _edge_labels(r, "inherits")
+    assert ("Suit", "Nameable") in _edge_labels(r, "implements")
+    assert ("Greets", "Named") in _edge_labels(r, "mixes_in")
+    # enum body (enum_declaration_list) must be walked to reach enum methods
+    assert ("Suit", "label") in _edge_labels(r, "method")
+
+
 def test_php_property_parameter_and_return_contexts():
     r = extract_php(FIXTURES / "sample.php")
     assert ("DataProcessor", "Result") in _edge_labels(r, "references", "field")
