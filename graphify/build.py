@@ -1502,6 +1502,31 @@ def _load_existing_graph(graph_path: Path) -> "tuple[list, list, list, bool] | N
     )
 
 
+def _sem_tier_counts(items: list) -> dict:
+    """Count semantic-tier items per RAW source_file (helper for #3004 gate).
+
+    AST-tier items are excluded: deterministic parsers legitimately shrink when
+    symbols are removed (#1116). Counts are taken pre-build, so dedup's fuzzy
+    id collapsing cannot distort them.
+    """
+    counts: dict = {}
+    for it in items:
+        if isinstance(it, dict) and not _is_ast_tier(it):
+            sf = it.get("source_file")
+            if sf:
+                counts[sf] = counts.get(sf, 0) + 1
+    return counts
+
+
+def _collapse_canon(counts: dict, root) -> dict:
+    """Fold raw source_file counts into canonical (normalised-relative) keys."""
+    out: dict = {}
+    for sf, c in counts.items():
+        k = _norm_source_file(sf, root) or sf
+        out[k] = out.get(k, 0) + c
+    return out
+
+
 def merge_raw_extraction(
     new: dict,
     graph_path: str | Path,
@@ -1522,6 +1547,9 @@ def merge_raw_extraction(
     - ``prune_sources`` (deleted / excluded / graph-stale files) are dropped,
       with the ``_abs_identity`` third-form fallback (#2012), and "replace" wins
       over a contradictory "delete" of a re-extracted source (#1796);
+    - sources whose NEW semantic extraction under-produces their on-disk
+      contribution are HELD BACK entirely (#3004 coverage gate, shared helpers
+      with build_merge) instead of being half-replaced;
     - everything else — nodes/edges/hyperedges owned by unchanged files — is
       carried forward unchanged.
 
@@ -1563,6 +1591,45 @@ def merge_raw_extraction(
         if norm:
             tier_sources.add(norm)
     new_sources: set[str] = new_ast_sources | new_sem_sources
+
+    # Coverage-gate parity with build_merge (#3004): hold back sources whose
+    # new semantic extraction under-produces vs the on-disk baseline, so the
+    # destructive replace below cannot destroy their prior contribution.
+    if new_sem_sources:
+        _disk_sem = _collapse_canon(_sem_tier_counts(existing_nodes), _eff_root)
+        _new_sem = _collapse_canon(
+            _sem_tier_counts(list(new.get("nodes", []))), _eff_root
+        )
+        held = [
+            (k, before, _new_sem[k])
+            for k, before in _disk_sem.items()
+            if k in _new_sem and _new_sem[k] < before
+        ]
+        if held:
+            held_keys = {k for k, _, _ in held}
+
+            def _held_item(item: dict) -> bool:
+                sf = item.get("source_file") if isinstance(item, dict) else None
+                return bool(sf) and (_norm_source_file(sf, _eff_root) or sf) in held_keys
+
+            for seq_key in ("nodes", "edges", "hyperedges"):
+                if new.get(seq_key):
+                    new[seq_key] = [i for i in new[seq_key] if not _held_item(i)]
+            for tier in (new_ast_sources, new_sem_sources):
+                tier.difference_update(
+                    sf for sf in tier
+                    if (_norm_source_file(sf, _eff_root) or sf) in held_keys
+                )
+            new_sources: set[str] = new_ast_sources | new_sem_sources
+            sample = ", ".join(f"{k}: {b}->{a}" for k, b, a in held[:5])
+            print(
+                f"[graphify] WARNING: {len(held)} re-extracted source(s) "
+                f"under-produced semantic nodes and were HELD BACK to protect "
+                f"the existing graph ({sample}); they keep their previous "
+                f"contribution and will be retried on the next extraction "
+                f"(#3004).",
+                file=sys.stderr,
+            )
 
     # "Replace" wins over a contradictory "delete" of the same source (#1796),
     # in both string and absolute-identity space (#2012) — as in build_merge.
@@ -1658,6 +1725,7 @@ def build_merge(
     dedup: bool = True,
     dedup_llm_backend: str | None = None,
     root: str | Path | None = None,
+    allow_shrink: list[str] | None = None,
 ) -> nx.Graph:
     """Load existing graph.json and return it merged with ``new_chunks``.
 
@@ -1672,6 +1740,11 @@ def build_merge(
     while a one-tier re-extract keeps the other tier's layer intact. Files
     absent from new_chunks are preserved unchanged; deleted files are removed
     via prune_sources (tier-blind). Safe to call repeatedly.
+    allow_shrink (#3004): names sources exempt from the semantic coverage gate —
+    a re-extraction producing FEWER semantic nodes than the graph already holds
+    for that source is held back wholesale (its old contribution kept, retried
+    on the next run) unless the source is listed here. The AST tier is never
+    gated: deterministic parsers legitimately shrink when symbols are removed.
     root: if given, absolute source_file paths in new_chunks are made relative (#932).
     directed: if None (default), honor the on-disk graph's own ``directed`` flag
     when one exists, so an incremental merge can't silently flip a directed
@@ -1738,6 +1811,59 @@ def build_merge(
             if norm:
                 tier_sources.add(norm)
     new_sources: set[str] = new_ast_sources | new_sem_sources
+    # Per-source coverage gate (#3004): replace-on-re-extract used to delete ALL
+    # of a source's prior nodes as soon as the new extraction contained >= 1 node
+    # for it, then add back whatever the new pass produced — so a partial LLM
+    # extraction silently destroyed most of that file's contribution. Both guards
+    # meant to own the case were inert: the #479 block below skips itself under
+    # dedup=True (the default) and excused exactly this failure mode, pointing at
+    # an incomplete-build guard that does not exist in llm.py — so partial failure
+    # was punished harder than total failure (a file producing ZERO nodes never
+    # enters the replace sets at all). Hold such sources back instead: their chunk
+    # items are dropped for this run, their old contribution carries forward
+    # intact, and they are retried on the next extraction. SEMANTIC tier only;
+    # counts taken pre-build so dedup cannot distort them; allow_shrink names
+    # sources whose shrink is known-legitimate (rewritten documents).
+    if had_graph and new_sem_sources:
+        _disk_sem = _collapse_canon(_sem_tier_counts(existing_nodes), _replace_root)
+        _new_sem = _collapse_canon(
+            _sem_tier_counts([n for ch in new_chunks for n in ch.get("nodes", [])]),
+            _replace_root,
+        )
+        _allow = {
+            _norm_source_file(s, _replace_root) or s for s in (allow_shrink or ())
+        }
+        held = [
+            (k, before, _new_sem[k])
+            for k, before in _disk_sem.items()
+            if k in _new_sem and _new_sem[k] < before and k not in _allow
+        ]
+        if held:
+            held_keys = {k for k, _, _ in held}
+
+            def _held_item(item: dict) -> bool:
+                sf = item.get("source_file") if isinstance(item, dict) else None
+                return bool(sf) and (_norm_source_file(sf, _replace_root) or sf) in held_keys
+
+            for ch in new_chunks:
+                for seq_key in ("nodes", "edges", "hyperedges"):
+                    if ch.get(seq_key):
+                        ch[seq_key] = [i for i in ch[seq_key] if not _held_item(i)]
+            for tier in (new_ast_sources, new_sem_sources):
+                tier.difference_update(
+                    sf for sf in tier
+                    if (_norm_source_file(sf, _replace_root) or sf) in held_keys
+                )
+            new_sources: set[str] = new_ast_sources | new_sem_sources
+            sample = ", ".join(f"{k}: {b}->{a}" for k, b, a in held[:5])
+            print(
+                f"[graphify] WARNING: {len(held)} re-extracted source(s) "
+                f"under-produced semantic nodes and were HELD BACK to protect "
+                f"the existing graph ({sample}); they keep their previous "
+                f"contribution and will be retried on the next extraction; "
+                f"pass them in allow_shrink to accept the loss. (#3004)",
+                file=sys.stderr,
+            )
     # True on-disk baseline for the #479 shrink accounting at the end (#2497):
     # the rebind below removes the re-extracted sources' old nodes from
     # existing_nodes, so any later size comparison against the rebound list can
@@ -2007,11 +2133,11 @@ def build_merge(
     # this run's own re-extraction (same tier) or an explicit prune. Skipped
     # under dedup, where fuzzy merging collapses ids legitimately.
     #
-    # Residual tradeoff (accepted): a partial re-extraction that under-produces
-    # for ITS OWN file (>= 1 node still present in new_chunks) is excused here —
-    # that failure mode is owned by the extraction layer's incomplete-build
-    # guard (#1951), and refusing it here would reintroduce the #1116
-    # false-refuse for legitimate edits that remove symbols from a file.
+    # Own-file under-production is NOT excused here anymore: the per-source
+    # coverage gate above (#3004) owns it upstream of the replace, holding the
+    # source back instead of deleting its contribution — whatever reaches this
+    # point was replaced deliberately or pruned explicitly. (It used to be
+    # excused here in favour of an extraction-layer guard that does not exist.)
     if had_graph and not dedup:
         def _in_new_graph(n: dict) -> bool:
             nid = n.get("id")
