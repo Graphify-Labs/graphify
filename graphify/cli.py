@@ -4059,6 +4059,14 @@ def dispatch_command(cmd: str) -> None:
         # first means semantic node attributes win on collision (richer labels
         # for symbols also referenced in docs). Hyperedges only come from the
         # semantic side.
+        # Everything in sem_result is semantic tier - fresh results and cache
+        # hits alike - so say so before the merge (#2843): an unstamped item
+        # is classified by the shape of its source_location, and a doc node
+        # located at 'L12' would read as AST and be deleted by the next
+        # incremental rebuild. Fresh results already carry the stamp
+        # (llm._stamp_semantic_origin); cache entries from before it do not.
+        from graphify.llm import _stamp_semantic_origin as _stamp_sem
+        _stamp_sem(sem_result)
         merged: dict = {
             "nodes": list(ast_result.get("nodes", [])) + list(sem_result.get("nodes", [])) + list(pg_result.get("nodes", [])) + list(cargo_result.get("nodes", [])),
             "edges": list(ast_result.get("edges", [])) + list(sem_result.get("edges", [])) + list(pg_result.get("edges", [])) + list(cargo_result.get("edges", [])),
