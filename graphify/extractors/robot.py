@@ -211,7 +211,10 @@ def extract_robot(path: Path) -> dict:
             elif raw not in _ROBOT_STDLIBS:
                 # External library (SeleniumLibrary, RequestsLibrary, ...) -
                 # stub node so suites sharing a library cluster together.
-                nid = _make_id(raw)
+                # Namespace the id so a user keyword that happens to share the
+                # library's name cannot collide with this stub (the label keeps
+                # the raw library name for display).
+                nid = _make_id("robot_library", raw)
                 add_node(nid, raw, node.lineno)
                 add_edge(file_nid, nid, "imports", node.lineno)
 
