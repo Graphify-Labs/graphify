@@ -43,12 +43,20 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from functools import lru_cache
 
 __all__ = ["normalize_id", "make_id"]
 
 
+@lru_cache(maxsize=1 << 17)
 def normalize_id(s: str) -> str:
     r"""Normalize a single ID string to its canonical form.
+
+    Memoized (#3008): the recipe below is a pure function of the string — a
+    casefold/NFKC fixpoint loop plus two regex passes, ~7.6us a call — and a
+    corpus asks about the same names repeatedly, 448,282 calls on a 32k-file run.
+    The bound is a ceiling for a long-lived `watch` process, not a correctness
+    concern; nothing here consults the filesystem, so there is no staleness.
 
     Guarantees, all enforced by tests:
 

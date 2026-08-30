@@ -16,6 +16,7 @@ flow) and every reader honours it.
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
@@ -24,6 +25,47 @@ import tempfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 GRAPHIFY_OUT = os.environ.get("GRAPHIFY_OUT", "graphify-out")
+
+# Memoized `Path.resolve()` results, keyed by the input path string (a relative
+# input is keyed under its cwd-joined form, so a chdir cannot serve a wrong
+# answer). See :func:`resolve_cached`.
+_RESOLVE_CACHE: "dict[str, Path]" = {}
+
+
+def resolve_cached(path: "str | Path") -> Path:
+    """``Path(path).resolve()``, memoized for the life of one extraction run.
+
+    ``Path.resolve()`` is not a string operation: it walks the path component by
+    component through ``lstat`` to follow symlinks, so one call on a path 15
+    segments deep costs ~15 syscalls. Cross-file resolution asks the same
+    question about the same few thousand paths millions of times — a profile of
+    a 32k-file corpus showed 3.9M ``realpath`` calls issuing 59M ``lstat``
+    syscalls, with ``_source_key`` alone accounting for 1.7M of them (#3008).
+
+    The filesystem is treated as frozen for the duration of a run, which is the
+    same assumption the tsconfig/workspace caches already make. Like those, this
+    cache has no mtime or content component, so ``extract()`` clears it per run
+    (#2917) — a symlink retargeted between two ``extract()`` calls in one
+    ``graphify watch`` process is observed on the next run, not within a run.
+
+    The returned ``Path`` is shared between callers. ``Path`` is immutable, so
+    that is safe, but callers must not rely on object identity meaning anything.
+    """
+    key = str(path)
+    if not os.path.isabs(key):
+        # A relative input resolves against the cwd, and watch.py can chdir to
+        # recover a lost repo root — so the cwd has to be part of the identity.
+        key = os.path.join(os.getcwd(), key)
+    hit = _RESOLVE_CACHE.get(key)
+    if hit is None:
+        hit = path.resolve() if isinstance(path, Path) else Path(path).resolve()
+        _RESOLVE_CACHE[key] = hit
+    return hit
+
+
+def clear_resolve_cache() -> None:
+    """Drop the memoized ``resolve()`` results. Called once per ``extract()`` run."""
+    _RESOLVE_CACHE.clear()
 
 
 def _atomic_replace(path: "str | Path", write_fn) -> None:
@@ -130,8 +172,18 @@ _TEST_FILENAME_PATTERNS = (
 )
 
 
+@functools.lru_cache(maxsize=65536)
 def _is_test_path(path: str) -> bool:
     """Classify a source path as a test path (case-insensitive, segment-aware).
+
+    Cached because it is a pure function of the string — no filesystem access —
+    and `disambiguate_ambiguous_candidates` asks it once per candidate per
+    ambiguous call site. On a 2,500-file Go corpus that was 173k calls over a few
+    thousand distinct paths, ~2.2 s of a run, nearly all of it re-deriving the
+    same answer via a fresh `PurePosixPath` and up to nine regex matches.
+
+    The bound matters: `watch` keeps one process alive across many extractions,
+    so an unbounded cache would grow with every path ever classified.
 
     Shared by extract.py and symbol_resolution.py so cross-file call resolution
     treats test mocks/stubs identically. A path is a test path when:
@@ -166,6 +218,25 @@ def _is_test_path(path: str) -> bool:
     return False
 
 
+@functools.lru_cache(maxsize=16384)
+def _posix_parent_parts(norm: str) -> tuple[str, ...]:
+    """``PurePosixPath(norm).parent.parts``, memoized on the normalized string.
+
+    ``_path_proximity_winner`` is called once per ambiguous bare-name call and
+    walks every candidate, so a corpus with a few thousand distinct source files
+    built tens of thousands of ``PurePosixPath`` objects to read one attribute —
+    pathlib's parser accounted for ~15% of extraction CPU in a profiled run
+    (#3008). The parse is a pure function of the string, so one construction per
+    distinct path serves every call.
+
+    Deliberately still pathlib rather than ``str.rsplit``: ``.parent`` collapses
+    duplicate slashes, drops ``.`` components, yields ``"."`` for a bare
+    filename and ``"/"`` for a root child. Those cases feed the god-node guard,
+    where a wrong parent silently changes which candidate wins.
+    """
+    return PurePosixPath(norm).parent.parts
+
+
 def _path_proximity_winner(call_site_file: str, candidate_files: dict[str, str]) -> str | None:
     """Pick the candidate whose source file is closest to the call site.
 
@@ -183,19 +254,24 @@ def _path_proximity_winner(call_site_file: str, candidate_files: dict[str, str])
     if not call_site_file:
         return None
     call_norm = str(call_site_file).replace("\\", "/")
-    call_dir = PurePosixPath(call_norm).parent
+    # All three tiers below need each candidate's separator-normalized path, and
+    # two of them need its parent. Normalize once per candidate instead of once
+    # per candidate per tier; dict order is preserved, so tier 3's scoring order
+    # is unchanged.
+    norm_items = [(cid, str(f).replace("\\", "/")) for cid, f in candidate_files.items()]
 
     # Tier 1: exact same file.
-    same_file = [cid for cid, f in candidate_files.items()
-                 if str(f).replace("\\", "/") == call_norm]
+    same_file = [cid for cid, norm in norm_items if norm == call_norm]
     if len(same_file) == 1:
         return same_file[0]
     if len(same_file) > 1:
         return None  # genuinely ambiguous within one file; bail
 
-    # Tier 2: same directory.
-    same_dir = [cid for cid, f in candidate_files.items()
-                if PurePosixPath(str(f).replace("\\", "/")).parent == call_dir]
+    # Tier 2: same directory. Two PurePosixPaths are equal exactly when their
+    # parts match, so comparing the memoized tuples is the same test.
+    call_parts = _posix_parent_parts(call_norm)
+    same_dir = [cid for cid, norm in norm_items
+                if _posix_parent_parts(norm) == call_parts]
     if len(same_dir) == 1:
         return same_dir[0]
     if len(same_dir) > 1:
@@ -203,10 +279,9 @@ def _path_proximity_winner(call_site_file: str, candidate_files: dict[str, str])
 
     # Tier 3: longest common path-prefix, computed over path segments. The
     # winner must be a strict unique maximum, else we bail (guard holds).
-    call_parts = call_dir.parts
 
-    def _common_prefix_len(f: str) -> int:
-        parts = PurePosixPath(str(f).replace("\\", "/")).parent.parts
+    def _common_prefix_len(norm: str) -> int:
+        parts = _posix_parent_parts(norm)
         n = 0
         for a, b in zip(call_parts, parts):
             if a != b:
@@ -215,7 +290,7 @@ def _path_proximity_winner(call_site_file: str, candidate_files: dict[str, str])
         return n
 
     scored = sorted(
-        ((cid, _common_prefix_len(f)) for cid, f in candidate_files.items()),
+        ((cid, _common_prefix_len(norm)) for cid, norm in norm_items),
         key=lambda kv: kv[1],
         reverse=True,
     )

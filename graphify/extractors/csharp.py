@@ -373,19 +373,26 @@ def _resolve_csharp_type_references(
                 return alias
         return stem or None
 
+    # First sourceless node per label, in `all_nodes` order — the answer
+    # `_dangling_stub_id` used to re-derive by scanning every node on every call
+    # (#3008). Nothing in this pass rewrites a node's `label` or `source_file`, so
+    # one pass up front is equivalent; the only new members are the stubs minted
+    # below, which register themselves. `setdefault` keeps the earliest match, so
+    # a later stub never shadows a placeholder the scan would have reached first.
+    placeholder_by_label: dict[object, str] = {}
+    for node in all_nodes:
+        nid = node.get("id")
+        if isinstance(nid, str) and _is_placeholder(node):
+            placeholder_by_label.setdefault(node.get("label"), nid)
+
     def _dangling_stub_id(label: str, current_target: object) -> str:
         current = node_by_id.get(current_target)
         if _is_placeholder(current) and current.get("label") == label:
             return str(current_target)
 
-        for node in all_nodes:
-            nid = node.get("id")
-            if (
-                isinstance(nid, str)
-                and node.get("label") == label
-                and _is_placeholder(node)
-            ):
-                return nid
+        hit = placeholder_by_label.get(label)
+        if hit is not None:
+            return hit
 
         stem = _make_id(label)
         stub_id = stem
@@ -404,6 +411,7 @@ def _resolve_csharp_type_references(
         }
         all_nodes.append(node)
         node_by_id[stub_id] = node
+        placeholder_by_label.setdefault(label, stub_id)
         return stub_id
 
     REPOINT_RELATIONS = {"implements", "inherits", "references"}
