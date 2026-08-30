@@ -16332,9 +16332,26 @@ def _extract_haxe_tong(path: Path) -> dict:
 
     def _dotted_path(node) -> str:
         # `import`/`using` expose their segments as package_name/type_name
-        # children, exactly as the vantreeseba grammar did.
-        return ".".join(_read_text(c, source) for c in node.children
-                        if c.type in ("package_name", "type_name"))
+        # children, as the vantreeseba grammar did -- plus, for an import that
+        # reaches a sub-type, one `sub` field per extra segment, emitted as a
+        # bare identifier:
+        #
+        #   import com.masque.tools.MiscUtil.ArrayOrItem.ArrayOrItemArrayInt;
+        #     path: com, masque, tools | module: MiscUtil
+        #     sub: ArrayOrItem | sub: ArrayOrItemArrayInt
+        #
+        # Collecting only package_name/type_name truncates that at `MiscUtil`
+        # and points the edge at the wrong target -- 2,264 import edges across
+        # 1,139 files in one 5,372-file corpus. An `as` alias is skipped: it
+        # renames the import rather than extending its path.
+        parts = []
+        for i, c in enumerate(node.children):
+            if c.type not in ("package_name", "type_name", "identifier"):
+                continue
+            if node.field_name_for_child(i) == "alias":
+                continue
+            parts.append(_read_text(c, source))
+        return ".".join(parts)
 
     def _call_name(node) -> str:
         """Bare function/method name from an ECall or ENew."""
