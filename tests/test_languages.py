@@ -1070,6 +1070,33 @@ def test_scala_trait_definition_heritage(tmp_path):
     assert any("Greeter" in l for l in _labels(r))
     assert ("Greeter", "Base") in _edge_labels(r, "inherits")
     assert ("Greeter", "Logging") in _edge_labels(r, "mixes_in")
+def test_scala_qualified_extends_uses_tail_name(tmp_path):
+    """A qualified base like `pkg.Base` is a `stable_type_identifier` node in the
+    extends_clause. The handler only matched `type_identifier`/`generic_type`, so
+    qualified extends/with clauses were dropped. Resolve them to the tail type
+    name (`Base`, `Trait1`), not the package path.
+    """
+    f = tmp_path / "foo.scala"
+    f.write_text(
+        "class Foo extends pkg.Base with other.Trait1\n"
+        "class Generic extends pkg.Base[Int] with other.Trait1[String]\n"
+        "class Constructed extends outer.pkg.Base[Int](42) "
+        "with a.b.Trait1[String]\n"
+    )
+    r = extract_scala(f)
+    inherits = _edge_labels(r, "inherits")
+    mixes_in = _edge_labels(r, "mixes_in")
+    assert ("Foo", "Base") in inherits
+    assert ("Foo", "Trait1") in mixes_in
+    assert ("Generic", "Base") in inherits
+    assert ("Generic", "Trait1") in mixes_in
+    assert ("Constructed", "Base") in inherits
+    assert ("Constructed", "Trait1") in mixes_in
+    # Package qualifiers and generic arguments are not parent type names.
+    assert ("Generic", "pkg.Base") not in inherits
+    assert ("Generic", "other.Trait1") not in mixes_in
+    assert ("Constructed", "Int") not in inherits
+    assert ("Constructed", "String") not in mixes_in
 
 
 def test_scala_constructor_parameter_field_context():

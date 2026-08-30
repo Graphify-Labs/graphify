@@ -3559,18 +3559,39 @@ def _extract_generic(
                             break
                 if extend is not None:
                     bases: list[tuple[str, int]] = []
-                    for c in extend.children:
-                        if c.type == "type_identifier":
-                            bases.append((_read_text(c, source), c.start_point[0] + 1))
-                        elif c.type == "generic_type":
-                            base = c.child_by_field_name("type")
+
+                    def scala_base_name(type_node) -> str | None:
+                        if type_node.type == "type_identifier":
+                            return _read_text(type_node, source)
+                        if type_node.type == "stable_type_identifier":
+                            tail = next(
+                                (
+                                    child
+                                    for child in reversed(type_node.children)
+                                    if child.type in ("type_identifier", "identifier")
+                                ),
+                                None,
+                            )
+                            return _read_text(tail, source) if tail is not None else None
+                        if type_node.type == "generic_type":
+                            base = type_node.child_by_field_name("type")
                             if base is None:
-                                for sc in c.children:
-                                    if sc.type == "type_identifier":
-                                        base = sc
-                                        break
-                            if base is not None:
-                                bases.append((_read_text(base, source), c.start_point[0] + 1))
+                                base = next(
+                                    (
+                                        child
+                                        for child in type_node.children
+                                        if child.type
+                                        in ("type_identifier", "stable_type_identifier")
+                                    ),
+                                    None,
+                                )
+                            return scala_base_name(base) if base is not None else None
+                        return None
+
+                    for c in extend.children:
+                        base_name = scala_base_name(c)
+                        if base_name is not None:
+                            bases.append((base_name, c.start_point[0] + 1))
                     for idx, (base_name, base_line) in enumerate(bases):
                         rel = "inherits" if idx == 0 else "mixes_in"
                         base_nid = ensure_named_node(base_name, base_line)
