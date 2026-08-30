@@ -17,6 +17,9 @@ def _csharp_namespace_id(dotted_name: str) -> str:
 
 REFERENCE_CONTEXTS = frozenset({
     "field", "parameter_type", "return_type", "generic_arg", "attribute", "value", "type",
+    # A property/field READ on a typed receiver (`ctx.Items`). Distinct from `field`, which
+    # marks a declaration's own type reference: this one records a use site.
+    "member_access",
 })
 
 def _source_location(line: int | str | None) -> str | None:
@@ -5850,6 +5853,69 @@ def _extract_generic(
                 caught: set[str] = set()
                 _js_collect_pattern_idents(param, source, caught)
                 extra_locals = extra_locals | frozenset(caught)
+
+        # C#: record a property/field READ on a typed receiver (`ctx.Items`). The call
+        # branches above only see a member_access_expression when it is an invocation's
+        # `function`, so a member used as a VALUE produced no edge at all and a property
+        # was reachable only from its own declaration. Resolution is deferred to extract()
+        # for the same reason member calls are: the declaring type may be in another file.
+        #
+        # Skipped when this node is an invocation's `function`, which the member-call path
+        # already claims -- otherwise `ctx.Save()` would emit both a call and a read. The
+        # receiver of a chained call is NOT skipped: `ctx.Items.Any()` genuinely reads
+        # `Items` before calling on it.
+        if (
+            config.ts_module == "tree_sitter_c_sharp"
+            and node.type == "member_access_expression"
+        ):
+            parent = node.parent
+            is_call_target = (
+                parent is not None
+                and parent.type == "invocation_expression"
+                and parent.child_by_field_name("function") is node
+            )
+            if not is_call_target:
+                ma_recv = node.child_by_field_name("expression")
+                ma_name = node.child_by_field_name("name")
+                # Only a simple or `this` receiver can be typed from the binding table;
+                # anything else (an indexer, a call result) needs inference we do not do.
+                # The grammar names this node `this`; `this_expression` is accepted too so a
+                # grammar rename does not silently drop the case.
+                recv_is_this = ma_recv is not None and ma_recv.type in ("this", "this_expression")
+                recv_name = (
+                    _read_text(ma_recv, source)
+                    if ma_recv is not None and ma_recv.type == "identifier"
+                    else None
+                )
+                named = ma_name is not None and ma_name.type == "identifier"
+                if (recv_name or recv_is_this) and named:
+                    # Carried on raw_calls, not a channel of its own, because a
+                    # caller_nid is rewritten by four separate id passes in extract()
+                    # (merge-away, id_remap, sym_remap, collision disambiguation). A
+                    # parallel list would have to repeat all four and silently emit
+                    # dangling edges the day one was missed. `member_read` marks these
+                    # and no `callee` is set, so every existing raw_calls consumer -- all
+                    # of which require `callee` or `is_member_call` -- ignores them.
+                    entry = {
+                        "caller_nid": caller_nid,
+                        "lang": "csharp",
+                        "member_read": True,
+                        "member": _read_text(ma_name, source),
+                        "source_file": str_path,
+                        "source_location": f"L{node.start_point[0] + 1}",
+                    }
+                    if recv_is_this:
+                        # `this` names the enclosing type, which the binding table does not
+                        # carry; the resolver reads it off the caller's declaring class.
+                        entry["receiver_is_this"] = True
+                        raw_calls.append(entry)
+                    else:
+                        ma_type = _csharp_scoped_receiver_type(
+                            receiver_types, recv_name, node.start_byte
+                        )
+                        if ma_type:
+                            entry["receiver_type"] = ma_type
+                            raw_calls.append(entry)
 
         for child in node.children:
             walk_calls(child, caller_nid, receiver_types, extra_locals)
