@@ -671,7 +671,7 @@ def _disambiguate_colliding_node_ids(
     """
     by_id: dict[str, list[dict]] = {}
     for node in nodes:
-        if node.get("type") in ("module", "namespace"):
+        if node.get("type") in ("module", "namespace", "ui"):
             continue
         nid = node.get("id")
         if isinstance(nid, str) and nid:
