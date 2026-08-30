@@ -255,7 +255,25 @@ def _build_opener() -> urllib.request.OpenerDirector:
 # Safe fetch
 # ---------------------------------------------------------------------------
 
-def safe_fetch(url: str, max_bytes: int = _MAX_FETCH_BYTES, timeout: int = 30) -> bytes:
+_DISALLOWED_CALLER_HEADERS = {
+    "connection",
+    "content-length",
+    "host",
+    "proxy-authorization",
+    "proxy-connection",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+}
+
+
+def safe_fetch(
+    url: str,
+    max_bytes: int = _MAX_FETCH_BYTES,
+    timeout: int = 30,
+    headers: Mapping[str, str] | None = None,
+) -> bytes:
     """Fetch *url* and return raw bytes.
 
     Protections applied:
@@ -264,6 +282,8 @@ def safe_fetch(url: str, max_bytes: int = _MAX_FETCH_BYTES, timeout: int = 30) -
     - Response body capped at *max_bytes* (streaming read)
     - Non-2xx status raises urllib.error.HTTPError
     - Network errors propagate as urllib.error.URLError / OSError
+    - Caller headers are sent only to the original URL
+    - Routing, framing, and hop-by-hop caller headers are rejected
 
     Raises:
         ValueError        - disallowed scheme or redirect target
@@ -272,9 +292,13 @@ def safe_fetch(url: str, max_bytes: int = _MAX_FETCH_BYTES, timeout: int = 30) -
         OSError               - size cap exceeded
     """
     validate_url(url)
-    opener = _build_opener()
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 graphify/1.0"})
+    for header, value in (headers or {}).items():
+        if header.strip().casefold() in _DISALLOWED_CALLER_HEADERS:
+            raise ValueError(f"caller header is not allowed: {header}")
+        req.add_unredirected_header(header, value)
 
+    opener = _build_opener()
     with opener.open(req, timeout=timeout) as resp:
         # urllib raises HTTPError for non-2xx when using urlopen directly;
         # with a custom opener we check manually to be safe.
@@ -299,12 +323,17 @@ def safe_fetch(url: str, max_bytes: int = _MAX_FETCH_BYTES, timeout: int = 30) -
     return b"".join(chunks)
 
 
-def safe_fetch_text(url: str, max_bytes: int = _MAX_TEXT_BYTES, timeout: int = 15) -> str:
+def safe_fetch_text(
+    url: str,
+    max_bytes: int = _MAX_TEXT_BYTES,
+    timeout: int = 15,
+    headers: Mapping[str, str] | None = None,
+) -> str:
     """Fetch *url* and return decoded text (UTF-8, replacing bad bytes).
 
     Wraps safe_fetch with tighter defaults for HTML / text content.
     """
-    raw = safe_fetch(url, max_bytes=max_bytes, timeout=timeout)
+    raw = safe_fetch(url, max_bytes=max_bytes, timeout=timeout, headers=headers)
     return raw.decode("utf-8", errors="replace")
 
 
