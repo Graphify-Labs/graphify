@@ -1031,6 +1031,15 @@ def _c_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[str
         if text:
             out.append((text, "generic_arg" if generic else "type"))
         return
+    if t in ("struct_specifier", "union_specifier", "enum_specifier"):
+        # `struct Point p` / `union U u` in field, parameter, or return position
+        # references the named aggregate by its tag. A body-carrying definition is
+        # handled as a nested type before we get here, so this only fires for a
+        # bare tag reference. Resolve to the tag's type_identifier name.
+        name_node = node.child_by_field_name("name")
+        if name_node is not None:
+            _c_collect_type_refs(name_node, source, generic, out)
+        return
     if t in ("pointer_declarator", "reference_declarator", "array_declarator",
              "type_qualifier", "type_descriptor", "abstract_pointer_declarator",
              "abstract_reference_declarator", "abstract_array_declarator"):
@@ -4096,9 +4105,16 @@ def _extract_generic(
                         add_edge(parent_class_nid, target_nid, "requires", line)
             return
 
-        if (config.ts_module == "tree_sitter_cpp"
+        if (config.ts_module in ("tree_sitter_c", "tree_sitter_cpp")
                 and t == "field_declaration"
                 and parent_class_nid):
+            # C and C++ share the struct/field grammar, so a C struct's members
+            # are emitted the same way as a C++ one's; the type-ref collector is
+            # the only language-specific piece.
+            field_type_collect = (
+                _cpp_collect_type_refs if config.ts_module == "tree_sitter_cpp"
+                else _c_collect_type_refs
+            )
             # Skip method prototypes (field_declaration with a function_declarator
             # is a member-function declaration, not a data member).
             decls = list(node.children_by_field_name("declarator"))
@@ -4133,7 +4149,7 @@ def _extract_generic(
                 if type_node is not None:
                     line = node.start_point[0] + 1
                     refs: list[tuple[str, str]] = []
-                    _cpp_collect_type_refs(type_node, source, False, refs)
+                    field_type_collect(type_node, source, False, refs)
                     for ref_name, role in refs:
                         ctx = "generic_arg" if role == "generic_arg" else "field"
                         target_nid = ensure_named_node(ref_name, line)

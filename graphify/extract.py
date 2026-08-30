@@ -890,8 +890,14 @@ _GROOVY_CONFIG = LanguageConfig(
 )
 
 _C_CONFIG = LanguageConfig(
+    # `struct_specifier` mirrors the C++ config: in C the struct is the primary
+    # data-modeling construct, so an empty class_types dropped every struct (and
+    # its fields) from the graph, erasing the entire type layer of a C codebase.
+    # tree-sitter-c and tree-sitter-cpp share the struct_specifier shape, so the
+    # generic extractor produces the same struct node + `defines`/field edges C++
+    # already gets.
     ts_module="tree_sitter_c",
-    class_types=frozenset(),
+    class_types=frozenset({"struct_specifier"}),
     function_types=frozenset({"function_definition"}),
     import_types=frozenset({"preproc_include"}),
     call_types=frozenset({"call_expression"}),
