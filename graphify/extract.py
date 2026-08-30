@@ -995,7 +995,9 @@ _KOTLIN_CONFIG = LanguageConfig(
 
 _SCALA_CONFIG = LanguageConfig(
     ts_module="tree_sitter_scala",
-    class_types=frozenset({"class_definition", "object_definition"}),
+    # traits are class-like containers with their own heritage (extends / with),
+    # so they need a node and the heritage walk just like classes and objects.
+    class_types=frozenset({"class_definition", "object_definition", "trait_definition"}),
     function_types=frozenset({"function_definition"}),
     import_types=frozenset({"import_declaration"}),
     call_types=frozenset({"call_expression"}),

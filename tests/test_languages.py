@@ -1059,6 +1059,19 @@ def test_scala_splits_inherits_and_mixes_in():
     assert ("HttpClient", "Loggable") in _edge_labels(r, "mixes_in")
 
 
+def test_scala_trait_definition_heritage(tmp_path):
+    """A `trait` is a class-like container and must get a node plus heritage
+    edges. `trait_definition` was missing from the Scala class_types, so traits
+    produced no node and their `extends`/`with` edges were dropped.
+    """
+    f = tmp_path / "greeter.scala"
+    f.write_text("trait Greeter extends Base with Logging { def greet(): Unit }\n")
+    r = extract_scala(f)
+    assert any("Greeter" in l for l in _labels(r))
+    assert ("Greeter", "Base") in _edge_labels(r, "inherits")
+    assert ("Greeter", "Logging") in _edge_labels(r, "mixes_in")
+
+
 def test_scala_constructor_parameter_field_context():
     r = extract_scala(FIXTURES / "sample.scala")
     assert ("HttpClient", "Config") in _edge_labels(r, "references", "field")
