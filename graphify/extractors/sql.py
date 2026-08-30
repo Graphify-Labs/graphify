@@ -691,4 +691,46 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
             fn_line = src_text[: m.start()].count("\n") + 1
             _add_node(_make_id(stem, fn_name), f"{fn_name}()", fn_line)
 
+    # Global regex fallback for RLS policies. tree-sitter-sql has no grammar rule
+    # for CREATE POLICY, so the statement never parses: it lands in an ERROR node
+    # (often one blob swallowing the whole file). A policy-heavy Postgres file
+    # therefore contributes only its file node -- every policy is silently
+    # absent, no warning, exit 0. Same failure shape as the routines above, so
+    # the same recovery applies.
+    #
+    # A policy becomes a node linked to the table it is ON with a `secures` edge,
+    # mirroring how create_trigger links a trigger to its table. The id carries
+    # the table name because policy names are unique only per table: two tables
+    # may each define `tenant_isolation`, and a name-only id would collapse them
+    # into one node.
+    #
+    # The USING / WITH CHECK body is deliberately not scanned for references, for
+    # the reason the ERROR branch gives: expression locals would produce junk.
+    #
+    # Gated on a failed parse like the routine fallback, so a cleanly-parsing
+    # file cannot have policies fabricated out of comments or EXECUTE '...'
+    # bodies.
+    if root.has_error:
+        # Blank out comments first, preserving offsets and newlines so reported
+        # line numbers stay correct. The routine fallback above cannot do this
+        # (it predates the need), but a commented-out policy is a realistic
+        # thing to find in a migration that also fails to parse, and a
+        # fabricated node here would be indistinguishable from a real one.
+        def _blank(match: re.Match) -> str:
+            return re.sub(r"[^\n]", " ", match.group(0))
+
+        scan_text = re.sub(r"--[^\n]*|/\*.*?\*/", _blank, src_text, flags=re.DOTALL)
+        for m in re.finditer(
+            r"CREATE\s+POLICY\s+"
+            r"(\"[^\"\n]+\"|[\w$]+)\s+ON\s+"
+            r"((?:\"[^\"\n]+\"|[\w$]+)(?:\s*\.\s*(?:\"[^\"\n]+\"|[\w$]+))*)",
+            scan_text, re.IGNORECASE,
+        ):
+            pol_name, tbl_name = m.group(1), m.group(2)
+            pol_line = scan_text[: m.start()].count("\n") + 1
+            pol_nid = _make_id(stem, tbl_name, pol_name)
+            _add_node(pol_nid, pol_name, pol_line)
+            tbl_nid = table_nids.get(_norm_ident(tbl_name)) or _ref_stub(tbl_name)
+            _add_edge(pol_nid, tbl_nid, "secures", pol_line)
+
     return {"nodes": nodes, "edges": edges}
