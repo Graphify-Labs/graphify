@@ -996,6 +996,22 @@ def test_kotlin_interface_delegation_emits_implements():
     assert ("LoggingList", "MutableList") in _edge_labels(r, "implements")
 
 
+def test_kotlin_qualified_supertype_uses_tail_name(tmp_path):
+    """A qualified supertype like `com.example.Base` must resolve to the tail
+    type name (`Base`), not the package root (`com`). The Kotlin user_type lists
+    its segments as flat identifier children, and the walker returned the first
+    one, so every qualified base/interface collapsed onto a bogus `com` node.
+    """
+    f = tmp_path / "foo.kt"
+    f.write_text("class Foo : com.example.Base(), com.example.Iface\n")
+    r = extract_kotlin(f)
+    assert ("Foo", "Base") in _edge_labels(r, "inherits")
+    assert ("Foo", "Iface") in _edge_labels(r, "implements")
+    # the package root must not leak in as a heritage target
+    assert ("Foo", "com") not in _edge_labels(r, "inherits")
+    assert ("Foo", "com") not in _edge_labels(r, "implements")
+
+
 def test_kotlin_parameter_return_generic_and_field_contexts():
     r = extract_kotlin(FIXTURES / "sample.kt")
     assert ("run", "DataProcessor") in _edge_labels(r, "references", "parameter_type")

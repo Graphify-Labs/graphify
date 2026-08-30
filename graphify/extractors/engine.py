@@ -706,22 +706,31 @@ _KOTLIN_BUILTIN_TYPES = frozenset({
 })
 
 def _kotlin_user_type_name(user_type_node, source: bytes) -> str | None:
-    """Return the head identifier text from a Kotlin user_type node (without generics)."""
+    """Return the tail identifier text from a Kotlin user_type node (without generics).
+
+    A qualified supertype like `com.example.Base` lists its segments as flat
+    `identifier` children (`com`, `example`, `Base`) separated by `.` tokens, so
+    the real type is the LAST segment, not the first — returning the head yielded
+    the package root (`com`). Type arguments live in a separate `type_arguments`
+    child, so scanning direct children and keeping the last identifier/
+    type_identifier segment ignores generics correctly (mirrors the C++ qualified
+    base handling, which uses the unqualified tail)."""
     if user_type_node is None:
         return None
+    name: str | None = None
     for c in user_type_node.children:
-        if c.type == "type_identifier":
+        if c.type in ("type_identifier", "identifier"):
             text = _read_text(c, source)
-            return text or None
-        if c.type == "identifier":
-            text = _read_text(c, source)
-            return text or None
-        if c.type == "simple_user_type":
+            if text:
+                name = text
+        elif c.type == "simple_user_type":
             for sub in c.children:
                 if sub.type in ("identifier", "type_identifier"):
                     text = _read_text(sub, source)
-                    return text or None
-    return None
+                    if text:
+                        name = text
+                    break
+    return name
 
 def _kotlin_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[str, str]]) -> None:
     """Walk a Kotlin type expression; append (name, role) tuples."""
