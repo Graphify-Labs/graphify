@@ -1997,6 +1997,47 @@ def test_go_receiver_uses_pkg_scope():
     assert "sample" not in server_nodes[0]["id"].split(":")[0]
 
 
+def test_go_interface_embedding_emits_embeds():
+    """`type ReaderLogger interface { Logger; Reader }` embeds both interfaces."""
+    r = extract_go(FIXTURES / "sample.go")
+    embeds = _edge_labels(r, "embeds")
+    assert ("ReaderLogger", "Logger") in embeds
+    assert ("ReaderLogger", "Reader") in embeds
+
+
+def test_go_struct_embedding_emits_embeds():
+    """`type DataProcessor struct { BaseProcessor }` embeds the base struct."""
+    r = extract_go(FIXTURES / "sample.go")
+    assert ("DataProcessor", "BaseProcessor") in _edge_labels(r, "embeds")
+
+
+def test_go_interface_type_union_is_not_embedding(tmp_path):
+    """A generics type-set constraint (`A | B`) is NOT interface embedding.
+
+    Go only allows *interfaces* to be embedded, and each embed is its own
+    element. A union of type terms (`MyInt | MyFloat`) is a constraint type
+    set that can never be embedded, so its terms must not emit `embeds`
+    heritage edges. They are reclassified as `references` (type_constraint)
+    so the type link is preserved without asserting false composition.
+    """
+    source = tmp_path / "constraint.go"
+    source.write_text(
+        "package p\n"
+        "type MyInt int\n"
+        "type MyFloat float64\n"
+        "type Number interface {\n"
+        "\tMyInt | MyFloat\n"
+        "}\n"
+    )
+    r = extract_go(source)
+    embeds = _edge_labels(r, "embeds")
+    assert ("Number", "MyInt") not in embeds
+    assert ("Number", "MyFloat") not in embeds
+    refs = _edge_labels(r, "references", "type_constraint")
+    assert ("Number", "MyInt") in refs
+    assert ("Number", "MyFloat") in refs
+
+
 # ---------------------------------------------------------------------------
 # Julia
 # ---------------------------------------------------------------------------
