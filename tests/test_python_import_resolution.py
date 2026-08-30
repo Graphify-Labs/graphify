@@ -119,6 +119,44 @@ def test_python_package_reexport_resolves_import_and_call_to_origin_symbol(tmp_p
     assert _has_edge(result, consumer_symbol, origin_symbol, "calls")
 
 
+def test_from_import_disambiguates_duplicate_bare_call_targets(tmp_path: Path):
+    _write(tmp_path / "graphify/__init__.py", "")
+    _write(tmp_path / "graphify/extractors/__init__.py", "")
+    base = _write(
+        tmp_path / "graphify/extractors/base.py",
+        "def _make_id(*parts):\n"
+        "    return '_'.join(parts)\n",
+    )
+    mcp_ingest = _write(
+        tmp_path / "graphify/mcp_ingest.py",
+        "def _make_id(*parts):\n"
+        "    return '-'.join(parts)\n",
+    )
+    consumer = _write(
+        tmp_path / "graphify/extract.py",
+        "from graphify.extractors.base import _make_id\n\n"
+        "def extract():\n"
+        "    return _make_id('extract')\n",
+    )
+
+    result = extract([base, mcp_ingest, consumer], cache_root=tmp_path)
+
+    caller = _node_id(result, "extract()", "graphify/extract.py")
+    imported_target = _node_id(result, "_make_id()", "graphify/extractors/base.py")
+    unimported_target = _node_id(result, "_make_id()", "graphify/mcp_ingest.py")
+    call_edges = [
+        edge for edge in result["edges"]
+        if edge.get("source") == caller and edge.get("relation") == "calls"
+    ]
+
+    assert any(
+        edge.get("target") == imported_target and edge.get("confidence") == "EXTRACTED"
+        for edge in call_edges
+    )
+    assert not any(edge.get("target") == unimported_target for edge in call_edges)
+
+
+
 def test_python_parameter_return_and_generic_contexts(tmp_path: Path):
     model = tmp_path / "pkg" / "model.py"
     model.parent.mkdir(parents=True)

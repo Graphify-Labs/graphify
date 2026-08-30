@@ -1,6 +1,7 @@
 """Deterministic structural extraction from source code using tree-sitter. Outputs nodes+edges dicts."""
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib
 import json
@@ -6827,11 +6828,41 @@ def extract(
     # confirm the caller pulled in the callee's source file.
     file_to_symbol_imports: dict[str, set[str]] = {}
     file_to_module_imports: dict[str, set[str]] = {}
+    python_import_from_targets: dict[str, dict[str, set[str]]] = {}
+    python_import_from_targets_by_line: dict[tuple[str, int], set[str]] = {}
     for e in all_edges:
         if e.get("relation") == "imports":
             file_to_symbol_imports.setdefault(e["source"], set()).add(e["target"])
         elif e.get("relation") == "imports_from":
             file_to_module_imports.setdefault(e["source"], set()).add(e["target"])
+            sf = str(e.get("source_file") or "")
+            loc = str(e.get("source_location") or "")
+            if sf.lower().endswith((".py", ".pyi")) and loc.startswith("L"):
+                try:
+                    python_import_from_targets_by_line.setdefault((sf, int(loc[1:])), set()).add(e["target"])
+                except (TypeError, ValueError):
+                    pass
+
+    if python_import_from_targets_by_line:
+        for path in paths:
+            str_path = str(path)
+            if not str_path.lower().endswith((".py", ".pyi")):
+                continue
+            try:
+                parsed = ast.parse(path.read_text(encoding="utf-8"))
+            except (OSError, SyntaxError, UnicodeDecodeError):
+                continue
+            for node in ast.walk(parsed):
+                if not isinstance(node, ast.ImportFrom):
+                    continue
+                imported_files = python_import_from_targets_by_line.get((str_path, node.lineno), set())
+                if not imported_files:
+                    continue
+                for alias in node.names:
+                    if alias.name == "*":
+                        continue
+                    local_name = alias.asname or alias.name
+                    python_import_from_targets.setdefault(str_path, {}).setdefault(local_name, set()).update(imported_files)
 
     # Map each node back to its containing file node id so we can ask
     # "did the caller's file import the callee's file?"
@@ -6994,28 +7025,38 @@ def extract(
                 tgt = symbol_matches[0]
                 has_import_evidence = True
             else:
-                module_matches = [
-                    c for c in candidates
-                    if (cf := nid_to_file_nid.get(c)) is not None and cf in imported_modules
-                ]
-                if len(module_matches) == 1:
-                    tgt = module_matches[0]
+                python_from_import_files = python_import_from_targets.get(str(rc.get("source_file", "")), {}).get(callee, set())
+                python_from_import_matches: list[str] = []
+                for candidate in candidates:
+                    candidate_file = nid_to_file_nid.get(str(candidate))
+                    if candidate_file is not None and candidate_file in python_from_import_files:
+                        python_from_import_matches.append(candidate)
+                if len(python_from_import_matches) == 1:
+                    tgt = python_from_import_matches[0]
                     has_import_evidence = True
                 else:
-                    # No unique import evidence. Instead of dropping the edge
-                    # outright (which let a single same-named test mock erase the
-                    # real call graph, #1553), apply the shared god-node
-                    # tie-breakers (non-test preference, then path proximity).
-                    # Resolve only if exactly one candidate survives; otherwise
-                    # the #543/#1219 guard still holds and we skip.
-                    tgt = disambiguate_ambiguous_candidates(
-                        candidates,
-                        {c: nid_to_source_file.get(c, "") for c in candidates},
-                        rc.get("source_file", ""),
-                    )
-                    if tgt is None:
-                        continue
-                    has_import_evidence = False
+                    module_matches = [
+                        c for c in candidates
+                        if (cf := nid_to_file_nid.get(c)) is not None and cf in imported_modules
+                    ]
+                    if len(module_matches) == 1:
+                        tgt = module_matches[0]
+                        has_import_evidence = True
+                    else:
+                        # No unique import evidence. Instead of dropping the edge
+                        # outright (which let a single same-named test mock erase the
+                        # real call graph, #1553), apply the shared god-node
+                        # tie-breakers (non-test preference, then path proximity).
+                        # Resolve only if exactly one candidate survives; otherwise
+                        # the #543/#1219 guard still holds and we skip.
+                        tgt = disambiguate_ambiguous_candidates(
+                            candidates,
+                            {c: nid_to_source_file.get(c, "") for c in candidates},
+                            rc.get("source_file", ""),
+                        )
+                        if tgt is None:
+                            continue
+                        has_import_evidence = False
         if rc.get("indirect"):
             # Cross-file indirect dispatch: a callback passed BY NAME
             # (`from .h import fn; pool.submit(fn)`, or listed in a dispatch
