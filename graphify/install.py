@@ -211,6 +211,19 @@ def _copy_skill_file(platform_name: str, *, project: bool = False, project_dir: 
         if orphan_refs.exists():
             shutil.rmtree(orphan_refs)
 
+    # A SKILL.md that differs from what is about to be written may carry the
+    # user's local edits (a tuned description:, extra guidance); replacing it
+    # wholesale with only "skill installed ->" for output read like a no-op
+    # while the edits were gone (#3144). Keep one .bak beside it and say so.
+    # Every upgrade differs too - the .bak is overwritten each install, so it
+    # always holds exactly the previous copy.
+    try:
+        if skill_dst.exists() and skill_dst.read_bytes() != skill_src.read_bytes():
+            backup = skill_dst.with_suffix(skill_dst.suffix + ".bak")
+            shutil.copy2(skill_dst, backup)
+            print(f"  previous copy    ->  {backup} (differed from the packaged skill)")
+    except OSError:
+        pass  # a failed backup must not block the install
     # SKILL.md last (crash-safety), via an atomic temp + rename.
     tmp_dst = skill_dst.with_suffix(skill_dst.suffix + ".tmp")
     try:
