@@ -2476,7 +2476,10 @@ def _csharp_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: 
         # second would hang a duplicate edge on the first member's node, so the
         # first declaration keeps it (same guard as the property nodes in #3006).
         if member_nid not in seen_ids:
-            add_node_fn(member_nid, member_name, line)
+            # `is_member` keeps this out of the C# type-definition index, the
+            # same way a property node is kept out: an enum member is not a type.
+            add_node_fn(member_nid, member_name, line,
+                        metadata={"is_member": True})
             add_edge_fn(parent_class_nid, member_nid, "case_of", line)
         return True
     if node.type == "namespace_declaration":
@@ -3856,7 +3859,12 @@ def _extract_generic(
                     property_line = node.start_point[0] + 1
                     property_nid = _make_id(parent_class_nid, property_name)
                     if property_nid not in seen_ids:
-                        add_node(property_nid, property_name, property_line)
+                        # `is_member` keeps this out of the C# type-definition
+                        # index: a property is not a type, and without the stamp
+                        # it competed with real declarations for its
+                        # `(namespace, name)` key.
+                        add_node(property_nid, property_name, property_line,
+                                 metadata={"is_member": True})
                         add_edge(parent_class_nid, property_nid, "defines",
                                  property_line, context="field")
             type_node = node.child_by_field_name("type")
