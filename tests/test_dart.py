@@ -5,6 +5,7 @@ import textwrap
 from pathlib import Path
 
 from graphify.extract import extract_dart, _make_id, _file_stem
+from graphify.extractors.dart import _parse_dartdoc
 
 
 class TestDart(unittest.TestCase):
@@ -634,6 +635,339 @@ class TestDart(unittest.TestCase):
         )
         self.assertIsNotNone(nav_edge)
         self.assertEqual(nav_edge["target"], "route_home_id_123_type_auth")
+
+
+    def test_dartdoc_extraction(self):
+        """Dartdoc (///) survives comment stripping: full prose lands on nodes, and
+        See also / {@tool} / {@template}-{@macro} become edges."""
+        code_content = textwrap.dedent("""
+        /// Material Design button collection.
+        library;
+
+        import 'package:flutter/material.dart';
+
+        /// {@template app.buttons.onPressed}
+        /// Called when the button is tapped.
+        /// {@end-template}
+        const double kButtonHeight = 48.0;
+
+        /// A Material Design floating action button.
+        ///
+        /// A circular icon button that hovers over content to promote a primary
+        /// action, most commonly used in the [Scaffold.floatingActionButton] field.
+        ///
+        /// {@macro app.buttons.onPressed}
+        ///
+        /// {@tool dartpad}
+        /// This example shows a [MyFab] in its usual position.
+        ///
+        /// ** See code in examples/api/lib/material/my_fab/my_fab.0.dart **
+        /// {@end-tool}
+        ///
+        /// See also:
+        ///
+        ///  * [Scaffold], in which floating action buttons typically live.
+        ///  * [showDialog], the dialog helper declared below.
+        ///  * [onPressed], a member reference that must not become a node.
+        ///  * <https://m3.material.io/components/floating-action-button>
+        class MyFab extends StatelessWidget {
+          const MyFab({super.key});
+        }
+
+        /// Shows a Material dialog.
+        Future<void> showDialog() async {}
+
+        class Undocumented extends StatelessWidget {}
+        """)
+
+        file_path = self.temp_path / "my_fab.dart"
+        file_path.write_text(code_content, encoding="utf-8")
+
+        result = extract_dart(file_path)
+        nodes = result["nodes"]
+        edges = result["edges"]
+        by_label = {n["label"]: n for n in nodes}
+
+        # A. Library-level dartdoc lands on the file node.
+        self.assertEqual(by_label["my_fab.dart"]["doc"], "Material Design button collection.")
+
+        # B. The class keeps its WHOLE prose, paragraphs and all, with [refs]
+        #    unwrapped and directives removed.
+        fab = by_label["MyFab"]
+        self.assertEqual(
+            fab["doc"],
+            "A Material Design floating action button.\n\n"
+            "A circular icon button that hovers over content to promote a primary "
+            "action, most commonly used in the Scaffold.floatingActionButton field.\n\n"
+            "This example shows a MyFab in its usual position.",
+        )
+
+        # C. Top-level function and variable docs are attached too.
+        self.assertEqual(by_label["showDialog"]["doc"], "Shows a Material dialog.")
+        self.assertIn("doc", by_label["kButtonHeight"])
+
+        # D. An undocumented declaration carries no doc key at all.
+        self.assertNotIn("doc", by_label["Undocumented"])
+
+        # E. See also: entries become references edges, tagged as dartdoc.
+        see_also = {
+            e["target"]
+            for e in edges
+            if e["source"] == fab["id"] and e.get("context") == "dartdoc_see_also"
+        }
+        self.assertIn(_make_id("Scaffold"), see_also)
+        # A lowercase entry resolves only when this file declares it.
+        self.assertIn(_make_id(_file_stem(file_path), "showDialog"), see_also)
+        # A bare member reference resolves to nothing and must be dropped.
+        self.assertNotIn(_make_id("onPressed"), see_also)
+        self.assertNotIn(_make_id(_file_stem(file_path), "onPressed"), see_also)
+
+        # F. {@tool} sample paths become edges to the example file.
+        sample = next((e for e in edges if e.get("context") == "dartdoc_sample"), None)
+        self.assertIsNotNone(sample)
+        self.assertEqual(sample["source"], fab["id"])
+        self.assertEqual(
+            sample["target"], _make_id("examples/api/lib/material/my_fab/my_fab.0.dart")
+        )
+
+        # G. {@template} is defined once and {@macro} references the same node,
+        #    so doc reuse is traversable across files.
+        template_nid = _make_id("dartdoc", "app.buttons.onPressed")
+        template_def = next(
+            (
+                e
+                for e in edges
+                if e["target"] == template_nid and e.get("context") == "dartdoc_template"
+            ),
+            None,
+        )
+        self.assertIsNotNone(template_def)
+        self.assertEqual(template_def["relation"], "defines")
+
+        macro_ref = next(
+            (
+                e
+                for e in edges
+                if e["target"] == template_nid and e.get("context") == "dartdoc_macro"
+            ),
+            None,
+        )
+        self.assertIsNotNone(macro_ref)
+        self.assertEqual(macro_ref["source"], fab["id"])
+        self.assertEqual(macro_ref["relation"], "references")
+
+    def test_dartdoc_binds_to_the_declaration_below_it(self):
+        """A block attaches at the granularity of what it sits above: class,
+        constructor, constructor parameter, field, method."""
+        code_content = textwrap.dedent("""
+        /// A tappable card.
+        class Card extends StatelessWidget {
+          /// Creates a card.
+          const Card({
+            super.key,
+            /// The surface color.
+            this.color,
+            /// Called on tap.
+            required this.onTap,
+            /// How far the content is inset.
+            double padding = 8.0,
+          });
+
+          /// Creates a card from JSON.
+          factory Card.fromJson(Map<String, dynamic> json) => const Card();
+
+          /// Internal, test-only.
+          const Card._();
+
+          /// The resolved surface color.
+          final Color? color;
+
+          /// Builds the card.
+          Widget build(BuildContext context) => const Placeholder();
+        }
+        """)
+        file_path = self.temp_path / "card.dart"
+        file_path.write_text(code_content, encoding="utf-8")
+
+        result = extract_dart(file_path)
+        stem = _file_stem(file_path)
+        by_label = {n["label"]: n for n in result["nodes"]}
+        by_id = {n["id"]: n for n in result["nodes"]}
+
+        # The class doc stays on the class, not on its constructor.
+        self.assertEqual(by_label["Card"]["doc"], "A tappable card.")
+
+        # Each constructor is its own node, and the unnamed one does not collide
+        # with the class.
+        unnamed = by_id[_make_id(stem, "Card.new")]
+        self.assertEqual(unnamed["label"], "Card()")
+        self.assertEqual(unnamed["doc"], "Creates a card.")
+        self.assertNotEqual(unnamed["id"], by_label["Card"]["id"])
+
+        named = by_id[_make_id(stem, "Card.fromJson")]
+        self.assertEqual(named["doc"], "Creates a card from JSON.")
+
+        # `Card._()` normalizes to nothing and would otherwise collapse onto the
+        # class node, or onto the file node (#2738).
+        private = by_id[_make_id(stem, "Card.private")]
+        self.assertEqual(private["doc"], "Internal, test-only.")
+
+        # A constructor is contained by its class.
+        contains = {
+            e["target"]
+            for e in result["edges"]
+            if e["source"] == by_label["Card"]["id"]
+            and e.get("context") == "dartdoc_constructor"
+        }
+        self.assertEqual(
+            contains,
+            {unnamed["id"], named["id"], private["id"]},
+        )
+
+        # A `this.x` parameter documents the field it forwards to, and the field's
+        # own node is the one that carries it.
+        color = by_id[_make_id(stem, "color")]
+        self.assertEqual(color["doc"], "The surface color.")
+        self.assertEqual(by_id[_make_id(stem, "onTap")]["doc"], "Called on tap.")
+        # A plain parameter with no matching field is bound too.
+        self.assertEqual(
+            by_id[_make_id(stem, "padding")]["doc"], "How far the content is inset."
+        )
+        # An undocumented parameter (super.key) is not pulled in.
+        self.assertNotIn(_make_id(stem, "key"), by_id)
+
+        params = {
+            e["target"]
+            for e in result["edges"]
+            if e["source"] == unnamed["id"] and e.get("context") == "dartdoc_parameter"
+        }
+        self.assertEqual(
+            params,
+            {_make_id(stem, "color"), _make_id(stem, "onTap"), _make_id(stem, "padding")},
+        )
+
+        # A method doc still binds to the method.
+        self.assertEqual(by_id[_make_id(stem, "build")]["doc"], "Builds the card.")
+
+    def test_dartdoc_skips_intervening_annotations_and_comments(self):
+        """The block documents the first line below it that is not itself
+        documentation."""
+        code_content = textwrap.dedent("""
+        /// The answer.
+        // a plain implementation note
+        @Deprecated('use answer2')
+        const int answer = 42;
+        """)
+        file_path = self.temp_path / "answer.dart"
+        file_path.write_text(code_content, encoding="utf-8")
+
+        result = extract_dart(file_path)
+        by_label = {n["label"]: n for n in result["nodes"]}
+        self.assertEqual(by_label["answer"]["doc"], "The answer.")
+
+    def test_dartdoc_constructor_call_is_not_mistaken_for_a_declaration(self):
+        """`Padding(` inside a build method is a call, not a constructor: only a
+        name matching the ENCLOSING type declares one."""
+        code_content = textwrap.dedent("""
+        class Page extends StatelessWidget {
+          Widget build(BuildContext context) {
+            /// not a declaration
+            return Padding(padding: EdgeInsets.zero);
+          }
+        }
+        """)
+        file_path = self.temp_path / "page.dart"
+        file_path.write_text(code_content, encoding="utf-8")
+
+        result = extract_dart(file_path)
+        stem = _file_stem(file_path)
+        ids = {n["id"] for n in result["nodes"]}
+        self.assertNotIn(_make_id(stem, "Padding.new"), ids)
+
+    def test_dartdoc_survives_a_normalized_id_collision(self):
+        """Node IDs strip leading underscores, so a private field and a parameter
+        named after it are one node. Whichever pass gets there first names the
+        node; the doc must still land on it."""
+        code_content = textwrap.dedent("""
+        class Filter {
+          final Object _field;
+
+          /// Builds a filter.
+          Filter(
+            /// The field to filter on.
+            Object field,
+          );
+        }
+        """)
+        file_path = self.temp_path / "filter.dart"
+        file_path.write_text(code_content, encoding="utf-8")
+
+        result = extract_dart(file_path)
+        stem = _file_stem(file_path)
+        self.assertEqual(_make_id(stem, "_field"), _make_id(stem, "field"))
+        node = next(n for n in result["nodes"] if n["id"] == _make_id(stem, "field"))
+        self.assertEqual(node["doc"], "The field to filter on.")
+
+
+    def test_dartdoc_does_not_leak_into_external_nodes(self):
+        """A referenced external type that shares a name with a documented local
+        symbol must not inherit the local doc."""
+        code_content = textwrap.dedent("""
+        /// The local repository implementation.
+        class Repository {}
+
+        void lookup() {
+          final other = locator<Session>();
+        }
+        """)
+        file_path = self.temp_path / "repo.dart"
+        file_path.write_text(code_content, encoding="utf-8")
+
+        result = extract_dart(file_path)
+        session = next(n for n in result["nodes"] if n["id"] == _make_id("Session"))
+        self.assertIsNone(session["source_file"])
+        self.assertNotIn("doc", session)
+
+    def test_dartdoc_ignores_directive_only_blocks(self):
+        """A doc block that holds only @docImport lines has no prose, so it must
+        not produce a bogus doc."""
+        code_content = textwrap.dedent("""
+        /// @docImport 'elevated_button.dart';
+        /// @docImport 'ink_well.dart';
+        library;
+
+        class Plain {}
+        """)
+        file_path = self.temp_path / "plain.dart"
+        file_path.write_text(code_content, encoding="utf-8")
+
+        result = extract_dart(file_path)
+        file_node = next(n for n in result["nodes"] if n["label"] == "plain.dart")
+        self.assertNotIn("doc", file_node)
+
+    def test_dartdoc_is_prose_not_markup(self):
+        """Dartdoc renders inline HTML (all ~8.8k icon constants in Flutter's
+        icons.dart are documented as an <i> tag), but the text must read as prose.
+        Autolinks are not tags and must survive."""
+        icon_doc = _parse_dartdoc(
+            '<i class="material-icons md-36">help_outline</i> '
+            '&#x2014; material icon named "help outline".'
+        )
+        self.assertEqual(
+            icon_doc["doc"], 'help_outline \u2014 material icon named "help outline".'
+        )
+
+        link_doc = _parse_dartdoc("See <https://m3.material.io/x> for details.")
+        self.assertEqual(link_doc["doc"], "See <https://m3.material.io/x> for details.")
+
+    def test_dartdoc_is_not_truncated(self):
+        """Long dartdoc keeps every paragraph — consumers that want the one-line
+        summary take the first one, which is dartdoc's own convention."""
+        body = "\n\n".join([" ".join(["word"] * 200)] * 4)
+        parsed = _parse_dartdoc(body)
+        self.assertEqual(len(parsed["doc"].split("\n\n")), 4)
+        self.assertGreater(len(parsed["doc"]), 3000)
+        self.assertFalse(parsed["doc"].endswith("\u2026"))
 
 
 if __name__ == "__main__":
