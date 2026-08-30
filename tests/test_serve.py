@@ -1170,6 +1170,59 @@ def test_query_terms_chinese_no_jieba_fallback(monkeypatch):
     assert len(terms) == 4
 
 
+def test_query_terms_janome_content_keeps_content_parts(monkeypatch):
+    """The Japanese opt-in keeps Janome content-word surface forms."""
+    import graphify.serve as serve_mod
+
+    class FakeToken:
+        def __init__(self, surface, part_of_speech):
+            self.surface = surface
+            self.part_of_speech = part_of_speech
+
+    class FakeTokenizer:
+        def tokenize(self, text):
+            assert text == "日本語の検索を改善する。"
+            return [
+                FakeToken("日本語", "名詞,一般,*,*"),
+                FakeToken("の", "助詞,連体化,*,*"),
+                FakeToken("検索", "名詞,サ変接続,*,*"),
+                FakeToken("改善", "名詞,サ変接続,*,*"),
+                FakeToken("する", "動詞,自立,*,*"),
+                FakeToken("。", "記号,句点,*,*"),
+            ]
+
+    monkeypatch.setattr(serve_mod, "_JanomeTokenizer", FakeTokenizer)
+    assert _query_terms("日本語の検索を改善する。", tokenizer="janome_content") == [
+        "日本語",
+        "検索",
+        "改善",
+        "する",
+    ]
+
+
+def test_query_terms_janome_content_real_library():
+    pytest.importorskip("janome")
+    terms = _query_terms("日本語の検索を改善する", tokenizer="janome_content")
+    assert "日本語" in terms
+    assert "検索" in terms
+    assert "改善" in terms
+    assert "の" not in terms
+    assert "を" not in terms
+
+
+def test_query_terms_janome_content_requires_optional_extra(monkeypatch):
+    import graphify.serve as serve_mod
+
+    monkeypatch.setattr(serve_mod, "_JanomeTokenizer", None)
+    with pytest.raises(ImportError, match=r"graphifyy\[japanese\]"):
+        _query_terms("日本語の検索", tokenizer="janome_content")
+
+
+def test_query_terms_rejects_unknown_tokenizer():
+    with pytest.raises(ValueError, match="Unsupported query tokenizer"):
+        _query_terms("query", tokenizer="unknown")
+
+
 def test_score_nodes_chinese_substring_match():
     """Searching for '路由' should match a node with label containing '路由'."""
     G = nx.Graph()

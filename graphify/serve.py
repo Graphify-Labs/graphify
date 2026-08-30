@@ -21,6 +21,18 @@ try:
 except ImportError:
     _jieba = None
 
+try:
+    from janome.tokenizer import Tokenizer as _JanomeTokenizer  # type: ignore[import-untyped]
+except ImportError:
+    _JanomeTokenizer = None
+
+
+_QUERY_TOKENIZERS = ("baseline", "janome_content")
+_JANOME_CONTENT_PARTS = frozenset({"名詞", "動詞", "形容詞", "副詞"})
+_JANOME_TOKENIZER_INSTANCE = None
+_JANOME_TOKENIZER_FACTORY = None
+_JANOME_TOKENIZER_LOCK = threading.Lock()
+
 
 class ToolError(Exception):
     """Raised by a tool handler to signal an error result.
@@ -208,6 +220,36 @@ def _segment_chinese(text: str) -> list[str]:
     return segments
 
 
+def _get_janome_tokenizer():
+    """Return the lazily initialized Janome tokenizer singleton."""
+    global _JANOME_TOKENIZER_FACTORY, _JANOME_TOKENIZER_INSTANCE
+
+    tokenizer_factory = _JanomeTokenizer
+    if tokenizer_factory is None:
+        raise ImportError(
+            'The "janome_content" tokenizer requires the optional Japanese extra. '
+            'Install it with: uv tool install "graphifyy[japanese]"'
+        )
+
+    if _JANOME_TOKENIZER_INSTANCE is None or _JANOME_TOKENIZER_FACTORY is not tokenizer_factory:
+        with _JANOME_TOKENIZER_LOCK:
+            if _JANOME_TOKENIZER_INSTANCE is None or _JANOME_TOKENIZER_FACTORY is not tokenizer_factory:
+                _JANOME_TOKENIZER_INSTANCE = tokenizer_factory()
+                _JANOME_TOKENIZER_FACTORY = tokenizer_factory
+    return _JANOME_TOKENIZER_INSTANCE
+
+
+def _segment_japanese_content(text: str) -> list[str]:
+    """Return Janome surface forms for Japanese content words."""
+    terms: list[str] = []
+    for token in _get_janome_tokenizer().tokenize(text):
+        part = str(getattr(token, "part_of_speech", "")).split(",", 1)[0]
+        surface = str(getattr(token, "surface", "")).strip().lower()
+        if part in _JANOME_CONTENT_PARTS and surface:
+            terms.append(surface)
+    return terms
+
+
 def _is_searchable(term: str) -> bool:
     """True if term is Chinese, non-English, or an English word longer than 2 chars."""
     if all("a" <= ch <= "z" for ch in term):
@@ -269,25 +311,36 @@ _QUERY_STOPWORDS = frozenset({
 })
 
 
-def _query_terms(question: str) -> list[str]:
-    """Split a query into searchable terms, segmenting Chinese text, then drop
-    question/filler words (`_QUERY_STOPWORDS`, English plus common German/
-    Romance-language fillers) so content words drive seeding. Falls back to the
-    unfiltered terms if the query is all stopwords, so a question like "how does
-    it work" or "wie funktioniert das" still seeds on something."""
-    terms: list[str] = []
-    for raw in question.split():
-        if _has_chinese(raw):
-            for seg in _segment_chinese(raw.lower().strip()):
-                seg = seg.strip()
-                if seg and _is_searchable(seg):
-                    terms.append(seg)
-        else:
-            # Strip punctuation without touching Unicode characters (avoid NFKD mangling non-Latin scripts)
-            for tok in re.findall(r"\w+", raw.lower()):
-                if _is_searchable(tok):
-                    terms.append(tok)
-    content = [t for t in terms if t not in _QUERY_STOPWORDS]
+def _query_terms(question: str, *, tokenizer: str = "baseline") -> list[str]:
+    """Split a query into searchable terms, then drop question/filler words.
+
+    ``baseline`` preserves the existing whitespace/Chinese segmentation behavior.
+    ``janome_content`` is an explicit opt-in for Japanese content-word
+    segmentation and requires the optional ``japanese`` extra.
+
+    The all-stopword fallback keeps a question like "how does it work" or
+    "wie funktioniert das" searchable.
+    """
+    if tokenizer == "janome_content":
+        terms = _segment_japanese_content(question)
+    elif tokenizer == "baseline":
+        terms = []
+        for raw in question.split():
+            if _has_chinese(raw):
+                for seg in _segment_chinese(raw.lower().strip()):
+                    seg = seg.strip()
+                    if seg and _is_searchable(seg):
+                        terms.append(seg)
+            else:
+                # Strip punctuation without touching Unicode characters (avoid NFKD mangling non-Latin scripts)
+                for tok in re.findall(r"\w+", raw.lower()):
+                    if _is_searchable(tok):
+                        terms.append(tok)
+    else:
+        supported = ", ".join(_QUERY_TOKENIZERS)
+        raise ValueError(f"Unsupported query tokenizer {tokenizer!r}; choose from {supported}")
+
+    content = [t for t in terms if t.lower() not in _QUERY_STOPWORDS]
     return content or terms
 
 
@@ -1203,8 +1256,9 @@ def _query_graph_text(
     token_budget: int = 2000,
     context_filters: list[str] | None = None,
     graph_path: str | None = None,
+    tokenizer: str = "baseline",
 ) -> str:
-    terms = _query_terms(question)
+    terms = _query_terms(question, tokenizer=tokenizer)
     # One graph scoring pass produces both the combined ranking (used to drive
     # the gap-based seed selection below) and the per-token singleton winners
     # (used by _pick_seeds' per-term guarantee). Previously this was T+1 passes
@@ -1624,6 +1678,12 @@ def _build_server(graph_path: str):
                                  "description": "bfs=broad context, dfs=trace a specific path"},
                         "depth": {"type": "integer", "default": 3, "description": "Traversal depth (1-6)"},
                         "token_budget": {"type": "integer", "default": 2000, "description": "Max output tokens"},
+                        "tokenizer": {
+                            "type": "string",
+                            "enum": list(_QUERY_TOKENIZERS),
+                            "default": "baseline",
+                            "description": "Query tokenizer; janome_content is an explicit Japanese opt-in",
+                        },
                         "context_filter": {
                             "type": "array",
                             "items": {"type": "string"},
@@ -1769,6 +1829,7 @@ def _build_server(graph_path: str):
         mode = arguments.get("mode", "bfs")
         depth = min(int(arguments.get("depth", 3)), 6)
         budget = int(arguments.get("token_budget", 2000))
+        tokenizer = arguments.get("tokenizer", "baseline")
         context_filter = arguments.get("context_filter")
         _t0 = _time.perf_counter()
         result = _query_graph_text(
@@ -1779,6 +1840,7 @@ def _build_server(graph_path: str):
             token_budget=budget,
             context_filters=context_filter,
             graph_path=str(active_graph_path),
+            tokenizer=tokenizer,
         )
         querylog.log_query(
             kind="mcp_query",

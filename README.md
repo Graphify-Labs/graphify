@@ -270,6 +270,7 @@ Codex users also need `multi_agent = true` under `[features]` in `~/.codex/confi
 | `ocaml` | OCaml `.ml`/`.mli` AST extraction | `uv tool install "graphifyy[ocaml]"` |
 | `commonlisp` | Common Lisp `.lisp`/`.cl`/`.lsp`/`.asd` AST extraction | `uv tool install "graphifyy[commonlisp]"` |
 | `chinese` | Chinese query segmentation (jieba) | `uv tool install "graphifyy[chinese]"` |
+| `japanese` | Optional Japanese query segmentation (Janome) | `uv tool install "graphifyy[japanese]"` |
 | `all` | Everything above | `uv tool install "graphifyy[all]"` |
 
 </details>
@@ -469,6 +470,8 @@ The commit and branch-switch rebuilds run in the background and return immediate
 # query the graph from the terminal
 graphify query "show the auth flow"
 graphify query "what connects DigestAuth to Response?" --graph graphify-out/graph.json
+# opt in to content-word segmentation for Japanese queries
+graphify query "日本語の検索を改善する" --tokenizer janome_content
 
 # expose the graph as an MCP server (for repeated tool-call access)
 python -m graphify.serve graphify-out/graph.json
@@ -483,6 +486,13 @@ python -m graphify.serve graphify-out/graph.json --transport http --host 0.0.0.0
 ```
 
 The MCP server gives your assistant structured access: `query_graph`, `get_node`, `get_neighbors`, `shortest_path`, `list_prs`, `get_pr_impact`, `triage_prs`.
+
+The default query tokenizer remains unchanged. For Japanese-language queries,
+install the optional `japanese` extra and pass `--tokenizer janome_content` to
+the CLI, or set `tokenizer` to `janome_content` in the MCP `query_graph` tool.
+This can improve term-level matching for Japanese text, which typically does not
+separate words with spaces; it is an explicit opt-in because tokenization can
+change retrieval results for a given corpus.
 
 ### Shared HTTP server
 

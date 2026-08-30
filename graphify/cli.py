@@ -1067,7 +1067,7 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(1)
     elif cmd == "query":
         if len(sys.argv) < 3:
-            print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--budget N] [--graph path]", file=sys.stderr)
+            print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--budget N] [--graph path] [--tokenizer NAME]", file=sys.stderr)
             sys.exit(1)
         from graphify.serve import _query_graph_text
         from graphify.security import sanitize_label
@@ -1079,6 +1079,7 @@ def dispatch_command(cmd: str) -> None:
         budget = 2000
         graph_path = _default_graph_path()
         context_filters: list[str] = []
+        tokenizer = "baseline"
         args = sys.argv[3:]
         i = 0
         while i < len(args):
@@ -1101,6 +1102,12 @@ def dispatch_command(cmd: str) -> None:
                 i += 2
             elif args[i].startswith("--context="):
                 context_filters.append(args[i].split("=", 1)[1])
+                i += 1
+            elif args[i] == "--tokenizer" and i + 1 < len(args):
+                tokenizer = args[i + 1]
+                i += 2
+            elif args[i].startswith("--tokenizer="):
+                tokenizer = args[i].split("=", 1)[1]
                 i += 1
             elif args[i] == "--graph" and i + 1 < len(args):
                 graph_path = args[i + 1]
@@ -1165,15 +1172,20 @@ def dispatch_command(cmd: str) -> None:
         import time as _time
         _t0 = _time.perf_counter()
         _mode = "dfs" if use_dfs else "bfs"
-        _result = _query_graph_text(
-            G,
-            question,
-            mode=_mode,
-            depth=2,
-            token_budget=budget,
-            context_filters=context_filters,
-            graph_path=str(gp),
-        )
+        try:
+            _result = _query_graph_text(
+                G,
+                question,
+                mode=_mode,
+                depth=2,
+                token_budget=budget,
+                context_filters=context_filters,
+                graph_path=str(gp),
+                tokenizer=tokenizer,
+            )
+        except (ImportError, ValueError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            sys.exit(1)
         querylog.log_query(
             kind="query",
             question=question,
