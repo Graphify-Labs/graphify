@@ -11,6 +11,7 @@ Usage:
   graphify prs --worktrees       # show worktree → branch → PR mapping
   graphify prs --conflicts       # PRs sharing graph communities (merge-order risk)
   graphify prs --base <branch>   # filter to PRs targeting this base (default: v8)
+  graphify prs --limit <n>       # max PRs per gh page (default: 20; auto-retries smaller on failure)
 """
 
 from __future__ import annotations
@@ -138,7 +139,28 @@ def _ci_icon(status: str) -> str:
 
 # ── GitHub data fetching ──────────────────────────────────────────────────────
 
-def _gh(*args: str) -> list | dict | None:
+_DEFAULT_PR_LIMIT = 20
+_FALLBACK_PAGE_LIMITS = (20, 10)
+
+
+@dataclass(frozen=True)
+class GhFailure:
+    message: str
+    missing: bool = False
+
+
+def _gh_err(result: subprocess.CompletedProcess[str]) -> str:
+    err = (result.stderr or result.stdout or "").strip()
+    if not err:
+        return f"gh exited with code {result.returncode}"
+    line = err.splitlines()[-1].strip()
+    low = line.lower()
+    if any(tok in low for tok in ("auth", "login", "401", "403", "not logged")):
+        return f"{line} (run: gh auth login)"
+    return line
+
+
+def _gh_call(*args: str) -> tuple[list | dict | None, GhFailure | None]:
     try:
         result = subprocess.run(
             ["gh", *args],
@@ -147,11 +169,26 @@ def _gh(*args: str) -> list | dict | None:
             # default text=True decode crashes on those (#1505 fixed the same in llm).
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30
         )
-        if result.returncode != 0:
-            return None
-        return json.loads(result.stdout)
-    except (subprocess.TimeoutExpired, json.JSONDecodeError, FileNotFoundError):
-        return None
+    except FileNotFoundError:
+        return None, GhFailure(
+            "gh CLI not found. Install GitHub CLI: https://cli.github.com/",
+            missing=True,
+        )
+    except subprocess.TimeoutExpired:
+        return None, GhFailure("gh command timed out after 30s")
+
+    if result.returncode != 0:
+        return None, GhFailure(_gh_err(result))
+
+    try:
+        return json.loads(result.stdout), None
+    except json.JSONDecodeError as exc:
+        return None, GhFailure(f"gh returned invalid JSON: {exc}")
+
+
+def _gh(*args: str) -> list | dict | None:
+    data, _ = _gh_call(*args)
+    return data
 
 
 def _detect_default_branch(repo: str | None = None) -> str:
@@ -195,8 +232,27 @@ def _parse_ci(rollup: list) -> str:
     return "NONE"
 
 
-def fetch_prs(repo: str | None = None, base: str | None = None, limit: int = 50) -> list[PRInfo]:
-    resolved_base = base or _detect_default_branch(repo)
+def _page_limits(limit: int) -> list[int]:
+    chain = [limit]
+    for fb in _FALLBACK_PAGE_LIMITS:
+        if fb < chain[-1]:
+            chain.append(fb)
+    return chain
+
+
+def _parse_limit(raw: str) -> int:
+    try:
+        v = int(raw)
+    except ValueError:
+        print(f"error: --limit must be a positive integer (got {raw!r})", file=sys.stderr)
+        sys.exit(2)
+    if v <= 0:
+        print(f"error: --limit must be > 0 (got {v})", file=sys.stderr)
+        sys.exit(2)
+    return v
+
+
+def _fetch_prs_page(repo: str | None, limit: int) -> tuple[list | dict | None, GhFailure | None]:
     args = [
         "pr", "list", "--state", "open", "--limit", str(limit),
         "--json", "number,title,headRefName,baseRefName,author,isDraft,"
@@ -204,10 +260,23 @@ def fetch_prs(repo: str | None = None, base: str | None = None, limit: int = 50)
     ]
     if repo:
         args += ["--repo", repo]
+    return _gh_call(*args)
 
-    raw = _gh(*args)
+
+def fetch_prs(repo: str | None = None, base: str | None = None, limit: int = _DEFAULT_PR_LIMIT) -> list[PRInfo]:
+    resolved_base = base or _detect_default_branch(repo)
+    last: GhFailure | None = None
+    raw: list | dict | None = None
+    for page in _page_limits(limit):
+        raw, last = _fetch_prs_page(repo, page)
+        if raw is not None:
+            break
+
     if raw is None:
-        raise RuntimeError("gh CLI not found or not authenticated. Run: gh auth login")
+        if last and last.missing:
+            raise RuntimeError(last.message)
+        detail = last.message if last else "unknown gh error"
+        raise RuntimeError(f"gh pr list failed: {detail}")
 
     prs = []
     for item in raw:
@@ -681,6 +750,7 @@ def triage_with_opus(prs: list[PRInfo], base: str) -> None:
 def cmd_prs(argv: list[str]) -> None:
     base: str | None = None  # auto-detected from repo if not given
     repo: str | None = None
+    limit = _DEFAULT_PR_LIMIT
     do_triage = False
     do_worktrees = False
     do_conflicts = False
@@ -705,6 +775,10 @@ def cmd_prs(argv: list[str]) -> None:
             base = arg.split("=", 1)[1]
         elif arg in ("--repo", "-R") and i + 1 < len(argv):
             repo = argv[i + 1]; i += 1
+        elif arg in ("--limit", "-n") and i + 1 < len(argv):
+            limit = _parse_limit(argv[i + 1]); i += 1
+        elif arg.startswith("--limit="):
+            limit = _parse_limit(arg.split("=", 1)[1])
         elif arg.startswith("--graph="):
             graph_path = Path(arg.split("=", 1)[1])
         elif arg == "--graph" and i + 1 < len(argv):
@@ -720,7 +794,7 @@ def cmd_prs(argv: list[str]) -> None:
         base = _detect_default_branch(repo)
 
     try:
-        prs = fetch_prs(repo=repo, base=base)
+        prs = fetch_prs(repo=repo, base=base, limit=limit)
     except RuntimeError as e:
         print(red(f"  Error: {e}"), file=sys.stderr)
         sys.exit(1)

@@ -11,16 +11,22 @@ import pytest
 
 from graphify.prs import (
     PRInfo,
+    GhFailure,
     _classify,
     _gh,
+    _gh_call,
+    _page_limits,
+    _parse_limit,
     _parse_ci,
     _path_match,
     build_community_labels,
     compute_pr_impact,
     fetch_pr_files,
+    fetch_prs,
     fetch_worktrees,
     format_prs_text,
     _detect_default_branch,
+    _DEFAULT_PR_LIMIT,
 )
 
 
@@ -53,6 +59,105 @@ def make_pr(
         updated_at=updated_at,
         expected_base=expected_base,
     )
+
+
+# ── _gh_call / fetch_prs (#2850) ─────────────────────────────────────────────
+
+class TestGhCall:
+    def test_missing_gh_is_distinct_from_auth_failure(self):
+        with patch("graphify.prs.subprocess.run", side_effect=FileNotFoundError):
+            data, err = _gh_call("pr", "list")
+        assert data is None
+        assert err is not None
+        assert err.missing is True
+        assert "not found" in err.message.lower()
+
+    def test_nonzero_exit_surfaces_stderr(self):
+        completed = MagicMock(returncode=1, stdout="", stderr="GraphQL: HTTP 504")
+        with patch("graphify.prs.subprocess.run", return_value=completed):
+            data, err = _gh_call("pr", "list")
+        assert data is None
+        assert err is not None
+        assert err.missing is False
+        assert "504" in err.message
+
+    def test_auth_hint_only_when_stderr_suggests_auth(self):
+        completed = MagicMock(returncode=1, stdout="", stderr="not logged in")
+        with patch("graphify.prs.subprocess.run", return_value=completed):
+            _, err = _gh_call("pr", "list")
+        assert "gh auth login" in err.message
+
+    def test_504_does_not_suggest_auth_login(self):
+        completed = MagicMock(returncode=1, stdout="", stderr="GraphQL: HTTP 504")
+        with patch("graphify.prs.subprocess.run", return_value=completed):
+            _, err = _gh_call("pr", "list")
+        assert "gh auth login" not in err.message
+
+
+class TestPageLimits:
+    def test_default_chain_from_50(self):
+        assert _page_limits(50) == [50, 20, 10]
+
+    def test_default_limit_chain(self):
+        assert _page_limits(_DEFAULT_PR_LIMIT) == [20, 10]
+
+    def test_small_limit_has_no_larger_fallback(self):
+        assert _page_limits(10) == [10]
+
+
+class TestParseLimit:
+    def test_valid(self):
+        assert _parse_limit("20") == 20
+
+    def test_invalid_exits(self):
+        with pytest.raises(SystemExit) as exc:
+            _parse_limit("abc")
+        assert exc.value.code == 2
+
+    def test_nonpositive_exits(self):
+        with pytest.raises(SystemExit) as exc:
+            _parse_limit("0")
+        assert exc.value.code == 2
+
+
+class TestFetchPrs:
+    _SAMPLE = [{
+        "number": 1,
+        "title": "Fix",
+        "headRefName": "fix",
+        "baseRefName": "v8",
+        "author": {"login": "alice"},
+        "isDraft": False,
+        "reviewDecision": "",
+        "statusCheckRollup": [],
+        "updatedAt": "2026-01-01T00:00:00Z",
+    }]
+
+    def test_retries_smaller_page_after_failure(self):
+        fail = MagicMock(returncode=1, stdout="", stderr="GraphQL: HTTP 504")
+        ok = MagicMock(
+            returncode=0,
+            stdout=json.dumps(self._SAMPLE),
+            stderr="",
+        )
+        with patch("graphify.prs.subprocess.run", side_effect=[fail, ok]), \
+             patch("graphify.prs._detect_default_branch", return_value="v8"):
+            prs = fetch_prs(limit=50)
+        assert len(prs) == 1
+        assert prs[0].number == 1
+
+    def test_missing_gh_raises_install_message(self):
+        with patch("graphify.prs.subprocess.run", side_effect=FileNotFoundError), \
+             patch("graphify.prs._detect_default_branch", return_value="v8"):
+            with pytest.raises(RuntimeError, match="not found"):
+                fetch_prs()
+
+    def test_exhausted_retries_raise_actual_gh_error(self):
+        fail = MagicMock(returncode=1, stdout="", stderr="GraphQL: HTTP 504")
+        with patch("graphify.prs.subprocess.run", return_value=fail), \
+             patch("graphify.prs._detect_default_branch", return_value="v8"):
+            with pytest.raises(RuntimeError, match="504"):
+                fetch_prs(limit=10)
 
 
 # ── _classify ─────────────────────────────────────────────────────────────────
