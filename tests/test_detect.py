@@ -3441,3 +3441,8 @@ def test_globstar_matcher_leaves_no_reference_cycle():
     finally:
         gc.enable()
     assert collected == 0, f"globstar matcher leaked {collected} cyclic objects per run"
+
+
+def test_classify_robot_framework_files():
+    assert classify_file(Path("acceptance.robot")) == FileType.DOCUMENT
+    assert classify_file(Path("shared.resource")) == FileType.DOCUMENT

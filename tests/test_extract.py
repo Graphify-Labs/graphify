@@ -376,6 +376,77 @@ def test_extract_does_not_rewire_constructor_method_to_same_named_class(tmp_path
     )
 
 
+# ── Robot Framework extractor tests ───────────────────────────────────────────
+
+
+def test_robot_framework_dispatch():
+    from graphify.extract import _get_extractor
+    from graphify.extractors.robot import extract_robot
+
+    assert _get_extractor(Path("acceptance.robot")) is extract_robot
+    assert _get_extractor(Path("shared.resource")) is extract_robot
+
+
+def test_robot_framework_structure(tmp_path):
+    from graphify.extractors.robot import extract_robot
+
+    path = tmp_path / "acceptance.robot"
+    path.write_text(
+        "*** Settings ***\n"
+        "Documentation    Login acceptance tests\n"
+        "Library          Browser\n"
+        "\n"
+        "*** Test Cases ***\n"
+        "Successful login\n"
+        "    New Page       https://example.test/login\n"
+        "    Fill Text      id=user    alice\n"
+        "    Click          id=submit\n"
+        "\n"
+        "*** Keywords ***\n"
+        "Login as a valid user\n"
+        "    Fill Text      id=user    alice\n"
+        "    Click          id=submit\n"
+    )
+
+    result = extract_robot(path)
+    labels = {node["label"]: node for node in result["nodes"]}
+
+    assert labels["acceptance.robot"]["node_kind"] == "page"
+    assert labels["Settings"]["node_kind"] == "section"
+    assert labels["Test Cases"]["node_kind"] == "section"
+    assert labels["Keywords"]["node_kind"] == "section"
+    assert labels["Successful login"]["node_kind"] == "test"
+    assert labels["Login as a valid user"]["node_kind"] == "keyword"
+    assert "New Page       https://example.test/login" not in labels
+
+    edges = {(edge["source"], edge["target"], edge["relation"]) for edge in result["edges"]}
+    assert (labels["acceptance.robot"]["id"], labels["Settings"]["id"], "contains") in edges
+    assert (labels["Test Cases"]["id"], labels["Successful login"]["id"], "contains") in edges
+    assert (labels["Keywords"]["id"], labels["Login as a valid user"]["id"], "contains") in edges
+
+
+def test_robot_framework_resource_sections_and_comments(tmp_path):
+    from graphify.extractors.robot import extract_robot
+
+    path = tmp_path / "shared.resource"
+    path.write_text(
+        "# Shared browser keywords\n"
+        "*** Variables ***\n"
+        "${BASE_URL}    https://example.test\n"
+        "*** Keywords ***\n"
+        "Open application\n"
+        "    No Operation\n"
+    )
+
+    result = extract_robot(path)
+    labels = [node["label"] for node in result["nodes"]]
+    assert "Variables" in labels
+    assert "${BASE_URL}    https://example.test" in labels
+    assert "Open application" in labels
+    assert "# Shared browser keywords" not in labels
+    assert "No Operation" not in labels
+
+
 def test_collect_files_from_dir():
     from graphify.extract import _DISPATCH
     files = collect_files(FIXTURES)
