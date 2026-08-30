@@ -1249,6 +1249,23 @@ def _python_module_bound_names(root, source: bytes) -> set[str]:
     walk(root)
     return bound
 
+
+def _python_base_reference(node, source: bytes) -> str | None:
+    """Return the resolvable head of one Python class-base expression.
+
+    Handles bare names, module-qualified names, and generic subscriptions while
+    deliberately ignoring keyword bases such as ``metaclass=Meta``.  Keeping a
+    qualified name intact lets the corpus-level resolver bind its module prefix
+    through the exact ``import ... [as ...]`` statement (#2736).
+    """
+    if node.type in ("identifier", "attribute"):
+        return _read_text(node, source)
+    if node.type == "subscript":
+        value = node.child_by_field_name("value")
+        if value is not None:
+            return _python_base_reference(value, source)
+    return None
+
 _JS_SCOPE_BOUNDARY = frozenset({
     "function_declaration", "function_expression", "function", "arrow_function",
     "method_definition", "class_declaration", "class", "generator_function",
@@ -3182,8 +3199,8 @@ def _extract_generic(
                 args = node.child_by_field_name("superclasses")
                 if args:
                     for arg in args.children:
-                        if arg.type == "identifier":
-                            base = _read_text(arg, source)
+                        base = _python_base_reference(arg, source)
+                        if base:
                             base_nid = ensure_named_node(base, line)
                             add_edge(class_nid, base_nid, "inherits", line)
 

@@ -131,6 +131,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _resolve_lua_import_target,
     _probe_python_module_candidate,
     _resolve_python_module_path,
+    _resolve_python_inheritance_references,
     _resolve_tsconfig_alias,
     _resolve_workspace_import,
     _source_key,
@@ -6664,15 +6665,54 @@ def extract(
             logging.getLogger(__name__).warning(
                 "Go type-reference resolution failed, skipping: %s", exc
             )
+    # Resolve imported Python base classes by exact module + symbol before the
+    # generic unique-label rewire.  The import disambiguates same-named classes,
+    # while resolution context keeps changed-child -> unchanged-base edges on
+    # incremental rebuilds (#2736).
+    py_paths = [p for p in paths if p.suffix == ".py"]
+    suppressed_python_inferred_uses: set[tuple[str, str, str, str]] = set()
+    if py_paths:
+        try:
+            suppressed_python_inferred_uses = _resolve_python_inheritance_references(
+                py_paths,
+                all_nodes,
+                all_edges,
+                root,
+                resolution_context_nodes,
+                resolution_context_edges,
+            )
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Python inheritance resolution failed, skipping: %s", exc
+            )
     _rewire_unique_stub_nodes(all_nodes, all_edges)
 
     # Add cross-file class-level edges (Python only - uses Python parser internally)
-    py_paths = [p for p in paths if p.suffix == ".py"]
     if py_paths:
         py_results = [r for r, p in zip(per_file, paths) if p.suffix == ".py"]
         try:
             cross_file_edges = _resolve_cross_file_imports(py_results, py_paths)
-            all_edges.extend(cross_file_edges)
+            # Suppress only legacy `uses` edges emitted for import statements
+            # that bind an inherited base.  Including the import line preserves
+            # legitimate uses of a same-named class imported from another module
+            # while still removing ambiguous or first-writer misresolution.
+            lookup_nodes = all_nodes + list(resolution_context_nodes or [])
+            labels_by_id = {
+                str(node.get("id")): str(node.get("label") or "")
+                for node in lookup_nodes
+                if node.get("id")
+            }
+            all_edges.extend(
+                edge
+                for edge in cross_file_edges
+                if (
+                    str(edge.get("source")),
+                    str(edge.get("source_file") or ""),
+                    str(edge.get("source_location") or ""),
+                    labels_by_id.get(str(edge.get("target")), ""),
+                ) not in suppressed_python_inferred_uses
+            )
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("Cross-file import resolution failed, skipping: %s", exc)

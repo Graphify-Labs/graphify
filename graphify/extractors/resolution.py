@@ -1911,6 +1911,286 @@ def _augment_symbol_resolution_edges(
     _collect_python_symbol_resolution_facts(paths, root, facts)
     _apply_symbol_resolution_facts(paths, nodes, edges, root, facts)
 
+
+def _resolve_python_inheritance_references(
+    paths: list[Path],
+    all_nodes: list[dict],
+    all_edges: list[dict],
+    root: Path,
+    resolution_context_nodes: list[dict] | None = None,
+    resolution_context_edges: list[dict] | None = None,
+) -> set[tuple[str, str, str, str]]:
+    """Resolve imported Python base classes to their exact definition nodes.
+
+    The per-file extractor emits ``inherits`` to a sourceless bare-name stub.
+    ``_rewire_unique_stub_nodes`` can repair that only when the base name is
+    globally unique; aliases stay ghosted, and duplicate names are deliberately
+    left unresolved.  A ``from module import Base [as Alias]`` statement carries
+    exact file + symbol evidence, so use it before the generic rewire (#2736).
+
+    Import bindings in re-export modules are followed recursively (for example,
+    ``pkg.__init__`` re-exporting ``Base`` from ``pkg.base``).  Unresolved and
+    external bases remain on their existing stubs, preserving the conservative
+    fallback.  Resolution-context nodes/edges are lookup-only so an incremental
+    rebuild of a child can still target an unchanged base without copying the
+    base into the fresh extraction result.
+
+    Return exact legacy import-edge keys to suppress so the later inferred-uses
+    pass cannot overwrite or guess an inheritance relationship.
+    """
+    py_paths = [path for path in paths if path.suffix == ".py"]
+    if not py_paths:
+        return set()
+
+    definition_nodes = all_nodes + list(resolution_context_nodes or [])
+    definition_edges = all_edges + list(resolution_context_edges or [])
+    contained = {
+        edge.get("target")
+        for edge in definition_edges
+        if edge.get("relation") == "contains"
+    }
+
+    def source_path(raw: object) -> Path | None:
+        if not raw:
+            return None
+        path = Path(str(raw))
+        if not path.is_absolute():
+            path = root / path
+        try:
+            return path.resolve()
+        except OSError:
+            return path.absolute()
+
+    # Exact (defining file, class name) -> candidate ids.  Requiring one
+    # candidate avoids guessing when malformed/recovered syntax produced two
+    # definitions with the same label in one file.
+    definitions: dict[tuple[Path, str], set[str]] = {}
+    for node in definition_nodes:
+        nid = node.get("id")
+        label = str(node.get("label") or "")
+        path = source_path(node.get("source_file"))
+        if not nid or not label or path is None or path.suffix != ".py":
+            continue
+        if not node.get("_callable_class") and nid not in contained:
+            continue
+        if not _is_type_like_definition(node):
+            continue
+        definitions.setdefault((path, label), set()).add(str(nid))
+
+    if not definitions:
+        return set()
+
+    # file -> local name -> [(import line, target file, target symbol)].  Keep
+    # every binding so a later import cannot retroactively resolve a class that
+    # appeared before it. Multiple distinct origins at/before the class are left
+    # unresolved rather than guessing across conditional/fallback imports.
+    binding_cache: dict[Path, dict[str, list[tuple[int, Path, str]]]] = {}
+    module_binding_cache: dict[Path, dict[str, list[tuple[int, Path]]]] = {}
+
+    def import_bindings(path: Path) -> dict[str, list[tuple[int, Path, str]]]:
+        try:
+            resolved_path = path.resolve()
+        except OSError:
+            resolved_path = path.absolute()
+        cached = binding_cache.get(resolved_path)
+        if cached is not None:
+            return cached
+
+        bindings: dict[str, list[tuple[int, Path, str]]] = {}
+        binding_cache[resolved_path] = bindings
+        module_bindings: dict[str, list[tuple[int, Path]]] = {}
+        module_binding_cache[resolved_path] = module_bindings
+        parsed = _parse_python_tree(resolved_path)
+        if parsed is None:
+            return bindings
+        source, root_node = parsed
+
+        # Imports nested inside functions/classes do not bind a module-level
+        # class base.  Module-level try/if blocks are traversed because their
+        # imports do bind the module namespace when that branch executes.
+        def walk(node) -> None:
+            if node is not root_node and node.type in (
+                "function_definition", "class_definition", "lambda"
+            ):
+                return
+            if node.type == "import_from_statement":
+                module = _python_import_from_module(node, source)
+                if module is None:
+                    return
+                level, module_name = module
+                target = _resolve_python_module_path(
+                    module_name, resolved_path, root, level
+                )
+                if target is None:
+                    return
+                try:
+                    target = target.resolve()
+                except OSError:
+                    target = target.absolute()
+                line = node.start_point[0] + 1
+                for imported_name, local_name in _python_imported_names(node, source):
+                    bindings.setdefault(local_name, []).append(
+                        (line, target, imported_name)
+                    )
+                return
+            if node.type == "import_statement":
+                line = node.start_point[0] + 1
+                for child in node.children:
+                    module_name = ""
+                    qualifier = ""
+                    if child.type == "dotted_name":
+                        module_name = _read_text(child, source)
+                        qualifier = module_name
+                    elif child.type == "aliased_import":
+                        name_node = child.child_by_field_name("name")
+                        alias_node = child.child_by_field_name("alias")
+                        if name_node is not None and alias_node is not None:
+                            module_name = _read_text(name_node, source)
+                            qualifier = _read_text(alias_node, source)
+                    if not module_name or not qualifier:
+                        continue
+                    target = _resolve_python_module_path(
+                        module_name, resolved_path, root, 0
+                    )
+                    if target is None:
+                        continue
+                    try:
+                        target = target.resolve()
+                    except OSError:
+                        target = target.absolute()
+                    module_bindings.setdefault(qualifier, []).append((line, target))
+                return
+            for child in node.children:
+                walk(child)
+
+        walk(root_node)
+        return bindings
+
+    def binding_at(
+        path: Path, local_name: str, use_line: int | None
+    ) -> tuple[Path, str] | None:
+        candidates = import_bindings(path).get(local_name, [])
+        if use_line is not None:
+            candidates = [entry for entry in candidates if entry[0] <= use_line]
+        if not candidates:
+            return None
+        origins = {(entry[1], entry[2]) for entry in candidates}
+        if len(origins) != 1:
+            return None
+        return next(iter(origins))
+
+    def qualified_binding_at(
+        path: Path, qualified_name: str, use_line: int | None
+    ) -> tuple[Path, str] | None:
+        # The final segment is the class; everything before it is the written
+        # module qualifier (`mod.Base`, `pkg.mod.Base`, or an import alias).
+        qualifier, separator, symbol = qualified_name.rpartition(".")
+        if not separator or not qualifier or not symbol:
+            return None
+        import_bindings(path)  # populates module_binding_cache as a side effect
+        try:
+            resolved_path = path.resolve()
+        except OSError:
+            resolved_path = path.absolute()
+        candidates = module_binding_cache.get(resolved_path, {}).get(qualifier, [])
+        if use_line is not None:
+            candidates = [entry for entry in candidates if entry[0] <= use_line]
+        targets = {entry[1] for entry in candidates}
+        if len(targets) != 1:
+            return None
+        return next(iter(targets)), symbol
+
+    def resolve_origin(
+        path: Path,
+        name: str,
+        seen: set[tuple[Path, str]] | None = None,
+    ) -> str | None:
+        try:
+            path = path.resolve()
+        except OSError:
+            path = path.absolute()
+        key = (path, name)
+        candidates = definitions.get(key, set())
+        if len(candidates) == 1:
+            return next(iter(candidates))
+        if len(candidates) > 1:
+            return None
+        visited = set() if seen is None else seen
+        if key in visited:
+            return None
+        visited.add(key)
+        reexport = binding_at(path, name, None)
+        if reexport is None:
+            return None
+        return resolve_origin(reexport[0], reexport[1], visited)
+
+    stub_labels = {
+        str(node["id"]): str(node.get("label") or "")
+        for node in all_nodes
+        if node.get("id") and not node.get("source_file")
+    }
+    if not stub_labels:
+        return set()
+
+    def edge_line(edge: dict) -> int | None:
+        location = str(edge.get("source_location") or "")
+        if location.startswith("L") and location[1:].isdigit():
+            return int(location[1:])
+        return None
+
+    repointed_from: set[str] = set()
+    suppressed_inferred_uses: set[tuple[str, str, str, str]] = set()
+    for edge in all_edges:
+        if edge.get("relation") != "inherits":
+            continue
+        target = str(edge.get("target") or "")
+        local_name = stub_labels.get(target)
+        referencing_path = source_path(edge.get("source_file"))
+        if not local_name or referencing_path is None:
+            continue
+        use_line = edge_line(edge)
+        for import_line, _, target_symbol in import_bindings(referencing_path).get(
+            local_name, []
+        ):
+            if use_line is not None and import_line > use_line:
+                continue
+            suppressed_inferred_uses.add(
+                (
+                    str(edge.get("source") or ""),
+                    str(edge.get("source_file") or ""),
+                    f"L{import_line}",
+                    target_symbol,
+                )
+            )
+        binding = binding_at(referencing_path, local_name, use_line)
+        if binding is None:
+            binding = qualified_binding_at(
+                referencing_path, local_name, use_line
+            )
+        if binding is None:
+            continue
+        resolved = resolve_origin(binding[0], binding[1])
+        if resolved is None or resolved == target:
+            continue
+        edge["target"] = resolved
+        repointed_from.add(target)
+
+    if not repointed_from:
+        return suppressed_inferred_uses
+
+    referenced = {
+        endpoint
+        for edge in all_edges
+        for endpoint in (edge.get("source"), edge.get("target"))
+    }
+    all_nodes[:] = [
+        node
+        for node in all_nodes
+        if node.get("id") not in repointed_from or node.get("id") in referenced
+    ]
+    return suppressed_inferred_uses
+
+
 def _resolve_cross_file_imports(
     per_file: list[dict],
     paths: list[Path],
