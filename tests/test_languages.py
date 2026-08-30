@@ -4151,8 +4151,12 @@ def test_robot_curdir_and_execdir_imports_resolve_without_double_prefix():
     resolved_abs = _resolve_robot_import("${CURDIR}/../Library/lib.py", abs_src)
     assert ".." not in resolved_abs.parts, resolved_abs
 
-    # ${EXECDIR} anchors to the execution root, not the suite dir
+    # ${EXECDIR} anchors to the execution root, not the suite dir - resolvable
+    # only for a relative scan where '.' aligns with the scan root
     assert _resolve_robot_import("${EXECDIR}/Resource/common.robot", rel_src) == P("Resource/common.robot")
+    # for an absolute source the execution root is unknowable: no edge beats a
+    # guaranteed-dangling relative id in an absolute-id scan
+    assert _resolve_robot_import("${EXECDIR}/Resource/common.robot", abs_src) is None
 
     # plain relative imports still join against the suite dir
     assert _resolve_robot_import("../Resource/common.robot", rel_src) == P("Tests/Resource/common.robot")
@@ -4215,3 +4219,37 @@ def test_robot_extractor_degrades_gracefully_without_robotframework():
     out = subprocess.run([sys.executable, "-c", script], capture_output=True,
                          text=True, cwd=str(repo_root))
     assert out.returncode == 0 and "ok" in out.stdout, (out.stdout, out.stderr)
+
+
+@_needs_robot
+def test_robot_bdd_style_calls_reach_their_definitions(tmp_path):
+    # Robot resolves 'Given Open Session' by trying the full name, then the
+    # name with one BDD prefix stripped; the extractor emits both candidate
+    # edges so whichever definition exists receives the call.
+    suite = tmp_path / "bdd.robot"
+    suite.write_text(
+        "*** Test Cases ***\n"
+        "Login Flow\n"
+        "    Given Open Session\n"
+        "    When user logs in\n"
+        "    Then Given Special\n"
+        "\n"
+        "*** Keywords ***\n"
+        "Open Session\n"
+        "    Log    x\n"
+        "User Logs In\n"
+        "    Log    y\n"
+        "Given Special\n"
+        "    Log    z\n",
+        encoding="utf-8",
+    )
+    r = extract_robot(suite)
+    assert r.get("error") is None
+    def_ids = {n["label"]: n["id"] for n in r["nodes"]}
+    call_targets = {e["target"] for e in r["edges"] if e["relation"] == "calls"}
+    # prefix-stripped candidates land on the definitions
+    assert def_ids["Open Session"] in call_targets
+    assert def_ids["User Logs In"] in call_targets
+    # a keyword literally named with a BDD prefix is reached via the
+    # full-name candidate ('Then Given Special' -> strip one prefix only)
+    assert def_ids["Given Special"] in call_targets

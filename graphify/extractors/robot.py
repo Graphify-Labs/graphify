@@ -33,6 +33,13 @@ def _resolve_robot_import(raw: str, source_path: Path) -> Path | None:
         s = s.replace("${CURDIR}", str(source_path.parent))
         anchored = True
     if "${EXECDIR}" in s:
+        # ${EXECDIR} is the directory Robot was launched from - statically
+        # knowable only for a relative scan, where "." is the scan root and
+        # matches how relative file-node IDs are built. For an absolute
+        # source path the resolved ID could never match a node, so emit
+        # nothing rather than a guaranteed-dangling edge.
+        if source_path.is_absolute():
+            return None
         s = s.replace("${EXECDIR}", ".")
         anchored = True
     if "${" in s or "%{" in s:
@@ -43,6 +50,12 @@ def _resolve_robot_import(raw: str, source_path: Path) -> Path | None:
     # normpath unconditionally so ../ segments collapse and the ID matches
     # the imported file's own node ID (absolute paths included)
     return Path(os.path.normpath(p))
+
+
+# Robot resolves BDD-style calls (Given/When/Then/And/But <keyword>) by trying
+# the full name first, then the name with one prefix stripped. English prefixes
+# only - Robot's localized BDD prefixes are out of scope here.
+_BDD_PREFIXES = ("given ", "when ", "then ", "and ", "but ")
 
 
 def _kw_id(name: str) -> str:
@@ -134,10 +147,25 @@ def extract_robot(path: Path) -> dict:
     except Exception as e:
         return {"nodes": nodes, "edges": edges, "error": str(e)}
 
-    def kw_target(name: str) -> str:
+    def kw_targets(name: str) -> list:
         # "SSHLibrary.Open Connection" -> keyword part only; explicit
         # library/resource prefixes are common, dots inside keyword names are not.
-        return _kw_id(name.rsplit(".", 1)[-1])
+        name = name.rsplit(".", 1)[-1].strip()
+        targets = [_kw_id(name)]
+        # BDD calls: emit an edge for BOTH the full and the prefix-stripped
+        # candidate, mirroring Robot's try-full-then-stripped resolution.
+        # Whichever keyword exists receives the edge; the other candidate
+        # dangles and is dropped by the graph builder.
+        low = name.lower()
+        for prefix in _BDD_PREFIXES:
+            if low.startswith(prefix) and len(name) > len(prefix):
+                targets.append(_kw_id(name[len(prefix):]))
+                break
+        return targets
+
+    def add_call_edges(src: str, name: str, line: int) -> None:
+        for tgt in kw_targets(name):
+            add_edge(src, tgt, "calls", line, context="call")
 
     class _RobotVisitor(ModelVisitor):
         def __init__(self):
@@ -179,29 +207,24 @@ def extract_robot(path: Path) -> dict:
         # Suite-level fixtures (file scope)
         def visit_SuiteSetup(self, node):
             if node.name:
-                add_edge(file_nid, kw_target(node.name), "calls", node.lineno,
-                         context="call")
+                add_call_edges(file_nid, node.name, node.lineno)
 
         def visit_SuiteTeardown(self, node):
             if node.name:
-                add_edge(file_nid, kw_target(node.name), "calls", node.lineno,
-                         context="call")
+                add_call_edges(file_nid, node.name, node.lineno)
 
         def visit_TestSetup(self, node):
             if node.name:
-                add_edge(file_nid, kw_target(node.name), "calls", node.lineno,
-                         context="call")
+                add_call_edges(file_nid, node.name, node.lineno)
 
         def visit_TestTeardown(self, node):
             if node.name:
-                add_edge(file_nid, kw_target(node.name), "calls", node.lineno,
-                         context="call")
+                add_call_edges(file_nid, node.name, node.lineno)
 
         def visit_TestTemplate(self, node):
             # Template statements carry the keyword in .value, not .name
             if node.value:
-                add_edge(file_nid, kw_target(node.value), "calls", node.lineno,
-                         context="call")
+                add_call_edges(file_nid, node.value, node.lineno)
 
         # Definitions
         def visit_TestCase(self, node):
@@ -227,25 +250,21 @@ def extract_robot(path: Path) -> dict:
         # Calls (current test/keyword scope, file scope for suite fixtures)
         def visit_KeywordCall(self, node):
             if node.keyword:
-                add_edge(self.scope_nid, kw_target(node.keyword), "calls",
-                         node.lineno, context="call")
+                add_call_edges(self.scope_nid, node.keyword, node.lineno)
             self.generic_visit(node)
 
         def visit_Setup(self, node):
             if node.name:
-                add_edge(self.scope_nid, kw_target(node.name), "calls",
-                         node.lineno, context="call")
+                add_call_edges(self.scope_nid, node.name, node.lineno)
 
         def visit_Teardown(self, node):
             if node.name:
-                add_edge(self.scope_nid, kw_target(node.name), "calls",
-                         node.lineno, context="call")
+                add_call_edges(self.scope_nid, node.name, node.lineno)
 
         def visit_Template(self, node):
             # Template statements carry the keyword in .value, not .name
             if node.value:
-                add_edge(self.scope_nid, kw_target(node.value), "calls",
-                         node.lineno, context="call")
+                add_call_edges(self.scope_nid, node.value, node.lineno)
 
     try:
         _RobotVisitor().visit(model)
