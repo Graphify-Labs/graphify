@@ -1082,6 +1082,44 @@ def test_scala_call_edges_have_call_context():
     assert all(e.get("context") == "call" for e in call_edges)
 
 
+def test_scala_trait_is_a_definition_with_methods(tmp_path):
+    """A Scala `trait` must be extracted as a definition, with its methods.
+
+    `trait_definition` was missing from the Scala class_types, so every trait
+    was dropped as a definition — its methods and their calls were lost, and a
+    subclass's `extends Trait` resolved to a sourceless stub instead of the real
+    trait node.
+    """
+    f = tmp_path / "logging.scala"
+    f.write_text(
+        "trait Logger {\n"
+        "  def prefix: String = \"[log] \"\n"
+        "  def log(msg: String): Unit = println(prefix + msg)\n"
+        "}\n"
+        "\n"
+        "class Service extends Logger {\n"
+        "  def run(): Unit = log(\"started\")\n"
+        "}\n"
+    )
+    r = extract_scala(f)
+    assert "error" not in r
+
+    logger = next((n for n in r["nodes"] if n["label"] == "Logger"), None)
+    assert logger is not None, "trait definition dropped"
+    assert logger["source_file"] != "", "trait must be a real sourced definition, not a stub"
+
+    # the trait's own methods are captured
+    method_targets = {
+        n["label"] for n in r["nodes"]
+        for e in r["edges"]
+        if e["relation"] == "method" and e["source"] == logger["id"] and e["target"] == n["id"]
+    }
+    assert {".prefix()", ".log()"} <= method_targets, f"trait methods missing: {method_targets}"
+
+    # `extends Logger` resolves to the real trait node
+    assert ("Service", "Logger") in _edge_labels(r, "inherits")
+
+
 # ── PHP ───────────────────────────────────────────────────────────────────────
 
 def test_php_no_error():
