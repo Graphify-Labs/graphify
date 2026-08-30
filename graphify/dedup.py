@@ -306,34 +306,43 @@ def _defines_id(node: dict) -> bool:
 # one of its sections. The markdown extractor stamps these precisely because
 # `file_type` cannot carry the distinction, and both are file-anchored in the
 # #1284 sense — two files' `## Decisions` sections are two sections (#3094).
+#
+# PRODUCER CONTRACT: an extractor that mints a node standing for a *part* of its
+# source file (a section, a sheet, a slide) must stamp one of these. The gate
+# below reads an unstamped node as an entity, so an unstamped structural node is
+# eligible to merge with its namesake in another file.
 _FILE_STRUCTURE_NODE_KINDS = frozenset({"page", "heading"})
 
 
-def _provably_not_file_structure(node: dict) -> bool:
-    """True only when the node is PROVABLY an entity found inside its file,
-    rather than a structural part of the file itself (#296).
+def _reads_as_file_entity(node: dict) -> bool:
+    """True when the node reads as an entity found inside its file, rather than
+    as the file itself or a stamped structural part of it (#296).
 
-    Two things disqualify a node, and either alone is enough:
+    Be precise about what is proven and what is assumed, because the two halves
+    differ in strength:
 
-    * It is its file's OWN node. ``_id_prefixes`` enumerates the ID a node
-      standing for ``source_file`` itself would carry, in every spelling a
-      stored path may take (absolute, repo-relative, or the pre-#1504 bare
+    * PROVEN — it is not its file's OWN node. ``_id_prefixes`` enumerates the ID
+      a node standing for ``source_file`` itself would carry, in every spelling
+      a stored path may take (absolute, repo-relative, or the pre-#1504 bare
       stem). A file's own node IS one of those; an entity extracted from that
-      file carries an ``_<entity>`` suffix, so it never equals one.
-    * It is a section of the file — ``node_kind: "heading"`` — or the file node
-      the extractor labelled outright, ``node_kind: "page"``. Repeated headings
-      across sibling documents are distinct sections, not duplicates
-      (#1284, re-verified on #3094), and stay blocked.
+      file carries an ``_<entity>`` suffix, so it never equals one. This is a
+      reconstruction, not a heuristic.
+    * ASSUMED — it is not a section of the file. That rests on ``node_kind``,
+      which only a producer that stamps it can attest. `heading`/`page` are
+      honoured when present, but ABSENCE OF THE MARKER IS NOT PROOF OF
+      ENTITY-NESS: a producer minting sub-file nodes without stamping
+      `node_kind` (see the contract above) yields structural nodes that this
+      returns True for, and two such nodes sharing a label in different files
+      would merge. The conservative fix is on the producer side — stamp
+      `node_kind` — not a guess here about what an unstamped node meant.
 
-    Fail-safe by construction: a node that cannot be checked (no ID, no
-    provenance) answers False and stays blocked, so this can only ever *narrow*
-    the set of nodes the cross-file gate treats as file-anchored — never widen
-    it on a guess.
+    A node that cannot be checked at all (no ID, no provenance) answers False
+    and stays blocked.
     """
     nid = node.get("id") or ""
     source_file = node.get("source_file") or ""
     if not nid or not source_file:
-        return False  # unprovable — leave the file-anchored block in place
+        return False  # uncheckable — leave the file-anchored block in place
     if node.get("node_kind") in _FILE_STRUCTURE_NODE_KINDS:
         return False  # the extractor says this node is part of the file's structure
     return nid not in _id_prefixes(source_file)
@@ -670,8 +679,8 @@ def deduplicate_entities(
         # it is provably safe (#2182). `concept` is the one file_type meant to
         # unify across files (#1284) — code is keyed by ID (#1205) and
         # image/paper labels are often shared basenames (logo.png), so both stay
-        # blocked. rationale/document join `concept` here ONLY when the node is
-        # provably not part of its file's own structure (#296): a file-anchored
+        # blocked. rationale/document join `concept` here ONLY when the node
+        # reads as an entity inside its file (#296): a file-anchored
         # *file_type* does not make an individual node file-anchored. An entity
         # extracted from a note — a person, a project — inherits `document` from
         # the file's extension, not from anything about itself, so in note-heavy
@@ -688,7 +697,7 @@ def deduplicate_entities(
             (n for n in group
              if (n.get("file_type") == "concept"
                  or (n.get("file_type") in _FILE_ANCHORED_NONCODE
-                     and _provably_not_file_structure(n)))
+                     and _reads_as_file_entity(n)))
              and (n.get("source_file") or "")
              and _entropy(n.get("label", "")) >= _ENTROPY_THRESHOLD),
             key=lambda n: n["id"],

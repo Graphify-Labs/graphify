@@ -1219,31 +1219,32 @@ def test_same_word_variant_helper():
 _CYRIL_VARIANTS = ["@cyrilXBT", "@cyrilxbt", "cyrilXBT"]
 
 
-def test_provably_not_file_structure_helper():
-    """The predicate proves entity-ness, and answers False whenever it cannot
-    (#296): a file's own node, a structural `page`/`heading` node, and any node
-    missing an id or provenance all stay treated as file-anchored."""
-    from graphify.dedup import _provably_not_file_structure
+def test_reads_as_file_entity_helper():
+    """A file's own node, a stamped `page`/`heading` node, and any node missing
+    an id or provenance all stay treated as file-anchored (#296). The own-node
+    half is a reconstruction and holds for every stored-path spelling; the
+    structural half rests on the producer stamping `node_kind`."""
+    from graphify.dedup import _reads_as_file_entity
     # An entity extracted from a note: `<path>_<entity>` never equals the path.
-    assert _provably_not_file_structure(
+    assert _reads_as_file_entity(
         {"id": "journal_2024_03_01_cyrilxbt", "label": "@cyrilXBT",
          "source_file": "journal/2024-03-01.md"})
     # The file's own node, in each spelling a stored source_file may take.
-    assert not _provably_not_file_structure(
+    assert not _reads_as_file_entity(
         {"id": "journal_2024_03_01", "source_file": "journal/2024-03-01.md"})
-    assert not _provably_not_file_structure(
+    assert not _reads_as_file_entity(
         {"id": "2024_03_01", "source_file": "journal/2024-03-01.md"})  # pre-#1504 bare stem
-    assert not _provably_not_file_structure(
+    assert not _reads_as_file_entity(
         {"id": "vault_journal_2024_03_01", "source_file": 'C:\\vault\\journal\\2024-03-01.md'})
     # The markdown extractor states it outright, for the file and its sections.
-    assert not _provably_not_file_structure(
+    assert not _reads_as_file_entity(
         {"id": "anything", "node_kind": "page", "source_file": "docs/a.md"})
-    assert not _provably_not_file_structure(
+    assert not _reads_as_file_entity(
         {"id": "docs_a_decisions", "node_kind": "heading",
          "label": "Decisions", "source_file": "docs/a.md"})
     # Unprovable -- no id, or no provenance.
-    assert not _provably_not_file_structure({"id": "", "source_file": "docs/a.md"})
-    assert not _provably_not_file_structure({"id": "docs_a_thing", "source_file": ""})
+    assert not _reads_as_file_entity({"id": "", "source_file": "docs/a.md"})
+    assert not _reads_as_file_entity({"id": "docs_a_thing", "source_file": ""})
 
 
 def test_dedup_merges_crossfile_document_entity_variants():
@@ -1368,3 +1369,18 @@ def test_dedup_never_merges_repeated_headings_across_files():
     )
     assert {n["source_file"] for n in result_nodes} == {
         "docs/a.md", "docs/b.md", "docs/c.md"}
+
+
+def test_reads_as_file_entity_trusts_the_node_kind_stamp_only():
+    """The documented limit of the structural half (#296): `node_kind` is what
+    marks a sub-file node, so an UNSTAMPED structural node reads as an entity.
+    Pinned deliberately — the fix for such a producer is to stamp `node_kind`,
+    and this test is what fails if the predicate is ever quietly changed to
+    guess instead."""
+    from graphify.dedup import _reads_as_file_entity
+    stamped = {"id": "book_xlsx_summary", "label": "Summary (sheet)",
+               "node_kind": "heading", "source_file": "book.xlsx"}
+    unstamped = dict(stamped)
+    del unstamped["node_kind"]
+    assert not _reads_as_file_entity(stamped)
+    assert _reads_as_file_entity(unstamped)
