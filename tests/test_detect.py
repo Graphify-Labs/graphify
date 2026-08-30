@@ -42,6 +42,14 @@ def test_classify_powershell_manifest():
     # #1331: .psd1 manifests must be classified as CODE so the manifest extractor runs.
     assert classify_file(Path("MyModule.psd1")) == FileType.CODE
 
+def test_classify_zsh():
+    # #2825: .zsh was missing from CODE_EXTENSIONS so zsh scripts were unclassified.
+    assert classify_file(Path("script.zsh")) == FileType.CODE
+
+def test_classify_sas():
+    # #2681: .sas files should be classified as CODE so the SAS extractor runs.
+    assert classify_file(Path("model.sas")) == FileType.CODE
+
 def test_classify_markdown():
     assert classify_file(Path("README.md")) == FileType.DOCUMENT
 

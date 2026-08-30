@@ -1150,6 +1150,7 @@ all = [
     { name = "tree-sitter-hcl" },
     { name = "tree-sitter-ocaml" },
     { name = "tree-sitter-pascal" },
+    { name = "tree-sitter-sas" },
     { name = "tree-sitter-sql" },
     { name = "watchdog" },
     { name = "yt-dlp" },
@@ -1218,6 +1219,9 @@ postgres = [
     { name = "psycopg", extra = ["binary"] },
     { name = "tree-sitter-sql" },
 ]
+sas = [
+    { name = "tree-sitter-sas" },
+]
 sql = [
     { name = "tree-sitter-sql" },
 ]
@@ -1254,6 +1258,7 @@ dev = [
     { name = "tree-sitter-commonlisp" },
     { name = "tree-sitter-hcl" },
     { name = "tree-sitter-ocaml" },
+    { name = "tree-sitter-sas" },
     { name = "wheel" },
 ]
 
@@ -1334,6 +1339,8 @@ requires-dist = [
     { name = "tree-sitter-python", specifier = ">=0.23,<0.26" },
     { name = "tree-sitter-ruby", specifier = ">=0.23,<0.25" },
     { name = "tree-sitter-rust", specifier = ">=0.23,<0.25" },
+    { name = "tree-sitter-sas", marker = "extra == 'all'" },
+    { name = "tree-sitter-sas", marker = "extra == 'sas'" },
     { name = "tree-sitter-scala", specifier = ">=0.23,<0.27" },
     { name = "tree-sitter-sql", marker = "extra == 'all'" },
     { name = "tree-sitter-sql", marker = "extra == 'postgres'" },
@@ -1347,7 +1354,7 @@ requires-dist = [
     { name = "yt-dlp", marker = "extra == 'all'", specifier = ">=2026.6.9" },
     { name = "yt-dlp", marker = "extra == 'video'", specifier = ">=2026.6.9" },
 ]
-provides-extras = ["mcp", "neo4j", "falkordb", "pdf", "watch", "svg", "leiden", "office", "google", "postgres", "video", "kimi", "ollama", "bedrock", "anthropic", "gemini", "openai", "chinese", "sql", "pascal", "dm", "terraform", "ocaml", "commonlisp", "all"]
+provides-extras = ["mcp", "neo4j", "falkordb", "pdf", "watch", "svg", "leiden", "office", "google", "postgres", "video", "kimi", "ollama", "bedrock", "anthropic", "gemini", "openai", "chinese", "sql", "pascal", "dm", "terraform", "ocaml", "commonlisp", "sas", "all"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1367,6 +1374,7 @@ dev = [
     { name = "tree-sitter-commonlisp", specifier = ">=0.4.1" },
     { name = "tree-sitter-hcl", specifier = ">=1.2.0" },
     { name = "tree-sitter-ocaml", specifier = ">=0.25.0" },
+    { name = "tree-sitter-sas", specifier = ">=0.4.2" },
     { name = "wheel", specifier = ">=0.47.0" },
 ]
 
@@ -4878,6 +4886,22 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/a2/e1/3519f866a4679ca36acd9f5a06a779ecb8a92b18887c5546458d521df557/tree_sitter_rust-0.24.2-cp39-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:da2b86099028fd42c6cd32878b7b16b01f8aac0f7b0e98742b7fa6bc3cf09b89", size = 162403, upload-time = "2026-03-27T21:08:52.588Z" },
     { url = "https://files.pythonhosted.org/packages/34/71/7ef609894dbfe5699eb16f7471f9b8af1d958d8ba3e29c238d7607e8cb47/tree_sitter_rust-0.24.2-cp39-abi3-win_amd64.whl", hash = "sha256:4529c125d928882ddfb879fdc6bc0704913261ecc078b6fa7902559e0daf200d", size = 129422, upload-time = "2026-03-27T21:08:54.031Z" },
     { url = "https://files.pythonhosted.org/packages/b9/d8/050a781172745bc345f98abb7c56e72022ea0790f8e793de981c83c2ef15/tree_sitter_rust-0.24.2-cp39-abi3-win_arm64.whl", hash = "sha256:66ba90f61bd54f4c4f5d30434957daf64507c16b0313df76becb37d63f70a227", size = 128245, upload-time = "2026-03-27T21:08:54.803Z" },
+]
+
+[[package]]
+name = "tree-sitter-sas"
+version = "0.4.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/23/7b/5644acdbef190098d022ca2feb747e0b9de8bd0aed974e0bfba1f11fd6ff/tree_sitter_sas-0.4.2.tar.gz", hash = "sha256:0bf60b6434015b36a0105bbb8b78b2f46568566b5849a74bee3000d39f3926cb", size = 86250, upload-time = "2026-05-26T02:35:18.4Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/23/d8/92640ff898e0de9ed85b11ec0b8e1dc2913de9f61082a3cb95c0899a5613/tree_sitter_sas-0.4.2-cp310-abi3-macosx_10_9_x86_64.whl", hash = "sha256:4bf2d35f18920a1eb2d7088b2a49462e75a496edb4b8b56696bc7e0399f52cd5", size = 53795, upload-time = "2026-05-26T02:35:11.141Z" },
+    { url = "https://files.pythonhosted.org/packages/85/fa/6f91ae2c330c9266d11fe19a616a582ecfa6cceb57088d3d5cbe1f3b7c26/tree_sitter_sas-0.4.2-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:684197a93b0d3df37740b3186a150107abeffa5577173d6a0e04b9ee726549a0", size = 56709, upload-time = "2026-05-26T02:35:12.178Z" },
+    { url = "https://files.pythonhosted.org/packages/3b/12/f3508c424a57970717569962d7563db1fe8070f73670fc7fb016b7917dcc/tree_sitter_sas-0.4.2-cp310-abi3-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:46931772298910d76cf1f3bc64bd49eaca6e6d954646ebfb6f6c02470975a308", size = 69010, upload-time = "2026-05-26T02:35:12.957Z" },
+    { url = "https://files.pythonhosted.org/packages/96/23/b9a577b563fb6f0cd5b6f280e83290190be8080a4ed580c20224325b1d31/tree_sitter_sas-0.4.2-cp310-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:074fd05168c7d8ec9e173d4d98ba9698a94b9a7d0a78b5896cb7d110a0d43158", size = 69320, upload-time = "2026-05-26T02:35:13.82Z" },
+    { url = "https://files.pythonhosted.org/packages/c0/73/c6bfe22d61537015a90d3b2c13749ea8db0524ce1b94e4cb728c3a344179/tree_sitter_sas-0.4.2-cp310-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:0d6a4e7518a1465ed4f2e783ae0901f6e7b660c892379f9447466f94ab8011e2", size = 68687, upload-time = "2026-05-26T02:35:14.848Z" },
+    { url = "https://files.pythonhosted.org/packages/b4/3b/2295752b3ef6863ef0e1039748f0b8922527ba287017a4f55dcf1a7c30f8/tree_sitter_sas-0.4.2-cp310-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:1be73663c7385e3e894f8b10ecdae636c1d77ea5e921b2d2aee32999c416914d", size = 68387, upload-time = "2026-05-26T02:35:15.823Z" },
+    { url = "https://files.pythonhosted.org/packages/db/e0/fa793931bc57c6dccf10cd2ffdc2a96366d157a2f8cc612e7f0829370f3f/tree_sitter_sas-0.4.2-cp310-abi3-win_amd64.whl", hash = "sha256:ca96574dfae47f5a94e2273e38ece25863fd48a4ae5a3d2c03ac2056935a2ce5", size = 57347, upload-time = "2026-05-26T02:35:16.667Z" },
+    { url = "https://files.pythonhosted.org/packages/3a/93/1a638a8df76af05abb73ef6e2b22d35e898d3cb15ccbe446b8d125288887/tree_sitter_sas-0.4.2-cp310-abi3-win_arm64.whl", hash = "sha256:d3d4676498418e4d622c244ad36b898d9aaf23ce4cf656ec266673af933642da", size = 55433, upload-time = "2026-05-26T02:35:17.567Z" },
 ]
 
 [[package]]

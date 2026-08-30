@@ -53,6 +53,7 @@ from graphify.extractors.pascal_forms import extract_delphi_form, extract_lazaru
 from graphify.extractors.powershell import extract_powershell, extract_powershell_manifest  # noqa: F401
 from graphify.extractors.razor import extract_razor  # noqa: F401
 from graphify.extractors.rust import extract_rust  # noqa: F401
+from graphify.extractors.sas import extract_sas  # noqa: F401
 from graphify.extractors.sln import extract_sln  # noqa: F401
 from graphify.extractors.sql import extract_sql  # noqa: F401
 from graphify.extractors.terraform import extract_terraform  # noqa: F401
@@ -2317,7 +2318,7 @@ _LANG_FAMILY_BY_EXT: dict[str, str] = {
     ".ex": "elixir", ".exs": "elixir",
     ".jl": "julia",
     ".dart": "dart",
-    ".sh": "shell", ".bash": "shell",
+    ".sh": "shell", ".bash": "shell", ".zsh": "shell",
     ".ps1": "powershell", ".psm1": "powershell", ".psd1": "powershell",
 }
 
@@ -5435,6 +5436,7 @@ _DISPATCH: dict[str, Any] = {
     ".lpk": extract_lazarus_package,
     ".sh": extract_bash,
     ".bash": extract_bash,
+    ".zsh": extract_bash,
     ".json": extract_json,
     ".tf": extract_terraform,
     ".tfvars": extract_terraform,
@@ -5454,6 +5456,7 @@ _DISPATCH: dict[str, Any] = {
     ".cshtml": extract_razor,
     ".cls": extract_apex,
     ".trigger": extract_apex,
+    ".sas": extract_sas,
 }
 
 
@@ -5474,6 +5477,7 @@ _EXTRA_FOR_EXTENSION = {
     ".cl": "commonlisp",
     ".lsp": "commonlisp",
     ".asd": "commonlisp",
+    ".sas": "sas",
 }
 
 # Substrings an extractor's error carries to classify why a dependency-backed
@@ -6720,7 +6724,7 @@ def extract(
 
     sh_pairs = [
         (r, p) for r, p in zip(per_file, paths)
-        if p.suffix in (".sh", ".bash") or _looks_like_bash(r)
+        if p.suffix in (".sh", ".bash", ".zsh") or _looks_like_bash(r)
     ]
     if sh_pairs:
         sh_results = [r for r, _ in sh_pairs]

@@ -94,7 +94,10 @@ ocaml = ["tree-sitter-ocaml"]
 # tree-sitter-commonlisp ships prebuilt abi3 wheels for every platform; optional
 # because Common Lisp is a niche corpus language.
 commonlisp = ["tree-sitter-commonlisp"]
-all = ["mcp>=1,<3", "starlette>=1.3.1,<2", "neo4j", "falkordb", "pypdf>=6.12.0", "markdownify", "watchdog", "graspologic; python_version < '3.13'", "python-docx", "openpyxl", "faster-whisper; python_version >= '3.11'", "yt-dlp>=2026.6.9", "matplotlib", "numpy>=2.0; python_version >= '3.13'", "openai", "tiktoken", "boto3", "anthropic", "tree-sitter-sql", "jieba", "tree-sitter-dm", "tree-sitter-hcl", "tree-sitter-pascal", "tree-sitter-ocaml", "tree-sitter-commonlisp"]
+# tree-sitter-sas ships prebuilt wheels for every platform; optional because SAS
+# is a niche corpus language.
+sas = ["tree-sitter-sas"]
+all = ["mcp>=1,<3", "starlette>=1.3.1,<2", "neo4j", "falkordb", "pypdf>=6.12.0", "markdownify", "watchdog", "graspologic; python_version < '3.13'", "python-docx", "openpyxl", "faster-whisper; python_version >= '3.11'", "yt-dlp>=2026.6.9", "matplotlib", "numpy>=2.0; python_version >= '3.13'", "openai", "tiktoken", "boto3", "anthropic", "tree-sitter-sql", "jieba", "tree-sitter-dm", "tree-sitter-hcl", "tree-sitter-pascal", "tree-sitter-ocaml", "tree-sitter-commonlisp", "tree-sitter-sas"]
 
 [project.scripts]
 graphify = "graphify.__main__:main"
@@ -119,6 +122,7 @@ dev = [
     "tree-sitter-hcl>=1.2.0",
     "tree-sitter-ocaml>=0.25.0",
     "tree-sitter-commonlisp>=0.4.1",
+    "tree-sitter-sas>=0.4.2",
 ]
 
 [tool.uv]
