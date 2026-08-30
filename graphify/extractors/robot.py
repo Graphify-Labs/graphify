@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 
 from pathlib import Path
 from graphify.extractors.base import _file_stem, _make_id
@@ -16,33 +17,51 @@ _ROBOT_STDLIBS = frozenset({
 })
 
 
+_ROBOT_VAR_RE = re.compile(r"\$\{([^}]*)\}")
+
+
 def _resolve_robot_import(raw: str, source_path: Path) -> Path | None:
     """Resolve a Settings-section import path relative to the importing file.
 
     Preserves the relative/absolute form of source_path so the target ID
     matches the ID the imported file's own extraction produces (same approach
-    as the JS relative-import resolver). Returns None when unresolvable
-    ${VARIABLES} remain in the path.
+    as the JS relative-import resolver). Robot matches variable names case-,
+    space-, and underscore-insensitively, so ``${curdir}`` and ``${Cur_Dir}``
+    resolve like ``${CURDIR}``. Returns None when the path holds any other
+    (unresolvable) ${VARIABLE} or %{ENV_VAR}.
     """
-    s = raw.strip().replace("${/}", "/")
+    s = raw.strip()
     # ${CURDIR}/${EXECDIR} already anchor the path - substituting and then
     # re-joining below would prefix source_path.parent twice when the scan
     # uses relative paths, so track anchoring explicitly.
     anchored = False
-    if "${CURDIR}" in s:
-        s = s.replace("${CURDIR}", str(source_path.parent))
-        anchored = True
-    if "${EXECDIR}" in s:
-        # ${EXECDIR} is the directory Robot was launched from - statically
-        # knowable only for a relative scan, where "." is the scan root and
-        # matches how relative file-node IDs are built. For an absolute
-        # source path the resolved ID could never match a node, so emit
-        # nothing rather than a guaranteed-dangling edge.
-        if source_path.is_absolute():
+    parts = []
+    last = 0
+    for m in _ROBOT_VAR_RE.finditer(s):
+        name = m.group(1).replace(" ", "").replace("_", "").lower()
+        if name == "/":
+            repl = "/"
+        elif name == "curdir":
+            repl = str(source_path.parent)
+            anchored = True
+        elif name == "execdir":
+            # ${EXECDIR} is the directory Robot was launched from - statically
+            # knowable only for a relative scan, where "." is the scan root
+            # and matches how relative file-node IDs are built. For an
+            # absolute source path the resolved ID could never match a node,
+            # so emit nothing rather than a guaranteed-dangling edge.
+            if source_path.is_absolute():
+                return None
+            repl = "."
+            anchored = True
+        else:
             return None
-        s = s.replace("${EXECDIR}", ".")
-        anchored = True
-    if "${" in s or "%{" in s:
+        parts.append(s[last:m.start()])
+        parts.append(repl)
+        last = m.end()
+    parts.append(s[last:])
+    s = "".join(parts)
+    if "%{" in s:
         return None
     p = Path(s)
     if not anchored and not p.is_absolute():

@@ -4253,3 +4253,20 @@ def test_robot_bdd_style_calls_reach_their_definitions(tmp_path):
     # a keyword literally named with a BDD prefix is reached via the
     # full-name candidate ('Then Given Special' -> strip one prefix only)
     assert def_ids["Given Special"] in call_targets
+
+
+def test_robot_path_variables_match_case_space_underscore_insensitively():
+    # Robot matches variable names case-, space-, and underscore-insensitively:
+    # ${curdir} / ${Cur_Dir} / ${EXEC DIR} all resolve like their canonical forms.
+    from pathlib import Path as P
+    from graphify.extractors.robot import _resolve_robot_import
+
+    rel_src = P("Tests/Sub/suite.robot")
+    expected = P("Tests/Library/lib.py")
+    for var in ("${curdir}", "${Cur_Dir}", "${CUR DIR}"):
+        assert _resolve_robot_import(f"{var}/../Library/lib.py", rel_src) == expected, var
+    assert _resolve_robot_import("${execdir}/Resource/common.robot", rel_src) == P("Resource/common.robot")
+    # ${/} separator variant still works alongside the variable matching
+    assert _resolve_robot_import("..${/}Resource${/}common.robot", rel_src) == P("Tests/Resource/common.robot")
+    # any other variable, in any casing, still yields no edge
+    assert _resolve_robot_import("${Root_Dir}/x.robot", rel_src) is None
