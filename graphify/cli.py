@@ -168,6 +168,56 @@ def _stamped_manifest_files(
     }
 
 
+def _handle_unverified_semantic_shrink(
+    unverified_shrink,
+    *,
+    cli_allow_partial: bool,
+    files_by_type,
+    sem_result,
+    target,
+    partial_semantic_files,
+    failed_ast_sources,
+    semantic_files,
+):
+    """Shared handling for the #3203 unverified-semantic-shrink guard on both the
+    raw and clustered write paths (they differ only in where the flag is read
+    from — ``merged`` vs ``G.graph``). Always prints the actionable notice.
+
+    Returns None when there is no shrink, else ``(incomplete, manifest_files,
+    cleared_semantic)`` — the latter two are None unless the guard armed
+    (``not cli_allow_partial``), so the caller mirrors the original inline logic.
+    """
+    if not unverified_shrink:
+        return None
+    incomplete = False
+    manifest_files = None
+    cleared_semantic = None
+    if not cli_allow_partial:
+        incomplete = True
+        unverified_sources = set(unverified_shrink.keys())
+        manifest_files = _stamped_manifest_files(
+            files_by_type,
+            sem_result,
+            target,
+            partial_source_files=partial_semantic_files,
+            failed_ast_sources=failed_ast_sources,
+            unverified_semantic_sources=unverified_sources,
+        )
+        stamped = {f for _flist in manifest_files.values() for f in _flist}
+        cleared_semantic = {str(p) for p in semantic_files} - stamped
+    details = ", ".join(
+        f"'{sf}' ({prior} -> {fresh} nodes)"
+        for sf, (prior, fresh) in sorted(unverified_shrink.items())
+    )
+    print(
+        f"[graphify extract] semantic extraction is incomplete: unverified semantic "
+        f"shrink detected for {details}. The shrink guard stays armed for this write; "
+        "pass --allow-partial to overwrite a larger existing graph anyway.",
+        file=sys.stderr,
+    )
+    return incomplete, manifest_files, cleared_semantic
+
+
 def _stale_graph_sources(
     graph_path: Path,
     scan_root: Path,
@@ -4150,33 +4200,23 @@ def dispatch_command(cmd: str) -> None:
                     # raw-dump this run's partial extraction over it.
                     print(f"error: {exc}", file=sys.stderr)
                     sys.exit(1)
-                _unverified_shrink = merged.get("_unverified_semantic_shrink")
-                if _unverified_shrink:
-                    if not cli_allow_partial:
-                        _extraction_incomplete = True
-                        _unverified_sources = set(_unverified_shrink.keys())
-                        _manifest_files = _stamped_manifest_files(
-                            files_by_type,
-                            sem_result,
-                            target,
-                            partial_source_files=_partial_semantic_files,
-                            failed_ast_sources=_failed_ast_sources,
-                            unverified_semantic_sources=_unverified_sources,
-                        )
-                        _stamped_semantic = {
-                            f for _flist in _manifest_files.values() for f in _flist
-                        }
-                        _cleared_semantic = {str(p) for p in semantic_files} - _stamped_semantic
-                    _shrink_details = ", ".join(
-                        f"'{sf}' ({prior} -> {fresh} nodes)"
-                        for sf, (prior, fresh) in sorted(_unverified_shrink.items())
-                    )
-                    print(
-                        f"[graphify extract] semantic extraction is incomplete: unverified semantic "
-                        f"shrink detected for {_shrink_details}. The shrink guard stays armed for "
-                        "this write; pass --allow-partial to overwrite a larger existing graph anyway.",
-                        file=sys.stderr,
-                    )
+                _shrink = _handle_unverified_semantic_shrink(
+                    merged.get("_unverified_semantic_shrink"),
+                    cli_allow_partial=cli_allow_partial,
+                    files_by_type=files_by_type,
+                    sem_result=sem_result,
+                    target=target,
+                    partial_semantic_files=_partial_semantic_files,
+                    failed_ast_sources=_failed_ast_sources,
+                    semantic_files=semantic_files,
+                )
+                if _shrink is not None and _shrink[0]:
+                    _extraction_incomplete = True
+                    _manifest_files = _shrink[1]
+                    _stamped_semantic = {
+                        f for _flist in _manifest_files.values() for f in _flist
+                    }
+                    _cleared_semantic = _shrink[2]
             merged["nodes"] = _dedupe_nodes(merged["nodes"])
             merged["edges"] = _dedupe_edges(merged["edges"])
             # Disambiguate colliding-basename file-node labels (#2032). This raw
@@ -4296,33 +4336,23 @@ def dispatch_command(cmd: str) -> None:
                     dedup_llm_backend=dedup_backend,
                     root=target,
                 )
-                _unverified_shrink = G.graph.get("_unverified_semantic_shrink") if hasattr(G, "graph") else None
-                if _unverified_shrink:
-                    if not cli_allow_partial:
-                        _extraction_incomplete = True
-                        _unverified_sources = set(_unverified_shrink.keys())
-                        _manifest_files = _stamped_manifest_files(
-                            files_by_type,
-                            sem_result,
-                            target,
-                            partial_source_files=_partial_semantic_files,
-                            failed_ast_sources=_failed_ast_sources,
-                            unverified_semantic_sources=_unverified_sources,
-                        )
-                        _stamped_semantic = {
-                            f for _flist in _manifest_files.values() for f in _flist
-                        }
-                        _cleared_semantic = {str(p) for p in semantic_files} - _stamped_semantic
-                    _shrink_details = ", ".join(
-                        f"'{sf}' ({prior} -> {fresh} nodes)"
-                        for sf, (prior, fresh) in sorted(_unverified_shrink.items())
-                    )
-                    print(
-                        f"[graphify extract] semantic extraction is incomplete: unverified semantic "
-                        f"shrink detected for {_shrink_details}. The shrink guard stays armed for "
-                        "this write; pass --allow-partial to overwrite a larger existing graph anyway.",
-                        file=sys.stderr,
-                    )
+                _shrink = _handle_unverified_semantic_shrink(
+                    G.graph.get("_unverified_semantic_shrink") if hasattr(G, "graph") else None,
+                    cli_allow_partial=cli_allow_partial,
+                    files_by_type=files_by_type,
+                    sem_result=sem_result,
+                    target=target,
+                    partial_semantic_files=_partial_semantic_files,
+                    failed_ast_sources=_failed_ast_sources,
+                    semantic_files=semantic_files,
+                )
+                if _shrink is not None and _shrink[0]:
+                    _extraction_incomplete = True
+                    _manifest_files = _shrink[1]
+                    _stamped_semantic = {
+                        f for _flist in _manifest_files.values() for f in _flist
+                    }
+                    _cleared_semantic = _shrink[2]
             except ValueError as exc:
                 # --no-dedup arms build_merge's #479 shrink guard, which refuses
                 # to drop nodes belonging to files this run neither re-extracted
