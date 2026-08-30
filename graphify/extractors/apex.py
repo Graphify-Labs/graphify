@@ -34,6 +34,40 @@ def extract_apex(path: Path) -> dict:
                 "source_location": f"L{line}",
             })
 
+    def add_stub(nid: str, label: str) -> None:
+        """Node for a type or SObject this file only REFERENCES, not declares.
+
+        The definition lives elsewhere, so the placeholder must stay
+        SOURCELESS: a stamped ``source_file`` reads as a definition, and
+        ``_disambiguate_colliding_node_ids`` then salts the id per referencing
+        file, so one class becomes N unconnected nodes and no edge reaches the
+        real definition (#1402/#2324, same fix as the SQL extractor). No
+        ``contains`` edge either, for the same reason.
+
+        Unlike the SQL/CommonLisp stubs this sets no ``origin_file``:
+        ``_node_disambiguation_source_key`` falls back to it, which would
+        re-introduce exactly the per-file salting.
+        """
+        if nid not in seen_ids:
+            seen_ids.add(nid)
+            nodes.append({
+                "id": nid,
+                "label": label,
+                "file_type": "code",
+                "source_file": "",
+                "source_location": "",
+            })
+
+    def type_ref(name: str) -> str:
+        """Id for a referenced type: this file's own declaration when it has
+        one, otherwise a sourceless stub the corpus-level rewire resolves."""
+        local_nid = _make_id(stem, name)
+        if local_nid in seen_ids:
+            return local_nid
+        nid = _make_id(name)
+        add_stub(nid, name)
+        return nid
+
     def add_edge(src: str, tgt: str, relation: str, line: int,
                  confidence: str = "EXTRACTED") -> None:
         edges.append({
@@ -50,23 +84,30 @@ def extract_apex(path: Path) -> dict:
 
     lines = source.splitlines()
 
-    _ACCESS = r"(?:public|private|protected|global|webService)?"
-    _SHARING = r"(?:\s+(?:with|without|inherited)\s+sharing)?"
-    _MOD = r"(?:\s+(?:abstract|virtual|override|static|final|transient|testMethod))?"
     _ANNOTATION = r"(?:\s*@\w+(?:\s*\([^)]*\))?\s*)*"
+    # Apex puts no ordering constraint on modifiers: `public abstract with
+    # sharing class Foo` and `public with sharing abstract class Foo` are both
+    # legal, as is any number of them. Matching a fixed
+    # access -> sharing -> modifier sequence silently dropped every declaration
+    # written in another order, so the type produced no node at all.
+    _MODIFIERS = (
+        r"(?:(?:public|private|protected|global|webService"
+        r"|abstract|virtual|override|static|final|transient|testMethod)\s+"
+        r"|(?:with|without|inherited)\s+sharing\s+)*"
+    )
 
     cls_re = _re.compile(
-        rf"^{_ANNOTATION}\s*{_ACCESS}{_SHARING}{_MOD}\s*class\s+(\w+)"
+        rf"^{_ANNOTATION}\s*{_MODIFIERS}class\s+(\w+)"
         rf"(?:\s+extends\s+(\w+))?(?:\s+implements\s+([\w,\s]+))?\s*\{{?",
         _re.IGNORECASE,
     )
     iface_re = _re.compile(
-        rf"^{_ANNOTATION}\s*{_ACCESS}{_SHARING}{_MOD}\s*interface\s+(\w+)"
+        rf"^{_ANNOTATION}\s*{_MODIFIERS}interface\s+(\w+)"
         rf"(?:\s+extends\s+([\w,\s]+))?\s*\{{?",
         _re.IGNORECASE,
     )
     enum_re = _re.compile(
-        rf"^{_ANNOTATION}\s*{_ACCESS}{_SHARING}{_MOD}\s*enum\s+(\w+)\s*\{{?",
+        rf"^{_ANNOTATION}\s*{_MODIFIERS}enum\s+(\w+)\s*\{{?",
         _re.IGNORECASE,
     )
     trigger_re = _re.compile(
@@ -74,7 +115,7 @@ def extract_apex(path: Path) -> dict:
         _re.IGNORECASE,
     )
     method_re = _re.compile(
-        rf"^{_ANNOTATION}\s*{_ACCESS}{_MOD}\s*(?:static\s+)?[\w<>\[\]]+\s+(\w+)\s*\([^)]*\)\s*(?:throws\s+\w+\s*)?\{{?",
+        rf"^{_ANNOTATION}\s*{_MODIFIERS}[\w<>\[\]]+\s+(\w+)\s*\([^)]*\)\s*(?:throws\s+\w+\s*)?\{{?",
         _re.IGNORECASE,
     )
     annotation_re = _re.compile(r"@(\w+)", _re.IGNORECASE)
@@ -105,9 +146,7 @@ def extract_apex(path: Path) -> dict:
             trig_nid = _make_id(stem, trig_name)
             add_node(trig_nid, trig_name, lineno)
             add_edge(file_nid, trig_nid, "contains", lineno)
-            sob_nid = _make_id(sobject)
-            if sob_nid not in seen_ids:
-                add_node(sob_nid, sobject, lineno)
+            sob_nid = type_ref(sobject)
             add_edge(trig_nid, sob_nid, "uses", lineno, confidence="INFERRED")
             current_class_nid = trig_nid
             pending_annotations = []
@@ -124,22 +163,14 @@ def extract_apex(path: Path) -> dict:
             add_edge(file_nid, class_nid, "contains", lineno)
             if cm.group(2):
                 base = cm.group(2).strip()
-                base_nid = _make_id(stem, base)
-                if base_nid not in seen_ids:
-                    base_nid = _make_id(base)
-                if base_nid not in seen_ids:
-                    add_node(base_nid, base, lineno)
-                add_edge(class_nid, base_nid, "extends", lineno, confidence="INFERRED")
+                add_edge(class_nid, type_ref(base), "extends", lineno,
+                         confidence="INFERRED")
             if cm.group(3):
                 for iface in cm.group(3).split(","):
                     iface = iface.strip()
                     if iface:
-                        iface_nid = _make_id(stem, iface)
-                        if iface_nid not in seen_ids:
-                            iface_nid = _make_id(iface)
-                        if iface_nid not in seen_ids:
-                            add_node(iface_nid, iface, lineno)
-                        add_edge(class_nid, iface_nid, "implements", lineno, confidence="INFERRED")
+                        add_edge(class_nid, type_ref(iface), "implements",
+                                 lineno, confidence="INFERRED")
             current_class_nid = class_nid
             pending_annotations = []
             continue
@@ -158,12 +189,8 @@ def extract_apex(path: Path) -> dict:
                 for parent in im.group(2).split(","):
                     parent = parent.strip()
                     if parent:
-                        parent_nid = _make_id(stem, parent)
-                        if parent_nid not in seen_ids:
-                            parent_nid = _make_id(parent)
-                        if parent_nid not in seen_ids:
-                            add_node(parent_nid, parent, lineno)
-                        add_edge(iface_nid, parent_nid, "extends", lineno, confidence="INFERRED")
+                        add_edge(iface_nid, type_ref(parent), "extends",
+                                 lineno, confidence="INFERRED")
             pending_annotations = []
             continue
 
@@ -198,9 +225,7 @@ def extract_apex(path: Path) -> dict:
 
         for sm in soql_re.finditer(line_text):
             sobject = sm.group(1)
-            sob_nid = _make_id(sobject)
-            if sob_nid not in seen_ids:
-                add_node(sob_nid, sobject, lineno)
+            sob_nid = type_ref(sobject)
             src = current_class_nid or file_nid
             add_edge(src, sob_nid, "uses", lineno, confidence="INFERRED")
 
