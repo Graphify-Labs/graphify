@@ -16372,14 +16372,42 @@ def _extract_haxe_tong(path: Path) -> dict:
                 return _read_text(nm, source)
         return ""
 
-    def walk_calls(node, owner_nid):
+    def walk_calls(node, owner_nid, class_name):
+        # Resolution policy is deliberately identical to
+        # _extract_haxe_vantreeseba's: resolve within the same file only, and
+        # DROP an unresolved call rather than inventing a node for it. A bare,
+        # language-unscoped name collides across the whole depot far more often
+        # than it lands (a Haxe `textSprite()` resolving to an unrelated C++
+        # `GraphObjs.h`), and no cross-file resolver exists for Haxe.
+        #
+        # This matters far more here than it did before: tong parses function
+        # bodies that previously failed, so it sees ~5x the call sites, and the
+        # overwhelming majority are calls OUT of the file (`addEventListener`,
+        # `Std.isOfType`). Creating a node per unresolved name buries the graph
+        # in placeholders -- measured on a 5,372-file corpus it left 92% of
+        # Haxe call edges pointing at fabricated nodes and cut community count
+        # by 41%, the largest community going 620 -> 3,799 nodes.
+        #
+        # `_call_name` doesn't distinguish `foo()`, `this.foo()` and
+        # `other.foo()` -- all come back as "foo" -- so the same-class sibling
+        # method (the idiomatic case, stored under a class-qualified id) is
+        # tried explicitly before the file-scoped name.
         if node.type in ("ECall", "ENew"):
             name = _call_name(node)
-            if name:
-                add_edge(owner_nid, ensure_type_node(name, node.start_point[0] + 1),
-                         "calls", node.start_point[0] + 1, confidence="INFERRED")
+            if name and name not in _LANGUAGE_BUILTIN_GLOBALS:
+                tgt_nid = None
+                if class_name is not None:
+                    candidate = _make_id(stem, class_name, name)
+                    if candidate in seen_ids:
+                        tgt_nid = candidate
+                if tgt_nid is None:
+                    candidate = _make_id(stem, name)
+                    if candidate in seen_ids:
+                        tgt_nid = candidate
+                if tgt_nid is not None:
+                    add_edge(owner_nid, tgt_nid, "calls", node.start_point[0] + 1)
         for c in node.children:
-            walk_calls(c, owner_nid)
+            walk_calls(c, owner_nid, class_name)
 
     def walk(node, parent_nid=None, parent_name=None):
         t = node.type
@@ -16461,15 +16489,15 @@ def _extract_haxe_tong(path: Path) -> dict:
                 add_edge(file_nid, func_nid, "contains", line)
             body = node.child_by_field_name("body")
             if body is not None:
-                function_bodies.append((func_nid, body))
+                function_bodies.append((func_nid, body, parent_name))
             return
 
         for c in node.children:
             walk(c, parent_nid, parent_name)
 
     walk(root)
-    for func_nid, body in function_bodies:
-        walk_calls(body, func_nid)
+    for func_nid, body, class_name in function_bodies:
+        walk_calls(body, func_nid, class_name)
     return {"nodes": nodes, "edges": edges}
 
 
