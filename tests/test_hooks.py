@@ -1888,3 +1888,67 @@ def test_register_merge_driver_correct_from_subdirectory_with_persisted_out_dir(
     assert "registered" in result
     attrs = (repo / ".gitattributes").read_text(encoding="utf-8")
     assert attrs.strip() == ".planning/graphs/graph.json merge=graphify"
+
+
+# --- eighth review round: whitespace/glob rejection at persist time, symlink-
+# loop RuntimeError (Graphify PR review round 8). "is_absolute_any_platform
+# removed" findings were false positives again — same as last round, verified
+# via direct import + full test_paths.py pass, no code change needed.
+
+@pytest.mark.parametrize("bad_value", [
+    "my custom-out",       # space
+    "custom\tout",         # tab
+    "custom*out",          # glob star
+    "custom?out",          # glob question mark
+    "custom[out]",         # character class
+    "!custom-out",         # leading negation
+    "#custom-out",         # leading comment marker
+])
+def test_persist_out_dir_refuses_unsafe_gitattributes_values(tmp_path, bad_value):
+    """Every such value would just make _merge_attr_line fall back to the
+    default anyway — persisting it is immediately useless, same reasoning
+    already applied to `..`-escaping and absolute values."""
+    from graphify.hooks import _persist_out_dir
+
+    with pytest.raises(ValueError, match="unsafe for .gitattributes"):
+        _persist_out_dir(tmp_path, bad_value)
+    assert not (tmp_path / ".graphifyrc").exists()
+
+
+def test_read_persisted_out_dir_survives_symlink_loop(tmp_path, monkeypatch):
+    """A symlink loop in the .graphifyrc's ancestry (repo-committed content
+    could ship one deliberately) raises RuntimeError from Path.resolve() —
+    pathlib's own exception for this, not OSError — must degrade to
+    'no override', not crash module import."""
+    import importlib
+    import graphify.paths as paths_mod
+
+    monkeypatch.delenv("GRAPHIFY_OUT", raising=False)
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".graphifyrc").write_text("out_dir=.planning/graphs\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    def _boom(self):
+        raise RuntimeError("Symlink loop from '...'")
+
+    monkeypatch.setattr("pathlib.Path.resolve", _boom)
+    importlib.reload(paths_mod)  # must not raise
+    try:
+        assert paths_mod.GRAPHIFY_OUT == "graphify-out"
+    finally:
+        monkeypatch.undo()
+        importlib.reload(paths_mod)
+
+
+def test_read_persisted_out_dir_for_root_survives_symlink_loop(tmp_path, monkeypatch):
+    from graphify.hooks import _persist_out_dir
+
+    repo = _make_git_repo(tmp_path)
+    _persist_out_dir(repo, ".planning/graphs")
+    import graphify.paths as paths_mod
+
+    def _boom(self):
+        raise RuntimeError("Symlink loop from '...'")
+
+    monkeypatch.setattr("pathlib.Path.resolve", _boom)
+    assert paths_mod._read_persisted_out_dir_for_root(repo) is None  # must not raise

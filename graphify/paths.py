@@ -196,13 +196,16 @@ def _read_persisted_out_dir() -> str | None:
     # per-call try/excepts: `Path.cwd()` raises OSError (FileNotFoundError)
     # if the invocation directory itself has been deleted out from under the
     # process (rarer, but real — a shell left open in a directory a script
-    # elsewhere just rm -rf'd, common in CI teardown), and building a path
-    # from a value containing an embedded NUL byte — a valid-UTF-8 string can
+    # elsewhere just rm -rf'd, common in CI teardown); building a path from
+    # a value containing an embedded NUL byte — a valid-UTF-8 string can
     # still contain one — raises ValueError from the OS layer the first time
-    # it reaches a syscall (inside ``_resolve_persisted_out_dir_target``).
-    # Both must degrade to "no override", per this function's own contract,
-    # not propagate and abort `graphify.paths` import for every command
-    # anywhere near the repo.
+    # it reaches a syscall; and a symlink loop anywhere in the path being
+    # resolved (`.graphifyrc` is repo-committed, so a cloned repo could ship
+    # one deliberately) raises RuntimeError specifically — pathlib's own
+    # exception for this, not OSError. All three (inside `_find_graphifyrc`
+    # and `_resolve_persisted_out_dir_target`) must degrade to "no override",
+    # per this function's own contract, not propagate and abort
+    # `graphify.paths` import for every command anywhere near the repo.
     try:
         rc_path = _find_graphifyrc(Path.cwd())
         if rc_path is None:
@@ -214,7 +217,7 @@ def _read_persisted_out_dir() -> str | None:
             return os.path.relpath(target, Path.cwd())
         except ValueError:
             return str(target)  # e.g. different drives on Windows
-    except (OSError, ValueError):
+    except (OSError, ValueError, RuntimeError):
         return None
 
 
@@ -248,7 +251,7 @@ def _read_persisted_out_dir_for_root(root: Path) -> str | None:
             return os.path.relpath(target, root.resolve())
         except ValueError:
             return str(target)
-    except (OSError, ValueError):
+    except (OSError, ValueError, RuntimeError):
         return None
 
 

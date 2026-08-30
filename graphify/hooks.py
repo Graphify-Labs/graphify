@@ -578,6 +578,19 @@ def _persist_out_dir(root: Path, out: str) -> None:
         # ignored the next time anyone reads it back. Refuse at the source
         # instead of writing something immediately useless.
         raise ValueError(f"refusing to persist a `..`-escaping GRAPHIFY_OUT: {out!r}")
+    if _unsafe_as_gitattributes_pattern(out):
+        # Same "don't write something a reader will just ignore" reasoning
+        # as the `..` check above: _merge_attr_line falls back to the
+        # default for whitespace or a gitattributes glob metacharacter
+        # (*?[]! or a leading #), so persisting one here just writes a
+        # value the very next .gitattributes generation will discard.
+        # (Absolute/backslash/`..` are re-checked here too via the shared
+        # predicate, but those already raised above with a more specific
+        # message — this branch is only reachable for whitespace/glob.)
+        raise ValueError(
+            f"refusing to persist a GRAPHIFY_OUT unsafe for .gitattributes "
+            f"(whitespace or a glob metacharacter): {out!r}"
+        )
     rc_path = root / ".graphifyrc"
     if rc_path.is_symlink():
         raise ValueError(f"refusing to write through a symlinked .graphifyrc: {rc_path}")
@@ -767,6 +780,39 @@ def _pinned_python() -> str:
     return sys.executable
 
 
+def _unsafe_as_gitattributes_pattern(out: str) -> bool:
+    """True if `out` can't safely become the pattern half of a
+    `.gitattributes` line (`<out>/graph.json merge=graphify`).
+
+    Shared by `_merge_attr_line` (falls back to the default name) and
+    `_persist_out_dir` (refuses to persist at all) so the two can't drift:
+    a value `_merge_attr_line` would reject anyway is also refused at
+    write time, matching the same "don't persist something a reader will
+    just ignore" reasoning already applied to `..`-escaping and absolute
+    values.
+
+    - Absolute, backslash-containing, or `..`-ascending: not expressible as
+      a repo-relative gitattributes pattern at all.
+    - Whitespace: a gitattributes line is whitespace-separated fields, so a
+      space would split the pattern from part of itself, parsing as an
+      extra unintended attribute.
+    - A glob metacharacter (`*?[]!`) or a leading `#`: embedded unescaped,
+      these change what the pattern MATCHES (`*`/`?` glob, `[...]` is a
+      character class, a leading `!` negates) or make the whole line a
+      comment, rather than being treated as a literal path segment — e.g.
+      `out="*"` would produce `*/graph.json`, matching under every
+      top-level directory instead of one literally named `"*"`.
+    """
+    return (
+        Path(out).is_absolute()
+        or "\\" in out
+        or ".." in Path(out).parts
+        or any(c.isspace() for c in out)
+        or any(c in out for c in "*?[]!")
+        or out.startswith("#")
+    )
+
+
 def _merge_attr_line(root: Path) -> str:
     """The .gitattributes line assigning the graphify merge driver to graph.json.
 
@@ -814,15 +860,7 @@ def _merge_attr_line(root: Path) -> str:
     """
     from graphify.paths import GRAPHIFY_OUT, _read_persisted_out_dir_for_root
     out = _read_persisted_out_dir_for_root(root) or GRAPHIFY_OUT
-    if (
-        not out
-        or Path(out).is_absolute()
-        or "\\" in out
-        or ".." in Path(out).parts
-        or any(c.isspace() for c in out)
-        or any(c in out for c in "*?[]!")
-        or out.startswith("#")
-    ):
+    if not out or _unsafe_as_gitattributes_pattern(out):
         out = "graphify-out"
     return f"{out.rstrip('/')}/graph.json merge=graphify"
 
