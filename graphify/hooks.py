@@ -1,5 +1,6 @@
 # git hook integration - install/uninstall graphify post-commit and post-checkout hooks
 from __future__ import annotations
+import errno
 import os
 import re
 import sys
@@ -459,10 +460,43 @@ def _load_graphifyrc(root: Path) -> dict[str, str | int]:
                     f"Must be a non-negative integer."
                 ) from exc
         elif key == "out_dir":
-            if not val:
-                raise ValueError(f"Invalid out_dir in {rc_path} at line {line_num}: empty value")
-            cfg["out_dir"] = val
+            # An empty value is treated as absent, not invalid — unlike
+            # viz_node_limit, a blank `out_dir=` is a plausible way someone
+            # hand-edits the file to clear an override, and this key is read
+            # unconditionally by `install()`; raising here would make hook
+            # install itself impossible to run over a harmless stale line.
+            # Matches graphify.paths._read_persisted_out_dir's own handling
+            # of the same file/key.
+            if val:
+                cfg["out_dir"] = val
     return cfg
+
+
+def _write_text_no_symlink(path: Path, content: str) -> bool:
+    """Write `content` to `path`, refusing to follow a symlink at the final
+    path component. Returns True if written, False if `path` is a symlink.
+
+    A separate `path.is_symlink()` check followed by a plain `write_text()`
+    call leaves a race window open: something could replace `path` with a
+    symlink between the check and the write. `O_NOFOLLOW` closes that window
+    by making the open() call itself atomically fail (ELOOP) if the final
+    component is a symlink — there is no gap to win a race in. POSIX only;
+    Windows lacks O_NOFOLLOW, so this degrades to a plain create/truncate
+    there (no worse than the check-then-write pattern it replaces, and
+    unprivileged symlink creation is a materially different threat there).
+    """
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(str(path), flags, 0o644)
+    except OSError as exc:
+        if hasattr(os, "O_NOFOLLOW") and exc.errno == errno.ELOOP:
+            return False
+        raise
+    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+        f.write(content)
+    return True
 
 
 def _persist_out_dir(root: Path, out: str) -> None:
@@ -486,11 +520,22 @@ def _persist_out_dir(root: Path, out: str) -> None:
     `.graphifyrc` as a symlink to an arbitrary path (e.g. a shell profile or
     cron file) and have `hook install` — routinely run, with no reason for a
     user to suspect it writes anything — overwrite whatever that symlink
-    points at. Refusing is a one-line check; silently following would make
-    the write target attacker-controlled.
+    points at. Uses `_write_text_no_symlink` for the actual write so a
+    symlink swapped in after this check (but before the write) is still
+    caught, rather than trusting a single earlier check-then-write.
+
+    Refuses to persist an absolute path at all: `.graphifyrc` is repo-
+    committed, and an absolute out_dir committed there would silently
+    redirect every collaborator's graphify output the moment they clone the
+    repo and run any command — no explicit opt-in, unlike an env var the
+    user sets for themselves. `graphify.paths._read_persisted_out_dir`
+    refuses to honor an absolute persisted value for the same reason; not
+    writing one here is the same policy applied at the source.
     """
     if "\n" in out or "\r" in out:
         raise ValueError(f"GRAPHIFY_OUT contains a newline, refusing to persist: {out!r}")
+    if Path(out).is_absolute():
+        raise ValueError(f"refusing to persist an absolute GRAPHIFY_OUT to .graphifyrc: {out!r}")
     rc_path = root / ".graphifyrc"
     if rc_path.is_symlink():
         raise ValueError(f"refusing to write through a symlinked .graphifyrc: {rc_path}")
@@ -505,7 +550,8 @@ def _persist_out_dir(root: Path, out: str) -> None:
                     continue  # replaced below with the current value
             lines.append(raw)
     lines.append(f"out_dir={out}")
-    rc_path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+    if not _write_text_no_symlink(rc_path, "\n".join(lines) + "\n"):
+        raise ValueError(f"refusing to write through a symlinked .graphifyrc: {rc_path}")
 
 
 def _git_root(path: Path) -> Path | None:
@@ -674,10 +720,25 @@ def _merge_attr_line() -> str:
     directory, but a persisted out_dir re-expressed relative to *this*
     process's cwd (see _read_persisted_out_dir) can legitimately be
     `../../out-dir` when invoked from a nested subdirectory — same fallback.
+
+    A newline/carriage-return in GRAPHIFY_OUT gets the same fallback. This
+    function is the actual place a corrupted value would land in
+    `.gitattributes` — _persist_out_dir rejecting a newline before writing
+    `.graphifyrc` does not stop THIS function from reading the same raw
+    GRAPHIFY_OUT (env var, never persisted) and building the line from it
+    regardless, since it runs unconditionally after the persist attempt,
+    swallowed or not.
     """
     from graphify.paths import GRAPHIFY_OUT
     out = GRAPHIFY_OUT
-    if not out or Path(out).is_absolute() or "\\" in out or ".." in Path(out).parts:
+    if (
+        not out
+        or Path(out).is_absolute()
+        or "\\" in out
+        or ".." in Path(out).parts
+        or "\n" in out
+        or "\r" in out
+    ):
         out = "graphify-out"
     return f"{out.rstrip('/')}/graph.json merge=graphify"
 
@@ -814,9 +875,12 @@ def _clear_persisted_out_dir(root: Path) -> bool:
     if kept == lines:
         return False
     if kept:
-        rc_path.write_text("\n".join(kept) + "\n", encoding="utf-8", newline="\n")
-    else:
-        rc_path.unlink()
+        # _write_text_no_symlink re-checks at the actual write, closing the
+        # race between the is_symlink() check above and this write.
+        return _write_text_no_symlink(rc_path, "\n".join(kept) + "\n")
+    # Removing a symlink deletes the link itself, never its target — no
+    # write-through-symlink risk here, unlike the write above.
+    rc_path.unlink()
     return True
 
 

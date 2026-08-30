@@ -74,21 +74,25 @@ def _read_persisted_out_dir() -> str | None:
     ``.graphifyrc`` is repo-committed, untrusted content (this project already
     reads it for ``viz_node_limit``) — unlike ``GRAPHIFY_OUT`` the env var,
     which a user sets for themselves, this file can arrive unreviewed via
-    ``git clone``. A *relative* value is therefore anchored to the repo root
-    (``rc_path.parent`` — where ``_register_merge_driver`` always resolves and
-    writes it) and refused outright if it escapes that root via ``..``, rather
-    than letting a cloned repo redirect graphify's file writes anywhere on
-    disk. An *absolute* value is returned as-is: that is an existing,
-    documented, intentional feature (shared/CI output setups, see module
-    docstring) with the same trust level ``GRAPHIFY_OUT`` itself already has,
-    and predates this persistence mechanism.
+    ``git clone`` and applies the moment ANY graphify command runs, with no
+    action from the user beyond that clone. A *relative* value is anchored to
+    the repo root (``rc_path.parent`` — where ``_register_merge_driver``
+    always resolves and writes it) and refused outright if it escapes that
+    root via ``..``. An *absolute* value is refused outright too — unlike a
+    relative one it can't even be checked against the repo boundary, and a
+    committed absolute path would silently redirect every collaborator's
+    output the instant they clone the repo. ``_register_merge_driver`` never
+    persists one for the same reason (`graphify.hooks._persist_out_dir`); an
+    absolute ``GRAPHIFY_OUT`` still works exactly as before when a user sets
+    the env var themselves — this refusal is specific to a value arriving
+    from repo-committed content, not the feature.
     """
     rc_path = _find_graphifyrc(Path.cwd())
     if rc_path is None:
         return None
     try:
         content = rc_path.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return None
     for raw in content.splitlines():
         line = raw.strip()
@@ -101,7 +105,7 @@ def _read_persisted_out_dir() -> str | None:
         if not val:
             return None
         if Path(val).is_absolute():
-            return val
+            return None  # repo-committed absolute path — refuse, don't honor
         # Relative: anchor to the repo root (this .graphifyrc's own directory),
         # not wherever this process happens to be invoked from — GRAPHIFY_OUT
         # is otherwise always resolved relative to cwd, so re-express the
