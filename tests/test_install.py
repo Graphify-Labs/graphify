@@ -811,6 +811,68 @@ def test_opencode_agents_uninstall_removes_plugin(tmp_path):
         assert not any("graphify.js" in p for p in config.get("plugin", []))
 
 
+def test_opencode_cli_install_copies_skill_file(tmp_path, monkeypatch):
+    """#2670: `graphify opencode install` must copy skill-opencode.md to the
+    user skill path, not only write AGENTS.md + the tool.execute.before plugin.
+    """
+    from graphify.__main__ import main
+
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    home.mkdir()
+    project.mkdir()
+    monkeypatch.chdir(project)
+    monkeypatch.setattr(sys, "argv", ["graphify", "opencode", "install"])
+    with patch("graphify.install.Path.home", return_value=home):
+        main()
+
+    skill = home / ".config" / "opencode" / "skills" / "graphify" / "SKILL.md"
+    assert skill.exists(), "user-scope OpenCode skill was not installed (#2670)"
+    assert skill.stat().st_size > 0
+    assert (project / "AGENTS.md").exists()
+    assert (project / ".opencode" / "plugins" / "graphify.js").exists()
+
+
+def test_opencode_cli_uninstall_removes_skill_file(tmp_path, monkeypatch):
+    """#2670: `graphify opencode uninstall` removes the user-scope skill too."""
+    from graphify.__main__ import main
+
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    home.mkdir()
+    project.mkdir()
+    monkeypatch.chdir(project)
+
+    monkeypatch.setattr(sys, "argv", ["graphify", "opencode", "install"])
+    with patch("graphify.install.Path.home", return_value=home):
+        main()
+    skill = home / ".config" / "opencode" / "skills" / "graphify" / "SKILL.md"
+    assert skill.exists()
+
+    monkeypatch.setattr(sys, "argv", ["graphify", "opencode", "uninstall"])
+    with patch("graphify.install.Path.home", return_value=home):
+        main()
+    assert not skill.exists()
+
+
+def test_codex_cli_install_copies_skill_file(tmp_path, monkeypatch):
+    """Same always-on install branch as opencode: codex must also get its skill."""
+    from graphify.__main__ import main
+
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    home.mkdir()
+    project.mkdir()
+    monkeypatch.chdir(project)
+    monkeypatch.setattr(sys, "argv", ["graphify", "codex", "install"])
+    with patch("graphify.install.Path.home", return_value=home):
+        main()
+
+    skill = home / ".codex" / "skills" / "graphify" / "SKILL.md"
+    assert skill.exists()
+    assert (project / "AGENTS.md").exists()
+
+
 def test_kilo_agents_install_writes_agents_md(tmp_path):
     _agents_install(tmp_path, "kilo")
     assert (tmp_path / "AGENTS.md").exists()

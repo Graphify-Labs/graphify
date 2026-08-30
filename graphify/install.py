@@ -2304,11 +2304,22 @@ def dispatch_install_cli(cmd: str) -> bool:
             if "--project" in sys.argv[3:]:
                 _project_install(cmd, Path("."))
             else:
+                # Mirror amp/agents user-scope install: skill file first, then
+                # AGENTS.md (+ platform plugin). Without this, `graphify
+                # opencode install` only wrote the AGENTS section/plugin and
+                # never copied skill-opencode.md to
+                # ~/.config/opencode/skills/graphify/SKILL.md, so /graphify
+                # was never discoverable (#2670). Same gap for the other
+                # always-on platforms in this branch.
+                _copy_skill_file(cmd)
                 _agents_install(Path("."), cmd)
         elif subcmd == "uninstall":
             if "--project" in sys.argv[3:]:
                 _project_uninstall(cmd, Path("."))
             else:
+                removed = _remove_skill_file(cmd)
+                if removed:
+                    print("skill removed")
                 _agents_uninstall(Path("."), platform=cmd)
                 if cmd == "codex":
                     _uninstall_codex_hook(Path("."))
