@@ -341,6 +341,12 @@ _PLATFORM_CONFIG: dict[str, dict] = {
         "claude_md": True,
         "skill_refs": "claude",
     },
+    "cursor": {
+        "skill_file": "skill-cursor.md",
+        "skill_dst": Path(".cursor") / "commands" / "graphify.md",
+        "claude_md": False,
+        "skill_refs": "claude",
+    },
     "codex": {
         "skill_file": "skill-codex.md",
         "skill_dst": Path(".codex") / "skills" / "graphify" / "SKILL.md",
@@ -1126,25 +1132,37 @@ def _cursor_install(project_dir: Path) -> None:
     """Write .cursor/rules/graphify.mdc with alwaysApply: true."""
     rule_path = (project_dir or Path(".")) / _CURSOR_RULE_PATH
     rule_path.parent.mkdir(parents=True, exist_ok=True)
-    if rule_path.exists() and rule_path.read_text(encoding="utf-8") == _CURSOR_RULE:
+    already_configured = rule_path.exists() and rule_path.read_text(encoding="utf-8") == _CURSOR_RULE
+    if already_configured:
         print(f"graphify rule at {rule_path} already configured (no change)")
-        return
-    # File is wholly graphify-owned. Overwrite on upgrade so older
-    # report-first wording does not silently linger (issue #580).
-    action = "updated" if rule_path.exists() else "written"
-    rule_path.write_text(_CURSOR_RULE, encoding="utf-8")
-    print(f"graphify rule {action} at {rule_path.resolve()}")
-    print()
-    print("Cursor will now always include the knowledge graph context.")
-    print("Run /graphify . first to build the graph if you haven't already.")
+    else:
+        # File is wholly graphify-owned. Overwrite on upgrade so older
+        # report-first wording does not silently linger (issue #580).
+        action = "updated" if rule_path.exists() else "written"
+        rule_path.write_text(_CURSOR_RULE, encoding="utf-8")
+        print(f"graphify rule {action} at {rule_path.resolve()}")
+        print()
+        print("Cursor will now always include the knowledge graph context.")
+        print("Run /graphify . first to build the graph if you haven't already.")
+    # The rule above handles the "when" (nudge toward the graph before raw
+    # file exploration); the skill file handles the "how" (the actual
+    # /graphify pipeline steps), same split every other platform gets.
+    # Without this, /graphify has no defined procedure on Cursor (#3158).
+    _copy_skill_file("cursor", project=True, project_dir=project_dir)
 def _cursor_uninstall(project_dir: Path) -> None:
-    """Remove .cursor/rules/graphify.mdc."""
-    rule_path = (project_dir or Path(".")) / _CURSOR_RULE_PATH
-    if not rule_path.exists():
+    """Remove .cursor/rules/graphify.mdc and the .cursor/commands/graphify.md skill."""
+    project_dir = project_dir or Path(".")
+    rule_path = project_dir / _CURSOR_RULE_PATH
+    rule_removed = False
+    if rule_path.exists():
+        rule_path.unlink()
+        print(f"graphify Cursor rule removed from {rule_path.resolve()}")
+        rule_removed = True
+    else:
         print("No graphify Cursor rule found - nothing to do")
-        return
-    rule_path.unlink()
-    print(f"graphify Cursor rule removed from {rule_path.resolve()}")
+    skill_removed = _remove_skill_file("cursor", project=True, project_dir=project_dir)
+    if not rule_removed and not skill_removed:
+        print("nothing to remove")
 # Devin CLI — .windsurf/rules/graphify.md (always-on context)
 # Devin reads .windsurf/rules/*.md files the same way Windsurf IDE does.
 _DEVIN_RULES_PATH = Path(".windsurf") / "rules" / "graphify.md"
