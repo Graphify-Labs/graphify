@@ -35,8 +35,28 @@ import tempfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 
+def _find_graphifyrc(start: Path) -> Path | None:
+    """Walk up from `start` looking for `.graphifyrc`, the same way git itself
+    walks up looking for `.git` — so a command run from a subdirectory of the
+    repo still finds the repo-root file `_register_merge_driver` writes to
+    (`root` there is always the git root, never the invocation cwd).
+
+    Capped at the filesystem root; a `.git` directory also stops the walk
+    early (no reason to keep climbing past the repo boundary into unrelated
+    parent directories, e.g. `/home/user` for a repo at `/home/user/proj`).
+    """
+    current = start.resolve()
+    for parent in (current, *current.parents):
+        candidate = parent / ".graphifyrc"
+        if candidate.is_file():
+            return candidate
+        if (parent / ".git").exists():
+            return None
+    return None
+
+
 def _read_persisted_out_dir() -> str | None:
-    """Read ``out_dir=`` from ``./.graphifyrc`` if present.
+    """Read ``out_dir=`` from the nearest ``.graphifyrc`` above cwd, if present.
 
     Deliberately minimal and independent of ``graphify.hooks._load_graphifyrc``
     (which also parses ``viz_node_limit``) to avoid a hooks<->paths import
@@ -44,9 +64,14 @@ def _read_persisted_out_dir() -> str | None:
     runs at import time, before any lazy import could resolve it. Malformed or
     unreadable files degrade to "no override" rather than raising — this must
     never block module import.
+
+    Injection (a value that would add an unintended `.gitattributes` line) is
+    rejected at the write site (``graphify.hooks._persist_out_dir``), not
+    here — a value read back via ``str.splitlines()`` can never itself
+    contain a newline, so a line-based check on this side is a no-op.
     """
-    rc_path = Path(".graphifyrc")
-    if not rc_path.is_file():
+    rc_path = _find_graphifyrc(Path.cwd())
+    if rc_path is None:
         return None
     try:
         content = rc_path.read_text(encoding="utf-8")

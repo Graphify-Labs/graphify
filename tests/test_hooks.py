@@ -1287,3 +1287,98 @@ def test_read_persisted_out_dir_env_var_takes_precedence(tmp_path, monkeypatch):
     finally:
         monkeypatch.delenv("GRAPHIFY_OUT", raising=False)
         importlib.reload(paths_mod)
+
+
+# --- review follow-up: root-walk resolution, injection guard, uninstall reset ---
+# (Graphify PR review on #3207: _read_persisted_out_dir used cwd instead of
+# walking to the repo root; a newline in GRAPHIFY_OUT could inject an extra
+# .gitattributes line; a persisted out_dir had no way back to default.)
+
+def test_read_persisted_out_dir_found_from_subdirectory(tmp_path, monkeypatch):
+    """A .graphifyrc at the repo root is found when invoked from a subdir —
+    mirrors how _register_merge_driver always writes to the git root, not cwd."""
+    import importlib
+    import graphify.paths as paths_mod
+
+    monkeypatch.delenv("GRAPHIFY_OUT", raising=False)
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".graphifyrc").write_text("out_dir=.planning/graphs\n", encoding="utf-8")
+    subdir = tmp_path / "src" / "nested"
+    subdir.mkdir(parents=True)
+    monkeypatch.chdir(subdir)
+    importlib.reload(paths_mod)
+    try:
+        assert paths_mod.GRAPHIFY_OUT == ".planning/graphs"
+    finally:
+        importlib.reload(paths_mod)
+
+
+def test_read_persisted_out_dir_stops_at_git_boundary(tmp_path, monkeypatch):
+    """A .graphifyrc outside the repo (in some unrelated parent directory)
+    must never be picked up — the walk stops at the first .git it meets."""
+    import importlib
+    import graphify.paths as paths_mod
+
+    monkeypatch.delenv("GRAPHIFY_OUT", raising=False)
+    (tmp_path / ".graphifyrc").write_text("out_dir=should-not-be-used\n", encoding="utf-8")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    monkeypatch.chdir(repo)
+    importlib.reload(paths_mod)
+    try:
+        assert paths_mod.GRAPHIFY_OUT == "graphify-out"
+    finally:
+        importlib.reload(paths_mod)
+
+
+def test_persist_out_dir_rejects_newline(tmp_path):
+    """A GRAPHIFY_OUT containing a newline must never reach the file verbatim —
+    it would inject an unrelated extra line into .graphifyrc/.gitattributes."""
+    from graphify.hooks import _persist_out_dir
+
+    with pytest.raises(ValueError, match="newline"):
+        _persist_out_dir(tmp_path, "custom-out\nout_dir=/etc/injected")
+    assert not (tmp_path / ".graphifyrc").exists()
+
+
+def test_register_merge_driver_swallows_persist_value_error(tmp_path, monkeypatch):
+    """A malformed GRAPHIFY_OUT must not abort hook install — the merge-driver
+    git config registration this run still applies even if persistence is skipped."""
+    from graphify.hooks import _register_merge_driver
+    import graphify.paths as paths_mod
+
+    repo = _make_git_repo(tmp_path)
+    monkeypatch.setattr(paths_mod, "GRAPHIFY_OUT", "bad\nvalue")
+    result = _register_merge_driver(repo)  # must not raise
+    assert not (repo / ".graphifyrc").exists()
+    assert "registered" in result or "skipped" in result
+
+
+def test_uninstall_clears_persisted_out_dir(tmp_path, monkeypatch):
+    """hook uninstall is the way back to default after a persisted out_dir —
+    there was previously no path back short of hand-editing .graphifyrc."""
+    from graphify.hooks import _register_merge_driver, _unregister_merge_driver, _load_graphifyrc
+    import graphify.paths as paths_mod2
+
+    repo = _make_git_repo(tmp_path)
+    monkeypatch.setattr(paths_mod2, "GRAPHIFY_OUT", "custom-out")
+    _register_merge_driver(repo)
+    assert _load_graphifyrc(repo).get("out_dir") == "custom-out"
+
+    result = _unregister_merge_driver(repo)
+    assert "out_dir" in result
+    assert _load_graphifyrc(repo).get("out_dir") is None
+
+
+def test_uninstall_preserves_other_graphifyrc_keys_while_clearing_out_dir(tmp_path):
+    from graphify.hooks import _persist_out_dir, _unregister_merge_driver, _load_graphifyrc
+
+    repo = _make_git_repo(tmp_path)
+    rc = repo / ".graphifyrc"
+    rc.write_text("viz_node_limit=0\n", encoding="utf-8")
+    _persist_out_dir(repo, "custom-out")
+    _unregister_merge_driver(repo)
+    cfg = _load_graphifyrc(repo)
+    assert cfg.get("out_dir") is None
+    assert cfg.get("viz_node_limit") == 0

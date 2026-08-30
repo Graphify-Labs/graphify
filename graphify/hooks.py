@@ -472,7 +472,17 @@ def _persist_out_dir(root: Path, out: str) -> None:
     hardcoded default, so the common case (no override) never touches the
     file. Preserves every other line untouched (mirrors _register_merge_driver's
     own append-don't-clobber behavior for .gitattributes).
+
+    Raises ValueError for a value containing a newline/carriage-return
+    instead of writing it: `.graphifyrc` is line-based, so such a value would
+    inject an extra, attacker- or accident-controlled line into the file (and
+    from there, via _merge_attr_line, into .gitattributes) rather than being
+    stored as the single `out_dir` line it looks like. GRAPHIFY_OUT is
+    ordinarily just a directory name, but it can come from an arbitrary env
+    var, so this is checked rather than assumed.
     """
+    if "\n" in out or "\r" in out:
+        raise ValueError(f"GRAPHIFY_OUT contains a newline, refusing to persist: {out!r}")
     rc_path = root / ".graphifyrc"
     lines: list[str] = []
     if rc_path.is_file():
@@ -730,7 +740,7 @@ def _register_merge_driver(root: Path) -> str:
     if GRAPHIFY_OUT and GRAPHIFY_OUT != "graphify-out":
         try:
             _persist_out_dir(root, GRAPHIFY_OUT)
-        except OSError:
+        except (OSError, ValueError):
             pass  # best-effort; the merge driver config above still applies this run
 
     line = _merge_attr_line()
@@ -756,8 +766,42 @@ def _register_merge_driver(root: Path) -> str:
     return f"registered ({line})"
 
 
+def _clear_persisted_out_dir(root: Path) -> bool:
+    """Remove the `out_dir=` line from <root>/.graphifyrc, if present.
+
+    A persisted out_dir intentionally survives GRAPHIFY_OUT being unset (that
+    is the whole point — it's what lets a later shell/CI job resolve the same
+    directory without the env var). But that means there was previously no
+    way back to the default short of hand-editing .graphifyrc; `hook
+    uninstall` now doubles as that reset, mirroring how it already clears the
+    merge-driver git config and .gitattributes line.
+    """
+    rc_path = root / ".graphifyrc"
+    if not rc_path.is_file():
+        return False
+    content = rc_path.read_text(encoding="utf-8")
+    lines = content.splitlines()
+    kept = [
+        raw for raw in lines
+        if not (
+            (stripped := raw.strip())
+            and not stripped.startswith("#")
+            and "=" in stripped
+            and stripped.split("=", 1)[0].strip() == "out_dir"
+        )
+    ]
+    if kept == lines:
+        return False
+    if kept:
+        rc_path.write_text("\n".join(kept) + "\n", encoding="utf-8", newline="\n")
+    else:
+        rc_path.unlink()
+    return True
+
+
 def _unregister_merge_driver(root: Path) -> str:
-    """Remove the merge-driver git config keys and the .gitattributes line."""
+    """Remove the merge-driver git config keys, .gitattributes line, and any
+    persisted out_dir override."""
     import subprocess as _sp
     for key in ("merge.graphify.name", "merge.graphify.driver"):
         try:
@@ -768,22 +812,33 @@ def _unregister_merge_driver(root: Path) -> str:
             )
         except OSError:
             pass
+    out_dir_cleared = _clear_persisted_out_dir(root)
+
     attrs = root / ".gitattributes"
     if not attrs.exists():
-        return "not registered - nothing to remove."
+        return (
+            "not registered - nothing to remove."
+            if not out_dir_cleared
+            else "removed persisted out_dir (no .gitattributes entry to remove)"
+        )
     content = attrs.read_text(encoding="utf-8")
     kept = [
         raw for raw in content.splitlines()
         if not _has_merge_attr(raw)
     ]
+    suffix = " (and cleared persisted out_dir)" if out_dir_cleared else ""
     if kept == content.splitlines():
-        return "gitattributes entry not found - nothing to remove."
+        return (
+            "gitattributes entry not found - nothing to remove."
+            if not out_dir_cleared
+            else f"gitattributes entry not found{suffix}"
+        )
     if kept:
         # Other entries survive; the file stays.
         attrs.write_text("\n".join(kept) + "\n", encoding="utf-8", newline="\n")
-        return "removed from .gitattributes (other entries preserved)"
+        return f"removed from .gitattributes (other entries preserved){suffix}"
     attrs.unlink()
-    return "removed (.gitattributes deleted - no other entries)"
+    return f"removed (.gitattributes deleted - no other entries){suffix}"
 
 
 def _merge_driver_status(root: Path) -> str:
