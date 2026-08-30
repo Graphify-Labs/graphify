@@ -4061,20 +4061,20 @@ def test_robot_suite_tests_and_keywords_become_nodes():
 
 @_needs_robot
 def test_robot_keyword_call_edges_incl_fixtures_and_loops():
-    from graphify.extract import _make_id
+    from graphify.extractors.robot import _kw_id
     r = extract_robot(FIXTURES / "sample.robot")
     call_targets = {e["target"] for e in r["edges"] if e["relation"] == "calls"}
     # body call, [Setup]/[Teardown], [Template], suite fixtures - all keyed by
     # bare keyword name so they land on the defining resource's node
     for kw in ("Login As Admin", "Open Session", "Close All Sessions",
                "Login As User", "Prepare Environment"):
-        assert _make_id(kw) in call_targets, f"missing call target {kw!r}"
+        assert _kw_id(kw) in call_targets, f"missing call target {kw!r}"
     # a call nested inside a FOR block is still extracted
     retry_nid = next(n["id"] for n in r["nodes"] if n["label"] == "Retry Loop Case")
-    assert any(e["source"] == retry_nid and e["target"] == _make_id("Open Session")
+    assert any(e["source"] == retry_nid and e["target"] == _kw_id("Open Session")
                for e in r["edges"] if e["relation"] == "calls")
     # BuiltIn keyword calls emit edges too (dropped later as external refs)
-    assert _make_id("Should Be Equal") in call_targets
+    assert _kw_id("Should Be Equal") in call_targets
 
 
 @_needs_robot
@@ -4116,7 +4116,7 @@ def test_robot_resource_keywords_and_cross_file_ids():
 
 @_needs_robot
 def test_robot_suite_level_test_template(tmp_path):
-    from graphify.extract import _make_id
+    from graphify.extractors.robot import _kw_id
     suite = tmp_path / "templated.robot"
     suite.write_text(
         "*** Settings ***\n"
@@ -4131,5 +4131,87 @@ def test_robot_suite_level_test_template(tmp_path):
     r = extract_robot(suite)
     assert r.get("error") is None
     file_nid = next(n["id"] for n in r["nodes"] if n["label"] == "templated.robot")
-    assert any(e["source"] == file_nid and e["target"] == _make_id("Login As User")
+    assert any(e["source"] == file_nid and e["target"] == _kw_id("Login As User")
                for e in r["edges"] if e["relation"] == "calls")
+
+
+def test_robot_curdir_and_execdir_imports_resolve_without_double_prefix():
+    # ${CURDIR}/${EXECDIR} already anchor the path; re-joining the source dir
+    # would double it for relative scan paths (bot finding on PR #3211).
+    # Pure path logic - needs no robotframework install.
+    from pathlib import Path as P
+    from graphify.extractors.robot import _resolve_robot_import
+
+    rel_src = P("Tests/Sub/suite.robot")
+    resolved = _resolve_robot_import("${CURDIR}/../Library/lib.py", rel_src)
+    assert resolved == P("Tests/Library/lib.py"), resolved
+
+    # absolute sources must come back normalized too (no leftover '..')
+    abs_src = P(r"C:\repo\Tests\Sub\suite.robot") if P("C:/").exists() else P("/repo/Tests/Sub/suite.robot")
+    resolved_abs = _resolve_robot_import("${CURDIR}/../Library/lib.py", abs_src)
+    assert ".." not in resolved_abs.parts, resolved_abs
+
+    # ${EXECDIR} anchors to the execution root, not the suite dir
+    assert _resolve_robot_import("${EXECDIR}/Resource/common.robot", rel_src) == P("Resource/common.robot")
+
+    # plain relative imports still join against the suite dir
+    assert _resolve_robot_import("../Resource/common.robot", rel_src) == P("Tests/Resource/common.robot")
+
+    # unresolvable variables still yield None
+    assert _resolve_robot_import("${ROOT}/x.robot", rel_src) is None
+
+
+@_needs_robot
+def test_robot_keyword_matching_is_case_space_underscore_insensitive(tmp_path):
+    # Robot resolves 'Open Session', 'open_session', and 'OpenSession' to the
+    # same keyword; all call styles must land on the definition's node id.
+    suite = tmp_path / "styles.robot"
+    suite.write_text(
+        "*** Test Cases ***\n"
+        "Mixed Style Calls\n"
+        "    OpenSession\n"
+        "    open_session\n"
+        "    OPEN SESSION\n"
+        "\n"
+        "*** Keywords ***\n"
+        "Open Session\n"
+        "    Log    opening\n",
+        encoding="utf-8",
+    )
+    r = extract_robot(suite)
+    assert r.get("error") is None
+    def_id = next(n["id"] for n in r["nodes"] if n["label"] == "Open Session")
+    tc_id = next(n["id"] for n in r["nodes"] if n["label"] == "Mixed Style Calls")
+    styled_calls = [e for e in r["edges"]
+                    if e["relation"] == "calls" and e["source"] == tc_id]
+    assert styled_calls, "no call edges extracted"
+    assert all(e["target"] == def_id for e in styled_calls), styled_calls
+
+
+def test_robot_extractor_degrades_gracefully_without_robotframework():
+    # The robot.api import is lazy inside extract_robot(): importing
+    # graphify.extract must work and the extractor must return the
+    # install-hint error dict when robotframework is absent (answers the
+    # 'optional robot extra is imported unconditionally' review finding).
+    import subprocess
+    import sys
+    from pathlib import Path as P
+    script = (
+        "import sys\n"
+        "class BlockRobot:\n"
+        "    def find_spec(self, name, path=None, target=None):\n"
+        "        if name == 'robot' or name.startswith('robot.'):\n"
+        "            raise ImportError('robotframework blocked for test')\n"
+        "        return None\n"
+        "sys.meta_path.insert(0, BlockRobot())\n"
+        "from pathlib import Path\n"
+        "from graphify.extract import extract_robot\n"
+        "r = extract_robot(Path('x.robot'))\n"
+        "assert r['nodes'] == [] and r['edges'] == [], r\n"
+        "assert 'not installed' in r.get('error', ''), r\n"
+        "print('ok')\n"
+    )
+    repo_root = P(__file__).resolve().parent.parent
+    out = subprocess.run([sys.executable, "-c", script], capture_output=True,
+                         text=True, cwd=str(repo_root))
+    assert out.returncode == 0 and "ok" in out.stdout, (out.stdout, out.stderr)

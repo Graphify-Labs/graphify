@@ -25,14 +25,33 @@ def _resolve_robot_import(raw: str, source_path: Path) -> Path | None:
     ${VARIABLES} remain in the path.
     """
     s = raw.strip().replace("${/}", "/")
-    s = s.replace("${CURDIR}", str(source_path.parent))
-    s = s.replace("${EXECDIR}", ".")
+    # ${CURDIR}/${EXECDIR} already anchor the path - substituting and then
+    # re-joining below would prefix source_path.parent twice when the scan
+    # uses relative paths, so track anchoring explicitly.
+    anchored = False
+    if "${CURDIR}" in s:
+        s = s.replace("${CURDIR}", str(source_path.parent))
+        anchored = True
+    if "${EXECDIR}" in s:
+        s = s.replace("${EXECDIR}", ".")
+        anchored = True
     if "${" in s or "%{" in s:
         return None
     p = Path(s)
-    if not p.is_absolute():
-        p = Path(os.path.normpath(source_path.parent / p))
-    return p
+    if not anchored and not p.is_absolute():
+        p = source_path.parent / p
+    # normpath unconditionally so ../ segments collapse and the ID matches
+    # the imported file's own node ID (absolute paths included)
+    return Path(os.path.normpath(p))
+
+
+def _kw_id(name: str) -> str:
+    """Node ID for a keyword, normalized the way Robot Framework matches
+    keyword names: case-, space-, and underscore-insensitive. Stripping
+    spaces/underscores before _make_id means ``Open Session``,
+    ``open_session``, and ``OpenSession`` all share one node ID, exactly as
+    Robot resolves them to one keyword."""
+    return _make_id(name.replace(" ", "").replace("_", ""))
 
 
 def extract_robot(path: Path) -> dict:
@@ -47,11 +66,15 @@ def extract_robot(path: Path) -> dict:
     nodes so suites sharing a library cluster together), and `calls`
     (test case / keyword / suite fixture -> the keyword it invokes).
 
-    Keyword nodes are keyed by bare keyword name (not stem-qualified): Robot
-    resolves keywords globally by name across imported resources, so bare IDs
-    make cross-file call edges land on the defining node without a separate
-    resolution pass. Test case nodes stay stem-qualified because test names
-    repeat across suites. Calls to keywords never defined in the corpus (e.g.
+    Keyword nodes are keyed by bare keyword name (not stem-qualified),
+    normalized the way Robot matches keywords (case-, space-, and
+    underscore-insensitive, see _kw_id): Robot resolves keywords globally by
+    name across imported resources, so bare IDs make cross-file call edges
+    land on the defining node without a separate resolution pass. Two files
+    defining the same keyword name deliberately merge into one node - that
+    mirrors Robot's own single global namespace (where such duplicates are
+    ambiguous). Test case nodes stay stem-qualified because test names repeat
+    across suites. Calls to keywords never defined in the corpus (e.g.
     BuiltIn's Log) are dropped by build_from_json like any external reference.
     """
     try:
@@ -114,7 +137,7 @@ def extract_robot(path: Path) -> dict:
     def kw_target(name: str) -> str:
         # "SSHLibrary.Open Connection" -> keyword part only; explicit
         # library/resource prefixes are common, dots inside keyword names are not.
-        return _make_id(name.rsplit(".", 1)[-1])
+        return _kw_id(name.rsplit(".", 1)[-1])
 
     class _RobotVisitor(ModelVisitor):
         def __init__(self):
@@ -194,7 +217,7 @@ def extract_robot(path: Path) -> dict:
         def visit_Keyword(self, node):
             if not node.name:
                 return
-            kw_nid = _make_id(node.name)
+            kw_nid = _kw_id(node.name)
             add_node(kw_nid, node.name, node.lineno)
             add_edge(file_nid, kw_nid, "contains", node.lineno)
             prev, self.scope_nid = self.scope_nid, kw_nid
