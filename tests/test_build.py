@@ -1256,6 +1256,8 @@ def test_is_ast_tier_legacy_fallback():
     assert _is_ast_tier({"_origin": "ast"}) is True
     assert _is_ast_tier({"_origin": "ast", "source_location": None}) is True
     assert _is_ast_tier({"source_location": "L10"}) is True
+    assert _is_ast_tier({"source_location": "W10"}) is True
+    assert _is_ast_tier({"source_location": "W10junk"}) is False
     assert _is_ast_tier({"source_location": None}) is False
     assert _is_ast_tier({}) is False
     assert _is_ast_tier({"_origin": "semantic", "source_location": "L10"}) is False
@@ -1463,6 +1465,12 @@ def test_cross_language_imports_references_are_dropped():
              "source_file": "src/time.ts", "source_location": "L1", "_origin": "ast"},
             {"id": "src_util_ts", "label": "util.ts", "file_type": "code",
              "source_file": "src/util.ts", "source_location": "L1", "_origin": "ast"},
+            {"id": "shader_hlsl", "label": "shader.hlsl", "file_type": "code",
+             "source_file": "shaders/shader.hlsl", "source_location": "L1", "_origin": "ast"},
+            {"id": "library_slang", "label": "library.slang", "file_type": "code",
+             "source_file": "shaders/library.slang", "source_location": "L1", "_origin": "ast"},
+            {"id": "shader_spv", "label": "shader.spv", "file_type": "code",
+             "source_file": "build/shader.spv", "source_location": "L1", "_origin": "ast"},
         ],
         "edges": [
             # phantom: Python file importing a TS file (cross-language)
@@ -1471,11 +1479,19 @@ def test_cross_language_imports_references_are_dropped():
             # legit: TS importing TS (same family) must survive
             {"source": "src_time_ts", "target": "src_util_ts", "relation": "imports",
              "confidence": "EXTRACTED", "source_file": "src/time.ts", "weight": 1.0},
+            # Slang/HLSL/GLSL can share declarations when explicitly imported.
+            {"source": "shader_hlsl", "target": "library_slang", "relation": "imports",
+             "confidence": "EXTRACTED", "source_file": "shaders/shader.hlsl", "weight": 1.0},
+            # Compiled SPIR-V is a separate family; no source relationship is inferred.
+            {"source": "shader_hlsl", "target": "shader_spv", "relation": "references",
+             "confidence": "INFERRED", "source_file": "shaders/shader.hlsl", "weight": 1.0},
         ],
     }
     G = build_from_json(ext, directed=False)
     assert not G.has_edge("backend_worker_py", "src_time_ts"), "cross-language import must be dropped"
     assert G.has_edge("src_time_ts", "src_util_ts"), "same-family (TS->TS) import must survive"
+    assert G.has_edge("shader_hlsl", "library_slang"), "shader-source family import must survive"
+    assert not G.has_edge("shader_hlsl", "shader_spv"), "source-to-SPIR-V inference must be dropped"
 
 
 def test_cross_family_reference_to_unknown_ext_is_kept():

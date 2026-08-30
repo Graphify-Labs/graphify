@@ -53,7 +53,9 @@ from graphify.extractors.pascal_forms import extract_delphi_form, extract_lazaru
 from graphify.extractors.powershell import extract_powershell, extract_powershell_manifest  # noqa: F401
 from graphify.extractors.razor import extract_razor  # noqa: F401
 from graphify.extractors.rust import extract_rust  # noqa: F401
+from graphify.extractors.shader import extract_glsl, extract_hlsl, extract_slang  # noqa: F401
 from graphify.extractors.sln import extract_sln  # noqa: F401
+from graphify.extractors.spirv import extract_spirv  # noqa: F401
 from graphify.extractors.sql import extract_sql  # noqa: F401
 from graphify.extractors.terraform import extract_terraform  # noqa: F401
 from graphify.extractors.verilog import extract_verilog  # noqa: F401
@@ -2304,6 +2306,10 @@ _LANG_FAMILY_BY_EXT: dict[str, str] = {
     ".c": "native", ".h": "native", ".cpp": "native", ".cc": "native",
     ".cxx": "native", ".hpp": "native", ".cu": "native", ".cuh": "native",
     ".metal": "native", ".m": "native", ".mm": "native", ".swift": "native",
+    # Shader sources share declarations only through explicit include/import
+    # evidence; the cross-file call gate below enforces that boundary.
+    ".hlsl": "shader", ".hlsli": "shader", ".glsl": "shader", ".slang": "shader",
+    ".spv": "spirv",
     # Single-language families
     ".py": "python",
     ".go": "go",
@@ -4482,14 +4488,14 @@ def _check_tree_sitter_version() -> None:
         from tree_sitter import LANGUAGE_VERSION
     except ImportError:
         raise ImportError(
-            "tree-sitter is not installed. Run: pip install 'tree-sitter>=0.23.0'"
+            "tree-sitter is not installed. Run: pip install 'tree-sitter>=0.25.0'"
         )
-    # Language API v2 starts at LANGUAGE_VERSION 14
-    if LANGUAGE_VERSION < 14:
+    # Slang's grammar uses ABI 15, provided by tree-sitter 0.25.x.
+    if LANGUAGE_VERSION < 15:
         import tree_sitter as _ts
         raise RuntimeError(
             f"tree-sitter {getattr(_ts, '__version__', 'unknown')} is too old. "
-            f"graphify requires tree-sitter >= 0.23.0 (Language API v2). "
+            f"graphify requires tree-sitter >= 0.25.0 (language ABI 15). "
             f"Run: pip install --upgrade tree-sitter"
         )
 
@@ -5377,6 +5383,11 @@ _DISPATCH: dict[str, Any] = {
     ".cu": extract_cpp,
     ".cuh": extract_cpp,
     ".metal": extract_cpp,
+    ".hlsl": extract_hlsl,
+    ".hlsli": extract_hlsl,
+    ".glsl": extract_glsl,
+    ".slang": extract_slang,
+    ".spv": extract_spirv,
     ".rb": extract_ruby, ".rake": extract_ruby,
     ".cs": extract_csharp,
     ".kt": extract_kotlin,
@@ -6765,6 +6776,7 @@ def extract(
             n for n in resolution_context_nodes
             if n.get("id") and n["id"] not in _fresh_ids
         ]
+    resolution_node_by_id = {n["id"]: n for n in resolution_nodes if n.get("id")}
     for n in resolution_nodes:
         if n.get("file_type") == "rationale" or n.get("type") == "namespace":
             continue
@@ -6811,11 +6823,31 @@ def extract(
     # confirm the caller pulled in the callee's source file.
     file_to_symbol_imports: dict[str, set[str]] = {}
     file_to_module_imports: dict[str, set[str]] = {}
+    include_imports: dict[str, set[str]] = {}
     for e in all_edges:
         if e.get("relation") == "imports":
             file_to_symbol_imports.setdefault(e["source"], set()).add(e["target"])
         elif e.get("relation") == "imports_from":
             file_to_module_imports.setdefault(e["source"], set()).add(e["target"])
+            if e.get("context") == "include":
+                include_imports.setdefault(e["source"], set()).add(e["target"])
+        elif e.get("relation") == "re_exports" and str(e.get("source_file", "")).lower().endswith(".slang"):
+            # Slang's `__exported import` creates a local import and re-exports it.
+            # JavaScript re-exports do not create a local binding, so do not
+            # broaden this evidence rule to every language.
+            file_to_module_imports.setdefault(e["source"], set()).add(e["target"])
+    # Textual includes expose declarations through nested includes. Keep this
+    # closure include-only: ordinary module imports are not implicitly transitive.
+    for source in include_imports:
+        visible: set[str] = set()
+        pending = list(include_imports[source])
+        while pending:
+            target = pending.pop()
+            if target in visible:
+                continue
+            visible.add(target)
+            pending.extend(include_imports.get(target, ()))
+        file_to_module_imports.setdefault(source, set()).update(visible)
 
     # Map each node back to its containing file node id so we can ask
     # "did the caller's file import the callee's file?"
@@ -6862,10 +6894,13 @@ def extract(
         (e["source"], e["target"]) for e in all_edges
         if e.get("relation") in ("calls", "indirect_call")
     }
-    # JS/TS/JSX modules have no implicit cross-module scope: a call into another
-    # file is real ONLY if the caller imported it. So a cross-file call from one
-    # of these files with no import evidence is gated below (#1659).
-    _JS_TS_CALL_SUFFIXES = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")
+    # JS/TS modules and shader compilation units have no implicit cross-file
+    # scope: a call into another file is real only when an import/include exposes
+    # it. Gate both families on that explicit evidence below (#1659).
+    _IMPORT_GATED_CALL_SUFFIXES = (
+        ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs",
+        ".hlsl", ".hlsli", ".glsl", ".slang",
+    )
     _go_module_cache: dict[Path, str | None] = {}
     for rc in all_raw_calls:
         callee = rc.get("callee", "")
@@ -6922,6 +6957,15 @@ def extract(
                 if (candidate_family := _lang_family(nid_to_source_file.get(c))) is None
                 or candidate_family == caller_family
             ]
+            if not candidates:
+                continue
+        if rc.get("language") == "shader":
+            candidates = [c for c in candidates if resolution_node_by_id.get(c, {}).get("_callable")]
+            if rc.get("arg_count") is not None:
+                candidates = [
+                    c for c in candidates
+                    if resolution_node_by_id[c].get("metadata", {}).get("shader", {}).get("arity") == rc["arg_count"]
+                ]
             if not candidates:
                 continue
         # Imported Go selectors carry exact package evidence. External package
@@ -7028,18 +7072,19 @@ def extract(
                     "weight": 1.0,
                 })
             continue
-        # #1659: a JS/TS DIRECT call with no import evidence is almost always an
+        # #1659: a JS/TS or shader DIRECT call with no import evidence is almost always an
         # unrelated same-named export in a package that was never imported — a
         # phantom cross-package edge (a 14-package monorepo had `platform` and
         # `sidecar` shown as depending on `registry-protocol` purely because it
         # exported generically-named symbols). JS/TS modules have no implicit
         # cross-module scope, so leave it unresolved rather than binding by name
-        # alone. Other languages keep the #1553 single-candidate resolution:
+        # alone. Shader units have the same rule: helpers become visible through
+        # an explicit include/import. Other languages keep the #1553 single-candidate resolution:
         # C/C++ headers, Ruby autoload, and same-package implicit scope
         # legitimately call across files without an explicit import. Scoped to
         # direct calls: the indirect_call path above is already conservative
         # (INFERRED, callable-target-gated) and independent of import evidence.
-        if not has_import_evidence and str(rc.get("source_file", "")).endswith(_JS_TS_CALL_SUFFIXES):
+        if not has_import_evidence and str(rc.get("source_file", "")).lower().endswith(_IMPORT_GATED_CALL_SUFFIXES):
             continue
         if tgt != caller and (caller, tgt) not in existing_pairs:
             existing_pairs.add((caller, tgt))

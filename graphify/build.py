@@ -35,16 +35,17 @@ from .paths import is_absolute_any_platform as _is_abs
 from .validate import validate_extraction
 
 
-# Deterministic (AST) extractors emit source_location "L<line>"; the semantic
-# extraction spec emits null. Used by _is_ast_tier as a shape fallback for
-# legacy items that predate the _origin marker (#2334).
-_AST_LOC_RE = re.compile(r"^L\d")
+# Deterministic extractors emit source_location "L<line>" for text or
+# "W<word-offset>" for binary SPIR-V; the semantic extraction spec emits null.
+# Used by _is_ast_tier as a shape fallback for legacy items that predate the
+# _origin marker (#2334).
+_AST_LOC_RE = re.compile(r"^[LW]\d+$")
 
 
 def _is_ast_tier(item: dict) -> bool:
     """AST vs semantic tier. _origin wins when present; unstamped legacy items
-    (pre-0.9.16) fall back to shape: deterministic extractors emit
-    source_location 'L<line>', the semantic spec emits null (#2334)."""
+    (pre-0.9.16) fall back to shape: deterministic extractors emit an L/W
+    location, while the semantic spec emits null (#2334)."""
     o = item.get("_origin")
     if o is not None:
         return o == "ast"
@@ -78,6 +79,8 @@ _EDGE_LANG_FAMILY: dict[str, str] = {
     ".c": "c", ".h": "c", ".cc": "c", ".cpp": "c", ".hpp": "c",
     ".cxx": "c", ".hh": "c", ".hxx": "c",
     ".cu": "c", ".cuh": "c", ".metal": "c", ".m": "c", ".mm": "c",
+    ".hlsl": "shader", ".hlsli": "shader", ".glsl": "shader", ".slang": "shader",
+    ".spv": "spirv",
     ".rb": "rb", ".rake": "rb", ".php": "php", ".cs": "cs", ".swift": "swift", ".lua": "lua",
 }
 

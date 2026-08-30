@@ -9,7 +9,8 @@ from graphify.extract import (
     extract_groovy, extract_sln, extract_csproj, extract_xaml, extract_razor,
     extract_dm, extract_dmi, extract_dmm, extract_dmf,
     extract_powershell, extract_apex, extract_commonlisp, extract_verilog,
-    extract_powershell_manifest,
+    extract_powershell_manifest, extract_hlsl, extract_glsl, extract_slang,
+    extract_spirv,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -351,6 +352,56 @@ def test_metal_finds_kernel_function_and_struct():
     assert any("Vec3" in l for l in labels)
     assert any("dot3" in l for l in labels)
     assert any("saxpy" in l for l in labels)
+
+
+# ── Shader languages + SPIR-V ────────────────────────────────────────────────
+
+def test_hlsl_fixture_reflects_entry_resources_and_decompiler_cbuffer():
+    result = extract_hlsl(FIXTURES / "sample.hlsl")
+    labels = set(_labels(result))
+
+    assert "error" not in result
+    assert {"mainCS()", "SourceTexture", "LinearSampler", "OutputTexture", "$Globals"} <= labels
+    assert next(
+        n for n in result["nodes"]
+        if n["label"] == "mainCS()"
+    )["metadata"]["shader"]["thread_group_size"] == [8, 8, 1]
+
+
+def test_hlsli_fixture_reflects_helper_function():
+    result = extract_hlsl(FIXTURES / "sample.hlsli")
+    assert "error" not in result
+    assert "ApplyExposure()" in _labels(result)
+
+
+def test_glsl_fixture_reflects_entry_binding_io_and_specialization():
+    result = extract_glsl(FIXTURES / "sample.glsl")
+    labels = set(_labels(result))
+
+    assert "error" not in result
+    assert {"main()", "ApplyExposure()", "SourceTexture", "input_uv", "output_color", "Exposure"} <= labels
+    assert {"calls", "stage_input", "stage_output", "uses"} <= _relations(result)
+
+
+def test_slang_fixture_reflects_module_interface_parameter_block_and_entry():
+    result = extract_slang(FIXTURES / "sample.slang")
+    labels = set(_labels(result))
+
+    assert "error" not in result
+    assert {"Sample", "ICurve", "LinearCurve", "gParams", "mainCS()"} <= labels
+    assert "implements" in _relations(result)
+
+
+def test_compiler_generated_spirv_fixture_reflects_entry_binding_and_spec_constant():
+    result = extract_spirv(FIXTURES / "sample.spv")
+    labels = set(_labels(result))
+
+    assert "error" not in result
+    assert {"main", "SourceTexture", "Exposure"} <= labels
+    source = next(n for n in result["nodes"] if n["label"] == "SourceTexture")
+    exposure = next(n for n in result["nodes"] if n["label"] == "Exposure")
+    assert source["metadata"]["shader"]["bindings"] == [{"descriptor_set": 0, "binding": 0}]
+    assert exposure["metadata"]["shader"]["spirv"]["spec_id"] == 0
 
 
 # ── Ruby ─────────────────────────────────────────────────────────────────────

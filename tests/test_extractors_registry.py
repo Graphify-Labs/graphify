@@ -42,3 +42,18 @@ def test_terraform_migrated():
 
     assert facade.extract_terraform is extract_terraform
     assert LANGUAGE_EXTRACTORS["terraform"] is extract_terraform
+
+
+def test_shader_extractors_are_registered_and_reexported():
+    from graphify.extractors.shader import extract_glsl, extract_hlsl, extract_slang
+    from graphify.extractors.spirv import extract_spirv
+
+    expected = {
+        "glsl": extract_glsl,
+        "hlsl": extract_hlsl,
+        "slang": extract_slang,
+        "spirv": extract_spirv,
+    }
+    for name, fn in expected.items():
+        assert LANGUAGE_EXTRACTORS[name] is fn
+        assert getattr(facade, fn.__name__) is fn
