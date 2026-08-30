@@ -10,6 +10,7 @@ import sys
 import textwrap
 from collections import Counter
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path, PurePath
 from typing import Any, Callable
 
@@ -59,7 +60,7 @@ from graphify.extractors.terraform import extract_terraform  # noqa: F401
 from graphify.extractors.verilog import extract_verilog  # noqa: F401
 from graphify.extractors.zig import extract_zig  # noqa: F401
 from graphify.security import sanitize_metadata
-from graphify.paths import disambiguate_ambiguous_candidates
+from graphify.paths import clear_resolve_cache, disambiguate_ambiguous_candidates, resolve_cached
 
 from graphify.extractors.models import LanguageConfig, _JS_CACHE_BYPASS_SUFFIXES, _NamespaceExportFact, _StarExportFact, _SymbolAliasFact, _SymbolDeclarationFact, _SymbolExportFact, _SymbolImportFact, _SymbolResolutionFacts, _SymbolUseFact, _WORKSPACE_PACKAGE_CACHE  # noqa: E402,F401
 
@@ -69,15 +70,21 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _EXPORT_CONDITION_PRIORITY,
     _JS_INDEX_FILES,
     _JS_PRIMITIVE_TYPES,
+    _JS_CONFIG_DIR_CACHE,
+    _JS_MODULE_PATH_CACHE,
     _JS_RESOLVE_EXTS,
+    _SOURCE_KEY_CACHE,
     _TSCONFIG_ALIAS_CACHE,
     _TSCONFIG_BASEURL_CACHE,
     _VUE_SCRIPT_LANG_RE,
     _VUE_SCRIPT_RE,
     _WORKSPACE_MANIFEST_NAMES,
+    _WORKSPACE_ROOT_CACHE,
     _apply_symbol_resolution_facts,
     _augment_symbol_resolution_edges,
     _collect_js_symbol_resolution_facts,
+    _collect_python_file_facts,
+    _collect_python_reference_facts,
     _collect_python_symbol_resolution_facts,
     _contained_in_package,
     _decldef_class_stem,
@@ -115,6 +122,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _python_call_identifier,
     _python_import_from_module,
     _python_imported_names,
+    _python_local_name_map,
     _python_top_level_function_bodies,
     _read_tsconfig_aliases,
     _resolve_c_include_path,
@@ -141,6 +149,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _walk_js_tree,
     _walk_python_tree,
     _workspace_globs,
+    clear_python_tree_cache,
 )
 
 from graphify.symbol_resolution import resolve_bash_source_edges  # noqa: E402
@@ -207,7 +216,7 @@ def _repoint_python_package_imports(paths, all_nodes, all_edges, root) -> None:
     (ambiguous -> leave dangling, as before). Files whose package root IS the
     scan root are skipped (ids already coincide)."""
     try:
-        root = Path(root).resolve()
+        root = resolve_cached(root)
     except OSError:
         root = Path(root)
     node_ids = {n.get("id") for n in all_nodes if isinstance(n, dict)}
@@ -216,13 +225,13 @@ def _repoint_python_package_imports(paths, all_nodes, all_edges, root) -> None:
         if p.suffix.lower() not in (".py", ".pyi"):
             continue
         try:
-            rel = Path(p).resolve().relative_to(root)
+            rel = resolve_cached(p).relative_to(root)
         except (ValueError, OSError):
             continue
         parts = rel.parts
         if len(parts) < 2:
             continue  # top-level file: scan-root-relative id already matches
-        d = Path(p).resolve().parent
+        d = resolve_cached(p).parent
         levels = 0
         # Bounded by the number of dirs between the file and the scan root, so a
         # pathological `/__init__.py` chain can't loop forever.
@@ -1416,7 +1425,7 @@ def _rescue_js_dynamic_imports(path: Path, result: dict) -> None:
                 tf = e.get("target_file")
                 if tf:
                     try:
-                        deferred_files.add(str(Path(tf).resolve()))
+                        deferred_files.add(str(resolve_cached(tf)))
                     except OSError:
                         deferred_files.add(str(tf))
         # `(?<!\w)` so `fooimport('x')` and `_import('x')` do not match. The
@@ -1443,7 +1452,7 @@ def _rescue_js_dynamic_imports(path: Path, result: dict) -> None:
                 continue
             if resolved_file is not None:
                 try:
-                    if str(resolved_file.resolve()) in deferred_files:
+                    if str(resolve_cached(resolved_file)) in deferred_files:
                         continue
                 except OSError:
                     pass
@@ -1453,7 +1462,7 @@ def _rescue_js_dynamic_imports(path: Path, result: dict) -> None:
             # in-function dynamic import through here too, which would turn an edge case
             # into the common one — a hub module deferred from eight functions of the same
             # file would carry eight identical arrows.
-            emit_key = str(resolved_file.resolve()) if resolved_file is not None else raw
+            emit_key = str(resolve_cached(resolved_file)) if resolved_file is not None else raw
             if emit_key in rescued_targets:
                 continue
             rescued_targets.add(emit_key)
@@ -2276,11 +2285,31 @@ _CASE_INSENSITIVE_EXTS = frozenset({
 })
 
 
+@lru_cache(maxsize=1 << 16)
+def _lower_suffix(source_file: str) -> str:
+    """A path's lowercased extension, without building a `Path` (#3008).
+
+    `Path(...).suffix` parses the whole path into components — 1.7M of those
+    accesses in a profiled 32k-file run, 5.7s, almost all of them re-asking about
+    a path already seen. `splitext` answers from the string alone. Two
+    differences from `Path.suffix`: a trailing-dot name, where it reports `"."`
+    and pathlib reports `""` (normalized away below), and a trailing separator,
+    where `_lower_suffix("foo.go/")` is `""` while `Path("foo.go/").suffix` is
+    `".go"` — pathlib drops the empty final component and `splitext` does not.
+    The second is left as-is: both callers are fed node `source_file` values,
+    which never carry a trailing slash. Purely a function of the
+    string, so unlike the filesystem caches this one needs no per-run clear; the
+    bound is there only so a long-lived `watch` process cannot grow without limit.
+    """
+    suffix = os.path.splitext(source_file)[1].lower()
+    return "" if suffix == "." else suffix
+
+
 def _lang_is_case_insensitive(source_file: object) -> bool:
     """True when the file's language resolves identifiers case-insensitively (#1581)."""
     if not source_file:
         return False
-    return Path(str(source_file)).suffix.lower() in _CASE_INSENSITIVE_EXTS
+    return _lower_suffix(str(source_file)) in _CASE_INSENSITIVE_EXTS
 
 
 # Language interop families for cross-file call resolution. A call in one language
@@ -2326,7 +2355,7 @@ def _lang_family(source_file: object) -> str | None:
     """Interop family of the file's language, or None when unknown/not code."""
     if not source_file:
         return None
-    return _LANG_FAMILY_BY_EXT.get(Path(str(source_file)).suffix.lower())
+    return _LANG_FAMILY_BY_EXT.get(_lower_suffix(str(source_file)))
 
 
 # A language's own built-in throwable hierarchy, keyed by the interop family of
@@ -2745,11 +2774,11 @@ def _merge_csharp_partial_class_nodes(
     for p in paths:
         if p.suffix.lower() in proj_exts:
             try:
-                project_dirs.add(p.resolve().parent)
+                project_dirs.add(resolve_cached(p).parent)
             except OSError:
                 pass
     try:
-        stop = root.resolve()
+        stop = resolve_cached(root)
     except OSError:
         stop = root
     dir_assembly: dict[Path, str] = {}
@@ -2789,7 +2818,7 @@ def _merge_csharp_partial_class_nodes(
         if path is None:
             return ""
         try:
-            d = path.resolve().parent
+            d = resolve_cached(path).parent
         except OSError:
             return ""
         return _assembly_of_dir(d)
@@ -3092,13 +3121,25 @@ def _resolve_python_member_calls(
             if alias:
                 import_alias_by_filenode.setdefault(e.get("source"), {})[e.get("target")] = _key(alias)
 
+    # Keyed only on nid, and this function never adds to node_by_id nor rewrites
+    # an existing node's source_file/label — so one answer per nid holds for the
+    # whole pass. The inner comprehension below re-asks about the same handful of
+    # module nodes per call site (63,220 calls in a profiled run, #3008).
+    _module_stem_keys: dict[str, str] = {}
+
     def _module_stem_key(nid: str) -> str:
+        hit = _module_stem_keys.get(nid)
+        if hit is not None:
+            return hit
         n = node_by_id.get(nid)
         if not n:
-            return ""
-        sf = n.get("source_file") or ""
-        stem = Path(sf).stem if sf else ""
-        return _key(stem or n.get("label", ""))
+            key = ""
+        else:
+            sf = n.get("source_file") or ""
+            stem = Path(sf).stem if sf else ""
+            key = _key(stem or n.get("label", ""))
+        _module_stem_keys[nid] = key
+        return key
 
     existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
 
@@ -4539,7 +4580,7 @@ def extract_slnx(path: Path) -> dict:
     def _resolve(proj_path: str) -> str:
         proj_path = proj_path.replace("\\", "/")
         try:
-            return str((path.parent / proj_path).resolve())
+            return str(resolve_cached(path.parent / proj_path))
         except Exception:
             return proj_path
 
@@ -4668,7 +4709,7 @@ def extract_csproj(path: Path) -> dict:
             continue
         ref_path_norm = ref_path.replace("\\", "/")
         try:
-            abs_ref = str((path.parent / ref_path_norm).resolve())
+            abs_ref = str(resolve_cached(path.parent / ref_path_norm))
         except Exception:
             abs_ref = ref_path_norm
         proj_nid = _make_id(abs_ref)
@@ -4956,7 +4997,7 @@ def _xaml_project_root(path: Path) -> Path:
         return root
     boundary = _XAML_ACTIVE_EXTRACT_ROOT.resolve()
     try:
-        root.resolve().relative_to(boundary)
+        resolve_cached(root).relative_to(boundary)
         return root
     except ValueError:
         return boundary
@@ -4965,7 +5006,7 @@ def _xaml_project_root(path: Path) -> Path:
 def _xaml_csharp_class_nodes(path: Path) -> dict[str, list[dict]]:
     from graphify.detect import _is_ignored, _is_noise_dir, _load_graphifyignore
     root = _xaml_project_root(path)
-    cache_key = str(root.resolve()) if _XAML_ACTIVE_EXTRACT_ROOT is not None else None
+    cache_key = str(resolve_cached(root)) if _XAML_ACTIVE_EXTRACT_ROOT is not None else None
     if cache_key and cache_key in _XAML_CSHARP_CLASS_CACHE:
         return _XAML_CSHARP_CLASS_CACHE[cache_key]
     classes: dict[str, list[dict]] = {}
@@ -5684,6 +5725,75 @@ def _extract_single_file(args: tuple) -> tuple[int, dict]:
     return idx, result
 
 
+def _pool_context():
+    """Multiprocessing context for the extraction pool, or None for the default.
+
+    Prefers ``forkserver`` with this module preloaded. Under ``spawn`` — the
+    default on macOS and Windows — every worker is a fresh interpreter that
+    re-imports ``graphify.extract``, and that duplicated startup is paid once
+    per worker rather than once per run: measured worker CPU on a 501-file
+    corpus grew from 3.95s at 6 workers to 4.65s at 16, about 0.07s per extra
+    worker, and the pool phase got *slower* past 8 workers (1.06s at 8, 1.57s
+    at 16) because the added startup outran the added parallelism. A forkserver
+    imports this module once and forks each worker from that warm image, which
+    on the same corpus cut the pool phase to 0.60s at 12 workers and flattened
+    the worker-count curve so more workers help again; the cost grows with core
+    count, so the win is larger on a big machine, not smaller (#3008).
+
+    Returns None when forkserver is unavailable (Windows, which only has spawn)
+    or unusable, leaving the executor's default context and the existing
+    BrokenProcessPool fallback in place.
+    """
+    import multiprocessing
+
+    if "forkserver" not in multiprocessing.get_all_start_methods():
+        return None
+    try:
+        ctx = multiprocessing.get_context("forkserver")
+        # Import cost moves into the forkserver process, once. Workers inherit
+        # the loaded module by fork, so this must name the module the worker
+        # entrypoint lives in.
+        ctx.set_forkserver_preload(["graphify.extract"])
+        return ctx
+    except (ValueError, OSError, ImportError):
+        return None
+
+
+def _pool_worker_count(max_workers: "int | None", work_len: int) -> int:
+    """Worker count for a per-file pool over ``work_len`` items.
+
+    Shared by every pool in this module so the env override, the CPU scaling and
+    the platform clamp are derived one way only.
+
+    ``max_workers`` None means auto: honour the GRAPHIFY_MAX_WORKERS env
+    override, otherwise scale to the full CPU. The historical `, 8)` cap was a
+    safety bound for laptops in 2023 — on a 32-thread workstation it costs a 4x
+    slowdown (issue #792). Capping at ``work_len`` keeps small jobs from
+    spawning useless idle workers.
+
+    Windows ProcessPoolExecutor hard-caps at 61 workers (CPython limitation tied
+    to WaitForMultipleObjects). Clamping here keeps every path — auto-compute,
+    GRAPHIFY_MAX_WORKERS, and --max-workers — valid on >61-core boxes (issue
+    #1298). Never returns 0, so an empty work list is still a legal count.
+    """
+    if max_workers is None:
+        env_raw = os.environ.get("GRAPHIFY_MAX_WORKERS", "").strip()
+        env_cap = None
+        if env_raw:
+            try:
+                v = int(env_raw)
+                if v > 0:
+                    env_cap = v
+            except ValueError:
+                pass
+        cpu_cap = env_cap if env_cap is not None else (os.cpu_count() or 4)
+        max_workers = min(cpu_cap, work_len)
+
+    if sys.platform == "win32":
+        max_workers = min(max_workers, 61)
+    return max(max_workers, 1)
+
+
 def _extract_parallel(
     uncached_work: list[tuple[int, Path]],
     per_file: list[dict | None],
@@ -5701,31 +5811,7 @@ def _extract_parallel(
     """
     import concurrent.futures
 
-    if max_workers is None:
-        # Honour GRAPHIFY_MAX_WORKERS env override; otherwise scale to the
-        # full CPU. The historical `, 8)` cap was a safety bound for laptops
-        # in 2023 — on a 32-thread workstation it costs a 4x slowdown
-        # (issue #792). Capping at len(uncached_work) keeps small jobs
-        # from spawning useless idle workers.
-        env_raw = os.environ.get("GRAPHIFY_MAX_WORKERS", "").strip()
-        env_cap = None
-        if env_raw:
-            try:
-                v = int(env_raw)
-                if v > 0:
-                    env_cap = v
-            except ValueError:
-                pass
-        cpu_cap = env_cap if env_cap is not None else (os.cpu_count() or 4)
-        max_workers = min(cpu_cap, len(uncached_work))
-
-    # Windows ProcessPoolExecutor hard-caps at 61 workers (CPython limitation
-    # tied to WaitForMultipleObjects). Clamp here so every path — auto-compute,
-    # GRAPHIFY_MAX_WORKERS, and --max-workers — stays valid on >61-core boxes
-    # (issue #1298). Guard against 0 from an empty work list.
-    if sys.platform == "win32":
-        max_workers = min(max_workers, 61)
-    max_workers = max(max_workers, 1)
+    max_workers = _pool_worker_count(max_workers, len(uncached_work))
 
     # A one-worker pool buys no parallelism: it still pays process spawn plus an
     # IPC round trip per file, and it is the one residual case where the parent's
@@ -5746,7 +5832,9 @@ def _extract_parallel(
     failed: list[int] = []  # positions into uncached_work whose future failed
     _PROGRESS_INTERVAL = 100
     try:
-        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as pool:
+        with concurrent.futures.ProcessPoolExecutor(
+            max_workers=max_workers, mp_context=_pool_context()
+        ) as pool:
             futures = {
                 pool.submit(_extract_single_file, item): pos
                 for pos, item in enumerate(work_items)
@@ -5853,6 +5941,108 @@ def _extract_sequential(
         print(f"  AST extraction: {_done}/{_done} uncached files (100%)", flush=True)
 
 
+# Python resolution passes below this many files stay in the parent. Both are a
+# parse plus a tree walk per file — real work, but a pool has to be paid for. On
+# a platform without forkserver (Windows only has spawn) every worker re-imports
+# graphify.extract, ~0.07s each, so a small corpus would lose more to startup
+# than the walks cost in the first place. Deliberately higher than
+# _PARALLEL_THRESHOLD, which gates far heavier per-file extraction work.
+_PY_PASS_PARALLEL_THRESHOLD = 60
+
+
+def _python_facts_worker(args: tuple) -> "tuple[int, dict | None]":
+    """Pool entrypoint for per-file Python symbol-resolution facts.
+
+    Must be at module level (not a closure) so it can be pickled.
+
+    Args:
+        args: ``(index, path_str, root_str)``; ``root`` anchors module resolution.
+
+    Returns:
+        ``(index, payload)`` so results can be placed back in order.
+    """
+    idx, path_str, root_str = args
+    return idx, _collect_python_file_facts(Path(path_str), Path(root_str))
+
+
+def _python_refs_worker(args: tuple) -> "tuple[int, dict | None]":
+    """Pool entrypoint for per-file Python cross-file-import reference facts.
+
+    Args:
+        args: ``(index, path_str, name_to_nid)``. The name map is built in the
+            parent because node ids only exist there.
+
+    Returns:
+        ``(index, payload)`` so results can be placed back in order.
+    """
+    idx, path_str, name_to_nid = args
+    return idx, _collect_python_reference_facts(Path(path_str), name_to_nid)
+
+
+def _map_python_pass(
+    worker,
+    work_items: list[tuple],
+    slots: int,
+    parallel: bool,
+    max_workers: "int | None",
+    label: str,
+) -> "list[dict | None] | None":
+    """Run a per-file Python resolution pass in a worker pool.
+
+    Both Python resolution hotspots are a parse plus a tree walk per file, over
+    files the extraction workers already parsed once, and only the cross-file
+    merge genuinely needs the global node table. Moving the per-file halves into
+    a pool leaves the parent doing just the merge: measured on a 501-file corpus
+    the two passes were 1.47s of a 2.01s serial tail (#3008). The payloads are
+    plain str/int data, and IPC is cheap enough not to matter — 4.56MB of
+    per-file results pickled in 0.017s on the same corpus.
+
+    ``work_items`` are ``(slot_index, ...)`` tuples; each result lands at its own
+    slot, so the returned list is aligned with the caller's path list regardless
+    of completion order. Slots with no work item stay None.
+
+    Returns None when the pass should run in the parent instead: pooling
+    disabled, too few files to pay for a pool, a single worker, or a pool that
+    broke — the same fallback contract as :func:`_extract_parallel`.
+    """
+    if not parallel or len(work_items) < _PY_PASS_PARALLEL_THRESHOLD:
+        return None
+    workers = _pool_worker_count(max_workers, len(work_items))
+    if workers == 1:
+        return None
+    # These passes only pay for themselves on a forkserver. Under spawn every
+    # worker of every pool re-imports graphify.extract, and these two pools are
+    # in addition to the extraction pool: on the 501-file corpus, moving the
+    # passes into spawn pools made the whole run *slower*, 3.59s -> 4.23s median,
+    # while the same change on a forkserver took it to 1.70s. A platform with no
+    # forkserver (Windows) keeps them in the parent (#3008).
+    ctx = _pool_context()
+    if ctx is None:
+        return None
+
+    import concurrent.futures
+
+    out: "list[dict | None]" = [None] * slots
+    try:
+        with concurrent.futures.ProcessPoolExecutor(
+            max_workers=workers, mp_context=ctx
+        ) as pool:
+            futures = [pool.submit(worker, item) for item in work_items]
+            for future in concurrent.futures.as_completed(futures):
+                idx, payload = future.result()
+                out[idx] = payload
+    except Exception as exc:
+        # Any failure discards the whole pass rather than half of it: the caller
+        # redoes it in-process, where the payloads are byte-identical, so a
+        # broken pool costs time and nothing else.
+        import logging
+        logging.getLogger(__name__).warning(
+            "parallel %s failed (%s); running in-process instead", label, exc
+        )
+        return None
+    return out
+
+
 _PARALLEL_THRESHOLD = 20
 
 
@@ -5922,6 +6112,22 @@ def extract(
     _TSCONFIG_BASEURL_CACHE.clear()
     _XAML_CSHARP_CLASS_CACHE.clear()
     _MD_LINK_INDEX_CACHE.clear()
+    # Same contract for the two path caches added in #3008: which config a
+    # directory sees, and a source path's root-relative key, both answer
+    # questions about the filesystem with no mtime component. They exist because
+    # cross-file resolution asked them millions of times per run — `_source_key`
+    # alone was 36% of a profiled 32k-file run — so they must be cleared here,
+    # never made permanent, or a config added between two watch rebuilds (or a
+    # retargeted symlink) would never be observed again.
+    _JS_CONFIG_DIR_CACHE.clear()
+    _SOURCE_KEY_CACHE.clear()
+    _WORKSPACE_ROOT_CACHE.clear()
+    _JS_MODULE_PATH_CACHE.clear()
+    clear_resolve_cache()
+    # Same per-run contract: the Python parse cache treats each file's contents
+    # as fixed for one run, so a watch process must not carry a previous cycle's
+    # trees into this one.
+    clear_python_tree_cache()
 
     # Infer a common root for cache keys (use first diverging segment, not sum of all matches)
     try:
@@ -6178,7 +6384,21 @@ def extract(
     # marker set in the per-file extractor. Populated just before the pass that uses it.
     callable_nids: set[str] = set()
 
-    _augment_symbol_resolution_edges(paths, all_nodes, all_edges, root)
+    # The per-file half of this pass — one parse plus two tree walks per Python
+    # file — needs no cross-file state, so hand it to a pool and let the parent
+    # do only the merge (#3008).
+    _py_fact_paths = [p for p in paths if p.suffix == ".py"]
+    _py_fact_payloads = _map_python_pass(
+        _python_facts_worker,
+        [(i, str(p), str(root)) for i, p in enumerate(_py_fact_paths)],
+        len(_py_fact_paths),
+        parallel,
+        max_workers,
+        "Python fact collection",
+    )
+    _augment_symbol_resolution_edges(
+        paths, all_nodes, all_edges, root, py_facts_payloads=_py_fact_payloads
+    )
 
     # Merge a header-declared class (and its methods) with its sibling-impl
     # definition into ONE node (C/C++/ObjC #1547/#1556). Runs BEFORE the id-remap
@@ -6250,7 +6470,7 @@ def extract(
     _remap_seen: set[Path] = set()
     for _p in paths:
         try:
-            _remap_seen.add(_p.resolve())
+            _remap_seen.add(resolve_cached(_p))
         except (OSError, RuntimeError):
             pass
     for _e in all_edges:
@@ -6259,7 +6479,7 @@ def extract(
             continue
         _raw_tp = Path(_tf)
         try:
-            _tp = _raw_tp.resolve()
+            _tp = resolve_cached(_raw_tp)
         except (OSError, RuntimeError):
             continue
         if _tp in _remap_seen:
@@ -6330,7 +6550,7 @@ def extract(
             rel = path.relative_to(root)
         except ValueError:
             try:
-                rel = path.resolve().relative_to(root)
+                rel = resolve_cached(path).relative_to(root)
             except ValueError:
                 continue
         new_id = _file_node_id(rel)
@@ -6339,14 +6559,14 @@ def extract(
         # Also register the absolute-resolved form of the file-level id so
         # alias/workspace import targets (resolved via .resolve()) remap to
         # canonical instead of orphaning (#1529).
-        old_id_abs = _make_id(str(path.resolve()))
+        old_id_abs = _make_id(str(resolve_cached(path)))
         if old_id_abs != new_id:
             id_remap[old_id_abs] = new_id
         old_prefs: list[tuple[str, str]] = []
         old_pref = _file_node_id(path)
         if old_pref != new_id:
             old_prefs.append((old_pref, new_id))
-        old_pref_abs = _file_node_id(path.resolve())
+        old_pref_abs = _file_node_id(resolve_cached(path))
         if old_pref_abs != new_id and old_pref_abs != old_pref:
             old_prefs.append((old_pref_abs, new_id))
         # Bash entrypoint node ids append "__entry" to the file-level id
@@ -6365,10 +6585,10 @@ def extract(
             if _entry_old != _entry_new:
                 id_remap.setdefault(_entry_old, _entry_new)
         if old_prefs:
-            prefix_remap[path.resolve()] = old_prefs
+            prefix_remap[resolve_cached(path)] = old_prefs
         # Absolute form first: it is the longest, so prefix decomposition can
         # try forms in order without a shorter form shadowing it.
-        stem_forms[path.resolve()] = (
+        stem_forms[resolve_cached(path)] = (
             new_id, [old_pref_abs, old_pref, new_id]
         )
     if id_remap:
@@ -6420,7 +6640,7 @@ def extract(
             if n.get("type") == "package":
                 continue
             try:
-                entry = prefix_remap.get(Path(sf).resolve())
+                entry = prefix_remap.get(resolve_cached(sf))
             except Exception:
                 continue
             if entry is None:
@@ -6526,7 +6746,7 @@ def extract(
 
         def _decompose(target: str, tf: str) -> "tuple[str, str] | None":
             try:
-                forms = stem_forms.get(Path(tf).resolve())
+                forms = stem_forms.get(resolve_cached(tf))
             except (OSError, RuntimeError):
                 return None
             if not forms:
@@ -6654,12 +6874,37 @@ def extract(
     py_paths = [p for p in paths if p.suffix == ".py"]
     if py_paths:
         py_results = [r for r, p in zip(per_file, paths) if p.suffix == ".py"]
+        # Local symbol maps are built here because node ids only exist in the
+        # parent, and only after the id-remap above; the walk that consumes them
+        # is per-file, so it goes to a pool (#3008). A file with no local symbols
+        # is dropped from the work list, matching the in-process skip.
+        _ref_name_maps = [
+            _python_local_name_map(r, str(p)) for r, p in zip(py_results, py_paths)
+        ]
+        _ref_payloads = _map_python_pass(
+            _python_refs_worker,
+            [
+                (i, str(p), nm)
+                for i, (p, nm) in enumerate(zip(py_paths, _ref_name_maps))
+                if nm
+            ],
+            len(py_paths),
+            parallel,
+            max_workers,
+            "Python reference collection",
+        )
         try:
-            cross_file_edges = _resolve_cross_file_imports(py_results, py_paths)
+            cross_file_edges = _resolve_cross_file_imports(
+                py_results, py_paths, ref_payloads=_ref_payloads
+            )
             all_edges.extend(cross_file_edges)
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("Cross-file import resolution failed, skipping: %s", exc)
+        # Last consumer of the shared Python trees — release them here rather
+        # than at the end of the run, so the remaining passes do not hold a
+        # parse tree per Python file for no reason.
+        clear_python_tree_cache()
 
     # Cross-file Java import resolution
     java_paths = [p for p in paths if p.suffix == ".java"]
@@ -6867,6 +7112,11 @@ def extract(
     # of these files with no import evidence is gated below (#1659).
     _JS_TS_CALL_SUFFIXES = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")
     _go_module_cache: dict[Path, str | None] = {}
+    # The import-path filter below runs once per candidate per Go raw_call, and
+    # the candidate set for a common method name is large. Without this memo the
+    # lookup was 48% of extract()'s wall clock on a 2,500-file Go corpus, nearly
+    # all of it re-deriving the same answer for the same file.
+    _go_import_path_cache: dict[str, str | None] = {}
     for rc in all_raw_calls:
         callee = rc.get("callee", "")
         if not callee:
@@ -6932,7 +7182,8 @@ def extract(
             candidates = [
                 candidate for candidate in candidates
                 if _go_import_path_for_file(
-                    nid_to_source_file.get(candidate, ""), root, _go_module_cache
+                    nid_to_source_file.get(candidate, ""), root,
+                    _go_module_cache, _go_import_path_cache,
                 ) == import_path
             ]
             if not candidates:
@@ -7133,7 +7384,7 @@ def extract(
             canonical_id = _file_node_id(rel)
             new_sf = rel.as_posix()
         try:
-            sf_resolved = sf_path.resolve()
+            sf_resolved = resolve_cached(sf_path)
         except (OSError, RuntimeError):
             sf_resolved = sf_path
         # Learn the STEM (extension-dropped) forms too: symbol producers mint

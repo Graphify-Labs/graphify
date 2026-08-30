@@ -11,6 +11,7 @@ import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
+from functools import lru_cache
 from pathlib import Path
 from typing import Callable
 
@@ -19,7 +20,7 @@ from graphify.google_workspace import (
     convert_google_workspace_file,
     google_workspace_enabled,
 )
-from graphify.paths import GRAPHIFY_OUT, out_path
+from graphify.paths import GRAPHIFY_OUT, clear_resolve_cache, out_path, resolve_cached
 
 
 class FileType(str, Enum):
@@ -1248,37 +1249,6 @@ def _load_graphifyignore(root: Path, *, gitignore: bool = True) -> list[tuple[Pa
     return patterns
 
 
-# Parsed-pattern cache: raw pattern string -> (negated, directory_only,
-# path_relative, stripped_pattern). Ignore patterns are re-evaluated for every
-# walked entry; parsing the same strings per entry per scan was pure waste.
-# Plain dict (no LRU): the universe of keys is the distinct pattern lines in
-# the corpus's ignore files, which is small and bounded per scan. A long-lived
-# `graphify watch` process spanning many repos could still accumulate keys over
-# time, so cap it and clear wholesale on overflow (parsing is cheap, so a rare
-# full re-fill costs nothing that matters).
-_PARSED_PATTERN_CACHE: dict[str, tuple[bool, bool, bool, str]] = {}
-_PARSED_PATTERN_CACHE_MAX = 100_000
-
-
-def _parse_ignore_pattern(pattern: str) -> tuple[bool, bool, bool, str]:
-    """Split one gitignore-style pattern into its matching flags, cached.
-
-    Returns (negated, directory_only, path_relative, stripped). ``stripped``
-    is empty for patterns that match nothing (bare "!", bare "/").
-    """
-    got = _PARSED_PATTERN_CACHE.get(pattern)
-    if got is None:
-        negated = pattern.startswith("!")
-        raw = pattern[1:] if negated else pattern
-        directory_only = raw.endswith("/")
-        path_relative = "/" in raw.rstrip("/")
-        got = (negated, directory_only, path_relative, raw.strip("/"))
-        if len(_PARSED_PATTERN_CACHE) >= _PARSED_PATTERN_CACHE_MAX:
-            _PARSED_PATTERN_CACHE.clear()
-        _PARSED_PATTERN_CACHE[pattern] = got
-    return got
-
-
 # PurePath.relative_to compares casefolded parts on Windows only; mirror that
 # exactly, but skip the normcase pass entirely where it is a no-op (POSIX).
 _CASEFOLD_PATHS = os.path.normcase("Aa") != "Aa"
@@ -1295,6 +1265,13 @@ def _lexical_relative(
     of constructing a Path object (and, on 3.12+, walking ``parents``
     quadratically) per pattern per scanned entry. That construction was the
     dominant cost of large scans (see CHANGELOG: 76k-file vault, 50+ min).
+
+    No longer on the scan path: ``_eval`` below derives the same relative form
+    by slicing the target's normcased string against a precomputed anchor
+    prefix, which needs no ``parts`` tuple at all (#3008). Kept because it is
+    the reference this equivalence is pinned against
+    (``test_lexical_relative_matches_pathlib_relative_to``), and because it is
+    the only implementation that handles a part-less anchor.
     """
     anchor_parts = anchor.parts
     if not anchor_parts:
@@ -1321,66 +1298,234 @@ def _lexical_relative(
     return _nfc("/".join(tail))
 
 
-def _match_globstar_parts(
+@lru_cache(maxsize=1 << 16)
+def _match_anchored_ignore_pattern(path: str, pattern: str) -> bool:
+    """Match an anchored gitignore pattern without letting ``*`` cross ``/``.
+
+    Memoized on the two strings (#3008). This used to build a fresh
+    ``lru_cache``-wrapped recursive closure on every call, so a 46,050-path scan of
+    a large repo paid 2.1M cache constructions whose contents were thrown away
+    immediately — the memo only ever helped within a single pattern/path pair. The
+    function is pure in its arguments, so the cache never goes stale and needs no
+    per-scan clear; the bound exists only so a long-lived ``watch`` process cannot
+    grow it without limit.
+    """
+    return _anchored_ignore_match(
+        tuple(path.split("/")), tuple(pattern.split("/"))
+    )
+
+
+def _anchored_ignore_match(
     path_parts: tuple[str, ...],
     pattern_parts: tuple[str, ...],
-    path_idx: int,
-    pattern_idx: int,
-    memo: dict[tuple[int, int], bool],
 ) -> bool:
-    """Recursive ``**``-aware segment match, memoized via an explicit dict.
+    """Segment-wise match for :func:`_match_anchored_ignore_pattern`.
 
-    Lifted out of ``_match_anchored_ignore_pattern`` (was a per-call
-    ``@lru_cache`` closure): the decorated inner closure referenced itself, so
-    every call leaked a reference cycle for the GC to reclaim on this hot path.
-    A plain dict passed in avoids both the cycle and the per-call cache setup.
+    The pattern is a chain of segment tests where ``**`` may absorb any number of
+    segments, which is exactly a small non-deterministic automaton over pattern
+    positions, so it is walked as one: ``frontier`` holds every pattern index the
+    path could be sitting at, and each path segment advances the whole set at once.
+
+    This replaced a memoized recursion over ``(path_parts, pattern_parts,
+    path_idx, pattern_idx)`` (#3008). The memo was worthless in practice — the key
+    carries the path, so consecutive paths never share an entry — and a profile of
+    a 46,050-path scan showed 22.5M executions of the recursive body, each one
+    hashing two tuples to miss its own cache. The automaton is O(segments x
+    pattern parts) with no hashing and no recursion, and decides the same language:
+    a non-final ``**`` either steps past itself or absorbs a segment (the two
+    recursive branches, now the epsilon closure plus the self-loop below), a final
+    ``**`` demands at least one segment remain, and any other part must match its
+    segment positionally.
     """
-    key = (path_idx, pattern_idx)
-    cached = memo.get(key)
-    if cached is not None:
-        return cached
-
-    if pattern_idx == len(pattern_parts):
-        result = path_idx == len(path_parts)
-    else:
-        part = pattern_parts[pattern_idx]
-        if part == "**":
-            if pattern_idx == len(pattern_parts) - 1:
-                result = path_idx < len(path_parts)
-            else:
-                result = _match_globstar_parts(
-                    path_parts, pattern_parts, path_idx, pattern_idx + 1, memo
-                ) or (
-                    path_idx < len(path_parts)
-                    and _match_globstar_parts(
-                        path_parts, pattern_parts, path_idx + 1, pattern_idx, memo
-                    )
-                )
-        else:
-            result = (
-                path_idx < len(path_parts)
-                and fnmatch.fnmatchcase(path_parts[path_idx], part)
-                and _match_globstar_parts(
-                    path_parts, pattern_parts, path_idx + 1, pattern_idx + 1, memo
-                )
-            )
-    memo[key] = result
-    return result
-
-
-def _match_anchored_ignore_pattern(path: str, pattern: str) -> bool:
-    """Match an anchored gitignore pattern without letting ``*`` cross ``/``."""
-    path_parts = tuple(path.split("/"))
-    pattern_parts = tuple(pattern.split("/"))
-    # Fast path: with no ``**`` the match is a straight segment-wise fnmatch of
-    # equal-length paths, so skip the recursive matcher and its memo entirely.
-    if "**" not in pattern_parts:
-        if len(path_parts) != len(pattern_parts):
+    nparts = len(pattern_parts)
+    last = nparts - 1
+    frontier = _globstar_closure({0}, pattern_parts, last)
+    for segment in path_parts:
+        advanced: set[int] = set()
+        for idx in frontier:
+            if idx > last:
+                continue  # pattern exhausted but the path is not: a dead state
+            part = pattern_parts[idx]
+            if part == "**":
+                # A trailing ``**`` accepts as soon as one segment is left to eat,
+                # and this loop body only runs when one is.
+                if idx == last:
+                    return True
+                advanced.add(idx)  # absorb this segment, stay put
+            elif fnmatch.fnmatchcase(segment, part):
+                advanced.add(idx + 1)
+        if not advanced:
             return False
-        return all(
-            fnmatch.fnmatchcase(pp, qp) for pp, qp in zip(path_parts, pattern_parts)
-        )
-    return _match_globstar_parts(path_parts, pattern_parts, 0, 0, {})
+        frontier = _globstar_closure(advanced, pattern_parts, last)
+    return nparts in frontier
+
+
+def _globstar_closure(
+    states: set[int], pattern_parts: tuple[str, ...], last: int
+) -> set[int]:
+    """Add the pattern indices reachable from *states* without consuming a segment.
+
+    Only a non-final ``**`` is skippable: ``a/**/b`` must accept ``a/b``. A final
+    ``**`` is not, because it requires a segment of its own.
+    """
+    pending = [idx for idx in states if idx <= last and pattern_parts[idx] == "**"]
+    if not pending:
+        return states
+    reached = set(states)
+    while pending:
+        idx = pending.pop()
+        if idx < last and idx + 1 not in reached:
+            reached.add(idx + 1)
+            if idx + 1 <= last and pattern_parts[idx + 1] == "**":
+                pending.append(idx + 1)
+    return reached
+
+
+_GLOB_METACHARS = ("*", "?", "[")
+
+
+def _matches_ignore_pattern(
+    rel: str,
+    parts: tuple[str, ...],
+    parts_normcased: frozenset,
+    p: str,
+    p_normcased: str,
+    is_literal: bool,
+    path_relative: bool,
+    pattern_parts: tuple[str, ...] | None,
+    has_globstar: bool,
+    name_nfc: str,
+) -> bool:
+    """Does the relative path *rel* match the bare gitignore pattern *p*?
+
+    ``parts``/``parts_normcased``/``name_nfc`` describe the target and are derived
+    once per distinct relative path by the caller; the rest describe the pattern
+    and are derived once per scan by :func:`_compile_ignore_pattern`. Both used to
+    be recomputed on every one of the 3.8M calls a 46,050-path scan makes (#3008).
+
+    Two fast paths carry almost all real-world patterns, and both are exact
+    rewrites of the general form below for every input this module produces —
+    with one documented exception, noted in the first bullet:
+
+    - A **literal** non-anchored pattern (no ``*``, ``?`` or ``[``, and no ``/``
+      by construction — a pattern containing ``/`` is anchored instead) can only
+      match a single path component. ``fnmatch`` reduces to equality for such a
+      pattern, ``name_nfc`` is ``parts[-1]`` for every ``(rel, name_nfc)`` pair
+      :func:`_eval` builds, and every multi-part join the general loop tries
+      contains a separator the pattern cannot hold. So the whole cascade
+      collapses to one set membership test.
+
+      The exception is ``rel == "."``, where ``parts == (".",)`` and
+      ``name_nfc`` is the *directory's own* name rather than ``parts[-1]``: this
+      branch drops the general form's ``fnmatch(name_nfc, p)`` term, so
+      ``rel='.' pattern='build' name='build'`` matches under the general form and
+      not here. ``_eval`` produces ``rel == "."`` only when the target IS the
+      scan root and the pattern's anchor is a strict ancestor, and nothing asks
+      that question: the parent-exclusion walk never ``_eval``s the root itself,
+      ``collect_files`` and ``extract.py`` only ask about files, and
+      ``watch.py`` returns early for a directory event. It is recorded rather
+      than fixed because changing the fast path costs every real scan and buys
+      an answer no caller reads.
+    - An **anchored** pattern with no ``**`` matches strictly positionally, so the
+      automaton in :func:`_anchored_ignore_match` reduces to a length check plus a
+      per-segment ``fnmatchcase``.
+    """
+    if path_relative:
+        if pattern_parts is None:  # defensive: caller always supplies these
+            return _match_anchored_ignore_pattern(rel, p)
+        if not has_globstar:
+            return len(parts) == len(pattern_parts) and all(
+                fnmatch.fnmatchcase(a, b) for a, b in zip(parts, pattern_parts)
+            )
+        return _anchored_ignore_match(parts, pattern_parts)
+
+    if is_literal:
+        return p_normcased in parts_normcased
+
+    if fnmatch.fnmatch(rel, p):
+        return True
+    if fnmatch.fnmatch(name_nfc, p):
+        return True
+    for i, part in enumerate(parts):
+        if fnmatch.fnmatch(part, p):
+            return True
+        if fnmatch.fnmatch("/".join(parts[: i + 1]), p):
+            return True
+    return False
+
+
+def _compile_ignore_pattern(anchor: Path, pattern: str) -> tuple | None:
+    """Pre-split one ``(anchor, pattern)`` pair into the form ``_eval`` consumes.
+
+    Returns ``None`` for a pattern that is empty once its slashes are stripped —
+    the case the old inline loop skipped with ``continue``.
+
+    The tuple carries the anchor as normcased strings so membership can be tested
+    by string prefix instead of ``Path.relative_to``. ``os.path.normcase`` is
+    identity on POSIX and, on Windows, lowercases and maps ``/`` to ``\\`` — both
+    length-preserving, so the slice offsets computed here stay valid against the
+    un-normcased path (and the case-insensitive comparison matches what
+    ``PureWindowsPath.relative_to`` already did).
+    """
+    negated = pattern.startswith("!")
+    raw = pattern[1:] if negated else pattern
+    directory_only = raw.endswith("/")
+    path_relative = "/" in raw.rstrip("/")
+    p = raw.strip("/")
+    if not p:
+        return None
+    anchor_key = os.path.normcase(str(anchor))
+    prefix = anchor_key if anchor_key.endswith(os.sep) else anchor_key + os.sep
+    pattern_parts = tuple(p.split("/")) if path_relative else None
+    return (
+        anchor_key,
+        prefix,
+        len(prefix),
+        len(anchor.parts),
+        p,
+        os.path.normcase(p),
+        not any(c in p for c in _GLOB_METACHARS),
+        negated,
+        directory_only,
+        path_relative,
+        pattern_parts,
+        pattern_parts is not None and "**" in pattern_parts,
+    )
+
+
+# Compiled pattern lists, keyed by the identity of the caller's pattern list
+# (#3008). The pattern list is fixed for a scan apart from nested ignore files,
+# which are only ever *appended* as the walk descends, so a compiled list can be
+# extended in place rather than rebuilt. Each entry holds a strong reference to
+# the source list, which is what makes `id()` safe as a key: while an entry is
+# cached its list cannot be collected, so its id cannot be reused. Entries are
+# dropped wholesale on overflow — the cost of a miss is one recompile.
+_IGNORE_COMPILED: "dict[int, list]" = {}
+_IGNORE_COMPILED_MAX = 16
+
+
+def _compiled_ignore_patterns(patterns: list[tuple[Path, str]]) -> list[tuple]:
+    """Return the compiled form of *patterns*, compiling only what is new."""
+    key = id(patterns)
+    entry = _IGNORE_COMPILED.get(key)
+    if entry is not None and entry[0] is patterns and entry[1] <= len(patterns):
+        if entry[1] < len(patterns):
+            for anchor, pattern in patterns[entry[1]:]:
+                compiled_one = _compile_ignore_pattern(anchor, pattern)
+                if compiled_one is not None:
+                    entry[2].append(compiled_one)
+            entry[1] = len(patterns)
+        return entry[2]
+
+    compiled: list[tuple] = []
+    for anchor, pattern in patterns:
+        compiled_one = _compile_ignore_pattern(anchor, pattern)
+        if compiled_one is not None:
+            compiled.append(compiled_one)
+    if len(_IGNORE_COMPILED) >= _IGNORE_COMPILED_MAX:
+        _IGNORE_COMPILED.clear()
+    _IGNORE_COMPILED[key] = [patterns, len(patterns), compiled]
+    return compiled
 
 
 def _is_ignored(
@@ -1402,10 +1547,28 @@ def _is_ignored(
     _cache: optional dict shared across calls within the same scan. Ancestor
     directory results are memoised so files under the same subtree don't
     re-evaluate the same patterns repeatedly.
+
+    Performance (#3008): this was the single most expensive frame in the whole
+    pipeline — 437.4 s of a 469 s instrumented ``detect()`` profile on a
+    46,050-path repo, 93% of the stage. The work was not the matching but the
+    ``Path`` arithmetic around it: ``target.relative_to(anchor)`` ran once per
+    pattern per path (5.1M calls, each one walking ``anchor.parents`` and
+    constructing ``PurePath`` objects to compare), and the per-pattern flags were
+    re-derived from the pattern string every time. Now the pattern list is
+    compiled once (:func:`_compiled_ignore_patterns`), anchor membership is a
+    string prefix test, and everything that depends only on the target — its
+    root-relative form, its NFC basename, its ``is_dir()`` — is computed at most
+    once per target instead of once per pattern. Decisions are unchanged; the
+    ``_cache`` contract is unchanged too, including that ``_eval`` writes each
+    target exactly once (#1235).
     """
     if not patterns:
         return False
 
+    compiled = _compiled_ignore_patterns(patterns)
+    root_key = os.path.normcase(str(root))
+    root_prefix = root_key if root_key.endswith(os.sep) else root_key + os.sep
+    root_prefix_len = len(root_prefix)
     root_nparts = len(root.parts)
 
     def _eval(target: Path) -> bool:
@@ -1422,87 +1585,96 @@ def _is_ignored(
         if _cache is not None and target in _cache:
             return _cache[target]
 
-        target_parts = target.parts
-        target_name_nfc: str | None = None
+        target_str = str(target)
+        target_key = os.path.normcase(target_str)
+        name_nfc = _nfc(target.name)
+
+        # Root-relative form, needed by every non-anchored pattern whose anchor
+        # sits above the scan root. Computed once here rather than per pattern.
+        if target_key == root_key:
+            rel_root: str | None = "."
+        elif target_key.startswith(root_prefix):
+            rel_root = _nfc(target_str[root_prefix_len:].replace(os.sep, "/"))
+        else:
+            rel_root = None
+
+        # One anchor typically owns many patterns (every rule in one .gitignore),
+        # so the anchor-relative form is derived per anchor, not per pattern.
+        rel_by_anchor: dict[str, str | None] = {}
+        # Split/normcase of a relative path, keyed by that path. A target has at
+        # most a handful of distinct relative forms (one per anchor, plus the
+        # root-relative one) but is tested against every pattern, so this is
+        # derived once per form rather than once per pattern.
+        parts_by_rel: dict[str, tuple[tuple[str, ...], frozenset]] = {}
         target_is_dir: bool | None = None
-        rel_root_known = False
-        rel_root: str | None = None
-        # rel string (or None = outside anchor) and part-count per distinct
-        # anchor; patterns overwhelmingly share a handful of anchors.
-        rel_by_anchor: dict[Path, tuple[str | None, int]] = {}
-        # split segments + accumulated "/" prefixes per distinct rel string.
-        segs_by_rel: dict[str, tuple[list[str], list[str]]] = {}
-
-        def _segments(rel: str) -> tuple[list[str], list[str]]:
-            got = segs_by_rel.get(rel)
-            if got is None:
-                parts = rel.split("/")
-                prefixes: list[str] = []
-                acc = ""
-                for part in parts:
-                    acc = part if not acc else acc + "/" + part
-                    prefixes.append(acc)
-                got = (parts, prefixes)
-                segs_by_rel[rel] = got
-            return got
-
-        def _matches(rel: str, p: str, path_relative: bool) -> bool:
-            nonlocal target_name_nfc
-            if path_relative:
-                return _match_anchored_ignore_pattern(rel, p)
-            if fnmatch.fnmatch(rel, p):
-                return True
-            if target_name_nfc is None:
-                target_name_nfc = _nfc(target.name)
-            if fnmatch.fnmatch(target_name_nfc, p):
-                return True
-            parts, prefixes = _segments(rel)
-            for part, prefix in zip(parts, prefixes):
-                if fnmatch.fnmatch(part, p):
-                    return True
-                if fnmatch.fnmatch(prefix, p):
-                    return True
-            return False
 
         result = False
-        for anchor, pattern in patterns:
-            negated, directory_only, path_relative, p = _parse_ignore_pattern(pattern)
-            if not p:
-                continue
-
+        for (
+            anchor_key,
+            anchor_prefix,
+            anchor_prefix_len,
+            anchor_nparts,
+            p,
+            p_normcased,
+            is_literal,
+            negated,
+            directory_only,
+            path_relative,
+            pattern_parts,
+            has_globstar,
+        ) in compiled:
             # gitignore semantics: patterns from A/.gitignore apply ONLY to paths
             # under A. Matching non-anchored patterns against root-relative paths
             # let e.g. .hypothesis/.gitignore's bare "*" ignore the ENTIRE repo
             # (detect() returned 0 files). The anchor dir itself is exempt — an
             # ignore file governs its directory's contents, not the directory.
-            cached_rel = rel_by_anchor.get(anchor)
-            if cached_rel is None:
-                cached_rel = (
-                    _lexical_relative(target, target_parts, anchor),
-                    len(anchor.parts),
-                )
-                rel_by_anchor[anchor] = cached_rel
-            rel_anchor, anchor_nparts = cached_rel
-            if rel_anchor is None:
-                continue  # target outside this pattern's anchor: cannot match
-            matched = False
-            if rel_anchor != ".":
-                rel = rel_anchor
-                if not path_relative and root_nparts > anchor_nparts:
-                    if not rel_root_known:
-                        rel_root_known = True
-                        rel_root = _lexical_relative(target, target_parts, root)
-                    if rel_root is not None:
-                        rel = rel_root
-                matched = _matches(rel, p, path_relative=path_relative)
-                if matched and directory_only:
-                    if target_is_dir is None:
-                        target_is_dir = target.is_dir()
-                    if not target_is_dir:
-                        matched = False
+            if anchor_key in rel_by_anchor:
+                rel_anchor = rel_by_anchor[anchor_key]
+            else:
+                if target_key == anchor_key:
+                    rel_anchor = "."
+                elif target_key.startswith(anchor_prefix):
+                    rel_anchor = _nfc(
+                        target_str[anchor_prefix_len:].replace(os.sep, "/")
+                    )
+                else:
+                    rel_anchor = None  # outside this anchor: cannot match
+                rel_by_anchor[anchor_key] = rel_anchor
+            if rel_anchor is None or rel_anchor == ".":
+                continue
 
-            if matched:
-                result = not negated  # last match wins; ! flips to un-ignore
+            rel = rel_anchor
+            if not path_relative and root_nparts > anchor_nparts and rel_root is not None:
+                rel = rel_root
+            cached_parts = parts_by_rel.get(rel)
+            if cached_parts is None:
+                split = tuple(rel.split("/"))
+                cached_parts = (
+                    split,
+                    frozenset(os.path.normcase(x) for x in split),
+                )
+                parts_by_rel[rel] = cached_parts
+            parts, parts_normcased = cached_parts
+            if not _matches_ignore_pattern(
+                rel,
+                parts,
+                parts_normcased,
+                p,
+                p_normcased,
+                is_literal,
+                path_relative,
+                pattern_parts,
+                has_globstar,
+                name_nfc,
+            ):
+                continue
+            if directory_only:
+                if target_is_dir is None:
+                    target_is_dir = target.is_dir()
+                if not target_is_dir:
+                    continue
+
+            result = not negated  # last match wins; ! flips to un-ignore
         if _cache is not None:
             _cache[target] = result
         return result
@@ -1656,13 +1828,19 @@ def _auto_follow_symlinks(root: Path) -> bool:
 def _resolves_under_root(path: Path, root: Path) -> bool:
     """True when ``path`` resolves to a target inside ``root``."""
     try:
-        path.resolve().relative_to(root.resolve())
+        resolve_cached(path).relative_to(resolve_cached(root))
     except (OSError, RuntimeError, ValueError):
         return False
     return True
 
 
 def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace: bool | None = None, extra_excludes: list[str] | None = None, cache_root: Path | None = None, gitignore: bool = True) -> dict:
+    # _resolves_under_root memoizes through resolve_cached, so a scan must start
+    # from a clean cache the same way extract() does (#3008). Without this, a
+    # `graphify watch` process would carry the previous cycle's symlink targets
+    # into this scan: extract() clears at its own start, which is too late for
+    # the detect that runs before it.
+    clear_resolve_cache()
     root = root.resolve()
     configured_out_dir = root / GRAPHIFY_OUT
     configured_out_names = {configured_out_dir.name}

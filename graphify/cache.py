@@ -17,6 +17,7 @@ from pathlib import Path
 # absolute path ("/shared/graphify-out"). Single source of truth in graphify.paths
 # (#1423); re-exported here as _GRAPHIFY_OUT for the existing call sites.
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
+from graphify.paths import resolve_cached
 
 # AST cache entries are the output of graphify's own extractor code, so they
 # are only valid for the version that wrote them: keying purely on file
@@ -321,7 +322,7 @@ def _stat_key_to_absolute(key: str, anchor: Path) -> str:
 
 def _stat_index_file(root: Path) -> Path:
     _out = Path(_GRAPHIFY_OUT)
-    base = _out if _out.is_absolute() else Path(root).resolve() / _out
+    base = _out if _out.is_absolute() else resolve_cached(root) / _out
     return base / "cache" / "stat-index.json"
 
 
@@ -453,7 +454,7 @@ def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = No
     # graphify-out/cache/stat-index.json inside the analyzed source tree even when
     # the AST cache itself is redirected to CWD (#1774 completion).
     _ensure_stat_index(root, cache_root=cache_root)
-    resolved = p.resolve()
+    resolved = resolve_cached(p)
     abs_key = str(resolved)
     # The salt is the path component that enters the digest (relative to root, or
     # the absolute-path fallback). The stat-index memo MUST be keyed by it too:
@@ -462,7 +463,7 @@ def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = No
     # path served whichever was computed first — making file_hash order-dependent
     # and poisoning the persisted stat-index across runs (#1989). Store one digest
     # per salt so alternating roots don't force re-reads.
-    resolved_root = root.resolve()
+    resolved_root = resolve_cached(root)
     try:
         resolved_rel = resolved.relative_to(resolved_root)
     except ValueError:
@@ -547,7 +548,7 @@ def cached_word_count(path: Path, root: Path, compute, cache_root: "Path | None"
     p = _normalize_path(Path(path))
     root = _normalize_path(Path(root))
     _ensure_stat_index(root, cache_root=cache_root)
-    abs_key = str(p.resolve())
+    abs_key = str(resolve_cached(p))
     st: "os.stat_result | None" = None
     try:
         st = p.stat()
@@ -606,6 +607,34 @@ def _relativize_source_files_in(payload: dict, root: Path) -> None:
     # source_file the same way nodes/edges/hyperedges do, so it needs the same
     # portable-path treatment for cache entries to round-trip correctly across
     # machines/checkout directories.
+    def _relativized(source: str) -> "str | None":
+        """The stored form of one ``source_file`` value, or None to leave it be."""
+        sp = Path(source)
+        if not sp.is_absolute():
+            # os.path.abspath is lexical (no symlink resolution), matching
+            # the symbolic relativization below.
+            cwd_form = Path(os.path.abspath(sp))
+            try:
+                if cwd_form == root_resolved / sp or not cwd_form.exists():
+                    return None  # already root-relative, or a ghost path
+            except OSError:
+                return None
+            sp = cwd_form
+        try:
+            rel = os.path.relpath(sp, root_resolved)
+        except (ValueError, OSError):
+            return None  # out-of-root (e.g. Windows cross-drive)
+        if rel == ".." or rel.startswith(".." + os.sep) or rel.startswith("../"):
+            return None  # escaped root — keep absolute
+        return rel.replace(os.sep, "/")
+
+    # A payload holds one file's symbols, so nearly every item repeats the same
+    # source_file — this loop asked the identical question once per node: 61,964
+    # relpath calls and 61,964 Path constructions across 438 payloads in a
+    # profiled run (#3008). ``root_resolved`` is fixed for the call and the rest
+    # is a pure function of the string, so one answer per distinct value serves
+    # the whole payload.
+    relativized: "dict[str, str | None]" = {}
     for bucket in ("nodes", "edges", "hyperedges", "raw_calls"):
         for item in payload.get(bucket, []):
             if not isinstance(item, dict):
@@ -613,24 +642,12 @@ def _relativize_source_files_in(payload: dict, root: Path) -> None:
             source = item.get("source_file")
             if not source:
                 continue
-            sp = Path(source)
-            if not sp.is_absolute():
-                # os.path.abspath is lexical (no symlink resolution), matching
-                # the symbolic relativization below.
-                cwd_form = Path(os.path.abspath(sp))
-                try:
-                    if cwd_form == root_resolved / sp or not cwd_form.exists():
-                        continue  # already root-relative, or a ghost path
-                except OSError:
-                    continue
-                sp = cwd_form
             try:
-                rel = os.path.relpath(sp, root_resolved)
-            except (ValueError, OSError):
-                continue  # out-of-root (e.g. Windows cross-drive)
-            if rel == ".." or rel.startswith(".." + os.sep) or rel.startswith("../"):
-                continue  # escaped root — keep absolute
-            item["source_file"] = rel.replace(os.sep, "/")
+                rel = relativized[source]
+            except KeyError:
+                rel = relativized[source] = _relativized(source)
+            if rel is not None:
+                item["source_file"] = rel
 
 
 def _normalize_source_file_value(src: "str | Path", root_resolved: Path) -> str:
@@ -805,6 +822,29 @@ def _rewrite_id_keyed_table_keys(payload: object, fn) -> None:
         }
 
 
+def _json_deepcopy(obj):
+    """Deep-copy a JSON-shaped payload: dicts, lists, immutable scalars.
+
+    ``copy.deepcopy`` on a cache payload was 868,965 calls / 0.75s of a profiled
+    run (#3008), almost all of it memo bookkeeping and dispatch rather than
+    copying — and none of that is needed here. The payload is about to be
+    ``json.dumps``-ed, so it can only hold JSON types, and every JSON scalar is
+    immutable.
+
+    Containers of other types are returned by reference on purpose: the two
+    passes that mutate a copy — :func:`_relativize_source_files_in` and
+    :func:`_rewrite_strings` — descend into dicts and lists only, so nothing
+    reachable through a tuple or a set can be written to. Unlike ``deepcopy``
+    this does not preserve shared identity between two references to the same
+    sub-object, which is unobservable in JSON output.
+    """
+    if isinstance(obj, dict):
+        return {k: _json_deepcopy(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_json_deepcopy(v) for v in obj]
+    return obj
+
+
 def _rewrite_strings(obj: object, fn) -> None:
     """Apply ``fn`` to every string VALUE reachable in ``obj``, in place.
 
@@ -944,7 +984,7 @@ def cache_dir(root: Path = Path("."), kind: str = "ast",
     vintage live.
     """
     _out = Path(_GRAPHIFY_OUT)
-    base = _out if _out.is_absolute() else Path(root).resolve() / _out
+    base = _out if _out.is_absolute() else resolve_cached(root) / _out
     d = base / "cache" / kind
     if kind == "ast":
         d = d / f"v{_EXTRACTOR_VERSION}-s{_AST_CACHE_SCHEMA}"
@@ -1105,8 +1145,7 @@ def save_cached(path: Path, result: dict, root: Path = Path("."), kind: str = "a
     # below would then mutate the caller's dict for real.
     on_disk = result
     if isinstance(result, dict):
-        import copy as _copy
-        on_disk = _copy.deepcopy(result)
+        on_disk = _json_deepcopy(result)
         _relativize_source_files_in(on_disk, root)
         # Then replace the absolute root inside the ids and remaining paths, so
         # the entry replays portably under any root (#2257). Strictly after the
@@ -1213,7 +1252,7 @@ def prune_semantic_cache(root: Path, live_hashes: set[str]) -> int:
     one doc on a future run, never incorrect output.
     """
     _out = Path(_GRAPHIFY_OUT)
-    base = _out if _out.is_absolute() else Path(root).resolve() / _out
+    base = _out if _out.is_absolute() else resolve_cached(root) / _out
     pruned = 0
     for kind in ("semantic", "semantic-deep"):
         semantic_dir = base / "cache" / kind
