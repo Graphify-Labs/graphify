@@ -425,6 +425,22 @@ dist/
 !src/**
 ```
 
+
+## Project configuration
+
+Create a `.graphifyrc` in the scan root for settings that belong to the project rather than to one run. One `key=value` per line, `#` comments.
+
+**Ambiguous extensions.** Some extensions mean different languages in different projects: `.inc` is PHP on pfSense, Pascal in a Delphi tree, SQL or assembly elsewhere; `.h` is C or C++; `.m` is Objective-C or MATLAB. graphify has to pick one global default, and when it picks wrong the file does not fail — it parses as the wrong language and yields a handful of incidental nodes, so the graph looks populated while the real symbols are missing. Declare what the extension means in your repo:
+
+```
+# .graphifyrc
+language.inc=php        # a language name ...
+language.tpl=.ts        # ... or an extension graphify already knows
+viz_node_limit=0        # baked into the git hooks (see Team setup)
+```
+
+The declaration applies everywhere graphify keys a decision on the extension — file classification, extractor dispatch, cross-file resolution, and the AST cache (a file re-parsed under a different language never reuses the old entry). It is read by `graphify extract`, `graphify update`, `watch`, the hooks, the MCP server, and the `/graphify` skill alike. A typo is reported once on stderr and the scan continues with graphify's defaults.
+
 ---
 
 ## Team setup
