@@ -1544,3 +1544,80 @@ def test_graphify_out_survives_non_utf8_graphifyrc(tmp_path, monkeypatch):
         assert paths_mod.GRAPHIFY_OUT == "graphify-out"
     finally:
         importlib.reload(paths_mod)
+
+
+# --- fourth review round: atomic write (truncate visibility), whitespace
+# injection, non-UTF8 uninstall crash (Graphify PR review round 4) ---
+
+def test_write_text_no_symlink_leaves_no_tmp_file_on_success(tmp_path):
+    from graphify.hooks import _write_text_no_symlink
+
+    path = tmp_path / "plain.txt"
+    assert _write_text_no_symlink(path, "hello\n") is True
+    leftovers = [p for p in tmp_path.iterdir() if p.name != "plain.txt"]
+    assert leftovers == []
+
+
+def test_write_text_no_symlink_overwrites_existing_content(tmp_path):
+    from graphify.hooks import _write_text_no_symlink
+
+    path = tmp_path / "plain.txt"
+    path.write_text("old\n", encoding="utf-8")
+    assert _write_text_no_symlink(path, "new\n") is True
+    assert path.read_text(encoding="utf-8") == "new\n"
+
+
+def test_write_text_no_symlink_cleans_up_tmp_on_write_failure(tmp_path, monkeypatch):
+    from graphify.hooks import _write_text_no_symlink
+
+    def _boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("os.fdopen", _boom)
+    path = tmp_path / "plain.txt"
+    with pytest.raises(OSError):
+        _write_text_no_symlink(path, "content\n")
+    leftovers = list(tmp_path.iterdir())
+    assert leftovers == [], f"temp file leaked: {leftovers}"
+
+
+def test_merge_attr_line_falls_back_on_space_in_graphify_out(monkeypatch):
+    """A space in GRAPHIFY_OUT would split the gitattributes line into more
+    fields than intended (pattern attr1 attr2 ...) — same fallback as an
+    absolute or `..`-ascending path."""
+    from graphify.hooks import _merge_attr_line
+    import graphify.paths as paths_mod
+
+    monkeypatch.setattr(paths_mod, "GRAPHIFY_OUT", "my custom-out")
+    assert _merge_attr_line() == "graphify-out/graph.json merge=graphify"
+
+
+def test_merge_attr_line_falls_back_on_tab_in_graphify_out(monkeypatch):
+    from graphify.hooks import _merge_attr_line
+    import graphify.paths as paths_mod
+
+    monkeypatch.setattr(paths_mod, "GRAPHIFY_OUT", "custom\tout")
+    assert _merge_attr_line() == "graphify-out/graph.json merge=graphify"
+
+
+def test_clear_persisted_out_dir_survives_non_utf8_graphifyrc(tmp_path):
+    """hook uninstall must not crash over a corrupted .graphifyrc — same
+    leniency as the read side in graphify.paths."""
+    from graphify.hooks import _clear_persisted_out_dir
+
+    rc = tmp_path / ".graphifyrc"
+    rc.write_bytes(b"out_dir=\xff\xfe\x00bad")
+    assert _clear_persisted_out_dir(tmp_path) is False
+
+
+def test_uninstall_survives_non_utf8_graphifyrc(tmp_path):
+    """End-to-end: hook uninstall must complete (removing hooks/git config/
+    .gitattributes) even when .graphifyrc itself is corrupted."""
+    from graphify.hooks import install, uninstall
+
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    (repo / ".graphifyrc").write_bytes(b"out_dir=\xff\xfe\x00bad")
+    result = uninstall(repo)  # must not raise
+    assert "removed" in result.lower()
+    assert not (repo / ".git" / "hooks" / "post-commit").exists()

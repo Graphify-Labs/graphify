@@ -1,9 +1,9 @@
 # git hook integration - install/uninstall graphify post-commit and post-checkout hooks
 from __future__ import annotations
-import errno
 import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 
 _HOOK_MARKER = "# graphify-hook-start"
@@ -473,29 +473,42 @@ def _load_graphifyrc(root: Path) -> dict[str, str | int]:
 
 
 def _write_text_no_symlink(path: Path, content: str) -> bool:
-    """Write `content` to `path`, refusing to follow a symlink at the final
-    path component. Returns True if written, False if `path` is a symlink.
+    """Write `content` to `path` atomically, without writing through a
+    symlink at the final path component. Returns True if written, False if
+    `path` is a symlink.
 
-    A separate `path.is_symlink()` check followed by a plain `write_text()`
-    call leaves a race window open: something could replace `path` with a
-    symlink between the check and the write. `O_NOFOLLOW` closes that window
-    by making the open() call itself atomically fail (ELOOP) if the final
-    component is a symlink — there is no gap to win a race in. POSIX only;
-    Windows lacks O_NOFOLLOW, so this degrades to a plain create/truncate
-    there (no worse than the check-then-write pattern it replaces, and
-    unprivileged symlink creation is a materially different threat there).
+    Writes to a temp file in the same directory, then `os.replace()`s it
+    into place. This gets two properties in one step, both needed and
+    neither provided by opening `path` directly (even with O_NOFOLLOW):
+
+    - Atomicity: an in-place open+truncate+write leaves a window, between
+      the truncate and the write completing, where a concurrent reader
+      (another graphify process, a git hook) sees an empty file instead of
+      either the old or the new content. `os.replace()` is a single
+      directory-entry swap; no reader ever observes a partial state.
+    - No write-through-symlink, without needing O_NOFOLLOW (POSIX-only) at
+      all: `os.replace(src, dst)` replaces whatever directory entry `dst`
+      names — symlink or regular file — it does not resolve `dst` and write
+      through it. So even if something races a symlink into place between
+      the `is_symlink()` check below and the replace, the replace still
+      only ever touches that directory entry, never the symlink's target.
+      The check is therefore an early, friendlier bail-out for the callers
+      here (a clear "refuse to write through a symlink" instead of a
+      generic failure), not the actual safety boundary.
     """
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
+    if path.is_symlink():
+        return False
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
     try:
-        fd = os.open(str(path), flags, 0o644)
-    except OSError as exc:
-        if hasattr(os, "O_NOFOLLOW") and exc.errno == errno.ELOOP:
-            return False
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            f.write(content)
+        os.replace(tmp, str(path))
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
         raise
-    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
-        f.write(content)
     return True
 
 
@@ -721,13 +734,21 @@ def _merge_attr_line() -> str:
     process's cwd (see _read_persisted_out_dir) can legitimately be
     `../../out-dir` when invoked from a nested subdirectory — same fallback.
 
-    A newline/carriage-return in GRAPHIFY_OUT gets the same fallback. This
-    function is the actual place a corrupted value would land in
-    `.gitattributes` — _persist_out_dir rejecting a newline before writing
-    `.graphifyrc` does not stop THIS function from reading the same raw
-    GRAPHIFY_OUT (env var, never persisted) and building the line from it
-    regardless, since it runs unconditionally after the persist attempt,
-    swallowed or not.
+    Any whitespace in GRAPHIFY_OUT (not just newline/carriage-return) gets
+    the same fallback: a `.gitattributes` line is whitespace-separated
+    fields (`pattern attr1 attr2 ...`), so a space in `out` would split the
+    line into more fields than intended — part of the directory name would
+    parse as an extra attribute rather than as part of the pattern. This
+    function is also the actual place any such corrupted value would land
+    in `.gitattributes` — _persist_out_dir rejecting a newline before
+    writing `.graphifyrc` does not stop THIS function from reading the same
+    raw GRAPHIFY_OUT (env var, never persisted) and building the line from
+    it regardless, since it runs unconditionally after the persist attempt,
+    swallowed or not. Guaranteeing `out` is whitespace-free here is also
+    what makes the plain `line.split(" ", 1)[0]` used by callers of this
+    function (_register_merge_driver, _merge_driver_status) a safe way to
+    recover the path: with no space possible before `/graph.json`, that
+    split can never land anywhere but the intended boundary.
     """
     from graphify.paths import GRAPHIFY_OUT
     out = GRAPHIFY_OUT
@@ -736,8 +757,7 @@ def _merge_attr_line() -> str:
         or Path(out).is_absolute()
         or "\\" in out
         or ".." in Path(out).parts
-        or "\n" in out
-        or "\r" in out
+        or any(c.isspace() for c in out)
     ):
         out = "graphify-out"
     return f"{out.rstrip('/')}/graph.json merge=graphify"
@@ -861,7 +881,13 @@ def _clear_persisted_out_dir(root: Path) -> bool:
         # Best-effort here (return False, not raise) — the rest of uninstall
         # (git config, .gitattributes) must still proceed.
         return False
-    content = rc_path.read_text(encoding="utf-8")
+    try:
+        content = rc_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        # A corrupted/non-UTF-8 .graphifyrc must not make `hook uninstall`
+        # itself fail — best-effort, same as the symlink case above; the
+        # rest of uninstall (git config, .gitattributes) must still proceed.
+        return False
     lines = content.splitlines()
     kept = [
         raw for raw in lines
