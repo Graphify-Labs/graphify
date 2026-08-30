@@ -15872,8 +15872,12 @@ def extract_terraform(path: Path) -> dict:
     return {"nodes": nodes, "edges": edges}
 
 
-def extract_haxe(path: Path) -> dict:
-    """Extract classes, interfaces, typedefs, functions, imports, and inheritance from a .hx file."""
+def _extract_haxe_vantreeseba(path: Path) -> dict:
+    """Extract from a .hx file parsed by the vantreeseba-derived grammar.
+
+    Node names here (``class_declaration``, ``call_expression``,
+    ``member_expression``) are those of ``masquepublishing/tree-sitter-haxe``.
+    See :func:`extract_haxe` for how the grammar in use is chosen."""
     try:
         import tree_sitter_haxe as _tshaxe
         from tree_sitter import Language, Parser
@@ -16237,6 +16241,229 @@ def _haxe_recover_scattered(
                     add_edge(decl_nid, fn_nid, "method", fn_line)
 
         i += 1
+
+
+# Two different tree-sitter grammars for Haxe are in use across this project's
+# history, and they share no node names:
+#
+#   masquepublishing/tree-sitter-haxe       class_declaration, call_expression, ...
+#   masquepublishing/tree-sitter-haxe-tong  ClassType,         ECall,           ...
+#
+# They also cannot share a Python environment: tong's parser is ABI 15, which a
+# tree-sitter 0.23.x core rejects outright. So exactly one is importable at a
+# time, and which one it is fully determines the node names in the tree. Rather
+# than pin either, probe once and dispatch, so a checkout keeps working with
+# whichever grammar happens to be installed.
+_HAXE_FLAVOUR: "str | None" = None
+
+
+def _detect_haxe_flavour() -> str:
+    """Return 'tong', 'vantreeseba' or 'none'. Probed once, then cached."""
+    global _HAXE_FLAVOUR
+    if _HAXE_FLAVOUR is not None:
+        return _HAXE_FLAVOUR
+    try:
+        import tree_sitter_haxe as _tshaxe
+        from tree_sitter import Language, Parser
+        root = Parser(Language(_tshaxe.language())).parse(b"class A {}").root_node
+        kinds = {c.type for c in root.children}
+        _HAXE_FLAVOUR = "tong" if "ClassType" in kinds else "vantreeseba"
+    except Exception:
+        _HAXE_FLAVOUR = "none"
+    return _HAXE_FLAVOUR
+
+
+def _extract_haxe_tong(path: Path) -> dict:
+    """Extract from a .hx file parsed by the tong-derived grammar.
+
+    Mirrors :func:`_extract_haxe_vantreeseba`'s contract exactly -- same node
+    ids, same edge relations -- so the two are directly comparable on the same
+    input. tong's tree differs in three ways that matter here: ``ClassType``
+    covers both classes and interfaces (told apart by its ``kind`` field), it
+    has no ``body`` field so members are direct children, and ``extends``/
+    ``implements`` are explicit fields rather than named child rules."""
+    try:
+        import tree_sitter_haxe as _tshaxe
+        from tree_sitter import Language, Parser
+    except ImportError:
+        return {"nodes": [], "edges": [], "error": "tree-sitter-haxe not installed"}
+    try:
+        language = Language(_tshaxe.language())
+        parser = Parser(language)
+        source = path.read_bytes()
+        if b"\r" in source:
+            source = source.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+        root = parser.parse(source).root_node
+    except Exception as e:
+        return {"nodes": [], "edges": [], "error": str(e)}
+
+    stem = _file_stem(path)
+    str_path = str(path)
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    seen_ids: set[str] = set()
+    function_bodies: list[tuple] = []
+
+    def add_node(nid, label, line):
+        if nid and nid not in seen_ids:
+            seen_ids.add(nid)
+            nodes.append({"id": nid, "label": label, "file_type": "code",
+                          "source_file": str_path, "source_location": f"L{line}"})
+
+    def add_edge(src, tgt, relation, line, confidence="EXTRACTED"):
+        if src and tgt and src != tgt:
+            edges.append({"source": src, "target": tgt, "relation": relation,
+                          "confidence": confidence, "source_file": str_path,
+                          "source_location": f"L{line}", "weight": 1.0})
+
+    def ensure_type_node(name, line):
+        nid = _make_id(stem, name)
+        if nid in seen_ids:
+            return nid
+        nid = _make_id(name)
+        if nid not in seen_ids:
+            nodes.append({"id": nid, "label": name, "file_type": "code",
+                          "source_file": "", "source_location": ""})
+            seen_ids.add(nid)
+        return nid
+
+    file_nid = _make_id(str(path))
+    add_node(file_nid, path.name, 1)
+
+    def _dotted_path(node) -> str:
+        # `import`/`using` expose their segments as package_name/type_name
+        # children, exactly as the vantreeseba grammar did.
+        return ".".join(_read_text(c, source) for c in node.children
+                        if c.type in ("package_name", "type_name"))
+
+    def _call_name(node) -> str:
+        """Bare function/method name from an ECall or ENew."""
+        if node.type == "ENew":
+            tp = next((c for c in node.children if c.type == "TypePath"), None)
+            if tp is None:
+                return ""
+            nm = tp.child_by_field_name("name")
+            return _read_text(nm, source) if nm is not None else ""
+        callee = node.child_by_field_name("callee")
+        if callee is None:
+            return ""
+        if callee.type == "identifier":
+            return _read_text(callee, source)
+        if callee.type == "EField":
+            nm = callee.child_by_field_name("name")
+            if nm is not None:
+                return _read_text(nm, source)
+        return ""
+
+    def walk_calls(node, owner_nid):
+        if node.type in ("ECall", "ENew"):
+            name = _call_name(node)
+            if name:
+                add_edge(owner_nid, ensure_type_node(name, node.start_point[0] + 1),
+                         "calls", node.start_point[0] + 1, confidence="INFERRED")
+        for c in node.children:
+            walk_calls(c, owner_nid)
+
+    def walk(node, parent_nid=None, parent_name=None):
+        t = node.type
+
+        if t in ("import", "using"):
+            dotted = _dotted_path(node)
+            if dotted:
+                add_edge(file_nid, _make_id(dotted.replace(".", "_")),
+                         "imports", node.start_point[0] + 1)
+            return
+
+        if t == "ClassType":
+            name_node = node.child_by_field_name("name")
+            if name_node is None:
+                for c in node.children:
+                    walk(c, parent_nid, parent_name)
+                return
+            class_name = _read_text(name_node, source)
+            line = node.start_point[0] + 1
+            class_nid = _make_id(stem, class_name)
+            add_node(class_nid, class_name, line)
+            add_edge(file_nid, class_nid, "contains", line)
+
+            kind_node = node.child_by_field_name("kind")
+            is_iface = kind_node is not None and _read_text(kind_node, source) == "interface"
+
+            for sup in node.children_by_field_name("extends"):
+                base = _read_text(sup, source).strip()
+                if base:
+                    add_edge(class_nid, ensure_type_node(base, line), "inherits", line)
+            for iface in node.children_by_field_name("implements"):
+                nm = _read_text(iface, source).strip()
+                if nm:
+                    add_edge(class_nid, ensure_type_node(nm, line),
+                             "inherits" if is_iface else "implements", line)
+
+            # tong has no `body` field: members are direct children.
+            for c in node.children:
+                walk(c, class_nid, class_name)
+            return
+
+        if t in ("EnumType", "AbstractType"):
+            name_node = node.child_by_field_name("name")
+            if name_node is None:
+                return
+            enum_name = _read_text(name_node, source)
+            line = node.start_point[0] + 1
+            enum_nid = _make_id(stem, enum_name)
+            add_node(enum_nid, enum_name, line)
+            add_edge(file_nid, enum_nid, "contains", line)
+            for c in node.children:
+                walk(c, enum_nid, enum_name)
+            return
+
+        if t == "DefType":
+            name_node = node.child_by_field_name("name")
+            if name_node is None:
+                return
+            td = _read_text(name_node, source)
+            line = node.start_point[0] + 1
+            td_nid = _make_id(stem, td)
+            add_node(td_nid, td, line)
+            add_edge(file_nid, td_nid, "contains", line)
+            return
+
+        if t in ("ClassMethod", "EFunction"):
+            name_node = node.child_by_field_name("name")
+            if name_node is None:
+                return
+            func_name = _read_text(name_node, source)
+            line = node.start_point[0] + 1
+            if parent_nid is not None and parent_name is not None:
+                func_nid = _make_id(stem, parent_name, func_name)
+                add_node(func_nid, f"{func_name}()", line)
+                add_edge(parent_nid, func_nid, "method", line)
+            else:
+                func_nid = _make_id(stem, func_name)
+                add_node(func_nid, f"{func_name}()", line)
+                add_edge(file_nid, func_nid, "contains", line)
+            body = node.child_by_field_name("body")
+            if body is not None:
+                function_bodies.append((func_nid, body))
+            return
+
+        for c in node.children:
+            walk(c, parent_nid, parent_name)
+
+    walk(root)
+    for func_nid, body in function_bodies:
+        walk_calls(body, func_nid)
+    return {"nodes": nodes, "edges": edges}
+
+
+def extract_haxe(path: Path) -> dict:
+    """Extract from a .hx file, using whichever Haxe grammar is installed."""
+    flavour = _detect_haxe_flavour()
+    if flavour == "tong":
+        return _extract_haxe_tong(path)
+    if flavour == "vantreeseba":
+        return _extract_haxe_vantreeseba(path)
+    return {"nodes": [], "edges": [], "error": "tree-sitter-haxe not installed"}
 
 
 _DISPATCH: dict[str, Any] = {
