@@ -65,10 +65,23 @@ def _read_persisted_out_dir() -> str | None:
     unreadable files degrade to "no override" rather than raising — this must
     never block module import.
 
-    Injection (a value that would add an unintended `.gitattributes` line) is
-    rejected at the write site (``graphify.hooks._persist_out_dir``), not
-    here — a value read back via ``str.splitlines()`` can never itself
-    contain a newline, so a line-based check on this side is a no-op.
+    Injection via a literal newline in the value (which would add an
+    unintended `.gitattributes` line) is rejected at the write site
+    (``graphify.hooks._persist_out_dir``), not here — a value read back via
+    ``str.splitlines()`` can never itself contain a newline, so a line-based
+    check on this side is a no-op.
+
+    ``.graphifyrc`` is repo-committed, untrusted content (this project already
+    reads it for ``viz_node_limit``) — unlike ``GRAPHIFY_OUT`` the env var,
+    which a user sets for themselves, this file can arrive unreviewed via
+    ``git clone``. A *relative* value is therefore anchored to the repo root
+    (``rc_path.parent`` — where ``_register_merge_driver`` always resolves and
+    writes it) and refused outright if it escapes that root via ``..``, rather
+    than letting a cloned repo redirect graphify's file writes anywhere on
+    disk. An *absolute* value is returned as-is: that is an existing,
+    documented, intentional feature (shared/CI output setups, see module
+    docstring) with the same trust level ``GRAPHIFY_OUT`` itself already has,
+    and predates this persistence mechanism.
     """
     rc_path = _find_graphifyrc(Path.cwd())
     if rc_path is None:
@@ -82,14 +95,35 @@ def _read_persisted_out_dir() -> str | None:
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, val = line.partition("=")
-        if key.strip() == "out_dir":
-            val = val.strip()
-            return val or None
+        if key.strip() != "out_dir":
+            continue
+        val = val.strip()
+        if not val:
+            return None
+        if Path(val).is_absolute():
+            return val
+        # Relative: anchor to the repo root (this .graphifyrc's own directory),
+        # not wherever this process happens to be invoked from — GRAPHIFY_OUT
+        # is otherwise always resolved relative to cwd, so re-express the
+        # repo-root-relative value in those terms when they differ.
+        repo_root = rc_path.parent.resolve()
+        target = (repo_root / val).resolve()
+        try:
+            target.relative_to(repo_root)
+        except ValueError:
+            return None  # escapes the repo root via `..` — refuse, don't honor
+        try:
+            return os.path.relpath(target, Path.cwd())
+        except ValueError:
+            return str(target)  # e.g. different drives on Windows
     return None
 
 
+_env_graphify_out = os.environ.get("GRAPHIFY_OUT")
 GRAPHIFY_OUT = (
-    os.environ.get("GRAPHIFY_OUT") or _read_persisted_out_dir() or "graphify-out"
+    _env_graphify_out
+    if _env_graphify_out is not None
+    else (_read_persisted_out_dir() or "graphify-out")
 )
 
 

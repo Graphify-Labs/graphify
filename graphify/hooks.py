@@ -480,10 +480,20 @@ def _persist_out_dir(root: Path, out: str) -> None:
     stored as the single `out_dir` line it looks like. GRAPHIFY_OUT is
     ordinarily just a directory name, but it can come from an arbitrary env
     var, so this is checked rather than assumed.
+
+    Also raises ValueError instead of writing through a symlinked
+    `.graphifyrc`: it is repo-committed content, so a cloned repo could ship
+    `.graphifyrc` as a symlink to an arbitrary path (e.g. a shell profile or
+    cron file) and have `hook install` — routinely run, with no reason for a
+    user to suspect it writes anything — overwrite whatever that symlink
+    points at. Refusing is a one-line check; silently following would make
+    the write target attacker-controlled.
     """
     if "\n" in out or "\r" in out:
         raise ValueError(f"GRAPHIFY_OUT contains a newline, refusing to persist: {out!r}")
     rc_path = root / ".graphifyrc"
+    if rc_path.is_symlink():
+        raise ValueError(f"refusing to write through a symlinked .graphifyrc: {rc_path}")
     lines: list[str] = []
     if rc_path.is_file():
         content = rc_path.read_text(encoding="utf-8")
@@ -658,11 +668,16 @@ def _merge_attr_line() -> str:
     resolved from GRAPHIFY_OUT env var or a persisted .graphifyrc out_dir —
     see _persist_out_dir / graphify.paths._read_persisted_out_dir). gitattributes
     patterns are repo-relative, so an absolute output-dir override cannot be
-    expressed there — fall back to the default name in that case.
+    expressed there — fall back to the default name in that case. A `..`-
+    ascending relative path can't be expressed either: hook install (via
+    _git_root) always resolves the correct repo root regardless of invocation
+    directory, but a persisted out_dir re-expressed relative to *this*
+    process's cwd (see _read_persisted_out_dir) can legitimately be
+    `../../out-dir` when invoked from a nested subdirectory — same fallback.
     """
     from graphify.paths import GRAPHIFY_OUT
     out = GRAPHIFY_OUT
-    if not out or Path(out).is_absolute() or "\\" in out:
+    if not out or Path(out).is_absolute() or "\\" in out or ".." in Path(out).parts:
         out = "graphify-out"
     return f"{out.rstrip('/')}/graph.json merge=graphify"
 
@@ -778,6 +793,12 @@ def _clear_persisted_out_dir(root: Path) -> bool:
     """
     rc_path = root / ".graphifyrc"
     if not rc_path.is_file():
+        return False
+    if rc_path.is_symlink():
+        # Same write-hijack concern as _persist_out_dir: don't write cleaned
+        # content through a repo-committed symlink to an arbitrary target.
+        # Best-effort here (return False, not raise) — the rest of uninstall
+        # (git config, .gitattributes) must still proceed.
         return False
     content = rc_path.read_text(encoding="utf-8")
     lines = content.splitlines()
