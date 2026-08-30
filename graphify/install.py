@@ -1564,6 +1564,22 @@ def _amp_uninstall(project_dir: Path | None = None) -> None:
     if removed:
         print("skill removed")
     _agents_uninstall(project_dir or Path("."), platform="amp")
+
+
+def _opencode_install(project_dir: Path | None = None) -> None:
+    """User-scope OpenCode install: skill into config + AGENTS.md and plugin."""
+    _copy_skill_file("opencode")
+    _agents_install(project_dir or Path("."), "opencode")
+
+
+def _opencode_uninstall(project_dir: Path | None = None) -> None:
+    """User-scope OpenCode uninstall: remove the skill, AGENTS.md section, and plugin."""
+    removed = _remove_skill_file("opencode")
+    if removed:
+        print("skill removed")
+    _agents_uninstall(project_dir or Path("."), platform="opencode")
+
+
 def _agents_platform_install(project_dir: Path | None = None) -> None:
     """`graphify agents install`: skill into ~/.agents/skills + AGENTS.md.
 
@@ -2298,7 +2314,22 @@ def dispatch_install_cli(cmd: str) -> bool:
         else:
             print(f"Usage: graphify {cmd} [install|uninstall]", file=sys.stderr)
             sys.exit(1)
-    elif cmd in ("aider", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes"):
+    elif cmd == "opencode":
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd == "install":
+            if "--project" in sys.argv[3:]:
+                _project_install("opencode", Path("."))
+            else:
+                _opencode_install(Path("."))
+        elif subcmd == "uninstall":
+            if "--project" in sys.argv[3:]:
+                _project_uninstall("opencode", Path("."))
+            else:
+                _opencode_uninstall(Path("."))
+        else:
+            print("Usage: graphify opencode [install|uninstall]", file=sys.stderr)
+            sys.exit(1)
+    elif cmd in ("aider", "codex", "claw", "droid", "trae", "trae-cn", "hermes"):
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
         if subcmd == "install":
             if "--project" in sys.argv[3:]:
