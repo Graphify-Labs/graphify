@@ -47,6 +47,32 @@ def is_url(path: str) -> bool:
     return any(path.startswith(p) for p in URL_PREFIXES)
 
 
+def _ytdlp_env_opts() -> dict:
+    """Optional yt-dlp options passed through the environment.
+
+    YouTube serves ``Sign in to confirm you're not a bot`` to datacenter IPs;
+    yt-dlp's own FAQ prescribes browser cookies for that, and its extractor
+    needs a JavaScript runtime for full format coverage. Both are reachable
+    from the CLI but were impossible to pass through the embedded API here,
+    so mirror the transcriber's env convention (GRAPHIFY_WHISPER_MODEL):
+
+    - ``GRAPHIFY_YTDLP_COOKIES``: path to a Netscape cookies.txt
+      (same as ``yt-dlp --cookies``).
+    - ``GRAPHIFY_YTDLP_JS_RUNTIMES``: comma-separated runtime names,
+      e.g. ``node`` or ``deno,node`` (same as ``yt-dlp --js-runtimes``).
+    """
+    opts: dict = {}
+    cookies = os.environ.get("GRAPHIFY_YTDLP_COOKIES")
+    if cookies:
+        opts['cookiefile'] = cookies
+    runtimes = os.environ.get("GRAPHIFY_YTDLP_JS_RUNTIMES")
+    if runtimes:
+        opts['js_runtimes'] = {
+            r.strip(): {'path': None} for r in runtimes.split(',') if r.strip()
+        }
+    return opts
+
+
 def download_audio(url: str, output_dir: Path) -> Path:
     """Download audio-only stream from a URL using yt-dlp.
 
@@ -78,6 +104,7 @@ def download_audio(url: str, output_dir: Path) -> Path:
         'noplaylist': True,
         'postprocessors': [],  # no ffmpeg needed — use native audio
     }
+    ydl_opts.update(_ytdlp_env_opts())
 
     print(f"  downloading audio: {url[:80]} ...", flush=True)
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
