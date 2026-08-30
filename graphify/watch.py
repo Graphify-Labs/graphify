@@ -529,6 +529,7 @@ def _reconcile_markdown_links(
     """
     from graphify.build import _is_ast_tier
     from graphify.extract import _file_node_id, _safe_extract_with_xaml_root
+    from graphify.extractors.base import _make_id
     from graphify.extractors.markdown import extract_markdown
 
     all_nodes = result.get("nodes", []) + preserved_nodes
@@ -562,6 +563,7 @@ def _reconcile_markdown_links(
     parsed_sources: set[str] = set()
     authored_links: set[tuple[str, str]] = set()
     authored_raw_pairs: set[frozenset[str]] = set()
+    unresolved_authored_sites: dict[tuple[str, str], set[str]] = {}
     resolved_raw_pairs: dict[frozenset[str], frozenset[str]] = {}
     desired_edges: list[tuple[str, str, dict, str, str]] = []
     node_sources = {
@@ -583,7 +585,14 @@ def _reconcile_markdown_links(
             extract_markdown, markdown_file, project_root
         )
         for edge in extraction.get("edges", []):
-            if edge.get("relation") != "references" or not edge.get("target_file"):
+            if edge.get("relation") != "references":
+                continue
+            if not edge.get("target_file"):
+                source_location = str(edge.get("source_location") or "")
+                if source_location:
+                    unresolved_authored_sites.setdefault(
+                        (source_file, source_location), set()
+                    ).add(str(edge.get("target") or ""))
                 continue
             target_path = Path(edge["target_file"])
             try:
@@ -620,12 +629,34 @@ def _reconcile_markdown_links(
         for source_rep, target_rep, _, source_file, target_file in desired_edges
     }
 
+    def _matches_unresolved_target(
+        raw_target: str, owner: str, target_source: str
+    ) -> bool:
+        candidate = project_root / Path(owner).parent / Path(target_source).name
+        return raw_target == _make_id(str(candidate))
+
     def _keep_edge(edge: dict) -> bool:
         if not (_is_ast_tier(edge) and edge.get("relation") == "references"):
             return True
         owner = source_paths.normalize(edge.get("source_file"))
         if owner not in parsed_sources:
             return True
+
+        unresolved_targets = unresolved_authored_sites.get(
+            (owner, str(edge.get("source_location") or "")), set()
+        )
+        if unresolved_targets:
+            target_sources = {
+                source
+                for endpoint in (edge.get("source"), edge.get("target"))
+                if (source := node_sources.get(endpoint)) and source != owner
+            }
+            if any(
+                _matches_unresolved_target(raw_target, owner, target_source)
+                for raw_target in unresolved_targets
+                for target_source in target_sources
+            ):
+                return True
 
         raw_pair = frozenset((edge.get("source"), edge.get("target")))
         if raw_pair in authored_raw_pairs:
