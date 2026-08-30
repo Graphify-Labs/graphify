@@ -264,6 +264,70 @@ def _repoint_python_package_imports(paths, all_nodes, all_edges, root) -> None:
                 e["target"] = alias_map[tgt]
 
 
+def _repoint_python_script_imports(all_edges: list[dict], root: Path | str) -> None:
+    """Repoint Python loose-script import edges to sibling file nodes (#2943).
+
+    When a script in a non-package directory (no __init__.py) imports a sibling
+    module (e.g. `scripts/caller.py` -> `import mod_a as m`), the AST extractor
+    emits a bare target `mod_a`. Repoint matching edges to the canonical file
+    node `scripts_mod_a` so member-call resolvers can find the module.
+
+    Guards:
+    - Never repoint inside a package directory (owned by _repoint_python_package_imports).
+    - Never repoint to self (e.g. `import builtins` inside `builtins.py`).
+    - Only resolve to an existing sibling file on disk.
+    """
+    try:
+        resolved_root = Path(root).resolve()
+    except OSError:
+        resolved_root = Path(root)
+
+    for e in all_edges:
+        if not isinstance(e, dict):
+            continue
+        if e.get("relation") != "imports":
+            continue
+        sf = e.get("source_file")
+        if not sf or not str(sf).lower().endswith((".py", ".pyi")):
+            continue
+        raw_target = e.get("target")
+        if not raw_target or not isinstance(raw_target, str):
+            continue
+
+        try:
+            caller_path = Path(sf).resolve()
+            parent_dir = caller_path.parent
+        except (OSError, RuntimeError, ValueError):
+            continue
+
+        # Package directories are handled globally by _repoint_python_package_imports (#2072).
+        if (parent_dir / "__init__.py").is_file() or (parent_dir / "__init__.pyi").is_file():
+            continue
+
+        # Probe sibling module in the caller's directory.
+        cand = _probe_python_module_candidate(parent_dir / raw_target)
+        if cand is None:
+            continue
+
+        try:
+            resolved_cand = cand.resolve()
+        except OSError:
+            resolved_cand = cand
+
+        # Guard: a file never imports itself (e.g. `import builtins` inside `builtins.py`).
+        if resolved_cand == caller_path:
+            continue
+
+        try:
+            rel = resolved_cand.relative_to(resolved_root)
+        except ValueError:
+            continue
+
+        new_target = _file_node_id(rel)
+        if new_target != raw_target:
+            e["target"] = new_target
+
+
 SEMANTIC_RELATIONS = frozenset({
     "inherits", "implements", "mixes_in", "embeds", "references",
     "calls", "imports", "imports_from", "re_exports", "contains", "method",
@@ -6614,6 +6678,7 @@ def extract(
     # (src/) package root before the resolver/import-evidence passes run, so the
     # graph is identical regardless of scan root (#2072).
     _repoint_python_package_imports(paths, all_nodes, all_edges, root)
+    _repoint_python_script_imports(all_edges, root)
     _merge_swift_extensions(per_file, all_nodes, all_edges)
     _merge_csharp_partial_class_nodes(per_file, all_nodes, all_edges, paths, root)
     _disambiguate_colliding_node_ids(all_nodes, all_edges, all_raw_calls, root)

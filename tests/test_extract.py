@@ -1767,6 +1767,153 @@ def test_python_aliased_call_survives_warm_cache(tmp_path):
     assert len(_alias_edges(warm)) == 1, "aliased call edge vanished on warm cache (#2082)"
 
 
+def test_python_subdirectory_aliased_import_module_call_resolves(tmp_path):
+    """#2943: `import mod_a as m` inside a subdirectory (e.g. `scripts/`) must resolve
+    to the canonical module node `scripts_mod_a` and emit the cross-module `calls` edge."""
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    mod_a = scripts / "mod_a.py"
+    mod_a.write_text("def target():\n    return 1\n")
+    caller = scripts / "caller.py"
+    caller.write_text(
+        "import mod_a as m\n\n"
+        "def go():\n"
+        "    return m.target()\n"
+    )
+    result = extract([caller, mod_a], cache_root=tmp_path, root=tmp_path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    call_edges = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and "go" in nodes.get(e["source"], {}).get("label", "")
+        and "target" in nodes.get(e["target"], {}).get("label", "")
+    ]
+    assert len(call_edges) == 1, f"expected one go->target call edge, got {call_edges}"
+    assert call_edges[0]["confidence"] == "EXTRACTED"
+    import_edges = [
+        e for e in result["edges"]
+        if e["relation"] == "imports"
+        and "caller.py" in (nodes.get(e["source"], {}).get("source_file") or "")
+    ]
+    assert len(import_edges) == 1
+    assert "scripts_mod_a" in import_edges[0]["target"]
+
+
+def test_python_subdirectory_unaliased_import_module_call_resolves(tmp_path):
+    """#2943: unaliased `import mod_a; mod_a.target()` in a subdirectory must resolve
+    to `scripts_mod_a` and emit the cross-module `calls` edge."""
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    mod_a = scripts / "mod_a.py"
+    mod_a.write_text("def target():\n    return 1\n")
+    caller = scripts / "caller.py"
+    caller.write_text(
+        "import mod_a\n\n"
+        "def go():\n"
+        "    return mod_a.target()\n"
+    )
+    result = extract([caller, mod_a], cache_root=tmp_path, root=tmp_path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    call_edges = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and "go" in nodes.get(e["source"], {}).get("label", "")
+        and "target" in nodes.get(e["target"], {}).get("label", "")
+    ]
+    assert len(call_edges) == 1, f"expected one unaliased go->target call edge, got {call_edges}"
+    assert call_edges[0]["confidence"] == "EXTRACTED"
+
+
+def test_python_subdirectory_duplicate_module_names_disambiguate_locally(tmp_path):
+    """#2943: when two subdirectories contain modules of the same stem (`scripts/mod_a.py`
+    and `tools/mod_a.py`), `scripts/caller.py` importing `mod_a` must resolve locally to
+    `scripts_mod_a` and not bind to `tools_mod_a`."""
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "mod_a.py").write_text("def target():\n    return 1\n")
+    caller = scripts / "caller.py"
+    caller.write_text(
+        "import mod_a as m\n\n"
+        "def go():\n"
+        "    return m.target()\n"
+    )
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    (tools / "mod_a.py").write_text("def target():\n    return 2\n")
+
+    result = extract([caller, scripts / "mod_a.py", tools / "mod_a.py"], cache_root=tmp_path, root=tmp_path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    call_edges = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and "go" in nodes.get(e["source"], {}).get("label", "")
+    ]
+    assert len(call_edges) == 1
+    target_node = nodes[call_edges[0]["target"]]
+    assert "scripts" in (target_node.get("source_file") or "")
+    assert "tools" not in (target_node.get("source_file") or "")
+
+
+def test_python_subdirectory_aliased_call_survives_warm_cache(tmp_path):
+    """#2943: subdirectory aliased `calls` edge must survive a warm (cache-hit) re-extract,
+    and transient hints (target_file, local_alias) must not leak into the result."""
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "mod_a.py").write_text("def target():\n    return 1\n")
+    caller = scripts / "caller.py"
+    caller.write_text(
+        "import mod_a as m\n\n"
+        "def go():\n"
+        "    return m.target()\n"
+    )
+    paths = [caller, scripts / "mod_a.py"]
+
+    cold = extract(paths, cache_root=tmp_path, root=tmp_path)
+    nodes = {n["id"]: n for n in cold["nodes"]}
+    cold_calls = [
+        e for e in cold["edges"]
+        if e["relation"] == "calls"
+        and "go" in nodes.get(e["source"], {}).get("label", "")
+        and "target" in nodes.get(e["target"], {}).get("label", "")
+    ]
+    assert len(cold_calls) == 1
+
+    warm = extract(paths, cache_root=tmp_path, root=tmp_path)
+    warm_calls = [
+        e for e in warm["edges"]
+        if e["relation"] == "calls"
+        and "go" in nodes.get(e["source"], {}).get("label", "")
+        and "target" in nodes.get(e["target"], {}).get("label", "")
+    ]
+    assert len(warm_calls) == 1, "aliased call edge vanished on warm cache (#2943)"
+    for edge in warm["edges"]:
+        assert "target_file" not in edge, "transient target_file leaked into final output"
+        assert "local_alias" not in edge, "transient local_alias leaked into final output"
+
+
+def test_python_loose_script_imports_from_edge_is_not_repointed(tmp_path):
+    """Loose-script repointing only touches plain `imports` edges, leaving `imports_from`
+    edges unchanged so symbol-resolution facts remain authoritative."""
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "mod_a.py").write_text("def target():\n    return 1\n")
+    caller = scripts / "caller.py"
+    caller.write_text("from mod_a import target\n\ndef go():\n    return target()\n")
+
+    result = extract([caller, scripts / "mod_a.py"], cache_root=tmp_path, root=tmp_path)
+    imports_from_edges = [
+        e for e in result["edges"]
+        if e["relation"] == "imports_from"
+    ]
+    assert len(imports_from_edges) == 1
+    assert imports_from_edges[0]["target"] == "mod_a"
+    symbol_imports = [
+        e for e in result["edges"]
+        if e["relation"] == "imports" and e["target"] == "scripts_mod_a_target"
+    ]
+    assert len(symbol_imports) == 1
+
+
 def test_python_qualified_call_resolves_when_method_name_collides_with_caller(tmp_path):
     """The real #1446 shape: a viewset action `approve()` delegates to a SERVICE
     action of the SAME name via `Service.approve()`. The bare-name in-file lookup
