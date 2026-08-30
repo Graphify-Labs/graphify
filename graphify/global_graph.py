@@ -175,6 +175,42 @@ def global_remove(repo_tag: str) -> int:
     return removed
 
 
+def global_push(
+    uri: str,
+    graph_name: str = "graphify",
+    *,
+    user: str | None = None,
+    password: str | None = None,
+    delta: bool = True,
+    prune: bool = False,
+    allow_shrink: bool = False,
+) -> dict:
+    """Push the global graph to a FalkorDB target.
+
+    `export --push` resolves its source from a project's output directory, so
+    the global graph — the one graph the push/prune contract is actually about —
+    had no CLI route at all (#3057).
+
+    delta: repo-keyed incremental push (default). Only repos whose manifest
+        source_hash moved, or whose node count in the target has drifted, are
+        re-sent; repos the manifest no longer lists are deleted. Set False for a
+        full push, in which case `prune` decides whether it converges.
+    """
+    from graphify.exporters.graphdb import push_to_falkordb
+
+    G = _load_global_graph()
+    if G.number_of_nodes() == 0:
+        raise FileNotFoundError(
+            "global graph is empty — add a project with `graphify global add` first"
+        )
+    manifest = _load_manifest().get("repos", {})
+    return push_to_falkordb(
+        G, uri=uri, user=user, password=password, graph_name=graph_name,
+        prune=prune, allow_shrink=allow_shrink,
+        repo_manifest=manifest if delta else None,
+    )
+
+
 def global_list() -> dict:
     """Return the manifest repos dict."""
     return _load_manifest().get("repos", {})
