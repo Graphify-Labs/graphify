@@ -2353,8 +2353,14 @@ def _main(argv: list[str] | None = None) -> None:
     import os
 
     parser = argparse.ArgumentParser(
-        prog="python -m graphify.serve",
+        prog="graphify-mcp",
         description="Serve a graphify knowledge graph over MCP (stdio or Streamable HTTP).",
+        epilog=(
+            "uv/pipx tool installs: run this console script directly — it already points "
+            "at the right interpreter. 'python -m graphify.serve' only works when the "
+            "current interpreter can import graphify (e.g. a pip-installed venv); under "
+            "uv tool / pipx installs it fails with ModuleNotFoundError."
+        ),
     )
     parser.add_argument(
         "graph_path",
