@@ -2,6 +2,17 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## 0.9.53 (unreleased)
+
+- Feature: Robot Framework `.robot`/`.resource` files are now extracted (optional `[robot]` extra) — suites, test cases, user keywords, keyword-call edges, and resource/library imports, with case/space/underscore-insensitive keyword resolution (#3192, thanks @nshiveg).
+- Fix: chat-template control tokens are now defanged by form (`<|…|>`, `[INST]`/`[SYSTEM]`) rather than an enumerated few, closing a prompt-injection gap for attacker-chosen tokens (e.g. `<|eot_id|>`); legitimate content is untouched (#3183, thanks @abhay-codes07).
+- Fix: `graphify watch`/`update` now preserves an authored markdown link whose target node is still live under a different spelling, extending the #3190 reconcile without loosening the deleted-target gate (#3190, thanks @logan683).
+- Fix: a semantic node is no longer silently dropped when a run did not actually re-extract the semantic tier — an unverified per-source shrink arms the shrink guard and re-queues the source next run (#3203, thanks @hopstreax).
+- Fix: the git hook-guard now detects a search command only in an executed position, not when it merely appears in a comment or a quoted message, eliminating false read-nudges (#3121, thanks @abhay-codes07).
+- Fix: `graphify install` now backs up a diverged `SKILL.md` before overwriting and prints an actionable warning, instead of silently clobbering user edits (#3144, thanks @abhay-codes07).
+- Fix: the `GRAPH_REPORT` headline community counts now reconcile with what is actually rendered, and the knowledge-gaps threshold matches its own label (#3148, thanks @abhay-codes07).
+- Fix: the wiki export now notes when a god-node relation group was truncated instead of silently showing a capped list (#3127, thanks @abhay-codes07).
+
 ## 0.9.52 (2026-08-29)
 
 - Fix: `graphify watch`/`update` no longer silently drops a Markdown link to a semantic-backed document during a code-only rebuild — authored `[[wikilink]]` references are repointed onto the target file's representative node, preserving links to the semantic tier without resurrecting a deleted target (#3190, thanks @logan683).
