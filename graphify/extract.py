@@ -54,6 +54,7 @@ from graphify.extractors.powershell import extract_powershell, extract_powershel
 from graphify.extractors.razor import extract_razor  # noqa: F401
 from graphify.extractors.robot import extract_robot  # noqa: F401
 from graphify.extractors.rust import extract_rust  # noqa: F401
+from graphify.extractors.salesforce_meta_xml import extract_salesforce_meta_xml, is_salesforce_meta_xml_path  # noqa: F401
 from graphify.extractors.sln import extract_sln  # noqa: F401
 from graphify.extractors.sql import extract_sql  # noqa: F401
 from graphify.extractors.terraform import extract_terraform  # noqa: F401
@@ -5601,6 +5602,13 @@ def _get_extractor(path: Path) -> Any | None:
     """Return the correct extractor function for a file, or None if unsupported."""
     if path.name.lower().endswith(".blade.php"):
         return extract_blade
+    # Salesforce source-format metadata (`Account.object-meta.xml`) carries the
+    # component kind in a compound suffix, not the extension, so it routes by
+    # filename like .blade.php above. Plain `.xml` stays unclaimed: claiming it
+    # would pull every pom.xml/web.xml in every repo into the graph, which is a
+    # separate decision from supporting Salesforce.
+    if is_salesforce_meta_xml_path(path):
+        return extract_salesforce_meta_xml
     # MCP config files (.mcp.json, claude_desktop_config.json, ...) are routed
     # by filename before generic .json dispatch so they get MCP-aware nodes
     # (servers, commands, packages, env vars) instead of opaque JSON keys.
@@ -7308,6 +7316,17 @@ def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | N
     if target.is_file():
         return [target] if _resolves_under_root(target, containment_root) else []
     _EXTENSIONS = set(_DISPATCH.keys())
+
+    def _claimed(p: Path) -> bool:
+        """Whether an extractor handles this file.
+
+        Salesforce metadata is dispatched by filename, not extension, so the
+        extension gate alone would never collect it. Shared by both walks below
+        — the symlink-following one used to miss the exception.
+        """
+        suffix = p.suffix
+        return (suffix in _EXTENSIONS or suffix.lower() in _EXTENSIONS
+                or is_salesforce_meta_xml_path(p))
     from graphify.detect import _is_ignored, _is_noise_dir, _load_graphifyignore
     ignore_root = root if root is not None else target
     patterns = _load_graphifyignore(ignore_root)
@@ -7337,8 +7356,7 @@ def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | N
             ]
             for fname in filenames:
                 p = dp / fname
-                suffix = p.suffix
-                if (suffix in _EXTENSIONS or suffix.lower() in _EXTENSIONS) and not _ignored(p) and _resolves_under_root(p, containment_root):
+                if _claimed(p) and not _ignored(p) and _resolves_under_root(p, containment_root):
                     results.append(p)
         return sorted(results)
     # Walk with symlink following + cycle detection
@@ -7358,8 +7376,7 @@ def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | N
         ]
         for fname in filenames:
             p = dp / fname
-            suffix = p.suffix
-            if (suffix in _EXTENSIONS or suffix.lower() in _EXTENSIONS) and not _ignored(p) and _resolves_under_root(p, containment_root):
+            if _claimed(p) and not _ignored(p) and _resolves_under_root(p, containment_root):
                 results.append(p)
     return sorted(results)
 
