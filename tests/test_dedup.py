@@ -851,13 +851,18 @@ _RATIONALE_BOILER = ("Django app config for apps.platform.cards. No business "
 
 
 @pytest.mark.parametrize("a,b", [
-    ({"id": "d1", "label": "Getting Started Installation Guide",
+    # #296 narrowed the document/rationale rows here to their boundary case: an
+    # identical label on two nodes that are provably NOT their files' own nodes
+    # now merges (that is the bug the concept-only gate was causing). What must
+    # still never merge is a file's OWN node, so these two rows now carry the
+    # ids the file nodes themselves would be minted with.
+    ({"id": "docs_a", "label": "Getting Started Installation Guide",
       "file_type": "document", "source_file": "docs/a.md"},
-     {"id": "d2", "label": "Getting Started Installation Guide",
+     {"id": "docs_b", "label": "Getting Started Installation Guide",
       "file_type": "document", "source_file": "docs/b.md"}),
-    ({"id": "r1", "label": _RATIONALE_BOILER,
+    ({"id": "apps_platform_cards_apps", "label": _RATIONALE_BOILER,
       "file_type": "rationale", "source_file": "apps/platform/cards/apps.py"},
-     {"id": "r2", "label": _RATIONALE_BOILER,
+     {"id": "apps_platform_cores_apps", "label": _RATIONALE_BOILER,
       "file_type": "rationale", "source_file": "apps/platform/cores/apps.py"}),
     ({"id": "backend_a_render_frame", "label": "render_frame",
       "file_type": "code", "source_file": "backend_a.py"},
@@ -879,12 +884,15 @@ _RATIONALE_BOILER = ("Django app config for apps.platform.cards. No business "
       "file_type": "concept", "source_file": "doc1.md"},
      {"id": "api_b", "label": "API",
       "file_type": "concept", "source_file": "doc2.md"}),
-], ids=["document", "rationale", "code", "image-basename", "concept-image-mixed",
-        "empty-source-file", "low-entropy-concept"])
+], ids=["document-own-file-node", "rationale-own-file-node", "code",
+        "image-basename", "concept-image-mixed", "empty-source-file",
+        "low-entropy-concept"])
 def test_crossfile_identical_labels_stay_distinct_for_guarded_types(a, b):
-    """The #2182 fix is gated to high-entropy `concept` nodes with provenance
-    on BOTH sides. Identical labels must NOT merge for: file-anchored types
-    (document/rationale, #1284), code (#1205), images sharing a basename in
+    """The #2182 cross-file merge requires provenance and high entropy on BOTH
+    sides, and #296 widened its type gate only as far as nodes provably not
+    their file's own node. Identical labels must still NOT merge for: a
+    document/rationale node that IS its file's own node (#296, the boundary of
+    #1284's file-anchored guard), code (#1205), images sharing a basename in
     different dirs, mixed concept+image pairs, provenance-less nodes (#1178),
     and low-entropy generic labels."""
     result_nodes, _ = deduplicate_entities([dict(a), dict(b)], [], communities={})
@@ -1196,3 +1204,167 @@ def test_same_word_variant_helper():
     # Accepted trade: a length-differing 5-char spelling variant reads as two
     # words and stays unmerged, per the never-merge-distinct-entities bar.
     assert not _same_word_variant("colour", "color")
+
+
+# -- #296: cross-file merge for entity nodes typed by their file's extension --
+#
+# Reported shape: per-file extraction over a note vault mints one node per
+# mention of the same person/project, and they never merge. Normalization was
+# never the problem -- `_norm` already buckets the variants together -- the
+# Pass 1 cross-file union was gated to `file_type == "concept"`, and an entity
+# pulled out of a `.md` note inherits `document` from the file's extension, not
+# from anything about the entity. The @cyrilXBT variant family below is the
+# reported corpus's shape, reduced to the spellings that occur in it.
+
+_CYRIL_VARIANTS = ["@cyrilXBT", "@cyrilxbt", "cyrilXBT"]
+
+
+def test_provably_not_file_structure_helper():
+    """The predicate proves entity-ness, and answers False whenever it cannot
+    (#296): a file's own node, a structural `page`/`heading` node, and any node
+    missing an id or provenance all stay treated as file-anchored."""
+    from graphify.dedup import _provably_not_file_structure
+    # An entity extracted from a note: `<path>_<entity>` never equals the path.
+    assert _provably_not_file_structure(
+        {"id": "journal_2024_03_01_cyrilxbt", "label": "@cyrilXBT",
+         "source_file": "journal/2024-03-01.md"})
+    # The file's own node, in each spelling a stored source_file may take.
+    assert not _provably_not_file_structure(
+        {"id": "journal_2024_03_01", "source_file": "journal/2024-03-01.md"})
+    assert not _provably_not_file_structure(
+        {"id": "2024_03_01", "source_file": "journal/2024-03-01.md"})  # pre-#1504 bare stem
+    assert not _provably_not_file_structure(
+        {"id": "vault_journal_2024_03_01", "source_file": 'C:\\vault\\journal\\2024-03-01.md'})
+    # The markdown extractor states it outright, for the file and its sections.
+    assert not _provably_not_file_structure(
+        {"id": "anything", "node_kind": "page", "source_file": "docs/a.md"})
+    assert not _provably_not_file_structure(
+        {"id": "docs_a_decisions", "node_kind": "heading",
+         "label": "Decisions", "source_file": "docs/a.md"})
+    # Unprovable -- no id, or no provenance.
+    assert not _provably_not_file_structure({"id": "", "source_file": "docs/a.md"})
+    assert not _provably_not_file_structure({"id": "docs_a_thing", "source_file": ""})
+
+
+def test_dedup_merges_crossfile_document_entity_variants():
+    """The reported bug (#296): case/prefix variants of one entity, extracted
+    from three different notes and typed `document` by extension, must collapse
+    to a single node."""
+    nodes = [
+        {"id": "journal_2024_03_0%d_cyrilxbt" % i, "label": variant,
+         "file_type": "document", "source_file": "journal/2024-03-0%d.md" % i}
+        for i, variant in enumerate(_CYRIL_VARIANTS, start=1)
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert len(result_nodes) == 1, (
+        "cross-file `document` entity variants did not merge -- the #296 gate "
+        "widening is not reaching Pass 1's cross-file residue"
+    )
+
+
+def test_dedup_merges_crossfile_rationale_entity_variants():
+    """`rationale` rides the same gate as `document` (#296): entity nodes of
+    that type, provably not their files' own nodes, merge on an exact label."""
+    nodes = [
+        {"id": "svc_alpha_py_retention_window", "label": "Retention Window",
+         "file_type": "rationale", "source_file": "svc/alpha.py"},
+        {"id": "svc_beta_py_retention_window", "label": "retention window",
+         "file_type": "rationale", "source_file": "svc/beta.py"},
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert len(result_nodes) == 1
+
+
+def test_dedup_never_merges_a_files_own_node_away():
+    """The boundary the widened gate is defined against (#296): a curated note
+    whose OWN node carries the entity's label must survive as its own node, even
+    when a same-label entity node exists in another file."""
+    nodes = [
+        # The curated page: its id is exactly the slugified source path.
+        {"id": "people_cyrilxbt", "label": "@cyrilXBT",
+         "file_type": "document", "source_file": "people/@cyrilXBT.md"},
+        # A mention of the same entity, extracted from a journal note.
+        {"id": "journal_2024_03_01_cyrilxbt", "label": "cyrilXBT",
+         "file_type": "document", "source_file": "journal/2024-03-01.md"},
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert len(result_nodes) == 2, (
+        "a file's own node merged away -- the #296 widening must never reach it"
+    )
+    assert {n["id"] for n in result_nodes} == {
+        "people_cyrilxbt", "journal_2024_03_01_cyrilxbt"}
+
+
+def test_dedup_never_merges_two_files_own_nodes():
+    """Two README.md in different folders are genuinely two documents (#1284's
+    original reasoning), and stay two under #296."""
+    nodes = [
+        {"id": "web_readme", "label": "README.md", "file_type": "document",
+         "node_kind": "page", "source_file": "web/README.md"},
+        {"id": "api_readme", "label": "README.md", "file_type": "document",
+         "node_kind": "page", "source_file": "api/README.md"},
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert len(result_nodes) == 2
+
+
+def test_dedup_crossfile_entity_merge_keeps_the_entropy_gate():
+    """Entropy guard untouched (#296): a short generic label stays distinct for
+    `document` entity nodes exactly as it does for `concept`."""
+    nodes = [
+        {"id": "docs_a_api", "label": "API", "file_type": "document",
+         "source_file": "docs/a.md"},
+        {"id": "docs_b_api", "label": "API", "file_type": "document",
+         "source_file": "docs/b.md"},
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert len(result_nodes) == 2
+
+
+def test_dedup_crossfile_entity_merge_keeps_the_provenance_gate():
+    """Provenance guard untouched (#296, #1178): without a source_file the node
+    cannot be proven to be an entity, so it stays out of the merge."""
+    nodes = [
+        {"id": "orphan_cyrilxbt", "label": "@cyrilXBT",
+         "file_type": "document", "source_file": ""},
+        {"id": "journal_2024_03_01_cyrilxbt", "label": "cyrilXBT",
+         "file_type": "document", "source_file": "journal/2024-03-01.md"},
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert len(result_nodes) == 2
+
+
+def test_dedup_crossfile_fuzzy_fileanchored_block_is_untouched():
+    """#296 widens only the exact-normalization pass. Pass 2's fuzzy
+    `_crossfile_fileanchored_blocked` is unchanged, so near-identical (not
+    identical) document labels in different files still stay distinct -- the
+    #1284 guard keeps doing its job on entity nodes too."""
+    nodes = [
+        {"id": "docs_a_guide", "label": "Getting Started Installation Guide",
+         "file_type": "document", "source_file": "docs/a.md"},
+        {"id": "docs_b_setup", "label": "Getting Started Installation Setup",
+         "file_type": "document", "source_file": "docs/b.md"},
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert len(result_nodes) == 2
+
+
+def test_dedup_never_merges_repeated_headings_across_files():
+    """#3094's verification case must keep holding under #296: sibling documents
+    that each carry the same `## Decisions` / `## Next steps` sections keep one
+    heading node per file, attributed to that file."""
+    nodes = [
+        {"id": "docs_%s_%s" % (doc, slug), "label": heading,
+         "file_type": "document", "node_kind": "heading",
+         "source_file": "docs/%s.md" % doc}
+        for doc in ("a", "b", "c")
+        for slug, heading in (("decisions", "Decisions"),
+                              ("next_steps", "Next steps"))
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert len(result_nodes) == 6, (
+        "repeated headings merged across files -- #296 must not reach section "
+        "nodes (#1284, #3094)"
+    )
+    assert {n["source_file"] for n in result_nodes} == {
+        "docs/a.md", "docs/b.md", "docs/c.md"}
