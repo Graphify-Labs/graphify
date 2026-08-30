@@ -249,6 +249,12 @@ def _mask_sql_comments(text: str) -> str:
     return _scan_sql(text)[0]
 
 
+# An unqualified CREATE TABLE lands in the first schema of search_path, which is
+# `public` unless the corpus overrides it. Only this schema is bridged to bare
+# definitions, so a reference to `other.users` still refuses to bind to `users`.
+_DEFAULT_SCHEMA = "public"
+
+
 def _norm_ident(name: str) -> str:
     """Normalize a SQL identifier for name-based reference resolution.
 
@@ -619,6 +625,21 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
     for bare, alias_nid in bare_candidates.items():
         if alias_nid is not None and bare not in table_nids:
             table_nids[bare] = alias_nid
+
+    # The mirror case: a reference written WITH the default schema
+    # (`REFERENCES "public"."users"`) must resolve to an unqualified definition
+    # (`CREATE TABLE "users"`). drizzle-kit emits exactly this pair -- unqualified
+    # CREATE, default-schema-qualified FOREIGN KEY -- so without the alias every
+    # generated foreign key dangles on a sourceless stub, and `_ref_stub` cannot
+    # recover it either: corpus rewire matches on label, and `"public"."users"`
+    # and `"users"` never share one. Same guards as above: never shadow an
+    # explicit `public.x` definition, and bridge only the default schema.
+    for key in list(table_nids):
+        if "." in key:
+            continue
+        qualified = f"{_DEFAULT_SCHEMA}.{key}"
+        if qualified not in table_nids:
+            table_nids[qualified] = table_nids[key]
 
     for stmt in root.children:
         if stmt.type == "statement":
