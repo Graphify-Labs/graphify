@@ -1397,19 +1397,34 @@ def _ts_walk_class_members(class_node, source: bytes, path: Path, class_nid: str
     line = class_node.start_point[0] + 1
     for child in class_node.children:
         if child.type == "class_heritage":
+            saw_clause = False
             for clause in child.children:
                 if clause.type == "extends_clause":
+                    saw_clause = True
                     for name in _ts_heritage_clause_entries(clause, source):
                         facts.uses.append(
                             _SymbolUseFact(path, class_nid, name, "inherits", "type",
                                            clause.start_point[0] + 1)
                         )
                 elif clause.type == "implements_clause":
+                    saw_clause = True
                     for name in _ts_heritage_clause_entries(clause, source):
                         facts.uses.append(
                             _SymbolUseFact(path, class_nid, name, "implements", "type",
                                            clause.start_point[0] + 1)
                         )
+            if not saw_clause:
+                # The JavaScript grammar carries the base directly under
+                # class_heritage (`extends Base` -> [extends, identifier]) with no
+                # extends_clause/implements_clause wrapper like the TypeScript
+                # grammar. Treat the heritage node itself as the extends clause so
+                # `class Derived extends Base {}` in a .js file still emits an
+                # inherits edge. Mirrors the extends_type_clause branch below.
+                for name in _ts_heritage_clause_entries(child, source):
+                    facts.uses.append(
+                        _SymbolUseFact(path, class_nid, name, "inherits", "type",
+                                       child.start_point[0] + 1)
+                    )
         elif child.type == "extends_type_clause":
             # Interface heritage (`interface A extends B, C`) is an
             # extends_type_clause node, NOT a class_heritage. Its base entries
