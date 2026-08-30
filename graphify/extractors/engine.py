@@ -633,6 +633,16 @@ def _php_name_text(node, source: bytes) -> str | None:
         return None
     return _read_text(node, source).rsplit("\\", 1)[-1] or None
 
+# PHP's relative-scope type keywords resolve to a class only in the context of the
+# enclosing class -- `self`/`static` are the current class, `parent` is its base.
+# They are not referenceable types of their own, and since they are declared in no
+# file the stub rewire collapses every `: self` / `: static` return type across the
+# corpus (fluent setters and factories emit them constantly) onto a single global
+# node, manufacturing a false god node. Skip them. PHP keywords are
+# case-insensitive, so match on the casefolded text.
+_PHP_RELATIVE_TYPE_KEYWORDS = frozenset({"self", "static", "parent"})
+
+
 def _php_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[str, str]]) -> None:
     """Walk a PHP type expression; append (name, role) tuples."""
     if node is None:
@@ -644,13 +654,13 @@ def _php_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[s
         for c in node.children:
             if c.type in ("name", "qualified_name"):
                 text = _php_name_text(c, source)
-                if text:
+                if text and text.casefold() not in _PHP_RELATIVE_TYPE_KEYWORDS:
                     out.append((text, "generic_arg" if generic else "type"))
                 return
         return
     if t in ("name", "qualified_name"):
         text = _php_name_text(node, source)
-        if text:
+        if text and text.casefold() not in _PHP_RELATIVE_TYPE_KEYWORDS:
             out.append((text, "generic_arg" if generic else "type"))
         return
     if t in ("nullable_type", "union_type", "intersection_type", "optional_type"):
@@ -879,7 +889,7 @@ def _swift_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple
         for c in node.children:
             if c.type == "type_identifier":
                 text = _read_text(c, source)
-                if text:
+                if text and text != "Self":
                     out.append((text, "generic_arg" if generic else "type"))
                 break
         for c in node.children:
@@ -890,7 +900,11 @@ def _swift_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple
         return
     if t == "type_identifier":
         text = _read_text(node, source)
-        if text:
+        # `Self` is Swift's keyword alias for the enclosing type (common on
+        # `static func … -> Self` factories); it is declared nowhere, so emitting
+        # it collapses every such return type onto one global `self` stub -- a
+        # false god node. Skip it, mirroring the Rust/PHP relative-type handling.
+        if text and text != "Self":
             out.append((text, "generic_arg" if generic else "type"))
         return
     if t in ("optional_type", "implicitly_unwrapped_optional_type", "array_type",
