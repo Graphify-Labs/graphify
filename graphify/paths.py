@@ -12,6 +12,17 @@ hardcoded the literal ``"graphify-out"`` and silently ignored the override
 once at import time, matching the previous per-module constants — set
 ``GRAPHIFY_OUT`` before the process starts (the normal worktree/shared-output
 flow) and every reader honours it.
+
+``GRAPHIFY_OUT`` only takes effect when exported in the *current* shell. A
+project that customized its output directory once (env var set at build time)
+gets silently reset to the default the moment someone runs a graphify command
+from a fresh shell, CI job, or IDE-launched terminal that doesn't export it —
+notably ``graphify hook install``, whose generated ``.gitattributes`` merge-
+driver line then points at the wrong path and never fires (#2595-adjacent).
+``graphify hook install`` persists a non-default value to ``./.graphifyrc``
+(``out_dir=...``) precisely so later invocations in a different shell still
+resolve correctly; that persisted value is the third fallback here, below the
+env var and above the hardcoded default.
 """
 
 from __future__ import annotations
@@ -23,7 +34,38 @@ import stat
 import tempfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-GRAPHIFY_OUT = os.environ.get("GRAPHIFY_OUT", "graphify-out")
+
+def _read_persisted_out_dir() -> str | None:
+    """Read ``out_dir=`` from ``./.graphifyrc`` if present.
+
+    Deliberately minimal and independent of ``graphify.hooks._load_graphifyrc``
+    (which also parses ``viz_node_limit``) to avoid a hooks<->paths import
+    cycle: ``hooks`` already imports ``GRAPHIFY_OUT`` from this module, and this
+    runs at import time, before any lazy import could resolve it. Malformed or
+    unreadable files degrade to "no override" rather than raising — this must
+    never block module import.
+    """
+    rc_path = Path(".graphifyrc")
+    if not rc_path.is_file():
+        return None
+    try:
+        content = rc_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for raw in content.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        if key.strip() == "out_dir":
+            val = val.strip()
+            return val or None
+    return None
+
+
+GRAPHIFY_OUT = (
+    os.environ.get("GRAPHIFY_OUT") or _read_persisted_out_dir() or "graphify-out"
+)
 
 
 def _atomic_replace(path: "str | Path", write_fn) -> None:

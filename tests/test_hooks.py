@@ -1167,3 +1167,123 @@ def test_rebuild_bodies_tolerate_a_bom_in_graphify_root(name, body):
     assert "encoding='utf-8')" not in body, (
         f"{name} rebuild body still has a BOM-intolerant read"
     )
+
+
+# --- merge-driver out_dir persistence + gitignore skip (#2595) -------------
+
+def test_load_graphifyrc_reads_out_dir(tmp_path):
+    from graphify.hooks import _load_graphifyrc
+
+    rc = tmp_path / ".graphifyrc"
+    rc.write_text("out_dir=.planning/graphs\n", encoding="utf-8")
+    cfg = _load_graphifyrc(tmp_path)
+    assert cfg.get("out_dir") == ".planning/graphs"
+
+
+def test_load_graphifyrc_rejects_empty_out_dir(tmp_path):
+    from graphify.hooks import _load_graphifyrc
+
+    rc = tmp_path / ".graphifyrc"
+    rc.write_text("out_dir=\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="Invalid out_dir"):
+        _load_graphifyrc(tmp_path)
+
+
+def test_persist_out_dir_writes_new_file(tmp_path):
+    from graphify.hooks import _persist_out_dir, _load_graphifyrc
+
+    _persist_out_dir(tmp_path, ".planning/graphs")
+    cfg = _load_graphifyrc(tmp_path)
+    assert cfg.get("out_dir") == ".planning/graphs"
+
+
+def test_persist_out_dir_preserves_other_keys_and_replaces_existing(tmp_path):
+    from graphify.hooks import _persist_out_dir, _load_graphifyrc
+
+    rc = tmp_path / ".graphifyrc"
+    rc.write_text("viz_node_limit=0\nout_dir=old-dir\n", encoding="utf-8")
+    _persist_out_dir(tmp_path, "new-dir")
+    cfg = _load_graphifyrc(tmp_path)
+    assert cfg.get("viz_node_limit") == 0
+    assert cfg.get("out_dir") == "new-dir"
+    # exactly one out_dir line, not two
+    lines = [l for l in rc.read_text(encoding="utf-8").splitlines() if l.startswith("out_dir=")]
+    assert lines == ["out_dir=new-dir"]
+
+
+def test_register_merge_driver_persists_nondefault_graphify_out(tmp_path, monkeypatch):
+    from graphify.hooks import _register_merge_driver, _load_graphifyrc
+    import graphify.paths as paths_mod
+
+    repo = _make_git_repo(tmp_path)
+    monkeypatch.setattr(paths_mod, "GRAPHIFY_OUT", "custom-out")
+    _register_merge_driver(repo)
+    cfg = _load_graphifyrc(repo)
+    assert cfg.get("out_dir") == "custom-out"
+    assert (repo / ".gitattributes").read_text(encoding="utf-8").strip() == (
+        "custom-out/graph.json merge=graphify"
+    )
+
+
+def test_register_merge_driver_skips_default_out_dir_persistence(tmp_path):
+    """No .graphifyrc noise for the common case (no override in play)."""
+    from graphify.hooks import _register_merge_driver
+
+    repo = _make_git_repo(tmp_path)
+    _register_merge_driver(repo)
+    assert not (repo / ".graphifyrc").exists()
+
+
+def test_register_merge_driver_skips_gitignored_target(tmp_path):
+    """#2595: a merge driver for an ignored, untracked path never runs."""
+    from graphify.hooks import _register_merge_driver, _merge_driver_status
+
+    repo = _make_git_repo(tmp_path)
+    (repo / ".gitignore").write_text("graphify-out/\n", encoding="utf-8")
+    result = _register_merge_driver(repo)
+    assert "skipped" in result
+    assert "gitignored" in result
+    assert not (repo / ".gitattributes").exists()
+    status = _merge_driver_status(repo)
+    assert status.startswith("not applicable")
+
+
+def test_register_merge_driver_registers_when_not_gitignored(tmp_path):
+    from graphify.hooks import _register_merge_driver, _merge_driver_status
+
+    repo = _make_git_repo(tmp_path)
+    result = _register_merge_driver(repo)
+    assert result.startswith("registered")
+    assert _merge_driver_status(repo) == "registered"
+
+
+def test_read_persisted_out_dir_used_when_env_var_unset(tmp_path, monkeypatch):
+    """paths.GRAPHIFY_OUT falls back to .graphifyrc when the env var is absent —
+    the exact gap that let a fresh shell/CI job silently reset a project's
+    customized output directory (#2595-adjacent)."""
+    import importlib
+    import graphify.paths as paths_mod
+
+    monkeypatch.delenv("GRAPHIFY_OUT", raising=False)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".graphifyrc").write_text("out_dir=.planning/graphs\n", encoding="utf-8")
+    importlib.reload(paths_mod)
+    try:
+        assert paths_mod.GRAPHIFY_OUT == ".planning/graphs"
+    finally:
+        importlib.reload(paths_mod)  # restore real cwd/env for later tests
+
+
+def test_read_persisted_out_dir_env_var_takes_precedence(tmp_path, monkeypatch):
+    import importlib
+    import graphify.paths as paths_mod
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".graphifyrc").write_text("out_dir=.planning/graphs\n", encoding="utf-8")
+    monkeypatch.setenv("GRAPHIFY_OUT", "env-wins")
+    importlib.reload(paths_mod)
+    try:
+        assert paths_mod.GRAPHIFY_OUT == "env-wins"
+    finally:
+        monkeypatch.delenv("GRAPHIFY_OUT", raising=False)
+        importlib.reload(paths_mod)

@@ -428,6 +428,9 @@ def _load_graphifyrc(root: Path) -> dict[str, str | int]:
 
     Supported options:
       viz_node_limit: integer >= 0 (e.g. viz_node_limit=0)
+      out_dir: string, a persisted GRAPHIFY_OUT override (see graphify.paths);
+        written by _register_merge_driver so a non-default output directory
+        survives into shells/CI jobs that never export the env var.
     """
     rc_path = root / ".graphifyrc"
     if not rc_path.is_file():
@@ -455,7 +458,34 @@ def _load_graphifyrc(root: Path) -> dict[str, str | int]:
                     f"Invalid viz_node_limit in {rc_path} at line {line_num}: {val!r}. "
                     f"Must be a non-negative integer."
                 ) from exc
+        elif key == "out_dir":
+            if not val:
+                raise ValueError(f"Invalid out_dir in {rc_path} at line {line_num}: empty value")
+            cfg["out_dir"] = val
     return cfg
+
+
+def _persist_out_dir(root: Path, out: str) -> None:
+    """Append/update ``out_dir=<out>`` in <root>/.graphifyrc.
+
+    Only called when GRAPHIFY_OUT resolved to something other than the
+    hardcoded default, so the common case (no override) never touches the
+    file. Preserves every other line untouched (mirrors _register_merge_driver's
+    own append-don't-clobber behavior for .gitattributes).
+    """
+    rc_path = root / ".graphifyrc"
+    lines: list[str] = []
+    if rc_path.is_file():
+        content = rc_path.read_text(encoding="utf-8")
+        for raw in content.splitlines():
+            stripped = raw.strip()
+            if stripped and not stripped.startswith("#") and "=" in stripped:
+                key = stripped.split("=", 1)[0].strip()
+                if key == "out_dir":
+                    continue  # replaced below with the current value
+            lines.append(raw)
+    lines.append(f"out_dir={out}")
+    rc_path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
 
 
 def _git_root(path: Path) -> Path | None:
@@ -615,15 +645,37 @@ def _merge_attr_line() -> str:
     """The .gitattributes line assigning the graphify merge driver to graph.json.
 
     The graph lives under the configured output directory (graphify.paths,
-    GRAPHIFY_OUT env override). gitattributes patterns are repo-relative, so an
-    absolute output-dir override cannot be expressed there — fall back to the
-    default name in that case.
+    resolved from GRAPHIFY_OUT env var or a persisted .graphifyrc out_dir —
+    see _persist_out_dir / graphify.paths._read_persisted_out_dir). gitattributes
+    patterns are repo-relative, so an absolute output-dir override cannot be
+    expressed there — fall back to the default name in that case.
     """
     from graphify.paths import GRAPHIFY_OUT
     out = GRAPHIFY_OUT
     if not out or Path(out).is_absolute() or "\\" in out:
         out = "graphify-out"
     return f"{out.rstrip('/')}/graph.json merge=graphify"
+
+
+def _is_gitignored(root: Path, relative_path: str) -> bool:
+    """True if `relative_path` (repo-relative) is excluded by gitignore rules.
+
+    A merge driver registered for an ignored path is dead weight (#2595): git
+    never tracks the file, so `git merge`/`git pull` never invoke any merge
+    driver for it, and the .gitattributes line just sits there re-adding itself
+    on every `hook install` re-run. Best-effort: any failure (git missing,
+    not a repo) reports "not ignored" so callers fall back to the previous,
+    always-register behavior rather than silently skipping registration.
+    """
+    import subprocess as _sp
+    try:
+        result = _sp.run(
+            ["git", "-C", str(root), "check-ignore", "-q", "--", relative_path],
+            capture_output=True,
+        )
+    except OSError:
+        return False
+    return result.returncode == 0
 
 
 def _has_merge_attr(content: str) -> bool:
@@ -671,7 +723,25 @@ def _register_merge_driver(root: Path) -> str:
     except (OSError, _sp.CalledProcessError) as exc:
         return f"not registered (git config failed: {exc})"
 
+    # Persist a non-default GRAPHIFY_OUT so a later `hook install`/`hook status`
+    # run in a shell that never exported the env var still resolves the same
+    # output directory this one did (see graphify.paths._read_persisted_out_dir).
+    from graphify.paths import GRAPHIFY_OUT
+    if GRAPHIFY_OUT and GRAPHIFY_OUT != "graphify-out":
+        try:
+            _persist_out_dir(root, GRAPHIFY_OUT)
+        except OSError:
+            pass  # best-effort; the merge driver config above still applies this run
+
     line = _merge_attr_line()
+    graph_relpath = line.split(" ", 1)[0]
+    if _is_gitignored(root, graph_relpath):
+        # #2595: a merge driver for an ignored, untracked file never runs —
+        # git has nothing to merge. Registering it just dirties .gitattributes
+        # and re-adds itself on every re-run. git config above is left in
+        # place (harmless, and needed if the path is later un-ignored).
+        return f"skipped ({graph_relpath} is gitignored — merge driver would never run)"
+
     attrs = root / ".gitattributes"
     if attrs.exists():
         content = attrs.read_text(encoding="utf-8")
@@ -732,6 +802,12 @@ def _merge_driver_status(root: Path) -> str:
     if cfg_ok and attr_ok:
         return "registered"
     if cfg_ok:
+        graph_relpath = _merge_attr_line().split(" ", 1)[0]
+        if _is_gitignored(root, graph_relpath):
+            # Intentional (#2595): install skipped the .gitattributes line
+            # because the target is ignored/untracked, so a merge driver for
+            # it would never run. Not a broken state — do not report it as one.
+            return f"not applicable ({graph_relpath} is gitignored — no merge driver needed)"
         return "partially registered (git config set, .gitattributes line missing)"
     if attr_ok:
         return "partially registered (.gitattributes line set, git config missing)"
