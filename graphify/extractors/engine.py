@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import re
 from graphify.extractors.base import _LANGUAGE_BUILTIN_GLOBALS, _file_stem, _make_id, _read_text
 from graphify.ids import normalize_id
 from graphify.extractors.models import LanguageConfig
@@ -2875,6 +2876,82 @@ def _ruby_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: st
             del ruby_namespace[-len(const_segments):]
     return True
 
+def _recover_3154_ts_import_types(tree, source: bytes) -> bytes | None:
+    """Rewrite TypeScript `import(...)` type arguments in malformed generic call expressions
+    to standard type identifiers of identical byte length (#3154 / #3210).
+
+    tree-sitter-typescript misparses generic call expressions whose type arguments start with
+    `typeof import(...)` or `import(...).Foo` (e.g. `f<typeof import("mod")>()`) as relational
+    binary comparison expressions (`<` and `>`), generating an ERROR node for `();` that absorbs
+    subsequent declarations as anonymous function/class expressions.
+
+    AST-first: only runs when `tree.root_node.has_error` is True, identifying exact `import(...)`
+    call expressions nested inside such malformed call expressions, and leaves runtime dynamic
+    imports completely untouched.
+
+    Preserves byte length, newlines, and source offsets so all downstream node source_location
+    metadata remains 100% accurate.
+    """
+    if b"import(" not in source and b"import (" not in source:
+        return None
+    if not tree.root_node.has_error:
+        return None
+
+    def find_candidates(node):
+        candidates = []
+        if node.type == "call_expression":
+            if node.children and node.children[0].type == "import":
+                curr = node.parent
+                while curr is not None and curr.type not in (
+                    "expression_statement",
+                    "lexical_declaration",
+                    "statement_block",
+                    "program",
+                ):
+                    curr = curr.parent
+                if curr is not None and curr.type == "expression_statement":
+                    main_expr = curr.children[0] if curr.children else None
+                    if main_expr and main_expr.type in ("binary_expression", "sequence_expression"):
+                        def leftmost_leaf(n):
+                            while n.children:
+                                n = n.children[0]
+                            return n
+
+                        first_leaf = leftmost_leaf(main_expr)
+                        if first_leaf.type in ("identifier", "property_identifier"):
+                            def has_call_error(n):
+                                if n.type == "ERROR":
+                                    raw = source[n.start_byte:n.end_byte].lstrip()
+                                    if (
+                                        raw.startswith(b"(")
+                                        or raw.startswith(b">(")
+                                        or any(
+                                            c.type in ("formal_parameters", "arguments")
+                                            for c in n.children
+                                        )
+                                    ):
+                                        return True
+                                return any(has_call_error(c) for c in n.children)
+
+                            if has_call_error(curr):
+                                candidates.append((node.start_byte, node.end_byte))
+        for c in node.children:
+            candidates.extend(find_candidates(c))
+        return candidates
+
+    import_ranges = find_candidates(tree.root_node)
+    if not import_ranges:
+        return None
+
+    rewritten = bytearray(source)
+    for start, end in sorted(import_ranges, key=lambda r: r[0], reverse=True):
+        orig_slice = source[start:end]
+        repl = b"T" + re.sub(rb"[^\r\n]", b" ", orig_slice[1:])
+        rewritten[start:end] = repl
+
+    return bytes(rewritten)
+
+
 def _extract_generic(
     path: Path, config: LanguageConfig, *, source_override: bytes | None = None
 ) -> dict:
@@ -2913,6 +2990,16 @@ def _extract_generic(
         source = path.read_bytes() if source_override is None else source_override
         tree = parser.parse(source)
         root = tree.root_node
+        if (
+            root.has_error
+            and config.ts_module in ("tree_sitter_typescript",)
+            and (b"import(" in source or b"import (" in source)
+        ):
+            rewritten = _recover_3154_ts_import_types(tree, source)
+            if rewritten is not None:
+                source = rewritten
+                tree = parser.parse(source)
+                root = tree.root_node
     except Exception as e:
         return {"nodes": [], "edges": [], "error": str(e)}
 
