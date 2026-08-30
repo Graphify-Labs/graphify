@@ -475,7 +475,12 @@ def _load_graphifyrc(root: Path) -> dict[str, str | int]:
             # refusal automatically rather than needing to remember to
             # re-derive it, so it is enforced here too even though nothing
             # currently depends on it.
-            if val and not Path(val).is_absolute() and ".." not in Path(val).parts:
+            # is_absolute_any_platform (not plain Path.is_absolute()): this
+            # value is untrusted repo-committed content that could have been
+            # authored on either OS — see that function's docstring
+            # "EXCEPTION" paragraph.
+            from graphify.paths import is_absolute_any_platform
+            if val and not is_absolute_any_platform(val) and ".." not in Path(val).parts:
                 cfg["out_dir"] = val
     return cfg
 
@@ -555,8 +560,24 @@ def _persist_out_dir(root: Path, out: str) -> None:
     """
     if "\n" in out or "\r" in out:
         raise ValueError(f"GRAPHIFY_OUT contains a newline, refusing to persist: {out!r}")
-    if Path(out).is_absolute():
+    # is_absolute_any_platform (not plain Path.is_absolute()): the value
+    # written here is read back by graphify.paths._read_persisted_out_dir on
+    # whatever machine/OS clones this repo next, which already refuses an
+    # any-platform-absolute value regardless of which host wrote it — a
+    # value this host doesn't consider absolute but another platform does
+    # (e.g. a POSIX host persisting "C:/shared") would be written here only
+    # to be immediately refused by every reader. See that function's
+    # docstring "EXCEPTION" paragraph.
+    from graphify.paths import is_absolute_any_platform
+    if is_absolute_any_platform(out):
         raise ValueError(f"refusing to persist an absolute GRAPHIFY_OUT to .graphifyrc: {out!r}")
+    if ".." in Path(out).parts:
+        # Every reader of this key (graphify.paths._read_persisted_out_dir,
+        # this module's own _load_graphifyrc) refuses a `..`-escaping value —
+        # persisting one anyway would just write a line that is silently
+        # ignored the next time anyone reads it back. Refuse at the source
+        # instead of writing something immediately useless.
+        raise ValueError(f"refusing to persist a `..`-escaping GRAPHIFY_OUT: {out!r}")
     rc_path = root / ".graphifyrc"
     if rc_path.is_symlink():
         raise ValueError(f"refusing to write through a symlinked .graphifyrc: {rc_path}")
@@ -800,13 +821,33 @@ def _is_gitignored(root: Path, relative_path: str) -> bool:
 
 
 def _has_merge_attr(content: str) -> bool:
-    """True if a (non-comment) `<...>graph.json ... merge=graphify` line exists."""
+    """True if a (non-comment) `<...>graph.json ... merge=graphify` line exists.
+
+    A gitattributes pattern containing whitespace is written C-quoted
+    (git's own convention, e.g. `"my dir/graph.json" merge=graphify`) — a
+    naive `line.split()` shatters a quoted pattern across multiple fields
+    (`'"my'`, `'dir/graph.json"'`, ...), none of which end with
+    `"graph.json"`, so a legitimately quoted pre-existing entry would be
+    missed and treated as unregistered. `_merge_attr_line` itself never
+    generates a quoted line (GRAPHIFY_OUT is validated whitespace-free
+    before it gets there), but this function also has to recognize an entry
+    someone else authored by hand for a path that genuinely needs quoting.
+    """
     for raw in content.splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
-        fields = line.split()
-        if fields and fields[0].endswith("graph.json") and "merge=graphify" in fields[1:]:
+        if line.startswith('"'):
+            end = line.find('"', 1)
+            if end == -1:
+                continue  # unterminated quote — malformed, not a match
+            pattern, rest = line[1:end], line[end + 1:].split()
+        else:
+            fields = line.split()
+            if not fields:
+                continue
+            pattern, rest = fields[0], fields[1:]
+        if pattern.endswith("graph.json") and "merge=graphify" in rest:
             return True
     return False
 
@@ -938,7 +979,15 @@ def _unregister_merge_driver(root: Path) -> str:
             )
         except OSError:
             pass
-    out_dir_cleared = _clear_persisted_out_dir(root)
+    try:
+        out_dir_cleared = _clear_persisted_out_dir(root)
+    except OSError:
+        # Best-effort, matching the git-config unset above: an unlink()
+        # failure (permission, a concurrent process removing the file, a
+        # cross-device rename inside _write_text_no_symlink) must not abort
+        # the rest of uninstall — the git config and .gitattributes cleanup
+        # below are unrelated and should still happen regardless.
+        out_dir_cleared = False
 
     attrs = root / ".gitattributes"
     if not attrs.exists():

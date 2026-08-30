@@ -1713,3 +1713,105 @@ def test_graphify_out_survives_embedded_null_byte_in_out_dir(tmp_path, monkeypat
         assert paths_mod.GRAPHIFY_OUT == "graphify-out"
     finally:
         importlib.reload(paths_mod)
+
+
+# --- sixth review round: quoted gitattributes entries, dot-dot persistence,
+# uninstall resilience, cross-platform absolute detection (Graphify PR review
+# round 6) ---
+
+def test_has_merge_attr_recognizes_quoted_entry(tmp_path):
+    """A gitattributes pattern with whitespace is C-quoted by convention —
+    a naive whitespace split must not miss an existing quoted entry and
+    treat it as unregistered."""
+    from graphify.hooks import _has_merge_attr
+
+    assert _has_merge_attr('"my dir/graph.json" merge=graphify') is True
+
+
+def test_has_merge_attr_still_recognizes_unquoted_entry():
+    from graphify.hooks import _has_merge_attr
+
+    assert _has_merge_attr("graphify-out/graph.json merge=graphify") is True
+
+
+def test_has_merge_attr_ignores_unterminated_quote():
+    from graphify.hooks import _has_merge_attr
+
+    assert _has_merge_attr('"unterminated/graph.json merge=graphify') is False
+
+
+def test_register_merge_driver_does_not_duplicate_quoted_entry(tmp_path):
+    """A pre-existing, hand-authored quoted entry must be recognized as
+    already registered — not duplicated with a second unquoted line."""
+    from graphify.hooks import _register_merge_driver
+
+    repo = _make_git_repo(tmp_path)
+    attrs = repo / ".gitattributes"
+    attrs.write_text('"graphify-out/graph.json" merge=graphify\n', encoding="utf-8")
+    result = _register_merge_driver(repo)
+    assert "already registered" in result
+    assert attrs.read_text(encoding="utf-8").count("merge=graphify") == 1
+
+
+def test_persist_out_dir_refuses_dotdot_value(tmp_path):
+    """Every reader of this key refuses a `..`-escaping value — persisting
+    one anyway would just write a line silently ignored on the next read."""
+    from graphify.hooks import _persist_out_dir
+
+    with pytest.raises(ValueError, match=r"\.\."):
+        _persist_out_dir(tmp_path, "../shared-graphs")
+    assert not (tmp_path / ".graphifyrc").exists()
+
+
+def test_unregister_merge_driver_survives_clear_out_dir_oserror(tmp_path, monkeypatch):
+    """A failure clearing the persisted out_dir (e.g. unlink() denied by a
+    concurrent process) must not abort the rest of uninstall — git config
+    and .gitattributes cleanup are unrelated and should still happen."""
+    from graphify.hooks import install, uninstall
+    import graphify.hooks as hooks_mod
+
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+
+    def _boom(root):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(hooks_mod, "_clear_persisted_out_dir", _boom)
+    result = uninstall(repo)  # must not raise
+    assert "removed" in result.lower()
+    assert not (repo / ".git" / "hooks" / "post-commit").exists()
+
+
+def test_persist_out_dir_refuses_windows_absolute_path_on_posix(tmp_path):
+    """A Windows-absolute value must be refused even on a POSIX host — plain
+    Path.is_absolute() only recognizes the CURRENT host's absolute forms,
+    but this value is untrusted repo-committed content that could have been
+    authored on either OS."""
+    from graphify.hooks import _persist_out_dir
+
+    with pytest.raises(ValueError, match="absolute"):
+        _persist_out_dir(tmp_path, "C:/shared-graphs")
+
+
+def test_load_graphifyrc_ignores_windows_absolute_out_dir_on_posix(tmp_path):
+    from graphify.hooks import _load_graphifyrc
+
+    rc = tmp_path / ".graphifyrc"
+    rc.write_text("out_dir=C:/shared-graphs\n", encoding="utf-8")
+    cfg = _load_graphifyrc(tmp_path)
+    assert "out_dir" not in cfg
+
+
+def test_read_persisted_out_dir_refuses_windows_absolute_value_on_posix(tmp_path, monkeypatch):
+    import importlib
+    import graphify.paths as paths_mod
+
+    monkeypatch.delenv("GRAPHIFY_OUT", raising=False)
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".graphifyrc").write_text("out_dir=C:/shared-graphs\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    importlib.reload(paths_mod)
+    try:
+        assert paths_mod.GRAPHIFY_OUT == "graphify-out"
+    finally:
+        importlib.reload(paths_mod)

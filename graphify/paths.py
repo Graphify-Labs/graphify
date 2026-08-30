@@ -35,6 +35,56 @@ import tempfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 
+def is_absolute_any_platform(p: "str | Path | None") -> bool:
+    """Whether *p* is absolute under POSIX **or** Windows rules.
+
+    ``Path.is_absolute()`` and ``os.path.isabs()`` answer for the HOST os only,
+    which is the wrong question for a path that was *stored* — a ``source_file``
+    in ``graph.json``, a ``prune_sources`` entry, a cache key. Those travel
+    between machines (build in Docker/CI, update on a Windows workstation, or
+    the reverse), so the host's rules do not describe the string in hand:
+
+    - On Windows, ``WindowsPath("/home/ci/repo/docs/a.md").is_absolute()`` is
+      False — no drive letter — so a Linux-built graph's absolute paths read as
+      relative and get baked into node IDs or joined under the scan root (#2618).
+    - On POSIX, ``PosixPath("C:/Users/u/a.md").is_absolute()`` is False for the
+      mirror-image reason (#2197, #1789).
+
+    ``os.path.isabs`` is additionally not stable across supported interpreters:
+    Python 3.13 changed ``ntpath.isabs`` so a path starting with a single slash
+    is no longer absolute, where 3.10–3.12 said it was. The project supports
+    >=3.10, so a guard written on it silently means different things per version.
+
+    Answering for both platforms is the conservative choice for stored paths:
+    treating a path as absolute at worst declines to relativize it (the string is
+    kept as-is), whereas treating an absolute path as relative corrupts identity.
+    Covers drive-letter, UNC, and POSIX-root forms with either separator.
+
+    NOTE: this is for STORED/portable paths. Code resolving a path against the
+    real local filesystem (``cli``, ``detect``, ``hooks``) must keep using
+    ``Path.is_absolute()`` — there the host's rules are exactly right.
+
+    EXCEPTION: a value read from ``.graphifyrc`` and being checked ONLY to
+    decide whether to refuse it as untrusted repo-committed content (see
+    ``_read_persisted_out_dir`` below, and ``graphify.hooks._persist_out_dir``
+    / ``_load_graphifyrc``) is itself a stored/portable value, not a path
+    being resolved against this machine's filesystem — ``.graphifyrc`` can be
+    authored on Windows and read on POSIX or vice versa. Using plain
+    ``Path.is_absolute()`` there let a Windows-absolute value like
+    ``C:/shared`` slip past the refusal on POSIX (and the POSIX-absolute
+    mirror slip past it on Windows), since neither host recognizes the
+    other's absolute form. Those three refusal checks use this function;
+    only the later resolution steps in the same functions (joining onto the
+    repo root, ``.resolve()``, ``relative_to``) keep using plain
+    ``Path.is_absolute()``, since those genuinely do resolve against this
+    process's real filesystem.
+    """
+    if not p:
+        return False
+    s = str(p)
+    return PurePosixPath(s).is_absolute() or PureWindowsPath(s).is_absolute()
+
+
 def _find_graphifyrc(start: Path) -> Path | None:
     """Walk up from `start` looking for `.graphifyrc`, the same way git itself
     walks up looking for `.git` — so a command run from a subdirectory of the
@@ -116,7 +166,12 @@ def _read_persisted_out_dir() -> str | None:
             val = val.strip()
             if not val:
                 return None
-            if Path(val).is_absolute():
+            if is_absolute_any_platform(val):
+                # Cross-platform check (not plain Path.is_absolute()): this
+                # value is untrusted repo-committed content that could have
+                # been authored on either OS — see is_absolute_any_platform's
+                # docstring "EXCEPTION" paragraph for why the usual
+                # local-filesystem guidance doesn't apply to this one check.
                 return None  # repo-committed absolute path — refuse, don't honor
             # Relative: anchor to the repo root (this .graphifyrc's own
             # directory), not wherever this process happens to be invoked
@@ -429,41 +484,6 @@ def default_graph_json() -> str:
     the path is passed explicitly (#1423).
     """
     return str(out_path("graph.json"))
-
-
-def is_absolute_any_platform(p: "str | Path | None") -> bool:
-    """Whether *p* is absolute under POSIX **or** Windows rules.
-
-    ``Path.is_absolute()`` and ``os.path.isabs()`` answer for the HOST os only,
-    which is the wrong question for a path that was *stored* — a ``source_file``
-    in ``graph.json``, a ``prune_sources`` entry, a cache key. Those travel
-    between machines (build in Docker/CI, update on a Windows workstation, or
-    the reverse), so the host's rules do not describe the string in hand:
-
-    - On Windows, ``WindowsPath("/home/ci/repo/docs/a.md").is_absolute()`` is
-      False — no drive letter — so a Linux-built graph's absolute paths read as
-      relative and get baked into node IDs or joined under the scan root (#2618).
-    - On POSIX, ``PosixPath("C:/Users/u/a.md").is_absolute()`` is False for the
-      mirror-image reason (#2197, #1789).
-
-    ``os.path.isabs`` is additionally not stable across supported interpreters:
-    Python 3.13 changed ``ntpath.isabs`` so a path starting with a single slash
-    is no longer absolute, where 3.10–3.12 said it was. The project supports
-    >=3.10, so a guard written on it silently means different things per version.
-
-    Answering for both platforms is the conservative choice for stored paths:
-    treating a path as absolute at worst declines to relativize it (the string is
-    kept as-is), whereas treating an absolute path as relative corrupts identity.
-    Covers drive-letter, UNC, and POSIX-root forms with either separator.
-
-    NOTE: this is for STORED/portable paths. Code resolving a path against the
-    real local filesystem (``cli``, ``detect``, ``hooks``) must keep using
-    ``Path.is_absolute()`` — there the host's rules are exactly right.
-    """
-    if not p:
-        return False
-    s = str(p)
-    return PurePosixPath(s).is_absolute() or PureWindowsPath(s).is_absolute()
 
 
 # Legacy Windows path ceiling. Unless long-path support is enabled *and* every
