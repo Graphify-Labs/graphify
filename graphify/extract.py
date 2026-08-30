@@ -975,7 +975,12 @@ _CSHARP_CONFIG = LanguageConfig(
 _KOTLIN_CONFIG = LanguageConfig(
     ts_module="tree_sitter_kotlin",
     class_types=frozenset({"class_declaration", "object_declaration"}),
-    function_types=frozenset({"function_declaration"}),
+    # `secondary_constructor` is a callable member (`constructor(...) { … }`) with
+    # a body, but it was omitted — so every secondary constructor was dropped
+    # along with all the calls made from it (field init, validation, delegation).
+    # It has no name field; the engine labels it `.constructor()` (see the
+    # deinit/subscript name-less-callable handling).
+    function_types=frozenset({"function_declaration", "secondary_constructor"}),
     # Grammar 1.1.0 (PyPI tree_sitter_kotlin) names the import node `import`;
     # older forks use `import_header`. Accept both (#2526).
     import_types=frozenset({"import_header", "import"}),
@@ -988,8 +993,12 @@ _KOTLIN_CONFIG = LanguageConfig(
     # older forks use `simple_identifier`. Accept both so the extractor
     # works across grammar generations.
     name_fallback_child_types=("simple_identifier", "identifier"),
-    body_fallback_child_types=("function_body", "class_body", "enum_class_body"),
-    function_boundary_types=frozenset({"function_declaration"}),
+    # `block` is the secondary_constructor body (it exposes no `body` field); the
+    # other entries cover function/class bodies. Order is irrelevant here because
+    # function_declaration/class_declaration expose their body via a field, so the
+    # fallback only fires for the name-/field-less secondary_constructor.
+    body_fallback_child_types=("function_body", "class_body", "enum_class_body", "block"),
+    function_boundary_types=frozenset({"function_declaration", "secondary_constructor"}),
     import_handler=_import_kotlin,
 )
 

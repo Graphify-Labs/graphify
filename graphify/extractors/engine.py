@@ -4193,11 +4193,14 @@ def _extract_generic(
 
         # Function types
         if t in config.function_types:
-            # Swift deinit/subscript have no name field — resolve before generic fallback
+            # Swift deinit/subscript and Kotlin secondary constructors have no name
+            # field — resolve before generic fallback.
             if t == "deinit_declaration":
                 func_name: str | None = "deinit"
             elif t == "subscript_declaration":
                 func_name = "subscript"
+            elif t == "secondary_constructor":
+                func_name = "constructor"
             elif config.resolve_function_name_fn is not None:
                 # C/C++ style: use declarator
                 declarator = node.child_by_field_name("declarator")
