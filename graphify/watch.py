@@ -17,6 +17,12 @@ from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT, is_absolute_any_platfo
 logger = logging.getLogger(__name__)
 _PENDING_FILENAME = ".pending_changes"
 _PENDING_DRAIN_MAX_PASSES = 20
+# #3045: below this corpus size the post-extraction phases (build/cluster/
+# analyze/report/export) finish fast enough that stage output would just be
+# noise. Above it — the AST-extraction progress print in extract.py uses the
+# same threshold — a large corpus can spend real time in each phase with no
+# output at all, which reads as a hang instead of a build in progress.
+_STAGE_PROGRESS_MIN_FILES = 100
 
 
 def _queue_pending(out_dir: Path, changed_paths: list[Path]) -> None:
@@ -1868,6 +1874,9 @@ def _rebuild_code(
             "total_words": detected.get("total_words", 0),
         }
 
+        _show_stage_progress = len(code_files) >= _STAGE_PROGRESS_MIN_FILES
+        if _show_stage_progress:
+            print("[graphify watch] Building graph...", flush=True)
         # Inherit the existing graph's directed flag (#2342) so `graphify
         # update` can't silently downgrade a directed graph to undirected -
         # build_from_json defaults to directed=False otherwise.
@@ -1912,11 +1921,18 @@ def _rebuild_code(
                     print("[graphify watch] No code-graph topology changes detected; outputs left untouched.")
                 return True
 
+        if _show_stage_progress:
+            print(
+                f"[graphify watch] Clustering graph ({G.number_of_nodes()} nodes, "
+                f"{G.number_of_edges()} edges)...", flush=True,
+            )
         communities = cluster(G)
         previous_node_community = _node_community_map(existing_graph_data)
         if previous_node_community:
             communities = remap_communities_to_previous(communities, previous_node_community)
         cohesion = score_all(G, communities)
+        if _show_stage_progress:
+            print("[graphify watch] Analyzing graph structure...", flush=True)
         gods = god_nodes(G)
         surprises = surprising_connections(G, communities)
         labels_file = out / ".graphify_labels.json"
@@ -1977,6 +1993,8 @@ def _rebuild_code(
                 file=sys.stderr,
             )
         questions = suggest_questions(G, communities, labels)
+        if _show_stage_progress:
+            print("[graphify watch] Generating report...", flush=True)
         from graphify.report import load_learning_for_report as _llfr
         report = generate(G, communities, cohesion, labels, gods, surprises, detection,
                           {"input": 0, "output": 0}, report_root, suggested_questions=questions,
@@ -1984,6 +2002,8 @@ def _rebuild_code(
         report_path = out / "GRAPH_REPORT.md"
         labels_json = json.dumps({str(k): v for k, v in sorted(labels.items())}, ensure_ascii=False, indent=2) + "\n"
         graph_tmp = out / ".graph.tmp.json"
+        if _show_stage_progress:
+            print("[graphify watch] Writing graph.json...", flush=True)
         json_written = to_json(G, communities, str(graph_tmp), force=True, built_at_commit=commit, community_labels=labels)
         if not json_written:
             return False
