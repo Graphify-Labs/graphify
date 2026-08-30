@@ -1388,6 +1388,101 @@ def dispatch_command(cmd: str) -> None:
                 root=graph_root,
             )
         )
+    elif cmd == "stale":
+        # Read-only, additive to `--update`: for every file the manifest says
+        # changed since the last extraction, reverse-walk the graph (reusing
+        # `affected`'s traversal) to list nodes elsewhere that reference a node
+        # in that file and were NOT re-extracted — candidates worth a second
+        # look, not confirmed-wrong claims. See affected.stale_from_changed_files
+        # docstring for why this stops short of verifying the claims themselves.
+        from graphify.affected import DEFAULT_AFFECTED_RELATIONS, format_stale, load_graph
+        from graphify.detect import detect_incremental
+        from graphify.paths import GRAPHIFY_OUT_NAME
+        graph_path = _default_graph_path()
+        depth = 1
+        relations: list[str] = []
+        args = sys.argv[2:]
+        i = 0
+        while i < len(args):
+            if args[i] == "--graph" and i + 1 < len(args):
+                graph_path = args[i + 1]
+                i += 2
+            elif args[i].startswith("--graph="):
+                graph_path = args[i].split("=", 1)[1]
+                i += 1
+            elif args[i] == "--depth" and i + 1 < len(args):
+                try:
+                    depth = int(args[i + 1])
+                except ValueError:
+                    print("error: --depth must be an integer", file=sys.stderr)
+                    sys.exit(1)
+                i += 2
+            elif args[i].startswith("--depth="):
+                try:
+                    depth = int(args[i].split("=", 1)[1])
+                except ValueError:
+                    print("error: --depth must be an integer", file=sys.stderr)
+                    sys.exit(1)
+                i += 1
+            elif args[i] == "--relation" and i + 1 < len(args):
+                relations.append(args[i + 1])
+                i += 2
+            elif args[i].startswith("--relation="):
+                relations.append(args[i].split("=", 1)[1])
+                i += 1
+            else:
+                i += 1
+        gp = Path(graph_path).resolve()
+        if not gp.exists():
+            print(f"error: graph file not found: {gp}", file=sys.stderr)
+            sys.exit(1)
+        try:
+            graph = load_graph(gp)
+        except Exception as exc:
+            print(f"error: could not load graph: {exc}", file=sys.stderr)
+            sys.exit(1)
+        graph_root = gp.parent.parent if gp.parent.name == GRAPHIFY_OUT_NAME else gp.parent
+        # Only compare the hash kind(s) this project has actually populated.
+        # `graphify update` (code, AST-only) stamps ast_hash and leaves
+        # semantic_hash "" forever if `extract`/`--update` never ran; per
+        # detect_incremental's own docstring, a missing hash for a kind
+        # always reads as "changed" for that kind — so checking a kind no
+        # pipeline has ever stamped would report every file as changed on
+        # every run, not because anything changed but because that kind was
+        # simply never used here. A brand-new manifest (first run, nothing
+        # stamped yet) falls back to checking both.
+        from graphify.detect import load_manifest as _load_manifest
+        manifest = _load_manifest(root=graph_root)
+        entries = [e for e in manifest.values() if isinstance(e, dict)]
+        kinds = set()
+        if any(e.get("ast_hash") for e in entries):
+            kinds.add("ast")
+        if any(e.get("semantic_hash") for e in entries):
+            kinds.add("semantic")
+        kinds = kinds or {"ast", "semantic"}
+        try:
+            changed_by_kind = {
+                f
+                for kind in kinds
+                for files in detect_incremental(graph_root, kind=kind).get("new_files", {}).values()
+                for f in files
+            }
+        except Exception as exc:
+            print(f"error: could not scan {graph_root} for changes: {exc}", file=sys.stderr)
+            sys.exit(1)
+        changed = sorted(changed_by_kind)
+        if not changed:
+            print("No files changed since the last extraction — nothing to check.")
+        else:
+            print(
+                format_stale(
+                    graph,
+                    changed,
+                    relations=relations or DEFAULT_AFFECTED_RELATIONS,
+                    depth=depth,
+                    root=graph_root,
+                )
+            )
     elif cmd in ("god-nodes", "god_nodes"):
         # god_nodes has long been an analyzer (analyze.py), an MCP tool, and a
         # README-advertised capability, but never a CLI subcommand — `graphify
