@@ -171,6 +171,11 @@ def _raise_recursion_limit() -> None:
 def _safe_extract(extractor: Callable, path: Path) -> dict:
     try:
         return extractor(path)
+    except MemoryError:
+        # Under a memory budget (#3011) this is the budget being hit, not a
+        # bad file. Recording it as a skipped file would let the run finish
+        # and publish a graph silently missing whatever came after.
+        raise
     except RecursionError:
         print(f"  warning: skipped {path} (recursion limit exceeded)", file=sys.stderr, flush=True)
         return {"nodes": [], "edges": [], "error": "recursion_limit_exceeded"}
@@ -5653,6 +5658,14 @@ def _safe_extract_with_xaml_root(extractor, path: Path, root: Path) -> dict:
         _XAML_ACTIVE_EXTRACT_ROOT = previous_root
 
 
+def _pool_worker_init() -> None:
+    """Pool initializer: put each worker under the configured memory budget
+    (#3011). Under `fork` the parent's rlimit is inherited already; under
+    `spawn` the worker starts fresh and must apply it from the environment."""
+    from graphify.memory_budget import apply_memory_budget
+    apply_memory_budget()
+
+
 def _extract_single_file(args: tuple) -> tuple[int, dict]:
     """Worker function for parallel extraction. Runs in a subprocess.
 
@@ -5762,7 +5775,9 @@ def _extract_parallel(
     failed: list[int] = []  # positions into uncached_work whose future failed
     _PROGRESS_INTERVAL = 100
     try:
-        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as pool:
+        with concurrent.futures.ProcessPoolExecutor(
+            max_workers=max_workers, initializer=_pool_worker_init,
+        ) as pool:
             futures = {
                 pool.submit(_extract_single_file, item): pos
                 for pos, item in enumerate(work_items)
@@ -5779,6 +5794,17 @@ def _extract_parallel(
                     # swallowed here per-future — that left the remaining
                     # per_file slots empty and silently dropped the files.
                     raise
+                except MemoryError as exc:
+                    # A worker hit the memory budget (#3011). This is not a
+                    # per-file failure to warn about and retry in-process -
+                    # the retry would hit the same wall in the parent, and a
+                    # "skipped" file would leave the graph silently partial.
+                    # Drop the queued work and abort the run.
+                    from graphify.memory_budget import budget_error
+                    pool.shutdown(wait=False, cancel_futures=True)
+                    raise budget_error(
+                        exc, phase=f"AST extraction of {work_items[futures[future]][1]}"
+                    ) from exc
                 except Exception as exc:
                     pos = futures[future]
                     print(

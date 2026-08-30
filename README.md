@@ -541,6 +541,7 @@ These are only needed for **headless / CI extraction** (`graphify extract`). Whe
 | `AZURE_OPENAI_DEPLOYMENT` or `GRAPHIFY_AZURE_MODEL` | Azure deployment name | optional — default `gpt-4o` |
 | `AWS_*` / `~/.aws/credentials` | AWS Bedrock — standard credential chain | `--backend bedrock` (no API key, uses IAM) |
 | `GRAPHIFY_MAX_WORKERS` | AST parallelism thread count | optional — also `--max-workers` flag |
+| `GRAPHIFY_MEMORY_LIMIT_MB` | Memory budget for `extract` / `update`: caps the CLI process and its extraction workers with `setrlimit`; exceeding it aborts with exit status 3 and no partial `graph.json` (Linux/macOS; reported as unenforceable on Windows) | optional — also `--memory-limit-mb` flag; set it below the container's cgroup limit |
 | `GRAPHIFY_MAX_OUTPUT_TOKENS` | Raise output cap for dense corpora | optional — e.g. `32768` for large files |
 | `GRAPHIFY_API_TIMEOUT` | Per-call timeout in seconds for HTTP, claude-cli, Anthropic SDK, and Bedrock backends (default: 600) | optional — also `--api-timeout` flag |
 | `GRAPHIFY_MAX_RETRIES` | How many times to retry a rate-limited (429) request before giving up (default: 6; honors `Retry-After`) | optional — raise for strict per-org limits (e.g. kimi); `0` disables |
@@ -764,6 +765,7 @@ graphify extract ./docs --backend bedrock      # AWS Bedrock via IAM - no API ke
 graphify extract ./docs --backend claude-cli   # route through Claude Code CLI - no API key, uses your Claude subscription
 graphify extract ./docs --backend azure        # Azure OpenAI (set AZURE_OPENAI_API_KEY + AZURE_OPENAI_ENDPOINT)
 graphify extract ./docs --max-workers 16       # AST parallelism (also GRAPHIFY_MAX_WORKERS)
+graphify extract ./src --memory-limit-mb 6144  # abort (exit 3, no partial graph) instead of being OOM-killed; also GRAPHIFY_MEMORY_LIMIT_MB
 graphify extract --postgres "postgresql://user:pass@host/db"   # introspect live PostgreSQL schema directly
 graphify extract ./my-workspace --cargo        # introspect Rust Cargo workspace dependencies directly
 graphify extract ./docs --token-budget 30000   # smaller semantic chunks for local/small models
