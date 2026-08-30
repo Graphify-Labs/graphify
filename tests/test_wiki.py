@@ -428,3 +428,36 @@ def test_wiki_links_use_collision_suffixed_slug(tmp_path):
     assert "parser_2.md" in index_targets  # link points at the suffixed file...
     for t in index_targets:
         assert (tmp_path / t).exists(), t  # ...and every target is a real file
+
+
+def test_community_article_links_god_node_key_concept(tmp_path):
+    """Key concepts that have their own god node article should be linked in the community article."""
+    G = _make_graph()
+    to_wiki(G, COMMUNITIES, tmp_path, community_labels=LABELS, god_nodes_data=GOD_NODES)
+    article = (tmp_path / "Parsing_Layer.md").read_text()
+    # 'parse' is a god node, so it should be linked in Key Concepts
+    assert "**[parse](parse.md)**" in article
+    # 'validate' is not a god node, so it should remain bold plain text
+    assert "**validate**" in article
+    assert "](validate.md)" not in article
+
+
+def test_wiki_normalizes_windows_backslashes_in_sources(tmp_path):
+    """Windows-style backslashes in source_file paths should be normalized to forward slashes."""
+    G = nx.Graph()
+    G.add_node("n1", label="parse", file_type="code", source_file="src\\parser\\main.py", community=0)
+    G.add_node("n2", label="render", file_type="code", source_file="src\\renderer\\main.py", community=1)
+    G.add_edge("n1", "n2", relation="references", confidence="INFERRED", weight=1.0)
+    communities = {0: ["n1"], 1: ["n2"]}
+    labels = {0: "Parsing", 1: "Rendering"}
+    god_nodes = [{"id": "n1", "label": "parse", "degree": 1}]
+    to_wiki(G, communities, tmp_path, community_labels=labels, god_nodes_data=god_nodes)
+
+    parsing = (tmp_path / "Parsing.md").read_text()
+    assert "`src/parser/main.py`" in parsing
+    assert "\\" not in parsing
+
+    god = (tmp_path / "parse.md").read_text()
+    assert "`src/parser/main.py`" in god
+    assert "\\" not in god
+
