@@ -1454,21 +1454,21 @@ def test_graphify_out_empty_env_var_preserved_not_overridden(tmp_path, monkeypat
         importlib.reload(paths_mod)
 
 
-def test_merge_attr_line_falls_back_on_dotdot_ascending_path(monkeypatch):
+def test_merge_attr_line_falls_back_on_dotdot_ascending_path(tmp_path, monkeypatch):
     """A `..`-ascending GRAPHIFY_OUT can't be expressed as a gitattributes
     pattern (same reason an absolute path can't) — must fall back to default."""
     from graphify.hooks import _merge_attr_line
     import graphify.paths as paths_mod
 
     monkeypatch.setattr(paths_mod, "GRAPHIFY_OUT", "../../shared-graphs")
-    assert _merge_attr_line() == "graphify-out/graph.json merge=graphify"
+    assert _merge_attr_line(tmp_path) == "graphify-out/graph.json merge=graphify"
 
 
 # --- third review round: .gitattributes still reachable via raw newline,
 # TOCTOU on symlink checks, lenient empty out_dir, absolute persisted paths,
 # and non-UTF8 .graphifyrc crashing import (Graphify PR review round 3) ---
 
-def test_merge_attr_line_falls_back_on_newline_graphify_out(monkeypatch):
+def test_merge_attr_line_falls_back_on_newline_graphify_out(tmp_path, monkeypatch):
     """The actual injection point: _persist_out_dir rejecting a newline before
     writing .graphifyrc does not stop _merge_attr_line from reading the SAME
     raw (never-persisted) GRAPHIFY_OUT and writing it into .gitattributes."""
@@ -1476,7 +1476,7 @@ def test_merge_attr_line_falls_back_on_newline_graphify_out(monkeypatch):
     import graphify.paths as paths_mod
 
     monkeypatch.setattr(paths_mod, "GRAPHIFY_OUT", "custom\nout_dir=/etc/injected")
-    assert _merge_attr_line() == "graphify-out/graph.json merge=graphify"
+    assert _merge_attr_line(tmp_path) == "graphify-out/graph.json merge=graphify"
 
 
 def test_write_text_no_symlink_refuses_symlink(tmp_path):
@@ -1581,7 +1581,7 @@ def test_write_text_no_symlink_cleans_up_tmp_on_write_failure(tmp_path, monkeypa
     assert leftovers == [], f"temp file leaked: {leftovers}"
 
 
-def test_merge_attr_line_falls_back_on_space_in_graphify_out(monkeypatch):
+def test_merge_attr_line_falls_back_on_space_in_graphify_out(tmp_path, monkeypatch):
     """A space in GRAPHIFY_OUT would split the gitattributes line into more
     fields than intended (pattern attr1 attr2 ...) — same fallback as an
     absolute or `..`-ascending path."""
@@ -1589,15 +1589,15 @@ def test_merge_attr_line_falls_back_on_space_in_graphify_out(monkeypatch):
     import graphify.paths as paths_mod
 
     monkeypatch.setattr(paths_mod, "GRAPHIFY_OUT", "my custom-out")
-    assert _merge_attr_line() == "graphify-out/graph.json merge=graphify"
+    assert _merge_attr_line(tmp_path) == "graphify-out/graph.json merge=graphify"
 
 
-def test_merge_attr_line_falls_back_on_tab_in_graphify_out(monkeypatch):
+def test_merge_attr_line_falls_back_on_tab_in_graphify_out(tmp_path, monkeypatch):
     from graphify.hooks import _merge_attr_line
     import graphify.paths as paths_mod
 
     monkeypatch.setattr(paths_mod, "GRAPHIFY_OUT", "custom\tout")
-    assert _merge_attr_line() == "graphify-out/graph.json merge=graphify"
+    assert _merge_attr_line(tmp_path) == "graphify-out/graph.json merge=graphify"
 
 
 def test_clear_persisted_out_dir_survives_non_utf8_graphifyrc(tmp_path):
@@ -1815,3 +1815,76 @@ def test_read_persisted_out_dir_refuses_windows_absolute_value_on_posix(tmp_path
         assert paths_mod.GRAPHIFY_OUT == "graphify-out"
     finally:
         importlib.reload(paths_mod)
+
+
+# --- seventh review round: non-UTF8 existing .graphifyrc on persist, glob
+# metacharacters in gitattributes patterns, repo-root-relative merge-attr
+# generation (Graphify PR review round 7). Findings "Removed cross-platform
+# absolute-path helper" and "Removed public path helper" were false
+# positives from moving is_absolute_any_platform earlier in paths.py (a
+# move, not a removal) — verified via existing test_paths.py coverage and
+# a direct import check, no test needed for a non-bug.
+
+def test_persist_out_dir_survives_non_utf8_existing_content(tmp_path):
+    """A corrupted/non-UTF-8 EXISTING .graphifyrc must not crash persisting
+    a new value — the current sole caller already tolerates this via its own
+    except (OSError, ValueError), but guarded internally too so it stays
+    true for any future caller."""
+    from graphify.hooks import _persist_out_dir, _load_graphifyrc
+
+    rc = tmp_path / ".graphifyrc"
+    rc.write_bytes(b"\xff\xfe\x00bad")
+    _persist_out_dir(tmp_path, "custom-out")  # must not raise
+    assert _load_graphifyrc(tmp_path).get("out_dir") == "custom-out"
+
+
+@pytest.mark.parametrize("glob_char", ["*", "?", "[", "]", "!"])
+def test_merge_attr_line_falls_back_on_glob_metacharacter(tmp_path, monkeypatch, glob_char):
+    """A glob metacharacter in GRAPHIFY_OUT changes what the gitattributes
+    PATTERN matches instead of being a literal path segment — e.g. "*"
+    would match graph.json under every top-level directory."""
+    from graphify.hooks import _merge_attr_line
+    import graphify.paths as paths_mod
+
+    monkeypatch.setattr(paths_mod, "GRAPHIFY_OUT", f"custom{glob_char}out")
+    assert _merge_attr_line(tmp_path) == "graphify-out/graph.json merge=graphify"
+
+
+def test_merge_attr_line_falls_back_on_leading_hash(tmp_path, monkeypatch):
+    """A leading # would make the whole generated .gitattributes line a
+    comment — silently registering nothing while reporting success."""
+    from graphify.hooks import _merge_attr_line
+    import graphify.paths as paths_mod
+
+    monkeypatch.setattr(paths_mod, "GRAPHIFY_OUT", "#custom-out")
+    assert _merge_attr_line(tmp_path) == "graphify-out/graph.json merge=graphify"
+
+
+def test_merge_attr_line_uses_repo_root_relative_persisted_value_from_subdir(tmp_path):
+    """The exact interaction bug: a persisted out_dir re-expressed relative
+    to a nested cwd is a `..`-ascending path that _merge_attr_line's own
+    guard then (correctly, given that input) falls back to default for —
+    but the actual .gitattributes line generated from `root` should use
+    the persisted directory, not silently revert to the wrong default."""
+    from graphify.hooks import _merge_attr_line, _persist_out_dir
+
+    repo = _make_git_repo(tmp_path)
+    _persist_out_dir(repo, ".planning/graphs")
+    assert _merge_attr_line(repo) == ".planning/graphs/graph.json merge=graphify"
+
+
+def test_register_merge_driver_correct_from_subdirectory_with_persisted_out_dir(tmp_path, monkeypatch):
+    """End-to-end: hook install run from a subdirectory of a repo that
+    already has a persisted out_dir must generate the correct
+    .gitattributes line, not fall back to the wrong default."""
+    from graphify.hooks import _persist_out_dir, _register_merge_driver
+
+    repo = _make_git_repo(tmp_path)
+    _persist_out_dir(repo, ".planning/graphs")
+    subdir = repo / "src" / "nested"
+    subdir.mkdir(parents=True)
+    monkeypatch.chdir(subdir)
+    result = _register_merge_driver(repo)
+    assert "registered" in result
+    attrs = (repo / ".gitattributes").read_text(encoding="utf-8")
+    assert attrs.strip() == ".planning/graphs/graph.json merge=graphify"

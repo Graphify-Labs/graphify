@@ -105,15 +105,76 @@ def _find_graphifyrc(start: Path) -> Path | None:
     return None
 
 
-def _read_persisted_out_dir() -> str | None:
-    """Read ``out_dir=`` from the nearest ``.graphifyrc`` above cwd, if present.
+def _resolve_persisted_out_dir_target(rc_path: Path) -> Path | None:
+    """Read and validate ``out_dir=`` from ``rc_path``, returning an
+    absolute, safe target directory, or ``None`` if absent/empty/invalid/
+    untrusted.
 
-    Deliberately minimal and independent of ``graphify.hooks._load_graphifyrc``
-    (which also parses ``viz_node_limit``) to avoid a hooks<->paths import
-    cycle: ``hooks`` already imports ``GRAPHIFY_OUT`` from this module, and this
-    runs at import time, before any lazy import could resolve it. Malformed or
-    unreadable files degrade to "no override" rather than raising — this must
-    never block module import.
+    Shared validation core for ``_read_persisted_out_dir`` (cwd-relative,
+    for the general ``GRAPHIFY_OUT`` fallback) and
+    ``_read_persisted_out_dir_for_root`` (repo-root-relative, for
+    ``.gitattributes`` generation) — the security-relevant checks (refusing
+    an absolute or ``..``-escaping value) live in exactly one place so the
+    two callers can't drift apart, the way three separate near-duplicates
+    of this logic already had to be caught and re-synced across earlier
+    revisions of this file and ``graphify.hooks``.
+
+    ``.graphifyrc`` is repo-committed, untrusted content (this project
+    already reads it for ``viz_node_limit``) — unlike ``GRAPHIFY_OUT`` the
+    env var, which a user sets for themselves, this file can arrive
+    unreviewed via ``git clone`` and applies the moment ANY graphify command
+    runs, with no action from the user beyond that clone. A *relative*
+    value is anchored to the repo root (``rc_path.parent`` — where
+    ``_register_merge_driver`` always resolves and writes it) and refused
+    outright if it escapes that root via ``..``. An *absolute* value
+    (checked cross-platform via ``is_absolute_any_platform``, not plain
+    ``Path.is_absolute()`` — see that function's docstring "EXCEPTION"
+    paragraph) is refused outright too — unlike a relative one it can't even
+    be checked against the repo boundary, and a committed absolute path
+    would silently redirect every collaborator's output the instant they
+    clone the repo. ``_register_merge_driver`` never persists one for the
+    same reason (`graphify.hooks._persist_out_dir`); an absolute
+    ``GRAPHIFY_OUT`` still works exactly as before when a user sets the env
+    var themselves — this refusal is specific to a value arriving from
+    repo-committed content, not the feature.
+    """
+    try:
+        content = rc_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    for raw in content.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        if key.strip() != "out_dir":
+            continue
+        val = val.strip()
+        if not val:
+            return None
+        if is_absolute_any_platform(val):
+            return None  # repo-committed absolute path — refuse, don't honor
+        repo_root = rc_path.parent.resolve()
+        target = (repo_root / val).resolve()
+        try:
+            target.relative_to(repo_root)
+        except ValueError:
+            return None  # escapes the repo root via `..` — refuse, don't honor
+        return target
+    return None
+
+
+def _read_persisted_out_dir() -> str | None:
+    """Read ``out_dir=`` from the nearest ``.graphifyrc`` above cwd, if
+    present, re-expressed relative to the current working directory.
+
+    Deliberately independent of ``graphify.hooks._load_graphifyrc`` (which
+    also parses ``viz_node_limit``) to avoid a hooks<->paths import cycle:
+    ``hooks`` already imports ``GRAPHIFY_OUT`` from this module, and this
+    runs at import time, before any lazy import could resolve it. Malformed
+    or unreadable files degrade to "no override" rather than raising — this
+    must never block module import. See ``_resolve_persisted_out_dir_target``
+    for the untrusted-repo-content refusal policy this applies.
 
     Injection via a literal newline in the value (which would add an
     unintended `.gitattributes` line) is rejected at the write site
@@ -121,21 +182,15 @@ def _read_persisted_out_dir() -> str | None:
     ``str.splitlines()`` can never itself contain a newline, so a line-based
     check on this side is a no-op.
 
-    ``.graphifyrc`` is repo-committed, untrusted content (this project already
-    reads it for ``viz_node_limit``) — unlike ``GRAPHIFY_OUT`` the env var,
-    which a user sets for themselves, this file can arrive unreviewed via
-    ``git clone`` and applies the moment ANY graphify command runs, with no
-    action from the user beyond that clone. A *relative* value is anchored to
-    the repo root (``rc_path.parent`` — where ``_register_merge_driver``
-    always resolves and writes it) and refused outright if it escapes that
-    root via ``..``. An *absolute* value is refused outright too — unlike a
-    relative one it can't even be checked against the repo boundary, and a
-    committed absolute path would silently redirect every collaborator's
-    output the instant they clone the repo. ``_register_merge_driver`` never
-    persists one for the same reason (`graphify.hooks._persist_out_dir`); an
-    absolute ``GRAPHIFY_OUT`` still works exactly as before when a user sets
-    the env var themselves — this refusal is specific to a value arriving
-    from repo-committed content, not the feature.
+    This is the general-purpose ``GRAPHIFY_OUT`` fallback, used for
+    resolving files relative to wherever the process was invoked — for
+    generating a ``.gitattributes`` pattern instead, which git always
+    interprets relative to the repo root regardless of invocation
+    directory, use ``_read_persisted_out_dir_for_root`` instead (re-
+    expressing relative to cwd here can legitimately produce a
+    `..`-ascending path when invoked from a subdirectory, which is correct
+    for opening a file from that cwd but not expressible as a gitattributes
+    pattern).
     """
     # Everything below is wrapped in one outer guard rather than scattering
     # per-call try/excepts: `Path.cwd()` raises OSError (FileNotFoundError)
@@ -144,51 +199,55 @@ def _read_persisted_out_dir() -> str | None:
     # elsewhere just rm -rf'd, common in CI teardown), and building a path
     # from a value containing an embedded NUL byte — a valid-UTF-8 string can
     # still contain one — raises ValueError from the OS layer the first time
-    # it reaches a syscall (`.resolve()` below), not at the earlier
-    # `read_text()`/`Path(val).is_absolute()` checks. Both must degrade to
-    # "no override", per this function's own contract, not propagate and
-    # abort `graphify.paths` import for every command anywhere near the repo.
+    # it reaches a syscall (inside ``_resolve_persisted_out_dir_target``).
+    # Both must degrade to "no override", per this function's own contract,
+    # not propagate and abort `graphify.paths` import for every command
+    # anywhere near the repo.
     try:
         rc_path = _find_graphifyrc(Path.cwd())
         if rc_path is None:
             return None
-        try:
-            content = rc_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+        target = _resolve_persisted_out_dir_target(rc_path)
+        if target is None:
             return None
-        for raw in content.splitlines():
-            line = raw.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, val = line.partition("=")
-            if key.strip() != "out_dir":
-                continue
-            val = val.strip()
-            if not val:
-                return None
-            if is_absolute_any_platform(val):
-                # Cross-platform check (not plain Path.is_absolute()): this
-                # value is untrusted repo-committed content that could have
-                # been authored on either OS — see is_absolute_any_platform's
-                # docstring "EXCEPTION" paragraph for why the usual
-                # local-filesystem guidance doesn't apply to this one check.
-                return None  # repo-committed absolute path — refuse, don't honor
-            # Relative: anchor to the repo root (this .graphifyrc's own
-            # directory), not wherever this process happens to be invoked
-            # from — GRAPHIFY_OUT is otherwise always resolved relative to
-            # cwd, so re-express the repo-root-relative value in those terms
-            # when they differ.
-            repo_root = rc_path.parent.resolve()
-            target = (repo_root / val).resolve()
-            try:
-                target.relative_to(repo_root)
-            except ValueError:
-                return None  # escapes the repo root via `..` — refuse, don't honor
-            try:
-                return os.path.relpath(target, Path.cwd())
-            except ValueError:
-                return str(target)  # e.g. different drives on Windows
+        try:
+            return os.path.relpath(target, Path.cwd())
+        except ValueError:
+            return str(target)  # e.g. different drives on Windows
+    except (OSError, ValueError):
         return None
+
+
+def _read_persisted_out_dir_for_root(root: Path) -> str | None:
+    """Like ``_read_persisted_out_dir``, but returns the persisted value
+    relative to ``root`` (the git repo root) instead of the current working
+    directory — for ``.gitattributes`` pattern generation specifically.
+
+    git always interprets a ``.gitattributes`` pattern relative to the repo
+    root, never relative to wherever a command happened to be invoked from.
+    ``_read_persisted_out_dir``'s cwd-relative form is correct for its own
+    purpose (opening a file from the current process's cwd), but reusing it
+    for the pattern too meant `graphify.hooks._merge_attr_line` could
+    receive a `..`-ascending path whenever `hook install` ran from a
+    subdirectory of a repo with a persisted override — which its own
+    `..`-ascending fallback then (correctly, given that input) turned into
+    the wrong default `graphify-out/graph.json`, instead of the actual
+    persisted directory. Looks only at ``root / ".graphifyrc"`` directly
+    (no walking up further) since that is exactly where
+    ``_persist_out_dir`` always writes it, keyed off the same ``root`` a
+    caller here already resolved via ``_git_root``.
+    """
+    try:
+        rc_path = root / ".graphifyrc"
+        if not rc_path.is_file():
+            return None
+        target = _resolve_persisted_out_dir_target(rc_path)
+        if target is None:
+            return None
+        try:
+            return os.path.relpath(target, root.resolve())
+        except ValueError:
+            return str(target)
     except (OSError, ValueError):
         return None
 

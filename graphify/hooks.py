@@ -584,7 +584,18 @@ def _persist_out_dir(root: Path, out: str) -> None:
     lines: list[str] = []
     existing_value = None
     if rc_path.is_file():
-        content = rc_path.read_text(encoding="utf-8")
+        try:
+            content = rc_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            # A corrupted/non-UTF-8 existing .graphifyrc can't be preserved
+            # (its other lines, if any, aren't recoverable), but that must
+            # not crash hook install over it — start fresh and write just
+            # the out_dir line. The current sole caller already wraps this
+            # call in `except (OSError, ValueError)` (UnicodeDecodeError is
+            # a ValueError subclass), so this specific path isn't reachable
+            # today — guarded here anyway so it stays true for any future
+            # caller that doesn't happen to wrap it the same way.
+            content = ""
         for raw in content.splitlines():
             stripped = raw.strip()
             if stripped and not stripped.startswith("#") and "=" in stripped:
@@ -756,19 +767,25 @@ def _pinned_python() -> str:
     return sys.executable
 
 
-def _merge_attr_line() -> str:
+def _merge_attr_line(root: Path) -> str:
     """The .gitattributes line assigning the graphify merge driver to graph.json.
 
-    The graph lives under the configured output directory (graphify.paths,
-    resolved from GRAPHIFY_OUT env var or a persisted .graphifyrc out_dir —
-    see _persist_out_dir / graphify.paths._read_persisted_out_dir). gitattributes
-    patterns are repo-relative, so an absolute output-dir override cannot be
-    expressed there — fall back to the default name in that case. A `..`-
-    ascending relative path can't be expressed either: hook install (via
-    _git_root) always resolves the correct repo root regardless of invocation
-    directory, but a persisted out_dir re-expressed relative to *this*
-    process's cwd (see _read_persisted_out_dir) can legitimately be
-    `../../out-dir` when invoked from a nested subdirectory — same fallback.
+    The graph lives under the configured output directory. Prefers the
+    persisted override re-expressed relative to `root` (see
+    graphify.paths._read_persisted_out_dir_for_root) over the raw
+    GRAPHIFY_OUT env var/cwd-relative fallback: gitattributes patterns are
+    always interpreted relative to the repo root by git, never relative to
+    wherever a command was invoked from, so reusing the cwd-relative form
+    here would produce a `..`-ascending path (see below) whenever `hook
+    install` runs from a subdirectory of a repo with a persisted override —
+    landing on the wrong default instead of the actual persisted directory.
+
+    gitattributes patterns are repo-relative, so an absolute output-dir
+    override cannot be expressed there — fall back to the default name in
+    that case. A `..`-ascending relative path can't be expressed either —
+    same fallback (this can still legitimately occur: no persisted override
+    at all, falling through to a cwd-relative GRAPHIFY_OUT set directly via
+    the env var while invoked from a subdirectory).
 
     Any whitespace in GRAPHIFY_OUT (not just newline/carriage-return) gets
     the same fallback: a `.gitattributes` line is whitespace-separated
@@ -785,15 +802,26 @@ def _merge_attr_line() -> str:
     function (_register_merge_driver, _merge_driver_status) a safe way to
     recover the path: with no space possible before `/graph.json`, that
     split can never land anywhere but the intended boundary.
+
+    A directory name containing a gitattributes glob metacharacter
+    (`*?[]!`) or a leading `#` gets the same fallback too: embedded
+    unescaped into the pattern, these change what the pattern MATCHES
+    (`*` and `?` glob, `[...]` is a character class, a leading `!`
+    negates, a leading `#` makes the whole line a comment) rather than
+    being treated as a literal path segment — e.g. GRAPHIFY_OUT="*" would
+    produce the pattern `*/graph.json`, matching graph.json under every
+    top-level directory instead of one literally named "*".
     """
-    from graphify.paths import GRAPHIFY_OUT
-    out = GRAPHIFY_OUT
+    from graphify.paths import GRAPHIFY_OUT, _read_persisted_out_dir_for_root
+    out = _read_persisted_out_dir_for_root(root) or GRAPHIFY_OUT
     if (
         not out
         or Path(out).is_absolute()
         or "\\" in out
         or ".." in Path(out).parts
         or any(c.isspace() for c in out)
+        or any(c in out for c in "*?[]!")
+        or out.startswith("#")
     ):
         out = "graphify-out"
     return f"{out.rstrip('/')}/graph.json merge=graphify"
@@ -895,7 +923,7 @@ def _register_merge_driver(root: Path) -> str:
         except (OSError, ValueError):
             pass  # best-effort; the merge driver config above still applies this run
 
-    line = _merge_attr_line()
+    line = _merge_attr_line(root)
     graph_relpath = line.split(" ", 1)[0]
     if _is_gitignored(root, graph_relpath):
         # #2595: a merge driver for an ignored, untracked file never runs —
@@ -1032,7 +1060,7 @@ def _merge_driver_status(root: Path) -> str:
     if cfg_ok and attr_ok:
         return "registered"
     if cfg_ok:
-        graph_relpath = _merge_attr_line().split(" ", 1)[0]
+        graph_relpath = _merge_attr_line(root).split(" ", 1)[0]
         if _is_gitignored(root, graph_relpath):
             # Intentional (#2595): install skipped the .gitattributes line
             # because the target is ignored/untracked, so a merge driver for
