@@ -3160,7 +3160,7 @@ def _resolve_python_member_calls(
             file_aliases = import_alias_by_filenode.get(caller_file, {})
             mods = [t for t in imported_by_filenode.get(caller_file, ())
                     if t in contains_children
-                    and (_module_stem_key(t) == rkey or file_aliases.get(t) == rkey)]
+                    and (file_aliases.get(t) == rkey if t in file_aliases else _module_stem_key(t) == rkey)]
             if len(mods) != 1:  # not an imported module, or ambiguous -> bail
                 continue
             children = contains_children[mods[0]].get(_key(callee), [])

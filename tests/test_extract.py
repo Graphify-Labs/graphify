@@ -1767,6 +1767,56 @@ def test_python_aliased_call_survives_warm_cache(tmp_path):
     assert len(_alias_edges(warm)) == 1, "aliased call edge vanished on warm cache (#2082)"
 
 
+def test_python_aliased_import_stem_collision_resolution(tmp_path):
+    """Verify Issue #2428: two imported modules share the same filename stem ('service'),
+    with one aliased and one unaliased. The call to the unaliased module must resolve
+    and must not be blocked by a false ambiguity with the aliased module."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "service.py").write_text("def register_user(name):\n    return {'name': name}\n")
+
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "__init__.py").write_text("")
+    (other / "service.py").write_text("def ping():\n    return 'pong'\n")
+
+    api = pkg / "api.py"
+    api.write_text(
+        "from pkg import service\n"
+        "from other import service as other_service\n\n"
+        "def register(payload):\n"
+        "    other_service.ping()\n"
+        "    return service.register_user(payload['name'])\n"
+    )
+    result = extract(
+        [api, pkg / "service.py", other / "service.py", pkg / "__init__.py", other / "__init__.py"],
+        cache_root=tmp_path,
+        root=tmp_path,
+    )
+    nodes = {n["id"]: n for n in result["nodes"]}
+
+    # Verify call to other_service.ping() resolves to other/service.py -> ping()
+    ping_calls = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and "register" in nodes[e["source"]]["label"]
+        and "ping" in nodes[e["target"]]["label"]
+        and "other/service.py" in (nodes[e["target"]].get("source_file") or "")
+    ]
+    assert len(ping_calls) == 1, f"expected call to other_service.ping to resolve, got: {ping_calls}"
+
+    # Verify call to service.register_user() resolves to pkg/service.py -> register_user()
+    register_user_calls = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and "register" in nodes[e["source"]]["label"]
+        and "register_user" in nodes[e["target"]]["label"]
+        and "pkg/service.py" in (nodes[e["target"]].get("source_file") or "")
+    ]
+    assert len(register_user_calls) == 1, f"expected call to service.register_user to resolve, got: {register_user_calls}"
+
+
 def test_python_qualified_call_resolves_when_method_name_collides_with_caller(tmp_path):
     """The real #1446 shape: a viewset action `approve()` delegates to a SERVICE
     action of the SAME name via `Service.approve()`. The bare-name in-file lookup
