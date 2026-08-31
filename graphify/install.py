@@ -480,6 +480,18 @@ _PLATFORM_CONFIG: dict[str, dict] = {
 # dispatch. `skills` is the friendly alias for the generic `agents` platform
 # (the Agent-Skills ecosystem calls them "skills").
 _PLATFORM_ALIASES: dict[str, str] = {"skills": "agents"}
+# The platforms `install()` dispatches BEFORE its _PLATFORM_CONFIG membership
+# check, so they are accepted despite having no config entry of their own.
+_SPECIAL_PLATFORMS: tuple[str, ...] = ("cursor", "gemini")
+# Every value `--platform` accepts. Single source of truth for the three places
+# that advertise it — the top-level `--help` line, `graphify install`'s own
+# usage, and the unknown-platform error below. All three used to hand-maintain
+# a copy, and the `--help` one had drifted to omit `antigravity-windows`,
+# `copilot`, `kilo` and `kimi`; the other two omit the `skills` alias (#2638).
+# Derived, so the advertised list cannot fall behind the dispatch again.
+ACCEPTED_PLATFORMS: tuple[str, ...] = tuple(sorted(
+    set(_PLATFORM_CONFIG) | set(_SPECIAL_PLATFORMS) | set(_PLATFORM_ALIASES)
+))
 def _canonical_platform(platform_name: str) -> str:
     """Resolve a CLI platform alias to its real _PLATFORM_CONFIG key."""
     return _PLATFORM_ALIASES.get(platform_name, platform_name)
@@ -613,7 +625,7 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
         platform = "antigravity-windows"
     if platform not in _PLATFORM_CONFIG:
         print(
-            f"error: unknown platform '{platform}'. Choose from: {', '.join(_PLATFORM_CONFIG)}, gemini, cursor",
+            f"error: unknown platform '{platform}'. Choose from: {', '.join(ACCEPTED_PLATFORMS)}",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -695,7 +707,7 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
     print("open free before the public v1 launch: https://app.graphify.com")
     print()
 def _print_install_usage() -> None:
-    platforms = ", ".join([*_PLATFORM_CONFIG, "gemini", "cursor"])
+    platforms = ", ".join(ACCEPTED_PLATFORMS)
     print("Usage: graphify install [--project] [--strict] [--platform P|P]")
     print(f"Platforms: {platforms}")
     print("  --strict  block the first raw file read per session until one "

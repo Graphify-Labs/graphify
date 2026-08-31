@@ -96,6 +96,7 @@ from graphify.install import (  # noqa: E402,F401
     vscode_install,
     vscode_uninstall,
     _PLATFORM_ALIASES,
+    ACCEPTED_PLATFORMS,
     _CLAUDE_MD_MARKER,
     _CODEBUDDY_MD_MARKER,
     _AGENTS_MD_MARKER,
@@ -533,7 +534,7 @@ def _run_cli() -> None:
         print("Usage: graphify <command>")
         print()
         print("Commands:")
-        print("  install [--platform P]  copy skill to platform config dir (claude|windows|codebuddy|codex|opencode|aider|amp|agents|claw|droid|trae|trae-cn|gemini|cursor|antigravity|hermes|kiro|pi|devin)")
+        print(f"  install [--platform P]  copy skill to platform config dir ({'|'.join(ACCEPTED_PLATFORMS)})")
         print("  uninstall               remove graphify from all detected platforms in one shot")
         print("    --purge                 also delete graphify-out/ directory")
         print("  path \"A\" \"B\"            shortest path between two nodes in graph.json")
