@@ -1259,6 +1259,67 @@ def test_sql_schema_qualified_alter_fk():
         assert e["source"] in node_ids, f"dangling source: {e['source']}"
         assert e["target"] in node_ids, f"dangling target: {e['target']}"
 
+def test_sql_tsql_bracket_identifiers_produce_clean_labels(tmp_path):
+    """#2712: [dbo].[Alpha] must label as dbo.Alpha, not the delimiter-mangled
+    `dbo].[Alpha` tree-sitter-sql's grammar produces for bracket quoting (it has
+    no token for `[...]`, so each bracket lands as its own one-byte ERROR node,
+    one character short of the real pair)."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text(
+        "CREATE TABLE [dbo].[Alpha] (\n"
+        "    [Id] INT NOT NULL PRIMARY KEY\n"
+        ");\n"
+        "GO\n"
+        "CREATE TABLE [dbo].[Beta] (\n"
+        "    [Id] INT NOT NULL PRIMARY KEY\n"
+        ");\n"
+        "GO\n"
+    )
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"]]
+    assert "dbo.Alpha" in labels, f"got {labels}"
+    assert "dbo.Beta" in labels, f"got {labels}"
+    assert not any("]" in l or "[" in l for l in labels), (
+        f"a bracket fragment leaked into a label: {labels}"
+    )
+
+def test_sql_tsql_bracket_reference_resolves_by_clean_name(tmp_path):
+    """#2712: a bracket-quoted FOREIGN KEY ... REFERENCES [dbo].[Alpha] must
+    resolve onto the real Alpha table node, not dangle or mint a stub keyed by
+    the mangled `Alpha` text."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text(
+        "CREATE TABLE [dbo].[Alpha] ([Id] INT NOT NULL PRIMARY KEY);\n"
+        "GO\n"
+        "CREATE TABLE [dbo].[Beta] (\n"
+        "    [Id] INT NOT NULL PRIMARY KEY,\n"
+        "    [AlphaId] INT NOT NULL,\n"
+        "    CONSTRAINT [FK_Beta_Alpha] FOREIGN KEY ([AlphaId])\n"
+        "        REFERENCES [dbo].[Alpha] ([Id])\n"
+        ");\n"
+        "GO\n"
+    )
+    r = extract_sql(p)
+    nid = {n["label"]: n["id"] for n in r["nodes"]}
+    assert "dbo.Alpha" in nid and "dbo.Beta" in nid
+    refs = {(e["source"], e["target"]) for e in r["edges"] if e["relation"] == "references"}
+    assert (nid["dbo.Beta"], nid["dbo.Alpha"]) in refs, f"got {refs}"
+
+def test_sql_tsql_bracket_debracketing_does_not_corrupt_array_types(tmp_path):
+    """#2712 follow-up: the bracket->backtick rewrite must not misfire on
+    Postgres/MySQL array-type syntax (`text[]`, `numeric(10)[3]`), which uses
+    `[...]` for something other than a T-SQL quoted identifier."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text("CREATE TABLE t (id INT, tags text[], scores numeric(10,2)[3]);\n")
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"]]
+    assert any(l == "t" for l in labels), f"table extraction broke on array types: {labels}"
+    for l in labels:
+        assert "`" not in l, f"a synthetic backtick leaked into a label: {labels}"
+
 def test_sql_plpgsql_functions_survive_parse_errors():
     """PL/pgSQL bodies make tree-sitter-sql emit ERROR nodes; the functions
     must still be extracted (#1910), without cascading into later statements."""
