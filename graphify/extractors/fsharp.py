@@ -71,7 +71,10 @@ def extract_fsharp(path: Path) -> dict:
     # (caller_nid, callee_name, qualifier_root_or_None, full_path_text, line)
     call_sites: list[tuple[str, str, str | None, str, int]] = []
 
+    node_labels: dict[str, str] = {}
+
     def add_node(nid: str, label: str, line: int) -> None:
+        node_labels.setdefault(nid, label)
         if nid not in seen_ids:
             seen_ids.add(nid)
             nodes.append({
@@ -173,10 +176,15 @@ def extract_fsharp(path: Path) -> dict:
             add_edge(type_nid, cnid, "contains", line_of(case))
             register_def(cname, cnid)
 
-    def emit_member(member_defn, type_nid: str) -> str | None:
+    def emit_member(member_defn, type_nid: str, owner_label: str = "") -> str | None:
         """member this.Run() / static member Default — name is the LAST
         identifier of property_or_ident (the first is the self-identifier when
-        present). Returns the member nid for call attribution in its body."""
+        present). Returns the member nid for call attribution in its body.
+
+        The node id is qualified by the OWNING TYPE, not just the file: F#
+        repeats member names constantly (every IDisposable impl has a Dispose),
+        and a file-scoped id would merge same-named members of different types
+        in one file into a single node."""
         mp = first_child(member_defn, "method_or_prop_defn", "member_signature")
         if mp is None:
             return None
@@ -188,7 +196,7 @@ def extract_fsharp(path: Path) -> dict:
             return None
         mname = parts[-1]
         line = line_of(member_defn)
-        mnid = _make_id(stem, mname)
+        mnid = _make_id(stem, owner_label, mname) if owner_label else _make_id(stem, mname)
         add_node(mnid, mname, line)
         add_edge(type_nid, mnid, "contains", line)
         register_def(mname, mnid)
@@ -260,7 +268,7 @@ def extract_fsharp(path: Path) -> dict:
                     if child.type == "type_extension_elements":
                         for el in child.children:
                             if el.type == "member_defn":
-                                mnid = emit_member(el, tnid)
+                                mnid = emit_member(el, tnid, tname)
                                 for sub in el.children:
                                     walk(sub, tnid, mnid or tnid)
                             else:
@@ -284,7 +292,7 @@ def extract_fsharp(path: Path) -> dict:
 
         if t == "member_defn":
             # A member outside type_extension_elements (type augmentation).
-            mnid = emit_member(node, container_nid)
+            mnid = emit_member(node, container_nid, node_labels.get(container_nid, ""))
             for child in node.children:
                 walk(child, container_nid, mnid or enclosing_value)
             return

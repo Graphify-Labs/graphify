@@ -131,14 +131,15 @@ def test_qualified_external_call_stays_distinct(tmp_path):
            "    sb.Append(\"y\") |> ignore\n")
     r = extract_fsharp(_write(tmp_path, "qual.fs", src))
     lab = {n["id"]: n for n in r["nodes"]}
-    for e in r["edges"]:
-        if e["relation"] != "calls":
-            continue
-        tgt = lab[e["target"]]
-        if tgt["label"] in ("Append", "sb.Append"):
-            # must NOT resolve to the local definition (which has a source_file)
-            assert tgt["source_file"] == "", (
-                "external qualified call bound to a local definition")
+    # The edge must EXIST: without this, the loop below is vacuously green when
+    # no call edge is emitted at all (caught by graphify's own review of this PR).
+    append_edges = [e for e in r["edges"] if e["relation"] == "calls"
+                    and lab[e["target"]]["label"] in ("Append", "sb.Append")]
+    assert append_edges, "no call edge emitted for sb.Append at all"
+    for e in append_edges:
+        # must NOT resolve to the local definition (which has a source_file)
+        assert lab[e["target"]]["source_file"] == "", (
+            "external qualified call bound to a local definition")
 
 
 def test_fsx_script_parses(tmp_path):
@@ -148,6 +149,21 @@ def test_fsx_script_parses(tmp_path):
     assert "hello" in _labels(r)
     assert ("script.fsx", "hello") in _rel_pairs(r, "calls") or \
            ("hello", "printfn") in _rel_pairs(r, "calls")
+
+
+def test_same_named_members_of_different_types_stay_distinct(tmp_path):
+    # Two types in ONE file, each with a Dispose member: file-scoped member ids
+    # would merge them into a single node (caught by graphify's own review).
+    src = ("module M\n"
+           "type A() =\n"
+           "    member this.Dispose() = 1\n"
+           "type B() =\n"
+           "    member this.Dispose() = 2\n")
+    r = extract_fsharp(_write(tmp_path, "two.fs", src))
+    disp = [n for n in r["nodes"] if n["label"] == "Dispose" and n.get("source_file")]
+    assert len(disp) == 2, f"expected 2 Dispose nodes, got {len(disp)}"
+    contains = _rel_pairs(r, "contains")
+    assert ("A", "Dispose") in contains and ("B", "Dispose") in contains
 
 
 def test_annotated_let_names_the_binding_not_the_type(tmp_path):
