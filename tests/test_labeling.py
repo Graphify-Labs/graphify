@@ -164,6 +164,53 @@ def test_label_cli_missing_only_preserves_existing_labels(tmp_path, monkeypatch)
     assert labels == {"0": "Order Management", "1": "Payment Flow"}
 
 
+def test_label_cli_all_failed_preserves_existing_artifacts(tmp_path, monkeypatch, capsys):
+    """An all-failed requested labeling run must not rewrite graph artifacts."""
+    import graphify.__main__ as cli
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    _two_community_graph(out)
+    (out / "GRAPH_REPORT.md").write_text("PREVIOUS REPORT\n", encoding="utf-8")
+    (out / ".graphify_analysis.json").write_text('{"previous": true}\n', encoding="utf-8")
+    (out / ".graphify_labels.json").write_text(
+        '{"0": "Curated Orders", "1": "Curated Payments"}\n', encoding="utf-8"
+    )
+    (out / ".graphify_labels.json.sig").write_text('{"0": "sig-0", "1": "sig-1"}\n', encoding="utf-8")
+    (out / "graph.html").write_text("<html>previous</html>\n", encoding="utf-8")
+    backup = out / "existing-backup"
+    backup.mkdir()
+    (backup / "sentinel").write_text("leave me alone\n", encoding="utf-8")
+
+    def always_fail(prompt, *, backend, max_tokens=200):
+        raise RuntimeError("backend down")
+
+    monkeypatch.setattr("graphify.llm._call_llm", always_fail)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["graphify", "label", str(tmp_path), "--backend", "gemini", "--no-viz"],
+    )
+
+    before = {
+        path.relative_to(out).as_posix(): (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in out.rglob("*")
+        if path.is_file()
+    }
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    assert exc_info.value.code == 1
+    assert "no graph artifacts were changed" in capsys.readouterr().err
+    after = {
+        path.relative_to(out).as_posix(): (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in out.rglob("*")
+        if path.is_file()
+    }
+    assert after == before
+
+
 def test_label_communities_partial_reply_fills_placeholder(monkeypatch):
     G, communities = _graph()
     monkeypatch.setattr("graphify.llm._call_llm",
@@ -196,7 +243,18 @@ def test_generate_community_labels_degrades_on_error(monkeypatch):
     monkeypatch.setattr("graphify.llm._call_llm",
                         lambda p, *, backend, max_tokens=200: "not json")
     labels, source = generate_community_labels(G, communities, backend="gemini", quiet=True)
-    assert source == "placeholder"
+    assert source == "failed"
+    assert labels == {0: "Community 0", 1: "Community 1"}
+
+
+def test_generate_community_labels_fails_when_backend_names_nothing(monkeypatch):
+    G, communities = _graph()
+    monkeypatch.setattr(
+        "graphify.llm._call_llm",
+        lambda p, *, backend, max_tokens=200: "{}",
+    )
+    labels, source = generate_community_labels(G, communities, backend="gemini", quiet=True)
+    assert source == "failed"
     assert labels == {0: "Community 0", 1: "Community 1"}
 
 
@@ -445,8 +503,8 @@ def test_label_communities_accumulates_token_usage(monkeypatch):
             usage_out["input"] = usage_out.get("input", 0) + 100
             usage_out["output"] = usage_out.get("output", 0) + 10
         # one name per community id present in this batch
-        cids = [int(line.split()[1].rstrip(":")) for line in prompt.splitlines()
-                if line.startswith("Community ")]
+        cids = [int(line.split(":", 1)[0]) for line in prompt.splitlines()
+                if re.match(r"^\d+: ", line)]
         return json.dumps({str(c): f"Name {c}" for c in cids})
 
     monkeypatch.setattr("graphify.llm._call_llm", fake_call)

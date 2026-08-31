@@ -2239,11 +2239,18 @@ def dispatch_command(cmd: str) -> None:
                     for cid, members in communities.items()
                     if cid not in existing_labels or existing_labels.get(cid) == f"Community {cid}"
                 }
-            generated_labels, _ = generate_community_labels(
+            generated_labels, label_source = generate_community_labels(
                 G, label_communities_input, backend=label_backend, model=label_model, gods=gods,
                 max_concurrency=label_max_concurrency, batch_size=label_batch_size,
                 usage_out=label_token_usage,
             )
+            if label_source == "failed":
+                print(
+                    "[graphify label] community labeling failed for every requested batch; "
+                    "no graph artifacts were changed. Check the backend and retry.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
             # Only let the LLM OVERRIDE where it produced a real name — its no-backend
             # fallback returns "Community {cid}" placeholders, which must not clobber
             # the deterministic hub labels. Also reject a model echoing the prompt

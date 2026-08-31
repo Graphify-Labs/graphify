@@ -3332,9 +3332,8 @@ def label_communities(
     for any community the backend did not name. Per-batch failures are logged
     to stderr and skipped — the surviving batches still contribute labels.
 
-    Raises on the first batch's backend/parse failure if it leaves *no* labels
-    written. Callers that want graceful degradation should use
-    :func:`generate_community_labels`.
+    Raises if no batch produces a label. Callers that want graceful degradation
+    should use :func:`generate_community_labels`.
     """
     labels = _placeholder_community_labels(communities)
     cap = len(communities) if max_communities is None else max_communities
@@ -3406,10 +3405,12 @@ def label_communities(
             for future in as_completed(futures):
                 _merge(*future.result())
 
-    if written == 0 and errors:
-        # Every batch failed; propagate the lowest-index error so the message is
-        # deterministic and generate_community_labels degrades cleanly.
-        raise errors[min(errors)]
+    if written == 0:
+        if errors:
+            # Every batch failed; propagate the lowest-index error so the message
+            # is deterministic and generate_community_labels can report failure.
+            raise errors[min(errors)]
+        raise ValueError("labeling produced no community labels")
     return labels
 
 
@@ -3425,10 +3426,12 @@ def generate_community_labels(
     batch_size: int = _LABEL_BATCH_SIZE,
     usage_out: dict | None = None,
 ) -> tuple[dict[int, str], str]:
-    """CLI entry point: resolve a backend, name communities, and degrade to
-    ``Community N`` placeholders on any failure (no backend, API error, malformed
-    reply). Returns ``(labels, source)`` where source is ``"llm"`` or
-    ``"placeholder"``. Never raises."""
+    """CLI entry point: resolve a backend and name communities.
+
+    Returns ``(labels, source)`` where ``source`` is ``"llm"`` when at least one
+    requested batch succeeds, ``"placeholder"`` when no backend is configured,
+    or ``"failed"`` when every requested batch fails. Never raises.
+    """
     if backend is None:
         try:
             backend = detect_backend()
@@ -3453,7 +3456,7 @@ def generate_community_labels(
         if not quiet:
             print(
                 f"[graphify label] warning: community labeling failed ({exc}); "
-                "using Community N placeholders.",
+                "no labels were generated.",
                 file=sys.stderr,
             )
-        return _placeholder_community_labels(communities), "placeholder"
+        return _placeholder_community_labels(communities), "failed"
