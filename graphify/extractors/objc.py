@@ -12,6 +12,14 @@ import re
 # `C++Bridge.h` and `Foo+.h` are left intact.
 _OBJC_STEM_PART = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
+# Declaration markers, matching what the generic engine puts on every other
+# language's definitions (#2438): `_callable` says "a real callable, not a
+# same-named data symbol", and `_callable_class` narrows that to a type, which is
+# callable only through a constructor. Passes that index declarations gate on
+# these, so a node without them is invisible to them.
+_CALLABLE = ("_callable",)
+_CALLABLE_CLASS = ("_callable", "_callable_class")
+
 
 def _objc_category_base_stem(stem: str) -> str:
     """Strip an ObjC category/extension suffix from a file stem (``Foo+Cat`` -> ``Foo``).
@@ -115,11 +123,14 @@ def extract_objc(path: Path) -> dict:
     # same (class, field) tombstones the entry (None) — drop, don't guess.
     objc_field_types: dict[str, dict[str, str | None]] = {}
 
-    def add_node(nid: str, label: str, line: int) -> None:
+    def add_node(nid: str, label: str, line: int, markers: tuple[str, ...] = ()) -> None:
         if nid not in seen_ids:
             seen_ids.add(nid)
-            nodes.append({"id": nid, "label": label, "file_type": "code",
-                          "source_file": str_path, "source_location": f"L{line}"})
+            node = {"id": nid, "label": label, "file_type": "code",
+                    "source_file": str_path, "source_location": f"L{line}"}
+            for marker in markers:
+                node[marker] = True
+            nodes.append(node)
 
     def add_edge(src: str, tgt: str, relation: str, line: int,
                  confidence: str = "EXTRACTED", weight: float = 1.0,
@@ -284,7 +295,7 @@ def extract_objc(path: Path) -> dict:
             # produced fine when the members lived in `Foo.h` (#1556).
             cls_stem = _objc_category_base_stem(stem) if _objc_is_category(node) else stem
             cls_nid = _make_id(cls_stem, name)
-            add_node(cls_nid, name, line)
+            add_node(cls_nid, name, line, _CALLABLE_CLASS)
             add_edge(file_nid, cls_nid, "contains", line)
             # superclass is second identifier after ':'
             colon_seen = False
@@ -349,7 +360,7 @@ def extract_objc(path: Path) -> dict:
             impl_stem = _objc_category_base_stem(stem) if _objc_is_category(node) else stem
             impl_nid = _make_id(impl_stem, name)
             if impl_nid not in seen_ids:
-                add_node(impl_nid, name, line)
+                add_node(impl_nid, name, line, _CALLABLE_CLASS)
                 add_edge(file_nid, impl_nid, "contains", line)
             for child in node.children:
                 if child.type == "instance_variables":
@@ -367,7 +378,9 @@ def extract_objc(path: Path) -> dict:
                     break
             if name:
                 proto_nid = _make_id(stem, name)
-                add_node(proto_nid, f"<{name}>", line)
+                # A protocol is a type declaration like any other interface, and
+                # the engine marks a Java/C# interface the same way.
+                add_node(proto_nid, f"<{name}>", line, _CALLABLE_CLASS)
                 add_edge(file_nid, proto_nid, "contains", line)
                 # Adopted protocols: `@protocol Derived <Base, Other>`. These
                 # nest under a protocol_reference_list node (distinct from the
@@ -402,7 +415,7 @@ def extract_objc(path: Path) -> dict:
             method_name = "".join(parts) if parts else None
             if method_name:
                 method_nid = _make_id(container, method_name)
-                add_node(method_nid, f"{prefix}{method_name}", line)
+                add_node(method_nid, f"{prefix}{method_name}", line, _CALLABLE)
                 add_edge(container, method_nid, "method", line)
                 if t == "method_definition":
                     method_bodies.append((method_nid, node, container))
