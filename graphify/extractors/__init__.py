@@ -12,12 +12,14 @@ from typing import Callable
 
 from graphify.extractors.blade import extract_blade
 from graphify.extractors.elixir import extract_elixir
+from graphify.extractors.haxe import extract_haxe
 from graphify.extractors.razor import extract_razor
 from graphify.extractors.zig import extract_zig
 
 LANGUAGE_EXTRACTORS: dict[str, Callable[[Path], dict]] = {
     "blade": extract_blade,
     "elixir": extract_elixir,
+    "haxe": extract_haxe,
     "razor": extract_razor,
     "zig": extract_zig,
 }

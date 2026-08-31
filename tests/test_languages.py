@@ -2996,6 +2996,6 @@ def test_haxe_finds_imports():
 def test_haxe_finds_calls():
     r = extract_haxe(FIXTURES / "sample.hx")
     calls = _edge_labels(r, "calls")
-    assert ("get", "buildrequest") in calls
-    assert ("post", "buildrequest") in calls
+    assert ("get", "buildRequest") in calls
+    assert ("post", "buildRequest") in calls
     assert ("createClient", "HttpClient") in calls

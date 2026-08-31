@@ -12,7 +12,8 @@ written so an AI agent can execute it in a single session.
 | zig | yes |
 | elixir | yes |
 | razor | yes |
-| (40 more in extract.py) | no |
+| haxe | yes |
+| (39 more in extract.py) | no |
 
 Note: config-driven extractors (python, js, java, c, cpp, ruby, csharp,
 kotlin, scala, php, lua, swift, groovy) depend on the shared
