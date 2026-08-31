@@ -5617,11 +5617,15 @@ def _looks_like_fsharp_source(path: Path) -> bool:
     except OSError:
         return True  # unreadable: let the extractor report the real error
     glsl_markers = (b"#version", b"precision ", b"gl_Frag", b"gl_Position",
-                    b"layout(", b"layout (", b"uniform ", b"varying ")
+                    b"layout(", b"layout (", b"uniform ", b"varying ",
+                    b"void main(", b"sampler2D", b"fragColor",
+                    b"vec2", b"vec3", b"vec4")
     if any(m in head for m in glsl_markers):
         return False
+    # No bare comment marker here: `// phong lighting` on a modern shader with
+    # no #version line must not read as F# (#3221 round 3).
     fsharp_markers = (b"let ", b"module ", b"namespace ", b"open ", b"type ",
-                      b"#light", b"member ", b"//")
+                      b"#light", b"member ")
     return any(m in head for m in fsharp_markers)
 
 

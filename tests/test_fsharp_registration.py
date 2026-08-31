@@ -36,7 +36,7 @@ def test_dispatch_routes_fs_to_fsharp_extractor(tmp_path):
     p.write_text("module M\nlet f x = x\n", encoding="utf-8")
     r = extract([p], root=tmp_path)
     labels = {n["label"] for n in r["nodes"]}
-    assert "f" in labels, "extract() did not route .fs to the F# extractor"
+    assert "f()" in labels, "extract() did not route .fs to the F# extractor"
 
 
 def test_dispatch_routes_fsx_to_fsharp_extractor(tmp_path):
@@ -48,7 +48,7 @@ def test_dispatch_routes_fsx_to_fsharp_extractor(tmp_path):
     p.write_text("let hello name = name\n", encoding="utf-8")
     r = extract([p], root=tmp_path)
     labels = {n["label"] for n in r["nodes"]}
-    assert "hello" in labels, "extract() did not route .fsx to the F# extractor"
+    assert "hello()" in labels, "extract() did not route .fsx to the F# extractor"
 
 
 def test_extra_hint_names_fsharp():
@@ -89,3 +89,25 @@ def test_glsl_fragment_shader_is_not_dispatched_to_fsharp(tmp_path):
     q = tmp_path / "real.fs"
     q.write_text("module M\nlet f x = x\n", encoding="utf-8")
     assert _get_extractor(q) is not None
+
+
+def test_glsl_guard_is_load_bearing_for_marker_collisions(tmp_path):
+    # A modern shader with no #version line but a comment mentioning `type ` —
+    # an F# marker — must STILL be rejected on its GLSL markers. Deleting the
+    # GLSL marker check flips this file to "F#", so this test kills that
+    # mutant (the original test's shader had no F# markers and could not).
+    from graphify.extract import _get_extractor
+    p = tmp_path / "lighting.fs"
+    p.write_text("// type of light: directional\n"
+                 "in vec3 normal;\nout vec4 fragColor;\n"
+                 "void main() { fragColor = vec4(normal, 1.0); }\n",
+                 encoding="utf-8")
+    assert _get_extractor(p) is None
+
+
+def test_modern_shader_without_version_line_not_dispatched(tmp_path):
+    from graphify.extract import _get_extractor
+    p = tmp_path / "phong.fs"
+    p.write_text("// phong lighting\nin vec3 normal;\nout vec4 fragColor;\n"
+                 "void main() { float d = 0.0; }\n", encoding="utf-8")
+    assert _get_extractor(p) is None

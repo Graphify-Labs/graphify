@@ -64,7 +64,7 @@ def test_defines_module_types_values_and_members(tmp_path):
     labels = _labels(r)
     # module (last segment), record + DU types, exception, let-bound defs
     assert {"Demo", "Config", "Mode", "BadFrame",
-            "defaultPort", "makeConfig", "validate", "start"} <= labels
+            "defaultPort", "makeConfig()", "validate()", "start()"} <= labels
     # DU cases and class members
     assert {"Fast", "Careful", "Server", ".Run()", ".Default()"} <= labels
 
@@ -75,7 +75,7 @@ def test_containment_shape(tmp_path):
     contains = _rel_pairs(r, "contains")
     # file defines the top-level module; module contains its declarations
     assert ("demo.fs", "Demo") in defines
-    assert ("Demo", "makeConfig") in contains
+    assert ("Demo", "makeConfig()") in contains
     assert ("Demo", "Config") in contains
     # DU cases contained by their type; members contained by their class
     assert ("Mode", "Fast") in contains
@@ -95,31 +95,22 @@ def test_pipeline_calls_resolve_same_file(tmp_path):
     calls = _rel_pairs(r, "calls")
     # `makeConfig cfg.Host |> validate` inside `start`:
     # the application edge AND the pipeline edge, both attributed to `start`.
-    assert ("start", "makeConfig") in calls
-    assert ("start", "validate") in calls
+    assert ("start()", "makeConfig()") in calls
+    assert ("start()", "validate()") in calls
 
 
 def test_member_body_calls_attribute_to_member(tmp_path):
     r = extract_fsharp(_write(tmp_path, "demo.fs", IMPL))
     calls = _rel_pairs(r, "calls")
     # `member this.Run() = start cfg` — caller is Run, not the file.
-    assert (".Run()", "start") in calls
+    assert (".Run()", "start()") in calls
 
 
 def test_pipeline_callee_left_of_backpipe(tmp_path):
     src = "module M\nlet f x = x\nlet g y =\n    f <| y\n"
     r = extract_fsharp(_write(tmp_path, "back.fs", src))
-    assert ("g", "f") in _rel_pairs(r, "calls")
+    assert ("g()", "f()") in _rel_pairs(r, "calls")
 
-
-def test_open_becomes_imports_from_stub(tmp_path):
-    r = extract_fsharp(_write(tmp_path, "demo.fs", IMPL))
-    imports = _rel_pairs(r, "imports_from")
-    targets = {t for _, t in imports}
-    assert {"Text", "Abstractions"} <= targets
-    # the stub is sourceless so the corpus rewire can collapse it (#1402)
-    by_label = {n["label"]: n for n in r["nodes"]}
-    assert by_label["Abstractions"]["source_file"] == ""
 
 
 def test_qualified_external_call_stays_distinct(tmp_path):
@@ -146,10 +137,10 @@ def test_fsx_script_parses(tmp_path):
     src = "let hello name =\n    printfn \"hi %s\" name\nhello \"world\"\n"
     r = extract_fsharp(_write(tmp_path, "script.fsx", src))
     assert "error" not in r
-    assert "hello" in _labels(r)
+    assert "hello()" in _labels(r)
     calls = _rel_pairs(r, "calls")
-    assert ("script.fsx", "hello") in calls
-    assert ("hello", "printfn") in calls
+    assert ("script.fsx", "hello()") in calls
+    assert ("hello()", "printfn") in calls
 
 
 def test_same_named_members_of_different_types_stay_distinct(tmp_path):
@@ -179,7 +170,7 @@ def test_annotated_let_names_the_binding_not_the_type(tmp_path):
            "let port : int = 8080\n")
     r = extract_fsharp(_write(tmp_path, "ann.fs", src))
     sourced = {n["label"] for n in r["nodes"] if n.get("source_file")}
-    assert "subscribe" in sourced
+    assert "subscribe" in sourced or "subscribe()" in sourced
     assert "port" in sourced
     assert "IDisposable" not in sourced
     assert "int" not in sourced
@@ -208,18 +199,18 @@ def test_dotted_callee_records_call(tmp_path):
     src = "module M\nlet go args =\n    Grasp.Telemetry.init args\n"
     r = extract_fsharp(_write(tmp_path, "dot.fs", src))
     calls = _rel_pairs(r, "calls")
-    assert ("go", "Grasp.Telemetry.init") in calls or ("go", "init") in calls, calls
+    assert ("go()", "Grasp.Telemetry.init") in calls or ("go()", "init") in calls, calls
 
 
 def test_let_rec_and_mints_every_binding(tmp_path):
     src = "module M\nlet rec f x = g x\nand g y = f y\n"
     r = extract_fsharp(_write(tmp_path, "rec.fs", src))
     sourced = {n["label"] for n in r["nodes"] if n.get("source_file")}
-    assert {"f", "g"} <= sourced
+    assert {"f()", "g()"} <= sourced
     calls = _rel_pairs(r, "calls")
-    assert ("f", "g") in calls
-    assert ("g", "f") in calls
-    assert ("f", "f") not in calls, "false self-loop from mis-attributed and-binding"
+    assert ("f()", "g()") in calls
+    assert ("g()", "f()") in calls
+    assert ("f()", "f()") not in calls, "false self-loop from mis-attributed and-binding"
 
 
 def test_enum_members_are_emitted(tmp_path):
@@ -239,7 +230,7 @@ def test_destructuring_let_mints_each_name(tmp_path):
 def test_comment_inside_pipeline_keeps_call_edge(tmp_path):
     src = "module M\nlet f x = x\nlet h x =\n    x // note\n    |> f\n"
     r = extract_fsharp(_write(tmp_path, "cpipe.fs", src))
-    assert ("h", "f") in _rel_pairs(r, "calls")
+    assert ("h()", "f()") in _rel_pairs(r, "calls")
 
 
 def test_same_named_union_cases_stay_type_scoped(tmp_path):
@@ -282,7 +273,134 @@ def test_namespace_segment_does_not_bind_local(tmp_path):
            "    let go c = Sidecar.validate c\n")
     r = extract_fsharp(_write(tmp_path, "ns.fs", src))
     lab = {n["id"]: n for n in r["nodes"]}
-    bound = [e for e in r["edges"] if e["relation"] == "calls"
-             and lab[e["target"]]["label"] == "validate"
-             and lab[e["target"]].get("source_file")]
-    assert not bound, "namespace-rooted call falsely bound to local definition"
+    vcalls = [e for e in r["edges"] if e["relation"] == "calls"
+              and lab[e["target"]]["label"] in ("validate", "validate()",
+                                                "Sidecar.validate")]
+    assert vcalls, "no call edge for Sidecar.validate at all"
+    for e in vcalls:
+        assert not lab[e["target"]].get("source_file"), (
+            "namespace-rooted call falsely bound to local definition")
+
+
+# ── Findings from the four-model panel (round 3) ─────────────────────────────
+
+
+def test_generic_type_named_after_itself_not_its_parameter(tmp_path):
+    src = ("module M\n"
+           "type Box<'T>() =\n"
+           "    static member Create(x: 'T) = x\n"
+           "type Cache<'T when 'T :> System.IDisposable> = { Item: 'T }\n")
+    r = extract_fsharp(_write(tmp_path, "gen.fs", src))
+    sourced = {n["label"] for n in r["nodes"] if n.get("source_file")}
+    assert {"Box", "Cache"} <= sourced
+    assert "T" not in sourced
+    assert "IDisposable" not in sourced, "constraint type minted as sourced definition"
+
+
+def test_type_extension_does_not_impersonate_foreign_type(tmp_path):
+    src = ("module M\n"
+           "type System.String with\n"
+           "    member this.Shout() = 1\n")
+    r = extract_fsharp(_write(tmp_path, "ext.fs", src))
+    sourced = {n["label"] for n in r["nodes"] if n.get("source_file")}
+    assert "String" not in sourced, "extension minted a sourced foreign-type node"
+    # the member still exists, hung off the sourceless stub
+    assert ".Shout()" in sourced
+    lab = {n["id"]: n for n in r["nodes"]}
+    owners = [lab[e["source"]] for e in r["edges"]
+              if e["relation"] == "contains" and lab[e["target"]]["label"] == ".Shout()"]
+    assert owners and all(o["source_file"] == "" for o in owners)
+
+
+def test_heritage_edges_emitted(tmp_path):
+    src = ("module M\n"
+           "type Derived() =\n"
+           "    inherit Base()\n"
+           "    interface System.IDisposable with\n"
+           "        member this.Dispose() = ()\n")
+    r = extract_fsharp(_write(tmp_path, "her.fs", src))
+    rels = _rel_pairs(r, "inherits") | _rel_pairs(r, "implements")
+    assert ("Derived", "Base") in rels
+    assert ("Derived", "IDisposable") in rels
+    # stubs, not sourced definitions
+    sourced = {n["label"] for n in r["nodes"] if n.get("source_file")}
+    assert "Base" not in sourced and "IDisposable" not in sourced
+
+
+def test_object_expression_members_are_anonymous(tmp_path):
+    src = ("module M\n"
+           "let cleanup () = ()\n"
+           "let mk () =\n"
+           "    { new System.IDisposable with\n"
+           "        member this.Dispose() = cleanup () }\n"
+           "let Go x = x\n"
+           "let caller y = Go y\n")
+    r = extract_fsharp(_write(tmp_path, "obj.fs", src))
+    sourced = {n["label"] for n in r["nodes"] if n.get("source_file")}
+    assert ".Dispose()" not in sourced, "object-expression member minted as owned member"
+    calls = _rel_pairs(r, "calls")
+    assert ("mk()", "cleanup()") in calls, calls
+    # the real Go binding must not be poisoned into ambiguity
+    assert ("caller()", "Go()") in calls, calls
+
+
+def test_active_pattern_and_operator_are_minted_and_attributed(tmp_path):
+    src = ("module M\n"
+           "let classify n = n\n"
+           "let combine a b = a\n"
+           "let (|Even|Odd|) n = classify n\n"
+           "let (+.) a b = combine a b\n")
+    r = extract_fsharp(_write(tmp_path, "ops.fs", src))
+    sourced = {n["label"] for n in r["nodes"] if n.get("source_file")}
+    assert "(|Even|Odd|)" in sourced
+    assert "(+.)" in sourced
+    calls = _rel_pairs(r, "calls")
+    assert ("(|Even|Odd|)", "classify()") in calls
+    assert ("(+.)", "combine()") in calls
+    assert ("M", "classify()") not in calls, "body call attributed to module"
+
+
+def test_member_val_auto_property_is_emitted(tmp_path):
+    src = ("module M\n"
+           "type T() =\n"
+           "    member val Name = \"x\" with get, set\n"
+           "    member this.Go() = 1\n")
+    r = extract_fsharp(_write(tmp_path, "mv.fs", src))
+    contains = _rel_pairs(r, "contains")
+    assert ("T", ".Name()") in contains
+    assert ("T", ".Go()") in contains
+
+
+def test_same_named_bindings_in_sibling_modules_stay_distinct(tmp_path):
+    src = ("module Root\n"
+           "module A =\n"
+           "    let encode x = x\n"
+           "    let run x = encode x\n"
+           "module B =\n"
+           "    let decode y = y\n"
+           "    let run y = decode y\n")
+    r = extract_fsharp(_write(tmp_path, "sib.fs", src))
+    runs = [n for n in r["nodes"] if n["label"] == "run()" and n.get("source_file")]
+    assert len(runs) == 2, f"expected 2 run() nodes, got {len(runs)}"
+
+
+def test_companion_type_and_module_stay_distinct(tmp_path):
+    src = ("module Root\n"
+           "type Config = { Port: int }\n"
+           "module Config =\n"
+           "    let create p = p\n")
+    r = extract_fsharp(_write(tmp_path, "comp.fs", src))
+    configs = [n for n in r["nodes"] if n["label"] == "Config" and n.get("source_file")]
+    assert len(configs) == 2, f"companion type/module merged: {len(configs)} node(s)"
+
+
+def test_open_mirrors_csharp_using(tmp_path):
+    src = "module M\nopen System.Text\n"
+    r = extract_fsharp(_write(tmp_path, "op.fs", src))
+    imports = [e for e in r["edges"] if e["relation"] == "imports"]
+    assert imports, "no imports edge for open"
+    e = imports[0]
+    assert e["confidence"] == "EXTRACTED"
+    assert e["metadata"]["target_fqn"] == "System.Text"
+    # no minted last-segment stub that could rewire onto an unrelated `Text`
+    assert not any(n["label"] == "Text" for n in r["nodes"])
