@@ -7024,7 +7024,7 @@ def extract(
             # `indirect_call` and ONLY when the target is a real callable def —
             # never a same-named data symbol. Stays INFERRED even with import
             # evidence: the name is referenced as a value here, not invoked. Dedup
-            # is call-aware (an existing direct `calls` edge pre-empts it; a benign
+            # is call-aware (an existing direct `calls` edge preempts it; a benign
             # `imports` edge to the same symbol does NOT suppress it).
             if tgt != caller and (caller, tgt) not in call_like_pairs and tgt in callable_nids and tgt not in class_nids:
                 call_like_pairs.add((caller, tgt))

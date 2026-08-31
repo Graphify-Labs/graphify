@@ -165,3 +165,26 @@ select = ["E9", "F63", "F7", "F82"]
 include = ["graphify", "tests"]
 pythonVersion = "3.10"
 typeCheckingMode = "basic"
+
+[tool.codespell]
+# Ref: https://github.com/codespell-project/codespell#using-a-config-file
+# worked/ contains sample outputs (graph.json/html snapshots from real repos)
+# whose truncated string identifiers extracted from source are not typos in
+# the codebase itself. translations/ (basename glob, matches docs/translations/)
+# hosts foreign-language README variants that codespell (English-only) misreads.
+skip = '.git,.gitignore,.gitattributes,*.svg,*.lock,worked,translations'
+check-hidden = true
+# Per-word rationale for ignore-words-list (single TOML string, per-entry
+# comments are not possible inside the value):
+#   unparseable - consistent alternate spelling used across graphify/ (35x)
+#   bloc        - Dart BLoC pattern (Business Logic Component), not "block"
+#   inout       - SQL PROCEDURE param mode / Verilog keyword (not "input")
+#   dependant   - FastAPI class name shown in README example output
+#   inh         - test-local variable holding "inherits" edge set (tests/)
+#   datas       - matches edge_datas() function name from graphify.build
+#   nd          - short variable for graph node data (wiki.py, engine.py)
+#   bu          - short variable for Bedrock usage dict (llm.py)
+#   anc         - short variable for ancestor path (resolution.py)
+#   ans         - short variable for answer file path (tests/test_reflect.py)
+#   oder,ist    - German stopwords in serve.py's stopword list
+ignore-words-list = 'unparseable,bloc,inout,dependant,inh,datas,nd,bu,anc,ans,oder,ist'
