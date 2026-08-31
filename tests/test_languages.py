@@ -4498,3 +4498,51 @@ def test_haxe_finds_calls():
     assert ("get", "buildRequest") in calls
     assert ("post", "buildRequest") in calls
     assert ("createClient", "HttpClient") in calls
+
+
+# The dialect probe is what stops a wrong-but-installed grammar producing a
+# silently different graph, so it is tested without the grammar: these drive
+# the cached dialect directly rather than requiring two forks side by side.
+
+def test_haxe_unsupported_dialect_is_refused_by_name(tmp_path, monkeypatch):
+    """A grammar we cannot read must refuse and say which one it found.
+
+    This is the failure mode the probe exists for: guessing a dialect does not
+    raise and does not return empty, it returns a smaller, differently-shaped
+    graph that nothing downstream can tell from a correct one.
+    """
+    from graphify.extractors import haxe as _haxe
+
+    monkeypatch.setattr(_haxe, "_HAXE_DIALECT", "vantreeseba")
+    src = tmp_path / "A.hx"
+    src.write_text("class A {}\n")
+    r = _haxe.extract_haxe(src)
+    assert r["nodes"] == [] and r["edges"] == []
+    assert "vantreeseba" in r["error"]
+    assert "tree-sitter-haxe-tong" in r["error"]
+
+
+def test_haxe_unknown_dialect_is_distinct_from_missing_grammar(tmp_path, monkeypatch):
+    """An unreadable grammar and no grammar at all are different problems."""
+    from graphify.extractors import haxe as _haxe
+
+    src = tmp_path / "A.hx"
+    src.write_text("class A {}\n")
+
+    monkeypatch.setattr(_haxe, "_HAXE_DIALECT", "unknown")
+    unknown = _haxe.extract_haxe(src)["error"]
+    monkeypatch.setattr(_haxe, "_HAXE_DIALECT", "none")
+    missing = _haxe.extract_haxe(src)["error"]
+
+    assert unknown != missing
+    assert "not installed" in missing
+    assert "unrecognised" in unknown
+
+
+@_needs_haxe
+def test_haxe_dialect_probe_identifies_the_installed_grammar(monkeypatch):
+    """The probe reports a dialect it has an extractor for, not a guess."""
+    from graphify.extractors import haxe as _haxe
+
+    monkeypatch.setattr(_haxe, "_HAXE_DIALECT", None)
+    assert _haxe._detect_haxe_dialect() in _haxe._SUPPORTED_DIALECTS
