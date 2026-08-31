@@ -823,13 +823,17 @@ def ipynb_to_markdown(path: Path) -> str:
         nb = json.loads(path.read_text(encoding="utf-8", errors="ignore"))
         # Resolve the kernel language from notebook metadata so fenced code
         # blocks use the correct language identifier (e.g. ```python) rather
-        # than the generic ```code fallback.
-        meta = nb.get("metadata", {})
+        # than the generic ```code fallback. JSON null is common in Jupyter /
+        # VS Code / Databricks exports and must be treated as missing — dict.get
+        # defaulting does not, and `.get("name")` on None would abort the cell.
+        meta = nb.get("metadata") or {}
         lang = (
-            meta.get("language_info", {}).get("name")
-            or meta.get("kernelspec", {}).get("language")
+            (meta.get("language_info") or {}).get("name")
+            or (meta.get("kernelspec") or {}).get("language")
             or "code"
         )
+        if not isinstance(lang, str) or not lang:
+            lang = "code"
         lines = []
         for cell in nb.get("cells", []):
             ct = cell.get("cell_type")
