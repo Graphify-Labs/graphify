@@ -616,6 +616,29 @@ def test_suggest_questions_excludes_rationale_nodes_from_isolated_count():
     assert "Explains service" not in isolated["question"]
 
 
+def test_suggest_questions_bridge_node_no_self_referential_connect():
+    """An extreme hub often gets isolated into its own singleton community,
+    auto-named after that same node. The bridge-node question must not restate
+    that as "Why does `X` connect `X` to ...?" - `X` is not a distinct target."""
+    G = nx.Graph()
+    G.add_node("hub", label="useLang", source_file="lib/i18n/context.tsx", file_type="code")
+    G.add_node("peer_a", label="SettingsContent", source_file="app/settings/settings-content.tsx", file_type="code")
+    G.add_node("peer_b", label="ChartContent", source_file="app/chart/chart-content.tsx", file_type="code")
+    G.add_edge("hub", "peer_a")
+    G.add_edge("hub", "peer_b")
+
+    communities = {0: ["hub"], 1: ["peer_a"], 2: ["peer_b"]}
+    community_labels = {0: "useLang", 1: "Settings", 2: "Chart"}
+
+    questions = suggest_questions(G, communities, community_labels, top_n=10)
+    bridge = next(question for question in questions if question["type"] == "bridge_node")
+
+    assert "connect `useLang`" not in bridge["question"]
+    assert "bridge" in bridge["question"]
+    assert "`Settings`" in bridge["question"]
+    assert "`Chart`" in bridge["question"]
+
+
 # ── find_import_cycles tests ──────────────────────────────────────────────────
 
 
