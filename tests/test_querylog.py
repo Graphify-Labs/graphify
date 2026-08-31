@@ -1,6 +1,7 @@
 """Tests for graphify.querylog."""
 import json
 import os
+import threading
 import pytest
 from pathlib import Path
 
@@ -287,3 +288,46 @@ def test_rotation_never_raises(tmp_path, monkeypatch):
     monkeypatch.setenv("GRAPHIFY_QUERY_LOG_MAX_RECORDS", "1")
     monkeypatch.delenv("GRAPHIFY_QUERY_LOG_DISABLE", raising=False)
     log_query(kind="query", question="q", corpus="/g.json")
+
+
+def test_rotation_archive_after_live_replace(tmp_path, monkeypatch):
+    log_file = _rotation_env(monkeypatch, tmp_path, max_records=2)
+    log_query(kind="query", question="q0", corpus="/g.json")
+    log_query(kind="query", question="q1", corpus="/g.json")
+
+    def fail_replace(src, dst):
+        raise OSError("simulated replace failure")
+
+    monkeypatch.setattr(os, "replace", fail_replace)
+    log_query(kind="query", question="q2", corpus="/g.json")
+
+    archive = _archive_path(log_file)
+    assert not archive.exists() or archive.read_text() == ""
+    live = [json.loads(l)["question"] for l in log_file.read_text().splitlines()]
+    assert live == ["q0", "q1", "q2"]
+
+
+def test_rotation_concurrent_appends_preserved(tmp_path, monkeypatch):
+    log_file = _rotation_env(monkeypatch, tmp_path, max_records=5)
+    errors: list[Exception] = []
+
+    def worker(prefix: str) -> None:
+        try:
+            for i in range(5):
+                log_query(kind="query", question=f"{prefix}{i}", corpus="/g.json")
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(p,)) for p in ("a", "b")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors
+
+    questions: set[str] = set()
+    for path in (log_file, _archive_path(log_file)):
+        if path.exists():
+            for line in path.read_text().splitlines():
+                questions.add(json.loads(line)["question"])
+    assert len(questions) == 10

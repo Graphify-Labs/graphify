@@ -1,13 +1,13 @@
 """Query logging for graphify — append-only JSONL, fail-silent."""
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
-import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 _NODES_RE = re.compile(r"(\d+)\s+nodes?\s+found")
 
@@ -55,22 +55,43 @@ def _archive_path(path: Path) -> Path:
     return path.with_name(f"{path.stem}.archive{path.suffix}")
 
 
+@contextlib.contextmanager
+def _query_log_lock(path: Path) -> Iterator[None]:
+    # Serialize append+rotate on POSIX (watch.py uses the same flock pattern).
+    # Multi-process rotation on Windows is best-effort when fcntl is unavailable.
+    try:
+        import fcntl
+    except ImportError:
+        yield
+        return
+    lock_path = path.with_name(path.name + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fh = open(lock_path, "a+", encoding="utf-8")
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        fh.close()
+
+
 def _rotate_if_needed(path: Path, max_records: int) -> None:
     if not path.is_file():
         return
     lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
-    if not lines:
-        return
-    if len(lines) <= max_records:
+    if not lines or len(lines) <= max_records:
         return
     overflow, keep = lines[:-max_records], lines[-max_records:]
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text("".join(keep), encoding="utf-8")
+    os.replace(tmp, path)
     archive = _archive_path(path)
     archive.parent.mkdir(parents=True, exist_ok=True)
     with archive.open("a", encoding="utf-8") as fh:
         fh.writelines(overflow)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text("".join(keep), encoding="utf-8")
-    os.replace(tmp, path)
 
 
 def log_query(
@@ -107,10 +128,11 @@ def log_query(
         if result is not None and _log_responses():
             rec["response"] = result
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
-        max_records = _max_records()
-        if max_records is not None:
-            _rotate_if_needed(path, max_records)
+        with _query_log_lock(path):
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            max_records = _max_records()
+            if max_records is not None:
+                _rotate_if_needed(path, max_records)
     except Exception:
         pass
