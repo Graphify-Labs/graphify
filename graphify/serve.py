@@ -688,16 +688,19 @@ def _pick_seeds(
     seeds, so the BFS traversal only ever explores the neighborhood of the one
     unrelated exact match — see #1445.
 
-    When `G` and `best_seed_by_term` are supplied, this guarantees at least one
-    seed per distinct query term that has any match at all, so one term's
-    incidental collision cannot starve out the others. The per-token winners
-    in `best_seed_by_term` are precomputed by `_score_query` (during the same
-    traversal that produced `scored`) so this function no longer rescores the
-    graph per term — see #1445 and the `_score_query` docstring.
+    When `G` and `best_seed_by_term` are supplied, the remaining slots recover
+    singleton winners for terms that the combined ranking would otherwise
+    starve out. Recovery is bounded by `max_k`: long natural-language queries
+    must not turn the seed cap into a soft suggestion and flood traversal with
+    one generic seed per token. When several terms share a winner, that node is
+    preferred because it covers more of the query with one slot. The per-token
+    winners in `best_seed_by_term` are precomputed by `_score_query` (during the
+    same traversal that produced `scored`) so this function no longer rescores
+    the graph per term — see #1445 and the `_score_query` docstring.
 
     Coverage scaling in _score_nodes (#1602) now dampens a lone collision's
     exact tier on multi-term queries, which brings label-matching relevant
-    nodes back inside the gap window; this per-term guarantee remains
+    nodes back inside the gap window; this per-term recovery remains
     load-bearing for relevant nodes matched only via substrings, whose flat
     scores a dampened collision can still exceed.
     """
@@ -732,24 +735,33 @@ def _pick_seeds(
         seen_labels.add(key)
         seeds.append(nid)
 
-    if G is not None and best_seed_by_term:
-        # Guarantee one seed per distinct query term that has any match at all,
-        # so an incidental exact match on one term cannot starve matches on
-        # other terms (#1445). Iterate tokens in a deterministic sorted order
-        # so seeds added by this loop have a stable order independent of dict
-        # iteration — preserving the legacy `_pick_seeds(terms=...)` behavior
-        # which iterated `sorted({tok ...})`. Per-token winners arrive
-        # precomputed in `best_seed_by_term` from `_score_query`'s single
-        # traversal, so `_pick_seeds` no longer rescoring the graph per term.
-        # The per-label dedup cap also gates these additions, so the guarantee
-        # cannot reintroduce a second copy of an already-seeded generic label
-        # (#1766).
-        for term in sorted(best_seed_by_term):
-            best_nid = best_seed_by_term[term]
-            # Honor the same per-label cap so the per-term guarantee can't
-            # reintroduce a second copy of an already-seeded generic label.
+    if G is not None and best_seed_by_term and len(seeds) < max_k:
+        # Recover per-term winners without exceeding max_k. Grouping by node
+        # lets one candidate represent several otherwise-starved terms with a
+        # single slot; combined score then gives deterministic relevance order
+        # among equally broad candidates. This preserves #1445's recovery while
+        # preventing a long query from appending one generic seed per token.
+        terms_by_nid: dict[str, set[str]] = {}
+        for term, best_nid in best_seed_by_term.items():
+            if best_nid not in seeds:
+                terms_by_nid.setdefault(best_nid, set()).add(term)
+        score_by_nid = {nid: score for score, nid in scored}
+        candidates = sorted(
+            terms_by_nid,
+            key=lambda nid: (
+                -len(terms_by_nid[nid]),
+                -score_by_nid.get(nid, 0.0),
+                len(G.nodes[nid].get("label") or nid),
+                nid,
+            ),
+        )
+        for best_nid in candidates:
+            if len(seeds) >= max_k:
+                break
+            # Honor the same per-label cap so recovery cannot reintroduce a
+            # second copy of an already-seeded generic label (#1766).
             key = _seed_label_key(best_nid)
-            if best_nid not in seeds and key not in seen_labels:
+            if key not in seen_labels:
                 seen_labels.add(key)
                 seeds.append(best_nid)
     return seeds

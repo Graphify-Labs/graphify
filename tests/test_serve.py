@@ -901,7 +901,7 @@ def test_pick_seeds_diversity_recovers_starved_term(monkeypatch):
     as an unrelated field/identifier) outscores every SUBSTRING match on the
     query's other, actually-relevant terms by ~1000x. Without
     G/best_seed_by_term, the 20%-gap cutoff discards the relevant candidate
-    entirely; with them, it is recovered as a guaranteed per-term seed.
+    entirely; with them, it is recovered while seed capacity remains.
     """
     G = nx.DiGraph()
     # "unrelated" is an exact label match for the query term "unrelated" and
@@ -915,7 +915,7 @@ def test_pick_seeds_diversity_recovers_starved_term(monkeypatch):
     terms = ["unrelated", "widget"]
     # `_score_query` does the combined scoring and the per-term singleton
     # winner tracking in one traversal; `_pick_seeds` consumes its
-    # `best_seed_by_term` to satisfy the per-term guarantee without rescoring.
+    # `best_seed_by_term` to recover starved terms without rescoring.
     qs = _score_query(G, terms, collect_per_term_seeds=True)
     scored = qs.ranked
 
@@ -926,6 +926,44 @@ def test_pick_seeds_diversity_recovers_starved_term(monkeypatch):
     seeds_after = _pick_seeds(scored, G=G, best_seed_by_term=qs.best_seed_by_term)
     assert "noise" in seeds_after
     assert "target" in seeds_after
+
+
+def test_pick_seeds_per_term_recovery_respects_max_k_and_prefers_coverage():
+    """Per-term recovery must not turn ``max_k`` into a soft suggestion.
+
+    A long natural-language query can have many distinct terms whose singleton
+    winners are all different nodes.  The recovery path should stay bounded and
+    spend its remaining slots on nodes that account for the most query terms.
+    """
+    G = nx.DiGraph()
+    G.add_node("anchor", label="CheckoutMatchingResult", source_file="result.py")
+    G.add_node("bridge", label="rpc_response_adapter", source_file="adapter.py")
+    G.add_node("service", label="Processor", source_file="processor.py")
+    G.add_node("model", label="Models", source_file="models.py")
+
+    scored = [
+        (1000.0, "anchor"),
+        (10.0, "bridge"),
+        (9.0, "service"),
+        (8.0, "model"),
+    ]
+    best_seed_by_term = {
+        "rpc": "bridge",
+        "response": "bridge",
+        "adapter": "bridge",
+        "processor": "service",
+        "models": "model",
+    }
+
+    seeds = _pick_seeds(
+        scored,
+        max_k=3,
+        G=G,
+        best_seed_by_term=best_seed_by_term,
+    )
+
+    assert seeds == ["anchor", "bridge", "service"]
+    assert len(seeds) <= 3
 
 
 # --- generic-symbol seed flooding (#1766) ---
@@ -1303,43 +1341,27 @@ def test_score_query_best_seed_by_term_matches_legacy_singleton_scoring(terms):
 
 
 @pytest.mark.parametrize("terms", SYLLABLE_QUERIES)
-def test_pick_seeds_with_optimized_best_seed_matches_legacy_semantics(terms):
+def test_pick_seeds_with_optimized_best_seed_matches_bounded_reference(terms):
     """The seeds produced by `_pick_seeds(qs.ranked, G=G, best_seed_by_term=
-    qs.best_seed_by_term)` exactly match what the legacy `_pick_seeds(terms=...)`
-    loop would have produced (recreated via the reference oracle)."""
+    qs.best_seed_by_term)` exactly match seeds produced from the legacy
+    per-token winner oracle, while the shared bounded selector owns ordering."""
     G = _make_random_scoring_graph(80, seed=7)
     qs = _score_query(G, terms, collect_per_term_seeds=True)
     ref_best = _reference_best_seed_by_term(G, terms)
-    # Legacy `_pick_seeds(terms=...)` ran `_score_nodes(G, [term])` per token
-    # to build ref_best, then deduped by label key. The new `_pick_seeds(
-    # best_seed_by_term=...)` only swaps the source of the per-token winners,
-    # so it must produce the same seeds given equivalent inputs.
+    # Legacy `_pick_seeds(terms=...)` ran `_score_nodes(G, [term])` per token to
+    # build ref_best. The optimized scorer only swaps the source of those
+    # winners, so the bounded selector must produce the same result from
+    # equivalent inputs.
     opt_seeds = _pick_seeds(qs.ranked, G=G, best_seed_by_term=qs.best_seed_by_term)
     ref_seeds = _pick_seeds(qs.ranked, G=G, best_seed_by_term=ref_best)
     assert opt_seeds == ref_seeds, f"terms={terms}: ref={ref_seeds} opt={opt_seeds}"
-    # Per-term guarantee: every legacy winner with a non-empty seed slot is
-    # accounted for — either it appears in the seed list or another node with
-    # the same normalized label already claimed the slot (#1766 label dedup).
-    ref_seed_set = set(ref_seeds)
-    for term, nid in ref_best.items():
-        if nid in ref_seed_set:
-            continue
-        nid_label = (G.nodes[nid].get("norm_label")
-                     or G.nodes[nid].get("label")
-                     or nid)
-        seeded_with_same_label = any(
-            (G.nodes[s].get("norm_label") or G.nodes[s].get("label") or s) == nid_label
-            for s in ref_seeds
-        )
-        assert seeded_with_same_label, (
-            f"term {term!r} winner {nid!r} dropped without label-dedup reason"
-        )
+    assert len(ref_seeds) <= 3
 
 
 def test_score_query_matches_legacy_across_random_deterministic_graphs():
     """Across many deterministic random graphs and many random multi-term
     queries, the single-pass scorer's combined ranking, per-token winners,
-    and resulting seed list all match the legacy semantics. Exercises label
+    and bounded seed list all match the reference winners. Exercises label
     collisions, ties, broad terms, missing terms, and graph size variance."""
     import random
 
