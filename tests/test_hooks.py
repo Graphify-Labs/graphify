@@ -895,6 +895,24 @@ def test_install_registers_merge_driver(tmp_path):
     assert "merge driver" in result
 
 
+def test_install_skips_merge_attribute_for_ignored_graph(tmp_path):
+    """An ignored graph cannot participate in a merge, so installation must
+    not dirty the worktree with a useless .gitattributes entry (#2595)."""
+    repo = _make_git_repo(tmp_path)
+    (repo / ".gitignore").write_text("/graphify-out/\n", encoding="utf-8")
+
+    result = install(repo)
+
+    driver = subprocess.run(
+        ["git", "-C", str(repo), "config", "--get", "merge.graphify.driver"],
+        capture_output=True,
+        text=True,
+    )
+    assert driver.returncode == 0
+    assert "ignored" in result
+    assert not (repo / ".gitattributes").exists()
+
+
 def test_install_merge_driver_idempotent(tmp_path):
     """Running install twice must not duplicate the .gitattributes line."""
     repo = _make_git_repo(tmp_path)

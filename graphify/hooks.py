@@ -619,11 +619,38 @@ def _merge_attr_line() -> str:
     absolute output-dir override cannot be expressed there — fall back to the
     default name in that case.
     """
+    return f"{_merge_attr_path()} merge=graphify"
+
+
+def _merge_attr_path() -> str:
+    """Return the repository-relative graph path used by ``.gitattributes``."""
     from graphify.paths import GRAPHIFY_OUT
+
     out = GRAPHIFY_OUT
     if not out or Path(out).is_absolute() or "\\" in out:
         out = "graphify-out"
-    return f"{out.rstrip('/')}/graph.json merge=graphify"
+    return f"{out.rstrip('/')}/graph.json"
+
+
+def _graph_path_is_ignored(root: Path) -> bool:
+    """Return whether Git ignores the graph path in ``root``.
+
+    Failure is deliberately treated as ``False``. The check only prevents an
+    unnecessary worktree mutation; it must not prevent local merge-driver setup
+    when Git cannot answer the query.
+    """
+    import subprocess as _sp
+
+    try:
+        result = _sp.run(
+            ["git", "-C", str(root), "check-ignore", "-q", "--", _merge_attr_path()],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return False
+    return result.returncode == 0
 
 
 def _has_merge_attr(content: str) -> bool:
@@ -672,6 +699,8 @@ def _register_merge_driver(root: Path) -> str:
         return f"not registered (git config failed: {exc})"
 
     line = _merge_attr_line()
+    if _graph_path_is_ignored(root):
+        return f"registered (graph output is ignored; skipped .gitattributes: {line})"
     attrs = root / ".gitattributes"
     if attrs.exists():
         content = attrs.read_text(encoding="utf-8")
