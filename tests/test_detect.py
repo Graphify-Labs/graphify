@@ -2749,6 +2749,44 @@ def test_ipynb_to_markdown_falls_back_to_generic_fence(tmp_path):
     assert "```code\nx = 1" in detect_mod.ipynb_to_markdown(nb_path)
 
 
+def test_ipynb_to_markdown_null_language_metadata_falls_back_to_generic_fence(tmp_path):
+    """JSON null language_info/kernelspec must not abort conversion.
+
+    Jupyter / VS Code / Databricks often write ``"language_info": null`` (and
+    sometimes ``kernelspec`` or ``name``/``language`` too). ``dict.get`` does
+    not treat null as missing, so the old ``.get("name")`` raised and the
+    converter skipped the notebook as a failure.
+    """
+    nb_path = tmp_path / "null_meta.ipynb"
+    nb_path.write_text(
+        _minimal_ipynb(
+            [{"cell_type": "code", "source": "x = 1"}],
+            metadata={"language_info": None, "kernelspec": None},
+        ),
+        encoding="utf-8",
+    )
+    md = detect_mod.ipynb_to_markdown(nb_path)
+    assert md
+    assert "```code\nx = 1" in md
+
+    sidecar = detect_mod.convert_notebook_file(nb_path, tmp_path / "converted")
+    assert sidecar is not None
+    assert "```code\nx = 1" in sidecar.read_text(encoding="utf-8")
+
+    null_name = tmp_path / "null_name.ipynb"
+    null_name.write_text(
+        _minimal_ipynb(
+            [{"cell_type": "code", "source": "y = 2"}],
+            metadata={
+                "language_info": {"name": None},
+                "kernelspec": {"language": None},
+            },
+        ),
+        encoding="utf-8",
+    )
+    assert "```code\ny = 2" in detect_mod.ipynb_to_markdown(null_name)
+
+
 def test_ipynb_to_markdown_accepts_string_source(tmp_path):
     """nbformat allows `source` as a plain string as well as a list of lines."""
     import json
