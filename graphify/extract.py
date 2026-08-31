@@ -154,6 +154,56 @@ from graphify.extractors.objc import _objc_local_var_types, extract_objc  # noqa
 
 from graphify.extractors.julia import extract_julia  # noqa: E402,F401
 
+from graphify.generic_logger import GenericLogExtractor
+
+log_extractor = GenericLogExtractor()
+
+class GraphifyBuilderWrapper:
+    def __init__(self, result_dict, file_path_str):
+        self.result = result_dict
+        self.file_path = file_path_str
+
+    def get_tree_sitter_language(self, lang_key):
+        configs = {
+            "java": _JAVA_CONFIG,
+            "kotlin": _KOTLIN_CONFIG,
+            "c": _C_CONFIG,
+            "cpp": _CPP_CONFIG,
+        }
+        config = configs.get(lang_key)
+        if not config:
+            raise ValueError(f"Unsupported language: {lang_key}")
+        import importlib
+        mod = importlib.import_module(config.ts_module)
+        from tree_sitter import Language
+        lang_fn = getattr(mod, config.ts_language_fn, None)
+        if lang_fn is None:
+            lang_fn = getattr(mod, "language", None)
+        return Language(lang_fn())
+
+    def add_edge(self, source, target, relationship, metadata=None):
+        if not any(n.get("id") == target for n in self.result.get("nodes", [])):
+            self.result.setdefault("nodes", []).append({
+                "id": target,
+                "label": target,
+                "file_type": "code",
+                "type": "log",
+                "source_file": self.file_path,
+                "source_location": "L1",
+            })
+        edge = {
+            "source": source,
+            "target": target,
+            "relation": relationship,
+            "confidence": "EXTRACTED",
+            "source_file": self.file_path,
+            "source_location": "L1",
+            "weight": 1.0,
+        }
+        if metadata:
+            edge["metadata"] = metadata
+        self.result.setdefault("edges", []).append(edge)
+
 _RECURSION_LIMIT = 10_000
 
 # Language built-in globals that AST may classify as call targets when used as
@@ -5690,6 +5740,12 @@ def _extract_single_file(args: tuple) -> tuple[int, dict]:
         return idx, {"nodes": [], "edges": []}
 
     result = _safe_extract_with_xaml_root(extractor, path, root)
+    try:
+        content = path.read_text(encoding="utf-8", errors="ignore")
+        builder = GraphifyBuilderWrapper(result, str(path))
+        log_extractor.inject_logs_to_graph(str(path), content, builder)
+    except Exception as e:
+        print(f"[LogExtractor Hook Error] {e}", file=sys.stderr, flush=True)
     # Never cache a zero-node result for an extractable file. Every supported
     # source produces at least a file node, so an empty node list is anomalous
     # (e.g. a transient batch/parallel hiccup). Caching it makes the empty
@@ -5859,6 +5915,12 @@ def _extract_sequential(
         bypass_cache = path.suffix in _JS_CACHE_BYPASS_SUFFIXES
         # XAML boundary anchors on `root` (the corpus), not the cache location.
         result = _safe_extract_with_xaml_root(extractor, path, root)
+        try:
+            content = path.read_text(encoding="utf-8", errors="ignore")
+            builder = GraphifyBuilderWrapper(result, str(path))
+            log_extractor.inject_logs_to_graph(str(path), content, builder)
+        except Exception as e:
+            print(f"[LogExtractor Hook Error] {e}", file=sys.stderr, flush=True)
         # See _extract_single_file: don't cache an anomalous zero-node result (#1666).
         if not bypass_cache and "error" not in result and result.get("nodes"):
             save_cached(path, result, root, cache_root=cache_location)
