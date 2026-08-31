@@ -3,10 +3,15 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+from dataclasses import dataclass
 from graphify.extractors.base import _LANGUAGE_BUILTIN_GLOBALS, _file_stem, _make_id, _read_text
 from graphify.ids import normalize_id
 from graphify.extractors.models import LanguageConfig
-from graphify.extractors.resolution import _resolve_js_import_target
+from graphify.extractors.resolution import (
+    _python_import_from_module,
+    _python_imported_names,
+    _resolve_js_import_target,
+)
 from graphify.security import sanitize_metadata
 from pathlib import Path
 
@@ -71,6 +76,11 @@ _PYTHON_ANNOTATION_NOISE = frozenset({
 # unique-function rewire can collapse them onto an unrelated local definition
 # (a corpus defining its own `def wraps(...)` gets a false decorator edge).
 # Same name-based tradeoff as `patch`/`Mock` in _PYTHON_ANNOTATION_NOISE.
+# Third-party decorators hit the same failure mode (#2732) but cannot be folded
+# into this bare-name set: `_python_decorator_name` reduces `@pytest.fixture`
+# to the tail `fixture`, a generic name a corpus may use for its OWN decorator.
+# Pytest decorators are suppressed instead by qualified path / binding in
+# `_is_pytest_decorator_noise`.
 _PYTHON_DECORATOR_NOISE = frozenset({
     "property", "staticmethod", "classmethod", "abstractmethod",
     "abstractproperty", "cached_property", "wraps", "lru_cache", "cache",
@@ -78,6 +88,34 @@ _PYTHON_DECORATOR_NOISE = frozenset({
     "contextmanager", "asynccontextmanager", "overload", "override",
     "final", "no_type_check", "runtime_checkable", "dataclass",
 })
+
+# pytest decorators are matched by qualified path, never by bare tail symbol:
+# `fixture` may be a legitimate corpus-owned decorator. `pytest.mark.` is an
+# open-ended prefix because plugin markers are unbounded third-party names.
+_PYTEST_DECORATOR_PATHS = frozenset({
+    "pytest.fixture",
+    "pytest.hookimpl",
+    "pytest.hookspec",
+})
+_PYTEST_DECORATOR_PREFIXES = frozenset({"pytest.mark."})
+# pytest's exports that are themselves decorators when rebound directly
+# (`from pytest import fixture, mark`): the import-scope scan suppresses only
+# those, not every name pytest happens to export (`raises`, `approx`, …).
+_PYTEST_DECORATOR_EXPORTS = frozenset({"fixture", "hookimpl", "hookspec", "mark"})
+
+@dataclass(frozen=True)
+class _PythonBindingEvent:
+    """One module-level pytest binding, resolved in source order.
+
+    kind is "module_alias" (a name bound to the pytest module itself:
+    `import pytest`, `import pytest as pt`), "imported_symbol" (a name rebound
+    from pytest's namespace: `from pytest import fixture, mark`), "rebound"
+    (a module-level `def`/`class`/assignment rebinds the name to a local), or
+    "unbound" (`del pytest` removes the name again).
+    """
+    start_byte: int
+    kind: str
+    name: str
 
 def _python_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[str, str]]) -> None:
     """Walk a Python type annotation; append (name, role) where role is 'type' or 'generic_arg'.
@@ -2996,6 +3034,12 @@ def _extract_generic(
     if config.ts_module == "tree_sitter_c_sharp":
         csharp_interface_names = _csharp_pre_scan_interfaces(root, source)
 
+    # Python only (#2732): ordered module-level pytest bindings, so the
+    # decorator branch can tell pytest's ambient decorators from a corpus's own.
+    pytest_bindings: list[_PythonBindingEvent] = []
+    if config.ts_module == "tree_sitter_python":
+        pytest_bindings = _python_pytest_bindings(root, source)
+
     swift_protocol_names: set[str] = set()
     swift_class_names: set[str] = set()
     if config.ts_module == "tree_sitter_swift":
@@ -4820,6 +4864,17 @@ def _extract_generic(
                         # no false rewires onto same-named local definitions.
                         if not deco_name or deco_name in _PYTHON_DECORATOR_NOISE:
                             continue
+                        # pytest decorators are ambient test vocabulary too, but
+                        # matched by qualified path / import scope — NOT by bare
+                        # tail symbol, which would also silence a corpus's own
+                        # `@fixture` decorators (#2732).
+                        if _is_pytest_decorator_noise(
+                            _python_decorator_path(child, source),
+                            pytest_bindings,
+                            # The decorator's own offset, which precedes the def.
+                            child.start_byte,
+                        ):
+                            continue
                         deco_line = child.start_point[0] + 1
                         target = ensure_named_node(deco_name, deco_line)
                         if target != owner_nid:
@@ -6060,13 +6115,135 @@ def _extract_generic(
             result["cpp_type_table"] = {"path": str_path, "table": type_table}
     return result
 
-def _python_decorator_name(deco_node, source: bytes) -> str | None:
-    """Return the head symbol of a Python `decorator` node.
+def _python_pytest_bindings(root, source: bytes) -> list[_PythonBindingEvent]:
+    """Module-level pytest binding events, in source order (see `_PythonBindingEvent`).
+
+    `_is_pytest_decorator_noise` replays the events up to a decorator's byte
+    offset, so the binding actually in force at that site decides: a later
+    rebinding must not invalidate an earlier `@fixture` that genuinely
+    referenced pytest, and a name rebound before a decorator must not be
+    treated as pytest vocabulary (#2732). Function and class bodies are not
+    descended into — their bindings are local, mirroring
+    `_python_module_bound_names`. This is a conservative tracker for pytest
+    decorator classification only, not a complete Python binding model: a
+    wildcard `from pytest import *` records no events, so it is conservatively
+    not treated as pytest vocabulary.
+    """
+    # Unlike `_python_module_bound_names`, which folds bindings into a final
+    # set, this records ordered events so the binding in force AT A LOCATION
+    # (before/after a rebinding) can be replayed per decorator site.
+    events: list[_PythonBindingEvent] = []
+
+    def walk(n) -> None:
+        for child in n.children:
+            t = child.type
+            if t in ("function_definition", "class_definition"):
+                # Definitions bind their names in module scope, but their
+                # bodies are nested scopes and must not be traversed.
+                name = child.child_by_field_name("name")
+                if name is not None:
+                    events.append(_PythonBindingEvent(
+                        child.start_byte, "rebound", _read_text(name, source)))
+                continue
+            if t == "lambda":
+                continue  # expression — binds nothing at module scope
+            if t == "import_statement":
+                for c in child.children:
+                    if c.type == "dotted_name":
+                        if _read_text(c, source) == "pytest":
+                            events.append(_PythonBindingEvent(
+                                c.start_byte, "module_alias", "pytest"))
+                    elif c.type == "aliased_import":
+                        name_node = c.child_by_field_name("name")
+                        alias_node = c.child_by_field_name("alias")
+                        if name_node is not None and _read_text(name_node, source) == "pytest":
+                            alias = _read_text(alias_node, source) if alias_node is not None else "pytest"
+                            events.append(_PythonBindingEvent(c.start_byte, "module_alias", alias))
+            elif t == "import_from_statement":
+                module = _python_import_from_module(child, source)
+                if module is not None:
+                    level, module_name = module
+                    if level == 0 and module_name == "pytest":
+                        for name, local_name in _python_imported_names(child, source):
+                            if name in _PYTEST_DECORATOR_EXPORTS:
+                                events.append(_PythonBindingEvent(
+                                    child.start_byte, "imported_symbol", local_name))
+            elif t in ("assignment", "for_statement", "for_in_clause", "named_expression"):
+                # `x = ...`, `for x in ...`, walrus `x := ...`: local rebinding.
+                field = "left" if t != "named_expression" else "name"
+                targets: set[str] = set()
+                _python_collect_assignment_targets(
+                    child.child_by_field_name(field), source, targets
+                )
+                for target in targets:
+                    events.append(_PythonBindingEvent(child.start_byte, "rebound", target))
+            elif t == "as_pattern":
+                # `with ... as fixture` / `except Exception as fixture` binds the
+                # alias in the surrounding (module) scope.
+                alias = child.child_by_field_name("alias")
+                if alias is not None:
+                    events.append(_PythonBindingEvent(
+                        alias.start_byte, "rebound", _read_text(alias, source)))
+            elif t == "delete_statement":
+                # `del pytest` / `del fixture` unbinds the name at this point, so
+                # a later decorator no longer names pytest vocabulary. Only plain
+                # identifiers count — `del d[k]` / `del obj.attr` do not rebind a
+                # module-level name.
+                for target_node in child.children:
+                    if target_node.type == "identifier":
+                        events.append(_PythonBindingEvent(
+                            target_node.start_byte, "unbound",
+                            _read_text(target_node, source)))
+            walk(child)
+
+    walk(root)
+    events.sort(key=lambda e: e.start_byte)
+    return events
+
+def _is_pytest_decorator_noise(
+    deco_path: str | None,
+    pytest_bindings: list[_PythonBindingEvent],
+    byte_pos: int,
+) -> bool:
+    """True when the decorator at `byte_pos` names an ambient pytest decorator.
+
+    Matched by qualified path and by the pytest binding in force at the
+    decorator's source location, never by bare tail symbol: `@pytest.fixture`,
+    `@pt.fixture` (via `import pytest as pt`), and a bare `@fixture` rebound
+    from `from pytest import fixture` are pytest vocabulary, while a corpus's
+    own unimported `@fixture` — or one shadowed by an earlier local binding or
+    `del` — keeps its edge.
+    """
+    if not deco_path:
+        return False
+    head = deco_path.partition(".")[0]
+    binding: str | None = None
+    for event in pytest_bindings:
+        if event.start_byte > byte_pos:
+            break
+        if event.name == head:
+            binding = event.kind  # last event at or before the decorator wins
+    if binding == "imported_symbol":
+        return True
+    if binding in ("rebound", "unbound"):
+        return False
+    if binding == "module_alias":
+        suffix = deco_path[len(head):]
+        deco_path = f"pytest{suffix}"
+    if deco_path in _PYTEST_DECORATOR_PATHS:
+        return True
+    return any(deco_path.startswith(prefix) for prefix in _PYTEST_DECORATOR_PREFIXES)
+
+def _python_decorator_path(deco_node, source: bytes) -> str | None:
+    """Return the full dotted path of a Python `decorator` node.
 
     The Python twin of `_ts_decorator_name`, differing only in grammar node
-    names: `@traced` -> the identifier; `@retry(times=3)` -> the `function` of
-    the `call`; `@app.route("/")` / `@mod.deco` -> the `attribute` (the symbol
-    itself, not the module alias it is reached through).
+    names, but keeping the WHOLE path instead of the tail symbol:
+    `@pytest.fixture` -> "pytest.fixture"; `@retry(times=3)` -> "retry";
+    `@app.route("/")` -> "app.route"; a bare `@fixture` -> "fixture".
+    `_python_decorator_name` derives the tail from this (the symbol that
+    resolves into a graph node); the full path is what decides whether the
+    decorator is ambient noise (#2732).
     """
     for child in deco_node.children:
         if not child.is_named:
@@ -6075,12 +6252,23 @@ def _python_decorator_name(deco_node, source: bytes) -> str | None:
         if target.type == "call":
             target = target.child_by_field_name("function") or target
         if target.type == "attribute":
-            attr = target.child_by_field_name("attribute")
-            return _read_text(attr, source) if attr else None
+            return _read_text(target, source)
         if target.type == "identifier":
             return _read_text(target, source)
         return None
     return None
+
+def _python_decorator_name(deco_node, source: bytes) -> str | None:
+    """Return the head symbol of a Python `decorator` node.
+
+    `@pytest.fixture` -> "fixture"; `@retry(times=3)` -> "retry";
+    `@app.route("/")` -> "route"; `@fixture` -> "fixture". The tail of
+    `_python_decorator_path`.
+    """
+    path = _python_decorator_path(deco_node, source)
+    if path is None:
+        return None
+    return path.rsplit(".", 1)[-1]
 
 def _ts_decorator_name(deco_node, source: bytes) -> str | None:
     """Return the head symbol of a TS `decorator` node.
