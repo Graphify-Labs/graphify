@@ -155,6 +155,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.42 (2026-08-13)
 
+- Fix: `.svelte` and `.astro` files now get a real AST pass. Both extractors fed the raw file to the JS grammar, which errors on the first tag (Svelte) or the opening `---` (Astro), abandoning the AST and leaving only the regex import rescue — so every function, const, interface and type in those files was invisible to the graph. Both now mask the non-code regions and parse the script with the TypeScript grammar, mirroring `extract_vue` (#850 family). Measured on a Svelte 5 + Astro monorepo: `.svelte` 931 → 4,307 nodes and 1,047 → 6,225 edges across 260 files; `.astro` 2,946 → 6,607 nodes and 9,963 → 15,337 edges across 1,107 files.
 - Fix: a JS/TS `for...of` / `for...in` loop binding is now shadowed, so passing it as a call argument no longer fabricates an `indirect_call` edge to an unrelated same-named callable (#2685, thanks @ousamabenyounes); completes the loop/closure/catch shadow family (#2568/#2569/#2517).
 - Fix: graph provenance (`built_at_commit`) is stamped from the analysed repository rather than the shell's working directory, so `graphify extract` run from elsewhere records the target's commit, not the caller's (#2534 family; #2699, thanks @C0KERNEL).
 - Fix: `affected` resolves a seed passed as a `./`-relative path (or an absolute path when run from the repo root) instead of silently returning nothing (#2707, thanks @phudayyy). Note: an absolute-path seed still requires the working directory to be the analysed repo root.

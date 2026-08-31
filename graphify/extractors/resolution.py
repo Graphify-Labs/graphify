@@ -640,6 +640,66 @@ def _vue_mask_non_script(src: str) -> tuple[str, str | None]:
     out.append(_blank(src[pos:]))
     return "".join(out), lang
 
+
+# Astro frontmatter is a `---` fenced block that must open the file; a `---`
+# appearing later is markup, not code.
+_ASTRO_FRONTMATTER_RE = re.compile(r"\A(\s*---[^\n]*\r?\n)([\s\S]*?)(\r?\n---)")
+
+
+def _astro_mask(src: str, *, include_scripts: bool = True) -> str:
+    """Blank everything in a ``.astro`` file except executable TS/JS regions.
+
+    Astro files are ``---`` fenced TypeScript frontmatter followed by an
+    HTML-with-expressions template that may carry client-side ``<script>``
+    blocks. Neither the template nor the fences parse as JS, so feeding the raw
+    file to the JS grammar yields a top-level ERROR node and the AST pass is
+    abandoned (#850). Blanking the non-code regions — preserving ``\r``/``\n``
+    so line numbers stay accurate — lets the TS grammar see the real code.
+
+    ``include_scripts=False`` keeps only the frontmatter. Used as a fallback for
+    files whose client script does not concatenate cleanly onto the frontmatter.
+    """
+    def _blank_region(s: str) -> str:
+        return re.sub(r"[^\r\n]", " ", s)
+
+    m = _ASTRO_FRONTMATTER_RE.match(src)
+    if m:
+        out = [_blank_region(m.group(1)), m.group(2)]
+        pos = m.end(2)
+    else:
+        out, pos = [], 0
+    if include_scripts:
+        for sm in _VUE_SCRIPT_RE.finditer(src, pos):
+            out.append(_blank_region(src[pos:sm.start()]))
+            out.append(_blank_region(sm.group(1)))
+            out.append(sm.group(2))
+            out.append(_blank_region(sm.group(3)))
+            pos = sm.end()
+    out.append(_blank_region(src[pos:]))
+    return "".join(out)
+
+
+def _astro_best_mask(src: str) -> str:
+    """Mask an ``.astro`` file, preferring the variant that parses cleanly.
+
+    Frontmatter + client ``<script>`` yields the most symbols, but a client
+    script occasionally will not concatenate onto the frontmatter as valid TS.
+    Falling back to frontmatter-only recovers those without losing the rest.
+    """
+    with_scripts = _astro_mask(src, include_scripts=True)
+    try:
+        from tree_sitter import Language, Parser
+        import tree_sitter_typescript as _tsts
+        parser = Parser(Language(_tsts.language_typescript()))
+        if not parser.parse(with_scripts.encode("utf-8")).root_node.has_error:
+            return with_scripts
+        frontmatter_only = _astro_mask(src, include_scripts=False)
+        if not parser.parse(frontmatter_only.encode("utf-8")).root_node.has_error:
+            return frontmatter_only
+    except Exception:
+        pass
+    return with_scripts
+
 def _source_key(source_file: str, root: Path) -> str:
     if not source_file:
         return ""
@@ -1118,6 +1178,15 @@ def _parse_js_tree(path: Path):
                 path.read_text(encoding="utf-8", errors="replace")
             )
             source = masked.encode("utf-8")
+        elif path.suffix == ".svelte":
+            masked, vue_lang = _vue_mask_non_script(
+                path.read_text(encoding="utf-8", errors="replace")
+            )
+            source = masked.encode("utf-8")
+        elif path.suffix == ".astro":
+            source = _astro_best_mask(
+                path.read_text(encoding="utf-8", errors="replace")
+            ).encode("utf-8")
         else:
             source = path.read_bytes()
         use_ts = path.suffix in (".ts", ".mts", ".cts") or (

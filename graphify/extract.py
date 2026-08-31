@@ -139,6 +139,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _ts_heritage_clause_entries,
     _ts_walk_class_members,
     _vue_mask_non_script,
+    _astro_best_mask,
     _walk_js_tree,
     _walk_python_tree,
     _workspace_globs,
@@ -1687,7 +1688,23 @@ def extract_svelte(path: Path) -> dict:
     {#await import('./X.svelte')} lives in the markup layer and is invisible
     to the JS parser, so a regex pass covers those dynamic imports.
     """
-    result = _extract_generic(path, _JS_CONFIG)
+    # Mask the markup so the <script> block reaches the AST
+    # pass. Without this the raw .svelte file makes the JS grammar error at the
+    # first tag, and only the regex rescue below contributes anything.
+    try:
+        _svelte_src = path.read_text(encoding="utf-8", errors="replace")
+        _masked, _svelte_lang = _vue_mask_non_script(_svelte_src)
+        if _svelte_lang == "tsx":
+            _svelte_config = _TSX_CONFIG
+        elif _svelte_lang in ("js", "jsx"):
+            _svelte_config = _JS_CONFIG
+        else:  # "ts" or unspecified — TS is a superset of JS, safe default
+            _svelte_config = _TS_CONFIG
+        result = _extract_generic(
+            path, _svelte_config, source_override=_masked.encode("utf-8")
+        )
+    except Exception:
+        result = _extract_generic(path, _JS_CONFIG)
     try:
         import re as _re
         src = path.read_text(encoding="utf-8", errors="replace")
@@ -1749,7 +1766,19 @@ def extract_astro(path: Path) -> dict:
     approach, scanning the frontmatter block and any client-side ``<script>`` blocks
     for static and dynamic imports.
     """
-    result = _extract_generic(path, _JS_CONFIG)
+    # Mask the template so frontmatter (and client scripts)
+    # reach the AST pass. Without this the raw .astro file makes the JS grammar
+    # error on the opening `---`, and only the regex rescue below contributes.
+    try:
+        result = _extract_generic(
+            path,
+            _TS_CONFIG,
+            source_override=_astro_best_mask(
+                path.read_text(encoding="utf-8", errors="replace")
+            ).encode("utf-8"),
+        )
+    except Exception:
+        result = _extract_generic(path, _JS_CONFIG)
     try:
         import re as _re
         src = path.read_text(encoding="utf-8", errors="replace")
