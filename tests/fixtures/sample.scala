@@ -27,3 +27,12 @@ object HttpClientFactory {
     new HttpClient(Config(baseUrl, 30))
   }
 }
+
+class TypeAliases {
+  type Routes = Map[String, HttpClient]
+  opaque type ClientId = Long
+  type Unwrap[X] = X match {
+    case Option[t] => t
+    case ListBuffer[t] => t
+  }
+}

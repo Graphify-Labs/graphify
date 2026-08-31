@@ -1112,7 +1112,8 @@ def _scala_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple
                         _scala_collect_type_refs(arg, source, True, out)
         return
     if t in ("compound_type", "infix_type", "function_type", "tuple_type",
-             "annotated_type", "projected_type"):
+             "annotated_type", "projected_type", "match_type",
+             "type_case_clause"):
         for c in node.children:
             if c.is_named:
                 _scala_collect_type_refs(c, source, generic, out)
@@ -4092,8 +4093,11 @@ def _extract_generic(
                     function_bodies.append((prop_nid, body_block))
             return
 
+        # type_definition covers plain aliases (`type Alias = List[Int]`),
+        # `opaque type`, and match types — the right-hand side sits under the
+        # same `type` field a val/var annotation uses, so the walk is shared.
         if (config.ts_module == "tree_sitter_scala"
-                and t in ("val_definition", "var_definition")
+                and t in ("val_definition", "var_definition", "type_definition")
                 and parent_class_nid):
             type_node = node.child_by_field_name("type")
             if type_node is not None:
