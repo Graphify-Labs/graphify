@@ -160,6 +160,10 @@ def extract_rust(path: Path) -> dict:
                 if tgt != func_nid:
                     add_edge(func_nid, tgt, "references", line, context=ctx)
 
+    # Local name -> root path segment of the `use` that bound it
+    # (e.g. `use std::fs;` -> {"fs": "std"}). Read by the scoped-call pass.
+    use_roots: dict[str, str] = {}
+
     def walk(node, parent_impl_nid: str | None = None) -> None:
         t = node.type
 
@@ -329,6 +333,25 @@ def extract_rust(path: Path) -> dict:
                 if module_name:
                     tgt_nid = _make_id(module_name)
                     add_edge(file_nid, tgt_nid, "imports_from", node.start_point[0] + 1, context="import")
+                # Record what each `use` binds locally, and from which root
+                # (`std`, `crate`, an extern crate...). Scoped-call resolution
+                # consults this: `use std::fs; fs::read()` names std's fs, and
+                # must not bind to an unrelated local `fs.rs`.
+                root = raw.split("::", 1)[0].strip()
+                if "{" in raw:
+                    inner = raw.split("{", 1)[1].rsplit("}", 1)[0]
+                    leaves = [leaf.strip() for leaf in inner.split(",")]
+                else:
+                    leaves = [raw.strip()]
+                for leaf in leaves:
+                    if not leaf or leaf == "*" or "{" in leaf or "}" in leaf:
+                        continue
+                    if " as " in leaf:
+                        binding = leaf.rsplit(" as ", 1)[1].strip()
+                    else:
+                        binding = leaf.rsplit("::", 1)[-1].strip()
+                    if binding and binding != "*" and root:
+                        use_roots[binding] = root
             return
 
         for child in node.children:
@@ -386,7 +409,46 @@ def extract_rust(path: Path) -> dict:
                             "source_location": f"L{line}",
                             "weight": 1.0,
                         })
-                elif not is_scoped_call and callee_name.lower() not in _RUST_TRAIT_METHOD_BLOCKLIST:
+                elif is_scoped_call:
+                    # WHY: dropping unresolved scoped calls entirely made every
+                    # cross-file module-qualified call (`module::function()`) —
+                    # the DOMINANT intra-crate call form in idiomatic Rust —
+                    # invisible to the graph: e.g. `scan_substrate::
+                    # accumulate_observations(...)` in rotation_drive.rs showed
+                    # 0 dependents while grep found the caller, forcing every
+                    # consumer back to grep and defeating graph-first navigation.
+                    # The original guard existed because BARE last-segment lookup
+                    # across crates produced spurious INFERRED edges (#908).
+                    # This keeps that guard: instead of resolving here (or bare-
+                    # name downstream), we enqueue the call WITH its qualifier
+                    # path so the shared cross-file pass can resolve it strictly
+                    # against the qualifier (file-stem / mod.rs match, unique-
+                    # candidate or bail) — see resolve_cross_file_raw_calls in
+                    # symbol_resolution.py, same reasoning as the Python
+                    # qualified-class-method pass (#1446/#1533): a call that
+                    # names its module explicitly in source is an exact
+                    # reference, not an inference.
+                    qual_node = func_node.child_by_field_name("path")
+                    qualifier = _read_text(qual_node, source) if qual_node else ""
+                    # A qualifier bound by a `use` from outside the crate
+                    # (`use std::fs; fs::read()`) names that import, not a
+                    # sibling module file — resolving it would bind std calls
+                    # to same-named local modules (shadowing std module names
+                    # with wrapper modules is common Rust).
+                    first_seg = qualifier.split("::", 1)[0].split("<", 1)[0].strip()
+                    if use_roots.get(first_seg, "crate") not in ("crate", "super", "self"):
+                        qualifier = ""
+                    if qualifier:
+                        raw_calls.append({
+                            "caller_nid": caller_nid,
+                            "callee": callee_name,
+                            "is_member_call": False,
+                            "is_scoped_call": True,
+                            "scope_qualifier": qualifier,
+                            "source_file": str_path,
+                            "source_location": f"L{node.start_point[0] + 1}",
+                        })
+                elif callee_name.lower() not in _RUST_TRAIT_METHOD_BLOCKLIST:
                     raw_calls.append({
                         "caller_nid": caller_nid,
                         "callee": callee_name,
