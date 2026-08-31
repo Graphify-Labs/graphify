@@ -3340,6 +3340,39 @@ def _extract_generic(
                                             add_edge(class_nid, target, "references", line,
                                                      context="generic_arg")
 
+            # Kotlin-specific: primary_constructor class_parameters carry
+            # constructor-injected fields (`private val x: Foo` - the idiomatic
+            # Hilt/DI pattern). Mirrors the Scala class_parameters handling
+            # below; without this, every constructor-injected dependency was
+            # invisible to the graph (only body-level property_declaration
+            # vals were captured, and only delegation_specifiers for supertypes).
+            if config.ts_module == "tree_sitter_kotlin":
+                for child in node.children:
+                    if child.type != "primary_constructor":
+                        continue
+                    for pc in child.children:
+                        if pc.type != "class_parameters":
+                            continue
+                        for cp in pc.children:
+                            if cp.type != "class_parameter":
+                                continue
+                            type_node = next(
+                                (t for t in cp.children
+                                 if t.type in ("user_type", "nullable_type", "type_reference")),
+                                None,
+                            )
+                            if type_node is None:
+                                continue
+                            cp_line = cp.start_point[0] + 1
+                            refs: list[tuple[str, str]] = []
+                            _kotlin_collect_type_refs(type_node, source, False, refs)
+                            for ref_name, role in refs:
+                                ctx = "generic_arg" if role == "generic_arg" else "field"
+                                target_nid = ensure_named_node(ref_name, cp_line)
+                                if target_nid != class_nid:
+                                    add_edge(class_nid, target_nid, "references",
+                                             cp_line, context=ctx)
+
             # Ruby: `class Dog < Animal` puts the base class in the `superclass`
             # field (a `<` token followed by a constant or scope_resolution).
             # There was no Ruby branch, so every Ruby inherits edge was dropped.
