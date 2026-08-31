@@ -175,7 +175,7 @@ def test_watch_raises_without_watchdog(tmp_path, monkeypatch):
     monkeypatch.setattr(builtins, "__import__", mock_import)
 
     from graphify.watch import watch
-    with pytest.raises(ImportError, match="watchdog not installed"):
+    with pytest.raises(ImportError, match=r"watchdog not installed.*graphifyy\[watch\]"):
         watch(tmp_path)
 
 

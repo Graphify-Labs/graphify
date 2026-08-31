@@ -2193,7 +2193,7 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
         from watchdog.observers.polling import PollingObserver
         from watchdog.events import FileSystemEventHandler
     except ImportError as e:
-        raise ImportError("watchdog not installed. Run: pip install watchdog") from e
+        raise ImportError('watchdog not installed. Run: uv tool install "graphifyy[watch]"') from e
 
     last_trigger: float = 0.0
     pending: bool = False
