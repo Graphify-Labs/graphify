@@ -18,7 +18,7 @@
 
 <div dir="rtl">
 
-**یک مهارت برای دستیار کدنویسی هوش مصنوعی.** `/graphify` را در Claude Code، Codex، OpenCode، Kilo Code، Cursor، Gemini CLI، GitHub Copilot CLI، VS Code Copilot Chat، Aider، Amp، OpenClaw، Factory Droid، Trae، Hermes، Kimi Code، Kiro، Pi، Devin CLI یا Google Antigravity تایپ کنید — تمام پروژه‌تان را می‌خواند، یک گراف دانش می‌سازد، و ساختاری که نمی‌دانستید وجود دارد را به شما بازمی‌گرداند. کدبیس را سریع‌تر درک کنید. «چرا»ی پشت تصمیمات معماری را کشف کنید.
+**یک مهارت برای دستیار کدنویسی هوش مصنوعی.** `/graphify` را در Claude Code، Codex، OpenCode، Kilo Code، Cursor، GitHub Copilot CLI، VS Code Copilot Chat، Aider، Amp، OpenClaw، Factory Droid، Trae، Hermes، Kimi Code، Kiro، Pi، Devin CLI یا Google Antigravity تایپ کنید — تمام پروژه‌تان را می‌خواند، یک گراف دانش می‌سازد، و ساختاری که نمی‌دانستید وجود دارد را به شما بازمی‌گرداند. کدبیس را سریع‌تر درک کنید. «چرا»ی پشت تصمیمات معماری را کشف کنید.
 
 کاملاً چندوجهی. کد، PDF، مارک‌داون، اسکرین‌شات، نمودار، عکس وایت‌بورد، تصاویر به زبان‌های دیگر، یا فایل‌های ویدئو و صوتی بریزید — graphify مفاهیم و روابط را از همه آن‌ها استخراج کرده و در یک گراف به هم متصل می‌کند. ویدئوها به‌صورت محلی با Whisper رونویسی می‌شوند. ۳۶ زبان برنامه‌نویسی از طریق tree-sitter AST پشتیبانی می‌شوند.
 
@@ -168,7 +168,6 @@ graphify install --project --platform codex
 | Factory Droid | `graphify install --platform droid` |
 | Trae | `graphify install --platform trae` |
 | Trae CN | `graphify install --platform trae-cn` |
-| Gemini CLI | `graphify install --platform gemini` |
 | Hermes | `graphify install --platform hermes` |
 | Kimi Code | `graphify install --platform kimi` |
 | Amp | `graphify amp install` |
@@ -226,7 +225,6 @@ graphify install --project --platform codex
 | Factory Droid | `graphify droid install` |
 | Trae | `graphify trae install` |
 | Cursor | `graphify cursor install` |
-| Gemini CLI | `graphify gemini install` |
 | Amp | `graphify amp install` |
 | Kiro IDE/CLI | `graphify kiro install` |
 | Devin CLI | `graphify devin install` |
@@ -475,7 +473,6 @@ graphify hook status
 graphify claude install            # CLAUDE.md + PreToolUse hook (Claude Code)
 graphify codex install             # AGENTS.md + PreToolUse hook (Codex)
 graphify cursor install            # .cursor/rules/graphify.mdc (Cursor)
-graphify gemini install            # GEMINI.md + BeforeTool hook (Gemini CLI)
 graphify amp install               # فایل مهارت (Amp)
 graphify kiro install              # .kiro/skills/ + .kiro/steering/ (Kiro)
 graphify devin install             # فایل مهارت + .windsurf/rules/ (Devin CLI)

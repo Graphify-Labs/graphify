@@ -13,7 +13,7 @@
   <a href="https://github.com/sponsors/safishamsi"><img src="https://img.shields.io/badge/sponsor-safishamsi-ea4aaa?logo=github-sponsors" alt="Sponsor"/></a>
 </p>
 
-**Kỹ năng dành cho trợ lý lập trình AI.** Gõ `/graphify` trong Claude Code, Codex, OpenCode, Cursor, Gemini CLI, GitHub Copilot CLI, VS Code Copilot Chat, Aider, OpenClaw, Factory Droid, Trae, Hermes, Kiro hoặc Google Antigravity — nó đọc các tệp của bạn, xây dựng đồ thị kiến thức và trả lại cho bạn cấu trúc mà bạn không biết là tồn tại. Hiểu codebase nhanh hơn. Tìm ra "tại sao" đằng sau các quyết định kiến trúc.
+**Kỹ năng dành cho trợ lý lập trình AI.** Gõ `/graphify` trong Claude Code, Codex, OpenCode, Cursor, GitHub Copilot CLI, VS Code Copilot Chat, Aider, OpenClaw, Factory Droid, Trae, Hermes, Kiro hoặc Google Antigravity — nó đọc các tệp của bạn, xây dựng đồ thị kiến thức và trả lại cho bạn cấu trúc mà bạn không biết là tồn tại. Hiểu codebase nhanh hơn. Tìm ra "tại sao" đằng sau các quyết định kiến trúc.
 
 Hoàn toàn đa phương thức. Thêm code, PDF, markdown, ảnh chụp màn hình, sơ đồ, ảnh bảng trắng, hình ảnh bằng ngôn ngữ khác hoặc tệp video và âm thanh — graphify trích xuất các khái niệm và mối quan hệ từ tất cả mọi thứ và kết nối chúng trong một đồ thị duy nhất. Video được phiên âm cục bộ bằng Whisper. Hỗ trợ 25 ngôn ngữ lập trình qua tree-sitter AST.
 
