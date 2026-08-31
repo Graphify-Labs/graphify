@@ -568,6 +568,202 @@ def _resolve_c_include_path(raw: str, str_path: str) -> "Path | None":
         return candidate
     return None
 
+_DART_PUBSPEC_NAME_RE = re.compile(r"""^name:\s*['"]?([A-Za-z_]\w*)['"]?\s*(?:#.*)?$""", re.MULTILINE)
+
+_DART_WORKSPACE_RE = re.compile(r"^workspace:\s*(?:#.*)?$", re.MULTILINE)
+
+_DART_PACKAGE_INDEX_CACHE: "dict[str, tuple[tuple[str, str], ...]]" = {}
+
+_DART_MAX_PARENTS = 40
+
+
+def _dart_pubspec_name(pubspec: Path) -> "str | None":
+    """Read the `name:` of a pubspec.yaml without a YAML dependency."""
+    try:
+        text = pubspec.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    m = _DART_PUBSPEC_NAME_RE.search(text)
+    return m.group(1) if m else None
+
+
+def _dart_workspace_members(pubspec: Path) -> "list[Path]":
+    """Members listed under a pub-workspace `workspace:` block (#pub workspaces).
+
+    Only the top-level block is read; the entries are directory paths relative to
+    the pubspec's own directory:
+
+        workspace:
+          - apps/client_app
+          - packages/pricing_catalog
+    """
+    try:
+        text = pubspec.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    m = _DART_WORKSPACE_RE.search(text)
+    if m is None:
+        return []
+    members: list[Path] = []
+    for line in text[m.end():].splitlines():
+        if not line.strip():
+            continue
+        entry = re.match(r"^\s+-\s+(?:['\"])?([^'\"#\s]+)(?:['\"])?\s*(?:#.*)?$", line)
+        if entry is None:
+            break  # block ended (a new top-level key, or a non-list line)
+        members.append(pubspec.parent / entry.group(1))
+    return members
+
+
+def _dart_package_index(start_dir: str) -> "tuple[tuple[str, str], ...]":
+    """Map every reachable Dart package name to its package root directory.
+
+    Walks up from `start_dir` recording each `pubspec.yaml` it passes, and at each
+    one also records the members of a pub `workspace:` block, so an import of a
+    sibling package in a monorepo resolves as well as the file's own package.
+
+    Cached per starting directory; the result is a tuple of (name, root) pairs so
+    it stays immutable across callers.
+    """
+    cached = _DART_PACKAGE_INDEX_CACHE.get(start_dir)
+    if cached is not None:
+        return cached
+
+    found: dict[str, str] = {}
+    try:
+        here = Path(start_dir).resolve()
+    except OSError:
+        here = Path(start_dir)
+    for parent in [here, *here.parents][:_DART_MAX_PARENTS]:
+        pubspec = parent / "pubspec.yaml"
+        if not pubspec.is_file():
+            continue
+        name = _dart_pubspec_name(pubspec)
+        if name:
+            found.setdefault(name, str(parent))
+        for member in _dart_workspace_members(pubspec):
+            member_spec = member / "pubspec.yaml"
+            if not member_spec.is_file():
+                continue
+            member_name = _dart_pubspec_name(member_spec)
+            if member_name:
+                found.setdefault(member_name, str(member))
+
+    result = tuple(sorted(found.items()))
+    _DART_PACKAGE_INDEX_CACHE[start_dir] = result
+    return result
+
+
+def _dart_lib_root(start_dir: Path) -> "Path | None":
+    """The `lib/` of the package owning `start_dir`, if it is inside one.
+
+    A directory only counts when its parent holds a pubspec.yaml, so a `lib/`
+    belonging to something else (an asset tree, a vendored copy) is not mistaken
+    for a package root.
+    """
+    try:
+        here = start_dir.resolve()
+    except OSError:
+        return None
+    for parent in [here, *here.parents][:_DART_MAX_PARENTS]:
+        if parent.name == "lib" and (parent.parent / "pubspec.yaml").is_file():
+            return parent
+    return None
+
+
+def _resolve_dart_package_uri(raw: str, start_dir: Path) -> "Path | None":
+    """Resolve `package:<name>/<sub>` to `<root of name>/lib/<sub>`."""
+    pkg, _, sub = raw[len("package:"):].partition("/")
+    if not pkg or not sub:
+        return None
+    for name, root in _dart_package_index(str(start_dir)):
+        if name != pkg:
+            continue
+        try:
+            candidate = (Path(root) / "lib" / sub).resolve()
+        except OSError:
+            return None
+        return candidate if candidate.is_file() else None
+    return None
+
+
+def _resolve_dart_relative_uri(raw: str, start_dir: Path) -> "Path | None":
+    """Resolve a relative Dart URI, clamping `..` at the package root.
+
+    A relative URI is resolved against the importing library's OWN uri, and for
+    anything under `lib/` that uri is `package:<name>/...`, not a file path. The
+    difference is not cosmetic: RFC 3986 drops `..` segments that would escape the
+    base, so from `package:app/core/data/x.dart` an import of
+    `../../../features/y.dart` CLAMPS at the package root and resolves to
+    `package:app/features/y.dart`, while the same join over the file path escapes
+    `lib/` and lands on a file that does not exist. Dart accepts the first — this
+    is live, compiling code in real repos — so resolving on the filesystem alone
+    reports a false miss on exactly those imports.
+
+    Outside `lib/` (bin/, test/, tool/, a loose script) the base really is a file
+    uri, so a plain join is the correct semantics there.
+    """
+    lib_root = _dart_lib_root(start_dir)
+    if lib_root is None:
+        try:
+            candidate = (start_dir / raw).resolve()
+        except OSError:
+            return None
+        return candidate if candidate.is_file() else None
+
+    try:
+        segments = list(start_dir.resolve().relative_to(lib_root).parts)
+    except ValueError:
+        segments = []
+    for part in raw.split("/"):
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if segments:
+                segments.pop()
+            continue  # already at the package root: clamp, as `package:` does
+        segments.append(part)
+    candidate = lib_root.joinpath(*segments)
+    return candidate if candidate.is_file() else None
+
+
+def _resolve_dart_uri(raw: str, start_dir: Path) -> "Path | None":
+    """Resolve a non-SDK Dart URI against `start_dir`.
+
+    Split out of `_resolve_dart_import_target` so that entry point stays a thin
+    dispatcher; see its docstring for the URI forms handled here.
+    """
+    if raw.startswith("package:"):
+        return _resolve_dart_package_uri(raw, start_dir)
+    if raw.startswith(("http:", "https:", "asset:")):
+        return None
+    return _resolve_dart_relative_uri(raw, start_dir)
+
+
+def _resolve_dart_import_target(raw: str, str_path: str) -> "Path | None":
+    """Resolve a Dart `import`/`export`/`part` URI to a real file on disk.
+
+    Dart resolution is fully deterministic — there is no extension guessing, no
+    index file, and no alias config, so only three forms exist:
+
+        'dart:async'                  SDK, always external          -> None
+        '../cell/cell_widget.dart'    relative to the importing file
+        'package:app/x/y.dart'        `lib/x/y.dart` of package `app`
+
+    Returns the resolved path, or None when the URI names something outside the
+    scanned corpus (the SDK, a pub dependency, a dangling path) — mirroring
+    `_resolve_c_include_path`, so the caller keeps its existing external-node
+    behaviour untouched.
+    """
+    if not raw or raw.startswith("dart:"):
+        return None
+    try:
+        start_dir = Path(str_path).parent
+    except Exception:
+        return None
+    return _resolve_dart_uri(raw, start_dir)
+
+
 def _resolve_lua_import_target(raw_module: str, str_path: str) -> str:
     """Resolve a Lua require() module name to a node id.
 

@@ -5,6 +5,10 @@ import textwrap
 from pathlib import Path
 
 from graphify.extract import extract_dart, _make_id, _file_stem
+from graphify.extractors.resolution import (
+    _DART_PACKAGE_INDEX_CACHE,
+    _resolve_dart_import_target,
+)
 
 
 class TestDart(unittest.TestCase):
@@ -634,6 +638,143 @@ class TestDart(unittest.TestCase):
         )
         self.assertIsNotNone(nav_edge)
         self.assertEqual(nav_edge["target"], "route_home_id_123_type_auth")
+
+
+
+class TestDartImportResolution(unittest.TestCase):
+    """Dart import/export URIs must land on the id of the file they name (#2329).
+
+    Before this, every Dart import edge targeted a bare string node with
+    source_file=None, so reverse traversal ("who imports this file", `affected`)
+    returned nothing on Dart while Python and TypeScript resolved.
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp_dir.name).resolve()
+        _DART_PACKAGE_INDEX_CACHE.clear()
+
+    def tearDown(self):
+        _DART_PACKAGE_INDEX_CACHE.clear()
+        self.temp_dir.cleanup()
+
+    def _pkg(self, name, at=".", workspace=None):
+        d = (self.root / at).resolve()
+        (d / "lib").mkdir(parents=True, exist_ok=True)
+        body = "name: {}\n".format(name)
+        if workspace:
+            body += "workspace:\n" + "".join("  - {}\n".format(m) for m in workspace)
+        (d / "pubspec.yaml").write_text(body)
+        return d
+
+    def _write(self, pkg_dir, rel, text=""):
+        f = pkg_dir / "lib" / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(textwrap.dedent(text))
+        return f
+
+    def _import_targets(self, path):
+        out = extract_dart(path)
+        return {
+            e["target"]
+            for e in out["edges"]
+            if e["relation"] in ("imports", "exports")
+        }
+
+    def test_relative_import_targets_the_real_file_node(self):
+        pkg = self._pkg("app")
+        target = self._write(pkg, "core/data/auth_repository.dart", "class AuthRepo {}")
+        importer = self._write(
+            pkg, "features/auth/login.dart",
+            "import '../../core/data/auth_repository.dart';",
+        )
+        self.assertIn(_make_id(str(target)), self._import_targets(importer))
+
+    def test_package_import_of_own_package_resolves_through_pubspec_name(self):
+        pkg = self._pkg("app")
+        target = self._write(pkg, "config/theme.dart", "class Theme {}")
+        importer = self._write(
+            pkg, "features/home.dart", "import 'package:app/config/theme.dart';"
+        )
+        self.assertIn(_make_id(str(target)), self._import_targets(importer))
+
+    def test_excess_parent_segments_clamp_at_the_package_root(self):
+        """A relative uri is resolved against the library's own `package:` uri, and
+        RFC 3986 drops `..` segments that would escape the base. So from
+        `package:app/core/data/x.dart` an import of `../../../features/y.dart`
+        resolves to `package:app/features/y.dart` — real, compiling Dart that a
+        plain filesystem join reports as a miss (it escapes `lib/`)."""
+        pkg = self._pkg("app")
+        target = self._write(pkg, "features/auth/auth_repository.dart", "class AuthRepo {}")
+        importer = self._write(
+            pkg, "core/data/prefs.dart",
+            "import '../../../features/auth/auth_repository.dart';",
+        )
+        self.assertIn(_make_id(str(target)), self._import_targets(importer))
+
+    def test_export_resolves_like_import(self):
+        pkg = self._pkg("app")
+        target = self._write(pkg, "models/user.dart", "class User {}")
+        importer = self._write(pkg, "models.dart", "export 'models/user.dart';")
+        self.assertIn(_make_id(str(target)), self._import_targets(importer))
+
+    def test_workspace_sibling_package_resolves(self):
+        self._pkg("root", workspace=["apps/app", "packages/shared"])
+        app = self._pkg("app", at="apps/app")
+        shared = self._pkg("shared", at="packages/shared")
+        target = self._write(shared, "pricing.dart", "class Pricing {}")
+        importer = self._write(
+            app, "main.dart", "import 'package:shared/pricing.dart';"
+        )
+        self.assertIn(_make_id(str(target)), self._import_targets(importer))
+
+    def test_sdk_and_third_party_imports_stay_external(self):
+        pkg = self._pkg("app")
+        importer = self._write(
+            pkg, "main.dart",
+            """\
+            import 'dart:async';
+            import 'package:flutter/material.dart';
+            import 'package:app/missing.dart';
+            """,
+        )
+        targets = self._import_targets(importer)
+        for raw in ("dart:async", "package:flutter/material.dart", "package:app/missing.dart"):
+            self.assertIn(_make_id(raw), targets, raw)
+
+    def test_outside_lib_does_not_clamp(self):
+        """In bin/ or tool/ the library's base really is a file uri, so an escaping
+        `..` is a genuine miss and must stay external rather than silently
+        clamping onto an unrelated file."""
+        pkg = self._pkg("app")
+        self._write(pkg, "helper.dart", "class Helper {}")
+        (pkg / "bin").mkdir(exist_ok=True)
+        script = pkg / "bin" / "run.dart"
+        script.write_text("import '../../../lib/helper.dart';")
+        self.assertIn(_make_id("../../../lib/helper.dart"), self._import_targets(script))
+
+    def test_dot_segments_in_the_importing_files_own_path_are_normalized(self):
+        """The importing file's own path may carry `.`/`..` segments (a scan rooted
+        through one, a symlinked corpus). Both the `lib/` root and the start
+        directory are resolved before the relative walk, so those segments never
+        shift the result or the clamping."""
+        pkg = self._pkg("app")
+        target = self._write(pkg, "features/auth/repo.dart", "class Repo {}")
+        self._write(pkg, "core/data/prefs.dart", "")
+        (pkg / "lib" / "core" / "zzz").mkdir(parents=True, exist_ok=True)
+        noisy = str(pkg / "lib" / "core" / "zzz" / ".." / "data" / "prefs.dart")
+        clean = str(pkg / "lib" / "core" / "data" / "prefs.dart")
+        for path in (clean, noisy):
+            for raw in ("../../features/auth/repo.dart",        # exact
+                        "../../../features/auth/repo.dart"):    # one too many: clamps
+                _DART_PACKAGE_INDEX_CACHE.clear()
+                self.assertEqual(_resolve_dart_import_target(raw, path), target, (path, raw))
+
+    def test_resolver_returns_none_for_unresolvable_uris(self):
+        pkg = self._pkg("app")
+        f = self._write(pkg, "main.dart", "")
+        for raw in ("", "dart:core", "package:other/x.dart", "package:app", "./gone.dart"):
+            self.assertIsNone(_resolve_dart_import_target(raw, str(f)), raw)
 
 
 if __name__ == "__main__":
