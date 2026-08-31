@@ -1038,8 +1038,8 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
             f"NODE {sanitize_label(d.get('label', nid))} "
             f"[src={sanitize_label(str(d.get('source_file', '')))} "
             f"loc={sanitize_label(str(d.get('source_location', '')))} "
-            f"community={sanitize_label(str(d.get('community_name') or d.get('community', '')))}"
-            f"{learning_suffix}]"
+            f"community={_resolved_community_label(d)}"
+            f"{_node_description_suffix(d)}{learning_suffix}]"
         )
         lines.append(line)
     for u, v in edges:
@@ -1490,6 +1490,45 @@ def _filter_blank_stdin() -> None:
     sys.stdin = open(0, "r", closefd=False)
 
 
+def _resolved_community_label(d: dict) -> str:
+    cid = d.get("community")
+    name = d.get("community_name")
+    if name:
+        placeholder = f"Community {cid}" if cid is not None else ""
+        clean = sanitize_label(str(name))
+        if clean and clean != placeholder:
+            return clean
+    if cid is not None:
+        return sanitize_label(str(cid))
+    return ""
+
+
+def _node_description_suffix(d: dict) -> str:
+    desc = d.get("description")
+    if not desc:
+        return ""
+    return f" desc={sanitize_label(str(desc))}"
+
+
+def _format_node_detail_lines(nid: str, d: dict, *, degree: int | None = None) -> list[str]:
+    lines = [
+        f"Node: {sanitize_label(d.get('label', nid))}",
+        f"  ID:        {sanitize_label(nid)}",
+        (
+            f"  Source:    {sanitize_label(str(d.get('source_file', '')))} "
+            f"{sanitize_label(str(d.get('source_location', '')))}"
+        ).rstrip(),
+        f"  Type:      {sanitize_label(str(d.get('file_type', '')))}",
+        f"  Community: {_resolved_community_label(d)}",
+    ]
+    desc = d.get("description")
+    if desc:
+        lines.append(f"  Description: {sanitize_label(str(desc))}")
+    if degree is not None:
+        lines.append(f"  Degree:    {degree}")
+    return lines
+
+
 def _community_header(cid: int, community_name) -> str:
     # Header for get_community: "Community N — Name", matching get_node / query
     # output which read the community_name attribute to_json writes onto nodes.
@@ -1764,15 +1803,7 @@ def _build_server(graph_path: str):
         if not matches:
             return f"No node matching '{label}' found."
         nid, d = matches[0]
-        # Sanitise every LLM-derived field before concatenation (F-010).
-        return "\n".join([
-            f"Node: {sanitize_label(d.get('label', nid))}",
-            f"  ID: {sanitize_label(nid)}",
-            f"  Source: {sanitize_label(str(d.get('source_file', '')))} {sanitize_label(str(d.get('source_location', '')))}",
-            f"  Type: {sanitize_label(str(d.get('file_type', '')))}",
-            f"  Community: {sanitize_label(str(d.get('community_name') or d.get('community', '')))}",
-            f"  Degree: {G.degree(nid)}",
-        ])
+        return "\n".join(_format_node_detail_lines(nid, d, degree=G.degree(nid)))
 
     def _tool_get_neighbors(arguments: dict) -> str:
         label = arguments["label"].lower()
@@ -1806,7 +1837,8 @@ def _build_server(graph_path: str):
             if rel_filter and rel_filter not in rel.lower():
                 continue
             lines.append(
-                f"  --> {sanitize_label(G.nodes[nb].get('label', nb))} "
+                f"  --> {sanitize_label(G.nodes[nb].get('label', nb))}"
+                f"{_node_description_suffix(G.nodes[nb])} "
                 f"[{sanitize_label(str(rel))}] [{sanitize_label(str(d.get('confidence', '')))}]{_edge_at(d)}"
             )
         for nb in G.predecessors(nid):
@@ -1815,7 +1847,8 @@ def _build_server(graph_path: str):
             if rel_filter and rel_filter not in rel.lower():
                 continue
             lines.append(
-                f"  <-- {sanitize_label(G.nodes[nb].get('label', nb))} "
+                f"  <-- {sanitize_label(G.nodes[nb].get('label', nb))}"
+                f"{_node_description_suffix(G.nodes[nb])} "
                 f"[{sanitize_label(str(rel))}] [{sanitize_label(str(d.get('confidence', '')))}]{_edge_at(d)}"
             )
         budget = int(arguments.get("token_budget", 2000))
@@ -1835,7 +1868,9 @@ def _build_server(graph_path: str):
             # Sanitise label and source_file (F-010).
             lines.append(
                 f"  {sanitize_label(d.get('label', n))} "
-                f"[{sanitize_label(str(d.get('source_file', '')))}]"
+                f"[{sanitize_label(str(d.get('source_file', '')))}] "
+                f"community={_resolved_community_label(d)}"
+                f"{_node_description_suffix(d)}"
             )
         budget = int(arguments.get("token_budget", 2000))
         return _cut_lines_to_budget(

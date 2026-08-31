@@ -31,6 +31,9 @@ from graphify.serve import (
     _cut_lines_to_budget,
     _load_graph,
     _community_header,
+    _resolved_community_label,
+    _format_node_detail_lines,
+    _node_description_suffix,
     _search_tokens,
     _shortest_path_text,
 )
@@ -653,6 +656,58 @@ def test_subgraph_to_text_no_overlay_is_unchanged():
     G = _make_graph()
     text = _subgraph_to_text(G, {"n1", "n2"}, [("n1", "n2")])
     assert "learning=" not in text
+
+
+def test_subgraph_to_text_includes_description():
+    G = _make_graph()
+    G.nodes["n1"]["description"] = "auth handler"
+    text = _subgraph_to_text(G, {"n1"}, [])
+    assert "desc=auth handler" in text
+
+
+def test_subgraph_to_text_description_counts_against_budget():
+    G = nx.Graph()
+    G.add_node("n1", label="x", source_file="a.py", source_location="L1", community=0,
+               description="z" * 500)
+    bare = _subgraph_to_text(G, {"n1"}, [], token_budget=50)
+    assert "truncated" not in bare
+    annotated = _subgraph_to_text(G, {"n1"}, [], token_budget=50)
+    assert "truncated" in annotated or len(annotated) < len(bare) + 100
+
+
+def test_subgraph_to_text_no_description_unchanged_shape():
+    G = _make_graph()
+    text = _subgraph_to_text(G, {"n1"}, [])
+    assert " desc=" not in text
+    assert "community=0" in text
+
+
+def test_resolved_community_skips_placeholder():
+    d = {"community": 2, "community_name": "Community 2"}
+    assert _resolved_community_label(d) == "2"
+    d["community_name"] = "Services"
+    assert _resolved_community_label(d) == "Services"
+
+
+def test_format_node_detail_lines_includes_description():
+    d = {
+        "label": "foo",
+        "source_file": "a.py",
+        "source_location": "L1",
+        "file_type": "code",
+        "community": 1,
+        "community_name": "Core",
+        "description": "handles auth",
+    }
+    lines = _format_node_detail_lines("foo_id", d, degree=3)
+    assert any("Description: handles auth" in line for line in lines)
+    assert any("Community: Core" in line for line in lines)
+    assert any("Degree:    3" in line for line in lines)
+
+
+def test_node_description_suffix_empty_without_field():
+    assert _node_description_suffix({}) == ""
+    assert _node_description_suffix({"description": "x"}) == " desc=x"
 
 
 def test_query_graph_text_explicit_context_filter_changes_traversal():
