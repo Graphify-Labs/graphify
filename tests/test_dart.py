@@ -636,5 +636,177 @@ class TestDart(unittest.TestCase):
         self.assertEqual(nav_edge["target"], "route_home_id_123_type_auth")
 
 
+    def test_intra_file_calls_and_widget_composition(self):
+        """Calls inside function bodies resolve against declarations in the same file.
+
+        Without this every .dart file is a star: members only ever link back to
+        the file node, never to each other.
+        """
+        code_content = textwrap.dedent("""
+        import 'package:flutter/material.dart';
+
+        class ProductScreen extends StatefulWidget {
+          const ProductScreen({super.key});
+          @override
+          State<ProductScreen> createState() => _ProductScreenState();
+        }
+
+        class _ProductScreenState extends State<ProductScreen> {
+          Product? _product;
+          Timer? _timer;
+
+          @override
+          void initState() {
+            super.initState();
+            _load();
+          }
+
+          @override
+          void dispose() {
+            _timer.cancel();
+            _controller.dispose();
+            super.dispose();
+          }
+
+          Future<void> _load() async {
+            final p = await api.fetchProduct(widget.barcode);
+            _remember(p);
+          }
+
+          void _remember(Product p) {
+            history.add(p);
+          }
+
+          @override
+          Widget build(BuildContext context) {
+            return _ProductView(product: _product);
+          }
+        }
+
+        class _ProductView extends StatelessWidget {
+          const _ProductView({this.product});
+          @override
+          Widget build(BuildContext context) {
+            return Column(children: [
+              _ScoreHeader(),
+              _BreakdownCard(),
+            ]);
+          }
+        }
+
+        class _ScoreHeader extends StatelessWidget {
+          const _ScoreHeader();
+          @override
+          Widget build(BuildContext context) => const Text('score');
+        }
+
+        class _BreakdownCard extends StatelessWidget {
+          const _BreakdownCard();
+          @override
+          Widget build(BuildContext context) {
+            return Column(children: [_row('a'), _row('b')]);
+          }
+
+          Widget _row(String label) => Text(label);
+        }
+        """)
+
+        file_path = self.temp_path / "product_screen.dart"
+        file_path.write_text(code_content, encoding="utf-8")
+
+        result = extract_dart(file_path)
+        edges = result["edges"]
+        stem = _file_stem(file_path)
+
+        def call_edge(source_label, target_label):
+            return next(
+                (
+                    e
+                    for e in edges
+                    if e["relation"] == "calls"
+                    and e["source"] == _make_id(stem, source_label)
+                    and e["target"] == _make_id(stem, target_label)
+                ),
+                None,
+            )
+
+        # A. Widget composition: a constructor invocation is what links siblings.
+        # This is the only edge that gives a Flutter file any internal structure.
+        compose = call_edge("_ProductScreenState", "_ProductView")
+        self.assertIsNotNone(compose)
+        self.assertEqual(compose["context"], "widget_composition")
+        self.assertEqual(compose["confidence"], "EXTRACTED")
+
+        self.assertIsNotNone(call_edge("_ProductView", "_ScoreHeader"))
+        self.assertIsNotNone(call_edge("_ProductView", "_BreakdownCard"))
+
+        # B. Plain helper calls, attributed to the enclosing class rather than to
+        # the method: member ids are (stem, name), so every widget's `build`
+        # collapses onto one node and a method-level caller would be meaningless.
+        load = call_edge("_ProductScreenState", "_load")
+        self.assertIsNotNone(load)
+        self.assertEqual(load["context"], "call")
+        self.assertIsNotNone(call_edge("_ProductScreenState", "_remember"))
+
+        # C. Repeated call sites are counted in the weight, not duplicated.
+        row = call_edge("_BreakdownCard", "_row")
+        self.assertIsNotNone(row)
+        self.assertEqual(row["weight"], 2.0)
+
+        # D. No self-loops when a class calls its own members.
+        self.assertEqual([e for e in edges if e["source"] == e["target"]], [])
+
+    def test_intra_file_calls_ignore_foreign_receivers(self):
+        """Only unqualified calls and this./widget. resolve locally.
+
+        `_controller.dispose()` is not this widget's `dispose`, and
+        `super.initState()` is a framework upcall - matching either against local
+        declarations invents edges that do not exist.
+        """
+        code_content = textwrap.dedent("""
+        class Screen extends StatefulWidget {
+          const Screen();
+        }
+
+        class _ScreenState extends State<Screen> {
+          @override
+          void initState() {
+            super.initState();
+            this.refresh();
+          }
+
+          @override
+          void dispose() {
+            _controller.dispose();
+            _sub..cancel()..close();
+            super.dispose();
+          }
+
+          void refresh() {
+            widget.rebuild();
+          }
+
+          void rebuild() {}
+        }
+        """)
+
+        file_path = self.temp_path / "screen.dart"
+        file_path.write_text(code_content, encoding="utf-8")
+
+        result = extract_dart(file_path)
+        stem = _file_stem(file_path)
+        calls = [e for e in result["edges"] if e["relation"] == "calls"]
+        targets = {e["target"] for e in calls}
+
+        # this./widget. are the widget itself, so these resolve
+        self.assertIn(_make_id(stem, "refresh"), targets)
+        self.assertIn(_make_id(stem, "rebuild"), targets)
+
+        # super.initState()/super.dispose() are framework upcalls, and
+        # _controller.dispose()/_sub..cancel() belong to other objects
+        self.assertNotIn(_make_id(stem, "initState"), targets)
+        self.assertNotIn(_make_id(stem, "dispose"), targets)
+        self.assertNotIn(_make_id(stem, "cancel"), targets)
+
 if __name__ == "__main__":
     unittest.main()

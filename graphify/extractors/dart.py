@@ -525,4 +525,108 @@ def extract_dart(path: Path) -> dict:
             add_node(target_nid, clean_name, source_file=None)
             add_edge(file_nid, target_nid, "references", context="type_lookup")
 
+    # 8. Intra-file call graph (invocations and widget composition)
+    # Sections 1-7 only ever link members back to the file node, so a .dart file
+    # collapses into a star: N members, N-1 `defines` edges, nothing between them.
+    # Resolve call sites inside function bodies against declarations in this same
+    # file. Names that resolve to nothing (imported symbols, receiver-qualified
+    # calls into other libraries) are dropped rather than guessed.
+    call_keywords = {
+        "if", "for", "while", "switch", "catch", "return", "assert", "await",
+        "super", "this", "new", "case", "do", "else", "in", "is", "as", "rethrow",
+        "yield", "throw", "print", "setState",
+    }
+
+    # Class bodies, so a method's calls are attributed to its enclosing class.
+    # Member functions collapse to one node per name per file (`build` is defined
+    # by every widget here), which would make method-level callers meaningless.
+    class_spans: list[tuple[int, int, str]] = []
+    for m in re.finditer(class_pattern, src_clean, re.MULTILINE):
+        body_start = src_clean.find("{", m.end())
+        if body_start == -1:
+            continue
+        # `class A = B with C;` has no body - its brace belongs to the next class
+        semi = src_clean.find(";", m.end())
+        if semi != -1 and semi < body_start:
+            continue
+        class_spans.append((m.start(), _find_matching_brace(src_clean, m.end()),
+                            _make_id(stem, m.group(1))))
+    declared_classes = {m.group(1): _make_id(stem, m.group(1))
+                        for m in re.finditer(class_pattern, src_clean, re.MULTILINE)}
+
+    # Function bodies, re-derived with the same filters section 5 applies
+    declared_funcs: dict[str, str] = {}
+    func_bodies: list[tuple[int, int, str]] = []
+    for m in re.finditer(method_pattern, src_clean, re.MULTILINE):
+        name = m.group(1).split(".")[-1]
+        if name in {"if", "for", "while", "switch", "catch", "return", "void",
+                    "dynamic", "final", "const", "get", "set"}:
+            continue
+        if re.match(r"^[A-Z]", name):
+            continue
+        nid = _make_id(stem, name)
+        declared_funcs[name] = nid
+
+        start_idx = m.start()
+        brace_pos = src_clean.find("{", start_idx)
+        semi_pos = src_clean.find(";", start_idx)
+        arrow_pos = src_clean.find("=>", start_idx)
+        if brace_pos == -1:
+            continue
+        if semi_pos != -1 and semi_pos < brace_pos:
+            continue
+        if arrow_pos != -1 and arrow_pos < brace_pos:
+            continue
+        func_bodies.append((brace_pos, _find_matching_brace(src_clean, start_idx), nid))
+
+    def _enclosing_class(pos: int) -> str | None:
+        """Innermost class whose body contains pos, or None for top-level code."""
+        owner = None
+        owner_start = -1
+        for c_start, c_end, c_nid in class_spans:
+            if c_start <= pos < c_end and c_start > owner_start:
+                owner, owner_start = c_nid, c_start
+        return owner
+
+    # A receiver makes the call belong to another object: `_controller.dispose()`
+    # is not this widget's `dispose`, and `super.initState()` is a framework
+    # upcall, not a local one. Only unqualified calls and `this.`/`widget.` are
+    # resolvable against this file without real type inference.
+    call_site_pattern = re.compile(r"(?:(\w+)\s*\.\s*)?\b([A-Za-z_]\w*)\s*\(")
+    self_receivers = {"this", "widget"}
+
+    call_counts: dict[tuple[str, str], list] = {}
+    for body_start, body_end, func_nid in func_bodies:
+        caller = _enclosing_class(body_start) or func_nid
+        body = src_clean[body_start:body_end]
+        for cm in call_site_pattern.finditer(body):
+            receiver, callee = cm.group(1), cm.group(2)
+            if receiver is not None and receiver not in self_receivers:
+                continue
+            if receiver is None and cm.start() > 0 and body[cm.start() - 1] == ".":
+                continue  # cascade (`..dispose()`) - target is some other object
+            if callee in call_keywords:
+                continue
+            if callee in declared_classes:
+                # Constructor invocation - in Flutter this is how a widget tree
+                # is assembled, and it is the only edge that links siblings.
+                # Checked before declared_funcs: a constructor declaration
+                # (`const _ScoreHeader({super.key})`) also matches method_pattern,
+                # so the two maps collide on every widget name.
+                target, context = declared_classes[callee], "widget_composition"
+            elif callee in declared_funcs:
+                target, context = declared_funcs[callee], "call"
+            else:
+                continue
+            if target == caller:
+                continue
+            entry = call_counts.get((caller, target))
+            if entry is None:
+                call_counts[(caller, target)] = [1, context]
+            else:
+                entry[0] += 1
+
+    for (caller, target), (count, context) in call_counts.items():
+        add_edge(caller, target, "calls", weight=float(count), context=context)
+
     return {"nodes": nodes, "edges": edges}
