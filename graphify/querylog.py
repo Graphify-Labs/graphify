@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
+from graphify.paths import _atomic_replace
+
 _NODES_RE = re.compile(r"(\d+)\s+nodes?\s+found")
 
 
@@ -57,8 +59,12 @@ def _archive_path(path: Path) -> Path:
 
 @contextlib.contextmanager
 def _query_log_lock(path: Path) -> Iterator[None]:
-    # Serialize append+rotate on POSIX (watch.py uses the same flock pattern).
-    # Multi-process rotation on Windows is best-effort when fcntl is unavailable.
+    """Serialize append+rotate on POSIX (watch.py uses the same flock pattern).
+
+    Multi-process rotation on Windows is best-effort when fcntl is unavailable.
+    If the lock file cannot be opened, degrades to unlocked append rather than
+    dropping the log line.
+    """
     try:
         import fcntl
     except ImportError:
@@ -66,7 +72,11 @@ def _query_log_lock(path: Path) -> Iterator[None]:
         return
     lock_path = path.with_name(path.name + ".lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    fh = open(lock_path, "a+", encoding="utf-8")
+    try:
+        fh = open(lock_path, "a+", encoding="utf-8")
+    except OSError:
+        yield
+        return
     try:
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
         yield
@@ -85,13 +95,19 @@ def _rotate_if_needed(path: Path, max_records: int) -> None:
     if not lines or len(lines) <= max_records:
         return
     overflow, keep = lines[:-max_records], lines[-max_records:]
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text("".join(keep), encoding="utf-8")
-    os.replace(tmp, path)
+
+    def _write_keep(fh) -> None:
+        fh.write("".join(keep))
+
+    _atomic_replace(path, _write_keep)
     archive = _archive_path(path)
     archive.parent.mkdir(parents=True, exist_ok=True)
-    with archive.open("a", encoding="utf-8") as fh:
-        fh.writelines(overflow)
+    try:
+        with archive.open("a", encoding="utf-8") as fh:
+            fh.writelines(overflow)
+    except OSError:
+        with path.open("a", encoding="utf-8") as fh:
+            fh.writelines(overflow)
 
 
 def log_query(

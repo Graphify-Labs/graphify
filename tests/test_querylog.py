@@ -331,3 +331,38 @@ def test_rotation_concurrent_appends_preserved(tmp_path, monkeypatch):
             for line in path.read_text().splitlines():
                 questions.add(json.loads(line)["question"])
     assert len(questions) == 10
+
+
+def test_rotation_lock_open_failure_still_appends(tmp_path, monkeypatch):
+    log_file = _rotation_env(monkeypatch, tmp_path, max_records=3)
+    real_open = open
+
+    def selective_open(file, *args, **kwargs):
+        if str(file).endswith(".lock"):
+            raise OSError("simulated lock open failure")
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", selective_open)
+    log_query(kind="query", question="q0", corpus="/g.json")
+    assert log_file.exists()
+    rec = json.loads(log_file.read_text())
+    assert rec["question"] == "q0"
+
+
+def test_rotation_archive_failure_restores_overflow(tmp_path, monkeypatch):
+    log_file = _rotation_env(monkeypatch, tmp_path, max_records=2)
+    archive = _archive_path(log_file)
+    real_open = Path.open
+
+    def selective_open(self, *args, **kwargs):
+        if self == archive and args and args[0] == "a":
+            raise OSError("simulated archive failure")
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", selective_open)
+    for i in range(3):
+        log_query(kind="query", question=f"q{i}", corpus="/g.json")
+
+    live = [json.loads(l)["question"] for l in log_file.read_text().splitlines()]
+    assert live == ["q1", "q2", "q0"]
+    assert not archive.exists() or archive.read_text() == ""
