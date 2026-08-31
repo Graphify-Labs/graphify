@@ -85,6 +85,23 @@ def _default_graph_path() -> str:
     return str(Path(_GRAPHIFY_OUT) / "graph.json")
 
 
+#: How many connections `explain` prints before summarizing the rest by file.
+EXPLAIN_DEFAULT_LIMIT = 20
+
+
+def _explain_limit(raw: str) -> int:
+    """Parse `--limit` for `explain`. 0 means no cap."""
+    try:
+        value = int(raw)
+    except ValueError:
+        print("error: --limit must be an integer", file=sys.stderr)
+        sys.exit(1)
+    if value < 0:
+        print("error: --limit must be >= 0", file=sys.stderr)
+        sys.exit(1)
+    return value
+
+
 def _stamped_manifest_files(
     files_by_type: dict[str, list[str]],
     sem_result: dict,
@@ -1700,17 +1717,27 @@ def dispatch_command(cmd: str) -> None:
 
     elif cmd == "explain":
         if len(sys.argv) < 3:
-            print('Usage: graphify explain "<node>" [--graph path]', file=sys.stderr)
+            print(
+                'Usage: graphify explain "<node>" [--graph path] [--limit N]',
+                file=sys.stderr,
+            )
             sys.exit(1)
         from graphify.serve import _find_node, find_node_ambiguity
         from networkx.readwrite import json_graph
 
         label = sys.argv[2]
         graph_path = _default_graph_path()
+        # How many connections to print before falling back to the grouped
+        # summary. 0 means no cap. Default unchanged.
+        limit = EXPLAIN_DEFAULT_LIMIT
         args = sys.argv[3:]
         for i, a in enumerate(args):
             if a == "--graph" and i + 1 < len(args):
                 graph_path = args[i + 1]
+            elif a == "--limit" and i + 1 < len(args):
+                limit = _explain_limit(args[i + 1])
+            elif a.startswith("--limit="):
+                limit = _explain_limit(a.split("=", 1)[1])
         gp = Path(graph_path).resolve()
         if not gp.exists():
             print(f"error: graph file not found: {gp}", file=sys.stderr)
@@ -1790,7 +1817,8 @@ def dispatch_command(cmd: str) -> None:
         if connections:
             print(f"\nConnections ({len(connections)}):")
             connections.sort(key=lambda c: G.degree(c[1]), reverse=True)
-            for direction, nb, edata in connections[:20]:
+            shown = connections if limit == 0 else connections[:limit]
+            for direction, nb, edata in shown:
                 rel = edata.get("relation", "")
                 conf = edata.get("confidence", "")
                 arrow = "-->" if direction == "out" else "<--"
@@ -1801,9 +1829,9 @@ def dispatch_command(cmd: str) -> None:
                 sfile = edata.get("source_file") or ""
                 at = f" {sfile}:{loc}" if loc else ""
                 print(f"  {arrow} {G.nodes[nb].get('label', nb)} [{rel}] [{conf}]{at}")
-            if len(connections) > 20:
-                remainder = connections[20:]
-                print(f"  ... and {len(remainder)} more")
+            if len(connections) > len(shown):
+                remainder = connections[len(shown):]
+                print(f"  ... and {len(remainder)} more (raise with --limit N, 0 for all)")
                 # #2009: a bare count silently hides the answer on high-degree
                 # nodes ("who calls this, what's the impact?"). Group the cut
                 # connections by direction + file so their shape is visible
@@ -1817,12 +1845,12 @@ def dispatch_command(cmd: str) -> None:
                 # byte-stable order (not the degree-derived insertion order).
                 grouped = sorted(by_file.items(), key=lambda kv: (-kv[1], kv[0]))
                 print("  Grouped by file:")
-                for (direction, sfile), count in grouped[:20]:
+                for (direction, sfile), count in grouped[:limit]:
                     arrow = "-->" if direction == "out" else "<--"
                     noun = "connection" if count == 1 else "connections"
                     print(f"    {arrow} {sfile}: {count} {noun}")
-                if len(grouped) > 20:
-                    print(f"    ... and {len(grouped) - 20} more files")
+                if len(grouped) > limit:
+                    print(f"    ... and {len(grouped) - limit} more files")
         from graphify import querylog
         querylog.log_query(
             kind="explain",

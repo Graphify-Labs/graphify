@@ -1,6 +1,9 @@
 """Regression tests for `graphify explain` arrow direction (#853)."""
 from __future__ import annotations
 import json
+
+import pytest
+
 import graphify.__main__ as mainmod
 
 
@@ -320,3 +323,79 @@ def test_explain_matches_within_one_file_are_not_ambiguous(monkeypatch, tmp_path
     out = _run(monkeypatch, p, "MetricsPort", capsys)
     assert "Ambiguous" not in out
     assert "Node: MetricsPort" in out
+
+
+# --------------------------------------------------------------------------
+# --limit: seeing past the first 20 connections (#2009 follow-up)
+# --------------------------------------------------------------------------
+def _write_hub_graph(tmp_path, callers=25):
+    """One node called by `callers` others, i.e. more than the default cut."""
+    nodes = [{"id": "hub", "label": "hub()", "source_file": "src/hub.ts",
+              "community": 0}]
+    links = []
+    for i in range(callers):
+        nodes.append({"id": f"c{i}", "label": f"caller{i:02d}()",
+                      "source_file": f"src/caller{i:02d}.ts", "community": 0})
+        links.append({"source": f"c{i}", "target": "hub",
+                      "relation": "calls", "confidence": "EXTRACTED"})
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps({"directed": False, "multigraph": False, "graph": {},
+                             "nodes": nodes, "links": links}))
+    return p
+
+
+def _run_argv(monkeypatch, capsys, *argv):
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(mainmod.sys, "argv", ["graphify", *argv])
+    mainmod.main()
+    return capsys.readouterr().out
+
+
+def test_default_cut_is_unchanged(monkeypatch, tmp_path, capsys):
+    p = _write_hub_graph(tmp_path)
+    out = _run_argv(monkeypatch, capsys, "explain", "hub", "--graph", str(p))
+    assert out.count("<-- caller") == 20
+    assert "... and 5 more" in out
+
+
+def test_limit_raises_the_cut(monkeypatch, tmp_path, capsys):
+    p = _write_hub_graph(tmp_path)
+    out = _run_argv(monkeypatch, capsys, "explain", "hub", "--graph", str(p),
+                    "--limit", "25")
+    assert out.count("<-- caller") == 25
+    assert "more" not in out.split("Connections")[1]
+
+
+def test_limit_zero_shows_every_connection(monkeypatch, tmp_path, capsys):
+    p = _write_hub_graph(tmp_path, callers=40)
+    out = _run_argv(monkeypatch, capsys, "explain", "hub", "--graph", str(p),
+                    "--limit=0")
+    assert out.count("<-- caller") == 40
+    assert "Grouped by file:" not in out
+
+
+def test_limit_below_the_default_still_summarizes_the_rest(monkeypatch, tmp_path, capsys):
+    p = _write_hub_graph(tmp_path)
+    out = _run_argv(monkeypatch, capsys, "explain", "hub", "--graph", str(p),
+                    "--limit", "3")
+    assert out.count("<-- caller") == 3
+    assert "... and 22 more" in out
+    assert "Grouped by file:" in out
+
+
+def test_a_non_numeric_limit_is_an_error(monkeypatch, tmp_path, capsys):
+    p = _write_hub_graph(tmp_path)
+    with pytest.raises(SystemExit) as exc:
+        _run_argv(monkeypatch, capsys, "explain", "hub", "--graph", str(p),
+                  "--limit", "all")
+    assert exc.value.code == 1
+    assert "--limit must be an integer" in capsys.readouterr().err
+
+
+def test_a_negative_limit_is_an_error(monkeypatch, tmp_path, capsys):
+    p = _write_hub_graph(tmp_path)
+    with pytest.raises(SystemExit) as exc:
+        _run_argv(monkeypatch, capsys, "explain", "hub", "--graph", str(p),
+                  "--limit", "-1")
+    assert exc.value.code == 1
+    assert "--limit must be >= 0" in capsys.readouterr().err
