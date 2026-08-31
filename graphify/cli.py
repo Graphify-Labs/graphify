@@ -3118,7 +3118,8 @@ def dispatch_command(cmd: str) -> None:
                     print(f"Added '{tag}' to global graph: +{result['nodes_added']} nodes, "
                           f"-{result['nodes_removed']} pruned. Global: {_global_path()}")
                     if result.get("cross_repo_calls"):
-                        print(f"  resolved {result['cross_repo_calls']} member call(s) across repos")
+                        print(f"  resolved {result['cross_repo_calls']} "
+                              f"member call(s) across repos")
             except Exception as exc:
                 print(f"error: {exc}", file=sys.stderr); sys.exit(1)
         elif subcmd == "remove":
