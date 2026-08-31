@@ -720,9 +720,9 @@ def _run_cli() -> None:
             "  antigravity uninstall   remove .agents/rules, .agents/workflows, and skill"
         )
         print(
-            "  hermes install          write skill to ~/.hermes/skills/graphify/ (Hermes)"
+            "  hermes install          write skill to ~/.hermes/skills/graphify/ + AGENTS.md section (Hermes)"
         )
-        print("  hermes uninstall        remove skill from ~/.hermes/skills/graphify/")
+        print("  hermes uninstall        remove skill from ~/.hermes/skills/graphify/ + AGENTS.md section")
         print(
             "  kiro install            write skill to .kiro/skills/graphify/ + steering file (Kiro IDE/CLI)"
         )
