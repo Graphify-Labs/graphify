@@ -66,7 +66,7 @@ def test_defines_module_types_values_and_members(tmp_path):
     assert {"Demo", "Config", "Mode", "BadFrame",
             "defaultPort", "makeConfig", "validate", "start"} <= labels
     # DU cases and class members
-    assert {"Fast", "Careful", "Server", "Run", "Default"} <= labels
+    assert {"Fast", "Careful", "Server", ".Run()", ".Default()"} <= labels
 
 
 def test_containment_shape(tmp_path):
@@ -80,8 +80,8 @@ def test_containment_shape(tmp_path):
     # DU cases contained by their type; members contained by their class
     assert ("Mode", "Fast") in contains
     assert ("Mode", "Careful") in contains
-    assert ("Server", "Run") in contains
-    assert ("Server", "Default") in contains
+    assert ("Server", ".Run()") in contains
+    assert ("Server", ".Default()") in contains
 
 
 def test_nested_let_does_not_mint_a_definition(tmp_path):
@@ -103,7 +103,7 @@ def test_member_body_calls_attribute_to_member(tmp_path):
     r = extract_fsharp(_write(tmp_path, "demo.fs", IMPL))
     calls = _rel_pairs(r, "calls")
     # `member this.Run() = start cfg` — caller is Run, not the file.
-    assert ("Run", "start") in calls
+    assert (".Run()", "start") in calls
 
 
 def test_pipeline_callee_left_of_backpipe(tmp_path):
@@ -147,8 +147,9 @@ def test_fsx_script_parses(tmp_path):
     r = extract_fsharp(_write(tmp_path, "script.fsx", src))
     assert "error" not in r
     assert "hello" in _labels(r)
-    assert ("script.fsx", "hello") in _rel_pairs(r, "calls") or \
-           ("hello", "printfn") in _rel_pairs(r, "calls")
+    calls = _rel_pairs(r, "calls")
+    assert ("script.fsx", "hello") in calls
+    assert ("hello", "printfn") in calls
 
 
 def test_same_named_members_of_different_types_stay_distinct(tmp_path):
@@ -160,10 +161,10 @@ def test_same_named_members_of_different_types_stay_distinct(tmp_path):
            "type B() =\n"
            "    member this.Dispose() = 2\n")
     r = extract_fsharp(_write(tmp_path, "two.fs", src))
-    disp = [n for n in r["nodes"] if n["label"] == "Dispose" and n.get("source_file")]
+    disp = [n for n in r["nodes"] if n["label"] == ".Dispose()" and n.get("source_file")]
     assert len(disp) == 2, f"expected 2 Dispose nodes, got {len(disp)}"
     contains = _rel_pairs(r, "contains")
-    assert ("A", "Dispose") in contains and ("B", "Dispose") in contains
+    assert ("A", ".Dispose()") in contains and ("B", ".Dispose()") in contains
 
 
 def test_annotated_let_names_the_binding_not_the_type(tmp_path):
@@ -196,3 +197,92 @@ def test_missing_grammar_is_reported_not_raised(tmp_path, monkeypatch):
     monkeypatch.setattr(builtins, "__import__", fake_import)
     r = extract_fsharp(_write(tmp_path, "x.fs", "module M\n"))
     assert r["nodes"] == [] and "not installed" in r["error"]
+
+
+# ── Findings from graphify's review of PR #3221 (round 2) ────────────────────
+
+
+def test_dotted_callee_records_call(tmp_path):
+    # `Grasp.Telemetry.init args` parses as application > dot_expression; the
+    # callee must be recorded as a full-path stub, not silently skipped.
+    src = "module M\nlet go args =\n    Grasp.Telemetry.init args\n"
+    r = extract_fsharp(_write(tmp_path, "dot.fs", src))
+    calls = _rel_pairs(r, "calls")
+    assert ("go", "Grasp.Telemetry.init") in calls or ("go", "init") in calls, calls
+
+
+def test_let_rec_and_mints_every_binding(tmp_path):
+    src = "module M\nlet rec f x = g x\nand g y = f y\n"
+    r = extract_fsharp(_write(tmp_path, "rec.fs", src))
+    sourced = {n["label"] for n in r["nodes"] if n.get("source_file")}
+    assert {"f", "g"} <= sourced
+    calls = _rel_pairs(r, "calls")
+    assert ("f", "g") in calls
+    assert ("g", "f") in calls
+    assert ("f", "f") not in calls, "false self-loop from mis-attributed and-binding"
+
+
+def test_enum_members_are_emitted(tmp_path):
+    src = "module M\ntype Color =\n    | Red = 0\n    | Blue = 1\n"
+    r = extract_fsharp(_write(tmp_path, "enum.fs", src))
+    contains = _rel_pairs(r, "contains")
+    assert ("Color", "Red") in contains and ("Color", "Blue") in contains
+
+
+def test_destructuring_let_mints_each_name(tmp_path):
+    src = "module M\nlet (major, minor) = parseVersion v\n"
+    r = extract_fsharp(_write(tmp_path, "destr.fs", src))
+    sourced = {n["label"] for n in r["nodes"] if n.get("source_file")}
+    assert {"major", "minor"} <= sourced
+
+
+def test_comment_inside_pipeline_keeps_call_edge(tmp_path):
+    src = "module M\nlet f x = x\nlet h x =\n    x // note\n    |> f\n"
+    r = extract_fsharp(_write(tmp_path, "cpipe.fs", src))
+    assert ("h", "f") in _rel_pairs(r, "calls")
+
+
+def test_same_named_union_cases_stay_type_scoped(tmp_path):
+    src = ("module M\n"
+           "type ParseResult = | Ok of int | Bad\n"
+           "type SaveResult = | Ok of string | Failed\n")
+    r = extract_fsharp(_write(tmp_path, "du.fs", src))
+    oks = [n for n in r["nodes"] if n["label"] == "Ok" and n.get("source_file")]
+    assert len(oks) == 2, f"expected 2 type-scoped Ok nodes, got {len(oks)}"
+
+
+def test_single_case_du_has_no_self_loop(tmp_path):
+    src = "module M\ntype Email = Email of string\n"
+    r = extract_fsharp(_write(tmp_path, "email.fs", src))
+    for e in r["edges"]:
+        assert e["source"] != e["target"], f"self-loop: {e}"
+    emails = [n for n in r["nodes"] if n["label"] == "Email" and n.get("source_file")]
+    assert len(emails) == 2  # the type AND its case, distinct
+
+
+def test_namespace_is_canonical_and_marked(tmp_path):
+    src_a = "namespace Grasp.Core\ntype A() = member this.Go() = 1\n"
+    src_b = "namespace Grasp.Core\ntype B() = member this.Ho() = 2\n"
+    ra = extract_fsharp(_write(tmp_path, "a.fs", src_a))
+    rb = extract_fsharp(_write(tmp_path, "b.fs", src_b))
+    ns_a = [n for n in ra["nodes"] if n.get("type") == "namespace"]
+    ns_b = [n for n in rb["nodes"] if n.get("type") == "namespace"]
+    assert ns_a and ns_b
+    assert ns_a[0]["id"] == ns_b[0]["id"], "namespace id must be canonical across files"
+    assert ns_a[0]["id"].startswith("csharp_namespace:")
+    assert ns_a[0]["label"] == "Grasp.Core"
+
+
+def test_namespace_segment_does_not_bind_local(tmp_path):
+    # Under `namespace Grasp.Sidecar`, the call `Sidecar.validate c` must stay
+    # a stub — the namespace is corpus-wide, not a local qualifier.
+    src = ("namespace Grasp.Sidecar\n"
+           "module Impl =\n"
+           "    let validate c = c\n"
+           "    let go c = Sidecar.validate c\n")
+    r = extract_fsharp(_write(tmp_path, "ns.fs", src))
+    lab = {n["id"]: n for n in r["nodes"]}
+    bound = [e for e in r["edges"] if e["relation"] == "calls"
+             and lab[e["target"]]["label"] == "validate"
+             and lab[e["target"]].get("source_file")]
+    assert not bound, "namespace-rooted call falsely bound to local definition"

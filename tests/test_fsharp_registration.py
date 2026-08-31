@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import pytest
 
-pytest.importorskip("tree_sitter_fsharp")
+# NOTE: no module-level importorskip. The registry entries below are pure
+# literals whose absence is a shippable bug regardless of whether the grammar
+# is installed; only the two dispatch tests need the grammar and skip
+# individually.
 
 
 def test_detect_categorizes_fs_as_code():
@@ -25,6 +28,7 @@ def test_watch_covers_fs():
 
 
 def test_dispatch_routes_fs_to_fsharp_extractor(tmp_path):
+    pytest.importorskip("tree_sitter_fsharp")
     # Through the public extract() path, not a direct import: a missing
     # dispatch entry silently yields zero nodes for the file.
     from graphify.extract import extract
@@ -36,6 +40,7 @@ def test_dispatch_routes_fs_to_fsharp_extractor(tmp_path):
 
 
 def test_dispatch_routes_fsx_to_fsharp_extractor(tmp_path):
+    pytest.importorskip("tree_sitter_fsharp")
     # .fsx must be tested separately: the .fs entry alone keeps this green,
     # and the .fsx entry's removal survived a mutation run until this existed.
     from graphify.extract import extract
@@ -69,3 +74,18 @@ def test_build_edge_family_matches_cs():
     from graphify.build import _EDGE_LANG_FAMILY
     assert _EDGE_LANG_FAMILY.get(".fs") == _EDGE_LANG_FAMILY[".cs"]
     assert _EDGE_LANG_FAMILY.get(".fsx") == _EDGE_LANG_FAMILY[".cs"]
+
+
+def test_glsl_fragment_shader_is_not_dispatched_to_fsharp(tmp_path):
+    # .fs is also the standard GLSL fragment-shader extension. A shader must
+    # get NO extractor (no-AST-extractor warning path), not be ERROR-parsed
+    # into sourceless dotnet-family stubs.
+    from graphify.extract import _get_extractor
+    p = tmp_path / "frag.fs"
+    p.write_text("#version 330 core\nuniform vec4 color;\n"
+                 "void main() { gl_FragColor = color; }\n", encoding="utf-8")
+    assert _get_extractor(p) is None
+
+    q = tmp_path / "real.fs"
+    q.write_text("module M\nlet f x = x\n", encoding="utf-8")
+    assert _get_extractor(q) is not None

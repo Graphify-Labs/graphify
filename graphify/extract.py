@@ -5603,6 +5603,28 @@ def _is_cpp_header(path: Path) -> bool:
     return any(marker in head for marker in _CPP_HEADER_MARKERS)
 
 
+
+def _looks_like_fsharp_source(path: Path) -> bool:
+    """Distinguish F# from the other users of the .fs extension (GLSL fragment
+    shaders, Forth). Mirrors the `.m` ObjC-vs-MATLAB sniff: route to the F#
+    extractor only when the file plausibly IS F#; otherwise return no extractor
+    (surfaced by the no-AST-extractor warning) instead of ERROR-parsing a
+    shader into sourceless dotnet-family stubs that the corpus rewire could
+    bind to real definitions.
+    """
+    try:
+        head = path.read_bytes()[:4096]
+    except OSError:
+        return True  # unreadable: let the extractor report the real error
+    glsl_markers = (b"#version", b"precision ", b"gl_Frag", b"gl_Position",
+                    b"layout(", b"layout (", b"uniform ", b"varying ")
+    if any(m in head for m in glsl_markers):
+        return False
+    fsharp_markers = (b"let ", b"module ", b"namespace ", b"open ", b"type ",
+                      b"#light", b"member ", b"//")
+    return any(m in head for m in fsharp_markers)
+
+
 def _get_extractor(path: Path) -> Any | None:
     """Return the correct extractor function for a file, or None if unsupported."""
     if path.name.lower().endswith(".blade.php"):
@@ -5637,6 +5659,9 @@ def _get_extractor(path: Path) -> Any | None:
     # an extractor (surfaced by the no-AST-extractor warning, #1689) rather than
     # mis-parsed. `.mm` is unambiguously Objective-C++ and stays on extract_objc.
     if suffix == ".m" and not _is_objc_source(path):
+        return None
+    # `.fs` is F# OR a GLSL fragment shader (or Forth). Only route plausible F#.
+    if suffix == ".fs" and not _looks_like_fsharp_source(path):
         return None
     # Extensionless files: resolve by shebang, mirroring detect.classify_file.
     # Without this, detect labels e.g. `#!/usr/bin/env bash` CLIs as code but
