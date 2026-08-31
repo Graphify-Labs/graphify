@@ -1870,8 +1870,16 @@ def _rebuild_code(
 
         # Inherit the existing graph's directed flag (#2342) so `graphify
         # update` can't silently downgrade a directed graph to undirected -
-        # build_from_json defaults to directed=False otherwise.
-        G = build_from_json(result, directed=bool((existing_graph_data or {}).get("directed", False)))
+        # build_from_json defaults to directed=False otherwise. Pass the
+        # project root so absolute source_file paths from semantic fragments
+        # are relativized the same way `graphify build` does (#932) — without
+        # it a watch rebuild writes machine-absolute paths that break sharing
+        # and path-based selectors.
+        G = build_from_json(
+            result,
+            directed=bool((existing_graph_data or {}).get("directed", False)),
+            root=project_root,
+        )
         candidate_topology = _topology_from_graph(G)
         if existing_graph_data:
             try:

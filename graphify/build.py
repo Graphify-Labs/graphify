@@ -2148,3 +2148,150 @@ def prune_repo_from_graph(G: nx.Graph, repo_tag: str) -> int:
     to_remove = [n for n, d in G.nodes(data=True) if d.get("repo") == repo_tag]
     G.remove_nodes_from(to_remove)
     return len(to_remove)
+
+
+def load_graph_json(
+    path: Path,
+    *,
+    preserve_type: bool = False,
+    directed: bool = False,
+    preserve_direction: bool = False,
+) -> nx.Graph:
+    """Load persisted node-link JSON, optionally preserving its graph type.
+
+    Shared by merge-graphs and the global graph. Applies the graph-file size
+    cap, normalizes the legacy ``edges`` key to ``links`` (#738). By default
+    directed/multi inputs are coerced to a simple Graph for established
+    callers; type-preserving composition uses ``preserve_type``.
+
+    directed=True loads the stored source/target order into a directed graph.
+    Persisted simple graphs say ``"directed": false`` even though their edge
+    order is meaningful (export restores it from _src/_tgt and pops the
+    attrs), so an undirected round-trip re-emits endpoints by node insertion
+    order and silently flips caller/callee — the #760 failure mode. Callers
+    that re-serialize a composed graph must load members directed.
+
+    preserve_direction=True keeps the graph undirected but stashes the stored
+    endpoints on each edge as ``_src``/``_tgt`` first, so direction survives
+    the round-trip for callers that must compose into an undirected graph and
+    cannot switch type (#2261, merge-graphs). Mirrors export.py's marker
+    convention; use ``directed`` instead when the caller can hold a DiGraph.
+    """
+    from networkx.readwrite import json_graph as _jg
+    from .security import check_graph_file_size_cap
+
+    try:
+        check_graph_file_size_cap(path)
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("expected a mapping at the top level")
+
+        nodes = data.get("nodes")
+        if not isinstance(nodes, list):
+            raise ValueError("'nodes' must be a list")
+        for i, node in enumerate(nodes):
+            if not isinstance(node, dict):
+                raise ValueError(f"nodes[{i}] must be a mapping")
+            if "id" not in node:
+                raise ValueError(f"nodes[{i}] is missing required 'id'")
+            try:
+                hash(node["id"])
+            except TypeError as exc:
+                raise ValueError(f"nodes[{i}].id must be hashable") from exc
+
+        links_key = "links" if "links" in data else "edges" if "edges" in data else ""
+        if not links_key:
+            raise ValueError("expected a 'links' or legacy 'edges' list")
+        links = data[links_key]
+        if not isinstance(links, list):
+            raise ValueError(f"'{links_key}' must be a list")
+        for i, link in enumerate(links):
+            if not isinstance(link, dict):
+                raise ValueError(f"{links_key}[{i}] must be a mapping")
+            for endpoint in ("source", "target"):
+                if endpoint not in link:
+                    raise ValueError(
+                        f"{links_key}[{i}] is missing required '{endpoint}'"
+                    )
+                try:
+                    hash(link[endpoint])
+                except TypeError as exc:
+                    raise ValueError(
+                        f"{links_key}[{i}].{endpoint} must be hashable"
+                    ) from exc
+
+        if links_key == "edges":
+            data = dict(data, links=links)
+        if preserve_direction:
+            # Keep in-file markers when present (#2309): unconditionally
+            # overwriting them with source/target would clobber the true
+            # direction of a link persisted in flipped endpoint order.
+            data = dict(
+                data,
+                links=[
+                    {
+                        **link,
+                        "_src": link.get("_src", link.get("source")),
+                        "_tgt": link.get("_tgt", link.get("target")),
+                    }
+                    for link in links
+                ],
+            )
+        if directed:
+            data = dict(data, directed=True)
+        try:
+            G = _jg.node_link_graph(data, edges="links")
+        except TypeError:
+            G = _jg.node_link_graph(data)
+        # node_link_graph restores only the nested `graph.hyperedges` slot; a
+        # graph.json whose hyperedges live only at the top level (the other
+        # half of to_json's dual-slot shape, #2485) would silently lose them
+        # here. Fall back to the top-level key (#2484).
+        if "hyperedges" not in G.graph and isinstance(data.get("hyperedges"), list):
+            G.graph["hyperedges"] = data["hyperedges"]
+    except (
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        AttributeError,
+        nx.NetworkXException,
+    ) as exc:
+        raise ValueError(f"cannot load graph {path}: {exc}") from exc
+
+    simple_type = nx.DiGraph if directed else nx.Graph
+    if not preserve_type and type(G) is not simple_type:
+        G = simple_type(G)
+    return G
+
+
+def merge_prefixed_into(G: nx.Graph, prefixed: nx.Graph) -> int:
+    """Merge a repo_tag::-prefixed graph into G in-place. Returns nodes added.
+
+    External-library nodes (no ``source_file``) are deduplicated by label
+    against G's existing externals, with incident edges rewired onto the
+    shared node instead of dropped — the one place cross-repo identity is
+    established. Self-loops introduced by the rewiring are skipped.
+    """
+    external_labels = {
+        d.get("label", ""): n
+        for n, d in G.nodes(data=True)
+        if not d.get("source_file") and d.get("label")
+    }
+    # Map each deduplicated external onto the existing node so that edges
+    # incident to it can be rewired instead of dropped.
+    remap = {}
+    for node, data in prefixed.nodes(data=True):
+        if not data.get("source_file") and data.get("label") in external_labels:
+            remap[node] = external_labels[data["label"]]
+
+    for node, data in prefixed.nodes(data=True):
+        if node not in remap:
+            G.add_node(node, **data)
+    for u, v, data in prefixed.edges(data=True):
+        u = remap.get(u, u)
+        v = remap.get(v, v)
+        if u != v:  # don't introduce self-loops via remapping
+            G.add_edge(u, v, **data)
+
+    return prefixed.number_of_nodes() - len(remap)

@@ -85,6 +85,54 @@ def _default_graph_path() -> str:
     return str(Path(_GRAPHIFY_OUT) / "graph.json")
 
 
+def _parse_graph_option(args: list[str]) -> "tuple[str, bool, list[str]]":
+    """Strip the --graph selection out of ``args``.
+
+    Returns ``(graph_path, graph_given, remaining)``. ``remaining`` keeps every
+    other token in order so each command can run its own flag loop over it
+    (``--budget``/``--context``, ``--depth``/``--relation``,
+    ``--directed``/``--undirected``).
+
+    query/path/explain/affected each grew their own copy of this parsing in two
+    different styles, and only ``affected`` ever handled the ``--graph=PATH``
+    form — the others silently dropped the token, so an explicitly selected
+    graph was ignored and the user queried the default graph with no warning.
+    A trailing valueless ``--graph`` was likewise silently dropped by all four
+    commands. The empty ``--graph=`` form was ignored by three commands and
+    reached a less-useful file-type error in ``affected``. Both now exit 2 at
+    parse time. One parser keeps the four surfaces honest.
+
+    ``graph_given`` is unused by the callers today but is part of the contract:
+    a later ``--cluster`` option needs it for its mutual-exclusion check.
+    """
+    graph_path = _default_graph_path()
+    graph_given = False
+    remaining: list[str] = []
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        value: "str | None" = None
+        if arg == "--graph":
+            if i + 1 < len(args):
+                value = args[i + 1]
+                i += 2
+            else:
+                i += 1
+        elif arg.startswith("--graph="):
+            value = arg.split("=", 1)[1]
+            i += 1
+        else:
+            remaining.append(arg)
+            i += 1
+            continue
+        if not value:
+            print("error: --graph requires a path", file=sys.stderr)
+            sys.exit(2)
+        graph_path = value
+        graph_given = True
+    return graph_path, graph_given, remaining
+
+
 def _stamped_manifest_files(
     files_by_type: dict[str, list[str]],
     sem_result: dict,
@@ -580,6 +628,51 @@ def _zero_node_stamped_semantic_sources(
     return healed
 
 
+def _filter_payload_sources(data: dict, stale: set) -> int:
+    """Drop nodes/edges/hyperedges owned by ``stale`` source spellings from a
+    raw graph payload IN MEMORY, mutating ``data``. Both serialized hyperedge
+    slots are filtered. Returns nodes removed.
+
+    Exact string matching against ``source_file`` — callers pass spellings the
+    graph itself uses (or every plausible spelling of a path).
+    """
+    links_key = "links" if "links" in data else "edges"
+    nodes = [n for n in data.get("nodes", []) if isinstance(n, dict)]
+    kept_nodes = [n for n in nodes if n.get("source_file") not in stale]
+    removed_ids = {
+        n.get("id") for n in nodes if n.get("source_file") in stale
+    }
+    n_removed = len(nodes) - len(kept_nodes)
+    data["nodes"] = kept_nodes
+    data[links_key] = [
+        e for e in data.get(links_key, [])
+        if isinstance(e, dict)
+        and e.get("source_file") not in stale
+        and e.get("source") not in removed_ids
+        and e.get("target") not in removed_ids
+    ]
+
+    def _kept_hyperedges(items: list) -> list:
+        return [
+            h for h in items
+            if isinstance(h, dict)
+            and h.get("source_file") not in stale
+            and not (
+                isinstance(h.get("nodes"), list)
+                and any(member in removed_ids for member in h["nodes"])
+            )
+        ]
+
+    if "hyperedges" in data:
+        data["hyperedges"] = _kept_hyperedges(data.get("hyperedges", []))
+    graph_meta = data.get("graph")
+    if isinstance(graph_meta, dict) and "hyperedges" in graph_meta:
+        graph_meta["hyperedges"] = _kept_hyperedges(
+            graph_meta.get("hyperedges", [])
+        )
+    return n_removed
+
+
 def _prune_graph_json_sources(graph_path: Path, stale_sources: list[str]) -> int:
     """Drop nodes/edges/hyperedges owned by ``stale_sources`` from graph.json
     in place. Returns the number of nodes removed.
@@ -597,33 +690,29 @@ def _prune_graph_json_sources(graph_path: Path, stale_sources: list[str]) -> int
         return 0
     if not isinstance(data, dict):
         return 0
-    stale = set(stale_sources)
     links_key = "links" if "links" in data else "edges"
-    nodes = [n for n in data.get("nodes", []) if isinstance(n, dict)]
-    kept_nodes = [n for n in nodes if n.get("source_file") not in stale]
-    removed_ids = {
-        n.get("id") for n in nodes if n.get("source_file") in stale
-    }
-    n_removed = len(nodes) - len(kept_nodes)
-    kept_edges = [
-        e for e in data.get(links_key, [])
-        if isinstance(e, dict)
-        and e.get("source_file") not in stale
-        and e.get("source") not in removed_ids
-        and e.get("target") not in removed_ids
-    ]
-    kept_hyper = [
-        h for h in data.get("hyperedges", [])
-        if isinstance(h, dict) and h.get("source_file") not in stale
-    ]
-    if n_removed == 0 and len(kept_edges) == len(data.get(links_key, [])) and (
-        len(kept_hyper) == len(data.get("hyperedges", []))
+    n_edges_before = len(data.get(links_key, []))
+    n_hyper_before = len(data.get("hyperedges", []))
+    graph_meta = data.get("graph")
+    n_nested_hyper_before = (
+        len(graph_meta.get("hyperedges", []))
+        if isinstance(graph_meta, dict)
+        else 0
+    )
+    n_removed = _filter_payload_sources(data, set(stale_sources))
+    graph_meta = data.get("graph")
+    n_nested_hyper_after = (
+        len(graph_meta.get("hyperedges", []))
+        if isinstance(graph_meta, dict)
+        else 0
+    )
+    if (
+        n_removed == 0
+        and len(data.get(links_key, [])) == n_edges_before
+        and len(data.get("hyperedges", [])) == n_hyper_before
+        and n_nested_hyper_after == n_nested_hyper_before
     ):
         return 0
-    data["nodes"] = kept_nodes
-    data[links_key] = kept_edges
-    if "hyperedges" in data:
-        data["hyperedges"] = kept_hyper
     from graphify.export import backup_if_protected as _backup
     _backup(graph_path.parent)
     from graphify.paths import write_json_atomic
@@ -1211,9 +1300,8 @@ def dispatch_command(cmd: str) -> None:
         question = sys.argv[2]
         use_dfs = "--dfs" in sys.argv
         budget = 2000
-        graph_path = _default_graph_path()
         context_filters: list[str] = []
-        args = sys.argv[3:]
+        graph_path, _graph_given, args = _parse_graph_option(sys.argv[3:])
         i = 0
         while i < len(args):
             if args[i] == "--budget" and i + 1 < len(args):
@@ -1236,9 +1324,6 @@ def dispatch_command(cmd: str) -> None:
             elif args[i].startswith("--context="):
                 context_filters.append(args[i].split("=", 1)[1])
                 i += 1
-            elif args[i] == "--graph" and i + 1 < len(args):
-                graph_path = args[i + 1]
-                i += 2
             else:
                 i += 1
         gp = Path(graph_path).resolve()
@@ -1326,19 +1411,12 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(1)
         from graphify.affected import DEFAULT_AFFECTED_RELATIONS, format_affected, load_graph
         query = sys.argv[2]
-        graph_path = _default_graph_path()
         depth = 2
         relations: list[str] = []
-        args = sys.argv[3:]
+        graph_path, _graph_given, args = _parse_graph_option(sys.argv[3:])
         i = 0
         while i < len(args):
-            if args[i] == "--graph" and i + 1 < len(args):
-                graph_path = args[i + 1]
-                i += 2
-            elif args[i].startswith("--graph="):
-                graph_path = args[i].split("=", 1)[1]
-                i += 1
-            elif args[i] == "--depth" and i + 1 < len(args):
+            if args[i] == "--depth" and i + 1 < len(args):
                 try:
                     depth = int(args[i + 1])
                 except ValueError:
@@ -1545,13 +1623,10 @@ def dispatch_command(cmd: str) -> None:
 
         source_label = sys.argv[2]
         target_label = sys.argv[3]
-        graph_path = _default_graph_path()
-        args = sys.argv[4:]
+        graph_path, _graph_given, args = _parse_graph_option(sys.argv[4:])
         direction_flag = None
-        for i, a in enumerate(args):
-            if a == "--graph" and i + 1 < len(args):
-                graph_path = args[i + 1]
-            elif a == "--directed":
+        for a in args:
+            if a == "--directed":
                 if direction_flag == "undirected":
                     print(
                         "error: --directed and --undirected are mutually exclusive",
@@ -1706,11 +1781,7 @@ def dispatch_command(cmd: str) -> None:
         from networkx.readwrite import json_graph
 
         label = sys.argv[2]
-        graph_path = _default_graph_path()
-        args = sys.argv[3:]
-        for i, a in enumerate(args):
-            if a == "--graph" and i + 1 < len(args):
-                graph_path = args[i + 1]
+        graph_path, _graph_given, _rest = _parse_graph_option(sys.argv[3:])
         gp = Path(graph_path).resolve()
         if not gp.exists():
             print(f"error: graph file not found: {gp}", file=sys.stderr)
@@ -2606,45 +2677,29 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(1)
         import networkx as _nx
         from networkx.readwrite import json_graph as _jg
-        from graphify.build import prefix_graph_for_global as _prefix, distinct_repo_tags as _repo_tags
+        from graphify.build import (
+            prefix_graph_for_global as _prefix,
+            distinct_repo_tags as _repo_tags,
+            load_graph_json as _load_graph,
+        )
         graphs = []
         for gp in graph_paths:
             if not gp.exists():
                 print(f"error: not found: {gp}", file=sys.stderr)
                 sys.exit(1)
-            _enforce_graph_size_cap_or_exit(gp)
-            data = json.loads(gp.read_text(encoding="utf-8"))
-            # Normalize edges/links key before loading — graphify writes "links"
-            # via node_link_data but older runs may have used "edges" (#738).
-            if "links" not in data and "edges" in data:
-                data = dict(data, links=data["edges"])
-            # Preserve stored edge direction across undirected node_link_graph (#2261).
-            # Mirrors cli.py's query pattern and export.py's _src/_tgt restoration.
-            # Keep in-file markers when present (#2309): unconditionally
-            # overwriting them with source/target would clobber the true
-            # direction of a link persisted in flipped endpoint order.
-            data = dict(
-                data,
-                links=[
-                    {
-                        **link,
-                        "_src": link.get("_src", link.get("source")),
-                        "_tgt": link.get("_tgt", link.get("target")),
-                    }
-                    for link in data.get("links", [])
-                ],
-            )
+            # load_graph_json enforces the size cap, normalizes the legacy
+            # "edges" key (#738), and coerces directed/multi inputs to a plain
+            # undirected Graph so nx.compose never sees mixed types (#1606).
+            # preserve_direction stashes the stored endpoints as _src/_tgt so
+            # the undirected round-trip can't flip caller/callee (#2261),
+            # keeping in-file markers when present (#2309) — the merged graph
+            # stays a plain Graph, as compose requires. Top-level-only
+            # hyperedges are restored onto G.graph there too (#2484/#2485).
             try:
-                G = _jg.node_link_graph(data, edges="links")
-            except TypeError:
-                G = _jg.node_link_graph(data)
-            # node_link_graph restores only the nested `graph.hyperedges` slot;
-            # a graph.json whose hyperedges live only at the top level (the
-            # other half of to_json's dual-slot shape, #2485) would silently
-            # lose them here. Fall back to the top-level key (#2484).
-            if "hyperedges" not in G.graph and isinstance(data.get("hyperedges"), list):
-                G.graph["hyperedges"] = data["hyperedges"]
-            graphs.append(G)
+                graphs.append(_load_graph(gp, preserve_direction=True))
+            except ValueError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                sys.exit(1)
         # nx.compose requires all graphs to be the same type.  When input graphs
         # come from different sources (e.g. an AST-only run vs a full LLM run) one
         # may be a MultiGraph and another a Graph.  Normalise everything to Graph

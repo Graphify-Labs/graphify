@@ -431,3 +431,67 @@ def test_code_only_force_rescan_re_resolves_tsconfig_paths_and_preserves_semanti
     assert "doc_arch" in nodes2, (
         "existing semantic nodes must survive --code-only --force (#2923/#3125)"
     )
+
+
+def test_filter_payload_sources_drops_hyperedges_with_removed_members():
+    """A hyperedge must not outlive its members: pruning a stale source used
+    to drop only hyperedges whose own source_file was stale, leaving danglers
+    that referenced removed node ids."""
+    from graphify.cli import _filter_payload_sources
+
+    payload = {
+        "nodes": [
+            {"id": "removed", "source_file": "stale.py"},
+            {"id": "kept", "source_file": "live.py"},
+        ],
+        "links": [],
+        "hyperedges": [
+            {
+                "id": "dangling",
+                "nodes": ["removed", "kept"],
+                "source_file": "live.py",
+            },
+            {
+                "id": "owned-by-stale",
+                "nodes": ["kept"],
+                "source_file": "stale.py",
+            },
+            {"id": "kept", "nodes": ["kept"], "source_file": "live.py"},
+            "malformed",
+        ],
+    }
+    payload["graph"] = {"hyperedges": list(payload["hyperedges"])}
+
+    assert _filter_payload_sources(payload, {"stale.py"}) == 1
+    assert payload["nodes"] == [{"id": "kept", "source_file": "live.py"}]
+    expected = [{"id": "kept", "nodes": ["kept"], "source_file": "live.py"}]
+    assert payload["hyperedges"] == expected
+    assert payload["graph"]["hyperedges"] == expected
+
+
+def test_prune_graph_json_sources_writes_nested_only_hyperedge_removal(tmp_path):
+    """A nested-only hyperedge change must bypass the no-change early return."""
+    from graphify.cli import _prune_graph_json_sources
+
+    graph_path = tmp_path / "graph.json"
+    payload = {
+        "nodes": [{"id": "kept", "source_file": "live.py"}],
+        "links": [],
+        "graph": {
+            "hyperedges": [
+                {
+                    "id": "stale",
+                    "nodes": ["kept"],
+                    "source_file": "stale.py",
+                }
+            ],
+        },
+    }
+    graph_path.write_text(
+        json.dumps(payload),
+        encoding="utf-8",
+    )
+
+    assert _prune_graph_json_sources(graph_path, ["stale.py"]) == 0
+    payload = json.loads(graph_path.read_text(encoding="utf-8"))
+    assert payload["graph"]["hyperedges"] == []
