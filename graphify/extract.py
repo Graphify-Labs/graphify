@@ -5630,14 +5630,16 @@ def _looks_like_fsharp_source(path: Path) -> bool:
     if head.startswith(b"\xef\xbb\xbf"):
         head = head[3:]
 
-    # STRONG = shapes impossible as F# line-starts (directives, typed io
-    # decls, main). Word-shaped markers (uniform/varying/precision) are valid
-    # F# IDENTIFIERS on continuation lines and live in the WEAK tier, which
-    # never overrides a strong F# declaration (bot round-9 find: an F# call
-    # `uniform 0.0 1.0` on its own line dropped the whole file).
-    strong_glsl = (b"#version", b"#extension", b"void main",
-                   b"in vec2", b"in vec3", b"in vec4",
-                   b"out vec2", b"out vec3", b"out vec4", b"gl_")
+    # STRONG = shapes the F# grammar cannot parse at a line start. Only the
+    # preprocessor directives qualify: `#version`/`#extension` are not F#
+    # compiler directives and tree-sitter-fsharp rejects those lines outright.
+    # Every word-shaped marker audited (uniform/varying/layout in rounds 9-10;
+    # gl_/in vecN/out vecN/void main closing the class here) parses as valid
+    # F# at a line start — `gl_ctx.MakeCurrent ctx`, verbose `let x = 1.0`
+    # + `in vec2 x x`, and `out`/`void` as plain identifiers — so keeping any
+    # of them strong drops real F# files whole. They live in the WEAK tier,
+    # which never overrides a strong F# declaration.
+    strong_glsl = (b"#version", b"#extension")
     # No `(*` marker: Forth stack-effect comments start with it too, and any
     # compilable F# file surfaces a real declaration line within the 64KB
     # window regardless of leading block-comment headers (bot round-8 find).
@@ -5645,7 +5647,8 @@ def _looks_like_fsharp_source(path: Path) -> bool:
                      b"member ", b"#light", b"#load", b"#r ", b"[<")
     weak_glsl = (b"float ", b"int ", b"bool ", b"vec2", b"vec3", b"vec4",
                  b"mat3", b"mat4", b"sampler2D",
-                 b"uniform ", b"varying ", b"precision ", b"layout")
+                 b"uniform ", b"varying ", b"precision ", b"layout",
+                 b"in vec", b"out vec", b"gl_", b"void main")
 
     saw_strong_glsl = saw_strong_fsharp = saw_weak_glsl = False
     in_block_comment = False

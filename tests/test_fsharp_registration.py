@@ -92,13 +92,16 @@ def test_glsl_fragment_shader_is_not_dispatched_to_fsharp(tmp_path):
 
 
 def test_glsl_guard_is_load_bearing_for_marker_collisions(tmp_path):
-    # A modern shader with no #version line but a comment mentioning `type ` —
-    # an F# marker — must STILL be rejected on its GLSL markers. Deleting the
-    # GLSL marker check flips this file to "F#", so this test kills that
-    # mutant (the original test's shader had no F# markers and could not).
+    # A #version-directive shader whose body carries an F#-shaped line-start
+    # (`type ` — GLSL-invalid, but sniffing is lexical) must STILL be rejected:
+    # strong GLSL directives outrank strong F# evidence. Deleting the strong
+    # GLSL check flips this file to "F#", so this test kills that mutant.
+    # (Since round 11 the word-shaped markers are weak, so only the #version/
+    # #extension directives can carry this kill.)
     from graphify.extract import _get_extractor
     p = tmp_path / "lighting.fs"
-    p.write_text("// type of light: directional\n"
+    p.write_text("#version 330 core\n"
+                 "type of_light = 1; // hybrid nonsense, lexically F#-shaped\n"
                  "in vec3 normal;\nout vec4 fragColor;\n"
                  "void main() { fragColor = vec4(normal, 1.0); }\n",
                  encoding="utf-8")
@@ -250,5 +253,62 @@ def test_layout_qualifier_shader_still_rejected(tmp_path):
     from graphify.extract import _get_extractor
     p = tmp_path / "lq.fs"
     p.write_text("// s\nlayout(location = 0) in vec3 pos;\nvoid main() { }\n",
+                 encoding="utf-8")
+    assert _get_extractor(p) is None
+
+
+# ── Round-11 marker-class closure: every word-shaped marker demoted ─────────
+# The remaining formerly-strong markers were audited against the grammar
+# itself: gl_-prefixed names, `in vecN` (verbose let...in), `out vecN`, and
+# `void main` all parse as valid F# line-starts, so any of them as strong
+# evidence rejects a real F# file that carries one on a continuation line.
+# Each acceptance test below kills the mutant that re-promotes its marker.
+
+
+def test_fsharp_with_gl_prefixed_interop_identifier_is_dispatched(tmp_path):
+    # OpenGL interop code mirrors C names: `gl_`-prefixed identifiers are
+    # ordinary F# identifiers (`let gl_ctx = ...` parses clean).
+    from graphify.extract import _get_extractor
+    p = tmp_path / "glapp.fs"
+    p.write_text("module GlApp\nlet render ctx =\n"
+                 "    gl_makeCurrent ctx\n    gl_swapBuffers ()\n",
+                 encoding="utf-8")
+    assert _get_extractor(p) is not None
+
+
+def test_fsharp_verbose_let_in_line_is_dispatched(tmp_path):
+    # Verbose syntax puts `in` at a line start; `vec2` is a natural
+    # constructor-function name in F# math code.
+    from graphify.extract import _get_extractor
+    p = tmp_path / "vec.fs"
+    p.write_text("module V\nlet v =\n    let x = 1.0\n    in vec2 x x\n",
+                 encoding="utf-8")
+    assert _get_extractor(p) is not None
+
+
+def test_fsharp_out_identifier_application_is_dispatched(tmp_path):
+    # `out` is not an F# keyword; `out vec3 v` is a plain application.
+    from graphify.extract import _get_extractor
+    p = tmp_path / "emit.fs"
+    p.write_text("module P\nlet emit v =\n    out vec3 v\n", encoding="utf-8")
+    assert _get_extractor(p) is not None
+
+
+def test_fsharp_void_identifier_application_is_dispatched(tmp_path):
+    # `void` is not a lexer-level F# keyword either (`let void = 1` parses);
+    # a line starting `void main` is a legal application.
+    from graphify.extract import _get_extractor
+    p = tmp_path / "void.fs"
+    p.write_text("module V\nlet void x = x\nlet main = 1\n"
+                 "let run =\n    void main\n", encoding="utf-8")
+    assert _get_extractor(p) is not None
+
+
+def test_gl_prefixed_headerless_shader_still_rejected(tmp_path):
+    # A directive-free shader fragment must still fall to the weak tier:
+    # gl_/vec lines with no F# declaration anywhere reject.
+    from graphify.extract import _get_extractor
+    p = tmp_path / "gl.fs"
+    p.write_text("// pass-through\ngl_FragColor = vec4(1.0);\n",
                  encoding="utf-8")
     assert _get_extractor(p) is None
