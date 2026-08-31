@@ -2702,6 +2702,12 @@ def dispatch_command(cmd: str) -> None:
         shared_links = _link_shared(merged)
         if shared_links:
             print(f"  linked {shared_links} type declaration(s) shared across repos")
+        # A member call whose receiver type lives in another repo was dropped at
+        # extraction; the caller node carries it and this finishes the edge (#3152).
+        from graphify.cross_repo_calls import link_cross_repo_member_calls as _link_calls
+        call_links = _link_calls(merged)
+        if call_links:
+            print(f"  resolved {call_links} member call(s) across repos")
         # Drop whatever compose left behind (the last input's list, possibly
         # with internal duplicates) so attach_hyperedges dedups the full
         # collection by id from a clean slate.
@@ -3111,6 +3117,8 @@ def dispatch_command(cmd: str) -> None:
                 else:
                     print(f"Added '{tag}' to global graph: +{result['nodes_added']} nodes, "
                           f"-{result['nodes_removed']} pruned. Global: {_global_path()}")
+                    if result.get("cross_repo_calls"):
+                        print(f"  resolved {result['cross_repo_calls']} member call(s) across repos")
             except Exception as exc:
                 print(f"error: {exc}", file=sys.stderr); sys.exit(1)
         elif subcmd == "remove":

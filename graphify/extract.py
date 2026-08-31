@@ -3702,6 +3702,52 @@ def _bind_member_field_tables(
     return bound
 
 
+UNRESOLVED_CALLS_KEY = "unresolved_calls"
+_MAX_PARKED_CALLS_PER_NODE = 64
+
+
+def _park_unresolved_member_call(
+    caller_node: dict | None,
+    callee: str,
+    receiver_type: str,
+    lang: str,
+    raw_call: dict,
+) -> None:
+    """Keep a member call whose receiver type is declared nowhere in this corpus.
+
+    A single-repo build can only bind ``obj.method()`` when the receiver's type is
+    declared in the same build, so a call into another repository is dropped with
+    the receiver type already in hand and nothing about it reaches ``graph.json``
+    — the one artifact ``merge-graphs`` and ``global add`` consume. Parking the
+    pair on the caller node lets a merged graph finish the edge (#3152).
+
+    The payload carries names only, never node ids: ids are rewritten by the
+    remaps and again by the repo prefixing, and a stale id inside metadata would
+    fail silently (#3150 was that bug). Names survive every rewrite.
+    """
+    if not caller_node or not callee or not receiver_type:
+        return
+    metadata = caller_node.setdefault("metadata", {})
+    if not isinstance(metadata, dict):
+        return
+    parked = metadata.setdefault(UNRESOLVED_CALLS_KEY, [])
+    if not isinstance(parked, list) or len(parked) >= _MAX_PARKED_CALLS_PER_NODE:
+        return
+    callee, receiver_type = str(callee), str(receiver_type)
+    for previous in parked:
+        if (
+            isinstance(previous, dict)
+            and previous.get("callee") == callee
+            and previous.get("receiver_type") == receiver_type
+        ):
+            return
+    entry = {"callee": callee, "receiver_type": receiver_type, "lang": lang}
+    location = raw_call.get("source_location")
+    if location:
+        entry["line"] = str(location)
+    parked.append(entry)
+
+
 def _resolve_java_member_calls(
     per_file: list[dict],
     all_nodes: list[dict],
@@ -3796,6 +3842,17 @@ def _resolve_java_member_calls(
                 if not type_name:
                     continue
                 type_defs = type_def_nids.get(key(type_name), [])
+                if not type_defs:
+                    # The type is declared nowhere in this corpus, which in a
+                    # multi-repo setup usually means "in a repo this build does
+                    # not contain" rather than "does not exist" — park it for the
+                    # merge (#3152). An ambiguous name (>1 declaration) is a
+                    # local ambiguity that merging only widens, so it stays
+                    # dropped, exactly as the guard below already decided.
+                    _park_unresolved_member_call(
+                        node_by_id.get(caller), callee, type_name, "java", raw_call,
+                    )
+                    continue
                 if len(type_defs) != 1:
                     continue
                 type_nid = type_defs[0]
