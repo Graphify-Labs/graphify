@@ -425,6 +425,53 @@ def test_to_html_member_counts_accepted():
         assert out.exists()
 
 
+def test_to_html_connection_types_panel_on_normal_graph():
+    """#2088: non-aggregated graph.html ships the Connection Types panel,
+    with colouring off by default so existing reports look unchanged."""
+    G = make_graph()
+    communities = cluster(G)
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "graph.html"
+        to_html(G, communities, str(out))
+        html = out.read_text(encoding="utf-8")
+    assert 'id="edge-types-wrap"' in html
+    assert 'id="edge-types-enable"' in html
+    assert "SHOW_EDGE_TYPES = true" in html
+    assert "EDGE_TYPES_COLOR_DEFAULT = false" in html
+    assert "#legend .legend-item" in html  # community select-all stays scoped
+
+
+def test_to_html_connection_types_panel_skipped_when_aggregated():
+    """#2088: aggregated community view has weight-label 'relations' — no panel."""
+    G = make_graph()
+    communities = cluster(G)
+    member_counts = {cid: len(members) for cid, members in communities.items()}
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "graph.html"
+        to_html(G, communities, str(out), member_counts=member_counts)
+        html = out.read_text(encoding="utf-8")
+    assert 'id="edge-types-wrap"' not in html
+    assert "SHOW_EDGE_TYPES = false" in html
+
+
+def test_to_html_edge_types_kwarg_and_env_set_color_default(monkeypatch):
+    """#2088: edge_types= / GRAPHIFY_EDGE_TYPES flip the initial colour flag."""
+    G = make_graph()
+    communities = cluster(G)
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "graph.html"
+        to_html(G, communities, str(out), edge_types=True)
+        assert "EDGE_TYPES_COLOR_DEFAULT = true" in out.read_text(encoding="utf-8")
+
+        monkeypatch.setenv("GRAPHIFY_EDGE_TYPES", "1")
+        to_html(G, communities, str(out))
+        assert "EDGE_TYPES_COLOR_DEFAULT = true" in out.read_text(encoding="utf-8")
+
+        monkeypatch.delenv("GRAPHIFY_EDGE_TYPES", raising=False)
+        to_html(G, communities, str(out), edge_types=False)
+        assert "EDGE_TYPES_COLOR_DEFAULT = false" in out.read_text(encoding="utf-8")
+
+
 def _vis_nodes_from_html(content: str) -> list:
     """Extract the RAW_NODES JSON array embedded in the generated HTML."""
     m = re.search(r"const RAW_NODES = (\[.*?\]);", content, re.DOTALL)
