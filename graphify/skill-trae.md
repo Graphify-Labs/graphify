@@ -428,11 +428,39 @@ questions = suggest_questions(G, communities, labels)
 # nothing) when the new graph is smaller than the existing graph.json. Only write
 # GRAPH_REPORT.md + the analysis sidecar when the graph was actually written, so
 # they never describe a graph that graph.json doesn't contain (#1392).
+# Read the previous graph's counts BEFORE it is overwritten. The #479 guard
+# compares NODES only, so a rebuild that gains nodes and loses edges passes it
+# silently: measured on a real corpus, 2,100 -> 2,172 nodes (+72) while edges
+# went 3,378 -> 2,978 (-12%), and the guard passed.
+_prev_n = _prev_e = None
+_prev_path = Path('graphify-out/graph.json')
+if _prev_path.is_file():
+    try:
+        with _prev_path.open('rb') as _fh:
+            _prev = json.loads(_fh.read())
+        _prev_n = len(_prev.get('nodes', []))
+        # to_json writes node_link_data(G, edges='links'); its TypeError fallback
+        # can emit 'edges' instead, so accept either key.
+        _prev_e = len(_prev.get('links', _prev.get('edges', [])))
+    except Exception:
+        _prev_n = _prev_e = None
+
 wrote = to_json(G, communities, 'graphify-out/graph.json')
 if not wrote:
     print('ERROR: refused to shrink graphify-out/graph.json (existing graph has more nodes; #479).')
     print('If this shrink is intentional (you deleted files), re-run a full build with --force.')
     raise SystemExit(1)
+# Edge side of the same guard. Reported, not fatal: an edge drop can be legitimate
+# (files deleted, a noisy extractor tightened), and a guard that aborted here would
+# be switched off during exactly the rebuild it should be watching.
+if _prev_e:
+    _new_n, _new_e = G.number_of_nodes(), G.number_of_edges()
+    if _new_e < _prev_e:
+        _pct = (_prev_e - _new_e) * 100.0 / _prev_e
+        print(f'EDGE LOSS: {_prev_e} -> {_new_e} edges (-{_pct:.1f}%) while nodes went {_prev_n} -> {_new_n}. The #479 guard compares nodes and did not see this.')
+        if _new_n >= _prev_n:
+            print('  Nodes did not shrink, so relations were lost, not content. Node ids that are not stable across passes are the usual cause: cached edges point at nodes the new pass renamed.')
+
 report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, 'INPUT_PATH', suggested_questions=questions)
 Path('graphify-out/GRAPH_REPORT.md').write_text(report, encoding=\"utf-8\")
 analysis = {
