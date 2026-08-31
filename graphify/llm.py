@@ -404,6 +404,59 @@ def _no_window_kwargs() -> dict:
     return {}
 
 
+_CLAUDE_CLI_PROBE_TIMEOUT = 30
+
+
+def _resolve_claude_cli() -> str:
+    """Return a runnable Claude CLI executable for the current platform.
+
+    Windows installations can leave a broken npm ``claude.cmd`` shim beside a
+    working native ``claude.exe``. Resolve supported candidates in a stable
+    order and probe each one before using it so a stale shim cannot shadow the
+    native installation. Non-Windows keeps the existing bare ``claude``
+    invocation unchanged.
+    """
+    import platform
+    import shutil
+    import subprocess
+
+    if platform.system() != "Windows":
+        if shutil.which("claude") is None:
+            raise RuntimeError(
+                "Claude Code CLI not found on $PATH. Install from "
+                "https://claude.ai/code and run `claude` once to authenticate."
+            )
+        return "claude"
+
+    candidates: list[str] = []
+    for name in ("claude.cmd", "claude.exe", "claude"):
+        path = shutil.which(name)
+        if path and path not in candidates:
+            candidates.append(path)
+
+    for candidate in candidates:
+        try:
+            probe = subprocess.run(
+                [candidate, "--version"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=_CLAUDE_CLI_PROBE_TIMEOUT,
+                check=False,
+                **_no_window_kwargs(),
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if probe.returncode == 0:
+            return candidate
+
+    raise RuntimeError(
+        "Claude Code CLI not found or not executable on $PATH. Install from "
+        "https://claude.ai/code and run `claude` once to authenticate."
+    )
+
+
 def _resolve_api_timeout(default: float = 600.0) -> float:
     """Honour GRAPHIFY_API_TIMEOUT env var override, else use default (seconds)."""
     raw = os.environ.get("GRAPHIFY_API_TIMEOUT", "").strip()
@@ -1647,31 +1700,9 @@ def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bo
     the model to open each one with its Read tool, and each containing directory
     is allowlisted with `--add-dir` so the read is permitted.
     """
-    import platform
-    import shutil
     import subprocess
 
-    # On Windows, npm installs `claude` as both `claude.ps1` and `claude.cmd`
-    # alongside each other. When PATHEXT lists `.PS1` before `.CMD`,
-    # `shutil.which("claude")` returns `claude.ps1`, which `CreateProcess`
-    # cannot execute directly — it raises `[WinError 2] The system cannot
-    # find the file specified`. `claude.cmd` IS executable by CreateProcess,
-    # so prefer it explicitly on Windows. See issue #1072.
-    claude_cmd = "claude"
-    if platform.system() == "Windows":
-        cmd_path = shutil.which("claude.cmd")
-        if cmd_path:
-            claude_cmd = cmd_path
-        elif shutil.which("claude") is None:
-            raise RuntimeError(
-                "Claude Code CLI not found on $PATH. Install from "
-                "https://claude.ai/code and run `claude` once to authenticate."
-            )
-    elif shutil.which("claude") is None:
-        raise RuntimeError(
-            "Claude Code CLI not found on $PATH. Install from "
-            "https://claude.ai/code and run `claude` once to authenticate."
-        )
+    claude_cmd = _resolve_claude_cli()
 
     # Deliver the extraction instructions in the USER turn rather than via
     # --system-prompt. Newer Claude Code CLIs (>= ~2.1) do not treat a
@@ -2891,19 +2922,9 @@ def _call_llm(
         return _anthropic_response_text(resp.content, default="")
 
     if backend == "claude-cli":
-        import platform, shutil, subprocess
-        # Mirror the extraction-path resolution: on Windows the npm shim is
-        # claude.cmd, which CreateProcess can't resolve from a bare "claude"
-        # (PATHEXT doesn't apply), so pass the resolved .cmd path explicitly.
-        claude_cmd = "claude"
-        if platform.system() == "Windows":
-            cmd_path = shutil.which("claude.cmd")
-            if cmd_path:
-                claude_cmd = cmd_path
-            elif shutil.which("claude") is None:
-                raise RuntimeError("Claude Code CLI not found on $PATH")
-        elif shutil.which("claude") is None:
-            raise RuntimeError("Claude Code CLI not found on $PATH")
+        import subprocess
+
+        claude_cmd = _resolve_claude_cli()
         cli_args = [claude_cmd, "-p", "--output-format", "json", "--no-session-persistence"]
         if model is not None:
             cli_args.extend(["--model", mdl])

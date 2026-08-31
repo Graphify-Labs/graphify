@@ -81,8 +81,14 @@ def test_raises_when_cli_missing():
 
 def test_raises_on_nonzero_exit():
     completed = MagicMock(returncode=2, stdout="", stderr="auth failed")
+
+    def fake_run(args, **kwargs):
+        if args[1] in ("--version", "--help"):
+            return MagicMock(returncode=0, stdout="Claude 1.0", stderr="")
+        return completed
+
     with patch("shutil.which", return_value="/fake/bin/claude"), \
-         patch("subprocess.run", return_value=completed):
+         patch("subprocess.run", side_effect=fake_run):
         with pytest.raises(RuntimeError, match="exited 2"):
             llm._call_claude_cli("dummy", max_tokens=8192)
 
@@ -104,8 +110,14 @@ def test_nonzero_exit_surfaces_envelope_error_when_stderr_empty():
     completed = MagicMock(
         returncode=1, stdout=json.dumps(_ERROR_ENVELOPE), stderr="",
     )
+
+    def fake_run(args, **kwargs):
+        if args[1] in ("--version", "--help"):
+            return MagicMock(returncode=0, stdout="Claude 1.0", stderr="")
+        return completed
+
     with patch("shutil.which", return_value="/fake/bin/claude"), \
-         patch("subprocess.run", return_value=completed):
+         patch("subprocess.run", side_effect=fake_run):
         with pytest.raises(RuntimeError, match="Rate limit reached"):
             llm._call_claude_cli("dummy", max_tokens=8192)
 
@@ -156,8 +168,14 @@ def test_call_llm_nonzero_exit_surfaces_envelope_error():
     completed = MagicMock(
         returncode=1, stdout=json.dumps(_ERROR_ENVELOPE), stderr="",
     )
+
+    def fake_run(args, **kwargs):
+        if args[1] == "--version":
+            return MagicMock(returncode=0, stdout="Claude 1.0", stderr="")
+        return completed
+
     with patch("shutil.which", return_value="/fake/bin/claude"), \
-         patch("subprocess.run", return_value=completed):
+         patch("subprocess.run", side_effect=fake_run):
         with pytest.raises(RuntimeError, match="Rate limit reached"):
             llm._call_llm("dummy", backend="claude-cli")
 
@@ -327,19 +345,106 @@ def test_windows_prefers_claude_cmd_over_bare_claude(monkeypatch):
     )
 
 
-def test_windows_falls_back_to_bare_claude_when_cmd_missing(monkeypatch):
-    """If `claude.cmd` is somehow unavailable but `claude` resolves
-    (e.g. WSL-style install), fall back to the bare name so the
-    existing behaviour is preserved."""
+def test_windows_skips_broken_cmd_and_uses_working_exe_for_extraction(monkeypatch):
+    """A broken npm shim must not shadow a working native CLI for extraction."""
+    cmd_path = r"C:\npm\claude.cmd"
+    exe_path = r"C:\Users\u\.local\bin\claude.exe"
+    paths = {
+        "claude.cmd": cmd_path,
+        "claude.exe": exe_path,
+        "claude": r"C:\npm\claude.ps1",
+    }
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        proc = MagicMock(stderr="")
+        proc.returncode = 0
+        if args[1] == "--version":
+            proc.returncode = int(args[0] == cmd_path)
+            proc.stdout = "broken shim" if proc.returncode else "Claude 1.0"
+        elif args[1] == "--help":
+            proc.stdout = ""
+        else:
+            proc.stdout = json.dumps(_ENVELOPE)
+        return proc
+
+    monkeypatch.setattr(llm, "_response_is_hollow", lambda raw, parsed: False)
+    llm._JSON_SCHEMA_SUPPORT.clear()
+    with patch("platform.system", return_value="Windows"), \
+         patch("shutil.which", side_effect=paths.get), \
+         patch("subprocess.run", side_effect=fake_run):
+        llm._call_claude_cli("dummy", max_tokens=8192)
+
+    assert calls[0][:2] == [cmd_path, "--version"]
+    assert calls[1][:2] == [exe_path, "--version"]
+    assert calls[-1][0] == exe_path
+    assert calls[-1][1] == "-p"
+
+
+def test_windows_skips_broken_cmd_and_uses_working_exe_for_labeling(monkeypatch):
+    """The lightweight labeling path must use the same resolved executable."""
+    cmd_path = r"C:\npm\claude.cmd"
+    exe_path = r"C:\Users\u\.local\bin\claude.exe"
+    paths = {
+        "claude.cmd": cmd_path,
+        "claude.exe": exe_path,
+        "claude": r"C:\npm\claude.ps1",
+    }
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        proc = MagicMock(stderr="")
+        proc.returncode = int(args[0] == cmd_path)
+        proc.stdout = "broken shim" if proc.returncode else json.dumps({"result": "ok"})
+        return proc
+
+    with patch("platform.system", return_value="Windows"), \
+         patch("shutil.which", side_effect=paths.get), \
+         patch("subprocess.run", side_effect=fake_run):
+        out = llm._call_llm("hi", backend="claude-cli")
+
+    assert out == "ok"
+    assert calls[0][:2] == [cmd_path, "--version"]
+    assert calls[1][:2] == [exe_path, "--version"]
+    assert calls[-1][0] == exe_path
+    assert calls[-1][1] == "-p"
+
+
+def test_windows_raises_when_all_cli_candidates_fail():
+    """A failed probe across all supported candidates reports an actionable error."""
+    paths = {
+        "claude.cmd": r"C:\npm\claude.cmd",
+        "claude.exe": r"C:\Users\u\.local\bin\claude.exe",
+        "claude": r"C:\npm\claude.ps1",
+    }
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        return MagicMock(returncode=1, stdout="", stderr="not executable")
+
+    with patch("platform.system", return_value="Windows"), \
+         patch("shutil.which", side_effect=paths.get), \
+         patch("subprocess.run", side_effect=fake_run):
+        with pytest.raises(RuntimeError, match="not found or not executable"):
+            llm._call_claude_cli("dummy", max_tokens=8192)
+
+    assert [call[1] for call in calls] == ["--version"] * 3
+
+
+def test_windows_uses_resolved_bare_claude_when_other_candidates_missing(monkeypatch):
+    """If only the bare Windows candidate resolves, use its resolved path."""
     completed = MagicMock(returncode=0, stdout=json.dumps(_ENVELOPE), stderr="")
     monkeypatch.setattr(llm, "_response_is_hollow", lambda raw, parsed: False)
 
     def fake_which(name):
-        if name == "claude.cmd":
-            return None
-        if name == "claude":
-            return "/usr/local/bin/claude"
-        return None
+        return {
+            "claude.cmd": None,
+            "claude.exe": None,
+            "claude": "/usr/local/bin/claude",
+        }.get(name)
 
     with patch("platform.system", return_value="Windows"), \
          patch("shutil.which", side_effect=fake_which), \
@@ -347,12 +452,11 @@ def test_windows_falls_back_to_bare_claude_when_cmd_missing(monkeypatch):
         llm._call_claude_cli("dummy", max_tokens=8192)
 
     argv = run.call_args.args[0]
-    assert argv[0] == "claude"
+    assert argv[0] == "/usr/local/bin/claude"
 
 
 def test_windows_raises_when_neither_cmd_nor_bare_claude_present():
-    """If neither `claude.cmd` nor `claude` are on PATH on Windows,
-    raise the standard not-found error."""
+    """If no supported Claude candidate is on PATH, raise the not-found error."""
     with patch("platform.system", return_value="Windows"), \
          patch("shutil.which", return_value=None):
         with pytest.raises(RuntimeError, match="Claude Code CLI not found"):
