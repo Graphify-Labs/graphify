@@ -679,6 +679,11 @@ def find_import_cycles(
         # hard file-level cycle, so they are excluded from cycle detection (#1241).
         if data.get("deferred"):
             continue
+        # Type-only imports/re-exports (`import type` / `export type ... from`)
+        # are erased at compile time - a cycle that closes through one cannot
+        # exist at runtime (#3123). The edge itself stays in the graph.
+        if data.get("type_only"):
+            continue
 
         src_file_attr = data.get("source_file", "")
         if not isinstance(src_file_attr, str) or not src_file_attr:

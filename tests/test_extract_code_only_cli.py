@@ -258,3 +258,176 @@ def test_extract_names_skipped_sensitive_files(tmp_path):
     out = r.stdout + r.stderr
     assert "skipped as potentially sensitive" in out
     assert "github_token.txt" in out, "the skipped filename must be surfaced (#2106)"
+
+
+def test_code_only_force_preserves_existing_semantic_layer(tmp_path):
+    """#2923 regression: --code-only --force must not drop the existing semantic
+    layer. The AST pass is fully replaced (full re-scan, semantic cache reads
+    skipped) but the semantic pass is itself skipped, so doc/paper/image nodes
+    from graph.json must be carried forward. Before the fix this combination
+    silently rewrote graph.json with only the AST tier, losing every semantic
+    node and every hyperedge connected to one.
+    """
+    repo = _mixed_repo(tmp_path)
+    out = repo / "graphify-out"
+    out.mkdir()
+    graph = out / "graph.json"
+    # Seed a graph.json as if a prior full extract with an LLM backend had run:
+    # 2 AST nodes from app.py + 4 SEMANTIC nodes from README.md/NOTES.txt.
+    graph.write_text(json.dumps({
+        "nodes": [
+            {"id": "app_py", "label": "app.py", "type": "file",
+             "source_file": "app.py", "origin": "AST"},
+            {"id": "app_hello", "label": "hello()", "type": "function",
+             "source_file": "app.py", "origin": "AST"},
+            {"id": "readme_md", "label": "readme.md", "type": "file",
+             "source_file": "README.md", "origin": "SEMANTIC"},
+            {"id": "readme_design", "label": "Design", "type": "concept",
+             "source_file": "README.md", "origin": "SEMANTIC"},
+            {"id": "notes_txt", "label": "NOTES.txt", "type": "file",
+             "source_file": "NOTES.txt", "origin": "SEMANTIC"},
+            {"id": "notes_architecture", "label": "Architecture", "type": "concept",
+             "source_file": "NOTES.txt", "origin": "SEMANTIC"},
+        ],
+        "edges": [
+            {"id": "e1", "source": "app_py", "target": "app_hello",
+             "relation": "contains", "source_file": "app.py"},
+            {"id": "e2", "source": "readme_md", "target": "readme_design",
+             "relation": "concept_about", "source_file": "README.md"},
+            {"id": "e3", "source": "notes_txt", "target": "notes_architecture",
+             "relation": "concept_about", "source_file": "NOTES.txt"},
+        ],
+        "hyperedges": [],
+        "input_tokens": 0,
+        "output_tokens": 0,
+    }))
+
+    r = _run(repo, "--code-only", "--force", "--no-cluster")
+    assert r.returncode == 0, r.stderr
+
+    out_graph = json.loads(graph.read_text())
+    semantic_labels = {n["label"] for n in out_graph["nodes"]
+                       if n.get("origin") == "SEMANTIC"}
+    semantic_source_files = {
+        Path(str(n["source_file"])).name.lower()
+        for n in out_graph["nodes"]
+        if n.get("origin") == "SEMANTIC"
+    }
+    # Every seeded semantic node must survive. The AST pass may add new nodes
+    # (or relabel existing ones — e.g. hello vs hello()) but it must not
+    # silently drop the semantic tier.
+    assert {"readme.md", "notes.txt"}.issubset(semantic_source_files), (
+        "code-only --force erased the existing semantic layer (#2923); "
+        f"semantic nodes remaining: {semantic_labels}"
+    )
+    # Hyperedges are also semantic tier; the seeded graph had none but the
+    # AST re-extract must not have invented any non-semantic work, and the
+    # surviving edges list must not have been wholesale replaced.
+    assert "edges" in out_graph, "graph.json must still have an edges key"
+    # And the user-visible console line must explain why a semantic-layer-
+    # preserving branch fired.
+    assert "existing semantic layer preserved" in r.stdout + r.stderr, (
+        "the --force --code-only print must announce the semantic-preserving branch"
+    )
+
+
+def test_code_only_force_prunes_removed_semantic_files(tmp_path):
+    """#2923 follow-up: --code-only --force preserves surviving semantic nodes
+    but must still prune semantic nodes for files that have been removed from
+    disk (the doc/paper/image tier cannot outlive the corpus it indexes).
+    """
+    repo = _mixed_repo(tmp_path)
+    out = repo / "graphify-out"
+    out.mkdir()
+    graph = out / "graph.json"
+    graph.write_text(json.dumps({
+        "nodes": [
+            {"id": "app_py", "label": "app.py", "type": "file",
+             "source_file": "app.py", "origin": "AST"},
+            {"id": "app_hello", "label": "hello()", "type": "function",
+             "source_file": "app.py", "origin": "AST"},
+            {"id": "notes_txt", "label": "NOTES.txt", "type": "file",
+             "source_file": "NOTES.txt", "origin": "SEMANTIC"},
+            {"id": "notes_architecture", "label": "Architecture", "type": "concept",
+             "source_file": "NOTES.txt", "origin": "SEMANTIC"},
+        ],
+        "edges": [],
+        "hyperedges": [],
+        "input_tokens": 0,
+        "output_tokens": 0,
+    }))
+
+    # Delete NOTES.txt between seed and re-run. The merge's graph_stale_sources
+    # path must drop its semantic nodes because the file no longer exists.
+    (repo / "NOTES.txt").unlink()
+
+    r = _run(repo, "--code-only", "--force", "--no-cluster")
+    assert r.returncode == 0, r.stderr
+    out_graph = json.loads(graph.read_text())
+    remaining_sources = {
+        Path(n["source_file"]).name
+        for n in out_graph["nodes"]
+        if n.get("origin") == "SEMANTIC"
+    }
+    assert "NOTES.txt" not in remaining_sources, (
+        "NOTES.txt was deleted from disk; its semantic nodes must be pruned "
+        "(#2923 follow-up)"
+    )
+
+
+def test_code_only_force_rescan_re_resolves_tsconfig_paths_and_preserves_semantics(tmp_path: Path):
+    """#3125 regression: `extract --code-only --force` over an existing graph
+    must perform a full code/AST re-scan so updated tsconfig paths take effect on
+    unchanged .ts files, while preserving the existing semantic layer (#2923).
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    src = repo / "src"
+    src.mkdir()
+    (src / "utils.ts").write_text("export const helper = 42;\n")
+    (src / "index.ts").write_text("import { helper } from '@/utils';\nconsole.log(helper);\n")
+    (repo / "tsconfig.json").write_text(json.dumps({"compilerOptions": {"target": "es2020"}}))
+
+    # 1. Initial extract --code-only
+    r1 = _run(repo, "--code-only", "--no-cluster")
+    assert r1.returncode == 0, r1.stderr
+    graph_path = repo / "graphify-out" / "graph.json"
+    g1 = json.loads(graph_path.read_text(encoding="utf-8"))
+    edges1 = [(e["source"], e["target"]) for e in g1.get("edges", g1.get("links", []))]
+    assert not any(src == "src_index" and ("src_utils" in tgt or "helper" in tgt) for src, tgt in edges1), (
+        "alias import @/utils must not resolve without tsconfig paths mapping"
+    )
+
+    # 2. Seed a semantic file and node into graph.json to verify semantic preservation (#2923)
+    (repo / "ARCH.md").write_text("# Architecture\nDesign notes.\n")
+    g1["nodes"].append({
+        "id": "doc_arch", "label": "Architecture", "type": "concept",
+        "source_file": "ARCH.md", "origin": "SEMANTIC", "_origin": "semantic"
+    })
+    graph_path.write_text(json.dumps(g1), encoding="utf-8")
+
+    # 3. Modify only tsconfig.json to add baseUrl and paths alias
+    (repo / "tsconfig.json").write_text(json.dumps({
+        "compilerOptions": {
+            "target": "es2020",
+            "baseUrl": ".",
+            "paths": {"@/*": ["src/*"]}
+        }
+    }))
+
+    # 4. Run extract --code-only --force
+    r2 = _run(repo, "--code-only", "--force", "--no-cluster")
+    assert r2.returncode == 0, r2.stderr
+
+    g2 = json.loads(graph_path.read_text(encoding="utf-8"))
+    edges2 = [(e["source"], e["target"]) for e in g2.get("edges", g2.get("links", []))]
+    # Verify the import edge now exists
+    assert any(src == "src_index" and ("src_utils" in tgt or "helper" in tgt) for src, tgt in edges2), (
+        "extract --code-only --force must re-resolve alias imports after tsconfig paths change (#3125)"
+    )
+
+    # Verify the semantic entity was preserved
+    nodes2 = {n.get("id") for n in g2.get("nodes", [])}
+    assert "doc_arch" in nodes2, (
+        "existing semantic nodes must survive --code-only --force (#2923/#3125)"
+    )

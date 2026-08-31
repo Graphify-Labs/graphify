@@ -545,11 +545,11 @@ def _install_fake_openai(monkeypatch, fake_resp):
     monkeypatch.setitem(sys.modules, "openai", fake_module)
 
 
-def test_call_openai_compat_relabels_empty_content_as_length(monkeypatch):
+def test_call_openai_compat_labels_empty_content_hollow(monkeypatch):
     # Simulates an overwhelmed Ollama: HTTP 200, empty content, finish_reason
-    # "stop", zero completion tokens. Pre-fix this would silently return an
-    # empty fragment and the chunk would be dropped. Post-fix `finish_reason`
-    # is rewritten to "length" so the adaptive retry layer bisects.
+    # "stop", zero completion tokens. The chunk must not be dropped silently,
+    # but it must not be labelled "length" either: bisecting a hollow response
+    # cannot converge and costs 2**max_retry_depth billed calls (#2880).
     fake_resp = _fake_openai_response("", finish_reason="stop", completion_tokens=0)
     _install_fake_openai(monkeypatch, fake_resp)
 
@@ -557,13 +557,13 @@ def test_call_openai_compat_relabels_empty_content_as_length(monkeypatch):
         "http://localhost:11434/v1", "ollama", "qwen2.5-coder:7b",
         "user msg", temperature=0, max_completion_tokens=8192, backend="ollama",
     )
-    assert result["finish_reason"] == "length", (
-        "empty content from a 'successful' call must be re-labelled so the "
-        "adaptive retry layer treats it as a truncation and bisects the chunk"
+    assert result["finish_reason"] == "hollow", (
+        "empty content from a 'successful' call must be labelled hollow so the "
+        "adaptive retry layer retries the same chunk instead of bisecting it"
     )
 
 
-def test_call_openai_compat_relabels_none_content_as_length(monkeypatch):
+def test_call_openai_compat_labels_none_content_hollow(monkeypatch):
     fake_resp = _fake_openai_response(None, finish_reason="stop")
     _install_fake_openai(monkeypatch, fake_resp)
 
@@ -571,19 +571,32 @@ def test_call_openai_compat_relabels_none_content_as_length(monkeypatch):
         "http://localhost:11434/v1", "ollama", "qwen2.5-coder:7b",
         "u", temperature=0, max_completion_tokens=8192, backend="ollama",
     )
-    assert result["finish_reason"] == "length"
+    assert result["finish_reason"] == "hollow"
 
 
-def test_call_openai_compat_relabels_unparseable_json_as_length(monkeypatch):
+def test_call_openai_compat_labels_unparseable_json_hollow(monkeypatch):
     # A half-generated response: `{"nodes": [{"id":` parses to {} (empty
     # fragment) via _parse_llm_json's JSONDecodeError fallback. That is also
-    # hollow and must trigger bisection.
+    # hollow.
     fake_resp = _fake_openai_response('{"nodes": [{"id":', finish_reason="stop", completion_tokens=20)
     _install_fake_openai(monkeypatch, fake_resp)
 
     result = llm._call_openai_compat(
         "http://localhost:11434/v1", "ollama", "qwen2.5-coder:7b",
         "u", temperature=0, max_completion_tokens=8192, backend="ollama",
+    )
+    assert result["finish_reason"] == "hollow"
+
+
+def test_call_openai_compat_keeps_real_truncation_as_length(monkeypatch):
+    # A genuine truncation stays "length" — that one IS a size problem and the
+    # bisection path is the right recovery.
+    fake_resp = _fake_openai_response('{"nodes": [{"id":', finish_reason="length", completion_tokens=8192)
+    _install_fake_openai(monkeypatch, fake_resp)
+
+    result = llm._call_openai_compat(
+        "http://localhost:11434/v1", "k", "m",
+        "u", temperature=0, max_completion_tokens=8192, backend="kimi",
     )
     assert result["finish_reason"] == "length"
 
@@ -868,12 +881,10 @@ def test_extract_corpus_parallel_ollama_parallel_env_restores_concurrency(tmp_pa
     mock_pool.assert_called()
 
 
-def test_adaptive_retry_bisects_on_hollow_ollama_response(tmp_path):
-    # End-to-end: an overwhelmed Ollama returns hollow on the full 4-file
-    # chunk; halves succeed. The bug being fixed is that pre-fix this
-    # produces zero nodes (chunk silently dropped). Post-fix the hollow
-    # response is relabelled `finish_reason="length"` and the existing
-    # bisection path recovers the full 4 nodes.
+def test_adaptive_retry_bisects_on_truncated_response(tmp_path):
+    # End-to-end: the full 4-file chunk truncates at max_completion_tokens;
+    # halves fit. A truncation IS a size problem, so bisection is the right
+    # recovery and must keep working (contrast: hollow, below).
     files = [tmp_path / f"f{i}.md" for i in range(4)]
     for f in files:
         f.write_text("hello")
@@ -883,8 +894,7 @@ def test_adaptive_retry_bisects_on_hollow_ollama_response(tmp_path):
     def fake_extract(chunk, *_, **__):
         calls["n"] += 1
         if len(chunk) == 4:
-            # Hollow response: looks successful, finish_reason already
-            # rewritten to "length" by _call_openai_compat.
+            # Truncated: the model ran out of output budget mid-JSON.
             return {
                 "nodes": [], "edges": [], "hyperedges": [],
                 "input_tokens": 100, "output_tokens": 0,
@@ -1320,3 +1330,148 @@ def test_call_llm_openai_compat_client_built_with_timeout_and_retries(monkeypatc
     llm._call_llm("hi", backend="kimi")
     assert ctor_kwargs.get("timeout") == 1.0, ctor_kwargs
     assert ctor_kwargs.get("max_retries", 0) >= 5, ctor_kwargs
+
+
+def test_adaptive_retry_does_not_bisect_a_hollow_response(tmp_path, monkeypatch):
+    """#2880: a hollow response is retried as-is, never bisected.
+
+    Bisecting cannot converge — both halves go to the same misbehaving backend
+    — so it burned up to 2**max_depth billed calls per chunk. The retry must be
+    on the SAME chunk, and the sub-call count must stay bounded.
+    """
+    monkeypatch.setattr(llm, "_HOLLOW_BACKOFF_S", (0.0, 0.0))
+    files = [tmp_path / f"f{i}.md" for i in range(4)]
+    for f in files:
+        f.write_text("hello")
+
+    seen: list[int] = []
+
+    def fake_extract(chunk, *_, **__):
+        seen.append(len(chunk))
+        return {
+            "nodes": [], "edges": [], "hyperedges": [],
+            "input_tokens": 100, "output_tokens": 0,
+            "model": "m", "finish_reason": "hollow",
+        }
+
+    with patch("graphify.llm.extract_files_direct", side_effect=fake_extract):
+        result = llm._extract_with_adaptive_retry(
+            files, backend="ollama", api_key="ollama", model="qwen2.5-coder:7b",
+            root=tmp_path, max_depth=3,
+        )
+
+    # Every call saw the whole chunk: no halving happened.
+    assert seen == [4, 4, 4], f"hollow must not bisect, got chunk sizes {seen}"
+    # ...and the files are marked for re-extraction rather than cached as done.
+    assert sorted(Path(p).name for p in result["_partial_files"]) == [
+        "f0.md", "f1.md", "f2.md", "f3.md",
+    ]
+    assert result["finish_reason"] == "stop"
+
+
+def test_adaptive_retry_recovers_a_transient_hollow_response(tmp_path, monkeypatch):
+    """A hollow response that clears on retry costs 2 calls, not 15."""
+    monkeypatch.setattr(llm, "_HOLLOW_BACKOFF_S", (0.0, 0.0))
+    files = [tmp_path / f"f{i}.md" for i in range(4)]
+    for f in files:
+        f.write_text("hello")
+
+    calls = {"n": 0}
+
+    def fake_extract(chunk, *_, **__):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {
+                "nodes": [], "edges": [], "hyperedges": [],
+                "input_tokens": 100, "output_tokens": 0,
+                "model": "m", "finish_reason": "hollow",
+            }
+        return _ok(nodes=[{"id": f.stem} for f in chunk])
+
+    with patch("graphify.llm.extract_files_direct", side_effect=fake_extract):
+        result = llm._extract_with_adaptive_retry(
+            files, backend="ollama", api_key="ollama", model="qwen2.5-coder:7b",
+            root=tmp_path, max_depth=3,
+        )
+
+    assert calls["n"] == 2
+    assert len(result["nodes"]) == 4
+    assert not result.get("_partial_files")
+
+
+def test_max_retry_depth_zero_disables_hollow_retries_too(tmp_path, monkeypatch):
+    """#2880 review catch: `0` means no retries of ANY kind.
+
+    Bounding only the bisection depth still let a misbehaving backend triple
+    the call count of a run whose operator had explicitly asked for no retries,
+    which is the opposite of what the knob is set for.
+    """
+    monkeypatch.setattr(llm, "_HOLLOW_BACKOFF_S", (0.0, 0.0))
+    files = [tmp_path / f"f{i}.md" for i in range(4)]
+    for f in files:
+        f.write_text("hello")
+
+    calls = {"n": 0}
+
+    def fake_extract(chunk, *_, **__):
+        calls["n"] += 1
+        return {
+            "nodes": [], "edges": [], "hyperedges": [],
+            "input_tokens": 100, "output_tokens": 0,
+            "model": "m", "finish_reason": "hollow",
+        }
+
+    with patch("graphify.llm.extract_files_direct", side_effect=fake_extract):
+        result = llm._extract_with_adaptive_retry(
+            files, backend="ollama", api_key="ollama", model="qwen2.5-coder:7b",
+            root=tmp_path, max_depth=0,
+        )
+
+    assert calls["n"] == 1, "max_depth=0 must cost exactly one call per chunk"
+    # The chunk still fails loudly and its files are still re-dispatched next run.
+    assert sorted(Path(p).name for p in result["_partial_files"]) == [
+        "f0.md", "f1.md", "f2.md", "f3.md",
+    ]
+    assert result["finish_reason"] == "stop"
+
+
+def test_hollow_retries_still_run_at_the_default_depth(tmp_path, monkeypatch):
+    """Guard the other side: the cap must not silently disable the retry path."""
+    monkeypatch.setattr(llm, "_HOLLOW_BACKOFF_S", (0.0, 0.0))
+    files = [tmp_path / f"f{i}.md" for i in range(4)]
+    for f in files:
+        f.write_text("hello")
+
+    calls = {"n": 0}
+
+    def fake_extract(chunk, *_, **__):
+        calls["n"] += 1
+        return {
+            "nodes": [], "edges": [], "hyperedges": [],
+            "input_tokens": 100, "output_tokens": 0,
+            "model": "m", "finish_reason": "hollow",
+        }
+
+    with patch("graphify.llm.extract_files_direct", side_effect=fake_extract):
+        llm._extract_with_adaptive_retry(
+            files, backend="ollama", api_key="ollama", model="qwen2.5-coder:7b",
+            root=tmp_path, max_depth=3,
+        )
+
+    assert calls["n"] == 3
+
+
+def test_max_retry_depth_reads_the_env_var(monkeypatch):
+    """#2880: max_retry_depth was a Python-API kwarg only, so a `graphify
+    extract` operator had no way to lower it as a mitigation."""
+    monkeypatch.delenv("GRAPHIFY_MAX_RETRY_DEPTH", raising=False)
+    assert llm._resolve_max_retry_depth() == 3
+    monkeypatch.setenv("GRAPHIFY_MAX_RETRY_DEPTH", "0")
+    assert llm._resolve_max_retry_depth() == 0
+    monkeypatch.setenv("GRAPHIFY_MAX_RETRY_DEPTH", "1")
+    assert llm._resolve_max_retry_depth() == 1
+    # garbage and negatives fall back to the default
+    monkeypatch.setenv("GRAPHIFY_MAX_RETRY_DEPTH", "banana")
+    assert llm._resolve_max_retry_depth() == 3
+    monkeypatch.setenv("GRAPHIFY_MAX_RETRY_DEPTH", "-2")
+    assert llm._resolve_max_retry_depth() == 3
