@@ -110,11 +110,14 @@ def _extract_haxe_tong(path: Path) -> dict:
             nodes.append({"id": nid, "label": label, "file_type": "code",
                           "source_file": str_path, "source_location": f"L{line}"})
 
-    def add_edge(src, tgt, relation, line, confidence="EXTRACTED"):
+    def add_edge(src, tgt, relation, line, confidence="EXTRACTED", context=None):
         if src and tgt and src != tgt:
-            edges.append({"source": src, "target": tgt, "relation": relation,
-                          "confidence": confidence, "source_file": str_path,
-                          "source_location": f"L{line}", "weight": 1.0})
+            e = {"source": src, "target": tgt, "relation": relation,
+                 "confidence": confidence, "source_file": str_path,
+                 "source_location": f"L{line}", "weight": 1.0}
+            if context:
+                e["context"] = context
+            edges.append(e)
 
     def ensure_type_node(name, line):
         nid = _make_id(stem, name)
@@ -269,6 +272,33 @@ def _extract_haxe_tong(path: Path) -> dict:
             td_nid = _make_id(stem, td)
             add_node(td_nid, td, line)
             add_edge(file_nid, td_nid, "contains", line)
+            return
+
+        # Class fields. Without this the graph held a class's behaviour and
+        # none of its data -- `Achievements.hx` contributed 54 nodes, every one
+        # a class or a method, and not one of its declared fields. Emitted as
+        # `defines` with context "field", matching what the other extractors
+        # use, and labelled bare so a field reads differently from a method's
+        # `name()`.
+        #
+        # A property with accessors (`var p(get, never):Bool`) is one field
+        # here, not three: the `get`/`set` entries are a property_accessor
+        # child, and the accessor methods, where they exist, are separate
+        # ClassMethod nodes already.
+        if t == "ClassVar":
+            name_node = node.child_by_field_name("name")
+            if name_node is None:
+                return
+            field_name = _read_text(name_node, source)
+            line = node.start_point[0] + 1
+            if parent_nid is not None and parent_name is not None:
+                field_nid = _make_id(stem, parent_name, field_name)
+                add_node(field_nid, field_name, line)
+                add_edge(parent_nid, field_nid, "defines", line, context="field")
+            else:
+                field_nid = _make_id(stem, field_name)
+                add_node(field_nid, field_name, line)
+                add_edge(file_nid, field_nid, "contains", line)
             return
 
         if t in ("ClassMethod", "EFunction"):

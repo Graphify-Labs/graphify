@@ -4546,3 +4546,22 @@ def test_haxe_dialect_probe_identifies_the_installed_grammar(monkeypatch):
 
     monkeypatch.setattr(_haxe, "_HAXE_DIALECT", None)
     assert _haxe._detect_haxe_dialect() in _haxe._SUPPORTED_DIALECTS
+
+
+@_needs_haxe
+def test_haxe_finds_class_fields():
+    """The graph held a class's methods and none of its data (#ClassVar was
+    never handled), so a field could never be the target of a reference."""
+    r = extract_haxe(FIXTURES / "sample.hx")
+    fields = _edge_labels(r, "defines")
+    assert ("HttpClient", "mBaseUrl") in fields
+
+
+@_needs_haxe
+def test_haxe_field_and_method_labels_are_distinguishable():
+    """A method label carries `()`, a field's does not — otherwise `explain`
+    cannot tell a field from a zero-argument accessor."""
+    r = extract_haxe(FIXTURES / "sample.hx")
+    labels = {n["label"] for n in r["nodes"]}
+    assert "mBaseUrl" in labels
+    assert "buildRequest()" in labels
