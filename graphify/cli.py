@@ -3429,6 +3429,9 @@ def dispatch_command(cmd: str) -> None:
                 google_workspace=google_workspace or None,
                 extra_excludes=_effective_excludes or None,
                 gitignore=_effective_gitignore,
+                # semantic kind re-queues empty-semantic_hash files; explicit
+                # so the extract contract survives default drift (#2459).
+                kind="semantic",
             )
             files_by_type = detection.get("files", {})
             new_by_type = detection.get("new_files", {})
