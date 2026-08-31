@@ -2797,9 +2797,18 @@ def extract_corpus_parallel(
         if sf:
             p = Path(sf)
             covered.add(p if p.is_absolute() else (root / p))
+    # Resolve `covered` once (local patch): the set comprehension used to be
+    # rebuilt from scratch inside the generator below, once per `dispatched`
+    # item -- O(len(dispatched) * len(covered)) resolve() syscalls instead of
+    # O(len(dispatched) + len(covered)). On a real corpus (~23k dispatched
+    # semantic files) that's on the order of hundreds of millions of realpath
+    # calls, observed taking multiple hours with no end in sight (py-spy
+    # showed the same call site continuously for over an hour, CPU still
+    # climbing) before this was caught and fixed.
+    _covered_resolved = {c.resolve() for c in covered}
     uncovered = sorted(
         p for p in dispatched
-        if p.resolve() not in {c.resolve() for c in covered}
+        if p.resolve() not in _covered_resolved
     )
     merged["uncovered_files"] = [str(p) for p in uncovered]
     if uncovered:
