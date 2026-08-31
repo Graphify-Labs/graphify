@@ -2731,6 +2731,141 @@ def dispatch_command(cmd: str) -> None:
         print(f"Merged {len(graphs)} graphs -> {merged.number_of_nodes()} nodes, {merged.number_of_edges()} edges")
         print(f"Written to: {out_path}")
 
+    elif cmd == "depth":
+        # `graphify depth <root>`: iterative sliding-window build.
+        # Runs the full extract pipeline per sub-bucket (auto-detected or
+        # supplied via --focus) and merges the per-bucket graphs into a
+        # single cross-bucket graph. See graphify/depth.py for the full
+        # design. Output is written to <root>/graphify-out/graph.json
+        # by default, plus a per-bucket sub-dir and a DEPTH_REPORT.md.
+        if len(sys.argv) < 3:
+            print(
+                "Usage: graphify depth <root> "
+                "[--focus PATH]... [--out DIR] [--merged PATH] "
+                "[--report PATH] [--max-buckets N] [--min-files N] "
+                "[--min-words N] [--parallel N] [--timeout S] "
+                "[--retries N] [--retry-backoff S] "
+                "[--skip-on-error|--no-skip-on-error] [--resume] [--dry-run] "
+                "[--global] [--global-tag NAME] "
+                "[--graphify-bin PATH] [-- <extract args>...]",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if sys.argv[2].startswith("-"):
+            target = Path(".").resolve()
+        else:
+            target = Path(sys.argv[2]).resolve()
+        if not target.exists():
+            print(f"error: path not found: {target}", file=sys.stderr)
+            sys.exit(1)
+
+        focuses: list[Path] = []
+        out_dir: Path | None = None
+        merged_path: Path | None = None
+        depth_report_path: Path | None = None
+        max_buckets = 20
+        min_files = 20
+        min_words = 5_000
+        parallel = 1
+        timeout_s: int | None = None
+        retries = 0
+        retry_backoff_s = 2.0
+        skip_on_error = True
+        resume = False
+        dry_run = False
+        add_to_global = False
+        global_tag: str | None = None
+        graphify_bin: str | None = None
+        # Anything after a literal `--` is forwarded to every per-bucket
+        # `graphify extract` invocation (e.g. `--backend`, `--model`,
+        # `--mode deep`, `--no-cluster`, `--code-only`).
+        extract_args: list[str] = []
+        i = 3
+        args = sys.argv[3:]
+        if "--" in args:
+            sep = args.index("--")
+            forward = args[sep + 1 :]
+            args = args[:sep]
+            extract_args = forward
+        while i - 3 < len(args):
+            a = args[i - 3]
+            if a == "--focus" and i - 3 + 1 < len(args):
+                focuses.append(Path(args[i - 3 + 1]).resolve())
+                i += 2
+            elif a == "--out" and i - 3 + 1 < len(args):
+                out_dir = Path(args[i - 3 + 1]).resolve()
+                i += 2
+            elif a == "--merged" and i - 3 + 1 < len(args):
+                merged_path = Path(args[i - 3 + 1]).resolve()
+                i += 2
+            elif a == "--report" and i - 3 + 1 < len(args):
+                depth_report_path = Path(args[i - 3 + 1]).resolve()
+                i += 2
+            elif a == "--max-buckets" and i - 3 + 1 < len(args):
+                max_buckets = int(args[i - 3 + 1]); i += 2
+            elif a == "--min-files" and i - 3 + 1 < len(args):
+                min_files = int(args[i - 3 + 1]); i += 2
+            elif a == "--min-words" and i - 3 + 1 < len(args):
+                min_words = int(args[i - 3 + 1]); i += 2
+            elif a == "--parallel" and i - 3 + 1 < len(args):
+                parallel = int(args[i - 3 + 1]); i += 2
+            elif a == "--timeout" and i - 3 + 1 < len(args):
+                timeout_s = int(args[i - 3 + 1]); i += 2
+            elif a == "--retries" and i - 3 + 1 < len(args):
+                retries = int(args[i - 3 + 1]); i += 2
+            elif a == "--retry-backoff" and i - 3 + 1 < len(args):
+                retry_backoff_s = float(args[i - 3 + 1]); i += 2
+            elif a == "--no-skip-on-error":
+                skip_on_error = False; i += 1
+            elif a == "--skip-on-error":
+                skip_on_error = True; i += 1
+            elif a == "--resume":
+                resume = True; i += 1
+            elif a == "--dry-run":
+                dry_run = True; i += 1
+            elif a == "--global":
+                add_to_global = True; i += 1
+            elif a == "--global-tag" and i - 3 + 1 < len(args):
+                global_tag = args[i - 3 + 1]; i += 2
+            elif a == "--graphify-bin" and i - 3 + 1 < len(args):
+                graphify_bin = args[i - 3 + 1]; i += 2
+            else:
+                print(f"error: unknown flag: {a}", file=sys.stderr)
+                sys.exit(2)
+
+        from graphify.depth import depth_command
+        result = depth_command(
+            root=target,
+            focuses=focuses or None,
+            out_dir=out_dir,
+            merged_path=merged_path,
+            depth_report_path=depth_report_path,
+            max_buckets=max_buckets,
+            min_files=min_files,
+            min_words=min_words,
+            extract_args=tuple(extract_args),
+            graphify_bin=graphify_bin,
+            timeout_s=timeout_s,
+            parallel=parallel,
+            skip_on_error=skip_on_error,
+            resume=resume,
+            dry_run=dry_run,
+            retries=retries,
+            retry_backoff_s=retry_backoff_s,
+            add_to_global=add_to_global,
+            global_tag=global_tag,
+        )
+        print(
+            f"[graphify depth] status={result.status} "
+            f"buckets={len(result.buckets)} "
+            f"merged={result.merged_graph_path} "
+            f"elapsed={result.total_elapsed_s:.1f}s"
+        )
+        if result.status == "failed":
+            sys.exit(1)
+        if result.status == "partial" and not skip_on_error:
+            sys.exit(2)
+
     elif cmd == "clone":
         if len(sys.argv) < 3:
             print(
