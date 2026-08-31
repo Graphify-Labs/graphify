@@ -234,3 +234,21 @@ def test_uniform_only_headerless_shader_still_rejected(tmp_path):
     p.write_text("// u\nuniform vec4 color;\nvoid main() { gl_FragColor = color; }\n",
                  encoding="utf-8")
     assert _get_extractor(p) is None
+
+
+def test_fsharp_calling_identifier_named_layout_is_dispatched(tmp_path):
+    # Same word-vs-directive class as `uniform` (bot round-10): `layout` is a
+    # natural F# identifier (TUI code); demoted to weak evidence.
+    from graphify.extract import _get_extractor
+    p = tmp_path / "tui.fs"
+    p.write_text("module Tui\nlet render w =\n    layout w |> draw\n",
+                 encoding="utf-8")
+    assert _get_extractor(p) is not None
+
+
+def test_layout_qualifier_shader_still_rejected(tmp_path):
+    from graphify.extract import _get_extractor
+    p = tmp_path / "lq.fs"
+    p.write_text("// s\nlayout(location = 0) in vec3 pos;\nvoid main() { }\n",
+                 encoding="utf-8")
+    assert _get_extractor(p) is None

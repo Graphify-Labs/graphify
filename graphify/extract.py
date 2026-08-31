@@ -5635,7 +5635,7 @@ def _looks_like_fsharp_source(path: Path) -> bool:
     # F# IDENTIFIERS on continuation lines and live in the WEAK tier, which
     # never overrides a strong F# declaration (bot round-9 find: an F# call
     # `uniform 0.0 1.0` on its own line dropped the whole file).
-    strong_glsl = (b"#version", b"#extension", b"layout", b"void main",
+    strong_glsl = (b"#version", b"#extension", b"void main",
                    b"in vec2", b"in vec3", b"in vec4",
                    b"out vec2", b"out vec3", b"out vec4", b"gl_")
     # No `(*` marker: Forth stack-effect comments start with it too, and any
@@ -5645,7 +5645,7 @@ def _looks_like_fsharp_source(path: Path) -> bool:
                      b"member ", b"#light", b"#load", b"#r ", b"[<")
     weak_glsl = (b"float ", b"int ", b"bool ", b"vec2", b"vec3", b"vec4",
                  b"mat3", b"mat4", b"sampler2D",
-                 b"uniform ", b"varying ", b"precision ")
+                 b"uniform ", b"varying ", b"precision ", b"layout")
 
     saw_strong_glsl = saw_strong_fsharp = saw_weak_glsl = False
     in_block_comment = False
