@@ -30,6 +30,9 @@ _BACKUP_ARTIFACTS = [
     "manifest.json",
     ".graphify_semantic_marker",
     "cost.json",
+    # The rendered viewer is regenerable, but only by re-running the build it
+    # belongs to — without it the dated folder can't be opened in a browser.
+    "graph.html",
 ]
 
 
