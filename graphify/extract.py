@@ -3410,10 +3410,24 @@ def _resolve_cpp_member_calls(
         elif receiver[:1].isupper():
             # Foo::bar(): the type is named explicitly in source.
             type_defs = type_def_nids.get(_key(receiver), [])
-            if len(type_defs) != 1:  # ambiguous or absent -> bail (god-node guard)
-                continue
-            type_nid = type_defs[0]
-            type_qualified = True
+            if len(type_defs) == 1:
+                type_nid = type_defs[0]
+                type_qualified = True
+            else:
+                # A capitalized receiver is very often a VARIABLE - the
+                # parameter `T` in `ParamRef(const Thing& T)`, the field
+                # `Inner` - not a type name (#3215). When no unique type of
+                # that name exists, fall back to the file's var->type table
+                # exactly like the lowercase arm; a miss there still bails
+                # rather than guessing.
+                type_name = type_table_by_file.get(src_file, {}).get(receiver)
+                if not type_name:
+                    continue
+                type_defs = type_def_nids.get(_key(type_name), [])
+                if len(type_defs) != 1:  # ambiguous or absent -> bail
+                    continue
+                type_nid = type_defs[0]
+                type_qualified = False
         else:
             # f.bar() / f->bar(): type the receiver via the file's local table.
             type_name = type_table_by_file.get(src_file, {}).get(receiver)
