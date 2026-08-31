@@ -339,6 +339,11 @@ GIT_DIR=${GIT_DIR:-$(git rev-parse --git-dir 2>/dev/null)}
 
 [ "${GRAPHIFY_SKIP_HOOK:-0}" = "1" ] && exit 0
 
+_GFY_OUT="${GRAPHIFY_OUT:-graphify-out}"
+if [ ! -f "$_GFY_OUT/graph.json" ]; then
+    exit 0
+fi
+
 """ + _WORKTREE_GUARD + """
 CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || git diff --name-only HEAD 2>/dev/null)
 if [ -z "$CHANGED" ]; then
@@ -396,8 +401,9 @@ fi
 # branch switch but leaves the tree unchanged ΓÇö nothing to rebuild (#2421).
 [ "$PREV_HEAD" = "$NEW_HEAD" ] && exit 0
 
-# Only run if graphify-out/ exists (graph has been built before)
-if [ ! -d "graphify-out" ]; then
+# Only run if a graph has been built before
+_GFY_OUT="${GRAPHIFY_OUT:-graphify-out}"
+if [ ! -f "$_GFY_OUT/graph.json" ]; then
     exit 0
 fi
 
@@ -537,6 +543,43 @@ def _hooks_dir(root: Path) -> Path:
     return d
 
 
+def _validate_hook_can_append(
+    hook_path: Path,
+    marker: str,
+    marker_end: str,
+) -> None:
+    """Reject an existing hook whose original body ends in a terminal command."""
+    if not hook_path.exists():
+        return
+
+    content = hook_path.read_text(encoding="utf-8")
+    original = content
+    start_idx = content.find(marker)
+    if start_idx != -1:
+        end_idx = content.find(marker_end, start_idx) if marker_end else -1
+        if end_idx != -1:
+            end_idx += len(marker_end)
+            original = content[:start_idx] + content[end_idx:]
+        else:
+            original = content[:start_idx]
+
+    last_command = next(
+        (
+            line.strip()
+            for line in reversed(original.splitlines())
+            if line.strip() and not line.lstrip().startswith("#")
+        ),
+        "",
+    )
+    if re.match(r"^(?:exec|exit|return)(?:\s|$)", last_command):
+        raise RuntimeError(
+            f"Cannot append graphify to {hook_path}: the existing hook ends "
+            f"with terminal command {last_command!r}. Replace that command "
+            f"with a non-terminal invocation that preserves its exit status, "
+            f"then rerun 'graphify hook install'."
+        )
+
+
 def _install_hook(
     hooks_dir: Path,
     name: str,
@@ -549,6 +592,7 @@ def _install_hook(
     hook_path = hooks_dir / name
     if hook_path.exists():
         content = hook_path.read_text(encoding="utf-8")
+        _validate_hook_can_append(hook_path, marker, marker_end)
         if marker in content:
             if marker_end and marker_end in content:
                 start_idx = content.find(marker)
@@ -758,6 +802,16 @@ def install(path: Path = Path(".")) -> str:
         raise RuntimeError(f"No git repository found at or above {path.resolve()}")
 
     hooks_dir = _user_hooks_dir(_hooks_dir(root))
+    _validate_hook_can_append(
+        hooks_dir / "post-commit",
+        _HOOK_MARKER,
+        _HOOK_MARKER_END,
+    )
+    _validate_hook_can_append(
+        hooks_dir / "post-checkout",
+        _CHECKOUT_MARKER,
+        _CHECKOUT_MARKER_END,
+    )
 
     cfg = _load_graphifyrc(root)
     viz_limit = cfg.get("viz_node_limit")

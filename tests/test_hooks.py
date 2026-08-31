@@ -53,6 +53,68 @@ def test_install_appends_to_existing_hook(tmp_path):
     assert _HOOK_MARKER in content
 
 
+def test_install_rejects_existing_hook_with_terminal_exec(tmp_path):
+    repo = _make_git_repo(tmp_path)
+    marker = repo / "existing-hook-ran"
+    helper = repo / "existing-hook.sh"
+    helper.write_text(
+        f"#!/bin/sh\nprintf ran > {marker}\n",
+        encoding="utf-8",
+    )
+    helper.chmod(0o755)
+    hook = repo / ".git" / "hooks" / "post-commit"
+    original = f"#!/bin/sh\nexec {helper}\n"
+    hook.write_text(original, encoding="utf-8")
+    hook.chmod(0o755)
+
+    with pytest.raises(RuntimeError, match="ends with terminal command"):
+        install(repo)
+
+    assert hook.read_text(encoding="utf-8") == original
+    assert _HOOK_MARKER not in hook.read_text(encoding="utf-8")
+    subprocess.run([hook], cwd=repo, check=True)
+    assert marker.read_text(encoding="utf-8") == "ran"
+
+
+def test_install_rejects_unreachable_existing_graphify_block(tmp_path):
+    repo = _make_git_repo(tmp_path)
+    hook = repo / ".git" / "hooks" / "post-commit"
+    original = (
+        "#!/bin/sh\n"
+        "exec existing-helper\n\n"
+        "# graphify-hook-start\n"
+        "echo unreachable\n"
+        "# graphify-hook-end\n"
+    )
+    hook.write_text(original, encoding="utf-8")
+    hook.chmod(0o755)
+
+    with pytest.raises(RuntimeError, match="ends with terminal command"):
+        install(repo)
+
+    assert hook.read_text(encoding="utf-8") == original
+
+
+def test_install_preflights_both_hooks_before_writing(tmp_path):
+    repo = _make_git_repo(tmp_path)
+    commit_hook = repo / ".git" / "hooks" / "post-commit"
+    checkout_hook = repo / ".git" / "hooks" / "post-checkout"
+    commit_original = "#!/bin/sh\necho commit\n"
+    checkout_original = "#!/bin/sh\nexec checkout-helper\n"
+    commit_hook.write_text(commit_original, encoding="utf-8")
+    checkout_hook.write_text(checkout_original, encoding="utf-8")
+    commit_hook.chmod(0o755)
+    checkout_hook.chmod(0o755)
+
+    with pytest.raises(RuntimeError, match="ends with terminal command"):
+        install(repo)
+
+    assert commit_hook.read_text(encoding="utf-8") == commit_original
+    assert checkout_hook.read_text(encoding="utf-8") == checkout_original
+    assert _HOOK_MARKER not in commit_hook.read_text(encoding="utf-8")
+    assert _CHECKOUT_MARKER not in checkout_hook.read_text(encoding="utf-8")
+
+
 def test_uninstall_removes_hook(tmp_path):
     repo = _make_git_repo(tmp_path)
     install(repo)
@@ -373,6 +435,119 @@ def test_installed_hooks_contain_no_nohup(tmp_path):
         text = (repo / ".git" / "hooks" / name).read_text(encoding="utf-8")
         assert "nohup" not in text, f"installed {name} still references nohup"
         assert "start_new_session=True" in text
+
+
+def test_post_commit_hook_stays_silent_without_existing_graph(tmp_path):
+    """Installing the repository hook alone must not initialize Graphify.
+
+    A repository opts into rebuilds by creating graphify-out/graph.json. Before
+    that file exists, post-commit must exit without output or filesystem writes.
+    """
+    repo = _make_git_repo(tmp_path)
+    (repo / "fixture.py").write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "fixture.py"], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.name=Hook Test",
+            "-c",
+            "user.email=hook@example.invalid",
+            "commit",
+            "-m",
+            "fixture",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    install(repo)
+
+    (repo / "fixture.py").write_text("value = 2\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "fixture.py"], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.name=Hook Test",
+            "-c",
+            "user.email=hook@example.invalid",
+            "commit",
+            "-m",
+            "change",
+        ],
+        check=True,
+        capture_output=True,
+        env={**os.environ, "GRAPHIFY_SKIP_HOOK": "1"},
+    )
+
+    result = subprocess.run(
+        [repo / ".git" / "hooks" / "post-commit"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "HOME": str(tmp_path / "home")},
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert result.stderr == ""
+    assert not (repo / "graphify-out").exists()
+
+
+@pytest.mark.parametrize(
+    ("output_dir", "create_output_dir", "create_default_graph"),
+    [
+        ("graphify-out", False, False),
+        ("graphify-out", True, False),
+        ("custom-graph", True, True),
+    ],
+)
+def test_post_checkout_hook_stays_silent_without_active_graph(
+    tmp_path,
+    output_dir,
+    create_output_dir,
+    create_default_graph,
+):
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    if create_output_dir:
+        (repo / output_dir).mkdir()
+    if create_default_graph:
+        default_out = repo / "graphify-out"
+        default_out.mkdir(exist_ok=True)
+        (default_out / "graph.json").write_text("{}", encoding="utf-8")
+
+    env = {**os.environ, "HOME": str(tmp_path / "home")}
+    if output_dir != "graphify-out":
+        env["GRAPHIFY_OUT"] = output_dir
+    before = sorted(
+        str(path.relative_to(repo))
+        for path in repo.rglob("*")
+        if ".git" not in path.parts
+    )
+
+    result = subprocess.run(
+        [repo / ".git" / "hooks" / "post-checkout", "old", "new", "1"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    after = sorted(
+        str(path.relative_to(repo))
+        for path in repo.rglob("*")
+        if ".git" not in path.parts
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert result.stderr == ""
+    assert before == after
+    assert not (repo / output_dir / "graph.json").exists()
 
 
 # ── #1385: reject Windows-style hooks paths instead of creating a junk dir ───
