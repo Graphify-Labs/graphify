@@ -1803,7 +1803,14 @@ def dispatch_command(cmd: str) -> None:
                 print(f"  {arrow} {G.nodes[nb].get('label', nb)} [{rel}] [{conf}]{at}")
             if len(connections) > 20:
                 remainder = connections[20:]
-                print(f"  ... and {len(remainder)} more")
+                # #2420: agents often treat the visible 20 as the full answer.
+                # Point them at `affected`, which returns the uncapped reverse
+                # blast-radius (imports_from / calls / …).
+                print(
+                    f"  ... and {len(remainder)} more — "
+                    f"run 'graphify affected \"{label}\" --depth 1' "
+                    f"for the full reverse blast-radius"
+                )
                 # #2009: a bare count silently hides the answer on high-degree
                 # nodes ("who calls this, what's the impact?"). Group the cut
                 # connections by direction + file so their shape is visible
