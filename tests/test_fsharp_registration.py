@@ -198,3 +198,21 @@ def test_bom_prefixed_fsharp_is_dispatched(tmp_path):
     p = tmp_path / "bom.fs"
     p.write_bytes(b"\xef\xbb\xbfmodule M\n")  # BOM + single marker line
     assert _get_extractor(p) is not None
+
+
+def test_forth_with_paren_star_comment_not_dispatched(tmp_path):
+    # Forth stack-effect comments can start a line with `(*`; that byte pair
+    # must not count as F# evidence (bot round-8 find, probe-confirmed).
+    from graphify.extract import _get_extractor
+    p = tmp_path / "math.fs"
+    p.write_text("( Forth multiply )\n(* stack: a b -- a*b )\n: square dup * ;\n",
+                 encoding="utf-8")
+    assert _get_extractor(p) is None
+
+
+def test_fsharp_with_block_comment_header_still_dispatched(tmp_path):
+    from graphify.extract import _get_extractor
+    p = tmp_path / "hdr.fs"
+    p.write_text("(* Copyright 2026\n   licensed as... *)\nmodule M\nlet f x = x\n",
+                 encoding="utf-8")
+    assert _get_extractor(p) is not None

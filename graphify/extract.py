@@ -5632,8 +5632,11 @@ def _looks_like_fsharp_source(path: Path) -> bool:
 
     strong_glsl = (b"#version", b"#extension", b"precision ", b"uniform ",
                    b"varying ", b"layout", b"in vec", b"out vec", b"void main")
+    # No `(*` marker: Forth stack-effect comments start with it too, and any
+    # compilable F# file surfaces a real declaration line within the 64KB
+    # window regardless of leading block-comment headers (bot round-8 find).
     strong_fsharp = (b"let ", b"module ", b"namespace ", b"open ", b"type ",
-                     b"member ", b"#light", b"#load", b"#r ", b"[<", b"(*")
+                     b"member ", b"#light", b"#load", b"#r ", b"[<")
     weak_glsl = (b"float ", b"int ", b"bool ", b"vec2", b"vec3", b"vec4",
                  b"mat3", b"mat4", b"sampler2D")
 
