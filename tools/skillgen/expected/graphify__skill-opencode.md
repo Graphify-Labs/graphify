@@ -703,3 +703,16 @@ When the user asks to install the post-commit auto-rebuild hook or wire graphify
 - Always show token cost in the report.
 - Never hide cohesion scores behind symbols - show the raw number.
 - Never run HTML viz on a graph with more than 5,000 nodes without warning the user.
+- Never turn an empty traversal into an absence claim. "No path found" and "no
+  matching node" mean *not in this graph* — which is a claim about the
+  extraction, not about the corpus. Report the scope you actually searched
+  ("nothing in the graph connects X to Y; the graph covers N of M files, and
+  code is indexed structurally while prose is indexed semantically") and name
+  the likelier explanation: a wording mismatch against the graph's vocabulary,
+  a file type that was skipped, or a genuinely absent relationship.
+- Never trust an empty result from a command whose failure also prints nothing.
+  When a query, traversal, or lookup returns nothing and that emptiness is the
+  answer being sought, prove the instrument works first — check the exit
+  status, or run it against a node you already know exists. A broken command
+  and a true negative are indistinguishable on stdout, and the broken one
+  reads as a confirmed finding.

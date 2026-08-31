@@ -1142,6 +1142,25 @@ def _is_community_label_export_fix_line(line: str) -> bool:
     )
 
 
+def _is_honesty_rules_empty_result_fix_line(line: str) -> bool:
+    """Whether a line is part of the Honesty Rules empty result fix (#2672)."""
+    stripped = line.strip()
+    return (
+        stripped.startswith("- Never turn an empty traversal into an absence claim.")
+        or stripped.startswith("matching node\" mean *not in this graph*")
+        or stripped.startswith("extraction, not about the corpus.")
+        or stripped.startswith("(\"nothing in the graph connects X to Y;")
+        or stripped.startswith("code is indexed structurally while prose is indexed semantically")
+        or stripped.startswith("the likelier explanation: a wording mismatch against the graph's vocabulary")
+        or stripped.startswith("a file type that was skipped, or a genuinely absent relationship.")
+        or stripped.startswith("- Never trust an empty result from a command whose failure also prints nothing.")
+        or stripped.startswith("When a query, traversal, or lookup returns nothing and that emptiness is the")
+        or stripped.startswith("answer being sought, prove the instrument works first")
+        or stripped.startswith("status, or run it against a node you already know exists.")
+        or stripped.startswith("and a true negative are indistinguishable on stdout")
+        or stripped.startswith("reads as a confirmed finding.")
+    )
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -1163,6 +1182,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_uv_from_interpreter_fix_line,
     _is_semantic_cache_scope_fix_line,
     _is_community_label_export_fix_line,
+    _is_honesty_rules_empty_result_fix_line,
 )
 
 
