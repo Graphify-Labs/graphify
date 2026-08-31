@@ -404,3 +404,127 @@ def test_open_mirrors_csharp_using(tmp_path):
     assert e["metadata"]["target_fqn"] == "System.Text"
     # no minted last-segment stub that could rewire onto an unrelated `Text`
     assert not any(n["label"] == "Text" for n in r["nodes"])
+
+
+# ── Findings from the round-4 lensed panel ───────────────────────────────────
+
+
+def test_annotated_single_arg_let_does_not_mint_type(tmp_path):
+    # The R2 regression test was proven VACUOUS by mutation: its multi-arg
+    # source parses via function_declaration_left, never exercising
+    # bound_value_names. A SINGLE-arg annotated let goes down the value path.
+    src = "module M\nlet run (mode: string) : int = work mode\n"
+    r = extract_fsharp(_write(tmp_path, "sann.fs", src))
+    sourced = {n["label"] for n in r["nodes"] if n.get("source_file")}
+    assert "int" not in sourced
+    assert "run" in sourced or "run()" in sourced
+
+
+def test_object_expression_references_interface(tmp_path):
+    # This edge was DEAD CODE (wrong child type matched) — two arms proved it
+    # fired on zero corpus files. Positive assertion pins it.
+    src = ("module M\n"
+           "let mk () =\n"
+           "    { new System.IDisposable with\n"
+           "        member this.Dispose() = () }\n")
+    r = extract_fsharp(_write(tmp_path, "oref.fs", src))
+    assert ("mk()", "IDisposable") in _rel_pairs(r, "references")
+
+
+def test_generic_heritage_edges_emitted(tmp_path):
+    src = ("module M\n"
+           "type Child<'T>() =\n"
+           "    inherit Base<'T>()\n"
+           "    interface System.Collections.Generic.IComparer<'T> with\n"
+           "        member this.Compare(a, b) = 0\n")
+    r = extract_fsharp(_write(tmp_path, "gher.fs", src))
+    assert ("Child", "Base") in _rel_pairs(r, "inherits")
+    assert ("Child", "IComparer") in _rel_pairs(r, "implements")
+    sourced = {n["label"] for n in r["nodes"] if n.get("source_file")}
+    assert "T" not in sourced, "type parameter leaked from generic heritage"
+
+
+def test_static_let_minted_and_resolvable(tmp_path):
+    src = ("module M\n"
+           "type C() =\n"
+           "    static let build x = shape x\n"
+           "    member this.Go() = build 1\n")
+    r = extract_fsharp(_write(tmp_path, "slet.fs", src))
+    sourced = {n["label"] for n in r["nodes"] if n.get("source_file")}
+    assert "build()" in sourced
+    calls = _rel_pairs(r, "calls")
+    assert ("build()", "shape") in calls, "static-let body call misattributed"
+    assert (".Go()", "build()") in calls, "member call did not resolve to local static let"
+
+
+def test_class_let_and_member_do_not_collide(tmp_path):
+    # _make_id case-folds: `let capacity` and `member .Capacity()` merged into
+    # one node on the real corpus (RingBuffer.fs lost its public member), and
+    # produced a false self-loop elsewhere. Member ids now carry a kind tag.
+    src = ("module M\n"
+           "type T() =\n"
+           "    let run () = 1\n"
+           "    member this.Run() = run ()\n")
+    r = extract_fsharp(_write(tmp_path, "coll.fs", src))
+    sourced = {n["label"] for n in r["nodes"] if n.get("source_file")}
+    assert "run()" in sourced and ".Run()" in sourced
+    for e in r["edges"]:
+        assert e["source"] != e["target"], f"self-loop: {e}"
+
+
+def test_composition_records_both_callees(tmp_path):
+    src = ("module M\n"
+           "let f1 x = x\n"
+           "let f2 x = x\n"
+           "let pipeline = f1 >> f2\n"
+           "let rev = f2 << f1\n")
+    r = extract_fsharp(_write(tmp_path, "comp.fs", src))
+    calls = _rel_pairs(r, "calls")
+    assert ("pipeline", "f1()") in calls and ("pipeline", "f2()") in calls
+    assert ("rev", "f1()") in calls and ("rev", "f2()") in calls
+
+
+def test_inherit_argument_calls_recorded(tmp_path):
+    src = "module M\ntype Sub() =\n    inherit Base(mkArg ())\n"
+    r = extract_fsharp(_write(tmp_path, "iarg.fs", src))
+    calls = _rel_pairs(r, "calls")
+    assert ("Sub", "mkArg") in calls, calls
+
+
+def test_local_module_qualified_call_binds_extracted(tmp_path):
+    # The POSITIVE half of local_containers — previously only negative tests
+    # existed, so deleting the feature survived every test (64 corpus edges
+    # silently demoted to stubs).
+    src = ("module Root\n"
+           "module Config =\n"
+           "    let create p = p\n"
+           "let boot () = Config.create 1\n")
+    r = extract_fsharp(_write(tmp_path, "lq.fs", src))
+    lab = {n["id"]: n for n in r["nodes"]}
+    hits = [e for e in r["edges"] if e["relation"] == "calls"
+            and lab[e["target"]]["label"] == "create()"]
+    assert hits, "qualified call through local module did not bind"
+    assert all(e["confidence"] == "EXTRACTED" for e in hits)
+    assert all(lab[e["target"]].get("source_file") for e in hits)
+
+
+def test_abstract_members_emitted(tmp_path):
+    src = ("module M\n"
+           "type IFoo =\n"
+           "    abstract member Go: unit -> int\n")
+    r = extract_fsharp(_write(tmp_path, "abs.fs", src))
+    assert ("IFoo", ".Go()") in _rel_pairs(r, "contains")
+
+
+def test_partial_active_pattern_label_keeps_wildcard(tmp_path):
+    src = "module M\nlet (|Int|_|) (s: string) = tryInt s\n"
+    r = extract_fsharp(_write(tmp_path, "pap.fs", src))
+    sourced = {n["label"] for n in r["nodes"] if n.get("source_file")}
+    assert "(|Int|_|)" in sourced, sourced
+
+
+def test_heritage_confidence_is_inferred(tmp_path):
+    src = "module M\ntype Sub() =\n    inherit Base()\n"
+    r = extract_fsharp(_write(tmp_path, "hconf.fs", src))
+    her = [e for e in r["edges"] if e["relation"] == "inherits"]
+    assert her and all(e["confidence"] == "INFERRED" for e in her)

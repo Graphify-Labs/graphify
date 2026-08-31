@@ -63,7 +63,8 @@ from graphify.extractors.engine import _csharp_namespace_id
 from graphify.security import sanitize_metadata
 
 # *_type_defn wrappers under type_definition, per the grammar. type_extension
-# is deliberately NOT here: it augments an existing type (see emit path below).
+# is handled by its own branch (it augments an existing type) and is therefore
+# not in this set.
 _TYPE_DEFN_KINDS = frozenset({
     "record_type_defn", "union_type_defn", "interface_type_defn",
     "enum_type_defn", "type_abbrev_defn",
@@ -73,6 +74,11 @@ _TYPE_DEFN_KINDS = frozenset({
 # Pipe operators whose non-function operand is data, not a callee.
 _PIPE_RIGHT = frozenset({"|>", "||>", "|||>"})   # callee on the right
 _PIPE_LEFT = frozenset({"<|", "<||", "<|||"})    # callee on the left
+# Composition: BOTH operands are callees (direction only swaps application
+# order). Deliberately not generalized to custom operators — Kleisli (>=>)
+# happens to compose functions but bind (>>=) has a data operand; there is no
+# sound generic rule (round-4 panel, grammar-coverage arm).
+_COMPOSE = frozenset({">>", "<<"})
 
 _COMMENT_TYPES = frozenset({"line_comment", "block_comment", "xml_doc"})
 
@@ -210,6 +216,19 @@ def extract_fsharp(path: Path) -> dict:
         rec(node)
         return found
 
+    def type_ref_parts(node) -> list[str]:
+        """Dotted name of a type REFERENCE (heritage clause, interface impl,
+        object expression). `Base<'T>` wraps in generic_type whose subtree also
+        holds the type parameters — read only the long_identifier child, the
+        same rule the round-3 type_name fix established for definitions."""
+        if node is None:
+            return []
+        if node.type in ("generic_type", "simple_type", "long_identifier_or_op"):
+            inner = first_child(node, "long_identifier", "identifier")
+            if inner is not None:
+                return identifiers_of(inner)
+        return identifiers_of(node)
+
     def type_name_parts(defn) -> tuple[list[str], int]:
         """The type's OWN dotted name. A generic `type_name` carries
         `type_arguments` (and `when` constraints) as siblings of the name —
@@ -258,7 +277,7 @@ def extract_fsharp(path: Path) -> dict:
             return None
         mname = parts[-1]
         line = line_of(member_defn)
-        mnid = _make_id(type_nid, mname)
+        mnid = _make_id(type_nid, "mem", mname)
         add_node(mnid, f".{mname}()", line)
         add_edge(type_nid, mnid, "contains", line)
         register_def(mname, mnid)
@@ -271,8 +290,9 @@ def extract_fsharp(path: Path) -> dict:
         bind it to the real definition."""
         for decl in defn.children:
             if decl.type == "class_inherits_decl":
-                st = first_child(decl, "simple_type", "long_identifier")
-                parts = identifiers_of(st) if st is not None else []
+                st = first_child(decl, "simple_type", "generic_type",
+                                 "long_identifier")
+                parts = type_ref_parts(st)
                 if parts:
                     add_edge(type_nid, ref_stub(parts[-1]), "inherits",
                              line_of(decl), confidence="INFERRED")
@@ -335,7 +355,7 @@ def extract_fsharp(path: Path) -> dict:
                 case_names = [_read_text(c, source) for c in ap.children
                               if c.type == "active_pattern_op_name"]
                 if case_names:
-                    label = "(|" + "|".join(case_names) + "|)"
+                    label = _read_text(ap, source)  # keeps `|_|` in partials
                     line = line_of(head)
                     nid = _make_id(container_nid, "ap", *case_names)
                     add_node(nid, label, line)
@@ -355,7 +375,8 @@ def extract_fsharp(path: Path) -> dict:
                 add_node(nid, op_text, line)
                 add_edge(container_nid, nid,
                          "defines" if container_nid == file_nid else "contains", line)
-                register_def(op_text.strip("()"), nid)
+                # no register_def: nothing resolves calls by operator spelling
+                # (non-pipe operator invocations are deliberately unrecorded)
                 return nid
             return None
         # value_declaration_left
@@ -466,12 +487,21 @@ def extract_fsharp(path: Path) -> dict:
                     if child.type == "type_extension_elements":
                         for el in child.children:
                             if el.type == "member_defn":
+                                vd = first_child(el, "value_declaration")
+                                if vd is not None:
+                                    # `static let build x = ...`: a binding in
+                                    # member clothing; mint it under the type
+                                    # (empty scope lets mint_binding_head run).
+                                    for sub in vd.children:
+                                        walk(sub, tnid, "")
+                                    continue
                                 mnid = emit_member(el, tnid)
                                 for sub in el.children:
                                     walk(sub, tnid, mnid or tnid)
                             elif el.type == "interface_implementation":
-                                st = first_child(el, "simple_type", "long_identifier")
-                                iparts = identifiers_of(st) if st is not None else []
+                                st = first_child(el, "simple_type", "generic_type",
+                                                 "long_identifier")
+                                iparts = type_ref_parts(st)
                                 if iparts:
                                     add_edge(tnid, ref_stub(iparts[-1]),
                                              "implements", line_of(el),
@@ -483,9 +513,15 @@ def extract_fsharp(path: Path) -> dict:
                                             walk(sub, tnid, mnid or tnid)
                             else:
                                 walk(el, tnid, enclosing_value)
+                    elif child.type == "class_inherits_decl":
+                        # heritage edge came from emit_heritage; the ctor
+                        # arguments still carry calls (`inherit Base(mkArg ())`)
+                        for sub in child.children:
+                            if sub.type not in ("simple_type", "generic_type",
+                                                "long_identifier"):
+                                walk(sub, tnid, enclosing_value)
                     elif child.type not in ("type_name", "union_type_cases",
-                                            "enum_type_cases",
-                                            "class_inherits_decl"):
+                                            "enum_type_cases"):
                         walk(child, tnid, enclosing_value)
             return
 
@@ -508,8 +544,9 @@ def extract_fsharp(path: Path) -> dict:
             # implementations, and poisons local_defs (a later real `Go`
             # binding turns ambiguous). Attribute member-body calls to the
             # enclosing binding; reference the interface as a stub.
-            st = first_child(node, "simple_type", "long_identifier")
-            iparts = identifiers_of(st) if st is not None else []
+            st = first_child(node, "long_identifier_or_op", "generic_type",
+                             "simple_type", "long_identifier")
+            iparts = type_ref_parts(st)
             if iparts:
                 add_edge(enclosing_value or container_nid, ref_stub(iparts[-1]),
                          "references", line_of(node), confidence="INFERRED")
@@ -522,6 +559,11 @@ def extract_fsharp(path: Path) -> dict:
             return
 
         if t == "member_defn":
+            vd = first_child(node, "value_declaration")
+            if vd is not None:
+                for sub in vd.children:
+                    walk(sub, container_nid, "")
+                return
             # A member outside type_extension_elements (type augmentation).
             mnid = emit_member(node, container_nid)
             for child in node.children:
@@ -561,6 +603,10 @@ def extract_fsharp(path: Path) -> dict:
                     target = operands[1]
                 elif op_text in _PIPE_LEFT and operands[0].type in _CALLEE_TYPES:
                     target = operands[0]
+                elif op_text in _COMPOSE:
+                    for opnd in operands:
+                        if opnd.type in _CALLEE_TYPES:
+                            record_call(opnd, enclosing_value or container_nid)
                 if target is not None:
                     record_call(target, enclosing_value or container_nid)
             # Fall through: both operands need walking (nested pipes, args).

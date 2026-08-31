@@ -5606,27 +5606,64 @@ def _is_cpp_header(path: Path) -> bool:
 
 def _looks_like_fsharp_source(path: Path) -> bool:
     """Distinguish F# from the other users of the .fs extension (GLSL fragment
-    shaders, Forth). Mirrors the `.m` ObjC-vs-MATLAB sniff: route to the F#
-    extractor only when the file plausibly IS F#; otherwise return no extractor
-    (surfaced by the no-AST-extractor warning) instead of ERROR-parsing a
-    shader into sourceless dotnet-family stubs that the corpus rewire could
-    bind to real definitions.
+    shaders, Forth). Evidence-tiered per the round-4 cross-examination:
+
+    - comment-only lines are ignored entirely (`// type of light` in a shader
+      must not read as F#; `// uniform distribution` in real F# must not read
+      as GLSL — both happened);
+    - unmistakable GLSL line-starts are STRONG negative evidence;
+    - F# declaration line-starts are STRONG positive evidence and override
+      everything weaker (`float count / float total` is a real F# expression
+      line in a real corpus file — bare type keywords are only WEAK evidence);
+    - weak GLSL evidence (float/int/bool/vecN declaration-shaped line-starts)
+      rejects only when no strong F# evidence exists anywhere in the window;
+    - the window is 64 KB so a long license header cannot starve the F# pass.
     """
     try:
-        head = path.read_bytes()[:4096]
+        head = path.read_bytes()[:65536]
     except OSError:
         return True  # unreadable: let the extractor report the real error
-    glsl_markers = (b"#version", b"precision ", b"gl_Frag", b"gl_Position",
-                    b"layout(", b"layout (", b"uniform ", b"varying ",
-                    b"void main(", b"sampler2D", b"fragColor",
-                    b"vec2", b"vec3", b"vec4")
-    if any(m in head for m in glsl_markers):
+
+    strong_glsl = (b"#version", b"#extension", b"precision ", b"uniform ",
+                   b"varying ", b"layout", b"in vec", b"out vec", b"void main")
+    strong_fsharp = (b"let ", b"module ", b"namespace ", b"open ", b"type ",
+                     b"member ", b"#light", b"#load", b"#r ", b"[<", b"(*")
+    weak_glsl = (b"float ", b"int ", b"bool ", b"vec2", b"vec3", b"vec4",
+                 b"mat3", b"mat4", b"sampler2D")
+
+    saw_strong_glsl = saw_strong_fsharp = saw_weak_glsl = False
+    in_block_comment = False
+    for raw in head.splitlines():
+        line = raw.lstrip()
+        if in_block_comment:
+            if b"*/" in line:
+                in_block_comment = False
+            continue
+        if line.startswith(b"//"):
+            continue
+        if line.startswith(b"/*"):
+            if b"*/" not in line:
+                in_block_comment = True
+            continue
+        if not line:
+            continue
+        if any(line.startswith(m) for m in strong_glsl):
+            saw_strong_glsl = True
+        elif any(line.startswith(m) for m in strong_fsharp):
+            saw_strong_fsharp = True
+        elif any(line.startswith(m) for m in weak_glsl):
+            saw_weak_glsl = True
+
+    if saw_strong_glsl:
+        # A strong F# declaration can only be shader-glue coincidence when
+        # strong GLSL directives are present; GLSL wins (a .fs shader is far
+        # likelier than an F# file whose lines start with `uniform `).
         return False
-    # No bare comment marker here: `// phong lighting` on a modern shader with
-    # no #version line must not read as F# (#3221 round 3).
-    fsharp_markers = (b"let ", b"module ", b"namespace ", b"open ", b"type ",
-                      b"#light", b"member ")
-    return any(m in head for m in fsharp_markers)
+    if saw_strong_fsharp:
+        return True
+    if saw_weak_glsl:
+        return False
+    return False
 
 
 def _get_extractor(path: Path) -> Any | None:
@@ -6726,7 +6763,18 @@ def extract(
     # references edges left on shadow stubs, disambiguating same-named types by the
     # referencing file's `using` directives + enclosing namespace (mirrors Java #1318).
     _DOTNET_TYPE_EXTS = {".cs", ".razor", ".cshtml"}
+    # The imports repoint reads language-agnostic edge metadata (target_fqn /
+    # using_kind) and canonical namespace nodes, so it must also run for a
+    # pure-F# corpus — F# `open` edges carry the same contract (#3221 round 4;
+    # gated on .cs alone, every F#-only repo silently dropped its import edges
+    # in build's dangling-edge prune). The TYPE-reference resolver stays gated
+    # on C# sources: its index and metadata contract (metadata.namespace,
+    # scope_chain, ref_token) are C#-shaped, and F# nodes do not provide them
+    # yet — generalizing it is the follow-up that would also resolve
+    # cross-language constructor calls.
+    _DOTNET_IMPORT_EXTS = _DOTNET_TYPE_EXTS | {".fs", ".fsx"}
     cs_paths = [p for p in paths if p.suffix.lower() in _DOTNET_TYPE_EXTS]
+    dotnet_paths = [p for p in paths if p.suffix.lower() in _DOTNET_IMPORT_EXTS]
     if cs_paths:
         cs_results = [r for r, p in zip(per_file, paths) if p.suffix.lower() in _DOTNET_TYPE_EXTS]
         try:
@@ -6734,11 +6782,13 @@ def extract(
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("C# type-reference resolution failed, skipping: %s", exc)
+    if dotnet_paths:
+        dotnet_results = [r for r, p in zip(per_file, paths) if p.suffix.lower() in _DOTNET_IMPORT_EXTS]
         try:
-            _resolve_cross_file_csharp_imports(cs_results, cs_paths, all_nodes, all_edges)
+            _resolve_cross_file_csharp_imports(dotnet_results, dotnet_paths, all_nodes, all_edges)
         except Exception as exc:
             import logging
-            logging.getLogger(__name__).warning("C# cross-file import resolution failed, skipping: %s", exc)
+            logging.getLogger(__name__).warning(".NET cross-file import resolution failed, skipping: %s", exc)
 
     # Cross-file Bash source-backed call resolution: a call to a function defined
     # in a file this one `source`s is left unresolved by the per-file extractor

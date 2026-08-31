@@ -111,3 +111,64 @@ def test_modern_shader_without_version_line_not_dispatched(tmp_path):
     p.write_text("// phong lighting\nin vec3 normal;\nout vec4 fragColor;\n"
                  "void main() { float d = 0.0; }\n", encoding="utf-8")
     assert _get_extractor(p) is None
+
+
+# ── Round-4 sniff + resolution gates ─────────────────────────────────────────
+
+
+def test_fsharp_with_glsl_words_in_comments_is_dispatched(tmp_path):
+    # Round-3's sniff DROPPED this file ("uniform " matched inside a comment).
+    from graphify.extract import _get_extractor
+    p = tmp_path / "stats.fs"
+    p.write_text("module Stats\n"
+                 "// Draws a sample from a uniform distribution over [lo, hi).\n"
+                 "let sampleUniform lo hi = lo + hi\n", encoding="utf-8")
+    assert _get_extractor(p) is not None
+
+
+def test_fsharp_with_float_expression_lines_is_dispatched(tmp_path):
+    # Cross-exam counterexample: real corpus lines start with `float ` —
+    # weak GLSL evidence must not override a strong F# declaration.
+    from graphify.extract import _get_extractor
+    p = tmp_path / "fmt.fs"
+    p.write_text("namespace Grasp.Tui\nmodule Fmt =\n"
+                 "    let pct count total =\n"
+                 "        float count / float total * 100.0\n", encoding="utf-8")
+    assert _get_extractor(p) is not None
+
+
+def test_marker_free_shader_rejected_on_weak_evidence(tmp_path):
+    from graphify.extract import _get_extractor
+    p = tmp_path / "blur.fs"
+    p.write_text("// blur\nfloat weight = 0.5;\nfloat offset = 1.3;\n",
+                 encoding="utf-8")
+    assert _get_extractor(p) is None
+
+
+def test_comment_only_marker_regression(tmp_path):
+    # Kills the mutant that re-adds b"//" as F# evidence: this shader's only
+    # F#-marker-shaped bytes are comments.
+    from graphify.extract import _get_extractor
+    p = tmp_path / "glow.fs"
+    p.write_text("// glow pass\n// type: additive\nfloat glow = 2.0;\n",
+                 encoding="utf-8")
+    assert _get_extractor(p) is None
+
+
+def test_pure_fsharp_corpus_resolves_open_to_canonical_namespace(tmp_path):
+    # The imports repoint was gated on .cs presence: a pure-F# corpus dangled
+    # every open edge and build silently pruned them (verified by two arms).
+    pytest.importorskip("tree_sitter_fsharp")
+    from graphify.extract import extract
+    from graphify.extractors.engine import _csharp_namespace_id
+    lib = tmp_path / "Lib.fs"
+    lib.write_text("namespace Acme.Widgets\ntype Gadget() = member this.Go() = 1\n",
+                   encoding="utf-8")
+    prog = tmp_path / "Program.fs"
+    prog.write_text("namespace Acme.App\nopen Acme.Widgets\n"
+                    "module Main =\n    let run () = 1\n", encoding="utf-8")
+    r = extract([lib, prog], root=tmp_path, max_workers=1)
+    canon = _csharp_namespace_id("Acme.Widgets")
+    hits = [e for e in r["edges"]
+            if e["relation"] == "imports" and e["target"] == canon]
+    assert hits, "open edge was not repointed to the canonical namespace node"
