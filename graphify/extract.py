@@ -5620,7 +5620,9 @@ def _looks_like_fsharp_source(path: Path) -> bool:
     - the window is 64 KB so a long license header cannot starve the F# pass.
     """
     try:
-        head = path.read_bytes()[:65536]
+        with open(path, "rb") as fh:
+            head = fh.read(65536)  # bounded read — not read_bytes()[:n],
+            # which slurps the whole file before slicing
     except OSError:
         return True  # unreadable: let the extractor report the real error
     # Windows-authored F# commonly leads with a UTF-8 BOM; without stripping it

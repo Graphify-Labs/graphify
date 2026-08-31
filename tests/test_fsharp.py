@@ -533,3 +533,10 @@ def test_qualified_call_binds_only_to_owning_container(tmp_path):
                         and c == "EXTRACTED" for s, t, c in good)
     assert bad and all(not t.get("source_file") for s, t, c in bad), (
         "B.helper falsely bound to A's sourced helper")
+
+
+def test_nested_destructuring_let_mints_all_names(tmp_path):
+    src = "module M\nlet (a, (b, c)) = mk ()\n"
+    r = extract_fsharp(_write(tmp_path, "nest.fs", src))
+    sourced = {n["label"] for n in r["nodes"] if n.get("source_file")}
+    assert {"a", "b", "c"} <= sourced

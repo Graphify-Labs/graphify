@@ -222,6 +222,10 @@ def extract_fsharp(path: Path) -> dict:
         return None
 
     def find_all(node, node_type: str) -> list:
+        """Matches of node_type, NOT descending into a match — intentional:
+        for destructuring, inner patterns nest beside identifier_pattern (under
+        paren_pattern/repeat_pattern), never inside one, so `let (a, (b, c))`
+        yields all three (pinned by test_nested_destructuring_let)."""
         found: list = []
 
         def rec(n) -> None:
