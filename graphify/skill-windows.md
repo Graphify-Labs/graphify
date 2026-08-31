@@ -647,7 +647,7 @@ print(f'All time: {cost["total_input_tokens"]:,} input, {cost["total_output_toke
 '@ | & (Get-Content graphify-out\.graphify_python) -
 Remove-Item -Force -ErrorAction SilentlyContinue graphify-out\.graphify_detect.json, graphify-out\.graphify_extract.json, graphify-out\.graphify_ast.json, graphify-out\.graphify_semantic.json, graphify-out\.graphify_analysis.json
 Get-ChildItem graphify-out -Filter '.graphify_chunk_*.json' -File -ErrorAction SilentlyContinue | Remove-Item -Force
-Remove-Item -Force -ErrorAction SilentlyContinue graphify-out\.needs_update
+Remove-Item -Force -ErrorAction SilentlyContinue graphify-out\needs_update
 ```
 
 Replace INPUT_PATH with the actual path (same value used in Steps 4-5) so the manifest is relativized to the scan root.
