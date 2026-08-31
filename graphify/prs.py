@@ -138,7 +138,7 @@ def _ci_icon(status: str) -> str:
 
 # ── GitHub data fetching ──────────────────────────────────────────────────────
 
-def _gh(*args: str) -> list | dict | None:
+def _gh(*args: str, _errors: list[str] | None = None) -> list | dict | None:
     try:
         result = subprocess.run(
             ["gh", *args],
@@ -148,9 +148,21 @@ def _gh(*args: str) -> list | dict | None:
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30
         )
         if result.returncode != 0:
+            if _errors is not None:
+                _errors.append(result.stderr.strip() or f"gh exited with code {result.returncode}")
             return None
         return json.loads(result.stdout)
-    except (subprocess.TimeoutExpired, json.JSONDecodeError, FileNotFoundError):
+    except FileNotFoundError:
+        if _errors is not None:
+            _errors.append("gh CLI not found on PATH")
+        return None
+    except subprocess.TimeoutExpired:
+        if _errors is not None:
+            _errors.append("gh command timed out after 30s")
+        return None
+    except json.JSONDecodeError as e:
+        if _errors is not None:
+            _errors.append(f"gh returned non-JSON output: {e}")
         return None
 
 
@@ -205,9 +217,15 @@ def fetch_prs(repo: str | None = None, base: str | None = None, limit: int = 50)
     if repo:
         args += ["--repo", repo]
 
-    raw = _gh(*args)
+    errors: list[str] = []
+    raw = _gh(*args, _errors=errors)
     if raw is None:
-        raise RuntimeError("gh CLI not found or not authenticated. Run: gh auth login")
+        detail = errors[0] if errors else "unknown error"
+        raise RuntimeError(
+            f"gh CLI call failed: {detail}\n"
+            "If this looks like an auth issue, run: gh auth login\n"
+            "If it looks like a repo/permissions issue, double-check the --repo value."
+        )
 
     prs = []
     for item in raw:
