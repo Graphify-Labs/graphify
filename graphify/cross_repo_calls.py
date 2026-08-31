@@ -39,8 +39,16 @@ UNRESOLVED_CALLS_KEY = "unresolved_calls"
 # just as happily to a Python class of the same name in another repo. Extend this
 # map when another extractor starts parking calls.
 _LANG_SUFFIXES: dict[str, frozenset[str]] = {
+    "cpp": frozenset({".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx", ".h", ".cu", ".cuh"}),
+    "csharp": frozenset({".cs"}),
     "java": frozenset({".java"}),
+    "swift": frozenset({".swift"}),
 }
+
+# A declaration owns its members through a `method` edge, except in C++, where an
+# in-class declaration (`void bar();` in a header) is modelled as a field and
+# carries `defines` instead. `method` wins when both name the same member.
+_MEMBER_RELATIONS = ("defines", "method")
 
 
 def _key(label: object) -> str:
@@ -97,17 +105,26 @@ def _index_declarations(merged: "nx.Graph") -> tuple[dict[str, list[str]], set[s
     return by_name, type_ids
 
 
-def _index_methods(merged: "nx.Graph", type_ids: set[str]) -> dict[tuple[str, str], list[str]]:
-    """Index each declaration's methods by name.
+def _index_members(
+    merged: "nx.Graph", type_ids: set[str]
+) -> dict[str, dict[tuple[str, str], list[str]]]:
+    """Index each declaration's members by relation, then by name.
 
     The merged graph is undirected, and a ``method`` edge carries no reliable
     direction once composed, so the owner is identified as the endpoint that is a
     type declaration. A nested declaration puts a type on both ends; that pair is
     skipped rather than guessed at.
+
+    Kept per relation rather than pooled: ``defines`` covers fields as well as
+    C++'s in-class member declarations, so only a language that needs it may look
+    there, and only when no ``method`` of that name exists.
     """
-    by_owner: dict[tuple[str, str], list[str]] = defaultdict(list)
+    by_relation: dict[str, dict[tuple[str, str], list[str]]] = {
+        relation: defaultdict(list) for relation in _MEMBER_RELATIONS
+    }
     for u, v, data in merged.edges(data=True):
-        if data.get("relation") != "method":
+        relation = data.get("relation")
+        if relation not in by_relation:
             continue
         if u in type_ids and v not in type_ids:
             owner, member = u, v
@@ -117,8 +134,18 @@ def _index_methods(merged: "nx.Graph", type_ids: set[str]) -> dict[tuple[str, st
             continue
         name = _key(merged.nodes[member].get("label"))
         if name:
-            by_owner[(owner, name)].append(member)
-    return by_owner
+            by_relation[relation][(owner, name)].append(member)
+    return by_relation
+
+
+def _member_relations(lang: str) -> tuple[str, ...]:
+    """Which owner→member relations may answer a call parked by ``lang``.
+
+    Only C++ models an in-class declaration (``void bar();`` in a header) as a
+    field, so only a C++ entry may fall back to ``defines``; for every other
+    language a ``defines`` target is a field, and a field cannot answer a call.
+    """
+    return ("method", "defines") if lang == "cpp" else ("method",)
 
 
 def link_cross_repo_member_calls(merged: "nx.Graph") -> int:
@@ -136,7 +163,7 @@ def link_cross_repo_member_calls(merged: "nx.Graph") -> int:
     by_name, type_ids = _index_declarations(merged)
     if not by_name:
         return 0
-    methods_by_owner = _index_methods(merged, type_ids)
+    members_by_relation = _index_members(merged, type_ids)
 
     added = 0
     for caller, caller_data in parked_nodes:
@@ -146,7 +173,8 @@ def link_cross_repo_member_calls(merged: "nx.Graph") -> int:
             # deliberately never re-decides a call inside one repo.
             continue
         for entry in _parked_entries(caller_data):
-            suffixes = _LANG_SUFFIXES.get(str(entry.get("lang") or ""))
+            lang = str(entry.get("lang") or "")
+            suffixes = _LANG_SUFFIXES.get(lang)
             receiver_type = _key(entry.get("receiver_type"))
             callee = _key(entry.get("callee"))
             if not suffixes or not receiver_type or not callee:
@@ -160,7 +188,11 @@ def link_cross_repo_member_calls(merged: "nx.Graph") -> int:
                 # The same guard the single-repo resolvers apply: two repos
                 # declaring the same name is an ambiguity, not a hit.
                 continue
-            targets = methods_by_owner.get((candidates[0], callee), [])
+            targets: list[str] = []
+            for relation in _member_relations(lang):
+                targets = members_by_relation[relation].get((candidates[0], callee), [])
+                if targets:
+                    break
             if len(targets) != 1:
                 continue
             target = targets[0]

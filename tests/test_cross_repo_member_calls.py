@@ -6,13 +6,15 @@ type already in hand and nothing about it reached `graph.json` — the only arti
 `merge-graphs` and `global add` read. The two-repo graph was missing precisely the
 edges that make it a call graph.
 
-The Java resolver now parks those calls on the caller node and this pass finishes
-them after the merge. The cases below pin what it must NOT do as much as what it
-must: the single-definition guard, the cross-repo-only scope, and the language
-guard are what keep it from fabricating an edge from a name collision.
+The Java, C++, C# and Swift resolvers now park those calls on the caller node and
+this pass finishes them after the merge. The cases below pin what it must NOT do
+as much as what it must: the single-definition guard, the cross-repo-only scope,
+and the language guard are what keep it from fabricating an edge from a name
+collision.
 """
 from __future__ import annotations
 
+import importlib
 import json
 import subprocess
 import sys
@@ -28,18 +30,27 @@ from graphify.cross_repo_calls import (
 
 PYTHON = sys.executable
 
-try:
-    import tree_sitter_java  # noqa: F401
-    HAVE_JAVA = True
-except ImportError:
-    HAVE_JAVA = False
 
-needs_java = pytest.mark.skipif(not HAVE_JAVA, reason="tree-sitter-java not installed")
+def _needs(module: str):
+    """Skip a real-extraction case when its tree-sitter grammar is absent."""
+    try:
+        importlib.import_module(module)
+        missing = False
+    except ImportError:
+        missing = True
+    return pytest.mark.skipif(missing, reason=f"{module} not installed")
 
 
-def _caller(repo: str, parked: list[dict], node_id: str = "app_run") -> tuple[str, dict]:
+needs_java = _needs("tree_sitter_java")
+needs_cpp = _needs("tree_sitter_cpp")
+needs_csharp = _needs("tree_sitter_c_sharp")
+needs_swift = _needs("tree_sitter_swift")
+
+
+def _caller(repo: str, parked: list[dict], node_id: str = "app_run",
+            source_file: str = "src/App.java") -> tuple[str, dict]:
     return f"{repo}::{node_id}", {
-        "label": ".run()", "source_file": "src/App.java", "repo": repo,
+        "label": ".run()", "source_file": source_file, "repo": repo,
         "metadata": {"unresolved_calls": parked},
     }
 
@@ -58,14 +69,14 @@ def _method(repo: str, label: str = ".greet()", node_id: str = "greeter_greet",
                                   "source_file": source_file, "_callable": True}
 
 
-def _graph(*, caller, declarations) -> nx.Graph:
-    """Build a merged-graph shape: one caller plus (declaration, method) pairs."""
+def _graph(*, caller, declarations, relation: str = "method") -> nx.Graph:
+    """Build a merged-graph shape: one caller plus (declaration, member) pairs."""
     G = nx.Graph()
     G.add_node(caller[0], **caller[1])
     for decl, method in declarations:
         G.add_node(decl[0], **decl[1])
         G.add_node(method[0], **method[1])
-        G.add_edge(decl[0], method[0], relation="method")
+        G.add_edge(decl[0], method[0], relation=relation)
     return G
 
 
@@ -126,6 +137,62 @@ def test_a_declaration_in_another_language_binds_nothing():
                        _method("b", source_file="greeter.py"))],
     )
     assert link_cross_repo_member_calls(G) == 0
+
+
+PARKED_CPP = [{"callee": "greet", "receiver_type": "Greeter", "lang": "cpp", "line": "L1"}]
+
+
+def test_a_cpp_call_does_not_bind_to_a_csharp_declaration():
+    # Every parking language now has its own suffix set, so the guard has to keep
+    # them apart from each other and not just from the languages that never park.
+    G = _graph(
+        caller=_caller("a", PARKED_CPP, source_file="src/app.cpp"),
+        declarations=[(_declaration("b", "Greeter", "Greeter.cs"),
+                       _method("b", ".greet()", source_file="Greeter.cs"))],
+    )
+    assert link_cross_repo_member_calls(G) == 0
+
+
+def test_a_cpp_header_declaration_answers_through_defines():
+    # A C++ class that only declares `void greet();` owns it through `defines`,
+    # the relation the extractor also uses for fields, so a header-only library
+    # would otherwise answer nothing.
+    G = _graph(
+        caller=_caller("a", PARKED_CPP, source_file="src/app.cpp"),
+        declarations=[(_declaration("b", "Greeter", "greeter.h"),
+                       _method("b", "greet", source_file="greeter.h"))],
+        relation="defines",
+    )
+    assert link_cross_repo_member_calls(G) == 1
+    assert _added_calls(G) == {("a::app_run", "b::greeter_greet")}
+
+
+def test_a_defines_member_does_not_answer_a_java_call():
+    # Outside C++ a `defines` target is a field, and a field cannot be called.
+    G = _graph(
+        caller=_caller("a", PARKED_GREET),
+        declarations=[(_declaration("b", "Greeter"), _method("b"))],
+        relation="defines",
+    )
+    assert link_cross_repo_member_calls(G) == 0
+
+
+def test_the_definition_answers_before_a_same_named_declaration():
+    # A C++ class declares `void greet();` in its header (`defines`) and defines
+    # it out of line in the `.cpp` (`method`). Both hang off the one folded class
+    # node, and the definition is the better target.
+    decl = _declaration("b", "Greeter", "greeter.h")
+    G = _graph(
+        caller=_caller("a", PARKED_CPP, source_file="src/app.cpp"),
+        declarations=[(decl, _method("b", "greet", "greeter_decl", "greeter.h"))],
+        relation="defines",
+    )
+    definition = _method("b", ".greet()", "greeter_def", "greeter.cpp")
+    G.add_node(definition[0], **definition[1])
+    G.add_edge(decl[0], definition[0], relation="method")
+
+    assert link_cross_repo_member_calls(G) == 1
+    assert _added_calls(G) == {("a::app_run", "b::greeter_def")}
 
 
 def test_a_sourceless_stub_does_not_answer_a_parked_call():
@@ -197,6 +264,32 @@ def _merge(tmp_path: Path, a: Path, b: Path) -> dict:
     return {"data": json.loads(out.read_text(encoding="utf-8")), "stdout": result.stdout}
 
 
+def _build(tmp_path: Path, repo: str, name: str, body: str) -> Path:
+    """Extract one repo the way a real build does and write its `graph.json`."""
+    from graphify.extract import extract
+
+    path = tmp_path / repo / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+    result = extract([path], cache_root=tmp_path / repo / "graphify-out")
+    graph = tmp_path / repo / "graphify-out" / "graph.json"
+    _write_graph(graph, result["nodes"], result["edges"])
+    return graph
+
+
+def _parked(graph: Path) -> list[dict]:
+    """Every parked entry in a written `graph.json`, flattened across nodes."""
+    return [entry
+            for node in json.loads(graph.read_text(encoding="utf-8"))["nodes"]
+            if isinstance(node.get("metadata"), dict)
+            for entry in node["metadata"].get("unresolved_calls", [])]
+
+
+def _cross_repo_calls(merged: dict) -> list[dict]:
+    return [e for e in merged["data"]["links"]
+            if e.get("relation") == "calls" and e.get("context") == "cross_repo"]
+
+
 def test_merge_graphs_cli_finishes_the_parked_call(tmp_path: Path):
     # The pass has to be reached through the real command, not just called
     # directly, and it has to survive the repo prefixing the merge applies.
@@ -214,8 +307,7 @@ def test_merge_graphs_cli_finishes_the_parked_call(tmp_path: Path):
     )
 
     merged = _merge(tmp_path, a, b)
-    calls = [e for e in merged["data"]["links"]
-             if e.get("relation") == "calls" and e.get("context") == "cross_repo"]
+    calls = _cross_repo_calls(merged)
     assert len(calls) == 1, merged["stdout"]
     assert {calls[0]["source"], calls[0]["target"]} == {"app::app_run", "lib::greeter_greet"}
     assert calls[0]["confidence"] == "INFERRED"
@@ -226,39 +318,84 @@ def test_a_java_build_parks_the_call_and_the_merge_finishes_it(tmp_path: Path):
     """The two halves together: a real Java extraction of each repo, then the
     merge. `App` calls a method on a `Greeter` that only the other repo declares,
     which is the case a single build resolves for one corpus and drops for two."""
-    from graphify.extract import extract
+    app = _build(tmp_path, "app", "src/App.java",
+                 "class App {\n"
+                 "    Greeter greeter;\n"
+                 "    void run() { this.greeter.greet(); }\n"
+                 "}\n")
+    lib = _build(tmp_path, "lib", "src/Greeter.java",
+                 "class Greeter { void greet() {} }\n")
 
-    sources = {
-        "app": ("src/App.java",
-                "class App {\n"
-                "    Greeter greeter;\n"
-                "    void run() { this.greeter.greet(); }\n"
-                "}\n"),
-        "lib": ("src/Greeter.java",
-                "class Greeter { void greet() {} }\n"),
-    }
-    graphs = {}
-    for repo, (name, body) in sources.items():
-        path = tmp_path / repo / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(body, encoding="utf-8")
-        result = extract([path], cache_root=tmp_path / repo / "graphify-out")
-        graphs[repo] = tmp_path / repo / "graphify-out" / "graph.json"
-        _write_graph(graphs[repo], result["nodes"], result["edges"])
-
-    parked = [n["metadata"]["unresolved_calls"]
-              for n in json.loads(graphs["app"].read_text(encoding="utf-8"))["nodes"]
-              if isinstance(n.get("metadata"), dict) and n["metadata"].get("unresolved_calls")]
-    assert len(parked) == 1 and len(parked[0]) == 1, parked
-    entry = parked[0][0]
+    parked = _parked(app)
+    assert len(parked) == 1, parked
+    entry = parked[0]
     assert (entry["callee"], entry["receiver_type"], entry["lang"]) == ("greet", "Greeter", "java")
     assert entry["line"], "the call site travels with the entry so the merged edge can carry it"
 
-    merged = _merge(tmp_path, graphs["app"], graphs["lib"])
-    calls = [e for e in merged["data"]["links"]
-             if e.get("relation") == "calls" and e.get("context") == "cross_repo"]
+    merged = _merge(tmp_path, app, lib)
+    calls = _cross_repo_calls(merged)
     assert len(calls) == 1, merged["stdout"]
     endpoints = {calls[0]["source"], calls[0]["target"]}
     assert any(e.startswith("app::") and "run" in e for e in endpoints), endpoints
     assert any(e.startswith("lib::") and "greet" in e for e in endpoints), endpoints
+
+
+@pytest.mark.parametrize("lang,callee,app_file,lib_file", [
+    pytest.param(
+        "cpp", "greet",
+        ("src/app.cpp", "void run() { Greeter g; g.greet(); }\n"),
+        ("src/greeter.cpp", "class Greeter {\n public:\n  void greet() {}\n};\n"),
+        marks=needs_cpp, id="cpp-typed-local",
+    ),
+    pytest.param(
+        # `Greeter::greet()` is also the shape of a namespace-qualified free
+        # function, so this is the arm that leans hardest on the merge's guards.
+        "cpp", "greet",
+        ("src/app.cpp", "void run() { Greeter::greet(); }\n"),
+        ("src/greeter.cpp", "class Greeter {\n public:\n  static void greet() {}\n};\n"),
+        marks=needs_cpp, id="cpp-qualified-receiver",
+    ),
+    pytest.param(
+        "csharp", "Greet",
+        ("src/App.cs", "class App {\n"
+                       "    Greeter greeter;\n"
+                       "    void Run() { greeter.Greet(); }\n"
+                       "}\n"),
+        ("src/Greeter.cs", "class Greeter { public void Greet() {} }\n"),
+        marks=needs_csharp, id="csharp-field-receiver",
+    ),
+    pytest.param(
+        "swift", "greet",
+        ("src/App.swift", "class App {\n"
+                          "    var greeter: Greeter\n"
+                          "    func run() { greeter.greet() }\n"
+                          "}\n"),
+        ("src/Greeter.swift", "class Greeter { func greet() {} }\n"),
+        marks=needs_swift, id="swift-property-receiver",
+    ),
+])
+def test_each_language_parks_the_call_and_the_merge_finishes_it(
+    tmp_path: Path, lang: str, callee: str, app_file: tuple[str, str],
+    lib_file: tuple[str, str],
+):
+    """The Java case above, once per language that parks: the receiver's type is
+    declared only in the other repo, so the build parks the call by name and the
+    merge finishes it. The parked `lang` is asserted because it is what the merge
+    matches the declaring file's suffix against."""
+    app = _build(tmp_path, "app", *app_file)
+    lib = _build(tmp_path, "lib", *lib_file)
+
+    parked = _parked(app)
+    assert len(parked) == 1, parked
+    assert (parked[0]["callee"], parked[0]["receiver_type"], parked[0]["lang"]) == (
+        callee, "Greeter", lang)
+    assert parked[0]["line"], "the call site travels with the entry"
+
+    merged = _merge(tmp_path, app, lib)
+    calls = _cross_repo_calls(merged)
+    assert len(calls) == 1, merged["stdout"]
+    endpoints = {calls[0]["source"], calls[0]["target"]}
+    assert any(e.startswith("app::") and "run" in e.lower() for e in endpoints), endpoints
+    assert any(e.startswith("lib::") and callee.lower() in e.lower()
+               for e in endpoints), endpoints
 
