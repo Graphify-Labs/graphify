@@ -666,7 +666,14 @@ def _dedup_node_filenames(G: nx.Graph, safe_name) -> dict[str, str]:
     silently overwrites a node whose literal label is already "base_1"."""
     node_filenames: dict[str, str] = {}
     used: set[str] = set()
-    for node_id, data in G.nodes(data=True):
+    # #2282: iterate in a stable order (sorted node id) rather than graph iteration
+    # order. nx.Graph iteration order isn't guaranteed stable across process runs
+    # for the same node set, which let a node's `_N` suffix drift between runs of
+    # to_obsidian and defeat the manifest-based ownership check in _owned_write
+    # (a node's filename changing run-to-run makes its old note look orphaned and
+    # its new name look "pre-existing").
+    for node_id in sorted(G.nodes(), key=str):
+        data = G.nodes[node_id]
         base = safe_name(data.get("label", node_id))
         candidate = base
         n = 1
@@ -676,6 +683,26 @@ def _dedup_node_filenames(G: nx.Graph, safe_name) -> dict[str, str]:
         used.add(candidate.lower())
         node_filenames[node_id] = candidate
     return node_filenames
+
+
+def _detect_case_insensitive_fs(out: Path) -> bool:
+    """#2282: probe whether `out` sits on a case-insensitive filesystem
+    (macOS/APFS, Windows/NTFS) by writing a sentinel file and checking whether its
+    case-flipped name also `.exists()`. Assume case-SENSITIVE (the conservative
+    default that preserves today's Linux/ext4 behavior) if the probe can't run for
+    any filesystem reason. Module-level so tests can monkeypatch it to force a
+    result without needing a real filesystem of the opposite kind."""
+    probe = out / ".graphify_case_probe.tmp"
+    flipped = out / ".graphify_CASE_probe.tmp"
+    try:
+        out.mkdir(parents=True, exist_ok=True)
+        probe.write_text("", encoding="utf-8")
+        try:
+            return flipped.exists()
+        finally:
+            probe.unlink(missing_ok=True)
+    except OSError:
+        return False
 
 
 def to_obsidian(
@@ -718,11 +745,27 @@ def to_obsidian(
     _written: list[str] = []
     _skipped: list[str] = []
 
+    # #2282: target.exists() consults the real filesystem, which is
+    # case-INsensitive on APFS/NTFS, while a plain `rel_name in _owned` check is an
+    # exact-string lookup. On such a filesystem a node's note written as
+    # "AGORA.md" in one run looks like someone else's pre-existing file when a
+    # later run computes "agora.md" for the same node - it gets skipped, and then
+    # deleted by the stale-prune below because it's in neither _written nor
+    # _skipped. Probed once per call (not per file) and only applied when the
+    # filesystem is actually case-insensitive, so ext4/Linux keeps its existing
+    # case-sensitive behavior of treating "Agora.md" and "agora.md" as distinct.
+    _case_insensitive = _detect_case_insensitive_fs(out)
+
+    def _own_key(rel_name: str) -> str:
+        return rel_name.lower() if _case_insensitive else rel_name
+
+    _owned_keys = {_own_key(f) for f in _owned}
+
     def _owned_write(rel_name: str, content: str) -> bool:
         """Write a graphify-owned file, refusing to overwrite a pre-existing file
         graphify didn't create. Returns True if written."""
         target = out / rel_name
-        if target.exists() and rel_name not in _owned:
+        if target.exists() and _own_key(rel_name) not in _owned_keys:
             _skipped.append(rel_name)
             return False
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -987,7 +1030,11 @@ def to_obsidian(
     # this run is excluded — so a user's own note is never touched (foreign files
     # land in _skipped, never _owned). Guard each path to stay inside the vault in
     # case a corrupt/hostile manifest contains `../` entries.
-    stale = _owned - set(_written) - set(_skipped)
+    # #2282: compare via the same case-normalized key as _owned_write, else a note
+    # whose filename drifted case (but is still accounted for this run) reads as
+    # stale and gets deleted even though it was just written or skipped.
+    _live_keys = {_own_key(f) for f in _written} | {_own_key(f) for f in _skipped}
+    stale = {f for f in _owned if _own_key(f) not in _live_keys}
     pruned = 0
     for rel_name in sorted(stale):
         target = (out / rel_name).resolve()
