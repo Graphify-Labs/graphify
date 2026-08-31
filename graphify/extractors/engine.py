@@ -3070,6 +3070,15 @@ def _extract_generic(
     file_nid = _make_id(str(path))
     add_node(file_nid, path.name, 1)
 
+    # Attribute-form decorator receivers (#2315): computed once so the
+    # decorated_definition branch below can tell a locally-assigned receiver
+    # apart from an imported module/symbol. See _python_local_instance_classes.
+    local_assigned_names: set[str] = set()
+    local_receiver_classes: dict[str, str] = {}
+    if config.ts_module == "tree_sitter_python":
+        local_assigned_names, local_receiver_classes = (
+            _python_local_instance_classes(root, source, config.class_types))
+
     def walk(node, parent_class_nid: str | None = None) -> None:
         t = node.type
 
@@ -4821,7 +4830,33 @@ def _extract_generic(
                         if not deco_name or deco_name in _PYTHON_DECORATOR_NOISE:
                             continue
                         deco_line = child.start_point[0] + 1
-                        target = ensure_named_node(deco_name, deco_line)
+                        # Attribute-form receiver (#2315): a bare-name lookup on
+                        # just the symbol (`get` in `app.get(...)`) is free to
+                        # collide with any unrelated same-named def, same-file or
+                        # via the corpus rewire. A receiver bound to a locally-
+                        # instantiated local class targets that class's method
+                        # directly; a receiver that's locally assigned but not
+                        # traced to a class (or a compound `@a.b.c` chain)
+                        # gets a receiver-scoped stub instead of the bare name so
+                        # it can never bind to an unrelated definition. A receiver
+                        # that's neither (i.e. likely imported) keeps the existing
+                        # bare-name behavior locked by
+                        # test_attribute_decorator_targets_the_symbol_not_the_module.
+                        receiver = _python_decorator_receiver(child, source)
+                        if receiver is None:
+                            target = ensure_named_node(deco_name, deco_line)
+                        elif receiver in local_receiver_classes:
+                            class_nid = _make_id(
+                                stem, "", local_receiver_classes[receiver])
+                            target = _make_id(class_nid, deco_name)
+                        elif "." in receiver or receiver in local_assigned_names:
+                            # A compound chain (`a.b`) can't be a plain import
+                            # alias either, so it gets the same scoped-stub
+                            # treatment as an unresolved local variable.
+                            target = ensure_named_node(
+                                f"{receiver}.{deco_name}", deco_line)
+                        else:
+                            target = ensure_named_node(deco_name, deco_line)
                         if target != owner_nid:
                             add_edge(owner_nid, target, "references", deco_line,
                                      context="decorator")
@@ -6081,6 +6116,67 @@ def _python_decorator_name(deco_node, source: bytes) -> str | None:
             return _read_text(target, source)
         return None
     return None
+
+def _python_decorator_receiver(deco_node, source: bytes) -> str | None:
+    """Return the receiver text of an attribute-form Python decorator.
+
+    `"app"` for `@app.get(...)` / `@app.route(...)`; the full dotted text
+    (`"a.b"`) when the decorator IS attribute-form but its object isn't a
+    plain identifier (`@a.b.c`, an unresolvable chain); `None` when the
+    decorator isn't attribute-form at all (`@traced`, `@retry(...)`) — those
+    have no receiver-collision risk (#2315).
+    """
+    for child in deco_node.children:
+        if not child.is_named:
+            continue
+        target = child
+        if target.type == "call":
+            target = target.child_by_field_name("function") or target
+        if target.type == "attribute":
+            obj = target.child_by_field_name("object")
+            return _read_text(obj, source) if obj else None
+        return None
+    return None
+
+def _python_local_instance_classes(
+    root, source: bytes, class_types
+) -> tuple[set[str], dict[str, str]]:
+    """Module-level `name = expr` targets, and the subset assigned a call to a
+    class defined in this same file (`name = ClassName()`) mapped to the class
+    name (#2315).
+
+    Scoped to simple top-level `name = call(...)` assignments — no control
+    flow, no attribute targets — matching the shape of `app = _App()` without
+    building general type inference. Used so an attribute-form decorator's
+    receiver (`app` in `@app.get(...)`) can be told apart from an imported
+    module/symbol, which never appears on the left of a plain assignment.
+    """
+    local_class_names = {
+        _read_text(n.child_by_field_name("name"), source)
+        for n in root.children
+        if n.type in class_types and n.child_by_field_name("name")
+    }
+    assigned: set[str] = set()
+    receiver_classes: dict[str, str] = {}
+    for node in root.children:
+        stmt = node
+        if stmt.type == "expression_statement" and stmt.named_child_count == 1:
+            stmt = stmt.named_children[0]
+        if stmt.type != "assignment":
+            continue
+        left = stmt.child_by_field_name("left")
+        right = stmt.child_by_field_name("right")
+        if left is None or left.type != "identifier":
+            continue
+        left_name = _read_text(left, source)
+        assigned.add(left_name)
+        if right is not None and right.type == "call":
+            fn = right.child_by_field_name("function")
+            if fn is not None and fn.type == "identifier":
+                cls_name = _read_text(fn, source)
+                if cls_name in local_class_names:
+                    receiver_classes[left_name] = cls_name
+    return assigned, receiver_classes
 
 def _ts_decorator_name(deco_node, source: bytes) -> str | None:
     """Return the head symbol of a TS `decorator` node.
