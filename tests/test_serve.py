@@ -682,11 +682,35 @@ def test_subgraph_to_text_no_description_unchanged_shape():
     assert "community=0" in text
 
 
-def test_resolved_community_skips_placeholder():
+def test_resolved_community_label_preserves_stored_name():
     d = {"community": 2, "community_name": "Community 2"}
-    assert _resolved_community_label(d) == "2"
+    assert _resolved_community_label(d) == "Community 2"
     d["community_name"] = "Services"
     assert _resolved_community_label(d) == "Services"
+    del d["community_name"]
+    assert _resolved_community_label(d) == "2"
+
+
+def test_format_node_detail_lines_mcp_compact_matches_v8():
+    d = {
+        "label": "foo",
+        "source_file": "a.py",
+        "source_location": "L1",
+        "file_type": "code",
+        "community": 1,
+        "community_name": "Core",
+        "description": "handles auth",
+    }
+    lines = _format_node_detail_lines("foo_id", d, degree=3, compact=True)
+    assert lines == [
+        "Node: foo",
+        "  ID: foo_id",
+        "  Source: a.py L1",
+        "  Type: code",
+        "  Community: Core",
+        "  Description: handles auth",
+        "  Degree: 3",
+    ]
 
 
 def test_format_node_detail_lines_includes_description():

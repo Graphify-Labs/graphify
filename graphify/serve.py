@@ -1491,16 +1491,11 @@ def _filter_blank_stdin() -> None:
 
 
 def _resolved_community_label(d: dict) -> str:
-    cid = d.get("community")
     name = d.get("community_name")
     if name:
-        placeholder = f"Community {cid}" if cid is not None else ""
-        clean = sanitize_label(str(name))
-        if clean and clean != placeholder:
-            return clean
-    if cid is not None:
-        return sanitize_label(str(cid))
-    return ""
+        return sanitize_label(str(name))
+    cid = d.get("community")
+    return sanitize_label(str(cid)) if cid is not None else ""
 
 
 def _node_description_suffix(d: dict) -> str:
@@ -1510,22 +1505,43 @@ def _node_description_suffix(d: dict) -> str:
     return f" desc={sanitize_label(str(desc))}"
 
 
-def _format_node_detail_lines(nid: str, d: dict, *, degree: int | None = None) -> list[str]:
+def _detail_field(label: str, value: str, *, compact: bool) -> str:
+    if compact:
+        return f"  {label}: {value}"
+    padding = {
+        "ID": "        ",
+        "Source": "    ",
+        "Type": "      ",
+        "Community": " ",
+        "Description": " ",
+        "Degree": "    ",
+    }
+    return f"  {label}:{padding.get(label, ' ')}{value}"
+
+
+def _format_node_detail_lines(
+    nid: str,
+    d: dict,
+    *,
+    degree: int | None = None,
+    compact: bool = False,
+) -> list[str]:
+    source = (
+        f"{sanitize_label(str(d.get('source_file', '')))} "
+        f"{sanitize_label(str(d.get('source_location', '')))}"
+    ).strip()
     lines = [
         f"Node: {sanitize_label(d.get('label', nid))}",
-        f"  ID:        {sanitize_label(nid)}",
-        (
-            f"  Source:    {sanitize_label(str(d.get('source_file', '')))} "
-            f"{sanitize_label(str(d.get('source_location', '')))}"
-        ).rstrip(),
-        f"  Type:      {sanitize_label(str(d.get('file_type', '')))}",
-        f"  Community: {_resolved_community_label(d)}",
+        _detail_field("ID", sanitize_label(nid), compact=compact),
+        _detail_field("Source", source, compact=compact),
+        _detail_field("Type", sanitize_label(str(d.get('file_type', ''))), compact=compact),
+        _detail_field("Community", _resolved_community_label(d), compact=compact),
     ]
     desc = d.get("description")
     if desc:
-        lines.append(f"  Description: {sanitize_label(str(desc))}")
+        lines.append(_detail_field("Description", sanitize_label(str(desc)), compact=compact))
     if degree is not None:
-        lines.append(f"  Degree:    {degree}")
+        lines.append(_detail_field("Degree", str(degree), compact=compact))
     return lines
 
 
@@ -1803,7 +1819,7 @@ def _build_server(graph_path: str):
         if not matches:
             return f"No node matching '{label}' found."
         nid, d = matches[0]
-        return "\n".join(_format_node_detail_lines(nid, d, degree=G.degree(nid)))
+        return "\n".join(_format_node_detail_lines(nid, d, degree=G.degree(nid), compact=True))
 
     def _tool_get_neighbors(arguments: dict) -> str:
         label = arguments["label"].lower()
