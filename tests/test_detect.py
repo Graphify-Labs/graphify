@@ -45,6 +45,10 @@ def test_classify_powershell_manifest():
 def test_classify_markdown():
     assert classify_file(Path("README.md")) == FileType.DOCUMENT
 
+def test_classify_delimited_data_as_document():
+    assert classify_file(Path("research.csv")) == FileType.DOCUMENT
+    assert classify_file(Path("research.tsv")) == FileType.DOCUMENT
+
 def test_classify_skill():
     # #1901: .skill agent files (Markdown with YAML frontmatter) were dropped as unclassified.
     assert classify_file(Path("10_Orchestrator.skill")) == FileType.DOCUMENT

@@ -348,6 +348,7 @@ To remove graphify from all platforms at once: `graphify uninstall` (add `--purg
 | MCP configs | `.mcp.json` `mcp.json` `mcp_servers.json` `claude_desktop_config.json` — extracts server nodes, package refs, env var requirements |
 | Package manifests | `apm.yml` `pyproject.toml` `go.mod` `pom.xml` — one canonical package node per package (by name) plus `depends_on` edges, so a package referenced from many manifests is a single hub |
 | Docs | `.md .mdx .qmd .html .txt .rst .yaml .yml` (markdown `[text](./other.md)` links and `[[wikilinks]]` become `references` edges between docs) |
+| Delimited data | `.csv .tsv` (built-in bounded conversion to contextualized Markdown; UTF-8 and UTF-8-BOM) |
 | Office | `.docx .xlsx` (requires `uv tool install graphifyy[office]`) |
 | Google Workspace | `.gdoc .gsheet .gslides` (opt-in; requires `gws` auth and `--google-workspace`; Sheets need `uv tool install graphifyy[google]`) |
 | PDFs | `.pdf` |
@@ -356,6 +357,14 @@ To remove graphify from all platforms at once: `graphify uninstall` (add `--purg
 | YouTube / URLs | any video URL (requires `uv tool install graphifyy[video]`) |
 
 Code is extracted **locally with no API calls** (AST via tree-sitter). Everything else goes through your AI assistant's model API.
+
+CSV and TSV values are parsed as inert text—spreadsheet-style formulas are never
+evaluated—and rendered to Markdown with delimiter, header, shape, ragged-row, and
+truncation metadata. Conversion is capped at 50 MiB of input, 1,000 data rows,
+100 columns, 10,000 characters per field, and 1.1 million output characters;
+the generated sidecar states when any limit truncated the table. Before parsing,
+logical records are rejected above 2 MiB or 1,000 input columns, malformed quoting
+fails closed, and strict UTF-8/UTF-8-BOM decoding prevents silent data loss.
 
 Google Drive for desktop `.gdoc`, `.gsheet`, and `.gslides` files are shortcut
 pointers, not document content. To include native Google Docs, Sheets, and Slides
