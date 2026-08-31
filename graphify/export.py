@@ -678,18 +678,136 @@ def _dedup_node_filenames(G: nx.Graph, safe_name) -> dict[str, str]:
     return node_filenames
 
 
+# --with-sources (#1968): map a source file's extension to a fenced-code
+# language hint so non-markdown sources embed with syntax highlighting.
+_SOURCE_FENCE_LANG = {
+    "py": "python", "js": "javascript", "jsx": "javascript", "ts": "typescript",
+    "tsx": "typescript", "rs": "rust", "go": "go", "java": "java", "rb": "ruby",
+    "php": "php", "c": "c", "h": "c", "cpp": "cpp", "hpp": "cpp", "cc": "cpp",
+    "cs": "csharp", "swift": "swift", "kt": "kotlin", "scala": "scala",
+    "sh": "bash", "bash": "bash", "zsh": "bash", "sql": "sql", "yaml": "yaml",
+    "yml": "yaml", "toml": "toml", "json": "json", "html": "html", "css": "css",
+    "xml": "xml", "lua": "lua", "r": "r", "jl": "julia",
+}
+
+# Extensions Obsidian renders as prose, so their source note copies the file
+# verbatim rather than wrapping it in a code fence.
+_SOURCE_MARKDOWN_EXT = {"md", "mdx", "markdown", "qmd", "txt", ""}
+
+# Skip embedding a "source" larger than this (a mis-referenced binary/asset)
+# so --with-sources never bloats the vault with megabytes of noise (#1968).
+_MAX_SOURCE_BYTES = 2_000_000
+
+
+def _resolve_source_path(source_file: str, roots: list[Path]) -> "Path | None":
+    """Resolve a node's ``source_file`` to an existing readable file on disk.
+
+    ``source_file`` is stored relative to the scan root (#1941), so we try each
+    candidate root in order; an absolute path is tried as-is first. Returns the
+    first existing regular file, or None when nothing resolves."""
+    if not source_file:
+        return None
+    p = Path(source_file)
+    candidates: list[Path] = []
+    if p.is_absolute():
+        candidates.append(p)
+    else:
+        candidates.extend(r / source_file for r in roots)
+    for c in candidates:
+        try:
+            if c.is_file():
+                return c
+        except OSError:
+            continue
+    return None
+
+
+def _flatten_source_name(source_file: str) -> str:
+    """Flatten a (possibly nested, possibly Windows) source path into a single
+    collision-safe note stem prefixed ``_src_`` (e.g. ``en/best-practices.md``
+    -> ``_src_en_best-practices``)."""
+    norm = source_file.replace("\\", "/")
+    parts = [seg for seg in norm.split("/") if seg not in ("", ".", "..")]
+    flat = "_".join(parts) if parts else "source"
+    # Drop a trailing markdown-ish extension so the note isn't "_src_x.md.md".
+    flat = re.sub(r"\.(md|mdx|qmd|markdown)$", "", flat, flags=re.IGNORECASE)
+    # Same unsafe-char strip the node filenames use, so wikilinks stay valid.
+    flat = re.sub(r'[\\/*?:"<>|#^[\]]', "", flat).strip() or "source"
+    return _cap_filename("_src_" + flat)
+
+
+def _source_note_body(path: Path, source_file: str) -> "str | None":
+    """Build the markdown body for a copied source note, or None if the file is
+    unreadable or over the size cap. Markdown-like files are copied verbatim
+    (their own frontmatter/tags fall below our callout, so they no longer parse
+    as vault frontmatter); everything else is embedded in a code fence."""
+    try:
+        if path.stat().st_size > _MAX_SOURCE_BYTES:
+            return None
+    except OSError:
+        return None
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    header = f"> [!note] Source file\n> `{_yaml_str(source_file).strip(chr(34))}`\n\n"
+    ext = path.suffix.lower().lstrip(".")
+    if ext in _SOURCE_MARKDOWN_EXT:
+        return header + text
+    lang = _SOURCE_FENCE_LANG.get(ext, ext)
+    return header + "```" + lang + "\n" + text.rstrip("\n") + "\n```\n"
+
+
+def _write_source_notes(G: nx.Graph, roots: list[Path], owned_write) -> dict[str, str]:
+    """Copy every referenced, resolvable source file into ``sources/`` as one
+    note per distinct ``source_file`` and return a map ``source_file`` string ->
+    wikilink stem for the node notes to callout. Names are case-fold deduped so
+    two paths that flatten alike stay distinct on case-insensitive filesystems."""
+    source_note_for: dict[str, str] = {}
+    used: set[str] = set()
+    for _node_id, data in G.nodes(data=True):
+        sf = data.get("source_file", "")
+        if not sf or sf in source_note_for:
+            continue
+        resolved = _resolve_source_path(sf, roots)
+        if resolved is None:
+            continue
+        body = _source_note_body(resolved, sf)
+        if body is None:
+            continue
+        base = _flatten_source_name(sf)
+        stem = base
+        n = 1
+        while stem.lower() in used:
+            stem = f"{base}_{n}"
+            n += 1
+        if owned_write(f"sources/{stem}.md", body):
+            used.add(stem.lower())
+            source_note_for[sf] = stem
+    return source_note_for
+
+
 def to_obsidian(
     G: nx.Graph,
     communities: dict[int, list[str]],
     output_dir: str,
     community_labels: dict[int, str] | None = None,
     cohesion: dict[int, float] | None = None,
+    with_sources: bool = False,
+    source_root: "str | Path | list | tuple | None" = None,
 ) -> int:
     """Export graph as an Obsidian vault - one .md file per node with [[wikilinks]],
     plus one _COMMUNITY_name.md overview note per community (sorted to top by underscore prefix).
 
     Open the output directory as a vault in Obsidian to get an interactive
     graph view with community colors and full-text search over node metadata.
+
+    When ``with_sources`` is set (#1968), each node's ``source_file`` is copied
+    into ``sources/`` as a real note and every node note gets a callout linking
+    to it, so the vault is browsable standalone instead of every note reading as
+    a bare stub. ``source_file`` is stored relative to the scan root, so
+    ``source_root`` (default: the export's out dir and its parent) is where those
+    relative paths are resolved on disk.
 
     Returns the number of node notes + community notes written.
     """
@@ -742,6 +860,21 @@ def to_obsidian(
     node_filename = _dedup_node_filenames(
         G, lambda label: _obsidian_safe_stem(label, _stem_limit)
     )
+
+    # --with-sources (#1968): copy each referenced source file into sources/ and
+    # remember which source_file strings got a note, so node notes can callout to
+    # them below. Roots to resolve the (scan-root-relative) source_file against:
+    # an explicit source_root, else the out dir and its parent (the default
+    # <scanroot>/graphify-out/ layout puts the scan root one level up).
+    source_note_for: dict[str, str] = {}
+    if with_sources:
+        if source_root is None:
+            roots = [out.parent, out]
+        elif isinstance(source_root, (list, tuple)):
+            roots = [Path(r) for r in source_root]
+        else:
+            roots = [Path(source_root)]
+        source_note_for = _write_source_notes(G, roots, _owned_write)
 
     # Helper: compute dominant confidence for a node across all its edges
     def _dominant_confidence(node_id: str) -> str:
@@ -797,6 +930,19 @@ def to_obsidian(
         for tag in node_tags:
             lines.append(f"  - {tag}")
         lines += ["---", "", f"# {label}", ""]
+
+        # --with-sources: a callout linking this note to its copied source note,
+        # displayed with the original source_file path (#1968).
+        node_sf = data.get("source_file", "")
+        src_stem = source_note_for.get(node_sf)
+        if src_stem:
+            # A ']' or '|' in the display path would truncate the wikilink alias.
+            disp = node_sf.replace("|", "-").replace("[", "(").replace("]", ")")
+            lines += [
+                "> [!info] Source",
+                f"> [[{src_stem}|{disp}]]",
+                "",
+            ]
 
         # Outgoing edges as wikilinks
         neighbors = list(G.neighbors(node_id))

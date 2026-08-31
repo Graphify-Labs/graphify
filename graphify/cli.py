@@ -2762,7 +2762,7 @@ def dispatch_command(cmd: str) -> None:
             print("  html      [--graph PATH] [--labels PATH] [--node-limit N] [--no-viz]", file=sys.stderr)
             print("  callflow-html [GRAPH|DIR] [--graph PATH] [--labels PATH] [--report PATH] [--sections PATH] [--output HTML]", file=sys.stderr)
             print("            [--lang auto|zh-CN|en] [--max-sections N] [--diagram-scale N]", file=sys.stderr)
-            print("  obsidian  [--graph PATH] [--labels PATH] [--dir PATH]", file=sys.stderr)
+            print("  obsidian  [--graph PATH] [--labels PATH] [--dir PATH] [--with-sources] [--source-root PATH]", file=sys.stderr)
             print("  wiki      [--graph PATH] [--labels PATH]", file=sys.stderr)
             print("  svg       [--graph PATH] [--labels PATH]", file=sys.stderr)
             print("  graphml   [--graph PATH]", file=sys.stderr)
@@ -2791,6 +2791,11 @@ def dispatch_command(cmd: str) -> None:
         node_limit = 5000
         no_viz = False
         obsidian_dir = Path(_GRAPHIFY_OUT) / "obsidian"
+        # --with-sources (#1968): copy each node's source file into the vault and
+        # wire a callout to it. --source-root overrides where the (scan-root-
+        # relative) source_file paths are resolved on disk.
+        obsidian_with_sources = False
+        obsidian_source_root: Path | None = None
         # Shared push-connection settings for the graph-database sinks (neo4j,
         # falkordb), parsed from the generic --push/--user/--password flags below.
         push_uri: str | None = None
@@ -2852,6 +2857,10 @@ def dispatch_command(cmd: str) -> None:
                 no_viz = True; i += 1
             elif a == "--dir" and i + 1 < len(args):
                 obsidian_dir = Path(args[i + 1]); i += 2
+            elif a == "--with-sources":
+                obsidian_with_sources = True; i += 1
+            elif a == "--source-root" and i + 1 < len(args):
+                obsidian_source_root = Path(args[i + 1]).expanduser(); i += 2
             elif a == "--push" and i + 1 < len(args):
                 push_uri = args[i + 1]; i += 2
             elif a == "--user" and i + 1 < len(args):
@@ -2997,9 +3006,22 @@ def dispatch_command(cmd: str) -> None:
 
         elif subcmd == "obsidian":
             from graphify.export import to_obsidian as _to_obsidian, to_canvas as _to_canvas
+            # source_file is stored relative to the scan root (#1941); resolve it
+            # against an explicit --source-root, else the graph's scan root
+            # (out_dir's parent under the default <root>/graphify-out/ layout) with
+            # the out_dir itself as a fallback for graphs written by <=0.9.16 that
+            # stored source_file relative to the out dir (#1968).
+            if obsidian_with_sources:
+                _src_roots = ([obsidian_source_root] if obsidian_source_root
+                              else [out_dir.parent, out_dir])
+            else:
+                _src_roots = None
             n = _to_obsidian(G, communities, str(obsidian_dir),
-                             community_labels=labels or None, cohesion=cohesion or None)
+                             community_labels=labels or None, cohesion=cohesion or None,
+                             with_sources=obsidian_with_sources, source_root=_src_roots)
             print(f"Obsidian vault: {n} notes in {obsidian_dir}/")
+            if obsidian_with_sources:
+                print(f"  --with-sources: source notes in {obsidian_dir}/sources/")
             _to_canvas(G, communities, str(obsidian_dir / "graph.canvas"),
                        community_labels=labels or None)
             print(f"Canvas: {obsidian_dir}/graph.canvas")
