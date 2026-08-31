@@ -655,12 +655,16 @@ graphify install  # overwrites the skill file
 ```
 
 **Claude Code prompt cache invalidated after every `graphify extract`**
-Graphify writes output files (`graph.json`, `graphify-out/`) into the workspace. If those paths aren't ignored, every write invalidates Claude Code's prompt cache, forcing a full re-upload at cache-write rates on the next turn. Add them to `.claudeignore`:
-```text
-# .claudeignore
-graph.json
-graphify-out/
+Graphify writes output files (`graph.json`, `graphify-out/`) into the workspace. If those paths aren't excluded, every write invalidates Claude Code's prompt cache, forcing a full re-upload at cache-write rates on the next turn. Claude Code does not read a `.claudeignore` file; use `permissions.deny` Read rules in `.claude/settings.json` instead:
+```json
+// .claude/settings.json
+{
+  "permissions": {
+    "deny": ["Read(./graph.json)", "Read(./graphify-out/**)"]
+  }
+}
 ```
+Note that deny rules gate *access*, so this also stops the assistant from reading `graphify-out/` directly (e.g. browsing the generated wiki as navigation). If you rely on that workflow, keep the paths readable and accept the cache cost instead.
 
 ---
 
