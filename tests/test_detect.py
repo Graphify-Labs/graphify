@@ -2689,6 +2689,315 @@ def test_convert_office_file_does_not_rewrite_existing_sidecar(tmp_path, monkeyp
     assert second.stat().st_mtime_ns == mtime_before
 
 
+def _minimal_ipynb(cells, metadata=None):
+    import json
+    nb = {"cells": cells, "nbformat": 4, "nbformat_minor": 5}
+    if metadata is not None:
+        nb["metadata"] = metadata
+    return json.dumps(nb)
+
+
+def test_classify_ipynb():
+    assert classify_file(Path("analysis.ipynb")) == FileType.DOCUMENT
+
+
+def test_ipynb_to_markdown_mixed_cells(tmp_path):
+    nb_path = tmp_path / "nb.ipynb"
+    nb_path.write_text(
+        _minimal_ipynb(
+            [
+                {"cell_type": "markdown", "source": "# Title\n\nIntro text."},
+                {
+                    "cell_type": "code",
+                    "source": "import pandas as pd\nprint('hi')",
+                    "outputs": [{"output_type": "stream", "text": "hi\n"}],
+                },
+                {"cell_type": "markdown", "source": "## Section"},
+            ],
+            metadata={"language_info": {"name": "python"}},
+        ),
+        encoding="utf-8",
+    )
+    md = detect_mod.ipynb_to_markdown(nb_path)
+    assert "# Title" in md
+    assert "```python\nimport pandas as pd" in md
+    assert "hi\n" not in md  # outputs stripped
+    assert "## Section" in md
+    assert md.index("# Title") < md.index("```python") < md.index("## Section")
+
+
+def test_ipynb_to_markdown_uses_non_python_kernel_language(tmp_path):
+    """Notebooks are not Python-only: the fence must name the kernel language."""
+    nb_path = tmp_path / "survey.ipynb"
+    nb_path.write_text(
+        _minimal_ipynb(
+            [{"cell_type": "code", "source": "summary(df)"}],
+            metadata={"kernelspec": {"language": "R"}},
+        ),
+        encoding="utf-8",
+    )
+    assert "```R\nsummary(df)" in detect_mod.ipynb_to_markdown(nb_path)
+
+
+def test_ipynb_to_markdown_falls_back_to_generic_fence(tmp_path):
+    """A notebook with no language metadata still fences its code cells."""
+    nb_path = tmp_path / "bare.ipynb"
+    nb_path.write_text(
+        _minimal_ipynb([{"cell_type": "code", "source": "x = 1"}]),
+        encoding="utf-8",
+    )
+    assert "```code\nx = 1" in detect_mod.ipynb_to_markdown(nb_path)
+
+
+def test_ipynb_to_markdown_null_language_metadata_falls_back_to_generic_fence(tmp_path):
+    """JSON null language_info/kernelspec must not abort conversion.
+
+    Jupyter / VS Code / Databricks often write ``"language_info": null`` (and
+    sometimes ``kernelspec`` or ``name``/``language`` too). ``dict.get`` does
+    not treat null as missing, so the old ``.get("name")`` raised and the
+    converter skipped the notebook as a failure.
+    """
+    nb_path = tmp_path / "null_meta.ipynb"
+    nb_path.write_text(
+        _minimal_ipynb(
+            [{"cell_type": "code", "source": "x = 1"}],
+            metadata={"language_info": None, "kernelspec": None},
+        ),
+        encoding="utf-8",
+    )
+    md = detect_mod.ipynb_to_markdown(nb_path)
+    assert md
+    assert "```code\nx = 1" in md
+
+    sidecar = detect_mod.convert_notebook_file(nb_path, tmp_path / "converted")
+    assert sidecar is not None
+    assert "```code\nx = 1" in sidecar.read_text(encoding="utf-8")
+
+    null_name = tmp_path / "null_name.ipynb"
+    null_name.write_text(
+        _minimal_ipynb(
+            [{"cell_type": "code", "source": "y = 2"}],
+            metadata={
+                "language_info": {"name": None},
+                "kernelspec": {"language": None},
+            },
+        ),
+        encoding="utf-8",
+    )
+    assert "```code\ny = 2" in detect_mod.ipynb_to_markdown(null_name)
+
+
+def test_ipynb_to_markdown_accepts_string_source(tmp_path):
+    """nbformat allows `source` as a plain string as well as a list of lines."""
+    import json
+
+    nb_path = tmp_path / "str.ipynb"
+    nb_path.write_text(
+        json.dumps({
+            "cells": [{"cell_type": "code", "source": "x = 1"}],
+            "metadata": {"language_info": {"name": "python"}},
+            "nbformat": 4,
+            "nbformat_minor": 5,
+        }),
+        encoding="utf-8",
+    )
+    assert "```python\nx = 1" in detect_mod.ipynb_to_markdown(nb_path)
+
+
+def test_ipynb_to_markdown_empty_notebook(tmp_path):
+    nb_path = tmp_path / "empty.ipynb"
+    nb_path.write_text(_minimal_ipynb([]), encoding="utf-8")
+    assert detect_mod.ipynb_to_markdown(nb_path) == ""
+
+
+def test_ipynb_to_markdown_malformed_json(tmp_path):
+    nb_path = tmp_path / "bad.ipynb"
+    nb_path.write_text("{not valid json", encoding="utf-8")
+    assert detect_mod.ipynb_to_markdown(nb_path) == ""
+
+
+def test_ipynb_to_markdown_lengthens_fence_when_cell_contains_backticks(tmp_path):
+    """A ``` line inside a code cell must not close the sidecar fence early."""
+    nb_path = tmp_path / "fence.ipynb"
+    nb_path.write_text(
+        _minimal_ipynb(
+            [
+                {"cell_type": "code", "source": "x = 1"},
+                {"cell_type": "code", "source": 'print("""\n```\n""")'},
+            ],
+            metadata={"language_info": {"name": "python"}},
+        ),
+        encoding="utf-8",
+    )
+    md = detect_mod.ipynb_to_markdown(nb_path)
+    assert "```python\nx = 1\n```" in md
+    assert "````python\nprint(\"\"\"\n```\n\"\"\")\n````" in md
+
+
+def test_detect_converts_notebook_to_sidecar(tmp_path):
+    nb_path = tmp_path / "analysis.ipynb"
+    nb_path.write_text(
+        _minimal_ipynb([
+            {"cell_type": "markdown", "source": "# Analysis"},
+            {"cell_type": "code", "source": "x = 1"},
+        ]),
+        encoding="utf-8",
+    )
+    result = detect(tmp_path)
+    assert len(result["files"]["document"]) == 1
+    sidecar = Path(result["files"]["document"][0])
+    assert sidecar.suffix == ".md"
+    assert sidecar.exists()
+    text = sidecar.read_text(encoding="utf-8")
+    assert "converted from analysis.ipynb" in text
+    assert "# Analysis" in text
+    assert "x = 1" in text
+    assert result["total_words"] > 0
+
+
+def test_convert_notebook_file_rewrite_semantics(tmp_path):
+    """Single entry-point for convert_notebook_file unit coverage.
+
+    Keeps afferent coupling on the converter low (one test caller + detect)
+    while still checking empty notebooks, output-only re-runs, and source edits.
+    """
+    out_dir = tmp_path / "converted"
+
+    empty = tmp_path / "empty.ipynb"
+    empty.write_text(_minimal_ipynb([]), encoding="utf-8")
+    assert detect_mod.convert_notebook_file(empty, out_dir) is None
+    assert not list(out_dir.glob("*.md"))
+
+    nb_path = tmp_path / "analysis.ipynb"
+    nb_path.write_text(
+        _minimal_ipynb([{"cell_type": "code", "source": "print(1)", "outputs": []}]),
+        encoding="utf-8",
+    )
+    sidecar = detect_mod.convert_notebook_file(nb_path, out_dir)
+    assert sidecar is not None
+    mtime_before = sidecar.stat().st_mtime_ns
+
+    nb_path.write_text(
+        _minimal_ipynb([
+            {
+                "cell_type": "code",
+                "source": "print(1)",
+                "outputs": [{"output_type": "stream", "text": "1\n"}],
+                "execution_count": 1,
+            },
+        ]),
+        encoding="utf-8",
+    )
+    again = detect_mod.convert_notebook_file(nb_path, out_dir)
+    assert again == sidecar
+    assert again.stat().st_mtime_ns == mtime_before
+
+    nb_path.write_text(
+        _minimal_ipynb([{"cell_type": "code", "source": "x = 2", "outputs": []}]),
+        encoding="utf-8",
+    )
+    updated = detect_mod.convert_notebook_file(nb_path, out_dir)
+    assert updated == sidecar
+    assert "x = 2" in updated.read_text(encoding="utf-8")
+    assert updated.stat().st_mtime_ns >= mtime_before
+
+
+def test_detect_refreshes_notebook_sidecar_on_source_change(tmp_path):
+    """Cell source edits must update the sidecar so a later extract sees new content."""
+    nb_path = tmp_path / "analysis.ipynb"
+    nb_path.write_text(
+        _minimal_ipynb([{"cell_type": "markdown", "source": "v1"}]),
+        encoding="utf-8",
+    )
+    detect(tmp_path)
+    converted_dir = tmp_path / "graphify-out" / "converted"
+    sidecar = next(converted_dir.glob("analysis_*.md"))
+
+    nb_path.write_text(
+        _minimal_ipynb([{"cell_type": "markdown", "source": "v2 updated"}]),
+        encoding="utf-8",
+    )
+    detect(tmp_path)
+    assert "v2 updated" in sidecar.read_text(encoding="utf-8")
+
+
+def test_detect_incremental_ignores_notebook_output_only_changes(tmp_path):
+    import json
+
+    nb_path = tmp_path / "analysis.ipynb"
+    nb_path.write_text(
+        _minimal_ipynb([{"cell_type": "code", "source": "print(1)", "outputs": []}]),
+        encoding="utf-8",
+    )
+    first = detect(tmp_path)
+    sidecar = Path(first["files"]["document"][0])
+    mtime_before = sidecar.stat().st_mtime_ns
+    manifest_path = tmp_path / "graphify-out" / "manifest.json"
+    Path(manifest_path).write_text(
+        json.dumps({
+            str(sidecar): {
+                "mtime": sidecar.stat().st_mtime,
+                "ast_hash": "a" * 32,
+                "semantic_hash": "b" * 32,
+            }
+        }),
+        encoding="utf-8",
+    )
+
+    nb_path.write_text(
+        _minimal_ipynb([
+            {
+                "cell_type": "code",
+                "source": "print(1)",
+                "outputs": [{"output_type": "stream", "text": "1\n"}],
+                "execution_count": 1,
+            },
+        ]),
+        encoding="utf-8",
+    )
+    inc = detect_incremental(tmp_path, manifest_path=str(manifest_path))
+    assert sidecar.stat().st_mtime_ns == mtime_before
+    assert not inc["new_files"]["document"]
+    assert str(sidecar) in inc["unchanged_files"]["document"]
+
+
+def test_notebook_sidecar_path_stable_across_checkouts_and_stems(tmp_path):
+    """#2059: notebook sidecar names come from scan-root-relative paths."""
+    def _name(root, rel):
+        src = root / rel
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_text("placeholder", encoding="utf-8")
+        return detect_mod._notebook_sidecar_path(
+            src, root / "graphify-out" / "converted", root=root
+        ).name
+
+    assert _name(tmp_path / "checkout-a", "notebooks/analysis.ipynb") == _name(
+        tmp_path / "somewhere-else" / "checkout-b", "notebooks/analysis.ipynb"
+    )
+
+    root = tmp_path / "repo"
+    name_a = _name(root, "a/analysis.ipynb")
+    name_b = _name(root, "b/analysis.ipynb")
+    assert name_a != name_b
+
+    # Outside the scan root: absolute fallback is deterministic.
+    out_dir = root / "graphify-out" / "converted"
+    outside = tmp_path / "elsewhere" / "analysis.ipynb"
+    outside.parent.mkdir(parents=True)
+    outside.write_text("x", encoding="utf-8")
+    assert detect_mod._notebook_sidecar_path(
+        outside, out_dir, root=root
+    ) == detect_mod._notebook_sidecar_path(outside, out_dir, root=root)
+
+    # No explicit root -> out_dir.parent.parent fallback matches explicit root.
+    checkout = tmp_path / "checkout-a"
+    src = checkout / "notebooks" / "analysis.ipynb"
+    converted = checkout / "graphify-out" / "converted"
+    explicit = detect_mod._notebook_sidecar_path(src, converted, root=checkout)
+    fallback = detect_mod._notebook_sidecar_path(src, converted)
+    assert explicit.name == fallback.name
+
+
 def test_convert_office_file_sidecar_name_stable_across_checkouts(tmp_path, monkeypatch):
     """#2059: the sidecar name must depend on the scan-root-RELATIVE path, not the
     absolute checkout location, so the same tracked file in two clones/worktrees

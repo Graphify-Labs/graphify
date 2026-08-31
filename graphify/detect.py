@@ -46,6 +46,9 @@ DOC_EXTENSIONS = {'.md', '.mdx', '.qmd', '.skill', '.txt', '.rst', '.html', '.ya
 PAPER_EXTENSIONS = {'.pdf'}
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'}
 OFFICE_EXTENSIONS = {'.docx', '.xlsx'}
+# Notebooks are converted to markdown sidecars before indexing — do NOT add .ipynb
+# to CODE_EXTENSIONS or DOC_EXTENSIONS.
+NOTEBOOK_EXTENSIONS = {'.ipynb'}
 VIDEO_EXTENSIONS = {'.mp4', '.mov', '.webm', '.mkv', '.avi', '.m4v', '.mp3', '.wav', '.m4a', '.ogg'}
 
 CORPUS_WARN_THRESHOLD = 50_000    # words - below this, warn "you may not need a graph"
@@ -530,6 +533,8 @@ def classify_file(path: Path) -> FileType | None:
         return FileType.DOCUMENT
     if ext in OFFICE_EXTENSIONS:
         return FileType.DOCUMENT
+    if ext in NOTEBOOK_EXTENSIONS:
+        return FileType.DOCUMENT
     if ext in GOOGLE_WORKSPACE_EXTENSIONS:
         return FileType.DOCUMENT
     if ext in VIDEO_EXTENSIONS:
@@ -780,6 +785,103 @@ def convert_office_file(path: Path, out_dir: Path, root: "Path | None" = None) -
         f"<!-- converted from {path.name} -->\n\n{text}",
         encoding="utf-8",
     )
+    return out_path
+
+
+def _notebook_sidecar_path(path: Path, out_dir: Path, root: "Path | None" = None) -> Path:
+    """Stable sidecar path for a converted notebook.
+
+    Uses the same scheme convert_office_file() applies to Office sources: hash
+    the scan-root-RELATIVE, NFC-normalized path. An absolute key would salt the
+    name with the checkout location, so one tracked notebook in two clones emits
+    two byte-identical sidecars when graphify-out/ is committed (#2059); NFC
+    guards macOS NFD path drift (#1226). Sources outside the scan root keep the
+    absolute form.
+    """
+    import hashlib
+    import unicodedata
+    if root is None:
+        # Default layout: out_dir is <root>/<graphify-out>/converted.
+        root = out_dir.parent.parent
+    try:
+        key = path.resolve().relative_to(Path(root).resolve()).as_posix()
+    except (ValueError, OSError):
+        key = str(path.resolve())
+    name_hash = hashlib.sha256(unicodedata.normalize("NFC", key).encode()).hexdigest()[:8]
+    return out_dir / f"{path.stem}_{name_hash}.md"
+
+
+def ipynb_to_markdown(path: Path) -> str:
+    """Convert a Jupyter notebook to markdown, stripping outputs.
+
+    Uses the notebook's kernel language from metadata for fenced code blocks,
+    falling back to ``code`` when the metadata is absent.
+    """
+    if not _file_within_size_cap(path):
+        return ""
+    try:
+        nb = json.loads(path.read_text(encoding="utf-8", errors="ignore"))
+        # Resolve the kernel language from notebook metadata so fenced code
+        # blocks use the correct language identifier (e.g. ```python) rather
+        # than the generic ```code fallback. JSON null is common in Jupyter /
+        # VS Code / Databricks exports and must be treated as missing — dict.get
+        # defaulting does not, and `.get("name")` on None would abort the cell.
+        meta = nb.get("metadata") or {}
+        lang = (
+            (meta.get("language_info") or {}).get("name")
+            or (meta.get("kernelspec") or {}).get("language")
+            or "code"
+        )
+        if not isinstance(lang, str) or not lang:
+            lang = "code"
+        lines = []
+        for cell in nb.get("cells", []):
+            ct = cell.get("cell_type")
+            raw_src = cell.get("source", [])
+            src = raw_src if isinstance(raw_src, str) else "".join(raw_src)
+            if not src.strip():
+                continue
+            if ct == "markdown":
+                lines.append(src)
+            elif ct == "code":
+                # CommonMark closes a fence on a line of N+ backticks. Size the
+                # wrapper to one past the longest run in the cell so a ```
+                # (or longer) line inside the source cannot terminate it.
+                longest = max((len(m.group(0)) for m in re.finditer(r"`+", src)), default=0)
+                fence = "`" * max(3, longest + 1)
+                lines.append(f"{fence}{lang}\n{src}\n{fence}")
+        return "\n\n".join(lines)
+    except Exception:
+        return ""
+
+
+def convert_notebook_file(path: Path, out_dir: Path, root: "Path | None" = None) -> Path | None:
+    """Convert a .ipynb to a markdown sidecar in out_dir.
+
+    Naming matches the Office sidecars (see _notebook_sidecar_path). The
+    rewrite check does not: re-running a notebook rewrites the .ipynb with
+    fresh outputs/execution counts while cell sources stay the same, so the
+    Office mtime gate would churn the sidecar. Comparing extracted markdown
+    keeps its mtime untouched through a re-run, and detect_incremental then
+    leaves an unchanged notebook alone.
+    """
+    if path.suffix.lower() not in NOTEBOOK_EXTENSIONS:
+        return None
+
+    text = ipynb_to_markdown(path)
+    if not text.strip():
+        return None
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = _notebook_sidecar_path(path, out_dir, root=root)
+    payload = f"<!-- converted from {path.name} -->\n\n{text}"
+    try:
+        with open(_os_path(out_path), encoding="utf-8") as f:
+            if f.read() == payload:
+                return out_path
+    except OSError:
+        pass
+    out_path.write_text(payload, encoding="utf-8")
     return out_path
 
 
@@ -1924,6 +2026,17 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                 else:
                     # Conversion failed (library not installed) - skip with note
                     skipped_sensitive.append(str(p) + " [office conversion failed - pip install graphifyy[office]]")
+                continue
+            # Notebooks: same sidecar treatment as Office files
+            if p.suffix.lower() in NOTEBOOK_EXTENSIONS:
+                md_path = convert_notebook_file(p, converted_dir, root=root)
+                if md_path:
+                    if _ignored_for_scan(md_path):
+                        continue
+                    files[ftype].append(str(md_path))
+                    total_words += _wc(md_path)
+                else:
+                    skipped_sensitive.append(str(p) + " [notebook conversion failed]")
                 continue
             files[ftype].append(str(p))
             if ftype != FileType.VIDEO:
