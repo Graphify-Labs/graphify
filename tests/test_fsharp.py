@@ -511,3 +511,25 @@ def test_heritage_confidence_is_inferred(tmp_path):
     r = extract_fsharp(_write(tmp_path, "hconf.fs", src))
     her = [e for e in r["edges"] if e["relation"] == "inherits"]
     assert her and all(e["confidence"] == "INFERRED" for e in her)
+
+
+def test_qualified_call_binds_only_to_owning_container(tmp_path):
+    # `B.helper` where module B defines no helper must NOT bind to A's helper
+    # just because B is also a local container (found by graphify's own bot,
+    # round 6 — missed by all four panel arms).
+    src = ("module Root\n"
+           "module A =\n"
+           "    let helper x = x\n"
+           "module B =\n"
+           "    let go y = A.helper y\n"
+           "    let bad z = B.helper z\n")
+    r = extract_fsharp(_write(tmp_path, "own.fs", src))
+    lab = {n["id"]: n for n in r["nodes"]}
+    calls = [(lab[e["source"]]["label"], lab[e["target"]], e["confidence"])
+             for e in r["edges"] if e["relation"] == "calls"]
+    good = [(s, t, c) for s, t, c in calls if s == "go()"]
+    bad = [(s, t, c) for s, t, c in calls if s == "bad()"]
+    assert good and all(t["label"] == "helper()" and t.get("source_file")
+                        and c == "EXTRACTED" for s, t, c in good)
+    assert bad and all(not t.get("source_file") for s, t, c in bad), (
+        "B.helper falsely bound to A's sourced helper")

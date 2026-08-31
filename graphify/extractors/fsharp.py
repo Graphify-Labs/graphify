@@ -119,6 +119,12 @@ def extract_fsharp(path: Path) -> dict:
     # Names a qualified call `M.f` may resolve THROUGH to a local `f`: modules
     # and types DEFINED here. Never namespace segments (corpus-shared).
     local_containers: set[str] = set()
+    # container label -> {member name -> nid}: a QUALIFIED call `Q.f` may bind
+    # locally only when f is a member of Q ITSELF — `B.helper` must not bind to
+    # A's helper just because B is also a local container (bot round-6 find).
+    # A label claimed by two containers is ambiguous and resolves nothing.
+    container_members: dict[str, dict[str, str]] = {}
+    ambiguous_containers: set[str] = set()
     # (caller_nid, callee_name, qualifier_root_or_None, full_path_text, line)
     call_sites: list[tuple[str, str, str | None, str, int]] = []
 
@@ -172,6 +178,18 @@ def extract_fsharp(path: Path) -> dict:
 
     def line_of(node) -> int:
         return node.start_point[0] + 1
+
+    def register_container(label: str) -> None:
+        if label in container_members:
+            ambiguous_containers.add(label)
+        else:
+            container_members[label] = {}
+        local_containers.add(label)
+
+    def register_member(container_nid: str, name: str, nid: str) -> None:
+        clabel = node_labels.get(container_nid, "")
+        if clabel and clabel not in ambiguous_containers:
+            container_members.setdefault(clabel, {})[name] = nid
 
     def register_def(name: str, nid: str) -> None:
         if name in ambiguous:
@@ -260,6 +278,7 @@ def extract_fsharp(path: Path) -> dict:
                 add_node(cnid, cname, line_of(case))
                 add_edge(type_nid, cnid, "contains", line_of(case))
                 register_def(cname, cnid)
+                register_member(type_nid, cname, cnid)
 
     def emit_member(member_defn, type_nid: str) -> str | None:
         """member this.Run() / static member Default / member val Name.
@@ -281,6 +300,7 @@ def extract_fsharp(path: Path) -> dict:
         add_node(mnid, f".{mname}()", line)
         add_edge(type_nid, mnid, "contains", line)
         register_def(mname, mnid)
+        register_member(type_nid, mname, mnid)
         return mnid
 
     def emit_heritage(defn, type_nid: str) -> None:
@@ -347,6 +367,7 @@ def extract_fsharp(path: Path) -> dict:
                 add_edge(container_nid, nid,
                          "defines" if container_nid == file_nid else "contains", line)
                 register_def(name, nid)
+                register_member(container_nid, name, nid)
                 return nid
             # Active pattern `(|Even|Odd|)`: mint one node labelled with the
             # full delimited spelling; each case name resolves to it.
@@ -386,6 +407,7 @@ def extract_fsharp(path: Path) -> dict:
             add_edge(container_nid, nid,
                      "defines" if container_nid == file_nid else "contains", line)
             register_def(name, nid)
+            register_member(container_nid, name, nid)
             minted = nid
         return minted
 
@@ -441,7 +463,7 @@ def extract_fsharp(path: Path) -> dict:
                 add_edge(container_nid, mnid,
                          "defines" if container_nid == file_nid else "contains", line)
                 register_def(mname, mnid)
-                local_containers.add(mname)
+                register_container(mname)
                 for child in node.children:
                     walk(child, mnid, enclosing_value)
                 return
@@ -480,7 +502,7 @@ def extract_fsharp(path: Path) -> dict:
                 add_edge(container_nid, tnid,
                          "defines" if container_nid == file_nid else "contains", line)
                 register_def(tname, tnid)
-                local_containers.add(tname)
+                register_container(tname)
                 emit_cases(defn, tnid)
                 emit_heritage(defn, tnid)
                 for child in defn.children:
@@ -617,8 +639,19 @@ def extract_fsharp(path: Path) -> dict:
     walk(root, file_nid, "")
 
     for caller, callee, qualifier, full_path, line in call_sites:
-        if qualifier is not None and qualifier not in local_containers:
-            if callee in local_defs:
+        if qualifier is not None:
+            members = (container_members.get(qualifier)
+                       if qualifier not in ambiguous_containers else None)
+            if members is not None and callee in members:
+                add_edge(caller, members[callee], "calls", line)
+            elif qualifier in local_containers and callee in local_defs:
+                # qualifier is local but does not own this name (or is
+                # ambiguous): a full-path stub keeps it distinct — binding to
+                # the same-named member of a DIFFERENT container is the false
+                # EXTRACTED edge this branch exists to prevent.
+                add_edge(caller, ref_stub(full_path), "calls", line,
+                         confidence="INFERRED")
+            elif callee in local_defs:
                 add_edge(caller, ref_stub(full_path), "calls", line,
                          confidence="INFERRED")
             else:
