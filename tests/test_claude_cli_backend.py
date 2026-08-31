@@ -98,6 +98,19 @@ _ERROR_ENVELOPE = {
 }
 
 
+def test_claude_cli_failure_detail_prefers_envelope_and_keeps_stderr():
+    detail = llm._claude_cli_failure_detail(
+        "API Error: Rate limit reached",
+        "SessionEnd hook failed",
+    )
+    assert detail.startswith("API Error: Rate limit reached; stderr:")
+    assert "SessionEnd hook failed" in detail
+
+
+def test_claude_cli_failure_detail_stderr_only_when_no_envelope():
+    assert llm._claude_cli_failure_detail("", "auth failed") == "auth failed"
+
+
 def test_nonzero_exit_surfaces_envelope_error_when_stderr_empty():
     # The CLI reports API failures in the stdout JSON envelope, not on stderr.
     # Without reading it the user gets a bare "exited 1: " and no cause (#2554).
@@ -150,6 +163,40 @@ def test_call_llm_raises_on_error_envelope():
          patch("subprocess.run", return_value=completed):
         with pytest.raises(RuntimeError, match="Rate limit reached"):
             llm._call_llm("dummy", backend="claude-cli")
+
+
+def test_nonzero_exit_prefers_envelope_error_over_stderr_hook_noise():
+    # SessionEnd hook teardown often fills stderr on failure; the real cause
+    # (rate limit, auth, etc.) lives in the stdout JSON envelope (#2692).
+    hook_noise = "SessionEnd hook [notify]: failed: Hook cancelled"
+    completed = MagicMock(
+        returncode=1,
+        stdout=json.dumps(_ERROR_ENVELOPE),
+        stderr=hook_noise,
+    )
+    with patch("shutil.which", return_value="/fake/bin/claude"), \
+         patch("subprocess.run", return_value=completed):
+        with pytest.raises(RuntimeError, match="Rate limit reached") as exc:
+            llm._call_claude_cli("dummy", max_tokens=8192)
+        msg = str(exc.value)
+        assert msg.index("Rate limit reached") < msg.index(hook_noise)
+        assert f"stderr: {hook_noise}" in msg
+
+
+def test_call_llm_nonzero_exit_prefers_envelope_error_over_stderr():
+    hook_noise = "SessionEnd hook [notify]: failed: Hook cancelled"
+    completed = MagicMock(
+        returncode=1,
+        stdout=json.dumps(_ERROR_ENVELOPE),
+        stderr=hook_noise,
+    )
+    with patch("shutil.which", return_value="/fake/bin/claude"), \
+         patch("subprocess.run", return_value=completed):
+        with pytest.raises(RuntimeError, match="Rate limit reached") as exc:
+            llm._call_llm("dummy", backend="claude-cli")
+        msg = str(exc.value)
+        assert msg.index("Rate limit reached") < msg.index(hook_noise)
+        assert f"stderr: {hook_noise}" in msg
 
 
 def test_call_llm_nonzero_exit_surfaces_envelope_error():

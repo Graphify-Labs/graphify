@@ -1580,6 +1580,20 @@ def _claude_cli_error(stdout: str) -> str:
     return "unspecified error"
 
 
+def _claude_cli_failure_detail(cli_error: str, stderr: str) -> str:
+    """Build the error string for a non-zero ``claude -p`` exit.
+
+    The stdout JSON envelope carries the CLI's structured failure (rate limits,
+    auth, etc.). stderr often holds hook teardown noise instead (#2692), so the
+    envelope leads — but when stderr also has content, append a truncated copy
+    so diagnostics are not lost entirely.
+    """
+    stderr = stderr.strip()
+    if cli_error and stderr:
+        return f"{cli_error}; stderr: {stderr[:200]}"
+    return cli_error or stderr or "(no stderr, no error envelope)"
+
+
 # A JSON Schema pinning the top-level shape graphify consumes. Passed to
 # `claude -p --json-schema` (structured output) so the CLI CONSTRAINS the model
 # to emit the object directly instead of relying on it CHOOSING to honour a
@@ -1748,7 +1762,7 @@ def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bo
     )
     cli_error = _claude_cli_error(proc.stdout)
     if proc.returncode != 0:
-        detail = proc.stderr.strip() or cli_error or "(no stderr, no error envelope)"
+        detail = _claude_cli_failure_detail(cli_error, proc.stderr)
         raise RuntimeError(f"claude -p exited {proc.returncode}: {detail[:500]}")
     if cli_error:
         raise RuntimeError(f"claude -p reported an error: {cli_error[:500]}")
@@ -2920,7 +2934,7 @@ def _call_llm(
         )
         cli_error = _claude_cli_error(proc.stdout)
         if proc.returncode != 0:
-            detail = proc.stderr.strip() or cli_error or "(no stderr, no error envelope)"
+            detail = _claude_cli_failure_detail(cli_error, proc.stderr)
             raise RuntimeError(f"claude -p exited {proc.returncode}: {detail[:500]}")
         if cli_error:
             # Without this the error text is returned as the model's reply and
