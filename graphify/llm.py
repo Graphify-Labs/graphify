@@ -3265,8 +3265,9 @@ def _label_batch_with_retry(
     # Budget generously: a 2-5 word name is ~10 tokens, but models (notably
     # gemini) often prepend a short preamble or reasoning that eats the
     # completion and truncates the JSON mid-object, which used to fail the whole
-    # batch (#1690). The old 64 + 24*n floor left no headroom.
-    max_tokens = _resolve_max_tokens(min(256 + 48 * len(batch_cids), 8192))
+    # batch (#1690). Keep at least 512 tokens as adaptive retries shrink the
+    # batch; otherwise the recovery path starves its own base case (#2086).
+    max_tokens = _resolve_max_tokens(max(512, min(256 + 48 * len(batch_cids), 8192)))
     call_kwargs: dict = {"backend": backend, "max_tokens": max_tokens}
     if model is not None:
         call_kwargs["model"] = model
