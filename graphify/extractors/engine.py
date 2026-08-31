@@ -706,22 +706,31 @@ _KOTLIN_BUILTIN_TYPES = frozenset({
 })
 
 def _kotlin_user_type_name(user_type_node, source: bytes) -> str | None:
-    """Return the head identifier text from a Kotlin user_type node (without generics)."""
+    """Return the tail identifier text from a Kotlin user_type node (without generics).
+
+    A qualified supertype like `com.example.Base` lists its segments as flat
+    `identifier` children (`com`, `example`, `Base`) separated by `.` tokens, so
+    the real type is the LAST segment, not the first — returning the head yielded
+    the package root (`com`). Type arguments live in a separate `type_arguments`
+    child, so scanning direct children and keeping the last identifier/
+    type_identifier segment ignores generics correctly (mirrors the C++ qualified
+    base handling, which uses the unqualified tail)."""
     if user_type_node is None:
         return None
+    name: str | None = None
     for c in user_type_node.children:
-        if c.type == "type_identifier":
+        if c.type in ("type_identifier", "identifier"):
             text = _read_text(c, source)
-            return text or None
-        if c.type == "identifier":
-            text = _read_text(c, source)
-            return text or None
-        if c.type == "simple_user_type":
+            if text:
+                name = text
+        elif c.type == "simple_user_type":
             for sub in c.children:
                 if sub.type in ("identifier", "type_identifier"):
                     text = _read_text(sub, source)
-                    return text or None
-    return None
+                    if text:
+                        name = text
+                    break
+    return name
 
 def _kotlin_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[str, str]]) -> None:
     """Walk a Kotlin type expression; append (name, role) tuples."""
@@ -3412,7 +3421,14 @@ def _extract_generic(
                                     "source_location": "",
                                 })
                                 seen_ids.add(base_nid)
-                        relation = _csharp_classify_base(base, csharp_interface_names)
+                        # An `interface`'s base_list holds base interfaces, so every
+                        # entry is interface inheritance (`inherits`) -- the same way the
+                        # Java extractor treats `extends_interfaces`. Only class/struct/
+                        # record declarations use the name-based class-vs-interface split.
+                        if t == "interface_declaration":
+                            relation = "inherits"
+                        else:
+                            relation = _csharp_classify_base(base, csharp_interface_names)
                         metadata = {"ref_token": base}
                         if qualified:
                             metadata["qualified"] = True
@@ -3559,18 +3575,39 @@ def _extract_generic(
                             break
                 if extend is not None:
                     bases: list[tuple[str, int]] = []
-                    for c in extend.children:
-                        if c.type == "type_identifier":
-                            bases.append((_read_text(c, source), c.start_point[0] + 1))
-                        elif c.type == "generic_type":
-                            base = c.child_by_field_name("type")
+
+                    def scala_base_name(type_node) -> str | None:
+                        if type_node.type == "type_identifier":
+                            return _read_text(type_node, source)
+                        if type_node.type == "stable_type_identifier":
+                            tail = next(
+                                (
+                                    child
+                                    for child in reversed(type_node.children)
+                                    if child.type in ("type_identifier", "identifier")
+                                ),
+                                None,
+                            )
+                            return _read_text(tail, source) if tail is not None else None
+                        if type_node.type == "generic_type":
+                            base = type_node.child_by_field_name("type")
                             if base is None:
-                                for sc in c.children:
-                                    if sc.type == "type_identifier":
-                                        base = sc
-                                        break
-                            if base is not None:
-                                bases.append((_read_text(base, source), c.start_point[0] + 1))
+                                base = next(
+                                    (
+                                        child
+                                        for child in type_node.children
+                                        if child.type
+                                        in ("type_identifier", "stable_type_identifier")
+                                    ),
+                                    None,
+                                )
+                            return scala_base_name(base) if base is not None else None
+                        return None
+
+                    for c in extend.children:
+                        base_name = scala_base_name(c)
+                        if base_name is not None:
+                            bases.append((base_name, c.start_point[0] + 1))
                     for idx, (base_name, base_line) in enumerate(bases):
                         rel = "inherits" if idx == 0 else "mixes_in"
                         base_nid = ensure_named_node(base_name, base_line)
@@ -4853,11 +4890,36 @@ def _extract_generic(
     # populated before walk_calls runs. Lets member-call raw_calls carry a
     # receiver_type so the cross-file pass resolves `var.method` by type (#ruby).
     ruby_var_types: dict[str, dict[str, str | None]] = {}
+    # Fields declared on a SUPERCLASS type receivers in a subclass too (#3151):
+    # fold each class's table with its ancestors', nearest declaration winning.
+    # Local `inherits` edges only - the cross-file half lives in the corpus
+    # member-call resolvers, which see the whole graph.
+    _local_bases: dict[str, list[str]] = {}
+    for _e in edges:
+        if _e.get("relation") == "inherits":
+            _local_bases.setdefault(_e["source"], []).append(_e["target"])
+
+    def _fields_up_chain(tables: dict, class_nid) -> dict:
+        if not class_nid:
+            return {}
+        merged: dict = {}
+        seen: set = set()
+        queue = [class_nid]
+        while queue:
+            cls = queue.pop(0)
+            if cls in seen:
+                continue
+            seen.add(cls)
+            for _name, _tname in tables.get(cls, {}).items():
+                merged.setdefault(_name, _tname)
+            queue.extend(_local_bases.get(cls, []))
+        return merged
+
     java_receiver_types = {
         body_id: _java_method_receiver_types(
             method_node,
             source,
-            java_field_types.get(class_nid, {}),
+            _fields_up_chain(java_field_types, class_nid),
         )
         for body_id, (method_node, class_nid) in java_method_scopes.items()
     }
@@ -4865,7 +4927,7 @@ def _extract_generic(
         body_id: _csharp_method_receiver_types(
             method_node,
             source,
-            csharp_field_types.get(class_nid, {}),
+            _fields_up_chain(csharp_field_types, class_nid),
         )
         for body_id, (method_node, class_nid) in csharp_method_scopes.items()
     }
@@ -5158,6 +5220,22 @@ def _extract_generic(
                                 if child.type == "identifier":
                                     callee_name = _read_text(child, source)
                                     break
+            elif config.ts_module == "tree_sitter_php" and node.type == "object_creation_expression":
+                # PHP `new Foo(...)` keeps the class in a bare name/qualified_name
+                # child (no field), so the generic call path never names it and a
+                # class a method only constructs stayed unlinked - the PHP twin of
+                # Java's #1373 and C#'s #2997. The types this loses are the ones
+                # handed straight to something else (`$bus->dispatch(new Cmd(...))`).
+                # A qualified `new \App\Bar()` names the last segment, matching how
+                # the PHP namespace pass keys classes; `new $cls()` is dynamic and
+                # `new self()`/`static`/`parent` name no other class - all stay
+                # unnamed rather than minting junk edges.
+                for _oce_child in node.children:
+                    if _oce_child.type in ("name", "qualified_name"):
+                        _oce_text = _read_text(_oce_child, source).rsplit("\\", 1)[-1]
+                        if _oce_text.lower() not in ("self", "static", "parent"):
+                            callee_name = _oce_text
+                        break
             elif config.ts_module == "tree_sitter_c_sharp" and node.type == "object_creation_expression":
                 # `new Foo(...)` keeps the constructed type in the `type` field, so
                 # the invocation path below never sees it and a type a method only
@@ -5388,8 +5466,10 @@ def _extract_generic(
                         # unique-but-wrong one (#3078).
                         member_receiver = _ruby_const_full_name(recv, source) or None
             else:
-                # Generic: get callee from call_function_field
+                # Generic: get callee from call_function_field (or constructor on new_expression)
                 func_node = node.child_by_field_name(config.call_function_field) if config.call_function_field else None
+                if func_node is None and node.type == "new_expression":
+                    func_node = node.child_by_field_name("constructor")
                 if func_node:
                     if func_node.type == "identifier":
                         callee_name = _read_text(func_node, source)
@@ -5909,6 +5989,23 @@ def _extract_generic(
     if _ruby_mixin_calls:
         raw_calls.extend(_ruby_mixin_calls)
     result = {"nodes": nodes, "edges": clean_edges, "raw_calls": raw_calls}
+    # Export the per-file field->type tables for the corpus member-call
+    # resolvers (#3151): a field declared on a superclass in ANOTHER file can
+    # only be typed once the whole graph is visible. Keyed by class label +
+    # source_file, never by node id - ids are rewritten by the #1529 remap
+    # passes and the cache portability rewrite, which is exactly how the
+    # id-keyed ObjC table went stale (#3150).
+    _field_table_export = [
+        {"lang": _lang, "class_label": _n.get("label"),
+         "source_file": _n.get("source_file"), "fields": dict(_tbl)}
+        for _lang, _tables in (("java", java_field_types), ("csharp", csharp_field_types))
+        for _cls, _tbl in _tables.items()
+        if _tbl
+        for _n in (next((x for x in nodes if x["id"] == _cls), None),)
+        if _n is not None and _n.get("label")
+    ]
+    if _field_table_export:
+        result["member_field_tables"] = _field_table_export
     # #2551: the parser recovered from syntax errors, so extraction may be
     # partial (in the worst case, nothing but the file node). Record the first
     # error's line so extract() can warn instead of reporting silent success.

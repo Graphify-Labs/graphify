@@ -876,7 +876,7 @@ def _apply_symbol_resolution_facts(
         for edge in edges
     }
 
-    def add_edge(source: str, target: str, relation: str, context: str, line: int, source_path: Path, target_file: str | None = None, local_alias: str | None = None) -> None:
+    def add_edge(source: str, target: str, relation: str, context: str, line: int, source_path: Path, target_file: str | None = None, local_alias: str | None = None, type_only: bool = False) -> None:
         key = (source, target, relation, context or "")
         if key in existing_edges:
             return
@@ -901,6 +901,9 @@ def _apply_symbol_resolution_facts(
         # cross-file member-call resolver match `alias.func()` (#2082).
         if local_alias is not None:
             edge["local_alias"] = local_alias
+        # Erased at compile time (#3123): Import Cycles skips these edges.
+        if type_only:
+            edge["type_only"] = True
         edges.append(edge)
 
     for declaration in facts.declarations:
@@ -948,6 +951,7 @@ def _apply_symbol_resolution_facts(
                 star_fact.line,
                 star_fact.file_path,
                 target_file=str(path_by_resolved.get(target_path, target_path)),
+                type_only=star_fact.type_only,
             )
 
     for namespace_fact in facts.namespace_exports:
@@ -979,6 +983,7 @@ def _apply_symbol_resolution_facts(
                 namespace_fact.line,
                 namespace_fact.file_path,
                 target_file=str(path_by_resolved.get(target_path, target_path)),
+                type_only=namespace_fact.type_only,
             )
 
     for export_fact in facts.exports:
@@ -1004,6 +1009,7 @@ def _apply_symbol_resolution_facts(
                     export_fact.line,
                     export_fact.file_path,
                     target_file=str(path_by_resolved.get(origin[0], origin[0])),
+                    type_only=export_fact.type_only,
                 )
 
     def resolve_exported_origin(target_path: Path, imported_name: str, seen: set[tuple[Path, str]] | None = None) -> tuple[Path, str]:
@@ -1391,19 +1397,34 @@ def _ts_walk_class_members(class_node, source: bytes, path: Path, class_nid: str
     line = class_node.start_point[0] + 1
     for child in class_node.children:
         if child.type == "class_heritage":
+            saw_clause = False
             for clause in child.children:
                 if clause.type == "extends_clause":
+                    saw_clause = True
                     for name in _ts_heritage_clause_entries(clause, source):
                         facts.uses.append(
                             _SymbolUseFact(path, class_nid, name, "inherits", "type",
                                            clause.start_point[0] + 1)
                         )
                 elif clause.type == "implements_clause":
+                    saw_clause = True
                     for name in _ts_heritage_clause_entries(clause, source):
                         facts.uses.append(
                             _SymbolUseFact(path, class_nid, name, "implements", "type",
                                            clause.start_point[0] + 1)
                         )
+            if not saw_clause:
+                # The JavaScript grammar carries the base directly under
+                # class_heritage (`extends Base` -> [extends, identifier]) with no
+                # extends_clause/implements_clause wrapper like the TypeScript
+                # grammar. Treat the heritage node itself as the extends clause so
+                # `class Derived extends Base {}` in a .js file still emits an
+                # inherits edge. Mirrors the extends_type_clause branch below.
+                for name in _ts_heritage_clause_entries(child, source):
+                    facts.uses.append(
+                        _SymbolUseFact(path, class_nid, name, "inherits", "type",
+                                       child.start_point[0] + 1)
+                    )
         elif child.type == "extends_type_clause":
             # Interface heritage (`interface A extends B, C`) is an
             # extends_type_clause node, NOT a class_heritage. Its base entries
@@ -1542,6 +1563,13 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
 
             raw_module = _js_module_specifier(node, source)
             export_clause = _js_export_clause(node)
+            # `export type { X } from ...` / `export type * from ...`: the
+            # statement-level `type` keyword is a bare anonymous child; the
+            # default binding NAMED type sits inside the clause instead (#3123).
+            stmt_type_only = any(
+                child.type == "type" and not child.is_named
+                for child in node.children
+            )
             if raw_module is not None:
                 target_path = _resolve_js_module_path(raw_module, path.parent)
                 if target_path is None:
@@ -1555,11 +1583,13 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
                             namespace_name,
                             target_path,
                             node.start_point[0] + 1,
+                            type_only=stmt_type_only,
                         )
                     )
                 elif _js_export_statement_is_star(node):
                     facts.star_exports.append(
-                        _StarExportFact(path, target_path, node.start_point[0] + 1)
+                        _StarExportFact(path, target_path, node.start_point[0] + 1,
+                                        type_only=stmt_type_only)
                     )
                 if export_clause is not None:
                     for original_name, exported_name in _js_named_specifiers(
@@ -1572,6 +1602,7 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
                                 node.start_point[0] + 1,
                                 target_path=target_path,
                                 target_name=original_name,
+                                type_only=stmt_type_only,
                             )
                         )
                 continue

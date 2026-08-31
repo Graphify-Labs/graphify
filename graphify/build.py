@@ -1615,11 +1615,37 @@ def merge_raw_extraction(
             return False  # unowned — carry forward
         return _prune_hit(sf)
 
+    # #3203: Check for unverified semantic shrink on re-extracted sources.
+    unverified_semantic_shrink: dict[str, tuple[int, int]] = {}
+    if new_sem_sources:
+        prior_sem_counts: dict[str, int] = {}
+        for n in existing_nodes:
+            if isinstance(n, dict) and not _is_ast_tier(n):
+                sf = n.get("source_file")
+                if sf:
+                    canon = _norm_source_file(sf, _eff_root) or sf
+                    prior_sem_counts[canon] = prior_sem_counts.get(canon, 0) + 1
+
+        fresh_sem_counts: dict[str, int] = {}
+        for n in new.get("nodes", []):
+            if isinstance(n, dict) and not _is_ast_tier(n):
+                sf = n.get("source_file")
+                if sf:
+                    canon = _norm_source_file(sf, _eff_root) or sf
+                    fresh_sem_counts[canon] = fresh_sem_counts.get(canon, 0) + 1
+
+        for canon_sf, fresh_count in fresh_sem_counts.items():
+            prior_count = prior_sem_counts.get(canon_sf, 0)
+            if prior_count > 1 and fresh_count < prior_count:
+                unverified_semantic_shrink[canon_sf] = (prior_count, fresh_count)
+
     new["nodes"] = [n for n in existing_nodes if not _dropped(n)] + list(new.get("nodes", []))
     new["edges"] = [e for e in existing_edges if not _dropped(e)] + list(new.get("edges", []))
     carried_hyper = [he for he in existing_hyperedges if not _dropped(he)]
     if carried_hyper or new.get("hyperedges"):
         new["hyperedges"] = carried_hyper + list(new.get("hyperedges", []))
+    if unverified_semantic_shrink:
+        new["_unverified_semantic_shrink"] = unverified_semantic_shrink
     return new
 
 
@@ -1633,7 +1659,11 @@ def build_merge(
     dedup_llm_backend: str | None = None,
     root: str | Path | None = None,
 ) -> nx.Graph:
-    """Load existing graph.json, merge new chunks into it, and save back.
+    """Load existing graph.json and return it merged with ``new_chunks``.
+
+    Does NOT write to disk — the caller persists the result, e.g. via
+    ``export.to_json(G, communities, graph_path, force=True)`` after
+    clustering. ``graph_path`` is read-only here.
 
     Re-extracted files REPLACE their prior contribution per tier (#2333/#2336):
     a source_file present in new_chunks has its existing nodes/edges dropped
@@ -1649,6 +1679,9 @@ def build_merge(
     graph to inherit from. An explicit True/False always overrides the on-disk
     flag.
     """
+    # Iterated more than once below (source sets, the hyperedge carry, the
+    # build itself), so a one-shot iterator must be materialised first.
+    new_chunks = list(new_chunks)
     graph_path = Path(graph_path if graph_path is not None else _default_graph_json())
     _loaded = _load_existing_graph(graph_path)
     if _loaded is not None:
@@ -1711,6 +1744,35 @@ def build_merge(
     # never see the loss it is meant to catch.
     _disk_nodes = existing_nodes
     _disk_n = len(existing_nodes)
+
+    # #3203: Check for unverified semantic shrink on re-extracted sources.
+    # An existing source with prior semantic nodes (> 1) that produces strictly
+    # fewer semantic nodes in this extraction is flagged on G.graph so the CLI
+    # can arm the shrink guard and leave the source unstamped in the manifest.
+    unverified_semantic_shrink: dict[str, tuple[int, int]] = {}
+    if had_graph and new_sem_sources:
+        prior_sem_counts: dict[str, int] = {}
+        for n in _disk_nodes:
+            if isinstance(n, dict) and not _is_ast_tier(n):
+                sf = n.get("source_file")
+                if sf:
+                    canon = _norm_source_file(sf, _replace_root) or sf
+                    prior_sem_counts[canon] = prior_sem_counts.get(canon, 0) + 1
+
+        fresh_sem_counts: dict[str, int] = {}
+        for ch in new_chunks:
+            for n in ch.get("nodes", []):
+                if isinstance(n, dict) and not _is_ast_tier(n):
+                    sf = n.get("source_file")
+                    if sf:
+                        canon = _norm_source_file(sf, _replace_root) or sf
+                        fresh_sem_counts[canon] = fresh_sem_counts.get(canon, 0) + 1
+
+        for canon_sf, fresh_count in fresh_sem_counts.items():
+            prior_count = prior_sem_counts.get(canon_sf, 0)
+            if prior_count > 1 and fresh_count < prior_count:
+                unverified_semantic_shrink[canon_sf] = (prior_count, fresh_count)
+
     if new_sources:
         def _kept(item: dict) -> bool:
             sf = item.get("source_file")
@@ -1725,11 +1787,6 @@ def build_merge(
                 f"source file(s).",
                 file=sys.stderr,
             )
-
-    base = [{"nodes": existing_nodes, "edges": existing_edges}] if had_graph else []
-
-    all_chunks = base + list(new_chunks)
-    G = build(all_chunks, directed=directed, dedup=dedup, dedup_llm_backend=dedup_llm_backend, root=root)
 
     # Prune set for deleted source files — both the raw form (matches nodes that
     # kept absolute source_file) and the normalised relative form (matches nodes
@@ -1797,12 +1854,25 @@ def build_merge(
     # deleted (#1574). build() only sees the new chunks' hyperedges, so without
     # this every --update collapses the graph's hyperedge set down to just the
     # changed files'. Re-extracted files' prior hyperedges are dropped (their new
-    # version is already in G — replace-per-source, like nodes/edges); deleted
-    # files' are dropped via prune_set. id-dedup (attach_hyperedges) so a carried
-    # hyperedge never duplicates one the new chunks re-emitted. Mirrors watch.py,
-    # which already preserves existing hyperedges across a rebuild.
+    # version is already in the new chunks — replace-per-source, like
+    # nodes/edges); deleted files' are dropped via prune_set; id-dedup so a
+    # carried hyperedge never duplicates one the new chunks re-emitted. Mirrors
+    # watch.py, which already preserves existing hyperedges across a rebuild.
+    #
+    # The carried set rides INTO build() on the base chunk rather than being
+    # attached to G afterwards (#3102): entity dedup rewires every edge endpoint
+    # and every hyperedge member it sees onto the survivor (#2805), but a
+    # hyperedge attached after the fact kept naming the merged-away node — a
+    # dangling member with no backing node in the written graph.
+    carried_hyperedges: list[dict] = []
     if existing_hyperedges:
-        carried = []
+        carried = carried_hyperedges
+        _new_hyperedge_ids = {
+            he.get("id")
+            for chunk in new_chunks
+            for he in (chunk.get("hyperedges") or [])
+            if isinstance(he, dict) and he.get("id")
+        }
         for he in existing_hyperedges:
             if not isinstance(he, dict):
                 continue
@@ -1815,10 +1885,17 @@ def build_merge(
                 continue  # semantically re-extracted — replaced by the new chunk's version
             if _prune_match(sf):
                 continue  # deleted — pruned
+            if he.get("id") and he.get("id") in _new_hyperedge_ids:
+                continue  # the new chunks re-emitted it — theirs wins
             carried.append(he)
-        if carried:
-            from graphify.export import attach_hyperedges
-            attach_hyperedges(G, carried)
+
+    base = (
+        [{"nodes": existing_nodes, "edges": existing_edges, "hyperedges": carried_hyperedges}]
+        if had_graph else []
+    )
+
+    all_chunks = base + list(new_chunks)
+    G = build(all_chunks, directed=directed, dedup=dedup, dedup_llm_backend=dedup_llm_backend, root=root)
 
     # Prune nodes and edges from deleted source files
     if prune_sources:
@@ -1976,6 +2053,9 @@ def build_merge(
                 f"{_disk_n} → {G.number_of_nodes()} nodes. "
                 f"Pass prune_sources explicitly if you intend to remove them. (#479)"
             )
+
+    if unverified_semantic_shrink:
+        G.graph["_unverified_semantic_shrink"] = unverified_semantic_shrink
 
     return G
 

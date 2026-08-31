@@ -6,6 +6,248 @@ import re
 from pathlib import Path
 from graphify.extractors.base import _file_stem, _make_id
 
+# Recovers CREATE FUNCTION/PROCEDURE statements the grammar could not parse
+# structurally. Used by BOTH recovery sites — the walk-time ERROR-node scan and
+# the whole-file has_error fallback (#2180). They MUST share one pattern: when
+# they disagreed, the same statement produced two nodes with different names
+# (the ERROR scan captured `dbo.[usp_Mixed]`, the fallback stopped at `dbo`,
+# and _add_node's id-dedupe never fired because the ids differed).
+#
+# Each name part is a bare identifier, a double-quoted (delimited) one, or a
+# T-SQL bracket-delimited one, so CREATE OR REPLACE FUNCTION "public"."fn"(...)
+# and CREATE PROCEDURE [dbo].[usp_Load] ... are both recovered. A bare [\w$.]+
+# stops dead at the leading delimiter, which silently dropped every quoted
+# PL/pgSQL routine (#2180) and every bracket-named T-SQL procedure. T-SQL's
+# AS BEGIN...END body idiom always lands in recovery — the grammar has no
+# create_procedure parse for it — and T-SQL spells re-creation CREATE OR ALTER
+# (it has no OR REPLACE), so accept that form too, mirroring fb_proc_or_trigger.
+# Inside a bracket-delimited part, a literal ] is escaped by doubling
+# ([a]]b] names the identifier a]b), so consume ]] before treating a
+# lone ] as the closing delimiter — stopping at the first ] truncated
+# the name and minted a phantom that could collide with a real [a].
+# PROC is T-SQL's official shorthand for PROCEDURE and equally common in the
+# wild; the optional (?:EDURE)? still requires trailing whitespace, so a word
+# that merely starts with PROC cannot match.
+# \bCREATE: without the boundary, CREATE matched inside a bare word, so
+# 'SELECT AUTOCREATE PROCEDURE x FROM t;' in an error-bearing file minted a
+# phantom routine x() (delimited identifiers are span-skipped at the scan
+# site, but a bare word has no span).
+_ROUTINE_RECOVERY_RX = re.compile(
+    r"\bCREATE\s+(?:OR\s+(?:REPLACE|ALTER)\s+)?(?:FUNCTION|PROC(?:EDURE)?)\s+"
+    r"(?:IF\s+NOT\s+EXISTS\s+)?"
+    r"((?:\"(?:[^\"\n]|\"\")+\"|\[(?:[^\]\n]|\]\])+\]|[\w$]+)"
+    r"(?:\s*\.\s*(?:\"(?:[^\"\n]|\"\")+\"|\[(?:[^\]\n]|\]\])+\]|[\w$]+))*)",
+    re.IGNORECASE,
+)
+
+# _mask_sql_comments is a linear character scanner, not a regex: the four
+# span kinds interact in ways a single pattern cannot express safely —
+# comment-opener parity inside strings, nested block comments, and
+# end-of-line abandonment of unclosed literals. Span handling:
+#
+# - single-quoted strings are BLANKED like comments: routine names never
+#   live in single quotes, and dynamic SQL (EXEC(N'CREATE PROC [dbo].[Fake]
+#   ...')) would otherwise fabricate a routine node whenever an unrelated
+#   parse error arms the whole-file scan. (Dialects where other quoting
+#   carries strings — MySQL double quotes, PostgreSQL dollar-quoting — are
+#   NOT modelled; DDL inside those still reaches the scan.)
+# - double-quoted and bracket-delimited identifiers are PRESERVED verbatim —
+#   they are exactly the delimited names the recovery regex must see ("" and
+#   ]] escapes consumed, mirroring _ROUTINE_RECOVERY_RX).
+# - line comments blank to end-of-line; block comments blank to their
+#   matching */ with NESTING tracked (SQL Server and PostgreSQL both nest
+#   /* */, and a lazy first-*/ match let commented-out DDL inside a nested
+#   comment fabricate nodes). MySQL and Oracle do NOT nest — there the
+#   depth tracking over-blanks, losing (never fabricating) a routine after
+#   an inner */; the primary T-SQL/PostgreSQL targets win that trade. An
+#   UNCLOSED block comment blanks to end-of-file, matching SQL semantics.
+#
+# Literals are deliberately line-scoped: this mask only runs on files that
+# already failed to parse, where an unclosed delimiter is likely, and a
+# multi-line literal span would let one unclosed quote swallow real DDL
+# below it. The cost is asymmetric by kind. A single-quoted string that
+# continues past its line is blanked only up to the newline, so a comment
+# opener inside it cannot fire on that line — but its CONTINUATION lines are
+# scanned as code, and DDL there fabricates: multi-line dynamic SQL
+# (SET @sql = N\'\n CREATE PROC ...\') is a KNOWN HOLE, alongside the
+# unmodelled quoting dialects above; only same-line dynamic SQL is blanked.
+# Closing it would need a real string heuristic (e.g. an end-of-line opening
+# quote), judged not worth the swallow risk in a recovery-only path.
+
+
+def _scan_sql(text: str) -> tuple[str, list[tuple[int, int]]]:
+    """Blank comment and string-literal spans, preserving every offset.
+
+    One output character per input character: non-newline characters inside
+    a blanked span become spaces and newlines are kept, so positions and
+    line numbers computed against the masked text are valid against the
+    original. Double-quoted and bracket-delimited identifiers are preserved
+    verbatim (they carry recoverable routine names); single-quoted strings,
+    line comments, and (nesting-aware) block comments are blanked. Used by
+    the routine-recovery scan so CREATE PROCEDURE/FUNCTION DDL reachable
+    only through a comment or a single-quoted string cannot fabricate a
+    routine node when an unrelated parse error arms recovery.
+
+    Returns (masked_text, ident_spans) where ident_spans holds the [start,
+    end) of every PRESERVED delimited identifier: preserved spans keep their
+    text verbatim, so DDL keywords inside one are still visible in the
+    masked text, and the recovery scan must skip a match that starts there
+    (identifier data, not DDL — 'SELECT 1 AS [CREATE PROCEDURE x pending]'
+    must not mint a routine).
+    """
+    ident_spans: list[tuple[int, int]] = []
+    out: list[str] = []
+    i, n = 0, len(text)
+
+    def _blank(upto: int) -> int:
+        """Blank [i, upto), keeping newlines; return upto."""
+        for c in text[i:upto]:
+            out.append("\n" if c == "\n" else " ")
+        return upto
+
+    def _blank_tail_and_carry(start: int) -> int:
+        """Blank from start to end-of-line, carrying comment state forward.
+
+        The union-of-readings blank for an ambiguous stretch: the rest of the
+        line is blanked outright; if the raw text of that stretch leaves a /*
+        unclosed on its own line (the maximum comment depth any reading could
+        be left holding), blanking continues, nesting-aware, to the closing
+        */ or EOF. Where a carry closes MID-line the same rule applies to the
+        remainder of that line — under the reading where the carry never
+        opened, that whole line may be a comment or a string, so emitting the
+        post-*/ text verbatim exposed it (found by differential fuzzing).
+        Repeats until a line ends with no carry pending. Appends one output
+        character per input character; returns the resume index.
+        """
+        k = start
+        while True:
+            eol = text.find("\n", k)
+            eol = n if eol == -1 else eol
+            depth = 0
+            m2 = k
+            while m2 < eol:
+                if text.startswith("/*", m2):
+                    depth += 1
+                    m2 += 2
+                elif text.startswith("*/", m2):
+                    if depth:
+                        depth -= 1
+                    m2 += 2
+                else:
+                    m2 += 1
+            for ch in text[k:eol]:
+                out.append("\n" if ch == "\n" else " ")
+            k = eol
+            if not depth:
+                return k
+            j2 = k
+            while j2 < n and depth:
+                if text.startswith("/*", j2):
+                    depth += 1
+                    j2 += 2
+                elif text.startswith("*/", j2):
+                    depth -= 1
+                    j2 += 2
+                else:
+                    j2 += 1
+            for ch in text[k:j2]:
+                out.append("\n" if ch == "\n" else " ")
+            k = j2
+            if k >= n:
+                return k
+            # the carry closed mid-line: the remainder of THIS line is the
+            # same ambiguous stretch — loop and blank it too
+
+    while i < n:
+        c = text[i]
+        if c == "'":
+            # Single-quoted string: blank it. '' is an escaped quote; a
+            # newline abandons the literal (see the comment above).
+            j = i + 1
+            while j < n and text[j] != "\n":
+                if text[j] == "'":
+                    if j + 1 < n and text[j + 1] == "'":
+                        j += 2
+                        continue
+                    j += 1
+                    break
+                j += 1
+            i = _blank(j)
+        elif c == '"' or c == "[":
+            # Delimited identifier: preserve verbatim. Doubled closers are
+            # escapes. A span is DISTRUSTED when it is unterminated (no
+            # closer before the newline) or would swallow a comment opener
+            # on its way to the closer ('SELECT [Col FROM t -- CREATE PROC
+            # [dbo]' closes on [dbo]'s bracket) — a stray delimiter is
+            # ordinary in exactly the broken files this mask runs on.
+            #
+            # A distrusted span is irreducibly ambiguous (identifier data vs
+            # stray delimiter before real comments/strings), and any attempt
+            # to pick one reading exposed text the other reading blanks —
+            # re-emitting the delimiter and rescanning even re-paired later
+            # single quotes and uncovered dynamic SQL. So blank the UNION of
+            # every reading: the rest of the line is blanked outright, and
+            # any raw /* on it with no later */ on the same line carries
+            # forward as (nesting-aware) comment state, since some reading
+            # may have left it open — and where that carry closes mid-line,
+            # the remainder of THAT line gets the same treatment, repeated
+            # until a line ends carry-free (under the no-carry reading the
+            # close line may itself be all comment or string, so emitting its
+            # post-*/ tail verbatim was an exposure). Over-blanking loses at
+            # most routines on lines already entangled with the broken one (a
+            # conservative false negative; a routine named like [a--b] is
+            # inside that loss); under-blanking is what fabricates, and every
+            # reading's blank set stays a subset of this one — except where a
+            # */ + * versus * + /* token split makes two readings consume the
+            # same /, an irreducible divergence whose only closure would be
+            # blanking to EOF on every */* sequence (accepted, documented
+            # limitation; the token sequence appears in no dialect's idiom).
+            closer = '"' if c == '"' else "]"
+            j = i + 1
+            closed = False
+            while j < n and text[j] != "\n":
+                if text[j] == closer:
+                    if j + 1 < n and text[j + 1] == closer:
+                        j += 2
+                        continue
+                    j += 1
+                    closed = True
+                    break
+                j += 1
+            span = text[i:j]
+            if closed and "--" not in span and "/*" not in span:
+                ident_spans.append((i, j))
+                out.append(span)
+                i = j
+            else:
+                i = _blank_tail_and_carry(i)
+        elif c == "-" and i + 1 < n and text[i + 1] == "-":
+            j = i
+            while j < n and text[j] != "\n":
+                j += 1
+            i = _blank(j)
+        elif c == "/" and i + 1 < n and text[i + 1] == "*":
+            depth, j = 1, i + 2
+            while j < n and depth:
+                if text[j] == "/" and j + 1 < n and text[j + 1] == "*":
+                    depth += 1
+                    j += 2
+                elif text[j] == "*" and j + 1 < n and text[j + 1] == "/":
+                    depth -= 1
+                    j += 2
+                else:
+                    j += 1
+            i = _blank(j)  # unclosed comment: j == n, blanks to end-of-file
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out), ident_spans
+
+
+def _mask_sql_comments(text: str) -> str:
+    """Masked text only — see _scan_sql for the span-reporting form."""
+    return _scan_sql(text)[0]
+
 
 def _norm_ident(name: str) -> str:
     """Normalize a SQL identifier for name-based reference resolution.
@@ -244,32 +486,16 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                     tbl_nid = table_nids.get(_norm_ident(tbl_name)) or _ref_stub(tbl_name)
                     _add_edge(trig_nid, tbl_nid, "triggers", line)
 
-        elif t == "ERROR":
-            # tree-sitter-sql cannot parse PL/pgSQL CREATE FUNCTION/PROCEDURE
-            # bodies (OUT/INOUT params, tagged dollar quotes, PERFORM, :=) and
-            # emits an ERROR node instead, silently dropping the object.
-            # Regex-scan the raw text as fallback, mirroring the
-            # fb_proc_or_trigger recovery below. One ERROR blob can swallow
-            # several statements, so scan for every CREATE in it. We deliberately
-            # do not scan the body for FROM/JOIN references: PL/pgSQL loop
-            # variables and locals would produce junk reads_from targets.
-            #
-            # Each name part is either a bare identifier or a double-quoted
-            # (delimited) one, so schema-qualified generated DDL such as
-            # CREATE OR REPLACE FUNCTION "public"."fn"(...) is recovered too.
-            # A bare [\w$.]+ stops dead at the leading quote, which silently
-            # dropped every quoted PL/pgSQL routine (#2180).
-            text = _read(node)
-            for m in re.finditer(
-                r"CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE)\s+"
-                r"(?:IF\s+NOT\s+EXISTS\s+)?"
-                r"((?:\"[^\"\n]+\"|[\w$]+)(?:\s*\.\s*(?:\"[^\"\n]+\"|[\w$]+))*)",
-                text, re.IGNORECASE,
-            ):
-                name = m.group(1)
-                m_line = line + text[: m.start()].count("\n")
-                nid = _make_id(stem, name)
-                _add_node(nid, f"{name}()", m_line)
+        # NOTE: there is deliberately NO recovery scan on individual ERROR
+        # nodes. Any ERROR node anywhere makes root.has_error true, so the
+        # whole-file masked scan below this walk already recovers everything
+        # a per-node scan could — from the SAME shared _ROUTINE_RECOVERY_RX,
+        # with _add_node deduping by id. A per-node scan is not just
+        # redundant, it is unsound: _mask_sql_comments needs file-level
+        # context, and an ERROR fragment can begin MID-comment (tree-sitter's
+        # lexer does not nest /* */, so the text after an inner */ parses as
+        # code and lands in an ERROR blob with no comment opener in sight),
+        # which let commented-out DDL fabricate routine nodes.
 
         elif t == "fb_proc_or_trigger":
             text = _read(node)
@@ -433,24 +659,34 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
     #      (keyword_create/keyword_function/object_reference/... ) and the ERROR
     #      node holds only the offending body line, e.g. `PERFORM x();` or
     #      `x := 1;` -- so no CREATE text is inside any ERROR node at all
-    #   3. the name is a quoted identifier ("public"."fn"), which a bare
-    #      [\w$.]+ pattern cannot match
+    #   3. the name is a delimited identifier — quoted ("public"."fn") or
+    #      T-SQL-bracketed ([dbo].[usp_Load]) — which a bare [\w$.]+ pattern
+    #      cannot match
     # Shapes 2 and 3 silently dropped the routine: no node, no warning, exit 0.
     # Scanning the raw source catches all three, and _add_node dedupes by id so
     # routines already recovered from the tree are not emitted twice.
     #
     # Gate on a failed parse: a cleanly-parsing file must NOT have routines
-    # fabricated from commented-out DDL, DDL inside EXECUTE '...' string bodies,
-    # or MySQL `CREATE FUNCTION IF NOT EXISTS` (which would capture `IF`). Every
+    # fabricated from MySQL `CREATE FUNCTION IF NOT EXISTS` (which would
+    # capture `IF`) or other shapes the mask does not model (double-quoted
+    # strings in MySQL's default mode, PostgreSQL dollar-quoted bodies). Every
     # observed drop shape leaves an ERROR node in the tree, so has_error loses
     # nothing while protecting clean corpora (#2180 follow-up).
     if root.has_error:
-        for m in re.finditer(
-            r"CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE)\s+"
-            r"(?:IF\s+NOT\s+EXISTS\s+)?"
-            r"((?:\"[^\"\n]+\"|[\w$]+)(?:\s*\.\s*(?:\"[^\"\n]+\"|[\w$]+))*)",
-            src_text, re.IGNORECASE,
-        ):
+        # The mask blanks comments (nesting-aware) and single-quoted strings
+        # (offset-preserving), so commented-out DDL and single-quoted dynamic
+        # SQL cannot fabricate a routine when an unrelated error arms this
+        # scan; string shapes the mask does not model rely on the has_error
+        # gate alone. Preserved delimited identifiers keep their text
+        # verbatim (they carry the recoverable names), so a match whose
+        # CREATE keyword STARTS inside one is identifier data, not DDL
+        # ('SELECT 1 AS [CREATE PROCEDURE x pending]') and is skipped — the
+        # name a genuine statement captures is allowed to be a delimited
+        # identifier; its CREATE never is.
+        masked_src, ident_spans = _scan_sql(src_text)
+        for m in _ROUTINE_RECOVERY_RX.finditer(masked_src):
+            if any(s <= m.start() < e for s, e in ident_spans):
+                continue
             fn_name = m.group(1)
             fn_line = src_text[: m.start()].count("\n") + 1
             _add_node(_make_id(stem, fn_name), f"{fn_name}()", fn_line)

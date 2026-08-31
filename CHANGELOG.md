@@ -6,6 +6,47 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 - Feat: Jupyter notebooks (`.ipynb`) are indexed via markdown sidecars (#1497). Cell sources become fenced code (kernel language from notebook metadata, falling back to `code`) and verbatim markdown; outputs are stripped. Sidecar names use the scan-root-relative path (#2059); re-runs that only change outputs do not bump the sidecar or trigger re-extraction. No extra install.
 
+## 0.9.53 (2026-08-30)
+
+- Fix: a batch of cross-language inheritance-edge corrections (thanks @Synvoya): JavaScript `class X extends Y` now emits an `inherits` edge (#1790); PHP interfaces, enums, and traits are captured as class-like nodes with their heritage (#1791); Scala `trait` declarations become class-like nodes (#1792) and qualified `extends`/`with` bases resolve to the tail type (#1794); a qualified Kotlin supertype resolves to its tail type instead of the package head (#1793); a C# interface extending an interface is classified as `inherits`, not `implements` (#1817); and a Go interface type-set constraint no longer emits a spurious `embeds` edge (#1818).
+- Feature: Robot Framework `.robot`/`.resource` files are now extracted (optional `[robot]` extra) — suites, test cases, user keywords, keyword-call edges, and resource/library imports, with case/space/underscore-insensitive keyword resolution (#3192, thanks @nshiveg).
+- Fix: chat-template control tokens are now defanged by form (`<|…|>`, `[INST]`/`[SYSTEM]`) rather than an enumerated few, closing a prompt-injection gap for attacker-chosen tokens (e.g. `<|eot_id|>`); legitimate content is untouched (#3183, thanks @abhay-codes07).
+- Fix: `graphify watch`/`update` now preserves an authored markdown link whose target node is still live under a different spelling, extending the #3190 reconcile without loosening the deleted-target gate (#3190, thanks @logan683).
+- Fix: a semantic node is no longer silently dropped when a run did not actually re-extract the semantic tier — an unverified per-source shrink arms the shrink guard and re-queues the source next run (#3203, thanks @hopstreax).
+- Fix: the git hook-guard now detects a search command only in an executed position, not when it merely appears in a comment or a quoted message, eliminating false read-nudges (#3121, thanks @abhay-codes07).
+- Fix: `graphify install` now backs up a diverged `SKILL.md` before overwriting and prints an actionable warning, instead of silently clobbering user edits (#3144, thanks @abhay-codes07).
+- Fix: the `GRAPH_REPORT` headline community counts now reconcile with what is actually rendered, and the knowledge-gaps threshold matches its own label (#3148, thanks @abhay-codes07).
+- Fix: the wiki export now notes when a god-node relation group was truncated instead of silently showing a capped list (#3127, thanks @abhay-codes07).
+
+## 0.9.52 (2026-08-29)
+
+- Fix: `graphify watch`/`update` no longer silently drops a Markdown link to a semantic-backed document during a code-only rebuild — authored `[[wikilink]]` references are repointed onto the target file's representative node, preserving links to the semantic tier without resurrecting a deleted target (#3190, thanks @logan683).
+- Fix: T-SQL routines that parse to tree-sitter ERROR nodes — `CREATE OR ALTER`, the `PROC` shorthand, and bracket-delimited names like `[dbo].[Get Widgets]` — are now recovered by name over a comment/string-masked copy, so they appear in the graph without commented-out or dynamic SQL fabricating nodes (#3164, thanks @egarcia74).
+- Fix: `graphify --help` now lists the `prs` and `provider` commands and the export formats it actually supports (thanks @SyedFahad7).
+- Fix: corrected the `deepseek-v4-flash` pricing entry and the `build_merge` docstring (which wrongly claimed it saved the graph; callers persist) (thanks @adrianengkh).
+- Fix: Razor `@inject`/`@using` in `.razor`/`.cshtml` files now flow through the scope-aware C# type resolver, so an injected service type resolves to its cross-file definition; an external/undeclared type fabricates nothing (partially addresses #3187 — a bare inject of a file-scoped-namespace type still dangles, follow-up) (thanks @hopstreax).
+- Fix: the MCP `prs` tools (`list_prs`, `triage_prs`, `get_pr_impact`) now surface a genuine failure as an MCP error (`isError`) instead of success text, while an empty-but-successful result is unaffected (thanks @noQbot).
+- Fix: the MCP `get_node` tool now resolves a node through the same tiered resolver as `get_neighbors`, so the two agree deterministically instead of `get_node` returning an iteration-order substring match (thanks @noQbot).
+- Fix: a `graphify install --project` (committed/shared) install now emits a bare `graphify` hook command resolved at run time instead of pinning the absolute interpreter path, so the committed hook no longer churns across machines; the global install still pins the absolute path (thanks @davidbhoward).
+- Fix: a PHP `new Foo()` now emits a `calls` edge to the constructed class (namespaced names resolve to the last segment), completing the object-creation modeling across C# (#2998), TypeScript (#3135), and now PHP; dynamic (`new $var()`), `self`/`static`/`parent`, and unknown external constructions fabricate nothing (#3115, thanks @abhay-codes07).
+- Fix: a method call through a field whose type is declared on an ancestor class now resolves from a subclass — the field-type lookup walks the inheritance chain (per-file for Java/C#, cross-file for Java/Objective-C), cycle-safe and without fabricating edges (#3151, thanks @abhay-codes07).
+- Fix: the Objective-C field-to-type table is now re-keyed alongside the node-id rewrites, so `self.field` / `obj.field` method calls still resolve after `graphify update` normalizes ids (#3150, thanks @abhay-codes07).
+- Fix: TypeScript type-only imports (`import type { T } from './m'`) no longer manufacture false import cycles; the type-only edge is marked and excluded from cycle detection while a mixed `import { type A, B }` keeps its real value-import edge (#3123, thanks @abhay-codes07).
+- Fix: an `import(...)` used as a call type-argument (`f<typeof import('mod')>()`) no longer causes declarations after it to be dropped; the construct is normalized before parsing with source locations preserved (#3185, thanks @hopstreax).
+
+## 0.9.51 (2026-08-28)
+
+- Fix: the incomplete-build shrink guard now stays armed when a chunk came back hollow, unparseable, or omitting files, so a run that silently lost content can no longer overwrite the existing graph with a smaller one; a complete run and a retry-recovered chunk are unaffected, and `--allow-partial` still overrides (#3105, thanks @abhay-codes07).
+- Fix: `graphify extract --force --code-only` now fully rescans code (instead of skipping unchanged files and keeping stale import/alias resolution) while still carrying the existing document/semantic tier forward (#3125, thanks @hopstreax).
+- Fix: a hyperedge carried from a prior `graph.json` now has its members routed through the dedup survivor remap, so it no longer dangles when one of its members is merged away; an unresolvable member is dropped gracefully (#3102, thanks @abhay-codes07).
+- Fix: the cache's atexit stat-index flush no longer recreates a `graphify-out/` tree that was deleted during the run, so a removed corpus stays removed (#2974, thanks @abhay-codes07).
+- Fix: Leiden clustering canonicalizes undirected edge endpoints before sorting, so community assignments no longer drift across builds or machines from networkx yielding an edge's endpoints in a different order (thanks @ErichKinuya).
+- Fix: a TypeScript/JavaScript `new Foo()` now emits a `calls` edge to the constructed class (member, chained, and generic forms), so constructor usage is visible; built-in globals like `new Map()` / `new Promise()` are not fabricated (#3116, thanks @hopstreax).
+- Fix: an Elixir function whose only clause carries a `when` guard (`def foo(x) when is_integer(x), do: ...`) is now extracted, not dropped; multi-clause, multi-condition guards, and `defp` are handled (#3111, thanks @santhiprakash).
+- Fix: Common Lisp node ids are now derived from the full path stem like every other extractor, so two same-basename `.lisp` files in different directories no longer collide on merge (thanks @guitelesc).
+- Perf: Leiden clustering now calls the `graspologic_native` binding directly instead of importing the full `graspologic` package, avoiding its heavy import chain (umap / pynndescent / numba JIT); clustering output is unchanged, and it falls back to the `graspologic` wrapper and then NetworkX Louvain when the native binding is absent (#3104, thanks @Mohammad-Palla).
+- Docs: the README now documents the git workflow for keeping the graph in sync — commits and branch switches rebuild automatically via the installed hooks, while `git pull` / `git merge` need a manual `graphify update .` (thanks @Mohammad-Palla).
+
 ## 0.9.50 (2026-08-25)
 
 - Fix: Ruby methods whose names end in `!`, `?`, or `=` now keep distinct node ids, so `save` and `save!` (or `foo` and `foo=`) no longer collide into one node; the label keeps the raw spelling and member-call resolution still matches (#3077, thanks @hopstreax).

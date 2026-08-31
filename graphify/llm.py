@@ -172,7 +172,10 @@ BACKENDS: dict[str, dict] = {
         "default_model": "deepseek-v4-flash",
         "env_key": "DEEPSEEK_API_KEY",
         "model_env_key": "GRAPHIFY_DEEPSEEK_MODEL",
-        "pricing": {"input": 0.14, "output": 0.28},  # USD per 1M tokens (v4-flash)
+        "pricing": {"input": 0.44, "output": 1.32},  # USD per 1M tokens (v4-flash,
+        # peak, cache miss). Peak is 01:00-04:00 and 06:00-10:00 UTC Mon-Fri;
+        # all other hours are off-peak at half these rates. A cache hit is
+        # $0.014/1M in. Source: api-docs.deepseek.com/quick_start/pricing
         # deepseek-reasoner silently ignores temperature; deepseek-chat / v4-flash
         # accept 0-2, so sending 0 is safe. Note: deepseek-v4-flash (and v4-pro) have
         # thinking ENABLED by default (verified against the live API, #1621) — set
@@ -553,9 +556,14 @@ def _resolve_under_root(path: Path, root: Path) -> Path | None:
 # a file cannot forge an early `</untrusted_source>` and smuggle instructions out.
 _INJECTION_SENTINELS = re.compile(
     r"</?untrusted_source\b[^>]*>"
-    r"|<\|(?:im_start|im_end|system|user|assistant|endoftext)\|>"
+    # ANY <|token|> chat-template marker, not an enumerated few (#3183): the
+    # old list named six and missed <|start_header_id|>/<|eot_id|> (Llama 3),
+    # <|endofprompt|>, and whatever the next template calls its turns. The
+    # form itself is the hazard - no legitimate source construct needs an
+    # intact one, and defanging only inserts a zero-width space.
+    r"|<\|[A-Za-z0-9_.\-]{1,64}\|>"
     r"|<<SYS>>|<</SYS>>"
-    r"|\[/?INST\]"
+    r"|\[/?(?:INST|SYSTEM)\]"
     r"|^\s*###?\s*(?:system|instruction)s?\s*:?\s*$",
     re.IGNORECASE | re.MULTILINE,
 )

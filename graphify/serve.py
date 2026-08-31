@@ -22,6 +22,16 @@ except ImportError:
     _jieba = None
 
 
+class ToolError(Exception):
+    """Raised by a tool handler to signal an error result.
+
+    A normal string return is sent as an ordinary (successful) text result. A
+    ToolError is instead turned into a tool result with ``isError: true`` so a
+    client that only checks ``isError`` can tell a genuine failure — e.g. the
+    ``gh`` CLI missing or a PR that cannot be resolved — from success.
+    """
+
+
 def _load_graph(graph_path: str) -> nx.Graph:
     try:
         resolved = Path(graph_path).resolve()
@@ -1362,6 +1372,31 @@ def find_node_ambiguity(G: nx.Graph, label: str) -> list[str]:
     return []
 
 
+def _resolve_single_node(G: nx.Graph, label: str) -> tuple[str | None, str | None]:
+    """Shared node resolution for the get_node / get_neighbors tools.
+
+    Returns ``(node_id, None)`` when *label* resolves to a single winner via the
+    tiered `_find_node` ranking, or ``(None, message)`` when there is no match or
+    the winning tier spans several source files. Routing both tools through this
+    keeps get_node from silently returning a `G.nodes()` iteration-order match for
+    a hub name while get_neighbors reports the same lookup as ambiguous (#ADR-0001).
+    """
+    matches = _find_node(G, label)
+    if not matches:
+        return None, f"No node matching '{label}' found."
+    rivals = find_node_ambiguity(G, label)
+    if rivals:
+        listing = "\n".join(
+            f"  {G.nodes[r].get('source_file') or r}\n    id: {r}" for r in rivals
+        )
+        return None, (
+            f"Ambiguous: '{label}' matches {len(rivals)} nodes in different files.\n"
+            f"{listing}\n"
+            "Retry with the repo-relative path or the full node id."
+        )
+    return matches[0], None
+
+
 def _shortest_path_text(G: nx.Graph, arguments: dict) -> str:
     """Body of the `shortest_path` MCP tool (module-level so tests can call it
     without an mcp install).
@@ -1759,11 +1794,10 @@ def _build_server(graph_path: str):
 
     def _tool_get_node(arguments: dict) -> str:
         label = arguments["label"].lower()
-        matches = [(nid, d) for nid, d in G.nodes(data=True)
-                   if label in (d.get("label") or "").lower() or label == nid.lower()]
-        if not matches:
-            return f"No node matching '{label}' found."
-        nid, d = matches[0]
+        nid, err = _resolve_single_node(G, label)
+        if err:
+            return err
+        d = G.nodes[nid]
         # Sanitise every LLM-derived field before concatenation (F-010).
         return "\n".join([
             f"Node: {sanitize_label(d.get('label', nid))}",
@@ -1783,20 +1817,9 @@ def _build_server(graph_path: str):
     def _tool_get_neighbors(arguments: dict) -> str:
         label = arguments["label"].lower()
         rel_filter = arguments.get("relation_filter", "").lower()
-        matches = _find_node(G, label)
-        if not matches:
-            return f"No node matching '{label}' found."
-        rivals = find_node_ambiguity(G, label)
-        if rivals:
-            listing = "\n".join(
-                f"  {G.nodes[r].get('source_file') or r}\n    id: {r}" for r in rivals
-            )
-            return (
-                f"Ambiguous: '{label}' matches {len(rivals)} nodes in different files.\n"
-                f"{listing}\n"
-                "Retry with the repo-relative path or the full node id."
-            )
-        nid = matches[0]
+        nid, err = _resolve_single_node(G, label)
+        if err:
+            return err
         lines = [f"Neighbors of {sanitize_label(G.nodes[nid].get('label', nid))}:"]
         def _edge_at(d: dict) -> str:
             # Edge location = the relation SITE (call/import line) in the source
@@ -1877,7 +1900,7 @@ def _build_server(graph_path: str):
         try:
             prs = fetch_prs(repo=repo, base=base)
         except RuntimeError as e:
-            return f"Error: {e}"
+            raise ToolError(f"Error: {e}") from e
         worktrees = fetch_worktrees()
         for pr in prs:
             pr.worktree_path = worktrees.get(pr.branch)
@@ -1894,7 +1917,7 @@ def _build_server(graph_path: str):
             view_args += ["--repo", repo]
         pr_data = _gh(*view_args)
         if pr_data is None:
-            return f"PR #{number} not found or gh not authenticated."
+            raise ToolError(f"PR #{number} not found or gh not authenticated.")
         files = fetch_pr_files(number, repo)
         if not files:
             return f"PR #{number}: no changed files found (may require gh auth)."
@@ -1921,7 +1944,7 @@ def _build_server(graph_path: str):
         try:
             prs = fetch_prs(repo=repo, base=base)
         except RuntimeError as e:
-            return f"Error: {e}"
+            raise ToolError(f"Error: {e}") from e
         worktrees = fetch_worktrees()
         for pr in prs:
             pr.worktree_path = worktrees.get(pr.branch)
@@ -2049,6 +2072,11 @@ def _build_server(graph_path: str):
         try:
             _select_graph(project_path)  # bind G/communities to the target graph
             return [types.TextContent(type="text", text=handler(arguments))]
+        except ToolError:
+            # A handler-signalled error: propagate so the result is marked
+            # isError:true (the mcp 1.x decorator wraps a raised exception into
+            # an error result; the 2.x path catches it in _on_call_tool).
+            raise
         except Exception as exc:
             return [types.TextContent(type="text", text=f"Error executing {name}: {exc}")]
 
@@ -2068,7 +2096,13 @@ def _build_server(graph_path: str):
             return types.ListToolsResult(tools=await list_tools())
 
         async def _on_call_tool(ctx, params) -> types.CallToolResult:
-            content = await call_tool(params.name, dict(params.arguments or {}))
+            try:
+                content = await call_tool(params.name, dict(params.arguments or {}))
+            except ToolError as exc:
+                return types.CallToolResult(
+                    content=[types.TextContent(type="text", text=str(exc))],
+                    isError=True,
+                )
             return types.CallToolResult(content=content)
 
         async def _on_list_resources(ctx, params) -> types.ListResourcesResult:

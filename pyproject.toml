@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "graphifyy"
-version = "0.9.50"
+version = "0.9.53"
 description = "AI coding assistant skill (Claude Code, CodeBuddy, Codex, OpenCode, Kilo Code, Cursor, Gemini CLI, Aider, OpenClaw, Factory Droid, Trae, Hermes, Kiro, Pi, Devin CLI, Google Antigravity) - turn any folder of code, docs, papers, images, or videos into a queryable knowledge graph"
 readme = "README.md"
 license = "Apache-2.0"
@@ -94,7 +94,11 @@ ocaml = ["tree-sitter-ocaml"]
 # tree-sitter-commonlisp ships prebuilt abi3 wheels for every platform; optional
 # because Common Lisp is a niche corpus language.
 commonlisp = ["tree-sitter-commonlisp"]
-all = ["mcp>=1,<3", "starlette>=1.3.1,<2", "neo4j", "falkordb", "pypdf>=6.12.0", "markdownify", "watchdog", "graspologic; python_version < '3.13'", "python-docx", "openpyxl", "faster-whisper; python_version >= '3.11'", "yt-dlp>=2026.6.9", "matplotlib", "numpy>=2.0; python_version >= '3.13'", "openai", "tiktoken", "boto3", "anthropic", "tree-sitter-sql", "jieba", "tree-sitter-dm", "tree-sitter-hcl", "tree-sitter-pascal", "tree-sitter-ocaml", "tree-sitter-commonlisp"]
+# The official Robot Framework parser (robot.api) - pure Python, wheels for
+# every platform, no C toolchain; optional because Robot Framework corpora are
+# QA-automation specific.
+robot = ["robotframework>=4.0"]
+all = ["mcp>=1,<3", "starlette>=1.3.1,<2", "neo4j", "falkordb", "pypdf>=6.12.0", "markdownify", "watchdog", "graspologic; python_version < '3.13'", "python-docx", "openpyxl", "faster-whisper; python_version >= '3.11'", "yt-dlp>=2026.6.9", "matplotlib", "numpy>=2.0; python_version >= '3.13'", "openai", "tiktoken", "boto3", "anthropic", "tree-sitter-sql", "jieba", "tree-sitter-dm", "tree-sitter-hcl", "tree-sitter-pascal", "tree-sitter-ocaml", "tree-sitter-commonlisp", "robotframework>=4.0"]
 
 [project.scripts]
 graphify = "graphify.__main__:main"

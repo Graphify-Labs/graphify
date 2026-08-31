@@ -52,6 +52,7 @@ from graphify.extractors.ocaml import extract_ocaml  # noqa: F401
 from graphify.extractors.pascal_forms import extract_delphi_form, extract_lazarus_form  # noqa: F401
 from graphify.extractors.powershell import extract_powershell, extract_powershell_manifest  # noqa: F401
 from graphify.extractors.razor import extract_razor  # noqa: F401
+from graphify.extractors.robot import extract_robot  # noqa: F401
 from graphify.extractors.rust import extract_rust  # noqa: F401
 from graphify.extractors.sln import extract_sln  # noqa: F401
 from graphify.extractors.sql import extract_sql  # noqa: F401
@@ -411,6 +412,19 @@ def _import_js(node, source: bytes, file_nid: str, stem: str, edges: list, str_p
             if not has_from:
                 return
 
+    # `import type {...} from` / `export type {...} from` are erased by the
+    # TypeScript compiler: no runtime emit, no module-graph edge. The
+    # dependency is still real for "what references this type", so the edge is
+    # stamped `type_only` rather than dropped, and Import Cycles excludes it
+    # the way it already excludes deferred `import(...)` (#1241) - on the
+    # reporter's corpus all 3 reported cycles closed only through these
+    # (#3123). The grammar keeps `import type from './x'` (a default binding
+    # NAMED type) distinct: there `type` sits inside the import_clause, not as
+    # a bare keyword child of the statement. A mixed `import { type B, C }`
+    # stays a runtime edge - C is a runtime import.
+    is_type_only = any(
+        child.type == "type" and not child.is_named for child in node.children
+    )
     resolved_path: "Path | None" = None
     module_string = None
     for child in node.children:
@@ -453,6 +467,8 @@ def _import_js(node, source: bytes, file_nid: str, stem: str, edges: list, str_p
             # back onto the importer's own variant, a phantom self-loop (#1814).
             if resolved_path is not None:
                 edge["target_file"] = str(resolved_path)
+            if is_type_only:
+                edge["type_only"] = True
             edges.append(edge)
 
     # Emit symbol-level edges for named imports/re-exports from local/aliased files.
@@ -478,6 +494,7 @@ def _import_js(node, source: bytes, file_nid: str, stem: str, edges: list, str_p
                                 if sym == "default":
                                     continue  # skip default re-exports for ID matching
                                 edges.append({
+                                    **({"type_only": True} if is_type_only else {}),
                                     "source": file_nid,
                                     "target": _make_id(target_stem, sym),
                                     "relation": "re_exports",
@@ -978,7 +995,9 @@ _KOTLIN_CONFIG = LanguageConfig(
 
 _SCALA_CONFIG = LanguageConfig(
     ts_module="tree_sitter_scala",
-    class_types=frozenset({"class_definition", "object_definition"}),
+    # traits are class-like containers with their own heritage (extends / with),
+    # so they need a node and the heritage walk just like classes and objects.
+    class_types=frozenset({"class_definition", "object_definition", "trait_definition"}),
     function_types=frozenset({"function_definition"}),
     import_types=frozenset({"import_declaration"}),
     call_types=frozenset({"call_expression"}),
@@ -994,10 +1013,21 @@ _SCALA_CONFIG = LanguageConfig(
 _PHP_CONFIG = LanguageConfig(
     ts_module="tree_sitter_php",
     ts_language_fn="language_php",
-    class_types=frozenset({"class_declaration"}),
+    # interfaces/enums/traits are class-like containers whose heritage
+    # (extends/implements) and members must be captured, same as classes.
+    class_types=frozenset({
+        "class_declaration",
+        "interface_declaration",
+        "enum_declaration",
+        "trait_declaration",
+    }),
     function_types=frozenset({"function_definition", "method_declaration"}),
     import_types=frozenset({"namespace_use_clause"}),
-    call_types=frozenset({"function_call_expression", "member_call_expression", "scoped_call_expression", "class_constant_access_expression"}),
+    # object_creation_expression joins the dispatch set so `new Foo(...)` links
+    # the constructing method to Foo (engine has a dedicated PHP branch: the
+    # class sits in a bare name/qualified_name child, not a field) - the PHP
+    # twin of Java #1373 / C# #2997 (#3115).
+    call_types=frozenset({"function_call_expression", "member_call_expression", "scoped_call_expression", "class_constant_access_expression", "object_creation_expression"}),
     static_prop_types=frozenset({"scoped_property_access_expression"}),
     helper_fn_names=frozenset({"config"}),
     container_bind_methods=frozenset({"bind", "singleton", "scoped", "instance"}),
@@ -1006,7 +1036,9 @@ _PHP_CONFIG = LanguageConfig(
     call_accessor_node_types=frozenset({"member_call_expression"}),
     call_accessor_field="name",
     name_fallback_child_types=("name",),
-    body_fallback_child_types=("declaration_list", "compound_statement"),
+    # enums wrap their members in an enum_declaration_list rather than a
+    # declaration_list, so the body walk needs it to reach enum methods/cases.
+    body_fallback_child_types=("declaration_list", "compound_statement", "enum_declaration_list"),
     function_boundary_types=frozenset({"function_definition", "method_declaration"}),
     import_handler=_import_php,
 )
@@ -1258,6 +1290,48 @@ def _extract_python_rationale(path: Path, result: dict) -> None:
             _add_rationale(stripped, lineno, file_nid)
 
 
+# ── TypeScript import type normalization (#3154) ──────────────────────────────
+# tree-sitter-typescript misparses `import(...)` types used inside explicit call-
+# expression type arguments (e.g. `f<typeof import("mod")>()` or
+# `f<import("mod").Foo>()`) as binary comparison expressions (`<` and `>`).
+# The trailing `();` generates an ERROR node, leaving an open `binary_expression`
+# that absorbs subsequent declarations as anonymous `function_expression` or `class`
+# expressions, silently dropping them from extraction. Normalizing `import(...)`
+# within generic call type arguments `<...>(...)` to a valid type identifier of
+# identical byte length keeps AST parsing clean while preserving source offsets.
+
+_TS_IMPORT_CALL_RE = re.compile(
+    rb"\bimport\s*\(\s*['\"][^'\"\r\n]+['\"]\s*\)"
+)
+_TS_IMPORT_TYPE_CALL_RE = re.compile(
+    rb"<((?:[^;{}]*?\bimport\s*\([^()]+\)[^;{}]*?)+)>(?=\s*\()"
+)
+
+
+def _normalize_ts_import_types(source: bytes) -> bytes | None:
+    """Rewrite TypeScript `import(...)` type arguments in call expressions
+    to standard type identifiers of identical byte length (#3154).
+
+    Preserves byte length, newlines, and source offsets so all downstream node
+    source_location metadata remains 100% accurate.
+    """
+    if rb"import(" not in source and rb"import (" not in source:
+        return None
+
+    def repl_type_args(m: "re.Match[bytes]") -> bytes:
+        type_arg_content = m.group(1)
+
+        def repl_import(im: "re.Match[bytes]") -> bytes:
+            matched = im.group(0)
+            return b"T" + re.sub(rb"[^\r\n]", b" ", matched[1:])
+
+        new_content = _TS_IMPORT_CALL_RE.sub(repl_import, type_arg_content)
+        return b"<" + new_content + b">"
+
+    norm = _TS_IMPORT_TYPE_CALL_RE.sub(repl_type_args, source)
+    return norm if norm != source else None
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def extract_python(path: Path) -> dict:
@@ -1271,13 +1345,21 @@ def extract_python(path: Path) -> dict:
 def extract_js(path: Path) -> dict:
     """Extract classes, functions, arrow functions, and imports from a .js/.ts/.tsx/.mts/.cts file."""
     suffix = path.suffix.lower()
+    is_ts = suffix in (".ts", ".tsx", ".mts", ".cts")
     if suffix == ".tsx":
         config = _TSX_CONFIG
     elif suffix in (".ts", ".mts", ".cts"):
         config = _TS_CONFIG
     else:
         config = _JS_CONFIG
-    result = _extract_generic(path, config)
+    source_override = None
+    if is_ts:
+        try:
+            source = path.read_bytes()
+            source_override = _normalize_ts_import_types(source)
+        except OSError:
+            pass
+    result = _extract_generic(path, config, source_override=source_override)
     if "error" not in result:
         _extract_js_rationale(path, result)
         _rescue_js_dynamic_imports(path, result)
@@ -1742,8 +1824,11 @@ def extract_vue(path: Path) -> dict:
         config = _JS_CONFIG
     else:  # "ts" or unspecified — default to the TS grammar (superset of JS)
         config = _TS_CONFIG
+    masked_bytes = masked.encode("utf-8")
+    if config in (_TS_CONFIG, _TSX_CONFIG):
+        masked_bytes = _normalize_ts_import_types(masked_bytes) or masked_bytes
 
-    result = _extract_generic(path, config, source_override=masked.encode("utf-8"))
+    result = _extract_generic(path, config, source_override=masked_bytes)
 
     # Dynamic `import('…')` calls aren't edged by the AST pass; recover by regex,
     # mirroring extract_svelte/extract_astro.
@@ -2447,7 +2532,7 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
         return target_fam is not None and target_fam != edge_fam
     for edge in edges:
         is_csharp_scoped_edge = (
-            str(edge.get("source_file", "")).endswith(".cs")
+            str(edge.get("source_file", "")).endswith((".cs", ".razor", ".cshtml"))
             and edge.get("relation") in csharp_scoped_relations
         )
         source = edge.get("source")
@@ -2485,6 +2570,26 @@ def _augment_js_reexport_edges(
 
 
 # Header / implementation file-extension pairing for the decl/def class merge.
+
+
+def _remap_objc_field_tables(per_file: list, mapping: dict) -> None:
+    """Rewrite objc_field_types["tables"] KEYS through an id remap (#3150).
+
+    The #2591 field->type tables are the one extractor bucket keyed BY class
+    node id. The #1529 passes rewrote node ids, edge endpoints,
+    raw_calls[].caller_nid and swift_extensions[].nid but not these keys, so
+    whenever a common absolute prefix was stripped (always via
+    `graphify update <dir>`) the table keys went stale, every
+    field_types_by_class.get(cls) missed, and [self.<field> ...] sends
+    resolved to nothing - #2591 was inert through the CLI.
+    """
+    for result in per_file:
+        ft = result.get("objc_field_types") if isinstance(result, dict) else None
+        tables = ft.get("tables") if isinstance(ft, dict) else None
+        if not isinstance(tables, dict):
+            continue
+        if any(k in mapping for k in tables):
+            ft["tables"] = {mapping.get(k, k): v for k, v in tables.items()}
 
 
 def _merge_swift_extensions(
@@ -3546,6 +3651,57 @@ def _resolve_csharp_member_calls(
         })
 
 
+def _bind_member_field_tables(
+    per_file: list[dict],
+    all_nodes: list[dict],
+    *,
+    lang: str,
+) -> dict[str, dict[str, str]]:
+    """Bind the exported per-file field tables (#3151) to class node ids.
+
+    Entries are keyed by class label + source_file so they survive every id
+    remap; here they are matched back to the one class node carrying that
+    label (disambiguated by source_file basename when several share it).
+    An entry that stays ambiguous binds nothing - guessing would attach a
+    field table to the wrong class.
+    """
+    by_label: dict[str, list[dict]] = {}
+    for n in all_nodes:
+        if n.get("label") and n.get("source_file"):
+            by_label.setdefault(str(n["label"]), []).append(n)
+    bound: dict[str, dict[str, str]] = {}
+    for result in per_file:
+        for entry in (result.get("member_field_tables") or []):
+            if not isinstance(entry, dict) or entry.get("lang") != lang:
+                continue
+            label, fields = entry.get("class_label"), entry.get("fields")
+            if not label or not isinstance(fields, dict):
+                continue
+            candidates = by_label.get(str(label), [])
+            if len(candidates) > 1:
+                sf = str(entry.get("source_file") or "")
+                exact = [n for n in candidates if str(n.get("source_file")) == sf]
+                if len(exact) == 1:
+                    candidates = exact
+                else:
+                    # the node's source_file may have been relativized since
+                    # the entry was written; the basename still identifies it
+                    base = os.path.basename(sf)
+                    candidates = [
+                        n for n in candidates
+                        if os.path.basename(str(n.get("source_file"))) == base
+                    ]
+            if len(candidates) != 1:
+                continue
+            merged = bound.setdefault(candidates[0]["id"], {})
+            for fname, tname in fields.items():
+                if merged.get(fname) not in (None, tname):
+                    merged.pop(fname, None)  # cross-shard conflict: no guess
+                else:
+                    merged[fname] = tname
+    return bound
+
+
 def _resolve_java_member_calls(
     per_file: list[dict],
     all_nodes: list[dict],
@@ -3587,6 +3743,31 @@ def _resolve_java_member_calls(
         method_index.setdefault((owner, key(method_node.get("label", ""))), set()).add(method)
 
     existing_pairs = {(edge.get("source"), edge.get("target")) for edge in all_edges}
+    # Inherited fields (#3151): a field declared on a superclass - possibly in
+    # another file - types a `this.<field>` receiver in the subclass. Safe
+    # because `this.` names a field by construction; no local can shadow it.
+    # The per-file tables ride the results keyed by class label + source_file
+    # (never node id, see #3150); bind each to its class node, ambiguity skips.
+    inherits_bases: dict[str, list[str]] = {}
+    for edge in all_edges:
+        if edge.get("relation") == "inherits":
+            inherits_bases.setdefault(edge["source"], []).append(edge["target"])
+    class_fields = _bind_member_field_tables(per_file, all_nodes, lang="java")
+
+    def _inherited_field_type(class_nid, field: str):
+        seen: set = set()
+        queue = [class_nid]
+        while queue:
+            cls = queue.pop(0)
+            if not cls or cls in seen:
+                continue
+            seen.add(cls)
+            hit = class_fields.get(cls, {}).get(field)
+            if hit:
+                return hit
+            queue.extend(inherits_bases.get(cls, []))
+        return None
+
     for result in per_file:
         for raw_call in result.get("raw_calls", []):
             if raw_call.get("lang") != "java" or not raw_call.get("is_member_call"):
@@ -3608,6 +3789,10 @@ def _resolve_java_member_calls(
                 if not type_name and receiver[:1].isupper():
                     type_name = receiver
                     exact = True
+                if not type_name and receiver.startswith("this."):
+                    type_name = _inherited_field_type(
+                        enclosing_type.get(caller), receiver[len("this."):]
+                    )
                 if not type_name:
                     continue
                 type_defs = type_def_nids.get(key(type_name), [])
@@ -3737,6 +3922,27 @@ def _resolve_objc_member_calls(
         all_raw_calls.extend(result.get("raw_calls", []))
 
     existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
+    # A @property declared on a superclass types [self.<field> ...] in the
+    # subclass too (#3151): walk the inherits chain, nearest table first.
+    _objc_bases: dict[str, list[str]] = {}
+    for e in all_edges:
+        if e.get("relation") == "inherits":
+            _objc_bases.setdefault(e["source"], []).append(e["target"])
+
+    def _field_type_up_chain(cls, receiver):
+        seen: set = set()
+        queue = [cls]
+        while queue:
+            c = queue.pop(0)
+            if not c or c in seen:
+                continue
+            seen.add(c)
+            hit = field_types_by_class.get(c, {}).get(receiver)
+            if hit:
+                return hit
+            queue.extend(_objc_bases.get(c, []))
+        return None
+
     for rc in all_raw_calls:
         if not rc.get("is_member_call"):
             continue
@@ -3753,7 +3959,7 @@ def _resolve_objc_member_calls(
             # via the caller's own class's @property/ivar table. Checked before the
             # capitalized arm so a capitalized field never reads as a class name.
             cls = enclosing_type.get(caller)
-            type_name = field_types_by_class.get(cls, {}).get(receiver) if cls else None
+            type_name = _field_type_up_chain(cls, receiver) if cls else None
             if not type_name:
                 continue
             type_defs = type_def_nids.get(_key(type_name), [])
@@ -3778,7 +3984,7 @@ def _resolve_objc_member_calls(
             type_name = type_table_by_file.get(src_file, {}).get(receiver)
             if not type_name:
                 cls = enclosing_type.get(caller)
-                type_name = field_types_by_class.get(cls, {}).get(receiver) if cls else None
+                type_name = _field_type_up_chain(cls, receiver) if cls else None
             if not type_name:
                 continue
             type_defs = type_def_nids.get(_key(type_name), [])
@@ -5258,6 +5464,8 @@ _DISPATCH: dict[str, Any] = {
     ".xaml": extract_xaml,
     ".razor": extract_razor,
     ".cshtml": extract_razor,
+    ".robot": extract_robot,
+    ".resource": extract_robot,
     ".cls": extract_apex,
     ".trigger": extract_apex,
 }
@@ -5280,6 +5488,8 @@ _EXTRA_FOR_EXTENSION = {
     ".cl": "commonlisp",
     ".lsp": "commonlisp",
     ".asd": "commonlisp",
+    ".robot": "robot",
+    ".resource": "robot",
 }
 
 # Substrings an extractor's error carries to classify why a dependency-backed
@@ -6209,6 +6419,9 @@ def extract(
                 en = ext.get("nid")
                 if en in id_remap:
                     ext["nid"] = id_remap[en]
+        # objc_field_types["tables"] is keyed BY class node id - the one bucket
+        # the #1529 rewrites missed (#3150).
+        _remap_objc_field_tables(per_file, id_remap)
     if prefix_remap:
         sym_remap: dict[str, str] = {}
         edge_alias_candidates: dict[str, set[str]] = {}
@@ -6276,6 +6489,7 @@ def extract(
                     en = ext.get("nid")
                     if en in sym_remap:
                         ext["nid"] = sym_remap[en]
+            _remap_objc_field_tables(per_file, sym_remap)
         if edge_alias_candidates:
             def _edge_key(edge: dict) -> str:
                 # target_file is a transient stamp (#1814/#1983); exclude it
@@ -6476,9 +6690,10 @@ def extract(
     # Cross-file C# type-reference resolution: re-point dangling inherits/implements/
     # references edges left on shadow stubs, disambiguating same-named types by the
     # referencing file's `using` directives + enclosing namespace (mirrors Java #1318).
-    cs_paths = [p for p in paths if p.suffix == ".cs"]
+    _DOTNET_TYPE_EXTS = {".cs", ".razor", ".cshtml"}
+    cs_paths = [p for p in paths if p.suffix.lower() in _DOTNET_TYPE_EXTS]
     if cs_paths:
-        cs_results = [r for r, p in zip(per_file, paths) if p.suffix == ".cs"]
+        cs_results = [r for r, p in zip(per_file, paths) if p.suffix.lower() in _DOTNET_TYPE_EXTS]
         try:
             _resolve_csharp_type_references(cs_results, cs_paths, all_nodes, all_edges)
         except Exception as exc:

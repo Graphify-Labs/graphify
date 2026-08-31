@@ -1,4 +1,4 @@
-"""Tests for language extractors: Java, C, C++, Ruby, C#, Kotlin, Scala, PHP, Swift, Go, Julia, Fortran, JS/TS, .NET project files, XAML."""
+"""Tests for language extractors: Java, C, C++, Ruby, C#, Kotlin, Scala, PHP, Swift, Go, Julia, Fortran, JS/TS, .NET project files, XAML, Robot Framework."""
 from __future__ import annotations
 from pathlib import Path
 import pytest
@@ -9,7 +9,7 @@ from graphify.extract import (
     extract_groovy, extract_sln, extract_csproj, extract_xaml, extract_razor,
     extract_dm, extract_dmi, extract_dmm, extract_dmf,
     extract_powershell, extract_apex, extract_commonlisp, extract_verilog,
-    extract_powershell_manifest,
+    extract_powershell_manifest, extract_robot,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -25,6 +25,10 @@ _needs_dm = pytest.mark.skipif(
 _needs_commonlisp = pytest.mark.skipif(
     _ilu.find_spec("tree_sitter_commonlisp") is None,
     reason="tree-sitter-commonlisp not installed (optional [commonlisp] extra)",
+)
+_needs_robot = pytest.mark.skipif(
+    _ilu.find_spec("robot") is None,
+    reason="robotframework not installed (optional [robot] extra)",
 )
 
 
@@ -458,6 +462,35 @@ def test_csharp_splits_inherits_and_implements_edges():
     result = extract_csharp(FIXTURES / "sample.cs")
     assert ("DataProcessor", "Processor") in _edge_labels(result, "inherits")
     assert ("DataProcessor", "IProcessor") in _edge_labels(result, "implements")
+
+
+def test_csharp_interface_extends_is_inherits_not_implements(tmp_path):
+    # A C# `interface`'s base_list holds base interfaces, so extending another
+    # interface is interface *inheritance* -- mirroring how the Java extractor
+    # treats `extends_interfaces`. These edges used to be mislabeled `implements`,
+    # which is reserved for a class/struct/record realizing an interface.
+    source = tmp_path / "Interfaces.cs"
+    source.write_text(
+        "public interface IBase {}\n"
+        "public interface IOther {}\n"
+        "public interface IDerived : IBase {}\n"
+        "public interface IMulti : IBase, IOther {}\n"
+        "public class Impl : IBase {}\n"
+    )
+    result = extract_csharp(source)
+    inherits = _edge_labels(result, "inherits")
+    implements = _edge_labels(result, "implements")
+
+    # interface-extends-interface is inheritance, not implementation
+    assert ("IDerived", "IBase") in inherits
+    assert ("IMulti", "IBase") in inherits
+    assert ("IMulti", "IOther") in inherits
+    assert ("IDerived", "IBase") not in implements
+    assert ("IMulti", "IBase") not in implements
+
+    # a class realizing an interface is still `implements`
+    assert ("Impl", "IBase") in implements
+    assert ("Impl", "IBase") not in inherits
 
 
 def test_csharp_parameter_return_and_generic_contexts():
@@ -992,6 +1025,22 @@ def test_kotlin_interface_delegation_emits_implements():
     assert ("LoggingList", "MutableList") in _edge_labels(r, "implements")
 
 
+def test_kotlin_qualified_supertype_uses_tail_name(tmp_path):
+    """A qualified supertype like `com.example.Base` must resolve to the tail
+    type name (`Base`), not the package root (`com`). The Kotlin user_type lists
+    its segments as flat identifier children, and the walker returned the first
+    one, so every qualified base/interface collapsed onto a bogus `com` node.
+    """
+    f = tmp_path / "foo.kt"
+    f.write_text("class Foo : com.example.Base(), com.example.Iface\n")
+    r = extract_kotlin(f)
+    assert ("Foo", "Base") in _edge_labels(r, "inherits")
+    assert ("Foo", "Iface") in _edge_labels(r, "implements")
+    # the package root must not leak in as a heritage target
+    assert ("Foo", "com") not in _edge_labels(r, "inherits")
+    assert ("Foo", "com") not in _edge_labels(r, "implements")
+
+
 def test_kotlin_parameter_return_generic_and_field_contexts():
     r = extract_kotlin(FIXTURES / "sample.kt")
     assert ("run", "DataProcessor") in _edge_labels(r, "references", "parameter_type")
@@ -1053,6 +1102,46 @@ def test_scala_splits_inherits_and_mixes_in():
     r = extract_scala(FIXTURES / "sample.scala")
     assert ("HttpClient", "BaseClient") in _edge_labels(r, "inherits")
     assert ("HttpClient", "Loggable") in _edge_labels(r, "mixes_in")
+
+
+def test_scala_trait_definition_heritage(tmp_path):
+    """A `trait` is a class-like container and must get a node plus heritage
+    edges. `trait_definition` was missing from the Scala class_types, so traits
+    produced no node and their `extends`/`with` edges were dropped.
+    """
+    f = tmp_path / "greeter.scala"
+    f.write_text("trait Greeter extends Base with Logging { def greet(): Unit }\n")
+    r = extract_scala(f)
+    assert any("Greeter" in l for l in _labels(r))
+    assert ("Greeter", "Base") in _edge_labels(r, "inherits")
+    assert ("Greeter", "Logging") in _edge_labels(r, "mixes_in")
+def test_scala_qualified_extends_uses_tail_name(tmp_path):
+    """A qualified base like `pkg.Base` is a `stable_type_identifier` node in the
+    extends_clause. The handler only matched `type_identifier`/`generic_type`, so
+    qualified extends/with clauses were dropped. Resolve them to the tail type
+    name (`Base`, `Trait1`), not the package path.
+    """
+    f = tmp_path / "foo.scala"
+    f.write_text(
+        "class Foo extends pkg.Base with other.Trait1\n"
+        "class Generic extends pkg.Base[Int] with other.Trait1[String]\n"
+        "class Constructed extends outer.pkg.Base[Int](42) "
+        "with a.b.Trait1[String]\n"
+    )
+    r = extract_scala(f)
+    inherits = _edge_labels(r, "inherits")
+    mixes_in = _edge_labels(r, "mixes_in")
+    assert ("Foo", "Base") in inherits
+    assert ("Foo", "Trait1") in mixes_in
+    assert ("Generic", "Base") in inherits
+    assert ("Generic", "Trait1") in mixes_in
+    assert ("Constructed", "Base") in inherits
+    assert ("Constructed", "Trait1") in mixes_in
+    # Package qualifiers and generic arguments are not parent type names.
+    assert ("Generic", "pkg.Base") not in inherits
+    assert ("Generic", "other.Trait1") not in mixes_in
+    assert ("Constructed", "Int") not in inherits
+    assert ("Constructed", "String") not in mixes_in
 
 
 def test_scala_constructor_parameter_field_context():
@@ -1178,6 +1267,37 @@ def test_php_splits_inherits_implements_mixes_in():
     assert ("DataProcessor", "BaseProcessor") in _edge_labels(r, "inherits")
     assert ("DataProcessor", "Loggable") in _edge_labels(r, "implements")
     assert ("DataProcessor", "HasName") in _edge_labels(r, "mixes_in")
+
+
+def test_php_interface_enum_trait_heritage(tmp_path):
+    """Interfaces, enums, and traits must be captured as class-like nodes so
+    their heritage edges are emitted. Previously only `class_declaration` was a
+    class type, so interface/enum/trait declarations produced no node and their
+    extends/implements/use edges were dropped entirely. Enum members live under
+    an `enum_declaration_list` (not a `declaration_list`), so the body walk must
+    reach them too.
+    """
+    src = (
+        "<?php\n"
+        "interface Identifiable {}\n"
+        "interface Nameable extends Identifiable {}\n"
+        "enum Suit: string implements Nameable {\n"
+        "    case Hearts = 'H';\n"
+        "    public function label(): string { return 'x'; }\n"
+        "}\n"
+        "trait Named {}\n"
+        "trait Greets { use Named; }\n"
+    )
+    f = tmp_path / "heritage.php"
+    f.write_text(src)
+    r = extract_php(f)
+    labels = _labels(r)
+    assert "Nameable" in labels and "Suit" in labels and "Greets" in labels
+    assert ("Nameable", "Identifiable") in _edge_labels(r, "inherits")
+    assert ("Suit", "Nameable") in _edge_labels(r, "implements")
+    assert ("Greets", "Named") in _edge_labels(r, "mixes_in")
+    # enum body (enum_declaration_list) must be walked to reach enum methods
+    assert ("Suit", "label") in _edge_labels(r, "method")
 
 
 def test_php_property_parameter_and_return_contexts():
@@ -1438,6 +1558,47 @@ def test_elixir_method_edges():
     r = extract_elixir(FIXTURES / "sample.ex")
     methods = [e for e in r["edges"] if e["relation"] == "method"]
     assert len(methods) >= 3
+
+
+def test_elixir_guarded_single_clause_is_extracted(tmp_path):
+    """A function whose only clause has a `when` guard must still get a node.
+
+    tree-sitter-elixir wraps `def f(x) when guard` in a `binary_operator`,
+    so the head is not a direct `call` child of `arguments`. Multi-clause
+    functions survive via an unguarded clause; a single guarded clause
+    was dropped entirely (#3111).
+    """
+    src = tmp_path / "demo.ex"
+    src.write_text(
+        "defmodule Demo do\n"
+        "  def plain(x) do\n"
+        "    x + 1\n"
+        "  end\n"
+        "\n"
+        "  def guarded(x) when is_integer(x) do\n"
+        "    x + 1\n"
+        "  end\n"
+        "\n"
+        "  def mixed(x) when is_integer(x) do\n"
+        "    x + 1\n"
+        "  end\n"
+        "\n"
+        "  def mixed(_), do: :error\n"
+        "\n"
+        "  defp guarded_private(x) when is_binary(x) do\n"
+        "    String.upcase(x)\n"
+        "  end\n"
+        "end\n"
+    )
+    r = extract_elixir(src)
+    assert "error" not in r
+    labels = {(n.get("label") or "").rstrip("()") for n in r["nodes"]}
+    assert "plain" in labels
+    assert "mixed" in labels
+    assert "guarded" in labels, f"single-clause guarded def dropped: {sorted(labels)}"
+    assert "guarded_private" in labels, (
+        f"single-clause guarded defp dropped: {sorted(labels)}"
+    )
 
 
 # ── Objective-C ──────────────────────────────────────────────────────────────
@@ -1834,6 +1995,47 @@ def test_go_receiver_uses_pkg_scope():
     assert server_nodes
     # Should NOT contain the file stem "sample" in the type node id
     assert "sample" not in server_nodes[0]["id"].split(":")[0]
+
+
+def test_go_interface_embedding_emits_embeds():
+    """`type ReaderLogger interface { Logger; Reader }` embeds both interfaces."""
+    r = extract_go(FIXTURES / "sample.go")
+    embeds = _edge_labels(r, "embeds")
+    assert ("ReaderLogger", "Logger") in embeds
+    assert ("ReaderLogger", "Reader") in embeds
+
+
+def test_go_struct_embedding_emits_embeds():
+    """`type DataProcessor struct { BaseProcessor }` embeds the base struct."""
+    r = extract_go(FIXTURES / "sample.go")
+    assert ("DataProcessor", "BaseProcessor") in _edge_labels(r, "embeds")
+
+
+def test_go_interface_type_union_is_not_embedding(tmp_path):
+    """A generics type-set constraint (`A | B`) is NOT interface embedding.
+
+    Go only allows *interfaces* to be embedded, and each embed is its own
+    element. A union of type terms (`MyInt | MyFloat`) is a constraint type
+    set that can never be embedded, so its terms must not emit `embeds`
+    heritage edges. They are reclassified as `references` (type_constraint)
+    so the type link is preserved without asserting false composition.
+    """
+    source = tmp_path / "constraint.go"
+    source.write_text(
+        "package p\n"
+        "type MyInt int\n"
+        "type MyFloat float64\n"
+        "type Number interface {\n"
+        "\tMyInt | MyFloat\n"
+        "}\n"
+    )
+    r = extract_go(source)
+    embeds = _edge_labels(r, "embeds")
+    assert ("Number", "MyInt") not in embeds
+    assert ("Number", "MyFloat") not in embeds
+    refs = _edge_labels(r, "references", "type_constraint")
+    assert ("Number", "MyInt") in refs
+    assert ("Number", "MyFloat") in refs
 
 
 # ---------------------------------------------------------------------------
@@ -3974,3 +4176,254 @@ def test_zig_enum_and_union_methods_are_extracted(tmp_path):
         for e in r["edges"] if e["relation"] == "calls"
     }
     assert (".area()", "helper()") in calls, "call from union method body dropped"
+
+
+@_needs_commonlisp
+def test_cl_ids_are_path_qualified_across_directories(tmp_path):
+    """Two same-named .lisp files in DIFFERENT directories must mint distinct
+    ids (#1504). The prefix was derived from the bare `path.stem`, so both
+    `a/sample.lisp` and `b/sample.lisp` minted `sample` / `sample_init`; when
+    they land in separate extract batches (what `graphify update` does) build()
+    merges them and one file's nodes are dropped."""
+    a = tmp_path / "a" / "sample.lisp"
+    b = tmp_path / "b" / "sample.lisp"
+    for p in (a, b):
+        p.parent.mkdir(parents=True)
+        p.write_text("(defun init (x) (+ x 1))\n")
+
+    ids_a = {n["id"] for n in extract_commonlisp(a)["nodes"]}
+    ids_b = {n["id"] for n in extract_commonlisp(b)["nodes"]}
+
+    assert not (ids_a & ids_b), (
+        f"same-named .lisp files in different dirs must not share ids, "
+        f"got overlap {sorted(ids_a & ids_b)}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Robot Framework (.robot / .resource) - official robot.api parser (#3192)
+# ---------------------------------------------------------------------------
+
+@_needs_robot
+def test_robot_suite_tests_and_keywords_become_nodes():
+    r = extract_robot(FIXTURES / "sample.robot")
+    assert r.get("error") is None
+    labels = set(_labels(r))
+    assert "sample.robot" in labels  # file node
+    for expected in ("Login Works", "Retry Loop Case", "Data Driven Case",
+                     "Prepare Environment"):
+        assert expected in labels, f"missing node {expected!r}"
+    assert "contains" in _relations(r)
+
+
+@_needs_robot
+def test_robot_keyword_call_edges_incl_fixtures_and_loops():
+    from graphify.extractors.robot import _kw_id
+    r = extract_robot(FIXTURES / "sample.robot")
+    call_targets = {e["target"] for e in r["edges"] if e["relation"] == "calls"}
+    # body call, [Setup]/[Teardown], [Template], suite fixtures - all keyed by
+    # bare keyword name so they land on the defining resource's node
+    for kw in ("Login As Admin", "Open Session", "Close All Sessions",
+               "Login As User", "Prepare Environment"):
+        assert _kw_id(kw) in call_targets, f"missing call target {kw!r}"
+    # a call nested inside a FOR block is still extracted
+    retry_nid = next(n["id"] for n in r["nodes"] if n["label"] == "Retry Loop Case")
+    assert any(e["source"] == retry_nid and e["target"] == _kw_id("Open Session")
+               for e in r["edges"] if e["relation"] == "calls")
+    # BuiltIn keyword calls emit edges too (dropped later as external refs)
+    assert _kw_id("Should Be Equal") in call_targets
+
+
+@_needs_robot
+def test_robot_imports_resource_library_and_stdlib_filter():
+    from graphify.extract import _make_id
+    r = extract_robot(FIXTURES / "sample.robot")
+    labels = set(_labels(r))
+    import_targets = {e["target"] for e in r["edges"] if e["relation"] == "imports"}
+    # Resource and path-form Library imports (plain relative and ${CURDIR})
+    # resolve onto the imported file's own node id
+    assert _make_id(str(FIXTURES / "robot_keywords.resource")) in import_targets
+    assert _make_id(str(FIXTURES / "sample.py")) in import_targets
+    # third-party named library gets a stub node; an RF stdlib does not
+    assert "SeleniumLibrary" in labels
+    assert "Collections" not in labels
+    # an import with an unresolvable ${VARIABLE} path emits no edge at all
+    assert not any("vars_py" in t for t in import_targets)
+
+
+@_needs_robot
+def test_robot_resource_keywords_and_cross_file_ids():
+    res = extract_robot(FIXTURES / "robot_keywords.resource")
+    assert res.get("error") is None
+    labels = set(_labels(res))
+    for kw in ("Open Session", "Close All Sessions", "Login As Admin",
+               "Login As User"):
+        assert kw in labels, f"missing keyword node {kw!r}"
+    # resource-internal call
+    assert ("Login As Admin", "Open Session") in _calls(res)
+    # cross-file guarantee: the suite's call-edge target id equals the
+    # resource's definition node id, so the merged graph connects them
+    suite = extract_robot(FIXTURES / "sample.robot")
+    suite_call_targets = {e["target"] for e in suite["edges"]
+                          if e["relation"] == "calls"}
+    open_session_id = next(n["id"] for n in res["nodes"]
+                           if n["label"] == "Open Session")
+    assert open_session_id in suite_call_targets
+
+
+@_needs_robot
+def test_robot_suite_level_test_template(tmp_path):
+    from graphify.extractors.robot import _kw_id
+    suite = tmp_path / "templated.robot"
+    suite.write_text(
+        "*** Settings ***\n"
+        "Test Template     Login As User\n"
+        "\n"
+        "*** Test Cases ***\n"
+        "All Users\n"
+        "    alice\n"
+        "    bob\n",
+        encoding="utf-8",
+    )
+    r = extract_robot(suite)
+    assert r.get("error") is None
+    file_nid = next(n["id"] for n in r["nodes"] if n["label"] == "templated.robot")
+    assert any(e["source"] == file_nid and e["target"] == _kw_id("Login As User")
+               for e in r["edges"] if e["relation"] == "calls")
+
+
+def test_robot_curdir_and_execdir_imports_resolve_without_double_prefix():
+    # ${CURDIR}/${EXECDIR} already anchor the path; re-joining the source dir
+    # would double it for relative scan paths (bot finding on PR #3211).
+    # Pure path logic - needs no robotframework install.
+    from pathlib import Path as P
+    from graphify.extractors.robot import _resolve_robot_import
+
+    rel_src = P("Tests/Sub/suite.robot")
+    resolved = _resolve_robot_import("${CURDIR}/../Library/lib.py", rel_src)
+    assert resolved == P("Tests/Library/lib.py"), resolved
+
+    # absolute sources must come back normalized too (no leftover '..')
+    abs_src = P(r"C:\repo\Tests\Sub\suite.robot") if P("C:/").exists() else P("/repo/Tests/Sub/suite.robot")
+    resolved_abs = _resolve_robot_import("${CURDIR}/../Library/lib.py", abs_src)
+    assert ".." not in resolved_abs.parts, resolved_abs
+
+    # ${EXECDIR} anchors to the execution root, not the suite dir - resolvable
+    # only for a relative scan where '.' aligns with the scan root
+    assert _resolve_robot_import("${EXECDIR}/Resource/common.robot", rel_src) == P("Resource/common.robot")
+    # for an absolute source the execution root is unknowable: no edge beats a
+    # guaranteed-dangling relative id in an absolute-id scan
+    assert _resolve_robot_import("${EXECDIR}/Resource/common.robot", abs_src) is None
+
+    # plain relative imports still join against the suite dir
+    assert _resolve_robot_import("../Resource/common.robot", rel_src) == P("Tests/Resource/common.robot")
+
+    # unresolvable variables still yield None
+    assert _resolve_robot_import("${ROOT}/x.robot", rel_src) is None
+
+
+@_needs_robot
+def test_robot_keyword_matching_is_case_space_underscore_insensitive(tmp_path):
+    # Robot resolves 'Open Session', 'open_session', and 'OpenSession' to the
+    # same keyword; all call styles must land on the definition's node id.
+    suite = tmp_path / "styles.robot"
+    suite.write_text(
+        "*** Test Cases ***\n"
+        "Mixed Style Calls\n"
+        "    OpenSession\n"
+        "    open_session\n"
+        "    OPEN SESSION\n"
+        "\n"
+        "*** Keywords ***\n"
+        "Open Session\n"
+        "    Log    opening\n",
+        encoding="utf-8",
+    )
+    r = extract_robot(suite)
+    assert r.get("error") is None
+    def_id = next(n["id"] for n in r["nodes"] if n["label"] == "Open Session")
+    tc_id = next(n["id"] for n in r["nodes"] if n["label"] == "Mixed Style Calls")
+    styled_calls = [e for e in r["edges"]
+                    if e["relation"] == "calls" and e["source"] == tc_id]
+    assert styled_calls, "no call edges extracted"
+    assert all(e["target"] == def_id for e in styled_calls), styled_calls
+
+
+def test_robot_extractor_degrades_gracefully_without_robotframework():
+    # The robot.api import is lazy inside extract_robot(): importing
+    # graphify.extract must work and the extractor must return the
+    # install-hint error dict when robotframework is absent (answers the
+    # 'optional robot extra is imported unconditionally' review finding).
+    import subprocess
+    import sys
+    from pathlib import Path as P
+    script = (
+        "import sys\n"
+        "class BlockRobot:\n"
+        "    def find_spec(self, name, path=None, target=None):\n"
+        "        if name == 'robot' or name.startswith('robot.'):\n"
+        "            raise ImportError('robotframework blocked for test')\n"
+        "        return None\n"
+        "sys.meta_path.insert(0, BlockRobot())\n"
+        "from pathlib import Path\n"
+        "from graphify.extract import extract_robot\n"
+        "r = extract_robot(Path('x.robot'))\n"
+        "assert r['nodes'] == [] and r['edges'] == [], r\n"
+        "assert 'not installed' in r.get('error', ''), r\n"
+        "print('ok')\n"
+    )
+    repo_root = P(__file__).resolve().parent.parent
+    out = subprocess.run([sys.executable, "-c", script], capture_output=True,
+                         text=True, cwd=str(repo_root))
+    assert out.returncode == 0 and "ok" in out.stdout, (out.stdout, out.stderr)
+
+
+@_needs_robot
+def test_robot_bdd_style_calls_reach_their_definitions(tmp_path):
+    # Robot resolves 'Given Open Session' by trying the full name, then the
+    # name with one BDD prefix stripped; the extractor emits both candidate
+    # edges so whichever definition exists receives the call.
+    suite = tmp_path / "bdd.robot"
+    suite.write_text(
+        "*** Test Cases ***\n"
+        "Login Flow\n"
+        "    Given Open Session\n"
+        "    When user logs in\n"
+        "    Then Given Special\n"
+        "\n"
+        "*** Keywords ***\n"
+        "Open Session\n"
+        "    Log    x\n"
+        "User Logs In\n"
+        "    Log    y\n"
+        "Given Special\n"
+        "    Log    z\n",
+        encoding="utf-8",
+    )
+    r = extract_robot(suite)
+    assert r.get("error") is None
+    def_ids = {n["label"]: n["id"] for n in r["nodes"]}
+    call_targets = {e["target"] for e in r["edges"] if e["relation"] == "calls"}
+    # prefix-stripped candidates land on the definitions
+    assert def_ids["Open Session"] in call_targets
+    assert def_ids["User Logs In"] in call_targets
+    # a keyword literally named with a BDD prefix is reached via the
+    # full-name candidate ('Then Given Special' -> strip one prefix only)
+    assert def_ids["Given Special"] in call_targets
+
+
+def test_robot_path_variables_match_case_space_underscore_insensitively():
+    # Robot matches variable names case-, space-, and underscore-insensitively:
+    # ${curdir} / ${Cur_Dir} / ${EXEC DIR} all resolve like their canonical forms.
+    from pathlib import Path as P
+    from graphify.extractors.robot import _resolve_robot_import
+
+    rel_src = P("Tests/Sub/suite.robot")
+    expected = P("Tests/Library/lib.py")
+    for var in ("${curdir}", "${Cur_Dir}", "${CUR DIR}"):
+        assert _resolve_robot_import(f"{var}/../Library/lib.py", rel_src) == expected, var
+    assert _resolve_robot_import("${execdir}/Resource/common.robot", rel_src) == P("Resource/common.robot")
+    # ${/} separator variant still works alongside the variable matching
+    assert _resolve_robot_import("..${/}Resource${/}common.robot", rel_src) == P("Tests/Resource/common.robot")
+    # any other variable, in any casing, still yields no edge
+    assert _resolve_robot_import("${Root_Dir}/x.robot", rel_src) is None
