@@ -5471,6 +5471,20 @@ _DISPATCH: dict[str, Any] = {
 }
 
 
+def structural_extensions() -> frozenset[str]:
+    """Extensions with a registered structural (AST) extractor - i.e. what
+    extract() can walk deterministically, with no LLM.
+
+    Callers that need to decide "does this file qualify for structural
+    extraction" (the skill's Part A, `graphify update`, etc.) should call this
+    instead of hand-maintaining a second extension list: a duplicate list is
+    exactly the drift hazard `graphify.ids` was written to close for node-ID
+    recipes (#811, #550, #1033, #1104) - a new extractor's extension would
+    silently stay LLM-only here until someone remembered to update the copy.
+    """
+    return frozenset(_DISPATCH)
+
+
 # Extensions whose extractor depends on an optional-dependency extra
 # (pyproject [project.optional-dependencies]) and hard-fails without it,
 # rather than falling back like Pascal does. Used by the #1745 warning in

@@ -82,6 +82,51 @@ def test_update_without_root_still_preserves_hyperedges(tmp_path):
     assert "he_b" not in ids
 
 
+def test_stub_node_source_file_pointing_at_unextracted_file_prunes_it(tmp_path):
+    """Documents a real hazard, not a bug to fix here: replace-on-re-extract keys
+    off ANY node's source_file, with no concept of "this file was actually read
+    this run" versus "this node merely cites that file." A semantic subagent
+    that mislabels a whole-file reference/stub node's source_file as the file it
+    CITES (rather than the file it was extracting FROM) makes build_merge treat
+    the cited file as re-extracted and prune its real content - silently, on an
+    incremental update, for a file nobody actually re-read.
+
+    This is exactly the failure this repo's extraction-spec.md now warns
+    against by name (the "Whole-file nodes" section's incremental-update
+    caveat) after it destroyed 293/460 nodes of a real docs corpus: updating
+    two changed files whose extraction created citation stub nodes for
+    ARCHITECTURE.md/DATABASE.md/etc. with THOSE files' own paths as
+    source_file, rather than the changed files' own paths, pruned every
+    untouched file mentioned. The fix lives in the prompt (never emit a node
+    whose source_file isn't your own FILE_LIST entry); this test exists so a
+    future change to build_merge's replace semantics doesn't accidentally
+    make the hazard worse without anyone noticing, and so the mechanism is
+    verifiable in code rather than only in prose.
+    """
+    root, graph_path = _seed_two_file_graph(tmp_path)
+    # b.md is "re-extracted" this run, but its extraction wrongly stamps a stub
+    # node standing in for a.md with a.md's OWN path as source_file (the bug),
+    # instead of b.md's path (the correct rule).
+    new_chunk = {
+        "nodes": [
+            {"id": "b1", "label": "b1", "file_type": "document", "source_file": "b.md"},
+            {"id": "a1", "label": "A (cited)", "file_type": "document", "source_file": "a.md"},
+        ],
+        "edges": [{"source": "b1", "target": "a1", "relation": "references",
+                    "confidence": "EXTRACTED", "source_file": "b.md"}],
+        "hyperedges": [],
+    }
+    G = build_merge([new_chunk], graph_path, dedup=False, root=root)
+    # a.md was never actually re-extracted, but its real node was pruned anyway -
+    # replaced by the stub's thin re-statement. This is the data loss the spec
+    # rule prevents by keeping stub nodes' source_file on the citing file.
+    assert G.nodes["a1"]["label"] == "A (cited)"  # NOT the original a.md content
+    # a.md's own hyperedge (he_a) is gone too, wrongly treated as re-extracted;
+    # only the source_file-less global hyperedge (never subject to replacement)
+    # and b.md's (legitimately re-extracted, if it had a hyperedge) could survive.
+    assert _he_ids(G) == {"he_global"}
+
+
 def test_deleted_file_hyperedges_are_pruned(tmp_path):
     root, graph_path = _seed_two_file_graph(tmp_path)
     deleted_abs = [str(root / "a.md")]

@@ -197,22 +197,31 @@ _HOOKS_TARGET = {
     "agents-md": "AGENTS.md",
 }
 
-# Allowlist for the per-host coverage audit (waves 2-3 consolidations).
+# Allowlist for the per-host coverage audit (waves 2-3 consolidations, and later
+# shared-core heading renames).
 #
 # The lean core is one shared template across every split host, so a few v8
 # headings deliberately do NOT survive verbatim in a given host's render. These
 # are intentional consolidations, not content drops, and the audit must not flag
-# them. Two classes:
+# them. Three classes:
 #
-# 1. SHARED_INTRO_ALLOWLIST — the lean intro consolidation. "## What graphify is
-#    for" is the lean intro the core carries; the minimal v8 bodies (kilo, vscode)
-#    had verbose intro prose with no such heading, while the richer v8 bodies
-#    already had it. Listing it documents the wave-2/3 intro consolidation; it
-#    single-homes in every render, so it is never itself a coverage hole. The enum
-#    unification (Decision A) is prose, not a heading, and is guarded separately by
-#    schema-singleton.
+# 1. Intro consolidation — "## What graphify is for" is the lean intro the core
+#    carries; the minimal v8 bodies (kilo, vscode) had verbose intro prose with no
+#    such heading, while the richer v8 bodies already had it. Listing it documents
+#    the wave-2/3 intro consolidation; it single-homes in every render, so it is
+#    never itself a coverage hole. The enum unification (Decision A) is prose, not
+#    a heading, and is guarded separately by schema-singleton.
 #
-# 2. _CONSOLIDATION_ALLOWLIST[host] — per-host v8 headings the shared lean core
+# 2. Shared-core heading renames — a heading in the shared core is later reworded
+#    (not removed; the section and its content stay, just under a new name) for
+#    every split host at once. E.g. "Part A - Structural extraction for code
+#    files" -> "...for code and structurally-supported docs" when Part A grew to
+#    also cover doc files with a registered structural extractor.
+#
+# SHARED_CORE_ALLOWLIST holds both classes 1 and 2 (they apply uniformly across
+# every split host). _CONSOLIDATION_ALLOWLIST[host] below is class 3.
+#
+# 3. _CONSOLIDATION_ALLOWLIST[host] — per-host v8 headings the shared lean core
 #    re-homes under a reworded or re-leveled heading while preserving (or
 #    enriching) the content. The two minimal v8 bodies, kilo (414 L) and vscode
 #    (258 L), are the only hosts affected: the shared core is a richer superset
@@ -223,9 +232,11 @@ _HOOKS_TARGET = {
 #    trae's native AGENTS.md integration) still fails loudly.
 #
 # Adding a heading here is a deliberate, reviewed act: it asserts "this v8
-# heading was consolidated on purpose and its content is covered elsewhere."
-SHARED_INTRO_ALLOWLIST: frozenset[str] = frozenset({
+# heading was consolidated/renamed on purpose and its content is covered
+# elsewhere under the new heading."
+SHARED_CORE_ALLOWLIST: frozenset[str] = frozenset({
     "## What graphify is for",  # lean intro; v8 hosts had verbose intro prose, no heading.
+    "#### Part A - Structural extraction for code files",  # renamed; Part A now also covers docs.
 })
 
 _CONSOLIDATION_ALLOWLIST: dict[str, frozenset[str]] = {
@@ -258,7 +269,7 @@ _CONSOLIDATION_ALLOWLIST: dict[str, frozenset[str]] = {
 
 def _audit_allowlist(platform_key: str) -> frozenset[str]:
     """The full set of v8 headings the audit may skip for this host."""
-    return SHARED_INTRO_ALLOWLIST | _CONSOLIDATION_ALLOWLIST.get(platform_key, frozenset())
+    return SHARED_CORE_ALLOWLIST | _CONSOLIDATION_ALLOWLIST.get(platform_key, frozenset())
 
 
 @dataclass(frozen=True)
@@ -1142,6 +1153,57 @@ def _is_community_label_export_fix_line(line: str) -> bool:
     )
 
 
+def _is_structural_docs_fix_line(line: str) -> bool:
+    """Whether a line belongs to the Part A doc-structural-extraction change.
+
+    Part A used to structurally extract (AST, no LLM) only code files. It now
+    also covers document/paper files whose extension has a registered
+    structural extractor (currently Markdown), so every Part B subagent gets a
+    pre-existing, deterministic ID for "the node representing this file" to
+    reference instead of inventing its own convention. Skipping this is how a
+    real corpus produced two disconnected nodes, `docs_architecture` and
+    `docs_architecture_document`, for one file. Both the old code-only body
+    (removed) and the new code-plus-docs body (added) are listed here, along
+    with the renamed heading (also allowlisted in SHARED_CORE_ALLOWLIST for the
+    split-host coverage audit).
+    """
+    stripped = line.strip()
+    return stripped in {
+        "#### Part A - Structural extraction for code and structurally-supported docs",
+        "#### Part A - Structural extraction for code files",
+        "Run AST extraction in parallel with Part B subagents, over every code file plus any",
+        "document/paper file whose extension has a registered structural extractor",
+        "(currently `.md`/`.mdx`/`.qmd`/`.skill`, via a deterministic Markdown parser that",
+        "mints one whole-file node and one node per heading, no LLM involved). Doc files",
+        "without a registered extractor (`.txt`, `.rst`, `.html`, `.pdf`, ...) are unaffected",
+        "and still go through Part B only. This also gives every Part B subagent a",
+        'pre-existing, deterministic ID for "the node representing this file" to reference,',
+        "instead of each subagent inventing its own convention and splitting one file into",
+        "two disconnected nodes.",
+        "For any code files detected, run AST extraction in parallel with Part B subagents:",
+        "from graphify.extract import collect_files, extract, structural_extensions",
+        "from graphify.extract import collect_files, extract",
+        "exts = structural_extensions()",
+        "structural_files = []",
+        "code_files = []",
+        "structural_files.extend(collect_files(Path(f)) if Path(f).is_dir() else [Path(f)])",
+        "code_files.extend(collect_files(Path(f)) if Path(f).is_dir() else [Path(f)])",
+        "for cat in ('document', 'paper'):",
+        "for f in detect.get('files', {}).get(cat, []):",
+        "p = Path(f)",
+        "if p.is_dir():",
+        "structural_files.extend(x for x in collect_files(p) if x.suffix in exts)",
+        "elif p.suffix in exts:",
+        "structural_files.append(p)",
+        "if structural_files:",
+        "if code_files:",
+        "result = extract(structural_files)",
+        "result = extract(code_files)",
+        "print('No structurally-supported files - skipping AST extraction')",
+        "print('No code files - skipping AST extraction')",
+    }
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -1163,6 +1225,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_uv_from_interpreter_fix_line,
     _is_semantic_cache_scope_fix_line,
     _is_community_label_export_fix_line,
+    _is_structural_docs_fix_line,
 )
 
 
