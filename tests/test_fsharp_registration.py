@@ -216,3 +216,21 @@ def test_fsharp_with_block_comment_header_still_dispatched(tmp_path):
     p.write_text("(* Copyright 2026\n   licensed as... *)\nmodule M\nlet f x = x\n",
                  encoding="utf-8")
     assert _get_extractor(p) is not None
+
+
+def test_fsharp_calling_identifier_named_uniform_is_dispatched(tmp_path):
+    # `uniform` is a valid F# identifier; a call on a continuation line must
+    # not reject the file (bot round-9 find, probe-confirmed).
+    from graphify.extract import _get_extractor
+    p = tmp_path / "stats2.fs"
+    p.write_text("module Stats\nlet sample () =\n    uniform 0.0 1.0\n",
+                 encoding="utf-8")
+    assert _get_extractor(p) is not None
+
+
+def test_uniform_only_headerless_shader_still_rejected(tmp_path):
+    from graphify.extract import _get_extractor
+    p = tmp_path / "u.fs"
+    p.write_text("// u\nuniform vec4 color;\nvoid main() { gl_FragColor = color; }\n",
+                 encoding="utf-8")
+    assert _get_extractor(p) is None

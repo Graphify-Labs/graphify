@@ -5630,15 +5630,22 @@ def _looks_like_fsharp_source(path: Path) -> bool:
     if head.startswith(b"\xef\xbb\xbf"):
         head = head[3:]
 
-    strong_glsl = (b"#version", b"#extension", b"precision ", b"uniform ",
-                   b"varying ", b"layout", b"in vec", b"out vec", b"void main")
+    # STRONG = shapes impossible as F# line-starts (directives, typed io
+    # decls, main). Word-shaped markers (uniform/varying/precision) are valid
+    # F# IDENTIFIERS on continuation lines and live in the WEAK tier, which
+    # never overrides a strong F# declaration (bot round-9 find: an F# call
+    # `uniform 0.0 1.0` on its own line dropped the whole file).
+    strong_glsl = (b"#version", b"#extension", b"layout", b"void main",
+                   b"in vec2", b"in vec3", b"in vec4",
+                   b"out vec2", b"out vec3", b"out vec4", b"gl_")
     # No `(*` marker: Forth stack-effect comments start with it too, and any
     # compilable F# file surfaces a real declaration line within the 64KB
     # window regardless of leading block-comment headers (bot round-8 find).
     strong_fsharp = (b"let ", b"module ", b"namespace ", b"open ", b"type ",
                      b"member ", b"#light", b"#load", b"#r ", b"[<")
     weak_glsl = (b"float ", b"int ", b"bool ", b"vec2", b"vec3", b"vec4",
-                 b"mat3", b"mat4", b"sampler2D")
+                 b"mat3", b"mat4", b"sampler2D",
+                 b"uniform ", b"varying ", b"precision ")
 
     saw_strong_glsl = saw_strong_fsharp = saw_weak_glsl = False
     in_block_comment = False
