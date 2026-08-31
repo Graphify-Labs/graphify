@@ -67,4 +67,6 @@ source_file RULE (every node, edge, and hyperedge): set source_file to the path 
 
 Then write the JSON to disk using the Write tool at this exact absolute path (no relative paths — Write resolves relative paths against an undefined cwd and the file will be silently lost):
 CHUNK_PATH
+
+Every OTHER file you write must carry your chunk number in its name — a helper script, a scratch file, any intermediate output. Use `scratchpad/gen_CHUNK_NUM.py` or a `scratchpad/CHUNK_NUM/` directory, never a bare `scratchpad/gen.py`. You are one of many agents running concurrently against a single filesystem, and the chunk number in CHUNK_PATH is the only thing that currently keeps your work separate from theirs. Two agents that both pick the same helper path overwrite each other, and the one that loses then executes the other agent's script — writing that agent's chunk numbers instead of its own. Both writes succeed, so nothing reports an error; the output is simply attributed to the wrong chunk.
 ```
