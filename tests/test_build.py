@@ -1614,6 +1614,36 @@ def test_norm_source_file_relativizes_a_posix_absolute_path():
     ) == "docs/api/README.md"
 
 
+def test_build_from_json_relativizes_definition_file():
+    """A merged C/C++/ObjC decl/def node records where the symbol is implemented
+    in `definition_file`. That is a path into the scanned tree just like
+    `source_file`, so the graph must store it repo-relative — otherwise the
+    build machine's absolute path ships in graph.json and a reader on another
+    checkout (or the MCP `get_node` answer) points at a file that is not there."""
+    from graphify.build import build_from_json
+
+    root = "/home/ci/build/repo"
+    extraction = {
+        "nodes": [{
+            "id": "foo_bar",
+            "label": "bar",
+            "type": "function",
+            "file_type": "code",
+            "_origin": "ast",
+            "source_file": f"{root}/src/Foo.h",
+            "source_location": "L10",
+            "definition_file": f"{root}/src/Foo.cpp",
+            "definition_location": "L42",
+        }],
+        "edges": [],
+    }
+    G = build_from_json(extraction, root=root)
+    assert G.nodes["foo_bar"]["source_file"] == "src/Foo.h"
+    assert G.nodes["foo_bar"]["definition_file"] == "src/Foo.cpp"
+    # the line number is a plain string and must survive untouched
+    assert G.nodes["foo_bar"]["definition_location"] == "L42"
+
+
 def test_derive_prune_root_recovers_root_from_posix_absolute_prune_sources():
     """The prune-root recovery skips any prune source it thinks is relative.
 

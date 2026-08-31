@@ -3592,6 +3592,9 @@ def test_cpp_paired_merged_node_records_definition_site():
     bar = bars[0]
     assert str(bar["source_file"]).endswith("Foo.h"), bar
     assert str(bar.get("definition_file", "")).endswith("Foo.cpp"), bar
+    assert not Path(bar["source_file"]).is_absolute(), bar
+    assert not Path(bar["definition_file"]).is_absolute(), bar
+    assert Path(bar["source_file"]).parent == Path(bar["definition_file"]).parent, bar
     assert bar.get("definition_location"), bar
 
 
