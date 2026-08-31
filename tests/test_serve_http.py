@@ -397,6 +397,44 @@ def test_normal_tool_result_is_not_iserror(tmp_path):
         })
         assert resp.status_code == 200
         assert not resp.json()["result"].get("isError")
+
+
+def test_god_nodes_sanitizes_labels_over_mcp(tmp_path):
+    """The MCP tool must not expose control characters or unbounded labels."""
+    malicious_label = "hub\x00\x1f\x7f" + "x" * 300
+    graph = {
+        "directed": True,
+        "nodes": [
+            {"id": "hub", "label": malicious_label, "community": 0, "source_file": "hub.py"},
+            {"id": "ordinary", "label": "ordinary", "community": 0, "source_file": "ordinary.py"},
+            {"id": "leaf-a", "label": "leaf-a", "community": 0, "source_file": "leaf_a.py"},
+            {"id": "leaf-b", "label": "leaf-b", "community": 0, "source_file": "leaf_b.py"},
+            {"id": "leaf-c", "label": "leaf-c", "community": 0, "source_file": "leaf_c.py"},
+        ],
+        "edges": [
+            {"source": "hub", "target": "ordinary", "relation": "calls", "confidence": "EXTRACTED"},
+            {"source": "hub", "target": "leaf-a", "relation": "calls", "confidence": "EXTRACTED"},
+            {"source": "hub", "target": "leaf-b", "relation": "calls", "confidence": "EXTRACTED"},
+            {"source": "hub", "target": "leaf-c", "relation": "calls", "confidence": "EXTRACTED"},
+            {"source": "ordinary", "target": "leaf-a", "relation": "calls", "confidence": "EXTRACTED"},
+        ],
+    }
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(json.dumps(graph), encoding="utf-8")
+
+    app = serve_mod._build_http_app(str(graph_path), json_response=True)
+    with _client(app) as client:
+        text = _call_tool(client, _init_session(client), "god_nodes", {"top_n": 2}, rid=2)
+
+    clean_label = "hub" + "x" * 253
+    assert text.splitlines() == [
+        "God nodes (most connected):",
+        f"  1. {clean_label} - 4 edges",
+        "  2. ordinary - 2 edges",
+    ]
+    assert all(control not in text for control in ("\x00", "\x1f", "\x7f"))
+
+
 def _ambiguous_graph_file(tmp_path: Path) -> str:
     """A graph where the label 'extract' matches two nodes in different files."""
     graph = {

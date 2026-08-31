@@ -1875,7 +1875,10 @@ def _build_server(graph_path: str):
         from graphify.analyze import god_nodes as _god_nodes
         nodes = _god_nodes(G, top_n=int(arguments.get("top_n", 10)))
         lines = ["God nodes (most connected):"]
-        lines += [f"  {i}. {n['label']} - {n['degree']} edges" for i, n in enumerate(nodes, 1)]
+        lines += [
+            f"  {i}. {sanitize_label(n['label'])} - {n['degree']} edges"
+            for i, n in enumerate(nodes, 1)
+        ]
         return "\n".join(lines)
 
     def _tool_graph_stats(_: dict) -> str:
