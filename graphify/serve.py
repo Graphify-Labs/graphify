@@ -1354,6 +1354,30 @@ def _query_graph_text(
     return header + _subgraph_to_text(traversal_graph, nodes, edges, token_budget, seeds=start_nodes)
 
 
+def _prefer_code_over_docs(ids: list[str], G: nx.Graph) -> list[str]:
+    """Reorder same-tier matches so code nodes sort ahead of documentation ones.
+
+    A prose corpus graphed alongside its source puts heading and term nodes in
+    the same namespace as the symbols they describe: `SlotRespins` is both a
+    Haxe class and a heading in the CLAUDE.md that documents it. Both land in
+    the same tier, separated only by graph-iteration order, so `explain` can
+    answer a question about a class with a paragraph about the class -- or
+    refuse it as ambiguous.
+
+    Someone naming a symbol wants the symbol. The doc node stays in the results
+    as a lower-priority match; it just stops outranking the thing it describes.
+    Only `code` is promoted, not merely "not a document" -- `rationale` and
+    `concept` nodes are prose too.
+    """
+    if len(ids) < 2:
+        return ids
+    code, rest = [], []
+    for nid in ids:
+        target = code if G.nodes[nid].get("file_type") == "code" else rest
+        target.append(nid)
+    return code + rest if code and rest else ids
+
+
 def _prefer_case_exact(ids: list[str], G: nx.Graph, label: str) -> list[str]:
     """Reorder same-tier matches so an exact-case label match sorts first.
 
@@ -1457,9 +1481,9 @@ def _find_node_tiers(
 
     return (
         source_exact,
-        _prefer_case_exact(exact, G, label),
-        _prefer_case_exact(prefix, G, label),
-        _prefer_case_exact(substring, G, label),
+        _prefer_code_over_docs(_prefer_case_exact(exact, G, label), G),
+        _prefer_code_over_docs(_prefer_case_exact(prefix, G, label), G),
+        _prefer_code_over_docs(_prefer_case_exact(substring, G, label), G),
     )
 
 
@@ -1500,6 +1524,13 @@ def find_node_ambiguity(G: nx.Graph, label: str) -> list[str]:
         # reporting it as ambiguous would refuse a question that has an
         # answer. See `_prefer_case_exact`, which does the same ordering.
         #
+        # Likewise a documentation node is not a genuine rival to the code it
+        # describes (see `_prefer_code_over_docs`). When a tier mixes the two,
+        # judge ambiguity among the code nodes alone, so a class documented in
+        # a CLAUDE.md still answers instead of erroring against its own prose.
+        code_tier = [nid for nid in tier if G.nodes[nid].get("file_type") == "code"]
+        if code_tier and len(code_tier) < len(tier):
+            tier = code_tier
         case_exact = [
             nid for nid in tier
             if str(G.nodes[nid].get("label") or "").rstrip("()") == label
