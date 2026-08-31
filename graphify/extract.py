@@ -3091,6 +3091,14 @@ def _resolve_python_member_calls(
                 contains_children.setdefault(src, {}).setdefault(
                     _key(tnode.get("label", "")), []).append(tgt)
                 file_of_node[tgt] = src
+        elif e.get("relation") == "method":
+            # [FIX] method di dalam class TERHUBUNG lewat relasi `method`, BUKAN
+            # `contains` -- jadi `file_of_node` nol entri buat mereka dan arm
+            # module-alias di bawah dapet caller_file=None lalu bail. Akibatnya
+            # `modul.fungsi()` di dalam method class GAK PERNAH ke-resolve.
+            src, tgt = e.get("source"), e.get("target")
+            if tgt is not None and tgt not in file_of_node:
+                file_of_node[tgt] = src
     imported_by_filenode: dict[str, set[str]] = {}
     # Local alias bound by `as` on a specific import edge (#2082): `from pkg import
     # mod as alias` / `import pkg.mod as alias` bind `alias`, not `mod`'s own stem,
@@ -3156,7 +3164,15 @@ def _resolve_python_member_calls(
             # receiver also matches the local alias bound on that import edge
             # (#2082), so an aliased import resolves the same as the bare name.
             rkey = _key(receiver)
+            # [FIX] naik TRANSITIF: method -> class -> file
             caller_file = file_of_node.get(caller)
+            for _ in range(8):
+                if caller_file is None or caller_file in imported_by_filenode:
+                    break
+                _up = file_of_node.get(caller_file)
+                if _up is None or _up == caller_file:
+                    break
+                caller_file = _up
             file_aliases = import_alias_by_filenode.get(caller_file, {})
             mods = [t for t in imported_by_filenode.get(caller_file, ())
                     if t in contains_children
