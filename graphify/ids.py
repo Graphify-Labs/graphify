@@ -90,4 +90,12 @@ def make_id(*parts: str) -> str:
     part) and then run through :func:`normalize_id`, so the result is identical to
     what the builder produces from the joined string.
     """
-    return normalize_id("_".join(p.strip("_.") for p in parts if p))
+    normalized_parts = []
+    for p in parts:
+        if not p:
+            continue
+        norm_p = normalize_id(p)
+        if not norm_p:
+            norm_p = "underscore"
+        normalized_parts.append(norm_p)
+    return normalize_id("_".join(normalized_parts))

@@ -973,7 +973,19 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 continue
             if "source_file" in node:
                 node["source_file"] = _norm_source_file(node["source_file"], _root)
-        G.add_node(node["id"], **{k: v for k, v in node.items() if k != "id"})
+        
+        node_id = node["id"]
+        attrs = {k: v for k, v in node.items() if k != "id"}
+        if node_id in G:
+            existing_label = G.nodes[node_id].get("label")
+            new_label = attrs.get("label")
+            if existing_label and new_label and existing_label != new_label:
+                source_file = G.nodes[node_id].get("source_file") or attrs.get("source_file")
+                if source_file:
+                    if _is_file_node_label(existing_label, source_file) and not _is_file_node_label(new_label, source_file):
+                        del attrs["label"]
+        
+        G.add_node(node_id, **attrs)
     node_set = set(G.nodes())
 
     # #1145 (extended): merge LLM ghost-duplicate nodes into AST canonical nodes.
