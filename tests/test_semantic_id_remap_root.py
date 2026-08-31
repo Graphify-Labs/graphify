@@ -48,3 +48,36 @@ def test_normal_semantic_remap_still_works():
     remap = _semantic_id_remap(
         [{"id": "foo", "source_file": "src/foo.py", "_origin": "semantic"}], "/proj")
     assert isinstance(remap, dict)
+
+
+# --- #1917: _semantic_id_remap must be idempotent (no id accretion) ---
+
+def test_semantic_id_remap_is_idempotent_when_stem_contains_legacy_stem():
+    """A file whose parent dir name equals its stem (.claude/CLAUDE.md ->
+    canonical `claude_claude`, legacy `claude`) must not re-prefix an
+    already-canonical id on every build (#1917). Without the guard, ids grow
+    `claude_x` -> `claude_claude_x` -> `claude_claude_claude_x` ..., defeating
+    the same_topology/no_change short-circuits."""
+    nodes = [{"id": "claude_graphify_trigger",
+              "source_file": ".claude/CLAUDE.md", "_origin": "semantic"}]
+    first = _semantic_id_remap(nodes, ".")
+    assert first == {"claude_graphify_trigger": "claude_claude_graphify_trigger"}
+    # Feed the migrated ids back through: a second pass must be a fixed point.
+    migrated = [{**n, "id": first.get(n["id"], n["id"])} for n in nodes]
+    assert _semantic_id_remap(migrated, ".") == {}, "id re-prefixed on second build (#1917)"
+
+
+def test_semantic_id_remap_bare_file_node_is_idempotent():
+    """The bare file node id follows the same fixed-point rule."""
+    nodes = [{"id": "claude", "source_file": ".claude/CLAUDE.md", "_origin": "semantic"}]
+    first = _semantic_id_remap(nodes, ".")
+    assert first == {"claude": "claude_claude"}
+    migrated = [{"id": "claude_claude", "source_file": ".claude/CLAUDE.md", "_origin": "semantic"}]
+    assert _semantic_id_remap(migrated, ".") == {}
+
+
+def test_semantic_id_remap_still_migrates_genuine_legacy_id():
+    """The idempotency guard must not block a real one-time legacy migration:
+    a pre-scheme id under a normal path still remaps once to the canonical stem."""
+    nodes = [{"id": "readme_booking", "source_file": "api/README.md", "_origin": "semantic"}]
+    assert _semantic_id_remap(nodes, ".") == {"readme_booking": "api_readme_booking"}

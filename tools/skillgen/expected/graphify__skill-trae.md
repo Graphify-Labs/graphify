@@ -10,7 +10,7 @@ Turn any folder of files into a navigable knowledge graph with community detecti
 ## Usage
 
 ```
-/graphify                                             # full pipeline on current directory → Obsidian vault
+/graphify                                             # full pipeline on current directory (HTML viz; add --obsidian for a vault)
 /graphify <path>                                      # full pipeline on specific path
 /graphify https://github.com/<owner>/<repo>           # clone repo then run full pipeline on it
 /graphify https://github.com/<owner>/<repo> --branch <branch>  # clone a specific branch
@@ -70,7 +70,7 @@ PYTHON=""
 GRAPHIFY_BIN=$(which graphify 2>/dev/null)
 # 1. uv tool installs — most reliable on modern Mac/Linux
 if [ -z "$PYTHON" ] && command -v uv >/dev/null 2>&1; then
-    _UV_PY=$(uv tool run graphifyy python -c "import sys; print(sys.executable)" 2>/dev/null)
+    _UV_PY=$(uv tool run --from graphifyy python -c "import sys; print(sys.executable)" 2>/dev/null)
     if [ -n "$_UV_PY" ]; then PYTHON="$_UV_PY"; fi
 fi
 # 2. Read shebang from graphify binary (pipx and direct pip installs)
@@ -86,7 +86,7 @@ if [ -z "$PYTHON" ]; then PYTHON="python3"; fi
 if ! "$PYTHON" -c "import graphify" 2>/dev/null; then
     if command -v uv >/dev/null 2>&1; then
         uv tool install --upgrade graphifyy -q 2>&1 | tail -3
-        _UV_PY=$(uv tool run graphifyy python -c "import sys; print(sys.executable)" 2>/dev/null)
+        _UV_PY=$(uv tool run --from graphifyy python -c "import sys; print(sys.executable)" 2>/dev/null)
         if [ -n "$_UV_PY" ]; then PYTHON="$_UV_PY"; fi
     else
         "$PYTHON" -m pip install graphifyy -q 2>/dev/null \
@@ -112,8 +112,11 @@ import json
 from graphify.detect import detect
 from pathlib import Path
 result = detect(Path('INPUT_PATH'))
-print(json.dumps(result, ensure_ascii=False))
-" > graphify-out/.graphify_detect.json
+# Write the sidecar from Python, not a shell redirect, so the same block renders
+# on PowerShell hosts without console-encoding drift (#2528).
+Path('graphify-out/.graphify_detect.json').write_text(json.dumps(result, ensure_ascii=False), encoding=\"utf-8\")
+print(f'Detected {result[\"total_files\"]} files')
+"
 ```
 
 Replace INPUT_PATH with the actual path the user provided. Do NOT cat or print the JSON - read it silently and present a clean summary instead:
@@ -131,7 +134,7 @@ Omit any category with 0 files from the summary.
 
 Then act on it:
 - If `total_files` is 0: stop with "No supported files found in [path]."
-- If `skipped_sensitive` is non-empty: mention file count skipped, not the file names.
+- If `skipped_sensitive` is non-empty: report the count and list the skipped file names, so a wrongly-flagged source or doc is visible and can be renamed or moved (#2106).
 - If `total_words` > 2,000,000 OR `total_files` > 500: show the warning. Then compute the top 5 first-level subdirectories by file count:
   - Read `scan_root` from the detect JSON (always an absolute path to the resolved INPUT_PATH).
   - Concatenate all file lists across all types (`code`, `document`, `paper`, `image`, `video`).
@@ -214,6 +217,8 @@ Before dispatching subagents, print a timing estimate:
 
 Before dispatching any subagents, check which files already have cached extraction results:
 
+SPEC_PATH below is the **absolute** path of the `references/extraction-spec.md` that ships beside this SKILL.md — the same file Step B2 loads and hands to every subagent. It is the extraction prompt, so cache entries are attributed to it: when a graphify upgrade changes the prompt, entries produced by the old one are re-extracted instead of replayed, and unchanged prompts keep their entries (#1939). Substitute the real path in both Step B0 and Step B3 — pass the same one to each, and do not drop the argument.
+
 ```bash
 $(cat graphify-out/.graphify_python) -c "
 import json
@@ -226,7 +231,7 @@ detect = json.loads(Path('graphify-out/.graphify_detect.json').read_text(encodin
 # every source file (#1392). Video is transcribed to a document in Step 2.5 first.
 all_files = [f for cat in ('document', 'paper', 'image') for f in detect['files'].get(cat, [])]
 
-cached_nodes, cached_edges, cached_hyperedges, uncached = check_semantic_cache(all_files, root='INPUT_PATH')
+cached_nodes, cached_edges, cached_hyperedges, uncached = check_semantic_cache(all_files, root='INPUT_PATH', prompt_file='SPEC_PATH')
 
 # Always (re)write the cache file: write hits, else DELETE any leftover from a prior
 # run so Part C never merges a stale .graphify_cached.json (#1392).
@@ -303,7 +308,7 @@ print(f'Merged {len(chunks)} chunks: {total_in:,} in / {total_out:,} out tokens'
 "
 ```
 
-Save new results to cache:
+Save new results to cache. Pass the same SPEC_PATH as Step B0 — it stamps each entry with the prompt that produced it, and a write under a different prompt than the read lands where the next run won't look (#1939):
 ```bash
 $(cat graphify-out/.graphify_python) -c "
 import json
@@ -311,7 +316,8 @@ from graphify.cache import save_semantic_cache
 from pathlib import Path
 
 new = json.loads(Path('graphify-out/.graphify_semantic_new.json').read_text(encoding=\"utf-8\")) if Path('graphify-out/.graphify_semantic_new.json').exists() else {'nodes':[],'edges':[],'hyperedges':[]}
-saved = save_semantic_cache(new.get('nodes', []), new.get('edges', []), new.get('hyperedges', []), root='INPUT_PATH')
+uncached = [line for line in Path('graphify-out/.graphify_uncached.txt').read_text(encoding=\"utf-8\").splitlines() if line]
+saved = save_semantic_cache(new.get('nodes', []), new.get('edges', []), new.get('hyperedges', []), root='INPUT_PATH', allowed_source_files=uncached, prompt_file='SPEC_PATH')
 print(f'Cached {saved} files')
 "
 ```
@@ -484,6 +490,7 @@ from graphify.build import build_from_json
 from graphify.cluster import score_all
 from graphify.analyze import god_nodes, surprising_connections, suggest_questions
 from graphify.report import generate
+from graphify.export import to_json
 from pathlib import Path
 
 extraction = json.loads(Path('graphify-out/.graphify_extract.json').read_text(encoding=\"utf-8\"))
@@ -505,6 +512,13 @@ questions = suggest_questions(G, communities, labels)
 report = generate(G, communities, cohesion, labels, analysis['gods'], analysis['surprises'], detection, tokens, 'INPUT_PATH', suggested_questions=questions)
 Path('graphify-out/GRAPH_REPORT.md').write_text(report, encoding=\"utf-8\")
 Path('graphify-out/.graphify_labels.json').write_text(json.dumps({str(k): v for k, v in labels.items()}, ensure_ascii=False), encoding=\"utf-8\")
+# Re-export so graph.json nodes carry the curated community_name (#2490).
+# Same extraction as Step 4, so the #479 shrink-guard passes on node count;
+# if it still refuses, surface the guard message - do not force past it.
+wrote = to_json(G, communities, 'graphify-out/graph.json', community_labels=labels)
+if not wrote:
+    print('ERROR: refused to shrink graphify-out/graph.json (existing graph has more nodes; #479).')
+    print('If this shrink is intentional (you deleted files), re-run a full build with --force.')
 print('Report updated with community labels')
 "
 ```
@@ -549,15 +563,37 @@ from graphify.detect import save_manifest
 
 # Save manifest for --update
 detect = json.loads(Path('graphify-out/.graphify_detect.json').read_text(encoding=\"utf-8\"))
+extract = json.loads(Path('graphify-out/.graphify_extract.json').read_text(encoding=\"utf-8\"))
 # In --update mode, 'all_files' carries the full corpus; 'files' is the changed
 # subset. Full-rebuild mode populates only 'files', so the fallback handles that.
 # root= relativizes the manifest keys to the scan root (same base as the build),
 # so the on-disk manifest is portable across clones/machines and a later --update
 # matches cached files instead of missing every one (#1417).
-save_manifest(detect.get('all_files') or detect['files'], root='INPUT_PATH')
+#
+# Only stamp semantic files (docs/papers/images) that ACTUALLY produced output:
+# a detected file whose chunk failed or was omitted must stay unstamped so the
+# next --update re-queues it, otherwise it is marked done and its content is lost
+# forever (#2015). This mirrors the library extract path exactly
+# (cli._stamped_manifest_files + clear_semantic + scan_corpus); do not stamp the
+# raw corpus. Code files are always stamped (AST is deterministic); only semantic
+# types are gated on output.
+from graphify.cli import _stamped_manifest_files
+_corpus = detect.get('all_files') or detect['files']
+_manifest_files = _stamped_manifest_files(_corpus, extract, Path('INPUT_PATH'))
+# Files dispatched this run (the changed subset) but NOT stamped above still carry
+# a stale semantic_hash from a prior run; clear it so detect_incremental re-queues
+# them instead of reading them as unchanged (#1948).
+_sem_types = ('document', 'paper', 'image')
+_dispatched = {f for t, fl in detect['files'].items() if t in _sem_types for f in fl}
+_stamped = {f for fl in _manifest_files.values() for f in fl}
+_cleared = _dispatched - _stamped
+# scan_corpus = the RAW full corpus (not the stamp-filtered subset) so in-root
+# files newly excluded since last run are dropped rather than masquerading as
+# deletions; untouched files' prior rows are still preserved (#1908).
+_scan = {f for fl in _corpus.values() for f in fl}
+save_manifest(_manifest_files, root='INPUT_PATH', scan_corpus=_scan, clear_semantic=_cleared or None)
 
 # Update cumulative cost tracker
-extract = json.loads(Path('graphify-out/.graphify_extract.json').read_text(encoding=\"utf-8\"))
 input_tok = extract.get('input_tokens', 0)
 output_tok = extract.get('output_tokens', 0)
 

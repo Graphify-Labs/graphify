@@ -63,6 +63,30 @@ def test_report_shows_raw_cohesion_scores():
     assert "⚠" not in report
 
 
+def test_report_header_does_not_embed_host_absolute_path():
+    """#2628 / #2598: the header must not bake the generator host absolute path
+    into GRAPH_REPORT.md — it labels with the project directory basename so the
+    same graph produces the same bytes on any machine."""
+    G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
+    report = generate(G, communities, cohesion, labels, gods, surprises, detection,
+                      tokens, "/Users/mike/dev/apps/secretproj")
+    header = report.splitlines()[0]
+    assert "/Users/mike" not in header
+    assert "secretproj" in header
+
+
+def test_portable_root_label():
+    from graphify.report import _portable_root_label
+    # Absolute paths collapse to the basename on both POSIX and Windows.
+    assert _portable_root_label("/Users/mike/dev/apps/proj") == "proj"
+    assert _portable_root_label(r"C:\Users\mike\dev\proj") == "proj"
+    # A trailing slash still yields the directory name, not an empty label.
+    assert _portable_root_label("/Users/mike/dev/proj/") == "proj"
+    # Relative names pass through unchanged.
+    assert _portable_root_label("./project") == "project"
+    assert _portable_root_label("project") == "project"
+
+
 # --- work-memory lessons section ----------------------------------------------
 
 def test_report_work_memory_section_present_with_overlay_and_dead_ends():
@@ -135,3 +159,22 @@ def test_import_cycles_section_absent_for_documents_only_corpus():
     tokens = {"input": 0, "output": 0}
     report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
     assert "## Import Cycles" not in report
+
+
+def test_report_hubs_are_plain_text_by_default():
+    # #1712: without --obsidian the _COMMUNITY_*.md notes don't exist, so wikilinks
+    # would dangle (and pollute an Obsidian vault's graph view). Default to plain text.
+    G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
+    labels = {cid: f"Widget {cid}" for cid in communities}
+    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project", min_community_size=1)
+    assert "## Community Hubs (Navigation)" in report
+    assert "[[_COMMUNITY_" not in report, "must not emit dangling Obsidian wikilinks by default (#1712)"
+    assert any(f"- Widget {cid}" in report for cid in communities)
+
+
+def test_report_hubs_use_wikilinks_when_obsidian():
+    # The opt-in path keeps the vault-navigable wikilink form.
+    G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
+    labels = {cid: f"Widget {cid}" for cid in communities}
+    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project", min_community_size=1, obsidian=True)
+    assert "[[_COMMUNITY_" in report

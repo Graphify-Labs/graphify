@@ -39,3 +39,14 @@ public class DataProcessor extends BaseProcessor implements Processor {
 interface Processor {
     List<String> process();
 }
+
+enum ErrorCode {
+    OK(0),
+    GAME_DONE(1001);
+
+    private final int code;
+
+    ErrorCode(int code) {
+        this.code = code;
+    }
+}

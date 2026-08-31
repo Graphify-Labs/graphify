@@ -72,6 +72,6 @@ Ang mga code file ay prinoseso nang lokal sa pamamagitan ng tree-sitter AST. Ang
 
 ## Binuo sa ibabaw ng graphify — Penpax
 
-Ang [**Penpax**](https://graphifylabs.ai) ay ang enterprise layer sa ibabaw ng graphify. **Malapit nang magkaroon ng libreng trial.** [Sumali sa waitlist →](https://graphifylabs.ai)
+Ang [**Penpax**](https://graphify.com) ay ang enterprise layer sa ibabaw ng graphify. **Malapit nang magkaroon ng libreng trial.** [Sumali sa waitlist →](https://graphify.com)
 
 [![Star History Chart](https://api.star-history.com/svg?repos=safishamsi/graphify&type=Date)](https://star-history.com/#safishamsi/graphify&Date)

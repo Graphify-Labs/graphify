@@ -263,6 +263,106 @@ def test_decorated_method_node_id_is_class_qualified(tmp_path):
             )
 
 
+# ── Regression for #2206: labels must normalize whitespace before truncating ──
+
+
+def test_long_docstring_label_truncates_on_word_boundary(tmp_path):
+    """A docstring longer than the 80-char cap must be shortened at a word
+    boundary, not mid-word. Before the fix, ``text[:80]`` sliced "feeds" down
+    to "feed"."""
+    docstring = ("This routine reconciles pending settlement batches nightly "
+                 "because upstream feeds arrive unordered and out of sequence.")
+    path = _write_py(tmp_path, f'''
+        def reconcile_batches():
+            """{docstring}"""
+            pass
+    ''')
+    result = extract_python(path)
+    rationale = [n for n in result["nodes"] if n.get("file_type") == "rationale"]
+    assert len(rationale) == 1
+    label = rationale[0]["label"]
+    assert len(label) <= 80
+    core = label[:-1].rstrip() if label.endswith("…") else label
+    assert docstring.startswith(core)
+    if core != docstring:
+        # Whatever follows the retained prefix in the source must be a space
+        # (or end of string) -- i.e. the cut landed on a word boundary.
+        assert docstring[len(core):len(core) + 1] in (" ", ""), label
+
+
+def test_docstring_newline_and_indentation_collapsed_to_single_space(tmp_path):
+    """A multi-line docstring's line break + indentation must not survive as a
+    run of literal spaces inside the label (the raw slice used to keep them
+    because it ran before the newline-to-space normalization)."""
+    path = _write_py(tmp_path, '''
+        def sync_inventory():
+            """Aggregates daily settlement counts for reconciliation runs.
+               Retries three times before raising to the monitoring pipeline.
+            """
+            pass
+    ''')
+    result = extract_python(path)
+    rationale = [n for n in result["nodes"] if n.get("file_type") == "rationale"]
+    label = rationale[0]["label"]
+    assert "\n" not in label
+    assert "  " not in label, f"whitespace run survived in label: {label!r}"
+    assert "runs. Retries" in label
+
+
+def test_truncated_docstring_never_ends_with_bare_period(tmp_path):
+    """When the old 80-char cut happened to land on a ".", the Obsidian
+    exporter appended ".md" and produced a double-dot filename. A truncated
+    label must end on the placeholder, never on a lone trailing period."""
+    docstring = ("Loads the merchant configs bundle from disk once at process "
+                 "start-up and caches. It refreshes every six hours in the background.")
+    path = _write_py(tmp_path, f'''
+        def load_merchant_config():
+            """{docstring}"""
+            pass
+    ''')
+    result = extract_python(path)
+    rationale = [n for n in result["nodes"] if n.get("file_type") == "rationale"]
+    label = rationale[0]["label"]
+    assert len(label) < len(docstring), "expected this docstring to be truncated"
+    assert not label.endswith("."), label
+    assert label.endswith("…"), label
+
+
+def test_docstring_opening_with_unbroken_long_token_keeps_content(tmp_path):
+    """Adversarial case: ``textwrap.shorten`` alone collapses to just the
+    placeholder when the first whitespace-delimited "word" already exceeds
+    the width (e.g. a docstring opening with a long, unbroken URL) -- that
+    would regress to a content-free label, worse than the original bug. The
+    label must still carry real content."""
+    url = "https://example.com/api/v3/settlements/" + "a" * 60 + "/confirm"
+    docstring = f"{url} documents the retry contract for this handler."
+    path = _write_py(tmp_path, f'''
+        def call_endpoint():
+            """{docstring}"""
+            pass
+    ''')
+    result = extract_python(path)
+    rationale = [n for n in result["nodes"] if n.get("file_type") == "rationale"]
+    label = rationale[0]["label"]
+    assert label not in ("", "…"), label
+    assert label.startswith("https://example.com/"), label
+
+
+def test_short_docstring_label_unchanged(tmp_path):
+    """Non-regression: a docstring well under 80 chars must pass through
+    byte-for-byte, with no placeholder and no reformatting."""
+    docstring = "Splits the bearer token because some clients send a stray prefix."
+    path = _write_py(tmp_path, f'''
+        def parse_token():
+            """{docstring}"""
+            pass
+    ''')
+    result = extract_python(path)
+    rationale = [n for n in result["nodes"] if n.get("file_type") == "rationale"]
+    label = rationale[0]["label"]
+    assert label == docstring
+
+
 # ── JS/TS rationale + doc-reference extraction ────────────────────────────────
 
 
@@ -330,3 +430,80 @@ def test_js_adr_in_string_literal_not_extracted(tmp_path):
     result = extract_js(path)
     refs = [n for n in result["nodes"] if n.get("file_type") == "doc_ref"]
     assert refs == []
+
+
+# ── Regression for #2206, JS/TS site (shares the fix with the Python site) ────
+
+
+def test_js_rationale_label_truncates_on_word_boundary(tmp_path):
+    """Same invariant as the Python site: a long ``// WHY:`` comment must be
+    shortened at a word boundary, not mid-word."""
+    from graphify.extract import extract_js
+    comment_text = ("retries are capped because the upstream billing service "
+                     "enforces a strict per-tenant rate limit that keeps dropping requests")
+    path = _write_ts(tmp_path, f'''
+        // WHY: {comment_text}
+        export function fetchData(): void {{}}
+    ''')
+    result = extract_js(path)
+    rationale = [n for n in result["nodes"] if n.get("file_type") == "rationale"]
+    assert len(rationale) == 1
+    label = rationale[0]["label"]
+    full = f"WHY: {comment_text}"
+    assert len(label) <= 80
+    core = label[:-1].rstrip() if label.endswith("…") else label
+    assert full.startswith(core)
+    if core != full:
+        assert full[len(core):len(core) + 1] in (" ", ""), label
+
+
+def test_js_rationale_label_never_ends_with_bare_period_when_truncated(tmp_path):
+    """Same invariant as the Python site: a truncated label must never end on
+    a lone "." (double-dot Obsidian filename)."""
+    from graphify.extract import extract_js
+    comment_text = ("retries are capped at five attempts before the circuit breaker "
+                     "opens for the endpoint. A metrics counter records every trip.")
+    path = _write_ts(tmp_path, f'''
+        // WHY: {comment_text}
+        export function fetchData(): void {{}}
+    ''')
+    result = extract_js(path)
+    rationale = [n for n in result["nodes"] if n.get("file_type") == "rationale"]
+    label = rationale[0]["label"]
+    full = f"WHY: {comment_text}"
+    assert len(label) < len(full), "expected this comment to be truncated"
+    assert not label.endswith("."), label
+
+
+def test_js_rationale_comment_opening_with_unbroken_long_token_keeps_content(tmp_path):
+    """Same adversarial case as the Python site: a ``// WHY:`` comment whose
+    content is an unbroken long URL must not collapse to a content-free
+    placeholder label. Unlike the Python site, the ``WHY:`` prefix always
+    fits on its own, so the invariant is "some real content survives",
+    not "the URL itself survives" (it genuinely cannot fit in 80 chars)."""
+    from graphify.extract import extract_js
+    url = "https://example.com/api/v3/settlements/" + "a" * 60 + "/confirm"
+    path = _write_ts(tmp_path, f'''
+        // WHY: {url} documents the retry contract for this handler.
+        export function fetchData(): void {{}}
+    ''')
+    result = extract_js(path)
+    rationale = [n for n in result["nodes"] if n.get("file_type") == "rationale"]
+    label = rationale[0]["label"]
+    assert label not in ("", "…"), label
+    assert label.startswith("WHY:"), label
+
+
+def test_js_short_rationale_comment_unchanged(tmp_path):
+    """Non-regression: a short ``// NOTE:`` comment must pass through
+    byte-for-byte, matching the pre-existing test above but pinned exactly."""
+    from graphify.extract import extract_js
+    path = _write_ts(tmp_path, '''
+        // NOTE: must run before compile() or the linker will fail
+        export function build(): void {}
+    ''')
+    result = extract_js(path)
+    rationale = [n for n in result["nodes"] if n.get("file_type") == "rationale"]
+    assert [n["label"] for n in rationale] == [
+        "NOTE: must run before compile() or the linker will fail"
+    ]

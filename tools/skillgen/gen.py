@@ -357,14 +357,174 @@ def _render_frontmatter(platform: Platform) -> str:
     return "\n".join(lines)
 
 
+# --- POSIX -> PowerShell core translation (#2528) --------------------------------
+#
+# The lean core template is written once, in POSIX shell. A host that declares
+# ``shell = "powershell"`` (windows) used to get a PowerShell Step 1 but bash for
+# every later step (``$(cat ...) -c "..."``, ``rm -f``, ``find ... -delete``), so
+# on a strict-PowerShell host Steps 2+ failed. Rather than fork the core (which
+# would drift), the composed body is translated deterministically:
+#
+#   * ```` ```bash ```` fences become ```` ```powershell ```` fences;
+#   * the inline ``$(cat graphify-out/.graphify_python) -c "..."`` python blocks
+#     become single-quoted here-strings piped to the interpreter's stdin
+#     (``@'...'@ | & (Get-Content graphify-out\.graphify_python) -``). A
+#     single-quoted here-string is verbatim, so the bash ``\"`` escapes are
+#     dropped and no PowerShell escaping is introduced; piping the program to
+#     stdin (``python -``) sidesteps Windows PowerShell 5.1's native-argument
+#     quote mangling that would corrupt ``-c @'...'@``;
+#   * the ``rm -f`` / ``find ... -delete`` cleanup lines become ``Remove-Item``
+#     / ``Get-ChildItem | Remove-Item``, and ``mkdir -p`` becomes ``New-Item``.
+#
+# The translator is deliberately STRICT: any bash line it does not recognize
+# raises at render time, so a future core edit cannot silently ship
+# untranslated bash to the Windows variant. ``_POWERSHELL_BANNED_TOKENS`` is the
+# belt-and-braces post-check on the final body.
+
+_PY_INVOKE_POSIX = '$(cat graphify-out/.graphify_python) -c "'
+_PY_INVOKE_PS_OPEN = "@'"
+_PY_INVOKE_PS_CLOSE = "'@ | & (Get-Content graphify-out\\.graphify_python) -"
+_MKDIR_POSIX = "mkdir -p graphify-out"
+_MKDIR_PS = "New-Item -ItemType Directory -Force -Path graphify-out | Out-Null"
+_FIND_CHUNKS_POSIX = "find graphify-out -maxdepth 1 -name '.graphify_chunk_*.json' -delete 2>/dev/null"
+_FIND_CHUNKS_PS = (
+    "Get-ChildItem graphify-out -Filter '.graphify_chunk_*.json' -File "
+    "-ErrorAction SilentlyContinue | Remove-Item -Force"
+)
+
+# Bash-only tokens that must never survive in a powershell-shell render.
+_POWERSHELL_BANNED_TOKENS = ("$(cat ", "rm -f ", "2>/dev/null", "```bash")
+
+
+def _unescape_bash_dq(line: str) -> str:
+    """Turn one line of a bash ``-c "..."`` body into its verbatim (here-string) form.
+
+    Inside bash double quotes every literal ``"`` is written ``\\"``; a
+    single-quoted here-string is verbatim, so those escapes are dropped. Anything
+    else backslashed (except a Python ``'\\n'`` string literal, the only other
+    backslash the core bodies carry) is unexpected bash escaping and fails loudly,
+    as does a line that would terminate the here-string early.
+    """
+    body = line.replace('\\"', '"')
+    if body.lstrip().startswith("'@"):
+        raise ValueError(f"python body line would close the here-string: {line!r}")
+    for m in re.finditer(r"\\(.)", body):
+        if m.group(1) != "n":
+            raise ValueError(f"unexpected backslash escape in python body line: {line!r}")
+    return body
+
+
+def _rm_to_remove_item(cmd: str) -> str:
+    """Translate a ``rm -f FILE...`` line (with optional ``2>/dev/null [|| true]``)."""
+    rest = cmd.strip()
+    if not rest.startswith("rm -f "):
+        raise ValueError(f"not an rm -f command: {cmd!r}")
+    rest = rest[len("rm -f "):].replace("2>/dev/null", " ").replace("|| true", " ")
+    files = rest.split()
+    for f in files:
+        if not re.fullmatch(r"[\w./-]+", f):
+            raise ValueError(f"cannot translate rm -f operand to PowerShell: {f!r}")
+    joined = ", ".join(f.replace("/", "\\") for f in files)
+    return f"Remove-Item -Force -ErrorAction SilentlyContinue {joined}"
+
+
+def _translate_bash_block(lines: list[str]) -> list[str]:
+    """Translate the body of one ```` ```bash ```` fence to PowerShell."""
+    out: list[str] = []
+    in_py = False
+    for line in lines:
+        if in_py:
+            if line == '"':
+                out.append(_PY_INVOKE_PS_CLOSE)
+                in_py = False
+            else:
+                out.append(_unescape_bash_dq(line))
+        elif line == _PY_INVOKE_POSIX:
+            out.append(_PY_INVOKE_PS_OPEN)
+            in_py = True
+        elif line == _MKDIR_POSIX:
+            out.append(_MKDIR_PS)
+        elif line == _FIND_CHUNKS_POSIX:
+            out.append(_FIND_CHUNKS_PS)
+        elif line.strip().startswith("rm -f "):
+            out.append(_rm_to_remove_item(line))
+        elif not line.strip() or line.lstrip().startswith("#") or line.startswith("graphify "):
+            out.append(line)  # blank lines, comments, and graphify CLI calls are shell-neutral
+        else:
+            raise ValueError(f"cannot translate bash line to PowerShell: {line!r}")
+    if in_py:
+        raise ValueError("unterminated python -c body in bash fence")
+    return out
+
+
+def _translate_prose_line(line: str) -> str:
+    """Translate inline `` `rm -f ...` `` code spans in prose to Remove-Item."""
+    return re.sub(
+        r"`rm -f ([^`]+)`",
+        lambda m: "`" + _rm_to_remove_item("rm -f " + m.group(1)) + "`",
+        line,
+    )
+
+
+def _core_to_powershell(body: str) -> str:
+    """Render the composed POSIX core body as strict PowerShell (#2528)."""
+    lines = body.split("\n")
+    out: list[str] = []
+    i, n = 0, len(lines)
+    while i < n:
+        line = lines[i]
+        stripped = line.strip()
+        if stripped.startswith("```") and stripped != "```":
+            # Opening fence with an info string. Find its closing fence.
+            j = i + 1
+            while j < n and lines[j].strip() != "```":
+                j += 1
+            if j >= n:
+                raise ValueError(f"unterminated code fence: {line!r}")
+            if stripped == "```bash":
+                out.append(line.replace("```bash", "```powershell"))
+                out.extend(_translate_bash_block(lines[i + 1:j]))
+            else:
+                # Non-bash fences (```powershell, plain ```` ``` ````) pass through.
+                out.append(line)
+                out.extend(lines[i + 1:j])
+            out.append(lines[j])
+            i = j + 1
+        elif stripped == "```":
+            # Bare opening fence (Usage / summary blocks): opaque passthrough.
+            j = i + 1
+            while j < n and lines[j].strip() != "```":
+                j += 1
+            if j >= n:
+                raise ValueError("unterminated bare code fence")
+            out.extend(lines[i:j + 1])
+            i = j + 1
+        else:
+            out.append(_translate_prose_line(line))
+            i += 1
+    translated = "\n".join(out)
+    leftovers = [t for t in _POWERSHELL_BANNED_TOKENS if t in translated]
+    if re.search(r"\bfind\b[^\n]*-delete", translated):
+        leftovers.append("find ... -delete")
+    if leftovers:
+        raise ValueError(f"bash-only tokens survived the PowerShell render: {leftovers}")
+    return translated
+
+
 def _render_core(platform: Platform) -> str:
-    """Fill the shared core template's per-platform slots for this platform."""
+    """Fill the shared core template's per-platform slots for this platform.
+
+    The template is authored once in POSIX shell; a ``shell = "powershell"``
+    platform gets the same composed body translated to strict PowerShell (see
+    ``_core_to_powershell``), so the two variants cannot drift apart.
+    """
     template = _read_fragment(f"core/{platform.core}.md")
 
     if platform.dispatch is None:
         raise ValueError(f"split platform '{platform.key}' is missing a dispatch variant")
 
     install = _read_fragment(f"shell/{platform.shell}.md").rstrip("\n")
+    interp_guard = _read_fragment(f"shell/interpreter-guard-{platform.shell}.md").rstrip("\n")
     dispatch = _read_fragment(f"dispatch/{platform.dispatch}.md").rstrip("\n")
     query_stub = _read_fragment(_QUERY_STUB).rstrip("\n")
 
@@ -379,6 +539,7 @@ def _render_core(platform: Platform) -> str:
     body = (
         template.replace("@@FRONTMATTER@@", _render_frontmatter(platform))
         .replace("@@INSTALL@@", install)
+        .replace("@@INTERP_GUARD@@", interp_guard)
         .replace("@@DISPATCH@@", dispatch)
         .replace("@@QUERY_STUB@@", query_stub)
         .replace("@@HOOKS_TARGET@@", platform.hooks_target)
@@ -387,6 +548,8 @@ def _render_core(platform: Platform) -> str:
     if "@@" in body:
         leftover = sorted(set(re.findall(r"@@\w+@@", body)))
         raise ValueError(f"unfilled core slots for '{platform.key}': {leftover}")
+    if platform.shell == "powershell":
+        body = _core_to_powershell(body)
     return _normalise(body)
 
 
@@ -851,6 +1014,42 @@ def _is_manifest_root_fix_line(line: str) -> bool:
     return "save_manifest(" in line and "import" not in line
 
 
+def _is_manifest_stamp_fix_line(line: str) -> bool:
+    """Whether a line is part of the manifest over-stamping fix (#2015).
+
+    Step 9 stamped the whole detected corpus, so a semantic file whose chunk
+    failed (or was omitted) was marked done and never re-queued on the next
+    ``--update`` — its content lost forever. The manifest is now built with
+    ``cli._stamped_manifest_files`` (only files that actually produced output)
+    plus ``clear_semantic``/``scan_corpus``, mirroring the native
+    ``graphify extract`` path. The rooted ``save_manifest`` call itself is
+    covered by ``_is_manifest_root_fix_line``; these are the added helper import
+    and derivation lines, plus the single ``#2015`` explanatory comment.
+    """
+    stripped = line.strip()
+    return (
+        "_stamped_manifest_files" in stripped
+        or stripped.startswith((
+            "_corpus =",
+            "_manifest_files =",
+            "_sem_types =",
+            "_dispatched =",
+            "_stamped =",
+            "_cleared =",
+            "_scan =",
+        ))
+        or (stripped.startswith("#") and "#2015" in stripped)
+    )
+
+
+def _is_sensitive_reporting_fix_line(line: str) -> bool:
+    """The #2106 change to how a non-empty ``skipped_sensitive`` is reported: the
+    skill now lists the skipped file names instead of only a count, so a
+    wrongly-flagged source/doc is visible. Both the removed count-only line and
+    the added list-the-names line mention ``skipped_sensitive`` is non-empty."""
+    return "skipped_sensitive` is non-empty" in line
+
+
 def _is_no_api_key_fix_line(line: str) -> bool:
     """Whether a line is part of the "no API key required" clarity (#1461).
 
@@ -877,6 +1076,72 @@ def _is_shebang_allowlist_fix_line(line: str) -> bool:
     return "[!a-zA-Z0-9/_." in line
 
 
+def _is_obsidian_usage_comment_line(line: str) -> bool:
+    """Whether a line is part of the ``/graphify`` usage-comment fix (#1681).
+
+    The Usage block's bare ``/graphify`` comment said "full pipeline on current
+    directory -> Obsidian vault", contradicting Step 6 (HTML always; Obsidian vault
+    only when ``--obsidian`` is explicitly given). The comment now describes the
+    real default. Both the old (removed) and new (added) comment forms match here.
+    """
+    return "# full pipeline on current directory" in line
+
+
+def _is_uv_from_interpreter_fix_line(line: str) -> bool:
+    """Whether a line is part of the uv interpreter-detection fix (#1735).
+
+    Step 1's POSIX interpreter probe ran ``uv tool run graphifyy python -c ...``,
+    but ``graphifyy`` exposes its executable as ``graphify``, so uv treated
+    ``python`` as a missing ``graphifyy`` command and the probe silently failed
+    (the ``2>/dev/null`` swallowed uv's "use --from" hint), leaving PYTHON on a
+    graphify-less system interpreter. The probe now runs
+    ``uv tool run --from graphifyy python -c ...``. Both the old (removed) and new
+    (added) forms match here.
+    """
+    return "uv tool run" in line and "graphifyy python" in line
+
+
+def _is_semantic_cache_scope_fix_line(line: str) -> bool:
+    """Whether a line scopes semantic cache writes to dispatched files (#1757).
+
+    A semantic subagent can mention a corpus file outside its assigned chunk and
+    misattribute a node to that file. The final cache write now passes the B0
+    uncached-file list as an allowlist, so an incidental mention cannot replace
+    another file's complete cached extraction. Both the old unscoped call
+    (removed) and the allowlist read/call (added) are sanctioned here.
+    """
+    stripped = line.strip()
+    return (
+        stripped.startswith("uncached = [line for line in Path(")
+        and ".graphify_uncached.txt" in stripped
+    ) or stripped.startswith("saved = save_semantic_cache(")
+
+
+def _is_community_label_export_fix_line(line: str) -> bool:
+    """Whether a line is part of the Step-5 community_name re-export fix (#2490).
+
+    Step 5 curated the community labels but never re-exported graph.json, so the
+    persisted nodes shipped without ``community_name`` (only the
+    ``.graphify_labels.json`` sidecar carried the names). Step 5 now imports
+    ``to_json`` and re-exports with ``community_labels=labels`` after the curated
+    dict exists, honoring (not forcing past) the #479 shrink-guard — the ``if not
+    wrote:`` / refused-to-shrink lines are already sanctioned by the #1392
+    zero-node-guard predicate. The --cluster-only runbook keeps its label-less
+    export (its ``labels`` are placeholders at that point) and gains a comment
+    saying so. These are the added import, export call, and comment lines.
+    """
+    stripped = line.strip()
+    return (
+        "community_labels=labels" in line
+        or stripped == "from graphify.export import to_json"
+        or "curated community_name (#2490)" in line
+        or "shrink-guard passes on node count" in line
+        or "surface the guard message - do not force past it" in line
+        or "No community_labels here" in line
+        or "re-exports graph.json with the curated names (#2490)" in line
+    )
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -890,8 +1155,14 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_cache_unlink_fix_line,
     _is_zero_node_guard_fix_line,
     _is_manifest_root_fix_line,
+    _is_manifest_stamp_fix_line,
+    _is_sensitive_reporting_fix_line,
     _is_no_api_key_fix_line,
     _is_shebang_allowlist_fix_line,
+    _is_obsidian_usage_comment_line,
+    _is_uv_from_interpreter_fix_line,
+    _is_semantic_cache_scope_fix_line,
+    _is_community_label_export_fix_line,
 )
 
 
@@ -908,8 +1179,9 @@ def monolith_roundtrip(platform: Platform) -> list[str]:
     arbitrary edit (even a blessed one) from drifting them. Sanctioned changes are
     enumerated as predicates in ``_SANCTIONED_MONOLITH_DIFFS``: the file_type enum
     unification, the unified frontmatter description, the chunk-cleanup rewrite
-    (#1172), and the four #1392 runbook fixes (directed propagation, content-only
-    semantic scope, stale-cache unlink, and the zero-node/shrink-guard ordering).
+    (#1172), the four #1392 runbook fixes (directed propagation, content-only
+    semantic scope, stale-cache unlink, and the zero-node/shrink-guard ordering),
+    and semantic-cache source scoping (#1757).
 
     The comparison is a multiset diff, not a positional zip: a line whose text is
     unchanged but merely *moved* (the report-write line shifted below ``to_json``

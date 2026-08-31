@@ -4,7 +4,9 @@ Backend calls are mocked - no network. Covers the happy path, partial replies,
 malformed replies, and the no-backend fallback.
 """
 import json
+import re
 import sys
+from pathlib import Path
 
 import networkx as nx
 import pytest
@@ -265,8 +267,10 @@ def test_label_communities_batches_when_over_batch_size(monkeypatch):
 
     def fake_call(prompt, *, backend, max_tokens=200):
         # The fake reads which cids the prompt asks about and answers all of them.
-        cids = [int(line.split(":", 1)[0].removeprefix("Community ").strip())
-                for line in prompt.splitlines() if line.startswith("Community ")]
+        # #2534: prompt lines are now "<cid>: <names>" — the old "Community {cid}:"
+        # key collided with the placeholder sentinel and echoed keys were dropped.
+        cids = [int(m.group(1)) for m in
+                (re.match(r"^(\d+): ", line) for line in prompt.splitlines()) if m]
         calls.append(len(cids))
         return "{" + ", ".join(f'"{c}": "Cluster {c}"' for c in cids) + "}"
 
@@ -287,8 +291,10 @@ def test_label_communities_partial_batch_failure_keeps_successful_batches(monkey
 
     def fake_call(prompt, *, backend, max_tokens=200):
         n_calls[0] += 1
-        cids = [int(line.split(":", 1)[0].removeprefix("Community ").strip())
-                for line in prompt.splitlines() if line.startswith("Community ")]
+        # #2534: prompt lines are now "<cid>: <names>" — the old "Community {cid}:"
+        # key collided with the placeholder sentinel and echoed keys were dropped.
+        cids = [int(m.group(1)) for m in
+                (re.match(r"^(\d+): ", line) for line in prompt.splitlines()) if m]
         if n_calls[0] == 2:
             raise RuntimeError("simulated transient backend failure")
         return "{" + ", ".join(f'"{c}": "Named {c}"' for c in cids) + "}"
@@ -323,8 +329,10 @@ def test_label_communities_max_communities_caps_total(monkeypatch):
     captured_cids = []
 
     def fake_call(prompt, *, backend, max_tokens=200):
-        cids = [int(line.split(":", 1)[0].removeprefix("Community ").strip())
-                for line in prompt.splitlines() if line.startswith("Community ")]
+        # #2534: prompt lines are now "<cid>: <names>" — the old "Community {cid}:"
+        # key collided with the placeholder sentinel and echoed keys were dropped.
+        cids = [int(m.group(1)) for m in
+                (re.match(r"^(\d+): ", line) for line in prompt.splitlines()) if m]
         captured_cids.extend(cids)
         return "{" + ", ".join(f'"{c}": "X{c}"' for c in cids) + "}"
 
@@ -474,3 +482,392 @@ def test_label_communities_counts_tokens_for_failed_batch(monkeypatch):
             G2, {0: ["a"]}, backend="gemini", usage_out=usage,
         )
     assert usage == {"input": 50, "output": 5}
+
+
+def _two_community_graph(out):
+    """Two disconnected components -> two stable communities, each hub-labelled
+    by its own node."""
+    graph = {
+        "directed": False, "multigraph": False,
+        "nodes": [
+            {"id": "orders", "label": "OrderService", "community": 0},
+            {"id": "order_db", "label": "OrderDB", "community": 0},
+            {"id": "payments", "label": "PaymentService", "community": 1},
+            {"id": "pay_db", "label": "PayDB", "community": 1},
+        ],
+        "links": [
+            {"source": "orders", "target": "order_db", "relation": "calls"},
+            {"source": "payments", "target": "pay_db", "relation": "calls"},
+        ],
+    }
+    (out / "graph.json").write_text(json.dumps(graph), encoding="utf-8")
+
+
+@pytest.mark.parametrize("command", ["cluster-only", "label"])
+def test_cluster_commands_render_aggregated_html_above_viz_limit(
+    tmp_path, monkeypatch, capsys, command,
+):
+    """#2853: relabeling a large graph must keep a current aggregated HTML."""
+    import graphify.__main__ as cli
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    _two_community_graph(out)
+    html = out / "graph.html"
+    html.write_text("stale visualization", encoding="utf-8")
+
+    monkeypatch.setenv("GRAPHIFY_VIZ_NODE_LIMIT", "3")
+    monkeypatch.setattr(cli, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        "graphify.llm.generate_community_labels",
+        lambda G, comms, **kwargs: (
+            {cid: f"Fresh community {cid}" for cid in comms},
+            "test",
+        ),
+    )
+
+    argv = ["graphify", command, str(tmp_path)]
+    if command == "cluster-only":
+        argv.append("--no-label")
+    monkeypatch.setattr(sys, "argv", argv)
+
+    cli.main()
+
+    output = capsys.readouterr().out
+    assert html.exists()
+    assert not (out / ".graph.html.stale").exists()
+    rendered = html.read_text(encoding="utf-8")
+    assert "stale visualization" not in rendered
+    if command == "label":
+        assert "Fresh community" in rendered
+    assert "aggregated" in output
+    assert "graph.html updated" in output
+
+
+def test_cluster_only_preserves_but_does_not_claim_unusable_aggregate(
+    tmp_path, monkeypatch, capsys,
+):
+    """A skipped aggregate must not race with or falsely claim an HTML write."""
+    import importlib
+    import graphify.__main__ as cli
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    _two_community_graph(out)
+    html = out / "graph.html"
+    html.write_text("stale visualization", encoding="utf-8")
+
+    monkeypatch.setenv("GRAPHIFY_VIZ_NODE_LIMIT", "3")
+    monkeypatch.setattr(cli, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        importlib.import_module("graphify.cluster"),
+        "cluster",
+        lambda G, **kwargs: {0: list(G.nodes())},
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["graphify", "cluster-only", str(tmp_path), "--no-label"],
+    )
+
+    cli.main()
+
+    output = capsys.readouterr().out
+    assert html.read_text(encoding="utf-8") == "stale visualization"
+    assert (out / ".graph.html.stale").exists()
+    assert "Skipped graph.html" in output
+    assert "existing graph.html left unchanged" in output
+    assert "graph.html updated" not in output
+
+
+def test_cluster_only_restores_html_after_unexpected_render_failure(
+    tmp_path, monkeypatch,
+):
+    """A failed render must not destroy the previous HTML file."""
+    import importlib
+    import graphify.__main__ as cli
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    _two_community_graph(out)
+    html = out / "graph.html"
+    html.write_text("previous visualization", encoding="utf-8")
+
+    def fail_render(*args, **kwargs):
+        raise OSError("simulated render failure")
+
+    monkeypatch.setenv("GRAPHIFY_VIZ_NODE_LIMIT", "3")
+    monkeypatch.setattr(cli, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        importlib.import_module("graphify.export"),
+        "to_html",
+        fail_render,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["graphify", "cluster-only", str(tmp_path), "--no-label"],
+    )
+
+    with pytest.raises(OSError, match="simulated render failure"):
+        cli.main()
+
+    assert html.read_text(encoding="utf-8") == "previous visualization"
+    assert (out / ".graph.html.stale").exists()
+    assert not list(out.glob(".graph.html.*.previous"))
+
+
+def test_cluster_only_marks_html_stale_before_report_generation(
+    tmp_path, monkeypatch,
+):
+    """An interruption after graph.json advances must remain repairable."""
+    import graphify.__main__ as cli
+    from graphify.watch import _reconcile_graph_html
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    _two_community_graph(out)
+    html = out / "graph.html"
+    html.write_text("previous visualization", encoding="utf-8")
+
+    def interrupt_report(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setenv("GRAPHIFY_VIZ_NODE_LIMIT", "3")
+    monkeypatch.setattr(cli, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr("graphify.report.generate", interrupt_report)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["graphify", "cluster-only", str(tmp_path), "--no-label"],
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        cli.main()
+
+    marker = out / ".graph.html.stale"
+    assert html.read_text(encoding="utf-8") == "previous visualization"
+    assert marker.exists()
+
+    persisted = json.loads((out / "graph.json").read_text(encoding="utf-8"))
+    assert _reconcile_graph_html(out, persisted) == "rendered"
+    assert html.read_text(encoding="utf-8") != "previous visualization"
+    assert not marker.exists()
+
+
+def test_cluster_only_refused_graph_write_preserves_existing_stale_marker(
+    tmp_path, monkeypatch,
+):
+    """A refused write must not erase retry state owned by an earlier run."""
+    import graphify.__main__ as cli
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    _two_community_graph(out)
+    html = out / "graph.html"
+    html.write_text("known stale visualization", encoding="utf-8")
+    marker = out / ".graph.html.stale"
+    marker.touch()
+
+    monkeypatch.setattr(cli, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr("graphify.export.to_json", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["graphify", "cluster-only", str(tmp_path), "--no-label"],
+    )
+
+    with pytest.raises(SystemExit) as stopped:
+        cli.main()
+
+    assert stopped.value.code == 1
+    assert html.read_text(encoding="utf-8") == "known stale visualization"
+    assert marker.exists()
+
+
+def test_cluster_only_succeeds_when_stale_marker_cleanup_fails(
+    tmp_path, monkeypatch, capsys,
+):
+    """A completed HTML replacement must remain a successful command."""
+    import graphify.__main__ as cli
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    _two_community_graph(out)
+    html = out / "graph.html"
+    html.write_text("stale visualization", encoding="utf-8")
+    marker = out / ".graph.html.stale"
+    marker.touch()
+    original_unlink = Path.unlink
+
+    def reject_marker_unlink(path, *args, **kwargs):
+        if path == marker:
+            raise PermissionError("simulated marker cleanup failure")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setenv("GRAPHIFY_VIZ_NODE_LIMIT", "3")
+    monkeypatch.setattr(cli, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(Path, "unlink", reject_marker_unlink)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["graphify", "cluster-only", str(tmp_path), "--no-label"],
+    )
+
+    cli.main()
+
+    captured = capsys.readouterr()
+    assert html.read_text(encoding="utf-8") != "stale visualization"
+    assert marker.exists()
+    assert "graph.html updated" in captured.out
+    assert "stale marker could not be cleared" in captured.err
+
+
+def test_cluster_only_does_not_erase_concurrent_html_after_failure(
+    tmp_path, monkeypatch,
+):
+    """A failing renderer must not roll back a concurrent successful writer."""
+    import importlib
+    import graphify.__main__ as cli
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    _two_community_graph(out)
+    html = out / "graph.html"
+    html.write_text("previous visualization", encoding="utf-8")
+
+    def concurrent_then_fail(*args, **kwargs):
+        html.write_text("newer concurrent visualization", encoding="utf-8")
+        raise OSError("simulated render failure")
+
+    monkeypatch.setenv("GRAPHIFY_VIZ_NODE_LIMIT", "3")
+    monkeypatch.setattr(cli, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        importlib.import_module("graphify.export"),
+        "to_html",
+        concurrent_then_fail,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["graphify", "cluster-only", str(tmp_path), "--no-label"],
+    )
+
+    with pytest.raises(OSError, match="simulated render failure"):
+        cli.main()
+
+    assert html.read_text(encoding="utf-8") == "newer concurrent visualization"
+
+
+def test_cluster_only_no_label_does_not_persist_placeholders(tmp_path, monkeypatch):
+    """#2073: --no-label must not write .graphify_labels.json with 'Community N'
+    placeholders (which the reuse path would then treat as fresh forever). A
+    later normal run must produce real (non-placeholder) labels."""
+    import graphify.__main__ as cli
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    _two_community_graph(out)
+    labels_path = out / ".graphify_labels.json"
+
+    monkeypatch.setattr(cli, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr("graphify.export.to_html", lambda *a, **k: None)
+    # No-backend fallback shape: returns placeholders, which must not clobber hubs.
+    monkeypatch.setattr("graphify.llm.generate_community_labels",
+                        lambda G, comms, **k: ({cid: f"Community {cid}" for cid in comms}, "none"))
+
+    monkeypatch.setattr(sys, "argv", ["graphify", "cluster-only", str(tmp_path), "--no-label", "--no-viz"])
+    cli.main()
+    assert not labels_path.exists(), "--no-label persisted a placeholder labels file (#2073)"
+    assert not (out / ".graphify_labels.json.sig").exists()
+
+    # A later normal run generates real labels (no sticky placeholders blocking it).
+    monkeypatch.setattr(sys, "argv", ["graphify", "cluster-only", str(tmp_path), "--no-viz"])
+    cli.main()
+    assert labels_path.exists()
+    saved = json.loads(labels_path.read_text(encoding="utf-8"))
+    assert saved, "no labels written on the normal run"
+    assert not any(v == f"Community {k}" for k, v in saved.items()), (
+        f"real labels expected, got placeholders: {saved} (#2073)"
+    )
+
+
+def test_cluster_only_heals_persisted_placeholder_but_reuses_genuine(tmp_path, monkeypatch):
+    """#2073: an already-polluted sidecar (a placeholder for one community, a
+    genuine label for another) self-heals — the placeholder is replaced by the
+    hub name while the genuine label is reused, with no LLM call."""
+    import graphify.__main__ as cli
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    _two_community_graph(out)
+    labels_path = out / ".graphify_labels.json"
+    # Polluted state: community 0 is a stuck placeholder, community 1 is genuine.
+    labels_path.write_text(json.dumps({"0": "Community 0", "1": "Payment Flow"}), encoding="utf-8")
+
+    monkeypatch.setattr(cli, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr("graphify.export.to_html", lambda *a, **k: None)
+    def _fail_generate(*a, **k):
+        raise AssertionError("generate_community_labels must not be called on the reuse path")
+    monkeypatch.setattr("graphify.llm.generate_community_labels", _fail_generate)
+
+    monkeypatch.setattr(sys, "argv", ["graphify", "cluster-only", str(tmp_path), "--no-viz"])
+    cli.main()
+    saved = json.loads(labels_path.read_text(encoding="utf-8"))
+    assert saved["0"] != "Community 0", "stuck placeholder was not healed (#2073)"
+    assert saved["1"] == "Payment Flow", "genuine label was not reused"
+
+
+# ── #2534 case 2: prompt key must not collide with the placeholder sentinel ──
+
+
+def test_label_prompt_lines_use_bare_cid_keys():
+    """The prompt line used to read "Community {cid}: ..." — the exact string of
+    the no-backend placeholder sentinel. A model that echoed the key back as the
+    name produced a reply indistinguishable from the fallback, so the caller's
+    sentinel filter silently dropped it (#2534). The key must be the bare id."""
+    from graphify.llm import _community_label_lines
+
+    G, communities = _graph()
+    lines, labeled_cids = _community_label_lines(G, communities, None, 10, 12)
+    assert sorted(labeled_cids) == [0, 1]
+    for line in lines:
+        assert re.match(r"^\d+: ", line), f"prompt line key is not a bare id: {line!r}"
+        assert not line.startswith("Community "), f"sentinel-colliding key: {line!r}"
+
+
+def test_label_cli_drops_sentinel_and_bare_key_echoes(tmp_path, monkeypatch):
+    """#2534 case 2, cli side: an LLM reply that echoes the sentinel
+    ("Community 5") or the bare prompt key ("7") must not survive the filter —
+    the deterministic hub labels win — while a real name still overrides."""
+    import graphify.__main__ as cli
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    graph = {
+        "directed": False,
+        "multigraph": False,
+        "nodes": [
+            {"id": "orders", "label": "OrderService", "community": 0},
+            {"id": "pay", "label": "PaymentService", "community": 5},
+            {"id": "ship", "label": "ShippingService", "community": 7},
+        ],
+        "links": [],
+    }
+    (out / "graph.json").write_text(json.dumps(graph), encoding="utf-8")
+
+    def fake_generate(G, communities, *, backend=None, model=None, gods=None,
+                      quiet=False, max_concurrency=4, batch_size=100, usage_out=None):
+        return {0: "Order Management", 5: "Community 5", 7: "7"}, "llm"
+
+    monkeypatch.setattr("graphify.llm.generate_community_labels", fake_generate)
+    monkeypatch.setattr("graphify.export.to_html", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        sys, "argv",
+        ["graphify", "label", str(tmp_path), "--backend", "gemini", "--no-viz"],
+    )
+
+    cli.main()
+
+    labels = json.loads((out / ".graphify_labels.json").read_text(encoding="utf-8"))
+    assert labels["0"] == "Order Management"            # real name survives
+    assert labels["5"] == "PaymentService"              # sentinel echo dropped -> hub label
+    assert labels["7"] == "ShippingService"             # bare-key echo dropped -> hub label

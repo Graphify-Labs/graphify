@@ -98,7 +98,7 @@ def test_codebuddy_install_hook_has_bash_matcher(tmp_path):
     codebuddy_install(tmp_path)
     settings = json.loads(_settings_path(tmp_path).read_text())
     hooks = settings["hooks"]["PreToolUse"]
-    bash_hooks = [h for h in hooks if h.get("matcher") == "Bash"]
+    bash_hooks = [h for h in hooks if h.get("matcher") == "Bash|Grep"]
     assert any("graphify" in str(h) for h in bash_hooks)
 
 

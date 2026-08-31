@@ -77,6 +77,58 @@ def test_java_ambiguous_implements_disambiguated_by_import(tmp_path: Path):
     assert "com/b/handler" not in tgt["source_file"]
 
 
+def test_java_ambiguous_reference_disambiguated_by_import(tmp_path: Path):
+    # #1744: two classes with the SAME simple name in different modules/packages.
+    # Both survive as distinct path-scoped nodes, but a cross-module field/type
+    # `references` edge used to dangle on a sourceless phantom stub (the
+    # implements/inherits case was handled, references was not). The importing
+    # file's `import` must re-point the reference to the right class and leave no
+    # orphan phantom.
+    payment = _write(
+        tmp_path / "payment/src/com/example/payment/FinancialEntryValidator.java",
+        "package com.example.payment;\n"
+        "public class FinancialEntryValidator {\n"
+        "    public boolean validateCurrency(String c) { return c.length() == 3; }\n"
+        "}\n",
+    )
+    core = _write(
+        tmp_path / "core/src/com/example/core/FinancialEntryValidator.java",
+        "package com.example.core;\n"
+        "public class FinancialEntryValidator {\n"
+        "    public void auditEntry(String id) {}\n"
+        "}\n",
+    )
+    consumer = _write(
+        tmp_path / "app/src/com/example/app/PaymentService.java",
+        "package com.example.app;\n"
+        "import com.example.payment.FinancialEntryValidator;\n"
+        "public class PaymentService {\n"
+        "    private FinancialEntryValidator validator = new FinancialEntryValidator();\n"
+        "}\n",
+    )
+    result = extract([payment, core, consumer], cache_root=tmp_path)
+
+    # Both real classes survive (path-scoped ids); no sourceless phantom remains.
+    fev = [n for n in result["nodes"] if n.get("label") == "FinancialEntryValidator"]
+    reals = [n for n in fev if n.get("source_file")]
+    phantoms = [n for n in fev if not n.get("source_file")]
+    assert len(reals) == 2, f"expected both real classes, got {[n.get('source_file') for n in fev]}"
+    assert not phantoms, f"orphan phantom node(s) remain: {[n['id'] for n in phantoms]}"
+
+    # The reference must resolve to the IMPORTED (payment) class, not core.
+    refs = [
+        e for e in result["edges"]
+        if e["relation"] == "references"
+        and (_node_by_id(result, e["target"]) or {}).get("label") == "FinancialEntryValidator"
+    ]
+    assert refs, "expected a references edge to FinancialEntryValidator"
+    for e in refs:
+        tgt = _node_by_id(result, e["target"])
+        assert tgt is not None and tgt.get("source_file")
+        assert "payment/" in tgt["source_file"]
+        assert "core/" not in tgt["source_file"]
+
+
 def test_java_implements_edge_survives_build(tmp_path: Path):
     # #1318: the re-pointed edge must connect real nodes after graph assembly,
     # so the interface is not classified as an isolated community.
@@ -199,6 +251,174 @@ def test_java_user_types_still_emit_references(tmp_path: Path):
         by_label for (_, _, by_label) in _label_edges(result, {"references"})
     }
     assert "OrderDto" in ref_targets, "user type OrderDto must still emit references"
+
+
+def test_java_external_annotation_does_not_conflate_with_local_class(tmp_path: Path):
+    # #2504: Spring's @Component is EXTERNAL. A local `class Component` with the
+    # same simple name must not absorb the services' annotation/import edges —
+    # the bare-name stub used to collapse onto it and manufacture a false hub.
+    local = _write(
+        tmp_path / "src/com/example/model/Component.java",
+        "package com.example.model;\npublic class Component {}\n",
+    )
+    user = _write(
+        tmp_path / "src/com/example/service/UserService.java",
+        "package com.example.service;\n"
+        "import org.springframework.stereotype.Component;\n"
+        "@Component\npublic class UserService {}\n",
+    )
+    order = _write(
+        tmp_path / "src/com/example/service/OrderService.java",
+        "package com.example.service;\n"
+        "import org.springframework.stereotype.Component;\n"
+        "@Component\npublic class OrderService {}\n",
+    )
+    inventory = _write(
+        tmp_path / "src/com/example/app/Inventory.java",
+        "package com.example.app;\n"
+        "import com.example.model.Component;\n"
+        "public class Inventory {\n"
+        "    private Component part;\n"
+        "}\n",
+    )
+    result = extract([local, user, order, inventory], cache_root=tmp_path)
+    by_id = {n["id"]: n for n in result["nodes"]}
+
+    local_id = next(
+        n["id"] for n in result["nodes"]
+        if n.get("label") == "Component" and "model" in n.get("source_file", "")
+    )
+
+    # No references/imports edge from the service files may land on the local class.
+    conflated = [
+        e for e in result["edges"]
+        if e.get("target") == local_id and "service" in e.get("source_file", "")
+    ]
+    assert not conflated, f"external @Component conflated with local class: {conflated}"
+
+    # The @Component attribute edges park on an external FQN-labeled stub.
+    attr = [
+        e for e in result["edges"]
+        if e.get("relation") == "references" and e.get("context") == "attribute"
+        and "service" in e.get("source_file", "")
+    ]
+    assert len(attr) == 2, "expected one @Component attribute edge per service"
+    for e in attr:
+        tgt = by_id.get(e["target"]) or {}
+        assert tgt.get("label") == "org.springframework.stereotype.Component"
+        assert not tgt.get("source_file")
+
+    # The genuine internal use still resolves to the local class.
+    inv_edges = [
+        e for e in result["edges"]
+        if e.get("source_file", "").endswith("Inventory.java")
+        and e.get("target") == local_id
+    ]
+    assert inv_edges, "Inventory's use of the local Component must still resolve"
+
+
+def test_java_in_corpus_annotation_still_resolves(tmp_path: Path):
+    # #2504 guard: a locally-defined @interface used via an explicit import must
+    # still resolve to the real source-backed node, not get parked externally.
+    anno = _write(
+        tmp_path / "src/com/example/anno/Loggable.java",
+        "package com.example.anno;\npublic @interface Loggable {}\n",
+    )
+    svc = _write(
+        tmp_path / "src/com/example/service/AuditService.java",
+        "package com.example.service;\n"
+        "import com.example.anno.Loggable;\n"
+        "@Loggable\npublic class AuditService {}\n",
+    )
+    result = extract([anno, svc], cache_root=tmp_path)
+    by_id = {n["id"]: n for n in result["nodes"]}
+    attr = [
+        e for e in result["edges"]
+        if e.get("relation") == "references" and e.get("context") == "attribute"
+    ]
+    assert attr, "expected a @Loggable attribute edge"
+    for e in attr:
+        tgt = by_id.get(e["target"]) or {}
+        assert tgt.get("label") == "Loggable"
+        assert tgt.get("source_file"), "annotation must land on the real @interface node"
+        assert "anno" in tgt["source_file"]
+
+
+def test_java_same_package_annotation_resolves_without_import(tmp_path: Path):
+    # #2504 guard: same-package use (no import, no facts) keeps resolving via
+    # the legacy unique-label rewire.
+    anno = _write(
+        tmp_path / "src/com/example/anno/Loggable.java",
+        "package com.example.anno;\npublic @interface Loggable {}\n",
+    )
+    svc = _write(
+        tmp_path / "src/com/example/anno/AuditService.java",
+        "package com.example.anno;\n"
+        "@Loggable\npublic class AuditService {}\n",
+    )
+    result = extract([anno, svc], cache_root=tmp_path)
+    by_id = {n["id"]: n for n in result["nodes"]}
+    attr = [
+        e for e in result["edges"]
+        if e.get("relation") == "references" and e.get("context") == "attribute"
+    ]
+    assert attr, "expected a @Loggable attribute edge"
+    for e in attr:
+        tgt = by_id.get(e["target"]) or {}
+        assert tgt.get("label") == "Loggable"
+        assert tgt.get("source_file"), "annotation must land on the real @interface node"
+
+
+def test_java_qualified_inline_annotation_resolves_internally(tmp_path: Path):
+    # #2504 (qualified inline form): `@com.example.anno.Loggable` with no import
+    # must resolve to the real @interface node via its FQN.
+    anno = _write(
+        tmp_path / "src/com/example/anno/Loggable.java",
+        "package com.example.anno;\npublic @interface Loggable {}\n",
+    )
+    svc = _write(
+        tmp_path / "src/com/example/service/AuditService.java",
+        "package com.example.service;\n"
+        "@com.example.anno.Loggable\npublic class AuditService {}\n",
+    )
+    result = extract([anno, svc], cache_root=tmp_path)
+    by_id = {n["id"]: n for n in result["nodes"]}
+    attr = [
+        e for e in result["edges"]
+        if e.get("relation") == "references" and e.get("context") == "attribute"
+    ]
+    assert attr, "expected a qualified @Loggable attribute edge"
+    for e in attr:
+        tgt = by_id.get(e["target"]) or {}
+        assert tgt.get("label") == "Loggable"
+        assert tgt.get("source_file"), "qualified annotation must land on the real node"
+
+
+def test_java_qualified_inline_external_annotation_does_not_bind_local_class(tmp_path: Path):
+    # #2504 (qualified inline form): an external `@io.micrometer.core.annotation.Timed`
+    # must not bind to a same-named local class.
+    local = _write(
+        tmp_path / "src/com/example/model/Timed.java",
+        "package com.example.model;\npublic class Timed {}\n",
+    )
+    svc = _write(
+        tmp_path / "src/com/example/service/MetricsService.java",
+        "package com.example.service;\n"
+        "public class MetricsService {\n"
+        "    @io.micrometer.core.annotation.Timed\n"
+        "    public void record() {}\n"
+        "}\n",
+    )
+    result = extract([local, svc], cache_root=tmp_path)
+    local_id = next(
+        n["id"] for n in result["nodes"]
+        if n.get("label") == "Timed" and n.get("source_file")
+    )
+    conflated = [
+        e for e in result["edges"]
+        if e.get("target") == local_id and "service" in e.get("source_file", "")
+    ]
+    assert not conflated, f"external qualified annotation bound to local class: {conflated}"
 
 
 def test_java_cross_file_constructor_call_resolves(tmp_path: Path):

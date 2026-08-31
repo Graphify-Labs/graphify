@@ -268,3 +268,158 @@ def test_affected_cli_source_file_path_uses_file_level_node(monkeypatch, tmp_pat
     assert "consumer.ts" in out
     assert "imports_from" in out
     assert "No unique node matched" not in out
+
+
+# ── BUG1: caller lists must show the call-SITE line, not the caller def line ──
+
+def _write_callsite_graph(tmp_path):
+    """A caller whose call site (L158) differs from its own def line (L90)."""
+    g = nx.DiGraph()
+    g.add_node("loader", label="_load_apollo_app_state()",
+               source_file="apollo_pipeline_status.py", source_location="L90")
+    g.add_node("transition", label="transition_state()",
+               source_file="state.py", source_location="L56")
+    # The call happens at line 158 inside the caller's file.
+    g.add_edge("loader", "transition", relation="calls", context="call",
+               confidence="EXTRACTED", source_file="apollo_pipeline_status.py",
+               source_location="L158")
+    gp = tmp_path / "graph.json"
+    gp.write_text(json.dumps(json_graph.node_link_data(g, edges="links")), encoding="utf-8")
+    return gp
+
+
+def test_affected_reports_call_site_line_not_def_line(monkeypatch, tmp_path, capsys):
+    gp = _write_callsite_graph(tmp_path)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(mainmod.sys, "argv",
+                        ["graphify", "affected", "transition_state", "--graph", str(gp)])
+    mainmod.main()
+    out = capsys.readouterr().out
+    assert "apollo_pipeline_status.py:L158" in out, "must report the call SITE line (BUG1)"
+    assert "apollo_pipeline_status.py:L90" not in out, "must NOT report the caller's def line"
+
+
+def test_affected_falls_back_to_def_line_when_edge_has_no_location(monkeypatch, tmp_path, capsys):
+    """An edge with no stored location honestly falls back to the node's def line."""
+    g = nx.DiGraph()
+    g.add_node("loader", label="load()", source_file="a.py", source_location="L90")
+    g.add_node("t", label="target()", source_file="b.py", source_location="L5")
+    g.add_edge("loader", "t", relation="calls", confidence="INFERRED")  # no source_location
+    gp = tmp_path / "graph.json"
+    gp.write_text(json.dumps(json_graph.node_link_data(g, edges="links")), encoding="utf-8")
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(mainmod.sys, "argv", ["graphify", "affected", "target", "--graph", str(gp)])
+    mainmod.main()
+    assert "a.py:L90" in capsys.readouterr().out
+
+
+def test_affected_resolves_equivalent_path_forms(tmp_path, monkeypatch):
+    """`./x.py`, an absolute path and `x.py` name one file and must resolve alike.
+
+    The graph stores repo-relative `source_file`, and `resolve_seed` compared the
+    query to it as a plain string. `./pkg/foo.py` and `/abs/repo/pkg/foo.py`
+    therefore matched nothing, `affected` printed an empty list and exited 0 — a
+    blast-radius tool reporting "nothing depends on this" about a file with three
+    dependents, and indistinguishable both from a genuine zero and from a typo.
+    """
+    from graphify.affected import resolve_seed
+
+    graph = nx.DiGraph()
+    graph.add_node("target", label="Foo", source_file="pkg/foo.py", source_location="L1")
+    graph.add_node("caller", label="X()", source_file="app.py", source_location="L4")
+    graph.add_edge("caller", "target", relation="calls")
+
+    monkeypatch.chdir(tmp_path)
+    for query in (
+        "pkg/foo.py",
+        "./pkg/foo.py",
+        str(tmp_path / "pkg" / "foo.py"),
+    ):
+        assert resolve_seed(graph, query) == "target", query
+
+
+def test_affected_absolute_seed_resolves_via_graph_root_off_cwd(tmp_path, monkeypatch, capsys):
+    """An absolute-path seed resolves off the graph's location, not the cwd (#2706).
+
+    The shipped `./`/absolute fix only matched when the working directory already
+    was the analysed repo root. Editors and scripts pass an absolute path from
+    anywhere, so `affected` kept answering "nothing depends on this" — the
+    maintainer's noted follow-up. The root is now derived from the graph's own
+    location (`<root>/graphify-out/graph.json`).
+    """
+    from graphify.paths import GRAPHIFY_OUT_NAME
+
+    repo_root = tmp_path / "repo"
+    out_dir = repo_root / GRAPHIFY_OUT_NAME
+    out_dir.mkdir(parents=True)
+    g = nx.DiGraph()
+    g.add_node("target", label="Foo", source_file="pkg/foo.py", source_location="L1")
+    g.add_node("caller", label="X()", source_file="app.py", source_location="L4")
+    g.add_edge("caller", "target", relation="calls")
+    gp = out_dir / "graph.json"
+    gp.write_text(json.dumps(json_graph.node_link_data(g, edges="links")), encoding="utf-8")
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)  # NOT the repo root — mimics an editor/script caller
+    abs_seed = str(repo_root / "pkg" / "foo.py")
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(mainmod.sys, "argv", ["graphify", "affected", abs_seed, "--graph", str(gp)])
+    mainmod.main()
+
+    out = capsys.readouterr().out
+    assert "Affected nodes for Foo" in out
+    assert "X()" in out
+
+
+def test_affected_absolute_seed_outside_root_misses_cleanly(tmp_path, monkeypatch, capsys):
+    """An absolute seed that is NOT under the derived repo root must report a clean
+    no-match, not silently traverse from a wrong/guessed node (#2706)."""
+    from graphify.paths import GRAPHIFY_OUT_NAME
+
+    repo_root = tmp_path / "repo"
+    out_dir = repo_root / GRAPHIFY_OUT_NAME
+    out_dir.mkdir(parents=True)
+    g = nx.DiGraph()
+    g.add_node("target", label="Foo", source_file="pkg/foo.py", source_location="L1")
+    g.add_node("caller", label="X()", source_file="app.py", source_location="L4")
+    g.add_edge("caller", "target", relation="calls")
+    gp = out_dir / "graph.json"
+    gp.write_text(json.dumps(json_graph.node_link_data(g, edges="links")), encoding="utf-8")
+
+    monkeypatch.chdir(tmp_path)
+    outside_seed = str(tmp_path / "other-repo" / "pkg" / "foo.py")  # same basename, different tree
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(mainmod.sys, "argv",
+                        ["graphify", "affected", outside_seed, "--graph", str(gp)])
+    mainmod.main()
+
+    out = capsys.readouterr().out
+    assert "Affected nodes for Foo" not in out          # must NOT resolve to the in-root Foo
+
+
+def test_affected_absolute_seed_with_graph_not_under_out_dir(tmp_path, monkeypatch, capsys):
+    """Fallback layout: when --graph points at a graph.json NOT under the
+    graphify-out dir, the root is the graph's own parent (`else gp.parent`)."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir(parents=True)
+    g = nx.DiGraph()
+    g.add_node("target", label="Foo", source_file="pkg/foo.py", source_location="L1")
+    g.add_node("caller", label="X()", source_file="app.py", source_location="L4")
+    g.add_edge("caller", "target", relation="calls")
+    gp = repo_root / "graph.json"  # directly under repo_root, not graphify-out/
+    gp.write_text(json.dumps(json_graph.node_link_data(g, edges="links")), encoding="utf-8")
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    abs_seed = str(repo_root / "pkg" / "foo.py")
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(mainmod.sys, "argv",
+                        ["graphify", "affected", abs_seed, "--graph", str(gp)])
+    mainmod.main()
+
+    out = capsys.readouterr().out
+    assert "Affected nodes for Foo" in out
+    assert "X()" in out
+

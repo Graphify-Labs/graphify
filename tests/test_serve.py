@@ -1,13 +1,19 @@
 """Tests for serve.py - MCP graph query helpers (no mcp package required)."""
 import json
+import unicodedata
+
 import pytest
 import networkx as nx
 from networkx.readwrite import json_graph
 
 from graphify.serve import (
+    _strip_diacritics,
     _communities_from_graph,
     _score_nodes,
+    _score_query,
     _compute_idf,
+    _EXACT_MATCH_BONUS,
+    _SOURCE_MATCH_BONUS,
     _pick_seeds,
     _bfs,
     _dfs,
@@ -23,8 +29,11 @@ from graphify.serve import (
     _query_graph_text,
     _resolve_context_filters,
     _subgraph_to_text,
+    _cut_lines_to_budget,
     _load_graph,
     _community_header,
+    _search_tokens,
+    _shortest_path_text,
 )
 
 
@@ -124,6 +133,66 @@ def test_score_nodes_multiword_exact_label_outranks_superset():
     assert scored[0][0] > scored[1][0], "exact label must strictly outrank superset/token-bag matches"
 
 
+def test_score_nodes_coverage_lone_generic_exact_hit_loses_to_multi_term_match():
+    """A lone generic-word exact match must not bury a multi-term match.
+
+    Reproduces #1602: in a multi-term query, a single generic term that
+    exactly equals a short leaf label (query term "list" vs a list() function
+    node) received the full exact-tier bonus and outranked every node matching
+    several of the query's terms, even when the query contained the target's
+    literal identifier. The per-term exact/prefix tiers are now scaled by
+    squared term coverage, so a 1-of-5-terms collision drops below a
+    multi-term match. The leaves live in the same directory as the target
+    (the realistic case) to pin that source-path hits do not count as
+    coverage and hand the collision its exact tier back.
+    """
+    G = nx.Graph()
+
+    def _add(nid, label, src):
+        G.add_node(nid, label=label, norm_label=label.lower(),
+                   source_file=src, community=0)
+
+    _add("target", "ClientLive.Index", "lib/clients_live/index.ex")
+    _add("form", "ClientLive.Form", "lib/clients_live/form.ex")
+    _add("show", "ClientLive.Show", "lib/clients_live/show.ex")
+    # Same-named tiny leaf functions: "list" == bare label fires the exact
+    # tier. Placed in the target's own directory so their source paths also
+    # substring-match the query term "clients": a path hit must not inflate
+    # the coverage that multiplies the exact tier.
+    for i in range(3):
+        _add(f"leaf{i}", "list()", f"lib/clients_live/helpers{i}.ex")
+    # Filler making "list" a common (low-IDF) token, as in a real graph where
+    # list()/get()/new() style names are ubiquitous.
+    for i in range(24):
+        _add(f"filler{i}", f"shopping list {i}", f"lib/filler{i}.ex")
+
+    # The user pastes the real identifier plus context words; tokenization
+    # yields 5 terms: clientlive, index, clients, list, columns.
+    scored = _score_nodes(G, [t.lower() for t in "ClientLive.Index clients list columns".split()])
+    by_id = {nid: s for s, nid in scored}
+
+    assert scored[0][1] == "target"
+    assert by_id["target"] > by_id["leaf0"], (
+        "a 1-of-5-terms exact collision must not outrank the node matching 3 of 5 terms"
+    )
+
+
+def test_score_nodes_coverage_full_coverage_query_is_unchanged():
+    """Coverage scaling must not touch full-coverage queries (coverage == 1).
+
+    A single-term identifier lookup keeps the exact tier's full magnitude, so
+    `query "FooBarService"` behavior is byte-identical to before #1602.
+    """
+    G = _make_graph()
+    scored = _score_nodes(G, ["extract"])
+    w = _compute_idf(G, ["extract"])["extract"]
+    assert scored[0][1] == "n1"
+    # Full-query exact tier (10x) + per-term exact tier + source hit
+    # ("extract" in "extract.py"), all undampened.
+    expected = (_EXACT_MATCH_BONUS * 10 + _EXACT_MATCH_BONUS + _SOURCE_MATCH_BONUS) * w
+    assert scored[0][0] == pytest.approx(expected)
+
+
 def test_find_node_ignores_trailing_punctuation():
     G = _make_graph()
     assert _find_node(G, "extract?") == ["n1"]
@@ -188,6 +257,32 @@ def test_find_node_resolves_when_label_and_norm_label_diverge():
     assert _find_node(G, "blockStream.ts") == ["n1"]
 
 
+def test_find_node_matches_punctuated_node_id_exactly():
+    # #2467: the id is only ever compared against `term`, which tokenizes on \w+
+    # ("concept:domain:widget" -> "concept domain widget"), so no id carrying
+    # punctuation could equal it. Only the symmetric `norm_query == nid_norm`
+    # match resolves an exactly-typed node id.
+    G = nx.Graph()
+    G.add_node("concept:domain:widget", label="Widget", norm_label="widget",
+               source_file="docs/domain.md", source_location="L1")
+    G.add_node("plain_node_id", label="Plain", norm_label="plain",
+               source_file="docs/plain.md", source_location="L1")
+    assert _find_node(G, "concept:domain:widget") == ["concept:domain:widget"]
+    assert _find_node(G, "plain_node_id") == ["plain_node_id"]   # unpunctuated ids as before
+    assert _find_node(G, "Widget") == ["concept:domain:widget"]  # label lookup as before
+
+
+def test_find_node_matches_merge_graphs_namespaced_node_id():
+    # #2467: `prefix_graph_for_global` namespaces every id with "<repo>::", so on a
+    # merged graph no node at all resolved by id — including the id that `explain`
+    # itself had just printed.
+    G = nx.Graph()
+    G.add_node("backend::src_server_router_go", label="Router()",
+               norm_label="router()", source_file="src/server/router.go",
+               source_location="L12")
+    assert _find_node(G, "backend::src_server_router_go") == ["backend::src_server_router_go"]
+
+
 # --- trigram candidate prefilter (the trigram index that shrinks the O(N) scan) ---
 
 
@@ -209,6 +304,23 @@ def _make_big_graph(n: int = 150) -> nx.Graph:
     return G
 
 
+def _make_non_ascii_id_graph(n: int = 40) -> nx.Graph:
+    """A graph whose ids carry Hangul, large enough that the prefilter really runs.
+
+    The filler nodes are load-bearing: `_trigram_candidates` bails out to a full
+    scan when `min(present) > int(n * 0.10)`, so on a two-node graph any present
+    trigram trips the guard and the index path — where #2467's second defect lives —
+    is never exercised at all."""
+    G = nx.Graph()
+    for i in range(n):
+        G.add_node(f"id{i}", label=f"item node {i}", source_file=f"pkg/item_{i}.py")
+    G.add_node("concept:domain:한글", label="Hangul domain",
+               source_file="docs/한글.md", source_location="L1")
+    G.add_node("문서_목록", label="DocumentList",
+               source_file="src/문서_목록.py", source_location="L1")
+    return G
+
+
 def test_trigrams_basic():
     assert _trigrams("foobar") == {"foo", "oob", "oba", "bar"}
     assert _trigrams("ab") == {"ab"}        # <3 chars -> whole string is the key
@@ -226,6 +338,19 @@ def test_node_search_text_includes_all_matched_fields():
     assert parts[2] == "punct"                # nid
     assert parts[3] == "pkg/foobar.py"        # source_file
     assert parts[4] == "pkg foobar py"        # source_file tokens
+    assert len(parts) == 5                    # no folded-id field for an ASCII id (#2467)
+
+
+def test_node_search_text_appends_folded_non_ascii_node_id():
+    # #2467: for a Hangul id the raw and folded forms differ — precomposed syllables
+    # against conjoining jamo. Queries are trigrammed from the folded form, so the
+    # index has to carry it too, appended so the other field positions do not move.
+    G = _make_non_ascii_id_graph()
+    nid = "concept:domain:한글"
+    parts = _node_search_text(G.nodes[nid], nid).split("\x00")
+    assert parts[2] == nid
+    assert parts[5] == _strip_diacritics(nid).lower()
+    assert parts[5] != parts[2]
 
 
 def test_trigram_candidates_fast_path_fires_for_rare_term():
@@ -266,6 +391,35 @@ def test_find_node_prefilter_is_identical_to_full_scan(monkeypatch):
     # includes the punctuated label, exercised via its tokenized (label_tokens) form
     for label in ["ZebraQuokkaWidget", "MarmosetGadget handler", "Foo Bar Baz",
                   "item node 7", "missing"]:
+        fast = _find_node(G, label)
+        _force_full_scan(monkeypatch)
+        full = _find_node(G, label)
+        monkeypatch.undo()
+        assert fast == full, f"_find_node prefilter diverged (order!) for {label!r}"
+
+
+def test_find_node_matches_non_ascii_node_id_through_prefilter():
+    # #2467: `_node_search_text` indexed the id raw while every query folds through
+    # `_strip_diacritics`. NFKD decomposes a Hangul syllable into conjoining jamo,
+    # which have combining class 0 and so survive the combining-character filter —
+    # the needle's trigrams and the posting's trigrams were disjoint and the node
+    # was dropped from the candidate list before any predicate could see it.
+    G = _make_non_ascii_id_graph()
+    for nid in ("concept:domain:한글", "문서_목록"):
+        assert unicodedata.normalize("NFKD", nid) != nid   # fixture must stay NFKD-sensitive
+        needles = [" ".join(_search_tokens(nid)), _strip_diacritics(nid).lower()]
+        candidates = _trigram_candidates(G, needles)
+        assert candidates is not None                      # index path, not the full-scan fallback
+        assert nid in candidates
+        assert _find_node(G, nid) == [nid]
+
+
+def test_find_node_node_id_prefilter_is_identical_to_full_scan(monkeypatch):
+    # #2467: an id must resolve the same way whether the candidates came from the
+    # trigram index or from the full scan.
+    G = _make_non_ascii_id_graph()
+    for label in ["concept:domain:한글", "문서_목록", "id7", "item node 7",
+                  "DocumentList", "missing"]:
         fast = _find_node(G, label)
         _force_full_scan(monkeypatch)
         full = _find_node(G, label)
@@ -329,6 +483,43 @@ def test_query_terms_drops_question_stopwords():
 def test_query_terms_all_stopwords_falls_back_to_unfiltered():
     # An all-stopword query keeps its terms rather than seeding on nothing.
     assert _query_terms("how does it work") == ["how", "does", "work"]
+
+
+def test_query_terms_drops_german_question_stopwords():
+    # #1900: German full-sentence queries must reduce to the content noun.
+    # In a mostly-English corpus "wie"/"funktioniert" are rare, get high IDF
+    # weight, and out-seed the actual keyword unless dropped here.
+    assert _query_terms("Wie funktioniert die Authentifizierung?") == ["authentifizierung"]
+
+
+def test_query_terms_all_german_stopwords_falls_back_to_unfiltered():
+    # Existing all-stopword fallback applies to German fillers too: the query
+    # keeps its terms rather than seeding on nothing.
+    terms = _query_terms("wie funktioniert das")
+    assert terms == ["wie", "funktioniert", "das"]
+
+
+def test_pick_seeds_german_query_seeds_content_node_not_heading_noise():
+    """End-to-end for #1900: a German question over a graph with German
+    heading-noise nodes must seed on the content noun, not on nodes that
+    happen to contain 'die'/'wie'/'wird'."""
+    G = nx.DiGraph()
+    G.add_node("cfg", label="Die Konfiguration", source_file="docs/konfiguration.md")
+    G.add_node("sec", label="Wie wird gesichert", source_file="docs/sicherheit.md")
+    G.add_node("auth", label="Authentifizierung", source_file="src/auth.py")
+    G.add_node("helper", label="login_helper", source_file="src/auth.py")
+    G.add_edge("helper", "auth")
+
+    q = "Wie funktioniert die Authentifizierung?"
+    terms = _query_terms(q)
+    # #1918: _score_query does combined scoring + per-term singleton winners in
+    # one traversal; _pick_seeds consumes best_seed_by_term for the per-term
+    # guarantee (replaces the old terms= per-term rescoring).
+    qs = _score_query(G, terms, collect_per_term_seeds=True)
+    seeds = _pick_seeds(qs.ranked, G=G, best_seed_by_term=qs.best_seed_by_term)
+    assert "auth" in seeds
+    assert "cfg" not in seeds
+    assert "sec" not in seeds
 
 
 def test_query_terms_filters_only_short_english_terms(monkeypatch):
@@ -527,6 +718,32 @@ def test_load_graph_missing_file(tmp_path):
         _load_graph(str(graphify_dir / "nonexistent.json"))
 
 
+def test_load_graph_corrupted_json_prints_recovery_message(tmp_path, capsys):
+    """json.JSONDecodeError is a ValueError subclass, so its except clause
+    must be checked before the bare (ValueError, FileNotFoundError) clause,
+    or the corrupted-graph recovery hint is unreachable (#2005)."""
+    p = tmp_path / "graph.json"
+    p.write_text("{not valid json")
+    with pytest.raises(SystemExit):
+        _load_graph(str(p))
+    err = capsys.readouterr().err
+    assert "graph.json is corrupted" in err
+    assert "Re-run /graphify to rebuild" in err
+
+
+def test_load_graph_generic_value_error_message_unchanged(tmp_path, capsys):
+    """A non-decode ValueError (e.g. a non-.json path) must still print the
+    generic error, not the corrupted-graph hint — pins the except-clause
+    order from #2005 so a future refactor can't collapse them back."""
+    p = tmp_path / "graph.txt"
+    p.write_text("not a graph")
+    with pytest.raises(SystemExit):
+        _load_graph(str(p))
+    err = capsys.readouterr().err
+    assert "must be a .json file" in err
+    assert "corrupted" not in err
+
+
 def test_load_graph_rejects_oversized_file(monkeypatch, tmp_path, capsys):
     # #F4: oversized graph.json must fail fast (SystemExit) with a clear error.
     G = _make_graph()
@@ -701,8 +918,8 @@ def test_pick_seeds_respects_max_k():
 
 
 def test_pick_seeds_without_diversity_args_is_unchanged():
-    """G/terms are optional and default to None: existing callers see identical
-    behavior to before this change."""
+    """G/best_seed_by_term are optional and default to None: existing callers
+    see identical behavior to before this change."""
     scored = [(1000.0, "fbs"), (1.0, "err1"), (0.9, "err2")]
     assert _pick_seeds(scored) == ["fbs"]
 
@@ -711,9 +928,9 @@ def test_pick_seeds_diversity_recovers_starved_term(monkeypatch):
     """Reproduces #1445: a vague natural-language query where one term's
     incidental EXACT match on an unrelated node (e.g. a common word also used
     as an unrelated field/identifier) outscores every SUBSTRING match on the
-    query's other, actually-relevant terms by ~1000x. Without G/terms, the
-    20%-gap cutoff discards the relevant candidate entirely; with them, it is
-    recovered as a guaranteed per-term seed.
+    query's other, actually-relevant terms by ~1000x. Without
+    G/best_seed_by_term, the 20%-gap cutoff discards the relevant candidate
+    entirely; with them, it is recovered as a guaranteed per-term seed.
     """
     G = nx.DiGraph()
     # "unrelated" is an exact label match for the query term "unrelated" and
@@ -725,15 +942,79 @@ def test_pick_seeds_diversity_recovers_starved_term(monkeypatch):
     G.add_edge("other", "target")
 
     terms = ["unrelated", "widget"]
-    scored = _score_nodes(G, terms)
+    # `_score_query` does the combined scoring and the per-term singleton
+    # winner tracking in one traversal; `_pick_seeds` consumes its
+    # `best_seed_by_term` to satisfy the per-term guarantee without rescoring.
+    qs = _score_query(G, terms, collect_per_term_seeds=True)
+    scored = qs.ranked
 
     # Sanity check the premise: without diversity, only the exact match survives.
     seeds_before = _pick_seeds(scored)
     assert seeds_before == ["noise"]
 
-    seeds_after = _pick_seeds(scored, G=G, terms=terms)
+    seeds_after = _pick_seeds(scored, G=G, best_seed_by_term=qs.best_seed_by_term)
     assert "noise" in seeds_after
     assert "target" in seeds_after
+
+
+# --- generic-symbol seed flooding (#1766) ---
+
+def test_pick_seeds_dedups_homonymous_generic_labels():
+    """Many nodes sharing one generic label (e.g. framework `GET` handlers)
+    must contribute at most ONE seed, not consume every slot (#1766). A
+    distinct, relevant label still gets its own seed."""
+    G = nx.DiGraph()
+    for i in range(5):
+        G.add_node(f"get{i}", label="GET", source_file=f"routes/r{i}.py")
+    G.add_node("um", label="users_model", source_file="models/users.py")
+    # Score all the GET nodes above users_model so, pre-fix, they'd take every slot.
+    scored = [(1000.0, f"get{i}") for i in range(5)] + [(900.0, "um")]
+    seeds = _pick_seeds(scored, G=G)
+    get_seeds = [s for s in seeds if s.startswith("get")]
+    assert len(get_seeds) == 1, f"expected one GET representative, got {get_seeds}"
+    # A different, well-within-gap label is not starved out by the GET flood.
+    assert "um" in seeds
+
+
+def test_pick_seeds_dedup_key_is_case_and_diacritic_normalized():
+    """`GET`/`Get`/`get` are the same generic label and must dedup together."""
+    G = nx.DiGraph()
+    G.add_node("a", label="GET", source_file="a.py")
+    G.add_node("b", label="Get", source_file="b.py")
+    G.add_node("c", label="get", source_file="c.py")
+    scored = [(1000.0, "a"), (990.0, "b"), (980.0, "c")]
+    seeds = _pick_seeds(scored, G=G)
+    assert len(seeds) == 1, f"case-variant duplicates not collapsed: {seeds}"
+
+
+def test_pick_seeds_per_term_guarantee_does_not_reintroduce_generic_dupe(monkeypatch):
+    """The per-term guarantee loop must honor the same per-label cap, so it can't
+    add a second `GET` after dedup already seeded one (#1766)."""
+    G = nx.DiGraph()
+    for i in range(3):
+        G.add_node(f"get{i}", label="GET", source_file=f"r{i}.py")
+    G.add_node("um", label="users_model", source_file="users.py")
+    G.add_edge("um", "get0")
+    terms = ["get", "users"]
+    qs = _score_query(G, terms, collect_per_term_seeds=True)
+    seeds = _pick_seeds(qs.ranked, G=G, best_seed_by_term=qs.best_seed_by_term)
+    get_seeds = [s for s in seeds if s.startswith("get")]
+    assert len(get_seeds) == 1, f"per-term guarantee reintroduced a GET dupe: {seeds}"
+
+
+def test_score_nodes_scores_identical_labels_equally():
+    """Guard against a per-label multiplicity penalty leaking into _score_nodes
+    (shared by shortest_path / explain endpoint resolution): two nodes with the
+    SAME label must receive the SAME score for a query, i.e. the fix lives in
+    seed selection, not in the shared scorer (#1766 followup)."""
+    G = nx.DiGraph()
+    G.add_node("g1", label="GET", source_file="a.py")
+    G.add_node("g2", label="GET", source_file="b.py")
+    G.add_node("g3", label="GET", source_file="c.py")
+    by_id = {nid: s for s, nid in _score_nodes(G, ["get"])}
+    assert by_id["g1"] == by_id["g2"] == by_id["g3"], (
+        f"identical-label nodes scored differently: {by_id}"
+    )
 
 
 # --- actionable truncation hint (#897) ---
@@ -755,6 +1036,86 @@ def test_query_seeds_from_identifier_not_noise():
     text = _query_graph_text(G, "FooBarService error handling", mode="bfs", depth=2)
     assert "FooBarService" in text
     assert "ServiceClient" in text
+
+
+# --- relational-intent verbs must not seat decoy seeds (#2507) ---
+
+def _make_callers_graph() -> nx.Graph:
+    """A service, three callers wired via context='call' edges, and a decoy
+    whose tokenized label ('callstorewithamount') prefix-matches the intent
+    verb 'calls' — the #2507 pollution vector."""
+    G = nx.Graph()
+    G.add_node("svc", label="ChargeCustomerService", source_file="billing/charge.py")
+    G.add_node("c1", label="BillingJob", source_file="billing/job.py")
+    G.add_node("c2", label="CheckoutFlow", source_file="checkout/flow.py")
+    G.add_node("c3", label="RetryWorker", source_file="workers/retry.py")
+    for caller in ("c1", "c2", "c3"):
+        G.add_edge(caller, "svc", relation="calls", context="call")
+    G.add_node("decoy", label=".callStoreWithAmount()", source_file="store/amount.py")
+    return G
+
+
+def test_relational_verb_does_not_seat_decoy_seed():
+    """'Who calls X?' must seed on X, not on a decoy that merely prefix-matches
+    the intent verb 'calls' via its tokenized label (#2507). The gap window
+    already excludes the decoy; the per-term guarantee must not re-seat it."""
+    G = _make_callers_graph()
+    # Sanity-check the pollution premise: the decoy IS the singleton winner for
+    # 'calls', so pre-fix the guarantee loop would have seated it as a BFS root.
+    qs = _score_query(G, _query_terms("Who calls ChargeCustomerService?"), collect_per_term_seeds=True)
+    assert qs.best_seed_by_term.get("calls") == "decoy"
+
+    text = _query_graph_text(G, "Who calls ChargeCustomerService?", mode="bfs", depth=2)
+    header = text.splitlines()[0]
+    assert "ChargeCustomerService" in header.split("Start:")[1]
+    assert ".callStoreWithAmount()" not in header
+    for caller in ("BillingJob", "CheckoutFlow", "RetryWorker"):
+        assert caller in text
+
+
+def test_relational_verb_as_bare_query_still_seeds_symbol():
+    """All-intent fallback: a query that is ONLY intent words keeps the seed
+    guarantee, so a corpus-legit identifier literally named 'calls' stays
+    reachable via the bare query 'calls' (#2507, preserving #1597's intent)."""
+    G = nx.Graph()
+    G.add_node("calls_fn", label="calls", source_file="src/calls.py")
+    G.add_node("other", label="unrelated_helper", source_file="src/other.py")
+    text = _query_graph_text(G, "calls", mode="bfs", depth=1)
+    assert "No matching nodes found." not in text
+    assert "calls" in text.splitlines()[0].split("Start:")[1]
+
+
+def test_relational_verb_symbol_still_wins_seat_on_merit():
+    """Demotion only strips the GUARANTEE: a node literally named 'calls' whose
+    score sits within the gap window is still seeded alongside the other term's
+    node on a multi-term query (#2507)."""
+    G = nx.Graph()
+    G.add_node("calls_fn", label="calls", source_file="src/calls.py")
+    G.add_node("ext", label="extract", source_file="src/extract.py")
+    text = _query_graph_text(G, "calls extract", mode="bfs", depth=1)
+    start = text.splitlines()[0].split("Start:")[1]
+    assert "calls" in start
+    assert "extract" in start
+
+
+def test_uses_phrasing_does_not_seat_decoy_seed():
+    """'what uses X' must not seat a decoy that prefix-matches the intent verb
+    'uses' (#2507). 'uses' is deliberately NOT a _CONTEXT_HINTS alias (its
+    relation is ambiguous); the demotion set alone handles it."""
+    G = nx.Graph()
+    G.add_node("svc", label="ChargeCustomerService", source_file="billing/charge.py")
+    G.add_node("c1", label="BillingJob", source_file="billing/job.py")
+    G.add_edge("c1", "svc", relation="uses", context="call")
+    G.add_node("decoy", label="usesDiscountCode()", source_file="promo/discount.py")
+    text = _query_graph_text(G, "what uses ChargeCustomerService?", mode="bfs", depth=2)
+    header = text.splitlines()[0]
+    assert "ChargeCustomerService" in header.split("Start:")[1]
+    assert "usesDiscountCode()" not in header
+
+
+def test_infer_context_filters_for_callers_question():
+    """'callers of X' phrasing infers the call context (#2507 companion)."""
+    assert _infer_context_filters("callers of ChargeCustomerService") == ["call"]
 
 
 def test_query_graph_text_parameter_type_context_filter_changes_traversal():
@@ -882,3 +1243,524 @@ def test_community_header_sanitizes_name():
     out = _community_header(3, "Pay\x00ments\x1b[31m")
     assert out.startswith("Community 3 — ")
     assert "\x00" not in out and "\x1b" not in out
+
+
+# --- single-pass scoring refactor: reference-impl equality + one-traversal ---
+
+
+def _reference_best_seed_by_term(G: nx.Graph, terms: list[str]) -> dict[str, str]:
+    """Test-only oracle for the legacy per-term `_pick_seeds(terms=...)` loop.
+
+    Re-creates what `_pick_seeds` did before the single-pass refactor: rescore
+    the whole graph per token via `_score_nodes(G, [token])`, take the top-
+    scoring ties, and break them by `max(tied, key=degree)` (which, over a
+    list sorted by `(-score, label_len, nid)`, returns the highest-degree node
+    with ties broken toward the shortest label then the smallest node id).
+    This is the semantics `_score_query(..., collect_per_term_seeds=True)` now
+    produces inline during its single traversal.
+    """
+    norm_terms = sorted({tok for t in terms for tok in _search_tokens(t)})
+    best: dict[str, str] = {}
+    for term in norm_terms:
+        term_scored = _score_nodes(G, [term])
+        if not term_scored:
+            continue
+        best_score = term_scored[0][0]
+        tied = [nid for s, nid in term_scored if s == best_score]
+        best_nid = max(tied, key=lambda n: G.degree(n)) if len(tied) > 1 else term_scored[0][1]
+        best[term] = best_nid
+    return best
+
+
+def _make_random_scoring_graph(n: int, *, seed: int) -> nx.DiGraph:
+    """Reproducible broad-match DiGraph: short constructed labels + edge noise.
+
+    Labels draw from a small syllable pool so tokens collide across nodes,
+    forcing the trigram prefilter to be selective and exercising score ties
+    on common tokens. Edge noise provides degree variance so the legacy
+    tie-break (`max(tied, key=degree)`) is exercised against the new
+    `(-singleton, -degree, label_len, nid)` key tuple.
+    """
+    import random
+
+    rng = random.Random(seed)
+    syllables = [
+        "foo", "bar", "baz", "get", "set", "run", "user", "name", "path",
+        "build", "report", "extract", "router", "config", "service",
+        "handler", "token", "auth", "rate", "limit", "widget", "model",
+    ]
+    G: nx.DiGraph = nx.DiGraph()
+    for i in range(n):
+        label = "_".join(rng.sample(syllables, rng.randint(1, 3)))
+        G.add_node(f"n{i}", label=label, source_file=f"src/{label[:8]}.py")
+    for _ in range(n * 2):
+        a, b = rng.randrange(n), rng.randrange(n)
+        if a != b:
+            G.add_edge(f"n{a}", f"n{b}", relation="calls", confidence="EXTRACTED")
+    return G
+
+
+SYLLABLE_QUERIES = [
+    ["get"],                                      # single token, exact-match
+    ["get", "user"],                              # two distinct tokens
+    ["router", "service", "handler"],             # multi-token identifier
+    ["extract", "build", "report", "path"],       # broad term
+    ["nonexistent"],                              # no matches
+    ["nonexistent", "get"],                       # one missing term + match
+    ["bar", "bar"],                               # repeated token (must dedupe)
+    ["baz", "run", "set", "auth", "rate", "limit"], # many tokens
+]
+
+
+@pytest.mark.parametrize("terms", SYLLABLE_QUERIES)
+def test_score_query_ranked_matches_score_nodes_byte_identical(terms):
+    """`_score_query(..., collect_per_term_seeds=False).ranked` is the byte-for-
+    byte match of `_score_nodes(G, terms)` — guaranteeing path/explain/tests see
+    no behavior change from the refactor."""
+    G = _make_random_scoring_graph(80, seed=7)
+    assert _score_query(G, terms, collect_per_term_seeds=False).ranked == _score_nodes(G, terms)
+
+
+@pytest.mark.parametrize("terms", SYLLABLE_QUERIES)
+def test_score_query_best_seed_by_term_matches_legacy_singleton_scoring(terms):
+    """Per-token winner the single-pass scorer records matches the legacy
+    `_score_nodes([token])` + `max(tied, key=degree)` oracle exactly."""
+    G = _make_random_scoring_graph(80, seed=7)
+    ref = _reference_best_seed_by_term(G, terms)
+    opt = _score_query(G, terms, collect_per_term_seeds=True).best_seed_by_term
+    assert ref == opt, f"terms={terms}: legacy={ref} optimized={opt}"
+
+
+@pytest.mark.parametrize("terms", SYLLABLE_QUERIES)
+def test_pick_seeds_with_optimized_best_seed_matches_legacy_semantics(terms):
+    """The seeds produced by `_pick_seeds(qs.ranked, G=G, best_seed_by_term=
+    qs.best_seed_by_term)` exactly match what the legacy `_pick_seeds(terms=...)`
+    loop would have produced (recreated via the reference oracle)."""
+    G = _make_random_scoring_graph(80, seed=7)
+    qs = _score_query(G, terms, collect_per_term_seeds=True)
+    ref_best = _reference_best_seed_by_term(G, terms)
+    # Legacy `_pick_seeds(terms=...)` ran `_score_nodes(G, [term])` per token
+    # to build ref_best, then deduped by label key. The new `_pick_seeds(
+    # best_seed_by_term=...)` only swaps the source of the per-token winners,
+    # so it must produce the same seeds given equivalent inputs.
+    opt_seeds = _pick_seeds(qs.ranked, G=G, best_seed_by_term=qs.best_seed_by_term)
+    ref_seeds = _pick_seeds(qs.ranked, G=G, best_seed_by_term=ref_best)
+    assert opt_seeds == ref_seeds, f"terms={terms}: ref={ref_seeds} opt={opt_seeds}"
+    # Per-term guarantee: every legacy winner with a non-empty seed slot is
+    # accounted for — either it appears in the seed list or another node with
+    # the same normalized label already claimed the slot (#1766 label dedup).
+    ref_seed_set = set(ref_seeds)
+    for term, nid in ref_best.items():
+        if nid in ref_seed_set:
+            continue
+        nid_label = (G.nodes[nid].get("norm_label")
+                     or G.nodes[nid].get("label")
+                     or nid)
+        seeded_with_same_label = any(
+            (G.nodes[s].get("norm_label") or G.nodes[s].get("label") or s) == nid_label
+            for s in ref_seeds
+        )
+        assert seeded_with_same_label, (
+            f"term {term!r} winner {nid!r} dropped without label-dedup reason"
+        )
+
+
+def test_score_query_matches_legacy_across_random_deterministic_graphs():
+    """Across many deterministic random graphs and many random multi-term
+    queries, the single-pass scorer's combined ranking, per-token winners,
+    and resulting seed list all match the legacy semantics. Exercises label
+    collisions, ties, broad terms, missing terms, and graph size variance."""
+    import random
+
+    rng = random.Random(42)
+    syllables = [
+        "foo", "bar", "baz", "get", "set", "run", "user", "name", "path",
+        "build", "report", "extract", "router", "config", "service",
+        "handler", "token", "auth", "rate", "limit", "widget", "model",
+    ]
+    for trial in range(30):
+        n = rng.randint(20, 200)
+        G = _make_random_scoring_graph(n, seed=rng.randint(0, 10**9))
+        nq = rng.randint(1, 5)
+        terms = [rng.choice(syllables) for _ in range(nq)]
+        ref_best = _reference_best_seed_by_term(G, terms)
+        opt = _score_query(G, terms, collect_per_term_seeds=True)
+        # (a) Combined ranking unchanged.
+        assert opt.ranked == _score_nodes(G, terms), (
+            f"trial {trial}: combined ranking diverged for terms={terms}"
+        )
+        # (b) Per-token winners match the legacy per-term rescoring loop.
+        assert opt.best_seed_by_term == ref_best, (
+            f"trial {trial}: best_seed_by_term diverged; ref={ref_best} opt={opt.best_seed_by_term}"
+        )
+        # (c) Final seed list is identical under the legacy semantics.
+        ref_seeds = _pick_seeds(opt.ranked, G=G, best_seed_by_term=ref_best)
+        opt_seeds = _pick_seeds(opt.ranked, G=G, best_seed_by_term=opt.best_seed_by_term)
+        assert opt_seeds == ref_seeds, (
+            f"trial {trial}: seeds diverged; ref={ref_seeds} opt={opt_seeds}"
+        )
+
+
+def test_score_query_matches_legacy_under_full_scan_fallback(monkeypatch):
+    """When the trigram prefilter falls back to a full-graph scan, the
+    single-pass path still produces identical rankings and per-term winners.
+
+    Forces `_trigram_candidates` to return None so the combined iterates the
+    whole graph — mirroring per-token `_score_nodes([token])` which would also
+    full-scan when its own trigram search isn't selective."""
+    monkeypatch.setattr(
+        "graphify.serve._trigram_candidates", lambda G, needles: None
+    )
+    terms = ["router", "service", "handler"]
+    G = _make_random_scoring_graph(80, seed=19)
+    ref_best = _reference_best_seed_by_term(G, terms)
+    opt = _score_query(G, terms, collect_per_term_seeds=True)
+    assert opt.ranked == _score_nodes(G, terms)
+    assert opt.best_seed_by_term == ref_best
+
+
+def test_query_graph_text_makes_exactly_one_score_query_call(monkeypatch):
+    """`_query_graph_text` must invoke `_score_query` exactly once per query,
+    regardless of how many tokens the query has — eliminating the legacy
+    T+1-pass rescoring. `_score_nodes` must NOT be called from the query path
+    (only path/explain still call it)."""
+    G = _make_random_scoring_graph(60, seed=23)
+    original_sq = _score_query
+    original_sn = _score_nodes
+
+    state = {"sq": 0, "sn": 0}
+
+    def counting_sq(*a, **k):
+        state["sq"] += 1
+        return original_sq(*a, **k)
+
+    def counting_sn(*a, **k):
+        state["sn"] += 1
+        return original_sn(*a, **k)
+
+    monkeypatch.setattr("graphify.serve._score_query", counting_sq)
+    monkeypatch.setattr("graphify.serve._score_nodes", counting_sn)
+
+    queries = [
+        "foo",                                              # one term
+        "foo bar",                                          # two
+        "router service handler",                          # three (the scenario the RFC targets)
+        "get user run name path",                          # five
+        "extract build report router config service token rate limit widget",  # ten
+    ]
+    for q in queries:
+        state["sq"] = 0
+        state["sn"] = 0
+        _query_graph_text(G, q, mode="bfs", depth=1)
+        assert state["sq"] == 1, (
+            f"expected exactly one _score_query call for {q!r}, got {state['sq']}"
+        )
+        assert state["sn"] == 0, (
+            f"query path must not call _score_nodes; got {state['sn']} call(s) for {q!r}"
+        )
+
+
+def test_score_query_collect_per_term_seeds_false_omits_tracking(monkeypatch):
+    """`collect_per_term_seeds=False` returns empty `best_seed_by_term` and
+    does not pay for per-token best tracking — preserving the cost contract
+    for path/explain/tests callers that only want the combined ranking."""
+    G = _make_random_scoring_graph(50, seed=29)
+    qs = _score_query(G, ["foo", "bar", "baz"], collect_per_term_seeds=False)
+    assert qs.best_seed_by_term == {}
+    # And the combined output is still byte-identical to _score_nodes.
+    assert qs.ranked == _score_nodes(G, ["foo", "bar", "baz"])
+
+
+# --- BUG2: seed survival, truncation notice, deterministic ordering ----------
+
+def _star_graph(n_spokes=40):
+    """A high-degree hub plus a low-degree answer node, to force the answer past
+    a pure degree-sorted / BFS cut unless seed-first ordering protects it."""
+    G = nx.Graph()
+    G.add_node("hub", label="Hub", source_file="hub.py", source_location="L1", community=0)
+    for i in range(n_spokes):
+        G.add_node(f"s{i}", label=f"spoke{i}", source_file=f"s{i}.py", source_location="L1", community=0)
+        G.add_edge("hub", f"s{i}", relation="calls", confidence="EXTRACTED")
+    # low-degree answer node, attached to one spoke
+    G.add_node("answer", label="CompanySpacingGate", source_file="gate.py",
+               source_location="L12", community=0)
+    G.add_edge("s0", "answer", relation="calls", confidence="EXTRACTED")
+    return G
+
+
+def test_subgraph_to_text_seed_survives_truncation():
+    """BUG2: a low-degree answer node passed as a seed is rendered first and
+    survives a tiny budget, and truncation is announced."""
+    G = _star_graph()
+    nodes = set(G.nodes)
+    text = _subgraph_to_text(G, nodes, list(G.edges()), token_budget=30, seeds=["answer"])
+    assert "CompanySpacingGate" in text, "seed node was cut (BUG2)"
+    node_lines = [l for l in text.splitlines() if l.startswith("NODE ")]
+    assert "CompanySpacingGate" in node_lines[0], "seed must render first"
+    assert "TRUNCATED" in text
+
+
+def test_query_graph_text_passes_seeds_so_answer_survives():
+    """BUG2 regression guard: the query path must pass seeds to the renderer (a
+    branch merge had dropped the argument), so a queried low-degree symbol
+    appears in the body even when the output is truncated."""
+    G = _star_graph()
+    text = _query_graph_text(G, "CompanySpacingGate", mode="bfs", depth=2, token_budget=40)
+    # Present in the body, not merely the Start: header.
+    body = text.split("\n\n", 1)[-1]
+    assert "CompanySpacingGate" in body
+
+
+def test_subgraph_to_text_truncation_notice_at_top():
+    G = _star_graph()
+    text = _subgraph_to_text(G, set(G.nodes), list(G.edges()), token_budget=30, seeds=["answer"])
+    assert text.startswith("[!] TRUNCATED"), f"notice not at top: {text[:60]!r}"
+    assert "of" in text.splitlines()[0] and "nodes" in text.splitlines()[0]
+    assert "truncated" in text  # end marker still present
+
+
+def test_subgraph_to_text_no_notice_when_under_budget():
+    G = _make_graph()
+    text = _subgraph_to_text(G, {"n1", "n2"}, [("n1", "n2")], token_budget=2000)
+    assert "TRUNCATED" not in text and "truncated" not in text
+
+
+def test_subgraph_to_text_no_banner_when_only_edges_overflow():
+    """#2601: nodes render before edges, so a budget overflow that only trims
+    trailing edges cuts zero whole nodes. The banner must not fire with a
+    misleading "showing N of N nodes … among the 0 cut nodes" — that pushes an
+    agent to distrust a complete answer and issue pointless narrowing calls."""
+    import itertools
+
+    G = nx.Graph()
+    labels = [f"n{i}" for i in range(4)]
+    for lbl in labels:
+        G.add_node(lbl, label=lbl, source_file="f.py", source_location="L1", community="c")
+    edges = list(itertools.combinations(labels, 2))
+    for u, v in edges:
+        G.add_edge(u, v, relation="calls", confidence="high")
+    # Budget large enough for every NODE line but not the trailing EDGE lines.
+    text = _subgraph_to_text(G, set(G.nodes), edges, token_budget=60)
+    node_lines = [l for l in text.splitlines() if l.startswith("NODE ")]
+    edge_lines = [l for l in text.splitlines() if l.startswith("EDGE ")]
+    assert len(node_lines) == len(labels), "every node must still be shown"
+    assert "TRUNCATED" not in text and "truncated" not in text
+    assert "cut nodes" not in text
+    # A complete answer renders the whole subgraph: suppressing the banner must
+    # not silently truncate the trailing edges either (a `return output[:cut_at]`
+    # would drop them and still pass the assertions above).
+    assert len(edge_lines) == len(edges), "all edges must survive a complete answer"
+
+
+def test_subgraph_to_text_overshoot_notice_when_edges_exceed_budget():
+    """#2784: once every node fits, edges are never dropped (#2601) — but that
+    used to mean the char_budget check silently stopped applying, so a query
+    could cost 4-6x its requested budget with zero indication. The complete
+    answer must still be returned whole, but the overshoot must be visible and
+    must not repeat the "raise the budget" advice that caused the blow-up."""
+    import itertools
+
+    G = nx.Graph()
+    labels = [f"n{i}" for i in range(20)]
+    for lbl in labels:
+        G.add_node(lbl, label=lbl, source_file="f.py", source_location="L1", community="c")
+    edges = list(itertools.combinations(labels, 2))
+    for u, v in edges:
+        G.add_edge(u, v, relation="calls", confidence="high")
+    node_chars = len("\n".join(f"NODE {l} [src=f.py loc=L1 community=c]" for l in labels))
+    budget = (node_chars // 3) + 5  # fits every node, nowhere near every edge
+    text = _subgraph_to_text(G, set(G.nodes), edges, token_budget=budget)
+    node_lines = [l for l in text.splitlines() if l.startswith("NODE ")]
+    edge_lines = [l for l in text.splitlines() if l.startswith("EDGE ")]
+    assert len(node_lines) == len(labels)
+    assert len(edge_lines) == len(edges), "complete answer: edges must not be dropped"
+    assert "Complete answer over budget" in text
+    assert str(len(labels)) in text and str(len(edges)) in text
+    assert "raise" not in text.lower(), "must not repeat the advice that caused the overshoot"
+    assert "TRUNCATED" not in text and "truncated" not in text
+
+
+def test_subgraph_to_text_no_overshoot_notice_when_edges_fit_too():
+    """The honest-overshoot notice is additive: a complete answer that already
+    fits the budget must render exactly as before, with no notice at all."""
+    import itertools
+
+    G = nx.Graph()
+    labels = [f"n{i}" for i in range(3)]
+    for lbl in labels:
+        G.add_node(lbl, label=lbl, source_file="f.py", source_location="L1", community="c")
+    edges = list(itertools.combinations(labels, 2))
+    for u, v in edges:
+        G.add_edge(u, v, relation="calls", confidence="high")
+    text = _subgraph_to_text(G, set(G.nodes), edges, token_budget=2000)
+    assert "Complete answer over budget" not in text
+    assert "TRUNCATED" not in text and "truncated" not in text
+
+
+def test_subgraph_to_text_order_is_deterministic():
+    """Equal-degree nodes render in a stable order regardless of set iteration."""
+    G = nx.Graph()
+    for i in range(10):
+        G.add_node(f"z{i}", label=f"z{i}", source_file=f"z{i}.py", source_location="L1", community=0)
+    nodes = set(G.nodes)
+    a = _subgraph_to_text(G, nodes, [])
+    b = _subgraph_to_text(G, set(reversed(list(nodes))), [])
+    assert a == b
+
+
+# --- #2069: token budget on get_neighbors / get_community line lists ----------
+
+def test_cut_lines_to_budget_under_budget_is_byte_identical():
+    lines = ["Neighbors of X:", "  --> a [calls] [EXTRACTED]", "  --> b [calls] [EXTRACTED]"]
+    out = _cut_lines_to_budget(lines, token_budget=2000, narrow_hint="use relation_filter")
+    assert out == "\n".join(lines)
+    assert "TRUNCATED" not in out and "truncated" not in out
+
+
+def test_cut_lines_to_budget_over_budget_announces_at_top():
+    lines = [f"  --> node{i} [calls] [EXTRACTED]" for i in range(200)]
+    out = _cut_lines_to_budget(lines, token_budget=20, narrow_hint="use get_node for a specific symbol")
+    # Top notice (silence must not read as absence) + accurate counts + bottom marker + hint.
+    assert out.startswith("[!] TRUNCATED: showing ")
+    first = out.splitlines()[0]
+    assert "of 200 lines" in first
+    assert "use get_node for a specific symbol" in out
+    assert "truncated" in out  # end marker retained
+    # shown count in the notice matches the actual kept line count.
+    import re
+    shown = int(re.search(r"showing (\d+) of", first).group(1))
+    body = out.split("\n\n", 1)[1].split("\n... (truncated", 1)[0]
+    assert body.count("\n") + 1 == shown
+
+
+def test_subgraph_to_text_ignores_dangling_src_tgt(monkeypatch):
+    """#2080 review: a stray/dangling _src/_tgt on an edge (hand-edited or
+    adversarial graph.json) must NOT crash rendering; fall back to (u, v)."""
+    G = nx.Graph()
+    G.add_node("a", label="Alpha", source_file="a.py", source_location="L1", community=0)
+    G.add_node("b", label="Beta", source_file="b.py", source_location="L2", community=0)
+    # _src names a node that doesn't exist -> must be ignored, no KeyError.
+    G.add_edge("a", "b", relation="calls", confidence="EXTRACTED", _src="ghost", _tgt="b")
+    out = _subgraph_to_text(G, {"a", "b"}, [("a", "b")])
+    assert "EDGE" in out and "Alpha" in out and "Beta" in out  # rendered, didn't crash
+
+
+def test_subgraph_to_text_honors_valid_src_tgt_direction():
+    """#2080: a valid _src/_tgt (the stored direction) is honored even when the
+    traversal tuple is reversed."""
+    G = nx.Graph()
+    G.add_node("caller", label="caller", source_file="c.py", source_location="L1", community=0)
+    G.add_node("callee", label="callee", source_file="d.py", source_location="L2", community=0)
+    # Edge collected as (callee, caller) by traversal, but stored direction is caller->callee.
+    G.add_edge("callee", "caller", relation="calls", confidence="EXTRACTED", _src="caller", _tgt="callee")
+    out = _subgraph_to_text(G, {"caller", "callee"}, [("callee", "caller")])
+    edge_line = next(l for l in out.splitlines() if l.startswith("EDGE"))
+    assert "caller --calls" in edge_line and "--> callee" in edge_line
+
+
+# --- _shortest_path_text direction (#2487) ---
+
+def _directed_chain() -> nx.DiGraph:
+    """alpha --calls--> beta --calls--> gamma, as _load_graph would load it
+    (directed storage, arc order = true direction on post-#563 files)."""
+    G = nx.DiGraph()
+    for n in ("alpha", "beta", "gamma"):
+        G.add_node(n, label=n)
+    G.add_edge("alpha", "beta", relation="calls")
+    G.add_edge("beta", "gamma", relation="calls")
+    return G
+
+
+def test_shortest_path_tool_directed_respects_direction():
+    out = _shortest_path_text(_directed_chain(), {"source": "alpha", "target": "gamma"})
+    assert "Shortest path (2 hops)" in out
+    assert out.count("-->") == 2
+    assert "<--" not in out
+
+
+def test_shortest_path_tool_directed_backwards_is_no_path():
+    # Directed is the default (#2487): walking the chain backwards must report
+    # no directed path, with the undirected opt-out hint, not a reversed path.
+    out = _shortest_path_text(_directed_chain(), {"source": "gamma", "target": "alpha"})
+    assert "No directed path found" in out
+    assert "undirected=true" in out
+    assert "-->" not in out
+    assert "<--" not in out
+
+
+def test_shortest_path_tool_undirected_opt_in():
+    out = _shortest_path_text(
+        _directed_chain(), {"source": "gamma", "target": "alpha", "undirected": True}
+    )
+    assert "Shortest path (2 hops)" in out
+    assert out.count("<--calls--") == 2
+    assert "-->" not in out
+def test_underscore_query_matches_hyphenated_label():
+    r"""Separator-blind seeding: `_` must split like `-` does.
+
+    `\w` counts `_` as a word character but not `-`, so a query written with
+    underscores stayed one un-matchable token while the label tokenized into
+    parts. Both sides run through _search_tokens, so normalising there keeps
+    query and label consistent. Regression for the 2026-07-29 finding: the
+    graph could not find its own `local_id` spelling of a node.
+    """
+    G = nx.Graph()
+    G.add_node("n1", label="graph-first-guard.py", source_file="bin/graph-first-guard.py",
+               source_location="L1", community=0)
+    G.add_node("n2", label="unrelated", source_file="other.py", source_location="L1", community=1)
+
+    hyphen = _score_nodes(G, _query_terms("graph-first-guard"))
+    underscore = _score_nodes(G, _query_terms("graph_first_guard"))
+
+    assert hyphen, "hyphenated query must match (this already worked)"
+    assert underscore, "underscored query must match the same node"
+    assert hyphen[0][1] == underscore[0][1] == "n1"
+
+
+def test_snake_case_identifier_still_matches_itself():
+    """Splitting on `_` must not break plain snake_case lookups."""
+    G = nx.Graph()
+    G.add_node("n1", label="_query_terms", source_file="graphify/serve.py",
+               source_location="L128", community=0)
+    G.add_node("n2", label="unrelated", source_file="other.py", source_location="L1", community=1)
+
+    scored = _score_nodes(G, _query_terms("_query_terms"))
+    assert scored and scored[0][1] == "n1"
+
+
+def test_underscore_query_does_not_let_a_single_token_outrank_the_real_match():
+    """Splitting on `_` broadens seeding, so an unrelated single-token node can now
+    be scored — but coverage-scaling/IDF must keep it from out-ranking the node
+    that matches the full multi-token query (the over-match guard for this fix)."""
+    G = nx.Graph()
+    G.add_node("real", label="user-service-client",
+               source_file="a.py", source_location="L1", community=0)
+    G.add_node("noise", label="user",
+               source_file="b.py", source_location="L1", community=1)
+    scored = _score_nodes(G, _query_terms("user_service_client"))
+    assert scored, "the multi-token query must match the full-label node"
+    assert scored[0][1] == "real", f"a single-token node out-ranked the real match: {scored}"
+
+
+def test_resolve_single_node_shared_by_get_node_and_get_neighbors():
+    """ADR-0001 finding 1: the resolver both tools now use returns an Ambiguous
+    message when the winning tier spans multiple files, a clean node id for a
+    unique label, and a not-found message otherwise."""
+    from graphify.serve import _resolve_single_node
+
+    G = nx.Graph()
+    G.add_node("a", label="extract", source_file="a/x.py")
+    G.add_node("b", label="extract", source_file="b/y.py")
+    G.add_node("u", label="unique_helper", source_file="c/z.py")
+
+    nid, err = _resolve_single_node(G, "extract")
+    assert nid is None
+    assert err.startswith("Ambiguous:")
+
+    nid, err = _resolve_single_node(G, "unique_helper")
+    assert err is None
+    assert nid == "u"
+
+    nid, err = _resolve_single_node(G, "nonexistent")
+    assert nid is None
+    assert "No node matching" in err

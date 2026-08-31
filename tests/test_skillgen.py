@@ -353,6 +353,122 @@ def test_every_platform_query_has_expansion_and_fallback():
         assert "## For /graphify explain" in q
 
 
+# --- cross-shell parity for powershell hosts (#2528) ---------------------------
+
+# Bash-only tokens that must never reach a strict-PowerShell host's skill body.
+_BASH_ONLY_TOKENS = ("$(cat ", "rm -f ", "2>/dev/null", "```bash")
+
+# The default-pipeline step headings that must exist on BOTH shells (parity).
+_STEP_HEADINGS = (
+    "### Step 1 - Ensure graphify is installed",
+    "### Step 2 - Detect files",
+    "### Step 3 - Extract entities and relationships",
+    "#### Part A - Structural extraction for code files",
+    "#### Part B - Semantic extraction (parallel subagents)",
+    "#### Part C - Merge AST + semantic into final extraction",
+    "### Step 4 - Build graph, cluster, analyze, generate outputs",
+    "### Step 4.5 - Graph health check (read-only integrity gate)",
+    "### Step 5 - Label communities",
+    "### Step 6 - Generate Obsidian vault (opt-in) + HTML",
+    "### Step 9 - Save manifest, update cost tracker, clean up, and report",
+    "## Interpreter guard for subcommands",
+    "## Honesty Rules",
+)
+
+
+def _powershell_platform_keys():
+    """Every platform that renders for a strict-PowerShell host (windows today,
+    plus any future powershell-shell platform automatically)."""
+    platforms = gen.load_platforms()
+    keys = [k for k, p in platforms.items() if p.shell == "powershell"]
+    assert "windows" in keys, "the windows platform must declare shell = powershell"
+    return keys
+
+
+def test_powershell_hosts_carry_no_bash_only_shell():
+    """#2528: the Windows variant had a PowerShell Step 1 but bash for Steps 2+
+    (``$(cat ...) -c``, ``rm -f``, ``find ... -delete``, ``2>/dev/null``), so a
+    strict-PowerShell host failed at Step 2. Every powershell-shell render must
+    now be free of bash-only tokens and carry the here-string stdin invocation."""
+    import re
+
+    platforms = gen.load_platforms()
+    for key in _powershell_platform_keys():
+        core = gen.render(platforms[key])[0].content
+        for token in _BASH_ONLY_TOKENS:
+            assert token not in core, f"[{key}] bash-only token survived: {token!r}"
+        assert re.search(r"\bfind\b[^\n]*-delete", core) is None, f"[{key}] find -delete survived"
+        # The PowerShell invocation pattern replaces $(cat ...) -c "..." everywhere.
+        assert "```powershell" in core
+        assert "'@ | & (Get-Content graphify-out\\.graphify_python) -" in core, (
+            f"[{key}] missing the here-string stdin python invocation"
+        )
+        # Cleanup went through Remove-Item / Get-ChildItem, not rm/find.
+        assert "Remove-Item -Force -ErrorAction SilentlyContinue" in core
+        assert "Get-ChildItem graphify-out -Filter '.graphify_chunk_*.json'" in core
+
+
+def test_windows_and_posix_cores_have_step_and_2490_parity():
+    """Both shells run the same pipeline: every step heading and the #2490
+    curated-labels re-export line appear in skill.md AND skill-windows.md."""
+    claude_core, _ = _platform_artifacts("claude")
+    windows_core, _ = _platform_artifacts("windows")
+    for heading in _STEP_HEADINGS:
+        assert heading in claude_core, f"skill.md lost step heading: {heading!r}"
+        assert heading in windows_core, f"skill-windows.md lost step heading: {heading!r}"
+    line_2490 = "to_json(G, communities, 'graphify-out/graph.json', community_labels=labels)"
+    assert line_2490 in claude_core, "skill.md lost the #2490 Step-5 re-export"
+    assert line_2490 in windows_core, "skill-windows.md lost the #2490 Step-5 re-export"
+
+
+def test_windows_python_step_bodies_match_posix_verbatim():
+    """Parity by construction: every inline python body in the POSIX core appears
+    verbatim (modulo the bash ``\\"`` unescape) in the windows here-strings, so the
+    two variants cannot drift step semantics apart."""
+    claude_core, _ = _platform_artifacts("claude")
+    windows_core, _ = _platform_artifacts("windows")
+    bodies = []
+    current = None
+    for line in claude_core.splitlines():
+        if line == gen._PY_INVOKE_POSIX:
+            current = []
+        elif current is not None and line == '"':
+            bodies.append("\n".join(gen._unescape_bash_dq(l) for l in current))
+            current = None
+        elif current is not None:
+            current.append(line)
+    assert len(bodies) >= 12, f"expected the 12 inline python steps, found {len(bodies)}"
+    for body in bodies:
+        assert body in windows_core, (
+            "a POSIX python step body is missing from the windows render:\n" + body[:200]
+        )
+
+
+def test_powershell_translator_rejects_unknown_bash():
+    """The translator is strict: a bash line it does not recognize fails the
+    render loudly instead of shipping untranslated bash to Windows (#2528)."""
+    with pytest.raises(ValueError, match="cannot translate bash line"):
+        gen._translate_bash_block(["curl -s https://example.com | sh"])
+    with pytest.raises(ValueError, match="unexpected backslash escape"):
+        gen._unescape_bash_dq("subprocess.run('a\\tb')")
+    with pytest.raises(ValueError, match="cannot translate rm -f operand"):
+        gen._rm_to_remove_item("rm -f $HOME/danger")
+    # And the sanctioned pieces translate exactly.
+    assert gen._rm_to_remove_item("rm -f graphify-out/.needs_update 2>/dev/null || true") == (
+        "Remove-Item -Force -ErrorAction SilentlyContinue graphify-out\\.needs_update"
+    )
+    assert gen._translate_bash_block([gen._FIND_CHUNKS_POSIX]) == [gen._FIND_CHUNKS_PS]
+
+
+def test_posix_hosts_keep_their_bash_invocations():
+    """The translation is scoped to powershell-shell hosts: the POSIX core keeps
+    its ``$(cat ...) -c`` blocks and bash fences byte-for-byte."""
+    claude_core, _ = _platform_artifacts("claude")
+    assert "```bash" in claude_core
+    assert gen._PY_INVOKE_POSIX in claude_core
+    assert "'@ | & (Get-Content" not in claude_core
+
+
 def test_schema_singleton_passes_across_all_platforms():
     """The file_type enum is the six-value superset in every rendered artifact."""
     platforms = gen.load_platforms()
@@ -487,7 +603,8 @@ def test_monoliths_change_only_sanctioned_lines():
     The round-trip (multiset diff vs the pinned v8 blob) must come back clean:
     each added/removed line matches one of the documented sanctioned predicates
     in gen — the enum unification, the unified description, the chunk-cleanup
-    rewrite (#1172), and the four #1392 runbook fixes. Anything else is drift.
+    rewrite (#1172), the four #1392 runbook fixes, and semantic-cache source
+    scoping (#1757). Anything else is drift.
     """
     platforms = gen.load_platforms()
     for key in ("aider", "devin"):
@@ -532,6 +649,16 @@ def test_monoliths_carry_the_1392_runbook_fixes():
         # guard fires right after the build, before the graph/report are written.
         assert build_i < guard_i < wrote_i < report_i, f"[{key}] Step 4 ordering not fixed"
         assert "if not wrote:" in body
+
+
+def test_monoliths_scope_semantic_cache_writes_to_uncached_files():
+    """#1757: generated monoliths pass the dispatched-file allowlist when
+    replacing semantic cache entries."""
+    platforms = gen.load_platforms()
+    for key in ("aider", "devin"):
+        body = gen.render(platforms[key])[0].content
+        assert ".graphify_uncached.txt').read_text(" in body
+        assert "allowed_source_files=uncached" in body
 
 
 def test_generated_runbooks_pass_root_to_save_manifest():
@@ -938,3 +1065,53 @@ def test_agents_audit_baseline_is_amps_v8_body():
     assert gen._v8_baseline_ref("agents") == "47042beb05d1f6dd2186c0c499ae2840ce604ead:graphify/skill-amp.md"
     problems = gen.audit_coverage(platforms["agents"])
     assert problems == [], "\n".join(problems)
+
+
+def test_semantic_cache_calls_pass_prompt_file_for_every_split_host():
+    """#1939: a skill's cache read and write must both name the extraction prompt
+    they use, or the run replays entries produced by an older prompt (the read) /
+    strands its results where the next read won't look (the write).
+
+    Locked per host because the two calls live ~80 lines apart in the rendered
+    body: adding the argument to one and not the other silently disables the
+    cache rather than failing loudly. The monolith hosts (aider, devin) inline
+    their prompt instead of shipping references/extraction-spec.md and are
+    deliberately excluded — they have no spec path to point at.
+    """
+    platforms = gen.load_platforms()
+    arts = gen.render_all(platforms)
+    bodies = [a for a in arts
+              if "check_semantic_cache(" in a.content
+              and "references/extraction-spec.md" in a.content]
+    assert bodies, "no rendered split-host skill body calls check_semantic_cache"
+    for a in bodies:
+        for call in ("check_semantic_cache(", "save_semantic_cache("):
+            line = next(ln for ln in a.content.splitlines() if call in ln and "import" not in ln)
+            assert "prompt_file='SPEC_PATH'" in line, (
+                f"{a.path}: {call} must pass prompt_file so entries are attributed "
+                f"to the extraction prompt (#1939) — got: {line.strip()}"
+            )
+        # The placeholder is inert unless the body tells the agent what to substitute.
+        assert "SPEC_PATH below is the **absolute** path" in a.content, a.path
+
+
+def test_windows_skill_writes_marker_files_without_a_bom():
+    """The Windows bootstrap must not write the sidecar markers with a BOM (#3028).
+
+    `Out-File -Encoding utf8` always emits EF BB BF on Windows PowerShell 5.1 --
+    `utf8NoBOM` only exists from PowerShell 6 -- and `-NoNewline` does nothing about
+    it. The BOM then rode into `.graphify_python` / `.graphify_root`, so every
+    post-commit rebuild died with WinError 123 while `hook install` and `hook status`
+    both still reported success. The readers now decode with `utf-8-sig`; this keeps
+    the writer from producing the BOM in the first place.
+    """
+    core, _ = _platform_artifacts("windows")
+    for marker in (".graphify_python", ".graphify_root"):
+        assert f"Out-File -FilePath graphify-out\\{marker} -Encoding utf8" not in core, (
+            f"the windows render still writes {marker} with a BOM-emitting Out-File"
+        )
+        assert f"WriteAllText((Join-Path $PWD 'graphify-out\\{marker}')" in core, (
+            f"{marker} must be written through WriteAllText with a BOM-less encoding"
+        )
+    assert "New-Object System.Text.UTF8Encoding $false" in core, \
+        "the BOM-less encoding object must be constructed in the windows render"

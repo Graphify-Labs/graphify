@@ -78,6 +78,13 @@ def test_cts_uses_the_typescript_grammar(tmp_path):
     }
 
 
+def test_uppercase_typescript_extensions_use_typescript_grammar(tmp_path):
+    for ext in (".TS", ".TSX", ".MTS", ".CTS"):
+        labels = _labels(_extract(tmp_path, ext))
+        assert any("Mode" in label for label in labels), f"TS `type` alias missing for {ext}"
+        assert any("Options" in label for label in labels), f"TS `interface` missing for {ext}"
+
+
 def test_mts_cts_route_to_extract_js():
     from graphify.extract import _DISPATCH, extract_js
     assert _DISPATCH.get(".mts") is extract_js
