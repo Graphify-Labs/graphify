@@ -973,6 +973,11 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 continue
             if "source_file" in node:
                 node["source_file"] = _norm_source_file(node["source_file"], _root)
+            # A merged C/C++/ObjC decl/def node also carries the definition's
+            # file; it is a source path like any other and must be relativized
+            # too, or the graph ships the build machine's absolute path.
+            if "definition_file" in node:
+                node["definition_file"] = _norm_source_file(node["definition_file"], _root)
         G.add_node(node["id"], **{k: v for k, v in node.items() if k != "id"})
     node_set = set(G.nodes())
 

@@ -3590,8 +3590,8 @@ def test_cpp_paired_merged_node_records_definition_site():
     bars = [n for n in r["nodes"] if n["label"] in ("bar", "Foo::bar()")]
     assert len(bars) == 1, f"bar decl/def should be one node, got {bars}"
     bar = bars[0]
-    assert str(bar["source_file"]).endswith("Foo.h"), bar
-    assert str(bar.get("definition_file", "")).endswith("Foo.cpp"), bar
+    assert bar["source_file"] == "Foo.h", bar
+    assert bar.get("definition_file") == "Foo.cpp", bar
     assert bar.get("definition_location"), bar
 
 
