@@ -57,6 +57,11 @@ def test_skill_roundtrip_at_real_destination(platform, project, tmp_path, monkey
     home.mkdir()
     project_dir.mkdir()
     monkeypatch.chdir(project_dir)
+    # hermes resolves its Windows destination through %LOCALAPPDATA%, not ~ (#1403),
+    # so patching Path.home alone leaves it pointing at conftest._sandbox_home and
+    # the startswith(home) check below compares against the wrong tree. Redirect it
+    # to this test's home, mirroring what conftest does session-wide.
+    monkeypatch.setenv("LOCALAPPDATA", str(home / "AppData" / "Local"))
 
     with patch("graphify.__main__.Path.home", return_value=home):
         dst = mainmod._platform_skill_destination(

@@ -259,7 +259,7 @@ def test_codex_skill_contains_spawn_agent():
     """Codex skill file must reference spawn_agent."""
     import graphify
 
-    skill = (Path(graphify.__file__).parent / "skill-codex.md").read_text()
+    skill = (Path(graphify.__file__).parent / "skill-codex.md").read_text(encoding="utf-8")
     assert "spawn_agent" in skill
 
 
@@ -271,7 +271,10 @@ def test_codex_skill_uses_graphify_with_existing_graph():
     fast-path block, which jumps straight to the query flow when a graph exists.
     """
     import graphify
-    skill = (Path(graphify.__file__).parent / "skill-codex.md").read_text()
+    # encoding= matters: the skill is UTF-8 and the assertions below carry an em
+    # dash and an en dash. Without it Windows decodes through the locale codepage
+    # and the match fails on a file that is perfectly fine.
+    skill = (Path(graphify.__file__).parent / "skill-codex.md").read_text(encoding="utf-8")
     assert "Fast path — existing graph" in skill
     assert "skip Steps 1–5 entirely and jump straight to `## For /graphify query`" in skill
     assert "graphify query" in skill
@@ -1161,7 +1164,10 @@ def test_hermes_skill_destination_posix_uses_home():
     from graphify.__main__ import _platform_skill_destination
     with patch("graphify.__main__.platform.system", return_value="Linux"):
         dst = _platform_skill_destination("hermes", project=False)
-    assert str(dst).endswith(".hermes/skills/graphify/SKILL.md"), dst
+    # Compare the path, not the host's separator: patching platform.system() does
+    # not change pathlib's flavour, so on Windows dst is still a WindowsPath and
+    # str() renders backslashes. The POSIX branch IS being exercised here.
+    assert dst.as_posix().endswith(".hermes/skills/graphify/SKILL.md"), dst
 
 
 def _cli_dispatched_commands() -> set[str]:
