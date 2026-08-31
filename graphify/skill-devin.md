@@ -409,10 +409,11 @@ merged = {
 }
 merged = sanitize_semantic_fragment(merged)
 Path('graphify-out/.graphify_semantic.json').write_text(json.dumps(merged, indent=2))
+for _tmp in ['.graphify_cached.json', '.graphify_uncached.txt', '.graphify_semantic_new.json']:
+    Path('graphify-out', _tmp).unlink(missing_ok=True)
 print(f'Extraction complete - {len(deduped)} nodes, {len(all_edges)} edges ({len(cached[\"nodes\"])} from cache, {len(new.get(\"nodes\",[]))} new)')
 "
 ```
-Clean up temp files: `rm -f graphify-out/.graphify_cached.json graphify-out/.graphify_uncached.txt graphify-out/.graphify_semantic_new.json`
 
 #### Part C - Merge AST + semantic into final extraction
 
@@ -836,9 +837,13 @@ cost_path.write_text(json.dumps(cost, indent=2))
 
 print(f'This run: {input_tok:,} input tokens, {output_tok:,} output tokens')
 print(f'All time: {cost[\"total_input_tokens\"]:,} input, {cost[\"total_output_tokens\"]:,} output ({len(cost[\"runs\"])} runs)')
+
+_out = Path('graphify-out')
+for _tmp in ['.graphify_detect.json', '.graphify_extract.json', '.graphify_ast.json', '.graphify_semantic.json', '.graphify_analysis.json', '.graphify_labels.json', '.graphify_incremental.json', '.graphify_transcripts.json', '.graphify_old.json', '.needs_update']:
+    (_out / _tmp).unlink(missing_ok=True)
+for _chunk in _out.glob('.graphify_chunk_*.json'):
+    _chunk.unlink(missing_ok=True)
 "
-rm -f graphify-out/.graphify_detect.json graphify-out/.graphify_extract.json graphify-out/.graphify_ast.json graphify-out/.graphify_semantic.json graphify-out/.graphify_analysis.json graphify-out/.graphify_labels.json graphify-out/.graphify_incremental.json graphify-out/.graphify_transcripts.json graphify-out/.graphify_old.json; find graphify-out -maxdepth 1 -name '.graphify_chunk_*.json' -delete 2>/dev/null
-rm -f graphify-out/.needs_update 2>/dev/null || true
 ```
 
 Tell the user (omit the obsidian line unless --obsidian was given; omit the wiki line unless --wiki was given):
@@ -1001,11 +1006,11 @@ if old_data:
         print('New nodes:', ', '.join(n['label'] for n in diff['new_nodes'][:5]))
     if diff['new_edges']:
         print('New edges:', len(diff['new_edges']))
+Path('graphify-out/.graphify_old.json').unlink(missing_ok=True)
 "
 ```
 
 Before the merge step, save the old graph: `cp graphify-out/graph.json graphify-out/.graphify_old.json`
-Clean up after: `rm -f graphify-out/.graphify_old.json`
 
 ---
 

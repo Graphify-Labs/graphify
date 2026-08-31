@@ -191,11 +191,11 @@ if old_data:
         print('New nodes:', ', '.join(n['label'] for n in diff['new_nodes'][:5]))
     if diff['new_edges']:
         print('New edges:', len(diff['new_edges']))
+Path('graphify-out/.graphify_old.json').unlink(missing_ok=True)
 "
 ```
 
 Before the merge step, save the old graph: `cp graphify-out/graph.json graphify-out/.graphify_old.json`
-Clean up after: `rm -f graphify-out/.graphify_old.json`
 
 ---
 
