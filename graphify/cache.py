@@ -606,31 +606,35 @@ def _relativize_source_files_in(payload: dict, root: Path) -> None:
     # source_file the same way nodes/edges/hyperedges do, so it needs the same
     # portable-path treatment for cache entries to round-trip correctly across
     # machines/checkout directories.
+    # definition_file (#2990) is a path into the scanned tree exactly like
+    # source_file; a cache entry keeping it absolute replayed the build host's
+    # layout on every warm hit (#3223).
     for bucket in ("nodes", "edges", "hyperedges", "raw_calls"):
         for item in payload.get(bucket, []):
             if not isinstance(item, dict):
                 continue
-            source = item.get("source_file")
-            if not source:
-                continue
-            sp = Path(source)
-            if not sp.is_absolute():
-                # os.path.abspath is lexical (no symlink resolution), matching
-                # the symbolic relativization below.
-                cwd_form = Path(os.path.abspath(sp))
-                try:
-                    if cwd_form == root_resolved / sp or not cwd_form.exists():
-                        continue  # already root-relative, or a ghost path
-                except OSError:
+            for key in ("source_file", "definition_file"):
+                source = item.get(key)
+                if not source:
                     continue
-                sp = cwd_form
-            try:
-                rel = os.path.relpath(sp, root_resolved)
-            except (ValueError, OSError):
-                continue  # out-of-root (e.g. Windows cross-drive)
-            if rel == ".." or rel.startswith(".." + os.sep) or rel.startswith("../"):
-                continue  # escaped root — keep absolute
-            item["source_file"] = rel.replace(os.sep, "/")
+                sp = Path(source)
+                if not sp.is_absolute():
+                    # os.path.abspath is lexical (no symlink resolution),
+                    # matching the symbolic relativization below.
+                    cwd_form = Path(os.path.abspath(sp))
+                    try:
+                        if cwd_form == root_resolved / sp or not cwd_form.exists():
+                            continue  # already root-relative, or a ghost path
+                    except OSError:
+                        continue
+                    sp = cwd_form
+                try:
+                    rel = os.path.relpath(sp, root_resolved)
+                except (ValueError, OSError):
+                    continue  # out-of-root (e.g. Windows cross-drive)
+                if rel == ".." or rel.startswith(".." + os.sep) or rel.startswith("../"):
+                    continue  # escaped root — keep absolute
+                item[key] = rel.replace(os.sep, "/")
 
 
 def _normalize_source_file_value(src: "str | Path", root_resolved: Path) -> str:
@@ -911,16 +915,18 @@ def _absolutize_source_files_in(payload: dict, root: Path) -> None:
         for item in payload.get(bucket, []):
             if not isinstance(item, dict):
                 continue
-            source = item.get("source_file")
-            if not source:
-                continue
-            sp = Path(source)
-            if sp.is_absolute():
-                continue
-            try:
-                item["source_file"] = str(root_resolved / sp)
-            except (TypeError, OSError):
-                continue
+            # Mirror of the relativize side: definition_file re-anchors too (#3223).
+            for key in ("source_file", "definition_file"):
+                source = item.get(key)
+                if not source:
+                    continue
+                sp = Path(source)
+                if sp.is_absolute():
+                    continue
+                try:
+                    item[key] = str(root_resolved / sp)
+                except (TypeError, OSError):
+                    continue
 
 
 def cache_dir(root: Path = Path("."), kind: str = "ast",
