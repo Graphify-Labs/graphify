@@ -61,11 +61,13 @@ def _v8_baseline_ref(platform_key: str) -> str:
     """The git ref for a split host's own pre-split skill body."""
     if platform_key == "claude":
         return f"{_V8_BASELINE_SHA}:graphify/skill.md"
-    if platform_key == "agents":
+    if platform_key in ("agents", "command-code"):
         # `agents` is a post-v8 platform with no own v8 body — it re-homes amp's
         # agents-md body at the generic ~/.agents/skills location. Its render is
         # amp's modulo the install/uninstall command wording (prose, not headings),
-        # so amp's v8 body is the correct per-host coverage baseline.
+        # so amp's v8 body is the correct per-host coverage baseline. command-code
+        # is likewise post-v8 with no own v8 body (its body is the same agents-md
+        # split render), so it audits against amp's v8 body too.
         return f"{_V8_BASELINE_SHA}:graphify/skill-amp.md"
     return f"{_V8_BASELINE_SHA}:graphify/skill-{platform_key}.md"
 
@@ -188,6 +190,16 @@ _AGENTS_MD_HOOKS: dict[str, dict[str, str]] = {
         "host_display": "your agent",
         "install_block": "graphify agents install",
         "uninstall_block": "graphify agents uninstall  # remove the section",
+        "pretooluse_note": "",
+    },
+    "command-code": {
+        # Command Code reads AGENTS.md as project memory. Same bare, caveat-free
+        # agents-md section as amp/agents, worded for Command Code and pointing
+        # at `graphify command-code install` (which wires AGENTS.md).
+        "heading_suffix": "",
+        "host_display": "Command Code",
+        "install_block": "graphify command-code install",
+        "uninstall_block": "graphify command-code uninstall  # remove the section",
         "pretooluse_note": "",
     },
 }

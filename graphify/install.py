@@ -102,6 +102,13 @@ def _platform_skill_destination(platform_name: str, *, project: bool = False, pr
         # Global Antigravity skill dir (all workspaces): ~/.gemini/config/skills/
         return Path.home() / ".gemini" / "config" / "skills" / "graphify" / "SKILL.md"
 
+    if platform_name == "command-code":
+        if project:
+            return (project_dir or Path(".")) / ".commandcode" / "skills" / "graphify" / "SKILL.md"
+        if os.environ.get("COMMANDCODE_CONFIG_DIR"):
+            return Path(os.environ["COMMANDCODE_CONFIG_DIR"]) / "skills" / "graphify" / "SKILL.md"
+        return Path.home() / ".commandcode" / "skills" / "graphify" / "SKILL.md"
+
     cfg = _PLATFORM_CONFIG[platform_name]
     if project:
         return (project_dir or Path(".")) / cfg["skill_dst"]
@@ -466,6 +473,15 @@ _PLATFORM_CONFIG: dict[str, dict] = {
         "skill_dst": Path(".agents") / "skills" / "graphify" / "SKILL.md",
         "claude_md": False,
         "skill_refs": "agents",
+    },
+    "command-code": {
+        # Command Code discovers skills from .commandcode/skills/ (project) and
+        # ~/.commandcode/skills/ (user-global). The user-scope path is set in
+        # _platform_skill_destination (COMMANDCODE_CONFIG_DIR override).
+        "skill_file": "skill-command-code.md",
+        "skill_dst": Path(".commandcode") / "skills" / "graphify" / "SKILL.md",
+        "claude_md": False,
+        "skill_refs": "command-code",
     },
     "devin": {
         # Monolith: devin ships the full SKILL.md inline, no references/ sidecar.
@@ -1598,7 +1614,7 @@ def _project_install(platform_name: str, project_dir: Path | None = None, strict
     elif platform_name == "kiro":
         _kiro_install(project_dir)
         _print_project_git_add_hint([project_dir / ".kiro"])
-    elif platform_name in ("aider", "amp", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes"):
+    elif platform_name in ("aider", "amp", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes", "command-code"):
         skill_dst = _copy_skill_file(platform_name, project=True, project_dir=project_dir)
         _agents_install(project_dir, platform_name, project=True)
         hint_paths = [_project_scope_root(skill_dst, project_dir), project_dir / "AGENTS.md"]
@@ -1639,7 +1655,7 @@ def _project_uninstall(platform_name: str, project_dir: Path | None = None) -> N
         _cursor_uninstall(project_dir)
     elif platform_name == "kiro":
         _kiro_uninstall(project_dir)
-    elif platform_name in ("aider", "amp", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes"):
+    elif platform_name in ("aider", "amp", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes", "command-code"):
         _remove_skill_file(platform_name, project=True, project_dir=project_dir)
         _agents_uninstall(project_dir, platform=platform_name)
         if platform_name == "codex":
@@ -1840,6 +1856,9 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
     # The generic agents platform's user-scope skill lives at ~/.agents/skills,
     # which neither the AGENTS.md cleanup nor amp's removal reaches.
     _remove_skill_file("agents")
+    # Command Code's user-scope skill lives at ~/.commandcode/skills, which the
+    # AGENTS.md cleanup does not touch either.
+    _remove_skill_file("command-code")
     _uninstall_opencode_plugin(pd)
     _uninstall_codex_hook(pd)
 
@@ -2036,6 +2055,7 @@ _CLI_INSTALL_COMMANDS = frozenset({
     "claw",
     "codebuddy",
     "codex",
+    "command-code",
     "copilot",
     "cursor",
     "devin",
@@ -2298,7 +2318,7 @@ def dispatch_install_cli(cmd: str) -> bool:
         else:
             print(f"Usage: graphify {cmd} [install|uninstall]", file=sys.stderr)
             sys.exit(1)
-    elif cmd in ("aider", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes"):
+    elif cmd in ("aider", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes", "command-code"):
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
         if subcmd == "install":
             if "--project" in sys.argv[3:]:

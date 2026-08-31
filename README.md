@@ -64,7 +64,7 @@ graphify-out/
 └── graph.json       the full graph — query it anytime without re-reading your files
 ```
 
-**Works in** Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot, and 15+ more — [pick your platform](#install).
+**Works in** Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot, Command Code, and 15+ more — [pick your platform](#install).
 
 ---
 
@@ -230,6 +230,7 @@ for example `graphify claude install --project` or `graphify codex install --pro
 | Agent Skills (cross-framework) | `graphify install --platform agents` (alias `--platform skills`) |
 | Kiro IDE/CLI | `graphify kiro install` |
 | Pi coding agent | `graphify install --platform pi` |
+| Command Code | `graphify install --platform command-code` |
 | Cursor | `graphify cursor install` |
 | Devin CLI | `graphify devin install` |
 | Google Antigravity | `graphify antigravity install` |
@@ -303,6 +304,7 @@ Run this once in your project after building a graph:
 | Agent Skills (cross-framework) | `graphify agents install` (alias `graphify skills install`) |
 | Kiro IDE/CLI | `graphify kiro install` |
 | Pi coding agent | `graphify pi install` |
+| Command Code | `graphify command-code install` |
 | Devin CLI | `graphify devin install` |
 | Google Antigravity | `graphify antigravity install` |
 
@@ -749,6 +751,8 @@ graphify pi install                # skill file (Pi coding agent)
 graphify pi uninstall
 graphify devin install             # skill file + .windsurf/rules/graphify.md (Devin CLI)
 graphify devin uninstall
+graphify command-code install      # ~/.commandcode/skills/ + AGENTS.md (Command Code)
+graphify command-code uninstall
 graphify antigravity install       # .agents/rules + .agents/workflows (Google Antigravity)
 graphify antigravity uninstall
 
