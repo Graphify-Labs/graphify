@@ -4,7 +4,7 @@ import os
 import pytest
 from pathlib import Path
 
-from graphify.querylog import log_query, nodes_from_result
+from graphify.querylog import _archive_path, log_query, nodes_from_result
 
 
 # ---------------------------------------------------------------------------
@@ -221,3 +221,69 @@ def test_log_query_writes_nothing_by_default(monkeypatch, tmp_path):
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     log_query(kind="query", question="secret internal ticket TICKET-123", corpus=".", result="1 node found")
     assert not (tmp_path / ".cache" / "graphify-queries.log").exists()
+
+
+# ---------------------------------------------------------------------------
+# #3051 — optional rotation via GRAPHIFY_QUERY_LOG_MAX_RECORDS
+# ---------------------------------------------------------------------------
+
+def _rotation_env(monkeypatch, tmp_path, max_records=None):
+    log_file = tmp_path / "q.log"
+    monkeypatch.setenv("GRAPHIFY_QUERY_LOG", str(log_file))
+    monkeypatch.delenv("GRAPHIFY_QUERY_LOG_DISABLE", raising=False)
+    if max_records is None:
+        monkeypatch.delenv("GRAPHIFY_QUERY_LOG_MAX_RECORDS", raising=False)
+    else:
+        monkeypatch.setenv("GRAPHIFY_QUERY_LOG_MAX_RECORDS", str(max_records))
+    return log_file
+
+
+def test_rotation_unset_keeps_all_lines(tmp_path, monkeypatch):
+    log_file = _rotation_env(monkeypatch, tmp_path)
+    for i in range(5):
+        log_query(kind="query", question=f"q{i}", corpus="/g.json")
+    lines = log_file.read_text().splitlines()
+    assert len(lines) == 5
+    assert not _archive_path(log_file).exists()
+
+
+def test_rotation_trims_live_keeps_newest(tmp_path, monkeypatch):
+    log_file = _rotation_env(monkeypatch, tmp_path, max_records=3)
+    for i in range(5):
+        log_query(kind="query", question=f"q{i}", corpus="/g.json")
+    live = [json.loads(l)["question"] for l in log_file.read_text().splitlines()]
+    archive = [json.loads(l)["question"] for l in _archive_path(log_file).read_text().splitlines()]
+    assert live == ["q2", "q3", "q4"]
+    assert archive == ["q0", "q1"]
+
+
+def test_rotation_invalid_env_is_noop(tmp_path, monkeypatch):
+    log_file = _rotation_env(monkeypatch, tmp_path, max_records="abc")
+    for i in range(4):
+        log_query(kind="query", question=f"q{i}", corpus="/g.json")
+    assert len(log_file.read_text().splitlines()) == 4
+    assert not _archive_path(log_file).exists()
+
+    monkeypatch.setenv("GRAPHIFY_QUERY_LOG_MAX_RECORDS", "0")
+    log_query(kind="query", question="extra", corpus="/g.json")
+    assert len(log_file.read_text().splitlines()) == 5
+
+
+def test_rotation_archive_appends_across_rotations(tmp_path, monkeypatch):
+    log_file = _rotation_env(monkeypatch, tmp_path, max_records=2)
+    for i in range(5):
+        log_query(kind="query", question=f"q{i}", corpus="/g.json")
+    archive_path = _archive_path(log_file)
+    archived = [json.loads(l)["question"] for l in archive_path.read_text().splitlines()]
+    assert archived == ["q0", "q1", "q2"]
+    live = [json.loads(l)["question"] for l in log_file.read_text().splitlines()]
+    assert live == ["q3", "q4"]
+
+
+def test_rotation_never_raises(tmp_path, monkeypatch):
+    bad_path = tmp_path / "is_a_dir"
+    bad_path.mkdir()
+    monkeypatch.setenv("GRAPHIFY_QUERY_LOG", str(bad_path))
+    monkeypatch.setenv("GRAPHIFY_QUERY_LOG_MAX_RECORDS", "1")
+    monkeypatch.delenv("GRAPHIFY_QUERY_LOG_DISABLE", raising=False)
+    log_query(kind="query", question="q", corpus="/g.json")

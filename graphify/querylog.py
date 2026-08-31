@@ -40,6 +40,39 @@ def nodes_from_result(result: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
+def _max_records() -> int | None:
+    raw = os.environ.get("GRAPHIFY_QUERY_LOG_MAX_RECORDS", "").strip()
+    if not raw:
+        return None
+    try:
+        n = int(raw)
+    except ValueError:
+        return None
+    return n if n > 0 else None
+
+
+def _archive_path(path: Path) -> Path:
+    return path.with_name(f"{path.stem}.archive{path.suffix}")
+
+
+def _rotate_if_needed(path: Path, max_records: int) -> None:
+    if not path.is_file():
+        return
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    if not lines:
+        return
+    if len(lines) <= max_records:
+        return
+    overflow, keep = lines[:-max_records], lines[-max_records:]
+    archive = _archive_path(path)
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    with archive.open("a", encoding="utf-8") as fh:
+        fh.writelines(overflow)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text("".join(keep), encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def log_query(
     *,
     kind: str,
@@ -76,5 +109,8 @@ def log_query(
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        max_records = _max_records()
+        if max_records is not None:
+            _rotate_if_needed(path, max_records)
     except Exception:
         pass
