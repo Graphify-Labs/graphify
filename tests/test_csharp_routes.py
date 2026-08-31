@@ -176,6 +176,24 @@ def test_route_node_is_anchored_to_the_controller_file(tmp_path: Path):
     assert node.get("file_type") == "code"
 
 
+def test_route_without_a_verb_attribute_matches_every_verb(tmp_path: Path):
+    """A bare `[Route]` with no `Http*` sibling is verb-agnostic in ASP.NET; the
+    label says so with `*` rather than guessing a verb."""
+    f = _write(
+        tmp_path / "c.cs",
+        "namespace N {\n"
+        "  public class AnyController {\n"
+        '    [Route("api/any")]\n'
+        "    public int Any() { return 1; }\n"
+        "  }\n"
+        "}\n",
+    )
+    result = extract([f], cache_root=tmp_path)
+    assert "* api/any" in _routes(result), (
+        f"verb-less route not labelled '*'; got {sorted(_routes(result))}"
+    )
+
+
 def test_a_method_without_routing_attributes_mints_no_route_node(tmp_path: Path):
     """Only routing attributes produce route nodes — `[Obsolete("...")]` must not."""
     f = _write(
