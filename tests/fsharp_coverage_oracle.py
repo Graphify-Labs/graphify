@@ -199,7 +199,7 @@ CONSTRUCTS: list = [
 
 def run_one(name: str, src: str, want_labels: set, want_edges: list,
             forbidden: set | None = None):
-    with tempfile.TemporaryDirectory(dir="/data/tmp") as td:
+    with tempfile.TemporaryDirectory() as td:
         fp = pathlib.Path(td) / "c.fs"
         fp.write_text(src, encoding="utf-8")
         r = extract_fsharp(fp)

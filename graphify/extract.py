@@ -5623,6 +5623,10 @@ def _looks_like_fsharp_source(path: Path) -> bool:
         head = path.read_bytes()[:65536]
     except OSError:
         return True  # unreadable: let the extractor report the real error
+    # Windows-authored F# commonly leads with a UTF-8 BOM; without stripping it
+    # the first line's marker (usually `module`/`namespace`) never matches.
+    if head.startswith(b"\xef\xbb\xbf"):
+        head = head[3:]
 
     strong_glsl = (b"#version", b"#extension", b"precision ", b"uniform ",
                    b"varying ", b"layout", b"in vec", b"out vec", b"void main")

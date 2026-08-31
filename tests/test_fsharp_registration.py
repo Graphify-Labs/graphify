@@ -172,3 +172,29 @@ def test_pure_fsharp_corpus_resolves_open_to_canonical_namespace(tmp_path):
     hits = [e for e in r["edges"]
             if e["relation"] == "imports" and e["target"] == canon]
     assert hits, "open edge was not repointed to the canonical namespace node"
+
+
+def test_missing_grammar_is_reported_not_raised(tmp_path, monkeypatch):
+    # Lives HERE (no module-level importorskip): it fakes the ImportError, so
+    # it must run precisely on machines where the grammar is absent.
+    from graphify.extractors.fsharp import extract_fsharp
+    import builtins
+    real_import = builtins.__import__
+
+    def fake_import(name, *a, **k):
+        if name == "tree_sitter_fsharp":
+            raise ImportError("boom")
+        return real_import(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    p = tmp_path / "x.fs"
+    p.write_text("module M\n", encoding="utf-8")
+    r = extract_fsharp(p)
+    assert r["nodes"] == [] and "not installed" in r["error"]
+
+
+def test_bom_prefixed_fsharp_is_dispatched(tmp_path):
+    from graphify.extract import _get_extractor
+    p = tmp_path / "bom.fs"
+    p.write_bytes(b"\xef\xbb\xbfmodule M\n")  # BOM + single marker line
+    assert _get_extractor(p) is not None

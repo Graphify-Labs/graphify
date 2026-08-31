@@ -176,23 +176,6 @@ def test_annotated_let_names_the_binding_not_the_type(tmp_path):
     assert "int" not in sourced
 
 
-def test_missing_grammar_is_reported_not_raised(tmp_path, monkeypatch):
-    import builtins
-    real_import = builtins.__import__
-
-    def fake_import(name, *a, **k):
-        if name == "tree_sitter_fsharp":
-            raise ImportError("boom")
-        return real_import(name, *a, **k)
-
-    monkeypatch.setattr(builtins, "__import__", fake_import)
-    r = extract_fsharp(_write(tmp_path, "x.fs", "module M\n"))
-    assert r["nodes"] == [] and "not installed" in r["error"]
-
-
-# ── Findings from graphify's review of PR #3221 (round 2) ────────────────────
-
-
 def test_dotted_callee_records_call(tmp_path):
     # `Grasp.Telemetry.init args` parses as application > dot_expression; the
     # callee must be recorded as a full-path stub, not silently skipped.
