@@ -7224,6 +7224,45 @@ def extract(
             if e.get("target"):
                 e["target"] = _canon(e["target"])
 
+    # Every resolution/repoint/rewire/disambiguation pass above has now had its
+    # chance to land an edge endpoint on a real node id. Anything still not in
+    # the node set at this point is not a bug in one particular resolver — it
+    # is a genuine reference to something outside the graph (an unimported
+    # stdlib/third-party module, an unresolved dotted path, ...). Leaving it
+    # as a bare edge endpoint is not a neutral encoding of "outside the
+    # graph": every consumer that builds a graph object from nodes+edges
+    # (networkx included) materializes it as an attribute-less phantom node,
+    # so the file's declared node set and its produced node set disagree
+    # (#2873). Mint a minimal, explicitly-marked stub for each so they agree.
+    # `external: True` distinguishes these from ordinary file/symbol nodes —
+    # merge-graphs reads it to merge same-named external references across
+    # repos instead of namespacing them like repo-local ids (#2873).
+    _declared_ids = {n.get("id") for n in all_nodes if isinstance(n, dict)}
+    if resolution_context_nodes:
+        _declared_ids |= {
+            n.get("id") for n in resolution_context_nodes if isinstance(n, dict)
+        }
+    _external_stubs: dict[str, dict] = {}
+    for e in all_edges:
+        if not isinstance(e, dict):
+            continue
+        tgt = e.get("target")
+        if not tgt or tgt in _declared_ids or tgt in _external_stubs:
+            continue
+        if e.get("relation") in ("depends_on", "requires") or str(tgt).startswith("pkg_"):
+            continue  # manifest/package deps: keep prior prune-not-fabricate behavior (#2873)
+        _external_stubs[tgt] = {
+            "id": tgt,
+            "label": tgt,
+            "file_type": "code",
+            "type": "module",
+            "confidence": "INFERRED",
+            "external": True,
+            "source_file": None,
+        }
+    if _external_stubs:
+        all_nodes.extend(_external_stubs.values())
+
     # origin_file is an internal disambiguation hint (#1462): the colliding-id pass
     # above reads it to keep same-named cross-file stubs distinct, after which nothing
     # consumes it. Drop it from the returned nodes so it never ships into graph.json as

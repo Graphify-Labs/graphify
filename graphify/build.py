@@ -1608,6 +1608,8 @@ def merge_raw_extraction(
         # re-extracted its source. Hyperedges are semantic-tier (no _origin,
         # null source_location), so an AST-only re-extract carries them.
         # Deletion pruning below stays tier-blind.
+        if item.get("external"):
+            return False  # external stub nodes/edges (#2873): never carried-forward-drop, never replace-drop
         own = new_ast_sources if _is_ast_tier(item) else new_sem_sources
         if sf in own or _norm_source_file(sf, _eff_root) in own:
             return True  # re-extracted this run — replaced by the new chunk
@@ -2076,7 +2078,11 @@ def prefix_graph_for_global(
     collide and the aggregated community view fuses unrelated communities
     into one meta-node (#3014). 0 (the default) leaves communities untouched.
     """
-    relabel = {n: f"{repo_tag}::{n}" for n in G.nodes}
+    relabel = {
+        n: f"{repo_tag}::{n}"
+        for n, data in G.nodes(data=True)
+        if not data.get("external")
+    }
     H = nx.relabel_nodes(G, relabel, copy=True)
     for node, data in H.nodes(data=True):
         data["repo"] = repo_tag
@@ -2144,7 +2150,21 @@ def distinct_repo_tags(graph_paths: "list[Path]") -> "list[str]":
 
 
 def prune_repo_from_graph(G: nx.Graph, repo_tag: str) -> int:
-    """Remove all nodes tagged with repo_tag from G in-place. Returns count removed."""
-    to_remove = [n for n, d in G.nodes(data=True) if d.get("repo") == repo_tag]
+    """Remove all nodes tagged with repo_tag from G in-place. Returns count removed.
+
+    External nodes (#2873) can be referenced by multiple repos via their
+    'repos' list -- pruning one repo only removes the tag; the node itself
+    is removed only once no repo still references it.
+    """
+    to_remove = []
+    for n, d in G.nodes(data=True):
+        if d.get("repo") == repo_tag:
+            to_remove.append(n)
+        elif d.get("external") and repo_tag in d.get("repos", ()):
+            remaining = [r for r in d["repos"] if r != repo_tag]
+            if remaining:
+                d["repos"] = remaining
+            else:
+                to_remove.append(n)
     G.remove_nodes_from(to_remove)
     return len(to_remove)
