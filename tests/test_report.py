@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import networkx as nx
 from graphify.build import build_from_json
 from graphify.cluster import cluster, score_all
 from graphify.analyze import god_nodes, surprising_connections
@@ -169,7 +170,8 @@ def test_report_hubs_are_plain_text_by_default():
     report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project", min_community_size=1)
     assert "## Community Hubs (Navigation)" in report
     assert "[[_COMMUNITY_" not in report, "must not emit dangling Obsidian wikilinks by default (#1712)"
-    assert any(f"- Widget {cid}" in report for cid in communities)
+    # #3147: labels are wrapped in a code span like every other label in the file.
+    assert any(f"- `Widget {cid}`" in report for cid in communities)
 
 
 def test_report_hubs_use_wikilinks_when_obsidian():
@@ -178,3 +180,70 @@ def test_report_hubs_use_wikilinks_when_obsidian():
     labels = {cid: f"Widget {cid}" for cid in communities}
     report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project", min_community_size=1, obsidian=True)
     assert "[[_COMMUNITY_" in report
+
+
+# --- #3147: snake_case labels must render inside code spans -------------------
+#
+# God Nodes, Ambiguous Edges, Import Cycles and the isolated-node list already
+# wrap labels in backticks; these four sites didn't, so a corpus with
+# snake_case identifiers produced raw intraword underscores outside any code
+# span, which markdown linters flag as unbalanced emphasis.
+
+def _snake_case_inputs():
+    G = nx.Graph()
+    G.add_node("n1", label="_scan_redirects", file_type="code", source_file="a.py")
+    G.add_node("n2", label="my_var_name", file_type="code", source_file="a.py")
+    G.add_edge("n1", "n2", relation="calls", confidence="EXTRACTED")
+    G.graph["hyperedges"] = [
+        {"id": "he_snake", "label": "flow_builder", "nodes": ["_scan_redirects", "my_var_name"],
+         "confidence": "EXTRACTED"},
+    ]
+    communities = {0: ["n1", "n2"]}
+    cohesion = {0: 0.5}
+    detection = {"total_files": 1, "total_words": 10}
+    tokens = {"input": 0, "output": 0}
+    return G, communities, cohesion, detection, tokens
+
+
+def test_community_hub_label_is_code_wrapped():
+    G, communities, cohesion, detection, tokens = _snake_case_inputs()
+    labels = {0: "my_var_name"}
+    report = generate(G, communities, cohesion, labels, [], [], detection, tokens,
+                      "./project", min_community_size=1)
+    assert "- `my_var_name`" in report
+
+
+def test_hyperedge_label_and_node_labels_are_code_wrapped():
+    G, communities, cohesion, detection, tokens = _snake_case_inputs()
+    labels = {0: "my_var_name"}
+    report = generate(G, communities, cohesion, labels, [], [], detection, tokens,
+                      "./project", min_community_size=1)
+    assert "## Hyperedges" in report
+    assert "**`flow_builder`**" in report
+    assert "`_scan_redirects`" in report
+    assert "`my_var_name`" in report
+
+
+def test_hyperedge_falls_back_to_id_when_unlabeled():
+    G, communities, cohesion, detection, tokens = _snake_case_inputs()
+    G.graph["hyperedges"][0].pop("label")
+    labels = {0: "my_var_name"}
+    report = generate(G, communities, cohesion, labels, [], [], detection, tokens,
+                      "./project", min_community_size=1)
+    assert "**`he_snake`**" in report
+
+
+def test_community_heading_wraps_label_in_code_span():
+    G, communities, cohesion, detection, tokens = _snake_case_inputs()
+    labels = {0: "my_var_name"}
+    report = generate(G, communities, cohesion, labels, [], [], detection, tokens,
+                      "./project", min_community_size=1)
+    assert '### Community 0 - "`my_var_name`"' in report
+
+
+def test_community_node_list_wraps_each_label_in_code_span():
+    G, communities, cohesion, detection, tokens = _snake_case_inputs()
+    labels = {0: "my_var_name"}
+    report = generate(G, communities, cohesion, labels, [], [], detection, tokens,
+                      "./project", min_community_size=1)
+    assert "Nodes (2): `_scan_redirects`, `my_var_name`" in report
