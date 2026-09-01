@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import json
 from graphify.extractors.base import _LANGUAGE_BUILTIN_GLOBALS, _file_stem, _make_id, _read_text
 from graphify.ids import normalize_id
 from graphify.extractors.models import LanguageConfig
@@ -5979,9 +5980,23 @@ def _extract_generic(
     # ── Clean edges ───────────────────────────────────────────────────────────
     valid_ids = seen_ids
     clean_edges = []
+    # Byte-identical duplicates collapse to one edge (#3251): a signature that
+    # annotates the same type twice (``def f(a: Path, b: Path)``) is ONE
+    # reference relationship at one location, but the per-occurrence emission
+    # loops above append it once per annotation — in every language block, since
+    # neither add_edge nor the raw appends de-duplicate. The copies carry zero
+    # information (build's dedup drops them anyway) and their only observable
+    # effect is tripping diagnose_extraction's exact_duplicate_edges health
+    # warning. Only edges whose ENTIRE payload is identical collapse; any
+    # differing field (source_location, context, metadata, …) keeps both.
+    _seen_edge_payloads: set[str] = set()
     for edge in edges:
         src, tgt = edge["source"], edge["target"]
         if src in valid_ids and (tgt in valid_ids or edge["relation"] in ("imports", "imports_from", "re_exports")):
+            payload = json.dumps(edge, sort_keys=True, default=str)
+            if payload in _seen_edge_payloads:
+                continue
+            _seen_edge_payloads.add(payload)
             clean_edges.append(edge)
 
     # Ruby mixins were collected during the node walk (before raw_calls existed);
