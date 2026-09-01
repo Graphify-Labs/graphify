@@ -1093,3 +1093,25 @@ def test_semantic_cache_calls_pass_prompt_file_for_every_split_host():
             )
         # The placeholder is inert unless the body tells the agent what to substitute.
         assert "SPEC_PATH below is the **absolute** path" in a.content, a.path
+
+
+def test_windows_skill_writes_marker_files_without_a_bom():
+    """The Windows bootstrap must not write the sidecar markers with a BOM (#3028).
+
+    `Out-File -Encoding utf8` always emits EF BB BF on Windows PowerShell 5.1 --
+    `utf8NoBOM` only exists from PowerShell 6 -- and `-NoNewline` does nothing about
+    it. The BOM then rode into `.graphify_python` / `.graphify_root`, so every
+    post-commit rebuild died with WinError 123 while `hook install` and `hook status`
+    both still reported success. The readers now decode with `utf-8-sig`; this keeps
+    the writer from producing the BOM in the first place.
+    """
+    core, _ = _platform_artifacts("windows")
+    for marker in (".graphify_python", ".graphify_root"):
+        assert f"Out-File -FilePath graphify-out\\{marker} -Encoding utf8" not in core, (
+            f"the windows render still writes {marker} with a BOM-emitting Out-File"
+        )
+        assert f"WriteAllText((Join-Path $PWD 'graphify-out\\{marker}')" in core, (
+            f"{marker} must be written through WriteAllText with a BOM-less encoding"
+        )
+    assert "New-Object System.Text.UTF8Encoding $false" in core, \
+        "the BOM-less encoding object must be constructed in the windows render"

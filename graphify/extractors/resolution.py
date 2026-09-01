@@ -209,7 +209,9 @@ def _load_tsconfig_aliases(start_dir: Path) -> dict[str, list[str]]:
     Follows extends chains so SvelteKit/Nuxt/NestJS inherited aliases are included.
     Returns a dict mapping alias patterns to ordered resolved target patterns;
     wildcard tokens remain intact for substitution during resolution (#927).
-    Result is cached by config path string.
+    Result is cached by config path string. The cache has no mtime/content
+    component, so extract() clears it per run (#2917); do not assume the entry
+    survives a config edit within a long-lived process.
     """
     found = _find_js_config(start_dir)
     if found is None:
@@ -227,7 +229,8 @@ def _load_tsconfig_base_url(start_dir: Path) -> "Path | None":
     so a config declaring baseUrl and NO paths yielded an empty alias map and
     every non-relative import went unresolved (#2153). Exposed separately so it
     can act as a resolution root of last resort, after all declared aliases miss.
-    Returns None when no config declares baseUrl.
+    Returns None when no config declares baseUrl. Cached by config path with no
+    mtime component, so extract() clears it per run (#2917).
     """
     found = _find_js_config(start_dir)
     if found is None:
@@ -873,7 +876,7 @@ def _apply_symbol_resolution_facts(
         for edge in edges
     }
 
-    def add_edge(source: str, target: str, relation: str, context: str, line: int, source_path: Path, target_file: str | None = None, local_alias: str | None = None) -> None:
+    def add_edge(source: str, target: str, relation: str, context: str, line: int, source_path: Path, target_file: str | None = None, local_alias: str | None = None, type_only: bool = False) -> None:
         key = (source, target, relation, context or "")
         if key in existing_edges:
             return
@@ -898,6 +901,9 @@ def _apply_symbol_resolution_facts(
         # cross-file member-call resolver match `alias.func()` (#2082).
         if local_alias is not None:
             edge["local_alias"] = local_alias
+        # Erased at compile time (#3123): Import Cycles skips these edges.
+        if type_only:
+            edge["type_only"] = True
         edges.append(edge)
 
     for declaration in facts.declarations:
@@ -945,6 +951,7 @@ def _apply_symbol_resolution_facts(
                 star_fact.line,
                 star_fact.file_path,
                 target_file=str(path_by_resolved.get(target_path, target_path)),
+                type_only=star_fact.type_only,
             )
 
     for namespace_fact in facts.namespace_exports:
@@ -976,6 +983,7 @@ def _apply_symbol_resolution_facts(
                 namespace_fact.line,
                 namespace_fact.file_path,
                 target_file=str(path_by_resolved.get(target_path, target_path)),
+                type_only=namespace_fact.type_only,
             )
 
     for export_fact in facts.exports:
@@ -1001,6 +1009,7 @@ def _apply_symbol_resolution_facts(
                     export_fact.line,
                     export_fact.file_path,
                     target_file=str(path_by_resolved.get(origin[0], origin[0])),
+                    type_only=export_fact.type_only,
                 )
 
     def resolve_exported_origin(target_path: Path, imported_name: str, seen: set[tuple[Path, str]] | None = None) -> tuple[Path, str]:
@@ -1388,19 +1397,34 @@ def _ts_walk_class_members(class_node, source: bytes, path: Path, class_nid: str
     line = class_node.start_point[0] + 1
     for child in class_node.children:
         if child.type == "class_heritage":
+            saw_clause = False
             for clause in child.children:
                 if clause.type == "extends_clause":
+                    saw_clause = True
                     for name in _ts_heritage_clause_entries(clause, source):
                         facts.uses.append(
                             _SymbolUseFact(path, class_nid, name, "inherits", "type",
                                            clause.start_point[0] + 1)
                         )
                 elif clause.type == "implements_clause":
+                    saw_clause = True
                     for name in _ts_heritage_clause_entries(clause, source):
                         facts.uses.append(
                             _SymbolUseFact(path, class_nid, name, "implements", "type",
                                            clause.start_point[0] + 1)
                         )
+            if not saw_clause:
+                # The JavaScript grammar carries the base directly under
+                # class_heritage (`extends Base` -> [extends, identifier]) with no
+                # extends_clause/implements_clause wrapper like the TypeScript
+                # grammar. Treat the heritage node itself as the extends clause so
+                # `class Derived extends Base {}` in a .js file still emits an
+                # inherits edge. Mirrors the extends_type_clause branch below.
+                for name in _ts_heritage_clause_entries(child, source):
+                    facts.uses.append(
+                        _SymbolUseFact(path, class_nid, name, "inherits", "type",
+                                       child.start_point[0] + 1)
+                    )
         elif child.type == "extends_type_clause":
             # Interface heritage (`interface A extends B, C`) is an
             # extends_type_clause node, NOT a class_heritage. Its base entries
@@ -1539,6 +1563,13 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
 
             raw_module = _js_module_specifier(node, source)
             export_clause = _js_export_clause(node)
+            # `export type { X } from ...` / `export type * from ...`: the
+            # statement-level `type` keyword is a bare anonymous child; the
+            # default binding NAMED type sits inside the clause instead (#3123).
+            stmt_type_only = any(
+                child.type == "type" and not child.is_named
+                for child in node.children
+            )
             if raw_module is not None:
                 target_path = _resolve_js_module_path(raw_module, path.parent)
                 if target_path is None:
@@ -1552,11 +1583,13 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
                             namespace_name,
                             target_path,
                             node.start_point[0] + 1,
+                            type_only=stmt_type_only,
                         )
                     )
                 elif _js_export_statement_is_star(node):
                     facts.star_exports.append(
-                        _StarExportFact(path, target_path, node.start_point[0] + 1)
+                        _StarExportFact(path, target_path, node.start_point[0] + 1,
+                                        type_only=stmt_type_only)
                     )
                 if export_clause is not None:
                     for original_name, exported_name in _js_named_specifiers(
@@ -1569,6 +1602,7 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
                                 node.start_point[0] + 1,
                                 target_path=target_path,
                                 target_name=original_name,
+                                type_only=stmt_type_only,
                             )
                         )
                 continue
@@ -2129,7 +2163,10 @@ def _merge_decl_def_classes(
     and leaves it alone, and the downstream resolvers see ONE definition. Because
     the colliding nodes already share an id, no edge re-pointing is needed: every
     edge that referenced the impl symbol already points at the surviving id. We
-    only drop the redundant duplicate node and prefer the header's label.
+    only drop the redundant duplicate node and prefer the header's label — but
+    the dropped impl node's provenance is preserved on the survivor as
+    ``definition_file`` / ``definition_location``, so the definition site is
+    still reachable from the merged node.
 
     GOD-NODE GUARDS (false merges are the main risk):
 
@@ -2200,6 +2237,30 @@ def _merge_decl_def_classes(
             if len(base_headers) > 1:
                 continue
             keeper = base_headers[0] if base_headers else min(headers, key=_source_stem)
+        # The keeper is the DECLARATION, so without this the graph reports the
+        # header as the symbol's only location and the definition site — the file
+        # and line a reader actually wants — is discarded with the dropped node.
+        # Recorded as separate attributes: the survivor's id, label and
+        # source_file are untouched, so no existing graph is re-keyed, no edge
+        # moves, and the single-definition guarantee downstream resolvers rely on
+        # is unchanged. Chosen deterministically (lowest source_file, then
+        # location) so an ObjC class whose members are split across several
+        # category impls does not depend on node arrival order.
+        impls = sorted(
+            (n for n in group
+             if n is not keeper
+             and Path(str(n.get("source_file", ""))).suffix.lower()
+             in _DECLDEF_IMPL_SUFFIXES),
+            key=lambda n: (str(n.get("source_file", "")),
+                           str(n.get("source_location", ""))),
+        )
+        if impls:
+            definition = impls[0]
+            if definition.get("source_file"):
+                keeper["definition_file"] = definition["source_file"]
+            if definition.get("source_location"):
+                keeper["definition_location"] = definition["source_location"]
+
         for node in group:
             if node is not keeper:
                 drop_objs.add(id(node))
@@ -2208,7 +2269,8 @@ def _merge_decl_def_classes(
         return
 
     # Drop the redundant duplicate nodes. The surviving (header) node keeps its
-    # own label/source_file; edges are unchanged because the id is identical. Then
+    # own label/source_file (and now carries the impl's definition_file/
+    # definition_location); edges are unchanged because the id is identical. Then
     # de-dup any now-identical edges (e.g. the impl file's `contains`/`method`
     # edge that duplicates the header's after the collapse).
     all_nodes[:] = [n for n in all_nodes if id(n) not in drop_objs]

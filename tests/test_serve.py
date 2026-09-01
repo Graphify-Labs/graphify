@@ -1711,3 +1711,27 @@ def test_underscore_query_does_not_let_a_single_token_outrank_the_real_match():
     scored = _score_nodes(G, _query_terms("user_service_client"))
     assert scored, "the multi-token query must match the full-label node"
     assert scored[0][1] == "real", f"a single-token node out-ranked the real match: {scored}"
+
+
+def test_resolve_single_node_shared_by_get_node_and_get_neighbors():
+    """ADR-0001 finding 1: the resolver both tools now use returns an Ambiguous
+    message when the winning tier spans multiple files, a clean node id for a
+    unique label, and a not-found message otherwise."""
+    from graphify.serve import _resolve_single_node
+
+    G = nx.Graph()
+    G.add_node("a", label="extract", source_file="a/x.py")
+    G.add_node("b", label="extract", source_file="b/y.py")
+    G.add_node("u", label="unique_helper", source_file="c/z.py")
+
+    nid, err = _resolve_single_node(G, "extract")
+    assert nid is None
+    assert err.startswith("Ambiguous:")
+
+    nid, err = _resolve_single_node(G, "unique_helper")
+    assert err is None
+    assert nid == "u"
+
+    nid, err = _resolve_single_node(G, "nonexistent")
+    assert nid is None
+    assert "No node matching" in err

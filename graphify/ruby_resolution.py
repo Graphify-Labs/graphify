@@ -83,7 +83,8 @@ def resolve_ruby_member_calls(
                 class_def_nids.setdefault(_key(clabel.split("::")[-1]), []).append(str(src))
         tnode = node_by_id.get(tgt)
         if tnode is not None:
-            method_index[(str(src), _key(tnode.get("label", "")))] = str(tgt)
+            method_name = str(tnode.get("label", "")).strip("()").lstrip(".")
+            method_index[(str(src), method_name)] = str(tgt)
     # Also register class/module container nodes that own no `method` edge — a
     # method-less `Class.new(StandardError)` or an empty module — so a constant
     # receiver still resolves to a real node (#1640/#1634). External base stubs
@@ -118,6 +119,28 @@ def resolve_ruby_member_calls(
     def _unique_class(name: str) -> str | None:
         nids = class_def_nids.get(_key(name), [])
         return nids[0] if len(nids) == 1 else None
+
+    def _class_by_const_path(raw: str) -> str | None:
+        """Resolve a qualified constant receiver (``Billing::Processor``) to one class.
+
+        Matches on the constant path rather than its tail: a class qualifies when its
+        own label ends with the referenced segments, so ``Billing::Processor`` still
+        finds an ``App::Billing::Processor`` while ``ActiveRecord::Base`` no longer
+        binds to an unrelated ``Thing::Base`` (#3078). A leading ``::`` pins the
+        reference to top level, so it must match the label whole. Ambiguous, or
+        matching nothing in the corpus (the usual case for a framework constant) ->
+        no edge, never a guess.
+        """
+        segs = tuple(_segment_path(raw))
+        if not segs:
+            return None
+        if raw.strip().startswith("::"):
+            nids = fq_label_map.get(segs, [])
+            return nids[0] if len(nids) == 1 else None
+        hits = {nid for path, nids in fq_label_map.items()
+                if len(path) >= len(segs) and path[-len(segs):] == segs
+                for nid in nids}
+        return next(iter(hits)) if len(hits) == 1 else None
 
     def _emit(caller: str, target: str, rc: dict[str, Any],
               relation: str = "calls", context: str = "call") -> None:
@@ -187,8 +210,12 @@ def resolve_ruby_member_calls(
         # collide with unrelated same-named methods, so we resolve by the
         # receiver's class under the single-owning-class god-node guard.
         receiver = rc.get("receiver")
-        if receiver and str(receiver)[:1].isupper():
-            class_nid = _unique_class(str(receiver))
+        # `lstrip(":")` so a top-level-pinned `::Processor.call` is still recognised
+        # as a constant receiver now that the whole path is captured (#3078).
+        if receiver and str(receiver).lstrip(":")[:1].isupper():
+            recv_raw = str(receiver)
+            class_nid = (_class_by_const_path(recv_raw) if "::" in recv_raw
+                         else _unique_class(recv_raw))
             if class_nid is not None:
                 if callee == "new":
                     _emit(caller, class_nid, rc)
@@ -198,7 +225,7 @@ def resolve_ruby_member_calls(
                     # to the class node itself, so inherited/dynamic class methods
                     # like ActiveRecord `where`/`find_by` still give correct
                     # blast-radius. An ambiguous receiver bails to nothing.
-                    method_nid = method_index.get((class_nid, _key(str(callee))))
+                    method_nid = method_index.get((class_nid, str(callee)))
                     _emit(caller, method_nid or class_nid, rc)
             continue
 
@@ -209,7 +236,7 @@ def resolve_ruby_member_calls(
         class_nid = _unique_class(str(receiver_type))
         if class_nid is None:
             continue
-        method_nid = method_index.get((class_nid, _key(str(callee))))
+        method_nid = method_index.get((class_nid, str(callee)))
         if method_nid is None:
             continue
         _emit(caller, method_nid, rc)

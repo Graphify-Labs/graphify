@@ -988,6 +988,63 @@ def test_extract_js_commonjs_exports_assignment(tmp_path):
     assert "beta()" in labels
 
 
+def test_extract_js_commonjs_exports_hof_assignment(tmp_path):
+    """#3035: `exports.X = wrap(...)` and `module.exports.X = wrap(...)` must produce function nodes."""
+    from graphify.extract import extract_js
+    f = tmp_path / "mod.js"
+    f.write_text(
+        "function wrap(fn) { return fn; }\n"
+        "exports.assignedCall = wrap(async (x) => x);\n"
+        "module.exports.moduleAssignedCall = wrap(function(y) { return y; });\n"
+    )
+    res = extract_js(f)
+    by_label = {n["label"]: n for n in res["nodes"]}
+    assert "assignedCall()" in by_label
+    assert "moduleAssignedCall()" in by_label
+    assert by_label["assignedCall()"].get("_callable") is True
+    assert by_label["moduleAssignedCall()"].get("_callable") is True
+    file_nid = next(n["id"] for n in res["nodes"] if n["label"] == "mod.js")
+    edges = {(e["source"], e["relation"], e["target"]) for e in res["edges"]}
+    assert (file_nid, "contains", by_label["assignedCall()"]["id"]) in edges
+    assert (file_nid, "contains", by_label["moduleAssignedCall()"]["id"]) in edges
+
+
+def test_extract_js_commonjs_exports_hof_options_and_calls(tmp_path):
+    """#3035: Calls inside HOF-wrapped export callbacks (with options) are attributed to the exported node."""
+    from graphify.extract import extract_js
+    f = tmp_path / "handler.js"
+    f.write_text(
+        "function onCall(opts, fn) { return fn; }\n"
+        "function helperA() {}\n"
+        "function helperB() {}\n"
+        "exports.apiHandler = onCall({ cors: true }, async (req) => {\n"
+        "    helperA();\n"
+        "});\n"
+        "module.exports.otherHandler = onCall({ timeout: 5000 }, (req) => helperB());\n"
+    )
+    res = extract_js(f)
+    by_label = {n["label"]: n for n in res["nodes"]}
+    assert {"apiHandler()", "otherHandler()", "helperA()", "helperB()"} <= set(by_label)
+    edges = {(e["source"], e["relation"], e["target"]) for e in res["edges"]}
+    assert (by_label["apiHandler()"]["id"], "calls", by_label["helperA()"]["id"]) in edges
+    assert (by_label["otherHandler()"]["id"], "calls", by_label["helperB()"]["id"]) in edges
+
+
+def test_extract_js_arbitrary_member_hof_assignment_not_captured(tmp_path):
+    """#3035 / #1077: Arbitrary `obj.x = wrap(...)` must NOT produce a node."""
+    from graphify.extract import extract_js
+    f = tmp_path / "noise.js"
+    f.write_text(
+        "function wrap(fn) { return fn; }\n"
+        "const obj = {};\n"
+        "obj.assignedCall = wrap(async () => {});\n"
+    )
+    labels = [n["label"] for n in extract_js(f)["nodes"]]
+    assert "assignedCall()" not in labels
+    assert ".assignedCall()" not in labels
+    assert "assignedCall" not in labels
+
+
 def test_extract_js_prototype_method_assignment(tmp_path):
     """`Foo.prototype.bar = fn` must be captured as a method owned by Foo."""
     from graphify.extract import extract_js
@@ -2569,6 +2626,41 @@ def test_extract_bash_rejects_command_substitution_as_call(tmp_path):
     assert call_pairs == [], f"Command substitution erroneously emitted call edges: {call_pairs}"
 
 
+def test_extract_bash_command_substitution_in_assignment_emits_call(tmp_path):
+    """#2978: x=$(helper) inside a function must emit a calls edge to helper()."""
+    script = tmp_path / "a.sh"
+    script.write_text(
+        "#!/usr/bin/env bash\n"
+        "helper() { echo ok; }\n"
+        "bare()      { helper; }\n"
+        "subst()     { x=$(helper); echo \"$x\"; }\n"
+        "orlist()    { helper || return 1; }\n"
+        "andlist()   { true && helper; }\n"
+        "pipe()      { helper | cat; }\n"
+        "cond()      { if helper; then :; fi; }\n"
+        "loop()      { while helper; do break; done; }\n"
+        "redir()     { helper >/dev/null; }\n"
+        "neg()       { ! helper; }\n",
+        encoding="utf-8",
+    )
+    result = extract_bash(script)
+    labels = {n["id"]: n["label"] for n in result["nodes"]}
+    call_pairs = [
+        (labels.get(e["source"], e["source"]), labels.get(e["target"], e["target"]))
+        for e in result["edges"]
+        if e["relation"] == "calls"
+    ]
+    assert ("subst()", "helper()") in call_pairs
+    assert ("bare()", "helper()") in call_pairs
+    assert ("orlist()", "helper()") in call_pairs
+    assert ("andlist()", "helper()") in call_pairs
+    assert ("pipe()", "helper()") in call_pairs
+    assert ("cond()", "helper()") in call_pairs
+    assert ("loop()", "helper()") in call_pairs
+    assert ("redir()", "helper()") in call_pairs
+    assert ("neg()", "helper()") in call_pairs
+
+
 def test_extract_bash_process_substitution_not_recorded(tmp_path):
     """`<(helper)` (process substitution) must not be recorded as a call edge."""
     script = tmp_path / "process_substitution.sh"
@@ -3830,6 +3922,74 @@ def test_rewire_does_not_bind_supertype_stub_to_function():
               "source_file": "store.py", "weight": 1.0}]
     _rewire_unique_stub_nodes(nodes, edges)
     assert edges[0]["target"] == "BookStore"  # inherits stub not bound to function
+
+
+def test_rewire_does_not_bind_supertype_stub_across_language():
+    """#2812: a bare `extends Exception` in PHP is the language's own built-in.
+    It must not fuse onto a unique same-named TypeScript class."""
+    from graphify.extract import _rewire_unique_stub_nodes
+    nodes = [
+        {"id": "app_exception_Exception", "label": "Exception", "file_type": "code",
+         "source_file": "app/exception.ts", "source_location": "L1"},
+        {"id": "Exception", "label": "Exception", "file_type": "code", "source_file": ""},
+    ]
+    edges = [{"source": "pkg_FooApiException", "target": "Exception", "relation": "inherits",
+              "source_file": "pkg/FooApiException.php", "weight": 1.0}]
+    _rewire_unique_stub_nodes(nodes, edges)
+    assert edges[0]["target"] == "Exception"  # unchanged — cross-language blocked
+    assert "Exception" in {n["id"] for n in nodes}  # stub kept as the external base
+
+
+def test_rewire_binds_builtin_named_supertype_stub_within_same_language():
+    """#2812 control: the guard is per language family, not a name blocklist — a
+    PHP corpus that declares its own `Exception` must still absorb the stub."""
+    from graphify.extract import _rewire_unique_stub_nodes
+    nodes = [
+        {"id": "pkg_support_Exception", "label": "Exception", "file_type": "code",
+         "source_file": "pkg/Support/Exception.php", "source_location": "L1"},
+        {"id": "Exception", "label": "Exception", "file_type": "code", "source_file": ""},
+    ]
+    edges = [{"source": "pkg_FooApiException", "target": "Exception", "relation": "inherits",
+              "source_file": "pkg/FooApiException.php", "weight": 1.0}]
+    _rewire_unique_stub_nodes(nodes, edges)
+    assert edges[0]["target"] == "pkg_support_Exception"
+
+
+def test_rewire_builtin_supertype_guard_folds_case_insensitive_languages():
+    """#2812: PHP resolves class names case-insensitively, so `extends \\exception`
+    names the same built-in as `extends \\Exception` and must be blocked too."""
+    from graphify.extract import _rewire_unique_stub_nodes
+    nodes = [
+        {"id": "app_exception_exception", "label": "exception", "file_type": "code",
+         "source_file": "app/exception.ts", "source_location": "L1"},
+        {"id": "exception", "label": "exception", "file_type": "code", "source_file": ""},
+    ]
+    edges = [{"source": "pkg_FooApiException", "target": "exception", "relation": "inherits",
+              "source_file": "pkg/FooApiException.php", "weight": 1.0}]
+    _rewire_unique_stub_nodes(nodes, edges)
+    assert edges[0]["target"] == "exception"
+
+
+def test_rewire_builtin_supertype_guard_is_per_edge_not_per_stub():
+    """#2812: one sourceless `Exception` stub collects referrers from every
+    language that names it. A TypeScript referrer sharing the stub must not
+    re-open the cross-language bind for the PHP one — the guard reads the
+    referring file, not the union of the stub's referrer families."""
+    from graphify.extract import _rewire_unique_stub_nodes
+    nodes = [
+        {"id": "app_exception_Exception", "label": "Exception", "file_type": "code",
+         "source_file": "app/exception.ts", "source_location": "L1"},
+        {"id": "Exception", "label": "Exception", "file_type": "code", "source_file": ""},
+    ]
+    edges = [
+        {"source": "pkg_FooApiException", "target": "Exception", "relation": "inherits",
+         "source_file": "pkg/FooApiException.php", "weight": 1.0},
+        {"source": "app_http_HttpError", "target": "Exception", "relation": "inherits",
+         "source_file": "app/http.ts", "weight": 1.0},
+    ]
+    _rewire_unique_stub_nodes(nodes, edges)
+    assert edges[0]["target"] == "Exception"                 # PHP still blocked
+    assert edges[1]["target"] == "app_exception_Exception"   # TS still resolves
 
 
 def test_extract_emits_posix_source_file_for_relative_inputs(tmp_path):

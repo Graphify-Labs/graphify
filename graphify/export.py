@@ -544,6 +544,73 @@ def _cap_filename(s: str, limit: int = 200) -> str:
     return f"{truncated}_{digest}"
 
 
+# A frontmatter tag entry in graphify's own namespace, e.g. "  - graphify/document".
+_GRAPHIFY_TAG_RE = re.compile(r"^\s*-\s+graphify/\S")
+
+# Frontmatter sits at the very top of a note; reading this much is enough to see
+# the whole block without pulling a large note into memory.
+_NOTE_FRONTMATTER_PROBE_BYTES = 4096
+
+# Community notes carry no frontmatter; graphify identifies its own by the
+# Dataview query it writes into every one of them.
+_COMMUNITY_QUERY_MARKER = "FROM #community/"
+
+
+def _is_graphify_note(path: Path) -> bool:
+    """Whether a vault note carries graphify's own frontmatter signature.
+
+    Every note graphify writes opens with a YAML frontmatter block tagging it in
+    the ``graphify/`` namespace::
+
+        ---
+        source_file: "d0.md"
+        tags:
+          - graphify/document
+          - graphify/EXTRACTED
+        ---
+
+    Only that block is inspected, and only a tag entry inside it counts — a
+    user's note that merely mentions graphify in its prose is not adopted.
+
+    Community overview notes are recognised separately: they carry no
+    frontmatter at all, so they are identified by graphify's own filename prefix
+    together with the Dataview query it writes into the body. Requiring both
+    keeps a user's own ``_COMMUNITY_*.md`` from being adopted on the name alone.
+    """
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            head = fh.read(_NOTE_FRONTMATTER_PROBE_BYTES)
+    except OSError:
+        return False
+    if path.name.startswith(_COMMUNITY_PREFIX) and _COMMUNITY_QUERY_MARKER in head:
+        return True
+    if not head.startswith("---"):
+        return False
+    for line in head.splitlines()[1:]:
+        if line.strip() == "---":
+            return False  # frontmatter closed without a graphify tag
+        if _GRAPHIFY_TAG_RE.match(line):
+            return True
+    return False
+
+
+def _adopt_pre_manifest_notes(out: Path) -> set[str]:
+    """Names of notes in *out* that graphify itself wrote before manifests existed.
+
+    Deliberately limited to top-level ``*.md``: those are the only files graphify
+    can identify as its own from their content. ``.obsidian/graph.json`` is NOT
+    adopted — graphify writes one, but so does Obsidian, and with no manifest
+    there is no way to tell whose it is. Leaving it unowned keeps the
+    conservative behaviour for the one file where guessing wrong would cost the
+    user their own vault configuration.
+    """
+    try:
+        candidates = sorted(out.glob("*.md"))
+    except OSError:
+        return set()
+    return {p.name for p in candidates if _is_graphify_note(p)}
+
+
 def _obsidian_safe_stem(label: str, limit: int = 200) -> str:
     """Filename stem for an Obsidian note / canvas card from a node label.
 
@@ -636,8 +703,18 @@ def to_obsidian(
     _manifest_path = out / ".graphify_obsidian_manifest.json"
     try:
         _owned: set[str] = set(json.loads(_manifest_path.read_text(encoding="utf-8")).get("files", []))
+        _manifest_existed = True
     except (OSError, ValueError):
         _owned = set()
+        _manifest_existed = False
+    if not _manifest_existed:
+        # A vault written before the manifest existed has no record of what
+        # graphify owns, so every note it wrote last time reads as the user's and
+        # is skipped. The re-export then writes fresh notes BESIDE the stale ones
+        # and the vault carries two generations, with a warning claiming graphify
+        # "did not create" files it did (#2863). Adopt the notes that carry
+        # graphify's own frontmatter, once, so the manifest starts out honest.
+        _owned |= _adopt_pre_manifest_notes(out)
     _written: list[str] = []
     _skipped: list[str] = []
 
