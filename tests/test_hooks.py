@@ -2,7 +2,8 @@
 import os
 import shutil
 import subprocess
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 from pathlib import Path
 import pytest
 from graphify.hooks import install, uninstall, status, _hooks_dir, _HOOK_MARKER, _CHECKOUT_MARKER
@@ -330,6 +331,72 @@ def test_rebuild_bodies_with_graphify_root_are_valid_python():
     that crashes the moment git fires it (#1173)."""
     for body in (_REBUILD_BODY_COMMIT, _REBUILD_BODY_CHECKOUT):
         ast.parse(body)
+
+
+@pytest.mark.parametrize(
+    "name,body",
+    [("post-commit", _REBUILD_BODY_COMMIT), ("post-checkout", _REBUILD_BODY_CHECKOUT)],
+)
+@pytest.mark.parametrize("marker_kind", ("external", "empty", "malformed"))
+def test_rebuild_bodies_anchor_untrusted_roots_to_worktree(
+    tmp_path, monkeypatch, capsys, name, body, marker_kind,
+):
+    """Automatic hooks must never re-anchor a rebuild beyond their worktree."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    out = repo / "graphify-out"
+    out.mkdir()
+    external = tmp_path / "external"
+    external.mkdir()
+    marker = out / ".graphify_root"
+    marker.write_text(
+        str(external) if marker_kind == "external" else "\0" if marker_kind == "malformed" else "",
+        encoding="utf-8",
+    )
+    rebuilt: list[Path] = []
+    watch = ModuleType("graphify.watch")
+    watch._apply_resource_limits = lambda: None
+    watch._rebuild_code = lambda root, **kwargs: rebuilt.append(root)
+    monkeypatch.setitem(sys.modules, "graphify.watch", watch)
+    monkeypatch.chdir(repo)
+    monkeypatch.delenv("GRAPHIFY_OUT", raising=False)
+    monkeypatch.setenv("GRAPHIFY_REBUILD_TIMEOUT", "0")
+    if name == "post-commit":
+        monkeypatch.setenv("GRAPHIFY_CHANGED", "src/module.py")
+
+    exec(body)
+
+    assert rebuilt == [repo.resolve()]
+    captured = capsys.readouterr()
+    assert str(external) not in captured.out + captured.err
+
+
+@pytest.mark.parametrize(
+    "name,body",
+    [("post-commit", _REBUILD_BODY_COMMIT), ("post-checkout", _REBUILD_BODY_CHECKOUT)],
+)
+def test_rebuild_bodies_accept_saved_subdirectory_roots(tmp_path, monkeypatch, name, body):
+    """A valid saved subdirectory scan must remain available to automatic hooks."""
+    repo = tmp_path / "repo"
+    source = repo / "src"
+    source.mkdir(parents=True)
+    out = repo / "graphify-out"
+    out.mkdir()
+    (out / ".graphify_root").write_text(str(source), encoding="utf-8")
+    rebuilt: list[Path] = []
+    watch = ModuleType("graphify.watch")
+    watch._apply_resource_limits = lambda: None
+    watch._rebuild_code = lambda root, **kwargs: rebuilt.append(root)
+    monkeypatch.setitem(sys.modules, "graphify.watch", watch)
+    monkeypatch.chdir(repo)
+    monkeypatch.delenv("GRAPHIFY_OUT", raising=False)
+    monkeypatch.setenv("GRAPHIFY_REBUILD_TIMEOUT", "0")
+    if name == "post-commit":
+        monkeypatch.setenv("GRAPHIFY_CHANGED", "src/module.py")
+
+    exec(body)
+
+    assert rebuilt == [source.resolve()]
 
 
 @pytest.mark.parametrize(
