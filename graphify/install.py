@@ -298,14 +298,17 @@ def _print_project_git_add_hint(paths: list[Path]) -> None:
     print()
     print("Project-scoped install. Add to version control:")
     print(f"  git add {' '.join(unique)}")
-def _claude_pretooluse_hooks(strict: bool = False, project: bool = False) -> "list[dict]":
+def _claude_pretooluse_hooks(strict: bool = False) -> "list[dict]":
     """graphify's Claude/Codebuddy PreToolUse hooks, resolved at install time.
 
-    The command invokes `graphify hook-guard <search|read>` via the absolute exe
-    path (`_resolve_graphify_exe`) — or, for a project-scoped install, via the
-    bare `graphify` command, since that config gets committed (#3129). Either
-    form parses under sh, cmd.exe and PowerShell alike — this is the #522 fix,
-    and mirrors the codex hook. Matchers are
+    The command invokes `graphify hook-guard <search|read>` via the bare
+    `graphify` command. `.claude/settings.json` (like `.codebuddy/settings.json`)
+    is always written into the current directory -- there is no separate
+    user-profile destination for it, project-scoped or not -- so it is always a
+    candidate for being committed, and an absolute path resolved from the
+    installing machine would be wrong in every other clone (#3129). This parses
+    under sh, cmd.exe and PowerShell alike -- the #522 fix, mirroring the codex
+    hook. Matchers are
     "Bash|Grep" and "Read|Glob" and the command always contains "graphify", so the
     existing install/uninstall filters find and replace both old bash hooks and
     these. "Grep" is in the search matcher because current Claude Code routes
@@ -316,7 +319,7 @@ def _claude_pretooluse_hooks(strict: bool = False, project: bool = False) -> "li
     first raw read per session (Claude Code only). The ``GRAPHIFY_HOOK_STRICT`` env
     var can force it on or off at runtime without a reinstall.
     """
-    exe = _resolve_graphify_exe(project=project)
+    exe = _resolve_graphify_exe(project=True)
     if " " in exe and not exe.startswith('"'):
         exe = f'"{exe}"'
     read_cmd = f"{exe} hook-guard read" + (" --strict" if strict else "")
@@ -704,13 +707,15 @@ _CLAUDE_MD_MARKER = "## graphify"
 _CODEBUDDY_MD_MARKER = "## graphify"
 _AGENTS_MD_MARKER = "## graphify"
 _GEMINI_MD_MARKER = "## graphify"
-def _gemini_hook(project: bool = False) -> dict:
+def _gemini_hook() -> dict:
     """Gemini CLI BeforeTool hook, resolved to a shell-agnostic `graphify` call.
 
-    A project-scoped install emits the bare command, since .gemini/settings.json
-    is then committed and an installing machine's path is wrong there (#3129).
+    Always emits the bare command: .gemini/settings.json is always written into
+    the current directory (there is no separate user-profile destination for
+    it), so it is always a candidate for being committed, and an installing
+    machine's absolute path would be wrong there (#3129).
     """
-    exe = _resolve_graphify_exe(project=project)
+    exe = _resolve_graphify_exe(project=True)
     if " " in exe and not exe.startswith('"'):
         exe = f'"{exe}"'
     return {
@@ -740,7 +745,7 @@ def gemini_install(project_dir: Path | None = None, *, project: bool = False) ->
 
     # Always re-install the Gemini hook so an older payload (e.g. pre-issue-#580
     # wording) is replaced on upgrade.
-    _install_gemini_hook(project_dir, project=project)
+    _install_gemini_hook(project_dir)
     if project:
         _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir), project_dir / "GEMINI.md", project_dir / ".gemini"])
     print()
@@ -788,7 +793,7 @@ def _write_settings_with_backup(settings_path: Path, settings: dict) -> None:
         backup = settings_path.with_name(settings_path.name + ".graphify-bak")
         shutil.copy2(settings_path, backup)
     settings_path.write_text(output, encoding="utf-8")
-def _install_gemini_hook(project_dir: Path, project: bool = False) -> None:
+def _install_gemini_hook(project_dir: Path) -> None:
     settings_path = project_dir / ".gemini" / "settings.json"
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     settings = _read_settings_for_merge(settings_path)
@@ -801,7 +806,7 @@ def _install_gemini_hook(project_dir: Path, project: bool = False) -> None:
     hooks["BeforeTool"] = [
         h for h in before_tool if "graphify" not in str(h)
     ]
-    hooks["BeforeTool"].append(_gemini_hook(project=project))
+    hooks["BeforeTool"].append(_gemini_hook())
     _write_settings_with_backup(settings_path, settings)
     print("  .gemini/settings.json  ->  BeforeTool hook registered")
 def _uninstall_gemini_hook(project_dir: Path) -> None:
@@ -1452,18 +1457,23 @@ def _resolve_graphify_exe(project: bool = False) -> str:
                 found = str(candidate)
                 break
     return (found or "graphify").replace("\\", "/")
-def _install_codex_hook(project_dir: Path, project: bool = False) -> None:
+def _install_codex_hook(project_dir: Path) -> None:
     """Add graphify PreToolUse hook to .codex/hooks.json.
 
-    A project-scoped install emits the bare command, since .codex/hooks.json is
-    then committed and an installing machine's path is wrong there (#3129).
+    Always emits the bare command: .codex/hooks.json is always written into
+    the current directory (there is no separate user-profile destination for
+    it, project-scoped or not), so it is always a candidate for being
+    committed, and an installing machine's absolute path would be wrong there
+    (#3129). If a future fix (#2164) gives the non-project install a genuine,
+    non-shared destination, that call site should resolve the exe itself
+    rather than resurrecting this one's project flag.
     """
     hooks_path = project_dir / ".codex" / "hooks.json"
     hooks_path.parent.mkdir(parents=True, exist_ok=True)
 
     existing = _read_settings_for_merge(hooks_path)
 
-    graphify_exe = _resolve_graphify_exe(project=project)
+    graphify_exe = _resolve_graphify_exe(project=True)
     hook_entry = {
         "hooks": {
             "PreToolUse": [
@@ -1505,7 +1515,7 @@ def _uninstall_codex_hook(project_dir: Path) -> None:
     existing["hooks"]["PreToolUse"] = filtered
     hooks_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
     print(f"  .codex/hooks.json  ->  PreToolUse hook removed")
-def _agents_install(project_dir: Path, platform: str, project: bool = False) -> None:
+def _agents_install(project_dir: Path, platform: str) -> None:
     """Write the graphify section to the local AGENTS.md for always-on platforms."""
     target = (project_dir or Path(".")) / "AGENTS.md"
 
@@ -1524,7 +1534,7 @@ def _agents_install(project_dir: Path, platform: str, project: bool = False) -> 
         print(f"graphify section written to {target.resolve()}")
 
     if platform == "codex":
-        _install_codex_hook(project_dir or Path("."), project=project)
+        _install_codex_hook(project_dir or Path("."))
     elif platform == "opencode":
         _install_opencode_plugin(project_dir or Path("."))
     elif platform == "kilo":
@@ -1588,7 +1598,7 @@ def _project_install(platform_name: str, project_dir: Path | None = None, strict
     platform_name = _canonical_platform(platform_name)
     if platform_name in ("claude", "windows"):
         install(platform=platform_name, project=True, project_dir=project_dir)
-        claude_install(project_dir, strict=strict, project=True)
+        claude_install(project_dir, strict=strict)
         _print_project_git_add_hint([project_dir / ".claude", project_dir / "CLAUDE.md"])
     elif platform_name == "gemini":
         gemini_install(project_dir, project=True)
@@ -1600,7 +1610,7 @@ def _project_install(platform_name: str, project_dir: Path | None = None, strict
         _print_project_git_add_hint([project_dir / ".kiro"])
     elif platform_name in ("aider", "amp", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes"):
         skill_dst = _copy_skill_file(platform_name, project=True, project_dir=project_dir)
-        _agents_install(project_dir, platform_name, project=True)
+        _agents_install(project_dir, platform_name)
         hint_paths = [_project_scope_root(skill_dst, project_dir), project_dir / "AGENTS.md"]
         if platform_name == "opencode":
             hint_paths.append(project_dir / ".opencode")
@@ -1741,7 +1751,7 @@ def _kilo_uninstall(project_dir: Path) -> None:
     _agents_uninstall(project_dir or Path("."), platform="kilo")
     removed = _kilo_uninstall_global()
     print("; ".join(removed) if removed else "nothing to remove")
-def claude_install(project_dir: Path | None = None, strict: bool = False, project: bool = False) -> None:
+def claude_install(project_dir: Path | None = None, strict: bool = False) -> None:
     """Write the graphify section to the local CLAUDE.md."""
     target = (project_dir or Path(".")) / "CLAUDE.md"
 
@@ -1761,7 +1771,7 @@ def claude_install(project_dir: Path | None = None, strict: bool = False, projec
 
     # Always re-install the Claude Code PreToolUse hook so an old hook
     # payload (e.g. pre-issue-#580 wording) is replaced on upgrade.
-    _install_claude_hook(project_dir or Path("."), strict=strict, project=project)
+    _install_claude_hook(project_dir or Path("."), strict=strict)
 
     print()
     print("Claude Code will now check the knowledge graph before answering")
@@ -1769,11 +1779,13 @@ def claude_install(project_dir: Path | None = None, strict: bool = False, projec
     if strict:
         print("Strict mode: the first raw file read per session is blocked until")
         print("one `graphify query` runs (toggle with GRAPHIFY_HOOK_STRICT=0).")
-def _install_claude_hook(project_dir: Path, strict: bool = False, project: bool = False) -> None:
+def _install_claude_hook(project_dir: Path, strict: bool = False) -> None:
     """Add graphify PreToolUse hook to .claude/settings.json.
 
-    A project-scoped install emits the bare command, since .claude/settings.json
-    is then committed and an installing machine's path is wrong there (#3129).
+    Always emits the bare command: .claude/settings.json is always written into
+    the current directory (there is no separate user-profile destination for
+    it), so it is always a candidate for being committed, and an installing
+    machine's absolute path would be wrong there (#3129).
     """
     settings_path = project_dir / ".claude" / "settings.json"
     settings_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1788,7 +1800,7 @@ def _install_claude_hook(project_dir: Path, strict: bool = False, project: bool 
         _refuse_to_modify(settings_path)
 
     hooks["PreToolUse"] = [h for h in pre_tool if not (isinstance(h, dict) and h.get("matcher") in ("Glob|Grep", "Bash", "Bash|Grep", "Read|Glob") and "graphify" in str(h))]
-    hooks["PreToolUse"].extend(_claude_pretooluse_hooks(strict=strict, project=project))
+    hooks["PreToolUse"].extend(_claude_pretooluse_hooks(strict=strict))
     _write_settings_with_backup(settings_path, settings)
     _mode = " (strict)" if strict else ""
     print(f"  .claude/settings.json  ->  PreToolUse hooks registered (Bash|Grep search + Read/Glob){_mode}")
