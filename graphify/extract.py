@@ -1616,6 +1616,10 @@ def extract_svelte(path: Path) -> dict:
     pass does not edge and which legally live in markup-layer template syntax
     such as ``{#await import('./X.svelte')}`` — outside every script block, and
     so blanked out of the masked source the AST sees.
+
+    Static imports are edged by the AST pass, so the old regex rescue for them
+    would double-emit and is used only when the script fails to parse, where
+    the AST pass reaches no ``import_statement`` at all.
     """
     try:
         src = path.read_text(encoding="utf-8", errors="replace")
@@ -1654,9 +1658,47 @@ def extract_svelte(path: Path) -> dict:
                 result, existing_ids, file_node_id, path, raw,
                 "dynamic_import", aliases, base_url,
             )
+        if result.get("parse_errors"):
+            # The masked script did not parse cleanly, so `import_statement`
+            # nodes may never have been reached and the AST pass edged nothing.
+            # Fall back to the regex rescue the pre-mask extractor relied on.
+            # Gated on the failure so a clean parse does not double-emit: the
+            # AST already edges those specifiers. Scanned over the MASKED
+            # source, whose only surviving text is the script regions.
+            static_import_re = _re.compile(
+                r"""import\s+(?:[^'"`;]+?\s+from\s+)?['"]([^'"]+)['"]"""
+            )
+            for m in static_import_re.finditer(masked):
+                raw = m.group(1)
+                if not raw:
+                    continue
+                _emit_rescued_import(
+                    result, existing_ids, file_node_id, path, raw,
+                    "imports_from", aliases, base_url,
+                )
+            # A recovered parse can still have edged SOME imports before the
+            # error node, so drop any duplicate the rescue re-emitted.
+            _dedupe_edges(result)
     except Exception:
         pass
     return result
+
+
+def _dedupe_edges(result: dict) -> None:
+    """Drop repeat ``(source, target, relation)`` edges, keeping the first.
+
+    The first occurrence is the AST-derived edge, which carries ``target_file``
+    and richer context than a regex rescue's.
+    """
+    seen: set[tuple[str, str, str]] = set()
+    kept = []
+    for edge in result.get("edges", []):
+        key = (edge.get("source"), edge.get("target"), edge.get("relation"))
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append(edge)
+    result["edges"] = kept
 
 
 def extract_astro(path: Path) -> dict:

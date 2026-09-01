@@ -285,3 +285,91 @@ function go(): void {
     by_label = {n["label"]: n["id"] for n in result["nodes"]}
     edges = {(e["source"], e["target"], e["relation"]) for e in result["edges"]}
     assert (by_label["go()"], by_label["helper()"], "calls") in edges
+
+
+def test_static_imports_rescued_when_the_script_fails_to_parse(tmp_path):
+    """A script the grammar cannot parse reaches no ``import_statement``.
+
+    Masking fixed the common case, but a genuine syntax error (or a construct
+    tree-sitter-typescript mishandles) still leaves the AST pass with nothing,
+    and the pre-mask regex rescue is the only thing that recovers the import.
+    """
+    _write(tmp_path / "format.ts", "export const fmt = (s: string) => s\n")
+    component = _write(
+        tmp_path / "Broken.svelte",
+        '<script lang="ts">\n'
+        "  import { fmt } from './format'\n"
+        "  const busted = ((( @@@\n"
+        "</script>\n"
+        "\n"
+        "<span />\n",
+    )
+    result = extract_svelte(component)
+    assert result.get("parse_errors"), "test needs a script the grammar rejects"
+    assert _make_id(str(tmp_path / "format.ts")) in _targets(
+        result, relation="imports_from"
+    )
+
+
+def test_clean_parse_does_not_double_emit_static_imports(tmp_path):
+    """The rescue is gated on failure, and duplicates are dropped regardless."""
+    _write(tmp_path / "format.ts", "export const fmt = (s: string) => s\n")
+    component = _write(
+        tmp_path / "Card.svelte",
+        '<script lang="ts">\n'
+        "  import { fmt } from './format'\n"
+        "</script>\n"
+        "\n"
+        "<span>{fmt('x')}</span>\n",
+    )
+    result = extract_svelte(component)
+    assert not result.get("parse_errors")
+    target = _make_id(str(tmp_path / "format.ts"))
+    matching = [
+        e for e in result["edges"]
+        if e.get("target") == target and e.get("relation") == "imports_from"
+    ]
+    assert len(matching) == 1
+
+
+def test_rescue_does_not_duplicate_a_partially_parsed_import(tmp_path):
+    """A recovered parse can edge some imports before the error node."""
+    _write(tmp_path / "format.ts", "export const fmt = (s: string) => s\n")
+    _write(tmp_path / "later.ts", "export const later = 1\n")
+    component = _write(
+        tmp_path / "Partial.svelte",
+        '<script lang="ts">\n'
+        "  import { fmt } from './format'\n"
+        "  const busted = ((( @@@\n"
+        "  import { later } from './later'\n"
+        "</script>\n"
+        "\n"
+        "<span />\n",
+    )
+    result = extract_svelte(component)
+    assert result.get("parse_errors")
+    for name in ("format.ts", "later.ts"):
+        target = _make_id(str(tmp_path / name))
+        matching = [
+            e for e in result["edges"]
+            if e.get("target") == target and e.get("relation") == "imports_from"
+        ]
+        assert len(matching) == 1, name
+
+
+def test_dynamic_import_rescue_still_runs_on_a_clean_parse(tmp_path):
+    """Gating the STATIC rescue must not gate the dynamic one."""
+    _write(tmp_path / "Lazy.svelte", "<span />\n")
+    component = _write(
+        tmp_path / "Host.svelte",
+        '<script lang="ts">\n'
+        "  const ready = true\n"
+        "</script>\n"
+        "\n"
+        "{#await import('./Lazy.svelte')}{/await}\n",
+    )
+    result = extract_svelte(component)
+    assert not result.get("parse_errors")
+    assert _make_id(str(tmp_path / "Lazy.svelte")) in _targets(
+        result, relation="dynamic_import"
+    )
