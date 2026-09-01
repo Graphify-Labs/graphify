@@ -6,6 +6,7 @@ malformed replies, and the no-backend fallback.
 import json
 import re
 import sys
+import threading
 from pathlib import Path
 
 import networkx as nx
@@ -263,6 +264,12 @@ def _wide_graph(n_communities: int):
 
 def test_label_communities_batches_when_over_batch_size(monkeypatch):
     G, communities = _wide_graph(250)
+    # `label_communities` fans the batches out across a ThreadPoolExecutor and
+    # collects them with `as_completed`, so the fake is called from several
+    # threads and finishing order is not dispatch order — the 50-community
+    # batch is the smallest and usually lands before the second 100. Guard the
+    # list rather than relying on `list.append` being atomic under the GIL.
+    calls_lock = threading.Lock()
     calls = []
 
     def fake_call(prompt, *, backend, max_tokens=200):
@@ -271,14 +278,16 @@ def test_label_communities_batches_when_over_batch_size(monkeypatch):
         # key collided with the placeholder sentinel and echoed keys were dropped.
         cids = [int(m.group(1)) for m in
                 (re.match(r"^(\d+): ", line) for line in prompt.splitlines()) if m]
-        calls.append(len(cids))
+        with calls_lock:
+            calls.append(len(cids))
         return "{" + ", ".join(f'"{c}": "Cluster {c}"' for c in cids) + "}"
 
     monkeypatch.setattr("graphify.llm._call_llm", fake_call)
     labels = label_communities(G, communities, backend="gemini", batch_size=100)
 
-    # 250 communities / 100 per batch -> 3 batches (100, 100, 50)
-    assert calls == [100, 100, 50]
+    # 250 communities / 100 per batch -> 3 batches (100, 100, 50), in whatever
+    # order they complete.
+    assert sorted(calls) == [50, 100, 100]
     # And every community got a real name, none left as a placeholder.
     assert all(name.startswith("Cluster ") for name in labels.values()), \
         f"some communities still have placeholders: {[k for k, v in labels.items() if not v.startswith('Cluster ')][:5]}"
