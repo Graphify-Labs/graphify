@@ -309,7 +309,8 @@ def _looks_like_paper(path: Path) -> bool:
     """Heuristic: does this text file read like an academic paper?"""
     try:
         # Only scan first 3000 chars for speed
-        text = path.read_text(encoding="utf-8", errors="ignore")[:3000]
+        with open(_os_path(path), encoding="utf-8", errors="ignore") as f:
+            text = f.read(3000)
         hits = sum(1 for pattern in _PAPER_SIGNALS if pattern.search(text))
         return hits >= _PAPER_SIGNAL_THRESHOLD
     except Exception:
@@ -802,7 +803,16 @@ def count_words(path: Path) -> int:
         if not stat.S_ISREG(os.stat(_os_path(path)).st_mode):
             return 0
         with open(_os_path(path), encoding="utf-8", errors="ignore") as f:
-            return len(f.read().split())
+            words = 0
+            in_word = False
+            while chunk := f.read(64 * 1024):
+                for char in chunk:
+                    if char.isspace():
+                        in_word = False
+                    elif not in_word:
+                        words += 1
+                        in_word = True
+            return words
     except Exception:
         return 0
 
