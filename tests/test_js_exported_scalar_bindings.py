@@ -210,3 +210,41 @@ def test_non_require_call_initializer_still_binds(tmp_path):
 
     labels = {n["label"] for n in extract_js(source)["nodes"]}
     assert {"levels", "disabled"} <= labels
+
+
+def test_member_access_require_is_still_an_import(tmp_path):
+    """``const { doWork } = require('./lib').utils`` is a CJS import too.
+
+    ``_require_imports_js`` edges the member-access form, so
+    ``_is_require_initializer`` must recognise it as well — otherwise the
+    destructured name would be both imported and shadowed by a local stub,
+    and the call in ``run()`` would resolve to the stub.
+    """
+    caller = tmp_path / "caller.js"
+    callee = tmp_path / "lib.js"
+    caller.write_text(
+        "const { doWork } = require('./lib').utils;\n"
+        "function run() { doWork(); }\n",
+        encoding="utf-8",
+    )
+    callee.write_text(
+        "function doWork() { return 1; }\n"
+        "module.exports = { utils: { doWork } };\n",
+        encoding="utf-8",
+    )
+
+    result = extract([caller, callee], cache_root=tmp_path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    local_stubs = [
+        n for n in result["nodes"]
+        if n["label"] == "doWork" and n["source_file"].endswith("caller.js")
+    ]
+    assert not local_stubs
+    calls = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and nodes[e["source"]]["label"] == "run()"
+        and nodes[e["target"]]["label"] == "doWork()"
+    ]
+    assert len(calls) == 1
+    assert nodes[calls[0]["target"]]["source_file"].endswith("lib.js")

@@ -1913,7 +1913,12 @@ def _find_require_call(value_node):
     return None
 
 def _is_require_initializer(value_node, source: bytes) -> bool:
-    """True when a declarator's initializer is a literal ``require(...)`` call.
+    """True when a declarator's initializer is a ``require(...)`` call.
+
+    The call may be reached through member access — ``require('./m').sub`` is
+    still a CJS import, and :func:`_require_imports_js` edges that form, so
+    both sides must agree on what counts or a destructured binding would be
+    both imported and shadowed by a local stub.
 
     ``_find_require_call`` matches the call *shape* only — any
     ``identifier(...)`` — and leaves the callee-name check to its callers, so
