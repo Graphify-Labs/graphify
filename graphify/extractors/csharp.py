@@ -164,6 +164,35 @@ def _metadata(value: object) -> dict:
     return value if isinstance(value, dict) else {}
 
 
+def _razor_imports_dir(source_file: object) -> str | None:
+    """The directory prefix an ``_Imports.razor``'s directives apply to.
+
+    Returns the file's parent directory with normalized separators ("" for the
+    corpus root), or None when the file is not an ``_Imports.razor``.
+    """
+    if not isinstance(source_file, str) or not source_file:
+        return None
+    norm = source_file.replace("\\", "/")
+    parts = norm.rstrip("/").rsplit("/", 1)
+    name = parts[-1]
+    if name.lower() != "_imports.razor":
+        return None
+    return parts[0] if len(parts) == 2 else ""
+
+
+def _razor_dir_applies(imports_dir: str, source_file: str) -> bool:
+    """True when an ``_Imports.razor`` in ``imports_dir`` governs ``source_file``.
+
+    The Razor compiler applies ``_Imports.razor`` directives to every Razor
+    file in the same directory and every subdirectory below it.
+    """
+    norm = source_file.replace("\\", "/")
+    file_dir = norm.rsplit("/", 1)[0] if "/" in norm else ""
+    if not imports_dir:
+        return True  # root _Imports.razor governs the whole tree
+    return file_dir == imports_dir or file_dir.startswith(imports_dir + "/")
+
+
 class CsharpNameResolver:
     """Namespace/using/alias-aware C# simple-name resolution.
 
@@ -227,6 +256,26 @@ class CsharpNameResolver:
                     if entry not in bucket:
                         bucket.append(entry)
 
+        # Blazor ``_Imports.razor`` (#3187): the Razor compiler applies its
+        # ``@using``/alias directives to every Razor file in the same directory
+        # and below, and the standard Blazor template keeps the app's
+        # namespaces there — so without this a bare ``@inject WidgetService``
+        # in a page dangles even though the canonical definition is in the
+        # graph. Index each _Imports.razor's directives by the directory they
+        # govern; razor-family lookups fold them in.
+        self._razor_dir_usings: list[tuple[str, list[tuple[str, str, str | None]]]] = []
+        self._razor_dir_aliases: list[
+            tuple[str, dict[str, list[tuple[str, str, str | None]]]]
+        ] = []
+        for sf, entries in self.namespace_usings_by_file.items():
+            d = _razor_imports_dir(sf)
+            if d is not None:
+                self._razor_dir_usings.append((d, entries))
+        for sf, alias_map in self.aliases_by_file.items():
+            d = _razor_imports_dir(sf)
+            if d is not None:
+                self._razor_dir_aliases.append((d, alias_map))
+
     @staticmethod
     def _namespace(node: dict | None) -> str:
         metadata = _metadata((node or {}).get("metadata"))
@@ -243,6 +292,46 @@ class CsharpNameResolver:
             return True
         return scope_id is not None and scope_id in self._scope_chain(source_node)
 
+    @staticmethod
+    def _is_razor_family(source_file: str) -> bool:
+        return isinstance(source_file, str) and source_file.lower().endswith(
+            (".razor", ".cshtml")
+        )
+
+    def _inherited_razor_usings(
+        self, source_file: str
+    ) -> list[tuple[str, str, str | None]]:
+        if not self._razor_dir_usings or not self._is_razor_family(source_file):
+            return []
+        out: list[tuple[str, str, str | None]] = []
+        for d, entries in self._razor_dir_usings:
+            if _razor_dir_applies(d, source_file):
+                for entry in entries:
+                    if entry not in out:
+                        out.append(entry)
+        return out
+
+    def _aliases_for(
+        self, source_file: str
+    ) -> dict[str, list[tuple[str, str, str | None]]]:
+        own = self.aliases_by_file.get(source_file, {})
+        if not self._razor_dir_aliases or not self._is_razor_family(source_file):
+            return own
+        inherited = [
+            alias_map for d, alias_map in self._razor_dir_aliases
+            if _razor_dir_applies(d, source_file)
+        ]
+        if not inherited:
+            return own
+        merged = {alias: list(entries) for alias, entries in own.items()}
+        for alias_map in inherited:
+            for alias, entries in alias_map.items():
+                bucket = merged.setdefault(alias, [])
+                for entry in entries:
+                    if entry not in bucket:
+                        bucket.append(entry)
+        return merged
+
     def _scopes_for(self, source_node: dict, source_file: str) -> list[str]:
         def _append_unique(items: list[str], value: str) -> None:
             if value not in items:
@@ -254,11 +343,14 @@ class CsharpNameResolver:
         for namespace, scope_kind, scope_id in self.namespace_usings_by_file.get(source_file, []):
             if self._using_in_scope(scope_kind, scope_id, source_node):
                 _append_unique(scopes, namespace)
+        for namespace, scope_kind, scope_id in self._inherited_razor_usings(source_file):
+            if self._using_in_scope(scope_kind, scope_id, source_node):
+                _append_unique(scopes, namespace)
         return scopes
 
     def _resolve_alias(self, label: str, source_node: dict, source_file: str) -> str | None:
         hits = set()
-        for target_fqn, scope_kind, scope_id in self.aliases_by_file.get(source_file, {}).get(label, []):
+        for target_fqn, scope_kind, scope_id in self._aliases_for(source_file).get(label, []):
             if not self._using_in_scope(scope_kind, scope_id, source_node):
                 continue
             base_fqn = _strip_trailing_csharp_generic_args(html.unescape(target_fqn))
@@ -286,7 +378,7 @@ class CsharpNameResolver:
           * ``(None, False)`` — scoping knows nothing about the name; a caller
             may fall back (e.g. to the corpus-wide unique bare-name match).
         """
-        if label in self.aliases_by_file.get(source_file, {}):
+        if label in self._aliases_for(source_file):
             return self._resolve_alias(label, source_node, source_file), True
         candidates: list[str] = []
         for namespace in self._scopes_for(source_node, source_file):
@@ -310,7 +402,7 @@ class CsharpNameResolver:
         if not isinstance(qualifier, str) or not qualifier:
             return None
         in_scope = [
-            entry for entry in self.aliases_by_file.get(source_file, {}).get(qualifier, [])
+            entry for entry in self._aliases_for(source_file).get(qualifier, [])
             if self._using_in_scope(entry[1], entry[2], source_node)
         ]
         if in_scope:
