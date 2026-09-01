@@ -49,7 +49,7 @@ def test_method_route_template_becomes_a_node(tmp_path: Path):
     f = _write(
         tmp_path / "c.cs",
         "namespace N {\n"
-        "  public class ServerController {\n"
+        "  public class OrdersController {\n"
         '    [HttpGet("Status")]\n'
         "    public int GetStatus() { return 1; }\n"
         "  }\n"
@@ -67,15 +67,15 @@ def test_controller_route_prefix_composes_with_the_method_template(tmp_path: Pat
     f = _write(
         tmp_path / "c.cs",
         "namespace N {\n"
-        '  [Route("api/Presence")]\n'
-        "  public class PresenceController {\n"
+        '  [Route("api/Orders")]\n'
+        "  public class OrdersController {\n"
         '    [HttpPost("Add")]\n'
         "    public int Add() { return 1; }\n"
         "  }\n"
         "}\n",
     )
     result = extract([f], cache_root=tmp_path)
-    assert "POST api/Presence/Add" in _routes(result), (
+    assert "POST api/Orders/Add" in _routes(result), (
         f"prefix not composed; got {sorted(_routes(result))}"
     )
 
@@ -85,19 +85,19 @@ def test_route_node_points_back_at_its_handler(tmp_path: Path):
     f = _write(
         tmp_path / "c.cs",
         "namespace N {\n"
-        '  [Route("api/Presence")]\n'
-        "  public class PresenceController {\n"
-        '    [HttpGet("MobileAccess/{mobileAccessId}")]\n'
-        "    public int GetMobileAccess(string mobileAccessId) { return 1; }\n"
+        '  [Route("api/Orders")]\n'
+        "  public class OrdersController {\n"
+        '    [HttpGet("Items/{orderId}")]\n'
+        "    public int GetItem(string orderId) { return 1; }\n"
         "  }\n"
         "}\n",
     )
     result = extract([f], cache_root=tmp_path)
-    label = "GET api/Presence/MobileAccess/{mobileAccessId}"
+    label = "GET api/Orders/Items/{orderId}"
     assert _route_source(result, label) is not None, (
         f"route node has no handler; got {sorted(_routes(result))}"
     )
-    assert "GetMobileAccess" in str(_route_source(result, label))
+    assert "GetItem" in str(_route_source(result, label))
 
 
 def test_verb_attribute_and_route_attribute_on_the_same_method(tmp_path: Path):
@@ -125,8 +125,8 @@ def test_absolute_method_template_ignores_the_controller_prefix(tmp_path: Path):
     f = _write(
         tmp_path / "c.cs",
         "namespace N {\n"
-        '  [Route("api/Presence")]\n'
-        "  public class PresenceController {\n"
+        '  [Route("api/Orders")]\n'
+        "  public class OrdersController {\n"
         '    [HttpGet("/health")]\n'
         "    public int Health() { return 1; }\n"
         "  }\n"
@@ -145,14 +145,14 @@ def test_controller_token_expands_to_the_controller_name(tmp_path: Path):
         tmp_path / "c.cs",
         "namespace N {\n"
         '  [Route("api/[controller]")]\n'
-        "  public class RuleSetController {\n"
+        "  public class ProductsController {\n"
         "    [HttpGet]\n"
         "    public int GetAll() { return 1; }\n"
         "  }\n"
         "}\n",
     )
     result = extract([f], cache_root=tmp_path)
-    assert "GET api/RuleSet" in _routes(result), (
+    assert "GET api/Products" in _routes(result), (
         f"[controller] token not expanded; got {sorted(_routes(result))}"
     )
 
@@ -163,7 +163,7 @@ def test_route_node_is_anchored_to_the_controller_file(tmp_path: Path):
     f = _write(
         tmp_path / "c.cs",
         "namespace N {\n"
-        "  public class ServerController {\n"
+        "  public class OrdersController {\n"
         '    [HttpGet("Status")]\n'
         "    public int GetStatus() { return 1; }\n"
         "  }\n"
@@ -182,14 +182,14 @@ def test_route_without_a_verb_attribute_matches_every_verb(tmp_path: Path):
     f = _write(
         tmp_path / "c.cs",
         "namespace N {\n"
-        "  public class AnyController {\n"
-        '    [Route("api/any")]\n'
-        "    public int Any() { return 1; }\n"
+        "  public class ReportsController {\n"
+        '    [Route("api/reports")]\n'
+        "    public int Summary() { return 1; }\n"
         "  }\n"
         "}\n",
     )
     result = extract([f], cache_root=tmp_path)
-    assert "* api/any" in _routes(result), (
+    assert "* api/reports" in _routes(result), (
         f"verb-less route not labelled '*'; got {sorted(_routes(result))}"
     )
 
