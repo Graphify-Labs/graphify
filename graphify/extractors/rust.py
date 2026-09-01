@@ -1,7 +1,7 @@
 """Rust extractor. Moved verbatim from graphify/extract.py."""
 from __future__ import annotations
 
-
+import re
 from pathlib import Path
 from graphify.extractors.base import _LANGUAGE_BUILTIN_GLOBALS, _file_stem, _make_id, _read_text
 
@@ -60,6 +60,10 @@ _RUST_TRAIT_METHOD_BLOCKLIST: frozenset[str] = frozenset({
 
 # Rust module roots: a file that IS its module (rather than a child of one).
 _RUST_MODULE_ROOT_FILES = ("mod.rs", "lib.rs", "main.rs")
+
+# `pub(self)` restricts to the current module, which is what a bare `use`
+# already does — it publishes nothing and so is not a re-export.
+_RUST_PUB_SELF_RE = re.compile(r"^pub\s*\(\s*self\s*\)$")
 
 
 def _rust_path_segments(node, source: bytes) -> list[str]:
@@ -128,6 +132,13 @@ def _rust_use_leaves(node, source: bytes, prefix: tuple[str, ...] = ()) -> list[
             else:
                 inner_prefix = inner_prefix + tuple(_rust_path_segments(child, source))
         return _rust_use_leaves(list_node, source, inner_prefix) if list_node else []
+    if t == "self" and prefix:
+        # Inside a use list, `self` names the MODULE the prefix already spells:
+        # `use foo::bar::{self, Baz}` binds `foo::bar`, not a symbol called
+        # `self`. Appending the segment would resolve nothing and mint a node
+        # labelled `self`. A leading `self::` path has an empty prefix and
+        # falls through below, where `_resolve_rust_use_path` anchors it.
+        return [(tuple(prefix), None, False)]
     if t in ("scoped_identifier", "identifier", "crate", "super", "self", "metavariable"):
         segments = tuple(prefix) + tuple(_rust_path_segments(node, source))
         return [(segments, None, False)] if segments else []
@@ -361,8 +372,14 @@ def extract_rust(path: Path) -> dict:
             # rewire can still collapse it onto a definition if one shows up.
             name = alias or segments[-1]
             if not is_wildcard and name:
-                add_edge(file_nid, ensure_named_node(name, line), "imports_from",
-                         line, context="import")
+                stub_nid = ensure_named_node(name, line)
+                add_edge(file_nid, stub_nid, "imports_from", line, context="import")
+                if is_reexport:
+                    # `pub use anyhow::Result;` republishes an external name.
+                    # Without the symbol-level `re_exports` the barrel collapse
+                    # cannot follow a consumer through this module, which is the
+                    # whole point of resolving preludes.
+                    add_edge(file_nid, stub_nid, "re_exports", line)
             return
         module_file, symbol = resolution
         module_nid = _make_id(str(module_file))
@@ -558,8 +575,13 @@ def extract_rust(path: Path) -> dict:
                 # symbol under its own path. The corpus-level barrel collapse
                 # keys on this relation to follow consumers through to the
                 # defining file, so a prelude stops being a dead end.
+                # `pub(self)` is exactly as private as a bare `use`, so it is
+                # NOT a re-export. `pub(crate)`/`pub(super)`/`pub(in path)`
+                # genuinely republish within a scope and still count.
                 is_reexport = any(
-                    child.type == "visibility_modifier" for child in node.children
+                    child.type == "visibility_modifier"
+                    and not _RUST_PUB_SELF_RE.match(_read_text(child, source))
+                    for child in node.children
                 )
                 for segments, alias, is_wildcard in _rust_use_leaves(arg, source):
                     emit_use_leaf(segments, alias, is_wildcard, is_reexport, line)

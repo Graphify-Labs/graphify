@@ -278,3 +278,81 @@ def test_external_crate_import_still_edges_a_named_stub(tmp_path):
     )
     result, nodes = _graph(tmp_path)
     assert ("service.rs", "HashMap") in _edges(result, nodes, "imports_from")
+
+
+def test_pub_self_use_is_not_a_reexport(tmp_path):
+    """`pub(self)` restricts to the current module — as private as a bare `use`."""
+    _crate(tmp_path)
+    (tmp_path / "src" / "models" / "_entities" / "prelude.rs").write_text(
+        "pub(self) use super::risk::Entity;\n", encoding="utf-8"
+    )
+    result, nodes = _graph(tmp_path)
+    assert ("prelude.rs", "Entity") in _edges(result, nodes, "imports")
+    assert ("prelude.rs", "Entity") not in _edges(result, nodes, "re_exports")
+
+
+def test_pub_crate_use_is_still_a_reexport(tmp_path):
+    """`pub(crate)` republishes within the crate, so consumers can follow it."""
+    _crate(tmp_path)
+    (tmp_path / "src" / "models" / "_entities" / "prelude.rs").write_text(
+        "pub(crate) use super::risk::Entity;\n", encoding="utf-8"
+    )
+    result, nodes = _graph(tmp_path)
+    assert ("prelude.rs", "Entity") in _edges(result, nodes, "re_exports")
+
+
+def test_use_list_self_names_the_module_not_a_symbol():
+    """`use foo::bar::{self, Baz}` binds `foo::bar`, not a symbol called `self`."""
+    leaves = _leaves("use crate::models::risk::{self, Entity};\n")
+    segments = {leaf[0] for leaf in leaves}
+    assert ("crate", "models", "risk") in segments
+    assert ("crate", "models", "risk", "self") not in segments
+    assert ("crate", "models", "risk", "Entity") in segments
+
+
+def test_use_list_self_edges_the_module_file(tmp_path):
+    _crate(tmp_path)
+    (tmp_path / "src" / "models" / "service.rs").write_text(
+        "use crate::models::_entities::risk::{self, Entity};\n"
+        "pub fn run() -> u32 { 1 }\n",
+        encoding="utf-8",
+    )
+    result, nodes = _graph(tmp_path)
+    assert ("service.rs", "risk.rs") in _edges(result, nodes, "imports_from")
+    # No node is minted for a symbol named `self`.
+    assert "self" not in {n.get("label") for n in result["nodes"]}
+
+
+def test_leading_self_path_still_resolves(tmp_path):
+    """A bare `self::` prefix anchors at the current module and is unaffected."""
+    _crate(tmp_path)
+    (tmp_path / "src" / "models" / "_entities" / "prelude.rs").write_text(
+        "use self::risk::Entity;\n", encoding="utf-8"
+    )
+    result, nodes = _graph(tmp_path)
+    assert ("prelude.rs", "risk.rs") in _edges(result, nodes, "imports_from")
+
+
+def test_external_pub_use_keeps_the_reexport_relation(tmp_path):
+    """`pub use anyhow::Result;` republishes an external name.
+
+    Without the symbol-level `re_exports` the barrel collapse cannot follow a
+    consumer through the module, which is the point of resolving preludes.
+    """
+    _crate(tmp_path)
+    (tmp_path / "src" / "models" / "_entities" / "prelude.rs").write_text(
+        "pub use anyhow::Result;\n", encoding="utf-8"
+    )
+    result, nodes = _graph(tmp_path)
+    assert ("prelude.rs", "Result") in _edges(result, nodes, "re_exports")
+    assert ("prelude.rs", "Result") in _edges(result, nodes, "imports_from")
+
+
+def test_external_plain_use_is_not_a_reexport(tmp_path):
+    _crate(tmp_path)
+    (tmp_path / "src" / "models" / "service.rs").write_text(
+        "use anyhow::Result;\npub fn run() -> u32 { 1 }\n", encoding="utf-8"
+    )
+    result, nodes = _graph(tmp_path)
+    assert ("service.rs", "Result") in _edges(result, nodes, "imports_from")
+    assert not _edges(result, nodes, "re_exports")
