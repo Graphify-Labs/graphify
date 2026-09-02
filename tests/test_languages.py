@@ -3408,6 +3408,11 @@ def test_apex_method_qualified_and_generic_return_types(tmp_path):
         "    public Database.QueryLocator dottedReturn(Database.BatchableContext bc) { return null; }\n"
         "    private static List<Map<String, Id>> nestedGeneric() { return null; }\n"
         "    global Set<Id> setReturn() { return null; }\n"
+        "    public String[] arrayReturn() { return null; }\n"
+        # Apex permits whitespace around the angle brackets themselves
+        "    public Map <String, Object> spaceBeforeAngle() { return null; }\n"
+        "    public List< Account > spacesInside() { return null; }\n"
+        "    public List < Map< String, Id > > roomy() { return null; }\n"
         "}\n"
     )
     result = extract_apex(source)
@@ -3417,6 +3422,10 @@ def test_apex_method_qualified_and_generic_return_types(tmp_path):
     assert ".dottedReturn()" in labels
     assert ".nestedGeneric()" in labels
     assert ".setReturn()" in labels
+    assert ".arrayReturn()" in labels
+    assert ".spaceBeforeAngle()" in labels
+    assert ".spacesInside()" in labels
+    assert ".roomy()" in labels
 
 def test_apex_statements_are_not_read_as_methods(tmp_path):
     source = tmp_path / "Neg.cls"
@@ -3429,6 +3438,10 @@ def test_apex_statements_are_not_read_as_methods(tmp_path):
         "        results.put('a', compute(x));\n"
         "        this.helper(1, 2);\n"
         "        Integer a = 1, b = compute();\n"
+        # a bare `<` / `>` is a comparison, not a generic argument list
+        "        if (a > b) { doIt(x); }\n"
+        "        while (i < list.size()) { next(); }\n"
+        "        String s = (Map<String, Object>) JSON.deserializeUntyped(raw);\n"
         "    }\n"
         "}\n"
     )
