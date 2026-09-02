@@ -5,6 +5,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 ## Unreleased
 
 - Feature: `detect()` enumerates large trees via `git ls-files`, Google `repo` project lists, and nested git worktrees/submodules, so gitignored directories are not walked.
+- Feature: AST extract, JS/Python symbol resolution, and cache probes share `graphify.parallel` process/thread pools (`GRAPHIFY_MAX_WORKERS`).
 
 ## 0.9.53 (2026-08-30)
 

@@ -2200,10 +2200,10 @@ def test_extract_bpp_fallback_skips_already_completed_files(tmp_path, monkeypatc
             self._submitted = 0
         def __enter__(self): return self
         def __exit__(self, *a): return False
-        def submit(self, fn, item):
+        def submit(self, fn, *args):
             self._submitted += 1
             if self._submitted <= completed_before_break:
-                return GoodFuture(fn(item))  # extract in-process, eagerly
+                return GoodFuture(fn(*args))  # extract in-process, eagerly
             return BrokenFuture()
 
     monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", FakePool)
@@ -2224,8 +2224,15 @@ def test_extract_bpp_fallback_skips_already_completed_files(tmp_path, monkeypatc
     files = [FIXTURES / "sample.py"] * 25
     result = extract_mod.extract(files, cache_root=tmp_path / "cache")
 
+    from graphify.parallel import chunk_size_for, chunked, resolve_max_workers
+    n = 25
+    workers = resolve_max_workers(n, None)
+    batches = chunked(list(range(n)), chunk_size_for(n, workers))
+    completed_idxs = [i for batch in batches[:completed_before_break] for i in batch]
+    leftover = [i for i in range(n) if i not in completed_idxs]
+
     assert len(retried) == 1, "sequential fallback should have run exactly once"
-    assert sorted(retried[0]) == list(range(completed_before_break, 25)), (
+    assert sorted(retried[0]) == leftover, (
         "files whose futures completed before the pool broke must not be re-extracted"
     )
     assert result["nodes"]
@@ -2252,11 +2259,11 @@ def test_extract_parallel_retries_failed_future_sequentially(
             self._submitted = 0
         def __enter__(self): return self
         def __exit__(self, *a): return False
-        def submit(self, fn, item):
+        def submit(self, fn, *args):
             self._submitted += 1
             if self._submitted == 1:
                 return FailingFuture()
-            return GoodFuture(fn(item))
+            return GoodFuture(fn(*args))
 
     monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", FakePool)
     monkeypatch.setattr(
@@ -2276,7 +2283,12 @@ def test_extract_parallel_retries_failed_future_sequentially(
     files = [FIXTURES / "sample.py"] * 25
     result = extract_mod.extract(files, cache_root=tmp_path / "cache")
 
-    assert retried == [[0]], "only the failed file may be retried, exactly once"
+    from graphify.parallel import chunk_size_for, chunked, resolve_max_workers
+    first_batch = chunked(
+        list(range(25)),
+        chunk_size_for(25, resolve_max_workers(25, None)),
+    )[0]
+    assert retried == [first_batch], "only the failed batch may be retried, exactly once"
     assert result["nodes"]
     err = capsys.readouterr().err
     assert "worker failed" in err
@@ -2313,11 +2325,11 @@ def test_extract_twice_failing_file_carries_error_marker(tmp_path, monkeypatch):
             self._submitted = 0
         def __enter__(self): return self
         def __exit__(self, *a): return False
-        def submit(self, fn, item):
+        def submit(self, fn, *args):
             self._submitted += 1
             if self._submitted == 1:  # boom.go is first in the batch
                 return FailingFuture()
-            return GoodFuture(fn(item))
+            return GoodFuture(fn(*args))
 
     monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", FakePool)
     monkeypatch.setattr(
@@ -2339,12 +2351,69 @@ def test_extract_twice_failing_file_carries_error_marker(tmp_path, monkeypatch):
     files = [bad_file] + [FIXTURES / "sample.py"] * 24
     result = extract_mod.extract(files, cache_root=tmp_path / "cache")
 
+    from graphify.parallel import chunk_size_for, chunked, resolve_max_workers
+    first_batch = chunked(
+        list(range(25)),
+        chunk_size_for(25, resolve_max_workers(25, None)),
+    )[0]
     assert captured["calls"] == 1, "the retry must be bounded: one pass, no loop"
-    assert captured["retry_indices"] == [0]
+    assert captured["retry_indices"] == first_batch
+    assert 0 in captured["retry_indices"]
     assert "error" in captured["per_file"][0], (
         "a twice-failing file must carry an error marker, not a clean empty"
     )
     assert result["nodes"], "the other files must still complete"
+
+
+def test_extract_parallel_submits_file_batches(tmp_path, monkeypatch):
+    """One Future per file on a large corpus is too much pickle/scheduling;
+    _extract_parallel must submit chunks (and still extract every file)."""
+    import concurrent.futures
+    from graphify import extract as extract_mod
+    from graphify.parallel import chunk_size_for, chunked, resolve_max_workers
+
+    class GoodFuture:
+        def __init__(self, value):
+            self._value = value
+
+        def result(self):
+            return self._value
+
+    submitted: list[int] = []
+
+    class FakePool:
+        def __init__(self, *a, **kw):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def submit(self, fn, *args):
+            # Symbol-resolution also opens a ProcessPoolExecutor; only count
+            # AST extraction batches (one positional payload).
+            if fn is extract_mod._extract_file_batch:
+                submitted.append(len(args[0]))
+            return GoodFuture(fn(*args))
+
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", FakePool)
+    monkeypatch.setattr(
+        concurrent.futures, "as_completed", lambda futures: iter(futures)
+    )
+    monkeypatch.setenv("GRAPHIFY_MAX_WORKERS", "2")
+
+    files = [FIXTURES / "sample.py"] * 25
+    result = extract_mod.extract(files, cache_root=tmp_path / "cache")
+
+    expected = chunked(
+        list(range(25)),
+        chunk_size_for(25, resolve_max_workers(25, None)),
+    )
+    assert submitted == [len(b) for b in expected]
+    assert len(submitted) < 25
+    assert result["nodes"]
 
 
 def test_extract_legitimately_empty_result_keeps_no_error_marker(
@@ -3805,18 +3874,56 @@ def test_extract_progress_final_line_uses_consistent_denominator(tmp_path, capsy
     # #1693: intermediate progress lines count against uncached_work; the final
     # "100%" line must NOT switch to total_files (which includes cached hits and
     # files with no extractor), or the count appears to jump upward at the end.
+    from graphify.progress import set_verbose
+
     for i in range(100):
         (tmp_path / f"m{i}.py").write_text(f"def f{i}():\n    return {i}\n")
     for i in range(5):
         (tmp_path / f"s{i}.r").write_text(f"g{i} <- function(x) x\n")  # no extractor
     paths = sorted(tmp_path.glob("*.py")) + sorted(tmp_path.glob("*.r"))  # total 105
 
-    extract(paths, cache_root=tmp_path, parallel=False)
+    set_verbose(True)
+    try:
+        extract(paths, cache_root=tmp_path, parallel=False)
+    finally:
+        set_verbose(None)
     out = capsys.readouterr().out
 
     # final progress line reports the uncached count (100), not the total (105)
     assert "100/100 uncached files (100%)" in out
     assert "105/105 files" not in out, "final line must not switch to total_files (#1693)"
+
+
+def test_extract_resolving_progress_is_verbose_only(tmp_path, capsys):
+    from graphify.progress import set_verbose
+
+    a = tmp_path / "a.py"
+    b = tmp_path / "b.py"
+    a.write_text("def a():\n    return 1\n")
+    b.write_text("from a import a\ndef b():\n    return a()\n")
+    extract([a, b], cache_root=tmp_path, parallel=False)
+    assert "resolving symbols" not in capsys.readouterr().out
+
+    set_verbose(True)
+    try:
+        extract([a, b], cache_root=tmp_path, parallel=False)
+    finally:
+        set_verbose(None)
+    out = capsys.readouterr().out
+    assert "resolving symbols across 2 files" in out
+    assert "resolving: Python facts (2 files)" in out
+    assert "resolving: applying cross-file edges" in out
+    assert "resolving: done" in out
+
+
+def test_extract_resolving_progress_via_env(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_VERBOSE", "1")
+    a = tmp_path / "a.py"
+    a.write_text("def a():\n    return 1\n")
+    extract([a], cache_root=tmp_path, parallel=False)
+    out = capsys.readouterr().out
+    assert "resolving symbols across 1 files" in out
+    assert "resolving: Python facts (1 files)" in out
 
 
 def test_get_extractor_routes_matlab_m_away_from_objc(tmp_path):
