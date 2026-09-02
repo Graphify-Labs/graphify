@@ -619,6 +619,29 @@ def test_monolith_roundtrip_passes_for_aider_and_devin():
         assert problems == [], f"[{key}]\n" + "\n".join(problems)
 
 
+@pytest.mark.parametrize("line", [
+    "# Only trust absolute shebang-derived interpreter paths. Env command names like",
+    "# `python` are PATH-controlled; explicit fallbacks handle them below.",
+    '    case "$_SHEBANG" in /*) ;; *) _SHEBANG="" ;; esac',
+    '        ""|*[!a-zA-Z0-9/_.@-]*) ;;',
+    '# `python` are PATH-controlled; use the explicit python3 fallback.',
+    '        case "$PYTHON" in /*) ;; *) PYTHON="python3" ;; esac',
+])
+def test_monolith_shebang_argument_fix_sanctions_path_control_lines(line):
+    """The monolith drift guard permits the pathless-env hardening lines."""
+    assert gen._is_shebang_argument_fix_line(line)
+
+
+@pytest.mark.parametrize("line", [
+    "# Only trust shebang-derived interpreter paths. Env command names like",
+    'case "$_SHEBANG" in */*|*\\\\*) ;; *) _SHEBANG="" ;; esac',
+    'case "$PYTHON" in */*|*\\\\*) ;; *) PYTHON="python3" ;; esac',
+])
+def test_monolith_shebang_guard_rejects_retired_relative_path_forms(line):
+    """The drift validator must not sanction the superseded relative-path guard."""
+    assert not gen._is_shebang_argument_fix_line(line)
+
+
 def test_monoliths_change_only_sanctioned_lines():
     """Every line that differs from pristine v8 is a sanctioned change-class.
 
