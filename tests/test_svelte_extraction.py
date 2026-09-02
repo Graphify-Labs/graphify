@@ -514,3 +514,16 @@ def test_tsx_lang_reaches_the_call_graph_pass(tmp_path):
         and nodes.get(e["target"], {}).get("label") == "fmt()"
     ]
     assert calls
+
+
+def test_rescue_dedupe_uses_the_shared_build_helper():
+    """The rescue dedupes through `build.dedupe_edges`, not a private twin.
+
+    A second `_dedupe_edges` in extract.py collided by name with the alias
+    cli.py and watch.py already bind to `build.dedupe_edges`, while taking a
+    result dict instead of an edge list — a trap for anyone importing the
+    wrong one.
+    """
+    import graphify.extract as extract_module
+
+    assert not hasattr(extract_module, "_dedupe_edges")

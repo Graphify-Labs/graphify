@@ -1679,27 +1679,13 @@ def extract_svelte(path: Path) -> dict:
         # Both rescues can repeat an edge: a recovered parse edges some
         # imports before the error node, and a specifier imported twice in one
         # file (`import('./X')` in two markup branches) is matched twice.
-        _dedupe_edges(result)
+        # Imported inside the function, as cli.py and watch.py do, to keep
+        # extract.py free of a module-level dependency on build.py.
+        from graphify.build import dedupe_edges
+        result["edges"] = dedupe_edges(result.get("edges", []))
     except Exception:
         pass
     return result
-
-
-def _dedupe_edges(result: dict) -> None:
-    """Drop repeat ``(source, target, relation)`` edges, keeping the first.
-
-    The first occurrence is the AST-derived edge, which carries ``target_file``
-    and richer context than a regex rescue's.
-    """
-    seen: set[tuple[str, str, str]] = set()
-    kept = []
-    for edge in result.get("edges", []):
-        key = (edge.get("source"), edge.get("target"), edge.get("relation"))
-        if key in seen:
-            continue
-        seen.add(key)
-        kept.append(edge)
-    result["edges"] = kept
 
 
 def extract_astro(path: Path) -> dict:
