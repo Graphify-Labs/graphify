@@ -73,7 +73,7 @@ def test_run_command_recursive_search_denies_bounded_allows(tmp_path, monkeypatc
     for cmd in (
         f'powershell -NoProfile -Command "Get-ChildItem -Path \'{w}\' -Recurse -Include *.md | Select-String -Pattern x"',
         f'rg -n "x" "{w}" -l',
-        f'Select-String -Path "{w}\\*.md" -Pattern x',
+        f'Select-String -Path "{os.path.join(w, "*.md")}" -Pattern x',  # OS separator: a backslash is a file name on POSIX
         f'grep -rn x "{w}"',
     ):
         out = _invoke(_tool("run_command", {"CommandLine": cmd}), tmp_path, monkeypatch)
