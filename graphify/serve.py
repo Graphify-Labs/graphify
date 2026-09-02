@@ -1670,7 +1670,11 @@ def _build_server(graph_path: str):
             types.Tool(
                 name="god_nodes",
                 description="Return the most connected nodes - the core abstractions of the knowledge graph.",
-                inputSchema={"type": "object", "properties": {"top_n": {"type": "integer", "default": 10}}},
+                inputSchema={"type": "object", "properties": {
+                    "top_n": {"type": "integer", "default": 10},
+                    "exclude_hubs_percentile": {"type": "number",
+                                                "description": "Suppress nodes whose degree exceeds this percentile (0-100) of the degree distribution, matching cluster()'s hub exclusion"},
+                }},
             ),
             types.Tool(
                 name="graph_stats",
@@ -1873,7 +1877,11 @@ def _build_server(graph_path: str):
 
     def _tool_god_nodes(arguments: dict) -> str:
         from graphify.analyze import god_nodes as _god_nodes
-        nodes = _god_nodes(G, top_n=int(arguments.get("top_n", 10)))
+        _pct = arguments.get("exclude_hubs_percentile")
+        nodes = _god_nodes(
+            G, top_n=int(arguments.get("top_n", 10)),
+            exclude_hubs_percentile=float(_pct) if _pct is not None else None,
+        )
         lines = ["God nodes (most connected):"]
         lines += [f"  {i}. {n['label']} - {n['degree']} edges" for i, n in enumerate(nodes, 1)]
         return "\n".join(lines)
