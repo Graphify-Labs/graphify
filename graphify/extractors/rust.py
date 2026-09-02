@@ -153,7 +153,10 @@ def _rust_use_leaves(node, source: bytes, prefix: tuple[str, ...] = ()) -> list[
 # Cargo's conventional auto-discovered target directories. A .rs file sitting
 # directly in one of these IS a crate root of its own, so `crate::` inside it
 # refers to that file's module tree, not to the library's `src/`.
-_RUST_AUTO_TARGET_DIRS = ("bin", "examples", "tests", "benches")
+# `bin` is only auto-discovered under `src`; the others sit at the package
+# root. A top-level `bin/` is just a directory and holds no crate roots.
+_RUST_PACKAGE_TARGET_DIRS = ("examples", "tests", "benches")
+_RUST_SRC_TARGET_DIRS = ("bin",)
 
 
 def _rust_crate_src_root(path: Path) -> Path | None:
@@ -187,9 +190,12 @@ def _rust_is_auto_target_dir(directory: Path, src: Path, package: Path) -> bool:
     ``bin`` lives under ``src``; ``examples``/``tests``/``benches`` sit at the
     package root.
     """
-    if directory.name == "bin" and directory.parent == src:
-        return True
-    return directory.name in _RUST_AUTO_TARGET_DIRS and directory.parent == package
+    if directory.name in _RUST_SRC_TARGET_DIRS:
+        # Only under `src`, and only when `src` is a real directory — with no
+        # `src/` the package root stands in for it, and a top-level `bin/`
+        # there is not an auto-target.
+        return src.name == "src" and directory.parent == src
+    return directory.name in _RUST_PACKAGE_TARGET_DIRS and directory.parent == package
 
 
 def _rust_auto_target_crate_dir(path: Path, src: Path, package: Path) -> Path | None:
@@ -290,20 +296,20 @@ def _resolve_rust_use_path(
     elif first == "self":
         anchor, index = _rust_self_module_dir(path), 1
     elif first == "super":
+        # `super` walks one module up per keyword, but the crate root has no
+        # `super`. Every step and the final anchor are checked against the
+        # crate floor, so the walk can never leave the crate and resolve an
+        # unrelated file higher up the filesystem. With no `Cargo.toml` above
+        # the file there is no floor, and no `super` is honoured at all.
+        if src_root is None:
+            return None
         anchor, index = super_dir, 1
-        # `super::super::x` walks further up one directory per keyword, but the
-        # crate root has no `super`: without the clamp the walk leaves the
-        # crate and can resolve an unrelated file higher up the filesystem.
-        # With no `Cargo.toml` above the file there is no root to clamp
-        # against, so no walking is allowed at all.
         while index < len(segments) and segments[index] == "super":
-            if anchor is None or src_root is None or anchor == src_root:
+            if anchor is None or anchor == src_root:
                 return None
             anchor = anchor.parent
             index += 1
-        if anchor is None:
-            return None
-        if src_root is not None and src_root not in (anchor, *anchor.parents):
+        if anchor is None or src_root not in (anchor, *anchor.parents):
             return None
     if anchor is None and first not in ("crate", "self", "super"):
         # 2018-edition paths may be crate-relative without the `crate` prefix;
@@ -366,10 +372,22 @@ def _walk_rust_segments(
     if not segments:
         return None
     directory = anchor
-    resolved: Path | None = anchor_file
+    resolved: Path | None = None
     for position, segment in enumerate(segments):
         found = _rust_module_file(directory, segment)
         if found is None:
+            if (
+                resolved is None
+                and anchor_file is not None
+                and position == len(segments) - 1
+            ):
+                # `use crate::Config` — the only segment is not a module, so it
+                # is an item of the anchor's own module file. Restricted to a
+                # LAST segment: an unresolved segment with more behind it was
+                # meant to be a module (`crate::models::risk::X` where
+                # `models` does not exist), and attributing that module name as
+                # an item of `lib.rs` invents a symbol nothing defines.
+                return anchor_file, segment
             # Not a module, so the remainder is a symbol path inside the module
             # that resolved (`…::prelude::Risk` -> `Risk`). The FIRST unresolved
             # segment is the item the module defines; anything after it names

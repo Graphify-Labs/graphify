@@ -10,6 +10,9 @@ re-exported.
 """
 from __future__ import annotations
 
+import os
+
+import pytest
 from pathlib import Path
 
 from graphify.extract import extract
@@ -771,3 +774,157 @@ def test_mod_rs_module_alias_is_still_recorded_when_it_renames(tmp_path):
     aliased = [e for e in _use_edges(service) if e.get("local_alias") == "ents"]
     assert len(aliased) == 1
     assert aliased[0]["target_file"].endswith("_entities/mod.rs")
+
+
+# ── Exhaustive resolver sweep ─────────────────────────────────────────────────
+# Four review rounds running found successively narrower edge cases in
+# _resolve_rust_use_path, each one in a layout or path shape the previous fix
+# had not considered. This matrix enumerates the input space instead: every
+# crate layout Cargo supports on disk, crossed with every anchor keyword and
+# path depth. It pins two invariants over the whole product — a resolved path
+# never escapes the crate, and a resolved symbol is never a module name — plus
+# the per-case answers, so a regression names itself.
+
+_SWEEP_LAYOUTS: dict[str, list[str]] = {
+    "lib": [
+        "src/lib.rs", "src/shared.rs",
+        "src/models/mod.rs", "src/models/risk.rs",
+    ],
+    "lib_and_main": ["src/lib.rs", "src/main.rs", "src/shared.rs"],
+    "no_src": ["lib.rs", "shared.rs", "sub/mod.rs"],
+    "src_bin": [
+        "src/lib.rs", "src/shared.rs",
+        "src/bin/tool.rs", "src/bin/tool/helper.rs", "src/bin/tool/shared.rs",
+    ],
+    "top_level_bin": ["src/lib.rs", "src/shared.rs", "bin/tool.rs"],
+    "examples": [
+        "src/lib.rs", "src/shared.rs",
+        "examples/demo.rs", "examples/demo/helper.rs",
+    ],
+}
+
+_SWEEP_PATHS: tuple[tuple[str, ...], ...] = (
+    ("crate", "X"),
+    ("crate", "shared", "X"),
+    ("crate", "models", "risk", "X"),
+    ("crate", "models", "risk", "Status", "Active"),
+    ("self", "X"),
+    ("self", "X", "Y"),
+    ("self", "helper", "X"),
+    ("super", "shared", "X"),
+    ("super", "super", "shared", "X"),
+    ("super", "super", "super", "super", "outside", "X"),
+    ("shared", "X"),
+    ("anyhow", "Result"),
+)
+
+
+def _sweep_crate(tmp_path: Path, files: list[str]) -> Path:
+    """Lay the crate out under `pkg/`, with bait namesakes above it.
+
+    The bait must sit OUTSIDE the package: a package with no `src/` treats its
+    own root as the source root, so bait placed there would be legitimately
+    in-crate and the escape check would be vacuous.
+    """
+    root = tmp_path / "pkg"
+    root.mkdir()
+    (root / "Cargo.toml").write_text('[package]\nname = "d"\n', encoding="utf-8")
+    for bait in ("outside.rs", "shared.rs", "lib.rs"):
+        (tmp_path / bait).write_text("pub struct X;\n", encoding="utf-8")
+    for rel in files:
+        target = root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("pub struct X;\n", encoding="utf-8")
+    return root
+
+
+def _sweep(tmp_path: Path, layout: str) -> dict[tuple[str, str], tuple[str, str | None]]:
+    """Every (origin file, use path) that resolves, as repo-relative answers."""
+    root = _sweep_crate(tmp_path, _SWEEP_LAYOUTS[layout])
+    out: dict[tuple[str, str], tuple[str, str | None]] = {}
+    for origin in _SWEEP_LAYOUTS[layout]:
+        for segments in _SWEEP_PATHS:
+            resolved = _resolve_rust_use_path(segments, root / origin)
+            if resolved is None:
+                continue
+            module_file, symbol = resolved
+            # Relative to the crate root, so an escape shows up as `../…`.
+            rel = os.path.relpath(module_file, root)
+            out[(origin, "::".join(segments))] = (rel, symbol)
+    return out
+
+
+@pytest.mark.parametrize("layout", sorted(_SWEEP_LAYOUTS))
+def test_sweep_never_escapes_the_crate(tmp_path, layout):
+    """No resolution may land outside the crate's own source tree.
+
+    `outside.rs` and a top-level `shared.rs` sit beside the crate as bait for
+    a `super::` walk or a crate-relative guess that climbs too far.
+    """
+    for (origin, path_text), (target, _symbol) in _sweep(tmp_path, layout).items():
+        assert not target.startswith(".."), (
+            f"{layout}: {origin} {path_text} escaped to {target}"
+        )
+
+
+@pytest.mark.parametrize("layout", sorted(_SWEEP_LAYOUTS))
+def test_sweep_never_attributes_a_module_name_as_a_symbol(tmp_path, layout):
+    """A `crate::`-anchored path must not attribute a module name as a symbol.
+
+    `crate::models::risk::X` in a layout with no `models/` used to resolve to
+    `(lib.rs, "models")` — a symbol nothing defines. Restricted to `crate::`
+    because a CHILDLESS module may legitimately define an item that shares a
+    name with one of its siblings, so `self::helper::X` resolving to
+    `(helper.rs, "helper")` is a real answer, not a leaked module name.
+    """
+    module_names = {Path(f).stem for f in _SWEEP_LAYOUTS[layout]} - {"mod", "lib", "main"}
+    for (origin, path_text), (target, symbol) in _sweep(tmp_path, layout).items():
+        if not path_text.startswith("crate::"):
+            continue
+        assert symbol not in module_names, (
+            f"{layout}: {origin} {path_text} -> {target} sym={symbol}"
+        )
+
+
+@pytest.mark.parametrize("layout", sorted(_SWEEP_LAYOUTS))
+def test_sweep_external_crate_never_resolves(tmp_path, layout):
+    """`use anyhow::Result` has no on-disk answer in any layout."""
+    resolved = _sweep(tmp_path, layout)
+    assert not [k for k in resolved if k[1] == "anyhow::Result"]
+
+
+def test_sweep_answers_are_pinned(tmp_path):
+    """The exact resolutions for the library layout, so a change is visible."""
+    assert _sweep(tmp_path, "lib") == {
+        ('src/lib.rs', 'crate::X'): ('src/lib.rs', 'X'),
+        ('src/lib.rs', 'crate::models::risk::Status::Active'): ('src/models/risk.rs', 'Status'),
+        ('src/lib.rs', 'crate::models::risk::X'): ('src/models/risk.rs', 'X'),
+        ('src/lib.rs', 'crate::shared::X'): ('src/shared.rs', 'X'),
+        ('src/lib.rs', 'self::X'): ('src/lib.rs', 'X'),
+        ('src/lib.rs', 'shared::X'): ('src/shared.rs', 'X'),
+        ('src/models/mod.rs', 'crate::X'): ('src/lib.rs', 'X'),
+        ('src/models/mod.rs', 'crate::models::risk::Status::Active'): ('src/models/risk.rs', 'Status'),
+        ('src/models/mod.rs', 'crate::models::risk::X'): ('src/models/risk.rs', 'X'),
+        ('src/models/mod.rs', 'crate::shared::X'): ('src/shared.rs', 'X'),
+        ('src/models/mod.rs', 'self::X'): ('src/models/mod.rs', 'X'),
+        ('src/models/mod.rs', 'shared::X'): ('src/shared.rs', 'X'),
+        ('src/models/mod.rs', 'super::shared::X'): ('src/shared.rs', 'X'),
+        ('src/models/risk.rs', 'crate::X'): ('src/lib.rs', 'X'),
+        ('src/models/risk.rs', 'crate::models::risk::Status::Active'): ('src/models/risk.rs', 'Status'),
+        ('src/models/risk.rs', 'crate::models::risk::X'): ('src/models/risk.rs', 'X'),
+        ('src/models/risk.rs', 'crate::shared::X'): ('src/shared.rs', 'X'),
+        ('src/models/risk.rs', 'self::X'): ('src/models/risk.rs', 'X'),
+        ('src/models/risk.rs', 'self::X::Y'): ('src/models/risk.rs', 'X'),
+        ('src/models/risk.rs', 'self::helper::X'): ('src/models/risk.rs', 'helper'),
+        ('src/models/risk.rs', 'shared::X'): ('src/shared.rs', 'X'),
+        ('src/models/risk.rs', 'super::super::shared::X'): ('src/shared.rs', 'X'),
+        ('src/shared.rs', 'crate::X'): ('src/lib.rs', 'X'),
+        ('src/shared.rs', 'crate::models::risk::Status::Active'): ('src/models/risk.rs', 'Status'),
+        ('src/shared.rs', 'crate::models::risk::X'): ('src/models/risk.rs', 'X'),
+        ('src/shared.rs', 'crate::shared::X'): ('src/shared.rs', 'X'),
+        ('src/shared.rs', 'self::X'): ('src/shared.rs', 'X'),
+        ('src/shared.rs', 'self::X::Y'): ('src/shared.rs', 'X'),
+        ('src/shared.rs', 'self::helper::X'): ('src/shared.rs', 'helper'),
+        ('src/shared.rs', 'shared::X'): ('src/shared.rs', 'X'),
+        ('src/shared.rs', 'super::shared::X'): ('src/shared.rs', 'X'),
+    }
