@@ -527,3 +527,68 @@ def test_rescue_dedupe_uses_the_shared_build_helper():
     import graphify.extract as extract_module
 
     assert not hasattr(extract_module, "_dedupe_edges")
+
+
+def _generic_hard_error(path, config, source_override=None, **kwargs):
+    """What `_extract_generic` returns when it cannot parse at all."""
+    return {"nodes": [], "edges": [], "error": "tree-sitter-typescript not installed"}
+
+
+def test_static_rescue_runs_on_a_hard_extractor_error(tmp_path, monkeypatch):
+    """`_extract_generic` signals a HARD failure with `error`, not `parse_errors`.
+
+    A missing grammar or unreadable source returns no tree and no nodes. The
+    rescue was gated on `parse_errors` alone, so it never ran and every static
+    import was lost — where the pre-mask extractor ran the regex
+    unconditionally and recovered them.
+    """
+    import graphify.extract as extract_module
+
+    _write(tmp_path / "format.ts", "export const fmt = (s: string) => s\n")
+    component = _write(
+        tmp_path / "Broken.svelte",
+        '<script lang="ts">\n'
+        "  import { fmt } from './format'\n"
+        "</script>\n"
+        "<span />\n",
+    )
+    monkeypatch.setattr(extract_module, "_extract_generic", _generic_hard_error)
+    result = extract_module.extract_svelte(component)
+
+    assert result.get("error"), "the error must stay for extract()'s reporting"
+    assert _make_id(str(tmp_path / "format.ts")) in _targets(
+        result, relation="imports_from"
+    )
+
+
+def test_hard_error_rescue_mints_the_source_file_node(tmp_path, monkeypatch):
+    """A rescued edge needs a real source node or build drops it (#701)."""
+    import graphify.extract as extract_module
+
+    _write(tmp_path / "format.ts", "export const fmt = (s: string) => s\n")
+    component = _write(
+        tmp_path / "Broken.svelte",
+        '<script lang="ts">\n  import { fmt } from \'./format\'\n</script>\n',
+    )
+    monkeypatch.setattr(extract_module, "_extract_generic", _generic_hard_error)
+    result = extract_module.extract_svelte(component)
+
+    file_node_id = _make_id(str(component))
+    assert file_node_id in {n["id"] for n in result["nodes"]}
+    assert all(e["source"] == file_node_id for e in result["edges"])
+
+
+def test_dynamic_rescue_also_survives_a_hard_error(tmp_path, monkeypatch):
+    import graphify.extract as extract_module
+
+    _write(tmp_path / "Lazy.svelte", "<span />\n")
+    component = _write(
+        tmp_path / "Host.svelte",
+        "{#await import('./Lazy.svelte')}{/await}\n",
+    )
+    monkeypatch.setattr(extract_module, "_extract_generic", _generic_hard_error)
+    result = extract_module.extract_svelte(component)
+
+    assert _make_id(str(tmp_path / "Lazy.svelte")) in _targets(
+        result, relation="dynamic_import"
+    )

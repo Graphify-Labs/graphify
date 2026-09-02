@@ -1643,6 +1643,18 @@ def extract_svelte(path: Path) -> dict:
         # _make_id(str(path)) - single arg, no stem prefix. Otherwise the source
         # endpoint is a phantom node and build_from_json drops the edge (#701).
         file_node_id = _make_id(str(path))
+        if result.get("error") and not result.get("nodes"):
+            # A hard failure (grammar missing, unreadable source) returns no
+            # nodes at all, so a rescued edge would have a dangling source and
+            # be dropped at build time. Mint the file node _extract_generic
+            # would have, in the same shape, so the rescue is worth running.
+            # `error` stays on the result for extract()'s own reporting.
+            result.setdefault("nodes", []).append({
+                "id": file_node_id, "label": path.name,
+                "file_type": "code", "source_file": str(path),
+                "source_location": "L1",
+            })
+            existing_ids.add(file_node_id)
         aliases = _load_tsconfig_aliases(path.parent)
         base_url = _load_tsconfig_base_url(path.parent)
         # Scanned over the raw source, not the masked one, so template-layer
@@ -1658,10 +1670,13 @@ def extract_svelte(path: Path) -> dict:
                 result, existing_ids, file_node_id, path, raw,
                 "dynamic_import", aliases, base_url,
             )
-        if result.get("parse_errors"):
-            # The masked script did not parse cleanly, so `import_statement`
-            # nodes may never have been reached and the AST pass edged nothing.
-            # Fall back to the regex rescue the pre-mask extractor relied on.
+        if result.get("parse_errors") or result.get("error"):
+            # The AST pass produced no usable tree — the masked script parsed
+            # WITH errors (`parse_errors`, so `import_statement` nodes may
+            # never have been reached), or it failed outright (`error`: the
+            # grammar is missing, the source unreadable). Both leave imports
+            # unedged, so fall back to the regex rescue the pre-mask extractor
+            # ran unconditionally.
             # Gated on the failure so a clean parse does not double-emit: the
             # AST already edges those specifiers. Scanned over the MASKED
             # source, whose only surviving text is the script regions.
