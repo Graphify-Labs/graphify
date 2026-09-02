@@ -1211,9 +1211,17 @@ def test_codex_hook_command_is_a_real_cli_subcommand(tmp_path):
     assert "hook-check" in dispatched, "sanity: parser must find known commands"
 
     for entry in entries:
-        # command is "<abs exe path> <subcommand> [args...]"
-        parts = entry["command"].split()
-        subcommand = parts[1] if len(parts) > 1 else ""
+        # Two supported shapes (#3280):
+        #   direct launcher: "<abs exe path> <subcommand> [args...]"
+        #   module launcher: "<python> -m graphify <subcommand> [args...]"
+        # Trailing "|| true" is a fail-open guard, not an argument.
+        parts = [p for p in entry["command"].split() if p not in ("||", "true")]
+        if "-m" in parts:
+            idx = parts.index("-m")
+            # skip "-m" and the module name that follows it
+            subcommand = parts[idx + 2] if len(parts) > idx + 2 else ""
+        else:
+            subcommand = parts[1] if len(parts) > 1 else ""
         assert subcommand in dispatched, (
             f"codex hook registers {subcommand!r}, which the CLI does not dispatch "
             f"(#2165). Known commands: {sorted(dispatched)}"
@@ -1341,3 +1349,53 @@ def test_project_uninstall_removes_the_bare_hook_command(tmp_path, monkeypatch):
             main()
 
     assert not [c for c in _hook_commands(settings.read_text(encoding="utf-8")) if "graphify" in c]
+
+
+# --- #3280: generated PreToolUse hook must be runnable and must fail open --------
+#
+# Two defects: the command resolved via shutil.which() can be an unsigned console
+# shim that hardened Windows refuses to load, and the entry has no guard, so a
+# launcher failure exits non-zero -- which blocks the tool call the hook was only
+# meant to advise.
+
+
+def test_codex_hook_is_invoked_through_the_running_interpreter(tmp_path):
+    """#3280: prefer sys.executable -m graphify over the PATH console shim."""
+    import json
+    import sys
+    from graphify.install import _install_codex_hook
+
+    _install_codex_hook(tmp_path)
+    hooks = json.loads((tmp_path / ".codex" / "hooks.json").read_text(encoding="utf-8"))
+    entries = [
+        h
+        for group in hooks["hooks"]["PreToolUse"]
+        for h in group["hooks"]
+        if "graphify" in h.get("command", "")
+    ]
+    assert entries, "codex install must register a graphify PreToolUse hook"
+    for entry in entries:
+        assert "-m graphify" in entry["command"], (
+            "hook must invoke the interpreter that installed it, not the PATH shim "
+            f"(#3280); got {entry['command']!r}"
+        )
+
+
+def test_codex_hook_fails_open(tmp_path):
+    """#3280: a launcher failure must not fail the host's tool call."""
+    import json
+    from graphify.install import _install_codex_hook
+
+    _install_codex_hook(tmp_path)
+    hooks = json.loads((tmp_path / ".codex" / "hooks.json").read_text(encoding="utf-8"))
+    for group in hooks["hooks"]["PreToolUse"]:
+        for entry in group["hooks"]:
+            if "graphify" not in entry.get("command", ""):
+                continue
+            assert entry["command"].rstrip().endswith("|| true"), (
+                f"POSIX command must fail open (#3280); got {entry['command']!r}"
+            )
+            win = entry.get("commandWindows", "")
+            assert "exit /b 0" in win, (
+                f"Windows command must fail open (#3280); got {win!r}"
+            )

@@ -1442,6 +1442,17 @@ def _resolve_graphify_exe(project: bool = False) -> str:
     import shutil
     if project:
         return "graphify"
+    # Prefer the interpreter running this install over any console-script shim.
+    # For uv-tool and pipx installs the shim is an unsigned executable; on Windows
+    # with Smart App Control enabled, code-integrity policy refuses to load it, so
+    # the hook can never run -- while `<venv>/Scripts/python.exe -m graphify` does.
+    # Both ~/.local/bin/graphify.exe and the venv Scripts/graphify.exe are
+    # NotSigned, so resolving to a different shim directory does not help (#3280).
+    # This mirrors hooks._pinned_python(), already used for git hooks.
+    from .hooks import _pinned_python
+    pinned = _pinned_python()
+    if pinned:
+        return f"{pinned.replace(chr(92), '/')} -m graphify"
     found = shutil.which("graphify")
     if not found:
         # Derive from sys.executable: same Scripts/ (Windows) or bin/ (Unix) dir
@@ -1469,7 +1480,19 @@ def _install_codex_hook(project_dir: Path, project: bool = False) -> None:
             "PreToolUse": [
                 {
                     "matcher": "Bash",
-                    "hooks": [{"type": "command", "command": f"{graphify_exe} hook-check"}],
+                    "hooks": [
+                        {
+                            "type": "command",
+                            # Fail open: a PreToolUse hook that exits non-zero blocks
+                            # the tool call it was meant to advise. An advisory graph
+                            # check must never be able to break the host (#3280).
+                            "command": f"{graphify_exe} hook-check || true",
+                            "commandWindows": (
+                                f'cmd /c "{graphify_exe} hook-check" & exit /b 0'
+                            ),
+                            "timeout": 10,
+                        }
+                    ],
                 }
             ]
         }
