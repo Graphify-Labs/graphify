@@ -397,8 +397,7 @@ _PLATFORM_CONFIG: dict[str, dict] = {
         "skill_refs": "trae",
     },
     "hermes": {
-        # Reuses claw's split bundle.
-        "skill_file": "skill-claw.md",
+        "skill_file": "skill-hermes.md",
         "skill_dst": Path(".hermes") / "skills" / "graphify" / "SKILL.md",
         "claude_md": False,
         "skill_refs": "claw",
