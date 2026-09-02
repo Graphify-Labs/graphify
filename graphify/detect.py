@@ -2386,17 +2386,22 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                         continue
                     kept_dirs.append(d)
                 dirnames[:] = kept_dirs
-                if follow_symlinks:
-                    safe_dirs: list[str] = []
-                    for d in dirnames:
-                        child = dp / d
-                        if child.is_symlink() and not _resolves_under_root(child, root):
-                            bucket.skipped_sensitive.append(
-                                str(child) + " [symlink target outside scan root]"
-                            )
-                            continue
-                        safe_dirs.append(d)
-                    dirnames[:] = safe_dirs
+            # Out-of-root symlink dirs must be pruned even in the memory walk
+            # (which skips ignore/noise). Otherwise followlinks=True descends
+            # into the target and admits its regular files, which are not
+            # themselves symlinks so a file-islink check cannot catch them.
+            if follow_symlinks:
+                safe_dirs: list[str] = []
+                for d in dirnames:
+                    child = dp / d
+                    if child.is_symlink() and not _resolves_under_root(child, root):
+                        bucket.skipped_sensitive.append(
+                            str(child) + " [symlink target outside scan root]"
+                        )
+                        continue
+                    safe_dirs.append(d)
+                dirnames[:] = safe_dirs
+            if not in_memory:
                 if not descend and dp == start:
                     if follow_symlinks:
                         bucket.top_dirs = list(dirnames)
@@ -2532,7 +2537,10 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                 return ("skip",)
         if not in_memory and _ignored_for_scan(p):
             return ("ignored", str(p))
-        if os.path.islink(os.fspath(p)) and not _resolves_under_root(p, root):
+        # Any path whose resolve() sits outside root — symlink file, or a
+        # regular file reached by following a symlink directory. v8 checked
+        # this for every candidate; gating on islink() admitted the latter.
+        if not _resolves_under_root(p, root):
             return ("sensitive", str(p) + " [symlink target outside scan root]")
         if not _is_regular_file(p):
             # A repository may contain named pipes, sockets and device nodes,

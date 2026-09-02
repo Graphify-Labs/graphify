@@ -883,6 +883,31 @@ def test_detect_skips_out_of_root_symlinked_directory_even_when_following(requir
     assert any("symlink target outside scan root" in item for item in result["skipped_sensitive"])
 
 
+def test_detect_rejects_regular_files_under_followed_out_of_root_memory_symlink(
+    requires_symlinks, tmp_path
+):
+    """The memory walk skips ignore/noise pruning. A followed symlink directory
+    there lists the target's regular files, which are not themselves symlinks.
+    Admit must still reject them the way v8 rejected any resolve()-outside path.
+    """
+    from graphify.paths import GRAPHIFY_OUT
+
+    root = tmp_path / "root"
+    mem = root / GRAPHIFY_OUT / "memory"
+    mem.mkdir(parents=True)
+    (root / "ok.py").write_text("x = 1")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.py").write_text("token = 'leaked'")
+    (mem / "leak").symlink_to(outside)
+
+    result = detect(root, follow_symlinks=True)
+
+    assert not any("secret.py" in f for v in result["files"].values() for f in v)
+    assert any("ok.py" in f for f in result["files"]["code"])
+    assert any("symlink target outside scan root" in item for item in result["skipped_sensitive"])
+
+
 def test_detect_skips_out_of_root_symlinked_file_by_default(requires_symlinks, tmp_path):
     root = tmp_path / "root"
     root.mkdir()
