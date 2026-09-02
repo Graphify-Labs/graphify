@@ -20,8 +20,8 @@ _SEARCH_NUDGE = json.dumps({
         "hookEventName": "PreToolUse",
         "additionalContext": (
             'MANDATORY: graphify-out/graph.json exists. Use the MCP `query_graph` '
-            'tool when available; otherwise run `graphify query "<question>"` '
-            'through the interpreter named by the installed Graphify skill. Only grep '
+            'tool when available; otherwise use the recorded-interpreter query '
+            'command in the installed Graphify skill. Only grep '
             'after graphify has oriented you, or to modify/debug specific lines.'
         ),
     }
@@ -32,9 +32,8 @@ _READ_NUDGE = json.dumps({
         "additionalContext": (
             'MANDATORY: graphify-out/graph.json exists. You MUST run graphify '
             'before reading source files. Prefer the MCP `query_graph` tool; '
-            'otherwise use: `graphify query "<question>"` '
-            '(scoped subgraph), `graphify explain "<concept>"`, or '
-            '`graphify path "<A>" "<B>"`. Only read raw files after graphify has '
+            'otherwise use the recorded-interpreter query, explain, or path '
+            'command in the installed Graphify skill. Only read raw files after graphify has '
             'oriented you, or to modify/debug specific lines. This rule applies to '
             'subagents too — include it in every subagent prompt involving code '
             'exploration.'
@@ -46,8 +45,9 @@ _READ_NUDGE_STALE = json.dumps({
         "hookEventName": "PreToolUse",
         "additionalContext": (
             'graphify-out/graph.json exists but may be STALE for this file (the file '
-            'changed after the last build). Prefer `graphify query "<question>"` for '
-            'orientation, and run `graphify update` to refresh the graph. Reading the '
+            'changed after the last build). Prefer the MCP `query_graph` tool or the '
+            'installed skill\'s recorded-interpreter query for orientation, and use '
+            'that interpreter to update the graph. Reading the '
             'file directly is fine.'
         ),
     }
@@ -62,9 +62,9 @@ _READ_DENY = json.dumps({
         "permissionDecision": "deny",
         "permissionDecisionReason": (
             'graphify strict mode: this project has a fresh knowledge graph that covers '
-            'this file. Use the MCP `query_graph` tool when available; otherwise run '
-            '`graphify query "<your question>"` (or `graphify explain` / '
-            '`graphify path`) FIRST to orient yourself, then re-issue this Read — it '
+            'this file. Use the MCP `query_graph` tool when available; otherwise use '
+            'the recorded-interpreter query, explain, or path command in the installed '
+            'Graphify skill FIRST, then re-issue this Read — it '
             'will be allowed. This block fires at most once per session; reading raw '
             'files to modify or debug specific lines is fine after one query. Apply the '
             'same rule in any subagent prompt that explores code.'
@@ -78,8 +78,8 @@ _HOOK_SOURCE_EXTS = (
 )
 _GEMINI_NUDGE_TEXT = (
     'graphify: knowledge graph at graphify-out/. For focused questions, use the '
-    'MCP `query_graph` tool when available; otherwise run `graphify query '
-    '"<question>"` through the installed Graphify skill (scoped subgraph, usually much smaller than '
+    'MCP `query_graph` tool when available; otherwise use the recorded-interpreter '
+    'query command in the installed Graphify skill (scoped subgraph, usually much smaller than '
     'GRAPH_REPORT.md) instead of grepping raw files. Read GRAPH_REPORT.md only '
     'for broad architecture context.'
 )
@@ -1192,7 +1192,7 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(1)
     elif cmd == "query":
         if len(sys.argv) < 3:
-            print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--budget N] [--graph path]", file=sys.stderr)
+            print("Usage: python -m graphify query \"<question>\" [--dfs] [--context C] [--budget N] [--graph path]", file=sys.stderr)
             sys.exit(1)
         from graphify.serve import _query_graph_text
         from graphify.security import sanitize_label
@@ -1524,7 +1524,7 @@ def dispatch_command(cmd: str) -> None:
     elif cmd == "path":
         if len(sys.argv) < 4:
             print(
-                'Usage: graphify path "<source>" "<target>" [--graph path] '
+                'Usage: python -m graphify path "<source>" "<target>" [--graph path] '
                 "[--directed|--undirected]",
                 file=sys.stderr,
             )
@@ -1689,7 +1689,7 @@ def dispatch_command(cmd: str) -> None:
 
     elif cmd == "explain":
         if len(sys.argv) < 3:
-            print('Usage: graphify explain "<node>" [--graph path]', file=sys.stderr)
+            print('Usage: python -m graphify explain "<node>" [--graph path]', file=sys.stderr)
             sys.exit(1)
         from graphify.serve import _find_node, find_node_ambiguity
         from networkx.readwrite import json_graph

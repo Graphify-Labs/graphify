@@ -209,7 +209,7 @@ def test_gemini_allow_with_nudge(tmp_path, monkeypatch):
     out = _invoke("gemini", None, tmp_path, monkeypatch, graph=True)
     payload = json.loads(out)
     assert payload["decision"] == "allow"
-    assert "graphify query" in payload["additionalContext"]
+    assert "query_graph" in payload["additionalContext"]
 
 
 def test_gemini_allow_without_graph(tmp_path, monkeypatch):

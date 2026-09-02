@@ -83,6 +83,15 @@ def test_query_guidance_prefers_mcp_and_never_runs_windows_console_shim():
     assert "query_graph" in antigravity
     assert not re.search(r"`graphify (?:query|path|explain) (?=[\"<])", antigravity)
 
+    forbidden = re.compile(
+        r"(?<!-m )(?<!/)\bgraphify (?:query|path|explain) (?=[\"'<$A-Z])",
+        re.MULTILINE,
+    )
+    for artifact in artifacts:
+        assert not forbidden.search(artifact.content), artifact.path
+    for source in (REPO_ROOT / "graphify" / "cli.py", REPO_ROOT / "graphify" / "install.py"):
+        assert not forbidden.search(source.read_text(encoding="utf-8")), source
+
 
 def test_no_version_or_timestamp_in_output():
     """No generated artifact carries the package version string."""

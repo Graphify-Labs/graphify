@@ -67,7 +67,7 @@ def test_nudge_payload_is_valid_pretooluse_json(tmp_path):
     out = _run({"file_path": "pkg/mod.ts"}, tmp_path, graph=True).stdout
     payload = json.loads(out)
     assert payload["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
-    assert "graphify query" in payload["hookSpecificOutput"]["additionalContext"]
+    assert "query_graph" in payload["hookSpecificOutput"]["additionalContext"]
 
 
 def test_silent_on_graphify_out_targets(tmp_path):

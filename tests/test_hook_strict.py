@@ -66,7 +66,7 @@ def test_strict_first_read_denies_then_nudges(tmp_path, monkeypatch):
     f = _fixture(tmp_path)
     out1 = _invoke("read", _read(f), tmp_path, monkeypatch, strict=True)
     assert _is_deny(out1)
-    assert "graphify query" in json.loads(out1)["hookSpecificOutput"]["permissionDecisionReason"]
+    assert "query_graph" in json.loads(out1)["hookSpecificOutput"]["permissionDecisionReason"]
     # marker created
     assert (tmp_path / "graphify-out" / "cache" / "hook_sessions" / "s1.denied").exists()
     # same session again -> soft nudge, not a second deny

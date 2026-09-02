@@ -59,8 +59,9 @@ def test_hook_command_has_no_backslashes(monkeypatch):
     # escape character and strips it (C:\Users\me\graphify.EXE -> C:Usersme...),
     # breaking every guard. The emitted command must use forward slashes.
     from graphify.__main__ import _resolve_graphify_exe
+    monkeypatch.setattr("graphify.hooks._pinned_python", lambda: "")
     monkeypatch.setattr("shutil.which", lambda _name: r"C:\Users\me\graphify.EXE")
-    assert _resolve_graphify_exe() == "C:/Users/me/graphify.EXE"
+    assert _resolve_graphify_exe() == '"C:/Users/me/graphify.EXE"'
     for h in _claude_pretooluse_hooks():
         assert "\\" not in h["hooks"][0]["command"]
 
@@ -104,7 +105,7 @@ def test_nudge_payload_is_valid_pretooluse_json(tmp_path):
     out = _run("grep -rn foo .", tmp_path, graph=True).stdout
     payload = json.loads(out)
     assert payload["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
-    assert "graphify query" in payload["hookSpecificOutput"]["additionalContext"]
+    assert "query_graph" in payload["hookSpecificOutput"]["additionalContext"]
 
 
 def test_fails_open_on_malformed_stdin(tmp_path):
