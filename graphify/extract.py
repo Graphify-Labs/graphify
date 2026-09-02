@@ -1676,9 +1676,10 @@ def extract_svelte(path: Path) -> dict:
                     result, existing_ids, file_node_id, path, raw,
                     "imports_from", aliases, base_url,
                 )
-            # A recovered parse can still have edged SOME imports before the
-            # error node, so drop any duplicate the rescue re-emitted.
-            _dedupe_edges(result)
+        # Both rescues can repeat an edge: a recovered parse edges some
+        # imports before the error node, and a specifier imported twice in one
+        # file (`import('./X')` in two markup branches) is matched twice.
+        _dedupe_edges(result)
     except Exception:
         pass
     return result

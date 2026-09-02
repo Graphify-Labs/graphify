@@ -373,3 +373,27 @@ def test_dynamic_import_rescue_still_runs_on_a_clean_parse(tmp_path):
     assert _make_id(str(tmp_path / "Lazy.svelte")) in _targets(
         result, relation="dynamic_import"
     )
+
+
+def test_repeated_dynamic_import_emits_one_edge(tmp_path):
+    """The same specifier in two markup branches is matched twice by the regex."""
+    _write(tmp_path / "Lazy.svelte", "<span />\n")
+    component = _write(
+        tmp_path / "Host.svelte",
+        '<script lang="ts">\n'
+        "  const ready = true\n"
+        "</script>\n"
+        "\n"
+        "{#if ready}\n"
+        "  {#await import('./Lazy.svelte')}{/await}\n"
+        "{:else}\n"
+        "  {#await import('./Lazy.svelte')}{/await}\n"
+        "{/if}\n",
+    )
+    result = extract_svelte(component)
+    target = _make_id(str(tmp_path / "Lazy.svelte"))
+    matching = [
+        e for e in result["edges"]
+        if e.get("target") == target and e.get("relation") == "dynamic_import"
+    ]
+    assert len(matching) == 1
