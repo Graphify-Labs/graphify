@@ -2,6 +2,12 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Fix: generated agent guidance now prefers the MCP `query_graph` tool and uses the graph's recorded Python interpreter as the CLI fallback, so hardened Windows hosts do not route agents through an unsigned `graphify.exe` shim.
+- Fix: strict Claude hooks no longer use one graph-wide 30-minute query stamp that let any agent disable the first-read block for every other session; deny markers now key subagents by `session_id` plus `agent_id`, so a parent's first read cannot silently consume every subagent's guard.
+- Fix: project-scoped hooks now resolve Graphify through each clone's `graphify-out/.graphify_python` sidecar instead of a bare PATH launcher, preserving committed-config portability without producing an unrunnable hook on Application Control hosts (#3280, follow-up to #3129).
+
 ## 0.9.53 (2026-08-30)
 
 - Fix: a batch of cross-language inheritance-edge corrections (thanks @Synvoya): JavaScript `class X extends Y` now emits an `inherits` edge (#1790); PHP interfaces, enums, and traits are captured as class-like nodes with their heritage (#1791); Scala `trait` declarations become class-like nodes (#1792) and qualified `extends`/`with` bases resolve to the tail type (#1794); a qualified Kotlin supertype resolves to its tail type instead of the package head (#1793); a C# interface extending an interface is classified as `inherits`, not `implements` (#1817); and a Go interface type-set constraint no longer emits a spurious `embeds` edge (#1818).

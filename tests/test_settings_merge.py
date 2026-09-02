@@ -89,7 +89,7 @@ def test_claude_install_preserves_existing_settings(tmp_path):
     graphify_hooks = [h for h in pre_tool if "graphify" in str(h)]
     assert len(graphify_hooks) == 2
     # strict=True lands on the read guard
-    assert any(h["hooks"][0]["command"].endswith("--strict") for h in graphify_hooks)
+    assert any(h["hooks"][0]["command"].endswith("--strict || true") for h in graphify_hooks)
 
 
 # ---------------------------------------------------------------- BOM

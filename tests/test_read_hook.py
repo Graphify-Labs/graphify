@@ -44,11 +44,13 @@ def test_matcher_targets_read_and_glob():
 
 
 def test_command_has_no_shell_syntax():
-    # #522: the command must be a plain exe invocation, not POSIX bash.
+    # Claude runs `command` through a POSIX shell (Git Bash on Windows), while
+    # Codex uses its separate commandWindows field. Keep the body simple and
+    # require the one fail-open operator added by #3280.
     cmd = _read_matcher()["hooks"][0]["command"]
-    for token in ("$(", "case ", "[ -f", "&&", "||", ";;", "echo '"):
+    for token in ("$(", "case ", "[ -f", "&&", ";;", "echo '"):
         assert token not in cmd, f"shell syntax {token!r} leaked into the hook"
-    assert "graphify" in cmd and "hook-guard read" in cmd
+    assert "graphify" in cmd and cmd.endswith("hook-guard read || true")
 
 
 def test_silent_without_graph(tmp_path):
@@ -58,14 +60,14 @@ def test_silent_without_graph(tmp_path):
 
 def test_nudges_on_source_read_with_graph(tmp_path):
     out = _run({"file_path": "src/app.py"}, tmp_path, graph=True).stdout
-    assert "graphify query" in out
+    assert "query_graph" in out
 
 
 def test_nudge_payload_is_valid_pretooluse_json(tmp_path):
     out = _run({"file_path": "pkg/mod.ts"}, tmp_path, graph=True).stdout
     payload = json.loads(out)
     assert payload["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
-    assert "graphify query" in payload["hookSpecificOutput"]["additionalContext"]
+    assert "query_graph" in payload["hookSpecificOutput"]["additionalContext"]
 
 
 def test_silent_on_graphify_out_targets(tmp_path):
@@ -82,19 +84,19 @@ def test_silent_on_non_source_files(tmp_path):
 
 def test_glob_pattern_nudges(tmp_path):
     out = _run({"pattern": "**/*.py", "path": "src"}, tmp_path, graph=True).stdout
-    assert "graphify query" in out
+    assert "query_graph" in out
 
 
 def test_nudges_on_framework_source(tmp_path):
     """.astro/.vue/.svelte are real source types and must nudge (regression)."""
     for path in ("src/components/Hero.astro", "src/App.vue", "src/Card.svelte"):
         out = _run({"file_path": path}, tmp_path, graph=True).stdout
-        assert "graphify query" in out, f"{path} should nudge"
+        assert "query_graph" in out, f"{path} should nudge"
 
 
 def test_astro_glob_nudges(tmp_path):
     out = _run({"pattern": "**/*.astro"}, tmp_path, graph=True).stdout
-    assert "graphify query" in out
+    assert "query_graph" in out
 
 
 def test_silent_on_json_config(tmp_path):
@@ -109,13 +111,13 @@ def test_nudges_on_multi_dot_source(tmp_path):
     a.test.tsx -> .tsx (nudge), foo.min.js -> .js (nudge)."""
     for path in ("src/a.test.tsx", "lib/foo.min.js"):
         out = _run({"file_path": path}, tmp_path, graph=True).stdout
-        assert "graphify query" in out, f"{path} should nudge"
+        assert "query_graph" in out, f"{path} should nudge"
 
 
 def test_windows_path_nudges(tmp_path):
     """Backslash-separated paths split on the real final segment, then its ext."""
     out = _run({"file_path": r"src\components\app.py"}, tmp_path, graph=True).stdout
-    assert "graphify query" in out
+    assert "query_graph" in out
 
 
 def test_silent_when_extension_is_on_a_directory_segment(tmp_path):

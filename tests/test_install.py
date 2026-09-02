@@ -274,9 +274,7 @@ def test_codex_skill_uses_graphify_with_existing_graph():
     skill = (Path(graphify.__file__).parent / "skill-codex.md").read_text()
     assert "Fast path — existing graph" in skill
     assert "skip Steps 1–5 entirely and jump straight to `## For /graphify query`" in skill
-    assert "graphify query" in skill
-    assert "graphify explain" in skill
-    assert "graphify path" in skill
+    assert "query_graph" in skill
 
 
 def test_codex_agents_install_mentions_dirty_graph_output(tmp_path):
@@ -406,8 +404,8 @@ def test_codebuddy_install_writes_hook(tmp_path):
 
 
 def test_claude_hook_is_shell_agnostic(tmp_path):
-    # #522: the installed PreToolUse hooks must be plain exe invocations, not
-    # POSIX bash (which fails on Windows cmd.exe/PowerShell).
+    # Claude runs command hooks through a POSIX shell, including Git Bash on
+    # Windows; keep the command simple while preserving #3280 fail-open.
     import json as _json
     from graphify.__main__ import _install_claude_hook
     _install_claude_hook(tmp_path)
@@ -416,9 +414,9 @@ def test_claude_hook_is_shell_agnostic(tmp_path):
     assert {"Bash|Grep", "Read|Glob"} <= matchers  # Grep in the search matcher: #1986
     for h in hooks:
         cmd = h["hooks"][0]["command"]
-        for token in ("$(", "case ", "[ -f", "&&", "||", ";;", "echo '"):
+        for token in ("$(", "case ", "[ -f", "&&", ";;", "echo '"):
             assert token not in cmd, f"shell syntax {token!r} in {cmd!r}"
-        assert "graphify" in cmd and "hook-guard" in cmd
+        assert "graphify" in cmd and "hook-guard" in cmd and cmd.endswith("|| true")
 
 
 def test_claude_hook_install_idempotent_and_replaces_old_bash_hook(tmp_path):
@@ -1211,9 +1209,17 @@ def test_codex_hook_command_is_a_real_cli_subcommand(tmp_path):
     assert "hook-check" in dispatched, "sanity: parser must find known commands"
 
     for entry in entries:
-        # command is "<abs exe path> <subcommand> [args...]"
-        parts = entry["command"].split()
-        subcommand = parts[1] if len(parts) > 1 else ""
+        # Two supported shapes (#3280):
+        #   direct launcher: "<abs exe path> <subcommand> [args...]"
+        #   module launcher: "<python> -m graphify <subcommand> [args...]"
+        # Trailing "|| true" is a fail-open guard, not an argument.
+        parts = [p for p in entry["command"].split() if p not in ("||", "true")]
+        if "-m" in parts:
+            idx = parts.index("-m")
+            # skip "-m" and the module name that follows it
+            subcommand = parts[idx + 2] if len(parts) > idx + 2 else ""
+        else:
+            subcommand = parts[1] if len(parts) > 1 else ""
         assert subcommand in dispatched, (
             f"codex hook registers {subcommand!r}, which the CLI does not dispatch "
             f"(#2165). Known commands: {sorted(dispatched)}"
@@ -1270,6 +1276,7 @@ def test_project_install_hook_command_is_portable(tmp_path, monkeypatch, platfor
     monkeypatch.chdir(project)
     # Resolution would otherwise find a real graphify on this machine; pin it so
     # the assertion fails loudly if the project path ever resolves again.
+    monkeypatch.setattr("graphify.hooks._pinned_python", lambda: "")
     monkeypatch.setattr("shutil.which", lambda _name: r"C:\Users\installer\graphify.EXE")
 
     _run_project_install(project, home, platform)
@@ -1277,7 +1284,7 @@ def test_project_install_hook_command_is_portable(tmp_path, monkeypatch, platfor
     commands = _hook_commands((project / _PROJECT_HOOK_FILES[platform]).read_text(encoding="utf-8"))
     assert commands, f"{platform} project install registered no hook command"
     for command in commands:
-        assert command.startswith("graphify "), command
+        assert ".graphify_python" in command, command
         assert ":" not in command, f"drive letter / absolute path leaked: {command}"
         assert "\\" not in command, f"backslash path leaked: {command}"
         assert ".exe" not in command.lower(), f"platform exe casing leaked: {command}"
@@ -1291,6 +1298,7 @@ def test_user_profile_install_still_resolves_absolute_path(tmp_path, monkeypatch
     project = tmp_path / "project"
     project.mkdir()
     monkeypatch.chdir(project)
+    monkeypatch.setattr("graphify.hooks._pinned_python", lambda: "")
     monkeypatch.setattr("shutil.which", lambda _name: r"C:\Users\installer\graphify.EXE")
 
     from graphify.__main__ import main
@@ -1302,7 +1310,7 @@ def test_user_profile_install_still_resolves_absolute_path(tmp_path, monkeypatch
     commands = _hook_commands((project / _PROJECT_HOOK_FILES[platform]).read_text(encoding="utf-8"))
     assert commands, f"{platform} install registered no hook command"
     for command in commands:
-        assert command.startswith("C:/Users/installer/graphify.EXE "), command
+        assert command.startswith('"C:/Users/installer/graphify.EXE" '), command
 
 
 @pytest.mark.parametrize("platform", sorted(_PROJECT_HOOK_FILES))
@@ -1312,6 +1320,7 @@ def test_project_install_is_idempotent(tmp_path, monkeypatch, platform):
     project = tmp_path / "project"
     project.mkdir()
     monkeypatch.chdir(project)
+    monkeypatch.setattr("graphify.hooks._pinned_python", lambda: "")
     monkeypatch.setattr("shutil.which", lambda _name: r"C:\Users\installer\graphify.EXE")
     target = project / _PROJECT_HOOK_FILES[platform]
 
@@ -1322,14 +1331,15 @@ def test_project_install_is_idempotent(tmp_path, monkeypatch, platform):
     assert target.read_text(encoding="utf-8") == first
 
 
-def test_project_uninstall_removes_the_bare_hook_command(tmp_path, monkeypatch):
-    """The uninstall filter matches on "graphify", so a bare command still goes."""
+def test_project_uninstall_removes_the_hook_command(tmp_path, monkeypatch):
+    """The uninstall filter removes the recorded-interpreter hook command."""
     from graphify.__main__ import main
 
     home = tmp_path / "home"
     project = tmp_path / "project"
     project.mkdir()
     monkeypatch.chdir(project)
+    monkeypatch.setattr("graphify.hooks._pinned_python", lambda: "")
     monkeypatch.setattr("shutil.which", lambda _name: r"C:\Users\installer\graphify.EXE")
 
     _run_project_install(project, home, "claude")
@@ -1341,3 +1351,61 @@ def test_project_uninstall_removes_the_bare_hook_command(tmp_path, monkeypatch):
             main()
 
     assert not [c for c in _hook_commands(settings.read_text(encoding="utf-8")) if "graphify" in c]
+
+
+# --- #3280: generated PreToolUse hook must be runnable and must fail open --------
+#
+# Two defects: the command resolved via shutil.which() can be an unsigned console
+# shim that hardened Windows refuses to load, and the entry has no guard, so a
+# launcher failure exits non-zero -- which blocks the tool call the hook was only
+# meant to advise.
+
+
+def test_codex_hook_is_invoked_through_the_running_interpreter(tmp_path):
+    """#3280: prefer sys.executable -m graphify over the PATH console shim."""
+    import json
+    import sys
+    from graphify.install import _install_codex_hook
+
+    _install_codex_hook(tmp_path)
+    hooks = json.loads((tmp_path / ".codex" / "hooks.json").read_text(encoding="utf-8"))
+    entries = [
+        h
+        for group in hooks["hooks"]["PreToolUse"]
+        for h in group["hooks"]
+        if "graphify" in h.get("command", "")
+    ]
+    assert entries, "codex install must register a graphify PreToolUse hook"
+    for entry in entries:
+        assert "-m graphify" in entry["command"], (
+            "hook must invoke the interpreter that installed it, not the PATH shim "
+            f"(#3280); got {entry['command']!r}"
+        )
+
+
+def test_codex_hook_fails_open(tmp_path):
+    """#3280: a launcher failure must not fail the host's tool call."""
+    import json
+    from graphify.install import _install_codex_hook
+
+    _install_codex_hook(tmp_path)
+    hooks = json.loads((tmp_path / ".codex" / "hooks.json").read_text(encoding="utf-8"))
+    for group in hooks["hooks"]["PreToolUse"]:
+        for entry in group["hooks"]:
+            if "graphify" not in entry.get("command", ""):
+                continue
+            assert entry["command"].rstrip().endswith("|| true"), (
+                f"POSIX command must fail open (#3280); got {entry['command']!r}"
+            )
+            win = entry.get("commandWindows", "")
+            assert win.startswith("powershell.exe -NoProfile -NonInteractive"), (
+                f"Windows command must name its interpreter (#3280); got {win!r}"
+            )
+            assert win.rstrip().endswith('; exit 0"'), (
+                f"Windows command must fail open (#3280); got {win!r}"
+            )
+            # `& exit /b 0` is cmd-only: run by PowerShell the bare `&` is the
+            # background operator, which spawns a job and exits 1.
+            assert "& exit /b 0" not in win, (
+                f"Windows fail-open suffix must not use cmd-only syntax; got {win!r}"
+            )

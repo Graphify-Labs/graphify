@@ -9,6 +9,7 @@ to the historical soft nudge unless strict is explicitly enabled.
 import io
 import json
 import os
+import subprocess
 import sys
 import time
 
@@ -65,7 +66,7 @@ def test_strict_first_read_denies_then_nudges(tmp_path, monkeypatch):
     f = _fixture(tmp_path)
     out1 = _invoke("read", _read(f), tmp_path, monkeypatch, strict=True)
     assert _is_deny(out1)
-    assert "graphify query" in json.loads(out1)["hookSpecificOutput"]["permissionDecisionReason"]
+    assert "query_graph" in json.loads(out1)["hookSpecificOutput"]["permissionDecisionReason"]
     # marker created
     assert (tmp_path / "graphify-out" / "cache" / "hook_sessions" / "s1.denied").exists()
     # same session again -> soft nudge, not a second deny
@@ -80,24 +81,31 @@ def test_strict_new_session_denies_again(tmp_path, monkeypatch):
     assert _is_deny(out)
 
 
-def test_fresh_query_stamp_suppresses_deny(tmp_path, monkeypatch):
+def test_subagent_gets_its_own_deny_with_shared_session_id(tmp_path, monkeypatch):
+    """A parent's deny must not consume the subagent's first-read guard."""
+    f = _fixture(tmp_path)
+    assert _is_deny(_invoke("read", _read(f, "shared"), tmp_path, monkeypatch, strict=True))
+    child = _read(f, "shared")
+    child["agent_id"] = "child-1"
+    assert _is_deny(_invoke("read", child, tmp_path, monkeypatch, strict=True))
+
+
+def test_long_sibling_agent_ids_do_not_collide(tmp_path, monkeypatch):
+    """Sibling identities differing past the marker prefix stay distinct."""
+    f = _fixture(tmp_path)
+    for suffix in ("A", "B"):
+        child = _read(f, "12345678-1234-1234-1234-123456789abc")
+        child["agent_id"] = "x" * 30 + suffix
+        assert _is_deny(_invoke("read", child, tmp_path, monkeypatch, strict=True))
+
+
+def test_query_stamp_from_another_session_does_not_suppress_deny(tmp_path, monkeypatch):
+    """One agent's query must not disable strict mode for another session."""
     f = _fixture(tmp_path)
     stamp = tmp_path / "graphify-out" / "cache" / "last_query_stamp"
     stamp.parent.mkdir(parents=True, exist_ok=True)
     stamp.write_text(str(time.time()), encoding="utf-8")
-    out = _invoke("read", _read(f), tmp_path, monkeypatch, strict=True)
-    assert not _is_deny(out) and "MANDATORY" in out
-
-
-def test_expired_query_stamp_still_denies(tmp_path, monkeypatch):
-    f = _fixture(tmp_path)
-    stamp = tmp_path / "graphify-out" / "cache" / "last_query_stamp"
-    stamp.parent.mkdir(parents=True, exist_ok=True)
-    stamp.write_text("old", encoding="utf-8")
-    old = time.time() - 10_000
-    os.utime(stamp, (old, old))
-    out = _invoke("read", _read(f), tmp_path, monkeypatch, strict=True, env={"GRAPHIFY_HOOK_STRICT_TTL": "1800"})
-    assert _is_deny(out)
+    assert _is_deny(_invoke("read", _read(f, "new-session"), tmp_path, monkeypatch, strict=True))
 
 
 def test_soft_mode_never_denies(tmp_path, monkeypatch):
@@ -189,14 +197,27 @@ def test_strict_enabled_env_precedence():
             _os.environ["GRAPHIFY_HOOK_STRICT"] = saved
 
 
-def test_install_hook_carries_strict_flag():
+def test_installed_strict_hook_executes_and_denies(tmp_path):
     from graphify.install import _claude_pretooluse_hooks
-    soft = _claude_pretooluse_hooks(strict=False)
-    strict = _claude_pretooluse_hooks(strict=True)
-    read_soft = next(h for h in soft if h["matcher"] == "Read|Glob")["hooks"][0]["command"]
-    read_strict = next(h for h in strict if h["matcher"] == "Read|Glob")["hooks"][0]["command"]
-    assert read_soft.endswith("hook-guard read")
-    assert read_strict.endswith("hook-guard read --strict")
-    # search hook is unchanged either way
-    for hooks in (soft, strict):
-        assert next(h for h in hooks if h["matcher"] == "Bash|Grep")["hooks"][0]["command"].endswith("hook-guard search")
+
+    f = _fixture(tmp_path)
+    sidecar = tmp_path / "graphify-out" / ".graphify_python"
+    sidecar.write_text(sys.executable, encoding="utf-8")
+    for project in (False, True):
+        payload = json.dumps(_read(f, f"installed-command-{int(project)}"))
+        entry = next(
+            h for h in _claude_pretooluse_hooks(strict=True, project=project)
+            if h["matcher"] == "Read|Glob"
+        )["hooks"][0]
+        command = entry["commandWindows"] if os.name == "nt" else entry["command"]
+        result = subprocess.run(
+            command,
+            input=payload,
+            text=True,
+            capture_output=True,
+            shell=True,
+            cwd=tmp_path,
+            timeout=15,
+        )
+        assert result.returncode == 0, result.stderr
+        assert _is_deny(result.stdout), result.stdout or result.stderr
