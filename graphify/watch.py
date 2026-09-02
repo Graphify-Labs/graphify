@@ -318,22 +318,30 @@ def _changed_path_candidates(raw: Path, *, change_root: Path, watch_root: Path) 
     return candidates
 
 
+# Every stored path that names a file in the scanned tree. ``definition_file``
+# is the implementation site recorded when a C/C++/ObjC declaration and its
+# definition merge into one node; it must stay repo-relative like its sibling
+# ``source_file`` so a graph built on one machine reads on another.
+_PORTABLE_PATH_KEYS = ("source_file", "definition_file")
+
+
 def _relativize_source_files(payload: dict, root: Path, *, scope: Path | None = None) -> None:
     for bucket in ("nodes", "edges", "hyperedges"):
         for item in payload.get(bucket, []):
-            source = item.get("source_file")
-            if not source:
-                continue
-            source_path = Path(source)
-            if not source_path.is_absolute():
-                continue
-            try:
-                resolved = source_path.resolve()
-                if scope is not None and not _is_relative_to(resolved, scope):
+            for key in _PORTABLE_PATH_KEYS:
+                source = item.get(key)
+                if not source:
                     continue
-                item["source_file"] = resolved.relative_to(root).as_posix()
-            except ValueError:
-                continue
+                source_path = Path(source)
+                if not source_path.is_absolute():
+                    continue
+                try:
+                    resolved = source_path.resolve()
+                    if scope is not None and not _is_relative_to(resolved, scope):
+                        continue
+                    item[key] = resolved.relative_to(root).as_posix()
+                except ValueError:
+                    continue
 
 
 def _rebase_relative_source_files(payload: dict, source_root: Path, target_root: Path) -> None:
@@ -342,13 +350,14 @@ def _rebase_relative_source_files(payload: dict, source_root: Path, target_root:
         return
     for bucket in ("nodes", "edges", "hyperedges"):
         for item in payload.get(bucket, []):
-            source = item.get("source_file")
-            if not source or Path(source).is_absolute():
-                continue
-            try:
-                item["source_file"] = (source_root / source).relative_to(target_root).as_posix()
-            except ValueError:
-                continue
+            for key in _PORTABLE_PATH_KEYS:
+                source = item.get(key)
+                if not source or Path(source).is_absolute():
+                    continue
+                try:
+                    item[key] = (source_root / source).relative_to(target_root).as_posix()
+                except ValueError:
+                    continue
 
 
 class _StoredSourcePaths:

@@ -7168,24 +7168,28 @@ def extract(
 
     for item in all_nodes + all_edges:
         sf = item.get("source_file")
-        if not sf:
-            continue
-        sf_path = Path(sf)
-        if not sf_path.is_absolute():
-            continue
-        new_sf, canonical_id, keys = _sf_entry(str(sf), sf_path)
-        if "id" in item:
-            for key in keys:
-                if key == canonical_id or key in ext_id_remap:
-                    continue
-                if key in owned_ids and item.get("id") != key:
-                    # The key is a real node's id minted some other way —
-                    # renaming it (or edges onto it) would corrupt the graph.
-                    # The node that owns it registers it itself when its own
-                    # id IS the absolute-derived form (#2195 stub).
-                    continue
-                ext_id_remap[key] = canonical_id
-        item["source_file"] = new_sf
+        if sf:
+            sf_path = Path(sf)
+            if sf_path.is_absolute():
+                new_sf, canonical_id, keys = _sf_entry(str(sf), sf_path)
+                if "id" in item:
+                    for key in keys:
+                        if key == canonical_id or key in ext_id_remap:
+                            continue
+                        if key in owned_ids and item.get("id") != key:
+                            # The key is a real node's id minted some other way —
+                            # renaming it (or edges onto it) would corrupt the graph.
+                            # The node that owns it registers it itself when its own
+                            # id IS the absolute-derived form (#2195 stub).
+                            continue
+                        ext_id_remap[key] = canonical_id
+                item["source_file"] = new_sf
+        df = item.get("definition_file")
+        if df:
+            df_path = Path(df)
+            if df_path.is_absolute():
+                new_df, _, _ = _sf_entry(str(df), df_path)
+                item["definition_file"] = new_df
 
     if ext_id_remap:
         # Bash entrypoint ids are the file-level id + "__entry"
@@ -7289,6 +7293,9 @@ def extract(
         _sf = _item.get("source_file")
         if _sf and "\\" in str(_sf):
             _item["source_file"] = PurePath(_sf).as_posix()
+        _df = _item.get("definition_file")
+        if _df and "\\" in str(_df):
+            _item["definition_file"] = PurePath(_df).as_posix()
 
     return {
         "nodes": all_nodes,
