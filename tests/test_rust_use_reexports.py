@@ -928,3 +928,24 @@ def test_sweep_answers_are_pinned(tmp_path):
         ('src/shared.rs', 'shared::X'): ('src/shared.rs', 'X'),
         ('src/shared.rs', 'super::shared::X'): ('src/shared.rs', 'X'),
     }
+
+
+def test_super_reaches_an_item_of_a_file_backed_parent_module(tmp_path):
+    """A module can be backed by a sibling FILE: `src/models.rs` owns `models/`.
+
+    `use super::Config` resolved only when the parent happened to be a
+    `mod.rs`, so the whole file-backed half of Rust's module system missed
+    every item defined in a parent.
+    """
+    (tmp_path / "src" / "models").mkdir(parents=True)
+    (tmp_path / "Cargo.toml").write_text('[package]\nname = "d"\n', encoding="utf-8")
+    (tmp_path / "src" / "lib.rs").write_text("pub mod models;\n", encoding="utf-8")
+    (tmp_path / "src" / "models.rs").write_text(
+        "pub mod risk;\npub struct Config;\n", encoding="utf-8"
+    )
+    (tmp_path / "src" / "models" / "risk.rs").write_text(
+        "use super::Config;\npub fn run() -> u32 { 1 }\n", encoding="utf-8"
+    )
+    result, nodes = _graph(tmp_path)
+    assert ("risk.rs", "models.rs") in _edges(result, nodes, "imports_from")
+    assert ("risk.rs", "Config") in _edges(result, nodes, "imports")

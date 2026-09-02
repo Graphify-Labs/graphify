@@ -357,7 +357,11 @@ def _rust_module_root_file(directory: Path) -> Path | None:
         candidate = directory / name
         if candidate.is_file():
             return candidate
-    return None
+    # A module can equally be backed by a sibling FILE: `src/models.rs` owns
+    # `src/models/`. Without this, `use super::Config` from a child resolved
+    # only when the parent happened to be a `mod.rs`.
+    sibling = directory.parent / f"{directory.name}.rs"
+    return sibling if sibling.is_file() else None
 
 
 def _walk_rust_segments(
