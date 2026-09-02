@@ -2,6 +2,13 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## 0.9.54 (unreleased)
+
+- Fix: a Python type reference to a name imported from another module now resolves to that module's definition — the sourceless stub is repointed onto the exact imported symbol (not a bare-name match), so two same-named types in different modules bind to their own (#3252, thanks @hopstreax).
+- Feature: `graphify merge-graphs` now resolves a member call whose receiver type is defined in another repo — the call is parked at extraction and linked at merge time only on a single unambiguous cross-repo type + method match, composing with the cross-repo type link (#3152, thanks @xiongjianxu).
+- Fix: the `definition_file` node attribute (the merged decl/def implementation site) is now stored portably — relative to the scan root with canonical separators, matching `source_file` — across graph.json, the AST cache, the watch/incremental path, and direct extract, so a graph is byte-stable across machines (#3223, thanks @abhay-codes07 and @hopstreax).
+- Fix: `god_nodes` now honours `exclude_hubs_percentile`, so `--exclude-hubs` actually affects god-node ranking (not just clustering); the default output is unchanged (#3205, thanks @abhay-codes07).
+
 ## 0.9.53 (2026-08-30)
 
 - Fix: a batch of cross-language inheritance-edge corrections (thanks @Synvoya): JavaScript `class X extends Y` now emits an `inherits` edge (#1790); PHP interfaces, enums, and traits are captured as class-like nodes with their heritage (#1791); Scala `trait` declarations become class-like nodes (#1792) and qualified `extends`/`with` bases resolve to the tail type (#1794); a qualified Kotlin supertype resolves to its tail type instead of the package head (#1793); a C# interface extending an interface is classified as `inherits`, not `implements` (#1817); and a Go interface type-set constraint no longer emits a spurious `embeds` edge (#1818).
