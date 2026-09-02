@@ -1735,3 +1735,74 @@ def test_resolve_single_node_shared_by_get_node_and_get_neighbors():
     nid, err = _resolve_single_node(G, "nonexistent")
     assert nid is None
     assert "No node matching" in err
+
+
+# --- bridge nodes: reached from two or more seeds ---
+
+def _two_seed_graph():
+    """`AuthModule` and `BillingDB` (both exact query hits) are joined only
+    through `SessionStore`. `Logger` is a hub off `AuthModule` with more
+    neighbors than `SessionStore`; `TokenCache` hangs off `AuthModule` alone."""
+    G = nx.Graph()
+    for nid, label in [("auth", "AuthModule"), ("bill", "BillingDB"),
+                       ("sess", "SessionStore"), ("log", "Logger"), ("tok", "TokenCache")]:
+        G.add_node(nid, label=label, source_file=f"{nid}.py")
+    for u, v in [("auth", "sess"), ("sess", "bill"), ("auth", "log"), ("auth", "tok")]:
+        G.add_edge(u, v, relation="calls", confidence="EXTRACTED")
+    for i in range(8):
+        G.add_node(f"leaf{i}", label=f"Leaf{i}", source_file="leaf.py")
+        G.add_edge("log", f"leaf{i}", relation="calls", confidence="EXTRACTED")
+    return G
+
+
+def test_bridge_nodes_returns_nodes_reached_from_two_seeds():
+    from graphify.serve import _bridge_nodes
+    G = _two_seed_graph()
+    nodes = set(G.nodes)
+    assert _bridge_nodes(G, nodes, ["auth", "bill"], depth=2) == ["sess"]
+
+
+def test_bridge_nodes_empty_with_single_seed():
+    from graphify.serve import _bridge_nodes
+    G = _two_seed_graph()
+    assert _bridge_nodes(G, set(G.nodes), ["auth"], depth=2) == []
+
+
+def test_bridge_nodes_never_reports_a_seed_as_a_bridge():
+    """Two adjacent seeds reach each other; a seed is a start point, not a
+    bridge, so neither may appear in the result."""
+    from graphify.serve import _bridge_nodes
+    G = _two_seed_graph()
+    G.add_edge("auth", "bill", relation="calls", confidence="EXTRACTED")
+    assert "auth" not in _bridge_nodes(G, set(G.nodes), ["auth", "bill"], depth=2)
+    assert "bill" not in _bridge_nodes(G, set(G.nodes), ["auth", "bill"], depth=2)
+
+
+def test_subgraph_to_text_renders_bridges_right_after_seeds():
+    G = _two_seed_graph()
+    text = _subgraph_to_text(
+        G, set(G.nodes), list(G.edges()), token_budget=2000,
+        seeds=["auth", "bill"], bridges=["sess"],
+    )
+    labels = [l.split(" [", 1)[0] for l in text.splitlines() if l.startswith("NODE ")]
+    assert labels[:3] == ["NODE AuthModule", "NODE BillingDB", "NODE SessionStore"], labels
+
+
+def test_query_graph_text_reports_bridge_in_header_and_keeps_it_under_budget():
+    """End to end: a two-entity question seats both as seeds; the node that
+    connects them is named in the header and survives a budget that cuts the
+    hub sitting in the same hop layer."""
+    G = _two_seed_graph()
+    text = _query_graph_text(G, "AuthModule BillingDB", mode="bfs", depth=2, token_budget=70)
+    header = text.split("\n\n", 1)[0]
+    assert "Bridges: ['SessionStore']" in header, header
+    labels = [l.split(" [", 1)[0] for l in text.splitlines() if l.startswith("NODE ")]
+    # Seed order is _pick_seeds' business; the bridge must follow the seed block.
+    assert set(labels[:2]) == {"NODE AuthModule", "NODE BillingDB"}, labels
+    assert labels[2] == "NODE SessionStore", labels
+
+
+def test_query_graph_text_single_seed_has_no_bridge_header():
+    G = _two_seed_graph()
+    text = _query_graph_text(G, "AuthModule", mode="bfs", depth=2, token_budget=2000)
+    assert "Bridges" not in text
