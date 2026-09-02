@@ -1735,3 +1735,65 @@ def test_resolve_single_node_shared_by_get_node_and_get_neighbors():
     nid, err = _resolve_single_node(G, "nonexistent")
     assert nid is None
     assert "No node matching" in err
+
+
+# --- relevance-aware ordering under the budget ---
+
+def _hub_vs_match_graph():
+    """Seed S with two depth-1 neighbors: `RetryTimeout` (degree 1, matches the
+    query term "timeout") and `Logger` (a hub wired to many leaves, matches
+    nothing). Both sit in the same hop layer, so today's (hop, -degree) sort
+    puts the hub first and a tight budget cuts the node that actually answers
+    the question."""
+    G = nx.Graph()
+    G.add_node("s", label="CompanySpacingGate", source_file="gate.py")
+    G.add_node("match", label="RetryTimeout", source_file="retry.py")
+    G.add_node("hub", label="Logger", source_file="log.py")
+    G.add_edge("s", "match", relation="calls", confidence="EXTRACTED")
+    G.add_edge("s", "hub", relation="calls", confidence="EXTRACTED")
+    for i in range(8):
+        G.add_node(f"leaf{i}", label=f"Leaf{i}", source_file="leaf.py")
+        G.add_edge("hub", f"leaf{i}", relation="calls", confidence="EXTRACTED")
+    return G
+
+
+def test_subgraph_to_text_query_match_outranks_hub_in_same_hop_layer():
+    """Within one hop layer, a node that scored against the query must render
+    before a higher-degree node that scored zero, so a tight budget cuts the
+    incidental hub, not the answer."""
+    G = _hub_vs_match_graph()
+    text = _subgraph_to_text(
+        G, set(G.nodes), list(G.edges()), token_budget=40,
+        seeds=["s"], scores={"match": 5.0},
+    )
+    node_lines = [l for l in text.splitlines() if l.startswith("NODE ")]
+    assert "CompanySpacingGate" in node_lines[0], "seed still renders first"
+    assert "RetryTimeout" in node_lines[1], f"query match must beat the hub: {node_lines}"
+
+
+def test_subgraph_to_text_without_scores_keeps_degree_order():
+    """No scores (or all-zero scores) must leave the existing hop/degree
+    ordering byte-identical — the hub still wins its layer."""
+    G = _hub_vs_match_graph()
+    kwargs = dict(token_budget=2000, seeds=["s"])
+    baseline = _subgraph_to_text(G, set(G.nodes), list(G.edges()), **kwargs)
+    node_lines = [l for l in baseline.splitlines() if l.startswith("NODE ")]
+    assert "Logger" in node_lines[1]
+    assert _subgraph_to_text(G, set(G.nodes), list(G.edges()), scores={}, **kwargs) == baseline
+    assert _subgraph_to_text(G, set(G.nodes), list(G.edges()), scores={"match": 0.0}, **kwargs) == baseline
+
+
+def test_query_graph_text_threads_relevance_scores_into_rendering():
+    """End to end: `query` already scores every node against the question;
+    that ranking must reach the renderer so a non-seed node matching a query
+    term survives a tight budget ahead of an unrelated hub."""
+    G = _hub_vs_match_graph()
+    # `TimeoutPolicy` takes the per-term seat for "timeout"; `RetryTimeout`
+    # still matches the term but is NOT a seed — the case this fix is about.
+    G.add_node("policy", label="TimeoutPolicy", source_file="policy.py")
+    G.add_edge("s", "policy", relation="calls", confidence="EXTRACTED")
+    text = _query_graph_text(G, "CompanySpacingGate timeout", mode="bfs", depth=1, token_budget=60)
+    labels = [l.split(" [", 1)[0] for l in text.splitlines() if l.startswith("NODE ")]
+    assert "NODE RetryTimeout" in labels, f"non-seed query match was cut: {labels}"
+    if "NODE Logger" in labels:
+        assert labels.index("NODE RetryTimeout") < labels.index("NODE Logger"), labels
