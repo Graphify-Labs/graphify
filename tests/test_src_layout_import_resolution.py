@@ -151,3 +151,127 @@ def test_non_python_import_edge_is_not_repointed(tmp_path):
     assert not any(v == "src_pkg_mod" and u == "app_cs" for _, u, v in _import_edges(G)), (
         "non-Python import edge was repointed onto a Python file (#2072 review)"
     )
+
+
+def test_package_submodule_import_from_outside_and_inside_src_layout_resolves(tmp_path):
+    """#3272: `from <pkg> import <submodule>` must resolve to submodule.py and downstream
+    submodule.func() calls whether the importing file is inside or outside the package tree."""
+    (tmp_path / "src" / "towmo" / "core").mkdir(parents=True)
+    (tmp_path / "src" / "towmo" / "domains").mkdir(parents=True)
+    (tmp_path / "tests").mkdir(parents=True)
+
+    (tmp_path / "src" / "towmo" / "__init__.py").write_text("")
+    (tmp_path / "src" / "towmo" / "core" / "__init__.py").write_text("")
+    (tmp_path / "src" / "towmo" / "domains" / "__init__.py").write_text("")
+
+    helper = tmp_path / "src" / "towmo" / "core" / "helper.py"
+    helper.write_text("def do_work(value):\n    return value * 2\n")
+
+    inside = tmp_path / "src" / "towmo" / "domains" / "inside_pkg_form.py"
+    inside.write_text("from towmo.core import helper\n\ndef run():\n    return helper.do_work(21)\n")
+
+    test_file = tmp_path / "tests" / "test_pkg_form.py"
+    test_file.write_text("from towmo.core import helper\n\ndef test_it():\n    assert helper.do_work(21) == 42\n")
+
+    paths = [
+        tmp_path / "src" / "towmo" / "__init__.py",
+        tmp_path / "src" / "towmo" / "core" / "__init__.py",
+        tmp_path / "src" / "towmo" / "domains" / "__init__.py",
+        helper,
+        inside,
+        test_file,
+    ]
+
+    res = extract(paths, root=tmp_path, parallel=False)
+    nodes_by_id = {n["id"]: n for n in res["nodes"]}
+    edges = res["edges"]
+
+    # 1. Verify submodule import edges exist for both inside and outside callers
+    submodule_imports = [
+        (e["source"], e["target"], e.get("context"))
+        for e in edges
+        if e.get("relation") == "imports_from" and e.get("context") == "submodule_import"
+    ]
+    submodule_sources = {src for src, tgt, _ in submodule_imports}
+    assert "src_towmo_domains_inside_pkg_form" in submodule_sources
+    assert "tests_test_pkg_form" in submodule_sources
+
+    # Both must point to helper.py
+    for src, tgt, _ in submodule_imports:
+        assert tgt == "src_towmo_core_helper"
+
+    # 2. Verify calls edges to do_work() exist for both inside and outside callers
+    call_edges = [
+        (e["source"], e["target"])
+        for e in edges
+        if e.get("relation") == "calls"
+    ]
+    call_sources = {src for src, tgt in call_edges}
+    assert "src_towmo_domains_inside_pkg_form_run" in call_sources
+    assert "tests_test_pkg_form_test_it" in call_sources
+
+    for src, tgt in call_edges:
+        assert tgt == "src_towmo_core_helper_do_work"
+
+
+def test_ambiguous_source_roots_fail_closed(tmp_path):
+    """#3272: when two distinct source roots contain conflicting packages with the same
+    name, absolute module resolution from an outside importer must fail closed (return None)
+    rather than arbitrarily binding to one."""
+    (tmp_path / "root1" / "pkg").mkdir(parents=True)
+    (tmp_path / "root2" / "pkg").mkdir(parents=True)
+    (tmp_path / "tests").mkdir(parents=True)
+
+    (tmp_path / "root1" / "pkg" / "__init__.py").write_text("")
+    (tmp_path / "root2" / "pkg" / "__init__.py").write_text("")
+
+    mod1 = tmp_path / "root1" / "pkg" / "mod.py"
+    mod1.write_text("def fn1(): return 1\n")
+    mod2 = tmp_path / "root2" / "pkg" / "mod.py"
+    mod2.write_text("def fn2(): return 2\n")
+
+    test_file = tmp_path / "tests" / "test_ambig.py"
+    test_file.write_text("from pkg import mod\n")
+
+    source_roots = [tmp_path / "root1", tmp_path / "root2"]
+    # Direct function test: conflicting candidate targets across source_roots -> None
+    assert _resolve_python_module_path("pkg.mod", test_file, tmp_path, level=0, source_roots=source_roots) is None
+
+
+def test_multi_source_root_distinct_packages_resolve(tmp_path):
+    """#3272: in a multi-root layout with distinct package names, external callers can
+    resolve modules across all source roots."""
+    (tmp_path / "packages" / "pkg_a" / "src" / "alpha").mkdir(parents=True)
+    (tmp_path / "packages" / "pkg_b" / "src" / "beta").mkdir(parents=True)
+    (tmp_path / "tests").mkdir(parents=True)
+
+    (tmp_path / "packages" / "pkg_a" / "src" / "alpha" / "__init__.py").write_text("")
+    (tmp_path / "packages" / "pkg_b" / "src" / "beta" / "__init__.py").write_text("")
+
+    alpha_mod = tmp_path / "packages" / "pkg_a" / "src" / "alpha" / "service.py"
+    alpha_mod.write_text("def work(): return 1\n")
+
+    test_file = tmp_path / "tests" / "test_cross.py"
+    test_file.write_text("from alpha import service\n\ndef test_fn():\n    return service.work()\n")
+
+    paths = [
+        tmp_path / "packages" / "pkg_a" / "src" / "alpha" / "__init__.py",
+        tmp_path / "packages" / "pkg_b" / "src" / "beta" / "__init__.py",
+        alpha_mod,
+        test_file,
+    ]
+
+    res = extract(paths, root=tmp_path, parallel=False)
+    submodule_imports = [
+        (e["source"], e["target"])
+        for e in res["edges"]
+        if e.get("relation") == "imports_from" and e.get("context") == "submodule_import"
+    ]
+    assert ("tests_test_cross", "packages_pkg_a_src_alpha_service") in submodule_imports
+
+    calls = [
+        (e["source"], e["target"])
+        for e in res["edges"]
+        if e.get("relation") == "calls"
+    ]
+    assert ("tests_test_cross_test_fn", "packages_pkg_a_src_alpha_service_work") in calls
