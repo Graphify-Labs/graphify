@@ -323,14 +323,100 @@ def test_use_list_self_edges_the_module_file(tmp_path):
     assert "self" not in {n.get("label") for n in result["nodes"]}
 
 
-def test_leading_self_path_still_resolves(tmp_path):
-    """A bare `self::` prefix anchors at the current module and is unaffected."""
+def test_leading_self_path_resolves_a_child_of_a_mod_rs(tmp_path):
+    """`self::x` in `_entities/mod.rs` names its child `_entities::risk`."""
+    _crate(tmp_path)
+    (tmp_path / "src" / "models" / "_entities" / "mod.rs").write_text(
+        "pub mod prelude;\npub mod risk;\nuse self::risk::Entity;\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "src" / "models" / "_entities" / "prelude.rs").write_text(
+        "pub use super::risk::Entity;\n", encoding="utf-8"
+    )
+    result, nodes = _graph(tmp_path)
+    assert ("mod.rs", "risk.rs") in _edges(result, nodes, "imports_from")
+
+
+def test_leading_self_path_does_not_reach_a_sibling_module(tmp_path):
+    """`self::risk` inside `_entities/prelude.rs` is `_entities::prelude::risk`.
+
+    `prelude.rs` has no sibling `prelude/` directory, so it declares no child
+    modules and the path resolves to nothing. Falling back to the containing
+    directory would make `self::` behave like `super::` and wrongly edge the
+    sibling `_entities/risk.rs`.
+    """
     _crate(tmp_path)
     (tmp_path / "src" / "models" / "_entities" / "prelude.rs").write_text(
         "use self::risk::Entity;\n", encoding="utf-8"
     )
     result, nodes = _graph(tmp_path)
-    assert ("prelude.rs", "risk.rs") in _edges(result, nodes, "imports_from")
+    assert ("prelude.rs", "risk.rs") not in _edges(result, nodes, "imports_from")
+
+
+def test_self_path_reaches_a_child_in_a_sibling_directory(tmp_path):
+    """A plain `foo.rs` WITH a sibling `foo/` does have children."""
+    _crate(tmp_path)
+    (tmp_path / "src" / "models" / "service").mkdir(parents=True)
+    (tmp_path / "src" / "models" / "service" / "helper.rs").write_text(
+        "pub struct Helper;\n", encoding="utf-8"
+    )
+    (tmp_path / "src" / "models" / "service.rs").write_text(
+        "pub mod helper;\nuse self::helper::Helper;\npub fn run() -> u32 { 1 }\n",
+        encoding="utf-8",
+    )
+    result, nodes = _graph(tmp_path)
+    assert ("service.rs", "helper.rs") in _edges(result, nodes, "imports_from")
+
+
+def test_super_walk_stops_at_the_crate_root(tmp_path):
+    """`super::super::…` past the crate root must resolve to nothing.
+
+    Unclamped, the walk leaves `src/` and can resolve an unrelated file higher
+    up the filesystem — `models.rs` next to `Cargo.toml`, say.
+    """
+    _crate(tmp_path)
+    (tmp_path / "models.rs").write_text("pub struct Outside;\n", encoding="utf-8")
+    (tmp_path / "src" / "models" / "service.rs").write_text(
+        "use super::super::super::models::Outside;\npub fn run() -> u32 { 1 }\n",
+        encoding="utf-8",
+    )
+    result, nodes = _graph(tmp_path)
+    imports_from = _edges(result, nodes, "imports_from")
+    assert ("service.rs", "models.rs") not in imports_from
+    # It falls back to a sourceless stub so the edge still has an endpoint.
+    assert ("service.rs", "Outside") in imports_from
+
+
+def test_super_still_resolves_within_the_crate(tmp_path):
+    _crate(tmp_path)
+    (tmp_path / "src" / "models" / "_entities" / "prelude.rs").write_text(
+        "use super::super::service::run;\n", encoding="utf-8"
+    )
+    (tmp_path / "src" / "models" / "service.rs").write_text(
+        "pub fn run() -> u32 { 1 }\n", encoding="utf-8"
+    )
+    result, nodes = _graph(tmp_path)
+    assert ("prelude.rs", "service.rs") in _edges(result, nodes, "imports_from")
+
+
+def test_multi_segment_symbol_tail_attributes_the_item(tmp_path):
+    """`use crate::…::Status::Active` names the enum the module defines.
+
+    Requiring a SINGLE trailing segment dropped the whole edge, so an enum
+    variant import contributed nothing.
+    """
+    _crate(tmp_path)
+    (tmp_path / "src" / "models" / "_entities" / "risk.rs").write_text(
+        "pub enum Status { Active }\npub struct Entity;\n", encoding="utf-8"
+    )
+    (tmp_path / "src" / "models" / "service.rs").write_text(
+        "use crate::models::_entities::risk::Status::Active;\n"
+        "pub fn run() -> u32 { 1 }\n",
+        encoding="utf-8",
+    )
+    result, nodes = _graph(tmp_path)
+    assert ("service.rs", "risk.rs") in _edges(result, nodes, "imports_from")
+    assert ("service.rs", "Status") in _edges(result, nodes, "imports")
 
 
 def test_external_pub_use_keeps_the_reexport_relation(tmp_path):

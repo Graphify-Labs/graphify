@@ -169,17 +169,38 @@ def _rust_module_file(directory: Path, name: str) -> Path | None:
 
 
 def _rust_module_dirs(path: Path) -> tuple[Path, Path]:
-    """Return ``(self_dir, super_dir)`` for the module ``path`` defines.
+    """Return ``(search_dir, super_dir)`` for the module ``path`` defines.
 
     ``mod.rs``/``lib.rs``/``main.rs`` ARE their module, so their own directory
     holds their children and the parent directory is ``super``. Any other file
     ``foo.rs`` is a module whose children live in a sibling ``foo/`` directory,
     and whose ``super`` is the directory it sits in.
+
+    ``search_dir`` falls back to the containing directory when a plain
+    ``foo.rs`` has no sibling ``foo/``, which is what the 2018-edition
+    crate-relative *heuristic* wants to probe. It is NOT the module's ``self``
+    — use :func:`_rust_self_module_dir` for a path anchored on the ``self``
+    keyword, which must not reach the module's siblings.
     """
     if path.name in _RUST_MODULE_ROOT_FILES:
         return path.parent, path.parent.parent
     sibling = path.parent / path.stem
     return (sibling if sibling.is_dir() else path.parent), path.parent
+
+
+def _rust_self_module_dir(path: Path) -> Path | None:
+    """The directory holding ``path``'s CHILD modules, or ``None`` if it has none.
+
+    ``self::x`` names a child of this module, so it resolves inside the
+    module's own directory. A plain ``foo.rs`` with no sibling ``foo/`` has no
+    children at all, and falling back to its containing directory would
+    silently make ``self::`` behave like ``super::`` — resolving a sibling
+    module the ``self`` path cannot legally reach.
+    """
+    if path.name in _RUST_MODULE_ROOT_FILES:
+        return path.parent
+    sibling = path.parent / path.stem
+    return sibling if sibling.is_dir() else None
 
 
 def _resolve_rust_use_path(
@@ -196,7 +217,7 @@ def _resolve_rust_use_path(
     """
     if not segments:
         return None
-    self_dir, super_dir = _rust_module_dirs(path)
+    search_dir, super_dir = _rust_module_dirs(path)
     src_root = _rust_crate_src_root(path)
 
     index = 0
@@ -205,18 +226,24 @@ def _resolve_rust_use_path(
     if first == "crate":
         anchor, index = src_root, 1
     elif first == "self":
-        anchor, index = self_dir, 1
+        anchor, index = _rust_self_module_dir(path), 1
     elif first == "super":
         anchor, index = super_dir, 1
-        # `super::super::x` walks further up one directory per keyword.
+        # `super::super::x` walks further up one directory per keyword, but the
+        # crate root has no `super`: without the clamp the walk leaves the
+        # crate and can resolve an unrelated file higher up the filesystem.
         while index < len(segments) and segments[index] == "super":
-            anchor = anchor.parent if anchor is not None else None
+            if anchor is None or (src_root is not None and anchor == src_root):
+                return None
+            anchor = anchor.parent
             index += 1
+        if src_root is not None and src_root not in (anchor, *anchor.parents):
+            return None
     if anchor is None and first not in ("crate", "self", "super"):
         # 2018-edition paths may be crate-relative without the `crate` prefix;
         # try the crate root, then the current module. An external crate simply
         # resolves to nothing at either.
-        for candidate_anchor in (src_root, self_dir):
+        for candidate_anchor in (src_root, search_dir):
             if candidate_anchor is None:
                 continue
             resolved = _walk_rust_segments(candidate_anchor, segments)
@@ -239,10 +266,12 @@ def _walk_rust_segments(
     for position, segment in enumerate(segments):
         found = _rust_module_file(directory, segment)
         if found is None:
-            # Not a module. If everything before it resolved, the remainder is a
-            # symbol path inside that module (`…::prelude::Risk` -> `Risk`), and
-            # only a single trailing segment is a name we can attribute.
-            if resolved is not None and position == len(segments) - 1:
+            # Not a module, so the remainder is a symbol path inside the module
+            # that resolved (`…::prelude::Risk` -> `Risk`). The FIRST unresolved
+            # segment is the item the module defines; anything after it names
+            # something inside that item (`…::Status::Active` -> `Status`), so
+            # attribute the item and drop the rest rather than the whole edge.
+            if resolved is not None:
                 return resolved, segment
             return None
         resolved = found
