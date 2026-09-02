@@ -989,11 +989,66 @@ def _dfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], lis
     return visited, edges_seen
 
 
-def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_budget: int = 2000, *, seeds: list[str] | None = None) -> str:
+def _bridge_nodes(G: nx.Graph, nodes: set[str], seeds: list[str], depth: int) -> list[str]:
+    """Non-seed nodes in `nodes` reachable within `depth` hops from two or more
+    distinct seeds — the nodes that connect the entities a multi-term question
+    named, which are usually the answer to "what links X to Y".
+
+    Walks each seed separately inside the already-traversed node set (both edge
+    directions, like the hop layering in `_subgraph_to_text`), so it never adds
+    a node the traversal did not find. Ordered by seeds reached (desc) then id,
+    so the output is deterministic. Empty with fewer than two seeds.
+    """
+    seed_set = set(seeds)
+    if len(seed_set) < 2:
+        return []
+
+    def _adj(n):
+        if G.is_directed():
+            yield from G.successors(n)
+            yield from G.predecessors(n)
+        else:
+            yield from G.neighbors(n)
+
+    reached_by: dict[str, int] = {}
+    for seed in seed_set:
+        if seed not in nodes:
+            continue
+        seen = {seed}
+        frontier = [seed]
+        for _ in range(depth):
+            nxt = []
+            for n in frontier:
+                for nb in _adj(n):
+                    if nb in nodes and nb not in seen:
+                        seen.add(nb)
+                        nxt.append(nb)
+            frontier = nxt
+        for n in seen - seed_set:
+            reached_by[n] = reached_by.get(n, 0) + 1
+    return sorted(
+        (n for n, k in reached_by.items() if k >= 2),
+        key=lambda n: (-reached_by[n], str(n)),
+    )
+
+
+def _subgraph_to_text(
+    G: nx.Graph,
+    nodes: set[str],
+    edges: list[tuple],
+    token_budget: int = 2000,
+    *,
+    seeds: list[str] | None = None,
+    bridges: list[str] | None = None,
+) -> str:
     """Render subgraph as text, cutting at token_budget (approx 3 chars/token).
 
     seeds: exact-match nodes rendered first before the degree-sorted expansion,
     so the queried symbol always appears at the top of the output.
+    bridges: nodes reached from two or more seeds (see `_bridge_nodes`); they
+    render directly after the seed block so the node connecting the question's
+    entities survives the budget ahead of same-layer hubs. Missing or empty
+    leaves the ordering unchanged.
     """
     char_budget = token_budget * 3
     lines = []
@@ -1025,8 +1080,12 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
                     dist[nb] = hop
                     nxt.append(nb)
         frontier = nxt
-    ordered = seed_hits + sorted(
-        nodes - seed_set,
+    # Bridges (reached from ≥2 seeds) follow the seed block in their given
+    # order; everything else keeps the hop/degree order.
+    bridge_hits = [n for n in (bridges or []) if n in nodes and n not in seed_set]
+    bridge_set = set(bridge_hits)
+    ordered = seed_hits + bridge_hits + sorted(
+        nodes - seed_set - bridge_set,
         key=lambda n: (dist.get(n, 1 << 30), -G.degree(n), str(n)),
     )
     for nid in ordered:
@@ -1231,10 +1290,16 @@ def _query_graph_text(
     resolved_filters, filter_source = _resolve_context_filters(question, context_filters)
     traversal_graph = _filter_graph_by_context(G, resolved_filters)
     nodes, edges = _dfs(traversal_graph, start_nodes, depth) if mode == "dfs" else _bfs(traversal_graph, start_nodes, depth)
+    # A multi-term question seats several seeds; the nodes their traversals
+    # share are the connective tissue the question is asking about. Name them
+    # up front and render them right after the seeds (see _bridge_nodes).
+    bridges = _bridge_nodes(traversal_graph, nodes, start_nodes, depth)
     header_parts = [
         f"Traversal: {mode.upper()} depth={depth}",
         f"Start: {[G.nodes[n].get('label', n) for n in start_nodes]}",
     ]
+    if bridges:
+        header_parts.append(f"Bridges: {[G.nodes[n].get('label', n) for n in bridges]}")
     # Name the graph this answer came from. `graphify-out/` resolves against the
     # CWD, so running a query from a parent project while thinking about a
     # vendored subproject silently answers from the wrong corpus — the output is
@@ -1253,7 +1318,9 @@ def _query_graph_text(
     # Pass the seeds so the queried symbol renders first and survives truncation
     # (#BUG2): a branch merge had silently dropped this argument, leaving the
     # seed-first ordering as dead code.
-    return header + _subgraph_to_text(traversal_graph, nodes, edges, token_budget, seeds=start_nodes)
+    return header + _subgraph_to_text(
+        traversal_graph, nodes, edges, token_budget, seeds=start_nodes, bridges=bridges
+    )
 
 
 def _find_node_tiers(
