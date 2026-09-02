@@ -59,11 +59,11 @@ def test_codebuddy_skill_file_contains_frontmatter(tmp_path):
     assert "description:" in content
 
 
-def test_codebuddy_skill_file_references_graphify_query(tmp_path):
-    """/graphify skill must mention graphify query (query-first policy)."""
+def test_codebuddy_skill_file_references_query_graph(tmp_path):
+    """The skill must name the MCP-first query path."""
     _codebuddy_install_user(tmp_path)
     content = _skill_path_user(tmp_path).read_text()
-    assert "graphify query" in content or "/graphify query" in content
+    assert "query_graph" in content
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +98,7 @@ def test_codebuddy_install_hook_has_bash_matcher(tmp_path):
     codebuddy_install(tmp_path)
     settings = json.loads(_settings_path(tmp_path).read_text())
     hooks = settings["hooks"]["PreToolUse"]
-    bash_hooks = [h for h in hooks if h.get("matcher") == "Bash|Grep"]
+    bash_hooks = [h for h in hooks if h.get("matcher") == "Bash|Grep|PowerShell"]
     assert any("graphify" in str(h) for h in bash_hooks)
 
 

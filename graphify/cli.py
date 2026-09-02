@@ -19,8 +19,9 @@ _SEARCH_NUDGE = json.dumps({
     "hookSpecificOutput": {
         "hookEventName": "PreToolUse",
         "additionalContext": (
-            'MANDATORY: graphify-out/graph.json exists. You MUST run '
-            '`graphify query "<question>"` before grepping raw files. Only grep '
+            'MANDATORY: graphify-out/graph.json exists. Use the MCP `query_graph` '
+            'tool when available; otherwise use the recorded-interpreter query '
+            'command in the installed Graphify skill. Only grep '
             'after graphify has oriented you, or to modify/debug specific lines.'
         ),
     }
@@ -30,9 +31,9 @@ _READ_NUDGE = json.dumps({
         "hookEventName": "PreToolUse",
         "additionalContext": (
             'MANDATORY: graphify-out/graph.json exists. You MUST run graphify '
-            'before reading source files. Use: `graphify query "<question>"` '
-            '(scoped subgraph), `graphify explain "<concept>"`, or '
-            '`graphify path "<A>" "<B>"`. Only read raw files after graphify has '
+            'before reading source files. Prefer the MCP `query_graph` tool; '
+            'otherwise use the recorded-interpreter query, explain, or path '
+            'command in the installed Graphify skill. Only read raw files after graphify has '
             'oriented you, or to modify/debug specific lines. This rule applies to '
             'subagents too — include it in every subagent prompt involving code '
             'exploration.'
@@ -44,8 +45,9 @@ _READ_NUDGE_STALE = json.dumps({
         "hookEventName": "PreToolUse",
         "additionalContext": (
             'graphify-out/graph.json exists but may be STALE for this file (the file '
-            'changed after the last build). Prefer `graphify query "<question>"` for '
-            'orientation, and run `graphify update` to refresh the graph. Reading the '
+            'changed after the last build). Prefer the MCP `query_graph` tool or the '
+            'installed skill\'s recorded-interpreter query for orientation, and use '
+            'that interpreter to update the graph. Reading the '
             'file directly is fine.'
         ),
     }
@@ -60,11 +62,31 @@ _READ_DENY = json.dumps({
         "permissionDecision": "deny",
         "permissionDecisionReason": (
             'graphify strict mode: this project has a fresh knowledge graph that covers '
-            'this file. Run `graphify query "<your question>"` (or `graphify explain` / '
-            '`graphify path`) FIRST to orient yourself, then re-issue this Read — it '
+            'this file. Use the MCP `query_graph` tool when available; otherwise use '
+            'the recorded-interpreter query, explain, or path command in the installed '
+            'Graphify skill FIRST, then re-issue this Read — it '
             'will be allowed. This block fires at most once per session; reading raw '
             'files to modify or debug specific lines is fine after one query. Apply the '
             'same rule in any subagent prompt that explores code.'
+        ),
+    }
+}, ensure_ascii=False, separators=(",", ":")) + "\n"
+# Strict search gate. Unlike the read block above this is NOT once-per-session:
+# a recursive in-project corpus search stays denied until this session/agent has
+# recorded one graph traversal (see _mark_session_queried). The way out is a
+# query, not a retry. Constant text — nothing from the command is echoed back.
+_SEARCH_DENY = json.dumps({
+    "hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "deny",
+        "permissionDecisionReason": (
+            'graphify strict mode: this project has a knowledge graph and this session '
+            'has not queried it yet. Recursive search of the project (grep -r, rg, find, '
+            'ack, ag) is denied until one graph traversal is recorded. Use the MCP '
+            '`query_graph` tool when available; otherwise run the recorded-interpreter '
+            'query, explain, or path command in the installed Graphify skill. Then '
+            're-issue this search — it will be allowed. Searching a single named file, '
+            'piping into grep, and paths outside the project are never blocked.'
         ),
     }
 }, ensure_ascii=False, separators=(",", ":")) + "\n"
@@ -74,8 +96,9 @@ _HOOK_SOURCE_EXTS = (
     '.swift', '.php', '.scala', '.lua', '.sh', '.md', '.rst', '.txt', '.mdx',
 )
 _GEMINI_NUDGE_TEXT = (
-    'graphify: knowledge graph at graphify-out/. For focused questions, run '
-    '`graphify query "<question>"` (scoped subgraph, usually much smaller than '
+    'graphify: knowledge graph at graphify-out/. For focused questions, use the '
+    'MCP `query_graph` tool when available; otherwise use the recorded-interpreter '
+    'query command in the installed Graphify skill (scoped subgraph, usually much smaller than '
     'GRAPH_REPORT.md) instead of grepping raw files. Read GRAPH_REPORT.md only '
     'for broad architecture context.'
 )
@@ -684,36 +707,94 @@ def _hook_strict_enabled(flag: bool) -> bool:
     return flag
 
 
-def _touch_query_stamp(graph_path: "Path") -> None:
-    """Record that graphify oriented the agent recently, next to the queried graph.
-    The strict guard suppresses its block while this stamp is fresh. Fail-silent."""
-    try:
-        from graphify.paths import write_text_atomic
-        stamp = Path(graph_path).parent / "cache" / "last_query_stamp"
-        stamp.parent.mkdir(parents=True, exist_ok=True)
-        write_text_atomic(stamp, str(time.time()))
-    except Exception:
-        pass
+def _session_marker_id(identity: str) -> str:
+    """Filesystem-safe marker name for a session/agent identity: allowlisted
+    characters, hashed when long so sibling identities cannot collide on a prefix.
+    Empty when the identity is empty — callers treat that as "no session"."""
+    raw = str(identity)
+    sid = re.sub(r"[^A-Za-z0-9_-]", "_", raw)
+    if len(sid) > 64:
+        import hashlib
+        sid = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    return sid
 
 
-def _query_stamp_fresh() -> bool:
-    """True if a query/explain/path ran within GRAPHIFY_HOOK_STRICT_TTL (default
-    1800s) — recent orientation, so strict mode does not block this read."""
+def _hook_session_key(d: dict) -> str:
+    """session_id plus agent_id from a Claude Code hook payload, so a subagent
+    sharing its parent's session_id keeps its own markers (#3280 follow-up)."""
+    key = str(d.get("session_id") or "")
+    if d.get("agent_id"):
+        key += f"--agent-{d['agent_id']}"
+    return key
+
+
+def _queried_marker_path(identity: str) -> "Path | None":
     from graphify.paths import out_path
+    sid = _session_marker_id(identity)
+    return out_path("cache", "hook_sessions", f"{sid}.queried") if sid else None
+
+
+def _mark_session_queried(identity: str) -> bool:
+    """Record that this session/agent ran an accepted graph traversal (query /
+    explain / path, MCP or CLI). Idempotent; fails open (returns False)."""
+    p = _queried_marker_path(identity)
+    if p is None:
+        return False
     try:
-        ttl = float(os.environ.get("GRAPHIFY_HOOK_STRICT_TTL", "1800"))
-        return (time.time() - out_path("cache", "last_query_stamp").stat().st_mtime) < ttl
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.touch()
+        _gc_session_markers(p.parent)
+        return True
     except Exception:
         return False
 
 
-def _mark_session_denied(session_id: str) -> bool:
-    """Atomically claim a one-time strict block for this session. Returns True only
-    on the FIRST call for a given session id (O_EXCL create wins once); every later
-    call — or any error — returns False, so a session is blocked at most once and an
-    agent can never be stranded. Best-effort GC of markers older than 24h."""
+def _gc_session_markers(d: "Path") -> None:
+    """Best-effort: drop session markers older than 24 hours so a reused
+    session id is neither pre-denied nor pre-authorized. Shared by both writers."""
+    try:
+        cutoff = time.time() - _SESSION_MARKER_TTL
+        for entry in os.scandir(d):
+            try:
+                if entry.stat().st_mtime < cutoff:
+                    os.unlink(entry.path)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
+_SESSION_MARKER_TTL = 86400  # seconds; shared by the reader and the GC sweep
+
+
+def _session_has_queried(identity: str) -> bool:
+    """True only for a marker younger than the TTL. The reader enforces the TTL
+    itself — a stale marker must not pre-authorize a reused session id just
+    because no writer has swept yet — and best-effort unlinks an expired one."""
+    p = _queried_marker_path(identity)
+    try:
+        if p is None or not p.is_file():
+            return False
+        if p.stat().st_mtime >= time.time() - _SESSION_MARKER_TTL:
+            return True
+        try:
+            p.unlink()
+        except OSError:
+            pass
+        return False
+    except Exception:
+        return False
+
+
+def _mark_session_denied(identity: str) -> bool:
+    """Atomically claim one strict block per session/agent identity.
+
+    Returns True only on the first call for the identity (O_EXCL wins once); every
+    later call or error returns False, so neither a parent nor subagent can be
+    stranded. Best-effort GC removes markers older than 24 hours.
+    """
     from graphify.paths import out_path
-    sid = re.sub(r"[^A-Za-z0-9_-]", "_", str(session_id))[:64]
+    sid = _session_marker_id(identity)
     if not sid:
         return False
     try:
@@ -721,16 +802,7 @@ def _mark_session_denied(session_id: str) -> bool:
         d.mkdir(parents=True, exist_ok=True)
         fd = os.open(str(d / f"{sid}.denied"), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
         os.close(fd)
-        try:
-            cutoff = time.time() - 86400
-            for entry in os.scandir(d):
-                try:
-                    if entry.stat().st_mtime < cutoff:
-                        os.unlink(entry.path)
-                except OSError:
-                    pass
-        except OSError:
-            pass
+        _gc_session_markers(d)
         return True
     except FileExistsError:
         return False
@@ -764,22 +836,7 @@ def _bash_invokes_search(cmd_str: str) -> bool:
     command position (wrappers like sudo/xargs/env skipped; `git grep` and
     `VAR=x grep ...` still count; a search-tool name inside prose does not).
     """
-    text = cmd_str
-    # Drop heredoc bodies: from the line after `<<WORD` through the line that
-    # is exactly WORD. An unterminated heredoc drops to the end of the string.
-    m = _HEREDOC_OPEN_RE.search(text)
-    while m:
-        nl_idx = text.find("\n", m.end())
-        if nl_idx == -1:
-            break
-        term = re.compile(r"^\s*" + re.escape(m.group(2)) + r"\s*$", re.MULTILINE)
-        t = term.search(text, nl_idx + 1)
-        if t is None:
-            # Unterminated heredoc: everything after the opener line is body.
-            text = text[: nl_idx + 1]
-            break
-        text = text[: nl_idx + 1] + text[t.end():]
-        m = _HEREDOC_OPEN_RE.search(text, nl_idx + 1)
+    text = _strip_heredoc_bodies(cmd_str)
     # Drop quoted spans (backslash escapes inside double quotes are irrelevant
     # here - anything quoted is an argument, never the executable).
     text = re.sub(r"'[^']*'", " ", text)
@@ -808,6 +865,208 @@ def _bash_invokes_search(cmd_str: str) -> bool:
             ):
                 return True
             break  # first real token decides this segment
+    return False
+
+
+# Search tools that walk a directory tree by default; grep needs -r/-R.
+_RECURSIVE_BY_DEFAULT = frozenset({"rg", "ripgrep", "find", "fd", "ack", "ag"})
+_GREP_FAMILY = frozenset({"grep", "egrep", "fgrep", "zgrep"})
+# Short flags that consume the next token, so it must not be read as a path.
+_SEARCH_FLAGS_WITH_ARG = frozenset({"-e", "-f", "-g", "-t", "-T", "-A", "-B", "-C", "-m"})
+_SEGMENT_SPLIT_RE = re.compile(r"[|;&\n]|\$\(|`|\(|\)|\{|\}")
+
+
+def _strip_heredoc_bodies(text: str) -> str:
+    """Drop heredoc bodies so their prose never counts as an executed command."""
+    m = _HEREDOC_OPEN_RE.search(text)
+    while m:
+        nl_idx = text.find("\n", m.end())
+        if nl_idx == -1:
+            break
+        term = re.compile(r"^\s*" + re.escape(m.group(2)) + r"\s*$", re.MULTILINE)
+        t = term.search(text, nl_idx + 1)
+        if t is None:
+            return text[: nl_idx + 1]
+        text = text[: nl_idx + 1] + text[t.end():]
+        m = _HEREDOC_OPEN_RE.search(text, nl_idx + 1)
+    return text
+
+
+def _bash_command_segments(cmd_str: str) -> "list[list[str]]":
+    """Executed command segments as argument lists, quotes stripped but their
+    contents kept (unlike _bash_invokes_search, which discards quoted spans and
+    therefore loses a quoted path argument). Wrappers and VAR=x prefixes removed,
+    so tokens[0] is the executable's base name."""
+    # Protect quoted spans before splitting on operators, so a regex containing
+    # `(` or `|`, or a `"$(cat ...)"` interpreter, cannot fragment its segment.
+    quoted = []
+
+    def _hold(m):
+        quoted.append(m.group(0)[1:-1])
+        return f"\x00{len(quoted) - 1}\x00"
+
+    text = re.sub(r"'[^']*'|\"[^\"]*\"", _hold, _strip_heredoc_bodies(cmd_str))
+    out = []
+    for segment in _SEGMENT_SPLIT_RE.split(text):
+        tokens = [re.sub(r"\x00(\d+)\x00", lambda m: quoted[int(m.group(1))], t)
+                  for t in segment.split()]
+        i = 0
+        while i < len(tokens):
+            tok = tokens[i]
+            if "=" in tok.split("/")[-1] and not tok.startswith(("-", "/")):
+                i += 1
+                continue
+            name = tok.replace("\\", "/").rsplit("/", 1)[-1].lower()
+            name = name[:-4] if name.endswith(".exe") else name
+            if name in _COMMAND_WRAPPERS:
+                i += 1
+                while i < len(tokens) and tokens[i].startswith("-"):
+                    i += 1
+                continue
+            out.append([name] + tokens[i + 1:])
+            break
+    return out
+
+
+def _bash_recursive_search_targets(cmd_str: str, root: "Path") -> "list[Path]":
+    """In-project DIRECTORIES that a recursive search segment would walk.
+
+    Recursive = grep with -r/-R/--recursive, or a tool that recurses by default
+    (rg, find, fd, ack, ag). Targets are the segment's path arguments; a recursive
+    tool with no path argument walks cwd. A path that is a regular file makes that
+    search bounded; a path that does not exist is ignored (probably a flag value);
+    a path outside *root* is out-of-project. `git grep` stays a nudge. Never
+    executes anything.
+    """
+    found = []
+    for tokens in _bash_command_segments(cmd_str):
+        name = tokens[0]
+        if name not in _SEARCH_COMMANDS:
+            continue
+        args = tokens[1:]
+        if name in _GREP_FAMILY:
+            recursive = any(
+                a in ("--recursive", "--dereference-recursive")
+                or (a.startswith("-") and not a.startswith("--") and ("r" in a or "R" in a))
+                for a in args
+            )
+            if not recursive:
+                continue
+        # The first positional is the pattern, except for find (paths come first)
+        # and grep given its pattern through -e/-f.
+        pattern_pending = name != "find" and not any(a in ("-e", "-f") for a in args)
+        paths, skip_next = [], False
+        for a in args:
+            if skip_next:
+                skip_next = False
+                continue
+            if a == "--":
+                continue
+            if a.startswith("-"):
+                if a in _SEARCH_FLAGS_WITH_ARG:
+                    skip_next = True
+                elif name == "find":
+                    break  # find's expression starts here; paths precede it
+                continue
+            if pattern_pending:
+                pattern_pending = False
+                continue
+            paths.append(a)
+        if not paths:
+            paths = ["."]
+        for p in paths:
+            try:
+                resolved = Path(p).resolve()
+                if not resolved.is_dir():
+                    continue
+                resolved.relative_to(root)
+            except (ValueError, OSError, RuntimeError):
+                continue
+            found.append(resolved)
+    return found
+
+
+_GRAPH_QUERY_SUBCOMMANDS = frozenset({"query", "explain", "path"})
+_GRAPH_QUERY_MCP_TOOLS = frozenset({
+    "query_graph", "get_node", "get_neighbors", "get_community", "god_nodes", "shortest_path",
+})
+
+
+def _bash_invokes_graphify_query(cmd_str: str) -> bool:
+    """Whether a Bash command RUNS a graph traversal: `... -m graphify <query|explain|path>`
+    through any interpreter, or `graphify <query|explain|path>` directly."""
+    for tokens in _bash_command_segments(cmd_str):
+        args = tokens[1:]
+        if tokens[0] == "graphify" and args[:1] and args[0] in _GRAPH_QUERY_SUBCOMMANDS:
+            return True
+        for i, a in enumerate(args):
+            if a == "-m" and args[i + 1:i + 3][:1] == ["graphify"] \
+                    and args[i + 2:i + 3] and args[i + 2] in _GRAPH_QUERY_SUBCOMMANDS:
+                return True
+    return False
+
+
+_PS_LIST_CMDS = frozenset({"get-childitem", "gci", "ls", "dir"})
+_PS_SEARCH_CMDS = frozenset({"select-string", "sls"})
+
+
+def _ps_recursive_search_targets(cmd_str: str, root: "Path") -> "list[Path]":
+    """In-project DIRECTORIES a PowerShell corpus search or enumeration would walk
+    (Claude Code's PowerShell tool: tool_name "PowerShell", tool_input.command).
+    Two measured shapes: `Get-ChildItem|gci|ls|dir ... -Recurse|-r [path]` — with or
+    without a `| Select-String` pipe, because recursive enumeration is the same
+    bypass class as `find .` — and `Select-String ... -Path <dir or dir\\*>`.
+    Exact-file -Path, non-recursive listing, stdin (Get-Content | Select-String)
+    and out-of-project targets return nothing. Never executes anything."""
+    found = []
+    for tokens in _bash_command_segments(cmd_str):
+        name = tokens[0]
+        args = tokens[1:]
+        lowered = [a.lower() for a in args]
+        if name in _PS_LIST_CMDS:
+            if not any(a in ("-recurse", "-r") for a in lowered):
+                continue
+            paths, value_of = [], None
+            for a in args:
+                if value_of:  # previous token was a flag that takes a value
+                    if value_of == "-path":
+                        paths.append(a)
+                    value_of = None
+                    continue
+                al = a.lower()
+                if al.startswith("-"):
+                    if al in ("-path", "-filter", "-include", "-exclude"):
+                        value_of = al
+                    continue
+                paths.append(a)
+        elif name in _PS_SEARCH_CMDS:
+            paths = [args[i + 1] for i, a in enumerate(args) if a.lower() == "-path" and i + 1 < len(args)]
+            if not paths:
+                continue  # stdin search or pattern-only
+        else:
+            continue
+        if not paths:
+            paths = ["."]
+        for p in paths:
+            p = p.rstrip("*").rstrip("\\/") or "."
+            try:
+                resolved = Path(p).resolve()
+                if not resolved.is_dir():
+                    continue
+                resolved.relative_to(root)
+            except (ValueError, OSError, RuntimeError):
+                continue
+            found.append(resolved)
+    return found
+
+
+def _ps_invokes_search(cmd_str: str) -> bool:
+    """A Select-String, or a recursive directory listing (enumeration counts)."""
+    for tokens in _bash_command_segments(cmd_str):
+        if tokens[0] in _PS_SEARCH_CMDS:
+            return True
+        if tokens[0] in _PS_LIST_CMDS and any(a.lower() in ("-recurse", "-r") for a in tokens[1:]):
+            return True
     return False
 
 
@@ -865,9 +1124,45 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
             # contains "ag ") and on heredoc bodies that merely mention
             # grep. Nudge-only, even in strict mode — see the docstring.
             is_grep_tool = not cmd_str and bool(t.get("pattern"))
-            is_bash_search = bool(cmd_str) and _bash_invokes_search(cmd_str)
-            if (is_grep_tool or is_bash_search) and out_path("graph.json").is_file():
-                sys.stdout.write(_SEARCH_NUDGE)
+            is_powershell = d.get("tool_name") == "PowerShell"
+            is_bash_search = bool(cmd_str) and (
+                _ps_invokes_search(cmd_str) if is_powershell else _bash_invokes_search(cmd_str)
+            )
+            if not (is_grep_tool or is_bash_search) or not out_path("graph.json").is_file():
+                return
+            # Strict search gate: deny a recursive in-project corpus search until
+            # this session/agent has recorded one graph traversal. Not once per
+            # session — the way out is a query, not a retry (see _SEARCH_DENY).
+            session_key = _hook_session_key(d)
+            if _hook_strict_enabled(strict) and session_key and not _session_has_queried(session_key):
+                root = Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+                try:
+                    root = root.resolve()
+                except (OSError, RuntimeError):
+                    pass
+                if is_grep_tool:
+                    target = Path(str(t.get("path") or ".")).resolve()
+                    try:
+                        target.relative_to(root)
+                        recursive = target.is_dir()
+                    except (ValueError, OSError, RuntimeError):
+                        recursive = False
+                elif is_powershell:
+                    recursive = bool(_ps_recursive_search_targets(cmd_str, root))
+                else:
+                    recursive = bool(_bash_recursive_search_targets(cmd_str, root))
+                if recursive:
+                    sys.stdout.write(_SEARCH_DENY)
+                    return
+            sys.stdout.write(_SEARCH_NUDGE)
+        elif kind == "mark-queried":
+            # PostToolUse: record query evidence for the strict search gate.
+            name = str(d.get("tool_name") or "")
+            queried = (
+                name.startswith("mcp__graphify__") and name[len("mcp__graphify__"):] in _GRAPH_QUERY_MCP_TOOLS
+            ) or (name == "Bash" and _bash_invokes_graphify_query(str(t.get("command", "") or "")))
+            if queried:
+                _mark_session_queried(_hook_session_key(d))
         elif kind == "read":
             vals = [str(t.get("file_path") or ""), str(t.get("pattern") or ""), str(t.get("path") or "")]
             j = " ".join(vals).lower().replace("\\", "/")
@@ -928,13 +1223,15 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
             if stale:
                 sys.stdout.write(_READ_NUDGE_STALE)
                 return
-            # Strict block: Read tool only, first time per session, not recently
-            # oriented, and the file is demonstrably indexed.
+            # Strict block: Read tool only, first time per session, and the file
+            # is demonstrably indexed. Do not suppress this from a graph-wide
+            # query timestamp: one agent's query must not disable every session
+            # sharing the same graph (#3280 follow-up).
             tool_name = d.get("tool_name")
+            session_key = _hook_session_key(d)
             if _hook_strict_enabled(strict) and tool_name in (None, "Read") \
-                    and not _query_stamp_fresh() \
                     and _target_is_indexed(fp, root) \
-                    and _mark_session_denied(str(d.get("session_id") or "")):
+                    and _mark_session_denied(session_key):
                 sys.stdout.write(_READ_DENY)
                 return
             sys.stdout.write(_READ_NUDGE)
@@ -1201,7 +1498,7 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(1)
     elif cmd == "query":
         if len(sys.argv) < 3:
-            print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--budget N] [--graph path]", file=sys.stderr)
+            print("Usage: python -m graphify query \"<question>\" [--dfs] [--context C] [--budget N] [--graph path]", file=sys.stderr)
             sys.exit(1)
         from graphify.serve import _query_graph_text
         from graphify.security import sanitize_label
@@ -1318,7 +1615,6 @@ def dispatch_command(cmd: str) -> None:
             token_budget=budget,
             duration_ms=(_time.perf_counter() - _t0) * 1000,
         )
-        _touch_query_stamp(gp)
         print(_result)
     elif cmd == "affected":
         if len(sys.argv) < 3:
@@ -1534,7 +1830,7 @@ def dispatch_command(cmd: str) -> None:
     elif cmd == "path":
         if len(sys.argv) < 4:
             print(
-                'Usage: graphify path "<source>" "<target>" [--graph path] '
+                'Usage: python -m graphify path "<source>" "<target>" [--graph path] '
                 "[--directed|--undirected]",
                 file=sys.stderr,
             )
@@ -1696,11 +1992,10 @@ def dispatch_command(cmd: str) -> None:
             corpus=str(gp),
             nodes_returned=hops,
         )
-        _touch_query_stamp(gp)
 
     elif cmd == "explain":
         if len(sys.argv) < 3:
-            print('Usage: graphify explain "<node>" [--graph path]', file=sys.stderr)
+            print('Usage: python -m graphify explain "<node>" [--graph path]', file=sys.stderr)
             sys.exit(1)
         from graphify.serve import _find_node, find_node_ambiguity
         from networkx.readwrite import json_graph
@@ -1830,7 +2125,6 @@ def dispatch_command(cmd: str) -> None:
             corpus=str(gp),
             nodes_returned=len(connections),
         )
-        _touch_query_stamp(gp)
 
     elif cmd == "diagnose":
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""

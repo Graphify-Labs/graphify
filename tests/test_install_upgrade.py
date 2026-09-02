@@ -85,8 +85,8 @@ def _assert_no_report_first(text: str, ctx: str) -> None:
 
 
 def _assert_query_first(text: str, ctx: str) -> None:
-    assert "graphify query" in text, (
-        f"{ctx}: new 'graphify query' guidance missing after upgrade"
+    assert "query_graph" in text, (
+        f"{ctx}: new 'query_graph' guidance missing after upgrade"
     )
 
 

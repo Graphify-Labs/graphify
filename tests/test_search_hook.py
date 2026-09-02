@@ -15,7 +15,7 @@ from graphify.__main__ import _claude_pretooluse_hooks
 
 def _search_matcher():
     hooks = _claude_pretooluse_hooks()
-    return next(h for h in hooks if h["matcher"] == "Bash|Grep")
+    return next(h for h in hooks if h["matcher"] == "Bash|Grep|PowerShell")
 
 
 def _env():
@@ -49,8 +49,9 @@ def _run_grep_tool(tool_input, cwd, *, graph: bool):
 
 def test_matcher_targets_bash_and_grep():
     # #1986: content search goes through Claude Code's dedicated Grep tool, so
-    # the matcher must cover it alongside Bash.
-    assert _search_matcher()["matcher"] == "Bash|Grep"
+    # the matcher must cover it alongside Bash. On Windows hosts Claude Code also
+    # exposes a PowerShell tool whose searches must reach the same guard.
+    assert _search_matcher()["matcher"] == "Bash|Grep|PowerShell"
 
 
 def test_hook_command_has_no_backslashes(monkeypatch):
@@ -59,18 +60,24 @@ def test_hook_command_has_no_backslashes(monkeypatch):
     # escape character and strips it (C:\Users\me\graphify.EXE -> C:Usersme...),
     # breaking every guard. The emitted command must use forward slashes.
     from graphify.__main__ import _resolve_graphify_exe
+    monkeypatch.setattr("graphify.hooks._pinned_python", lambda: "")
     monkeypatch.setattr("shutil.which", lambda _name: r"C:\Users\me\graphify.EXE")
-    assert _resolve_graphify_exe() == "C:/Users/me/graphify.EXE"
+    assert _resolve_graphify_exe() == '"C:/Users/me/graphify.EXE"'
     for h in _claude_pretooluse_hooks():
         assert "\\" not in h["hooks"][0]["command"]
 
+    monkeypatch.setattr("graphify.hooks._pinned_python", lambda: r"C:\Tools\Graphify\python.exe")
+    assert _resolve_graphify_exe() == '"C:/Tools/Graphify/python.exe" -m graphify'
+
 
 def test_command_has_no_shell_syntax():
-    # #522: no POSIX bash that Windows cmd.exe/PowerShell can't parse.
+    # Claude runs `command` through a POSIX shell (Git Bash on Windows), while
+    # Codex uses its separate commandWindows field. Keep the body simple and
+    # require the one fail-open operator added by #3280.
     cmd = _search_matcher()["hooks"][0]["command"]
-    for token in ("$(", "case ", "[ -f", "&&", "||", ";;", "echo '"):
+    for token in ("$(", "case ", "[ -f", "&&", ";;", "echo '"):
         assert token not in cmd, f"shell syntax {token!r} leaked into the hook"
-    assert "graphify" in cmd and "hook-guard search" in cmd
+    assert "graphify" in cmd and cmd.endswith("hook-guard search || true")
 
 
 def test_nudges_on_search_commands_with_graph(tmp_path):
@@ -84,7 +91,7 @@ def test_nudges_on_search_commands_with_graph(tmp_path):
         "ag needle",
     ):
         out = _run(command, tmp_path, graph=True).stdout
-        assert "graphify query" in out, f"{command!r} should nudge"
+        assert "query_graph" in out, f"{command!r} should nudge"
 
 
 def test_silent_without_graph(tmp_path):
@@ -102,7 +109,7 @@ def test_nudge_payload_is_valid_pretooluse_json(tmp_path):
     out = _run("grep -rn foo .", tmp_path, graph=True).stdout
     payload = json.loads(out)
     assert payload["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
-    assert "graphify query" in payload["hookSpecificOutput"]["additionalContext"]
+    assert "query_graph" in payload["hookSpecificOutput"]["additionalContext"]
 
 
 def test_fails_open_on_malformed_stdin(tmp_path):
@@ -116,7 +123,7 @@ def test_fails_open_on_malformed_stdin(tmp_path):
     assert r.stdout.strip() == ""
 
 
-def test_never_blocks(tmp_path):
+def test_never_blocks_in_soft_mode(tmp_path):
     r = _run("grep -rn foo .", tmp_path, graph=True)
     assert r.returncode == 0
     assert '"permissionDecision"' not in r.stdout
@@ -134,7 +141,7 @@ def test_honors_graphify_out_override(tmp_path):
         [sys.executable, "-m", "graphify", "hook-guard", "search"],
         input=stdin, capture_output=True, text=True, cwd=tmp_path, env=env,
     )
-    assert "graphify query" in r.stdout
+    assert "query_graph" in r.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +157,7 @@ def test_grep_tool_input_nudges_with_graph(tmp_path):
         {"pattern": "foo", "path": "src/", "glob": "**/*.ts"},
     ):
         out = _run_grep_tool(tool_input, tmp_path, graph=True).stdout
-        assert "graphify query" in out, f"Grep input {tool_input!r} should nudge"
+        assert "query_graph" in out, f"Grep input {tool_input!r} should nudge"
 
 
 def test_grep_tool_input_silent_without_graph(tmp_path):
@@ -162,10 +169,10 @@ def test_grep_tool_nudge_is_valid_pretooluse_json(tmp_path):
     out = _run_grep_tool({"pattern": "foo", "path": "."}, tmp_path, graph=True).stdout
     payload = json.loads(out)
     assert payload["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
-    assert "graphify query" in payload["hookSpecificOutput"]["additionalContext"]
+    assert "query_graph" in payload["hookSpecificOutput"]["additionalContext"]
 
 
-def test_grep_tool_never_blocks(tmp_path):
+def test_grep_tool_never_blocks_in_soft_mode(tmp_path):
     r = _run_grep_tool({"pattern": "foo", "path": "."}, tmp_path, graph=True)
     assert r.returncode == 0
     assert '"permissionDecision"' not in r.stdout

@@ -9,6 +9,7 @@ lives only in the references, and no reference duplicates core content.
 from __future__ import annotations
 
 import sys
+import re
 from pathlib import Path
 
 import pytest
@@ -56,6 +57,40 @@ def test_render_output_is_lf_only():
         assert "\r" not in art.content, art.path
         assert art.content.endswith("\n"), art.path
         assert not art.content.endswith("\n\n"), art.path
+
+
+def test_query_guidance_prefers_mcp_and_never_runs_windows_console_shim():
+    """Agent retrieval must not route Windows through an unsigned graphify.exe."""
+    for key in ("claude", "codex", "windows", "opencode"):
+        core, refs = _platform_artifacts(key)
+        query = refs["query.md"]
+        assert "query_graph" in core, key
+        assert "query_graph" in query, key
+        assert "never execute a `graphify.exe` console shim" in query, key
+        guidance = core + "\n" + query
+        assert not re.search(
+            r"`graphify (?:query|path|explain|update) (?=[\"<.])|^(?:# or: )?graphify (?:query|path|explain|update) (?=[\"<.])",
+            guidance,
+            re.MULTILINE,
+        ), key
+
+    artifacts = gen.render_all(gen.load_platforms())
+    antigravity = next(
+        artifact.content
+        for artifact in artifacts
+        if artifact.path == "graphify/always_on/antigravity-rules.md"
+    )
+    assert "query_graph" in antigravity
+    assert not re.search(r"`graphify (?:query|path|explain|update) (?=[\"<.])", antigravity)
+
+    forbidden = re.compile(
+        r"(?<!-m )(?<!/)\bgraphify (?:query|path|explain|update) (?=[\"'<$A-Z.])",
+        re.MULTILINE,
+    )
+    for artifact in artifacts:
+        assert not forbidden.search(artifact.content), artifact.path
+    for source in (REPO_ROOT / "graphify" / "cli.py", REPO_ROOT / "graphify" / "install.py"):
+        assert not forbidden.search(source.read_text(encoding="utf-8")), source
 
 
 def test_no_version_or_timestamp_in_output():
@@ -750,15 +785,15 @@ def test_always_on_roundtrip_is_byte_faithful():
         "When the user types `/graphify`, use the installed graphify skill or instructions "
         "before doing anything else."
     )
-    # The sanctioned-edit registry holds exactly this single old->new substitution.
-    assert gen.ALWAYS_ON_SANCTIONED_EDITS["_AGENTS_MD_SECTION"] == (
-        (old_instruction, new_instruction),
-    )
+    assert (old_instruction, new_instruction) in gen.ALWAYS_ON_SANCTIONED_EDITS["_AGENTS_MD_SECTION"]
     baseline_agents = gen._always_on_constants(gen.ALWAYS_ON_BASELINE_REF)["_AGENTS_MD_SECTION"]
-    # The ONLY divergence from the frozen baseline is the sanctioned sentence —
-    # any other byte drift would have surfaced as a problem above.
+    # Every divergence from the frozen baseline must be named in the sanctioned
+    # edit registry; applying that registry must reproduce the rendered bytes.
     assert old_instruction in baseline_agents
-    assert baseline_agents.replace(old_instruction, new_instruction) == rendered_agents
+    expected_agents = baseline_agents
+    for old, new in gen.ALWAYS_ON_SANCTIONED_EDITS["_AGENTS_MD_SECTION"]:
+        expected_agents = expected_agents.replace(old, new)
+    assert expected_agents == rendered_agents
     assert "`skill` tool" not in rendered_agents
     assert 'skill: "graphify"' not in rendered_agents
 
