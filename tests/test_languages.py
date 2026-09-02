@@ -3399,6 +3399,43 @@ def test_apex_method_extraction():
     assert any("createAccounts" in l for l in labels)
     assert any("deleteOldAccounts" in l for l in labels)
 
+def test_apex_method_qualified_and_generic_return_types(tmp_path):
+    source = tmp_path / "Repro.cls"
+    source.write_text(
+        "public with sharing class Repro {\n"
+        "    public static String simpleReturn() { return ''; }\n"
+        "    public static Map<String, Object> commaGeneric() { return null; }\n"
+        "    public Database.QueryLocator dottedReturn(Database.BatchableContext bc) { return null; }\n"
+        "    private static List<Map<String, Id>> nestedGeneric() { return null; }\n"
+        "    global Set<Id> setReturn() { return null; }\n"
+        "}\n"
+    )
+    result = extract_apex(source)
+    labels = _labels(result)
+    assert ".simpleReturn()" in labels
+    assert ".commaGeneric()" in labels
+    assert ".dottedReturn()" in labels
+    assert ".nestedGeneric()" in labels
+    assert ".setReturn()" in labels
+
+def test_apex_statements_are_not_read_as_methods(tmp_path):
+    source = tmp_path / "Neg.cls"
+    source.write_text(
+        "public class Neg {\n"
+        "    public void real() {\n"
+        "        insert new Account(Name = 'x');\n"
+        "        System.assertEquals(1, ids.size());\n"
+        "        Map<String, Object> m = new Map<String, Object>();\n"
+        "        results.put('a', compute(x));\n"
+        "        this.helper(1, 2);\n"
+        "        Integer a = 1, b = compute();\n"
+        "    }\n"
+        "}\n"
+    )
+    result = extract_apex(source)
+    methods = {l for l in _labels(result) if l.startswith(".")}
+    assert methods == {".real()"}
+
 def test_apex_contains_and_method_relations():
     r = extract_apex(FIXTURES / "sample.cls")
     relations = _relations(r)

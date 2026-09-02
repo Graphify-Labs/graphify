@@ -73,8 +73,14 @@ def extract_apex(path: Path) -> dict:
         r"^\s*trigger\s+(\w+)\s+on\s+(\w+)\s*\(",
         _re.IGNORECASE,
     )
+    # An Apex return type is not one bare word: it can be namespace-qualified
+    # (`Database.QueryLocator`) and can carry generic arguments holding commas
+    # and spaces (`Map<String, Object>`, `List<Map<String, Id>>`). Whitespace is
+    # admitted only next to a comma, so a statement such as
+    # `insert new Account(...)` still cannot be read as a declaration (#3217).
+    _TYPE = r"[\w.<>\[\]]+(?:\s*,\s*[\w.<>\[\]]+)*"
     method_re = _re.compile(
-        rf"^{_ANNOTATION}\s*{_ACCESS}{_MOD}\s*(?:static\s+)?[\w<>\[\]]+\s+(\w+)\s*\([^)]*\)\s*(?:throws\s+\w+\s*)?\{{?",
+        rf"^{_ANNOTATION}\s*{_ACCESS}{_MOD}\s*(?:static\s+)?{_TYPE}\s+(\w+)\s*\([^)]*\)\s*(?:throws\s+\w+\s*)?\{{?",
         _re.IGNORECASE,
     )
     annotation_re = _re.compile(r"@(\w+)", _re.IGNORECASE)
