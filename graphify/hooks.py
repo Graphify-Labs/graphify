@@ -84,14 +84,28 @@ if [ -z "$GRAPHIFY_PYTHON" ]; then
             *)     _SHEBANG="" ;;
         esac
         case "$_SHEBANG" in
-            */env\\ *) GRAPHIFY_PYTHON="${_SHEBANG#*/env }" ;;
-            *)         GRAPHIFY_PYTHON="$_SHEBANG" ;;
+            */env\\ -S\\ *) GRAPHIFY_PYTHON="${_SHEBANG#*/env -S }" ;;
+            */env\\ *)     GRAPHIFY_PYTHON="${_SHEBANG#*/env }" ;;
+            *)             GRAPHIFY_PYTHON="$_SHEBANG" ;;
         esac
         # Strip any interpreter argument: pipx writes `#!/.../python -E`, so the
         # shebang carries a trailing argument that is not part of the path. Keep
         # the leading word only, else the space trips the allowlist below and the
         # valid interpreter is discarded (silent python3 fallback, #2629).
         GRAPHIFY_PYTHON="${GRAPHIFY_PYTHON%% *}"
+        # Only trust absolute shebang-derived interpreter paths. Env command names like
+        # `python` are PATH-controlled; explicit fallbacks handle them below.
+        case "$GRAPHIFY_PYTHON" in
+            /*) ;;
+            [a-zA-Z]:[/\\\\]*|\\\\\\\\*)
+                # Drive/UNC spellings are relative filenames on POSIX. Trust
+                # them only when this hook runs in a Windows compatibility shell.
+                case "$(uname -s 2>/dev/null)" in
+                    MINGW*|MSYS*|CYGWIN*) ;;
+                    *) GRAPHIFY_PYTHON= ;;
+                esac ;;
+            *) GRAPHIFY_PYTHON= ;;
+        esac
         # Allowlist: only keep characters valid in a filesystem path to prevent
         # injection if the shebang contains shell metacharacters.
         case "$GRAPHIFY_PYTHON" in
