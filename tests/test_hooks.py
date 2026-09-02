@@ -7,6 +7,14 @@ from pathlib import Path
 import pytest
 from graphify.hooks import install, uninstall, status, _hooks_dir, _HOOK_MARKER, _CHECKOUT_MARKER
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _with_repo_pythonpath(env: dict[str, str]) -> dict[str, str]:
+    current = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = str(REPO_ROOT) if not current else str(REPO_ROOT) + os.pathsep + current
+    return env
+
 
 def _make_git_repo(tmp_path: Path) -> Path:
     subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
@@ -235,7 +243,13 @@ from graphify.hooks import (  # noqa: E402
 _HOOK_SCRIPTS = [("post-commit", _HOOK_SCRIPT), ("post-checkout", _CHECKOUT_SCRIPT)]
 SHEBANG_ARGUMENT_STRIP = '_SHEBANG="${_SHEBANG%% *}"'
 INTERPRETER_GUARD_ARGUMENT_STRIP = 'PYTHON="${PYTHON%% *}"'
+SHEBANG_PREFIX_STRIP = "sed 's/^#![[:space:]]*//'"
+DESTRUCTIVE_SHEBANG_PREFIX_STRIP = "tr -d '#!'"
 GRAPHIFY_PYTHON_MARKER = Path("graphify-out/.graphify_python")
+ENV_SPLIT_SHEBANG_PREFIX = "#!/usr/bin/env -S "
+CORRUPTED_INTERPRETER_MARKER = "corrupted"
+FALLBACK_INTERPRETER_MARKER = "fallback"
+PATH_CONTROLLED_INTERPRETER_MARKER = "path-controlled"
 
 
 @pytest.mark.parametrize("name,script", _HOOK_SCRIPTS)
@@ -1192,7 +1206,7 @@ def test_hook_probe_resolves_pipx_shebang_with_argument(tmp_path):
     launcher.chmod(0o755)
 
     script = _PYTHON_DETECT + '\nprintf "%s" "$GRAPHIFY_PYTHON"\n'
-    env = dict(os.environ, PATH=f"{bindir}{os.pathsep}{os.environ['PATH']}")
+    env = _with_repo_pythonpath(dict(os.environ, PATH=f"{bindir}{os.pathsep}{os.environ['PATH']}"))
     resolved = subprocess.run(
         ["bash", "-c", script],
         cwd=tmp_path,
@@ -1207,6 +1221,70 @@ def test_hook_probe_resolves_pipx_shebang_with_argument(tmp_path):
     )
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shebang probe")
+def test_hook_probe_resolves_env_split_shebang_with_argument(tmp_path):
+    """The hook probe must treat `/usr/bin/env -S ...` as an env option wrapper,
+    not as the interpreter path."""
+    import sys
+    from graphify.hooks import _PYTHON_DETECT
+
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    launcher = bindir / "graphify"
+    launcher.write_text(
+        f"{ENV_SPLIT_SHEBANG_PREFIX}{sys.executable} -E\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    launcher.chmod(0o755)
+
+    script = _PYTHON_DETECT + '\nprintf "%s" "$GRAPHIFY_PYTHON"\n'
+    env = _with_repo_pythonpath(dict(os.environ, PATH=f"{bindir}{os.pathsep}{os.environ['PATH']}"))
+    resolved = subprocess.run(
+        ["bash", "-c", script],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    assert resolved == sys.executable
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shebang probe")
+def test_hook_probe_rejects_path_controlled_env_split_interpreter(tmp_path):
+    """The hook probe must not retain an env-derived interpreter name from PATH."""
+    from graphify.hooks import _PYTHON_DETECT
+
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    launcher = bindir / "graphify"
+    launcher.write_text(
+        f"{ENV_SPLIT_SHEBANG_PREFIX}python -E\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    launcher.chmod(0o755)
+    path_controlled_python = bindir / "python"
+    path_controlled_python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8", newline="\n")
+    path_controlled_python.chmod(0o755)
+    fallback_python = bindir / "python3"
+    fallback_python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8", newline="\n")
+    fallback_python.chmod(0o755)
+
+    script = _PYTHON_DETECT + '\nprintf "%s" "$GRAPHIFY_PYTHON"\n'
+    env = _with_repo_pythonpath(dict(os.environ, PATH=f"{bindir}{os.pathsep}/usr/bin{os.pathsep}/bin"))
+    resolved = subprocess.run(
+        ["bash", "-c", script],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    assert resolved == "python3"
+
+
 def test_generated_skill_probes_strip_shebang_argument():
     """#2629: both POSIX probe sites in the rendered skill (step-1 install and the
     subcommand interpreter guard) must strip a shebang argument, so pipx
@@ -1217,6 +1295,12 @@ def test_generated_skill_probes_strip_shebang_argument():
         if skill_path.name == "skill-windows.md":
             continue
         skill = skill_path.read_text()
+        assert DESTRUCTIVE_SHEBANG_PREFIX_STRIP not in skill, (
+            f"{skill_path.name} removes every #/! character instead of only the shebang prefix"
+        )
+        assert SHEBANG_PREFIX_STRIP in skill, (
+            f"{skill_path.name} does not remove the shebang prefix structurally"
+        )
         assert SHEBANG_ARGUMENT_STRIP in skill, (
             f"{skill_path.name} step-1 probe does not strip shebang argument"
         )
@@ -1236,6 +1320,12 @@ def test_monolith_sources_strip_shebang_argument():
     ]
     for monolith_path in monolith_paths:
         monolith = monolith_path.read_text()
+        assert DESTRUCTIVE_SHEBANG_PREFIX_STRIP not in monolith, (
+            f"{monolith_path.name} removes every #/! character instead of only the shebang prefix"
+        )
+        assert SHEBANG_PREFIX_STRIP in monolith, (
+            f"{monolith_path.name} does not remove the shebang prefix structurally"
+        )
         assert SHEBANG_ARGUMENT_STRIP in monolith, (
             f"{monolith_path.name} probe does not strip shebang argument"
         )
@@ -1268,9 +1358,136 @@ def test_interpreter_guard_rejects_truncated_shebang_path(tmp_path):
         newline="\n",
     )
     fallback.chmod(0o755)
-    env = dict(os.environ)
+    env = _with_repo_pythonpath(dict(os.environ))
     env["PATH"] = str(bindir) + os.pathsep + env["PATH"]
     result = subprocess.run(["sh", "-c", guard], cwd=tmp_path, env=env, capture_output=True, text=True)
 
     assert result.returncode == 0, result.stderr
     assert (tmp_path / GRAPHIFY_PYTHON_MARKER).read_text() == str(fallback)
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="sh required to run emitted guard")
+def test_interpreter_guard_resolves_env_split_shebang_argument(tmp_path):
+    """The subcommand guard must parse `/usr/bin/env -S python -E` by selecting
+    the interpreter after `-S`, not the `-S` option itself."""
+    import sys
+
+    fragment = (
+        Path(__file__).resolve().parent.parent
+        / "tools"
+        / "skillgen"
+        / "fragments"
+        / "shell"
+        / "interpreter-guard-posix.md"
+    ).read_text()
+    guard = fragment.split("```bash", 1)[1].split("```", 1)[0]
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    launcher = bindir / "graphify"
+    launcher.write_text(
+        f"{ENV_SPLIT_SHEBANG_PREFIX}{sys.executable} -E\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    launcher.chmod(0o755)
+    fallback = bindir / "python3"
+    fallback.write_text(
+        f"#!/bin/sh\nmkdir -p graphify-out\nprintf '{FALLBACK_INTERPRETER_MARKER}' > graphify-out/.graphify_python\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    fallback.chmod(0o755)
+    env = _with_repo_pythonpath(dict(os.environ))
+    env["PATH"] = str(bindir) + os.pathsep + env["PATH"]
+    result = subprocess.run(["sh", "-c", guard], cwd=tmp_path, env=env, capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / GRAPHIFY_PYTHON_MARKER).read_text() == sys.executable
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="sh required to run emitted guard")
+def test_interpreter_guard_rejects_path_controlled_env_split_interpreter(tmp_path):
+    """The subcommand guard must not verify an env-derived interpreter name via PATH."""
+    fragment = (
+        Path(__file__).resolve().parent.parent
+        / "tools"
+        / "skillgen"
+        / "fragments"
+        / "shell"
+        / "interpreter-guard-posix.md"
+    ).read_text()
+    guard = fragment.split("```bash", 1)[1].split("```", 1)[0]
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    launcher = bindir / "graphify"
+    launcher.write_text(
+        f"{ENV_SPLIT_SHEBANG_PREFIX}python -E\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    launcher.chmod(0o755)
+    path_controlled_python = bindir / "python"
+    path_controlled_python.write_text(
+        f"#!/bin/sh\nmkdir -p graphify-out\nprintf '{PATH_CONTROLLED_INTERPRETER_MARKER}' > graphify-out/.graphify_python\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    path_controlled_python.chmod(0o755)
+    fallback = bindir / "python3"
+    fallback.write_text(
+        f"#!/bin/sh\nmkdir -p graphify-out\nprintf '{FALLBACK_INTERPRETER_MARKER}' > graphify-out/.graphify_python\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    fallback.chmod(0o755)
+    env = _with_repo_pythonpath(dict(os.environ))
+    env["PATH"] = str(bindir) + os.pathsep + env["PATH"]
+    result = subprocess.run(["sh", "-c", guard], cwd=tmp_path, env=env, capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / GRAPHIFY_PYTHON_MARKER).read_text() == FALLBACK_INTERPRETER_MARKER
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="sh required to run emitted guard")
+def test_interpreter_guard_does_not_corrupt_shebang_path_before_allowlist(tmp_path):
+    """The subcommand guard must remove only the leading `#!` marker.
+
+    `tr -d '#!'` deletes every `#` and `!` in the line, so a rejected interpreter
+    path can be rewritten into a different allowed path and executed.
+    """
+    fragment = (
+        Path(__file__).resolve().parent.parent
+        / "tools"
+        / "skillgen"
+        / "fragments"
+        / "shell"
+        / "interpreter-guard-posix.md"
+    ).read_text()
+    guard = fragment.split("```bash", 1)[1].split("```", 1)[0]
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    launcher = bindir / "graphify"
+    rejected_interpreter = tmp_path / "py!bad" / "python"
+    corrupted_interpreter = tmp_path / "pybad" / "python"
+    corrupted_interpreter.parent.mkdir()
+    corrupted_interpreter.write_text(
+        f"#!/bin/sh\nmkdir -p graphify-out\nprintf '{CORRUPTED_INTERPRETER_MARKER}' > graphify-out/.graphify_python\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    corrupted_interpreter.chmod(0o755)
+    launcher.write_text(f"#!{rejected_interpreter} -E\n", encoding="utf-8", newline="\n")
+    launcher.chmod(0o755)
+    fallback = bindir / "python3"
+    fallback.write_text(
+        f"#!/bin/sh\nmkdir -p graphify-out\nprintf '{FALLBACK_INTERPRETER_MARKER}' > graphify-out/.graphify_python\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    fallback.chmod(0o755)
+    env = dict(os.environ)
+    env["PATH"] = str(bindir) + os.pathsep + env["PATH"]
+    result = subprocess.run(["sh", "-c", guard], cwd=tmp_path, env=env, capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / GRAPHIFY_PYTHON_MARKER).read_text() == FALLBACK_INTERPRETER_MARKER

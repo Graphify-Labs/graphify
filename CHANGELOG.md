@@ -4,7 +4,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## Unreleased
 
-- Fix: the git post-commit hook and skill interpreter probes now strip a shebang argument before using it as a path, so a pipx launcher (`#!/.../python -E`) resolves instead of silently falling back to a `python3` without graphify and printing "could not locate a Python with graphify installed" after every commit (#2629, thanks @hpstr5000).
+- Fix: the git post-commit hook and skill interpreter probes now strip a shebang argument before using it as a path, correctly parse `/usr/bin/env -S ...` launchers, and reject PATH-controlled env interpreter names before verification. A pipx launcher (`#!/.../python -E`) now resolves instead of silently falling back to a `python3` without graphify and printing "could not locate a Python with graphify installed" after every commit (#2629, thanks @hpstr5000).
 
 ## 0.9.53 (2026-08-30)
 
