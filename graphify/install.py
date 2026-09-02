@@ -1073,12 +1073,72 @@ def _antigravity_finalize(skill_dst: Path, project_dir: Path) -> None:
     else:
         wf_path.write_text(_ANTIGRAVITY_WORKFLOW, encoding="utf-8")
         print(f"graphify workflow written to {wf_path.resolve()}")
-def _antigravity_install(project_dir: Path) -> None:
-    """Install graphify for Google Antigravity (global skill + .agents/rules + .agents/workflows)."""
+_ANTIGRAVITY_HOOK_KEY = "graphify-graph-first"
+
+
+def _antigravity_hooks_path() -> Path:
+    return Path.home() / ".gemini" / "config" / "hooks.json"
+
+
+def _antigravity_hooks_json_entry() -> dict:
+    """The `hooks.json` entry for the strict gate: PreToolUse on the search tools and MCP
+    call, plus PreInvocation. The command is the pinned interpreter; agy runs it through
+    `cmd /c` on Windows, where a quoted script path after `-File` breaks — so this is the
+    module form, not a script."""
+    command = f"{_resolve_graphify_exe()} hook-guard agy"
+    return {
+        "PreInvocation": [{"type": "command", "command": command, "timeout": 10}],
+        "PreToolUse": [{
+            "matcher": "grep_search|find_by_name|list_dir|run_command|call_mcp_tool",
+            "hooks": [{"type": "command", "command": command, "timeout": 10}],
+        }],
+    }
+
+
+def _antigravity_hooks_install() -> None:
+    path = _antigravity_hooks_path()
+    data = {}
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            _refuse_to_modify(path)
+        if not isinstance(data, dict):
+            _refuse_to_modify(path)
+    data[_ANTIGRAVITY_HOOK_KEY] = _antigravity_hooks_json_entry()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    print(f"  {path}  ->  {_ANTIGRAVITY_HOOK_KEY} hook registered (strict)")
+
+
+def _antigravity_hooks_uninstall() -> None:
+    path = _antigravity_hooks_path()
+    if not path.exists():
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return
+    if not isinstance(data, dict) or _ANTIGRAVITY_HOOK_KEY not in data:
+        return
+    del data[_ANTIGRAVITY_HOOK_KEY]
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    print(f"  {path}  ->  {_ANTIGRAVITY_HOOK_KEY} hook removed")
+
+
+def _antigravity_install(project_dir: Path, strict: bool = False) -> None:
+    """Install graphify for Google Antigravity (global skill + .agents/rules + .agents/workflows).
+
+    ``strict`` also registers the `hook-guard agy` gate in ~/.gemini/config/hooks.json: the
+    headless CLI loads rules as advice only and sends no workspacePaths, so without the gate
+    `.agents/rules/graphify.md` changes nothing there.
+    """
     # Copy the skill to ~/.gemini/config/skills/graphify/SKILL.md (global), then
     # lay down the always-on rules/workflows under the project dir.
     install(platform="antigravity")
     _antigravity_finalize(_platform_skill_destination("antigravity"), project_dir)
+    if strict:
+        _antigravity_hooks_install()
 
     print()
     print("Antigravity will now check the knowledge graph before answering")
@@ -1094,7 +1154,9 @@ def _antigravity_install(project_dir: Path) -> None:
     )
     print("  }")
 def _antigravity_uninstall(project_dir: Path, *, project: bool = False) -> None:
-    """Remove graphify Antigravity rules, workflow, and skill files."""
+    """Remove graphify Antigravity rules, workflow, skill files and the strict hook."""
+    if not project:
+        _antigravity_hooks_uninstall()
     # Remove rules file
     rules_path = project_dir / _ANTIGRAVITY_RULES_PATH
     if rules_path.exists():
@@ -2399,13 +2461,13 @@ def dispatch_install_cli(cmd: str) -> bool:
             if "--project" in sys.argv[3:]:
                 _project_install("antigravity", Path("."))
             else:
-                _antigravity_install(Path("."))
+                _antigravity_install(Path("."), strict="--strict" in sys.argv[3:])
         elif subcmd == "uninstall":
             if "--project" in sys.argv[3:]:
                 _project_uninstall("antigravity", Path("."))
             else:
                 _antigravity_uninstall(Path("."))
         else:
-            print("Usage: graphify antigravity [install|uninstall]", file=sys.stderr)
+            print("Usage: graphify antigravity [install [--strict]|uninstall]", file=sys.stderr)
             sys.exit(1)
     return True

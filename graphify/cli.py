@@ -1048,7 +1048,9 @@ def _ps_recursive_search_targets(cmd_str: str, root: "Path") -> "list[Path]":
         if not paths:
             paths = ["."]
         for p in paths:
-            p = p.rstrip("*").rstrip("\\/") or "."
+            # `dir\*` or `dir\*.md` means the directory; drop a wildcard last component.
+            head, _, tail = p.replace("\\", "/").rpartition("/")
+            p = (head if ("*" in tail or "?" in tail) else p).rstrip("\\/") or "."
             try:
                 resolved = Path(p).resolve()
                 if not resolved.is_dir():
@@ -1068,6 +1070,135 @@ def _ps_invokes_search(cmd_str: str) -> bool:
         if tokens[0] in _PS_LIST_CMDS and any(a.lower() in ("-recurse", "-r") for a in tokens[1:]):
             return True
     return False
+
+
+_AGY_GATED_TOOLS = frozenset({"grep_search", "find_by_name", "list_dir"})
+_AGY_PATH_KEYS = ("SearchPath", "SearchDirectory", "DirectoryPath", "Cwd")
+_AGY_DENY_REASON = (
+    "graph-first: this workspace has graphify-out/graph.json and this conversation has not "
+    "queried it. Searching or listing the tree (grep_search, find_by_name, list_dir, or a "
+    "recursive search in run_command) stays denied until you call call_mcp_tool with "
+    "ServerName graphify, ToolName query_graph, Arguments {question, project_path = the "
+    "workspace}. After that one call every search is allowed. Reading a single named file is "
+    "allowed now."
+)
+
+
+def _agy_marker_path(identity: str) -> "Path | None":
+    sid = _session_marker_id(identity)
+    return Path.home() / ".graphify" / "agy_sessions" / f"{sid}.queried" if sid else None
+
+
+def _agy_workspace(d: dict) -> "Path | None":
+    """The graph root this call touches. Antigravity's IDE sends workspacePaths; headless
+    `agy -p` sends [] (measured), so walk up from the call's own target paths to the nearest
+    directory holding graphify-out/graph.json. Never cwd: agy runs hooks from the hooks.json
+    directory."""
+    paths = [str(p) for p in (d.get("workspacePaths") or []) if p]
+    args = (d.get("toolCall") or {}).get("args") or {}
+    paths += [str(args.get(k)) for k in _AGY_PATH_KEYS if args.get(k)]
+    cmd = str(args.get("CommandLine") or "")
+    if cmd:
+        paths += re.findall(r"[A-Za-z]:[\\/][^\"'\s|;&]*|/[^\"'\s|;&]+", cmd)
+    for p in paths:
+        try:
+            cur = Path(p).resolve()
+        except (OSError, RuntimeError):
+            continue
+        # A wildcard or not-yet-existing target (`ws\*.md`) still names its directory.
+        while not cur.exists() and cur.parent != cur:
+            cur = cur.parent
+        if not cur.exists():
+            continue
+        if cur.is_file():
+            cur = cur.parent
+        while True:
+            if (cur / _GRAPHIFY_OUT / "graph.json").is_file() or (cur / "graphify-out" / "graph.json").is_file():
+                return cur
+            if cur.parent == cur:
+                break
+            cur = cur.parent
+    return None
+
+
+def _run_hook_guard_agy() -> None:
+    """Google Antigravity CLI gate (`hook-guard agy`): PreToolUse + PreInvocation.
+
+    Payload keys are camelCase. call_mcp_tool -> graphify writes a per-conversation marker;
+    grep_search / find_by_name / list_dir, or run_command running a recursive search, in a
+    tree that has a graph are denied until that marker exists (TTL _SESSION_MARKER_TTL).
+    PreInvocation injects the same instruction as an ephemeral message while the workspace
+    is known and unqueried. Everything else, and every error, allows.
+    """
+    def out(obj: dict) -> None:
+        sys.stdout.write(json.dumps(obj, ensure_ascii=False, separators=(",", ":")))
+
+    try:
+        d = json.loads(sys.stdin.buffer.read().decode("utf-8", "replace"))
+        if not isinstance(d, dict):
+            out({"decision": "allow"})
+            return
+        invocation = "invocationNum" in d and not d.get("toolCall")
+        conv = str(d.get("conversationId") or "")
+        marker = _agy_marker_path(conv)
+        if marker is None:
+            out({} if invocation else {"decision": "allow"})
+            return
+        ws = _agy_workspace(d)
+        queried = False
+        try:
+            if marker.is_file():
+                if marker.stat().st_mtime >= time.time() - _SESSION_MARKER_TTL:
+                    queried = True
+                else:
+                    marker.unlink()
+        except OSError:
+            pass
+        if invocation:
+            if ws is not None and not queried:
+                msg = (
+                    'graph-first: before any search or listing, call call_mcp_tool with ServerName '
+                    '"graphify", ToolName "query_graph", Arguments {"question": "<your question>", '
+                    f'"project_path": "{ws.as_posix()}"}}. Searches and listings are denied until that '
+                    'call happens; single-file reads are allowed.'
+                )
+                out({"injectSteps": [{"ephemeralMessage": msg}]})
+            else:
+                out({})
+            return
+        call = d.get("toolCall") or {}
+        name = str(call.get("name") or "")
+        args = call.get("args") or {}
+        if name == "call_mcp_tool":
+            if str(args.get("ServerName") or "") == "graphify":
+                marker.parent.mkdir(parents=True, exist_ok=True)
+                marker.touch()
+                _gc_session_markers(marker.parent)
+            out({"decision": "allow"})
+            return
+        if ws is None or queried:
+            out({"decision": "allow"})
+            return
+        gated = name in _AGY_GATED_TOOLS
+        if name == "run_command":
+            cmd = str(args.get("CommandLine") or "")
+            # `powershell -Command "<inner>"` / `pwsh -c '<inner>'`: the search is the quoted
+            # payload, which the segment parser keeps as one token — inspect it as well.
+            inner = re.search(r"(?i)\b(?:powershell(?:\.exe)?|pwsh(?:\.exe)?)\b[^\"']*-c(?:ommand)?\s+([\"'])(.*)\1", cmd, re.S)
+            candidates = [cmd] + ([inner.group(2)] if inner else [])
+            # Relative targets in the command resolve against the call's Cwd (else the graph root).
+            prev = os.getcwd()
+            try:
+                os.chdir(str(args.get("Cwd") or ws))
+                gated = any(
+                    _bash_recursive_search_targets(c, ws) or _ps_recursive_search_targets(c, ws)
+                    for c in candidates
+                )
+            finally:
+                os.chdir(prev)
+        out({"decision": "deny", "reason": _AGY_DENY_REASON} if gated else {"decision": "allow"})
+    except Exception:
+        out({"decision": "allow"})
 
 
 def _run_hook_guard(kind: str, strict: bool = False) -> None:
@@ -1090,6 +1221,9 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
     nudge instead of blocking or demanding.
     """
     from graphify.paths import out_path, GRAPHIFY_OUT_NAME
+    if kind == "agy":
+        _run_hook_guard_agy()
+        return
     # Gemini's BeforeTool hook takes no stdin and must ALWAYS return a decision so
     # the tool is never blocked; the graph nudge is appended only when a graph
     # exists. Handled before the stdin read below (which the search/read guards need).

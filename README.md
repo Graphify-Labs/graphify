@@ -752,6 +752,7 @@ graphify pi uninstall
 graphify devin install             # skill file + .windsurf/rules/graphify.md (Devin CLI)
 graphify devin uninstall
 graphify antigravity install       # .agents/rules + .agents/workflows (Google Antigravity)
+graphify antigravity install --strict   # + ~/.gemini/config/hooks.json gate: the headless agy CLI loads rules as advice only, so this denies recursive search until the conversation has queried the graph
 graphify antigravity uninstall
 
 graphify extract ./docs                        # headless LLM extraction for CI (no IDE needed)
