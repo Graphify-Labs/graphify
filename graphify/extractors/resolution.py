@@ -1914,6 +1914,8 @@ def _augment_symbol_resolution_edges(
 def _resolve_cross_file_imports(
     per_file: list[dict],
     paths: list[Path],
+    all_nodes: list[dict] | None = None,
+    all_edges: list[dict] | None = None,
 ) -> list[dict]:
     """
     Two-pass import resolution: turn file-level imports into class-level edges.
@@ -1975,9 +1977,15 @@ def _resolve_cross_file_imports(
     # shares the file (#2652). The edge is anchored at the real reference, not
     # the import line, so `source_location` points at genuine corroboration.
     new_edges: list[dict] = []
+    node_by_id = {node["id"]: node for node in all_nodes if node.get("id")} if all_nodes else {}
+    repointed_from: set[str] = set()
+    TYPE_REPOINT_RELATIONS = frozenset({"references", "inherits", "implements", "extends"})
 
     for file_result, path in zip(per_file, paths):
         str_path = str(path)
+        file_srcs = {n.get("source_file") for n in file_result.get("nodes", []) if n.get("source_file")}
+        file_srcs.add(str_path)
+        file_srcs.add(path.as_posix())
 
         # Map each local symbol (class or function) to its node id, keyed by the
         # bare symbol name. Function labels end in "()"; the file node ends in
@@ -2023,16 +2031,38 @@ def _resolve_cross_file_imports(
             target_fq: str | None = None
             for child in node.children:
                 if child.type == "relative_import":
+                    prefix_text = ""
+                    dotted_text = ""
                     for sub in child.children:
-                        if sub.type == "dotted_name":
-                            bare = _text(sub).split(".")[-1]
-                            candidate = path.parent / f"{bare}.py"
-                            target_fq = _file_stem(candidate)
-                            break
+                        if sub.type == "import_prefix":
+                            prefix_text = _text(sub)
+                        elif sub.type == "dotted_name":
+                            dotted_text = _text(sub)
+                    dots = prefix_text.count(".") if prefix_text else 1
+                    cur_dir = path.parent
+                    for _ in range(dots - 1):
+                        cur_dir = cur_dir.parent
+                    if dotted_text:
+                        candidate = cur_dir.joinpath(*dotted_text.split(".")).with_suffix(".py")
+                    else:
+                        candidate = cur_dir / "__init__.py"
+                    target_fq = _file_stem(candidate)
                     break
                 if child.type == "dotted_name" and target_fq is None:
-                    bare = _text(child).split(".")[-1]
-                    target_fq = bare_to_qualified.get(bare)
+                    dotted_name = _text(child)
+                    dotted_as_path = "/".join(dotted_name.split("."))
+                    if dotted_as_path in stem_to_entities:
+                        target_fq = dotted_as_path
+                    else:
+                        suffix_matches = [
+                            fq for fq in stem_to_entities
+                            if fq.endswith(f"/{dotted_as_path}") or fq.endswith(f"\\{dotted_as_path}")
+                        ]
+                        if len(suffix_matches) == 1:
+                            target_fq = suffix_matches[0]
+                        else:
+                            bare = dotted_name.split(".")[-1]
+                            target_fq = bare_to_qualified.get(bare)
 
             if not target_fq or target_fq not in stem_to_entities:
                 return
@@ -2106,6 +2136,31 @@ def _resolve_cross_file_imports(
                     "source_location": f"L{line}",
                     "weight": 0.8,
                 })
+
+        # Repoint AST type-reference and inheritance edges from sourceless stubs
+        # to the exact imported target definition (#3252).
+        if all_edges and import_targets:
+            for edge in all_edges:
+                if edge.get("source_file") not in file_srcs:
+                    continue
+                if edge.get("relation") not in TYPE_REPOINT_RELATIONS:
+                    continue
+                tgt = edge.get("target")
+                tgt_node = node_by_id.get(tgt)
+                if not tgt_node or tgt_node.get("source_file"):
+                    continue
+                stub_label = tgt_node.get("label", "")
+                resolved_id = import_targets.get(stub_label)
+                if resolved_id and resolved_id != tgt:
+                    edge["target"] = resolved_id
+                    repointed_from.add(tgt)
+
+    if all_nodes is not None and all_edges is not None and repointed_from:
+        still_referenced = {e.get("source") for e in all_edges} | {e.get("target") for e in all_edges}
+        all_nodes[:] = [
+            node for node in all_nodes
+            if node.get("id") not in repointed_from or node.get("id") in still_referenced
+        ]
 
     return new_edges
 
