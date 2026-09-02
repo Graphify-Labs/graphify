@@ -2,6 +2,14 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Fix: generated agent guidance now prefers the MCP `query_graph` tool and uses the graph's recorded Python interpreter as the CLI fallback, so hardened Windows hosts do not route agents through an unsigned `graphify.exe` shim.
+- Fix: strict Claude hooks no longer use one graph-wide 30-minute query stamp that let any agent disable the first-read block for every other session; deny markers now key subagents by `session_id` plus `agent_id`, so a parent's first read cannot silently consume every subagent's guard.
+- Fix: project-scoped hooks now resolve Graphify through each clone's `graphify-out/.graphify_python` sidecar instead of a bare PATH launcher, preserving committed-config portability without producing an unrunnable hook on Application Control hosts (#3280, follow-up to #3129).
+- Feature: `graphify antigravity install --strict` registers a `hook-guard agy` gate in `~/.gemini/config/hooks.json` (PreToolUse + PreInvocation). The headless Antigravity CLI loads `.agents/rules` as advice only and sends `workspacePaths: []`, so the gate derives the graph root from the call's own target path and denies `grep_search`, `find_by_name`, `list_dir` and recursive `run_command` searches until the conversation has called the graphify MCP server; `antigravity uninstall` removes it. Measured on claude-sonnet-4-6 and gpt-oss-120b: both grep first under the rule alone and query first under the gate.
+- Feature: strict Claude hooks now record query evidence per session and agent (a PostToolUse `hook-guard mark-queried` on the MCP graph tools and on `graphify query|explain|path`) and deny a recursive in-project search issued through Bash, the Grep tool, or Claude Code's PowerShell tool (`Get-ChildItem -Recurse | Select-String`, `Select-String -Path <dir>`) until that evidence exists; both marker writers garbage-collect markers older than 24 hours; the retry after one traversal is allowed, and exact-file grep, stdin grep, `git grep`, out-of-project targets, Glob, soft mode and malformed input never block. Closes the escape where an agent instructed to read and search through Bash never met the Read-only strict block.
+
 ## 0.9.53 (2026-08-30)
 
 - Fix: a batch of cross-language inheritance-edge corrections (thanks @Synvoya): JavaScript `class X extends Y` now emits an `inherits` edge (#1790); PHP interfaces, enums, and traits are captured as class-like nodes with their heritage (#1791); Scala `trait` declarations become class-like nodes (#1792) and qualified `extends`/`with` bases resolve to the tail type (#1794); a qualified Kotlin supertype resolves to its tail type instead of the package head (#1793); a C# interface extending an interface is classified as `inherits`, not `implements` (#1817); and a Go interface type-set constraint no longer emits a spurious `embeds` edge (#1818).

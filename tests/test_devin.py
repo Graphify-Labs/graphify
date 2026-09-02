@@ -54,11 +54,11 @@ def test_devin_skill_file_contains_frontmatter(tmp_path):
     assert "triggers:" in content
 
 
-def test_devin_skill_file_references_graphify_query(tmp_path):
-    """/graphify skill must mention graphify query (query-first policy)."""
+def test_devin_skill_file_references_query_graph(tmp_path):
+    """The skill must name the MCP-first query path."""
     _devin_install_user(tmp_path)
     content = _skill_path_user(tmp_path).read_text()
-    assert "graphify query" in content or "/graphify query" in content
+    assert "query_graph" in content
 
 
 def test_devin_install_user_does_not_write_rules(tmp_path):
@@ -101,12 +101,12 @@ def test_devin_install_project_creates_rules_file(tmp_path, monkeypatch):
     assert "GRAPH_REPORT.md" in rules.read_text()
 
 
-def test_devin_rules_content_recommends_graphify_query(tmp_path):
+def test_devin_rules_content_recommends_query_graph(tmp_path):
     """The rules file installed by devin must use query-first policy."""
     from graphify.__main__ import _devin_rules_install
     _devin_rules_install(tmp_path)
     content = _rules_path(tmp_path).read_text()
-    assert "graphify query" in content
+    assert "query_graph" in content
 
 
 def test_devin_rules_install_idempotent(tmp_path, capsys):

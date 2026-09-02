@@ -47,18 +47,18 @@ _INSTALL_TEXTS: dict[str, str] = {
 }
 
 
-def test_every_install_surface_recommends_graphify_query():
-    """All ten install surfaces must point the assistant at `graphify query`
+def test_every_install_surface_recommends_query_graph():
+    """All ten install surfaces must point the assistant at `query_graph`
     as the first action for codebase questions. This is the load-bearing
     fix for issue #580 — the alternative (reading GRAPH_REPORT.md) costs
     ~10x more tokens per question and made the project worse-than-baseline
     in real Claude Code sessions."""
     missing: list[str] = []
     for name, text in _INSTALL_TEXTS.items():
-        if "graphify query" not in text:
+        if "query_graph" not in text:
             missing.append(name)
     assert not missing, (
-        f"these install surfaces no longer mention `graphify query`: {missing}. "
+        f"these install surfaces no longer mention `query_graph`: {missing}. "
         f"If you removed it intentionally, consider whether issue #580 is back."
     )
 

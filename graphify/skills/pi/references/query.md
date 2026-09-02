@@ -1,6 +1,6 @@
 # graphify reference: query, path, explain
 
-Load this when the user asks a question against an existing graph, or runs `/graphify path` or `/graphify explain`. The core's query stub points here for the full traversal flow. These flows use the `graphify query` CLI when it is available and fall back to an inline NetworkX traversal otherwise.
+Load this when the user asks a question against an existing graph, or runs `/graphify path` or `/graphify explain`. The core's query stub points here for the full traversal flow. Prefer the MCP `query_graph` tool when it is available. If MCP is unavailable, invoke the module through the Python interpreter recorded in `graphify-out/.graphify_python`; on Windows, never execute a `graphify.exe` console shim. The inline NetworkX traversal remains the final fallback.
 
 Two traversal modes - choose based on the question:
 
@@ -11,7 +11,7 @@ Two traversal modes - choose based on the question:
 
 First check the graph exists:
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+"$(cat graphify-out/.graphify_python)" -c "
 from pathlib import Path
 if not Path('graphify-out/graph.json').exists():
     print('ERROR: No graph found. Run /graphify <path> first to build the graph.')
@@ -28,7 +28,7 @@ Fix this **without inventing tokens** by expanding the query against the actual 
 
 1. Extract the token vocabulary from node labels:
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+"$(cat graphify-out/.graphify_python)" -c "
 import json, re
 from pathlib import Path
 data = json.loads(Path('graphify-out/graph.json').read_text(encoding='utf-8'))
@@ -62,10 +62,10 @@ If the list is empty, say so plainly and stop — do not proceed to traversal.
 
 Build the **expanded query string** by joining the selected tokens with spaces. Use this string as `QUESTION` below — NOT the original user question. (The original question is preserved only for `save-result` at the end.)
 
-Prefer the CLI when it is installed:
+If the MCP `query_graph` tool is available, call it with the expanded question, traversal mode, token budget, and the project root as `project_path`, then continue with the returned scoped subgraph. Otherwise invoke the module through the graph's recorded interpreter:
 ```bash
-graphify query "QUESTION"
-# or: graphify query "QUESTION" --dfs --budget 3000
+"$(cat graphify-out/.graphify_python)" -m graphify query "QUESTION"
+# or: "$(cat graphify-out/.graphify_python)" -m graphify query "QUESTION" --dfs --budget 3000
 ```
 
 If the CLI is unavailable, load `graphify-out/graph.json` and run the traversal inline:
@@ -77,7 +77,7 @@ If the CLI is unavailable, load `graphify-out/graph.json` and run the traversal 
 5. If the graph lacks enough information, say so - do not hallucinate edges.
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+"$(cat graphify-out/.graphify_python)" -c "
 import sys, json
 from networkx.readwrite import json_graph
 import networkx as nx
@@ -168,7 +168,7 @@ Replace `QUESTION` with the **expanded** query string, `MODE` with `bfs` or `dfs
 After writing the answer, save it back into the graph so it improves future queries. Include the expanded tokens inside the `--answer` text (e.g. `"Expanded from original query via vocab: [tokens]. Then traversed..."`) so the next `--update` extracts the expansion history as a graph node:
 
 ```bash
-$(cat graphify-out/.graphify_python) -m graphify save-result --question "ORIGINAL_QUESTION" --answer "ANSWER" --type query --nodes NODE1 NODE2
+"$(cat graphify-out/.graphify_python)" -m graphify save-result --question "ORIGINAL_QUESTION" --answer "ANSWER" --type query --nodes NODE1 NODE2
 ```
 
 Replace `ORIGINAL_QUESTION` with the user's verbatim question, `ANSWER` with your full answer text (containing the expanded-token trace), `NODE1 NODE2` with the list of node labels you cited. This closes the feedback loop: the next `--update` will extract this Q&A as a node in the graph.
@@ -188,13 +188,13 @@ At the **start** of graph work, refresh and read the lessons: run `graphify refl
 Find the shortest path between two named concepts in the graph. Prefer the CLI when installed:
 
 ```bash
-graphify path "NODE_A" "NODE_B"
+"$(cat graphify-out/.graphify_python)" -m graphify path "NODE_A" "NODE_B"
 ```
 
 If the CLI is unavailable, run it inline:
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+"$(cat graphify-out/.graphify_python)" -c "
 import json, sys
 import networkx as nx
 from networkx.readwrite import json_graph
@@ -246,7 +246,7 @@ Replace `NODE_A` and `NODE_B` with the actual concept names from the user. Then 
 After writing the explanation, save it back:
 
 ```bash
-$(cat graphify-out/.graphify_python) -m graphify save-result --question "Path from NODE_A to NODE_B" --answer "ANSWER" --type path_query --nodes NODE_A NODE_B
+"$(cat graphify-out/.graphify_python)" -m graphify save-result --question "Path from NODE_A to NODE_B" --answer "ANSWER" --type path_query --nodes NODE_A NODE_B
 ```
 
 ---
@@ -256,13 +256,13 @@ $(cat graphify-out/.graphify_python) -m graphify save-result --question "Path fr
 Give a plain-language explanation of a single node - everything connected to it. Prefer the CLI when installed:
 
 ```bash
-graphify explain "NODE_NAME"
+"$(cat graphify-out/.graphify_python)" -m graphify explain "NODE_NAME"
 ```
 
 If the CLI is unavailable, run it inline:
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
+"$(cat graphify-out/.graphify_python)" -c "
 import json, sys
 import networkx as nx
 from networkx.readwrite import json_graph
@@ -307,5 +307,5 @@ Replace `NODE_NAME` with the concept the user asked about. Then write a 3-5 sent
 After writing the explanation, save it back:
 
 ```bash
-$(cat graphify-out/.graphify_python) -m graphify save-result --question "Explain NODE_NAME" --answer "ANSWER" --type explain --nodes NODE_NAME
+"$(cat graphify-out/.graphify_python)" -m graphify save-result --question "Explain NODE_NAME" --answer "ANSWER" --type explain --nodes NODE_NAME
 ```
