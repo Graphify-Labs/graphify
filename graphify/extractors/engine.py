@@ -2020,6 +2020,11 @@ def _require_imports_js(node, source: bytes, importer_nid: str, stem: str, edges
 
 _JS_FUNCTION_VALUE_TYPES = frozenset({"arrow_function", "function_expression", "function", "generator_function"})
 
+# Declarator `name` node types that are a destructuring PATTERN rather than a
+# single bound identifier. Their `name` field is the pattern source, never a
+# symbol, so it must not be used as a node label.
+_JS_DESTRUCTURING_PATTERNS = frozenset({"object_pattern", "array_pattern"})
+
 
 def _scan_js_nested_function_declarations(
     container_node, parent_nid: str, *, source: bytes, config,
@@ -2393,7 +2398,15 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                                 # stub instead of the callee's definition.
                                 const_names = []
                             elif not const_names:
-                                const_names = [_read_text(name_node, source)]
+                                if name_node.type in _JS_DESTRUCTURING_PATTERNS:
+                                    # A pattern that binds nothing (`const {} =`,
+                                    # `const { a: {} } =`) has no name to node.
+                                    # Falling back to the pattern SOURCE is the
+                                    # bug `_js_pattern_bound_names` exists to
+                                    # fix — it mints `{ a: {} }` as a symbol.
+                                    const_names = []
+                                else:
+                                    const_names = [_read_text(name_node, source)]
                             for const_name in const_names:
                                 # A name that normalizes to nothing would collapse
                                 # the id to the absolute file-stem and leak the

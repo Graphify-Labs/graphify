@@ -248,3 +248,32 @@ def test_member_access_require_is_still_an_import(tmp_path):
     ]
     assert len(calls) == 1
     assert nodes[calls[0]["target"]]["source_file"].endswith("lib.js")
+
+
+def test_pattern_binding_nothing_mints_no_node(tmp_path):
+    """A pattern that binds no identifier has no name to node.
+
+    Falling back to the pattern SOURCE is the bug `_js_pattern_bound_names`
+    exists to fix; the `normalize_id` guard only caught patterns that
+    normalize to nothing, so `{ a: {} }` still shipped as a symbol.
+    """
+    for name, body in (
+        ("empty", "export const {} = getThing();\n"),
+        ("nested", "export const { a: {} } = getThing();\n"),
+        ("comment", "export const { /* nothing */ } = getThing();\n"),
+        ("arr", "export const [] = getThing();\n"),
+    ):
+        source = tmp_path / f"{name}.ts"
+        source.write_text(body, encoding="utf-8")
+        labels = {n["label"] for n in extract_js(source)["nodes"]}
+        assert labels == {f"{name}.ts"}, name
+
+
+def test_exported_destructured_require_is_still_suppressed(tmp_path):
+    """Binding exported patterns must not undo the CJS-import exclusion."""
+    source = tmp_path / "barrel.js"
+    source.write_text(
+        "export const { doWork } = require('./lib');\n", encoding="utf-8"
+    )
+    labels = {n["label"] for n in extract_js(source)["nodes"]}
+    assert "doWork" not in labels
