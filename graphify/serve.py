@@ -6,7 +6,9 @@ import os
 import re
 import sys
 import threading
+import time
 import weakref
+from math import isfinite
 from array import array
 from collections import OrderedDict
 from contextvars import ContextVar
@@ -49,6 +51,9 @@ class GraphRegistry:
         self._allow_project_paths = True
         self._load_learning_overlay = True
         self._lock = threading.Lock()
+        self._graphs_dir: Path | None = None
+        self._graph_scan_interval = 30.0
+        self._last_discovery = 0.0
 
     @classmethod
     def from_path(cls, graph_path: Path) -> "GraphRegistry":
@@ -103,6 +108,16 @@ class GraphRegistry:
             )
         return reg
 
+    @classmethod
+    def from_graphs_dir(cls, root: Path, scan_interval: float = 30.0) -> "GraphRegistry":
+        if not isfinite(scan_interval) or scan_interval < 0:
+            raise ValueError("graph scan interval must be non-negative")
+        registry = cls.from_named_paths(_discover_graphs(root))
+        registry._graphs_dir = Path(root).resolve()
+        registry._graph_scan_interval = scan_interval
+        registry._last_discovery = time.monotonic()
+        return registry
+
     def rescan(self) -> None:
         with self._lock:
             for name, ctx in list(self._graphs.items()):
@@ -128,6 +143,34 @@ class GraphRegistry:
                     except FileNotFoundError:
                         del self._graphs[name]
                     except (SystemExit, Exception):
+                        continue
+
+            now = time.monotonic()
+            if (
+                self._graphs_dir is not None
+                and now - self._last_discovery >= self._graph_scan_interval
+            ):
+                try:
+                    discovered = _discover_graphs(self._graphs_dir)
+                except (OSError, ValueError):
+                    return
+                self._last_discovery = now
+                for name in set(self._graphs) - set(discovered):
+                    del self._graphs[name]
+                for name, graph_path in discovered.items():
+                    if name in self._graphs:
+                        continue
+                    try:
+                        graph = _load_graph_or_raise(str(graph_path), load_learning_overlay=False)
+                        _get_trigram_index(graph)
+                        self._graphs[name] = GraphContext(
+                            name=name,
+                            path=graph_path.resolve(),
+                            graph=graph,
+                            communities=_communities_from_graph(graph),
+                            mtime=graph_path.stat().st_mtime,
+                        )
+                    except (GraphLoadError, OSError):
                         continue
 
     def get(self, name: str) -> GraphContext | None:
@@ -1709,7 +1752,7 @@ def _build_server(
     fixed_session_state = session_state
     fallback_session_state: dict = {}
     active_session: ContextVar[object | None] = ContextVar("graphify_mcp_session", default=None)
-    is_multi = len(registry.names()) > 1
+    is_multi = registry._graphs_dir is not None or len(registry.names()) > 1
     _ctx_cache = _GraphContextCache(_max_server_contexts())
     default_paths = {
         str(ctx.path.resolve())
@@ -2645,6 +2688,12 @@ def _main(argv: list[str] | None = None) -> None:
     import argparse
     import os
 
+    def _non_negative_float(value: str) -> float:
+        parsed = float(value)
+        if not isfinite(parsed) or parsed < 0:
+            raise argparse.ArgumentTypeError("graph scan interval must be non-negative")
+        return parsed
+
     parser = argparse.ArgumentParser(
         prog="python -m graphify.serve",
         description="Serve a graphify knowledge graph over MCP (stdio or Streamable HTTP).",
@@ -2666,6 +2715,13 @@ def _main(argv: list[str] | None = None) -> None:
         "--graphs-dir",
         metavar="PATH",
         help="Recursively serve graphify-out/graph.json files below PATH",
+    )
+    parser.add_argument(
+        "--graph-scan-interval",
+        type=_non_negative_float,
+        default=None,
+        metavar="SECONDS",
+        help="Rescan --graphs-dir for added/removed graphs every N seconds (default: 30; 0 per request)",
     )
     parser.add_argument(
         "--transport",
@@ -2699,11 +2755,17 @@ def _main(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
 
+    if args.graph_scan_interval is not None and args.graphs_dir is None:
+        parser.error("--graph-scan-interval requires --graphs-dir")
+
     if args.graphs_dir is not None:
         if args.graph_path is not None or args.graph_flag is not None:
             parser.error("--graphs-dir cannot be combined with a graph path")
         try:
-            registry = GraphRegistry.from_named_paths(_discover_graphs(Path(args.graphs_dir)))
+            registry = GraphRegistry.from_graphs_dir(
+                Path(args.graphs_dir),
+                scan_interval=30.0 if args.graph_scan_interval is None else args.graph_scan_interval,
+            )
         except (OSError, ValueError, GraphLoadError) as exc:
             parser.error(str(exc))
         if args.transport == "http":

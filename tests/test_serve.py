@@ -1898,6 +1898,83 @@ class TestGraphRegistry:
 
         assert "Nodes: 2" in handlers["graph_stats"]({})
 
+    def test_graphs_dir_discovers_new_graph_after_interval(self, tmp_path):
+        _write_registry_graph(tmp_path / "alpha", "graphify-out")
+        registry = GraphRegistry.from_graphs_dir(tmp_path, scan_interval=30)
+        _write_registry_graph(tmp_path / "beta", "graphify-out")
+        registry._last_discovery -= 30
+
+        registry.rescan()
+
+        assert registry.names() == ["alpha", "beta"]
+
+    def test_graphs_dir_defers_discovery_until_interval(self, tmp_path):
+        _write_registry_graph(tmp_path / "alpha", "graphify-out")
+        registry = GraphRegistry.from_graphs_dir(tmp_path, scan_interval=30)
+        _write_registry_graph(tmp_path / "beta", "graphify-out")
+
+        registry.rescan()
+
+        assert registry.names() == ["alpha"]
+
+    def test_graphs_dir_removes_deleted_graph_after_interval(self, tmp_path):
+        graph = _write_registry_graph(tmp_path / "alpha", "graphify-out")
+        registry = GraphRegistry.from_graphs_dir(tmp_path, scan_interval=30)
+        graph.unlink()
+        registry._last_discovery -= 30
+
+        registry.rescan()
+
+        assert registry.names() == []
+
+    def test_graphs_dir_zero_interval_discovers_on_every_rescan(self, tmp_path):
+        _write_registry_graph(tmp_path / "alpha", "graphify-out")
+        registry = GraphRegistry.from_graphs_dir(tmp_path, scan_interval=0)
+        _write_registry_graph(tmp_path / "beta", "graphify-out")
+
+        registry.rescan()
+
+        assert registry.names() == ["alpha", "beta"]
+
+    @pytest.mark.parametrize("scan_interval", [float("nan"), float("inf"), float("-inf")])
+    def test_graphs_dir_rejects_non_finite_scan_interval(self, tmp_path, scan_interval):
+        _write_registry_graph(tmp_path / "alpha", "graphify-out")
+
+        with pytest.raises(ValueError, match="graph scan interval must be non-negative"):
+            GraphRegistry.from_graphs_dir(tmp_path, scan_interval=scan_interval)
+
+    def test_graphs_dir_reloads_known_graph_before_discovery_interval(self, tmp_path):
+        graph = _write_registry_graph(
+            tmp_path / "alpha", "graphify-out",
+            nodes=[{"id": "a", "label": "a", "community": 0}], edges=[],
+        )
+        registry = GraphRegistry.from_graphs_dir(tmp_path, scan_interval=30)
+        _write_registry_graph(
+            tmp_path / "alpha", "graphify-out",
+            nodes=[
+                {"id": "a", "label": "a", "community": 0},
+                {"id": "b", "label": "b", "community": 0},
+            ], edges=[],
+        )
+        import os
+        original_mtime = graph.stat().st_mtime
+        os.utime(graph, (original_mtime + 1, original_mtime + 1))
+
+        registry.rescan()
+
+        assert registry.get("alpha").graph.number_of_nodes() == 2
+
+    def test_graphs_dir_ignores_malformed_new_graph(self, tmp_path):
+        _write_registry_graph(tmp_path / "alpha", "graphify-out")
+        registry = GraphRegistry.from_graphs_dir(tmp_path, scan_interval=0)
+        malformed = _write_registry_graph(tmp_path / "beta", "graphify-out")
+        malformed.write_text("{malformed", encoding="utf-8")
+
+        registry.rescan()
+
+        assert registry.names() == ["alpha"]
+        assert registry.get("alpha").graph.number_of_nodes() == 2
+
     def test_registry_has_no_directory_discovery_api(self):
         assert not hasattr(GraphRegistry, "from_" + "directory")
 
@@ -1956,6 +2033,21 @@ class TestUnifiedBuildServer:
         server, handlers = _build_server(reg)
         assert "list_graphs" in handlers
         assert "use_graph" in handlers
+
+    def test_directory_registry_discovers_and_selects_graph_added_after_server_build(self, tmp_path):
+        _write_registry_graph(tmp_path / "alpha", "graphify-out")
+        registry = GraphRegistry.from_graphs_dir(tmp_path, scan_interval=30)
+        session = {}
+        _, handlers = _build_server(registry, session_state=session)
+        _write_registry_graph(tmp_path / "beta", "graphify-out")
+        registry._last_discovery -= 30
+
+        listing = handlers["list_graphs"]({})
+        selection = handlers["use_graph"]({"graph": "beta"})
+
+        assert "beta" in listing
+        assert "Switched to graph 'beta'" in selection
+        assert session["current_graph"] == "beta"
 
     def test_single_graph_has_pr_tools(self, tmp_path):
         gp = _write_registry_graph(tmp_path, "proj")
@@ -2071,6 +2163,72 @@ class TestResolveGraph:
             _resolve_graph(reg, graph="nope", current=None)
 
 class TestMainCLI:
+    def test_serve_cli_defaults_graph_scan_interval(self, tmp_path, monkeypatch):
+        _write_registry_graph(tmp_path / "api", "graphify-out")
+        captured = {}
+        monkeypatch.setattr(
+            "graphify.serve.serve",
+            lambda graph_path=None, *, registry=None: captured.update(registry=registry),
+        )
+
+        from graphify.serve import _main
+        _main(["--graphs-dir", str(tmp_path)])
+
+        assert captured["registry"]._graph_scan_interval == 30
+
+    def test_serve_cli_forwards_graph_scan_interval(self, tmp_path, monkeypatch):
+        _write_registry_graph(tmp_path / "api", "graphify-out")
+        captured = {}
+        monkeypatch.setattr(
+            "graphify.serve.serve",
+            lambda graph_path=None, *, registry=None: captured.update(registry=registry),
+        )
+
+        from graphify.serve import _main
+        _main(["--graphs-dir", str(tmp_path), "--graph-scan-interval", "0"])
+
+        assert captured["registry"]._graph_scan_interval == 0
+
+    def test_serve_cli_rejects_negative_graph_scan_interval(self, tmp_path, capsys):
+        _write_registry_graph(tmp_path / "api", "graphify-out")
+
+        from graphify.serve import _main
+
+        with pytest.raises(SystemExit):
+            _main(["--graphs-dir", str(tmp_path), "--graph-scan-interval", "-1"])
+
+        assert "non-negative" in capsys.readouterr().err
+
+    @pytest.mark.parametrize(
+        "value", ["nan", "inf", "-inf"], ids=["nan", "inf", "negative-inf"]
+    )
+    def test_serve_cli_rejects_non_finite_graph_scan_interval(self, tmp_path, capsys, value):
+        _write_registry_graph(tmp_path / "api", "graphify-out")
+
+        from graphify.serve import _main
+
+        with pytest.raises(SystemExit):
+            _main(["--graphs-dir", str(tmp_path), f"--graph-scan-interval={value}"])
+
+        assert "non-negative" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("transport", ["stdio", "http"])
+    def test_serve_cli_rejects_graph_scan_interval_without_graphs_dir(
+        self, monkeypatch, capsys, transport
+    ):
+        monkeypatch.setattr("graphify.serve.serve", lambda *args, **kwargs: None)
+        monkeypatch.setattr("graphify.serve.serve_http", lambda *args, **kwargs: None)
+
+        from graphify.serve import _main
+
+        argv = ["--graph-scan-interval", "15"]
+        if transport == "http":
+            argv.extend(["--transport", "http"])
+        with pytest.raises(SystemExit):
+            _main(argv)
+
+        assert "--graph-scan-interval requires --graphs-dir" in capsys.readouterr().err
+
     def test_serve_cli_starts_named_registry_for_graphs_dir(self, tmp_path, monkeypatch):
         graph_path = _write_registry_graph(tmp_path / "team" / "api", "graphify-out")
         captured = {}
@@ -2146,10 +2304,12 @@ class TestMainCLI:
             "--graphs-dir", str(tmp_path), "--transport", "http", "--host", "0.0.0.0",
             "--port", "8080", "--api-key", "secret", "--path", "/registry",
             "--json-response", "--stateless", "--session-timeout", "30",
+            "--graph-scan-interval", "15",
         ])
 
         assert captured["graph_path"] is None
         assert captured["registry"].names() == ["team/api"]
+        assert captured["registry"]._graph_scan_interval == 15
         assert {key: value for key, value in captured.items() if key != "registry"} == {
             "graph_path": None,
             "host": "0.0.0.0",

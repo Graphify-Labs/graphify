@@ -521,9 +521,15 @@ Serve multiple repositories containing `graphify-out/graph.json` from one MCP en
 # Serve over stdio (the default transport).
 python -m graphify.serve --graphs-dir ..
 
+# Rescan for added or removed graphs every 30 seconds (use 0 to rescan each request).
+python -m graphify.serve --graphs-dir .. --graph-scan-interval 0
+
 # Serve over HTTP. Remote HTTP requires a nonblank API key.
 python -m graphify.serve --graphs-dir .. --transport http --host 0.0.0.0 --port 8080 --api-key "$SECRET"
 ```
+
+Graph discovery is refreshed every 30 seconds by default. Pass
+`--graph-scan-interval 0` to rescan the directory for every MCP request.
 
 #### Docker Compose
 
