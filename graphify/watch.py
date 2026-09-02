@@ -1846,11 +1846,6 @@ def _rebuild_code(
             except Exception:
                 pass
 
-            # clear stale needs_update flag if present
-            flag = out / "needs_update"
-            if flag.exists():
-                flag.unlink()
-
             if same_graph:
                 print("[graphify watch] No code-graph changes detected (--no-cluster); outputs left untouched.")
             else:
@@ -1894,9 +1889,6 @@ def _rebuild_code(
                     )
                 except Exception:
                     pass
-                flag = out / "needs_update"
-                if flag.exists():
-                    flag.unlink()
                 html_action = _reconcile_graph_html(out, existing_graph_data)
                 if html_action == "rendered":
                     print(
@@ -2085,11 +2077,6 @@ def _rebuild_code(
                     )
             except Exception as cf_err:
                 print(f"[graphify watch] callflow HTML update skipped: {cf_err}")
-
-        # clear stale needs_update flag if present
-        flag = out / "needs_update"
-        if flag.exists():
-            flag.unlink()
 
         if not no_change:
             print(f"[graphify watch] Rebuilt: {G.number_of_nodes()} nodes, "
