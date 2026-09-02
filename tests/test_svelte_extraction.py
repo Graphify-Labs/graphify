@@ -431,3 +431,42 @@ def test_symbol_lines_are_right_under_non_ascii_markup(tmp_path):
     result = extract_svelte(component)
     lines = {n["label"]: n.get("source_location") for n in result["nodes"]}
     assert lines.get("handler()") == "L4"
+
+
+def test_lang_is_the_widest_grammar_across_all_script_blocks():
+    """Both blocks are parsed as ONE unit, so the grammar must accept both.
+
+    Taking the FIRST block's `lang` parsed a Svelte 5 `<script module
+    lang="js">` + `<script lang="ts">` pair with the JS grammar, which
+    chokes on the TS block's annotations.
+    """
+    src = (
+        '<script module lang="js">\n  const a = 1\n</script>\n'
+        '<script lang="ts">\n  const b: number = 2\n</script>\n'
+    )
+    assert _sfc_mask_non_script(src)[1] == "ts"
+
+
+def test_all_js_blocks_still_pick_js():
+    src = '<script lang="js">\n  const a = 1\n</script>\n'
+    assert _sfc_mask_non_script(src)[1] == "js"
+
+
+def test_js_then_ts_component_parses_the_ts_block(tmp_path):
+    _write(tmp_path / "format.ts", "export const fmt = (s: string) => s\n")
+    component = _write(
+        tmp_path / "Mixed.svelte",
+        '<script module lang="js">\n'
+        "  export const PRESET = 1\n"
+        "</script>\n"
+        '<script lang="ts">\n'
+        "  import { fmt } from './format'\n"
+        "  export function handler(n: number): string { return fmt(String(n)) }\n"
+        "</script>\n",
+    )
+    result = extract_svelte(component)
+    assert not result.get("parse_errors")
+    assert _make_id(str(tmp_path / "format.ts")) in _targets(
+        result, relation="imports_from"
+    )
+    assert {"PRESET", "handler()"} <= _labels(result)

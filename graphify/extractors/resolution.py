@@ -644,19 +644,34 @@ def _sfc_mask_non_script(src: str) -> tuple[str, str | None]:
 
     out: list[str] = []
     pos = 0
-    lang: str | None = None
+    langs: list[str] = []
     for m in _SFC_SCRIPT_RE.finditer(src):
         out.append(_blank(src[pos:m.start()]))  # markup/style before this block
         out.append(_blank(m.group(1)))           # <script …> open tag
         out.append(m.group(2))                   # script body, verbatim
         out.append(_blank(m.group(3)))           # </script> close tag
         pos = m.end()
-        if lang is None:
-            lang_m = _SFC_SCRIPT_LANG_RE.search(m.group(1))
-            if lang_m:
-                lang = lang_m.group(1).lower()
+        lang_m = _SFC_SCRIPT_LANG_RE.search(m.group(1))
+        if lang_m:
+            langs.append(lang_m.group(1).lower())
     out.append(_blank(src[pos:]))
-    return "".join(out), lang
+    return "".join(out), _sfc_widest_lang(langs)
+
+
+# Grammar precedence when a component's script blocks disagree. Every block is
+# parsed as ONE unit, so the grammar has to accept all of them: TS is a
+# superset of JS, and TSX of JSX, but not the reverse. A Svelte 5 `<script
+# module lang="js">` paired with a `<script lang="ts">` instance block must
+# therefore be parsed as TS, not JS.
+_SFC_LANG_PRECEDENCE = ("tsx", "jsx", "ts", "js")
+
+
+def _sfc_widest_lang(langs: list[str]) -> str | None:
+    """The grammar that can parse every declared block, or None if undeclared."""
+    for candidate in _SFC_LANG_PRECEDENCE:
+        if candidate in langs:
+            return candidate
+    return langs[0] if langs else None
 
 _vue_mask_non_script = _sfc_mask_non_script
 
