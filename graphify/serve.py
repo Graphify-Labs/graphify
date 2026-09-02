@@ -5,6 +5,7 @@ import json
 import math
 import os
 import pickle
+import tempfile
 import re
 import sys
 from array import array
@@ -380,6 +381,36 @@ def _node_search_text(data: dict, nid: str) -> str:
 _TRIGRAM_CACHE_VERSION = 1
 
 
+def _atomic_write_pickle(dest: Path, blob) -> None:
+    """Write `blob` to `dest` via a per-process temp file in the same directory.
+
+    The temp name has to be unique. With a shared `<dest>.pkl.tmp`, two
+    processes caching concurrently both open that one path: when the first
+    renames it into place the second is still holding an open descriptor to
+    that inode and keeps writing, so it corrupts the file the first just
+    published, and its own rename then fails because the temp path is gone. A
+    mixed pickle stream does not unpickle, so the cost is a rebuild rather than
+    a wrong answer, but the corrupt file survives until something overwrites
+    it. Measured on six concurrent writers: five failed.
+
+    mkstemp in `dest.parent` keeps the rename on one filesystem, which is what
+    makes it atomic.
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=str(dest.parent), suffix=".pkl.tmp")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            pickle.dump(blob, fh, protocol=5)
+        tmp.replace(dest)  # atomic within one filesystem
+    except Exception:
+        try:
+            tmp.unlink()
+        except Exception:
+            pass
+        raise
+
+
 def _trigram_cache_key(G: nx.Graph):
     """Identity of the graph file the index was built from, or None if unknown."""
     if os.environ.get("GRAPHIFY_TRIGRAM_CACHE_DISABLE", "").lower() in ("1", "true", "yes"):
@@ -444,19 +475,16 @@ def _store_trigram_cache(G: nx.Graph, idx: dict) -> None:
     key = _trigram_cache_key(G)
     if key is None:
         return
-    dest = _trigram_cache_path(key[0])
-    tmp = dest.with_suffix(".pkl.tmp")
     try:
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        blob = {"key": key, "ids": idx["ids"], "postings": idx["postings"]}
-        with tmp.open("wb") as fh:
-            pickle.dump(blob, fh, protocol=5)
-        tmp.replace(dest)  # atomic, so a partially-written file is never read back
+        # Inside the guard: _trigram_cache_path resolves the home directory and
+        # the graph path, either of which can raise (RuntimeError when HOME is
+        # unset), and this function is documented as never raising.
+        _atomic_write_pickle(
+            _trigram_cache_path(key[0]),
+            {"key": key, "ids": idx["ids"], "postings": idx["postings"]},
+        )
     except Exception:
-        try:
-            tmp.unlink()
-        except Exception:
-            pass
+        pass
 
 
 def _get_trigram_index(G: nx.Graph) -> dict:
