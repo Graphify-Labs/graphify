@@ -174,34 +174,49 @@ def _rust_crate_src_root(path: Path) -> Path | None:
         if (probe / "Cargo.toml").is_file():
             src = probe / "src"
             base = src if src.is_dir() else probe
-            own = _rust_own_crate_root_dir(path, base, probe)
+            own = _rust_auto_target_crate_dir(path, base, probe)
             return own if own is not None else base
         if probe.parent == probe:
             return None
         probe = probe.parent
 
 
-def _rust_own_crate_root_dir(path: Path, src: Path, package: Path) -> Path | None:
-    """The module directory of ``path`` when ``path`` is itself a crate root.
+def _rust_is_auto_target_dir(directory: Path, src: Path, package: Path) -> bool:
+    """True when ``directory`` is one of Cargo's auto-discovered target dirs.
 
-    ``src/bin/tool.rs`` is a binary crate whose children live in a sibling
-    ``src/bin/tool/``. ``examples``/``tests``/``benches`` sit at the package
-    root rather than under ``src``. Returns ``None`` when ``path`` is an
-    ordinary module of the library crate.
+    ``bin`` lives under ``src``; ``examples``/``tests``/``benches`` sit at the
+    package root.
     """
-    if path.name in _RUST_MODULE_ROOT_FILES:
-        return None
-    parent = path.parent
-    is_auto_target = (
-        (parent.parent == src and parent.name == "bin")
-        or (parent.parent == package and parent.name in _RUST_AUTO_TARGET_DIRS)
-    )
-    if not is_auto_target:
-        return None
-    # The binary's children live in a sibling directory named after it. If it
-    # does not exist the crate has no child modules, and the module walk finds
-    # nothing there — which is right, and better than falling back to `src`.
-    return parent / path.stem
+    if directory.name == "bin" and directory.parent == src:
+        return True
+    return directory.name in _RUST_AUTO_TARGET_DIRS and directory.parent == package
+
+
+def _rust_auto_target_crate_dir(path: Path, src: Path, package: Path) -> Path | None:
+    """The crate-root directory when ``path`` belongs to an auto-target crate.
+
+    Two shapes reach the same answer. ``src/bin/tool.rs`` IS the crate, so its
+    module tree is the sibling ``src/bin/tool/``; a module of that crate
+    (``src/bin/tool/helper.rs``, or deeper) resolves ``crate::`` against the
+    same directory. Returns ``None`` for an ordinary module of the library
+    crate, which anchors at ``src``.
+    """
+    if path.name not in _RUST_MODULE_ROOT_FILES and _rust_is_auto_target_dir(
+        path.parent, src, package
+    ):
+        # The crate root file itself. The sibling directory holds its children;
+        # if it does not exist the crate simply has none, which the module walk
+        # discovers — better than falling back to `src` and edging a namesake
+        # module of the library.
+        return path.parent / path.stem
+    # A module nested inside an auto-target crate: the crate root is the
+    # directory whose own parent is the auto-target directory.
+    probe = path.parent
+    while probe != package and probe.parent != probe:
+        if _rust_is_auto_target_dir(probe.parent, src, package):
+            return probe
+        probe = probe.parent
+    return None
 
 
 def _rust_module_file(directory: Path, name: str) -> Path | None:
@@ -311,7 +326,15 @@ def _resolve_rust_use_path(
             # child directory to live in.
             return path, segments[1]
         return None
-    anchor_file = path if first == "self" else _rust_module_root_file(anchor)
+    if first == "self":
+        anchor_file = path
+    elif path.parent == anchor and path.name in _RUST_MODULE_ROOT_FILES:
+        # A crate with both `src/lib.rs` and `src/main.rs` has two roots in one
+        # directory. `crate::` inside `main.rs` is `main.rs`, so prefer the
+        # file doing the importing over the first name that happens to exist.
+        anchor_file = path
+    else:
+        anchor_file = _rust_module_root_file(anchor)
     return _walk_rust_segments(anchor, segments[index:], anchor_file=anchor_file)
 
 
@@ -497,6 +520,10 @@ def extract_rust(path: Path) -> dict:
             "source_location": f"L{line}", "weight": 1.0, "context": "import",
             "target_file": str(module_file),
         }
+        if symbol is None and alias and alias != module_file.stem:
+            # `use crate::models::risk as risk_model;` aliases the MODULE, so
+            # the alias belongs on the file-level edge.
+            file_edge["local_alias"] = alias
         edges.append(file_edge)
         if symbol is None or is_wildcard:
             # `use super::risk;` names the module itself, and a glob re-export
@@ -507,13 +534,20 @@ def extract_rust(path: Path) -> dict:
         # name)`), so this edge lands on that node rather than a look-alike the
         # corpus rewire has to guess at.
         symbol_nid = _make_id(_file_stem(module_file), symbol)
-        edges.append({
+        symbol_edge = {
             "source": file_nid, "target": symbol_nid,
             "relation": "re_exports" if is_reexport else "imports",
             "confidence": "EXTRACTED", "source_file": str_path,
             "source_location": f"L{line}", "weight": 1.0,
             "target_file": str(module_file),
-        })
+        }
+        if alias and alias != symbol:
+            # `use …::Entity as Risk;` — this file spells the symbol `Risk`.
+            # `local_alias` is the field the corpus-level receiver resolution
+            # already reads (#2082), so the alias resolves like the bare name
+            # instead of being parsed and then dropped.
+            symbol_edge["local_alias"] = alias
+        edges.append(symbol_edge)
 
     def walk(node, parent_impl_nid: str | None = None) -> None:
         t = node.type

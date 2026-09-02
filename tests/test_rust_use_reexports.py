@@ -15,6 +15,7 @@ from pathlib import Path
 from graphify.extract import extract
 from graphify.extractors.rust import (
     _resolve_rust_use_path,
+    extract_rust,
     _rust_module_dirs,
     _rust_use_leaves,
 )
@@ -594,3 +595,136 @@ def test_super_walk_without_a_cargo_toml_resolves_nothing(tmp_path):
     imports_from = _edges(result, nodes, "imports_from")
     assert ("service.rs", "models.rs") not in imports_from
     assert ("service.rs", "Outside") in imports_from
+
+
+def _use_edges(path: Path):
+    """Edges straight from the extractor.
+
+    `local_alias` is a transient import-resolution hint that `extract()` pops
+    once the language resolvers have run (see the note beside the `pop` in
+    extract.py), so the alias has to be asserted at this layer.
+    """
+    return [
+        e for e in extract_rust(path)["edges"]
+        if e["relation"] in ("imports", "imports_from", "re_exports")
+    ]
+
+
+def test_resolved_symbol_alias_is_recorded_on_the_edge(tmp_path):
+    """`use …::Entity as Risk;` — the alias was parsed and then dropped.
+
+    `local_alias` is the field the corpus-level receiver resolution already
+    reads (#2082), so recording it there is what lets an aliased receiver
+    match the import edge it came from.
+    """
+    _crate(tmp_path)
+    service = tmp_path / "src" / "models" / "service.rs"
+    service.write_text(
+        "use crate::models::_entities::risk::Entity as Risk;\n"
+        "pub fn run() -> u32 { 1 }\n",
+        encoding="utf-8",
+    )
+    aliased = [e for e in _use_edges(service) if e.get("local_alias") == "Risk"]
+    assert len(aliased) == 1
+    assert aliased[0]["relation"] == "imports"
+    assert aliased[0]["target_file"].endswith("risk.rs")
+
+
+def test_module_alias_is_recorded_on_the_file_edge(tmp_path):
+    """`use crate::…::risk as risk_model;` aliases the MODULE, not a symbol."""
+    _crate(tmp_path)
+    service = tmp_path / "src" / "models" / "service.rs"
+    service.write_text(
+        "use crate::models::_entities::risk as risk_model;\n"
+        "pub fn run() -> u32 { 1 }\n",
+        encoding="utf-8",
+    )
+    aliased = [e for e in _use_edges(service) if e.get("local_alias") == "risk_model"]
+    assert len(aliased) == 1
+    assert aliased[0]["relation"] == "imports_from"
+    assert aliased[0]["target_file"].endswith("risk.rs")
+
+
+def test_unresolved_alias_still_names_the_local_binding(tmp_path):
+    """`use anyhow::Result as AnyResult;` stubs under the ALIAS, not `Result`."""
+    _crate(tmp_path)
+    service = tmp_path / "src" / "models" / "service.rs"
+    service.write_text(
+        "use anyhow::Result as AnyResult;\npub fn run() -> u32 { 1 }\n",
+        encoding="utf-8",
+    )
+    labels = {n["label"] for n in extract_rust(service)["nodes"]}
+    assert "AnyResult" in labels
+    assert "Result" not in labels
+
+
+def test_unaliased_import_records_no_alias(tmp_path):
+    _crate(tmp_path)
+    service = tmp_path / "src" / "models" / "service.rs"
+    service.write_text(
+        "use crate::models::_entities::risk::Entity;\npub fn run() -> u32 { 1 }\n",
+        encoding="utf-8",
+    )
+    assert not [e for e in _use_edges(service) if e.get("local_alias")]
+
+
+def test_module_under_a_named_bin_anchors_crate_at_that_bin(tmp_path):
+    """`crate::` inside `src/bin/tool/helper.rs` is the bin crate, not `src`."""
+    _crate(tmp_path)
+    (tmp_path / "src" / "shared.rs").write_text("pub struct Wrong;\n", encoding="utf-8")
+    (tmp_path / "src" / "bin" / "tool").mkdir(parents=True)
+    (tmp_path / "src" / "bin" / "tool" / "shared.rs").write_text(
+        "pub struct Shared;\n", encoding="utf-8"
+    )
+    (tmp_path / "src" / "bin" / "tool" / "helper.rs").write_text(
+        "use crate::shared::Shared;\npub fn go() -> u32 { 1 }\n", encoding="utf-8"
+    )
+    (tmp_path / "src" / "bin" / "tool.rs").write_text(
+        "mod helper;\nmod shared;\nfn main() {}\n", encoding="utf-8"
+    )
+    result, nodes = _graph(tmp_path)
+    targets = {
+        nodes[e["target"]]["source_file"]
+        for e in result["edges"]
+        if nodes.get(e["source"], {}).get("label") == "helper.rs"
+        and e["relation"] == "imports_from"
+        and nodes.get(e["target"], {}).get("label") == "shared.rs"
+    }
+    assert targets == {"src/bin/tool/shared.rs"}
+
+
+def test_super_still_resolves_inside_a_named_bin_crate(tmp_path):
+    """The clamp must accept a bin crate's own root as the floor."""
+    _crate(tmp_path)
+    (tmp_path / "src" / "bin" / "tool" / "deep").mkdir(parents=True)
+    (tmp_path / "src" / "bin" / "tool" / "shared.rs").write_text(
+        "pub struct Shared;\n", encoding="utf-8"
+    )
+    (tmp_path / "src" / "bin" / "tool" / "deep" / "mod.rs").write_text(
+        "use super::shared::Shared;\npub fn go() -> u32 { 1 }\n", encoding="utf-8"
+    )
+    (tmp_path / "src" / "bin" / "tool.rs").write_text(
+        "mod deep;\nmod shared;\nfn main() {}\n", encoding="utf-8"
+    )
+    result, nodes = _graph(tmp_path)
+    assert ("mod.rs", "shared.rs") in _edges(result, nodes, "imports_from")
+
+
+def test_main_rs_prefers_its_own_crate_root_over_lib_rs(tmp_path):
+    """A package with both roots in `src/` must not attribute main's item to lib."""
+    _crate(tmp_path)
+    (tmp_path / "src" / "lib.rs").write_text(
+        "pub mod models;\npub struct Config;\n", encoding="utf-8"
+    )
+    (tmp_path / "src" / "main.rs").write_text(
+        "use crate::Config;\npub struct Config;\nfn main() {}\n", encoding="utf-8"
+    )
+    result, nodes = _graph(tmp_path)
+    targets = {
+        nodes[e["target"]]["source_file"]
+        for e in result["edges"]
+        if nodes.get(e["source"], {}).get("label") == "main.rs"
+        and e["relation"] == "imports"
+        and nodes.get(e["target"], {}).get("label") == "Config"
+    }
+    assert targets == {"src/main.rs"}
