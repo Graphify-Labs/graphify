@@ -412,17 +412,45 @@ def _atomic_write_pickle(dest: Path, blob) -> None:
 
 
 def _trigram_cache_key(G: nx.Graph):
-    """Identity of the graph file the index was built from, or None if unknown."""
+    """Identity of the graph file the index was built from, or None if unknown.
+
+    Computed once per graph object and memoized on `G.graph`. It has to be the
+    same key at load and at store: a fresh stat() at store time describes the
+    file as it is THEN, and if graph.json was rebuilt while this process held
+    the old content in memory, the index would be written under the new file's
+    key. The next reader would load an index built from content that file no
+    longer has, with nothing to reveal it. Memoizing pins the key to the read
+    the index was actually built from.
+
+    The path is resolved here so that this string and the cache filename's
+    digest derive from the same value; resolving in one place and not the other
+    lets a symlinked and a real path share a filename while disagreeing on the
+    key, so each process invalidates the other's entry forever.
+    """
     if os.environ.get("GRAPHIFY_TRIGRAM_CACHE_DISABLE", "").lower() in ("1", "true", "yes"):
         return None
+    # Memoized as an attribute on the graph OBJECT, not in `G.graph`. Anything
+    # in `G.graph` is serialized by node_link_data, and `graphify merge-driver`
+    # loads through this module and writes the result back to graph.json — so a
+    # key stored there would put an absolute path, and the OS username in it,
+    # into a committed file. That is the leak #1789 was filed for.
+    cached = getattr(G, "_gfy_trigram_cache_key", None)
+    if cached is not None:
+        return cached
     raw = G.graph.get("_graph_path")
     if not raw:
         return None
     try:
-        st = Path(raw).stat()
+        resolved = Path(raw).resolve()
+        st = resolved.stat()
     except OSError:
         return None
-    return [str(raw), _TRIGRAM_CACHE_VERSION, st.st_mtime_ns, st.st_size]
+    key = [str(resolved), _TRIGRAM_CACHE_VERSION, st.st_mtime_ns, st.st_size]
+    try:
+        G._gfy_trigram_cache_key = key
+    except Exception:  # exotic graph classes with __slots__
+        pass
+    return key
 
 
 def _trigram_cache_path(graph_path: str) -> Path:
@@ -444,7 +472,9 @@ def _trigram_cache_path(graph_path: str) -> Path:
         base = Path(os.environ["LOCALAPPDATA"]) / "graphify" / "cache"
     else:
         base = Path(os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache")) / "graphify"
-    digest = hashlib.sha1(str(Path(graph_path).resolve()).encode("utf-8")).hexdigest()[:16]
+    # `graph_path` is already key[0], which _trigram_cache_key resolved. Do not
+    # resolve again: the key and this digest must come from one string.
+    digest = hashlib.sha1(str(graph_path).encode("utf-8")).hexdigest()[:16]
     return base / f"trigram-{digest}.pkl"
 
 
@@ -476,9 +506,9 @@ def _store_trigram_cache(G: nx.Graph, idx: dict) -> None:
     if key is None:
         return
     try:
-        # Inside the guard: _trigram_cache_path resolves the home directory and
-        # the graph path, either of which can raise (RuntimeError when HOME is
-        # unset), and this function is documented as never raising.
+        # Inside the guard: _trigram_cache_path resolves the home directory,
+        # which raises RuntimeError when it cannot be determined, and this
+        # function is documented as never raising.
         _atomic_write_pickle(
             _trigram_cache_path(key[0]),
             {"key": key, "ids": idx["ids"], "postings": idx["postings"]},
