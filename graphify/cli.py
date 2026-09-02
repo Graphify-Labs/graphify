@@ -753,7 +753,7 @@ def _gc_session_markers(d: "Path") -> None:
     """Best-effort: drop session markers older than 24 hours so a reused
     session id is neither pre-denied nor pre-authorized. Shared by both writers."""
     try:
-        cutoff = time.time() - 86400
+        cutoff = time.time() - _SESSION_MARKER_TTL
         for entry in os.scandir(d):
             try:
                 if entry.stat().st_mtime < cutoff:
@@ -764,10 +764,24 @@ def _gc_session_markers(d: "Path") -> None:
         pass
 
 
+_SESSION_MARKER_TTL = 86400  # seconds; shared by the reader and the GC sweep
+
+
 def _session_has_queried(identity: str) -> bool:
+    """True only for a marker younger than the TTL. The reader enforces the TTL
+    itself — a stale marker must not pre-authorize a reused session id just
+    because no writer has swept yet — and best-effort unlinks an expired one."""
     p = _queried_marker_path(identity)
     try:
-        return p is not None and p.is_file()
+        if p is None or not p.is_file():
+            return False
+        if p.stat().st_mtime >= time.time() - _SESSION_MARKER_TTL:
+            return True
+        try:
+            p.unlink()
+        except OSError:
+            pass
+        return False
     except Exception:
         return False
 
@@ -997,12 +1011,13 @@ _PS_SEARCH_CMDS = frozenset({"select-string", "sls"})
 
 
 def _ps_recursive_search_targets(cmd_str: str, root: "Path") -> "list[Path]":
-    """In-project DIRECTORIES a PowerShell corpus search would walk (Claude Code's
-    PowerShell tool: tool_name "PowerShell", tool_input.command). Two measured
-    shapes only: `Get-ChildItem|gci|ls|dir ... -Recurse|-r [path] | Select-String|sls`
-    and `Select-String ... -Path <dir or dir\\*>` (with or without -Recurse).
-    Exact-file -Path, stdin (Get-Content | Select-String) and out-of-project
-    targets return nothing. Never executes anything."""
+    """In-project DIRECTORIES a PowerShell corpus search or enumeration would walk
+    (Claude Code's PowerShell tool: tool_name "PowerShell", tool_input.command).
+    Two measured shapes: `Get-ChildItem|gci|ls|dir ... -Recurse|-r [path]` — with or
+    without a `| Select-String` pipe, because recursive enumeration is the same
+    bypass class as `find .` — and `Select-String ... -Path <dir or dir\\*>`.
+    Exact-file -Path, non-recursive listing, stdin (Get-Content | Select-String)
+    and out-of-project targets return nothing. Never executes anything."""
     found = []
     for tokens in _bash_command_segments(cmd_str):
         name = tokens[0]
@@ -1010,8 +1025,6 @@ def _ps_recursive_search_targets(cmd_str: str, root: "Path") -> "list[Path]":
         lowered = [a.lower() for a in args]
         if name in _PS_LIST_CMDS:
             if not any(a in ("-recurse", "-r") for a in lowered):
-                continue
-            if not any(t[0] in _PS_SEARCH_CMDS for t in _bash_command_segments(cmd_str)):
                 continue
             paths, value_of = [], None
             for a in args:
@@ -1048,7 +1061,13 @@ def _ps_recursive_search_targets(cmd_str: str, root: "Path") -> "list[Path]":
 
 
 def _ps_invokes_search(cmd_str: str) -> bool:
-    return any(t[0] in _PS_SEARCH_CMDS for t in _bash_command_segments(cmd_str))
+    """A Select-String, or a recursive directory listing (enumeration counts)."""
+    for tokens in _bash_command_segments(cmd_str):
+        if tokens[0] in _PS_SEARCH_CMDS:
+            return True
+        if tokens[0] in _PS_LIST_CMDS and any(a.lower() in ("-recurse", "-r") for a in tokens[1:]):
+            return True
+    return False
 
 
 def _run_hook_guard(kind: str, strict: bool = False) -> None:

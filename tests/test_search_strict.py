@@ -160,6 +160,20 @@ def test_queried_markers_are_garbage_collected(tmp_path, monkeypatch):
     assert _is_deny(_invoke("search", _search("grep -rn foo .", "stale-session"), tmp_path, monkeypatch))
 
 
+def test_stale_queried_marker_does_not_authorize_without_any_writer(tmp_path, monkeypatch):
+    """Round 3 F1: the reader enforces the TTL itself. No fresh mark call first —
+    the only marker is 25 hours old, and the search must still be denied."""
+    _fixture(tmp_path)
+    d = tmp_path / "graphify-out" / "cache" / "hook_sessions"
+    d.mkdir(parents=True)
+    old = d / "reused.queried"
+    old.write_text("", encoding="utf-8")
+    os.utime(old, (time.time() - 90000, time.time() - 90000))
+    out = _invoke("search", _search("grep -rn foo .", "reused"), tmp_path, monkeypatch)
+    assert _is_deny(out)
+    assert not old.exists()  # best-effort unlink of the expired marker
+
+
 def _ps(command, sid="s1"):
     return {"session_id": sid, "tool_name": "PowerShell", "tool_input": {"command": command}}
 
@@ -176,6 +190,18 @@ def test_powershell_recursive_search_denies(tmp_path, monkeypatch):
         "Select-String -Pattern foo -Path src -Recurse",
     ):
         assert _is_deny(_invoke("search", _ps(command), tmp_path, monkeypatch)), command
+
+
+def test_powershell_standalone_recursive_listing_denies_like_find(tmp_path, monkeypatch):
+    """Round 3 F2: recursive corpus enumeration without a Select-String pipe is the
+    same bypass class as `find .`; it must deny in-project, nudge out-of-project,
+    and stay silent when not recursive."""
+    _fixture(tmp_path)
+    for command in ("Get-ChildItem -Recurse .", "gci -r", "ls -Recurse src", "dir -Recurse -Filter *.md"):
+        assert _is_deny(_invoke("search", _ps(command), tmp_path, monkeypatch)), command
+    out = _invoke("search", _ps("Get-ChildItem -Recurse C:/somewhere/else"), tmp_path, monkeypatch)
+    assert not _is_deny(out) and "MANDATORY" in out
+    assert _invoke("search", _ps("Get-ChildItem src"), tmp_path, monkeypatch).strip() == ""
 
 
 def test_powershell_bounded_and_outside_only_nudge_or_stay_silent(tmp_path, monkeypatch):
