@@ -1471,7 +1471,16 @@ def _graphify_command_windows(args: str, project: bool = False) -> str:
             '"$p=(Get-Content -Raw \'graphify-out\\.graphify_python\').Trim(); '
             f'& $p -m graphify {args}; exit 0"'
         )
-    return f'cmd /c "{_resolve_graphify_exe()} {args}" & exit /b 0'
+    # The generated string may be run by cmd.exe or by PowerShell, and no bare
+    # suffix is fail-open in both: `& exit /b 0` is cmd syntax that PowerShell
+    # reads as its background operator (spawns a job, exits 1), while `; exit 0`
+    # is PowerShell syntax that cmd.exe rejects. Naming the interpreter removes
+    # the ambiguity, so the advisory hook can never break the host (#3280).
+    inner = f"cmd /c '{_resolve_graphify_exe()} {args}'"
+    return (
+        'powershell.exe -NoProfile -NonInteractive -Command '
+        f'"{inner}; exit 0"'
+    )
 def _install_codex_hook(project_dir: Path, project: bool = False) -> None:
     """Add graphify PreToolUse hook to .codex/hooks.json.
 

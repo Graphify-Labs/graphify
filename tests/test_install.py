@@ -1398,6 +1398,14 @@ def test_codex_hook_fails_open(tmp_path):
                 f"POSIX command must fail open (#3280); got {entry['command']!r}"
             )
             win = entry.get("commandWindows", "")
-            assert "exit /b 0" in win, (
+            assert win.startswith("powershell.exe -NoProfile -NonInteractive"), (
+                f"Windows command must name its interpreter (#3280); got {win!r}"
+            )
+            assert win.rstrip().endswith('; exit 0"'), (
                 f"Windows command must fail open (#3280); got {win!r}"
+            )
+            # `& exit /b 0` is cmd-only: run by PowerShell the bare `&` is the
+            # background operator, which spawns a job and exits 1.
+            assert "& exit /b 0" not in win, (
+                f"Windows fail-open suffix must not use cmd-only syntax; got {win!r}"
             )
