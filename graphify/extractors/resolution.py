@@ -628,9 +628,19 @@ def _sfc_mask_non_script(src: str) -> tuple[str, str | None]:
     /instance pair (or a Vue ``setup``/options pair) is parsed as one unit.
     Returns ``(masked_source, lang)``; ``lang`` is the first block's declared
     ``lang``.
+
+    Blanking is BYTE-preserving: a masked character becomes as many spaces as
+    its UTF-8 encoding takes. tree-sitter reports byte offsets, so one space
+    per character would shift every offset after any non-ASCII markup (an
+    accented word or an emoji in the template) and misreport the column of
+    everything in the script below it.
     """
     def _blank(s: str) -> str:
-        return re.sub(r"[^\r\n]", " ", s)
+        if s.isascii():
+            return re.sub(r"[^\r\n]", " ", s)
+        return "".join(
+            ch if ch in "\r\n" else " " * len(ch.encode("utf-8")) for ch in s
+        )
 
     out: list[str] = []
     pos = 0

@@ -397,3 +397,37 @@ def test_repeated_dynamic_import_emits_one_edge(tmp_path):
         if e.get("target") == target and e.get("relation") == "dynamic_import"
     ]
     assert len(matching) == 1
+
+
+def test_mask_preserves_byte_offsets_through_non_ascii_markup():
+    """tree-sitter reports BYTE offsets, so the mask must be byte-preserving.
+
+    One space per character shifts every offset after any non-ASCII markup —
+    an accented word or an emoji in the template — misreporting the column of
+    everything in the script below it.
+    """
+    src = (
+        '<div class="héllo ünïcode ✓ 🎉">{x}</div>\n'
+        '<script lang="ts">\n'
+        "  import { fmt } from './format'\n"
+        "</script>\n"
+    )
+    masked, _lang = _sfc_mask_non_script(src)
+    assert len(masked.encode("utf-8")) == len(src.encode("utf-8"))
+    assert masked.count("\n") == src.count("\n")
+    assert masked.encode("utf-8").index(b"import") == src.encode("utf-8").index(b"import")
+
+
+def test_symbol_lines_are_right_under_non_ascii_markup(tmp_path):
+    _write(tmp_path / "format.ts", "export const fmt = (s: string) => s\n")
+    component = _write(
+        tmp_path / "Emoji.svelte",
+        '<div title="ünïcode 🎉 ✓">{x}</div>\n'
+        '<script lang="ts">\n'
+        "  import { fmt } from './format'\n"
+        "  export function handler() { return fmt('x') }\n"
+        "</script>\n",
+    )
+    result = extract_svelte(component)
+    lines = {n["label"]: n.get("source_location") for n in result["nodes"]}
+    assert lines.get("handler()") == "L4"
