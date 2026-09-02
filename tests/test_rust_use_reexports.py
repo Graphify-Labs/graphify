@@ -728,3 +728,46 @@ def test_main_rs_prefers_its_own_crate_root_over_lib_rs(tmp_path):
         and nodes.get(e["target"], {}).get("label") == "Config"
     }
     assert targets == {"src/main.rs"}
+
+
+def test_self_prefixed_multi_segment_path_attributes_the_item(tmp_path):
+    """`use self::Status::Active;` names this module's own enum.
+
+    Requiring exactly two segments dropped the edge for anything deeper.
+    """
+    _crate(tmp_path)
+    service = tmp_path / "src" / "models" / "service.rs"
+    service.write_text(
+        "use self::Status::Active;\npub enum Status { Active }\n"
+        "pub fn run() -> u32 { 1 }\n",
+        encoding="utf-8",
+    )
+    result, nodes = _graph(tmp_path)
+    assert ("service.rs", "Status") in _edges(result, nodes, "imports")
+
+
+def test_mod_rs_module_alias_compares_against_the_written_name(tmp_path):
+    """A `mod.rs` file's stem is `mod`, not the module it defines.
+
+    Comparing the alias against the stem stamped a redundant alias
+    (`as _entities`) as though it renamed something.
+    """
+    _crate(tmp_path)
+    service = tmp_path / "src" / "models" / "service.rs"
+    service.write_text(
+        "use crate::models::_entities as _entities;\npub fn run() -> u32 { 1 }\n",
+        encoding="utf-8",
+    )
+    assert not [e for e in _use_edges(service) if e.get("local_alias")]
+
+
+def test_mod_rs_module_alias_is_still_recorded_when_it_renames(tmp_path):
+    _crate(tmp_path)
+    service = tmp_path / "src" / "models" / "service.rs"
+    service.write_text(
+        "use crate::models::_entities as ents;\npub fn run() -> u32 { 1 }\n",
+        encoding="utf-8",
+    )
+    aliased = [e for e in _use_edges(service) if e.get("local_alias") == "ents"]
+    assert len(aliased) == 1
+    assert aliased[0]["target_file"].endswith("_entities/mod.rs")

@@ -321,9 +321,11 @@ def _resolve_rust_use_path(
                 return resolved
         return None
     if anchor is None:
-        if first == "self" and len(segments) == 2:
+        if first == "self" and len(segments) >= 2:
             # `use self::Config;` names an item of THIS module, which needs no
-            # child directory to live in.
+            # child directory to live in. A longer path names something inside
+            # that item (`self::Status::Active`), so the item is attributed and
+            # the rest dropped — the same rule `_walk_rust_segments` applies.
             return path, segments[1]
         return None
     if first == "self":
@@ -520,9 +522,11 @@ def extract_rust(path: Path) -> dict:
             "source_location": f"L{line}", "weight": 1.0, "context": "import",
             "target_file": str(module_file),
         }
-        if symbol is None and alias and alias != module_file.stem:
+        if symbol is None and alias and alias != segments[-1]:
             # `use crate::models::risk as risk_model;` aliases the MODULE, so
-            # the alias belongs on the file-level edge.
+            # the alias belongs on the file-level edge. Compared against the
+            # last PATH segment, which is the module's name as written: a
+            # `mod.rs` file's stem is `mod`, not the module it defines.
             file_edge["local_alias"] = alias
         edges.append(file_edge)
         if symbol is None or is_wildcard:
