@@ -2063,7 +2063,53 @@ def _build_server(graph_path: str):
                 return f"Could not generate questions: {exc}"
         raise ValueError(f"Unknown resource: {uri_str}")
 
+    # Per-tool question extraction for the read log: each tool's most
+    # meaningful argument, so a GraphPulse feed card reads like a sentence
+    # instead of "get_node".
+    _LOG_QUESTION_KEYS = {
+        "query_graph": ("question",),
+        "get_node": ("label",),
+        "get_neighbors": ("label",),
+        "get_community": ("community_id",),
+        "god_nodes": ("top_n",),
+        "graph_stats": (),
+        "shortest_path": ("source", "target"),
+        "list_prs": ("repo",),
+        "get_pr_impact": ("pr_number",),
+        "triage_prs": ("repo",),
+    }
+
+    def _log_tool_read(name: str, arguments: dict, result: str, duration_ms: float) -> None:
+        """Record ONE MCP tool call in the graphify query log.
+
+        query_graph already logs itself inside its handler (with mode/depth/
+        budget detail), so it is skipped here to avoid double counting. Every
+        other tool is logged from this single dispatch point, which is why
+        adding a tool later cannot silently reintroduce an invisible read.
+
+        Fail-silent by contract: querylog.log_query never raises, and this
+        wrapper must never turn an observability concern into a tool error.
+        """
+        if name == "query_graph":
+            return
+        try:
+            from graphify import querylog
+            keys = _LOG_QUESTION_KEYS.get(name, ())
+            parts = [str(arguments[k]) for k in keys if arguments.get(k) is not None]
+            question = " -> ".join(parts) if parts else name
+            querylog.log_query(
+                kind=f"mcp_{name}",
+                question=question,
+                corpus=str(active_graph_path),
+                result=result,
+                duration_ms=duration_ms,
+                tool=name,
+            )
+        except Exception:
+            pass
+
     async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
+        import time as _time
         arguments = dict(arguments or {})
         project_path = arguments.pop("project_path", None)
         handler = _handlers.get(name)
@@ -2071,7 +2117,10 @@ def _build_server(graph_path: str):
             return [types.TextContent(type="text", text=f"Unknown tool: {name}")]
         try:
             _select_graph(project_path)  # bind G/communities to the target graph
-            return [types.TextContent(type="text", text=handler(arguments))]
+            _t0 = _time.perf_counter()
+            result = handler(arguments)
+            _log_tool_read(name, arguments, result, (_time.perf_counter() - _t0) * 1000)
+            return [types.TextContent(type="text", text=result)]
         except ToolError:
             # A handler-signalled error: propagate so the result is marked
             # isError:true (the mcp 1.x decorator wraps a raised exception into
