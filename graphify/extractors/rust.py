@@ -184,6 +184,31 @@ def _rust_crate_src_root(path: Path) -> Path | None:
         probe = probe.parent
 
 
+_RUST_EDITION_RE = re.compile(r"^\s*edition\s*=\s*[\"'](\d{4})[\"']", re.MULTILINE)
+
+
+def _rust_package_edition(path: Path) -> int:
+    """The Rust edition of the package owning ``path``.
+
+    Cargo's default when `edition` is absent is 2015, which is the edition
+    whose path rules the bare-path fallback below models.
+    """
+    probe = path.parent
+    while True:
+        manifest = probe / "Cargo.toml"
+        if manifest.is_file():
+            try:
+                match = _RUST_EDITION_RE.search(
+                    manifest.read_text(encoding="utf-8", errors="replace")
+                )
+            except OSError:
+                return 2015
+            return int(match.group(1)) if match else 2015
+        if probe.parent == probe:
+            return 2015
+        probe = probe.parent
+
+
 def _rust_is_auto_target_dir(directory: Path, src: Path, package: Path) -> bool:
     """True when ``directory`` is one of Cargo's auto-discovered target dirs.
 
@@ -312,8 +337,15 @@ def _resolve_rust_use_path(
         if anchor is None or src_root not in (anchor, *anchor.parents):
             return None
     if anchor is None and first not in ("crate", "self", "super"):
-        # 2018-edition paths may be crate-relative without the `crate` prefix;
-        # try the crate root, then the current module. An external crate simply
+        if _rust_package_edition(path) >= 2018:
+            # From 2018 a bare `use foo::…` names a CRATE, never a module of
+            # this one — a local module requires `crate::`/`self::`/`super::`.
+            # Resolving it locally lets a same-named module shadow the
+            # dependency (`use anyhow::Result` landing on `src/anyhow.rs`),
+            # which is the false-hub failure this resolver exists to avoid.
+            return None
+        # 2015-edition paths are crate-relative without a `crate` prefix; try
+        # the crate root, then the current module. An external crate simply
         # resolves to nothing at either.
         for candidate_anchor in (src_root, search_dir):
             if candidate_anchor is None:

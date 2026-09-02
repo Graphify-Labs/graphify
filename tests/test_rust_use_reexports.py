@@ -989,3 +989,49 @@ def test_use_list_self_alongside_a_name_edges_both(tmp_path):
     imports_from = _edges(result, nodes, "imports_from")
     assert ("prelude.rs", "mod.rs") in imports_from
     assert ("prelude.rs", "risk.rs") in imports_from
+
+
+def _edition_crate(tmp_path: Path, edition: str | None) -> Path:
+    (tmp_path / "src").mkdir(parents=True)
+    manifest = '[package]\nname = "d"\n'
+    if edition is not None:
+        manifest += f'edition = "{edition}"\n'
+    (tmp_path / "Cargo.toml").write_text(manifest, encoding="utf-8")
+    (tmp_path / "src" / "lib.rs").write_text("pub mod anyhow;\n", encoding="utf-8")
+    # A local module sharing an external dependency's name.
+    (tmp_path / "src" / "anyhow.rs").write_text("pub struct Result;\n", encoding="utf-8")
+    (tmp_path / "src" / "service.rs").write_text("pub fn run() {}\n", encoding="utf-8")
+    return tmp_path
+
+
+@pytest.mark.parametrize("edition", ["2018", "2021", "2024"])
+def test_bare_path_is_a_crate_from_the_2018_edition(tmp_path, edition):
+    """`use anyhow::Result` names the CRATE, never a local module.
+
+    From 2018 a local module needs `crate::`/`self::`/`super::`, so resolving
+    a bare path locally lets a same-named module shadow the dependency — the
+    false-hub failure this resolver exists to avoid.
+    """
+    root = _edition_crate(tmp_path, edition)
+    assert _resolve_rust_use_path(("anyhow", "Result"), root / "src" / "service.rs") is None
+
+
+@pytest.mark.parametrize("edition", ["2015", None])
+def test_bare_path_stays_crate_relative_in_the_2015_edition(tmp_path, edition):
+    """2015 paths ARE crate-relative, and an absent `edition` means 2015."""
+    root = _edition_crate(tmp_path, edition)
+    resolved = _resolve_rust_use_path(("anyhow", "Result"), root / "src" / "service.rs")
+    assert resolved is not None
+    module_file, symbol = resolved
+    assert (str(module_file.relative_to(root)), symbol) == ("src/anyhow.rs", "Result")
+
+
+def test_explicit_crate_prefix_still_resolves_under_2021(tmp_path):
+    """The edition rule constrains BARE paths only."""
+    root = _edition_crate(tmp_path, "2021")
+    resolved = _resolve_rust_use_path(
+        ("crate", "anyhow", "Result"), root / "src" / "service.rs"
+    )
+    assert resolved is not None
+    module_file, symbol = resolved
+    assert (str(module_file.relative_to(root)), symbol) == ("src/anyhow.rs", "Result")
