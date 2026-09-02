@@ -1,6 +1,6 @@
 # graphify reference: query, path, explain
 
-Load this when the user asks a question against an existing graph, or runs `/graphify path` or `/graphify explain`. The core's query stub points here for the full traversal flow. These flows use the `graphify query` CLI when it is available and fall back to an inline NetworkX traversal otherwise.
+Load this when the user asks a question against an existing graph, or runs `/graphify path` or `/graphify explain`. The core's query stub points here for the full traversal flow. Prefer the MCP `query_graph` tool when it is available. If MCP is unavailable, invoke the module through the Python interpreter recorded in `graphify-out/.graphify_python`; on Windows, never execute a `graphify.exe` console shim. The inline NetworkX traversal remains the final fallback.
 
 Two traversal modes - choose based on the question:
 
@@ -62,10 +62,10 @@ If the list is empty, say so plainly and stop — do not proceed to traversal.
 
 Build the **expanded query string** by joining the selected tokens with spaces. Use this string as `QUESTION` below — NOT the original user question. (The original question is preserved only for `save-result` at the end.)
 
-Prefer the CLI when it is installed:
+If the MCP `query_graph` tool is available, call it with the expanded question, traversal mode, token budget, and the project root as `project_path`, then continue with the returned scoped subgraph. Otherwise invoke the module through the graph's recorded interpreter:
 ```bash
-graphify query "QUESTION"
-# or: graphify query "QUESTION" --dfs --budget 3000
+$(cat graphify-out/.graphify_python) -m graphify query "QUESTION"
+# or: $(cat graphify-out/.graphify_python) -m graphify query "QUESTION" --dfs --budget 3000
 ```
 
 If the CLI is unavailable, load `graphify-out/graph.json` and run the traversal inline:

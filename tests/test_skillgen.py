@@ -58,6 +58,24 @@ def test_render_output_is_lf_only():
         assert not art.content.endswith("\n\n"), art.path
 
 
+def test_query_guidance_prefers_mcp_and_never_runs_windows_console_shim():
+    """Agent retrieval must not route Windows through an unsigned graphify.exe."""
+    for key in ("claude", "codex", "windows", "opencode"):
+        core, refs = _platform_artifacts(key)
+        query = refs["query.md"]
+        assert "Prefer the MCP `query_graph` tool when it is available" in core, key
+        assert "Prefer the MCP `query_graph` tool when it is available" in query, key
+        assert "never execute a `graphify.exe` console shim" in query, key
+
+    artifacts = gen.render_all(gen.load_platforms())
+    antigravity = next(
+        artifact.content
+        for artifact in artifacts
+        if artifact.path == "graphify/always_on/antigravity-rules.md"
+    )
+    assert "Prefer the MCP `query_graph` tool when it is available" in antigravity
+
+
 def test_no_version_or_timestamp_in_output():
     """No generated artifact carries the package version string."""
     from graphify.__main__ import __version__

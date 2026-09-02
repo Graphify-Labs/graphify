@@ -19,8 +19,9 @@ _SEARCH_NUDGE = json.dumps({
     "hookSpecificOutput": {
         "hookEventName": "PreToolUse",
         "additionalContext": (
-            'MANDATORY: graphify-out/graph.json exists. You MUST run '
-            '`graphify query "<question>"` before grepping raw files. Only grep '
+            'MANDATORY: graphify-out/graph.json exists. Use the MCP `query_graph` '
+            'tool when available; otherwise run `graphify query "<question>"` '
+            'through the interpreter named by the installed Graphify skill. Only grep '
             'after graphify has oriented you, or to modify/debug specific lines.'
         ),
     }
@@ -30,7 +31,8 @@ _READ_NUDGE = json.dumps({
         "hookEventName": "PreToolUse",
         "additionalContext": (
             'MANDATORY: graphify-out/graph.json exists. You MUST run graphify '
-            'before reading source files. Use: `graphify query "<question>"` '
+            'before reading source files. Prefer the MCP `query_graph` tool; '
+            'otherwise use: `graphify query "<question>"` '
             '(scoped subgraph), `graphify explain "<concept>"`, or '
             '`graphify path "<A>" "<B>"`. Only read raw files after graphify has '
             'oriented you, or to modify/debug specific lines. This rule applies to '
@@ -60,7 +62,8 @@ _READ_DENY = json.dumps({
         "permissionDecision": "deny",
         "permissionDecisionReason": (
             'graphify strict mode: this project has a fresh knowledge graph that covers '
-            'this file. Run `graphify query "<your question>"` (or `graphify explain` / '
+            'this file. Use the MCP `query_graph` tool when available; otherwise run '
+            '`graphify query "<your question>"` (or `graphify explain` / '
             '`graphify path`) FIRST to orient yourself, then re-issue this Read — it '
             'will be allowed. This block fires at most once per session; reading raw '
             'files to modify or debug specific lines is fine after one query. Apply the '
@@ -74,8 +77,9 @@ _HOOK_SOURCE_EXTS = (
     '.swift', '.php', '.scala', '.lua', '.sh', '.md', '.rst', '.txt', '.mdx',
 )
 _GEMINI_NUDGE_TEXT = (
-    'graphify: knowledge graph at graphify-out/. For focused questions, run '
-    '`graphify query "<question>"` (scoped subgraph, usually much smaller than '
+    'graphify: knowledge graph at graphify-out/. For focused questions, use the '
+    'MCP `query_graph` tool when available; otherwise run `graphify query '
+    '"<question>"` through the installed Graphify skill (scoped subgraph, usually much smaller than '
     'GRAPH_REPORT.md) instead of grepping raw files. Read GRAPH_REPORT.md only '
     'for broad architecture context.'
 )
@@ -684,36 +688,19 @@ def _hook_strict_enabled(flag: bool) -> bool:
     return flag
 
 
-def _touch_query_stamp(graph_path: "Path") -> None:
-    """Record that graphify oriented the agent recently, next to the queried graph.
-    The strict guard suppresses its block while this stamp is fresh. Fail-silent."""
-    try:
-        from graphify.paths import write_text_atomic
-        stamp = Path(graph_path).parent / "cache" / "last_query_stamp"
-        stamp.parent.mkdir(parents=True, exist_ok=True)
-        write_text_atomic(stamp, str(time.time()))
-    except Exception:
-        pass
+def _mark_session_denied(identity: str) -> bool:
+    """Atomically claim one strict block per session/agent identity.
 
-
-def _query_stamp_fresh() -> bool:
-    """True if a query/explain/path ran within GRAPHIFY_HOOK_STRICT_TTL (default
-    1800s) — recent orientation, so strict mode does not block this read."""
+    Returns True only on the first call for the identity (O_EXCL wins once); every
+    later call or error returns False, so neither a parent nor subagent can be
+    stranded. Best-effort GC removes markers older than 24 hours.
+    """
     from graphify.paths import out_path
-    try:
-        ttl = float(os.environ.get("GRAPHIFY_HOOK_STRICT_TTL", "1800"))
-        return (time.time() - out_path("cache", "last_query_stamp").stat().st_mtime) < ttl
-    except Exception:
-        return False
-
-
-def _mark_session_denied(session_id: str) -> bool:
-    """Atomically claim a one-time strict block for this session. Returns True only
-    on the FIRST call for a given session id (O_EXCL create wins once); every later
-    call — or any error — returns False, so a session is blocked at most once and an
-    agent can never be stranded. Best-effort GC of markers older than 24h."""
-    from graphify.paths import out_path
-    sid = re.sub(r"[^A-Za-z0-9_-]", "_", str(session_id))[:64]
+    raw = str(identity)
+    sid = re.sub(r"[^A-Za-z0-9_-]", "_", raw)
+    if len(sid) > 64:
+        import hashlib
+        sid = hashlib.sha256(raw.encode("utf-8")).hexdigest()
     if not sid:
         return False
     try:
@@ -928,13 +915,17 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
             if stale:
                 sys.stdout.write(_READ_NUDGE_STALE)
                 return
-            # Strict block: Read tool only, first time per session, not recently
-            # oriented, and the file is demonstrably indexed.
+            # Strict block: Read tool only, first time per session, and the file
+            # is demonstrably indexed. Do not suppress this from a graph-wide
+            # query timestamp: one agent's query must not disable every session
+            # sharing the same graph (#3280 follow-up).
             tool_name = d.get("tool_name")
+            session_key = str(d.get("session_id") or "")
+            if d.get("agent_id"):
+                session_key += f"--agent-{d['agent_id']}"
             if _hook_strict_enabled(strict) and tool_name in (None, "Read") \
-                    and not _query_stamp_fresh() \
                     and _target_is_indexed(fp, root) \
-                    and _mark_session_denied(str(d.get("session_id") or "")):
+                    and _mark_session_denied(session_key):
                 sys.stdout.write(_READ_DENY)
                 return
             sys.stdout.write(_READ_NUDGE)
@@ -1318,7 +1309,6 @@ def dispatch_command(cmd: str) -> None:
             token_budget=budget,
             duration_ms=(_time.perf_counter() - _t0) * 1000,
         )
-        _touch_query_stamp(gp)
         print(_result)
     elif cmd == "affected":
         if len(sys.argv) < 3:
@@ -1696,7 +1686,6 @@ def dispatch_command(cmd: str) -> None:
             corpus=str(gp),
             nodes_returned=hops,
         )
-        _touch_query_stamp(gp)
 
     elif cmd == "explain":
         if len(sys.argv) < 3:
@@ -1830,7 +1819,6 @@ def dispatch_command(cmd: str) -> None:
             corpus=str(gp),
             nodes_returned=len(connections),
         )
-        _touch_query_stamp(gp)
 
     elif cmd == "diagnose":
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""

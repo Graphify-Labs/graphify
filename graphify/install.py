@@ -301,11 +301,10 @@ def _print_project_git_add_hint(paths: list[Path]) -> None:
 def _claude_pretooluse_hooks(strict: bool = False, project: bool = False) -> "list[dict]":
     """graphify's Claude/Codebuddy PreToolUse hooks, resolved at install time.
 
-    The command invokes `graphify hook-guard <search|read>` via the absolute exe
-    path (`_resolve_graphify_exe`) — or, for a project-scoped install, via the
-    bare `graphify` command, since that config gets committed (#3129). Either
-    form parses under sh, cmd.exe and PowerShell alike — this is the #522 fix,
-    and mirrors the codex hook. Matchers are
+    User-scoped hooks pin the running interpreter. Project-scoped hooks read
+    ``graphify-out/.graphify_python`` at runtime, so committed config stays
+    portable without trusting an unsigned console shim on PATH (#3129, #3280).
+    Matchers are
     "Bash|Grep" and "Read|Glob" and the command always contains "graphify", so the
     existing install/uninstall filters find and replace both old bash hooks and
     these. "Grep" is in the search matcher because current Claude Code routes
@@ -317,14 +316,19 @@ def _claude_pretooluse_hooks(strict: bool = False, project: bool = False) -> "li
     var can force it on or off at runtime without a reinstall.
     """
     exe = _resolve_graphify_exe(project=project)
-    if " " in exe and not exe.startswith('"'):
-        exe = f'"{exe}"'
     read_cmd = f"{exe} hook-guard read" + (" --strict" if strict else "")
+    read_args = "hook-guard read" + (" --strict" if strict else "")
     return [
         {"matcher": "Bash|Grep",
-         "hooks": [{"type": "command", "command": f"{exe} hook-guard search"}]},
+         "hooks": [{"type": "command",
+                    "command": f"{exe} hook-guard search || true",
+                    "commandWindows": _graphify_command_windows("hook-guard search", project),
+                    "timeout": 10}]},
         {"matcher": "Read|Glob",
-         "hooks": [{"type": "command", "command": read_cmd}]},
+         "hooks": [{"type": "command",
+                    "command": f"{read_cmd} || true",
+                    "commandWindows": _graphify_command_windows(read_args, project),
+                    "timeout": 10}]},
     ]
 def _skill_registration(skill_path: str = "~/.claude/skills/graphify/SKILL.md") -> str:
     return (
@@ -1419,13 +1423,10 @@ def _uninstall_opencode_plugin(project_dir: Path) -> None:
 def _resolve_graphify_exe(project: bool = False) -> str:
     """Return the absolute path to the graphify executable, with forward slashes.
 
-    With *project* set, return the bare ``graphify`` command instead. A
-    project-scoped install writes hook config the installer then tells the user
-    to commit, so an absolute path resolved from the installing machine is wrong
-    for every other clone: it names a directory that does not exist there, and
-    the drive letter and ``.EXE`` casing do not even survive between two Windows
-    checkouts. A committed hook refers to ``graphify`` the way it would refer to
-    ``git`` or ``node``, and PATH resolves it per machine (#3129).
+    With *project* set, read the interpreter sidecar written in each clone's
+    ``graphify-out`` directory. This keeps committed hook config portable
+    without routing hardened Windows through an unsigned console shim
+    (#3129, #3280).
 
     Falls back to bare 'graphify' if resolution fails. Using an absolute path
     ensures the hook works in environments where the venv Scripts/ directory is
@@ -1441,7 +1442,7 @@ def _resolve_graphify_exe(project: bool = False) -> str:
     """
     import shutil
     if project:
-        return "graphify"
+        return '"$(cat graphify-out/.graphify_python)" -m graphify'
     # Prefer the interpreter running this install over any console-script shim.
     # For uv-tool and pipx installs the shim is an unsigned executable; on Windows
     # with Smart App Control enabled, code-integrity policy refuses to load it, so
@@ -1452,7 +1453,7 @@ def _resolve_graphify_exe(project: bool = False) -> str:
     from .hooks import _pinned_python
     pinned = _pinned_python()
     if pinned:
-        return f"{pinned.replace(chr(92), '/')} -m graphify"
+        return f'"{pinned.replace(chr(92), "/")}" -m graphify'
     found = shutil.which("graphify")
     if not found:
         # Derive from sys.executable: same Scripts/ (Windows) or bin/ (Unix) dir
@@ -1462,12 +1463,23 @@ def _resolve_graphify_exe(project: bool = False) -> str:
             if candidate.exists():
                 found = str(candidate)
                 break
-    return (found or "graphify").replace("\\", "/")
+    return f'"{(found or "graphify").replace(chr(92), "/")}"'
+
+
+def _graphify_command_windows(args: str, project: bool = False) -> str:
+    """Build a fail-open cmd.exe command for a generated Windows hook."""
+    if project:
+        return (
+            'powershell.exe -NoProfile -NonInteractive -Command '
+            '"$p=(Get-Content -Raw \'graphify-out\\.graphify_python\').Trim(); '
+            f'& $p -m graphify {args}; exit 0"'
+        )
+    return f'cmd /c "{_resolve_graphify_exe()} {args}" & exit /b 0'
 def _install_codex_hook(project_dir: Path, project: bool = False) -> None:
     """Add graphify PreToolUse hook to .codex/hooks.json.
 
-    A project-scoped install emits the bare command, since .codex/hooks.json is
-    then committed and an installing machine's path is wrong there (#3129).
+    A project-scoped install reads ``graphify-out/.graphify_python`` so the
+    committed config is portable without trusting PATH (#3129, #3280).
     """
     hooks_path = project_dir / ".codex" / "hooks.json"
     hooks_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1487,9 +1499,7 @@ def _install_codex_hook(project_dir: Path, project: bool = False) -> None:
                             # the tool call it was meant to advise. An advisory graph
                             # check must never be able to break the host (#3280).
                             "command": f"{graphify_exe} hook-check || true",
-                            "commandWindows": (
-                                f'cmd /c "{graphify_exe} hook-check" & exit /b 0'
-                            ),
+                            "commandWindows": _graphify_command_windows("hook-check", project),
                             "timeout": 10,
                         }
                     ],
