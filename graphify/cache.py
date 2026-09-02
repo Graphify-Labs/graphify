@@ -7,6 +7,7 @@ import json
 import os
 import re
 import tempfile
+import threading
 import time
 import warnings
 from collections.abc import Callable, Iterable
@@ -198,6 +199,9 @@ def _body_content(content: bytes) -> bytes:
 # `graphify extract --force` / `graphify update --force` (or GRAPHIFY_FORCE=1)
 # skip the cache reads and re-dispatch everything when needed (#1894).
 _stat_index: dict[str, dict] = {}
+# Detect word-count and extract cache probes run in a thread pool; every
+# read/write of this dict (and the dirty flag) goes through this lock.
+_stat_index_lock = threading.RLock()
 _stat_index_root: Path | None = None
 # Key anchor for the ON-DISK index (#2199): the first caller's key-root, i.e.
 # the corpus. Distinct from _stat_index_root, which is the cache-FILE location
@@ -329,89 +333,103 @@ def _ensure_stat_index(root: Path, cache_root: "Path | None" = None) -> None:
     global _stat_index, _stat_index_root, _stat_index_anchor, _stat_index_dirty
     if _stat_index_root is not None:
         return
-    # _stat_index_root determines the cache FILE location, so honoring an
-    # explicit cache_root keeps detect()'s word-count cache under the requested
-    # --out dir instead of polluting the scanned corpus with a stray
-    # graphify-out/ (#1747). _stat_index_anchor is the separate KEY anchor:
-    # in-memory keys stay absolute, but the on-disk index stores in-anchor keys
-    # relative so a moved/cloned corpus still hits (#2199) — same load/save
-    # re-anchoring the detect manifest uses.
-    _stat_index_root = Path(cache_root if cache_root is not None else root).resolve()
-    _stat_index_anchor = Path(root).resolve()
-    p = _stat_index_file(_stat_index_root)
-    _stat_index = {}
-    if p.exists():
-        try:
-            raw = json.loads(p.read_text(encoding="utf-8"))
-            if isinstance(raw, dict):
-                for k, v in raw.items():
-                    if not isinstance(k, str):
-                        continue
-                    if Path(k).is_absolute():
-                        # Legacy/out-of-anchor key: pass through, but never
-                        # clobber a re-anchored relative (new-format) entry
-                        # that resolved to the same absolute path.
-                        _stat_index.setdefault(k, v)
-                    else:
-                        _stat_index[_stat_key_to_absolute(k, _stat_index_anchor)] = v
-        except (json.JSONDecodeError, OSError):
-            _stat_index = {}
-    atexit.register(_flush_stat_index)
+    with _stat_index_lock:
+        if _stat_index_root is not None:
+            return
+        # _stat_index_root determines the cache FILE location, so honoring an
+        # explicit cache_root keeps detect()'s word-count cache under the requested
+        # --out dir instead of polluting the scanned corpus with a stray
+        # graphify-out/ (#1747). _stat_index_anchor is the separate KEY anchor:
+        # in-memory keys stay absolute, but the on-disk index stores in-anchor keys
+        # relative so a moved/cloned corpus still hits (#2199) — same load/save
+        # re-anchoring the detect manifest uses.
+        #
+        # Publish ``_stat_index_root`` last: the unlocked fast-path above treats
+        # a non-None root as "index is ready". Setting it first raced a second
+        # thread into an empty dict while this thread was still loading.
+        location = Path(cache_root if cache_root is not None else root).resolve()
+        anchor = Path(root).resolve()
+        p = _stat_index_file(location)
+        index: dict[str, dict] = {}
+        if p.exists():
+            try:
+                raw = json.loads(p.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    for k, v in raw.items():
+                        if not isinstance(k, str):
+                            continue
+                        if Path(k).is_absolute():
+                            # Legacy/out-of-anchor key: pass through, but never
+                            # clobber a re-anchored relative (new-format) entry
+                            # that resolved to the same absolute path.
+                            index.setdefault(k, v)
+                        else:
+                            index[_stat_key_to_absolute(k, anchor)] = v
+            except (json.JSONDecodeError, OSError):
+                index = {}
+        _stat_index = index
+        _stat_index_anchor = anchor
+        atexit.register(_flush_stat_index)
+        _stat_index_root = location
 
 
 def _flush_stat_index() -> None:
     global _stat_index_dirty, _stat_index_root
-    if not _stat_index_dirty or _stat_index_root is None:
-        return
-    p = _stat_index_file(_stat_index_root)
-    # Build the on-disk form (#2199): prune entries whose file is gone (the
-    # index otherwise grows without bound), then store in-anchor keys as
-    # forward-slash relative paths so the index survives a corpus move/clone.
-    # Out-of-anchor keys stay absolute (same rule as the detect manifest); a
-    # reader tells the formats apart by absoluteness, so no version marker is
-    # needed. In-memory keys are untouched — only the serialization changes.
-    on_disk: dict[str, dict] = {}
-    for k, v in _stat_index.items():
-        try:
-            if not os.path.exists(k):
+    with _stat_index_lock:
+        if not _stat_index_dirty or _stat_index_root is None:
+            return
+        p = _stat_index_file(_stat_index_root)
+        # Snapshot under the lock so a concurrent hash/word-count cannot mutate
+        # the dict we are serializing. The file write stays inside the lock:
+        # atexit vs a late worker is rare, and a torn write is worse.
+        # Build the on-disk form (#2199): prune entries whose file is gone (the
+        # index otherwise grows without bound), then store in-anchor keys as
+        # forward-slash relative paths so the index survives a corpus move/clone.
+        # Out-of-anchor keys stay absolute (same rule as the detect manifest); a
+        # reader tells the formats apart by absoluteness, so no version marker is
+        # needed. In-memory keys are untouched — only the serialization changes.
+        on_disk: dict[str, dict] = {}
+        for k, v in _stat_index.items():
+            try:
+                if not os.path.exists(k):
+                    continue
+            except OSError:
                 continue
+            dk = _stat_key_to_relative(k, _stat_index_anchor) if _stat_index_anchor is not None else k
+            on_disk[dk] = v
+        # Never resurrect a corpus that was deleted while graphify was running
+        # (#2974): a hook-launched `graphify update . &` in a short-lived worktree
+        # outlives `git worktree remove`, and an unconditional `mkdir -p` here
+        # rebuilt the dead path as a husk holding nothing but this index. The
+        # index is a pure optimisation, so when its root is gone it is simply not
+        # written. Creating graphify-out/cache/ under a root that still exists is
+        # unchanged (a first run writes the index before anything else does).
+        try:
+            if not _stat_index_root.is_dir():
+                _stat_index_dirty = False
+                return
         except OSError:
-            continue
-        dk = _stat_key_to_relative(k, _stat_index_anchor) if _stat_index_anchor is not None else k
-        on_disk[dk] = v
-    # Never resurrect a corpus that was deleted while graphify was running
-    # (#2974): a hook-launched `graphify update . &` in a short-lived worktree
-    # outlives `git worktree remove`, and an unconditional `mkdir -p` here
-    # rebuilt the dead path as a husk holding nothing but this index. The
-    # index is a pure optimisation, so when its root is gone it is simply not
-    # written. Creating graphify-out/cache/ under a root that still exists is
-    # unchanged (a first run writes the index before anything else does).
-    try:
-        if not _stat_index_root.is_dir():
             _stat_index_dirty = False
             return
-    except OSError:
-        _stat_index_dirty = False
-        return
-    try:
-        p.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=p.parent, prefix="stat-index.", suffix=".tmp")
         try:
-            os.write(fd, json.dumps(on_disk, separators=(",", ":")).encode())
-            os.close(fd)
-            os.replace(tmp, p)
-        except Exception:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=p.parent, prefix="stat-index.", suffix=".tmp")
             try:
+                os.write(fd, json.dumps(on_disk, separators=(",", ":")).encode())
                 os.close(fd)
-            except OSError:
-                pass
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-    except OSError:
-        pass
-    _stat_index_dirty = False
+                os.replace(tmp, p)
+            except Exception:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+        except OSError:
+            pass
+        _stat_index_dirty = False
 
 
 def _normalize_path(path: Path) -> Path:
@@ -495,14 +513,15 @@ def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = No
     st: "os.stat_result | None" = None
     try:
         st = p.stat()
-        if _stat_sig_fresh(_stat_index.get(abs_key), st):
-            hashes = _stat_index[abs_key].get("hashes")
-            if isinstance(hashes, dict):
-                cached = hashes.get(salt)
-                if isinstance(cached, str):
-                    return cached
-            # Legacy single-digest entries ("hash") don't record which salt
-            # produced them, so they are never trusted (#1989) — recompute once.
+        with _stat_index_lock:
+            if _stat_sig_fresh(_stat_index.get(abs_key), st):
+                hashes = _stat_index[abs_key].get("hashes")
+                if isinstance(hashes, dict):
+                    cached = hashes.get(salt)
+                    if isinstance(cached, str):
+                        return cached
+                # Legacy single-digest entries ("hash") don't record which salt
+                # produced them, so they are never trusted (#1989) — recompute once.
     except OSError:
         pass
 
@@ -518,14 +537,15 @@ def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = No
     digest = h.hexdigest()
 
     if st is not None:
-        entry = _stat_entry_for(abs_key, st, observed_at_ns)
-        hashes = entry.get("hashes")
-        if not isinstance(hashes, dict):
-            hashes = {}
-            entry["hashes"] = hashes
-        hashes[salt] = digest       # preserve a co-located word_count / other salts
-        entry.pop("hash", None)     # retire the un-salted legacy digest
-        _stat_index_dirty = True
+        with _stat_index_lock:
+            entry = _stat_entry_for(abs_key, st, observed_at_ns)
+            hashes = entry.get("hashes")
+            if not isinstance(hashes, dict):
+                hashes = {}
+                entry["hashes"] = hashes
+            hashes[salt] = digest       # preserve a co-located word_count / other salts
+            entry.pop("hash", None)     # retire the un-salted legacy digest
+            _stat_index_dirty = True
 
     return digest
 
@@ -551,9 +571,10 @@ def cached_word_count(path: Path, root: Path, compute, cache_root: "Path | None"
     st: "os.stat_result | None" = None
     try:
         st = p.stat()
-        entry = _stat_index.get(abs_key)
-        if _stat_sig_fresh(entry, st) and "word_count" in entry:
-            return entry["word_count"]
+        with _stat_index_lock:
+            entry = _stat_index.get(abs_key)
+            if _stat_sig_fresh(entry, st) and "word_count" in entry:
+                return entry["word_count"]
     except OSError:
         pass
 
@@ -563,8 +584,9 @@ def cached_word_count(path: Path, root: Path, compute, cache_root: "Path | None"
     wc = compute(Path(path))
 
     if st is not None:
-        _stat_entry_for(abs_key, st, observed_at_ns)["word_count"] = wc
-        _stat_index_dirty = True
+        with _stat_index_lock:
+            _stat_entry_for(abs_key, st, observed_at_ns)["word_count"] = wc
+            _stat_index_dirty = True
 
     return wc
 

@@ -129,3 +129,14 @@ class _SymbolResolutionFacts:
     # is the binding introduced in the importing file: the alias when `from pkg
     # import submod as alias` is used, otherwise the submodule's own name (#2082).
     module_imports: list[tuple[Path, Path, int, str]] = field(default_factory=list)
+
+    def extend(self, other: "_SymbolResolutionFacts") -> None:
+        """Append every fact list from *other*, preserving *other*'s order."""
+        self.declarations.extend(other.declarations)
+        self.imports.extend(other.imports)
+        self.aliases.extend(other.aliases)
+        self.exports.extend(other.exports)
+        self.star_exports.extend(other.star_exports)
+        self.namespace_exports.extend(other.namespace_exports)
+        self.uses.extend(other.uses)
+        self.module_imports.extend(other.module_imports)
