@@ -145,9 +145,14 @@ graphify = ["skill.md", "skill-codex.md", "skill-opencode.md", "skill-kilo.md", 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 norecursedirs = [
+    # Pytest defaults must be restated: a custom list replaces, not extends,
+    # them. Omitting `.*` / `.hypothesis` makes Hypothesis warn at collection
+    # and walk its example database as if it were tests.
+    ".*", "*.egg", "_darcs", "build", "CVS", "dist", "node_modules", "venv",
+    "{arch}", ".hypothesis",
     "graphify-benchmark", "graphify_eval", "graphify_test",
     "worked", "llm-stack-corpus", "llm-stack-demo", "product-site",
-    "scripts", "ebook", ".github", "dist", "build",
+    "scripts", "ebook", ".github",
 ]
 
 [tool.bandit]

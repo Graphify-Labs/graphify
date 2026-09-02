@@ -886,6 +886,45 @@ def test_extract_timing_flag_emits_stage_timings(monkeypatch, tmp_path, capsys):
     assert "graphify timing" not in capsys.readouterr().err
 
 
+def test_extract_verbose_flag_emits_detect_and_resolving_progress(monkeypatch, tmp_path, capsys):
+    """Quiet by default; --verbose turns on detect/AST/resolving chatter."""
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    code = tmp_path / "src"
+    code.mkdir()
+    (code / "a.py").write_text("def a():\n    return 1\n")
+    (code / "b.py").write_text("from a import a\ndef b():\n    return a()\n")
+
+    monkeypatch.setattr(
+        mainmod.sys, "argv",
+        ["graphify", "extract", str(code), "--code-only", "--no-cluster",
+         "--out", str(tmp_path / "quiet")],
+    )
+    with pytest.raises(SystemExit) as exc:
+        mainmod.main()
+    assert exc.value.code == 0
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "[graphify] scanning" not in combined
+    assert "resolving symbols" not in combined
+    assert "AST extraction:" not in combined
+    assert "wrote" in captured.out
+
+    monkeypatch.setattr(
+        mainmod.sys, "argv",
+        ["graphify", "extract", str(code), "--code-only", "--no-cluster",
+         "--out", str(tmp_path / "loud"), "--verbose"],
+    )
+    with pytest.raises(SystemExit) as exc2:
+        mainmod.main()
+    assert exc2.value.code == 0
+    captured2 = capsys.readouterr()
+    combined2 = captured2.out + captured2.err
+    assert "[graphify] scanning" in combined2 or "[graphify extract] scanning" in combined2
+    assert "resolving symbols across" in combined2
+    assert "resolving: Python facts" in combined2
+    assert "resolving: done" in combined2
+
+
 @pytest.mark.parametrize(
     "postgres_args",
     [["--postgres", "test-dsn"], ["--postgres=test-dsn"]],
@@ -1238,7 +1277,7 @@ def test_failed_extra_is_retried_and_recovers(monkeypatch, tmp_path, capsys):
     monkeypatch.setitem(extractmod._DISPATCH, ".sql", _ok_sql)
     _run_extract(monkeypatch, argv)
     out_text = capsys.readouterr().out
-    assert "1 code" in out_text, f"schema.sql must be in the changed set: {out_text}"
+    assert "1 re-extracted" in out_text, f"schema.sql must be in the changed set: {out_text}"
     assert any("schema.sql" in s for s in _node_sources(graph_path)), (
         "recovered schema.sql must contribute nodes to graph.json"
     )
@@ -1274,10 +1313,9 @@ def test_permanent_failure_does_not_wedge(monkeypatch, tmp_path, capsys):
     for run in (2, 3):
         _run_extract(monkeypatch, argv)
         out_text = capsys.readouterr().out
-        assert "1 code" in out_text, (
+        assert "1 re-extracted" in out_text, (
             f"run {run}: the failed file must be retried, not frozen: {out_text}"
         )
-        assert "1 re-extracted" in out_text, f"run {run}: {out_text}"
         sources = _node_sources(graph_path)
         assert any("keep.py" in s for s in sources), f"run {run}: graph must stay stable"
         assert not any("schema.sql" in s for s in sources)

@@ -6,6 +6,8 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 - Feature: `detect()` enumerates large trees via `git ls-files`, Google `repo` project lists, and nested git worktrees/submodules, so gitignored directories are not walked.
 - Feature: AST extract, JS/Python symbol resolution, and cache probes share `graphify.parallel` process/thread pools (`GRAPHIFY_MAX_WORKERS`).
+- Feature: `graphify extract` is quiet by default; pass `--verbose` (or `GRAPHIFY_VERBOSE=1`) for detect/AST/resolving progress. `--timing` is unchanged. Symbol resolution now reports JS/TS facts, Python facts, and applying edges so that stage is not a black box.
+- Fix: merge-driver git config round-trips a quoted Windows interpreter path on POSIX git (#2166).
 
 ## 0.9.53 (2026-08-30)
 

@@ -649,12 +649,26 @@ class _StageTimer:
     def mark(self, stage: str) -> None:
         now = self._now()
         if self.enabled:
-            print(f"[graphify timing] {stage}: {now - self._last:.1f}s", file=sys.stderr)
+            print(
+                f"[graphify timing] {stage}: {now - self._last:.1f}s",
+                file=sys.stderr, flush=True,
+            )
         self._last = now
 
     def total(self) -> None:
         if self.enabled:
-            print(f"[graphify timing] total: {self._now() - self.start:.1f}s", file=sys.stderr)
+            print(
+                f"[graphify timing] total: {self._now() - self.start:.1f}s",
+                file=sys.stderr, flush=True,
+            )
+
+
+def _extract_progress(msg: str) -> None:
+    """Stage progress; printed only with ``--verbose`` / ``GRAPHIFY_VERBOSE``."""
+    from graphify.progress import vprint
+    vprint(msg, file=sys.stdout, prefix="[graphify extract]")
+
+
 def _enforce_graph_size_cap_or_exit(gp: Path) -> None:
     """Reject oversized graph files before parsing (CLI exit-on-fail flavor).
 
@@ -3148,7 +3162,7 @@ def dispatch_command(cmd: str) -> None:
                 "[--model M] [--mode deep] [--out DIR|--output DIR] [--google-workspace] [--no-cluster] "
                 "[--no-gitignore] [--code-only] [--no-dedup] "
                 "[--max-workers N] [--token-budget N] [--max-concurrency N] "
-                "[--api-timeout S] [--postgres DSN] [--cargo] [--allow-partial] [--timing]",
+                "[--api-timeout S] [--postgres DSN] [--cargo] [--allow-partial] [--timing] [--verbose]",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -3194,6 +3208,7 @@ def dispatch_command(cmd: str) -> None:
         cli_exclude_hubs: float | None = None
         cli_excludes: list[str] = []
         cli_timing: bool = False
+        cli_verbose: bool = False
         # --force parity with `graphify update`: the flag or GRAPHIFY_FORCE=1
         # disables the incremental gate and skips semantic-cache reads (#1894).
         force = os.environ.get("GRAPHIFY_FORCE", "").lower() in ("1", "true", "yes")
@@ -3300,6 +3315,8 @@ def dispatch_command(cmd: str) -> None:
                 cli_allow_partial = True; i += 1
             elif a == "--timing":
                 cli_timing = True; i += 1
+            elif a == "--verbose":
+                cli_verbose = True; i += 1
             else:
                 i += 1
 
@@ -3335,6 +3352,9 @@ def dispatch_command(cmd: str) -> None:
             os.environ["GRAPHIFY_API_TIMEOUT"] = str(cli_api_timeout)
         if cli_max_workers is not None:
             os.environ["GRAPHIFY_MAX_WORKERS"] = str(cli_max_workers)
+
+        from graphify.progress import set_verbose
+        set_verbose(True if cli_verbose else None)
 
         # Resolve output dir. The user-facing contract is "<out>/graphify-out/"
         # so a fresh checkout writes graphify-out/ at the project root, matching
@@ -3429,6 +3449,7 @@ def dispatch_command(cmd: str) -> None:
                 google_workspace=google_workspace or None,
                 extra_excludes=_effective_excludes or None,
                 gitignore=_effective_gitignore,
+                code_only=code_only,
             )
             files_by_type = detection.get("files", {})
             new_by_type = detection.get("new_files", {})
@@ -3496,13 +3517,14 @@ def dispatch_command(cmd: str) -> None:
                     if _p in _healed_sem_set:
                         image_files.append(Path(_p))
         else:
-            print(f"[graphify extract] scanning {target}")
+            _extract_progress(f"scanning {target}")
             detection = _detect(
                 target,
                 google_workspace=google_workspace or None,
                 extra_excludes=_effective_excludes or None,
                 cache_root=out_root,
                 gitignore=_effective_gitignore,
+                code_only=code_only,
             )
             files_by_type = detection.get("files", {})
             code_files = [Path(p) for p in files_by_type.get("code", [])]
@@ -3564,15 +3586,15 @@ def dispatch_command(cmd: str) -> None:
             # (#1908): they still exist on disk, the scan just stopped
             # covering them (ignore rules / --exclude changed).
             _excl_note = f"; {len(excluded_files)} excluded" if excluded_files else ""
-            print(
-                f"[graphify extract] {len(code_files)} code, {len(doc_files)} docs, "
+            _extract_progress(
+                f"{len(code_files)} code, {len(doc_files)} docs, "
                 f"{len(paper_files)} papers, {len(image_files)} images changed; "
                 f"{unchanged_total} unchanged; {len(deleted_files)} deleted"
                 f"{_excl_note}"
             )
         else:
-            print(
-                f"[graphify extract] found {len(code_files)} code, "
+            _extract_progress(
+                f"found {len(code_files)} code, "
                 f"{len(doc_files)} docs, {len(paper_files)} papers, "
                 f"{len(image_files)} images"
             )
@@ -3585,7 +3607,8 @@ def dispatch_command(cmd: str) -> None:
             _more = f" (+{len(_unclassified) - 6} more)" if len(_unclassified) > 6 else ""
             print(
                 f"[graphify extract] {len(_unclassified)} file(s) not classified "
-                f"(no supported extension or shebang), skipped: {_names}{_more}"
+                f"(no supported extension or shebang), skipped: {_names}{_more}",
+                flush=True,
             )
         # Name the files dropped by the sensitive-file filter so a wrongly-flagged
         # source/doc is visible, not just a count (#2106). Operational skips
@@ -3598,9 +3621,14 @@ def dispatch_command(cmd: str) -> None:
             _smore = f" (+{len(_sec) - 6} more)" if len(_sec) > 6 else ""
             print(
                 f"[graphify extract] {len(_sec)} file(s) skipped as potentially sensitive "
-                f"(rename or move if wrongly flagged): {_snames}{_smore}"
+                f"(rename or move if wrongly flagged): {_snames}{_smore}",
+                flush=True,
             )
         stages.mark("detect")
+        _extract_progress(
+            f"detect done — next: AST on {len(code_files)} code file(s)"
+            + (f", semantic on {len(semantic_files)}" if semantic_files else "")
+        )
 
         # Resolve the LLM backend only now that we know whether the corpus
         # needs one. A code-only corpus is pure local AST and must not require
@@ -3709,6 +3737,7 @@ def dispatch_command(cmd: str) -> None:
         # the issue #698 case — skip cleanly instead of crashing inside extract().
         ast_result: dict = {"nodes": [], "edges": [], "input_tokens": 0, "output_tokens": 0}
         if code_files:
+            _extract_progress("loading AST extractors...")
             from graphify.extract import extract as _ast_extract
             # Anchor the cache at the output root, not the scanned project:
             # with --out, a <target>/graphify-out/cache/ would leak a
@@ -3800,7 +3829,9 @@ def dispatch_command(cmd: str) -> None:
                     ast_kwargs["resolution_context_nodes"] = _ctx_nodes
                 if _ctx_edges:
                     ast_kwargs["resolution_context_edges"] = _ctx_edges
-            print(f"[graphify extract] AST extraction on {len(code_files)} code files...")
+            _extract_progress(
+                f"AST extraction on {len(code_files)} code files..."
+            )
             try:
                 ast_result = _ast_extract(code_files, **ast_kwargs)
             except Exception as exc:
@@ -3815,6 +3846,11 @@ def dispatch_command(cmd: str) -> None:
                 ast_result = {"nodes": [], "edges": [], "input_tokens": 0, "output_tokens": 0}
                 _extraction_incomplete = True  # the whole AST pass was lost
         stages.mark("AST extract")
+        if code_files:
+            _extract_progress(
+                f"AST done: {len(ast_result.get('nodes', []))} nodes, "
+                f"{len(ast_result.get('edges', []))} edges"
+            )
 
         # Semantic extraction on docs/papers/images. Check cache first.
         from graphify.cache import (
@@ -3862,10 +3898,14 @@ def dispatch_command(cmd: str) -> None:
             sem_result["edges"].extend(cached_edges)
             sem_result["hyperedges"].extend(cached_hyperedges)
             if sem_cache_hits:
-                print(f"[graphify extract] semantic cache: {sem_cache_hits} hit / {sem_cache_misses} miss")
+                _extract_progress(
+                    f"semantic cache: {sem_cache_hits} hit / {sem_cache_misses} miss"
+                )
 
             if uncached_paths:
-                print(f"[graphify extract] semantic extraction on {len(uncached_paths)} files via {backend}...")
+                _extract_progress(
+                    f"semantic extraction on {len(uncached_paths)} files via {backend}..."
+                )
                 corpus_kwargs: dict = {
                     "backend": backend,
                     "model": model,
@@ -3887,10 +3927,7 @@ def dispatch_command(cmd: str) -> None:
                 def _progress(idx: int, total: int, _result: dict) -> None:
                     _chunk_stats["total"] = total
                     _chunk_stats["succeeded"] += 1
-                    print(
-                        f"[graphify extract] chunk {idx + 1}/{total} done",
-                        flush=True,
-                    )
+                    _extract_progress(f"chunk {idx + 1}/{total} done")
                 corpus_kwargs["on_chunk_done"] = _progress
 
                 try:
@@ -4034,26 +4071,30 @@ def dispatch_command(cmd: str) -> None:
         pg_result: dict = {"nodes": [], "edges": []}
         if cli_postgres_dsn is not None:
             from graphify.pg_introspect import introspect_postgres
-            print(f"[graphify extract] introspecting PostgreSQL schema...")
+            _extract_progress("introspecting PostgreSQL schema...")
             try:
                 pg_result = introspect_postgres(cli_postgres_dsn)
             except (ConnectionError, ImportError) as exc:
                 print(f"error: {exc}", file=sys.stderr)
                 sys.exit(1)
-            print(f"[graphify extract] PostgreSQL: {len(pg_result['nodes'])} nodes, "
-                  f"{len(pg_result['edges'])} edges")
+            _extract_progress(
+                f"PostgreSQL: {len(pg_result['nodes'])} nodes, "
+                f"{len(pg_result['edges'])} edges"
+            )
 
         cargo_result: dict = {"nodes": [], "edges": []}
         if cli_cargo:
             from graphify.cargo_introspect import introspect_cargo
-            print("[graphify extract] introspecting Cargo workspace...")
+            _extract_progress("introspecting Cargo workspace...")
             try:
                 cargo_result = introspect_cargo(target)
             except (ConnectionError, ImportError, OSError) as exc:
                 print(f"error: {exc}", file=sys.stderr)
                 sys.exit(1)
-            print(f"[graphify extract] Cargo: {len(cargo_result['nodes'])} nodes, "
-                  f"{len(cargo_result['edges'])} edges")
+            _extract_progress(
+                f"Cargo: {len(cargo_result['nodes'])} nodes, "
+                f"{len(cargo_result['edges'])} edges"
+            )
 
         # Merge AST + semantic + pg_result + cargo_result. Order matters for deduplication: passing AST
         # first means semantic node attributes win on collision (richer labels
@@ -4318,7 +4359,8 @@ def dispatch_command(cmd: str) -> None:
         from graphify.export import to_json as _to_json
         from graphify.analyze import god_nodes as _god_nodes, surprising_connections as _surprising
         dedup_backend = backend if dedup_llm else None
-        if merge_existing_graph:
+        _extract_progress("building graph...")
+        if incremental_mode:
             # Prune everything the current scan no longer covers: genuinely
             # deleted manifest rows, excluded-but-alive manifest rows (#1908),
             # and the graph's own stale sources — which catches files that
@@ -4372,8 +4414,12 @@ def dispatch_command(cmd: str) -> None:
             )
             sys.exit(1)
 
+        _extract_progress(
+            f"clustering {G.number_of_nodes()} nodes, {G.number_of_edges()} edges..."
+        )
         communities = _cluster(G, resolution=cli_resolution, exclude_hubs_percentile=cli_exclude_hubs)
         stages.mark("cluster")
+        _extract_progress("analyzing graph...")
         cohesion = _score_all(G, communities)
         try:
             gods = _god_nodes(G)
@@ -4385,6 +4431,7 @@ def dispatch_command(cmd: str) -> None:
             surprises = []
         stages.mark("analyze")
 
+        _extract_progress("writing graph.json...")
         from graphify.export import backup_if_protected as _backup
         _backup(graphify_out)
         _invalidate_file_manifest_for_db_graph()

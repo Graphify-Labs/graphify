@@ -311,10 +311,11 @@ def test_checkpoint_scopes_cache_writes_to_chunk_files(tmp_path):
         }
 
     with patch("graphify.llm.extract_files_direct", side_effect=stray):
-        extract_corpus_parallel(
-            [a], backend="kimi", root=tmp_path,
-            token_budget=None, chunk_size=1, max_concurrency=1,
-        )
+        with pytest.warns(RuntimeWarning, match="out-of-scope source_file 'B.py'"):
+            extract_corpus_parallel(
+                [a], backend="kimi", root=tmp_path,
+                token_budget=None, chunk_size=1, max_concurrency=1,
+            )
 
     # B.py's cache is unchanged: the stray node was rejected, not merged in.
     after = load_cached(b, tmp_path, kind="semantic")
@@ -464,10 +465,11 @@ def test_out_of_scope_nodes_are_dropped_from_merged_result(tmp_path, capsys):
         }
 
     with patch("graphify.llm.extract_files_direct", side_effect=stray):
-        result = extract_corpus_parallel(
-            [a, c], backend="kimi", root=tmp_path,
-            token_budget=None, chunk_size=2, max_concurrency=1,
-        )
+        with pytest.warns(RuntimeWarning, match="out-of-scope source_file 'B.py'"):
+            result = extract_corpus_parallel(
+                [a, c], backend="kimi", root=tmp_path,
+                token_budget=None, chunk_size=2, max_concurrency=1,
+            )
 
     ids = {n["id"] for n in result["nodes"]}
     assert "b_stray" not in ids, "out-of-scope node leaked into the merged graph (#1895)"

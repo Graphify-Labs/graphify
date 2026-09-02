@@ -639,6 +639,8 @@ def _run_cli() -> None:
         print("    --no-gitignore         ignore .gitignore and .git/info/exclude (prioritizes .graphifyignore)")
         print("    --no-cluster            skip clustering, write raw extraction only")
         print("    --code-only             index code (local AST, no API key) and skip doc/paper/image files")
+        print("    --verbose               progress on detect, AST, and symbol resolution (quiet by default)")
+        print("    --timing                per-stage wall-clock timings on stderr")
         print("    --postgres DSN          extract schema from a live PostgreSQL database")
         print("                            maps tables, views, functions + FK relationships;")
         print("                            column-level detail is not represented in the graph")
