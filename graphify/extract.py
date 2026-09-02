@@ -7400,17 +7400,22 @@ def scope_ast_inventory(
     edges = [e for e in ast_data.get("edges", []) if isinstance(e, dict)]
     nodes_by_id = {n["id"]: n for n in nodes}
 
+    def _posix_path_str(p: object) -> str:
+        if not p:
+            return ""
+        return str(p).replace("\\", "/")
+
     # Index by source_file and basename
     nodes_by_file: dict[str, list[dict]] = {}
     for n in nodes:
         sf = n.get("source_file")
         if sf:
-            posix_sf = PurePath(str(sf)).as_posix()
+            posix_sf = _posix_path_str(sf)
             nodes_by_file.setdefault(posix_sf, []).append(n)
 
     basename_to_files: dict[str, set[str]] = {}
     for sf in nodes_by_file:
-        bname = PurePath(sf).name.lower()
+        bname = sf.split("/")[-1].lower()
         basename_to_files.setdefault(bname, set()).add(sf)
 
     # Parent-child containment maps from AST edges
@@ -7427,8 +7432,8 @@ def scope_ast_inventory(
     def get_qualified_name(n: dict) -> str:
         label = str(n.get("label", "")).strip()
         nid = n.get("id", "")
-        sf = str(n.get("source_file", ""))
-        file_bname = PurePath(sf).name if sf else ""
+        sf = _posix_path_str(n.get("source_file", ""))
+        file_bname = sf.split("/")[-1] if sf else ""
 
         def _is_file_label(lbl: str) -> bool:
             return (
@@ -7491,15 +7496,15 @@ def scope_ast_inventory(
     # Tier 1: Path & unique basename matching
     tier1_nodes: list[dict] = []
     for sf, fnodes in nodes_by_file.items():
-        sf_posix = PurePath(sf).as_posix()
+        sf_posix = _posix_path_str(sf)
         sf_lower = sf_posix.lower()
         if sf_lower in full_text_lower or sf_posix in full_text:
             tier1_nodes.extend(fnodes)
             continue
         # Unique basename check
-        bname = PurePath(sf).name.lower()
+        bname = sf_posix.split("/")[-1].lower()
         if len(basename_to_files.get(bname, set())) == 1:
-            raw_bname = PurePath(sf).name
+            raw_bname = sf_posix.split("/")[-1]
             if re.search(rf"(?<![/\\])\b{re.escape(raw_bname)}\b", full_text, re.IGNORECASE):
                 tier1_nodes.extend(fnodes)
 
@@ -7513,8 +7518,8 @@ def scope_ast_inventory(
 
     tier2_nodes: list[dict] = []
     for n in nodes:
-        sf = str(n.get("source_file", ""))
-        file_bname = PurePath(sf).name if sf else ""
+        sf = _posix_path_str(n.get("source_file", ""))
+        file_bname = sf.split("/")[-1] if sf else ""
         lbl = str(n.get("label", "")).strip()
         # Skip file nodes in Tier 2 — file nodes are handled by Tier 1 (path/unique basename)
         if sf and lbl == file_bname:
@@ -7542,10 +7547,10 @@ def scope_ast_inventory(
     for n in list(tier1_nodes) + list(tier2_nodes) + list(tier3_nodes):
         sf = n.get("source_file")
         if sf:
-            posix_sf = PurePath(str(sf)).as_posix()
+            posix_sf = _posix_path_str(sf)
             if posix_sf in nodes_by_file:
                 for fn in nodes_by_file[posix_sf]:
-                    file_bname = PurePath(posix_sf).name
+                    file_bname = posix_sf.split("/")[-1]
                     if str(fn.get("label", "")).strip() == file_bname:
                         fn_id = fn.get("id")
                         if fn_id and fn_id not in selected_ids:
@@ -7553,7 +7558,7 @@ def scope_ast_inventory(
                             selected_ids.add(fn_id)
 
     def sort_key(n: dict) -> tuple[str, str, str]:
-        sf = PurePath(str(n.get("source_file", ""))).as_posix()
+        sf = _posix_path_str(n.get("source_file", ""))
         return (sf, get_qualified_name(n), str(n.get("id", "")))
 
     seen: set[str] = set()
@@ -7575,7 +7580,7 @@ def scope_ast_inventory(
     final_selection.sort(key=sort_key)
 
     lines = [
-        f"{n['id']} | {get_qualified_name(n)} | {PurePath(str(n.get('source_file', ''))).as_posix()}"
+        f"{n['id']} | {get_qualified_name(n)} | {_posix_path_str(n.get('source_file', ''))}"
         for n in final_selection
     ]
     return "\n".join(lines)

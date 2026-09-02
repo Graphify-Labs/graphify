@@ -218,10 +218,12 @@ def test_windows_path_normalization():
         ],
         "edges": [],
     }
-    doc_text = "See src/auth/session.py for details."
+    doc_text = "See src/auth/session.py for details regarding Token."
     result = scope_ast_inventory(ast_data, ["docs/spec.md"], [doc_text])
     assert "src/auth/session.py" in result
     assert "\\" not in result
+    assert "src_auth_session_token | Token | src/auth/session.py" in result
+    assert "src_auth_session_py | session.py | src/auth/session.py" in result
 def test_extraction_system_prompt_formatting():
     """_extraction_system injects CODE_SYMBOLS block when provided, omits when None/empty."""
     from graphify.llm import _extraction_system
