@@ -3391,6 +3391,43 @@ def test_apex_interface_extends(tmp_path):
     assert ("PaymentProcessor", "Processor") in inheritance
     assert ("PaymentProcessor", "Auditable") in inheritance
 
+def test_apex_qualified_heritage_uses_tail_type(tmp_path):
+    """A namespace-qualified base names a type *in* a namespace, not the
+    namespace itself. `implements Database.Batchable<sObject>, Schedulable` used
+    to stop at the dot, fabricating a `Database` node and losing `Schedulable`
+    with it. Resolve to the tail type name, as Kotlin (#1793) and Scala (#1794)
+    already do, and split the list on top-level commas only so a generic
+    argument (`Map<String, Object>`) is not shredded (#3277).
+    """
+    source = tmp_path / "Batch.cls"
+    source.write_text(
+        "public with sharing class Batch extends Outer.BaseThing "
+        "implements Database.Batchable<sObject>, Map<String, Object>, Schedulable {\n"
+        "    public void execute(Database.BatchableContext bc) { }\n"
+        "}\n"
+    )
+    result = extract_apex(source)
+    labels = _labels(result)
+    assert ("Batch", "BaseThing") in _edge_labels(result, "extends")
+    implements = _edge_labels(result, "implements")
+    assert ("Batch", "Batchable") in implements
+    assert ("Batch", "Map") in implements
+    assert ("Batch", "Schedulable") in implements
+    # the namespace is not a type, and a generic argument is not a base
+    assert "Database" not in labels
+    assert "Outer" not in labels
+    assert "sObject" not in labels
+    assert "Object" not in labels
+
+def test_apex_interface_qualified_extends_uses_tail_type(tmp_path):
+    source = tmp_path / "Combo.cls"
+    source.write_text("public interface Combo extends Pkg.Base, Auditable { }\n")
+    result = extract_apex(source)
+    extends = _edge_labels(result, "extends")
+    assert ("Combo", "Base") in extends
+    assert ("Combo", "Auditable") in extends
+    assert "Pkg" not in _labels(result)
+
 def test_apex_method_extraction():
     r = extract_apex(FIXTURES / "sample.cls")
     labels = _labels(r)

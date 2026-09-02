@@ -54,15 +54,57 @@ def extract_apex(path: Path) -> dict:
     _SHARING = r"(?:\s+(?:with|without|inherited)\s+sharing)?"
     _MOD = r"(?:\s+(?:abstract|virtual|override|static|final|transient|testMethod))?"
     _ANNOTATION = r"(?:\s*@\w+(?:\s*\([^)]*\))?\s*)*"
+    # An Apex type expression is not one bare word: it can be namespace-qualified
+    # (`Database.QueryLocator`) and can carry generic arguments holding commas
+    # and spaces (`Map<String, Object>`, `List<Map<String, Id>>`). Apex also
+    # permits whitespace around the angle brackets themselves (`Map <String, Id>`,
+    # `List< Account >`), so the type is read as segments joined by the type
+    # punctuators `<`, `>` and `,`, with whitespace allowed only ADJACENT to one
+    # of them - never between two bare words. That is what keeps a statement such
+    # as `insert new Account(...)` from being read as a declaration (#3217).
+    # The same shape covers a heritage clause, which is a comma-separated list of
+    # such types (#3277).
+    _TYPE = r"[\w.\[\]]+(?:\s*[<>,]\s*[\w.\[\]]*)*"
+
+    def heritage_names(clause: str) -> list[str]:
+        """Split an Apex heritage clause into the type names it actually names.
+
+        `Database.Batchable<sObject>, Schedulable` -> `["Batchable", "Schedulable"]`.
+        Commas are split at top level only, so a generic argument list
+        (`Map<String, Object>`) is not shredded into fragments, and each entry
+        drops its generic arguments and resolves to its tail segment: a qualified
+        base names a type *in* a namespace, not the namespace itself. This is the
+        same tail-name treatment Kotlin (#1793) and Scala (#1794) already use.
+        """
+        parts: list[str] = []
+        current: list[str] = []
+        depth = 0
+        for ch in clause:
+            if ch == "<":
+                depth += 1
+            elif ch == ">":
+                depth = max(0, depth - 1)
+            elif ch == "," and depth == 0:
+                parts.append("".join(current))
+                current = []
+                continue
+            current.append(ch)
+        parts.append("".join(current))
+        names: list[str] = []
+        for raw in parts:
+            name = raw.split("<", 1)[0].strip().rsplit(".", 1)[-1].strip()
+            if name:
+                names.append(name)
+        return names
 
     cls_re = _re.compile(
         rf"^{_ANNOTATION}\s*{_ACCESS}{_SHARING}{_MOD}\s*class\s+(\w+)"
-        rf"(?:\s+extends\s+(\w+))?(?:\s+implements\s+([\w,\s]+))?\s*\{{?",
+        rf"(?:\s+extends\s+({_TYPE}))?(?:\s+implements\s+({_TYPE}))?\s*\{{?",
         _re.IGNORECASE,
     )
     iface_re = _re.compile(
         rf"^{_ANNOTATION}\s*{_ACCESS}{_SHARING}{_MOD}\s*interface\s+(\w+)"
-        rf"(?:\s+extends\s+([\w,\s]+))?\s*\{{?",
+        rf"(?:\s+extends\s+({_TYPE}))?\s*\{{?",
         _re.IGNORECASE,
     )
     enum_re = _re.compile(
@@ -73,15 +115,6 @@ def extract_apex(path: Path) -> dict:
         r"^\s*trigger\s+(\w+)\s+on\s+(\w+)\s*\(",
         _re.IGNORECASE,
     )
-    # An Apex return type is not one bare word: it can be namespace-qualified
-    # (`Database.QueryLocator`) and can carry generic arguments holding commas
-    # and spaces (`Map<String, Object>`, `List<Map<String, Id>>`). Apex also
-    # permits whitespace around the angle brackets themselves (`Map <String, Id>`,
-    # `List< Account >`), so the type is read as segments joined by the type
-    # punctuators `<`, `>` and `,`, with whitespace allowed only ADJACENT to one
-    # of them - never between two bare words. That is what keeps a statement such
-    # as `insert new Account(...)` from being read as a declaration (#3217).
-    _TYPE = r"[\w.\[\]]+(?:\s*[<>,]\s*[\w.\[\]]*)*"
     method_re = _re.compile(
         rf"^{_ANNOTATION}\s*{_ACCESS}{_MOD}\s*(?:static\s+)?{_TYPE}\s+(\w+)\s*\([^)]*\)\s*(?:throws\s+\w+\s*)?\{{?",
         _re.IGNORECASE,
@@ -132,23 +165,21 @@ def extract_apex(path: Path) -> dict:
             add_node(class_nid, class_name, lineno)
             add_edge(file_nid, class_nid, "contains", lineno)
             if cm.group(2):
-                base = cm.group(2).strip()
-                base_nid = _make_id(stem, base)
-                if base_nid not in seen_ids:
-                    base_nid = _make_id(base)
-                if base_nid not in seen_ids:
-                    add_node(base_nid, base, lineno)
-                add_edge(class_nid, base_nid, "extends", lineno, confidence="INFERRED")
+                for base in heritage_names(cm.group(2)):
+                    base_nid = _make_id(stem, base)
+                    if base_nid not in seen_ids:
+                        base_nid = _make_id(base)
+                    if base_nid not in seen_ids:
+                        add_node(base_nid, base, lineno)
+                    add_edge(class_nid, base_nid, "extends", lineno, confidence="INFERRED")
             if cm.group(3):
-                for iface in cm.group(3).split(","):
-                    iface = iface.strip()
-                    if iface:
-                        iface_nid = _make_id(stem, iface)
-                        if iface_nid not in seen_ids:
-                            iface_nid = _make_id(iface)
-                        if iface_nid not in seen_ids:
-                            add_node(iface_nid, iface, lineno)
-                        add_edge(class_nid, iface_nid, "implements", lineno, confidence="INFERRED")
+                for iface in heritage_names(cm.group(3)):
+                    iface_nid = _make_id(stem, iface)
+                    if iface_nid not in seen_ids:
+                        iface_nid = _make_id(iface)
+                    if iface_nid not in seen_ids:
+                        add_node(iface_nid, iface, lineno)
+                    add_edge(class_nid, iface_nid, "implements", lineno, confidence="INFERRED")
             current_class_nid = class_nid
             pending_annotations = []
             continue
@@ -164,15 +195,13 @@ def extract_apex(path: Path) -> dict:
             add_edge(file_nid if current_class_nid is None else current_class_nid,
                      iface_nid, "contains", lineno)
             if im.group(2):
-                for parent in im.group(2).split(","):
-                    parent = parent.strip()
-                    if parent:
-                        parent_nid = _make_id(stem, parent)
-                        if parent_nid not in seen_ids:
-                            parent_nid = _make_id(parent)
-                        if parent_nid not in seen_ids:
-                            add_node(parent_nid, parent, lineno)
-                        add_edge(iface_nid, parent_nid, "extends", lineno, confidence="INFERRED")
+                for parent in heritage_names(im.group(2)):
+                    parent_nid = _make_id(stem, parent)
+                    if parent_nid not in seen_ids:
+                        parent_nid = _make_id(parent)
+                    if parent_nid not in seen_ids:
+                        add_node(parent_nid, parent, lineno)
+                    add_edge(iface_nid, parent_nid, "extends", lineno, confidence="INFERRED")
             pending_annotations = []
             continue
 
