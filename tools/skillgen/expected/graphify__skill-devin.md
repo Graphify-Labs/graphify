@@ -80,14 +80,17 @@ if [ -z "$PYTHON" ] && command -v uv >/dev/null 2>&1; then
 fi
 # 2. Read shebang from graphify binary (pipx and direct pip installs)
 if [ -z "$PYTHON" ] && [ -n "$GRAPHIFY_BIN" ]; then
-    _SHEBANG=$(head -1 "$GRAPHIFY_BIN" | tr -d '#!')
-    # Resolve `/usr/bin/env python` to the interpreter, then strip any argument
+    _SHEBANG=$(head -n 1 "$GRAPHIFY_BIN" | sed 's/^#![[:space:]]*//')
+    # Resolve `/usr/bin/env -S python` / `/usr/bin/env python` to the interpreter, then strip any argument
     # (pipx writes `.../python -E`) so a shebang argument is not mistaken for the
     # path and rejected by the allowlist below (silent python3 fallback, #2629).
-    case "$_SHEBANG" in */env\ *) _SHEBANG="${_SHEBANG#*/env }" ;; esac
+    case "$_SHEBANG" in */env\ -S\ *) _SHEBANG="${_SHEBANG#*/env -S }" ;; */env\ *) _SHEBANG="${_SHEBANG#*/env }" ;; esac
     _SHEBANG="${_SHEBANG%% *}"
+    # Only trust shebang-derived interpreter paths. Env command names like
+    # `python` are PATH-controlled; explicit fallbacks handle them below.
+    case "$_SHEBANG" in */*|*\\*) ;; *) _SHEBANG="" ;; esac
     case "$_SHEBANG" in
-        *[!a-zA-Z0-9/_.@-]*) ;;
+        ""|*[!a-zA-Z0-9/_.@-]*) ;;
         *) "$_SHEBANG" -c "import graphify" 2>/dev/null && PYTHON="$_SHEBANG" ;;
     esac
 fi
@@ -886,16 +889,17 @@ Before running any subcommand below (`--update`, `--cluster-only`, `query`, `pat
 if [ ! -f graphify-out/.graphify_python ]; then
     GRAPHIFY_BIN=$(which graphify 2>/dev/null)
     if [ -n "$GRAPHIFY_BIN" ]; then
-        PYTHON=$(head -1 "$GRAPHIFY_BIN" | tr -d '#!')
-        # Resolve `/usr/bin/env python` and strip any shebang argument (pipx
+        PYTHON=$(head -n 1 "$GRAPHIFY_BIN" | sed 's/^#![[:space:]]*//')
+        # Resolve `/usr/bin/env -S python` / `/usr/bin/env python` and strip any shebang argument (pipx
         # writes `.../python -E`) before the allowlist check, else the space
         # forces the unverified python3 fallback into .graphify_python (#2629).
-        case "$PYTHON" in */env\ *) PYTHON="${PYTHON#*/env }" ;; esac
+        case "$PYTHON" in */env\ -S\ *) PYTHON="${PYTHON#*/env -S }" ;; */env\ *) PYTHON="${PYTHON#*/env }" ;; esac
         PYTHON="${PYTHON%% *}"
+        # Only trust shebang-derived interpreter paths. Env command names like
+        # `python` are PATH-controlled; use the explicit python3 fallback.
+        case "$PYTHON" in */*|*\\*) ;; *) PYTHON="python3" ;; esac
         case "$PYTHON" in *[!a-zA-Z0-9/_.@-]*) PYTHON="python3" ;; esac
-        if [ "$PYTHON" != "python3" ] && ! "$PYTHON" -c "import graphify" 2>/dev/null; then
-            PYTHON="python3"
-        fi
+        if [ "$PYTHON" != "python3" ] && ! "$PYTHON" -c "import graphify" 2>/dev/null; then PYTHON="python3"; fi
     else
         PYTHON="python3"
     fi
