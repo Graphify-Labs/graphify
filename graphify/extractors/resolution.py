@@ -658,20 +658,26 @@ def _sfc_mask_non_script(src: str) -> tuple[str, str | None]:
     return "".join(out), _sfc_widest_lang(langs)
 
 
-# Grammar precedence when a component's script blocks disagree. Every block is
-# parsed as ONE unit, so the grammar has to accept all of them: TS is a
-# superset of JS, and TSX of JSX, but not the reverse. A Svelte 5 `<script
-# module lang="js">` paired with a `<script lang="ts">` instance block must
-# therefore be parsed as TS, not JS.
-_SFC_LANG_PRECEDENCE = ("tsx", "jsx", "ts", "js")
-
-
 def _sfc_widest_lang(langs: list[str]) -> str | None:
-    """The grammar that can parse every declared block, or None if undeclared."""
-    for candidate in _SFC_LANG_PRECEDENCE:
-        if candidate in langs:
-            return candidate
-    return langs[0] if langs else None
+    """The grammar that can parse every declared block, or None if undeclared.
+
+    Every block is masked into ONE source and parsed together, so the grammar
+    has to accept all of them. TS is a superset of JS and TSX of JSX, but not
+    the reverse, and TSX is the only grammar that takes BOTH type annotations
+    and JSX — so a `lang="ts"` block beside a `lang="jsx"` one needs TSX, not
+    either of the two declared.
+    """
+    if not langs:
+        return None
+    wants_types = any(lang in ("ts", "tsx") for lang in langs)
+    wants_jsx = any(lang in ("jsx", "tsx") for lang in langs)
+    if wants_types and wants_jsx:
+        return "tsx"
+    if wants_types:
+        return "ts"
+    if wants_jsx:
+        return "jsx"
+    return "js"
 
 _vue_mask_non_script = _sfc_mask_non_script
 
@@ -1157,9 +1163,11 @@ def _parse_js_tree(path: Path):
         use_ts = path.suffix in (".ts", ".mts", ".cts") or (
             path.suffix in _SFC_SUFFIXES and sfc_lang not in ("js", "jsx")
         )
-        if path.suffix == ".tsx":
-            # .tsx must use the JSX-aware TSX grammar, mirroring the engine's
-            # _TSX_CONFIG (ts_language_fn="language_tsx"). Parsing .tsx with
+        if path.suffix == ".tsx" or sfc_lang == "tsx":
+            # .tsx — and an SFC whose script declares `lang="tsx"`, whose own
+            # suffix is .vue/.svelte — must use the JSX-aware TSX grammar,
+            # mirroring the engine's _TSX_CONFIG (ts_language_fn=
+            # "language_tsx"). Parsing TSX with
             # language_typescript misparses JSX, and tree-sitter's error
             # recovery floats nested arrow components up to top level —
             # _js_top_level_function_bodies then mints caller ids for callers

@@ -470,3 +470,47 @@ def test_js_then_ts_component_parses_the_ts_block(tmp_path):
         result, relation="imports_from"
     )
     assert {"PRESET", "handler()"} <= _labels(result)
+
+
+def test_ts_and_jsx_blocks_together_need_the_tsx_grammar():
+    """TSX is the only grammar that takes BOTH annotations and JSX.
+
+    Picking either declared lang breaks the other block.
+    """
+    src = (
+        '<script lang="ts">\n  const a: number = 1\n</script>\n'
+        '<script lang="jsx">\n  const b = <div />\n</script>\n'
+    )
+    assert _sfc_mask_non_script(src)[1] == "tsx"
+
+
+def test_jsx_only_blocks_pick_jsx():
+    src = '<script lang="jsx">\n  const b = <div />\n</script>\n'
+    assert _sfc_mask_non_script(src)[1] == "jsx"
+
+
+def test_tsx_lang_reaches_the_call_graph_pass(tmp_path):
+    """`_parse_js_tree` keyed the TSX grammar off the file SUFFIX.
+
+    An SFC's suffix is `.svelte`, so a `lang="tsx"` script was parsed with the
+    plain TS grammar, which misparses JSX and drops the calls in it.
+    """
+    _write(tmp_path / "format.ts", "export const fmt = (s: string) => s\n")
+    component = _write(
+        tmp_path / "Tsx.svelte",
+        '<script lang="tsx">\n'
+        "  import { fmt } from './format'\n"
+        "  export function render(n: number) { return <div>{fmt(String(n))}</div> }\n"
+        "</script>\n",
+    )
+    result = extract(
+        [component, tmp_path / "format.ts"], cache_root=tmp_path,
+    )
+    nodes = {n["id"]: n for n in result["nodes"]}
+    calls = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and nodes.get(e["source"], {}).get("label") == "render()"
+        and nodes.get(e["target"], {}).get("label") == "fmt()"
+    ]
+    assert calls
