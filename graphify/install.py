@@ -311,25 +311,51 @@ def _claude_pretooluse_hooks(strict: bool = False, project: bool = False) -> "li
     content search through its dedicated Grep tool, not Bash (#1986) — a
     Bash-only matcher never fired on the agent's primary search path.
 
-    When ``strict`` is set, the read hook carries ``--strict`` so it blocks the
-    first raw read per session (Claude Code only). The ``GRAPHIFY_HOOK_STRICT`` env
-    var can force it on or off at runtime without a reinstall.
+    When ``strict`` is set, both hooks carry ``--strict``: the read hook blocks the
+    first raw read per session, and the search hook blocks a recursive in-project
+    search until this session has recorded one graph traversal (Claude Code only;
+    see ``_claude_posttooluse_hooks`` for the marker). The ``GRAPHIFY_HOOK_STRICT``
+    env var can force it on or off at runtime without a reinstall.
     """
     exe = _resolve_graphify_exe(project=project)
-    read_cmd = f"{exe} hook-guard read" + (" --strict" if strict else "")
-    read_args = "hook-guard read" + (" --strict" if strict else "")
+    flag = " --strict" if strict else ""
     return [
         {"matcher": "Bash|Grep",
          "hooks": [{"type": "command",
-                    "command": f"{exe} hook-guard search || true",
-                    "commandWindows": _graphify_command_windows("hook-guard search", project),
+                    "command": f"{exe} hook-guard search{flag} || true",
+                    "commandWindows": _graphify_command_windows("hook-guard search" + flag, project),
                     "timeout": 10}]},
         {"matcher": "Read|Glob",
          "hooks": [{"type": "command",
-                    "command": f"{read_cmd} || true",
-                    "commandWindows": _graphify_command_windows(read_args, project),
+                    "command": f"{exe} hook-guard read{flag} || true",
+                    "commandWindows": _graphify_command_windows("hook-guard read" + flag, project),
                     "timeout": 10}]},
     ]
+
+
+# Matchers graphify registers; the install/uninstall filters key on these plus
+# "graphify" in the entry so a user's unrelated hooks are never touched.
+_CLAUDE_PRETOOLUSE_MATCHERS = ("Glob|Grep", "Bash", "Bash|Grep", "Read|Glob")
+_CLAUDE_POSTTOOLUSE_MATCHER = "Bash|mcp__graphify__.*"
+_CLAUDE_POSTTOOLUSE_MATCHERS = (_CLAUDE_POSTTOOLUSE_MATCHER,)
+
+
+def _claude_posttooluse_hooks(project: bool = False) -> "list[dict]":
+    """PostToolUse hook that records query evidence for the strict search gate:
+    fires after the MCP graph tools and after Bash, and writes a per-session/agent
+    marker only when the call was a graph traversal (query/explain/path)."""
+    exe = _resolve_graphify_exe(project=project)
+    return [
+        {"matcher": _CLAUDE_POSTTOOLUSE_MATCHER,
+         "hooks": [{"type": "command",
+                    "command": f"{exe} hook-guard mark-queried || true",
+                    "commandWindows": _graphify_command_windows("hook-guard mark-queried", project),
+                    "timeout": 10}]},
+    ]
+
+
+def _is_graphify_hook(h, matchers) -> bool:
+    return isinstance(h, dict) and h.get("matcher") in matchers and "graphify" in str(h)
 def _skill_registration(skill_path: str = "~/.claude/skills/graphify/SKILL.md") -> str:
     return (
         "\n# graphify\n"
@@ -702,8 +728,9 @@ def _print_install_usage() -> None:
     platforms = ", ".join([*_PLATFORM_CONFIG, "gemini", "cursor"])
     print("Usage: graphify install [--project] [--strict] [--platform P|P]")
     print(f"Platforms: {platforms}")
-    print("  --strict  block the first raw file read per session until one "
-          "`graphify query` runs (Claude Code project hook only; needs --project)")
+    print("  --strict  block the first raw file read per session, and every recursive "
+          "in-project search until this session has run one graph traversal "
+          "(Claude Code project hook only; needs --project)")
 _CLAUDE_MD_MARKER = "## graphify"
 _CODEBUDDY_MD_MARKER = "## graphify"
 _AGENTS_MD_MARKER = "## graphify"
@@ -1806,8 +1833,9 @@ def claude_install(project_dir: Path | None = None, strict: bool = False, projec
     print("Claude Code will now check the knowledge graph before answering")
     print("codebase questions and rebuild it after code changes.")
     if strict:
-        print("Strict mode: the first raw file read per session is blocked until")
-        print("one `graphify query` runs (toggle with GRAPHIFY_HOOK_STRICT=0).")
+        print("Strict mode: the first raw file read per session is blocked until one")
+        print("graph traversal runs, and recursive in-project searches stay blocked until")
+        print("this session has run one (toggle with GRAPHIFY_HOOK_STRICT=0).")
 def _install_claude_hook(project_dir: Path, strict: bool = False, project: bool = False) -> None:
     """Add graphify PreToolUse hook to .claude/settings.json.
 
@@ -1826,11 +1854,17 @@ def _install_claude_hook(project_dir: Path, strict: bool = False, project: bool 
     if not isinstance(pre_tool, list):
         _refuse_to_modify(settings_path)
 
-    hooks["PreToolUse"] = [h for h in pre_tool if not (isinstance(h, dict) and h.get("matcher") in ("Glob|Grep", "Bash", "Bash|Grep", "Read|Glob") and "graphify" in str(h))]
+    post_tool = hooks.setdefault("PostToolUse", [])
+    if not isinstance(post_tool, list):
+        _refuse_to_modify(settings_path)
+
+    hooks["PreToolUse"] = [h for h in pre_tool if not _is_graphify_hook(h, _CLAUDE_PRETOOLUSE_MATCHERS)]
     hooks["PreToolUse"].extend(_claude_pretooluse_hooks(strict=strict, project=project))
+    hooks["PostToolUse"] = [h for h in post_tool if not _is_graphify_hook(h, _CLAUDE_POSTTOOLUSE_MATCHERS)]
+    hooks["PostToolUse"].extend(_claude_posttooluse_hooks(project=project))
     _write_settings_with_backup(settings_path, settings)
     _mode = " (strict)" if strict else ""
-    print(f"  .claude/settings.json  ->  PreToolUse hooks registered (Bash|Grep search + Read/Glob){_mode}")
+    print(f"  .claude/settings.json  ->  PreToolUse hooks registered (Bash|Grep search + Read/Glob){_mode}; PostToolUse query marker registered")
 def _uninstall_claude_hook(project_dir: Path) -> None:
     """Remove the graphify PreToolUse hook from .claude/settings.json and its
     local-only sibling .claude/settings.local.json.
@@ -1849,13 +1883,18 @@ def _strip_graphify_hook(settings_path: Path) -> None:
         settings = json.loads(settings_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return
-    pre_tool = settings.get("hooks", {}).get("PreToolUse", [])
-    filtered = [h for h in pre_tool if not (h.get("matcher") in ("Glob|Grep", "Bash", "Bash|Grep", "Read|Glob") and "graphify" in str(h))]
-    if len(filtered) == len(pre_tool):
+    hooks = settings.get("hooks", {})
+    pre_tool = hooks.get("PreToolUse", [])
+    post_tool = hooks.get("PostToolUse", [])
+    pre_kept = [h for h in pre_tool if not _is_graphify_hook(h, _CLAUDE_PRETOOLUSE_MATCHERS)]
+    post_kept = [h for h in post_tool if not _is_graphify_hook(h, _CLAUDE_POSTTOOLUSE_MATCHERS)]
+    if len(pre_kept) == len(pre_tool) and len(post_kept) == len(post_tool):
         return
-    settings["hooks"]["PreToolUse"] = filtered
+    hooks["PreToolUse"] = pre_kept
+    if len(post_kept) != len(post_tool):
+        hooks["PostToolUse"] = post_kept
     settings_path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
-    print(f"  .claude/{settings_path.name}  ->  PreToolUse hook removed")
+    print(f"  .claude/{settings_path.name}  ->  graphify hooks removed")
 def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
     """Remove graphify from every platform detected in the current project."""
     pd = project_dir or Path(".")

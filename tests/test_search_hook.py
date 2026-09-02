@@ -122,7 +122,7 @@ def test_fails_open_on_malformed_stdin(tmp_path):
     assert r.stdout.strip() == ""
 
 
-def test_never_blocks(tmp_path):
+def test_never_blocks_in_soft_mode(tmp_path):
     r = _run("grep -rn foo .", tmp_path, graph=True)
     assert r.returncode == 0
     assert '"permissionDecision"' not in r.stdout
@@ -171,7 +171,7 @@ def test_grep_tool_nudge_is_valid_pretooluse_json(tmp_path):
     assert "query_graph" in payload["hookSpecificOutput"]["additionalContext"]
 
 
-def test_grep_tool_never_blocks(tmp_path):
+def test_grep_tool_never_blocks_in_soft_mode(tmp_path):
     r = _run_grep_tool({"pattern": "foo", "path": "."}, tmp_path, graph=True)
     assert r.returncode == 0
     assert '"permissionDecision"' not in r.stdout

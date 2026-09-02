@@ -155,11 +155,11 @@ def test_glob_never_denies(tmp_path, monkeypatch):
     assert not _is_deny(_invoke("read", payload, tmp_path, monkeypatch, strict=True))
 
 
-def test_search_never_denies(tmp_path, monkeypatch):
+def test_search_soft_mode_never_denies(tmp_path, monkeypatch):
     _fixture(tmp_path)
     out = _invoke("search", {"session_id": "s1", "tool_input": {"command": "grep -rn foo ."}},
-                  tmp_path, monkeypatch, strict=True)
-    assert not _is_deny(out)  # search stays a nudge even in strict mode
+                  tmp_path, monkeypatch, strict=False)
+    assert not _is_deny(out)  # soft mode stays a nudge; the strict search gate is test_search_strict.py
 
 
 def test_no_session_id_never_denies(tmp_path, monkeypatch):

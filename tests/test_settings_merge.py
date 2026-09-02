@@ -81,15 +81,17 @@ def test_claude_install_preserves_existing_settings(tmp_path):
     assert result["mcpServers"] == seeded["mcpServers"]
     assert result["enabledPlugins"] == seeded["enabledPlugins"]
     assert result["theme"] == "dark"
-    # hooks sections graphify does not manage are untouched
-    assert result["hooks"]["PostToolUse"] == seeded["hooks"]["PostToolUse"]
+    # the user's own PostToolUse entry survives alongside graphify's query marker
+    post_tool = result["hooks"]["PostToolUse"]
+    assert seeded["hooks"]["PostToolUse"][0] in post_tool
+    assert len([h for h in post_tool if "graphify" in str(h)]) == 1
     # the user's own PreToolUse entry survives alongside graphify's
     pre_tool = result["hooks"]["PreToolUse"]
     assert seeded["hooks"]["PreToolUse"][0] in pre_tool
     graphify_hooks = [h for h in pre_tool if "graphify" in str(h)]
     assert len(graphify_hooks) == 2
-    # strict=True lands on the read guard
-    assert any(h["hooks"][0]["command"].endswith("--strict || true") for h in graphify_hooks)
+    # strict=True lands on both guards
+    assert all(h["hooks"][0]["command"].endswith("--strict || true") for h in graphify_hooks)
 
 
 # ---------------------------------------------------------------- BOM
