@@ -106,7 +106,12 @@ def _rust_use_leaves(node, source: bytes, prefix: tuple[str, ...] = ()) -> list[
             named = [c for c in node.named_children]
             path_node = path_node or (named[0] if named else None)
             alias_node = alias_node or (named[1] if len(named) > 1 else None)
-        segments = tuple(prefix) + tuple(_rust_path_segments(path_node, source))
+        if path_node is not None and path_node.type == "self" and prefix:
+            # `use foo::bar::{self as bar_mod, Baz}` aliases the MODULE the
+            # prefix spells, exactly as the unaliased `self` does.
+            segments = tuple(prefix)
+        else:
+            segments = tuple(prefix) + tuple(_rust_path_segments(path_node, source))
         alias = _read_text(alias_node, source).strip() if alias_node is not None else None
         return [(segments, alias or None, False)] if segments else []
     if t == "use_wildcard":
@@ -237,6 +242,8 @@ def _resolve_rust_use_path(
                 return None
             anchor = anchor.parent
             index += 1
+        if anchor is None:
+            return None
         if src_root is not None and src_root not in (anchor, *anchor.parents):
             return None
     if anchor is None and first not in ("crate", "self", "super"):
@@ -246,23 +253,51 @@ def _resolve_rust_use_path(
         for candidate_anchor in (src_root, search_dir):
             if candidate_anchor is None:
                 continue
+            # No anchor_file here: a bare path is only a GUESS at being
+            # crate-relative, and seeding the anchor's own file would make
+            # every external crate (`use anyhow::Result`) resolve to a symbol
+            # named `anyhow` inside `lib.rs`.
             resolved = _walk_rust_segments(candidate_anchor, segments)
             if resolved is not None:
                 return resolved
         return None
     if anchor is None:
+        if first == "self" and len(segments) == 2:
+            # `use self::Config;` names an item of THIS module, which needs no
+            # child directory to live in.
+            return path, segments[1]
         return None
-    return _walk_rust_segments(anchor, segments[index:])
+    anchor_file = path if first == "self" else _rust_module_root_file(anchor)
+    return _walk_rust_segments(anchor, segments[index:], anchor_file=anchor_file)
+
+
+def _rust_module_root_file(directory: Path) -> Path | None:
+    """The file that IS the module owning ``directory``, if one is present.
+
+    A symbol imported straight off an anchor (``use crate::Config``) is defined
+    in that module's own file rather than in a child module, so the anchor
+    needs a file to attribute it to.
+    """
+    for name in _RUST_MODULE_ROOT_FILES:
+        candidate = directory / name
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 def _walk_rust_segments(
-    anchor: Path, segments: tuple[str, ...]
+    anchor: Path, segments: tuple[str, ...], anchor_file: Path | None = None
 ) -> "tuple[Path, str | None] | None":
-    """Walk module segments from ``anchor``; the tail may name a symbol."""
+    """Walk module segments from ``anchor``; the tail may name a symbol.
+
+    ``anchor_file`` is the file backing ``anchor``'s own module, so a symbol
+    that is not inside any child module (``use crate::Config``, defined in
+    ``lib.rs``) still resolves instead of dropping its edge.
+    """
     if not segments:
         return None
     directory = anchor
-    resolved: Path | None = None
+    resolved: Path | None = anchor_file
     for position, segment in enumerate(segments):
         found = _rust_module_file(directory, segment)
         if found is None:

@@ -442,3 +442,67 @@ def test_external_plain_use_is_not_a_reexport(tmp_path):
     result, nodes = _graph(tmp_path)
     assert ("service.rs", "Result") in _edges(result, nodes, "imports_from")
     assert not _edges(result, nodes, "re_exports")
+
+
+def test_symbol_defined_in_the_anchor_module_itself_resolves(tmp_path):
+    """`use crate::Config` names an item of `lib.rs`, not of a child module.
+
+    Requiring at least one module segment to resolve first dropped the edge.
+    """
+    _crate(tmp_path)
+    (tmp_path / "src" / "lib.rs").write_text(
+        "pub mod models;\npub struct Config;\n", encoding="utf-8"
+    )
+    (tmp_path / "src" / "models" / "service.rs").write_text(
+        "use crate::Config;\npub fn run() -> u32 { 1 }\n", encoding="utf-8"
+    )
+    result, nodes = _graph(tmp_path)
+    assert ("service.rs", "lib.rs") in _edges(result, nodes, "imports_from")
+    assert ("service.rs", "Config") in _edges(result, nodes, "imports")
+
+
+def test_self_prefixed_own_item_resolves_without_a_child_directory(tmp_path):
+    """`use self::Config;` in a childless `foo.rs` names that file's own item."""
+    _crate(tmp_path)
+    (tmp_path / "src" / "models" / "service.rs").write_text(
+        "use self::Config;\npub struct Config;\npub fn run() -> u32 { 1 }\n",
+        encoding="utf-8",
+    )
+    result, nodes = _graph(tmp_path)
+    assert ("service.rs", "Config") in _edges(result, nodes, "imports")
+
+
+def test_external_crate_does_not_resolve_to_the_crate_root_file(tmp_path):
+    """A bare path is a GUESS at being crate-relative.
+
+    Seeding the anchor's own file for that guess would make every external
+    crate resolve to a symbol named after it inside `lib.rs`.
+    """
+    _crate(tmp_path)
+    (tmp_path / "src" / "models" / "service.rs").write_text(
+        "use anyhow::Result;\npub fn run() -> u32 { 1 }\n", encoding="utf-8"
+    )
+    result, nodes = _graph(tmp_path)
+    imports_from = _edges(result, nodes, "imports_from")
+    assert ("service.rs", "lib.rs") not in imports_from
+    assert ("service.rs", "Result") in imports_from
+
+
+def test_aliased_self_in_a_use_list_names_the_module():
+    """`use foo::bar::{self as bar_mod, Baz}` aliases the module `foo::bar`."""
+    leaves = _leaves("use crate::models::risk::{self as risk_mod, Entity};\n")
+    by_alias = {leaf[1]: leaf[0] for leaf in leaves}
+    assert by_alias["risk_mod"] == ("crate", "models", "risk")
+    assert ("crate", "models", "risk", "self") not in {leaf[0] for leaf in leaves}
+
+
+def test_aliased_self_edges_the_module_file(tmp_path):
+    _crate(tmp_path)
+    (tmp_path / "src" / "models" / "service.rs").write_text(
+        "use crate::models::_entities::risk::{self as risk_mod, Entity};\n"
+        "pub fn run() -> u32 { 1 }\n",
+        encoding="utf-8",
+    )
+    result, nodes = _graph(tmp_path)
+    assert ("service.rs", "risk.rs") in _edges(result, nodes, "imports_from")
+    assert "self" not in {n.get("label") for n in result["nodes"]}
