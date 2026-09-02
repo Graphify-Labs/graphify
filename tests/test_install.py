@@ -404,8 +404,8 @@ def test_codebuddy_install_writes_hook(tmp_path):
 
 
 def test_claude_hook_is_shell_agnostic(tmp_path):
-    # #522: the installed PreToolUse hooks must be plain exe invocations, not
-    # POSIX bash (which fails on Windows cmd.exe/PowerShell).
+    # Claude runs command hooks through a POSIX shell, including Git Bash on
+    # Windows; keep the command simple while preserving #3280 fail-open.
     import json as _json
     from graphify.__main__ import _install_claude_hook
     _install_claude_hook(tmp_path)
@@ -414,9 +414,9 @@ def test_claude_hook_is_shell_agnostic(tmp_path):
     assert {"Bash|Grep", "Read|Glob"} <= matchers  # Grep in the search matcher: #1986
     for h in hooks:
         cmd = h["hooks"][0]["command"]
-        for token in ("$(", "case ", "[ -f", "&&", "||", ";;", "echo '"):
+        for token in ("$(", "case ", "[ -f", "&&", ";;", "echo '"):
             assert token not in cmd, f"shell syntax {token!r} in {cmd!r}"
-        assert "graphify" in cmd and "hook-guard" in cmd
+        assert "graphify" in cmd and "hook-guard" in cmd and cmd.endswith("|| true")
 
 
 def test_claude_hook_install_idempotent_and_replaces_old_bash_hook(tmp_path):
