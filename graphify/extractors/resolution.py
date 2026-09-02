@@ -16,6 +16,9 @@ import os
 import re
 import sys
 
+from graphify.parallel import map_in_process_pool
+from graphify.progress import vprint
+
 
 _TSCONFIG_ALIAS_CACHE: dict[str, dict[str, list[str]]] = {}
 
@@ -1488,127 +1491,101 @@ def _ts_walk_class_members(class_node, source: bytes, path: Path, class_nid: str
                     _SymbolUseFact(path, class_nid, name, "references", ctx, m_line)
                 )
 
-def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolutionFacts) -> None:
-    js_paths = [
-        path for path in paths
-        if path.suffix in _JS_CACHE_BYPASS_SUFFIXES
-    ]
-    if not js_paths:
-        return
+def _collect_js_facts_for_path(path: Path) -> _SymbolResolutionFacts:
+    """Parse one JS/TS/Vue/Svelte file and return its symbol-resolution facts.
 
-    trees: dict[Path, tuple[bytes, object]] = {}
+    Same walks as the historical all-files-then-next-pass loops, but scoped to
+    a single path so a process pool can parse many files at once. Merging
+    results in original path order reconstructs the serial fact lists.
+    """
+    facts = _SymbolResolutionFacts()
+    parsed = _parse_js_tree(path)
+    if parsed is None:
+        return facts
+    source, root_node = parsed
 
-    for path in js_paths:
-        resolved_path = path.resolve()
-        parsed = _parse_js_tree(path)
-        if parsed is None:
+    for node in _walk_js_tree(root_node):
+        if node.type == "export_statement":
+            for name in _js_exported_declaration_names(node, source):
+                facts.declarations.append(
+                    _SymbolDeclarationFact(path, name, node.start_point[0] + 1)
+                )
+
+        if node.type != "import_statement":
             continue
-        source, root_node = parsed
-        trees[resolved_path] = parsed
+        raw_module = _js_module_specifier(node, source)
+        if raw_module is None:
+            continue
+        target_path = _resolve_js_module_path(raw_module, path.parent)
+        if target_path is None:
+            continue
+        target_path = target_path.resolve()
+        for imported_name, local_name in _js_named_specifiers(node, source, "import_specifier"):
+            facts.imports.append(
+                _SymbolImportFact(
+                    path,
+                    local_name,
+                    target_path,
+                    imported_name,
+                    node.start_point[0] + 1,
+                )
+            )
+        default_local = _js_default_import_name(node, source)
+        if default_local is not None:
+            facts.imports.append(
+                _SymbolImportFact(
+                    path,
+                    default_local,
+                    target_path,
+                    "default",
+                    node.start_point[0] + 1,
+                )
+            )
 
-        for node in _walk_js_tree(root_node):
-            if node.type == "export_statement":
-                for name in _js_exported_declaration_names(node, source):
-                    facts.declarations.append(
-                        _SymbolDeclarationFact(path, name, node.start_point[0] + 1)
-                    )
+    for node in _walk_js_tree(root_node):
+        for alias, target in _js_lexical_aliases(node, source):
+            facts.aliases.append(
+                _SymbolAliasFact(path, alias, target, node.start_point[0] + 1)
+            )
 
-            if node.type != "import_statement":
-                continue
-            raw_module = _js_module_specifier(node, source)
-            if raw_module is None:
-                continue
+    for node in _walk_js_tree(root_node):
+        if node.type != "export_statement":
+            continue
+
+        raw_module = _js_module_specifier(node, source)
+        export_clause = _js_export_clause(node)
+        # `export type { X } from ...` / `export type * from ...`: the
+        # statement-level `type` keyword is a bare anonymous child; the
+        # default binding NAMED type sits inside the clause instead (#3123).
+        stmt_type_only = any(
+            child.type == "type" and not child.is_named
+            for child in node.children
+        )
+        if raw_module is not None:
             target_path = _resolve_js_module_path(raw_module, path.parent)
             if target_path is None:
                 continue
             target_path = target_path.resolve()
-            for imported_name, local_name in _js_named_specifiers(node, source, "import_specifier"):
-                facts.imports.append(
-                    _SymbolImportFact(
+            namespace_name = _js_namespace_export_name(node, source)
+            if namespace_name is not None:
+                facts.namespace_exports.append(
+                    _NamespaceExportFact(
                         path,
-                        local_name,
+                        namespace_name,
                         target_path,
-                        imported_name,
                         node.start_point[0] + 1,
+                        type_only=stmt_type_only,
                     )
                 )
-            default_local = _js_default_import_name(node, source)
-            if default_local is not None:
-                facts.imports.append(
-                    _SymbolImportFact(
-                        path,
-                        default_local,
-                        target_path,
-                        "default",
-                        node.start_point[0] + 1,
+            elif _js_export_statement_is_star(node):
+                facts.star_exports.append(
+                    _StarExportFact(
+                        path, target_path, node.start_point[0] + 1,
+                        type_only=stmt_type_only,
                     )
                 )
-
-        for node in _walk_js_tree(root_node):
-            for alias, target in _js_lexical_aliases(node, source):
-                facts.aliases.append(
-                    _SymbolAliasFact(path, alias, target, node.start_point[0] + 1)
-                )
-
-    for path in js_paths:
-        resolved_path = path.resolve()
-        parsed = trees.get(resolved_path)
-        if parsed is None:
-            continue
-        source, root_node = parsed
-
-        for node in _walk_js_tree(root_node):
-            if node.type != "export_statement":
-                continue
-
-            raw_module = _js_module_specifier(node, source)
-            export_clause = _js_export_clause(node)
-            # `export type { X } from ...` / `export type * from ...`: the
-            # statement-level `type` keyword is a bare anonymous child; the
-            # default binding NAMED type sits inside the clause instead (#3123).
-            stmt_type_only = any(
-                child.type == "type" and not child.is_named
-                for child in node.children
-            )
-            if raw_module is not None:
-                target_path = _resolve_js_module_path(raw_module, path.parent)
-                if target_path is None:
-                    continue
-                target_path = target_path.resolve()
-                namespace_name = _js_namespace_export_name(node, source)
-                if namespace_name is not None:
-                    facts.namespace_exports.append(
-                        _NamespaceExportFact(
-                            path,
-                            namespace_name,
-                            target_path,
-                            node.start_point[0] + 1,
-                            type_only=stmt_type_only,
-                        )
-                    )
-                elif _js_export_statement_is_star(node):
-                    facts.star_exports.append(
-                        _StarExportFact(path, target_path, node.start_point[0] + 1,
-                                        type_only=stmt_type_only)
-                    )
-                if export_clause is not None:
-                    for original_name, exported_name in _js_named_specifiers(
-                        export_clause, source, "export_specifier"
-                    ):
-                        facts.exports.append(
-                            _SymbolExportFact(
-                                path,
-                                exported_name,
-                                node.start_point[0] + 1,
-                                target_path=target_path,
-                                target_name=original_name,
-                                type_only=stmt_type_only,
-                            )
-                        )
-                continue
-
             if export_clause is not None:
-                for local_name, exported_name in _js_named_specifiers(
+                for original_name, exported_name in _js_named_specifiers(
                     export_clause, source, "export_specifier"
                 ):
                     facts.exports.append(
@@ -1616,80 +1593,140 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
                             path,
                             exported_name,
                             node.start_point[0] + 1,
-                            local_name=local_name,
+                            target_path=target_path,
+                            target_name=original_name,
+                            type_only=stmt_type_only,
                         )
                     )
-                continue
+            continue
 
-            for exported_name in _js_exported_declaration_names(node, source):
+        if export_clause is not None:
+            for local_name, exported_name in _js_named_specifiers(
+                export_clause, source, "export_specifier"
+            ):
                 facts.exports.append(
                     _SymbolExportFact(
                         path,
                         exported_name,
                         node.start_point[0] + 1,
-                        local_name=exported_name,
+                        local_name=local_name,
                     )
                 )
-
-            # `export default class Foo {}` / `export default foo` exposes the
-            # symbol under the name "default"; record that so a default import
-            # (imported_name="default") resolves to it. `export { X as default }`
-            # is already handled via the export_clause path above.
-            default_name = _js_default_export_name(node, source)
-            if default_name is not None:
-                facts.exports.append(
-                    _SymbolExportFact(
-                        path,
-                        "default",
-                        node.start_point[0] + 1,
-                        local_name=default_name,
-                    )
-                )
-
-    for path in js_paths:
-        resolved_path = path.resolve()
-        parsed = trees.get(resolved_path)
-        if parsed is None:
             continue
-        source, root_node = parsed
-        for source_id, body in _js_top_level_function_bodies(path, root_node, source):
-            for node in _walk_js_tree(body):
-                imported_name = _js_call_identifier(node, source)
-                if imported_name is None:
-                    continue
-                facts.uses.append(
-                    _SymbolUseFact(
-                        path,
-                        source_id,
-                        imported_name,
-                        "calls",
-                        "call",
-                        node.start_point[0] + 1,
-                    )
-                )
 
-    for path in js_paths:
-        resolved_path = path.resolve()
-        parsed = trees.get(resolved_path)
-        if parsed is None:
+        for exported_name in _js_exported_declaration_names(node, source):
+            facts.exports.append(
+                _SymbolExportFact(
+                    path,
+                    exported_name,
+                    node.start_point[0] + 1,
+                    local_name=exported_name,
+                )
+            )
+
+        # `export default class Foo {}` / `export default foo` exposes the
+        # symbol under the name "default"; record that so a default import
+        # (imported_name="default") resolves to it. `export { X as default }`
+        # is already handled via the export_clause path above.
+        default_name = _js_default_export_name(node, source)
+        if default_name is not None:
+            facts.exports.append(
+                _SymbolExportFact(
+                    path,
+                    "default",
+                    node.start_point[0] + 1,
+                    local_name=default_name,
+                )
+            )
+
+    for source_id, body in _js_top_level_function_bodies(path, root_node, source):
+        for node in _walk_js_tree(body):
+            imported_name = _js_call_identifier(node, source)
+            if imported_name is None:
+                continue
+            facts.uses.append(
+                _SymbolUseFact(
+                    path,
+                    source_id,
+                    imported_name,
+                    "calls",
+                    "call",
+                    node.start_point[0] + 1,
+                )
+            )
+
+    stem = _file_stem(path)
+    for node in _walk_js_tree(root_node):
+        if node.type not in (
+            "class_declaration",
+            "abstract_class_declaration",
+            "interface_declaration",
+        ):
             continue
-        source, root_node = parsed
-        stem = _file_stem(path)
-        for node in _walk_js_tree(root_node):
-            if node.type not in (
-                "class_declaration",
-                "abstract_class_declaration",
-                "interface_declaration",
-            ):
-                continue
-            name_node = node.child_by_field_name("name")
-            if name_node is None:
-                continue
-            class_name = _read_text(name_node, source)
-            if not class_name:
-                continue
-            class_nid = _make_id(stem, class_name)
-            _ts_walk_class_members(node, source, path, class_nid, facts)
+        name_node = node.child_by_field_name("name")
+        if name_node is None:
+            continue
+        class_name = _read_text(name_node, source)
+        if not class_name:
+            continue
+        class_nid = _make_id(stem, class_name)
+        _ts_walk_class_members(node, source, path, class_nid, facts)
+    return facts
+
+
+def _collect_js_facts_worker(path_str: str) -> _SymbolResolutionFacts:
+    """Process-pool entry: path as str so the payload pickles cleanly."""
+    return _collect_js_facts_for_path(Path(path_str))
+
+
+def _merge_fact_results(
+    facts: _SymbolResolutionFacts,
+    paths: list[Path],
+    parts: list[_SymbolResolutionFacts] | None,
+    collect_one,
+) -> None:
+    """Extend *facts* in original *paths* order.
+
+    ``parts is None`` means the pool declined (small job / one worker / BPP);
+    run *collect_one* sequentially. Otherwise *parts[i]* is the facts for
+    ``paths[i]``.
+    """
+    if parts is None:
+        for path in paths:
+            facts.extend(collect_one(path))
+        return
+    for part in parts:
+        facts.extend(part)
+
+
+def _resolving_progress(msg: str) -> None:
+    vprint(msg, file=sys.stdout, prefix="")
+
+
+def _collect_js_symbol_resolution_facts(
+    paths: list[Path],
+    facts: _SymbolResolutionFacts,
+    *,
+    parallel: bool = True,
+    max_workers: int | None = None,
+) -> None:
+    js_paths = [
+        path for path in paths
+        if path.suffix in _JS_CACHE_BYPASS_SUFFIXES
+    ]
+    if not js_paths:
+        return
+    _resolving_progress(f"  resolving: JS/TS facts ({len(js_paths)} files)...")
+    parts = None
+    if parallel:
+        parts = map_in_process_pool(
+            _collect_js_facts_worker,
+            [str(p) for p in js_paths],
+            max_workers=max_workers,
+        )
+    _merge_fact_results(facts, js_paths, parts, _collect_js_facts_for_path)
+    _resolving_progress("  resolving: JS/TS facts done")
+
 
 def _parse_python_tree(path: Path):
     try:
@@ -1824,92 +1861,123 @@ def _python_call_identifier(node, source: bytes) -> str | None:
         return _read_text(function_node, source)
     return None
 
+def _collect_python_facts_for_path(path: Path, root: Path) -> _SymbolResolutionFacts:
+    """Parse one Python file into symbol-resolution facts (imports + uses)."""
+    facts = _SymbolResolutionFacts()
+    parsed = _parse_python_tree(path)
+    if parsed is None:
+        return facts
+    source, root_node = parsed
+
+    for node in _walk_python_tree(root_node):
+        if node.type != "import_from_statement":
+            continue
+        module = _python_import_from_module(node, source)
+        if module is None:
+            continue
+        level, module_name = module
+        target_path = _resolve_python_module_path(module_name, path, root, level)
+        if target_path is None:
+            continue
+        # #1146: `from pkg import submod` — if the target is a package
+        # (__init__.py) and an imported name matches a submodule file on
+        # disk, emit a file-level import edge to that submodule rather
+        # than only to the package.
+        pkg_dir = target_path.parent if target_path.name == "__init__.py" else None
+        for imported_name, local_name in _python_imported_names(node, source):
+            line = node.start_point[0] + 1
+            if pkg_dir is not None:
+                sub_py = pkg_dir / f"{imported_name}.py"
+                sub_pkg = pkg_dir / imported_name / "__init__.py"
+                submodule = sub_py if sub_py.is_file() else (sub_pkg if sub_pkg.is_file() else None)
+                if submodule is not None:
+                    facts.module_imports.append((path, submodule, line, local_name))
+                    continue
+            facts.imports.append(
+                _SymbolImportFact(path, local_name, target_path, imported_name, line)
+            )
+            if path.name == "__init__.py":
+                facts.exports.append(
+                    _SymbolExportFact(
+                        path,
+                        local_name,
+                        line,
+                        target_path=target_path,
+                        target_name=imported_name,
+                    )
+                )
+
+    for source_id, body in _python_top_level_function_bodies(path, root_node, source):
+        for node in _walk_python_tree(body):
+            imported_name = _python_call_identifier(node, source)
+            if imported_name is None:
+                continue
+            facts.uses.append(
+                _SymbolUseFact(
+                    path,
+                    source_id,
+                    imported_name,
+                    "calls",
+                    "call",
+                    node.start_point[0] + 1,
+                )
+            )
+    return facts
+
+
+def _collect_python_facts_worker(args: tuple[str, str]) -> _SymbolResolutionFacts:
+    path_str, root_str = args
+    return _collect_python_facts_for_path(Path(path_str), Path(root_str))
+
+
 def _collect_python_symbol_resolution_facts(
     paths: list[Path],
     root: Path,
     facts: _SymbolResolutionFacts,
+    *,
+    parallel: bool = True,
+    max_workers: int | None = None,
 ) -> None:
     py_paths = [path for path in paths if path.suffix == ".py"]
     if not py_paths:
         return
+    _resolving_progress(f"  resolving: Python facts ({len(py_paths)} files)...")
+    parts = None
+    if parallel:
+        parts = map_in_process_pool(
+            _collect_python_facts_worker,
+            [(str(p), str(root)) for p in py_paths],
+            max_workers=max_workers,
+        )
+    _merge_fact_results(
+        facts,
+        py_paths,
+        parts,
+        lambda p: _collect_python_facts_for_path(p, root),
+    )
+    _resolving_progress("  resolving: Python facts done")
 
-    trees: dict[Path, tuple[bytes, object]] = {}
-    for path in py_paths:
-        parsed = _parse_python_tree(path)
-        if parsed is None:
-            continue
-        source, root_node = parsed
-        trees[path.resolve()] = parsed
-
-        for node in _walk_python_tree(root_node):
-            if node.type != "import_from_statement":
-                continue
-            module = _python_import_from_module(node, source)
-            if module is None:
-                continue
-            level, module_name = module
-            target_path = _resolve_python_module_path(module_name, path, root, level)
-            if target_path is None:
-                continue
-            # #1146: `from pkg import submod` — if the target is a package
-            # (__init__.py) and an imported name matches a submodule file on
-            # disk, emit a file-level import edge to that submodule rather
-            # than only to the package.
-            pkg_dir = target_path.parent if target_path.name == "__init__.py" else None
-            for imported_name, local_name in _python_imported_names(node, source):
-                line = node.start_point[0] + 1
-                if pkg_dir is not None:
-                    sub_py = pkg_dir / f"{imported_name}.py"
-                    sub_pkg = pkg_dir / imported_name / "__init__.py"
-                    submodule = sub_py if sub_py.is_file() else (sub_pkg if sub_pkg.is_file() else None)
-                    if submodule is not None:
-                        facts.module_imports.append((path, submodule, line, local_name))
-                        continue
-                facts.imports.append(
-                    _SymbolImportFact(path, local_name, target_path, imported_name, line)
-                )
-                if path.name == "__init__.py":
-                    facts.exports.append(
-                        _SymbolExportFact(
-                            path,
-                            local_name,
-                            line,
-                            target_path=target_path,
-                            target_name=imported_name,
-                        )
-                    )
-
-    for path in py_paths:
-        parsed = trees.get(path.resolve())
-        if parsed is None:
-            continue
-        source, root_node = parsed
-        for source_id, body in _python_top_level_function_bodies(path, root_node, source):
-            for node in _walk_python_tree(body):
-                imported_name = _python_call_identifier(node, source)
-                if imported_name is None:
-                    continue
-                facts.uses.append(
-                    _SymbolUseFact(
-                        path,
-                        source_id,
-                        imported_name,
-                        "calls",
-                        "call",
-                        node.start_point[0] + 1,
-                    )
-                )
 
 def _augment_symbol_resolution_edges(
     paths: list[Path],
     nodes: list[dict],
     edges: list[dict],
     root: Path,
+    *,
+    parallel: bool = True,
+    max_workers: int | None = None,
 ) -> None:
     facts = _SymbolResolutionFacts()
-    _collect_js_symbol_resolution_facts(paths, facts)
-    _collect_python_symbol_resolution_facts(paths, root, facts)
+    _resolving_progress(f"  resolving symbols across {len(paths)} files...")
+    _collect_js_symbol_resolution_facts(
+        paths, facts, parallel=parallel, max_workers=max_workers,
+    )
+    _collect_python_symbol_resolution_facts(
+        paths, root, facts, parallel=parallel, max_workers=max_workers,
+    )
+    _resolving_progress("  resolving: applying cross-file edges...")
     _apply_symbol_resolution_facts(paths, nodes, edges, root, facts)
+    _resolving_progress("  resolving: done")
 
 def _resolve_cross_file_imports(
     per_file: list[dict],

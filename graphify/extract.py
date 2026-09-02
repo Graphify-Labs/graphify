@@ -16,6 +16,14 @@ from typing import Any, Callable
 from .cache import load_cached, save_cached
 from .mcp_ingest import extract_mcp_config, is_mcp_config_path
 from .manifest_ingest import extract_package_manifest, is_package_manifest_path
+from .parallel import (
+    PARALLEL_THRESHOLD,
+    chunk_size_for,
+    chunked,
+    map_in_thread_pool,
+    resolve_max_workers,
+)
+from .progress import vprint
 from .resolver_registry import (
     LanguageResolver,
     register as register_language_resolver,
@@ -5700,6 +5708,57 @@ def _extract_single_file(args: tuple) -> tuple[int, dict]:
     return idx, result
 
 
+def _extract_file_batch(items: list[tuple]) -> list[tuple[int, dict]]:
+    """Process-pool entry: extract a chunk of files in one submitted task.
+
+    One Future per file made a 50k-file corpus spawn 50k pickles; batching
+    keeps worker count on the CPU and cuts scheduling overhead.
+    """
+    return [_extract_single_file(item) for item in items]
+
+
+def _probe_one_cached(args: tuple[int, str, str, str]) -> tuple[int, dict | None]:
+    """Cache probe for one file. ``None`` result means the file still needs extract.
+
+    Thread-pool entry (I/O + JSON). Must stay pickle-free nested-friendly; it is
+    module-level so ``map_in_thread_pool`` can also be swapped for a process
+    pool later without changing the payload.
+    """
+    i, path_str, root_str, cache_loc_str = args
+    path = Path(path_str)
+    if _get_extractor(path) is None:
+        return i, {"nodes": [], "edges": []}
+    if path.suffix in _JS_CACHE_BYPASS_SUFFIXES:
+        return i, None
+    return i, load_cached(path, Path(root_str), cache_root=Path(cache_loc_str))
+
+
+def _probe_cached_files(
+    paths: list[Path],
+    root: Path,
+    cache_location: Path,
+    *,
+    parallel: bool,
+    max_workers: int | None,
+) -> tuple[list[dict | None], list[tuple[int, Path]]]:
+    """Fill per-file cache hits; return (per_file, uncached_work) in path order."""
+    total = len(paths)
+    per_file: list[dict | None] = [None] * total
+    root_str = str(root)
+    cache_loc_str = str(cache_location)
+    items = [(i, str(path), root_str, cache_loc_str) for i, path in enumerate(paths)]
+
+    mapped = None
+    if parallel:
+        mapped = map_in_thread_pool(_probe_one_cached, items, max_workers=max_workers)
+    if mapped is None:
+        mapped = [_probe_one_cached(item) for item in items]
+    for i, result in mapped:
+        per_file[i] = result
+    uncached_work = [(i, paths[i]) for i in range(total) if per_file[i] is None]
+    return per_file, uncached_work
+
+
 def _extract_parallel(
     uncached_work: list[tuple[int, Path]],
     per_file: list[dict | None],
@@ -5717,31 +5776,7 @@ def _extract_parallel(
     """
     import concurrent.futures
 
-    if max_workers is None:
-        # Honour GRAPHIFY_MAX_WORKERS env override; otherwise scale to the
-        # full CPU. The historical `, 8)` cap was a safety bound for laptops
-        # in 2023 — on a 32-thread workstation it costs a 4x slowdown
-        # (issue #792). Capping at len(uncached_work) keeps small jobs
-        # from spawning useless idle workers.
-        env_raw = os.environ.get("GRAPHIFY_MAX_WORKERS", "").strip()
-        env_cap = None
-        if env_raw:
-            try:
-                v = int(env_raw)
-                if v > 0:
-                    env_cap = v
-            except ValueError:
-                pass
-        cpu_cap = env_cap if env_cap is not None else (os.cpu_count() or 4)
-        max_workers = min(cpu_cap, len(uncached_work))
-
-    # Windows ProcessPoolExecutor hard-caps at 61 workers (CPython limitation
-    # tied to WaitForMultipleObjects). Clamp here so every path — auto-compute,
-    # GRAPHIFY_MAX_WORKERS, and --max-workers — stays valid on >61-core boxes
-    # (issue #1298). Guard against 0 from an empty work list.
-    if sys.platform == "win32":
-        max_workers = min(max_workers, 61)
-    max_workers = max(max_workers, 1)
+    max_workers = resolve_max_workers(len(uncached_work), max_workers)
 
     # A one-worker pool buys no parallelism: it still pays process spawn plus an
     # IPC round trip per file, and it is the one residual case where the parent's
@@ -5757,20 +5792,26 @@ def _extract_parallel(
     root_str = str(root)
     cache_loc_str = str(cache_location if cache_location is not None else root)
     work_items = [(idx, str(path), root_str, cache_loc_str) for idx, path in uncached_work]
+    batches = chunked(work_items, chunk_size_for(len(work_items), max_workers))
 
     done_count = 0
     failed: list[int] = []  # positions into uncached_work whose future failed
     _PROGRESS_INTERVAL = 100
     try:
         with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as pool:
-            futures = {
-                pool.submit(_extract_single_file, item): pos
-                for pos, item in enumerate(work_items)
-            }
+            futures = {}
+            pos = 0
+            for batch in batches:
+                fut = pool.submit(_extract_file_batch, batch)
+                futures[fut] = (pos, batch)
+                pos += len(batch)
             for future in concurrent.futures.as_completed(futures):
+                start, batch = futures[future]
                 try:
-                    idx, result = future.result()
-                    per_file[idx] = result
+                    results = future.result()
+                    for idx, result in results:
+                        per_file[idx] = result
+                    done_count += len(results)
                 except concurrent.futures.process.BrokenProcessPool:
                     # #2444: a pool that dies while results are being consumed
                     # raises BrokenProcessPool from every pending future. It
@@ -5779,22 +5820,23 @@ def _extract_parallel(
                     # swallowed here per-future — that left the remaining
                     # per_file slots empty and silently dropped the files.
                     raise
-                except Exception as exc:
-                    pos = futures[future]
+                except Exception as extra:
+                    extra_paths = f" (+{len(batch) - 1} more in batch)" if len(batch) > 1 else ""
                     print(
-                        f"  warning: worker failed for {work_items[pos][1]}: {exc}",
+                        f"  warning: worker failed for {batch[0][1]}{extra_paths}: {extra}",
                         file=sys.stderr, flush=True,
                     )
-                    failed.append(pos)
-                done_count += 1
+                    failed.extend(range(start, start + len(batch)))
+                    done_count += len(batch)
                 if (
                     total_files >= _PROGRESS_INTERVAL
                     and done_count % _PROGRESS_INTERVAL == 0
                 ):
-                    print(
+                    vprint(
                         f"  AST extraction: {done_count}/{len(uncached_work)} uncached files "
                         f"({done_count * 100 // len(uncached_work)}%) [{max_workers} workers]",
-                        flush=True,
+                        file=sys.stdout,
+                        prefix="",
                     )
     except concurrent.futures.process.BrokenProcessPool:
         # On Windows (spawn start method) the worker subprocesses re-import the
@@ -5826,9 +5868,10 @@ def _extract_parallel(
         # corpus made the count jump upward at the end (cached hits + files with no
         # extractor never entered uncached_work), which read as inconsistent (#1693).
         _done = len(uncached_work)
-        print(
+        vprint(
             f"  AST extraction: {_done}/{_done} uncached files (100%) [{max_workers} workers]",
-            flush=True,
+            file=sys.stdout,
+            prefix="",
         )
     return True
 
@@ -5848,9 +5891,10 @@ def _extract_sequential(
             and work_idx % _PROGRESS_INTERVAL == 0
             and work_idx > 0
         ):
-            print(
+            vprint(
                 f"  AST extraction: {work_idx}/{len(uncached_work)} uncached files ({work_idx * 100 // len(uncached_work)}%)",
-                flush=True,
+                file=sys.stdout,
+                prefix="",
             )
         extractor = _get_extractor(path)
         if extractor is None:
@@ -5866,10 +5910,10 @@ def _extract_sequential(
     if total_files >= _PROGRESS_INTERVAL:
         # Consistent denominator with the intermediate lines (#1693).
         _done = len(uncached_work)
-        print(f"  AST extraction: {_done}/{_done} uncached files (100%)", flush=True)
+        vprint(f"  AST extraction: {_done}/{_done} uncached files (100%)", file=sys.stdout, prefix="")
 
 
-_PARALLEL_THRESHOLD = 20
+_PARALLEL_THRESHOLD = PARALLEL_THRESHOLD
 
 
 def extract(
@@ -5901,8 +5945,10 @@ def extract(
             Anchors ids/source_file only as a fallback when `root` is unset.
         parallel: if True and there are >= _PARALLEL_THRESHOLD uncached files,
             use ProcessPoolExecutor for multi-core extraction.
-        max_workers: max subprocess count. Defaults to cpu_count (or the
-            value of GRAPHIFY_MAX_WORKERS if set), bounded by len(uncached_work).
+        max_workers: max subprocess/thread count for AST extract, cache
+            probe, and JS/Python symbol-resolution parses. Defaults to
+            cpu_count (or GRAPHIFY_MAX_WORKERS). The env/cpu default is
+            capped by the amount of work; an explicit value is not.
         resolution_context_nodes: read-only AST nodes from files that are NOT
             being extracted this run (an incremental rebuild's unchanged
             corpus, #2406). They extend the cross-file resolution indexes —
@@ -5975,21 +6021,11 @@ def extract(
     cache_location = (cache_root if cache_root is not None else Path(".")).resolve()
     total = len(paths)
 
-    # Phase 1: separate cached hits from uncached work
-    per_file: list[dict | None] = [None] * total
-    uncached_work: list[tuple[int, Path]] = []
-
-    for i, path in enumerate(paths):
-        if _get_extractor(path) is None:
-            per_file[i] = {"nodes": [], "edges": []}
-            continue
-        bypass_cache = path.suffix in _JS_CACHE_BYPASS_SUFFIXES
-        if not bypass_cache:
-            cached = load_cached(path, root, cache_root=cache_location)
-            if cached is not None:
-                per_file[i] = cached
-                continue
-        uncached_work.append((i, path))
+    # Phase 1: separate cached hits from uncached work (thread pool on large
+    # corpora — stat + JSON load is I/O bound).
+    per_file, uncached_work = _probe_cached_files(
+        paths, root, cache_location, parallel=parallel, max_workers=max_workers,
+    )
 
     # Phase 2: extract uncached files (parallel or sequential)
     if uncached_work:
@@ -6194,7 +6230,10 @@ def extract(
     # marker set in the per-file extractor. Populated just before the pass that uses it.
     callable_nids: set[str] = set()
 
-    _augment_symbol_resolution_edges(paths, all_nodes, all_edges, root)
+    _augment_symbol_resolution_edges(
+        paths, all_nodes, all_edges, root,
+        parallel=parallel, max_workers=max_workers,
+    )
 
     # Merge a header-declared class (and its methods) with its sibling-impl
     # definition into ONE node (C/C++/ObjC #1547/#1556). Runs BEFORE the id-remap

@@ -61,7 +61,10 @@ def _sandbox_home(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("LOCALAPPDATA", str(home / "AppData" / "Local"))
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)     # escape hatch that bypasses Path.home
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.delenv("GRAPHIFY_VERBOSE", raising=False)
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    from graphify.progress import set_verbose
+    set_verbose(None)
     return home
 
 _ANALYZE_WARNING_FILTERS = (

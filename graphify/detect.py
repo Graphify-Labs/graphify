@@ -7,6 +7,8 @@ import re
 import shlex
 import stat
 import subprocess
+import sys
+import threading
 import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
@@ -19,7 +21,9 @@ from graphify.google_workspace import (
     convert_google_workspace_file,
     google_workspace_enabled,
 )
+from graphify.parallel import map_in_thread_pool, resolve_max_workers
 from graphify.paths import GRAPHIFY_OUT, out_path
+from graphify.progress import verbose_enabled, vprint
 
 
 class FileType(str, Enum):
@@ -47,6 +51,14 @@ PAPER_EXTENSIONS = {'.pdf'}
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'}
 OFFICE_EXTENSIONS = {'.docx', '.xlsx'}
 VIDEO_EXTENSIONS = {'.mp4', '.mov', '.webm', '.mkv', '.avi', '.m4v', '.mp3', '.wav', '.m4a', '.ogg'}
+_CORPUS_EXT_LOWER = frozenset(
+    ext.lower()
+    for group in (
+        CODE_EXTENSIONS, DOC_EXTENSIONS, PAPER_EXTENSIONS, IMAGE_EXTENSIONS,
+        OFFICE_EXTENSIONS, VIDEO_EXTENSIONS, GOOGLE_WORKSPACE_EXTENSIONS,
+    )
+    for ext in group
+)
 
 CORPUS_WARN_THRESHOLD = 50_000    # words - below this, warn "you may not need a graph"
 CORPUS_UPPER_THRESHOLD = 500_000  # words - above this, warn about token cost
@@ -807,6 +819,66 @@ def count_words(path: Path) -> int:
         return 0
 
 
+def _sum_word_counts(paths: list[Path], count_one: Callable[[Path], int]) -> int:
+    """Word-count every path; thread-pool when the corpus is large enough."""
+    if not paths:
+        return 0
+    mapped = map_in_thread_pool(count_one, paths)
+    if mapped is None:
+        return sum(count_one(p) for p in paths)
+    return sum(mapped)
+
+
+class _Heartbeat:
+    """Rate-limited stderr progress so a long detect() walk is not silent (--verbose)."""
+
+    def __init__(self, label: str, interval: float = 2.0) -> None:
+        self.label = label
+        self.interval = interval
+        self._t0 = time.monotonic()
+        self._last = self._t0
+        self._n = 0
+        self._lock = threading.Lock()
+
+    def tick(self, n: int | None = None) -> None:
+        if not verbose_enabled():
+            return
+        with self._lock:
+            self._n = n if n is not None else self._n + 1
+            now = time.monotonic()
+            if (now - self._last) < self.interval and self._n % 2000 != 0:
+                return
+            self._last = now
+            elapsed = now - self._t0
+            print(
+                f"[graphify] {self.label}: {self._n:,} ({elapsed:.0f}s)",
+                file=sys.stderr,
+                flush=True,
+            )
+
+
+class _WalkBucket:
+    __slots__ = (
+        "files", "walk_errors", "ignored", "pruned_noise",
+        "skipped_sensitive", "nested_ignore", "nested_explicit", "top_dirs",
+    )
+
+    def __init__(self) -> None:
+        self.files: list[Path] = []
+        self.walk_errors: list[str] = []
+        self.ignored: list[str] = []
+        self.pruned_noise: list[str] = []
+        self.skipped_sensitive: list[str] = []
+        self.nested_ignore: list[tuple[Path, str]] = []
+        self.nested_explicit: list[tuple[Path, str]] = []
+        self.top_dirs: list[str] = []
+
+
+def _keep_regular_file(path: Path) -> Path | None:
+    """Thread-pool entry: drop non-regular git-index paths."""
+    return path if _is_regular_file(path) else None
+
+
 def _is_regular_file(path: Path) -> bool:
     """True only for regular files (symlinks followed).
 
@@ -827,6 +899,7 @@ def _is_regular_file(path: Path) -> bool:
 _SKIP_DIRS = {
     "venv", ".venv",  # "env"/".env"/"*_env" are gated on venv markers below (#2058)
     "node_modules", "__pycache__", ".git",
+    ".repo",  # Google repo-tool metadata + object store; working trees sit beside it
     "dist", "build", "target", "out",
     "site-packages", "lib64",
     ".pytest_cache", ".mypy_cache", ".ruff_cache",
@@ -922,10 +995,34 @@ def _has_venv_markers(d: "Path") -> bool:
     return False
 
 
+def _is_buildroot_output(d: "Path") -> bool:
+    """True when *d* is a Buildroot ``output/`` tree (host sysroot, not source)."""
+    try:
+        names = set(os.listdir(d))
+    except OSError:
+        return False
+    return {"host", "target"} <= names or {"host", "images"} <= names or {"images", "staging"} <= names
+
+
+def _maybe_code_filename(name: str) -> bool:
+    """Keep classifiable (and extensionless/shebang) names for --code-only scans."""
+    dot = name.rfind(".")
+    if dot <= 0:
+        return True
+    return name[dot:].lower() in _CORPUS_EXT_LOWER
+
+
 def _is_noise_dir(part: str, parent: "Path | None" = None) -> bool:
     """Return True if this directory name looks like a venv, cache, or dep dir."""
     if part in _SKIP_DIRS:
         return True
+    if part == "output" or part.startswith("output_"):
+        # Buildroot writes millions of files under output/ / output_<board>/.
+        # A source dir that happens to be named output stays unless it has
+        # host/+target/ (or images/) layout.
+        if parent is None:
+            return False
+        return _is_buildroot_output(parent / part)
     if part in ("env", ".env") or part.endswith("_env"):
         # Ambiguous: a real venv OR a real source dir. Prune only on actual venv
         # evidence, mirroring the "snapshots" gating (#1666/#2058).
@@ -1025,6 +1122,434 @@ def _path_identity(path: Path) -> str:
     return _nfc(os.path.normcase(os.path.abspath(os.fspath(path))))
 
 
+# `git ls-files` of a million-path index is still seconds; 30s was too tight
+# and forced a Python os.walk fallback on the repos that need Git most.
+_GIT_LS_TIMEOUT = 300
+
+
+def _git_ls_z(
+    vcs_root: Path,
+    extra_args: list[str],
+    pathspec: str | None,
+) -> list[str] | None:
+    """NUL-delimited ``git ls-files`` paths relative to *vcs_root*, or None."""
+    cmd = ["git", "-C", str(vcs_root), "ls-files", "-z", *extra_args]
+    if pathspec:
+        cmd.extend(["--", pathspec])
+    try:
+        proc = subprocess.run(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=_GIT_LS_TIMEOUT,
+            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return [os.fsdecode(raw) for raw in proc.stdout.split(b"\0") if raw]
+
+
+def _find_repo_manifest_root(start: Path) -> Path | None:
+    """Nearest ancestor (inclusive) with a Google ``repo`` ``.repo/project.list``."""
+    current = start.resolve()
+    home = Path.home()
+    while True:
+        if (current / ".repo" / "project.list").is_file():
+            return current
+        parent = current.parent
+        if parent == current or current == home:
+            return None
+        current = parent
+
+
+def _repo_project_rels(repo_root: Path) -> list[str] | None:
+    listing = repo_root / ".repo" / "project.list"
+    try:
+        lines = listing.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    projects = [ln.strip() for ln in lines if ln.strip() and not ln.startswith("#")]
+    return projects or None
+
+
+def _ingest_git_relpaths(
+    *,
+    root: Path,
+    join_root: Path,
+    cached: list[str],
+    others: list[str],
+    code_only: bool,
+    files: list[Path],
+    seen: set[str],
+    tracked_files: set[str],
+    pruned: list[str],
+    pruned_seen: set[str],
+) -> None:
+    """Append Git-listed paths under *join_root* onto the shared scan buckets."""
+    root_s = os.path.abspath(os.fspath(root))
+    root_prefix = root_s + os.sep
+    join_s = os.path.abspath(os.fspath(join_root))
+
+    def _take(rel_s: str, tracked: bool) -> None:
+        path_s = os.path.abspath(os.path.join(join_s, rel_s.replace("/", os.sep)))
+        if path_s != root_s and not path_s.startswith(root_prefix):
+            return
+        name = os.path.basename(path_s)
+        if name in _SKIP_FILES:
+            return
+        if code_only and not _maybe_code_filename(name):
+            return
+        if os.path.isdir(path_s):
+            # Superproject indexes list submodule gitlinks as paths; the
+            # checkout is a directory and is enumerated from that worktree.
+            return
+        nest = os.path.dirname(path_s)
+        join_prefix = join_s + os.sep
+        while nest.startswith(join_prefix):
+            if os.path.exists(os.path.join(nest, ".git")):
+                return
+            nest = os.path.dirname(nest)
+        rel_parts = rel_s.replace("\\", "/").split("/")
+        parent = join_root
+        for part in rel_parts[:-1]:
+            if _is_noise_dir(part, parent):
+                key = str(parent / part) + os.sep
+                if key not in pruned_seen:
+                    pruned_seen.add(key)
+                    pruned.append(key)
+                return
+            parent = parent / part
+        ident = _nfc(os.path.normcase(path_s))
+        if ident in seen:
+            return
+        seen.add(ident)
+        files.append(Path(path_s))
+        if tracked:
+            tracked_files.add(ident)
+
+    for rel_s in cached:
+        _take(rel_s, True)
+    for rel_s in others:
+        _take(rel_s, False)
+
+
+def _git_enumerate_single_repo(
+    root: Path,
+    vcs_root: Path,
+    *,
+    code_only: bool,
+) -> tuple[list[Path], set[str], set[str], list[str]] | None:
+    try:
+        rel = root.resolve().relative_to(vcs_root.resolve()).as_posix()
+    except ValueError:
+        return None
+    pathspec = None if rel in (".", "") else rel
+    vprint(
+        f"listing files with git ls-files "
+        f"({pathspec or '.'}) ..."
+    )
+    cached = _git_ls_z(vcs_root, ["--cached"], pathspec)
+    if cached is None:
+        return None
+    others = _git_ls_z(vcs_root, ["--others", "--exclude-standard"], pathspec)
+    if others is None:
+        return None
+    files: list[Path] = []
+    seen: set[str] = set()
+    tracked_files: set[str] = set()
+    pruned: list[str] = []
+    pruned_seen: set[str] = set()
+    _ingest_git_relpaths(
+        root=root, join_root=vcs_root, cached=cached, others=others,
+        code_only=code_only, files=files, seen=seen,
+        tracked_files=tracked_files, pruned=pruned, pruned_seen=pruned_seen,
+    )
+    return files, tracked_files, set(), pruned
+
+
+def _ls_git_worktree(join_root_s: str) -> tuple[str, list[str], list[str]] | None:
+    """Thread-pool worker: ``git ls-files`` one working tree."""
+    proj = Path(join_root_s)
+    if not (proj / ".git").exists():
+        return None
+    cached = _git_ls_z(proj, ["--cached"], None)
+    others = _git_ls_z(proj, ["--others", "--exclude-standard"], None)
+    if cached is None or others is None:
+        return None
+    return join_root_s, cached, others
+
+
+def _parse_gitmodules_paths(gitmodules: Path) -> list[str]:
+    """``path =`` entries from a ``.gitmodules`` file."""
+    try:
+        text = gitmodules.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    paths: list[str] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or line.startswith(";"):
+            continue
+        if line.lower().startswith("path") and "=" in line:
+            rel = line.split("=", 1)[1].strip().replace("\\", "/")
+            if rel:
+                paths.append(rel)
+    return paths
+
+
+def _gitmodules_paths(super_root: Path) -> list[str]:
+    """Submodule paths relative to *super_root*, including nested checkouts."""
+    gitmodules = super_root / ".gitmodules"
+    if not gitmodules.is_file():
+        return []
+    paths: list[str] = []
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(super_root), "submodule", "status", "--recursive"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=_GIT_LS_TIMEOUT,
+            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+        )
+    except (OSError, subprocess.SubprocessError):
+        proc = None
+    if proc is not None and proc.returncode == 0 and proc.stdout:
+        for raw in proc.stdout.splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            parts = line.split()
+            if len(parts) >= 2:
+                paths.append(parts[1].replace("\\", "/"))
+    if not paths:
+        paths = _parse_gitmodules_paths(gitmodules)
+        nested: list[str] = []
+        for rel in paths:
+            nested.extend(
+                f"{rel}/{p}"
+                for p in _parse_gitmodules_paths(super_root / rel / ".gitmodules")
+            )
+        paths.extend(nested)
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for rel in paths:
+        rel = rel.strip("/")
+        if not rel or rel in seen:
+            continue
+        seen.add(rel)
+        ordered.append(rel)
+    return ordered
+
+
+def _submodule_super_for_scan(root: Path) -> Path | None:
+    """Superproject to enumerate when this scan should use git submodules.
+
+    Only the scan root's own ``.gitmodules``, or an ancestor superproject when
+    the scan root is *not* already a working tree (so scanning one submodule
+    does not pull in its siblings).
+    """
+    root = root.resolve()
+    if (root / ".gitmodules").is_file() and _gitmodules_paths(root):
+        return root
+    if (root / ".git").exists():
+        return None
+    vcs = _find_vcs_root(root)
+    if vcs is not None and (vcs / ".gitmodules").is_file() and _gitmodules_paths(vcs):
+        return vcs
+    return None
+
+
+def _path_is_under(inner: Path, outer: Path) -> bool:
+    try:
+        inner.resolve().relative_to(outer.resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def _worktree_overlaps_scan(worktree: Path, root: Path) -> bool:
+    return _path_is_under(worktree, root) or _path_is_under(root, worktree)
+
+
+def _git_enumerate_named_worktrees(
+    root: Path,
+    worktrees: list[Path],
+    *,
+    code_only: bool,
+    kind: str,
+) -> tuple[list[Path], set[str], set[str], list[str]] | None:
+    """``git ls-files`` each working tree and merge under the scan root."""
+    uniq: list[Path] = []
+    seen: set[str] = set()
+    for w in worktrees:
+        try:
+            resolved = w.resolve()
+        except OSError:
+            resolved = w
+        if not _worktree_overlaps_scan(resolved, root):
+            continue
+        if not (resolved / ".git").exists():
+            continue
+        ident = _path_identity(resolved)
+        if ident in seen:
+            continue
+        seen.add(ident)
+        uniq.append(resolved)
+    if not uniq:
+        return None
+    vprint(f"{kind}: git ls-files in {len(uniq)} worktree(s) ...")
+    payloads = [str(p) for p in uniq]
+    listed = map_in_thread_pool(_ls_git_worktree, payloads, threshold=2)
+    if listed is None:
+        listed = [_ls_git_worktree(p) for p in payloads]
+    files: list[Path] = []
+    seen_files: set[str] = set()
+    tracked_files: set[str] = set()
+    pruned: list[str] = []
+    pruned_seen: set[str] = set()
+    ok = 0
+    for row in listed:
+        if row is None:
+            continue
+        ok += 1
+        join_s, cached, others = row
+        _ingest_git_relpaths(
+            root=root, join_root=Path(join_s),
+            cached=cached, others=others, code_only=code_only,
+            files=files, seen=seen_files, tracked_files=tracked_files,
+            pruned=pruned, pruned_seen=pruned_seen,
+        )
+    if ok == 0:
+        return None
+    vprint(
+        f"{kind}: listed {len(files):,} files "
+        f"from {ok}/{len(uniq)} worktree(s)"
+    )
+    return files, tracked_files, set(), pruned
+
+
+def _find_git_worktrees(
+    root: Path,
+    *,
+    dir_ignored: Callable[[Path], bool] | None = None,
+) -> list[Path]:
+    """Working trees under *root* (directories that contain a ``.git`` marker).
+
+    Descends with noise pruning (``.repo``, Buildroot ``output_*``, …) and the
+    same ignore predicate as the corpus walk, and does not follow directory
+    symlinks. Nested checkouts are included.
+    """
+    vprint("searching for .git folders ...")
+    found: list[Path] = []
+    for dirpath, dirnames, _filenames in os.walk(root, followlinks=False):
+        dp = Path(dirpath)
+        kept: list[str] = []
+        for d in dirnames:
+            if d == ".git":
+                continue
+            child = dp / d
+            if _is_noise_dir(d, dp):
+                continue
+            if dir_ignored is not None:
+                try:
+                    if dir_ignored(child):
+                        continue
+                except (OSError, ValueError):
+                    continue
+            if os.path.islink(os.fspath(child)):
+                continue
+            kept.append(d)
+        dirnames[:] = kept
+        if (dp / ".git").exists():
+            found.append(dp)
+    found.sort(key=lambda p: (len(p.parts), str(p)))
+    return found
+
+
+def _git_enumerate_repo_projects(
+    root: Path,
+    repo_root: Path,
+    *,
+    code_only: bool,
+) -> tuple[list[Path], set[str], set[str], list[str]] | None:
+    projects = _repo_project_rels(repo_root)
+    if not projects:
+        return None
+    try:
+        scan_rel = root.resolve().relative_to(repo_root.resolve()).as_posix()
+    except ValueError:
+        return None
+    if scan_rel not in (".", ""):
+        prefix = scan_rel + "/"
+        projects = [
+            p for p in projects
+            if p == scan_rel or p.startswith(prefix)
+        ]
+        if not projects:
+            return None
+    return _git_enumerate_named_worktrees(
+        root,
+        [repo_root / p for p in projects],
+        code_only=code_only,
+        kind="repo workspace",
+    )
+
+
+def _git_enumerate_files(
+    root: Path,
+    *,
+    code_only: bool = False,
+    dir_ignored: Callable[[Path], bool] | None = None,
+) -> tuple[list[Path], set[str], set[str], list[str]] | None:
+    """List discoverable files via Git instead of ``os.walk``.
+
+    Order:
+    1. Git submodules (``.gitmodules`` at the scan root, or an ancestor
+       superproject when the scan root is not itself a working tree).
+    2. Google ``repo`` workspace (``.repo/project.list``).
+    3. Every nested ``.git`` working tree under the scan root.
+    4. A single ancestor Git repo with a pathspec (subfolder of a normal repo).
+    """
+    super_root = _submodule_super_for_scan(root)
+    if super_root is not None:
+        sub_rels = _gitmodules_paths(super_root)
+        if sub_rels:
+            worktrees = [super_root, *[super_root / rel for rel in sub_rels]]
+            listed = _git_enumerate_named_worktrees(
+                root, worktrees, code_only=code_only, kind="git submodules",
+            )
+            if listed is not None:
+                return listed
+    repo_root = _find_repo_manifest_root(root)
+    if repo_root is not None:
+        listed = _git_enumerate_repo_projects(root, repo_root, code_only=code_only)
+        if listed is not None:
+            return listed
+    if (root / ".git").exists():
+        listed = _git_enumerate_named_worktrees(
+            root, [root], code_only=code_only, kind="git",
+        )
+        if listed is not None:
+            return listed
+    worktrees = _find_git_worktrees(root, dir_ignored=dir_ignored)
+    if worktrees:
+        listed = _git_enumerate_named_worktrees(
+            root, worktrees, code_only=code_only, kind="nested git",
+        )
+        if listed is not None:
+            return listed
+    vcs_root = _find_vcs_root(root)
+    if vcs_root is not None and (vcs_root / ".git").exists():
+        return _git_enumerate_single_repo(root, vcs_root, code_only=code_only)
+    return None
+
+
 def _git_tracked_path_keys(root: Path) -> tuple[set[str], set[str]]:
     """Return tracked-file keys and their ancestor-directory keys under *root*.
 
@@ -1045,7 +1570,7 @@ def _git_tracked_path_keys(root: Path) -> tuple[set[str], set[str]]:
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             check=False,
-            timeout=30,
+            timeout=_GIT_LS_TIMEOUT,
             env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
         )
     except (OSError, subprocess.SubprocessError):
@@ -1063,11 +1588,8 @@ def _git_tracked_path_keys(root: Path) -> tuple[set[str], set[str]]:
             path.relative_to(root)
         except ValueError:
             continue
-        # Deleted index entries and submodule gitlinks are not discoverable
-        # files. Symlinks to regular files remain eligible; the existing
-        # in-root target guard still decides whether they may enter the corpus.
-        if not _is_regular_file(path):
-            continue
+        # Names from the index, no extra stat: regularity is checked at admit
+        # time. Statting every cached path doubled scan cost on huge repos.
         tracked_files.add(_path_identity(path))
         parent = path.parent
         while parent != root:
@@ -1662,7 +2184,7 @@ def _resolves_under_root(path: Path, root: Path) -> bool:
     return True
 
 
-def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace: bool | None = None, extra_excludes: list[str] | None = None, cache_root: Path | None = None, gitignore: bool = True) -> dict:
+def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace: bool | None = None, extra_excludes: list[str] | None = None, cache_root: Path | None = None, gitignore: bool = True, code_only: bool = False) -> dict:
     root = root.resolve()
     configured_out_dir = root / GRAPHIFY_OUT
     configured_out_names = {configured_out_dir.name}
@@ -1694,7 +2216,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
         FileType.IMAGE: [],
         FileType.VIDEO: [],
     }
-    total_words = 0
+    pending_wc: list[Path] = []
 
     def _wc(path: Path) -> int:
         # Cache word counts against each file's stat signature so unchanged
@@ -1714,15 +2236,16 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
     pruned_noise: list[str] = []
     ignore_patterns = _load_graphifyignore(root, gitignore=gitignore)
     explicit_ignore_patterns = _load_graphifyignore(root, gitignore=False)
-    # See ignored_predicate: skip the `git ls-files` subprocess when .gitignore
-    # contributes no patterns, so a non-.gitignore corpus pays nothing for it.
-    tracked_files, tracked_dirs = (
-        _git_tracked_path_keys(root)
-        if gitignore and len(ignore_patterns) > len(explicit_ignore_patterns)
-        else (set(), set())
-    )
+    tracked_files: set[str] = set()
+    tracked_dirs: set[str] = set()
     ignore_cache: dict[Path, bool] = {}  # shared across all _is_ignored calls in this scan
     explicit_ignore_cache: dict[Path, bool] = {}
+    # Positive directory-ignore memo: a nested-git hunt and the later os.walk
+    # both ask about the same ignored dir. Counting each as a fresh
+    # ``_is_scan_ignored`` call is the 29k-file defect shape the tests guard.
+    # Only True is sticky — False must be rechecked after a nested ignore file
+    # is loaded (#1922).
+    ignored_dirs: set[Path] = set()
     # CLI --exclude patterns are anchored at the scan root and appended last
     # so they win over any .graphifyignore/.gitignore rules (#947).
     if extra_excludes:
@@ -1733,7 +2256,9 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                 explicit_ignore_patterns.append((root, line))
 
     def _ignored_for_scan(path: Path) -> bool:
-        return _is_scan_ignored(
+        if path in ignored_dirs:
+            return True
+        val = _is_scan_ignored(
             path,
             root,
             ignore_patterns,
@@ -1743,47 +2268,77 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
             cache=ignore_cache,
             explicit_cache=explicit_ignore_cache,
         )
+        if val:
+            ignored_dirs.add(path)
+        return val
 
     # Always include graphify-out/memory/ - query results filed back into the graph
     memory_dir = root / GRAPHIFY_OUT / "memory"
-    scan_paths = [root]
-    if memory_dir.exists():
-        scan_paths.append(memory_dir)
 
-    seen: set[Path] = set()
-    all_files: list[Path] = []
+    vprint(f"scanning {root} ...")
+    heartbeat = _Heartbeat("scanning")
 
-    # os.walk swallows os.scandir errors by default (no onerror -> the failing
-    # directory subtree is silently skipped). That turns a transient
-    # PermissionError, or a directory created/deleted mid-walk (e.g. concurrent
-    # writes racing the scan), into a partial file list and, downstream, a
-    # silently partial graph.json. Record and surface every skipped directory
-    # so an incomplete enumeration is visible rather than silent.
-    walk_errors: list[str] = []
+    def _walk_from(
+        start: Path,
+        *,
+        in_memory: bool,
+        patterns: list[tuple[Path, str]],
+        explicit: list[tuple[Path, str]],
+        descend: bool,
+    ) -> _WalkBucket:
+        """Walk *start*. Nested ignore files are loaded onto local copies.
 
-    def _on_walk_error(err: OSError) -> None:
-        import sys as _sys
-        target = getattr(err, "filename", None) or "<unknown>"
-        walk_errors.append(f"{target}: {err}")
-        print(
-            f"[graphify] WARNING: could not scan {target} ({err}); "
-            f"its files are missing from this run's enumeration.",
-            file=_sys.stderr,
-        )
+        Sibling subtrees can run this in parallel: each call gets a snapshot of
+        ancestor patterns, and a pattern only matches under its own anchor.
+        """
+        patterns = list(patterns)
+        explicit = list(explicit)
+        base_ignore = len(patterns)
+        base_explicit = len(explicit)
+        cache: dict[Path, bool] = {}
+        explicit_cache: dict[Path, bool] = {}
+        bucket = _WalkBucket()
+        local_seen: set[Path] = set()
 
-    for scan_root in scan_paths:
-        in_memory_tree = memory_dir.exists() and str(scan_root).startswith(str(memory_dir))
+        def _ignored_local(path: Path) -> bool:
+            # Nested .gitignore/.graphifyignore is loaded onto *patterns* as
+            # the walk enters each directory. The outer _ignored_for_scan
+            # closure still sees only ancestor rules, so directory pruning
+            # MUST use this local copy or a sibling project's ignore file
+            # is applied too late (file-level drop instead of a recorded
+            # ignored subtree, #1922).
+            if path in ignored_dirs:
+                return True
+            val = _is_scan_ignored(
+                path, root, patterns, explicit,
+                tracked_files, tracked_dirs,
+                cache=cache, explicit_cache=explicit_cache,
+            )
+            if val:
+                ignored_dirs.add(path)
+            return val
+
+        def _on_err(err: OSError) -> None:
+            target = getattr(err, "filename", None) or "<unknown>"
+            bucket.walk_errors.append(f"{target}: {err}")
+            print(
+                f"[graphify] WARNING: could not scan {target} ({err}); "
+                f"its files are missing from this run's enumeration.",
+                file=sys.stderr, flush=True,
+            )
+
         for dirpath, dirnames, filenames in os.walk(
-            scan_root, followlinks=follow_symlinks, onerror=_on_walk_error
+            start, followlinks=follow_symlinks, onerror=_on_err,
         ):
             dp = Path(dirpath)
+            heartbeat.tick()
             if follow_symlinks and os.path.islink(dirpath):
                 real = os.path.realpath(dirpath)
                 parent_real = os.path.realpath(os.path.dirname(dirpath))
                 if parent_real == real or parent_real.startswith(real + os.sep):
                     dirnames.clear()
                     continue
-            if not in_memory_tree:
+            if not in_memory:
                 # dp == root was already loaded by _load_graphifyignore (root is
                 # the last entry in its ancestor chain); every other directory
                 # reached by the walk is a descendant below the scan root, whose
@@ -1791,10 +2346,8 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                 # Load it now, before pruning dp's children, so a nested ignore
                 # file governs its own subtree the same way git honors it (#1206).
                 if dp != root:
-                    ignore_patterns.extend(_load_dir_own_ignore(dp, gitignore=gitignore))
-                    explicit_ignore_patterns.extend(
-                        _load_dir_own_ignore(dp, gitignore=False)
-                    )
+                    patterns.extend(_load_dir_own_ignore(dp, gitignore=gitignore))
+                    explicit.extend(_load_dir_own_ignore(dp, gitignore=False))
                 # Prune noise dirs in-place so os.walk never descends into them.
                 # Dot dirs are allowed — users often want .github/, .claude/, etc.
                 # Framework caches (.next, .nuxt, …) are caught by _is_noise_dir.
@@ -1817,57 +2370,178 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                         except (OSError, RuntimeError):
                             pass
                     if is_configured_out:
-                        pruned_noise.append(str(child) + os.sep)
+                        bucket.pruned_noise.append(str(child) + os.sep)
                         continue
                     if _is_noise_dir(d, dp):
                         # Record pruned-as-noise dirs so a wrongly-pruned real
                         # source dir is at least traceable in the output rather
                         # than vanishing silently (#2058).
-                        pruned_noise.append(str(child) + os.sep)
+                        bucket.pruned_noise.append(str(child) + os.sep)
                         continue
                     # Directory-level pruning: ONE ignore evaluation excludes the
                     # whole subtree — os.walk never descends, so a 29k-file
                     # ignored dir costs one check, not one per contained file.
-                    if _ignored_for_scan(child):
-                        ignored.append(str(child) + os.sep)
+                    if _ignored_local(child):
+                        bucket.ignored.append(str(child) + os.sep)
                         continue
                     kept_dirs.append(d)
                 dirnames[:] = kept_dirs
-                if follow_symlinks:
-                    safe_dirs: list[str] = []
-                    for d in dirnames:
-                        child = dp / d
-                        if child.is_symlink() and not _resolves_under_root(child, root):
-                            skipped_sensitive.append(str(child) + " [symlink target outside scan root]")
-                            continue
-                        safe_dirs.append(d)
-                    dirnames[:] = safe_dirs
+            # Out-of-root symlink dirs must be pruned even in the memory walk
+            # (which skips ignore/noise). Otherwise followlinks=True descends
+            # into the target and admits its regular files, which are not
+            # themselves symlinks so a file-islink check cannot catch them.
+            if follow_symlinks:
+                safe_dirs: list[str] = []
+                for d in dirnames:
+                    child = dp / d
+                    if child.is_symlink() and not _resolves_under_root(child, root):
+                        bucket.skipped_sensitive.append(
+                            str(child) + " [symlink target outside scan root]"
+                        )
+                        continue
+                    safe_dirs.append(d)
+                dirnames[:] = safe_dirs
+            if not in_memory:
+                if not descend and dp == start:
+                    if follow_symlinks:
+                        bucket.top_dirs = list(dirnames)
+                    else:
+                        # os.walk(followlinks=False) lists symlink dirs but
+                        # does not recurse into them. Walking the symlink as
+                        # a subtree start WOULD follow it.
+                        bucket.top_dirs = [
+                            d for d in dirnames if not os.path.islink(str(dp / d))
+                        ]
+                    dirnames.clear()
             for fname in filenames:
                 if fname in _SKIP_FILES:
                     continue
+                if code_only and not _maybe_code_filename(fname):
+                    continue
                 p = dp / fname
-                if p not in seen:
-                    seen.add(p)
-                    all_files.append(p)
+                if p not in local_seen:
+                    local_seen.add(p)
+                    bucket.files.append(p)
+        bucket.nested_ignore = patterns[base_ignore:]
+        bucket.nested_explicit = explicit[base_explicit:]
+        return bucket
+
+    def _merge_walk(bucket: _WalkBucket) -> None:
+        ignore_patterns.extend(bucket.nested_ignore)
+        explicit_ignore_patterns.extend(bucket.nested_explicit)
+        walk_errors.extend(bucket.walk_errors)
+        ignored.extend(bucket.ignored)
+        pruned_noise.extend(bucket.pruned_noise)
+        skipped_sensitive.extend(bucket.skipped_sensitive)
+        for p in bucket.files:
+            if p not in seen:
+                seen.add(p)
+                all_files.append(p)
+
+    seen: set[Path] = set()
+    all_files: list[Path] = []
+    walk_errors: list[str] = []
+
+    # Walk the scan root's own directory first (no descend) so sibling
+    # subtrees can be scanned concurrently. Each subtree copies ancestor
+    # ignore patterns; a nested .gitignore only matches under its anchor.
+    # Prefer Git's C walker when we can: it never enters gitignored trees
+    # (the usual million-file ``node_modules/`` case). Python os.walk cannot.
+    _no_git_enum = os.environ.get("GRAPHIFY_NO_GIT_ENUM", "").strip().lower() in (
+        "1", "true", "yes",
+    )
+    git_enum = None
+    if gitignore and not follow_symlinks and not _no_git_enum:
+        git_enum = _git_enumerate_files(
+            root, code_only=code_only, dir_ignored=_ignored_for_scan,
+        )
+
+    if git_enum is not None:
+        all_files, tracked_files, tracked_dirs, git_pruned = git_enum
+        pruned_noise.extend(git_pruned)
+        out_prefix = str(configured_out_dir) + os.sep
+        mem_prefix = str(memory_dir) + os.sep
+        all_files = [
+            p for p in all_files
+            if not str(p).startswith(out_prefix) or str(p).startswith(mem_prefix)
+        ]
+        vprint(
+            f"git listed {len(all_files):,} files "
+            f"(ignored trees not walked)"
+        )
+        # Git already applied gitignore. Only load extra .graphifyignore files
+        # along listed paths — do not re-read every nested .gitignore.
+        seen_gi: set[str] = set()
+        root_s = str(root)
+        root_prefix = root_s + os.sep
+        for p in all_files:
+            parent = os.path.dirname(str(p))
+            while parent.startswith(root_prefix) or parent == root_s:
+                if parent == root_s:
+                    break
+                if parent in seen_gi:
+                    break
+                seen_gi.add(parent)
+                if os.path.isfile(os.path.join(parent, ".graphifyignore")):
+                    extra = _load_dir_own_ignore(Path(parent), gitignore=False)
+                    ignore_patterns.extend(extra)
+                    explicit_ignore_patterns.extend(extra)
+                parent = os.path.dirname(parent)
+    else:
+        vprint("walking filesystem (no git/repo index) ...")
+        if gitignore and len(ignore_patterns) > len(explicit_ignore_patterns):
+            tracked_files, tracked_dirs = _git_tracked_path_keys(root)
+        root_bucket = _walk_from(
+            root, in_memory=False,
+            patterns=ignore_patterns, explicit=explicit_ignore_patterns,
+            descend=False,
+        )
+        _merge_walk(root_bucket)
+        top_paths = [root / d for d in root_bucket.top_dirs]
+        snapshot_ignore = list(ignore_patterns)
+        snapshot_explicit = list(explicit_ignore_patterns)
+
+        def _walk_child(start: Path) -> _WalkBucket:
+            return _walk_from(
+                start, in_memory=False,
+                patterns=snapshot_ignore, explicit=snapshot_explicit,
+                descend=True,
+            )
+
+        child_parts = None
+        if len(top_paths) >= 2 and resolve_max_workers(len(top_paths), None) > 1:
+            child_parts = map_in_thread_pool(_walk_child, top_paths, threshold=2)
+        if child_parts is None:
+            child_parts = [_walk_child(p) for p in top_paths]
+        for part in child_parts:
+            _merge_walk(part)
+
+    if memory_dir.exists():
+        _merge_walk(_walk_from(
+            memory_dir, in_memory=True,
+            patterns=ignore_patterns, explicit=explicit_ignore_patterns,
+            descend=True,
+        ))
 
     all_files.sort(key=lambda p: str(p))
 
     out_base = Path(cache_root).resolve() if cache_root is not None else root
     converted_dir = out_base / GRAPHIFY_OUT / "converted"
 
-    for p in all_files:
-        # For memory dir files, skip hidden/noise filtering
+    def _admit(p: Path) -> tuple:
+        """Classify one walked path. Return a tagged result tuple."""
+        heartbeat.tick()
         in_memory = memory_dir.exists() and str(p).startswith(str(memory_dir))
         if not in_memory:
-            # Skip files inside our own converted/ dir (avoid re-processing sidecars)
             if str(p).startswith(str(converted_dir)):
-                continue
+                return ("skip",)
         if not in_memory and _ignored_for_scan(p):
-            ignored.append(str(p))
-            continue
+            return ("ignored", str(p))
+        # Any path whose resolve() sits outside root — symlink file, or a
+        # regular file reached by following a symlink directory. v8 checked
+        # this for every candidate; gating on islink() admitted the latter.
         if not _resolves_under_root(p, root):
-            skipped_sensitive.append(str(p) + " [symlink target outside scan root]")
-            continue
+            return ("sensitive", str(p) + " [symlink target outside scan root]")
         if not _is_regular_file(p):
             # A repository may contain named pipes, sockets and device nodes,
             # and `clone <github-url>` exists precisely to point the scan at
@@ -1878,76 +2552,105 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
             # number in the hundreds across the extractors, and open() on a
             # FIFO with no writer BLOCKS FOREVER — it never raises, so their
             # try/except cannot help and the whole run hangs with no output.
-            skipped_sensitive.append(str(p) + " [not a regular file]")
-            continue
+            return ("sensitive", str(p) + " [not a regular file]")
         if _is_sensitive(p):
-            skipped_sensitive.append(str(p))
-            continue
+            return ("sensitive", str(p))
         ftype = classify_file(p)
         if not ftype:
             # Considered but unclassifiable: an extension not in any supported set,
             # or an extensionless, non-shebang file (Dockerfile, Gemfile, Makefile,
             # Rakefile, LICENSE, ...). Previously these left no trace at all — not
             # counted, not listed — so a user couldn't tell they were seen (#1692).
-            unclassified.append(str(p))
+            return ("unclassified", str(p))
+        if p.suffix.lower() in GOOGLE_WORKSPACE_EXTENSIONS:
+            if code_only:
+                return ("file", ftype, str(p), None)
+            if not google_workspace:
+                return (
+                    "sensitive",
+                    str(p)
+                    + " [Google Workspace shortcut skipped - pass --google-workspace "
+                    "or set GRAPHIFY_GOOGLE_WORKSPACE=1]",
+                )
+            try:
+                md_path = convert_google_workspace_file(
+                    p, converted_dir, xlsx_to_markdown=xlsx_to_markdown, root=root,
+                )
+            except Exception as exc:
+                return ("sensitive", str(p) + f" [Google Workspace export failed: {exc}]")
+            if md_path:
+                if _ignored_for_scan(md_path):
+                    return ("skip",)
+                return ("file", ftype, str(md_path), md_path)
+            return ("sensitive", str(p) + " [Google Workspace export produced no readable text]")
+        if p.suffix.lower() in OFFICE_EXTENSIONS:
+            if code_only:
+                return ("file", ftype, str(p), None)
+            md_path = convert_office_file(p, converted_dir, root=root)
+            if md_path:
+                if _ignored_for_scan(md_path):
+                    return ("skip",)
+                return ("file", ftype, str(md_path), md_path)
+            return (
+                "sensitive",
+                str(p) + " [office conversion failed - pip install graphifyy[office]]",
+            )
+        wc = None if code_only or ftype == FileType.VIDEO else p
+        return ("file", ftype, str(p), wc)
+
+    admitted = map_in_thread_pool(_admit, all_files)
+    if admitted is None:
+        admitted = [_admit(p) for p in all_files]
+    for row in admitted:
+        kind = row[0]
+        if kind == "skip":
             continue
-        if ftype:
-            if p.suffix.lower() in GOOGLE_WORKSPACE_EXTENSIONS:
-                if not google_workspace:
-                    skipped_sensitive.append(
-                        str(p)
-                        + " [Google Workspace shortcut skipped - pass --google-workspace "
-                        "or set GRAPHIFY_GOOGLE_WORKSPACE=1]"
-                    )
-                    continue
-                try:
-                    md_path = convert_google_workspace_file(p, converted_dir, xlsx_to_markdown=xlsx_to_markdown, root=root)
-                except Exception as exc:
-                    skipped_sensitive.append(str(p) + f" [Google Workspace export failed: {exc}]")
-                    continue
-                if md_path:
-                    if _ignored_for_scan(md_path):
-                        continue
-                    files[ftype].append(str(md_path))
-                    total_words += _wc(md_path)
-                else:
-                    skipped_sensitive.append(str(p) + " [Google Workspace export produced no readable text]")
-                continue
-            # Office files: convert to markdown sidecar so subagents can read them
-            if p.suffix.lower() in OFFICE_EXTENSIONS:
-                md_path = convert_office_file(p, converted_dir, root=root)
-                if md_path:
-                    if _ignored_for_scan(md_path):
-                        continue
-                    files[ftype].append(str(md_path))
-                    total_words += _wc(md_path)
-                else:
-                    # Conversion failed (library not installed) - skip with note
-                    skipped_sensitive.append(str(p) + " [office conversion failed - pip install graphifyy[office]]")
-                continue
-            files[ftype].append(str(p))
-            if ftype != FileType.VIDEO:
-                total_words += _wc(p)
+        if kind == "ignored":
+            ignored.append(row[1])
+            continue
+        if kind == "sensitive":
+            skipped_sensitive.append(row[1])
+            continue
+        if kind == "unclassified":
+            unclassified.append(row[1])
+            continue
+        _, ftype, stored, wc = row
+        files[ftype].append(stored)
+        if wc is not None:
+            pending_wc.append(wc)
 
     for ftype in files:
         files[ftype].sort()
 
     total_files = sum(len(v) for v in files.values())
-    needs_graph = total_words >= CORPUS_WARN_THRESHOLD
-
-    # Determine warning - lower bound, upper bound, or sensitive files skipped
-    warning: str | None = None
-    if not needs_graph:
-        warning = (
-            f"Corpus is ~{total_words:,} words - fits in a single context window. "
-            f"You may not need a graph."
-        )
-    elif total_words >= CORPUS_UPPER_THRESHOLD or total_files >= FILE_COUNT_UPPER:
-        warning = (
-            f"Large corpus: {total_files} files · ~{total_words:,} words. "
-            f"Semantic extraction will be expensive (many Claude tokens). "
-            f"Consider running on a subfolder."
-        )
+    if code_only:
+        # Opening every file just to size the corpus dominates on huge trees;
+        # --code-only only needs AST membership, not a word budget.
+        total_words = 0
+        needs_graph = total_files > 0
+        warning = None
+        if total_files >= FILE_COUNT_UPPER:
+            warning = (
+                f"Large corpus: {total_files} files (word count skipped, --code-only). "
+                f"Semantic extraction is off; AST indexing still scales with file count."
+            )
+    else:
+        if len(pending_wc) >= 20:
+            vprint(f"counting words in {len(pending_wc):,} files ...")
+        total_words = _sum_word_counts(pending_wc, _wc)
+        needs_graph = total_words >= CORPUS_WARN_THRESHOLD
+        warning = None
+        if not needs_graph:
+            warning = (
+                f"Corpus is ~{total_words:,} words - fits in a single context window. "
+                f"You may not need a graph."
+            )
+        elif total_words >= CORPUS_UPPER_THRESHOLD or total_files >= FILE_COUNT_UPPER:
+            warning = (
+                f"Large corpus: {total_files} files · ~{total_words:,} words. "
+                f"Semantic extraction will be expensive (many Claude tokens). "
+                f"Consider running on a subfolder."
+            )
 
     return {
         "files": {k.value: v for k, v in files.items()},
@@ -2372,6 +3075,7 @@ def detect_incremental(
     kind: str = "semantic",
     extra_excludes: list[str] | None = None,
     gitignore: bool = True,
+    code_only: bool = False,
 ) -> dict:
     """Like detect(), but returns only new or modified files since the last run.
 
@@ -2401,6 +3105,7 @@ def detect_incremental(
         google_workspace=google_workspace,
         extra_excludes=extra_excludes,
         gitignore=gitignore,
+        code_only=code_only,
     )
     # Pass ``root`` so a manifest written with relative keys (post-#777) is
     # re-anchored to the absolute form the rest of this function compares
