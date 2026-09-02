@@ -973,6 +973,13 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 continue
             if "source_file" in node:
                 node["source_file"] = _norm_source_file(node["source_file"], _root)
+            # definition_file names a file inside the scanned tree exactly like
+            # source_file (the #2990 decl/def merge stamps it from the impl's
+            # source_file BEFORE this normalization runs), so it must be made
+            # portable the same way - it used to ship absolute, leaking the
+            # build host's layout into graph.json and MCP get_node (#3223).
+            if "definition_file" in node:
+                node["definition_file"] = _norm_source_file(node["definition_file"], _root)
         G.add_node(node["id"], **{k: v for k, v in node.items() if k != "id"})
     node_set = set(G.nodes())
 
@@ -1202,6 +1209,10 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             )
         if "source_file" in attrs:
             attrs["source_file"] = _norm_source_file(attrs["source_file"], _root)
+        if attrs.get("definition_file"):
+            # Same portability rule as source_file (#3223); heals a graph
+            # written before the fix on its next rebuild.
+            attrs["definition_file"] = _norm_source_file(attrs["definition_file"], _root)
         # Drop cross-language phantom edges — the same short names (render, parse,
         # time, ...) recur across language boundaries, so an unresolved target can
         # bind to a same-named node in another language. The extraction spec forbids
