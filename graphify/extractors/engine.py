@@ -1920,6 +1920,12 @@ def _is_require_initializer(value_node, source: bytes) -> bool:
     both sides must agree on what counts or a destructured binding would be
     both imported and shadowed by a local stub.
 
+    A STRING-LITERAL specifier is required, because that is what
+    :func:`_require_imports_js` needs to emit an edge at all. A computed
+    specifier (``require(name)``, ``require('./' + x)``) names no module it
+    can resolve, so suppressing the local binding for one would delete the
+    name from the graph outright rather than repoint it.
+
     ``_find_require_call`` matches the call *shape* only — any
     ``identifier(...)`` — and leaves the callee-name check to its callers, so
     it must not be used alone to recognise a CJS import.
@@ -1928,7 +1934,12 @@ def _is_require_initializer(value_node, source: bytes) -> bool:
     if call is None:
         return False
     fn = call.child_by_field_name("function")
-    return fn is not None and _read_text(fn, source) == "require"
+    if fn is None or _read_text(fn, source) != "require":
+        return False
+    args = call.child_by_field_name("arguments")
+    if args is None:
+        return False
+    return any(arg.type == "string" for arg in args.children)
 
 
 def _require_imports_js(node, source: bytes, importer_nid: str, stem: str, edges: list, str_path: str) -> bool:

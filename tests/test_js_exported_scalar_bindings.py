@@ -277,3 +277,25 @@ def test_exported_destructured_require_is_still_suppressed(tmp_path):
     )
     labels = {n["label"] for n in extract_js(source)["nodes"]}
     assert "doWork" not in labels
+
+
+def test_computed_require_specifier_still_binds_locally(tmp_path):
+    """`require(name)` names no module, so nothing replaces the local binding.
+
+    Suppressing it would delete the name from the graph rather than repoint
+    it: `_require_imports_js` needs a string literal to emit an edge at all.
+    """
+    for name, body in (
+        ("var", "const m = './lib';\nexport const { doWork } = require(m);\n"),
+        ("concat", "export const { doWork } = require('./' + n);\n"),
+    ):
+        source = tmp_path / f"{name}.js"
+        source.write_text(body, encoding="utf-8")
+        labels = {n["label"] for n in extract_js(source)["nodes"]}
+        assert "doWork" in labels, name
+
+
+def test_literal_require_specifier_is_still_suppressed(tmp_path):
+    source = tmp_path / "lit.js"
+    source.write_text("const { doWork } = require('./lib');\n", encoding="utf-8")
+    assert "doWork" not in {n["label"] for n in extract_js(source)["nodes"]}
