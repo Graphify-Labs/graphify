@@ -84,6 +84,18 @@ def test_detect_warns_small_corpus():
     assert result["needs_graph"] is False
     assert result["warning"] is not None
 
+
+def test_detect_code_only_skips_word_count(tmp_path):
+    """--code-only must not open every file just to size the corpus."""
+    (tmp_path / "app.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "notes.md").write_text("# hello world " * 20 + "\n", encoding="utf-8")
+    result = detect(tmp_path, code_only=True)
+    assert result["total_words"] == 0
+    assert any(f.endswith("app.py") for f in result["files"]["code"])
+    assert any(f.endswith("notes.md") for f in result["files"]["document"])
+    full = detect(tmp_path, code_only=False)
+    assert full["total_words"] > 0
+
 def test_detect_skips_noise_dot_dirs():
     """Noise dot dirs (.next, .nuxt, .graphify cache, …) are skipped (#873).
     Non-noise dot dirs (.github, .claude, …) are now allowed through."""
@@ -456,8 +468,10 @@ def test_gitignore_keeps_tracked_file_but_drops_untracked_sibling(tmp_path):
     code = {Path(path).name for path in result["files"]["code"]}
 
     assert code == {"app.js", "fileWatcher.js"}
-    assert str(untracked) in result["ignored"]
     assert str(tracked) not in result["ignored"]
+    # Git's enumerator never visits gitignored untracked files, so scratch.js
+    # may be absent from ignored[] (the os.walk path still records it).
+    assert str(untracked) not in result["files"]["code"]
 
 
 def test_graphifyignore_still_excludes_git_tracked_file(tmp_path):
@@ -473,7 +487,10 @@ def test_graphifyignore_still_excludes_git_tracked_file(tmp_path):
     result = detect(tmp_path)
 
     assert str(tracked) not in result["files"]["code"]
-    assert any(entry.rstrip(os.sep) == str(storage) for entry in result["ignored"])
+    assert any(
+        entry.rstrip(os.sep) in (str(storage), str(tracked))
+        for entry in result["ignored"]
+    )
 
 
 def test_tracked_gitignore_exemption_works_for_subdirectory_scan(tmp_path):
@@ -539,10 +556,12 @@ def test_git_tracking_probe_failure_preserves_ignore_behavior(
     assert str(ignored_file) in result["ignored"]
 
 
-def test_git_lsfiles_skipped_when_no_gitignore_contributes(tmp_path, monkeypatch):
-    """Optimization (#2759): a git repo with no .gitignore in play must not pay
-    the `git ls-files` subprocess — nothing can be gitignore-dropped, so the
-    tracked-exemption is moot. A .gitignore that DOES contribute still probes."""
+def test_git_lsfiles_enumerates_even_without_gitignore(tmp_path, monkeypatch):
+    """Git enumeration is the fast path on any Git repo, .gitignore or not.
+
+    Previously ls-files ran only to exempt tracked files from gitignore; now
+    it replaces os.walk so ignored trees are never descended.
+    """
     _git(tmp_path, "init", "-q")
     (tmp_path / "app.py").write_text("value = 1\n", encoding="utf-8")
     _git(tmp_path, "add", "app.py")
@@ -557,15 +576,195 @@ def test_git_lsfiles_skipped_when_no_gitignore_contributes(tmp_path, monkeypatch
 
     monkeypatch.setattr(detect_mod.subprocess, "run", _spy)
 
-    # No .gitignore anywhere -> gitignore contributes nothing -> no probe.
-    detect(tmp_path)
-    assert calls["ls_files"] == 0, "git ls-files ran despite no .gitignore in play"
+    result = detect(tmp_path)
+    assert calls["ls_files"] >= 1, "git ls-files must enumerate a Git working tree"
+    assert any(f.endswith("app.py") for f in result["files"]["code"])
 
-    # Add a .gitignore -> gitignore now contributes -> probe happens (once).
     (tmp_path / ".gitignore").write_text("build/\n", encoding="utf-8")
     calls["ls_files"] = 0
     detect(tmp_path)
     assert calls["ls_files"] >= 1, "git ls-files skipped even though .gitignore is present"
+
+
+def test_git_enum_does_not_walk_gitignored_tree(tmp_path, monkeypatch):
+    """Ignored trees must not be os.walk'd — that is the million-file win."""
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "app.py").write_text("x = 1\n", encoding="utf-8")
+    _git(tmp_path, "add", "app.py")
+    (tmp_path / ".gitignore").write_text("blob/\n", encoding="utf-8")
+    blob = tmp_path / "blob"
+    blob.mkdir()
+    (blob / "noise.py").write_text("y = 2\n", encoding="utf-8")
+
+    walked: list[str] = []
+    real_walk = os.walk
+
+    def _spy(start, *a, **k):
+        walked.append(os.path.abspath(start))
+        return real_walk(start, *a, **k)
+
+    monkeypatch.setattr(os, "walk", _spy)
+
+    result = detect(tmp_path)
+    code = {Path(p).name for p in result["files"]["code"]}
+    assert code == {"app.py"}
+    blob_abs = os.path.abspath(blob)
+    assert not any(
+        w == blob_abs or w.startswith(blob_abs + os.sep) for w in walked
+    ), f"os.walk descended into gitignored blob/: {walked}"
+
+
+def test_detect_skips_repo_tool_metadata_dir(tmp_path):
+    """Google repo-tool ``.repo/`` is object storage, not source (#playground)."""
+    (tmp_path / "app.py").write_text("x = 1\n", encoding="utf-8")
+    hidden = tmp_path / ".repo" / "projects" / "app.git" / "objects"
+    hidden.mkdir(parents=True)
+    (hidden / "pack.py").write_text("should_not_index = 1\n", encoding="utf-8")
+
+    result = detect(tmp_path)
+    code = [Path(p).name for p in result["files"]["code"]]
+    assert "app.py" in code
+    assert "pack.py" not in code
+    assert any(f"{os.sep}.repo{os.sep}" in d or d.rstrip(os.sep).endswith(".repo")
+               for d in result["pruned_noise_dirs"])
+
+
+def test_detect_prunes_buildroot_output_trees(tmp_path):
+    """Buildroot ``output_<board>/`` sysroots must not be walked."""
+    (tmp_path / "main.c").write_text("int main(){return 0;}\n", encoding="utf-8")
+    out = tmp_path / "output_eq5_mips"
+    (out / "host").mkdir(parents=True)
+    (out / "target").mkdir()
+    (out / "images").mkdir()
+    (out / "host" / "usr.c").write_text("int x;\n", encoding="utf-8")
+    fake = tmp_path / "output_docs"
+    fake.mkdir()
+    (fake / "notes.py").write_text("x = 1\n", encoding="utf-8")
+
+    result = detect(tmp_path)
+    code = {Path(p).name for p in result["files"]["code"]}
+    assert "main.c" in code
+    assert "notes.py" in code
+    assert "usr.c" not in code
+
+
+def test_repo_workspace_enumerates_each_git_project(tmp_path, monkeypatch):
+    """A Google repo forest has no root .git; list each project instead of walking."""
+    a = tmp_path / "proj_a"
+    b = tmp_path / "proj_b"
+    a.mkdir()
+    b.mkdir()
+    (a / "a.py").write_text("a = 1\n", encoding="utf-8")
+    (b / "b.py").write_text("b = 2\n", encoding="utf-8")
+    _git(a, "init", "-q")
+    _git(a, "add", "a.py")
+    _git(b, "init", "-q")
+    _git(b, "add", "b.py")
+    repo_dir = tmp_path / ".repo"
+    repo_dir.mkdir()
+    (repo_dir / "project.list").write_text("proj_a\nproj_b\n", encoding="utf-8")
+    junk = repo_dir / "projects" / "x.git" / "objects"
+    junk.mkdir(parents=True)
+    (junk / "blob.py").write_text("nope = 1\n", encoding="utf-8")
+
+    walked: list[str] = []
+    real_walk = os.walk
+
+    def _spy(start, *a, **k):
+        walked.append(os.path.abspath(start))
+        return real_walk(start, *a, **k)
+
+    monkeypatch.setattr(os, "walk", _spy)
+
+    result = detect(tmp_path)
+    names = {Path(p).name for p in result["files"]["code"]}
+    assert names == {"a.py", "b.py"}
+    assert "blob.py" not in names
+    junk_abs = os.path.abspath(junk)
+    assert not any(
+        w == junk_abs or w.startswith(junk_abs + os.sep) for w in walked
+    )
+
+
+def test_detect_enumerates_git_submodules(tmp_path, monkeypatch):
+    """A superproject with .gitmodules lists each submodule via git, not os.walk."""
+    (tmp_path / "app.py").write_text("app = 1\n", encoding="utf-8")
+    lib = tmp_path / "vendor" / "lib"
+    lib.mkdir(parents=True)
+    (lib / "lib.py").write_text("lib = 1\n", encoding="utf-8")
+    (tmp_path / ".gitmodules").write_text(
+        '[submodule "vendor/lib"]\n\tpath = vendor/lib\n\turl = ./vendor/lib\n',
+        encoding="utf-8",
+    )
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "add", "app.py", ".gitmodules")
+    _git(lib, "init", "-q")
+    _git(lib, "add", "lib.py")
+
+    walked: list[str] = []
+    real_walk = os.walk
+
+    def _spy(start, *a, **k):
+        walked.append(os.path.abspath(start))
+        return real_walk(start, *a, **k)
+
+    monkeypatch.setattr(os, "walk", _spy)
+
+    result = detect(tmp_path)
+    names = {Path(p).name for p in result["files"]["code"]}
+    assert names == {"app.py", "lib.py"}
+    lib_abs = os.path.abspath(lib)
+    assert not any(
+        w == lib_abs or w.startswith(lib_abs + os.sep) for w in walked
+    ), f"os.walk descended into submodule: {walked}"
+
+
+def test_detect_finds_nested_git_dirs_without_repo_or_submodules(tmp_path, monkeypatch):
+    """A directory of checkouts with no root .git and no .repo is enumerated per .git."""
+    a = tmp_path / "alpha"
+    b = tmp_path / "beta"
+    a.mkdir()
+    b.mkdir()
+    (a / "a.py").write_text("a = 1\n", encoding="utf-8")
+    (b / "b.py").write_text("b = 2\n", encoding="utf-8")
+    _git(a, "init", "-q")
+    _git(a, "add", "a.py")
+    _git(b, "init", "-q")
+    _git(b, "add", "b.py")
+
+    result = detect(tmp_path)
+    names = {Path(p).name for p in result["files"]["code"]}
+    assert names == {"a.py", "b.py"}
+
+
+def test_detect_prefers_submodules_over_repo_manifest(tmp_path):
+    """Submodules win when both .gitmodules and .repo/project.list exist."""
+    (tmp_path / "app.py").write_text("app = 1\n", encoding="utf-8")
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    (lib / "lib.py").write_text("lib = 1\n", encoding="utf-8")
+    decoy = tmp_path / "decoy"
+    decoy.mkdir()
+    (decoy / "decoy.py").write_text("decoy = 1\n", encoding="utf-8")
+    (tmp_path / ".gitmodules").write_text(
+        '[submodule "lib"]\n\tpath = lib\n\turl = ./lib\n',
+        encoding="utf-8",
+    )
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "add", "app.py", ".gitmodules")
+    _git(lib, "init", "-q")
+    _git(lib, "add", "lib.py")
+    _git(decoy, "init", "-q")
+    _git(decoy, "add", "decoy.py")
+    repo_dir = tmp_path / ".repo"
+    repo_dir.mkdir()
+    (repo_dir / "project.list").write_text("decoy\n", encoding="utf-8")
+
+    result = detect(tmp_path)
+    names = {Path(p).name for p in result["files"]["code"]}
+    assert "app.py" in names
+    assert "lib.py" in names
+    assert "decoy.py" not in names
 
 
 def test_gitignore_nested_below_root_prunes_whole_directory(tmp_path):
