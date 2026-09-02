@@ -662,7 +662,10 @@ def _register_merge_driver(root: Path) -> str:
     try:
         for key, value in (
             ("merge.graphify.name", "graphify graph.json union merge"),
-            ("merge.graphify.driver", driver),
+            # git config parses the argv with config-file syntax: `\` is an
+            # escape and an unquoted space ends the token. A quoted Windows
+            # path would otherwise store as `C:UsersFirst` on POSIX git (#2166).
+            ("merge.graphify.driver", driver.replace("\\", "\\\\").replace('"', '\\"')),
         ):
             _sp.run(
                 ["git", "-C", str(root), "config", key, value],
