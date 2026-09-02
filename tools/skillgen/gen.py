@@ -110,6 +110,47 @@ ALWAYS_ON_SANCTIONED_EDITS: dict[str, tuple[tuple[str, str], ...]] = {
             "When the user types `/graphify`, use the installed graphify skill or instructions "
             "before doing anything else.",
         ),
+        (
+            "- For codebase questions, first run `graphify query \"<question>\"` when graphify-out/graph.json exists. Use `graphify path \"<A>\" \"<B>\"` for relationships and `graphify explain \"<concept>\"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.",
+            "- For codebase questions, first use the graph when graphify-out/graph.json exists. Prefer the MCP `query_graph` tool. CLI fallback: `\"$(cat graphify-out/.graphify_python)\" -m graphify query \"<question>\"` (PowerShell: `& (Get-Content graphify-out\\.graphify_python) -m graphify query \"<question>\"`); use the same recorded interpreter with `path` or `explain` for relationships and focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.",
+        ),
+    ),
+    "_CLAUDE_MD_SECTION": (
+        (
+            "- For codebase questions, first run `graphify query \"<question>\"` when graphify-out/graph.json exists. Use `graphify path \"<A>\" \"<B>\"` for relationships and `graphify explain \"<concept>\"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.",
+            "- For codebase questions, first use the graph when graphify-out/graph.json exists. Prefer the MCP `query_graph` tool. CLI fallback: `\"$(cat graphify-out/.graphify_python)\" -m graphify query \"<question>\"` (PowerShell: `& (Get-Content graphify-out\\.graphify_python) -m graphify query \"<question>\"`); use the same recorded interpreter with `path` or `explain` for relationships and focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.",
+        ),
+    ),
+    "_GEMINI_MD_SECTION": (
+        (
+            "- For codebase questions, first run `graphify query \"<question>\"` when graphify-out/graph.json exists. Use `graphify path \"<A>\" \"<B>\"` for relationships and `graphify explain \"<concept>\"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.",
+            "- For codebase questions, first use the graph when graphify-out/graph.json exists. Prefer the MCP `query_graph` tool. CLI fallback: `\"$(cat graphify-out/.graphify_python)\" -m graphify query \"<question>\"` (PowerShell: `& (Get-Content graphify-out\\.graphify_python) -m graphify query \"<question>\"`); use the same recorded interpreter with `path` or `explain` for relationships and focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.",
+        ),
+    ),
+    "_ANTIGRAVITY_RULES": (
+        (
+            "- For codebase or architecture questions, when `graphify-out/graph.json` exists, first run `graphify query \"<question>\"` (CLI) or `query_graph` (MCP). Use `graphify path \"<A>\" \"<B>\"` / `shortest_path` for relationships and `graphify explain \"<concept>\"` / `get_node` for focused concepts. These return a scoped subgraph, usually much smaller than `GRAPH_REPORT.md` or raw grep output.",
+            "- For codebase or architecture questions, when `graphify-out/graph.json` exists, first use the graph. Prefer the MCP `query_graph` tool. CLI fallback: `\"$(cat graphify-out/.graphify_python)\" -m graphify query \"<question>\"` (PowerShell: `& (Get-Content graphify-out\\.graphify_python) -m graphify query \"<question>\"`); use the same recorded interpreter with `path` or `explain` for relationships and focused concepts. These return a scoped subgraph, usually much smaller than `GRAPH_REPORT.md` or raw grep output.",
+        ),
+    ),
+    "_KIRO_STEERING": (
+        (
+            "graphify: A knowledge graph of this project lives in `graphify-out/`. For codebase, architecture, or dependency questions, when `graphify-out/graph.json` exists, first run `graphify query \"<question>\"` (or `graphify path \"<A>\" \"<B>\"` / `graphify explain \"<concept>\"`). These return a scoped subgraph, usually much smaller than `GRAPH_REPORT.md` or raw grep output. Read `GRAPH_REPORT.md` only for broad architecture review or when those commands do not surface enough context.",
+            "graphify: A knowledge graph of this project lives in `graphify-out/`. For codebase, architecture, or dependency questions, when `graphify-out/graph.json` exists, prefer the MCP `query_graph` tool. CLI fallback: `\"$(cat graphify-out/.graphify_python)\" -m graphify query \"<question>\"` (PowerShell: `& (Get-Content graphify-out\\.graphify_python) -m graphify query \"<question>\"`); use the same recorded interpreter with `path` or `explain`. These return a scoped subgraph, usually much smaller than `GRAPH_REPORT.md` or raw grep output. Read `GRAPH_REPORT.md` only for broad architecture review or when those commands do not surface enough context.",
+        ),
+    ),
+    "_VSCODE_INSTRUCTIONS_SECTION": (
+        (
+            "code, your first action should be `graphify query \"<question>\"` when `graphify-out/graph.json`\n"
+            "exists. Use `graphify path \"<A>\" \"<B>\"` for relationship questions and `graphify explain \"<concept>\"`\n"
+            "for focused-concept questions. These return a scoped subgraph, usually much smaller than the full\n"
+            "report or raw grep output.",
+            "code, first use the graph when `graphify-out/graph.json` exists. Prefer the MCP `query_graph` tool.\n"
+            "CLI fallback: `\"$(cat graphify-out/.graphify_python)\" -m graphify query \"<question>\"` (PowerShell:\n"
+            "`& (Get-Content graphify-out\\.graphify_python) -m graphify query \"<question>\"`); use the same recorded\n"
+            "interpreter with `path` or `explain`. These return a scoped subgraph, usually much smaller than the\n"
+            "full report or raw grep output.",
+        ),
     ),
 }
 

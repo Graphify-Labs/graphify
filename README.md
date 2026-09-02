@@ -205,6 +205,8 @@ for example `graphify claude install --project` or `graphify codex install --pro
 
 > **Strict mode (Claude Code):** `graphify install --project --strict` makes the assistant actually use the graph. The default install *nudges* it to use the MCP `query_graph` tool (or the recorded Python-interpreter fallback) before reading files; strict mode *blocks* the first raw source read of a session and redirects it to the graph, then reverts to the nudge (so it fires at most once per session and never gets stuck). Set `GRAPHIFY_HOOK_STRICT=1`/`0` in the Claude process environment to override the installed mode; the default install is unchanged (soft nudge).
 
+> **Project hook interpreter:** committed project hooks read `graphify-out/.graphify_python`, which each clone writes when Graphify resolves its environment. Until that sidecar exists, the hook fails open and emits no graph decision; run the installed Graphify skill once in a fresh clone before relying on strict enforcement.
+
 <details>
 <summary><b>Pick your platform</b> (20+ assistants, click to expand)</summary>
 

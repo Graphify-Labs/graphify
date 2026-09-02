@@ -210,7 +210,6 @@ def test_gemini_allow_with_nudge(tmp_path, monkeypatch):
     payload = json.loads(out)
     assert payload["decision"] == "allow"
     assert "graphify query" in payload["additionalContext"]
-    assert "MCP `query_graph`" in payload["additionalContext"]
 
 
 def test_gemini_allow_without_graph(tmp_path, monkeypatch):

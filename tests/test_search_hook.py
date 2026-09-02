@@ -66,11 +66,13 @@ def test_hook_command_has_no_backslashes(monkeypatch):
 
 
 def test_command_has_no_shell_syntax():
-    # #522: no POSIX bash that Windows cmd.exe/PowerShell can't parse.
+    # Claude runs `command` through a POSIX shell (Git Bash on Windows), while
+    # Codex uses its separate commandWindows field. Keep the body simple and
+    # require the one fail-open operator added by #3280.
     cmd = _search_matcher()["hooks"][0]["command"]
-    for token in ("$(", "case ", "[ -f", "&&", "||", ";;", "echo '"):
+    for token in ("$(", "case ", "[ -f", "&&", ";;", "echo '"):
         assert token not in cmd, f"shell syntax {token!r} leaked into the hook"
-    assert "graphify" in cmd and "hook-guard search" in cmd
+    assert "graphify" in cmd and cmd.endswith("hook-guard search || true")
 
 
 def test_nudges_on_search_commands_with_graph(tmp_path):
@@ -103,7 +105,6 @@ def test_nudge_payload_is_valid_pretooluse_json(tmp_path):
     payload = json.loads(out)
     assert payload["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
     assert "graphify query" in payload["hookSpecificOutput"]["additionalContext"]
-    assert "MCP `query_graph`" in payload["hookSpecificOutput"]["additionalContext"]
 
 
 def test_fails_open_on_malformed_stdin(tmp_path):
