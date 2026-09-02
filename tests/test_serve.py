@@ -6,6 +6,8 @@ import pytest
 import networkx as nx
 from networkx.readwrite import json_graph
 
+from pathlib import Path
+
 from graphify.serve import (
     _strip_diacritics,
     _communities_from_graph,
@@ -33,6 +35,9 @@ from graphify.serve import (
     _community_header,
     _search_tokens,
     _shortest_path_text,
+    GraphContext,
+    GraphRegistry,
+    _resolve_graph,
 )
 
 
@@ -1714,9 +1719,6 @@ def test_underscore_query_does_not_let_a_single_token_outrank_the_real_match():
 
 
 def test_resolve_single_node_shared_by_get_node_and_get_neighbors():
-    """ADR-0001 finding 1: the resolver both tools now use returns an Ambiguous
-    message when the winning tier spans multiple files, a clean node id for a
-    unique label, and a not-found message otherwise."""
     from graphify.serve import _resolve_single_node
 
     G = nx.Graph()
@@ -1735,3 +1737,642 @@ def test_resolve_single_node_shared_by_get_node_and_get_neighbors():
     nid, err = _resolve_single_node(G, "nonexistent")
     assert nid is None
     assert "No node matching" in err
+
+
+# --- GraphRegistry tests ---
+
+
+def _write_registry_graph(base: Path, name: str, nodes=None, edges=None):
+    """Write a minimal graph.json under base/name/graph.json."""
+    d = base / name
+    d.mkdir(parents=True, exist_ok=True)
+    data = {
+        "nodes": [
+            {"id": f"{name}_n1", "label": "main", "community": 0},
+            {"id": f"{name}_n2", "label": "helper", "community": 0},
+        ] if nodes is None else nodes,
+        "links": [
+            {"source": f"{name}_n1", "target": f"{name}_n2", "relation": "calls", "confidence": "EXTRACTED"},
+        ] if edges is None else edges,
+    }
+    (d / "graph.json").write_text(json.dumps(data), encoding="utf-8")
+    return d / "graph.json"
+
+
+class TestGraphRegistry:
+    def test_from_path_single_graph(self, tmp_path):
+        gp = _write_registry_graph(tmp_path, "proj")
+        reg = GraphRegistry.from_path(gp)
+        assert len(reg.names()) == 1
+        ctx = reg.get(reg.names()[0])
+        assert ctx is not None
+        assert ctx.graph.number_of_nodes() == 2
+
+    def test_from_paths_loads_multiple_graphs(self, tmp_path):
+        frontend = _write_registry_graph(tmp_path / "frontend", "graphify-out")
+        backend = _write_registry_graph(tmp_path / "backend", "graphify-out")
+        reg = GraphRegistry.from_paths([frontend, backend])
+        assert sorted(reg.names()) == ["backend", "frontend"]
+
+    def test_from_paths_rejects_duplicate_repository_names(self, tmp_path):
+        first = _write_registry_graph(tmp_path / "one" / "api", "graphify-out")
+        second = _write_registry_graph(tmp_path / "two" / "api", "graphify-out")
+
+        with pytest.raises(ValueError, match="duplicate graph name 'api'"):
+            GraphRegistry.from_paths([first, second])
+
+    def test_get_unknown_returns_none(self, tmp_path):
+        gp = _write_registry_graph(tmp_path, "proj")
+        reg = GraphRegistry.from_path(gp)
+        assert reg.get("nonexistent") is None
+
+    def test_registry_reads_acquire_lock(self, tmp_path):
+        class TrackingLock:
+            entered = 0
+
+            def __enter__(self):
+                self.entered += 1
+
+            def __exit__(self, *args):
+                pass
+
+        gp = _write_registry_graph(tmp_path, "proj")
+        reg = GraphRegistry.from_path(gp)
+        lock = TrackingLock()
+        reg._lock = lock
+
+        reg.get("proj")
+        reg.names()
+
+        assert lock.entered == 2
+
+    def test_from_path_hot_reload(self, tmp_path):
+        gp = _write_registry_graph(tmp_path, "proj", nodes=[
+            {"id": "a", "label": "a", "community": 0},
+        ], edges=[])
+        reg = GraphRegistry.from_path(gp)
+        assert reg.get(reg.names()[0]).graph.number_of_nodes() == 1
+        import time; time.sleep(0.05)
+        _write_registry_graph(tmp_path, "proj", nodes=[
+            {"id": "a", "label": "a", "community": 0},
+            {"id": "b", "label": "b", "community": 0},
+        ], edges=[])
+        reg.rescan()
+        assert reg.get(reg.names()[0]).graph.number_of_nodes() == 2
+
+    def test_from_path_keeps_graph_on_transient_stat_failure(self, tmp_path, monkeypatch):
+        graph_path = _write_registry_graph(tmp_path, "proj")
+        registry = GraphRegistry.from_path(graph_path)
+        original_stat = Path.stat
+
+        def fail_graph_stat(path):
+            if path == graph_path:
+                raise PermissionError("temporarily unavailable")
+            return original_stat(path)
+
+        monkeypatch.setattr(Path, "stat", fail_graph_stat)
+
+        registry.rescan()
+
+        assert registry.names() == ["proj"]
+
+    def test_from_path_preserves_graph_when_reload_is_malformed(self, tmp_path):
+        graph_path = _write_registry_graph(tmp_path, "proj", nodes=[
+            {"id": "a", "label": "original", "community": 0},
+        ], edges=[])
+        registry = GraphRegistry.from_path(graph_path)
+        _, handlers = _build_server(registry)
+
+        graph_path.write_text("{malformed", encoding="utf-8")
+        import os
+        original_mtime = graph_path.stat().st_mtime
+        os.utime(graph_path, (original_mtime + 1, original_mtime + 1))
+
+        registry.rescan()
+
+        assert "original" in handlers["get_node"]({"label": "original"})
+
+    def test_from_path_evicts_graph_when_reload_file_is_missing(self, tmp_path, monkeypatch):
+        graph_path = _write_registry_graph(tmp_path, "proj")
+        registry = GraphRegistry.from_path(graph_path)
+        original_mtime = graph_path.stat().st_mtime
+
+        import os
+        os.utime(graph_path, (original_mtime + 1, original_mtime + 1))
+
+        def fail_graph_load(path, **kwargs):
+            if Path(path) == graph_path:
+                raise FileNotFoundError(path)
+            return _load_graph(path, **kwargs)
+
+        monkeypatch.setattr("graphify.serve._load_graph", fail_graph_load)
+
+        registry.rescan()
+
+        assert registry.names() == []
+
+    def test_from_paths_reloads_graph_only_before_each_request(self, tmp_path, monkeypatch):
+        graph_path = _write_registry_graph(
+            tmp_path / "repo", "graphify-out", nodes=[
+                {"id": "a", "label": "a", "community": 0},
+            ], edges=[],
+        )
+        registry = GraphRegistry.from_paths([graph_path])
+        _, handlers = _build_server(registry)
+        from graphify import reflect
+
+        monkeypatch.setattr(
+            reflect,
+            "load_learning_overlay",
+            lambda path: pytest.fail("explicit registry reload must not load sidecars"),
+        )
+        _write_registry_graph(
+            tmp_path / "repo", "graphify-out", nodes=[
+                {"id": "a", "label": "a", "community": 0},
+                {"id": "b", "label": "b", "community": 0},
+            ], edges=[],
+        )
+        import os
+        original_mtime = graph_path.stat().st_mtime
+        os.utime(graph_path, (original_mtime + 1, original_mtime + 1))
+
+        assert "Nodes: 2" in handlers["graph_stats"]({})
+
+    def test_graphs_dir_discovers_new_graph_after_interval(self, tmp_path):
+        _write_registry_graph(tmp_path / "alpha", "graphify-out")
+        registry = GraphRegistry.from_graphs_dir(tmp_path, scan_interval=30)
+        _write_registry_graph(tmp_path / "beta", "graphify-out")
+        registry._last_discovery -= 30
+
+        registry.rescan()
+
+        assert registry.names() == ["alpha", "beta"]
+
+    def test_graphs_dir_defers_discovery_until_interval(self, tmp_path):
+        _write_registry_graph(tmp_path / "alpha", "graphify-out")
+        registry = GraphRegistry.from_graphs_dir(tmp_path, scan_interval=30)
+        _write_registry_graph(tmp_path / "beta", "graphify-out")
+
+        registry.rescan()
+
+        assert registry.names() == ["alpha"]
+
+    def test_graphs_dir_removes_deleted_graph_after_interval(self, tmp_path):
+        graph = _write_registry_graph(tmp_path / "alpha", "graphify-out")
+        registry = GraphRegistry.from_graphs_dir(tmp_path, scan_interval=30)
+        graph.unlink()
+        registry._last_discovery -= 30
+
+        registry.rescan()
+
+        assert registry.names() == []
+
+    def test_graphs_dir_zero_interval_discovers_on_every_rescan(self, tmp_path):
+        _write_registry_graph(tmp_path / "alpha", "graphify-out")
+        registry = GraphRegistry.from_graphs_dir(tmp_path, scan_interval=0)
+        _write_registry_graph(tmp_path / "beta", "graphify-out")
+
+        registry.rescan()
+
+        assert registry.names() == ["alpha", "beta"]
+
+    @pytest.mark.parametrize("scan_interval", [float("nan"), float("inf"), float("-inf")])
+    def test_graphs_dir_rejects_non_finite_scan_interval(self, tmp_path, scan_interval):
+        _write_registry_graph(tmp_path / "alpha", "graphify-out")
+
+        with pytest.raises(ValueError, match="graph scan interval must be non-negative"):
+            GraphRegistry.from_graphs_dir(tmp_path, scan_interval=scan_interval)
+
+    def test_graphs_dir_reloads_known_graph_before_discovery_interval(self, tmp_path):
+        graph = _write_registry_graph(
+            tmp_path / "alpha", "graphify-out",
+            nodes=[{"id": "a", "label": "a", "community": 0}], edges=[],
+        )
+        registry = GraphRegistry.from_graphs_dir(tmp_path, scan_interval=30)
+        _write_registry_graph(
+            tmp_path / "alpha", "graphify-out",
+            nodes=[
+                {"id": "a", "label": "a", "community": 0},
+                {"id": "b", "label": "b", "community": 0},
+            ], edges=[],
+        )
+        import os
+        original_mtime = graph.stat().st_mtime
+        os.utime(graph, (original_mtime + 1, original_mtime + 1))
+
+        registry.rescan()
+
+        assert registry.get("alpha").graph.number_of_nodes() == 2
+
+    def test_graphs_dir_ignores_malformed_new_graph(self, tmp_path):
+        _write_registry_graph(tmp_path / "alpha", "graphify-out")
+        registry = GraphRegistry.from_graphs_dir(tmp_path, scan_interval=0)
+        malformed = _write_registry_graph(tmp_path / "beta", "graphify-out")
+        malformed.write_text("{malformed", encoding="utf-8")
+
+        registry.rescan()
+
+        assert registry.names() == ["alpha"]
+        assert registry.get("alpha").graph.number_of_nodes() == 2
+
+    def test_registry_has_no_directory_discovery_api(self):
+        assert not hasattr(GraphRegistry, "from_" + "directory")
+
+    def test_from_path_evicts_deleted(self, tmp_path):
+        gp = _write_registry_graph(tmp_path, "proj")
+        reg = GraphRegistry.from_path(gp)
+        assert len(reg.names()) == 1
+        import os
+        os.remove(gp)
+        reg.rescan()
+        assert reg.names() == []
+
+    def test_from_paths_loads_graph_json_without_learning_overlay(self, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        graph_path = repo / "graphify-out" / "graph.json"
+        graph_path.parent.mkdir(parents=True)
+        graph_path.write_text('{"nodes": [], "links": []}', encoding="utf-8")
+        from graphify import reflect
+
+        monkeypatch.setattr(
+            reflect,
+            "load_learning_overlay",
+            lambda path: pytest.fail("explicit registry must not load sidecars"),
+        )
+
+        registry = GraphRegistry.from_paths([graph_path])
+
+        assert registry.names() == ["repo"]
+
+
+
+from graphify.serve import _build_server
+
+
+class TestUnifiedBuildServer:
+    def test_legacy_graph_path_builds_single_graph_server(self, tmp_path):
+        graph_path = _write_registry_graph(tmp_path, "proj")
+
+        _, handlers = _build_server(str(graph_path))
+
+        assert "list_prs" in handlers
+        assert "list_graphs" not in handlers
+        assert "Nodes: 2" in handlers["graph_stats"]({})
+
+    def test_single_graph_has_no_list_graphs(self, tmp_path):
+        gp = _write_registry_graph(tmp_path, "proj")
+        reg = GraphRegistry.from_path(gp)
+        server, handlers = _build_server(reg)
+        assert "list_graphs" not in handlers
+        assert "use_graph" not in handlers
+
+    def test_multi_graph_has_list_graphs(self, tmp_path):
+        alpha = _write_registry_graph(tmp_path / "alpha", "graphify-out")
+        beta = _write_registry_graph(tmp_path / "beta", "graphify-out")
+        reg = GraphRegistry.from_paths([alpha, beta])
+        server, handlers = _build_server(reg)
+        assert "list_graphs" in handlers
+        assert "use_graph" in handlers
+
+    def test_directory_registry_discovers_and_selects_graph_added_after_server_build(self, tmp_path):
+        _write_registry_graph(tmp_path / "alpha", "graphify-out")
+        registry = GraphRegistry.from_graphs_dir(tmp_path, scan_interval=30)
+        session = {}
+        _, handlers = _build_server(registry, session_state=session)
+        _write_registry_graph(tmp_path / "beta", "graphify-out")
+        registry._last_discovery -= 30
+
+        listing = handlers["list_graphs"]({})
+        selection = handlers["use_graph"]({"graph": "beta"})
+
+        assert "beta" in listing
+        assert "Switched to graph 'beta'" in selection
+        assert session["current_graph"] == "beta"
+
+    def test_single_graph_has_pr_tools(self, tmp_path):
+        gp = _write_registry_graph(tmp_path, "proj")
+        reg = GraphRegistry.from_path(gp)
+        server, handlers = _build_server(reg)
+        assert "list_prs" in handlers
+
+    def test_multi_graph_no_pr_tools(self, tmp_path):
+        alpha = _write_registry_graph(tmp_path / "alpha", "graphify-out")
+        beta = _write_registry_graph(tmp_path / "beta", "graphify-out")
+        reg = GraphRegistry.from_paths([alpha, beta])
+        server, handlers = _build_server(reg)
+        assert "list_prs" not in handlers
+
+    def test_single_graph_query(self, tmp_path):
+        _write_registry_graph(tmp_path, "proj", nodes=[
+            {"id": "n1", "label": "AuthService", "community": 0, "source_file": "auth.py"},
+            {"id": "n2", "label": "Database", "community": 0, "source_file": "db.py"},
+        ], edges=[
+            {"source": "n1", "target": "n2", "relation": "calls", "confidence": "EXTRACTED"},
+        ])
+        reg = GraphRegistry.from_path(tmp_path / "proj" / "graph.json")
+        _, handlers = _build_server(reg)
+        result = handlers["query_graph"]({"question": "AuthService"})
+        assert "AuthService" in result
+
+    def test_multi_graph_use_graph_and_query(self, tmp_path):
+        alpha = _write_registry_graph(tmp_path / "alpha", "graphify-out", nodes=[
+            {"id": "a1", "label": "UserService", "community": 0},
+        ], edges=[])
+        beta = _write_registry_graph(tmp_path / "beta", "graphify-out", nodes=[
+            {"id": "b1", "label": "PaymentGateway", "community": 0},
+        ], edges=[])
+        reg = GraphRegistry.from_paths([alpha, beta])
+        session = {}
+        _, handlers = _build_server(reg, session_state=session)
+
+        result = handlers["list_graphs"]({})
+        assert "alpha" in result
+        assert "beta" in result
+
+        handlers["use_graph"]({"graph": "alpha"})
+        assert session["current_graph"] == "alpha"
+
+        result = handlers["graph_stats"]({})
+        assert "Nodes: 1" in result
+
+        result = handlers["graph_stats"]({"graph": "beta"})
+        assert "Nodes: 1" in result
+
+    def test_all_tools_have_graph_param(self, tmp_path):
+        alpha = _write_registry_graph(tmp_path / "alpha", "graphify-out")
+        beta = _write_registry_graph(tmp_path / "beta", "graphify-out")
+        reg = GraphRegistry.from_paths([alpha, beta])
+        server, _ = _build_server(reg)
+        from mcp import types as _t
+        import asyncio
+        handler = server.request_handlers[_t.ListToolsRequest]
+        loop = asyncio.new_event_loop()
+        result = loop.run_until_complete(handler(_t.ListToolsRequest()))
+        loop.close()
+        tools = result.root.tools
+        for t in tools:
+            if t.name != "list_graphs":
+                props = t.inputSchema.get("properties", {})
+                assert "graph" in props, f"tool {t.name} missing graph param"
+
+    def test_explicit_registry_rejects_project_path(self, tmp_path):
+        explicit_graph = tmp_path / "repo" / "graphify-out" / "graph.json"
+        explicit_graph.parent.mkdir(parents=True)
+        explicit_graph.write_text('{"nodes": [], "links": []}', encoding="utf-8")
+        other_project = tmp_path / "other"
+        (other_project / "graphify-out").mkdir(parents=True)
+        (other_project / "graphify-out" / "graph.json").write_text('{"nodes": [], "links": []}', encoding="utf-8")
+        registry = GraphRegistry.from_paths([explicit_graph])
+        _, handlers = _build_server(registry)
+
+        with pytest.raises(ValueError, match="project_path is not supported"):
+            handlers["graph_stats"]({"project_path": str(other_project)})
+
+
+class TestResolveGraph:
+    def test_explicit_param(self, tmp_path):
+        alpha = _write_registry_graph(tmp_path / "alpha", "graphify-out")
+        beta = _write_registry_graph(tmp_path / "beta", "graphify-out")
+        reg = GraphRegistry.from_paths([alpha, beta])
+        ctx = _resolve_graph(reg, graph="alpha", current=None)
+        assert ctx.name == "alpha"
+
+    def test_session_default(self, tmp_path):
+        graph_path = _write_registry_graph(tmp_path / "proj", "graphify-out")
+        reg = GraphRegistry.from_paths([graph_path])
+        ctx = _resolve_graph(reg, graph=None, current="proj")
+        assert ctx.name == "proj"
+
+    def test_single_graph_implicit(self, tmp_path):
+        gp = _write_registry_graph(tmp_path, "only")
+        reg = GraphRegistry.from_path(gp)
+        ctx = _resolve_graph(reg, graph=None, current=None)
+        assert ctx is not None
+
+    def test_ambiguous_raises(self, tmp_path):
+        first = _write_registry_graph(tmp_path / "a", "graphify-out")
+        second = _write_registry_graph(tmp_path / "b", "graphify-out")
+        reg = GraphRegistry.from_paths([first, second])
+        with pytest.raises(ValueError, match="multiple graphs"):
+            _resolve_graph(reg, graph=None, current=None)
+
+    def test_unknown_name_raises(self, tmp_path):
+        graph_path = _write_registry_graph(tmp_path / "x", "graphify-out")
+        reg = GraphRegistry.from_paths([graph_path])
+        with pytest.raises(ValueError, match="not found"):
+            _resolve_graph(reg, graph="nope", current=None)
+
+class TestMainCLI:
+    def test_serve_cli_defaults_graph_scan_interval(self, tmp_path, monkeypatch):
+        _write_registry_graph(tmp_path / "api", "graphify-out")
+        captured = {}
+        monkeypatch.setattr(
+            "graphify.serve.serve",
+            lambda graph_path=None, *, registry=None: captured.update(registry=registry),
+        )
+
+        from graphify.serve import _main
+        _main(["--graphs-dir", str(tmp_path)])
+
+        assert captured["registry"]._graph_scan_interval == 30
+
+    def test_serve_cli_forwards_graph_scan_interval(self, tmp_path, monkeypatch):
+        _write_registry_graph(tmp_path / "api", "graphify-out")
+        captured = {}
+        monkeypatch.setattr(
+            "graphify.serve.serve",
+            lambda graph_path=None, *, registry=None: captured.update(registry=registry),
+        )
+
+        from graphify.serve import _main
+        _main(["--graphs-dir", str(tmp_path), "--graph-scan-interval", "0"])
+
+        assert captured["registry"]._graph_scan_interval == 0
+
+    def test_serve_cli_rejects_negative_graph_scan_interval(self, tmp_path, capsys):
+        _write_registry_graph(tmp_path / "api", "graphify-out")
+
+        from graphify.serve import _main
+
+        with pytest.raises(SystemExit):
+            _main(["--graphs-dir", str(tmp_path), "--graph-scan-interval", "-1"])
+
+        assert "non-negative" in capsys.readouterr().err
+
+    @pytest.mark.parametrize(
+        "value", ["nan", "inf", "-inf"], ids=["nan", "inf", "negative-inf"]
+    )
+    def test_serve_cli_rejects_non_finite_graph_scan_interval(self, tmp_path, capsys, value):
+        _write_registry_graph(tmp_path / "api", "graphify-out")
+
+        from graphify.serve import _main
+
+        with pytest.raises(SystemExit):
+            _main(["--graphs-dir", str(tmp_path), f"--graph-scan-interval={value}"])
+
+        assert "non-negative" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("transport", ["stdio", "http"])
+    def test_serve_cli_rejects_graph_scan_interval_without_graphs_dir(
+        self, monkeypatch, capsys, transport
+    ):
+        monkeypatch.setattr("graphify.serve.serve", lambda *args, **kwargs: None)
+        monkeypatch.setattr("graphify.serve.serve_http", lambda *args, **kwargs: None)
+
+        from graphify.serve import _main
+
+        argv = ["--graph-scan-interval", "15"]
+        if transport == "http":
+            argv.extend(["--transport", "http"])
+        with pytest.raises(SystemExit):
+            _main(argv)
+
+        assert "--graph-scan-interval requires --graphs-dir" in capsys.readouterr().err
+
+    def test_serve_cli_starts_named_registry_for_graphs_dir(self, tmp_path, monkeypatch):
+        graph_path = _write_registry_graph(tmp_path / "team" / "api", "graphify-out")
+        captured = {}
+        monkeypatch.setattr(
+            "graphify.serve.serve",
+            lambda graph_path=None, *, registry=None: captured.update(names=registry.names()),
+        )
+
+        from graphify.serve import _main
+        _main(["--graphs-dir", str(tmp_path)])
+
+        assert captured == {"names": ["team/api"]}
+
+    @pytest.mark.parametrize("graphs_dir", ["missing", "not-a-directory"])
+    def test_serve_cli_rejects_missing_or_non_directory_graphs_dir(self, tmp_path, graphs_dir, capsys):
+        if graphs_dir == "not-a-directory":
+            (tmp_path / graphs_dir).write_text("not a directory", encoding="utf-8")
+
+        from graphify.serve import _main
+
+        with pytest.raises(SystemExit):
+            _main(["--graphs-dir", str(tmp_path / graphs_dir)])
+
+        assert "graphs directory not found" in capsys.readouterr().err
+
+    def test_serve_cli_rejects_graphs_dir_without_a_graph(self, tmp_path, capsys):
+        from graphify.serve import _main
+
+        with pytest.raises(SystemExit):
+            _main(["--graphs-dir", str(tmp_path)])
+
+        assert "no graphify-out/graph.json files found" in capsys.readouterr().err
+
+    def test_serve_cli_ignores_hidden_and_symlinked_graph_directories(self, tmp_path, monkeypatch):
+        visible = _write_registry_graph(tmp_path / "visible", "graphify-out")
+        _write_registry_graph(tmp_path / ".hidden", "graphify-out")
+        (tmp_path / "linked").symlink_to(visible.parent.parent, target_is_directory=True)
+        captured = {}
+        monkeypatch.setattr(
+            "graphify.serve.serve",
+            lambda graph_path=None, *, registry=None: captured.update(names=registry.names()),
+        )
+
+        from graphify.serve import _main
+        _main(["--graphs-dir", str(tmp_path)])
+
+        assert captured == {"names": ["visible"]}
+
+    @pytest.mark.parametrize("graph_argument", ["configured.json", "--graph"])
+    def test_serve_cli_rejects_graphs_dir_with_graph_path(self, tmp_path, graph_argument, capsys):
+        from graphify.serve import _main
+
+        argv = ["--graphs-dir", str(tmp_path)]
+        if graph_argument == "--graph":
+            argv.extend(["--graph", "configured.json"])
+        else:
+            argv.append(graph_argument)
+        with pytest.raises(SystemExit):
+            _main(argv)
+
+        assert "--graphs-dir cannot be combined with a graph path" in capsys.readouterr().err
+
+    def test_serve_cli_forwards_http_options_to_graphs_dir_registry(self, tmp_path, monkeypatch):
+        _write_registry_graph(tmp_path / "team" / "api", "graphify-out")
+        captured = {}
+        monkeypatch.setattr(
+            "graphify.serve.serve_http",
+            lambda graph_path=None, **kwargs: captured.update(graph_path=graph_path, **kwargs),
+        )
+
+        from graphify.serve import _main
+        _main([
+            "--graphs-dir", str(tmp_path), "--transport", "http", "--host", "0.0.0.0",
+            "--port", "8080", "--api-key", "secret", "--path", "/registry",
+            "--json-response", "--stateless", "--session-timeout", "30",
+            "--graph-scan-interval", "15",
+        ])
+
+        assert captured["graph_path"] is None
+        assert captured["registry"].names() == ["team/api"]
+        assert captured["registry"]._graph_scan_interval == 15
+        assert {key: value for key, value in captured.items() if key != "registry"} == {
+            "graph_path": None,
+            "host": "0.0.0.0",
+            "port": 8080,
+            "api_key": "secret",
+            "path": "/registry",
+            "json_response": True,
+            "stateless": True,
+            "session_timeout": 30.0,
+        }
+
+
+class TestUnifiedIntegration:
+    def test_multi_graph_full_flow(self, tmp_path):
+        alpha = _write_registry_graph(tmp_path / "alpha", "graphify-out", nodes=[
+            {"id": "a1", "label": "UserService", "community": 0, "source_file": "user.py", "source_location": "L1", "file_type": "python"},
+            {"id": "a2", "label": "AuthService", "community": 0, "source_file": "auth.py", "source_location": "L1", "file_type": "python"},
+        ], edges=[
+            {"source": "a1", "target": "a2", "relation": "calls", "confidence": "EXTRACTED"},
+        ])
+        beta = _write_registry_graph(tmp_path / "beta", "graphify-out", nodes=[
+            {"id": "b1", "label": "PaymentGateway", "community": 0, "source_file": "pay.py", "source_location": "L1", "file_type": "python"},
+        ], edges=[])
+
+        reg = GraphRegistry.from_paths([alpha, beta])
+        session = {}
+        _, handlers = _build_server(reg, session_state=session)
+
+        listing = handlers["list_graphs"]({})
+        assert "alpha" in listing
+        assert "beta" in listing
+
+        handlers["use_graph"]({"graph": "alpha"})
+        assert session["current_graph"] == "alpha"
+
+        result = handlers["query_graph"]({"question": "UserService"})
+        assert "UserService" in result
+
+        result = handlers["graph_stats"]({"graph": "beta"})
+        assert "Nodes: 1" in result
+
+        assert "list_prs" not in handlers
+
+    def test_single_graph_retro_compat(self, tmp_path):
+        _write_registry_graph(tmp_path, "proj", nodes=[
+            {"id": "n1", "label": "Main", "community": 0, "source_file": "main.py"},
+            {"id": "n2", "label": "Helper", "community": 0, "source_file": "helper.py"},
+        ], edges=[
+            {"source": "n1", "target": "n2", "relation": "calls", "confidence": "EXTRACTED"},
+        ])
+        reg = GraphRegistry.from_path(tmp_path / "proj" / "graph.json")
+        _, handlers = _build_server(reg)
+
+        assert "list_graphs" not in handlers
+        assert "use_graph" not in handlers
+        assert "list_prs" in handlers
+
+        result = handlers["query_graph"]({"question": "Main"})
+        assert "Main" in result
+
+        result = handlers["graph_stats"]({})
+        assert "Nodes: 2" in result
+
+        result = handlers["get_node"]({"label": "Helper"})
+        assert "Helper" in result
+        assert "helper.py" in result
