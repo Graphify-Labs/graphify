@@ -506,3 +506,91 @@ def test_aliased_self_edges_the_module_file(tmp_path):
     result, nodes = _graph(tmp_path)
     assert ("service.rs", "risk.rs") in _edges(result, nodes, "imports_from")
     assert "self" not in {n.get("label") for n in result["nodes"]}
+
+
+def test_named_bin_resolves_crate_against_its_own_module_tree(tmp_path):
+    """`src/bin/tool.rs` is its own crate root.
+
+    `crate::helper` there means `src/bin/tool/helper.rs`, not the library's
+    `src/helper.rs` — resolving it against `src/` edges the wrong file.
+    """
+    _crate(tmp_path)
+    (tmp_path / "src" / "helper.rs").write_text(
+        "pub struct Wrong;\n", encoding="utf-8"
+    )
+    (tmp_path / "src" / "bin" / "tool").mkdir(parents=True)
+    (tmp_path / "src" / "bin" / "tool" / "helper.rs").write_text(
+        "pub struct Helper;\n", encoding="utf-8"
+    )
+    (tmp_path / "src" / "bin" / "tool.rs").write_text(
+        "mod helper;\nuse crate::helper::Helper;\nfn main() {}\n", encoding="utf-8"
+    )
+    result, nodes = _graph(tmp_path)
+    imports_from = _edges(result, nodes, "imports_from")
+    assert ("tool.rs", "helper.rs") in imports_from
+    helper_targets = {
+        nodes[e["target"]]["source_file"]
+        for e in result["edges"]
+        if nodes.get(e["source"], {}).get("label") == "tool.rs"
+        and e["relation"] == "imports_from"
+        and nodes.get(e["target"], {}).get("label") == "helper.rs"
+    }
+    assert helper_targets == {"src/bin/tool/helper.rs"}
+
+
+def test_example_crate_root_does_not_reach_the_library_src(tmp_path):
+    """`examples/demo.rs` is its own crate too, and sits beside `src/`."""
+    _crate(tmp_path)
+    (tmp_path / "src" / "helper.rs").write_text(
+        "pub struct Wrong;\n", encoding="utf-8"
+    )
+    (tmp_path / "examples").mkdir()
+    (tmp_path / "examples" / "demo.rs").write_text(
+        "use crate::helper::Wrong;\nfn main() {}\n", encoding="utf-8"
+    )
+    result, nodes = _graph(tmp_path)
+    assert ("demo.rs", "helper.rs") not in _edges(result, nodes, "imports_from")
+
+
+def test_library_module_still_resolves_crate_against_src(tmp_path):
+    """The bin/example carve-out must not disturb an ordinary library module."""
+    _crate(tmp_path)
+    (tmp_path / "src" / "models" / "service.rs").write_text(
+        "use crate::models::_entities::risk::Entity;\npub fn run() -> u32 { 1 }\n",
+        encoding="utf-8",
+    )
+    result, nodes = _graph(tmp_path)
+    assert ("service.rs", "risk.rs") in _edges(result, nodes, "imports_from")
+
+
+def test_bin_directory_form_is_unaffected(tmp_path):
+    """`src/bin/tool/main.rs` IS its module, so `src` plus the walk suffices."""
+    _crate(tmp_path)
+    (tmp_path / "src" / "bin" / "tool").mkdir(parents=True)
+    (tmp_path / "src" / "bin" / "tool" / "helper.rs").write_text(
+        "pub struct Helper;\n", encoding="utf-8"
+    )
+    (tmp_path / "src" / "bin" / "tool" / "main.rs").write_text(
+        "mod helper;\nuse self::helper::Helper;\nfn main() {}\n", encoding="utf-8"
+    )
+    result, nodes = _graph(tmp_path)
+    assert ("main.rs", "helper.rs") in _edges(result, nodes, "imports_from")
+
+
+def test_super_walk_without_a_cargo_toml_resolves_nothing(tmp_path):
+    """No `Cargo.toml` above the file means no root to clamp against.
+
+    The clamp was skipped entirely when `_rust_crate_src_root` returned None,
+    so the walk climbed the filesystem unbounded.
+    """
+    (tmp_path / "models.rs").write_text("pub struct Outside;\n", encoding="utf-8")
+    loose = tmp_path / "a" / "b" / "c"
+    loose.mkdir(parents=True)
+    (loose / "service.rs").write_text(
+        "use super::super::super::models::Outside;\npub fn run() -> u32 { 1 }\n",
+        encoding="utf-8",
+    )
+    result, nodes = _graph(tmp_path)
+    imports_from = _edges(result, nodes, "imports_from")
+    assert ("service.rs", "models.rs") not in imports_from
+    assert ("service.rs", "Outside") in imports_from

@@ -150,16 +150,58 @@ def _rust_use_leaves(node, source: bytes, prefix: tuple[str, ...] = ()) -> list[
     return []
 
 
+# Cargo's conventional auto-discovered target directories. A .rs file sitting
+# directly in one of these IS a crate root of its own, so `crate::` inside it
+# refers to that file's module tree, not to the library's `src/`.
+_RUST_AUTO_TARGET_DIRS = ("bin", "examples", "tests", "benches")
+
+
 def _rust_crate_src_root(path: Path) -> Path | None:
-    """The ``src`` directory of the crate owning ``path``, if there is one."""
+    """The root directory ``crate::`` resolves against for ``path``.
+
+    Usually the owning package's ``src``. But a file directly inside one of
+    Cargo's auto-discovered target directories — ``src/bin/tool.rs``,
+    ``examples/demo.rs``, ``tests/it.rs``, ``benches/bench.rs`` — is its OWN
+    crate root, so ``crate::helper`` there means ``src/bin/tool/helper.rs``,
+    not ``src/helper.rs``. A directory form (``src/bin/tool/main.rs``) is
+    already handled by the plain ``src`` answer plus the module walk.
+
+    Returns ``None`` when no ``Cargo.toml`` is above ``path`` — there is no
+    crate to resolve against, and callers must not walk the filesystem.
+    """
     probe = path.parent
     while True:
         if (probe / "Cargo.toml").is_file():
             src = probe / "src"
-            return src if src.is_dir() else probe
+            base = src if src.is_dir() else probe
+            own = _rust_own_crate_root_dir(path, base, probe)
+            return own if own is not None else base
         if probe.parent == probe:
             return None
         probe = probe.parent
+
+
+def _rust_own_crate_root_dir(path: Path, src: Path, package: Path) -> Path | None:
+    """The module directory of ``path`` when ``path`` is itself a crate root.
+
+    ``src/bin/tool.rs`` is a binary crate whose children live in a sibling
+    ``src/bin/tool/``. ``examples``/``tests``/``benches`` sit at the package
+    root rather than under ``src``. Returns ``None`` when ``path`` is an
+    ordinary module of the library crate.
+    """
+    if path.name in _RUST_MODULE_ROOT_FILES:
+        return None
+    parent = path.parent
+    is_auto_target = (
+        (parent.parent == src and parent.name == "bin")
+        or (parent.parent == package and parent.name in _RUST_AUTO_TARGET_DIRS)
+    )
+    if not is_auto_target:
+        return None
+    # The binary's children live in a sibling directory named after it. If it
+    # does not exist the crate has no child modules, and the module walk finds
+    # nothing there — which is right, and better than falling back to `src`.
+    return parent / path.stem
 
 
 def _rust_module_file(directory: Path, name: str) -> Path | None:
@@ -237,8 +279,10 @@ def _resolve_rust_use_path(
         # `super::super::x` walks further up one directory per keyword, but the
         # crate root has no `super`: without the clamp the walk leaves the
         # crate and can resolve an unrelated file higher up the filesystem.
+        # With no `Cargo.toml` above the file there is no root to clamp
+        # against, so no walking is allowed at all.
         while index < len(segments) and segments[index] == "super":
-            if anchor is None or (src_root is not None and anchor == src_root):
+            if anchor is None or src_root is None or anchor == src_root:
                 return None
             anchor = anchor.parent
             index += 1
