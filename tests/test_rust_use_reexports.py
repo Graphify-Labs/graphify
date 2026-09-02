@@ -949,3 +949,43 @@ def test_super_reaches_an_item_of_a_file_backed_parent_module(tmp_path):
     result, nodes = _graph(tmp_path)
     assert ("risk.rs", "models.rs") in _edges(result, nodes, "imports_from")
     assert ("risk.rs", "Config") in _edges(result, nodes, "imports")
+
+
+@pytest.mark.parametrize(
+    "segments,expected",
+    [
+        (("super",), ("src/models/mod.rs", None)),
+        (("crate",), ("src/lib.rs", None)),
+        (("super", "super"), ("src/lib.rs", None)),
+        (("self",), ("src/models/risk.rs", None)),
+    ],
+)
+def test_keyword_only_use_path_names_the_anchor_module(tmp_path, segments, expected):
+    """`use super::{self};` leaves nothing to walk after the keyword.
+
+    `_rust_use_leaves` reduces a use-list `self` to the prefix, so
+    `use super::{self, X}` yields a bare `('super',)` leaf. The walk was
+    handed an empty remainder and returned None, dropping the import.
+    """
+    (tmp_path / "src" / "models").mkdir(parents=True)
+    (tmp_path / "Cargo.toml").write_text('[package]\nname = "d"\n', encoding="utf-8")
+    (tmp_path / "src" / "lib.rs").write_text("pub mod models;\n", encoding="utf-8")
+    (tmp_path / "src" / "models" / "mod.rs").write_text("pub mod risk;\n", encoding="utf-8")
+    (tmp_path / "src" / "models" / "risk.rs").write_text("pub struct X;\n", encoding="utf-8")
+
+    resolved = _resolve_rust_use_path(segments, tmp_path / "src" / "models" / "risk.rs")
+    assert resolved is not None
+    module_file, symbol = resolved
+    assert (str(module_file.relative_to(tmp_path)), symbol) == expected
+
+
+def test_use_list_self_alongside_a_name_edges_both(tmp_path):
+    """`use super::{self, X};` imports the module AND the name."""
+    _crate(tmp_path)
+    (tmp_path / "src" / "models" / "_entities" / "prelude.rs").write_text(
+        "use super::{self, risk};\n", encoding="utf-8"
+    )
+    result, nodes = _graph(tmp_path)
+    imports_from = _edges(result, nodes, "imports_from")
+    assert ("prelude.rs", "mod.rs") in imports_from
+    assert ("prelude.rs", "risk.rs") in imports_from

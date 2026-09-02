@@ -333,6 +333,9 @@ def _resolve_rust_use_path(
             # that item (`self::Status::Active`), so the item is attributed and
             # the rest dropped — the same rule `_walk_rust_segments` applies.
             return path, segments[1]
+        if first == "self":
+            # `use self::{self};` names this module, children or not.
+            return path, None
         return None
     if first == "self":
         anchor_file = path
@@ -343,7 +346,13 @@ def _resolve_rust_use_path(
         anchor_file = path
     else:
         anchor_file = _rust_module_root_file(anchor)
-    return _walk_rust_segments(anchor, segments[index:], anchor_file=anchor_file)
+    remainder = segments[index:]
+    if not remainder:
+        # A keyword-only path: `use super::{self};` / `use crate::{self};`
+        # name the anchor's module itself, with nothing left to walk. Without
+        # this the leaf resolved to nothing and the import was dropped.
+        return (anchor_file, None) if anchor_file is not None else None
+    return _walk_rust_segments(anchor, remainder, anchor_file=anchor_file)
 
 
 def _rust_module_root_file(directory: Path) -> Path | None:
