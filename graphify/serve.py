@@ -989,11 +989,25 @@ def _dfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], lis
     return visited, edges_seen
 
 
-def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_budget: int = 2000, *, seeds: list[str] | None = None) -> str:
+def _subgraph_to_text(
+    G: nx.Graph,
+    nodes: set[str],
+    edges: list[tuple],
+    token_budget: int = 2000,
+    *,
+    seeds: list[str] | None = None,
+    scores: dict[str, float] | None = None,
+) -> str:
     """Render subgraph as text, cutting at token_budget (approx 3 chars/token).
 
     seeds: exact-match nodes rendered first before the degree-sorted expansion,
     so the queried symbol always appears at the top of the output.
+    scores: per-node relevance to the question (the `_score_query` ranking the
+    query path already computed). Within one hop layer, a node that scored
+    against the query renders before a higher-degree node that scored zero, so
+    a tight budget cuts the incidental hub rather than the answer. Nodes absent
+    from the map score 0.0; an empty or missing map leaves the hop/degree order
+    unchanged.
     """
     char_budget = token_budget * 3
     lines = []
@@ -1025,9 +1039,13 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
                     dist[nb] = hop
                     nxt.append(nb)
         frontier = nxt
+    # Hop distance stays the primary key (#BUG2); query relevance decides
+    # within a layer so a term match outranks an unrelated hub; degree then
+    # str(n) keep the tail deterministic and byte-identical when no score is set.
+    score_of = scores or {}
     ordered = seed_hits + sorted(
         nodes - seed_set,
-        key=lambda n: (dist.get(n, 1 << 30), -G.degree(n), str(n)),
+        key=lambda n: (dist.get(n, 1 << 30), -score_of.get(n, 0.0), -G.degree(n), str(n)),
     )
     for nid in ordered:
         d = G.nodes[nid]
@@ -1253,7 +1271,13 @@ def _query_graph_text(
     # Pass the seeds so the queried symbol renders first and survives truncation
     # (#BUG2): a branch merge had silently dropped this argument, leaving the
     # seed-first ordering as dead code.
-    return header + _subgraph_to_text(traversal_graph, nodes, edges, token_budget, seeds=start_nodes)
+    # `qs.ranked` already holds every node's relevance to the question; hand it
+    # to the renderer so the budget cut is relevance-aware instead of dropping a
+    # term-matching node behind a same-layer hub.
+    scores = {nid: score for score, nid in qs.ranked}
+    return header + _subgraph_to_text(
+        traversal_graph, nodes, edges, token_budget, seeds=start_nodes, scores=scores
+    )
 
 
 def _find_node_tiers(
