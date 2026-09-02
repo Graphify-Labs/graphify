@@ -42,7 +42,7 @@ def test_allows_and_nudges_with_graph(tmp_path):
     out = _run(tmp_path, graph=True).stdout
     payload = json.loads(out)
     assert payload["decision"] == "allow"
-    assert "graphify query" in payload["additionalContext"]
+    assert "query_graph" in payload["additionalContext"]
 
 
 def test_allows_without_nudge_when_no_graph(tmp_path):
@@ -68,4 +68,4 @@ def test_honors_graphify_out_override(tmp_path):
         [sys.executable, "-m", "graphify", "hook-guard", "gemini"],
         input="", capture_output=True, text=True, cwd=tmp_path, env=env,
     )
-    assert "graphify query" in json.loads(r.stdout).get("additionalContext", "")
+    assert "query_graph" in json.loads(r.stdout).get("additionalContext", "")

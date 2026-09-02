@@ -114,11 +114,19 @@ ALWAYS_ON_SANCTIONED_EDITS: dict[str, tuple[tuple[str, str], ...]] = {
             "- For codebase questions, first run `graphify query \"<question>\"` when graphify-out/graph.json exists. Use `graphify path \"<A>\" \"<B>\"` for relationships and `graphify explain \"<concept>\"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.",
             "- For codebase questions, first use the graph when graphify-out/graph.json exists. Prefer the MCP `query_graph` tool. CLI fallback: `\"$(cat graphify-out/.graphify_python)\" -m graphify query \"<question>\"` (PowerShell: `& (Get-Content graphify-out\\.graphify_python) -m graphify query \"<question>\"`); use the same recorded interpreter with `path` or `explain` for relationships and focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.",
         ),
+        (
+            "- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).",
+            "- After modifying code, run `\"$(cat graphify-out/.graphify_python)\" -m graphify update .` (PowerShell: `& (Get-Content graphify-out\\.graphify_python) -m graphify update .`) to keep the graph current (AST-only, no API cost).",
+        ),
     ),
     "_CLAUDE_MD_SECTION": (
         (
             "- For codebase questions, first run `graphify query \"<question>\"` when graphify-out/graph.json exists. Use `graphify path \"<A>\" \"<B>\"` for relationships and `graphify explain \"<concept>\"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.",
             "- For codebase questions, first use the graph when graphify-out/graph.json exists. Prefer the MCP `query_graph` tool. CLI fallback: `\"$(cat graphify-out/.graphify_python)\" -m graphify query \"<question>\"` (PowerShell: `& (Get-Content graphify-out\\.graphify_python) -m graphify query \"<question>\"`); use the same recorded interpreter with `path` or `explain` for relationships and focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.",
+        ),
+        (
+            "- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).",
+            "- After modifying code, run `\"$(cat graphify-out/.graphify_python)\" -m graphify update .` (PowerShell: `& (Get-Content graphify-out\\.graphify_python) -m graphify update .`) to keep the graph current (AST-only, no API cost).",
         ),
     ),
     "_GEMINI_MD_SECTION": (
@@ -126,11 +134,19 @@ ALWAYS_ON_SANCTIONED_EDITS: dict[str, tuple[tuple[str, str], ...]] = {
             "- For codebase questions, first run `graphify query \"<question>\"` when graphify-out/graph.json exists. Use `graphify path \"<A>\" \"<B>\"` for relationships and `graphify explain \"<concept>\"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.",
             "- For codebase questions, first use the graph when graphify-out/graph.json exists. Prefer the MCP `query_graph` tool. CLI fallback: `\"$(cat graphify-out/.graphify_python)\" -m graphify query \"<question>\"` (PowerShell: `& (Get-Content graphify-out\\.graphify_python) -m graphify query \"<question>\"`); use the same recorded interpreter with `path` or `explain` for relationships and focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.",
         ),
+        (
+            "- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).",
+            "- After modifying code, run `\"$(cat graphify-out/.graphify_python)\" -m graphify update .` (PowerShell: `& (Get-Content graphify-out\\.graphify_python) -m graphify update .`) to keep the graph current (AST-only, no API cost).",
+        ),
     ),
     "_ANTIGRAVITY_RULES": (
         (
             "- For codebase or architecture questions, when `graphify-out/graph.json` exists, first run `graphify query \"<question>\"` (CLI) or `query_graph` (MCP). Use `graphify path \"<A>\" \"<B>\"` / `shortest_path` for relationships and `graphify explain \"<concept>\"` / `get_node` for focused concepts. These return a scoped subgraph, usually much smaller than `GRAPH_REPORT.md` or raw grep output.",
             "- For codebase or architecture questions, when `graphify-out/graph.json` exists, first use the graph. Prefer the MCP `query_graph` tool. CLI fallback: `\"$(cat graphify-out/.graphify_python)\" -m graphify query \"<question>\"` (PowerShell: `& (Get-Content graphify-out\\.graphify_python) -m graphify query \"<question>\"`); use the same recorded interpreter with `path` or `explain` for relationships and focused concepts. These return a scoped subgraph, usually much smaller than `GRAPH_REPORT.md` or raw grep output.",
+        ),
+        (
+            "- After modifying code files in this session, run `graphify update .` to keep the graph current (AST-only, no API cost)",
+            "- After modifying code files in this session, run `\"$(cat graphify-out/.graphify_python)\" -m graphify update .` (PowerShell: `& (Get-Content graphify-out\\.graphify_python) -m graphify update .`) to keep the graph current (AST-only, no API cost)",
         ),
     ),
     "_KIRO_STEERING": (

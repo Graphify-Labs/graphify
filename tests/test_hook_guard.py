@@ -63,7 +63,7 @@ def _invoke(kind, payload, tmp_path, monkeypatch, *, graph=True, out_name="graph
 ])
 def test_search_nudges(command, tmp_path, monkeypatch):
     out = _invoke("search", {"tool_input": {"command": command}}, tmp_path, monkeypatch)
-    assert "graphify query" in out, f"{command!r} should nudge"
+    assert "query_graph" in out, f"{command!r} should nudge"
     assert json.loads(out)["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
 
 
@@ -107,7 +107,7 @@ def test_search_non_string_command_is_silent(tmp_path, monkeypatch):
 def test_search_top_level_command_without_tool_input(tmp_path, monkeypatch):
     # Some hosts pass the tool payload flat (no "tool_input" wrapper).
     out = _invoke("search", {"command": "grep x"}, tmp_path, monkeypatch)
-    assert "graphify query" in out
+    assert "query_graph" in out
 
 
 def test_search_non_dict_tool_input_is_silent(tmp_path, monkeypatch):
@@ -133,7 +133,7 @@ def test_search_non_dict_tool_input_is_silent(tmp_path, monkeypatch):
 ])
 def test_read_nudges(tool_input, tmp_path, monkeypatch):
     out = _invoke("read", {"tool_input": tool_input}, tmp_path, monkeypatch)
-    assert "graphify query" in out, f"{tool_input!r} should nudge"
+    assert "query_graph" in out, f"{tool_input!r} should nudge"
 
 
 # --------------------------------------------------------------------------- #
@@ -179,7 +179,7 @@ def test_read_respects_custom_output_dir_name(tmp_path, monkeypatch):
 def test_read_nudges_source_outside_custom_output_dir(tmp_path, monkeypatch):
     out = _invoke("read", {"tool_input": {"file_path": "src/app.py"}},
                   tmp_path, monkeypatch, graph=True, out_name="build-out")
-    assert "graphify query" in out
+    assert "query_graph" in out
 
 
 # --------------------------------------------------------------------------- #

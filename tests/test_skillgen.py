@@ -69,7 +69,7 @@ def test_query_guidance_prefers_mcp_and_never_runs_windows_console_shim():
         assert "never execute a `graphify.exe` console shim" in query, key
         guidance = core + "\n" + query
         assert not re.search(
-            r"`graphify (?:query|path|explain) (?=[\"<])|^(?:# or: )?graphify (?:query|path|explain) (?=[\"<])",
+            r"`graphify (?:query|path|explain|update) (?=[\"<.])|^(?:# or: )?graphify (?:query|path|explain|update) (?=[\"<.])",
             guidance,
             re.MULTILINE,
         ), key
@@ -81,10 +81,10 @@ def test_query_guidance_prefers_mcp_and_never_runs_windows_console_shim():
         if artifact.path == "graphify/always_on/antigravity-rules.md"
     )
     assert "query_graph" in antigravity
-    assert not re.search(r"`graphify (?:query|path|explain) (?=[\"<])", antigravity)
+    assert not re.search(r"`graphify (?:query|path|explain|update) (?=[\"<.])", antigravity)
 
     forbidden = re.compile(
-        r"(?<!-m )(?<!/)\bgraphify (?:query|path|explain) (?=[\"'<$A-Z])",
+        r"(?<!-m )(?<!/)\bgraphify (?:query|path|explain|update) (?=[\"'<$A-Z.])",
         re.MULTILINE,
     )
     for artifact in artifacts:

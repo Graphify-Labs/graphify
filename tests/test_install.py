@@ -274,9 +274,7 @@ def test_codex_skill_uses_graphify_with_existing_graph():
     skill = (Path(graphify.__file__).parent / "skill-codex.md").read_text()
     assert "Fast path — existing graph" in skill
     assert "skip Steps 1–5 entirely and jump straight to `## For /graphify query`" in skill
-    assert "graphify query" in skill
-    assert "graphify explain" in skill
-    assert "graphify path" in skill
+    assert "query_graph" in skill
 
 
 def test_codex_agents_install_mentions_dirty_graph_output(tmp_path):
@@ -1278,6 +1276,7 @@ def test_project_install_hook_command_is_portable(tmp_path, monkeypatch, platfor
     monkeypatch.chdir(project)
     # Resolution would otherwise find a real graphify on this machine; pin it so
     # the assertion fails loudly if the project path ever resolves again.
+    monkeypatch.setattr("graphify.hooks._pinned_python", lambda: "")
     monkeypatch.setattr("shutil.which", lambda _name: r"C:\Users\installer\graphify.EXE")
 
     _run_project_install(project, home, platform)
@@ -1285,7 +1284,7 @@ def test_project_install_hook_command_is_portable(tmp_path, monkeypatch, platfor
     commands = _hook_commands((project / _PROJECT_HOOK_FILES[platform]).read_text(encoding="utf-8"))
     assert commands, f"{platform} project install registered no hook command"
     for command in commands:
-        assert command.startswith("graphify "), command
+        assert ".graphify_python" in command, command
         assert ":" not in command, f"drive letter / absolute path leaked: {command}"
         assert "\\" not in command, f"backslash path leaked: {command}"
         assert ".exe" not in command.lower(), f"platform exe casing leaked: {command}"
@@ -1299,6 +1298,7 @@ def test_user_profile_install_still_resolves_absolute_path(tmp_path, monkeypatch
     project = tmp_path / "project"
     project.mkdir()
     monkeypatch.chdir(project)
+    monkeypatch.setattr("graphify.hooks._pinned_python", lambda: "")
     monkeypatch.setattr("shutil.which", lambda _name: r"C:\Users\installer\graphify.EXE")
 
     from graphify.__main__ import main
@@ -1310,7 +1310,7 @@ def test_user_profile_install_still_resolves_absolute_path(tmp_path, monkeypatch
     commands = _hook_commands((project / _PROJECT_HOOK_FILES[platform]).read_text(encoding="utf-8"))
     assert commands, f"{platform} install registered no hook command"
     for command in commands:
-        assert command.startswith("C:/Users/installer/graphify.EXE "), command
+        assert command.startswith('"C:/Users/installer/graphify.EXE" '), command
 
 
 @pytest.mark.parametrize("platform", sorted(_PROJECT_HOOK_FILES))
@@ -1320,6 +1320,7 @@ def test_project_install_is_idempotent(tmp_path, monkeypatch, platform):
     project = tmp_path / "project"
     project.mkdir()
     monkeypatch.chdir(project)
+    monkeypatch.setattr("graphify.hooks._pinned_python", lambda: "")
     monkeypatch.setattr("shutil.which", lambda _name: r"C:\Users\installer\graphify.EXE")
     target = project / _PROJECT_HOOK_FILES[platform]
 
@@ -1330,14 +1331,15 @@ def test_project_install_is_idempotent(tmp_path, monkeypatch, platform):
     assert target.read_text(encoding="utf-8") == first
 
 
-def test_project_uninstall_removes_the_bare_hook_command(tmp_path, monkeypatch):
-    """The uninstall filter matches on "graphify", so a bare command still goes."""
+def test_project_uninstall_removes_the_hook_command(tmp_path, monkeypatch):
+    """The uninstall filter removes the recorded-interpreter hook command."""
     from graphify.__main__ import main
 
     home = tmp_path / "home"
     project = tmp_path / "project"
     project.mkdir()
     monkeypatch.chdir(project)
+    monkeypatch.setattr("graphify.hooks._pinned_python", lambda: "")
     monkeypatch.setattr("shutil.which", lambda _name: r"C:\Users\installer\graphify.EXE")
 
     _run_project_install(project, home, "claude")

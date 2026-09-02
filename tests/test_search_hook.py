@@ -65,6 +65,9 @@ def test_hook_command_has_no_backslashes(monkeypatch):
     for h in _claude_pretooluse_hooks():
         assert "\\" not in h["hooks"][0]["command"]
 
+    monkeypatch.setattr("graphify.hooks._pinned_python", lambda: r"C:\Tools\Graphify\python.exe")
+    assert _resolve_graphify_exe() == '"C:/Tools/Graphify/python.exe" -m graphify'
+
 
 def test_command_has_no_shell_syntax():
     # Claude runs `command` through a POSIX shell (Git Bash on Windows), while
@@ -87,7 +90,7 @@ def test_nudges_on_search_commands_with_graph(tmp_path):
         "ag needle",
     ):
         out = _run(command, tmp_path, graph=True).stdout
-        assert "graphify query" in out, f"{command!r} should nudge"
+        assert "query_graph" in out, f"{command!r} should nudge"
 
 
 def test_silent_without_graph(tmp_path):
@@ -137,7 +140,7 @@ def test_honors_graphify_out_override(tmp_path):
         [sys.executable, "-m", "graphify", "hook-guard", "search"],
         input=stdin, capture_output=True, text=True, cwd=tmp_path, env=env,
     )
-    assert "graphify query" in r.stdout
+    assert "query_graph" in r.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +156,7 @@ def test_grep_tool_input_nudges_with_graph(tmp_path):
         {"pattern": "foo", "path": "src/", "glob": "**/*.ts"},
     ):
         out = _run_grep_tool(tool_input, tmp_path, graph=True).stdout
-        assert "graphify query" in out, f"Grep input {tool_input!r} should nudge"
+        assert "query_graph" in out, f"Grep input {tool_input!r} should nudge"
 
 
 def test_grep_tool_input_silent_without_graph(tmp_path):
@@ -165,7 +168,7 @@ def test_grep_tool_nudge_is_valid_pretooluse_json(tmp_path):
     out = _run_grep_tool({"pattern": "foo", "path": "."}, tmp_path, graph=True).stdout
     payload = json.loads(out)
     assert payload["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
-    assert "graphify query" in payload["hookSpecificOutput"]["additionalContext"]
+    assert "query_graph" in payload["hookSpecificOutput"]["additionalContext"]
 
 
 def test_grep_tool_never_blocks(tmp_path):

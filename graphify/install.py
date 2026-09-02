@@ -1121,7 +1121,7 @@ Only use Read/Grep/Glob directly when:
 
 - If `graphify-out/wiki/index.md` exists, navigate it instead of reading raw files
 - Read `graphify-out/GRAPH_REPORT.md` only for broad architecture review when query/path/explain do not surface enough context
-- After modifying code files, run `graphify update .` to keep the graph current (AST-only, no API cost)
+- After modifying code files, run `"$(cat graphify-out/.graphify_python)" -m graphify update .` (PowerShell: `& (Get-Content graphify-out\\.graphify_python) -m graphify update .`) to keep the graph current (AST-only, no API cost)
 """
 def _cursor_install(project_dir: Path) -> None:
     """Write .cursor/rules/graphify.mdc with alwaysApply: true."""
@@ -1158,7 +1158,7 @@ Rules:
 - For codebase or architecture questions, when `graphify-out/graph.json` exists, prefer the MCP `query_graph` tool. CLI fallback: `"$(cat graphify-out/.graphify_python)" -m graphify query "<question>"` (PowerShell: `& (Get-Content graphify-out\\.graphify_python) -m graphify query "<question>"`); use the same recorded interpreter with `path` or `explain`. These return a scoped subgraph, usually much smaller than `GRAPH_REPORT.md` or raw grep output.
 - If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
 - Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context
-- After modifying code files in this session, run `graphify update .` to keep the graph current (AST-only, no API cost)
+- After modifying code files in this session, run `"$(cat graphify-out/.graphify_python)" -m graphify update .` (PowerShell: `& (Get-Content graphify-out\\.graphify_python) -m graphify update .`) to keep the graph current (AST-only, no API cost)
 """
 def _devin_rules_install(project_dir: Path) -> None:
     """Write .windsurf/rules/graphify.md for always-on Devin context."""
