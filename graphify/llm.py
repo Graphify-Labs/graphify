@@ -2314,11 +2314,33 @@ def _extract_with_adaptive_retry(
     split inherits the same absolute deadline rather than each getting a fresh
     full timeout. Before #3142, a chunk that timed out at every depth re-paid
     the full timeout on each of up to ``2**max_depth`` attempts — up to 2.5h for
-    the default 600s timeout at max_depth=3. Once the shared deadline passes,
-    a further timeout gives up immediately instead of splitting again.
+    the default 600s timeout at max_depth=3. A timeout checks the budget
+    reactively, after the attempt, and gives up rather than splitting further
+    once it is spent.
+
+    A split whose *own* attempt has not yet started also checks the budget
+    proactively, before making that attempt: if an earlier sibling elsewhere
+    in the same subtree already exhausted the budget with a real timeout of
+    its own, this split is skipped outright rather than paying for a fresh
+    full-length attempt that the shared budget can no longer afford.
     """
     if _deadline is None:
         _deadline = time.monotonic() + _resolve_api_timeout()
+    elif _depth > 0 and time.monotonic() >= _deadline:
+        # An earlier split in this subtree already used up the shared budget
+        # with a real timeout of its own (the reactive check below, on a
+        # prior call in this recursion). Skip this attempt entirely rather
+        # than paying for one more full-length call the budget can no longer
+        # afford — without this, a sibling reached after the budget is spent
+        # would still start (and pay for) its own fresh timeout, since the
+        # reactive check only fires after that sibling's own attempt fails.
+        print(
+            f"[graphify] chunk of {len(chunk)} at depth {_depth}: the subtree's "
+            f"{_resolve_api_timeout():g}s timeout budget is spent — skipping "
+            f"this split rather than starting a fresh attempt",
+            file=sys.stderr,
+        )
+        return {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0, "model": model, "finish_reason": "stop"}
 
     def _merge_two(left_units, right_units) -> dict:
         left = _extract_with_adaptive_retry(
