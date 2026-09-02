@@ -15,7 +15,7 @@ from graphify.__main__ import _claude_pretooluse_hooks
 
 def _search_matcher():
     hooks = _claude_pretooluse_hooks()
-    return next(h for h in hooks if h["matcher"] == "Bash|Grep")
+    return next(h for h in hooks if h["matcher"] == "Bash|Grep|PowerShell")
 
 
 def _env():
@@ -49,8 +49,9 @@ def _run_grep_tool(tool_input, cwd, *, graph: bool):
 
 def test_matcher_targets_bash_and_grep():
     # #1986: content search goes through Claude Code's dedicated Grep tool, so
-    # the matcher must cover it alongside Bash.
-    assert _search_matcher()["matcher"] == "Bash|Grep"
+    # the matcher must cover it alongside Bash. On Windows hosts Claude Code also
+    # exposes a PowerShell tool whose searches must reach the same guard.
+    assert _search_matcher()["matcher"] == "Bash|Grep|PowerShell"
 
 
 def test_hook_command_has_no_backslashes(monkeypatch):

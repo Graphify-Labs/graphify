@@ -320,7 +320,7 @@ def _claude_pretooluse_hooks(strict: bool = False, project: bool = False) -> "li
     exe = _resolve_graphify_exe(project=project)
     flag = " --strict" if strict else ""
     return [
-        {"matcher": "Bash|Grep",
+        {"matcher": "Bash|Grep|PowerShell",
          "hooks": [{"type": "command",
                     "command": f"{exe} hook-guard search{flag} || true",
                     "commandWindows": _graphify_command_windows("hook-guard search" + flag, project),
@@ -335,7 +335,7 @@ def _claude_pretooluse_hooks(strict: bool = False, project: bool = False) -> "li
 
 # Matchers graphify registers; the install/uninstall filters key on these plus
 # "graphify" in the entry so a user's unrelated hooks are never touched.
-_CLAUDE_PRETOOLUSE_MATCHERS = ("Glob|Grep", "Bash", "Bash|Grep", "Read|Glob")
+_CLAUDE_PRETOOLUSE_MATCHERS = ("Glob|Grep", "Bash", "Bash|Grep", "Bash|Grep|PowerShell", "Read|Glob")
 _CLAUDE_POSTTOOLUSE_MATCHER = "Bash|mcp__graphify__.*"
 _CLAUDE_POSTTOOLUSE_MATCHERS = (_CLAUDE_POSTTOOLUSE_MATCHER,)
 
@@ -2047,7 +2047,7 @@ def _install_codebuddy_hook(project_dir: Path) -> None:
     if not isinstance(pre_tool, list):
         _refuse_to_modify(settings_path)
 
-    hooks["PreToolUse"] = [h for h in pre_tool if not (isinstance(h, dict) and h.get("matcher") in ("Glob|Grep", "Bash", "Bash|Grep", "Read|Glob") and "graphify" in str(h))]
+    hooks["PreToolUse"] = [h for h in pre_tool if not _is_graphify_hook(h, _CLAUDE_PRETOOLUSE_MATCHERS)]
     hooks["PreToolUse"].extend(_claude_pretooluse_hooks())
     _write_settings_with_backup(settings_path, settings)
     print(f"  .codebuddy/settings.json  ->  PreToolUse hooks registered")
@@ -2061,7 +2061,7 @@ def _uninstall_codebuddy_hook(project_dir: Path) -> None:
     except json.JSONDecodeError:
         return
     pre_tool = settings.get("hooks", {}).get("PreToolUse", [])
-    filtered = [h for h in pre_tool if not (h.get("matcher") in ("Glob|Grep", "Bash", "Bash|Grep", "Read|Glob") and "graphify" in str(h))]
+    filtered = [h for h in pre_tool if not _is_graphify_hook(h, _CLAUDE_PRETOOLUSE_MATCHERS)]
     if len(filtered) == len(pre_tool):
         return
     settings["hooks"]["PreToolUse"] = filtered

@@ -743,9 +743,25 @@ def _mark_session_queried(identity: str) -> bool:
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.touch()
+        _gc_session_markers(p.parent)
         return True
     except Exception:
         return False
+
+
+def _gc_session_markers(d: "Path") -> None:
+    """Best-effort: drop session markers older than 24 hours so a reused
+    session id is neither pre-denied nor pre-authorized. Shared by both writers."""
+    try:
+        cutoff = time.time() - 86400
+        for entry in os.scandir(d):
+            try:
+                if entry.stat().st_mtime < cutoff:
+                    os.unlink(entry.path)
+            except OSError:
+                pass
+    except OSError:
+        pass
 
 
 def _session_has_queried(identity: str) -> bool:
@@ -772,16 +788,7 @@ def _mark_session_denied(identity: str) -> bool:
         d.mkdir(parents=True, exist_ok=True)
         fd = os.open(str(d / f"{sid}.denied"), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
         os.close(fd)
-        try:
-            cutoff = time.time() - 86400
-            for entry in os.scandir(d):
-                try:
-                    if entry.stat().st_mtime < cutoff:
-                        os.unlink(entry.path)
-                except OSError:
-                    pass
-        except OSError:
-            pass
+        _gc_session_markers(d)
         return True
     except FileExistsError:
         return False
@@ -985,6 +992,65 @@ def _bash_invokes_graphify_query(cmd_str: str) -> bool:
     return False
 
 
+_PS_LIST_CMDS = frozenset({"get-childitem", "gci", "ls", "dir"})
+_PS_SEARCH_CMDS = frozenset({"select-string", "sls"})
+
+
+def _ps_recursive_search_targets(cmd_str: str, root: "Path") -> "list[Path]":
+    """In-project DIRECTORIES a PowerShell corpus search would walk (Claude Code's
+    PowerShell tool: tool_name "PowerShell", tool_input.command). Two measured
+    shapes only: `Get-ChildItem|gci|ls|dir ... -Recurse|-r [path] | Select-String|sls`
+    and `Select-String ... -Path <dir or dir\\*>` (with or without -Recurse).
+    Exact-file -Path, stdin (Get-Content | Select-String) and out-of-project
+    targets return nothing. Never executes anything."""
+    found = []
+    for tokens in _bash_command_segments(cmd_str):
+        name = tokens[0]
+        args = tokens[1:]
+        lowered = [a.lower() for a in args]
+        if name in _PS_LIST_CMDS:
+            if not any(a in ("-recurse", "-r") for a in lowered):
+                continue
+            if not any(t[0] in _PS_SEARCH_CMDS for t in _bash_command_segments(cmd_str)):
+                continue
+            paths, value_of = [], None
+            for a in args:
+                if value_of:  # previous token was a flag that takes a value
+                    if value_of == "-path":
+                        paths.append(a)
+                    value_of = None
+                    continue
+                al = a.lower()
+                if al.startswith("-"):
+                    if al in ("-path", "-filter", "-include", "-exclude"):
+                        value_of = al
+                    continue
+                paths.append(a)
+        elif name in _PS_SEARCH_CMDS:
+            paths = [args[i + 1] for i, a in enumerate(args) if a.lower() == "-path" and i + 1 < len(args)]
+            if not paths:
+                continue  # stdin search or pattern-only
+        else:
+            continue
+        if not paths:
+            paths = ["."]
+        for p in paths:
+            p = p.rstrip("*").rstrip("\\/") or "."
+            try:
+                resolved = Path(p).resolve()
+                if not resolved.is_dir():
+                    continue
+                resolved.relative_to(root)
+            except (ValueError, OSError, RuntimeError):
+                continue
+            found.append(resolved)
+    return found
+
+
+def _ps_invokes_search(cmd_str: str) -> bool:
+    return any(t[0] in _PS_SEARCH_CMDS for t in _bash_command_segments(cmd_str))
+
+
 def _run_hook_guard(kind: str, strict: bool = False) -> None:
     """Shell-agnostic PreToolUse guard (#522).
 
@@ -1039,7 +1105,10 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
             # contains "ag ") and on heredoc bodies that merely mention
             # grep. Nudge-only, even in strict mode — see the docstring.
             is_grep_tool = not cmd_str and bool(t.get("pattern"))
-            is_bash_search = bool(cmd_str) and _bash_invokes_search(cmd_str)
+            is_powershell = d.get("tool_name") == "PowerShell"
+            is_bash_search = bool(cmd_str) and (
+                _ps_invokes_search(cmd_str) if is_powershell else _bash_invokes_search(cmd_str)
+            )
             if not (is_grep_tool or is_bash_search) or not out_path("graph.json").is_file():
                 return
             # Strict search gate: deny a recursive in-project corpus search until
@@ -1059,6 +1128,8 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
                         recursive = target.is_dir()
                     except (ValueError, OSError, RuntimeError):
                         recursive = False
+                elif is_powershell:
+                    recursive = bool(_ps_recursive_search_targets(cmd_str, root))
                 else:
                     recursive = bool(_bash_recursive_search_targets(cmd_str, root))
                 if recursive:

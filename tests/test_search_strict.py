@@ -143,6 +143,69 @@ def test_quoted_parens_do_not_fragment_the_segment(tmp_path, monkeypatch):
     assert _is_deny(_invoke("search", _search('grep -rn "foo(bar)" .'), tmp_path, monkeypatch))
 
 
+def test_queried_markers_are_garbage_collected(tmp_path, monkeypatch):
+    """Round 1 F1: a Bash-only session never reaches the .denied GC, so the
+    .queried writer must sweep too — an old marker goes, a fresh one stays."""
+    _fixture(tmp_path)
+    d = tmp_path / "graphify-out" / "cache" / "hook_sessions"
+    d.mkdir(parents=True)
+    old = d / "stale-session.queried"
+    old.write_text("", encoding="utf-8")
+    os.utime(old, (time.time() - 90000, time.time() - 90000))  # 25h old
+    _mark({"session_id": "fresh", "tool_name": "mcp__graphify__query_graph",
+           "tool_input": {}}, tmp_path, monkeypatch)
+    assert not old.exists()
+    assert (d / "fresh.queried").exists()
+    # a stale marker no longer pre-authorizes a reused session id
+    assert _is_deny(_invoke("search", _search("grep -rn foo .", "stale-session"), tmp_path, monkeypatch))
+
+
+def _ps(command, sid="s1"):
+    return {"session_id": sid, "tool_name": "PowerShell", "tool_input": {"command": command}}
+
+
+def test_powershell_recursive_search_denies(tmp_path, monkeypatch):
+    """Round 1 F2: Claude Code's PowerShell tool (tool_name "PowerShell", tool_input.command)
+    is matched by PreToolUse hooks; a recursive in-project search through it must gate too."""
+    _fixture(tmp_path)
+    for command in (
+        "Get-ChildItem -Recurse -Filter *.py | Select-String foo",
+        "gci -r . | sls foo",
+        "ls -Recurse src | Select-String -Pattern foo",
+        'Select-String -Path "src\\*" -Pattern foo',
+        "Select-String -Pattern foo -Path src -Recurse",
+    ):
+        assert _is_deny(_invoke("search", _ps(command), tmp_path, monkeypatch)), command
+
+
+def test_powershell_bounded_and_outside_only_nudge_or_stay_silent(tmp_path, monkeypatch):
+    f = _fixture(tmp_path)
+    for command in (
+        f"Select-String -Path {f} -Pattern foo",           # exact file
+        "Select-String -Path src/mod.py -Pattern foo",      # exact file, relative
+        "Get-Content src/mod.py | Select-String foo",       # stdin
+        "Get-ChildItem -Recurse C:/somewhere/else | Select-String foo",  # outside project
+    ):
+        out = _invoke("search", _ps(command), tmp_path, monkeypatch)
+        assert not _is_deny(out), command
+        assert "MANDATORY" in out, command
+    assert _invoke("search", _ps("Get-Process | Select-Object Id"), tmp_path, monkeypatch).strip() == ""
+
+
+def test_powershell_allowed_after_query(tmp_path, monkeypatch):
+    _fixture(tmp_path)
+    _mark({"session_id": "s1", "tool_name": "mcp__graphify__query_graph", "tool_input": {}},
+          tmp_path, monkeypatch)
+    out = _invoke("search", _ps("gci -r . | sls foo"), tmp_path, monkeypatch)
+    assert not _is_deny(out) and "MANDATORY" in out
+
+
+def test_search_matcher_covers_powershell():
+    from graphify.install import _claude_pretooluse_hooks
+    m = next(h for h in _claude_pretooluse_hooks(strict=True) if "Bash" in h["matcher"])["matcher"]
+    assert m == "Bash|Grep|PowerShell"
+
+
 def test_mark_queried_ignores_non_query_calls(tmp_path, monkeypatch):
     _fixture(tmp_path)
     for payload in (
@@ -227,7 +290,7 @@ def test_installed_strict_search_hook_executes_and_denies(tmp_path):
     for project in (False, True):
         entry = next(
             h for h in _claude_pretooluse_hooks(strict=True, project=project)
-            if h["matcher"] == "Bash|Grep"
+            if h["matcher"] == "Bash|Grep|PowerShell"
         )["hooks"][0]
         command = entry["commandWindows"] if os.name == "nt" else entry["command"]
         result = subprocess.run(
@@ -263,7 +326,7 @@ def test_install_and_uninstall_round_trip(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     _install_claude_hook(tmp_path, strict=True)
     settings = json.loads((tmp_path / ".claude" / "settings.json").read_text(encoding="utf-8"))
-    search = next(h for h in settings["hooks"]["PreToolUse"] if h["matcher"] == "Bash|Grep")
+    search = next(h for h in settings["hooks"]["PreToolUse"] if h["matcher"] == "Bash|Grep|PowerShell")
     assert "hook-guard search --strict" in search["hooks"][0]["command"]
     assert any("graphify" in str(h) for h in settings["hooks"]["PostToolUse"])
     _uninstall_claude_hook(tmp_path)
