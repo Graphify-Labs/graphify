@@ -580,6 +580,23 @@ def _zero_node_stamped_semantic_sources(
     return healed
 
 
+def _gate_hyperedges(hyperedges: object, nodes: object = None) -> "tuple[list, int]":
+    """Canonicalize *hyperedges*, returning the survivors and the drop count.
+
+    A thin module-level seam over :func:`graphify.build.gate_hyperedges`, for two
+    reasons. It keeps the gate's fan-out off ``dispatch_command`` — which is
+    already thousands of lines and every writer in it would otherwise add its
+    own import alias — and it keeps the ``graphify.build`` import function-local,
+    since ``cli`` deliberately imports only ``graphify.paths`` at module scope so
+    ``graphify install`` works before networkx is present.
+
+    Pass the node list about to be written to filter members by membership; omit
+    it where no node set exists yet (the pre-manifest-stamp gate).
+    """
+    from graphify.build import gate_hyperedges as _gate
+    return _gate(hyperedges, nodes)
+
+
 def _prune_graph_json_sources(graph_path: Path, stale_sources: list[str]) -> int:
     """Drop nodes/edges/hyperedges owned by ``stale_sources`` from graph.json
     in place. Returns the number of nodes removed.
@@ -590,6 +607,21 @@ def _prune_graph_json_sources(graph_path: Path, stale_sources: list[str]) -> int
     newly-excluded file's nodes survive forever (#1909).
     ``stale_sources`` comes from :func:`_stale_graph_sources`, i.e. the
     graph's own ``source_file`` spellings, so exact string matching is enough.
+
+    Hyperedges get the same revalidation the clustered path gets from
+    build_merge: an entry owned by a surviving file can still name a node this
+    prune just removed, so members are filtered to the survivors and the group
+    is dropped when that leaves it under ``MIN_HYPEREDGE_MEMBERS``. Two
+    wrinkles worth knowing:
+
+    - BOTH hyperedge slots are rewritten. ``to_json`` persists them top-level
+      and under ``graph`` (#2484), and :func:`_zero_node_stamped_semantic_sources`
+      unions the two when judging whether a doc's manifest stamp is honest
+      (#2927) — so a stale nested copy of a dropped group would keep that doc
+      looking covered and it would never be re-dispatched.
+    - The return value counts NODES only, so a hyperedge-only rewrite returns 0
+      and the caller prints nothing; the stderr line below is what makes such a
+      rewrite attributable.
     """
     try:
         data = json.loads(graph_path.read_text(encoding="utf-8"))
@@ -612,18 +644,67 @@ def _prune_graph_json_sources(graph_path: Path, stale_sources: list[str]) -> int
         and e.get("source") not in removed_ids
         and e.get("target") not in removed_ids
     ]
-    kept_hyper = [
-        h for h in data.get("hyperedges", [])
-        if isinstance(h, dict) and h.get("source_file") not in stale
-    ]
-    if n_removed == 0 and len(kept_edges) == len(data.get(links_key, [])) and (
-        len(kept_hyper) == len(data.get("hyperedges", []))
+    # Read whichever slot actually holds the list. A node_link_data-only writer
+    # emits hyperedges solely under `graph` with no top-level key (#2485, the
+    # shape build_from_json folds), so reading only the top level would find
+    # nothing to revalidate and then overwrite the nested slot with that empty
+    # result — destroying valid groups. The isinstance guards also absorb a
+    # legacy {"hyperedges": null}, which would otherwise raise TypeError out of
+    # this function (the try above wraps only the JSON load).
+    raw_hyper = data.get("hyperedges")
+    if not isinstance(raw_hyper, list):
+        _graph_md = data.get("graph")
+        # isinstance, not `or {}`: a legacy or hand-edited file can hold a
+        # non-dict `graph` value, and `.get` on a str/list/int raises
+        # AttributeError out of this function, aborting the whole prune. The
+        # nested-slot sync below already guards this way.
+        nested_hyper = _graph_md.get("hyperedges") if isinstance(_graph_md, dict) else None
+        raw_hyper = nested_hyper if isinstance(nested_hyper, list) else []
+    # gate_hyperedges collects the surviving ids for us, skipping the id-less
+    # and malformed-id nodes this path keeps (unlike the raw --no-cluster path,
+    # where dedupe_nodes has already dropped them) — either would otherwise let
+    # a null member count or abort the prune outright.
+    kept_hyper, _ = _gate_hyperedges(
+        [h for h in raw_hyper if isinstance(h, dict) and h.get("source_file") not in stale],
+        kept_nodes,
+    )
+    # The nested slot has to be part of the change test, not just the write.
+    # The pre-revalidation pruner filtered only the top-level list, so an
+    # upgraded graph.json can carry a stale nested copy of a group the top level
+    # already lost. Comparing the top level alone would find nothing to do and
+    # return early, leaving that copy for _zero_node_stamped_semantic_sources to
+    # keep counting as coverage (#2927).
+    _nested = (data.get("graph") or {}).get("hyperedges") if isinstance(data.get("graph"), dict) else None
+    _nested_needs_sync = isinstance(_nested, list) and _nested != kept_hyper
+    if (
+        n_removed == 0
+        and len(kept_edges) == len(data.get(links_key, []))
+        and kept_hyper == raw_hyper
+        and not _nested_needs_sync
     ):
         return 0
+    if kept_hyper != raw_hyper or _nested_needs_sync:
+        # Worded for a content change, not a drop count: the comparison above is
+        # by value, so this also fires when a member was pruned from a group that
+        # still has enough left, when a legacy alias-keyed entry was healed, or
+        # when only a stale nested copy needed reconciling.
+        print(
+            f"[graphify extract] rewrote {len(kept_hyper)} hyperedge(s) in "
+            f"{graph_path.name} ({len(raw_hyper) - len(kept_hyper)} dropped "
+            f"below the minimum surviving members).",
+            file=sys.stderr,
+        )
     data["nodes"] = kept_nodes
     data[links_key] = kept_edges
     if "hyperedges" in data:
         data["hyperedges"] = kept_hyper
+    # Keep BOTH slots in step (#2484/#2485): to_json persists hyperedges
+    # top-level AND under `graph`, and _zero_node_stamped_semantic_sources
+    # unions the two when judging whether a doc's manifest stamp is honest
+    # (#2927). A stale nested copy of a group we just dropped would keep that
+    # doc looking covered, so it would never be re-dispatched.
+    if isinstance(data.get("graph"), dict) and "hyperedges" in data["graph"]:
+        data["graph"]["hyperedges"] = kept_hyper
     from graphify.export import backup_if_protected as _backup
     _backup(graph_path.parent)
     from graphify.paths import write_json_atomic
@@ -1057,11 +1138,18 @@ def _clone_repo(
 
 
 def _reenter_main() -> None:
+    """Re-dispatch through ``__main__.main`` after rewriting ``sys.argv``."""
     from graphify.__main__ import main
     main()
 
 
 def dispatch_command(cmd: str) -> None:
+    """Run the subcommand named *cmd*, reading its flags from ``sys.argv``.
+
+    The single entry point every ``graphify <cmd>`` invocation goes through.
+    Each branch parses its own arguments and exits via ``sys.exit`` rather than
+    returning a status, so callers get the process exit code directly.
+    """
     if cmd == "provider":
         from graphify.llm import _custom_providers_path, BACKENDS
         import json as _json
@@ -2577,6 +2665,26 @@ def dispatch_command(cmd: str) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
+        # This writer composes two graph.json files and serializes the result
+        # directly — it never reaches build_from_json or to_json, so nothing
+        # else applies the hyperedge invariant to it. A legacy branch carrying
+        # a pair or a dangling group would have that metadata written straight
+        # back into graph.json, the same omission watch's raw writer had.
+        # Guarded on the key being present so an absent slot stays absent
+        # (#2485); note also that nx.compose takes graph attrs from one side
+        # only, so a group present solely on the current side is already lost
+        # before this point — pre-existing compose behaviour, not this gate.
+        if "hyperedges" in merged.graph:
+            from graphify.build import gate_hyperedges_against_graph as _gate_vs_graph
+            merged.graph["hyperedges"], _dropped_md = _gate_vs_graph(
+                merged.graph.get("hyperedges", []), merged,
+            )
+            if _dropped_md:
+                print(
+                    f"[graphify merge-driver] dropped {_dropped_md} hyperedge(s) "
+                    f"that are not group relationships over the merged nodes.",
+                    file=sys.stderr,
+                )
         try:
             out_data = _jg.node_link_data(merged, edges="links")
         except TypeError:
@@ -4055,6 +4163,25 @@ def dispatch_command(cmd: str) -> None:
             print(f"[graphify extract] Cargo: {len(cargo_result['nodes'])} nodes, "
                   f"{len(cargo_result['edges'])} edges")
 
+        # Drop hyperedges that can never become a group BEFORE the merge and
+        # before manifest stamping. _stamped_manifest_files counts a hyperedge
+        # as output for its source file (#1920), so a doc whose only result was
+        # an under-cardinality group would be stamped as successfully extracted
+        # and then contribute nothing to graph.json, leaving the #2927 graph
+        # heal to notice a run later. Shape and cardinality only — membership
+        # needs the final node set, so it stays with build_from_json and the
+        # raw --no-cluster gate below.
+        sem_result["hyperedges"], _dropped_sem_hes = _gate_hyperedges(
+            sem_result.get("hyperedges")
+        )
+        if _dropped_sem_hes:
+            print(
+                f"[graphify extract] dropped {_dropped_sem_hes} semantic "
+                f"hyperedge(s) that are not group relationships, before "
+                f"manifest stamping.",
+                file=sys.stderr,
+            )
+
         # Merge AST + semantic + pg_result + cargo_result. Order matters for deduplication: passing AST
         # first means semantic node attributes win on collision (richer labels
         # for symbols also referenced in docs). Hyperedges only come from the
@@ -4232,6 +4359,23 @@ def dispatch_command(cmd: str) -> None:
                     _e["source_file"] = (
                         _node_sf.get(_e.get("source")) or _node_sf.get(_e.get("target")) or ""
                     )
+            # Hyperedge parity for the raw path: it never reaches build_from_json
+            # / build_merge / to_json, whose gates canonicalize member lists,
+            # drop members with no backing node and enforce the 3-member
+            # minimum — and merge_raw_extraction carries hyperedges verbatim
+            # through replace/prune, so a deleted source leaves a cross-file
+            # group naming a node that is no longer here. Gate on the final
+            # (post-dedupe) node ids, the same set about to be written.
+            merged["hyperedges"], _dropped_raw_hes = _gate_hyperedges(
+                merged.get("hyperedges"), merged["nodes"],
+            )
+            if _dropped_raw_hes:
+                print(
+                    f"[graphify extract] dropped {_dropped_raw_hes} hyperedge(s) "
+                    f"with fewer than the minimum surviving members from the "
+                    f"raw graph.",
+                    file=sys.stderr,
+                )
             # RT-parity for the raw path: an incomplete build must not force a
             # partial graph over a larger complete one here either. The clustered
             # path gets this from to_json's #479 guard; this path never calls

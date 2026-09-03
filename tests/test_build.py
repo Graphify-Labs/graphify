@@ -1140,6 +1140,8 @@ def _write_two_tier_graph(graph_path):
              "_origin": "ast"},
             {"id": "auth_flow", "label": "Auth Flow", "file_type": "concept",
              "source_file": "docs/readme.md", "source_location": None},
+            {"id": "auth_policy", "label": "Auth Policy", "file_type": "concept",
+             "source_file": "docs/readme.md", "source_location": None},
         ],
         "links": [
             {"source": "docs_readme", "target": "docs_readme_intro",
@@ -1149,7 +1151,7 @@ def _write_two_tier_graph(graph_path):
         ],
         "hyperedges": [
             {"id": "auth_group", "label": "Auth Group",
-             "nodes": ["docs_readme", "auth_flow"], "relation": "form",
+             "nodes": ["docs_readme", "auth_flow", "auth_policy"], "relation": "form",
              "confidence": "INFERRED", "source_file": "docs/readme.md"},
         ],
     }
@@ -1553,18 +1555,108 @@ def test_build_from_json_prunes_dangling_hyperedge_members(capsys):
         "nodes": [
             {"id": "alpha", "label": "alpha", "file_type": "code", "source_file": "a.py"},
             {"id": "beta", "label": "beta", "file_type": "code", "source_file": "a.py"},
+            {"id": "gamma", "label": "gamma", "file_type": "code", "source_file": "a.py"},
         ],
         "edges": [],
         "hyperedges": [
-            {"id": "he_partial", "nodes": ["alpha", "beta", "ghost_member"], "source_file": "a.py"},
+            {
+                "id": "he_partial",
+                "nodes": ["alpha", "beta", "gamma", "ghost_member"],
+                "source_file": "a.py",
+            },
+            {
+                "id": "he_below_minimum",
+                "nodes": ["alpha", "beta", "ghost_member"],
+                "source_file": "a.py",
+            },
             {"id": "he_all_ghost", "nodes": ["ghost1", "ghost2"], "source_file": "a.py"},
         ],
     }
     G = build_from_json(ext)
     hes = {h["id"]: h for h in G.graph.get("hyperedges", [])}
     assert set(hes) == {"he_partial"}, "an all-dangling hyperedge must be dropped"
-    assert hes["he_partial"]["nodes"] == ["alpha", "beta"]
-    assert "he_all_ghost" in capsys.readouterr().err
+    assert hes["he_partial"]["nodes"] == ["alpha", "beta", "gamma"]
+    assert "he_below_minimum" in capsys.readouterr().err
+
+
+def _doc(nid: str, label: str, source_file: str) -> dict:
+    """Build a document-tier node dict."""
+    return {"id": nid, "label": label, "file_type": "document", "source_file": source_file}
+
+
+def test_build_from_json_counts_distinct_members_after_doc_twin_fold(capsys):
+    """The member dedupe in _normalize_hyperedge_members runs BEFORE the doc-twin
+    fold (#1799) maps `<slug>` onto `<slug>_doc`. A hyperedge naming both twins
+    therefore ends up with the same id twice, and the minimum-cardinality check
+    must count DISTINCT members, not list positions: three positions with two
+    distinct ids is a pair, not a group."""
+    ext = {
+        "nodes": [
+            _doc("docs_guide", "Guide", "docs/guide.md"),
+            _doc("docs_guide_doc", "Guide (semantic)", "docs/guide.md"),
+            _doc("docs_other_doc", "Other", "docs/other.md"),
+            _doc("docs_third_doc", "Third", "docs/third.md"),
+        ],
+        "edges": [],
+        "hyperedges": [
+            {"id": "he_twins_pair", "source_file": "docs/other.md",
+             "nodes": ["docs_guide", "docs_guide_doc", "docs_other_doc"]},
+            {"id": "he_twins_kept", "source_file": "docs/other.md",
+             "nodes": ["docs_guide", "docs_guide_doc", "docs_other_doc", "docs_third_doc"]},
+        ],
+    }
+    G = build_from_json(ext)
+    hes = {h["id"]: h for h in G.graph.get("hyperedges", [])}
+    assert set(hes) == {"he_twins_kept"}, "two distinct members is a pair, not a hyperedge"
+    assert hes["he_twins_kept"]["nodes"] == ["docs_guide_doc", "docs_other_doc", "docs_third_doc"]
+    assert "he_twins_pair" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("malformed", [
+    {"id": "s", "nodes": "a,b,c"},   # a string, not a list
+    {"id": "d", "nodes": {"a": 1}},  # a dict, not a list
+    {"id": "n", "label": "x"},       # no members at all
+    "not-a-dict",
+], ids=["string-nodes", "dict-nodes", "no-nodes", "non-dict"])
+def test_build_from_json_does_not_persist_a_malformed_hyperedge(malformed, capsys):
+    """The member revalidation only runs for a dict with a list-valued `nodes`;
+    every other shape used to fall straight through to the kept list, so
+    G.graph["hyperedges"] could carry metadata this very boundary would reject.
+    Aliases are already folded by this point, so a non-list `nodes` here is
+    genuinely malformed and must not be persisted for report/wiki/html consumers
+    to read back."""
+    ext = {
+        "nodes": [
+            {"id": n, "label": n, "file_type": "code", "source_file": "a.py"}
+            for n in ("alpha", "beta", "gamma")
+        ],
+        "edges": [],
+        "hyperedges": [
+            malformed,
+            {"id": "he_ok", "nodes": ["alpha", "beta", "gamma"], "source_file": "a.py"},
+        ],
+    }
+    G = build_from_json(ext)
+    assert [h["id"] for h in G.graph.get("hyperedges", [])] == ["he_ok"]
+
+
+def test_build_from_json_counts_distinct_members_after_case_remap(capsys):
+    """Same invariant via the other collapse path: a member that misses the node
+    set only by casing is remapped through norm_to_id onto the canonical id, so
+    `Foo` and `foo` become the same member and must be counted once."""
+    ext = {
+        "nodes": [
+            {"id": "foo", "label": "foo", "file_type": "code", "source_file": "a.py"},
+            {"id": "bar", "label": "bar", "file_type": "code", "source_file": "a.py"},
+        ],
+        "edges": [],
+        "hyperedges": [
+            {"id": "he_cased", "nodes": ["foo", "Foo", "bar"], "source_file": "a.py"},
+        ],
+    }
+    G = build_from_json(ext)
+    assert G.graph.get("hyperedges", []) == []
+    assert "he_cased" in capsys.readouterr().err
 
 
 # --- foreign-absolute source_file must not leak into IDs --------------------

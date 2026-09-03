@@ -714,6 +714,58 @@ def _reconcile_markdown_links(
     return preserved_edges
 
 
+def _member_id_space(*node_lists: list) -> set:
+    """The key set a hyperedge member is looked up in, over several node lists.
+
+    :func:`graphify.build.node_id_set` carries both keys
+    :func:`graphify.build.member_in_id_space` searches, so a numeric or drifted
+    member resolves here exactly as it does at every writer gate.
+    """
+    from graphify.build import node_id_set
+
+    space: set = set()
+    for nodes in node_lists:
+        space |= node_id_set(nodes)
+    return space
+
+
+def _coerce_member(value: object) -> object:
+    """Canonicalize one member ref the way the shared gate does."""
+    from graphify.build import _coerce_id
+
+    return _coerce_id(value)
+
+
+def _member_in_id_space(member: object, ids: object) -> bool:
+    """Whether *member* names anything in *ids*, under the shared lookup order.
+
+    Delegates to :func:`graphify.build.member_in_id_space` so watch's
+    reconciliation resolves a member exactly as every writer gate does. Kept as
+    a module-level seam for the same reason as :func:`_gated_hyperedges`: the
+    ``graphify.build`` import stays function-local.
+    """
+    from graphify.build import member_in_id_space
+
+    return member_in_id_space(member, ids)
+
+
+def _gated_hyperedges(hyperedges: list, nodes: list) -> list:
+    """Canonicalize *hyperedges* against the ids present in *nodes*.
+
+    The gate every other persistence boundary applies, for watch's raw
+    ``--no-cluster`` writer — which never builds a graph and so never reaches
+    build_from_json's member revalidation or to_json's own gate. Skips id-less
+    and unhashable node ids when collecting the id set: this path keeps both
+    (only ``dedupe_nodes`` drops id-less ones, and a persisted malformed id is
+    deliberately left for the validator), and either would otherwise poison the
+    set or raise.
+    """
+    from graphify.build import gate_hyperedges
+
+    kept, _dropped = gate_hyperedges(hyperedges, nodes)
+    return kept
+
+
 def _reconcile_existing_graph(
     existing_graph: Path,
     result: dict,
@@ -970,13 +1022,30 @@ def _reconcile_existing_graph(
             edge.get("id") for edge in result.get("hyperedges", []) if edge.get("id")
         }
         preserved_hyperedges = []
+        # Built once, before the loop: a watched graph can carry thousands of
+        # groups, and rebuilding this per hyperedge makes reconciliation
+        # O(nodes x hyperedges).
+        member_id_space = _member_id_space(result.get("nodes") or [], preserved_nodes)
         for edge in existing.get("hyperedges", []):
             members = edge.get("nodes", edge.get("members", edge.get("node_ids", [])))
             if edge.get("id") in new_hyperedge_ids or source_paths.is_evicted(
                 edge, hyperedge_evicted_source_identities
             ):
                 continue
-            if isinstance(members, list) and any(member not in all_ids for member in members):
+            # Membership goes through the shared lookup order, not a raw `in`:
+            # a member that drifted in casing or punctuation is resolvable, and
+            # the gate downstream keeps such a group — so a raw test here
+            # deleted, on an unrelated rebuild, a group the rest of the feature
+            # calls valid. The whole-group drop semantics are unchanged: any
+            # member that resolves to nothing still evicts the group.
+            #
+            # Against its own key set, not `all_ids`: that set holds the node
+            # ids raw for the edge-endpoint checks above, so a numeric node id
+            # stays `7` there while its member coerces to `"7"`.
+            if isinstance(members, list) and any(
+                not _member_in_id_space(_coerce_member(member), member_id_space)
+                for member in members
+            ):
                 continue
             preserved_hyperedges.append(edge)
 
@@ -1775,10 +1844,22 @@ def _rebuild_code(
             # without it, --no-cluster + repeated `update` accumulate duplicates and edge
             # counts diverge across build modes (#1317).
             from graphify.build import dedupe_edges as _dedupe_edges, dedupe_nodes as _dedupe_nodes
+            _cand_nodes = _dedupe_nodes(result.get("nodes", []))
             candidate_graph_data = {
-                **{k: v for k, v in result.items() if k not in ("edges", "nodes")},
-                "nodes": _dedupe_nodes(result.get("nodes", [])),
+                **{k: v for k, v in result.items() if k not in ("edges", "nodes", "hyperedges")},
+                "nodes": _cand_nodes,
                 "links": _dedupe_edges(result.get("edges", [])),
+                # Hyperedge parity for watch's raw writer. This path never builds
+                # a graph, so it misses build_from_json's member revalidation and
+                # to_json's gate, and _reconcile_existing_graph carries an
+                # existing group forward on source eviction and dangling members
+                # alone — never cardinality. A legacy pair whose members both
+                # still exist therefore survived every `update --no-cluster`.
+                # Gate against the deduplicated candidate node ids, the set about
+                # to be written.
+                "hyperedges": _gated_hyperedges(
+                    result.get("hyperedges") or [], _cand_nodes,
+                ),
                 # Inherit the existing graph's directed flag (#2342) so
                 # `graphify update --no-cluster` can't silently drop it -
                 # `result` (the raw merged extraction) never carries one.

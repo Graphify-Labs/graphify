@@ -240,6 +240,7 @@ def test_sanitize_filters_hyperedges_after_node_removal():
         "nodes": [
             {"id": "real_node", "label": "Real", "file_type": "code"},
             {"id": "other", "label": "Other", "file_type": "code"},
+            {"id": "third", "label": "Third", "file_type": "code"},
             {"id": "garbage", "label": "junk", "file_type": "rationale"},
         ],
         "edges": [],
@@ -247,7 +248,7 @@ def test_sanitize_filters_hyperedges_after_node_removal():
             {
                 "id": "group_a",
                 "label": "Group A",
-                "nodes": ["garbage", "real_node", "other"],
+                "nodes": ["garbage", "real_node", "other", "third"],
                 "relation": "participate_in",
             },
             {
@@ -260,11 +261,11 @@ def test_sanitize_filters_hyperedges_after_node_removal():
     }
     out = sc.sanitize_semantic_fragment(fragment)
     he_ids = {he["id"] for he in out["hyperedges"]}
-    # group_a survives with garbage filtered out
+    # group_a survives with three valid members after garbage is filtered out
     assert "group_a" in he_ids
     group_a = next(he for he in out["hyperedges"] if he["id"] == "group_a")
     assert "garbage" not in group_a["nodes"]
-    assert set(group_a["nodes"]) == {"real_node", "other"}
+    assert set(group_a["nodes"]) == {"real_node", "other", "third"}
     # group_b had only 1 surviving member → dropped
     assert "group_b" not in he_ids
 
@@ -349,23 +350,28 @@ def test_sanitize_rationale_only_propagates_through_rationale_for_edges():
 
 
 def test_sanitize_keeps_members_keyed_hyperedge(capsys):
-    """#1561: a `members`-keyed hyperedge with >=2 surviving members must be
+    """#1561: a `members`-keyed hyperedge with >=3 surviving members must be
     KEPT (normalized to `nodes`), not silently dropped before build."""
     fragment = {
         "nodes": [
             {"id": "real_a", "label": "A", "file_type": "code"},
             {"id": "real_b", "label": "B", "file_type": "code"},
+            {"id": "real_c", "label": "C", "file_type": "code"},
         ],
         "edges": [],
         "hyperedges": [
-            {"id": "grp", "label": "Group", "members": ["real_a", "real_b"]},
+            {
+                "id": "grp",
+                "label": "Group",
+                "members": ["real_a", "real_b", "real_c"],
+            },
         ],
     }
     out = sc.sanitize_semantic_fragment(fragment)
     assert len(out["hyperedges"]) == 1
     he = out["hyperedges"][0]
     assert he["id"] == "grp"
-    assert he["nodes"] == ["real_a", "real_b"]
+    assert he["nodes"] == ["real_a", "real_b", "real_c"]
     assert "members" not in he
 
 

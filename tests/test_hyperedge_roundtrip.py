@@ -27,42 +27,44 @@ def _roundtrip(G, tmp_path):
 
 
 def test_nested_only_slot_is_read_and_reexported_to_both_slots(tmp_path):
+    """A nested-only input is read and re-exported to both persistence slots (#2485)."""
     # node_link_data-only writers emit hyperedges solely under graph attrs.
     extraction = {
         "directed": True,
         "multigraph": False,
-        "graph": {"hyperedges": [{"id": "h1", "nodes": ["a", "b"]}]},
-        "nodes": [_node("a"), _node("b")],
+        "graph": {"hyperedges": [{"id": "h1", "nodes": ["a", "b", "c"]}]},
+        "nodes": [_node("a"), _node("b"), _node("c")],
         "links": [],
     }
     G = build_from_json(extraction, directed=True)
-    assert G.graph["hyperedges"] == [{"id": "h1", "nodes": ["a", "b"]}]
+    assert G.graph["hyperedges"] == [{"id": "h1", "nodes": ["a", "b", "c"]}]
 
     data = _roundtrip(G, tmp_path)
-    assert data["hyperedges"] == [{"id": "h1", "nodes": ["a", "b"]}]
+    assert data["hyperedges"] == [{"id": "h1", "nodes": ["a", "b", "c"]}]
     assert data["graph"]["hyperedges"] == data["hyperedges"], (
         "re-export must carry the set in BOTH slots"
     )
     # Full round-trip: rebuilding from the exported file preserves the set exactly.
     G2 = build_from_json(json.loads(json.dumps(data)), directed=True)
-    assert G2.graph["hyperedges"] == [{"id": "h1", "nodes": ["a", "b"]}]
+    assert G2.graph["hyperedges"] == [{"id": "h1", "nodes": ["a", "b", "c"]}]
 
 
 def test_top_level_slot_roundtrips_unchanged(tmp_path):
+    """Control arm: the canonical to_json shape still round-trips."""
     # Control arm: the canonical to_json shape keeps working as before.
     extraction = {
-        "nodes": [_node("a"), _node("b")],
+        "nodes": [_node("a"), _node("b"), _node("c")],
         "edges": [],
-        "hyperedges": [{"id": "h_top", "nodes": ["a", "b"]}],
+        "hyperedges": [{"id": "h_top", "nodes": ["a", "b", "c"]}],
     }
     G = build_from_json(extraction, directed=True)
-    assert G.graph["hyperedges"] == [{"id": "h_top", "nodes": ["a", "b"]}]
+    assert G.graph["hyperedges"] == [{"id": "h_top", "nodes": ["a", "b", "c"]}]
 
     data = _roundtrip(G, tmp_path)
-    assert data["hyperedges"] == [{"id": "h_top", "nodes": ["a", "b"]}]
+    assert data["hyperedges"] == [{"id": "h_top", "nodes": ["a", "b", "c"]}]
     assert data["graph"]["hyperedges"] == data["hyperedges"]
     G2 = build_from_json(json.loads(json.dumps(data)), directed=True)
-    assert G2.graph["hyperedges"] == [{"id": "h_top", "nodes": ["a", "b"]}]
+    assert G2.graph["hyperedges"] == [{"id": "h_top", "nodes": ["a", "b", "c"]}]
 
 
 def test_full_wipeout_emits_one_aggregate_warning(tmp_path, capsys):

@@ -330,6 +330,10 @@ def test_truncated_doc_semantic_hash_is_cleared_for_requeue(monkeypatch, tmp_pat
     monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
 
     def _run():
+        """Run the CLI once, tolerating a clean SystemExit.
+
+        Returns nothing — the assertions read the files the run wrote.
+        """
         monkeypatch.setattr(mainmod.sys, "argv",
                             ["graphify", "extract", str(corpus), "--backend", "claude",
                              "--no-cluster", "--out", str(out_dir)])
@@ -512,6 +516,132 @@ def test_manifest_stamps_hyperedge_only_docs(monkeypatch, tmp_path):
     manifest = json.loads((out_dir / "graphify-out" / "manifest.json").read_text())
     assert manifest.get("README.md", {}).get("semantic_hash"), (
         f"hyperedge-only doc must be stamped (#1920): {sorted(manifest)}"
+    )
+
+
+def test_under_cardinality_hyperedge_only_doc_is_not_stamped(monkeypatch, tmp_path):
+    """#1920 stamps a doc whose only output is a hyperedge — but only if that
+    hyperedge is a real group. An under-cardinality one is dropped before it
+    reaches graph.json, so stamping the doc would mark it successfully extracted
+    while contributing nothing, and only the #2927 graph heal could later notice
+    and re-queue it. Don't stamp it in the first place."""
+    import json
+
+    corpus = _make_corpus(tmp_path)  # main.go + README.md
+    out_dir = tmp_path / "out"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-fake-key")
+
+    def _pair_only(paths, **kwargs):
+        """Return a single two-member group for README.md and nothing else."""
+        on_chunk = kwargs.get("on_chunk_done")
+        if on_chunk:
+            on_chunk(0, 1, {"nodes": [], "edges": [], "hyperedges": []})
+        return {
+            "nodes": [],
+            "edges": [],
+            "hyperedges": [{"id": "pair", "label": "Pair", "nodes": ["a", "b"],
+                            "relation": "participate_in", "source_file": "README.md"}],
+            "input_tokens": 10,
+            "output_tokens": 5,
+        }
+
+    monkeypatch.setattr("graphify.llm.extract_corpus_parallel", _pair_only)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys, "argv",
+        ["graphify", "extract", str(corpus), "--backend", "claude",
+         "--no-cluster", "--out", str(out_dir)],
+    )
+    try:
+        mainmod.main()
+    except SystemExit as exc:
+        assert exc.code in (None, 0), f"unexpected exit code {exc.code}"
+
+    manifest = json.loads((out_dir / "graphify-out" / "manifest.json").read_text())
+    assert not manifest.get("README.md", {}).get("semantic_hash"), (
+        "a doc whose only output was dropped as under-cardinality must stay "
+        "unstamped so the next run re-dispatches it"
+    )
+
+
+def test_dangling_member_hyperedge_only_doc_stamps_then_re_queues_from_cache(
+    monkeypatch, tmp_path, capsys
+):
+    """Pins the accepted recovery path for a group that passes shape and
+    cardinality but whose members resolve to nothing.
+
+    Membership cannot be checked before stamping — build_from_json resolves
+    members afterwards through _semantic_id_remap and norm_to_id, so gating on
+    raw ids would re-dispatch docs whose groups actually survive. The doc is
+    therefore stamped on the strength of a group the graph later drops.
+
+    What follows is worth knowing, and is NOT the clean one-run recovery it
+    looks like: the #2927 heal does re-queue the doc on the next run, but the
+    group was already cached (the cache has no node set to reject it with), so
+    the re-queue is satisfied from cache, the group is dropped again and the doc
+    is re-stamped. The heal therefore re-fires every run without resolving.
+    Costs no LLM call and puts no bad data in graph.json — but it does not
+    self-heal either. Breaking the loop needs a design change, not a gate.
+    """
+    import json
+
+    corpus = _make_corpus(tmp_path)  # main.go + README.md
+    out_dir = tmp_path / "out"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-fake-key")
+    calls: list = []
+
+    def _dangling_group(paths, **kwargs):
+        """Return one three-member group whose members exist nowhere."""
+        calls.append(1)
+        on_chunk = kwargs.get("on_chunk_done")
+        if on_chunk:
+            on_chunk(0, 1, {"nodes": [], "edges": [], "hyperedges": []})
+        return {
+            "nodes": [],
+            "edges": [],
+            "hyperedges": [{"id": "ghost", "label": "G",
+                            "nodes": ["nope_a", "nope_b", "nope_c"],
+                            "relation": "participate_in", "source_file": "README.md"}],
+            "input_tokens": 1,
+            "output_tokens": 1,
+        }
+
+    monkeypatch.setattr("graphify.llm.extract_corpus_parallel", _dangling_group)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys, "argv",
+        ["graphify", "extract", str(corpus), "--backend", "claude",
+         "--no-cluster", "--out", str(out_dir)],
+    )
+
+    def _run():
+        """Run the CLI once, tolerating a clean SystemExit, and return its output."""
+        try:
+            mainmod.main()
+        except SystemExit as exc:
+            assert exc.code in (None, 0), f"unexpected exit code {exc.code}"
+        return capsys.readouterr()
+
+    graphify_out = out_dir / "graphify-out"
+    _run()
+    manifest = json.loads((graphify_out / "manifest.json").read_text())
+    graph = json.loads((graphify_out / "graph.json").read_text())
+    assert manifest.get("README.md", {}).get("semantic_hash"), (
+        "the group passes shape + cardinality, so #1920 stamps the doc"
+    )
+    assert graph["hyperedges"] == [], "the graph gate drops it: no member resolves"
+    assert calls == [1], "one extraction so far"
+
+    out2 = _run()
+    assert "#2927" in out2.out, "the heal must notice the stamped-but-empty source"
+    assert calls == [1], (
+        "the re-queue is served from cache, not re-extracted — no LLM call"
+    )
+    graph2 = json.loads((graphify_out / "graph.json").read_text())
+    manifest2 = json.loads((graphify_out / "manifest.json").read_text())
+    assert graph2["hyperedges"] == [], "still dropped on replay"
+    assert manifest2.get("README.md", {}).get("semantic_hash"), (
+        "and re-stamped, so the heal re-fires next run without resolving"
     )
 
 
@@ -741,6 +871,7 @@ def test_missing_manifest_code_only_preserves_semantic_layer(monkeypatch, tmp_pa
     monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
 
     def _sem_doc_count(g):
+        """Count the graph's nodes attributed to README.md."""
         return sum(1 for n in g["nodes"] if n.get("source_file") == "README.md")
 
     # 1) seed a code-only graph
@@ -754,11 +885,14 @@ def test_missing_manifest_code_only_preserves_semantic_layer(monkeypatch, tmp_pa
                            "source_file": "README.md", "file_type": "document"})
     graph["nodes"].append({"id": "doc_readme_b", "label": "Concept B",
                            "source_file": "README.md", "file_type": "document"})
+    graph["nodes"].append({"id": "doc_readme_c", "label": "Concept C",
+                           "source_file": "README.md", "file_type": "document"})
     graph.setdefault("edges", []).append(
         {"source": "doc_readme_a", "target": "doc_readme_b",
          "relation": "relates_to", "source_file": "README.md"})
     graph.setdefault("hyperedges", []).append(
-        {"id": "h1", "label": "Shared", "nodes": ["doc_readme_a", "doc_readme_b"],
+        {"id": "h1", "label": "Shared",
+         "nodes": ["doc_readme_a", "doc_readme_b", "doc_readme_c"],
          "relation": "participate_in", "source_file": "README.md"})
     graph_path.write_text(json.dumps(graph))
     (graphify_out / ".graphify_semantic_marker").write_text(
@@ -771,12 +905,20 @@ def test_missing_manifest_code_only_preserves_semantic_layer(monkeypatch, tmp_pa
     _run_extract(monkeypatch, ["graphify", "extract", str(corpus),
                                "--code-only", "--out", str(out_dir)])
     after = json.loads(graph_path.read_text())
-    assert _sem_doc_count(after) >= 2, (
+    # All THREE seeded nodes must survive, not merely two: the committed
+    # hyperedge below names every one of them, so losing `doc_readme_c` would
+    # take h1 under the minimum cardinality as well.
+    _survivors = {n["id"] for n in after["nodes"] if n.get("source_file") == "README.md"}
+    assert {"doc_readme_a", "doc_readme_b", "doc_readme_c"} <= _survivors, (
         "committed semantic doc nodes must survive a missing-manifest "
-        f"--code-only rebuild (#1925); got {_sem_doc_count(after)}"
+        f"--code-only rebuild (#1925); got {sorted(_survivors)}"
     )
-    assert any(h.get("id") == "h1" for h in after.get("hyperedges", [])), (
-        "committed hyperedge must survive the rebuild"
+    _h1 = next((h for h in after.get("hyperedges", []) if h.get("id") == "h1"), None)
+    assert _h1 is not None, "committed hyperedge must survive the rebuild"
+    # Assert the membership directly rather than inferring it from the group
+    # having survived at all: that inference only holds while the minimum is 3.
+    assert set(_h1["nodes"]) == {"doc_readme_a", "doc_readme_b", "doc_readme_c"}, (
+        f"h1 must keep every committed member; got {_h1['nodes']}"
     )
     assert any("keep" in n["id"] for n in after["nodes"]), "code nodes intact"
 
@@ -1122,6 +1264,354 @@ def test_incremental_extract_prunes_excluded_file_listed_in_manifest(
     sources = _node_sources(graph_path)
     assert not any("x.py" in s for s in sources)
     assert any("keep.py" in s for s in sources)
+
+
+def _read_graph(graph_path):
+    """Parse a written graph.json."""
+    import json
+    return json.loads(graph_path.read_text(encoding="utf-8"))
+
+
+def _he_by_id(graph_path):
+    """Map hyperedge id -> entry from a written graph.json."""
+    return {h["id"]: h for h in _read_graph(graph_path).get("hyperedges", [])}
+
+
+def test_no_cluster_gates_hyperedge_cardinality_in_the_raw_graph(monkeypatch, tmp_path):
+    """--no-cluster never reaches build_from_json / build_merge / to_json, whose
+    gates canonicalize members and enforce the minimum, so the raw path must
+    apply the same gate before writing graph.json (#3203 follow-up)."""
+    corpus = _make_corpus(tmp_path)  # main.go + README.md
+    out_dir = tmp_path / "out"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-fake-key")
+
+    def _fake_extract(paths, **kwargs):
+        """Return three README-owned nodes and four hyperedges of varying validity."""
+        on_chunk = kwargs.get("on_chunk_done")
+        if on_chunk:  # else the zero-succeeded gate exits 1
+            on_chunk(0, 1, {"nodes": [], "edges": [], "hyperedges": []})
+        return {
+            "nodes": [
+                {"id": nid, "label": nid, "file_type": "document", "source_file": "README.md"}
+                for nid in ("a", "b", "c")
+            ],
+            "edges": [],
+            "hyperedges": [
+                {"id": "pair", "nodes": ["a", "b"], "source_file": "README.md"},
+                {"id": "alias", "members": ["a", "b", "c"], "source_file": "README.md"},
+                {"id": "dupes", "nodes": ["a", "a", "b"], "source_file": "README.md"},
+                {"id": "dangling", "nodes": ["a", "b", "ghost"], "source_file": "README.md"},
+            ],
+            "input_tokens": 10,
+            "output_tokens": 5,
+        }
+
+    monkeypatch.setattr("graphify.llm.extract_corpus_parallel", _fake_extract)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys, "argv",
+        ["graphify", "extract", str(corpus), "--backend", "claude",
+         "--no-cluster", "--out", str(out_dir)],
+    )
+    with pytest.raises(SystemExit) as exc:
+        mainmod.main()
+    assert exc.value.code in (None, 0)
+
+    graph_path = out_dir / "graphify-out" / "graph.json"
+    hes = _he_by_id(graph_path)
+    assert set(hes) == {"alias"}, (
+        "only the alias-keyed 3-member group is a real hyperedge: pair has 2, "
+        f"dupes has 2 distinct, dangling loses ghost — got {sorted(hes)}"
+    )
+    assert hes["alias"]["nodes"] == ["a", "b", "c"]
+    assert "members" not in hes["alias"]
+
+
+def test_no_cluster_incremental_drops_a_hyperedge_left_dangling_by_a_prune(
+    monkeypatch, tmp_path
+):
+    """A deleted file's node is pruned by merge_raw_extraction, which carries
+    hyperedges verbatim — so a cross-file group owned by a surviving file keeps a
+    dangling member and can fall under the minimum. The raw gate must catch it."""
+    project = _two_file_corpus(tmp_path)  # x.py + keep.py
+    (project / "README.md").write_text("# Notes\nDescribes the helpers.\n")
+    out_dir = tmp_path / "out"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-fake-key")
+
+    def _fake_extract(paths, **kwargs):
+        """Return one README-owned group spanning both Python files' AST nodes."""
+        on_chunk = kwargs.get("on_chunk_done")
+        if on_chunk:
+            on_chunk(0, 1, {"nodes": [], "edges": [], "hyperedges": []})
+        return {
+            "nodes": [],
+            "edges": [],
+            # Members are the real AST ids for the two Python files.
+            "hyperedges": [{
+                "id": "cross", "label": "Helpers",
+                "nodes": ["x_secret_helper", "keep_kept", "keep_still_here"],
+                "source_file": "README.md",
+            }],
+            "input_tokens": 10,
+            "output_tokens": 5,
+        }
+
+    monkeypatch.setattr("graphify.llm.extract_corpus_parallel", _fake_extract)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys, "argv",
+        ["graphify", "extract", str(project), "--backend", "claude",
+         "--no-cluster", "--out", str(out_dir)],
+    )
+    with pytest.raises(SystemExit) as exc:
+        mainmod.main()
+    assert exc.value.code in (None, 0)
+
+    graph_path = out_dir / "graphify-out" / "graph.json"
+    hes = _he_by_id(graph_path)
+    assert "cross" in hes, f"precondition: the 3-member group must survive run 1, got {sorted(hes)}"
+    assert len(hes["cross"]["nodes"]) == 3
+
+    # Delete x.py: its AST node is pruned, leaving `cross` with 2 live members.
+    (project / "x.py").unlink()
+    with pytest.raises(SystemExit) as exc:
+        mainmod.main()
+    assert exc.value.code in (None, 0)
+
+    data = _read_graph(graph_path)
+    assert "cross" not in {h["id"] for h in data.get("hyperedges", [])}, (
+        "a group left with 2 live members after the prune must not be persisted"
+    )
+    assert not any(
+        (n.get("source_file") or "").endswith("x.py") for n in data["nodes"]
+    ), "the deleted file's nodes must be pruned too"
+
+
+def test_prune_graph_json_sources_revalidates_hyperedges(tmp_path):
+    """The exclusion-only early exit prunes graph.json in place and never runs
+    build_merge, so it needs the same hyperedge revalidation: a member whose node
+    just went away must go, and the group must die if that leaves it a pair."""
+    import json
+
+    from graphify.cli import _prune_graph_json_sources
+
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(json.dumps({
+        "nodes": [
+            {"id": "gone", "source_file": "stale.py"},
+            {"id": "a", "source_file": "live.py"},
+            {"id": "b", "source_file": "live.py"},
+            {"id": "c", "source_file": "live.py"},
+        ],
+        "edges": [],
+        "hyperedges": [
+            # owned by a LIVE file, so the source_file filter keeps it, but it
+            # names the removed node and is left with 2 members
+            {"id": "degraded", "nodes": ["gone", "a", "b"], "source_file": "live.py"},
+            # still has 3 live members after the prune
+            {"id": "survivor", "nodes": ["gone", "a", "b", "c"], "source_file": "live.py"},
+        ],
+    }), encoding="utf-8")
+
+    assert _prune_graph_json_sources(graph_path, ["stale.py"]) == 1
+    hes = {h["id"]: h for h in _read_graph(graph_path)["hyperedges"]}
+    assert set(hes) == {"survivor"}, f"a degraded pair must not survive, got {sorted(hes)}"
+    assert hes["survivor"]["nodes"] == ["a", "b", "c"]
+
+
+def test_prune_graph_json_sources_syncs_the_nested_hyperedge_slot(tmp_path):
+    """to_json persists hyperedges in BOTH slots (#2484). Dropping one from the
+    top-level slot only would leave a stale nested copy, and
+    _zero_node_stamped_semantic_sources unions both when deciding whether a doc's
+    manifest stamp is honest (#2927) — so the dropped group would still look
+    present there and the doc would never be re-dispatched."""
+    import json
+
+    from graphify.cli import _prune_graph_json_sources
+
+    graph_path = tmp_path / "graph.json"
+    hyperedges = [{"id": "degraded", "nodes": ["gone", "a", "b"], "source_file": "notes.md"}]
+    graph_path.write_text(json.dumps({
+        "nodes": [
+            {"id": "gone", "source_file": "stale.py"},
+            {"id": "a", "source_file": "live.py"},
+            {"id": "b", "source_file": "live.py"},
+        ],
+        "edges": [],
+        "graph": {"hyperedges": hyperedges},
+        "hyperedges": hyperedges,
+    }), encoding="utf-8")
+
+    _prune_graph_json_sources(graph_path, ["stale.py"])
+
+    data = _read_graph(graph_path)
+    assert data["hyperedges"] == []
+    assert data["graph"]["hyperedges"] == [], (
+        "the nested slot must not keep a hyperedge the top-level slot just lost"
+    )
+
+
+def test_prune_graph_json_sources_revalidates_a_nested_only_slot(tmp_path):
+    """A node_link_data-only writer emits hyperedges solely under `graph`, with
+    no top-level key (#2485 — build_from_json folds nested onto top-level for
+    exactly that shape). Reading only the top-level slot would see nothing to
+    revalidate and then overwrite the nested slot with that empty result,
+    destroying a perfectly valid group."""
+    import json
+
+    from graphify.cli import _prune_graph_json_sources
+
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(json.dumps({
+        "nodes": [{"id": n, "source_file": "live.py"} for n in ("a", "b", "c")]
+                 + [{"id": "gone", "source_file": "stale.py"}],
+        "links": [],
+        "graph": {"hyperedges": [
+            {"id": "keeper", "nodes": ["a", "b", "c"], "source_file": "live.py"},
+            {"id": "degraded", "nodes": ["gone", "a", "b"], "source_file": "live.py"},
+        ]},
+    }), encoding="utf-8")
+
+    _prune_graph_json_sources(graph_path, ["stale.py"])
+
+    data = _read_graph(graph_path)
+    nested = {h["id"]: h for h in data["graph"]["hyperedges"]}
+    assert set(nested) == {"keeper"}, (
+        f"the valid group must survive and only the degraded one go, got {sorted(nested)}"
+    )
+    assert nested["keeper"]["nodes"] == ["a", "b", "c"]
+    assert "hyperedges" not in data, "a nested-only file must not sprout a top-level slot"
+
+
+def test_prune_graph_json_sources_tolerates_an_unhashable_node_id(tmp_path):
+    """A persisted node can carry a malformed list/dict id — the build path
+    deliberately leaves those for the validator to report rather than dropping
+    them. Collecting surviving ids into a set must skip them, or the whole
+    exclusion-only prune aborts with TypeError on a legacy graph.json."""
+    import json
+
+    from graphify.cli import _prune_graph_json_sources
+
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(json.dumps({
+        "nodes": [
+            {"id": ["malformed", "list"], "source_file": "live.py"},
+            {"id": {"also": "malformed"}, "source_file": "live.py"},
+            {"id": "a", "source_file": "live.py"},
+            {"id": "b", "source_file": "live.py"},
+            {"id": "c", "source_file": "live.py"},
+            {"id": "gone", "source_file": "stale.py"},
+        ],
+        "links": [],
+        "hyperedges": [{"id": "grp", "nodes": ["a", "b", "c"], "source_file": "live.py"}],
+    }), encoding="utf-8")
+
+    assert _prune_graph_json_sources(graph_path, ["stale.py"]) == 1
+    data = _read_graph(graph_path)
+    assert [h["id"] for h in data["hyperedges"]] == ["grp"], (
+        "an unrelated malformed node id must not cost a valid group"
+    )
+    # The malformed nodes belong to a live file, so the prune leaves them alone.
+    assert len(data["nodes"]) == 5
+
+
+def test_prune_graph_json_sources_reconciles_a_stale_nested_slot(tmp_path):
+    """The pre-revalidation pruner filtered only the top-level slot, so an
+    upgraded graph.json can carry a stale nested copy of a group the top level
+    already lost. Preferring the top level whenever it is list-shaped would find
+    nothing to change, return early, and leave that copy in place — where
+    _zero_node_stamped_semantic_sources (#2927) still unions it and keeps the
+    source looking covered."""
+    import json
+
+    from graphify.cli import _prune_graph_json_sources
+
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(json.dumps({
+        "nodes": [{"id": "a", "source_file": "live.py"}],
+        "links": [],
+        # The skew: nested still holds what the top level already dropped.
+        "graph": {"hyperedges": [
+            {"id": "ghost_group", "nodes": ["x", "y", "z"], "source_file": "stale.md"},
+        ]},
+        "hyperedges": [],
+    }), encoding="utf-8")
+
+    _prune_graph_json_sources(graph_path, ["stale.md"])
+    data = _read_graph(graph_path)
+    assert data["graph"]["hyperedges"] == [], (
+        "the stale nested copy must be reconciled, not ignored because the "
+        "top-level slot already looks clean"
+    )
+    assert data["hyperedges"] == []
+
+
+def test_prune_graph_json_sources_leaves_a_clean_graph_untouched(tmp_path):
+    """Nothing to prune must mean no rewrite at all (the caller reports 0)."""
+    import json
+
+    from graphify.cli import _prune_graph_json_sources
+
+    graph_path = tmp_path / "graph.json"
+    payload = json.dumps({
+        "nodes": [{"id": n, "source_file": "live.py"} for n in ("a", "b", "c")],
+        "edges": [],
+        "hyperedges": [{"id": "ok", "nodes": ["a", "b", "c"], "source_file": "live.py"}],
+    })
+    graph_path.write_text(payload, encoding="utf-8")
+
+    assert _prune_graph_json_sources(graph_path, ["stale.py"]) == 0
+    assert graph_path.read_text(encoding="utf-8") == payload, "must not rewrite"
+
+
+def test_prune_graph_json_sources_tolerates_a_null_hyperedges_slot(tmp_path):
+    """A legacy `"hyperedges": null` makes .get return None, so a bare `for h in`
+    would raise TypeError straight out of the function (its try wraps only the
+    JSON load)."""
+    import json
+
+    from graphify.cli import _prune_graph_json_sources
+
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(json.dumps({
+        # A node that really is pruned, so the null slot is carried through the
+        # rewrite (and the nested-slot sync) rather than short-circuiting at the
+        # nothing-changed check.
+        "nodes": [{"id": "a", "source_file": "live.py"},
+                  {"id": "gone", "source_file": "stale.py"}],
+        "edges": [],
+        "hyperedges": None,
+    }), encoding="utf-8")
+
+    assert _prune_graph_json_sources(graph_path, ["stale.py"]) == 1
+    data = _read_graph(graph_path)
+    assert [n["id"] for n in data["nodes"]] == ["a"]
+    assert data["hyperedges"] == [], "the null slot is healed to an empty list, not left null"
+
+
+def test_prune_graph_json_sources_does_not_count_an_id_less_node_as_a_member(tmp_path):
+    """This path keeps id-less nodes, so an unfiltered surviving-id set contains
+    None and `[null, "a", "b"]` would pass as a 3-member group."""
+    import json
+
+    from graphify.cli import _prune_graph_json_sources
+
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(json.dumps({
+        "nodes": [
+            {"source_file": "live.py"},                 # no id at all
+            {"id": "a", "source_file": "live.py"},
+            {"id": "b", "source_file": "live.py"},
+            {"id": "gone", "source_file": "stale.py"},
+        ],
+        "edges": [],
+        "hyperedges": [{"id": "nully", "nodes": [None, "a", "b"], "source_file": "live.py"}],
+    }), encoding="utf-8")
+
+    _prune_graph_json_sources(graph_path, ["stale.py"])
+    assert _read_graph(graph_path)["hyperedges"] == [], (
+        "a null member is not a node: this is a pair, not a group"
+    )
 
 
 def test_no_cluster_incremental_prunes_newly_excluded_file(

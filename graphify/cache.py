@@ -12,6 +12,15 @@ import warnings
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
+from graphify.build import (
+    _coerce_id,
+    _normalize_id,
+    canonical_hyperedge,
+    gate_hyperedges as _gate_hyperedges,
+    member_in_id_space,
+    node_id_set,
+)
+
 # Output directory name — override with GRAPHIFY_OUT env var for worktrees or
 # shared-output setups. Accepts a relative name ("graphify-out-feature") or an
 # absolute path ("/shared/graphify-out"). Single source of truth in graphify.paths
@@ -1282,9 +1291,21 @@ def check_semantic_cache(
         result = load_cached(p, root, kind=kind, cache_root=cache_root,
                              prompt=prompt, prompt_file=prompt_file)
         if result is not None:
+            # Canonicalize on READ as well as on write. An entry written before
+            # the cardinality gate can hold nothing but a two-member group: the
+            # raw list is non-empty so the zero-output rule at save time passes,
+            # the file replays as a hit, the gates downstream then drop the pair,
+            # and the file is never freshly extracted — repeating every run.
+            # Writing cannot heal an entry that is only ever read. Cardinality
+            # and shape need no node set, so they can be judged here; membership
+            # cannot and stays with the graph-backed gates.
+            _hes, _ = _gate_hyperedges(result.get("hyperedges"))
+            if not result.get("nodes") and not _hes:
+                uncached.append(fpath)
+                continue
             cached_nodes.extend(result.get("nodes", []))
             cached_edges.extend(result.get("edges", []))
-            cached_hyperedges.extend(result.get("hyperedges", []))
+            cached_hyperedges.extend(_hes)
         else:
             uncached.append(fpath)
 
@@ -1472,6 +1493,11 @@ def save_semantic_cache(
         if src:
             by_file[src]["edges"].append(e)
     for h in (hyperedges or []):
+        # No node set here — the cache stores fragments, not a built graph — so
+        # this checks shape and cardinality only.
+        h = canonical_hyperedge(h)
+        if h is None:
+            continue
         h = _normalized(h)
         src = h.get("source_file", "")
         if src:
@@ -1522,35 +1548,61 @@ def save_semantic_cache(
     # member (whole-hyperedge drop, mirroring #1895) — references one. Gated
     # on allowed_source_files so unscoped callers stay byte-identical.
     if allowed_paths is not None:
-        skipped_ids: set = set()
-        written_ids: set = set()
+        # Coerced, via node_id_set: canonical_hyperedge has already coerced the
+        # member refs, so a raw set would leave `"7" in {7}` False and a group
+        # naming a node from a skipped source would be cached and dangle on
+        # every replay. node_id_set applies the same id-less/unhashable skips
+        # this loop did by hand.
+        #
+        # Built EXACT first, because the duplicate-attribution subtraction below
+        # is set arithmetic between two id sets: with normalized aliases present,
+        # a skipped `foo_bar` and a distinct written `Foo-Bar` share the key
+        # `foo_bar`, and subtracting would delete the skipped node outright.
+        skipped_exact: set = set()
+        written_exact: set = set()
         for fpath, result in by_file.items():
-            target = skipped_ids if group_skipped(fpath) else written_ids
-            for n in result["nodes"]:
-                nid = n.get("id")
-                if nid is None:
-                    continue
-                try:
-                    hash(nid)
-                except TypeError:
-                    continue
-                target.add(nid)
+            target = skipped_exact if group_skipped(fpath) else written_exact
+            target |= node_id_set(result["nodes"], normalized=False)
         # A duplicate-attribution node (defined in a skipped AND a written
         # group) still reaches the cache — don't over-prune references to it.
-        skipped_ids -= written_ids
+        # Decided in the exact space, then aliased for lookup; an alias is not
+        # added when a written node already owns that exact id.
+        skipped_exact -= written_exact
+        skipped_ids = _with_lookup_aliases(skipped_exact, written_exact)
         if skipped_ids:
 
             def edge_dangles(e: dict) -> bool:
+                """Whether *e* references a node from a skipped source group.
+
+                Endpoints are coerced on the way in for the same reason the id
+                sets are: edge endpoints reach the cache raw, so a numeric one
+                would stop matching its own node the moment the set is coerced.
+                """
                 try:
-                    return e.get("source") in skipped_ids or e.get("target") in skipped_ids
+                    return (
+                        _coerce_id(e.get("source")) in skipped_ids
+                        or _coerce_id(e.get("target")) in skipped_ids
+                    )
                 except TypeError:
                     # Non-hashable endpoint from an untrusted result; leave it
                     # to build-time validation rather than fail the save.
                     return False
 
             def hyperedge_dangles(h: dict) -> bool:
+                """Whether *h* names a node from a skipped source group.
+
+                Members go through the shared lookup order rather than a raw
+                set intersection: a member that drifted in casing or
+                punctuation resolves everywhere else in the feature, so an
+                exact intersection missed it and the group was cached with a
+                reference to a node deliberately not written — under-pruning,
+                and it reappears if another layer later supplies that id.
+                """
                 try:
-                    return bool(skipped_ids & set(h.get("nodes") or []))
+                    return any(
+                        member_in_id_space(m, skipped_ids)
+                        for m in (h.get("nodes") or [])
+                    )
                 except TypeError:
                     return False
 
@@ -1615,6 +1667,13 @@ def save_semantic_cache(
             )
             if is_partial:
                 result = {**result, "partial": True}
+            # Canonicalize BEFORE filtering: the union above may carry a legacy
+            # alias-keyed entry written before the cache normalized members.
+            result["hyperedges"] = [
+                c
+                for h in result.get("hyperedges", [])
+                if (c := canonical_hyperedge(h)) is not None
+            ]
             # A semantic extraction with zero nodes and zero hyperedges is not a valid
             # standalone extraction (#2927): edge-only or empty results must not be
             # cached, so that subsequent runs can re-dispatch and retry the file (#933/#1666).
@@ -1636,6 +1695,26 @@ def save_semantic_cache(
             stacklevel=2,
         )
     return saved
+
+
+def _with_lookup_aliases(exact_ids: set, veto_ids: set) -> set:
+    """Add normalized lookup aliases to *exact_ids*, skipping *veto_ids* owners.
+
+    The two dangling prunes decide duplicate attribution by subtracting one
+    exact id set from another, then have to look members up by the same
+    two-key order the rest of the feature uses. Expanding before the
+    subtraction conflates a node with a distinct one that normalizes the same
+    way; expanding after is safe, except that an alias must not be added when a
+    node in *veto_ids* owns that id exactly — otherwise a member naming the
+    vetoed node resolves onto the pruned one.
+    """
+    out = set(exact_ids)
+    for key in exact_ids:
+        if isinstance(key, str):
+            alias = _normalize_id(key)
+            if alias != key and alias not in veto_ids:
+                out.add(alias)
+    return out
 
 
 def scope_semantic_result(
@@ -1706,29 +1785,53 @@ def scope_semantic_result(
                 if bucket == "nodes" and item.get("id") is not None:
                     nid = item["id"]
                     if _hashable(nid):
-                        dropped_ids.add(nid)
+                        # Exact only here, for the same reason as the skipped
+                        # prune above: the subtraction below is set arithmetic
+                        # between two id sets, and a shared normalized alias
+                        # would conflate two distinct nodes.
+                        dropped_ids |= node_id_set([item], normalized=False)
                 continue
             if bucket == "nodes" and item.get("id") is not None and _hashable(item["id"]):
-                kept_ids.add(item["id"])
+                kept_ids |= node_id_set([item], normalized=False)
             kept.append(item)
         result[bucket] = kept
 
     # A duplicate-attribution node (defined in a dropped AND a kept group)
     # survives the filter — don't prune references to it.
     dropped_ids -= kept_ids
+    dropped_ids = _with_lookup_aliases(dropped_ids, kept_ids)
     if dropped_ids:
 
         def edge_dangles(e: dict) -> bool:
+            """Whether *e* references a node dropped as out of scope.
+
+            Endpoints are coerced on the way in, because the id sets above are:
+            a raw numeric endpoint would stop matching its own node otherwise.
+            """
             try:
-                return e.get("source") in dropped_ids or e.get("target") in dropped_ids
+                return (
+                    _coerce_id(e.get("source")) in dropped_ids
+                    or _coerce_id(e.get("target")) in dropped_ids
+                )
             except TypeError:
                 # Non-hashable endpoint from an untrusted result; leave it
                 # to build-time validation rather than fail here.
                 return False
 
         def hyperedge_dangles(h: dict) -> bool:
+            """Whether *h* names a node dropped as out of scope.
+
+            Through the shared lookup order rather than a raw set
+            intersection, for the same reason as the skipped-node prune above:
+            an exact intersection misses a member that resolves everywhere
+            else, leaving the group holding a reference to a node this
+            function has just removed.
+            """
             try:
-                return bool(dropped_ids & set(h.get("nodes") or []))
+                return any(
+                    member_in_id_space(_coerce_id(m), dropped_ids)
+                    for m in (h.get("nodes") or [])
+                )
             except TypeError:
                 return False
 

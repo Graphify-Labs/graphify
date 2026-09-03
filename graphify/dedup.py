@@ -12,6 +12,12 @@ from collections import defaultdict
 from pathlib import Path
 
 from graphify._minhash import MinHash, MinHashLSH
+from graphify.build import (
+    _coerce_id,
+    _has_minimum_hyperedge_members,
+    _hashable,
+    _is_usable_member_ref,
+)
 from rapidfuzz.distance import DamerauLevenshtein, Jaro, JaroWinkler
 
 
@@ -460,6 +466,76 @@ def _report_id_collision(nid: str, survivor: dict, losers: list[dict]) -> None:
 
 # ── main entry point ──────────────────────────────────────────────────────────
 
+def _member_raw_forms(hyperedges: list) -> list[dict]:
+    """Per hyperedge, map each member's coerced key back to its original id.
+
+    Captured BEFORE remapping, because remapping coerces members and that
+    discards which raw form the author actually wrote. With two distinct nodes
+    ``7`` and ``"7"`` present, a member ``7`` and a member ``"7"`` both become
+    ``"7"``, and nothing downstream can tell them apart — so restoration would
+    bind both to whichever node the id map prefers, silently moving one member
+    to a different node.
+    """
+    originals: list[dict] = []
+    for he in hyperedges or ():
+        seen: dict = {}
+        if isinstance(he, dict) and isinstance(he.get("nodes"), list):
+            for m in he["nodes"]:
+                raw = m.get("id") if isinstance(m, dict) else m
+                if _hashable(raw):
+                    seen.setdefault(_coerce_id(raw), raw)
+        originals.append(seen)
+    return originals
+
+
+def _restore_member_id_space(hyperedges: list, nodes: list, originals: list) -> None:
+    """Rewrite each member to the id its node record carries, in place.
+
+    Members are coerced during remapping so they can be compared and deduped;
+    the node records are not. Comparing in one space and returning in another
+    is what puts a member like ``"7"`` next to a node ``{"id": 7}``. Object
+    members keep their other fields, so only their ``id`` is rewritten.
+
+    *originals* (from :func:`_member_raw_forms`) wins whenever the member's own
+    raw form is itself one of the returned nodes: the id map has to pick one
+    node per coerced key, and preferring its choice over what the author wrote
+    would rebind a member from the node it named to a colliding one. The map is
+    the fallback, for a member whose raw form names nothing.
+
+    A member with no matching node either way is left untouched — remapping is
+    not membership gating.
+    """
+    from graphify.build import node_id_map
+
+    raw_by_coerced = node_id_map(nodes)
+    if not raw_by_coerced:
+        return
+    raw_ids = {
+        n["id"] for n in (nodes or ())
+        if isinstance(n, dict) and _hashable(n.get("id"))
+    }
+
+    def resolved(key: object, index: int) -> object:
+        """The node id member *key* should carry, preferring its own raw form."""
+        own = (originals[index] if index < len(originals) else {}).get(key)
+        if own is not None and own in raw_ids:
+            return own
+        return raw_by_coerced.get(key)
+
+    for i, he in enumerate(hyperedges or ()):
+        if not isinstance(he, dict) or not isinstance(he.get("nodes"), list):
+            continue
+        restored: list = []
+        for m in he["nodes"]:
+            if isinstance(m, dict):
+                raw = resolved(_coerce_id(m.get("id")), i)
+                restored.append(dict(m, id=raw) if raw is not None else m)
+            else:
+                raw = resolved(m, i)
+                restored.append(m if raw is None else raw)
+        he["nodes"] = restored
+
+
 def _remap_hyperedge_members(hyperedges: list[dict], remap: dict[str, str]) -> None:
     """Rewire hyperedge member ids onto dedup survivors, in place.
 
@@ -473,31 +549,54 @@ def _remap_hyperedge_members(hyperedges: list[dict], remap: dict[str, str]) -> N
     behaviour dropped the loser without promoting it, which shrank the group
     *and* lost the participant. Order is preserved so a rebuilt graph does not
     churn.
+
+    A group left with fewer than ``MIN_HYPEREDGE_MEMBERS`` distinct survivors is
+    dropped — a pair belongs in the ordinary edge set. Entries without a
+    canonical ``nodes`` list are passed through unchanged, never deleted.
     """
+    kept: list = []
     for he in hyperedges:
-        if not isinstance(he, dict):
-            continue
-        members = he.get("nodes")
+        members = he.get("nodes") if isinstance(he, dict) else None
         if not isinstance(members, list):
+            # Nothing this remap can interpret: a non-dict, a member-less dict, or
+            # an alias-keyed (`members`/`node_ids`) entry build_from_json has not
+            # canonicalized yet. Pass it through untouched — the kept-list rewrite
+            # below must never turn "skip" into "delete". Such an entry is NOT
+            # rewired onto survivors here; on the build() path that cannot bite,
+            # because build() normalizes hyperedges before dedup, so only direct
+            # deduplicate_entities(..., hyperedges=) callers reach this branch.
+            kept.append(he)
             continue
         seen: set = set()
         rewired: list = []
         for m in members:
-            if isinstance(m, str):
-                new_id = remap.get(m, m)
-                entry = new_id
-            elif isinstance(m, dict):
-                raw = m.get("id")
+            if isinstance(m, dict):
+                # Object members keep their other fields (role, weight, ...), so
+                # this branch cannot delegate to canonical_hyperedge, which
+                # flattens them to bare ids.
+                raw = _coerce_id(m.get("id"))
                 new_id = remap.get(raw, raw) if isinstance(raw, str) else raw
-                entry = dict(m, id=new_id) if new_id != raw else m
+                entry = dict(m, id=new_id) if new_id != m.get("id") else m
             else:
-                new_id, entry = None, m
-            if isinstance(new_id, str):
-                if new_id in seen:
-                    continue
-                seen.add(new_id)
+                # Coerce first, so a numeric id becomes the "7" form every other
+                # member path uses and can therefore be remapped and deduped.
+                new_id = _coerce_id(m)
+                if isinstance(new_id, str):
+                    new_id = remap.get(new_id, new_id)
+                entry = new_id
+            if not _is_usable_member_ref(new_id):
+                # Drop rather than append: these used to be appended untouched
+                # and then counted by list length, so [None, 7, False] survived
+                # as a three-POSITION group with no usable member in it.
+                continue
+            if new_id in seen:
+                continue
+            seen.add(new_id)
             rewired.append(entry)
         he["nodes"] = rewired
+        if _has_minimum_hyperedge_members(he):
+            kept.append(he)
+    hyperedges[:] = kept
 
 
 def deduplicate_entities(
@@ -535,8 +634,43 @@ def deduplicate_entities(
             f"Cross-project dedup is disabled — run dedup per-repo before merging."
         )
 
+    def _finish(
+        out_nodes: list[dict], out_edges: list[dict], remap: dict[str, str],
+    ) -> tuple[list[dict], list[dict]]:
+        """Rewire hyperedge members onto survivors, then return the pair.
+
+        Hyperedge members are node references exactly like edge endpoints, and
+        must follow the survivor for the same reason. Without this the member
+        naming a merged-away id was simply absent from the rebuilt graph: the
+        group lost a participant silently, could fall under the 3-member
+        threshold that makes it a hyperedge at all, and left NO dangling
+        reference, so a referential-integrity check saw nothing wrong (#2805).
+
+        Every return goes through here, including the short-circuits where
+        nothing merged: the cardinality contract must not depend on whether a
+        remap happened, or a direct caller keeps a pair that every other path
+        rejects.
+
+        Members are then put back into the id space of the nodes being returned.
+        The remap pass coerces every member so it can be looked up (`7` becomes
+        `"7"`), but a direct caller's node records keep `7`, so returning the
+        coerced form would hand back a group of dangling references — the shape
+        #1916 removed. `build()` coerces node ids before dedup, so on that path
+        this is a no-op; it matters for direct
+        `deduplicate_entities(..., hyperedges=)` callers.
+
+        Unresolved members are left as they are rather than dropped: this
+        function remaps, it does not gate membership. The writers do that.
+        """
+        if hyperedges:
+            # Captured before the remap coerces the members away.
+            _originals = _member_raw_forms(hyperedges)
+            _remap_hyperedge_members(hyperedges, remap)
+            _restore_member_id_space(hyperedges, out_nodes, _originals)
+        return out_nodes, out_edges
+
     if len(nodes) <= 1:
-        return nodes, edges
+        return _finish(nodes, edges, {})
 
     # Resolve the scan root once: _collision_rank ranks each node's source_file
     # relative to it, so an absolute stored path and its repo-relative twin rank
@@ -592,7 +726,7 @@ def deduplicate_entities(
     unique_nodes = list(seen_ids.values())
 
     if len(unique_nodes) <= 1:
-        return unique_nodes, edges
+        return _finish(unique_nodes, edges, {})
 
     # ── pass 1: exact normalization ───────────────────────────────────────────
     norm_to_nodes: dict[str, list[dict]] = defaultdict(list)
@@ -807,7 +941,7 @@ def deduplicate_entities(
 
     # ── apply remap ───────────────────────────────────────────────────────────
     if not remap:
-        return unique_nodes, edges
+        return _finish(unique_nodes, edges, {})
 
     total = len(remap)
     msg = f"[graphify] Deduplicated {total} node(s)"
@@ -822,15 +956,6 @@ def deduplicate_entities(
     if parts:
         msg += f" ({', '.join(parts)})"
     print(msg + ".", flush=True)
-
-    # Hyperedge members are node references exactly like edge endpoints, and
-    # must follow the survivor for the same reason. Without this the member
-    # naming a merged-away id was simply absent from the rebuilt graph: the
-    # group lost a participant silently, could fall under the 3-member threshold
-    # that makes it a hyperedge at all, and left NO dangling reference, so a
-    # referential-integrity check saw nothing wrong (#2805).
-    if hyperedges:
-        _remap_hyperedge_members(hyperedges, remap)
 
     deduped_nodes = [n for n in unique_nodes if n["id"] not in remap]
     deduped_edges = []
@@ -853,7 +978,7 @@ def deduplicate_entities(
         if e["source"] != e["target"]:
             deduped_edges.append(e)
 
-    return deduped_nodes, deduped_edges
+    return _finish(deduped_nodes, deduped_edges, remap)
 
 
 def _pick_winner(nodes: list[dict]) -> dict:

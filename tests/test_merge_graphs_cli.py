@@ -184,6 +184,7 @@ def _write_with_hyperedges(p: Path, node_ids: list[str], hyperedges: list[dict],
 
 
 def test_merge_graphs_carries_hyperedges_from_all_inputs(tmp_path):
+    """#2484: every input's hyperedges reach the merged output with prefixed members."""
     # #2484: prefix_graph_for_global never rewrote G.graph["hyperedges"], and
     # nx.compose's dict.update graph-attr merge clobbered each prior input's
     # list, so at best the LAST graph's hyperedges survived — with stale,
@@ -191,8 +192,8 @@ def test_merge_graphs_carries_hyperedges_from_all_inputs(tmp_path):
     # relabeled to the prefixed node ids, in BOTH persistence slots.
     a = tmp_path / "alpha" / "graphify-out" / "graph.json"
     b = tmp_path / "beta" / "graphify-out" / "graph.json"
-    _write_with_hyperedges(a, ["x", "y"], [{"id": "h_alpha", "nodes": ["x", "y"]}])
-    _write_with_hyperedges(b, ["p", "q"], [{"id": "h_beta", "nodes": ["p", "q"]}])
+    _write_with_hyperedges(a, ["x", "y", "z"], [{"id": "h_alpha", "nodes": ["x", "y", "z"]}])
+    _write_with_hyperedges(b, ["p", "q", "r"], [{"id": "h_beta", "nodes": ["p", "q", "r"]}])
     out = tmp_path / "merged.json"
 
     r = _run(["merge-graphs", str(a), str(b), "--out", str(out)], tmp_path)
@@ -214,13 +215,16 @@ def test_merge_graphs_carries_hyperedges_from_all_inputs(tmp_path):
 
 
 def test_merge_graphs_hyperedges_dedup_on_shared_prefixed_id(tmp_path):
+    """A duplicated id within an input yields one merged entry."""
     # Idempotence: a duplicated hyperedge id within an input must not produce
     # duplicate entries in the merged output (attach_hyperedges dedups by id).
     a = tmp_path / "alpha" / "graphify-out" / "graph.json"
     b = tmp_path / "beta" / "graphify-out" / "graph.json"
-    he = {"id": "h_alpha", "nodes": ["x"]}
-    _write_with_hyperedges(a, ["x"], [he, dict(he)])
-    _write_with_hyperedges(b, ["p"], [{"id": "h_beta", "nodes": ["p"]}])
+    he = {"id": "h_alpha", "nodes": ["x", "y", "z"]}
+    _write_with_hyperedges(a, ["x", "y", "z"], [he, dict(he)])
+    _write_with_hyperedges(
+        b, ["p", "q", "r"], [{"id": "h_beta", "nodes": ["p", "q", "r"]}]
+    )
     out = tmp_path / "merged.json"
 
     r = _run(["merge-graphs", str(a), str(b), "--out", str(out)], tmp_path)
@@ -231,12 +235,13 @@ def test_merge_graphs_hyperedges_dedup_on_shared_prefixed_id(tmp_path):
 
 
 def test_merge_graphs_reads_top_level_only_hyperedges(tmp_path):
+    """#2485: an input whose hyperedges live only at the top level is not lost."""
     # #2485 skew on the input side: node_link_graph restores only the nested
     # graph-attrs slot, so an input whose hyperedges live only at the top
     # level used to lose them entirely.
     a = tmp_path / "alpha" / "graphify-out" / "graph.json"
     b = tmp_path / "beta" / "graphify-out" / "graph.json"
-    _write_with_hyperedges(a, ["x"], [{"id": "h_top", "nodes": ["x"]}],
+    _write_with_hyperedges(a, ["x", "y", "z"], [{"id": "h_top", "nodes": ["x", "y", "z"]}],
                            top_level_only=True)
     _write_with_hyperedges(b, ["p"], [])
     out = tmp_path / "merged.json"
@@ -245,8 +250,34 @@ def test_merge_graphs_reads_top_level_only_hyperedges(tmp_path):
     assert r.returncode == 0, r.stderr
     data = json.loads(out.read_text())
     assert [h["id"] for h in data["hyperedges"]] == ["alpha::h_top"]
-    assert data["hyperedges"][0]["nodes"] == ["alpha::x"]
+    assert data["hyperedges"][0]["nodes"] == ["alpha::x", "alpha::y", "alpha::z"]
 
+
+
+def test_merge_graphs_prefixes_alias_and_object_shaped_members(tmp_path):
+    """A member list is prefixed only once it is canonical, so the fold has to
+    happen BEFORE prefixing. Otherwise an alias-keyed (`members`) or
+    object-shaped (`{"id": ...}`) group keeps unprefixed member ids while every
+    node gains a `repo::` prefix, and the attach boundary then discards the
+    whole group for having no member backed by a node."""
+    a = tmp_path / "alpha" / "graphify-out" / "graph.json"
+    b = tmp_path / "beta" / "graphify-out" / "graph.json"
+    _write_with_hyperedges(a, ["x", "y", "z"], [
+        {"id": "h_alias", "members": ["x", "y", "z"]},
+        {"id": "h_objects", "nodes": [{"id": "x"}, {"id": "y"}, {"id": "z"}]},
+    ])
+    _write_with_hyperedges(b, ["p", "q", "r"], [{"id": "h_beta", "nodes": ["p", "q", "r"]}])
+    out = tmp_path / "merged.json"
+
+    r = _run(["merge-graphs", str(a), str(b), "--out", str(out)], tmp_path)
+    assert r.returncode == 0, r.stderr
+    data = json.loads(out.read_text())
+    hes = {h["id"]: h for h in data["hyperedges"]}
+    assert set(hes) == {"alpha::h_alias", "alpha::h_objects", "beta::h_beta"}, (
+        f"no group may be lost to its member shape; got {sorted(hes)}"
+    )
+    assert hes["alpha::h_alias"]["nodes"] == ["alpha::x", "alpha::y", "alpha::z"]
+    assert hes["alpha::h_objects"]["nodes"] == ["alpha::x", "alpha::y", "alpha::z"]
 
 
 def _write_with_communities(p: Path, nodes):
@@ -304,3 +335,42 @@ def test_merge_graphs_community_offset_is_byte_reproducible(tmp_path):
     assert _run(["merge-graphs", str(a), str(b), "--out", str(out1)], tmp_path).returncode == 0
     assert _run(["merge-graphs", str(a), str(b), "--out", str(out2)], tmp_path).returncode == 0
     assert out1.read_bytes() == out2.read_bytes(), "same-order merge is not byte-reproducible"
+
+def test_merge_driver_gates_composed_hyperedges(tmp_path):
+    """`graphify merge-driver` composes two graph.json files and serializes the
+    result directly — it never reaches build_from_json or to_json, so nothing
+    applied the cardinality/dangling invariant. A legacy branch carrying a
+    two-member pair or a dangling group had that metadata written straight back
+    into graph.json, which is the same omission `watch`'s raw writer had.
+    """
+    def write(p: Path, hyperedges):
+        """Write a three-node graph.json carrying *hyperedges* in graph attrs."""
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({
+            "directed": False, "multigraph": False,
+            "graph": {"hyperedges": hyperedges},
+            "nodes": [{"id": "a"}, {"id": "b"}, {"id": "c"}], "links": [],
+        }))
+
+    base = tmp_path / "base.json"
+    current = tmp_path / "current.json"
+    other = tmp_path / "other.json"
+    write(base, [])
+    write(current, [{"id": "ok", "nodes": ["a", "b", "c"]}])
+    write(other, [
+        {"id": "legacy_pair", "nodes": ["a", "b"]},
+        {"id": "dangler", "nodes": ["a", "b", "ghost"]},
+    ])
+
+    r = _run(["merge-driver", str(base), str(current), str(other)], tmp_path)
+    assert r.returncode == 0, r.stderr
+
+    data = json.loads(current.read_text())
+    written = data.get("graph", {}).get("hyperedges", [])
+    node_ids = {n["id"] for n in data["nodes"]}
+    assert all(len(h["nodes"]) >= 3 for h in written), (
+        f"a sub-minimum group was written by the merge driver: {written}"
+    )
+    assert all(set(h["nodes"]) <= node_ids for h in written), (
+        f"a dangling member was written by the merge driver: {written}"
+    )
