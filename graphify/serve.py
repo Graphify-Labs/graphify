@@ -453,7 +453,7 @@ def _trigram_cache_key(G: nx.Graph):
     return key
 
 
-def _trigram_cache_path(graph_path: str) -> Path:
+def _trigram_cache_path(graph_path: str, key=None) -> Path:
     """Where the persisted index lives.
 
     Deliberately outside the corpus. Writing an 80 MB derived binary next to
@@ -461,6 +461,17 @@ def _trigram_cache_path(graph_path: str) -> Path:
     depot that means one `p4 reconcile -a` away from being submitted -- and a
     per-machine cache is per-machine anyway. GRAPHIFY_TRIGRAM_CACHE_DIR
     overrides.
+
+    The filename carries a generation digest when `key` is given, the same way
+    the graph cache does, so a rebuilt graph.json writes a NEW name instead of
+    replacing the existing file. That is not tidiness. On Windows, replacing a
+    destination another process holds open fails with PermissionError
+    (WinError 5), where POSIX allows it: measured on Windows 11 with a reader
+    holding the file open for three seconds, all four concurrent writers
+    failed. Never contending for one path removes the failure rather than
+    retrying around it.
+
+    `key` is optional so a caller without one can still locate legacy entries.
     """
     root = os.environ.get("GRAPHIFY_TRIGRAM_CACHE_DIR", "").strip()
     if root:
@@ -475,7 +486,31 @@ def _trigram_cache_path(graph_path: str) -> Path:
     # `graph_path` is already key[0], which _trigram_cache_key resolved. Do not
     # resolve again: the key and this digest must come from one string.
     digest = hashlib.sha1(str(graph_path).encode("utf-8")).hexdigest()[:16]
-    return base / f"trigram-{digest}.pkl"
+    if key is None:
+        return base / f"trigram-{digest}.pkl"
+    gen = hashlib.sha1(repr(list(key)).encode("utf-8")).hexdigest()[:12]
+    return base / f"trigram-{digest}-{gen}.pkl"
+
+
+def _prune_trigram_cache(dest: Path) -> None:
+    """Delete entries for superseded generations of the same graph.json.
+
+    The name is `trigram-<path>-<generation>.pkl`, so a rebuild leaves the old
+    entry behind. Same reasoning and roughly the same size per entry as
+    `_prune_graph_cache`. Runs on the write path only, so a cache hit never
+    prunes -- reaching a hit requires an earlier write, which did. Never
+    raises: a failure costs disk, not correctness.
+    """
+    try:
+        stem = dest.name.split("-")[1]
+        for old in dest.parent.glob(f"trigram-{stem}-*.pkl"):
+            if old != dest:
+                old.unlink(missing_ok=True)
+        legacy = dest.parent / f"trigram-{stem}.pkl"  # pre-generation entries
+        if legacy.exists():
+            legacy.unlink(missing_ok=True)
+    except Exception:
+        pass
 
 
 def _load_trigram_cache(G: nx.Graph):
@@ -489,7 +524,7 @@ def _load_trigram_cache(G: nx.Graph):
     if key is None:
         return None
     try:
-        with _trigram_cache_path(key[0]).open("rb") as fh:
+        with _trigram_cache_path(key[0], key).open("rb") as fh:
             blob = pickle.load(fh)
         if blob.get("key") != key:
             return None
@@ -509,10 +544,11 @@ def _store_trigram_cache(G: nx.Graph, idx: dict) -> None:
         # Inside the guard: _trigram_cache_path resolves the home directory,
         # which raises RuntimeError when it cannot be determined, and this
         # function is documented as never raising.
+        _dest = _trigram_cache_path(key[0], key)
         _atomic_write_pickle(
-            _trigram_cache_path(key[0]),
-            {"key": key, "ids": idx["ids"], "postings": idx["postings"]},
+            _dest, {"key": key, "ids": idx["ids"], "postings": idx["postings"]}
         )
+        _prune_trigram_cache(_dest)
     except Exception:
         pass
 
