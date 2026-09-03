@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from graphify.extractors.base import _LANGUAGE_BUILTIN_GLOBALS, _file_stem, _make_id, _read_text
+from graphify.extractors.collisions import SymbolCollisionCensus, raw_symbol_name
 
 
 def _rust_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[str, str]]) -> None:
@@ -82,16 +83,42 @@ def extract_rust(path: Path) -> dict:
     seen_ids: set[str] = set()
     function_bodies: list[tuple[str, object]] = []
 
-    def add_node(nid: str, label: str, line: int) -> None:
-        if nid not in seen_ids:
-            seen_ids.add(nid)
-            nodes.append({
-                "id": nid,
-                "label": label,
-                "file_type": "code",
-                "source_file": str_path,
-                "source_location": f"L{line}",
-            })
+    # Node IDs are casefolded (ids.py), so `struct Filter` and `fn filter` in
+    # one file produce the same id and add_node silently dropped whichever came
+    # second (#3302). The census salts the non-canonical member apart — the
+    # default preference gives the type the plain id, matching the Go rule's
+    # spirit (#2779); `#[cfg(unix)]`/`#[cfg(windows)]` twins of one fn keep
+    # collapsing onto one node (same raw name). See extractors/collisions.py.
+    collisions = SymbolCollisionCensus()
+
+    def add_node(nid: str, label: str, line: int, *,
+                 symbol_kind: str | None = None, raw_name: str | None = None) -> str:
+        """Add a node, returning the EFFECTIVE id (see engine.add_node).
+
+        Declarations pass `symbol_kind` and must use the returned id; an
+        `impl Foo` block re-naming its type still collapses onto the type's
+        node (same raw name). `raw_name` overrides the census key derived from
+        the label — used by `impl` blocks, whose label carries lifetime/generic
+        spelling (`Foo<'_>`) that must map to the bare type name.
+        """
+        if symbol_kind is not None:
+            nid, existing = collisions.assign(
+                nid, raw_name if raw_name is not None else raw_symbol_name(label),
+                symbol_kind, seen_ids,
+            )
+            if existing:
+                return nid
+        elif nid in seen_ids:
+            return nid
+        seen_ids.add(nid)
+        nodes.append({
+            "id": nid,
+            "label": label,
+            "file_type": "code",
+            "source_file": str_path,
+            "source_location": f"L{line}",
+        })
+        return nid
 
     def add_edge(src: str, tgt: str, relation: str, line: int,
                  confidence: str = "EXTRACTED", weight: float = 1.0,
@@ -110,7 +137,6 @@ def extract_rust(path: Path) -> dict:
         edges.append(edge)
 
     file_nid = _make_id(str(path))
-    add_node(file_nid, path.name, 1)
 
     def ensure_named_node(name: str, line: int) -> str:
         nid = _make_id(stem, name)
@@ -169,12 +195,14 @@ def extract_rust(path: Path) -> dict:
                 func_name = _read_text(name_node, source)
                 line = node.start_point[0] + 1
                 if parent_impl_nid:
-                    func_nid = _make_id(parent_impl_nid, func_name)
-                    add_node(func_nid, f".{func_name}()", line)
+                    func_nid = add_node(_make_id(parent_impl_nid, func_name),
+                                        f".{func_name}()", line,
+                                        symbol_kind="function")
                     add_edge(parent_impl_nid, func_nid, "method", line)
                 else:
-                    func_nid = _make_id(stem, func_name)
-                    add_node(func_nid, f"{func_name}()", line)
+                    func_nid = add_node(_make_id(stem, func_name),
+                                        f"{func_name}()", line,
+                                        symbol_kind="function")
                     add_edge(file_nid, func_nid, "contains", line)
                 emit_param_return_refs(node, func_nid, line)
                 body = node.child_by_field_name("body")
@@ -187,8 +215,8 @@ def extract_rust(path: Path) -> dict:
             if name_node:
                 item_name = _read_text(name_node, source)
                 line = node.start_point[0] + 1
-                item_nid = _make_id(stem, item_name)
-                add_node(item_nid, item_name, line)
+                item_nid = add_node(_make_id(stem, item_name), item_name, line,
+                                    symbol_kind="class")
                 add_edge(file_nid, item_nid, "contains", line)
                 if t == "trait_item":
                     for c in node.children:
@@ -300,8 +328,23 @@ def extract_rust(path: Path) -> dict:
             impl_nid: str | None = None
             if type_node:
                 type_name = _read_text(type_node, source).strip()
-                impl_nid = _make_id(stem, type_name)
-                add_node(impl_nid, type_name, node.start_point[0] + 1)
+                # The impl's id keeps the full type text (`_make_id` turns the
+                # generic parameter of `impl Foo<W>` into an id segment `_foo_w`,
+                # distinct from a `struct Foo`'s `_foo` — the shipped behavior,
+                # unchanged). But the collision census keys on the BARE type name
+                # (strip generics / lifetimes), so `impl Foo<'_>` and `struct Foo`
+                # — which DO share an id — collapse onto one node instead of
+                # salting apart, restoring the pre-#3302 single-node behavior for
+                # impl blocks while still separating a genuine `fn filter` from a
+                # `struct Filter`.
+                type_refs: list[tuple[str, str]] = []
+                _rust_collect_type_refs(type_node, source, False, type_refs)
+                bare_name = next(
+                    (name for name, role in type_refs if role == "type"), type_name
+                )
+                impl_nid = add_node(_make_id(stem, type_name), type_name,
+                                    node.start_point[0] + 1, symbol_kind="class",
+                                    raw_name=bare_name)
             if trait_node is not None and impl_nid is not None:
                 refs: list[tuple[str, str]] = []
                 _rust_collect_type_refs(trait_node, source, False, refs)
@@ -334,7 +377,17 @@ def extract_rust(path: Path) -> dict:
         for child in node.children:
             walk(child, parent_impl_nid=None)
 
-    walk(root)
+    # Mint passes (#3302): re-walk only when settling the census re-picks a
+    # group's canonical member (`fn filter` declared before `struct Filter`) —
+    # the impl-scoped method ids embed the type's id, so they are re-minted
+    # from the canonical form rather than patched. See collisions.py.
+    for _ in collisions.passes():
+        nodes.clear()
+        edges.clear()
+        seen_ids.clear()
+        function_bodies.clear()
+        add_node(file_nid, path.name, 1)
+        walk(root)
 
     label_to_nid: dict[str, str] = {}
     for n in nodes:

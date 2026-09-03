@@ -35,7 +35,10 @@ except Exception:
     _EXTRACTOR_VERSION = "unknown"
 
 # Bump when AST cache-key semantics change independently of the package version.
-_AST_CACHE_SCHEMA = 2
+# 3: same-file id-collision salts (#3302) — the extractor emits different nodes
+#    for identical file content, so entries written by schema 2 would silently
+#    serve pre-fix collapsed nodes.
+_AST_CACHE_SCHEMA = 3
 
 # Version dirs already swept this process — cleanup runs once per (base, version).
 _cleaned_ast_dirs: set[str] = set()

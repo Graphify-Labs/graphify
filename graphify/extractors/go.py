@@ -2,9 +2,13 @@
 from __future__ import annotations
 
 
-import hashlib
 from pathlib import Path
 from graphify.extractors.base import _LANGUAGE_BUILTIN_GLOBALS, _file_stem, _make_id, _read_text
+from graphify.extractors.collisions import (
+    SymbolCollisionCensus,
+    exported_canonical_raw_name,
+    raw_symbol_name,
+)
 
 
 _GO_PREDECLARED_TYPES = frozenset({
@@ -111,16 +115,44 @@ def extract_go(path: Path) -> dict:
     # local package name (including aliases) -> written Go import path
     go_imported_pkgs: dict[str, str] = {}
 
-    def add_node(nid: str, label: str, line: int) -> None:
-        if nid not in seen_ids:
-            seen_ids.add(nid)
-            nodes.append({
-                "id": nid,
-                "label": label,
-                "file_type": "code",
-                "source_file": str_path,
-                "source_location": f"L{line}",
-            })
+    # Node IDs are casefolded (ids.py), so `Run` and `run` declared in one file
+    # produce the same id and add_node silently dropped the second — the unexported
+    # half vanished from the graph and its call sites bound by bare name to a
+    # same-named function in another package, which Go's visibility rules make
+    # impossible (#2779). The census salts the non-canonical member of such a
+    # collision so both survive; Go keeps its #2779 preference (the unique
+    # EXPORTED member holds the plain id — see exported_canonical_raw_name) so
+    # already-shipped Go ids do not move. #3302 widened the census from
+    # function/method declarations to type_specs: `type ResponseWriter
+    # interface` vs `type responseWriter struct` collided the same way, dropping
+    # the struct and re-parenting its methods onto the interface's node.
+    collisions = SymbolCollisionCensus(preference=exported_canonical_raw_name)
+
+    def add_node(nid: str, label: str, line: int, *,
+                 symbol_kind: str | None = None) -> str:
+        """Add a node, returning the EFFECTIVE id (see engine.add_node).
+
+        Declarations pass `symbol_kind` and must use the returned id; a
+        re-declaration of the same raw name (a receiver anchor re-naming its
+        type, build-tag variants) still collapses onto the existing node.
+        """
+        if symbol_kind is not None:
+            nid, existing = collisions.assign(
+                nid, raw_symbol_name(label), symbol_kind, seen_ids
+            )
+            if existing:
+                return nid
+        elif nid in seen_ids:
+            return nid
+        seen_ids.add(nid)
+        nodes.append({
+            "id": nid,
+            "label": label,
+            "file_type": "code",
+            "source_file": str_path,
+            "source_location": f"L{line}",
+        })
+        return nid
 
     def add_edge(src: str, tgt: str, relation: str, line: int,
                  confidence: str = "EXTRACTED", weight: float = 1.0,
@@ -139,7 +171,6 @@ def extract_go(path: Path) -> dict:
         edges.append(edge)
 
     file_nid = _make_id(str(path))
-    add_node(file_nid, path.name, 1)
 
     def ensure_named_node(name: str, line: int) -> str:
         nid = _make_id(pkg_scope, name)
@@ -207,68 +238,6 @@ def extract_go(path: Path) -> dict:
                     if tgt != func_nid:
                         add_edge(func_nid, tgt, "references", line, context=ctx)
 
-    # Node IDs are casefolded (ids.py), so `Run` and `run` declared in one file
-    # produce the same id and add_node silently dropped the second — the unexported
-    # half vanished from the graph and its call sites bound by bare name to a
-    # same-named function in another package, which Go's visibility rules make
-    # impossible (#2779). Salt the non-canonical member of a case-only collision
-    # so both survive.
-    #
-    # The EXPORTED member keeps the plain id. Only exported symbols are reachable
-    # across packages, so cross-package edges (and edges cached in graph.json from
-    # files an incremental rebuild does not touch) target the exported one — keeping
-    # its id stable means adding/removing an unexported sibling in an update never
-    # re-points them. Docs likewise reference the exported API, so the casefolded id
-    # a semantic node produces lands on the symbol it actually describes. Calls to
-    # the unexported sibling can only come from the same package and only resolve
-    # once the sibling exists, so salting it re-points nothing. When the collision
-    # has no unique exported member (`Run`/`RUN`), every member is salted rather
-    # than picking one arbitrarily, so the result never depends on declaration order.
-    case_groups: dict[str, set[str]] = {}
-
-    def _receiver_type_of(node) -> str | None:
-        receiver = node.child_by_field_name("receiver")
-        if not receiver:
-            return None
-        for param in receiver.children:
-            if param.type == "parameter_declaration":
-                type_node = param.child_by_field_name("type")
-                if type_node:
-                    return _read_text(type_node, source).lstrip("*").strip()
-                break
-        return None
-
-    def _plain_symbol_nid(node) -> tuple[str, str] | None:
-        name_node = node.child_by_field_name("name")
-        if not name_node:
-            return None
-        name = _read_text(name_node, source)
-        if node.type == "method_declaration":
-            receiver_type = _receiver_type_of(node)
-            base = _make_id(pkg_scope, receiver_type) if receiver_type else stem
-        else:
-            base = stem
-        return _make_id(base, name), name
-
-    def _scan_declarations(node) -> None:
-        if node.type in ("function_declaration", "method_declaration"):
-            found = _plain_symbol_nid(node)
-            if found:
-                case_groups.setdefault(found[0], set()).add(found[1])
-            return
-        for child in node.children:
-            _scan_declarations(child)
-
-    def symbol_nid(plain_nid: str, name: str) -> str:
-        names = case_groups.get(plain_nid) or set()
-        if len(names) < 2:
-            return plain_nid
-        exported = [n for n in names if n[:1].isupper()]
-        if len(exported) == 1 and name == exported[0]:
-            return plain_nid
-        salt = hashlib.sha1(name.encode("utf-8"), usedforsecurity=False).hexdigest()[:6]
-        return _make_id(plain_nid, salt)
-
     def walk(node) -> None:
         t = node.type
 
@@ -277,8 +246,8 @@ def extract_go(path: Path) -> dict:
             if name_node:
                 func_name = _read_text(name_node, source)
                 line = node.start_point[0] + 1
-                func_nid = symbol_nid(_make_id(stem, func_name), func_name)
-                add_node(func_nid, f"{func_name}()", line)
+                func_nid = add_node(_make_id(stem, func_name), f"{func_name}()",
+                                    line, symbol_kind="function")
                 add_edge(file_nid, func_nid, "contains", line)
                 emit_go_method_refs(node, func_nid, line)
                 body = node.child_by_field_name("body")
@@ -303,14 +272,20 @@ def extract_go(path: Path) -> dict:
             line = node.start_point[0] + 1
 
             if receiver_type:
-                parent_nid = _make_id(pkg_scope, receiver_type)
-                add_node(parent_nid, receiver_type, line)
-                method_nid = symbol_nid(_make_id(parent_nid, method_name), method_name)
-                add_node(method_nid, f".{method_name}()", line)
+                # The receiver anchor mints (or re-finds) the type's node, so it
+                # goes through the census as a class-like declaration: methods
+                # must attach to the SAME node the `type` declaration got, plain
+                # or salted.
+                parent_nid = add_node(_make_id(pkg_scope, receiver_type),
+                                      receiver_type, line, symbol_kind="class")
+                method_nid = add_node(_make_id(parent_nid, method_name),
+                                      f".{method_name}()", line,
+                                      symbol_kind="function")
                 add_edge(parent_nid, method_nid, "method", line)
             else:
-                method_nid = symbol_nid(_make_id(stem, method_name), method_name)
-                add_node(method_nid, f"{method_name}()", line)
+                method_nid = add_node(_make_id(stem, method_name),
+                                      f"{method_name}()", line,
+                                      symbol_kind="function")
                 add_edge(file_nid, method_nid, "contains", line)
 
             emit_go_method_refs(node, method_nid, line)
@@ -328,8 +303,8 @@ def extract_go(path: Path) -> dict:
                     continue
                 type_name = _read_text(name_node, source)
                 line = child.start_point[0] + 1
-                type_nid = _make_id(pkg_scope, type_name)
-                add_node(type_nid, type_name, line)
+                type_nid = add_node(_make_id(pkg_scope, type_name), type_name,
+                                    line, symbol_kind="class")
                 add_edge(file_nid, type_nid, "contains", line)
                 # Type body: struct fields (with embeds) or interface embedding.
                 type_body = None
@@ -433,8 +408,17 @@ def extract_go(path: Path) -> dict:
         for child in node.children:
             walk(child)
 
-    _scan_declarations(root)
-    walk(root)
+    # Mint passes (#3302): re-walk only when settling the census re-picks a
+    # group's canonical member (an unexported sibling declared first) or a
+    # newly-salted type shifts its methods' derived ids — see collisions.py.
+    for _ in collisions.passes():
+        nodes.clear()
+        edges.clear()
+        seen_ids.clear()
+        function_bodies.clear()
+        go_imported_pkgs.clear()
+        add_node(file_nid, path.name, 1)
+        walk(root)
 
     label_to_nid: dict[str, str] = {}
     for n in nodes:

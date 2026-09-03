@@ -1204,6 +1204,38 @@ def _extract_python_rationale(path: Path, result: dict) -> None:
     seen_ids = {n["id"] for n in nodes}
     file_nid = _make_id(str(path))
 
+    # Effective-id index (#3302): a definition's node id is decided by the
+    # engine's collision census — a salted sibling (`_get_connection` next to
+    # `get_connection`, `visit_TEXT` next to `visit_text`) does NOT sit under
+    # `_make_id(stem, name)`. Re-deriving ids here with a private copy of the
+    # recipe attaches the docstring to the wrong sibling (or to an id that no
+    # longer exists), so resolve each definition through the node the engine
+    # actually emitted for its line instead. `redefinition_lines` covers
+    # same-raw-name collapses (`@overload` stubs, `if PY2:` twins), whose extra
+    # definition sites share the first site's node.
+    _nid_by_def_line: dict[int, str] = {}
+    for _n in nodes:
+        if _n.get("source_file") != str_path or _n.get("id") == file_nid:
+            continue
+        if _n.get("type") == "module":
+            continue
+        _loc = str(_n.get("source_location") or "")
+        if not _loc.startswith("L"):
+            continue
+        try:
+            _nid_by_def_line.setdefault(int(_loc[1:]), _n["id"])
+        except ValueError:
+            continue
+        for _extra in (_n.get("metadata") or {}).get("redefinition_lines", ()):
+            if isinstance(_extra, int):
+                _nid_by_def_line.setdefault(_extra, _n["id"])
+
+    def _effective_def_nid(def_line: int, derived_nid: str) -> str:
+        """The id the engine emitted for the definition starting at ``def_line``,
+        falling back to the recipe-derived id when no node matches (a definition
+        the engine deliberately does not model, e.g. nested-in-function)."""
+        return _nid_by_def_line.get(def_line, derived_nid)
+
     def _get_docstring(body_node) -> tuple[str, int] | None:
         if not body_node:
             return None
@@ -1260,7 +1292,9 @@ def _extract_python_rationale(path: Path, result: dict) -> None:
             body = node.child_by_field_name("body")
             if name_node and body:
                 class_name = source[name_node.start_byte:name_node.end_byte].decode("utf-8", errors="replace")
-                nid = _make_id(stem, class_name)
+                nid = _effective_def_nid(
+                    node.start_point[0] + 1, _make_id(stem, class_name)
+                )
                 ds = _get_docstring(body)
                 if ds:
                     _add_rationale(ds[0], ds[1], nid)
@@ -1272,7 +1306,10 @@ def _extract_python_rationale(path: Path, result: dict) -> None:
             body = node.child_by_field_name("body")
             if name_node and body:
                 func_name = source[name_node.start_byte:name_node.end_byte].decode("utf-8", errors="replace")
-                nid = _make_id(parent_nid, func_name) if parent_nid != file_nid else _make_id(stem, func_name)
+                nid = _effective_def_nid(
+                    node.start_point[0] + 1,
+                    _make_id(parent_nid, func_name) if parent_nid != file_nid else _make_id(stem, func_name),
+                )
                 ds = _get_docstring(body)
                 if ds:
                     _add_rationale(ds[0], ds[1], nid)

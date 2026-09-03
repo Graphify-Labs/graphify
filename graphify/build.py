@@ -30,6 +30,11 @@ import unicodedata
 from pathlib import Path
 import networkx as nx
 from .ids import make_id, normalize_id as _normalize_id
+from .extractors.collisions import (
+    collision_salt as _collision_salt,
+    raw_symbol_name as _collision_raw_name,
+    salted_symbol_id as _salted_symbol_id,
+)
 from .paths import default_graph_json as _default_graph_json
 from .paths import is_absolute_any_platform as _is_abs
 from .validate import validate_extraction
@@ -1502,6 +1507,94 @@ def _load_existing_graph(graph_path: Path) -> "tuple[list, list, list, bool] | N
     )
 
 
+def _repair_collision_salt_endpoints(
+    replaced_nodes: "list[dict]",
+    new_nodes,
+    kept_ids: set,
+    kept_edges: "list[dict]",
+    kept_hyperedges: "list[dict]",
+) -> int:
+    """Re-point stored endpoints whose node id the #3302 census re-keyed.
+
+    A re-extract can re-key a definition whose plain id is claimed by a
+    differently-named sibling (`class Session` arriving next to
+    `def session()`, `visit_TEXT` next to `visit_text`): the census keeps the
+    plain id on ONE canonical member and salts every other member with a hash
+    of its raw declared name. Stored edges from files the incremental update
+    does NOT re-extract still spell the OLD id — left alone they either
+    silently re-point onto the new plain-id occupant (the wrong symbol) or
+    dangle and get dropped by build's endpoint validation. The stored node's
+    own label says which raw name its id used to mean, and the salt is a pure
+    function of that raw name, so the stored endpoint can be re-pointed onto
+    the exact sibling it always meant without re-extracting the referencing
+    files. A definition that genuinely disappeared maps to no new node and
+    its edges drop exactly as before.
+
+    ``replaced_nodes``: the stored AST-tier nodes owned by re-extracted
+    sources (already dropped from the carried lists). ``new_nodes``: the new
+    extraction's node dicts. ``kept_ids``: ids still bound by carried nodes —
+    an id an untouched file still holds is not this file's to re-point
+    (cross-file id collisions are #1522's territory). ``kept_edges`` /
+    ``kept_hyperedges`` are mutated in place. Returns the number of endpoints
+    re-pointed.
+    """
+    new_raw_by_id: dict[str, str] = {}
+    for n in new_nodes:
+        if isinstance(n, dict) and n.get("id") and _is_ast_tier(n):
+            new_raw_by_id[str(n["id"])] = _collision_raw_name(
+                str(n.get("label") or "")
+            )
+    remap: dict[str, str] = {}
+    for n in replaced_nodes:
+        oid = str(n.get("id") or "")
+        raw = _collision_raw_name(str(n.get("label") or ""))
+        if not oid or not raw or oid in kept_ids:
+            continue
+        if new_raw_by_id.get(oid) == raw:
+            continue  # same raw name still holds this id — nothing moved
+        salted = _salted_symbol_id(oid, raw)
+        if salted in new_raw_by_id:
+            # Plain id re-assigned (or retired): this raw name now lives
+            # under its salted sibling id.
+            remap[oid] = salted
+            continue
+        salt_suffix = "_" + _collision_salt(raw)
+        if oid.endswith(salt_suffix):
+            # Reverse move: a previously salted member's group shrank and the
+            # plain id re-bound to it.
+            plain = oid[: -len(salt_suffix)]
+            if new_raw_by_id.get(plain) == raw:
+                remap[oid] = plain
+    if not remap:
+        return 0
+    repointed = 0
+    for e in kept_edges:
+        if not isinstance(e, dict):
+            continue
+        for ep in ("source", "target"):
+            new_id = remap.get(e.get(ep))
+            if new_id is not None:
+                e[ep] = new_id
+                repointed += 1
+    for he in kept_hyperedges:
+        if not isinstance(he, dict):
+            continue
+        for mkey in ("nodes", *_HE_MEMBER_ALIASES):
+            members = he.get(mkey)
+            if isinstance(members, list):
+                he[mkey] = [
+                    remap.get(m, m) if isinstance(m, str) else m for m in members
+                ]
+    if repointed:
+        print(
+            f"[graphify] Re-pointed {repointed} stored edge endpoint(s) "
+            f"across {len(remap)} re-keyed node id(s) from re-extracted "
+            f"file(s) (#3302 same-file collision salts).",
+            file=sys.stderr,
+        )
+    return repointed
+
+
 def merge_raw_extraction(
     new: dict,
     graph_path: str | Path,
@@ -1639,9 +1732,30 @@ def merge_raw_extraction(
             if prior_count > 1 and fresh_count < prior_count:
                 unverified_semantic_shrink[canon_sf] = (prior_count, fresh_count)
 
-    new["nodes"] = [n for n in existing_nodes if not _dropped(n)] + list(new.get("nodes", []))
-    new["edges"] = [e for e in existing_edges if not _dropped(e)] + list(new.get("edges", []))
+    carried_nodes = [n for n in existing_nodes if not _dropped(n)]
+    carried_edges = [e for e in existing_edges if not _dropped(e)]
     carried_hyper = [he for he in existing_hyperedges if not _dropped(he)]
+
+    # Same-file collision-salt endpoint repair (#3302), shared with
+    # build_merge so the raw and clustered incremental paths can't drift.
+    def _replaced_by_reextract(item: dict) -> bool:
+        sf = item.get("source_file")
+        own = new_ast_sources if _is_ast_tier(item) else new_sem_sources
+        return sf in own or _norm_source_file(sf, _eff_root) in own
+
+    _repair_collision_salt_endpoints(
+        replaced_nodes=[
+            n for n in existing_nodes
+            if isinstance(n, dict) and _is_ast_tier(n) and _replaced_by_reextract(n)
+        ],
+        new_nodes=new.get("nodes", []),
+        kept_ids={n.get("id") for n in carried_nodes if isinstance(n, dict)},
+        kept_edges=carried_edges,
+        kept_hyperedges=carried_hyper,
+    )
+
+    new["nodes"] = carried_nodes + list(new.get("nodes", []))
+    new["edges"] = carried_edges + list(new.get("edges", []))
     if carried_hyper or new.get("hyperedges"):
         new["hyperedges"] = carried_hyper + list(new.get("hyperedges", []))
     if unverified_semantic_shrink:
@@ -1787,6 +1901,21 @@ def build_merge(
                 f"source file(s).",
                 file=sys.stderr,
             )
+
+        # Same-file collision-salt endpoint repair (#3302), shared with
+        # merge_raw_extraction so the raw and clustered paths can't drift.
+        _repair_collision_salt_endpoints(
+            replaced_nodes=[
+                n for n in _disk_nodes
+                if isinstance(n, dict) and _is_ast_tier(n) and not _kept(n)
+            ],
+            new_nodes=(
+                n for ch in new_chunks for n in ch.get("nodes", [])
+            ),
+            kept_ids={n.get("id") for n in existing_nodes if isinstance(n, dict)},
+            kept_edges=existing_edges,
+            kept_hyperedges=existing_hyperedges,
+        )
 
     # Prune set for deleted source files — both the raw form (matches nodes that
     # kept absolute source_file) and the normalised relative form (matches nodes
