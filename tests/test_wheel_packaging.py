@@ -8,6 +8,7 @@ This builds the wheel once and asserts every committed skill artifact ships in i
 from __future__ import annotations
 
 import subprocess
+import tomllib
 import sys
 import zipfile
 from pathlib import Path
@@ -82,3 +83,10 @@ def test_skill_artifact_ships_in_wheel(artifact: Path, wheel_namelist: set[str])
         f"`graphify install` would hard-exit for this host. Check the "
         f"[tool.setuptools.package-data] globs in pyproject.toml."
     )
+
+def test_leiden_extra_installs_the_native_backend_on_new_python() -> None:
+    extras = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))["project"][
+        "optional-dependencies"
+    ]
+    assert any(dep.startswith("graspologic-native") for dep in extras["leiden"])
+    assert all("python_version" not in dep for dep in extras["leiden"])
