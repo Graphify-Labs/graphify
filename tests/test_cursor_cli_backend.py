@@ -181,9 +181,11 @@ def test_prompt_travels_over_stdin(fake_cursor):
     assert "UNIQUE_SOURCE_MARKER" in sent
 
 
-def test_no_model_flag_by_default(fake_cursor):
+def test_no_model_flag_by_default(fake_cursor, monkeypatch):
     # Without GRAPHIFY_CURSOR_CLI_MODEL the CLI's own model routing (auto)
-    # decides; graphify must not pin one.
+    # decides; graphify must not pin one. Scrub the env so a developer's
+    # exported var cannot leak into the assertion.
+    monkeypatch.delenv("GRAPHIFY_CURSOR_CLI_MODEL", raising=False)
     llm._call_cursor_cli("dummy", max_tokens=8192)
     argv = fake_cursor.call_args.args[0]
     assert "--model" not in argv
