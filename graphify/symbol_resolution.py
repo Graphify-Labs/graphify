@@ -10,7 +10,8 @@ from pathlib import Path
 from collections.abc import Sequence
 from typing import Any
 
-from graphify.ids import make_id as _shared_make_id
+from graphify.extractors.base import _file_stem
+from graphify.ids import make_id
 from graphify.paths import disambiguate_ambiguous_candidates
 from graphify.security import sanitize_metadata
 
@@ -379,28 +380,18 @@ def resolve_cross_file_raw_calls(
     return resolved
 
 
-def _bash_make_id(*parts: str) -> str:
-    """Bash symbol node ID via the single shared recipe (#1378).
-
-    Previously an inline copy to dodge an import cycle; ``graphify.ids`` is
-    dependency-free, so it can be imported directly.
-    """
-    return _shared_make_id(*parts)
-
-
-from graphify.extractors.base import _file_stem as _bash_file_stem  # canonical recipe (no import cycle: base imports only graphify.ids)
+_bash_make_id = make_id  # deprecated alias (kept for tests/external importers; use graphify.ids.make_id)
 
 
 def _file_node_id_for_path(path: Path, root: Path) -> str:
-    # Produce the canonical {parent_dir}_{stem} file-node ID that extract()'s
-    # id_remap generates (#1033), so bash `source` edges land on the real file
-    # node instead of an orphan. _bash_make_id / _bash_file_stem are exact copies
-    # of extract._make_id / extract._file_stem, so IDs match.
+    # Produce the canonical file-node ID that extract()'s id_remap generates
+    # (#1033), so bash `source` edges land on the real file node instead of an
+    # orphan. Uses the shared make_id / _file_stem helpers so IDs match.
     try:
         rel = path.resolve().relative_to(root.resolve())
     except ValueError:
-        return _bash_make_id(str(path))  # path outside root: hash absolute path as fallback
-    return _bash_make_id(_bash_file_stem(rel))
+        return make_id(str(path))  # path outside root: hash absolute path as fallback
+    return make_id(_file_stem(rel))
 
 
 def resolve_bash_source_edges(
