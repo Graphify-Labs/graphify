@@ -36,6 +36,31 @@ PACKAGE_MANIFEST_NAMES: dict[str, str] = {
 
 _MAX_MANIFEST_BYTES = 2_000_000  # 2 MB cap — manifests are small; this rejects junk
 
+_TOMLI_REQUIRED = (
+    "Package-manifest ingestion on Python < 3.11 needs tomli. "
+    "Install with: pip install 'tomli' "
+    "(or reinstall graphifyy, which declares tomli for python_version < '3.11')."
+)
+
+
+def _load_toml_module():
+    """Return a tomllib-compatible module, or raise ImportError (#3283).
+
+    Returning ``None`` used to look identical to a virtual workspace root with
+    nothing to emit, so missing ``tomli`` on Python 3.10 silently dropped every
+    ``Cargo.toml`` / ``pyproject.toml``. Fail loud the way ``cargo_introspect``
+    already does.
+    """
+    try:
+        import tomllib as _toml  # type: ignore[import-not-found]
+        return _toml
+    except ImportError:
+        try:
+            import tomli as _toml  # type: ignore[import-not-found,no-redef]
+            return _toml
+        except ImportError as exc:
+            raise ImportError(_TOMLI_REQUIRED) from exc
+
 
 def is_package_manifest_path(path: Path) -> bool:
     """True if ``path`` is a recognized package manifest (by filename)."""
@@ -182,13 +207,7 @@ def _pep508_name(spec: str) -> str:
 
 
 def _parse_pyproject(text: str) -> dict | None:
-    try:
-        import tomllib as _toml
-    except ImportError:
-        try:
-            import tomli as _toml  # type: ignore
-        except ImportError:
-            return None
+    _toml = _load_toml_module()
     data = _toml.loads(text)
     proj = data.get("project", {}) if isinstance(data.get("project"), dict) else {}
     poetry = (data.get("tool", {}) or {}).get("poetry", {}) if isinstance(data.get("tool"), dict) else {}
@@ -207,13 +226,7 @@ def _parse_cargo(text: str) -> dict | None:
     """Cargo.toml: name/version from ``[package]``, runtime deps from
     ``[dependencies]`` plus every ``[target.<cfg>.dependencies]`` table (mirrors
     ``_parse_pyproject``'s runtime-only scope; dev-/build-dependencies excluded)."""
-    try:
-        import tomllib as _toml
-    except ImportError:  # pragma: no cover — Python < 3.11 without tomli only
-        try:
-            import tomli as _toml  # type: ignore
-        except ImportError:
-            return None
+    _toml = _load_toml_module()
     data = _toml.loads(text)
     pkg = data.get("package", {}) if isinstance(data.get("package"), dict) else {}
     name = pkg.get("name")
