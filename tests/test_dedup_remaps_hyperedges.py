@@ -287,3 +287,35 @@ def test_direct_dedup_does_not_rebind_a_member_to_a_colliding_node():
         f"not the colliding {by_id.get(member)!r}"
     )
 
+
+
+def test_a_dropped_group_does_not_shift_the_raw_form_capture():
+    """Dropping an undersized group must not misalign the raw-form capture.
+
+    The capture that protects a member from being rebound onto a colliding node
+    is taken per hyperedge BEFORE the remap; the remap then drops undersized
+    groups and compacts the list in place. Read back by position, every
+    surviving group after the first drop was handed the raw forms of a
+    DIFFERENT group — so with distinct nodes `7` and `"7"` present, `trio`'s
+    member `"7"` was resolved through `pair`'s capture and silently rebound to
+    the int node it never named. That is #3297's failure mode: not a dangling
+    member, a wrong one.
+    """
+    hes = [
+        {"id": "pair", "nodes": [7, "delta_node"]},
+        {"id": "trio", "nodes": ["7", "beta_node", "gamma_node"]},
+    ]
+    deduplicate_entities(
+        [
+            _node(7, "Int Seven"),
+            _node("7", "Str Seven"),
+            _node("beta_node", "Beta"),
+            _node("gamma_node", "Gamma"),
+            _node("delta_node", "Delta"),
+        ],
+        [], communities={}, hyperedges=hes,
+    )
+    assert [h["id"] for h in hes] == ["trio"]
+    assert hes[0]["nodes"] == ["7", "beta_node", "gamma_node"], (
+        "the member must keep naming the string node it was written against"
+    )

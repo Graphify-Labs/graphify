@@ -466,7 +466,7 @@ def _report_id_collision(nid: str, survivor: dict, losers: list[dict]) -> None:
 
 # ── main entry point ──────────────────────────────────────────────────────────
 
-def _member_raw_forms(hyperedges: list) -> list[dict]:
+def _member_raw_forms(hyperedges: list) -> dict[int, dict]:
     """Per hyperedge, map each member's coerced key back to its original id.
 
     Captured BEFORE remapping, because remapping coerces members and that
@@ -475,8 +475,17 @@ def _member_raw_forms(hyperedges: list) -> list[dict]:
     ``"7"``, and nothing downstream can tell them apart — so restoration would
     bind both to whichever node the id map prefers, silently moving one member
     to a different node.
+
+    Keyed by the identity of the entry each capture came from, NOT by position:
+    :func:`_remap_hyperedge_members` runs in between, and it drops undersized
+    groups and compacts the list in place. Read back positionally, every group
+    after the first drop was handed a DIFFERENT group's raw forms — which
+    reintroduces the exact silent rebind this capture exists to prevent. The
+    entries are mutated in place, so a surviving group keeps its identity; a
+    dropped one leaves a key nothing ever looks up, because the map is only
+    ever queried for an entry still in the list.
     """
-    originals: list[dict] = []
+    originals: dict[int, dict] = {}
     for he in hyperedges or ():
         seen: dict = {}
         if isinstance(he, dict) and isinstance(he.get("nodes"), list):
@@ -484,11 +493,13 @@ def _member_raw_forms(hyperedges: list) -> list[dict]:
                 raw = m.get("id") if isinstance(m, dict) else m
                 if _hashable(raw):
                     seen.setdefault(_coerce_id(raw), raw)
-        originals.append(seen)
+        originals[id(he)] = seen
     return originals
 
 
-def _restore_member_id_space(hyperedges: list, nodes: list, originals: list) -> None:
+def _restore_member_id_space(
+    hyperedges: list, nodes: list, originals: dict[int, dict]
+) -> None:
     """Rewrite each member to the id its node record carries, in place.
 
     Members are coerced during remapping so they can be compared and deduped;
@@ -515,23 +526,26 @@ def _restore_member_id_space(hyperedges: list, nodes: list, originals: list) -> 
         if isinstance(n, dict) and _hashable(n.get("id"))
     }
 
-    def resolved(key: object, index: int) -> object:
+    def resolved(key: object, raws: dict) -> object:
         """The node id member *key* should carry, preferring its own raw form."""
-        own = (originals[index] if index < len(originals) else {}).get(key)
+        own = raws.get(key)
         if own is not None and own in raw_ids:
             return own
         return raw_by_coerced.get(key)
 
-    for i, he in enumerate(hyperedges or ()):
+    for he in hyperedges or ():
         if not isinstance(he, dict) or not isinstance(he.get("nodes"), list):
             continue
+        # By identity, not position: the remap between capture and restore
+        # compacted the list (see _member_raw_forms).
+        raws = originals.get(id(he)) or {}
         restored: list = []
         for m in he["nodes"]:
             if isinstance(m, dict):
-                raw = resolved(_coerce_id(m.get("id")), i)
+                raw = resolved(_coerce_id(m.get("id")), raws)
                 restored.append(dict(m, id=raw) if raw is not None else m)
             else:
-                raw = resolved(m, i)
+                raw = resolved(m, raws)
                 restored.append(m if raw is None else raw)
         he["nodes"] = restored
 
