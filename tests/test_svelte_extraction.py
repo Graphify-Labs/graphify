@@ -592,3 +592,36 @@ def test_dynamic_rescue_also_survives_a_hard_error(tmp_path, monkeypatch):
     assert _make_id(str(tmp_path / "Lazy.svelte")) in _targets(
         result, relation="dynamic_import"
     )
+
+
+def test_unreadable_component_reports_an_error(tmp_path, monkeypatch):
+    """An unreadable component must not look like an empty one.
+
+    Returning a bare empty result hides a permission or I/O failure: the file
+    contributes nothing and extract() reports success.
+    """
+    component = _write(tmp_path / "Locked.svelte", "<span />\n")
+
+    def _deny(*args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "read_text", _deny)
+    result = extract_svelte(component)
+
+    assert result["nodes"] == []
+    assert "Permission denied" in result.get("error", "")
+
+
+def test_unreadable_vue_component_reports_an_error(tmp_path, monkeypatch):
+    """`extract_vue` shares the shape and had the same silent return."""
+    from graphify.extract import extract_vue
+
+    component = _write(tmp_path / "Locked.vue", "<template><span /></template>\n")
+
+    def _deny(*args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "read_text", _deny)
+    result = extract_vue(component)
+
+    assert "Permission denied" in result.get("error", "")

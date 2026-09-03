@@ -1623,8 +1623,11 @@ def extract_svelte(path: Path) -> dict:
     """
     try:
         src = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return {"nodes": [], "edges": []}
+    except OSError as e:
+        # Report the failure rather than returning an empty result: an
+        # unreadable component is indistinguishable from an empty one
+        # otherwise, and extract() warns on `error` (#2551).
+        return {"nodes": [], "edges": [], "error": f"cannot read {path}: {e}"}
 
     masked, lang = _sfc_mask_non_script(src)
     if lang == "tsx":
@@ -1781,8 +1784,11 @@ def extract_vue(path: Path) -> dict:
     """
     try:
         src = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return {"nodes": [], "edges": []}
+    except OSError as e:
+        # Report the failure rather than returning an empty result: an
+        # unreadable component is indistinguishable from an empty one
+        # otherwise, and extract() warns on `error` (#2551).
+        return {"nodes": [], "edges": [], "error": f"cannot read {path}: {e}"}
 
     masked, lang = _sfc_mask_non_script(src)
     if lang == "tsx":
