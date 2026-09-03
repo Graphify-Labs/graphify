@@ -1524,6 +1524,40 @@ def _call_claude(api_key: str, model: str, user_message: str, max_tokens: int = 
     return result
 
 
+def _envelope_after_preamble(stdout: str):
+    """Recover the envelope when `claude -p` prefixes it with a diagnostic line.
+
+    The CLI shares stdout with its own subsystems, so the JSON is not always the
+    first thing on it. An attached MCP server that advertises no tools makes
+    every invocation emit
+
+        Client.listTools() called but server does not advertise tools capability
+        - returning empty list
+
+    ahead of the envelope, and `json.loads` then fails on the whole buffer.
+    Because that failure is raised after the model has already answered, the
+    chunk is discarded with its tokens spent -- on a mid-size corpus a run could
+    burn the whole budget and return nothing, and the error names the JSON
+    rather than the preamble that caused it, so the log points at the wrong
+    thing. Any user with an MCP server configured hits this on every chunk.
+
+    Scans for the first `[`/`{` that begins a valid JSON document. `raw_decode`
+    ignores trailing bytes, so a diagnostic on either side is tolerated, and
+    stdout carrying no JSON at all still returns None for the caller to raise on.
+    """
+    decoder = json.JSONDecoder()
+    for idx, ch in enumerate(stdout):
+        if ch not in "[{":
+            continue
+        try:
+            value, _ = decoder.raw_decode(stdout, idx)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, (dict, list)):
+            return value
+    return None
+
+
 def _claude_cli_envelope(stdout: str) -> dict:
     """Parse the JSON returned by `claude -p --output-format json`.
 
@@ -1536,10 +1570,12 @@ def _claude_cli_envelope(stdout: str) -> dict:
     try:
         envelope = json.loads(stdout)
     except json.JSONDecodeError as exc:
-        raise RuntimeError(
-            f"claude -p produced unparseable JSON envelope: {exc}; "
-            f"first 500 chars of stdout: {stdout[:500]!r}"
-        ) from exc
+        envelope = _envelope_after_preamble(stdout)
+        if envelope is None:
+            raise RuntimeError(
+                f"claude -p produced unparseable JSON envelope: {exc}; "
+                f"first 500 chars of stdout: {stdout[:500]!r}"
+            ) from exc
     if isinstance(envelope, list):
         result_events = [
             e for e in envelope
