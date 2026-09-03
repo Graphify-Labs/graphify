@@ -7,7 +7,15 @@ import time
 from pathlib import Path
 import pytest
 
-from graphify.watch import _notify_only, _WATCHED_EXTENSIONS, _rebuild_lock, _check_shrink
+from graphify.watch import (
+    _notify_only,
+    _rebuild_code,
+    _WATCHED_EXTENSIONS,
+    _rebuild_lock,
+    _check_shrink,
+    _batch_triggers_rebuild,
+    _batch_needs_llm_flag,
+)
 
 
 # --- _notify_only ---
@@ -54,6 +62,75 @@ def test_watched_extensions_excludes_noise():
     assert ".sh" in _WATCHED_EXTENSIONS
     assert ".pyc" not in _WATCHED_EXTENSIONS
     assert ".log" not in _WATCHED_EXTENSIONS
+
+
+# --- _batch_triggers_rebuild / _batch_needs_llm_flag: watch dispatch gating ---
+
+def test_batch_doc_only_deletion_triggers_rebuild(tmp_path):
+    """#2580: deleting ONLY doc files while `graphify watch` runs must trigger
+    an immediate full rebuild (eviction needs no LLM), not just the
+    needs_update flag deferred to the next code event."""
+    gone = tmp_path / "docs" / "x.md"
+    assert not gone.exists()
+    assert _batch_triggers_rebuild([gone]) is True
+
+def test_batch_doc_only_deletion_skips_llm_flag(tmp_path):
+    """A pure-deletion batch has nothing left needing LLM re-extraction —
+    the reconcile sweep inside the rebuild evicts it, so no needs_update flag."""
+    gone = tmp_path / "docs" / "x.md"
+    assert not gone.exists()
+    assert _batch_needs_llm_flag([gone]) is False
+
+def test_batch_modified_doc_only_does_not_rebuild(tmp_path):
+    """A doc that still exists needs LLM re-extraction, not an AST rebuild:
+    stays on the _notify_only path."""
+    doc = tmp_path / "docs" / "x.md"
+    doc.parent.mkdir()
+    doc.write_text("# heading\n", encoding="utf-8")
+    assert _batch_triggers_rebuild([doc]) is False
+    assert _batch_needs_llm_flag([doc]) is True
+
+def test_batch_code_file_still_triggers_rebuild(tmp_path):
+    """Regression: existing code-file batches keep rebuilding as before."""
+    code = tmp_path / "app.py"
+    code.write_text("x = 1\n", encoding="utf-8")
+    assert _batch_triggers_rebuild([code]) is True
+    assert _batch_needs_llm_flag([code]) is False
+
+def test_batch_mixed_deletion_and_modified_doc(tmp_path):
+    """Deleted doc + still-existing modified doc in one debounce window:
+    rebuild fires for the eviction AND the flag is kept for the survivor."""
+    survivor = tmp_path / "docs" / "kept.md"
+    survivor.parent.mkdir()
+    survivor.write_text("# kept\n", encoding="utf-8")
+    gone = tmp_path / "docs" / "gone.md"
+    batch = [survivor, gone]
+    assert _batch_triggers_rebuild(batch) is True
+    assert _batch_needs_llm_flag(batch) is True
+
+def test_doc_only_deletion_full_rebuild_evicts_md_nodes(tmp_path):
+    """End-to-end pin for #2580: the full rebuild the watcher now triggers on
+    a doc-only deletion actually evicts the deleted .md's nodes."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "app.py").write_text("def run(): pass\n", encoding="utf-8")
+    doc = corpus / "notes.md"
+    doc.write_text("# Notes\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    labels = {n["label"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+    assert "notes.md" in labels
+
+    doc.unlink()
+    batch = [doc]
+    assert _batch_triggers_rebuild(batch) is True
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+    labels = {n["label"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+    assert "notes.md" not in labels, "deleted doc's nodes must be evicted by the watch-triggered rebuild"
+    assert "run()" in labels
 
 
 # --- watch() import error without watchdog ---
@@ -304,6 +381,25 @@ def test_rebuild_code_keeps_a_visualization_when_over_the_viz_cap(tmp_path, monk
     assert len(communities) < cap < len(graph["nodes"]), "test corpus cannot exercise the cap"
     monkeypatch.setenv("GRAPHIFY_VIZ_NODE_LIMIT", str(cap))
     (corpus / "g9_extra.py").write_text("def extra():\n    return 1\n", encoding="utf-8")
+
+    real_replace = os.replace
+
+    def fail_html_publish(src, dst):
+        if Path(dst).name == "graph.html":
+            raise OSError("simulated atomic HTML publish failure")
+        return real_replace(src, dst)
+
+    with monkeypatch.context() as failed_render:
+        failed_render.setattr("graphify.paths.os.replace", fail_html_publish)
+        assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    assert html.read_text(encoding="utf-8") == before, (
+        "a failed aggregate publish must preserve the previous complete HTML"
+    )
+    assert (corpus / "graphify-out" / ".graph.html.stale").exists()
+
+    # With no further code change, the fast path consumes the stale marker and
+    # retries the current aggregate rather than trusting the preserved old file.
     assert _rebuild_code(corpus, acquire_lock=False) is True
 
     assert html.exists(), (
@@ -312,12 +408,122 @@ def test_rebuild_code_keeps_a_visualization_when_over_the_viz_cap(tmp_path, monk
     )
     after = html.read_text(encoding="utf-8")
     assert after != before, "graph.html must be re-rendered, not left stale"
+    assert not (corpus / "graphify-out" / ".graph.html.stale").exists()
 
-    # And the documented kill switch still means "no viz", not "aggregate".
+    # Missing derived output must be repaired by the unchanged-topology path.
+    # The repair must reuse persisted communities rather than reclustering or
+    # rewriting the graph, report, or label sidecars.
+    stable_paths = [
+        corpus / "graphify-out" / "graph.json",
+        corpus / "graphify-out" / "GRAPH_REPORT.md",
+        corpus / "graphify-out" / ".graphify_labels.json",
+        corpus / "graphify-out" / ".graphify_labels.json.sig",
+    ]
+    stable_bytes = {path: path.read_bytes() for path in stable_paths if path.exists()}
+    html.unlink()
+
+    def fail_cluster(*args, **kwargs):
+        raise AssertionError("unchanged update must not recluster to restore graph.html")
+
+    with monkeypatch.context() as recovery_patch:
+        recovery_patch.setattr("graphify.cluster.cluster", fail_cluster)
+        assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    assert html.exists(), "unchanged update did not restore missing graph.html"
+    assert html.read_text(encoding="utf-8") == after
+    for path, expected in stable_bytes.items():
+        assert path.read_bytes() == expected, f"recovery rewrote stable artifact {path.name}"
+
+    # The documented kill switch also applies on the unchanged-topology path.
     monkeypatch.setenv("GRAPHIFY_VIZ_NODE_LIMIT", "0")
-    (corpus / "g9_extra2.py").write_text("def extra2():\n    return 2\n", encoding="utf-8")
     assert _rebuild_code(corpus, acquire_lock=False) is True
     assert not html.exists(), "GRAPHIFY_VIZ_NODE_LIMIT=0 must disable the HTML viz outright"
+
+
+def test_missing_html_recovery_preserves_multigraph_edge_counts(tmp_path, monkeypatch):
+    """Aggregated recovery must count every parallel edge in persisted graphs."""
+    from graphify.watch import _reconcile_graph_html
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    graph = {
+        "directed": True,
+        "multigraph": True,
+        "nodes": [
+            {"id": "a", "label": "A", "community": 0, "community_name": "Left"},
+            {"id": "b", "label": "B", "community": 1, "community_name": "Right"},
+            {"id": "c", "label": "C", "community": 0, "community_name": "Left"},
+            {"id": "d", "label": "D", "community": 1, "community_name": "Right"},
+        ],
+        "links": [
+            {"source": "a", "target": "b", "key": "calls", "relation": "calls"},
+            {"source": "a", "target": "b", "key": "imports", "relation": "imports"},
+        ],
+    }
+    monkeypatch.setenv("GRAPHIFY_VIZ_NODE_LIMIT", "3")
+    original_touch = Path.touch
+
+    with monkeypatch.context() as failed_render:
+        def fail_replace(*args, **kwargs):
+            raise OSError("simulated atomic publish failure")
+
+        def fail_marker_touch(path, *args, **kwargs):
+            if path == out / ".graph.html.stale":
+                raise PermissionError("simulated marker write failure")
+            return original_touch(path, *args, **kwargs)
+
+        failed_render.setattr("graphify.paths.os.replace", fail_replace)
+        failed_render.setattr(Path, "touch", fail_marker_touch)
+        assert _reconcile_graph_html(out, graph) is None
+
+    assert not (out / "graph.html").exists()
+    # Missing HTML is itself the retry signal; recovery must not depend on a
+    # writable marker file.
+    assert not (out / ".graph.html.stale").exists()
+    assert _reconcile_graph_html(out, graph) == "rendered"
+    assert not (out / ".graph.html.stale").exists()
+
+    rendered = (out / "graph.html").read_text(encoding="utf-8")
+    assert "2 cross-community edges" in rendered
+
+
+def test_html_recovery_succeeds_when_stale_marker_cleanup_fails(
+    tmp_path, monkeypatch, capsys,
+):
+    """A current atomic HTML write must not be reported as a rebuild failure."""
+    from graphify.watch import _reconcile_graph_html
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    html = out / "graph.html"
+    html.write_text("stale visualization", encoding="utf-8")
+    marker = out / ".graph.html.stale"
+    marker.touch()
+    graph = {
+        "directed": False,
+        "multigraph": False,
+        "nodes": [
+            {"id": "a", "label": "A", "community": 0},
+            {"id": "b", "label": "B", "community": 0},
+            {"id": "c", "label": "C", "community": 1},
+            {"id": "d", "label": "D", "community": 1},
+        ],
+        "links": [],
+    }
+    original_unlink = Path.unlink
+
+    def reject_marker_unlink(path, *args, **kwargs):
+        if path == marker:
+            raise PermissionError("simulated marker cleanup failure")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setenv("GRAPHIFY_VIZ_NODE_LIMIT", "3")
+    monkeypatch.setattr(Path, "unlink", reject_marker_unlink)
+
+    assert _reconcile_graph_html(out, graph) == "rendered"
+    assert html.read_text(encoding="utf-8") != "stale visualization"
+    assert marker.exists()
+    assert "stale marker could not be cleared" in capsys.readouterr().out
 
 
 def test_update_rebuilds_with_nested_star_gitignore(tmp_path):
@@ -1180,6 +1386,61 @@ def test_check_shrink_blocks_shrink_outside_rebuilt_sources(capsys):
     assert "Refusing to overwrite" in capsys.readouterr().err
 
 
+def test_check_shrink_blocks_loss_from_failed_rebuilt_source(capsys):
+    """A failed extractor must not account for nodes it dropped during rebuild."""
+    existing = {"nodes": [
+        {"id": "app", "source_file": "app.py"},
+        {"id": "table", "source_file": "schema.sql"},
+    ], "links": []}
+    new = {"nodes": [{"id": "app", "source_file": "app.py"}], "links": []}
+
+    ok = _check_shrink(
+        False,
+        existing,
+        new,
+        rebuilt_sources={"app.py", "schema.sql"},
+        failed_sources={"schema.sql"},
+    )
+
+    assert ok is False
+    assert "Refusing to overwrite" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("no_cluster", [False, True])
+def test_rebuild_refuses_loss_from_failed_source(tmp_path, monkeypatch, no_cluster):
+    """A failed AST extractor must not overwrite its last good graph."""
+    previous_sql_node_count = 10
+    (tmp_path / "app.py").write_text(
+        "def alpha(): return beta()\ndef beta(): return 1\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "schema.sql").write_text(
+        "create table cliente (id int primary key);\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    graph_path = out / "graph.json"
+    existing_nodes = [
+        {"id": "app.py", "label": "app.py", "source_file": "app.py", "type": "file", "_origin": "ast"},
+        {"id": "app.py:alpha", "label": "alpha", "source_file": "app.py", "type": "function", "_origin": "ast"},
+        {"id": "app.py:beta", "label": "beta", "source_file": "app.py", "type": "function", "_origin": "ast"},
+        {"id": "schema.sql", "label": "schema.sql", "source_file": "schema.sql", "type": "file", "_origin": "ast"},
+    ]
+    existing_nodes.extend(
+        {"id": f"sql:table_{index}", "label": f"table_{index}", "source_file": "schema.sql", "type": "table", "_origin": "ast"}
+        for index in range(previous_sql_node_count)
+    )
+    existing = {"nodes": existing_nodes, "links": []}
+    graph_path.write_text(json.dumps(existing), encoding="utf-8")
+    monkeypatch.setitem(sys.modules, "tree_sitter_sql", None)
+
+    ok = _rebuild_code(tmp_path, force=False, no_cluster=no_cluster)
+
+    assert ok is False
+    assert json.loads(graph_path.read_text(encoding="utf-8")) == existing
+
+
 def test_check_shrink_allows_growth():
     """new > existing is always fine."""
     ok = _check_shrink(
@@ -1551,10 +1812,12 @@ def test_queue_and_drain_pending_round_trip(tmp_path):
 
     pending_file = out / _PENDING_FILENAME
     assert pending_file.exists()
-    # Each path written on its own line.
-    assert pending_file.read_text(encoding="utf-8").splitlines() == [
-        "a.py", "sub/b.py", "c.md",
-    ]
+    # Each path written on its own line. Compared as Paths, not as strings: the
+    # documented contract is "one path per line" (see _queue_pending), not a
+    # separator convention, and os.fspath emits the native one — so a literal
+    # "sub/b.py" fails on Windows without any real defect.
+    lines = pending_file.read_text(encoding="utf-8").splitlines()
+    assert [Path(line) for line in lines] == paths
 
     drained = _drain_pending(out)
     assert drained == paths
@@ -1748,11 +2011,13 @@ def test_merge_changed_paths_dedupes_in_order():
 
 
 def test_rebuild_code_preserves_nodes_from_excluded_but_alive_file(tmp_path, capsys):
-    """Fail-closed eviction: a file that leaves the scan corpus (newly ignored)
-    but still exists on disk was EXCLUDED, not deleted — its nodes must survive
-    an incremental rebuild, with a loud message, instead of being silently
-    mass-evicted as stale sources (the docs/brainstorms incident: an upgrade
-    started honoring .gitignore and evicted 655 nodes whose files were present).
+    """Fail-closed eviction: a file that leaves the scan corpus but still exists
+    on disk was EXCLUDED, not deleted — on an INCREMENTAL rebuild its nodes must
+    survive a newly-honored .gitignore, with a loud message, instead of being
+    silently mass-evicted as stale sources (the docs/brainstorms incident: an
+    upgrade started honoring .gitignore and evicted 655 nodes whose files were
+    present). .gitignore-driven eviction is deliberately gated on a full rebuild
+    (#2495): only .graphifyignore/--exclude matches evict on the hook path.
     """
     import json
     from graphify.watch import _rebuild_code
@@ -1769,14 +2034,14 @@ def test_rebuild_code_preserves_nodes_from_excluded_but_alive_file(tmp_path, cap
     labels = {n["label"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
     assert "brainstorm.md" in labels
 
-    # The file becomes ignored (leaves the corpus) but stays on disk.
-    (corpus / ".graphifyignore").write_text("notes/\n", encoding="utf-8")
+    # The file becomes gitignored (leaves the corpus) but stays on disk.
+    (corpus / ".gitignore").write_text("notes/\n", encoding="utf-8")
     capsys.readouterr()
 
     assert _rebuild_code(corpus, changed_paths=[Path("auth.py")], acquire_lock=False) is True
     labels = {n["label"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
     assert "brainstorm.md" in labels, (
-        "nodes from an excluded-but-alive file must be preserved, not evicted"
+        "nodes from a gitignored-but-alive file must be preserved on an incremental rebuild"
     )
     assert "fail-closed: kept" in capsys.readouterr().out
 
@@ -1801,6 +2066,233 @@ def test_rebuild_code_still_evicts_when_excluded_file_is_also_deleted(tmp_path):
     labels = {n["label"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
     assert "brainstorm.md" not in labels, "deleted file's nodes must still be evicted"
     assert "login()" in labels
+
+
+# ── #2495: `graphify update` purges newly-ignored files that still exist ───────
+
+
+def test_update_prunes_newly_graphifyignored_file(tmp_path, monkeypatch, capsys):
+    """#2495: a file added to .graphifyignore while still on disk must be purged
+    from the graph by a full `graphify update` — nodes, edges, and hyperedges —
+    instead of being preserved forever by the fail-closed keep. The legitimate
+    shrink passes without --force/GRAPHIFY_FORCE, unchanged in-corpus files stay
+    byte-identical, and the prune is reported distinctly from the fail-closed
+    keep line."""
+    from graphify.watch import _rebuild_code
+
+    monkeypatch.delenv("GRAPHIFY_FORCE", raising=False)
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "a.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+    (corpus / "b.py").write_text("def helper():\n    return 2\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    assert any(n.get("source_file") == "b.py" for n in data["nodes"])
+    # Inject a hyperedge OWNED by b.py whose members all live in a.py, so only
+    # the source-identity eviction (not member loss) can remove it.
+    a_ids = [n["id"] for n in data["nodes"] if n.get("source_file") == "a.py"]
+    assert a_ids
+    data.setdefault("hyperedges", []).append(
+        {"id": "h_b", "nodes": a_ids, "source_file": "b.py"}
+    )
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+
+    def _a_items(payload):
+        return sorted(
+            (
+                json.dumps(item, sort_keys=True)
+                for bucket in ("nodes", "links")
+                for item in payload.get(bucket, [])
+                if item.get("source_file") == "a.py"
+            ),
+        )
+
+    a_before = _a_items(data)
+    (corpus / ".graphifyignore").write_text("b.py\n", encoding="utf-8")
+    capsys.readouterr()
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+
+    after = json.loads(graph_path.read_text(encoding="utf-8"))
+    for bucket in ("nodes", "links", "hyperedges"):
+        assert not any(
+            item.get("source_file") == "b.py" for item in after.get(bucket, [])
+        ), f"{bucket} still reference newly-ignored b.py (#2495)"
+    assert "h_b" not in {h.get("id") for h in after.get("hyperedges", [])}
+    assert _a_items(after) == a_before, (
+        "unchanged in-corpus file's items must survive the prune byte-identical"
+    )
+    out = capsys.readouterr().out
+    assert "newly-ignored file(s)" in out
+    assert "fail-closed: kept" not in out
+
+
+def test_update_still_prunes_deleted_file_with_ignore_rules_present(tmp_path):
+    """Regression guard for #2495: routing ignore-rule evidence through the
+    corpus sweep must not weaken plain deletion eviction while unrelated ignore
+    rules exist."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / ".graphifyignore").write_text("unrelated/\n", encoding="utf-8")
+    (corpus / "a.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+    (corpus / "b.py").write_text("def helper():\n    return 2\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+
+    (corpus / "b.py").unlink()
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    sources = {n.get("source_file") for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+    assert "b.py" not in sources, "deleted file's nodes must still be evicted"
+    assert "a.py" in sources
+
+
+def test_update_keeps_alive_file_dropped_from_corpus_without_ignore_rule(
+    tmp_path, monkeypatch, capsys
+):
+    """#1795 retained under #2495: evicting an alive file now requires POSITIVE
+    evidence — a live ignore rule matching it. A file that leaves the corpus for
+    any other reason (filter regression, extractor loss) stays preserved, with
+    the fail-closed message."""
+    from graphify import detect as detect_mod
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "a.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+    (corpus / "b.py").write_text("def helper():\n    return 2\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+
+    real_detect = detect_mod.detect
+
+    def narrowed(root, **kwargs):
+        res = real_detect(root, **kwargs)
+        res["files"]["code"] = [
+            f for f in res["files"]["code"] if not str(f).endswith("b.py")
+        ]
+        return res
+
+    monkeypatch.setattr(detect_mod, "detect", narrowed)
+    capsys.readouterr()
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    sources = {n.get("source_file") for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+    assert "b.py" in sources, (
+        "alive file dropped from the corpus with NO matching ignore rule must be kept"
+    )
+    out = capsys.readouterr().out
+    assert "fail-closed: kept" in out
+    assert "newly-ignored" not in out
+
+
+def test_update_evicts_semantic_nodes_from_newly_ignored_non_ast_source(tmp_path, capsys):
+    """#2495 extends #2051: a non-AST source (.txt) whose semantic nodes evict on
+    disk absence must also evict when the file is alive but newly matched by a
+    .graphifyignore rule."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "app.py").write_text("def handle():\n    return 1\n", encoding="utf-8")
+    (corpus / "notes.txt").write_text("Rationale to be ignored.\n", encoding="utf-8")
+    (corpus / "kept.txt").write_text("Rationale that stays.\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    # No LLM in tests, so inject the semantic layer these .txt files would carry.
+    data["nodes"].extend([
+        {"id": "notes_concept", "label": "Notes Concept", "file_type": "concept",
+         "source_file": "notes.txt"},
+        {"id": "kept_concept", "label": "Kept Concept", "file_type": "concept",
+         "source_file": "kept.txt"},
+    ])
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+
+    (corpus / ".graphifyignore").write_text("notes.txt\n", encoding="utf-8")
+    capsys.readouterr()
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    after_ids = {n["id"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+    assert "notes_concept" not in after_ids, (
+        "semantic node from a newly-ignored alive non-AST source must be evicted (#2495)"
+    )
+    assert "kept_concept" in after_ids
+    assert "newly-ignored file(s)" in capsys.readouterr().out
+
+
+def test_gitignore_eviction_gated_on_full_rebuild(tmp_path, capsys):
+    """#2495 policy split: a .gitignore-only match is preserved fail-closed on an
+    incremental rebuild (#1795's motivating case — a deliberately-graphed
+    .gitignore'd tree survives the hook path), but an explicit full
+    `graphify update` honors it and purges the file."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    generated = corpus / "generated"
+    generated.mkdir(parents=True)
+    (corpus / "app.py").write_text("def handle():\n    return 1\n", encoding="utf-8")
+    (generated / "gen.py").write_text("def generated():\n    return 2\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    sources = {n.get("source_file") for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+    assert "generated/gen.py" in sources
+
+    (corpus / ".gitignore").write_text("generated/\n", encoding="utf-8")
+    capsys.readouterr()
+
+    # Incremental (hook) rebuild: .gitignore-driven eviction is NOT honored.
+    assert _rebuild_code(
+        corpus, changed_paths=[Path("app.py")], no_cluster=True, acquire_lock=False
+    ) is True
+    sources = {n.get("source_file") for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+    assert "generated/gen.py" in sources, (
+        ".gitignore-only match must be preserved on the incremental path"
+    )
+    assert "fail-closed: kept" in capsys.readouterr().out
+
+    # Explicit full update: the .gitignore match is honored and purged.
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    sources = {n.get("source_file") for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+    assert "generated/gen.py" not in sources, (
+        ".gitignore match must be purged by an explicit full update (#2495)"
+    )
+    assert "newly-ignored file(s)" in capsys.readouterr().out
+
+
+def test_graphifyignore_eviction_applies_to_incremental_rebuilds(tmp_path, capsys):
+    """#2495 policy split, other half: a .graphifyignore match is unambiguous
+    graph-level intent and evicts on the incremental (hook) path too."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "app.py").write_text("def handle():\n    return 1\n", encoding="utf-8")
+    (corpus / "vendor.py").write_text("def vendored():\n    return 2\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+
+    (corpus / ".graphifyignore").write_text("vendor.py\n", encoding="utf-8")
+    capsys.readouterr()
+
+    assert _rebuild_code(
+        corpus, changed_paths=[Path("app.py")], no_cluster=True, acquire_lock=False
+    ) is True
+    sources = {n.get("source_file") for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+    assert "vendor.py" not in sources, (
+        ".graphifyignore match must evict on an incremental rebuild too (#2495)"
+    )
+    assert "app.py" in sources
+    assert "newly-ignored file(s)" in capsys.readouterr().out
 
 
 # --- #1915: semantic-backed docs must not be double-represented by the AST quick-scan ---
@@ -2050,11 +2542,13 @@ def test_rebuild_code_quick_scans_doc_without_semantic_nodes(tmp_path):
     assert {"notes", "notes_alpha", "notes_beta"} <= ids
 
 
-def test_rebuild_code_polluted_graph_self_heals_on_full_rebuild(tmp_path):
-    """#1915: a graph already bloated by the bug (semantic doc nodes PLUS stale
-    _origin=="ast" heading nodes for the same doc) sheds the heading nodes on
-    the next full rebuild via the AST ownership rule — and the shrink guard
-    accepts the smaller write without --force."""
+def test_full_rebuild_preserves_semantic_backed_doc_ast_layer(tmp_path):
+    """#2333 (COEXIST): a doc that carries BOTH an AST heading layer and a
+    semantic layer keeps both across a full rebuild. The doc is excluded from
+    extract_targets (#1915, no re-quick-scan), so its AST nodes are NOT
+    regenerated this run — the full-rebuild ownership rule must therefore not
+    drop them (it owns only rebuilt sources, not everything in watch_root).
+    Supersedes the pre-COEXIST #1915 self-heal, which deleted the AST layer."""
     from graphify.watch import _rebuild_code
 
     corpus = tmp_path / "corpus"
@@ -2070,31 +2564,107 @@ def test_rebuild_code_polluted_graph_self_heals_on_full_rebuild(tmp_path):
     graph_path = corpus / "graphify-out" / "graph.json"
     data = json.loads(graph_path.read_text(encoding="utf-8"))
     assert _AST_GUIDE_IDS <= {n["id"] for n in data["nodes"]}
+    doc_nodes_before = sum(
+        1 for n in data["nodes"] if n.get("source_file") == "guide.md"
+    )
 
-    # Layer the semantic representation on top -> the double-represented state.
-    data["nodes"].extend([
-        {"id": "guide_doc", "label": "Guide", "file_type": "document",
-         "source_file": "guide.md"},
+    # Layer the semantic representation on top — both tiers now coexist.
+    data["nodes"].append(
         {"id": "auth_flow", "label": "Auth Flow", "file_type": "concept",
          "source_file": "guide.md"},
-    ])
-    data["links"].append({
-        "source": "guide_doc", "target": "auth_flow", "relation": "explains",
-        "confidence": "INFERRED", "source_file": "guide.md",
-    })
+    )
     graph_path.write_text(json.dumps(data), encoding="utf-8")
-    nodes_before = len(data["nodes"])
 
-    # No force=True: the self-heal shrink must be accepted by the guard.
+    # Full rebuild WITHOUT force: guide.md is now semantic-backed, so it is
+    # excluded from extract_targets — its existing AST layer must survive.
     assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
 
     after = json.loads(graph_path.read_text(encoding="utf-8"))
     after_ids = {n["id"] for n in after["nodes"]}
-    assert {"guide_doc", "auth_flow"} <= after_ids
-    assert not (_AST_GUIDE_IDS & after_ids), (
-        "stale AST heading nodes for a semantic-backed doc must self-heal away"
+    assert "auth_flow" in after_ids, "semantic layer lost on full rebuild"
+    assert _AST_GUIDE_IDS <= after_ids, (
+        "AST heading layer of a semantic-backed doc dropped by a full "
+        "rebuild (#2333 COEXIST)"
     )
-    assert len(after["nodes"]) < nodes_before, "polluted graph should shrink"
+    doc_nodes_after = sum(
+        1 for n in after["nodes"]
+        if n.get("source_file") == "guide.md" and n["id"] != "auth_flow"
+    )
+    assert doc_nodes_after == doc_nodes_before, (
+        "document-node count changed across a full rebuild of a "
+        f"semantic-backed doc: {doc_nodes_before} -> {doc_nodes_after}"
+    )
+
+
+def test_full_rebuild_regenerates_docs_with_legacy_unstamped_nodes(tmp_path):
+    """#2334: a legacy heading node without the _origin stamp (pre-0.9.16
+    graph) must not fake a semantic layer — _is_ast_tier's shape fallback
+    (source_location "L<n>") classifies it as AST, so the doc stays in
+    extract_targets, is re-quick-scanned, and comes back fully re-stamped."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "app.py").write_text(
+        "def handle_login():\n    return 1\n", encoding="utf-8"
+    )
+    (corpus / "guide.md").write_text(
+        "# Overview\n\n## Setup\n\n## Usage\n", encoding="utf-8"
+    )
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    assert _AST_GUIDE_IDS <= {n["id"] for n in data["nodes"]}
+
+    # Simulate a legacy graph: strip the _origin stamp from one heading node.
+    stripped = next(
+        n for n in data["nodes"] if n["id"] == "guide_overview"
+    )
+    stripped.pop("_origin", None)
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+
+    after = json.loads(graph_path.read_text(encoding="utf-8"))
+    after_by_id = {n["id"]: n for n in after["nodes"]}
+    assert _AST_GUIDE_IDS <= set(after_by_id), (
+        "legacy unstamped heading node made the doc look semantic-backed "
+        "and its AST structure was dropped (#2334)"
+    )
+    for nid in _AST_GUIDE_IDS:
+        assert after_by_id[nid].get("_origin") == "ast", (
+            f"{nid} not re-stamped with _origin=ast after the full rebuild"
+        )
+
+
+def test_full_rebuild_drops_stale_ast_for_reextracted_code(tmp_path):
+    """#1116 guard: tier-scoping the full-rebuild ownership rule (#2333) must
+    not stop a genuinely re-extracted code file from shedding its stale AST
+    nodes — a renamed function's old symbol node still disappears."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "app.py").write_text(
+        "def old_name():\n    return 1\n", encoding="utf-8"
+    )
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    ids = {n["id"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+    assert "app_old_name" in ids
+
+    (corpus / "app.py").write_text(
+        "def new_name():\n    return 1\n", encoding="utf-8"
+    )
+    # Full rebuild (no changed_paths): app.py is re-extracted, so its stale
+    # AST symbol node is owned by this run and must be dropped.
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+
+    ids = {n["id"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+    assert "app_new_name" in ids
+    assert "app_old_name" not in ids, (
+        "stale AST node for a re-extracted code file survived (#1116)"
+    )
 
 
 # ── #2014: code-typed semantic nodes count as a doc's semantic layer ───────────
@@ -2402,3 +2972,1234 @@ def test_rebuild_readable_graph_still_preserves_semantic_nodes(tmp_path):
         e.get("source") == "notes_concept" and e.get("target") == "notes_doc"
         for e in after["links"]
     ), "semantic link must survive an incremental rebuild"
+
+
+# --- #2342: `graphify update` rebuild must inherit the on-disk directed flag ---
+
+def test_rebuild_code_inherits_directed_flag_clustered(tmp_path):
+    """#2342: the clustered `graphify update` rebuild path built the graph via
+    build_from_json(result) with no directed= argument, so it always took the
+    directed=False default and silently downgraded an existing directed graph.
+    """
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "a.py").write_text(
+        "def alpha():\n    return beta()\n\ndef beta():\n    return 1\n", encoding="utf-8"
+    )
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    graph_path = corpus / "graphify-out" / "graph.json"
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    data["directed"] = True
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+
+    # Add a NEW function and a call to it, so the rebuild genuinely changes
+    # topology. Editing only a function BODY leaves the node/edge set identical,
+    # so the same_topology check short-circuits before graph.json is rewritten
+    # and the seeded flag survives untouched — the assertion below would then
+    # pass without the fix ever running.
+    n_before = len(json.loads(graph_path.read_text(encoding="utf-8"))["nodes"])
+    (corpus / "a.py").write_text(
+        "def alpha():\n    return beta() + gamma()\n\n"
+        "def beta():\n    return 1\n\ndef gamma():\n    return 2\n",
+        encoding="utf-8",
+    )
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    after = json.loads(graph_path.read_text(encoding="utf-8"))
+    assert len(after["nodes"]) > n_before, (
+        "guard: graph.json must actually have been rewritten, otherwise the "
+        "directed assertion below is vacuous"
+    )
+    assert after.get("directed") is True, (
+        "graphify update (clustered) must preserve an existing directed=True graph"
+    )
+    edge = next(
+        e for e in after["links"]
+        if e.get("relation") == "calls"
+    )
+    assert edge["source"] == "a_alpha" and edge["target"] == "a_beta", (
+        "directed calls edge must still read alpha -> beta, not reversed"
+    )
+
+
+def test_rebuild_code_inherits_directed_flag_no_cluster(tmp_path):
+    """#2342, --no-cluster path: candidate_graph_data was built straight from the
+    raw merged extraction (`result`), which never carries a directed key, so the
+    written graph.json silently lost the flag on every no-cluster update."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "a.py").write_text("def f(): pass\n", encoding="utf-8")
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+
+    graph_path = corpus / "graphify-out" / "graph.json"
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    data["directed"] = True
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+
+    # A new top-level function, not just a body edit, so the candidate graph
+    # really differs and the same_graph check cannot short-circuit the write
+    # (which would leave the seeded flag in place and make this vacuous).
+    n_before = len(json.loads(graph_path.read_text(encoding="utf-8"))["nodes"])
+    (corpus / "a.py").write_text("def f(): pass\n\ndef g(): pass\n", encoding="utf-8")
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+
+    after = json.loads(graph_path.read_text(encoding="utf-8"))
+    assert len(after["nodes"]) > n_before, (
+        "guard: graph.json must actually have been rewritten, otherwise the "
+        "directed assertion below is vacuous"
+    )
+    assert after.get("directed") is True, (
+        "graphify update --no-cluster must preserve an existing directed=True graph"
+    )
+
+
+def test_rebuild_code_keeps_undirected_graph_undirected(tmp_path):
+    """An existing undirected graph (no directed key, the on-disk default) must
+    not be spuriously flipped to directed=True by an update rebuild."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "a.py").write_text("def f(): pass\n", encoding="utf-8")
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    graph_path = corpus / "graphify-out" / "graph.json"
+    before = json.loads(graph_path.read_text(encoding="utf-8"))
+    assert before.get("directed", False) is False
+
+    (corpus / "a.py").write_text("def f(): return 1\n", encoding="utf-8")
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    after = json.loads(graph_path.read_text(encoding="utf-8"))
+    assert after.get("directed", False) is False, (
+        "an undirected graph must not be spuriously flipped to directed by update"
+    )
+
+
+def test_rebuild_code_fresh_build_defaults_undirected(tmp_path):
+    """No existing graph at all (first build via _rebuild_code) must still
+    default to directed=False - #2342's fix only inherits, never invents True."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "a.py").write_text("def f(): pass\n", encoding="utf-8")
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    graph_path = corpus / "graphify-out" / "graph.json"
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    assert data.get("directed", False) is False
+
+
+def test_incremental_rebuild_preserves_call_to_unchanged_typescript_target(tmp_path):
+    """#2406: rebuilding a changed caller retains its SHARED DIRECT calls into unchanged files.
+
+    Scope here is the shared direct-call pass (a plain `shared()`); member calls
+    (#2437) and indirect_call (#2438) are covered by the tests at the end of
+    this file.
+
+    A later edit that removes the call must still remove the edge, preventing a
+    stale-edge-preservation workaround.
+    """
+    import json
+
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+
+    target = corpus / "B.ts"
+    caller = corpus / "A.ts"
+
+    target.write_text(
+        """
+export function shared(): number {
+  return 1;
+}
+""".lstrip(),
+        encoding="utf-8",
+    )
+    caller.write_text(
+        """
+import { shared } from "./B";
+
+export function run(): number {
+  return shared();
+}
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    graph_path = corpus / "graphify-out" / "graph.json"
+
+    def load_graph():
+        return json.loads(graph_path.read_text(encoding="utf-8"))
+
+    def node_id(graph, label, source_file):
+        return next(
+            node["id"]
+            for node in graph.get("nodes", [])
+            if node.get("label") == label
+            and node.get("source_file") == source_file
+        )
+
+    def has_call(graph):
+        run_id = node_id(graph, "run()", "A.ts")
+        shared_id = node_id(graph, "shared()", "B.ts")
+        return any(
+            edge.get("relation") == "calls"
+            and edge.get("source") == run_id
+            and edge.get("target") == shared_id
+            for edge in graph.get("links", graph.get("edges", []))
+        )
+
+    # Full-corpus baseline resolves A.run() -> B.shared().
+    assert _rebuild_code(
+        corpus,
+        no_cluster=True,
+        acquire_lock=False,
+    ) is True
+    assert has_call(load_graph()), "full rebuild must create the cross-file call edge"
+
+    # Change only the caller while retaining the same call. The unchanged target
+    # must remain available to the cross-file resolver.
+    caller.write_text(
+        """
+import { shared } from "./B";
+
+export function run(): number {
+  return shared() + 1;
+}
+""".lstrip(),
+        encoding="utf-8",
+    )
+    assert _rebuild_code(
+        corpus,
+        changed_paths=[caller],
+        no_cluster=True,
+        acquire_lock=False,
+    ) is True
+    assert has_call(
+        load_graph()
+    ), "incremental rebuild dropped the call edge to an unchanged target"
+
+    # Removing the call must remove the edge; do not merely preserve old outgoing
+    # edges from changed files.
+    caller.write_text(
+        """
+export function run(): number {
+  return 1;
+}
+""".lstrip(),
+        encoding="utf-8",
+    )
+    assert _rebuild_code(
+        corpus,
+        changed_paths=[caller],
+        no_cluster=True,
+        acquire_lock=False,
+    ) is True
+
+    final_graph = load_graph()
+    run_id = node_id(final_graph, "run()", "A.ts")
+    assert not any(
+        edge.get("relation") == "calls"
+        and edge.get("source") == run_id
+        for edge in final_graph.get("links", final_graph.get("edges", []))
+    ), "removed call must not survive as a stale edge"
+
+
+# --- #2406 incremental shared-direct-call resolution helpers -----------------
+
+def _2406_graph(corpus):
+    import json
+    return json.loads(
+        (corpus / "graphify-out" / "graph.json").read_text(encoding="utf-8")
+    )
+
+
+def _2406_nid(graph, label, source_file):
+    return next(
+        (
+            node["id"]
+            for node in graph.get("nodes", [])
+            if node.get("label") == label and node.get("source_file") == source_file
+        ),
+        None,
+    )
+
+
+def _2406_calls(graph):
+    """(source_id, target_id) of every `calls` edge."""
+    return [
+        (edge.get("source"), edge.get("target"))
+        for edge in graph.get("links", graph.get("edges", []))
+        if edge.get("relation") == "calls"
+    ]
+
+
+def _2406_seed(tmp_path, caller_src, target_src="export function shared(): number {\n  return 1;\n}\n"):
+    """Build a two-file TS corpus and do the initial full rebuild."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir(parents=True)
+    (corpus / "B.ts").write_text(target_src, encoding="utf-8")
+    (corpus / "A.ts").write_text(caller_src, encoding="utf-8")
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    return corpus
+
+
+_2406_CALLER = (
+    'import { shared } from "./B";\n'
+    "\n"
+    "export function run(): number {\n"
+    "  return shared();\n"
+    "}\n"
+)
+
+
+def test_incremental_rebuild_drops_call_when_import_is_removed(tmp_path):
+    """#2406: no import evidence => the persisted target must not be resolved."""
+    from graphify.watch import _rebuild_code
+
+    corpus = _2406_seed(tmp_path, _2406_CALLER)
+    caller = corpus / "A.ts"
+    # `shared` is now a local no-op call with no import backing it.
+    caller.write_text(
+        "declare function shared(): number;\n"
+        "\n"
+        "export function run(): number {\n"
+        "  return shared();\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    assert _rebuild_code(
+        corpus, changed_paths=[caller], no_cluster=True, acquire_lock=False
+    ) is True
+
+    graph = _2406_graph(corpus)
+    shared_id = _2406_nid(graph, "shared()", "B.ts")
+    run_id = _2406_nid(graph, "run()", "A.ts")
+    assert (run_id, shared_id) not in _2406_calls(graph)
+
+
+def test_incremental_rebuild_uses_fresh_nodes_when_target_also_changed(tmp_path):
+    """#2406: a changed target's persisted symbols must never win over fresh ones."""
+    from graphify.watch import _rebuild_code
+
+    corpus = _2406_seed(tmp_path, _2406_CALLER)
+    caller, target = corpus / "A.ts", corpus / "B.ts"
+    target.write_text(
+        "export function renamed(): number {\n  return 2;\n}\n", encoding="utf-8"
+    )
+    caller.write_text(
+        'import { renamed } from "./B";\n'
+        "\n"
+        "export function run(): number {\n"
+        "  return renamed();\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    assert _rebuild_code(
+        corpus,
+        changed_paths=[caller, target],
+        no_cluster=True,
+        acquire_lock=False,
+    ) is True
+
+    graph = _2406_graph(corpus)
+    calls = _2406_calls(graph)
+    run_id = _2406_nid(graph, "run()", "A.ts")
+    assert (run_id, _2406_nid(graph, "renamed()", "B.ts")) in calls
+    # The stale `shared()` node is gone entirely, so nothing can point at it.
+    assert _2406_nid(graph, "shared()", "B.ts") is None
+
+
+def test_incremental_rebuild_context_excludes_deleted_target(tmp_path):
+    """#2406: a deleted file cannot remain a resolver target."""
+    from graphify.watch import _rebuild_code
+
+    corpus = _2406_seed(tmp_path, _2406_CALLER)
+    caller, target = corpus / "A.ts", corpus / "B.ts"
+    target.unlink()
+    caller.write_text(
+        "export function run(): number {\n  return shared();\n}\n", encoding="utf-8"
+    )
+    assert _rebuild_code(
+        corpus,
+        changed_paths=[caller, target],
+        no_cluster=True,
+        acquire_lock=False,
+    ) is True
+
+    graph = _2406_graph(corpus)
+    assert _2406_nid(graph, "shared()", "B.ts") is None
+    assert _2406_calls(graph) == []
+
+
+def test_incremental_rebuild_does_not_reparse_unchanged_targets(tmp_path, monkeypatch):
+    """#2406 keeps the incremental contract: only changed files are extracted."""
+    import graphify.extract as extract_mod
+    from graphify.watch import _rebuild_code
+
+    corpus = _2406_seed(tmp_path, _2406_CALLER)
+    caller = corpus / "A.ts"
+
+    seen: list[list[str]] = []
+    real_extract = extract_mod.extract
+
+    def spy(paths, *args, **kwargs):
+        seen.append([Path(p).name for p in paths])
+        return real_extract(paths, *args, **kwargs)
+
+    monkeypatch.setattr(extract_mod, "extract", spy)
+    caller.write_text(_2406_CALLER.replace("shared();", "shared() + 1;"), encoding="utf-8")
+    assert _rebuild_code(
+        corpus, changed_paths=[caller], no_cluster=True, acquire_lock=False
+    ) is True
+
+    assert seen == [["A.ts"]]
+
+
+def test_incremental_rebuild_matches_full_rebuild_and_does_not_duplicate(tmp_path):
+    """#2406: full/incremental parity for edges sourced by the changed file."""
+    from graphify.watch import _rebuild_code
+
+    corpus = _2406_seed(tmp_path, _2406_CALLER)
+    caller = corpus / "A.ts"
+    edited = _2406_CALLER.replace("shared();", "shared() + 1;")
+    caller.write_text(edited, encoding="utf-8")
+
+    # Two incremental rebuilds in a row must be idempotent (no duplicate edges).
+    for _ in range(2):
+        assert _rebuild_code(
+            corpus, changed_paths=[caller], no_cluster=True, acquire_lock=False
+        ) is True
+    incremental = _2406_calls(_2406_graph(corpus))
+    assert len(incremental) == len(set(incremental))
+
+    # Same final corpus, built from scratch.
+    fresh = _2406_seed(tmp_path / "fresh", edited)
+    assert sorted(_2406_calls(_2406_graph(fresh))) == sorted(incremental)
+
+
+def test_incremental_rebuild_preserves_python_call_to_unchanged_target(tmp_path):
+    """#2406 is language-agnostic: the shared DIRECT cross-file call pass carries it."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "b.py").write_text("def shared():\n    return 1\n", encoding="utf-8")
+    caller = corpus / "a.py"
+    caller.write_text(
+        "from b import shared\n\n\ndef run():\n    return shared()\n", encoding="utf-8"
+    )
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    full = _2406_calls(_2406_graph(corpus))
+    assert full, "full rebuild must resolve the cross-file python call"
+
+    caller.write_text(
+        "from b import shared\n\n\ndef run():\n    return shared() + 1\n",
+        encoding="utf-8",
+    )
+    assert _rebuild_code(
+        corpus, changed_paths=[caller], no_cluster=True, acquire_lock=False
+    ) is True
+    assert sorted(_2406_calls(_2406_graph(corpus))) == sorted(full)
+
+
+# --- #2437 / #2438: member + indirect calls into unchanged files -------------
+# The #2406 resolution context now also carries the unchanged corpus's
+# contains/method edges (member-call resolvers, #2437) and the persisted
+# `_callable`/`_callable_class` markers (indirect_call guard, #2438), so both
+# edge families survive an incremental rebuild exactly like shared direct calls.
+
+_2437_TARGET = "export class Service {\n  ping(): number { return 1; }\n}\n"
+_2437_CALLER = (
+    'import { Service } from "./B";\n\n'
+    "export function run(): number {\n"
+    "  const service = new Service();\n"
+    "  return service.ping()%s;\n}\n"
+)
+
+
+def _2437_seed(tmp_path, caller_suffix=""):
+    """Build the member-call corpus (TS receiver-typed call) and full-rebuild it."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir(parents=True)
+    (corpus / "B.ts").write_text(_2437_TARGET, encoding="utf-8")
+    (corpus / "A.ts").write_text(_2437_CALLER % caller_suffix, encoding="utf-8")
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    return corpus
+
+
+_2438_CALLER = (
+    "from b import handler\n\n\ndef run(pool):\n%s    return pool.submit(handler)\n"
+)
+
+
+def _2438_seed(tmp_path, caller_prefix="", target_src="def handler():\n    return 1\n"):
+    """Build the indirect-call corpus (py callback into b.py) and full-rebuild it."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir(parents=True)
+    (corpus / "b.py").write_text(target_src, encoding="utf-8")
+    (corpus / "a.py").write_text(_2438_CALLER % caller_prefix, encoding="utf-8")
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    return corpus
+
+
+def _2438_indirects(graph):
+    """(source_id, target_id) of every `indirect_call` edge."""
+    return [
+        (edge.get("source"), edge.get("target"))
+        for edge in graph.get("links", graph.get("edges", []))
+        if edge.get("relation") == "indirect_call"
+    ]
+
+
+def test_incremental_rebuild_preserves_member_call_to_unchanged_target(tmp_path):
+    """#2437: a changed caller keeps its `service.ping()` edge into an unchanged file."""
+    from graphify.watch import _rebuild_code
+
+    corpus = _2437_seed(tmp_path)
+    full = _2406_calls(_2406_graph(corpus))
+    assert full, "full rebuild must resolve the cross-file member call"
+
+    caller = corpus / "A.ts"
+    caller.write_text(_2437_CALLER % " + 1", encoding="utf-8")
+    assert _rebuild_code(
+        corpus, changed_paths=[caller], no_cluster=True, acquire_lock=False
+    ) is True
+    assert sorted(_2406_calls(_2406_graph(corpus))) == sorted(full)
+
+
+def test_incremental_rebuild_preserves_indirect_call_to_unchanged_target(tmp_path):
+    """#2438: the persisted `_callable` marker keeps `pool.submit(handler)` resolving."""
+    from graphify.watch import _rebuild_code
+
+    corpus = _2438_seed(tmp_path)
+    full = _2438_indirects(_2406_graph(corpus))
+    assert full, "full rebuild must resolve the cross-file indirect call"
+
+    caller = corpus / "a.py"
+    caller.write_text(_2438_CALLER % "    x = 1\n", encoding="utf-8")
+    assert _rebuild_code(
+        corpus, changed_paths=[caller], no_cluster=True, acquire_lock=False
+    ) is True
+    assert sorted(_2438_indirects(_2406_graph(corpus))) == sorted(full)
+
+
+def test_incremental_rebuild_evicts_removed_member_call(tmp_path):
+    """#2437: removing the member call from the caller must remove the edge —
+    the fix regenerates edges from fresh raw_calls, it never preserves stale ones."""
+    from graphify.watch import _rebuild_code
+
+    corpus = _2437_seed(tmp_path)
+    assert _2406_calls(_2406_graph(corpus)), "member-call baseline missing"
+
+    caller = corpus / "A.ts"
+    caller.write_text(
+        "export function run(): number {\n  return 1;\n}\n", encoding="utf-8"
+    )
+    assert _rebuild_code(
+        corpus, changed_paths=[caller], no_cluster=True, acquire_lock=False
+    ) is True
+    assert _2406_calls(_2406_graph(corpus)) == []
+
+
+def test_incremental_rebuild_evicts_member_call_when_target_deleted(tmp_path):
+    """#2437: a deleted callee file must not resurrect through the context edges."""
+    from graphify.watch import _rebuild_code
+
+    corpus = _2437_seed(tmp_path)
+    caller, target = corpus / "A.ts", corpus / "B.ts"
+    target.unlink()
+    assert _rebuild_code(
+        corpus,
+        changed_paths=[caller, target],
+        no_cluster=True,
+        acquire_lock=False,
+    ) is True
+
+    graph = _2406_graph(corpus)
+    assert _2406_calls(graph) == []
+    assert not any(
+        node.get("source_file") == "B.ts" for node in graph.get("nodes", [])
+    ), "deleted target's nodes must be evicted, not resurrected as context"
+
+
+def test_incremental_rebuild_evicts_indirect_call_when_target_deleted(tmp_path):
+    """#2438: a deleted callback target must not resurrect through the context nodes."""
+    from graphify.watch import _rebuild_code
+
+    corpus = _2438_seed(tmp_path)
+    caller, target = corpus / "a.py", corpus / "b.py"
+    target.unlink()
+    assert _rebuild_code(
+        corpus,
+        changed_paths=[caller, target],
+        no_cluster=True,
+        acquire_lock=False,
+    ) is True
+
+    graph = _2406_graph(corpus)
+    assert _2438_indirects(graph) == []
+    assert not any(
+        node.get("source_file") == "b.py" for node in graph.get("nodes", [])
+    ), "deleted target's nodes must be evicted, not resurrected as context"
+
+
+def test_incremental_rebuild_callable_guard_excludes_unchanged_data_symbol(tmp_path):
+    """#2438 keeps the #1566/#2137 guard: a same-named DATA symbol in an unchanged
+    file (`handler = 1`) is not `_callable`, so `pool.submit(handler)` must emit no
+    indirect_call on the full build or the incremental one."""
+    from graphify.watch import _rebuild_code
+
+    corpus = _2438_seed(tmp_path, target_src="handler = 1\n")
+    assert _2438_indirects(_2406_graph(corpus)) == []
+
+    caller = corpus / "a.py"
+    caller.write_text(_2438_CALLER % "    x = 1\n", encoding="utf-8")
+    assert _rebuild_code(
+        corpus, changed_paths=[caller], no_cluster=True, acquire_lock=False
+    ) is True
+    assert _2438_indirects(_2406_graph(corpus)) == []
+
+
+def test_incremental_rebuild_legacy_graph_without_callable_markers(tmp_path):
+    """#2438 degradation contract: a graph written before the `_callable` markers
+    persisted must not crash the incremental rebuild — the guard fails closed (no
+    indirect_call, pre-fix behavior) and the next full rebuild self-heals."""
+    import json
+
+    from graphify.watch import _rebuild_code
+
+    corpus = _2438_seed(tmp_path)
+    graph_path = corpus / "graphify-out" / "graph.json"
+    assert _2438_indirects(_2406_graph(corpus)), "indirect-call baseline missing"
+
+    # Simulate a pre-#2438 graph: strip the persisted callability markers.
+    legacy = json.loads(graph_path.read_text(encoding="utf-8"))
+    for node in legacy.get("nodes", []):
+        node.pop("_callable", None)
+        node.pop("_callable_class", None)
+    graph_path.write_text(json.dumps(legacy), encoding="utf-8")
+
+    caller = corpus / "a.py"
+    caller.write_text(_2438_CALLER % "    x = 1\n", encoding="utf-8")
+    assert _rebuild_code(
+        corpus, changed_paths=[caller], no_cluster=True, acquire_lock=False
+    ) is True
+    assert _2438_indirects(_2406_graph(corpus)) == []
+
+    # A full rebuild re-extracts the target, restores the markers, and the edge.
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    assert _2438_indirects(_2406_graph(corpus)), "full rebuild must self-heal"
+
+
+def test_incremental_member_call_parity_and_idempotency(tmp_path):
+    """#2437: repeated incremental rebuilds neither duplicate the member-call edge
+    nor diverge from a from-scratch build of the same corpus."""
+    from graphify.watch import _rebuild_code
+
+    corpus = _2437_seed(tmp_path)
+    caller = corpus / "A.ts"
+    caller.write_text(_2437_CALLER % " + 1", encoding="utf-8")
+    for _ in range(2):
+        assert _rebuild_code(
+            corpus, changed_paths=[caller], no_cluster=True, acquire_lock=False
+        ) is True
+    incremental = _2406_calls(_2406_graph(corpus))
+    assert incremental, "member call lost across repeated incremental rebuilds"
+    assert len(incremental) == len(set(incremental))
+
+    fresh = _2437_seed(tmp_path / "fresh", caller_suffix=" + 1")
+    assert sorted(_2406_calls(_2406_graph(fresh))) == sorted(incremental)
+
+
+def test_incremental_indirect_call_parity_and_idempotency(tmp_path):
+    """#2438: repeated incremental rebuilds neither duplicate the indirect_call edge
+    nor diverge from a from-scratch build of the same corpus."""
+    from graphify.watch import _rebuild_code
+
+    corpus = _2438_seed(tmp_path)
+    caller = corpus / "a.py"
+    caller.write_text(_2438_CALLER % "    x = 1\n", encoding="utf-8")
+    for _ in range(2):
+        assert _rebuild_code(
+            corpus, changed_paths=[caller], no_cluster=True, acquire_lock=False
+        ) is True
+    incremental = _2438_indirects(_2406_graph(corpus))
+    assert incremental, "indirect call lost across repeated incremental rebuilds"
+    assert len(incremental) == len(set(incremental))
+
+    fresh = _2438_seed(tmp_path / "fresh", caller_prefix="    x = 1\n")
+    assert sorted(_2438_indirects(_2406_graph(fresh))) == sorted(incremental)
+
+
+# --- #2603: absolute .graphify_root must not re-anchor cwd-relative sources ---
+
+def test_subfolder_root_marker_preserves_unchanged_nodes(tmp_path, monkeypatch):
+    """End-to-end pin for #2603: a graph built from the repo root scoped to a
+    subfolder stores source_file relative to the repo root ("src/mod0.py"),
+    while the skill writes an ABSOLUTE subfolder path into .graphify_root.
+    _StoredSourcePaths then anchored the stored paths to the subfolder,
+    doubling them (src/src/...), judging every unchanged source deleted, and
+    collapsing the graph. The marker must be validated against the stored
+    paths before it is trusted as their anchor."""
+    from graphify.watch import _rebuild_code
+
+    repo = tmp_path / "repo"
+    src = repo / "src"
+    src.mkdir(parents=True)
+    for i in range(3):
+        (src / f"mod{i}.py").write_text(
+            f"class Thing{i}:\n    def run(self):\n        return {i}\n",
+            encoding="utf-8",
+        )
+    monkeypatch.chdir(repo)
+
+    # Build from the repo root scoped to the subfolder (the skill's shape):
+    # stored source_file values come out relative to the repo root.
+    assert _rebuild_code(Path("src"), acquire_lock=False) is True
+    out = src / "graphify-out"
+    graph_path = out / "graph.json"
+    baseline = json.loads(graph_path.read_text(encoding="utf-8"))
+    baseline_ids = {n["id"] for n in baseline["nodes"]}
+    assert any(
+        (n.get("source_file") or "").startswith("src/") for n in baseline["nodes"]
+    ), "precondition: stored sources are repo-root-relative"
+
+    # The skill's Step 1 marker: an absolute path to the SUBFOLDER. The build
+    # above wrote the safe relative form; overwrite with the absolute form
+    # that reproduces #2603.
+    (out / ".graphify_root").write_text(str(src.resolve()), encoding="utf-8")
+
+    # Incremental rebuild the way the post-commit hook calls it: absolute
+    # watch_path read from the marker, one changed file.
+    (src / "mod0.py").write_text(
+        "class Thing0:\n    def run(self):\n        return 100\n", encoding="utf-8"
+    )
+    assert _rebuild_code(
+        src.resolve(), changed_paths=[Path("src/mod0.py")], acquire_lock=False
+    ) is True
+
+    after_ids = {
+        n["id"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]
+    }
+    # mod0's nodes are re-minted by the re-extraction; nodes of the UNCHANGED
+    # files must all survive.
+    unchanged_lost = {i for i in baseline_ids - after_ids if "mod0" not in i}
+    assert not unchanged_lost, (
+        f"unchanged sources lost {len(unchanged_lost)} node(s) to marker "
+        f"re-anchoring: {sorted(unchanged_lost)[:5]}"
+    )
+
+
+def test_subfolder_marker_still_evicts_a_deleted_file(tmp_path, monkeypatch):
+    """The anchor validation must not over-preserve (#2603): once the correct
+    anchor is chosen, a genuinely deleted source is still evicted."""
+    from graphify.watch import _rebuild_code
+
+    repo = tmp_path / "repo"
+    src = repo / "src"
+    src.mkdir(parents=True)
+    for i in range(3):
+        (src / f"mod{i}.py").write_text(
+            f"class Thing{i}:\n    def run(self):\n        return {i}\n", encoding="utf-8"
+        )
+    monkeypatch.chdir(repo)
+    assert _rebuild_code(Path("src"), acquire_lock=False) is True
+    out = src / "graphify-out"
+    graph_path = out / "graph.json"
+    (out / ".graphify_root").write_text(str(src.resolve()), encoding="utf-8")
+
+    (src / "mod1.py").unlink()  # a genuine deletion
+    assert _rebuild_code(
+        src.resolve(), changed_paths=[Path("src/mod1.py")], acquire_lock=False
+    ) is True
+
+    after = json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]
+    assert not any("mod1" in n["id"] for n in after), "deleted file's nodes must be evicted"
+    assert any("mod2" in n["id"] for n in after), "unchanged file must survive"
+
+
+def test_subfolder_marker_incremental_matches_cold_build(tmp_path, monkeypatch):
+    """Incremental rebuild with the validated anchor produces the same node-id
+    set as a cold rebuild of the identical on-disk state (id parity, #2603)."""
+    from graphify.watch import _rebuild_code
+
+    repo = tmp_path / "repo"
+    src = repo / "src"
+    src.mkdir(parents=True)
+    for i in range(3):
+        (src / f"mod{i}.py").write_text(
+            f"class Thing{i}:\n    def run(self):\n        return {i}\n", encoding="utf-8"
+        )
+    monkeypatch.chdir(repo)
+    assert _rebuild_code(Path("src"), acquire_lock=False) is True
+    out = src / "graphify-out"
+    graph_path = out / "graph.json"
+    (out / ".graphify_root").write_text(str(src.resolve()), encoding="utf-8")
+
+    (src / "mod0.py").write_text(
+        "class Thing0:\n    def run(self):\n        return 100\n", encoding="utf-8"
+    )
+    assert _rebuild_code(
+        src.resolve(), changed_paths=[Path("src/mod0.py")], acquire_lock=False
+    ) is True
+    incremental_ids = {n["id"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+
+    import shutil
+    shutil.rmtree(out)
+    assert _rebuild_code(Path("src"), acquire_lock=False) is True
+    cold_ids = {n["id"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+
+    assert incremental_ids == cold_ids, (
+        f"incremental vs cold id drift: only-incremental={sorted(incremental_ids - cold_ids)[:5]}, "
+        f"only-cold={sorted(cold_ids - incremental_ids)[:5]}"
+    )
+
+
+# --- read-only inotify events must not count as changes (#watch-self-trigger) ---
+
+def test_read_only_events_are_ignored():
+    """``opened`` / ``closed_no_write`` mean a file was read, not changed."""
+    from graphify.watch import _is_read_only_event
+
+    class E:
+        def __init__(self, t):
+            self.event_type = t
+
+    assert _is_read_only_event(E("opened"))
+    assert _is_read_only_event(E("closed_no_write"))
+    for t in ("created", "modified", "deleted", "moved", "closed"):
+        assert not _is_read_only_event(E(t)), t
+
+
+def test_read_only_events_with_real_watchdog_classes():
+    pytest.importorskip("watchdog.events")
+    from watchdog import events as we
+    from graphify.watch import _is_read_only_event
+
+    assert _is_read_only_event(we.FileOpenedEvent("/tmp/x.py"))
+    if hasattr(we, "FileClosedNoWriteEvent"):
+        assert _is_read_only_event(we.FileClosedNoWriteEvent("/tmp/x.py"))
+    assert not _is_read_only_event(we.FileModifiedEvent("/tmp/x.py"))
+    assert not _is_read_only_event(we.FileCreatedEvent("/tmp/x.py"))
+    assert not _is_read_only_event(we.FileClosedEvent("/tmp/x.py"))
+
+
+def _markdown_reconcile_fixture(tmp_path, files, nodes, links):
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    for relative_path, content in files.items():
+        path = corpus / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    output = corpus / "graphify-out"
+    output.mkdir()
+    graph_path = output / "graph.json"
+    graph_path.write_text(
+        json.dumps(
+            {
+                "nodes": nodes,
+                "links": links,
+                "hyperedges": [],
+                "directed": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return corpus, graph_path
+
+
+def _semantic_doc(node_id, source_file):
+    return {
+        "id": node_id,
+        "label": node_id,
+        "file_type": "document",
+        "source_file": source_file,
+        "_origin": "semantic",
+    }
+
+
+def _ast_reference(source, target, source_file, **extra):
+    return {
+        "source": source,
+        "target": target,
+        "relation": "references",
+        "source_file": source_file,
+        "source_location": "L1",
+        "_origin": "ast",
+        **extra,
+    }
+
+
+def test_markdown_reconcile_links_new_source_to_semantic_target(tmp_path):
+    """#1915/#1954: a fresh source reaches a semantic-only target."""
+    corpus, graph_path = _markdown_reconcile_fixture(
+        tmp_path,
+        {"a.md": "[link](b.md)\n", "b.md": "target\n"},
+        [_semantic_doc("b_sem", "b.md")],
+        [],
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+    references = [edge for edge in links if edge.get("relation") == "references"]
+    assert len(references) == 1
+    assert {references[0]["source"], references[0]["target"]} == {"a", "b_sem"}
+
+
+def test_markdown_reconcile_preserves_ambiguous_target(tmp_path):
+    """#1915/#1954: an authored link must survive target ambiguity."""
+    original = _ast_reference("a_sem", "b_one", "a.md", sentinel="keep")
+    corpus, graph_path = _markdown_reconcile_fixture(
+        tmp_path,
+        {"a.md": "[link](b.md)\n", "b.md": "target\n"},
+        [
+            _semantic_doc("a_sem", "a.md"),
+            _semantic_doc("b_one", "b.md"),
+            _semantic_doc("b_two", "b.md"),
+        ],
+        [original],
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+    references = [edge for edge in links if edge.get("relation") == "references"]
+    assert len(references) == 1
+    assert references[0]["sentinel"] == "keep"
+    assert {references[0]["source"], references[0]["target"]} == {"a_sem", "b_one"}
+
+
+def test_markdown_reconcile_preserves_ambiguous_source(tmp_path):
+    """#1915/#1954: an authored link must survive source ambiguity."""
+    corpus, graph_path = _markdown_reconcile_fixture(
+        tmp_path,
+        {"a.md": "[link](b.md)\n", "b.md": "target\n"},
+        [
+            _semantic_doc("a_one", "a.md"),
+            _semantic_doc("a_two", "a.md"),
+            _semantic_doc("b_sem", "b.md"),
+        ],
+        [_ast_reference("a_one", "b_sem", "a.md", sentinel="keep")],
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+    references = [edge for edge in links if edge.get("relation") == "references"]
+    assert len(references) == 1
+    assert references[0]["sentinel"] == "keep"
+
+
+def test_markdown_reconcile_prunes_removed_authored_link(tmp_path):
+    """#1915/#1954: removing a Markdown link removes its owned AST edge."""
+    corpus, graph_path = _markdown_reconcile_fixture(
+        tmp_path,
+        {"a.md": "no link\n", "b.md": "target\n"},
+        [_semantic_doc("a_sem", "a.md"), _semantic_doc("b_sem", "b.md")],
+        [_ast_reference("a_sem", "b_sem", "a.md")],
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+    assert not any(edge.get("relation") == "references" for edge in links)
+
+
+def test_markdown_reconcile_keeps_reverse_stored_edge_unchanged(tmp_path):
+    """#1915/#1954: undirected endpoint order must not churn edge data."""
+    corpus, graph_path = _markdown_reconcile_fixture(
+        tmp_path,
+        {"a.md": "[link](b.md)\n", "b.md": "target\n"},
+        [_semantic_doc("a_sem", "a.md"), _semantic_doc("b_sem", "b.md")],
+        [_ast_reference("b_sem", "a_sem", "a.md", sentinel="keep")],
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+    references = [edge for edge in links if edge.get("relation") == "references"]
+    assert len(references) == 1
+    assert references[0]["source"] == "b_sem"
+    assert references[0]["target"] == "a_sem"
+    assert references[0]["sentinel"] == "keep"
+
+
+def test_markdown_reconcile_prefers_later_canonical_page(tmp_path):
+    """#1915/#1954: a later canonical page replaces a semantic fallback."""
+    corpus, graph_path = _markdown_reconcile_fixture(
+        tmp_path,
+        {"a.md": "[link](b.md)\n", "b.md": "target\n"},
+        [
+            _semantic_doc("a_sem", "a.md"),
+            _semantic_doc("b_sem", "b.md"),
+            {
+                "id": "b",
+                "label": "b.md",
+                "node_kind": "page",
+                "file_type": "document",
+                "source_file": "b.md",
+                "source_location": "L1",
+                "_origin": "ast",
+            },
+        ],
+        [_ast_reference("a_sem", "b_sem", "a.md")],
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+    references = [edge for edge in links if edge.get("relation") == "references"]
+    assert len(references) == 1
+    assert {references[0]["source"], references[0]["target"]} == {"a_sem", "b"}
+
+
+def test_markdown_reconcile_keeps_existing_semantic_relation(tmp_path):
+    """#1915/#1954: a simple graph must not overwrite a semantic relation."""
+    semantic_edge = {
+        "source": "a_sem",
+        "target": "b_sem",
+        "relation": "derived_from",
+        "source_file": "a.md",
+        "_origin": "semantic",
+    }
+    corpus, graph_path = _markdown_reconcile_fixture(
+        tmp_path,
+        {"a.md": "[link](b.md)\n", "b.md": "target\n"},
+        [_semantic_doc("a_sem", "a.md"), _semantic_doc("b_sem", "b.md")],
+        [semantic_edge],
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+    assert links == [semantic_edge]
+
+
+def test_markdown_reconcile_uses_legacy_page_fallback(tmp_path):
+    """#1915/#1954: a unique legacy page is a safe target fallback."""
+    legacy_page = {
+        "id": "legacy_b",
+        "label": "b.md",
+        "node_kind": "page",
+        "file_type": "document",
+        "source_file": "b.md",
+        "_origin": "semantic",
+    }
+    corpus, graph_path = _markdown_reconcile_fixture(
+        tmp_path,
+        {"a.md": "[link](b.md)\n", "b.md": "target\n"},
+        [_semantic_doc("a_sem", "a.md"), legacy_page],
+        [_ast_reference("a_sem", "legacy_b", "a.md", sentinel="keep")],
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+    references = [edge for edge in links if edge.get("relation") == "references"]
+    assert len(references) == 1
+    assert {references[0]["source"], references[0]["target"]} == {"a_sem", "legacy_b"}
+    assert references[0]["sentinel"] == "keep"
+
+
+def test_markdown_reconcile_distinguishes_same_basename_paths(tmp_path):
+    """#1915/#1954: full relative paths disambiguate equal basenames."""
+    corpus, graph_path = _markdown_reconcile_fixture(
+        tmp_path,
+        {"one/a.md": "[link](../two/a.md)\n", "two/a.md": "target\n"},
+        [
+            _semantic_doc("one_a", "one/a.md"),
+            _semantic_doc("two_a", "two/a.md"),
+        ],
+        [_ast_reference("one_a", "two_a", "one/a.md", sentinel="keep")],
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+    references = [edge for edge in links if edge.get("relation") == "references"]
+    assert len(references) == 1
+    assert {references[0]["source"], references[0]["target"]} == {"one_a", "two_a"}
+
+
+def test_markdown_reconcile_does_not_resurrect_a_deleted_target(tmp_path):
+    """#3190: the link text still points at b.md, but b.md was deleted from disk.
+    The extractor only stamps target_file when the target exists, so reconcile
+    must NOT repoint/keep the edge onto the now-stale semantic node — a genuinely
+    deleted target does not survive as a dangling reference."""
+    corpus, graph_path = _markdown_reconcile_fixture(
+        tmp_path,
+        {"a.md": "[link](b.md)\n"},  # b.md intentionally absent from disk
+        [_semantic_doc("a_sem", "a.md"), _semantic_doc("b_sem", "b.md")],
+        [_ast_reference("a_sem", "b_sem", "a.md")],
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    links = data["links"]
+    assert not any(edge.get("relation") == "references" for edge in links), (
+        "a reference to a deleted target must not be resurrected"
+    )
+    # the stale semantic node for the deleted file is not kept as a dangling target
+    assert not any(
+        edge.get("target") == "b_sem" for edge in links
+    ), "no edge should still point at the deleted document's node"
+def test_markdown_reconcile_preserves_case_different_unresolved_target(tmp_path):
+    """An unresolved authored site preserves its existing edge without guessing."""
+
+    original = _ast_reference(
+        "source_sem",
+        "target_sem",
+        "history/source.md",
+        sentinel="keep",
+        source_location="L3",
+    )
+    corpus, graph_path = _markdown_reconcile_fixture(
+        tmp_path,
+        {
+            "history/source.md": "# Source\n\nSee [[target]] for detail.\n",
+            "root/TARGET.md": "# Target\n\nBody.\n",
+        },
+        [
+            _semantic_doc("source_sem", "history/source.md"),
+            _semantic_doc("target_sem", "root/TARGET.md"),
+        ],
+        [original],
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+    references = [edge for edge in links if edge.get("relation") == "references"]
+
+    assert references == [original]
+
+
+def test_markdown_reconcile_prunes_removed_unresolved_link(tmp_path):
+    """Removing the unresolved authored link still prunes its existing edge."""
+
+    corpus, graph_path = _markdown_reconcile_fixture(
+        tmp_path,
+        {
+            "history/source.md": "# Source\n\nSee nothing.\n",
+            "root/TARGET.md": "# Target\n\nBody.\n",
+        },
+        [
+            _semantic_doc("source_sem", "history/source.md"),
+            _semantic_doc("target_sem", "root/TARGET.md"),
+        ],
+        [
+            _ast_reference(
+                "source_sem",
+                "target_sem",
+                "history/source.md",
+                sentinel="drop",
+                source_location="L3",
+            )
+        ],
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+    references = [edge for edge in links if edge.get("relation") == "references"]
+
+    assert len(references) == 0
+
+
+def test_markdown_reconcile_prunes_removed_colocated_unresolved_link(tmp_path):
+    """One unresolved link does not preserve a removed neighbor on the same line."""
+    keep = _ast_reference(
+        "source_sem",
+        "target_sem",
+        "history/source.md",
+        sentinel="keep",
+        source_location="L3",
+    )
+    removed = _ast_reference(
+        "source_sem",
+        "removed_sem",
+        "history/source.md",
+        sentinel="removed",
+        source_location="L3",
+    )
+    corpus, graph_path = _markdown_reconcile_fixture(
+        tmp_path,
+        {
+            "history/source.md": "# Source\n\nSee [[target]] for detail.\n",
+            "root/TARGET.md": "# Target\n",
+            "root/REMOVED.md": "# Removed\n",
+        },
+        [
+            _semantic_doc("source_sem", "history/source.md"),
+            _semantic_doc("target_sem", "root/TARGET.md"),
+            _semantic_doc("removed_sem", "root/REMOVED.md"),
+        ],
+        [keep, removed],
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+    references = [edge for edge in links if edge.get("relation") == "references"]
+    assert references == [keep]
+
+
+def test_markdown_reconcile_does_not_suffix_match_unresolved_target(tmp_path):
+    """An unresolved foo_target link does not preserve an old TARGET edge."""
+    stale = _ast_reference(
+        "source_sem",
+        "wrong_target_sem",
+        "history/source.md",
+        sentinel="must-prune",
+        source_location="L3",
+    )
+    corpus, graph_path = _markdown_reconcile_fixture(
+        tmp_path,
+        {
+            "history/source.md": "# Source\n\nSee [[foo_target]] for detail.\n",
+            "root/FOO_TARGET.md": "# Current target\n",
+            "root/TARGET.md": "# Removed target\n",
+        },
+        [
+            _semantic_doc("source_sem", "history/source.md"),
+            _semantic_doc("current_target_sem", "root/FOO_TARGET.md"),
+            _semantic_doc("wrong_target_sem", "root/TARGET.md"),
+        ],
+        [stale],
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+    assert not any(edge.get("relation") == "references" for edge in links)
+
+
+def test_markdown_reconcile_does_not_suffix_match_top_level_target(tmp_path):
+    """A top-level foo_target link does not preserve an old TARGET edge."""
+    stale = _ast_reference(
+        "source_sem",
+        "wrong_target_sem",
+        "source.md",
+        sentinel="must-prune",
+        source_location="L3",
+    )
+    corpus, graph_path = _markdown_reconcile_fixture(
+        tmp_path,
+        {
+            "source.md": "# Source\n\nSee [[foo_target]] for detail.\n",
+            "TARGET.md": "# Removed target\n",
+        },
+        [
+            _semantic_doc("source_sem", "source.md"),
+            _semantic_doc("wrong_target_sem", "TARGET.md"),
+        ],
+        [stale],
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+    assert not any(edge.get("relation") == "references" for edge in links)

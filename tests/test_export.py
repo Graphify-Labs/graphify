@@ -40,6 +40,153 @@ def test_to_json_nodes_have_community():
         for node in data["nodes"]:
             assert "community" in node
 
+
+def test_to_json_sorts_graph_collections_across_insertion_order(tmp_path):
+    import networkx as nx
+
+    nodes = [("b", {"label": "Beta"}), ("a", {"label": "Alpha"}), ("c", {"label": "Gamma"})]
+    links = [
+        ("b", "c", {"relation": "uses", "_src": "b", "_tgt": "c"}),
+        ("a", "b", {"relation": "calls", "_src": "a", "_tgt": "b"}),
+    ]
+    hyperedges = [
+        {"id": "h2", "nodes": ["b", "c"]},
+        {"id": "h1", "nodes": ["a", "b"]},
+    ]
+
+    def make_graph(reverse=False):
+        graph = nx.Graph()
+        graph.add_nodes_from(reversed(nodes) if reverse else nodes)
+        graph.add_edges_from(reversed(links) if reverse else links)
+        graph.graph["hyperedges"] = list(reversed(hyperedges)) if reverse else hyperedges
+        return graph
+
+    outputs = [tmp_path / "first.json", tmp_path / "second.json"]
+    for output, reverse in zip(outputs, (False, True)):
+        assert to_json(
+            make_graph(reverse),
+            {0: ["a", "b"], 1: ["c"]},
+            str(output),
+            built_at_commit="fixed",
+        )
+
+    assert outputs[0].read_bytes() == outputs[1].read_bytes()
+
+
+def test_to_json_field_order_stable_across_read_rebuild(tmp_path):
+    """graph.json survives a build -> write -> read-back -> write round-trip
+    byte-for-byte. node_link_data always appends the node key (`id`) last, so a
+    node whose `id` was an inline attribute on a cold build lands mid-dict, while
+    the same node after build_from_json consumes `id` as the pure node key lands
+    last — identical values, churned field order. Emitting a canonical key order
+    keeps the two serializations identical. Regression guard: the earlier
+    determinism test only varied insertion order within one build and missed
+    this."""
+    extraction = {
+        "nodes": [
+            {"id": "a_foo", "label": "foo", "file_type": "code", "source_file": "a.py"},
+            {"id": "b_bar", "label": "bar", "file_type": "code", "source_file": "b.py"},
+            {"id": "c_baz", "label": "baz", "file_type": "code", "source_file": "c.py"},
+        ],
+        "edges": [
+            {"source": "a_foo", "target": "b_bar", "relation": "calls",
+             "confidence": "EXTRACTED", "confidence_score": 1.0, "source_file": "a.py"},
+            {"source": "b_bar", "target": "c_baz", "relation": "references",
+             "confidence": "EXTRACTED", "confidence_score": 1.0, "source_file": "b.py"},
+        ],
+        "hyperedges": [],
+    }
+    communities = {0: ["a_foo", "b_bar", "c_baz"]}
+
+    first = tmp_path / "first.json"
+    to_json(build_from_json(extraction), communities, str(first),
+            built_at_commit="fixed", force=True)
+    reread = json.loads(first.read_text())
+
+    second = tmp_path / "second.json"
+    to_json(build_from_json(reread), communities, str(second),
+            built_at_commit="fixed", force=True)
+
+    # Byte-identity is the strongest statement of "no cosmetic churn".
+    assert first.read_bytes() == second.read_bytes()
+
+    data = json.loads(first.read_text())
+    # `id` leads every node; source/target lead every link — the identity-first
+    # order node_link_data does not guarantee on its own.
+    for node in data["nodes"]:
+        assert list(node.keys())[0] == "id"
+    for link in data["links"]:
+        assert list(link.keys())[:2] == ["source", "target"]
+    # Endpoints are never swapped by the reordering.
+    endpoints = sorted((e["source"], e["target"]) for e in data["links"])
+    assert endpoints == [("a_foo", "b_bar"), ("b_bar", "c_baz")]
+
+
+def test_to_json_field_order_stable_with_non_ascii_labels(tmp_path):
+    """The byte-identity guarantee must hold with non-ASCII labels — the fix's
+    round-trip stability implicitly relies on the ensure_ascii write path, and a
+    reordered dict with escaped-unicode values must still serialize identically."""
+    extraction = {
+        "nodes": [
+            {"id": "a_cafe", "label": "café", "file_type": "code", "source_file": "a.py"},
+            {"id": "b_ja", "label": "日本語クラス", "file_type": "code", "source_file": "b.py"},
+        ],
+        "edges": [
+            {"source": "a_cafe", "target": "b_ja", "relation": "references",
+             "confidence": "INFERRED", "confidence_score": 0.55, "source_file": "a.py"},
+        ],
+        "hyperedges": [],
+    }
+    communities = {0: ["a_cafe", "b_ja"]}
+    first = tmp_path / "first.json"
+    to_json(build_from_json(extraction), communities, str(first),
+            built_at_commit="fixed", force=True)
+    reread = json.loads(first.read_text())
+    second = tmp_path / "second.json"
+    to_json(build_from_json(reread), communities, str(second),
+            built_at_commit="fixed", force=True)
+    assert first.read_bytes() == second.read_bytes(), "non-ASCII round-trip churned field order"
+    # the reorder preserves the non-ASCII value
+    labels = {n["id"]: n.get("label") for n in json.loads(first.read_text())["nodes"]}
+    assert labels.get("b_ja") == "日本語クラス"
+
+
+def test_to_json_commit_fallback_uses_output_repo_not_cwd(tmp_path, monkeypatch):
+    # Without an explicit built_at_commit, provenance must come from the repo
+    # the graph is written into, not from whatever repo the shell happens to
+    # be in — running `graphify extract <target>` from another repo's root
+    # used to stamp the invoker's HEAD into the target's graph.json.
+    import subprocess
+    import networkx as nx
+
+    def git(cwd, *args):
+        subprocess.run(
+            ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+            cwd=cwd, check=True, capture_output=True,
+        )
+
+    target = tmp_path / "target"
+    (target / "graphify-out").mkdir(parents=True)
+    git(target, "init")
+    git(target, "commit", "--allow-empty", "-m", "target")
+    target_head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=target, check=True,
+        capture_output=True, text=True,
+    ).stdout.strip()
+
+    invoker = tmp_path / "invoker"
+    invoker.mkdir()
+    git(invoker, "init")
+    git(invoker, "commit", "--allow-empty", "-m", "invoker")
+    monkeypatch.chdir(invoker)
+
+    G = nx.Graph()
+    G.add_node("n1", label="n1")
+    out = target / "graphify-out" / "graph.json"
+    assert to_json(G, {0: ["n1"]}, str(out), force=True)
+    assert json.loads(out.read_text())["built_at_commit"] == target_head
+
+
 def test_to_cypher_creates_file():
     G = make_graph()
     with tempfile.TemporaryDirectory() as tmp:
@@ -158,6 +305,37 @@ def test_to_html_contains_visjs():
         content = out.read_text()
         assert "vis-network" in content
 
+
+
+def test_to_html_title_uses_portable_path_not_host_absolute():
+    """#2598 / #433: <title> must not embed the generator host absolute path."""
+    import re
+
+    G = make_graph()
+    communities = cluster(G)
+    with tempfile.TemporaryDirectory() as tmp:
+        userish = Path(tmp) / "Users" / "mike" / "proj" / "graphify-out" / "graph.html"
+        userish.parent.mkdir(parents=True)
+        to_html(G, communities, str(userish))
+        html = userish.read_text(encoding="utf-8")
+    m = re.search(r"<title>(.*?)</title>", html)
+    assert m, "expected a <title> tag"
+    title = m.group(1)
+    assert title.startswith("graphify - ")
+    label = title[len("graphify - "):]
+    assert "mike" not in label
+    assert "Users" not in label
+    assert not label.startswith("/")
+    assert "graphify-out/graph.html" in label or label == "graph.html"
+
+
+def test_html_document_title_helper_windows_and_relative():
+    from graphify.exporters.html import _html_document_title
+
+    assert _html_document_title(r"C:\Users\mike\proj\graphify-out\graph.html") == "graphify-out/graph.html"
+    assert _html_document_title("/home/u/proj/graphify-out/graph.html") == "graphify-out/graph.html"
+    assert _html_document_title("graphify-out/graph.html") == "graphify-out/graph.html"
+    assert _html_document_title("/tmp/only/graph.html") == "graph.html"
 
 def test_to_html_neighbor_links_have_no_inline_onclick_xss():
     """#1838: neighbor links dropped an unescaped JSON.stringify(nid) into a
@@ -831,3 +1009,81 @@ def test_existing_graph_node_count(tmp_path):
     assert existing_graph_node_count(p) is MALFORMED_GRAPH  # structurally wrong -> fail closed
     p.write_text('{"nodes": [{"id": "a"}, {"id": "b"}], "links": []}', encoding="utf-8")
     assert existing_graph_node_count(p) == 2               # valid
+
+
+def test_hyperedge_perimeter_uses_convex_hull_not_member_order():
+    """The hyperedge polygon must be traced in hull order. Tracing `h.nodes`
+    array order self-intersects whenever the layout does not place members in
+    angular order, so `fill()` paints crossed wedges instead of one region."""
+    from graphify.exporters.html import _hyperedge_script
+    script = _hyperedge_script("[]")
+    assert "function convexHull(pts)" in script
+    assert "const hull = convexHull(positions);" in script
+    # the traced ring must derive from the hull, never from raw member order
+    assert "const expanded = hull.map(" in script
+    assert "const expanded = positions.map(" not in script
+
+
+def test_hyperedge_convex_hull_js_is_geometrically_sound():
+    """Execute the emitted convexHull in node: the perimeter must be simple
+    (no self-intersection), convex, and contain every member point."""
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    if node is None:
+        import pytest
+        pytest.skip("node not available")
+    from graphify.exporters.html import _hyperedge_script
+    m = re.search(r"function convexHull\(pts\) \{.*?\n\}", _hyperedge_script("[]"), re.S)
+    assert m, "convexHull not found in emitted script"
+    harness = m.group(0) + r"""
+const cross = (p,q,r) => (q.x-p.x)*(r.y-p.y) - (q.y-p.y)*(r.x-p.x);
+const proper = (a,b,c,d) => {
+  const s = (p,q,r) => Math.sign(cross(p,q,r));
+  return s(a,b,c)*s(a,b,d) < 0 && s(c,d,a)*s(c,d,b) < 0;
+};
+function selfIntersects(poly){
+  const n = poly.length;
+  if (n < 4) return false;
+  for (let i=0;i<n;i++) for (let j=i+1;j<n;j++){
+    if ((i+1)%n===j || (j+1)%n===i) continue;
+    if (proper(poly[i],poly[(i+1)%n],poly[j],poly[(j+1)%n])) return true;
+  }
+  return false;
+}
+let rng = 12345;
+const rnd = () => (rng = (rng*1103515245+12345) & 0x7fffffff) / 0x7fffffff;
+let bad = 0;
+for (let t=0;t<2000;t++){
+  const n = 4 + Math.floor(rnd()*4);            // real hyperedges carry 4-7 members
+  const pts = Array.from({length:n}, () => ({x: rnd()*1000-500, y: rnd()*1000-500}));
+  const h = convexHull(pts);
+  if (selfIntersects(h)) bad++;
+  for (let i=0;i<h.length;i++)                  // convex + counter-clockwise
+    if (cross(h[i], h[(i+1)%h.length], h[(i+2)%h.length]) < -1e-9) bad++;
+  for (const p of pts)                          // every member enclosed
+    for (let i=0;i<h.length;i++)
+      if (cross(h[i], h[(i+1)%h.length], p) < -1e-6) { bad++; break; }
+}
+// degenerate member sets must not throw or produce a crossed ring
+for (const pts of [
+  [{x:-2,y:0},{x:-1,y:0},{x:1,y:0},{x:2,y:0}],
+  [{x:0,y:0},{x:0,y:0},{x:5,y:0},{x:0,y:5}],
+  [{x:3,y:3},{x:3,y:3},{x:3,y:3},{x:3,y:3}],
+  [{x:0,y:0},{x:1,y:1}],
+]) {
+  const h = convexHull(pts);
+  if (!Array.isArray(h) || h.length < 1 || selfIntersects(h)) bad++;
+  if (!h.every(p => Number.isFinite(p.x) && Number.isFinite(p.y))) bad++;
+}
+// the bow-tie ordering this fix exists for
+if (!selfIntersects([{x:-1,y:-1},{x:1,y:1},{x:-1,y:1},{x:1,y:-1}])) bad++;
+if (selfIntersects(convexHull([{x:-1,y:-1},{x:1,y:1},{x:-1,y:1},{x:1,y:-1}]))) bad++;
+console.log(bad);
+"""
+    with tempfile.TemporaryDirectory() as tmp:
+        js = Path(tmp) / "hull_check.js"
+        js.write_text(harness, encoding="utf-8")
+        proc = subprocess.run([node, str(js)], capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "0", f"geometry violations: {proc.stdout.strip()}"

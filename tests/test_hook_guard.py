@@ -51,7 +51,6 @@ def _invoke(kind, payload, tmp_path, monkeypatch, *, graph=True, out_name="graph
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("command", [
     "grep -rn foo .",
-    "pgrep -f server",          # contains 'grep'
     "egrep pattern file",       # contains 'grep'
     "fgrep lit file",           # contains 'grep'
     "ls -la | grep foo",        # piped
@@ -73,6 +72,10 @@ def test_search_nudges(command, tmp_path, monkeypatch):
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("command", [
     "",                          # empty
+    # pgrep searches PROCESSES, not file content - the old substring scan
+    # nudged on it only because the string contains 'grep' (#3121); the graph
+    # has nothing to offer a process lookup.
+    "pgrep -f server",
     "ls -la",
     "git status",
     "cat README.md",

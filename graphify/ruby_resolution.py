@@ -28,11 +28,12 @@ def _key(label: str) -> str:
     return re.sub(r"[^a-zA-Z0-9]+", "", str(label)).lower()
 
 
-# A Ruby class/module container node is labelled with a bare constant
-# (``Processor``, ``TaxCalculator``); methods end in ``()`` and files in ``.rb``.
-# Lets us register method-less containers (a ``Class.new(StandardError)`` error
-# class, an empty module) that have no `method` edge to be found by.
-_BARE_CONST_RE = re.compile(r"^[A-Z][A-Za-z0-9_]*$")
+# A Ruby class/module container node is labelled with a constant path, bare or
+# ``::``-qualified (``Processor``, ``Billing::Rounding``); methods end in ``()``
+# and files in ``.rb``. Lets us register method-less containers (a
+# ``Class.new(StandardError)`` error class, an empty module) that have no
+# `method` edge to be found by.
+_BARE_CONST_RE = re.compile(r"^[A-Z][A-Za-z0-9_]*(?:::[A-Z][A-Za-z0-9_]*)*$")
 
 
 def _ruby_raw_calls(per_file: list[dict]) -> list[dict]:
@@ -72,10 +73,18 @@ def resolve_ruby_member_calls(
         src, tgt = e.get("source"), e.get("target")
         cnode = node_by_id.get(src)
         if cnode is not None:
-            class_def_nids.setdefault(_key(cnode.get("label", "")), []).append(str(src))
+            clabel = str(cnode.get("label", ""))
+            class_def_nids.setdefault(_key(clabel), []).append(str(src))
+            # A nested/compact declaration labels the node fully qualified
+            # (`Billing::Processor`), but its receivers reference the bare last
+            # segment (`Processor.new`), so index that too — the unique-match
+            # guard below still bails on genuine collisions (#2302).
+            if "::" in clabel:
+                class_def_nids.setdefault(_key(clabel.split("::")[-1]), []).append(str(src))
         tnode = node_by_id.get(tgt)
         if tnode is not None:
-            method_index[(str(src), _key(tnode.get("label", "")))] = str(tgt)
+            method_name = str(tnode.get("label", "")).strip("()").lstrip(".")
+            method_index[(str(src), method_name)] = str(tgt)
     # Also register class/module container nodes that own no `method` edge — a
     # method-less `Class.new(StandardError)` or an empty module — so a constant
     # receiver still resolves to a real node (#1640/#1634). External base stubs
@@ -83,16 +92,55 @@ def resolve_ruby_member_calls(
     for n in all_nodes:
         nid = n.get("id")
         sf = str(n.get("source_file", ""))
-        if nid and sf.endswith((".rb", ".rake")) and _BARE_CONST_RE.match(str(n.get("label", ""))):
-            class_def_nids.setdefault(_key(n.get("label", "")), []).append(str(nid))
+        label = str(n.get("label", ""))
+        if nid and sf.endswith((".rb", ".rake")) and _BARE_CONST_RE.match(label):
+            class_def_nids.setdefault(_key(label), []).append(str(nid))
+            if "::" in label:
+                class_def_nids.setdefault(_key(label.split("::")[-1]), []).append(str(nid))
     for k in list(class_def_nids):
         class_def_nids[k] = sorted(set(class_def_nids[k]))
+
+    def _segment_path(label: str) -> list[str]:
+        return [s.strip().lower() for s in str(label).split("::") if s.strip()]
+
+    # Fully-qualified and last-segment views of the same definitions, for the
+    # scoped mixin lookup: `include Foo::Bar` must match a `Foo::Bar` label as a
+    # whole path, never just its tail.
+    fq_label_map: dict[tuple[str, ...], list[str]] = {}
+    last_segment_map: dict[str, list[str]] = {}
+    for nid in sorted({nid for nids in class_def_nids.values() for nid in nids}):
+        segs = _segment_path(str(node_by_id.get(nid, {}).get("label", "")))
+        if segs:
+            fq_label_map.setdefault(tuple(segs), []).append(nid)
+            last_segment_map.setdefault(segs[-1], []).append(nid)
 
     existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
 
     def _unique_class(name: str) -> str | None:
         nids = class_def_nids.get(_key(name), [])
         return nids[0] if len(nids) == 1 else None
+
+    def _class_by_const_path(raw: str) -> str | None:
+        """Resolve a qualified constant receiver (``Billing::Processor``) to one class.
+
+        Matches on the constant path rather than its tail: a class qualifies when its
+        own label ends with the referenced segments, so ``Billing::Processor`` still
+        finds an ``App::Billing::Processor`` while ``ActiveRecord::Base`` no longer
+        binds to an unrelated ``Thing::Base`` (#3078). A leading ``::`` pins the
+        reference to top level, so it must match the label whole. Ambiguous, or
+        matching nothing in the corpus (the usual case for a framework constant) ->
+        no edge, never a guess.
+        """
+        segs = tuple(_segment_path(raw))
+        if not segs:
+            return None
+        if raw.strip().startswith("::"):
+            nids = fq_label_map.get(segs, [])
+            return nids[0] if len(nids) == 1 else None
+        hits = {nid for path, nids in fq_label_map.items()
+                if len(path) >= len(segs) and path[-len(segs):] == segs
+                for nid in nids}
+        return next(iter(hits)) if len(hits) == 1 else None
 
     def _emit(caller: str, target: str, rc: dict[str, Any],
               relation: str = "calls", context: str = "call") -> None:
@@ -113,10 +161,14 @@ def resolve_ruby_member_calls(
             "weight": 1.0,
         })
 
-    # `include`/`extend`/`prepend <Const>` mixins (#1668): resolve the module by
-    # its constant name to the single owning module/class node and emit a
-    # `mixes_in` edge, under the same single-definition god-node guard. An
-    # ambiguous or unresolved constant produces no edge.
+    # `include`/`extend`/`prepend <Const>` mixins (#1668): resolve the module
+    # reference lexically, the way Ruby constant lookup works (#2302) — try the
+    # reference under each enclosing scope of the including class, innermost
+    # first, then top level (a leading `::` pins it to top level). A qualified
+    # external like `ActiveSupport::Concern` matches no in-corpus path and
+    # produces no edge; an unqualified reference with no lexical match falls
+    # back to a globally unique last segment, under the same single-definition
+    # god-node guard. Ambiguous at any step -> bail, no wrong edge.
     for rc in _ruby_raw_calls(per_file):
         if not rc.get("is_mixin"):
             continue
@@ -124,7 +176,24 @@ def resolve_ruby_member_calls(
         module_name = rc.get("callee")
         if not caller or not module_name:
             continue
-        target = _unique_class(str(module_name))
+        raw_ref = str(module_name)
+        absolute = raw_ref.startswith("::")
+        ref_segs = _segment_path(raw_ref)
+        caller_node = node_by_id.get(caller)
+        caller_segs = [] if absolute else _segment_path(
+            str(caller_node.get("label", "")) if caller_node else "")
+        target: str | None = None
+        for i in range(len(caller_segs), -1, -1):
+            nids = fq_label_map.get(tuple(caller_segs[:i] + ref_segs), [])
+            if len(nids) == 1:
+                target = nids[0]
+                break
+            if len(nids) > 1:
+                break  # reopened/ambiguous definition: bail
+        if target is None and len(ref_segs) == 1 and not absolute:
+            nids = last_segment_map.get(ref_segs[0], [])
+            if len(nids) == 1:
+                target = nids[0]
         if target is not None:
             _emit(caller, target, rc, relation="mixes_in", context="mixin")
 
@@ -141,8 +210,12 @@ def resolve_ruby_member_calls(
         # collide with unrelated same-named methods, so we resolve by the
         # receiver's class under the single-owning-class god-node guard.
         receiver = rc.get("receiver")
-        if receiver and str(receiver)[:1].isupper():
-            class_nid = _unique_class(str(receiver))
+        # `lstrip(":")` so a top-level-pinned `::Processor.call` is still recognised
+        # as a constant receiver now that the whole path is captured (#3078).
+        if receiver and str(receiver).lstrip(":")[:1].isupper():
+            recv_raw = str(receiver)
+            class_nid = (_class_by_const_path(recv_raw) if "::" in recv_raw
+                         else _unique_class(recv_raw))
             if class_nid is not None:
                 if callee == "new":
                     _emit(caller, class_nid, rc)
@@ -152,7 +225,7 @@ def resolve_ruby_member_calls(
                     # to the class node itself, so inherited/dynamic class methods
                     # like ActiveRecord `where`/`find_by` still give correct
                     # blast-radius. An ambiguous receiver bails to nothing.
-                    method_nid = method_index.get((class_nid, _key(str(callee))))
+                    method_nid = method_index.get((class_nid, str(callee)))
                     _emit(caller, method_nid or class_nid, rc)
             continue
 
@@ -163,7 +236,7 @@ def resolve_ruby_member_calls(
         class_nid = _unique_class(str(receiver_type))
         if class_nid is None:
             continue
-        method_nid = method_index.get((class_nid, _key(str(callee))))
+        method_nid = method_index.get((class_nid, str(callee)))
         if method_nid is None:
             continue
         _emit(caller, method_nid, rc)

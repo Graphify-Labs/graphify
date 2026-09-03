@@ -224,8 +224,9 @@ def test_cross_file_indirect_survives_id_relativization(tmp_path):
         os.chdir(old)
     nid = {n["label"].rstrip("()"): n["id"] for n in r["nodes"]}
     assert (nid["schedule"], nid["on_event"]) in _rels(r, "indirect_call")
-    # the internal callable marker must never ship to graph.json
-    assert not any("_callable" in n for n in r["nodes"])
+    # the internal callable marker now persists to graph.json (#2438), so an
+    # incremental rebuild can resolve indirect_call edges into unchanged targets.
+    assert any(n.get("_callable") for n in r["nodes"])
 
 
 def test_cross_file_imported_callback_emits_indirect_call(tmp_path):

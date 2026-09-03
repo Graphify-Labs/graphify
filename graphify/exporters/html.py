@@ -5,12 +5,14 @@ from graphify.exporters.base import COMMUNITY_COLORS  # noqa: E402,F401
 from pathlib import Path
 import html as _html
 from graphify.analyze import _node_community_map
+from graphify.paths import write_text_atomic
 import json
 import networkx as nx
 from graphify.security import sanitize_label
 
 
 MAX_NODES_FOR_VIZ = 5_000
+_HTML_STALE_MARKER = ".graph.html.stale"
 
 def _viz_node_limit() -> int:
     """Return the effective viz node limit, honoring GRAPHIFY_VIZ_NODE_LIMIT env var.
@@ -73,6 +75,27 @@ def _hyperedge_script(hyperedges_json: str) -> str:
 const hyperedges = {hyperedges_json};
 // afterDrawing passes ctx already transformed to network coordinate space.
 // Draw node positions raw — no manual pan/zoom/DPR math needed.
+
+// Andrew's monotone chain. Returns the hull in counter-clockwise order, which
+// is what the perimeter must be traced in. Collinear and duplicate points
+// collapse to the extremes, so degenerate member sets render as a segment
+// rather than a zero-area crossed path.
+function convexHull(pts) {{
+    const p = pts.slice().sort((a, b) => (a.x - b.x) || (a.y - b.y));
+    if (p.length < 3) return p;
+    const cross = (o, a, b) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+    const build = seq => {{
+        const out = [];
+        for (const q of seq) {{
+            while (out.length >= 2 && cross(out[out.length - 2], out[out.length - 1], q) <= 0) out.pop();
+            out.push(q);
+        }}
+        out.pop();
+        return out;
+    }};
+    const hull = build(p).concat(build(p.slice().reverse()));
+    return hull.length >= 3 ? hull : p;
+}}
 network.on('afterDrawing', function(ctx) {{
     hyperedges.forEach(h => {{
         const positions = h.nodes
@@ -85,10 +108,14 @@ network.on('afterDrawing', function(ctx) {{
         ctx.strokeStyle = '#6366f1';
         ctx.lineWidth = 2;
         ctx.beginPath();
-        // Centroid and expanded hull in network coordinates
+        // Centroid and expanded hull in network coordinates.
+        // The perimeter must follow hull order, not h.nodes order: tracing the
+        // raw member order self-intersects whenever the layout does not happen
+        // to place members in angular order, filling as crossed wedges.
         const cx = positions.reduce((s, p) => s + p.x, 0) / positions.length;
         const cy = positions.reduce((s, p) => s + p.y, 0) / positions.length;
-        const expanded = positions.map(p => ({{
+        const hull = convexHull(positions);
+        const expanded = hull.map(p => ({{
             x: cx + (p.x - cx) * 1.15,
             y: cy + (p.y - cy) * 1.15
         }}));
@@ -322,6 +349,50 @@ LEGEND.forEach(c => {{
 }});
 </script>"""
 
+
+def _html_document_title(output_path: str) -> str:
+    """Return a portable label for the graph.html <title>.
+
+    Tracked artifacts must not embed the generator host absolute path
+    (regression of #433; reported again as #2598 on Windows). Keep from the
+    configured output-dir bare name (``graphify-out`` / ``GRAPHIFY_OUT``
+    basename) onward — portable in every case; otherwise fall back to a
+    cwd-relative label, and finally the filename only.
+    """
+    from graphify.paths import GRAPHIFY_OUT_NAME
+
+    raw = str(output_path).replace("\\", "/")
+    # Drop Windows drive prefix so Path parts are comparable on any OS.
+    if len(raw) >= 3 and raw[1] == ":" and raw[0].isalpha() and raw[2] == "/":
+        raw = raw[2:]  # "/Users/..." style after drive strip
+    p = Path(raw)
+
+    parts = list(Path(raw).parts)
+    # Path("C:/Users/..") on POSIX may keep "C:" as first part — strip it.
+    if parts and len(parts[0]) == 2 and parts[0][1] == ":" and parts[0][0].isalpha():
+        parts = parts[1:]
+    # Prefer keeping from the output-dir marker onward: portable in every
+    # case, whereas a cwd-relative path still leaks host/user segments when
+    # the graph is built from a directory ABOVE the project (#2598 follow-up).
+    marker = GRAPHIFY_OUT_NAME
+    for i, part in enumerate(parts):
+        if part == marker or part.startswith("graphify-out"):
+            return "/".join(parts[i:])
+
+    # No standard out-dir marker (fully custom output path): fall back to a
+    # cwd-relative label when the target is under cwd, else the bare filename.
+    try:
+        resolved = p if p.is_absolute() else (Path.cwd() / p)
+        rel = resolved.resolve().relative_to(Path.cwd().resolve())
+        label = rel.as_posix()
+        if label and label != ".":
+            return label
+    except (ValueError, OSError, RuntimeError):
+        pass
+
+    name = p.name
+    return name if name else "graph.html"
+
 def to_html(
     G: nx.Graph,
     communities: dict[int, list[str]],
@@ -330,7 +401,7 @@ def to_html(
     member_counts: dict[int, int] | None = None,
     node_limit: int | None = None,
     learning_overlay: dict | None = None,
-) -> None:
+) -> bool:
     """Generate an interactive vis.js HTML visualization of the graph.
 
     Features: node size by degree, click-to-inspect panel, search box,
@@ -342,6 +413,9 @@ def to_html(
 
     If node_limit is set and the graph exceeds it, automatically builds an
     aggregated community-level meta-graph instead of raising ValueError.
+
+    Returns True when the output was written. Returns False when an aggregated
+    view would contain fewer than two communities and is intentionally skipped.
     """
     limit = node_limit if node_limit is not None else _viz_node_limit()
     if G.number_of_nodes() > limit:
@@ -364,7 +438,7 @@ def to_html(
                               relation=f"{w} cross-community edges", confidence="AGGREGATED")
             if meta.number_of_nodes() <= 1:
                 print("Single community - aggregated view not useful. Skipping graph.html.")
-                return
+                return False
             meta_communities = {cid: [str(cid)] for cid in communities}
             mc = {cid: len(members) for cid, members in communities.items()}
             # Remap hyperedges from semantic node IDs to community IDs
@@ -391,11 +465,13 @@ def to_html(
                         "nodes": comm_ids,
                     })
                 meta.graph["hyperedges"] = remapped
-            to_html(meta, meta_communities, output_path,
-                    community_labels=community_labels, member_counts=mc)
+            written = to_html(meta, meta_communities, output_path,
+                              community_labels=community_labels, member_counts=mc)
+            if not written:
+                return False
             print(f"graph.html written (aggregated: {meta.number_of_nodes()} community nodes, {meta.number_of_edges()} cross-community edges)")
             print("Tip: run with --obsidian for full node-level detail.")
-            return
+            return True
         raise ValueError(
             f"Graph has {G.number_of_nodes()} nodes - too large for HTML viz "
             f"(limit: {limit}). Use --no-viz, raise GRAPHIFY_VIZ_NODE_LIMIT, "
@@ -519,7 +595,7 @@ def to_html(
     edges_json = _js_safe(vis_edges)
     legend_json = _js_safe(legend_data)
     hyperedges_json = _js_safe(getattr(G, "graph", {}).get("hyperedges", []))
-    title = _html.escape(sanitize_label(str(output_path)))
+    title = _html.escape(sanitize_label(_html_document_title(output_path)))
     stats = f"{G.number_of_nodes()} nodes &middot; {G.number_of_edges()} edges &middot; {len(communities)} communities"
 
     html = f"""<!DOCTYPE html>
@@ -557,4 +633,5 @@ def to_html(
 </body>
 </html>"""
 
-    Path(output_path).write_text(html, encoding="utf-8")  # nosec
+    write_text_atomic(output_path, html)
+    return True
