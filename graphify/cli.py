@@ -867,6 +867,13 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
             is_grep_tool = not cmd_str and bool(t.get("pattern"))
             is_bash_search = bool(cmd_str) and _bash_invokes_search(cmd_str)
             if (is_grep_tool or is_bash_search) and out_path("graph.json").is_file():
+                # The nudge says "only grep after graphify has oriented you".
+                # Honour that: query/explain/path stamp cache/last_query_stamp
+                # (the same stamp the strict read deny consults), and while it
+                # is fresh the agent IS oriented, so repeating the identical
+                # demand on every subsequent search adds nothing.
+                if _query_stamp_fresh():
+                    return
                 sys.stdout.write(_SEARCH_NUDGE)
         elif kind == "read":
             vals = [str(t.get("file_path") or ""), str(t.get("pattern") or ""), str(t.get("path") or "")]
@@ -936,6 +943,12 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
                     and _target_is_indexed(fp, root) \
                     and _mark_session_denied(str(d.get("session_id") or "")):
                 sys.stdout.write(_READ_DENY)
+                return
+            # Same contract as the search nudge: a fresh orientation stamp
+            # means the agent already did what the nudge asks for. The stale
+            # nudge above is deliberately NOT gated — "the graph lags this
+            # file" is new information regardless of orientation.
+            if _query_stamp_fresh():
                 return
             sys.stdout.write(_READ_NUDGE)
     except Exception:
