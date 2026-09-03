@@ -18,6 +18,11 @@ def test_family_and_cache_sets_agree_today():
     assert models._JS_FAMILY_SUFFIXES == models._JS_CACHE_BYPASS_SUFFIXES
 
 
+def test_suffix_sets_are_immutable():
+    assert isinstance(models._JS_FAMILY_SUFFIXES, frozenset)
+    assert isinstance(models._JS_CACHE_BYPASS_SUFFIXES, frozenset)
+
+
 def test_family_set_covers_the_js_ts_extensions():
     for suffix in (".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts", ".vue", ".svelte"):
         assert suffix in models._JS_FAMILY_SUFFIXES
