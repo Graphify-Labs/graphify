@@ -758,6 +758,47 @@ def _add_unrelated_semantic_pair(graph_path):
     graph_path.write_text(json.dumps(data), encoding="utf-8")
 
 
+def test_rebuild_code_preserves_a_hyperedge_whose_members_are_object_shaped(
+    tmp_path,
+):
+    """An object-shaped member names its `id`; reconciliation must resolve it.
+
+    Members come in both shapes the rest of the feature tolerates — a bare id
+    or an object carrying one (`_coerce_hyperedge_member_refs` exists precisely
+    because backends emit `{"id": "a"}`). Watch's whole-group drop tested the
+    member ref without unwrapping it, so an unhashable dict resolved to
+    nothing, "any member names nothing" fired, and a group whose members are
+    all alive was DELETED on an unrelated rebuild.
+    """
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "doc.md").write_text(
+        "# Design\n\n## Flow\n\nDetails.\n", encoding="utf-8"
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    members = ["doc", "doc_design", "doc_flow"]
+    assert set(members) <= {node["id"] for node in data["nodes"]}
+    data["hyperedges"] = [{
+        "id": "doc_flow_group",
+        "label": "Doc flow group",
+        "nodes": [{"id": mid} for mid in members],
+        "source_file": "doc.md",
+    }]
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+
+    after = json.loads(graph_path.read_text(encoding="utf-8"))
+    kept = {he["id"]: he for he in after.get("hyperedges", [])}
+    assert "doc_flow_group" in kept, "every member is alive; the group must survive"
+    assert kept["doc_flow_group"]["nodes"] == members
+
+
 @pytest.mark.parametrize(
     "changed_paths",
     [None, [Path("doc.md")]],

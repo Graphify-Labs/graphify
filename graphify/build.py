@@ -138,14 +138,42 @@ def resolve_member_ref(member: object, raw_by_coerced: dict, default: object = N
     return default
 
 
+def canonical_member_ref(member: object) -> object:
+    """One member ref in the canonical scalar space, whatever shape it arrives in.
+
+    An object-shaped member (``{"id": "a"}``) names its ``id``; a numeric ref is
+    coerced by :func:`_coerce_id`. :func:`_coerce_hyperedge_member_refs` applies
+    this same rule to a whole member list, with a WARNING and a drop for an
+    unusable id. This is the single-ref form, for the predicates that answer a
+    yes/no about a member taken straight off a persisted group that nothing has
+    normalized yet.
+
+    An id-less object collapses to ``None``, which :func:`_member_keys` then
+    resolves to nothing — canonicalizing must not invent a member.
+    """
+    if isinstance(member, dict):
+        member = member.get("id")
+    return _coerce_id(member)
+
+
 def member_in_id_space(member: object, ids: object) -> bool:
     """Whether *member* names anything in *ids*, under the shared lookup order.
 
     For the callers that need a yes/no rather than the resolved id — watch's
     whole-group reconciliation drop and the cache's skipped-node prune. Build
     *ids* with :func:`node_id_set`, which carries the same keys.
+
+    *member* is canonicalized here rather than by each caller, because these
+    callers read members off a group that has NOT been through
+    ``_normalize_hyperedge_members``: watch's drop reads ``edge["nodes"]``
+    verbatim out of the persisted graph. Both shapes the feature tolerates
+    therefore arrived raw, and an unwrapped object member is unhashable, so it
+    named nothing and watch deleted a group every one of whose members is alive
+    — while an uncoerced numeric member missed the coerced key
+    :func:`node_id_set` holds, leaving the cache's prune under-pruning. Callers
+    that pre-coerce are unaffected: :func:`canonical_member_ref` is idempotent.
     """
-    return any(key in ids for key in _member_keys(member))
+    return any(key in ids for key in _member_keys(canonical_member_ref(member)))
 
 
 

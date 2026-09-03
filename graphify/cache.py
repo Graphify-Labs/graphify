@@ -1825,11 +1825,13 @@ def scope_semantic_result(
             intersection, for the same reason as the skipped-node prune above:
             an exact intersection misses a member that resolves everywhere
             else, leaving the group holding a reference to a node this
-            function has just removed.
+            function has just removed. Members go in as they were emitted —
+            ``member_in_id_space`` canonicalizes the ref, so the numeric and
+            object shapes resolve here as they do at every writer gate.
             """
             try:
                 return any(
-                    member_in_id_space(_coerce_id(m), dropped_ids)
+                    member_in_id_space(m, dropped_ids)
                     for m in (h.get("nodes") or [])
                 )
             except TypeError:

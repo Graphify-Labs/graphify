@@ -13,6 +13,7 @@ from graphify.build import (
     canonical_hyperedge,
     gate_hyperedges,
     gate_hyperedges_against_graph,
+    member_in_id_space,
     node_id_set,
 )
 from graphify.export import attach_hyperedges, to_json
@@ -491,6 +492,50 @@ def test_gate_hyperedges_reports_the_drop_count_for_the_caller_message():
     assert gate_hyperedges(None, None) == ([], 0)
     _, dropped = gate_hyperedges([{"id": "p", "nodes": ["a", "b"]}], None)
     assert dropped == 1
+
+
+# ---------------------------------------------------------------------------
+# 2d. member_in_id_space — the yes/no predicate canonicalizes its own argument
+# ---------------------------------------------------------------------------
+
+MEMBER_SPACE = node_id_set([{"id": "foo_bar"}, {"id": 7}])
+
+
+@pytest.mark.parametrize(
+    "member",
+    ["foo_bar", {"id": "foo_bar"}, "Foo-Bar", {"id": "Foo-Bar"}],
+    ids=["bare", "object", "drifted-bare", "drifted-object"],
+)
+def test_member_in_id_space_resolves_a_string_member_in_either_shape(member):
+    """An object-shaped member names its `id`, exactly as it does everywhere else.
+
+    `_normalize_hyperedge_members` flattens `{"id": "a"}` to `"a"`, but the
+    yes/no callers test members straight off a persisted group that has not
+    been through it — watch's reconciliation drop reads
+    `edge["nodes"]` verbatim. An unwrapped dict is unhashable, so it named
+    nothing, and watch DELETED a group whose members are all alive.
+    """
+    assert member_in_id_space(member, MEMBER_SPACE) is True
+
+
+@pytest.mark.parametrize("member", [7, "7", {"id": 7}, {"id": "7"}])
+def test_member_in_id_space_coerces_a_numeric_member(member):
+    """`node_id_set` keys are `_coerce_id`-coerced, so the member side has to be
+    too. The cache's skipped-node prune passes members raw, so a numeric one
+    missed the node it named and the group was cached referencing a node
+    deliberately not written."""
+    assert member_in_id_space(member, MEMBER_SPACE) is True
+
+
+@pytest.mark.parametrize(
+    "member",
+    ["ghost", {"id": "ghost"}, {"id": None}, {"label": "no id"}, {}, None,
+     ["unhashable"]],
+)
+def test_member_in_id_space_rejects_what_names_nothing(member):
+    """Canonicalizing must not invent a resolution: a member with no usable id,
+    in either shape, still names nothing."""
+    assert member_in_id_space(member, MEMBER_SPACE) is False
 
 
 # ---------------------------------------------------------------------------

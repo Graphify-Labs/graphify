@@ -729,13 +729,6 @@ def _member_id_space(*node_lists: list) -> set:
     return space
 
 
-def _coerce_member(value: object) -> object:
-    """Canonicalize one member ref the way the shared gate does."""
-    from graphify.build import _coerce_id
-
-    return _coerce_id(value)
-
-
 def _member_in_id_space(member: object, ids: object) -> bool:
     """Whether *member* names anything in *ids*, under the shared lookup order.
 
@@ -1039,11 +1032,17 @@ def _reconcile_existing_graph(
             # calls valid. The whole-group drop semantics are unchanged: any
             # member that resolves to nothing still evicts the group.
             #
+            # Members go in as persisted, in whatever shape they were written:
+            # `member_in_id_space` canonicalizes the ref itself, so an
+            # object-shaped `{"id": "a"}` names `a` here as it does everywhere
+            # else. Coercing only the numeric case on the way in left the object
+            # form unhashable, naming nothing, and evicted a live group.
+            #
             # Against its own key set, not `all_ids`: that set holds the node
             # ids raw for the edge-endpoint checks above, so a numeric node id
             # stays `7` there while its member coerces to `"7"`.
             if isinstance(members, list) and any(
-                not _member_in_id_space(_coerce_member(member), member_id_space)
+                not _member_in_id_space(member, member_id_space)
                 for member in members
             ):
                 continue
