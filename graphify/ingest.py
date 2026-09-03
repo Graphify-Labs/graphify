@@ -2,6 +2,7 @@
 from __future__ import annotations
 import json
 import re
+import uuid
 import urllib.error
 import urllib.parse
 from datetime import datetime, timezone
@@ -299,7 +300,11 @@ def save_query_result(
 
     now = datetime.now(timezone.utc)
     slug = re.sub(r"[^\w]", "_", question.lower())[:50].strip("_")
-    filename = f"query_{now.strftime('%Y%m%d_%H%M%S')}_{slug}.md"
+    # A second-granularity stamp plus a 50-char slug is not unique: two saves in
+    # the same second whose questions share a prefix resolve to one path, and the
+    # later write_text silently replaces the earlier one (#3301). The short uuid
+    # makes every save its own file; the query_ prefix and .md suffix are kept.
+    filename = f"query_{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}_{slug}.md"
 
     frontmatter_lines = [
         "---",
