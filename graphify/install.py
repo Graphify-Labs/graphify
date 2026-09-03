@@ -32,6 +32,28 @@ except Exception:
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
 
 
+def _write_version_stamp(skill_dst: Path, version: str) -> None:
+    """Atomically write ``.graphify_version`` beside ``skill_dst``.
+
+    Matches the SKILL.md install path: temp file in the same directory, then
+    ``os.replace``. Unlike ``Path.write_text`` (and unlike
+    ``paths.write_text_atomic``, which resolves through symlinks), ``os.replace``
+    replaces a managed symlink in place — consistent with SKILL.md /
+    ``references/`` and crash-safe against a half-written stamp (#3286).
+    """
+    version_file = skill_dst.parent / ".graphify_version"
+    tmp = version_file.with_name(".graphify_version.tmp")
+    try:
+        tmp.write_text(version, encoding="utf-8")
+        os.replace(tmp, version_file)
+    except Exception:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
 @functools.lru_cache(maxsize=None)
 def _always_on(basename: str) -> str:
     """Read a packaged always-on instruction block from graphify/always_on/.
@@ -236,7 +258,7 @@ def _copy_skill_file(platform_name: str, *, project: bool = False, project_dir: 
             pass
         raise
 
-    (skill_dst.parent / ".graphify_version").write_text(__version__, encoding="utf-8")
+    _write_version_stamp(skill_dst, __version__)
     print(f"  skill installed  ->  {skill_dst}")
     return skill_dst
 def _remove_skill_file(platform_name: str, *, project: bool = False, project_dir: Path | None = None) -> bool:
@@ -881,7 +903,7 @@ def vscode_install(project_dir: Path | None = None) -> None:
         orphan_refs = skill_dst.parent / "references"
         if orphan_refs.exists():
             shutil.rmtree(orphan_refs)
-    (skill_dst.parent / ".graphify_version").write_text(__version__, encoding="utf-8")
+    _write_version_stamp(skill_dst, __version__)
     print(f"  skill installed  ->  {skill_dst}")
 
     instructions = (project_dir or Path(".")) / ".github" / "copilot-instructions.md"
