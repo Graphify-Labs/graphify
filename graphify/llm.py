@@ -3111,21 +3111,44 @@ def _validate_ollama_base_url(url: str, *, warn: bool = True) -> None:
 def detect_backend() -> str | None:
     """Return the name of whichever backend has an API key set, or None.
 
-    Priority: gemini → kimi → claude → openai → deepseek → azure → bedrock → ollama (last, opt-in).
+    If GRAPHIFY_BACKEND is set, it overrides automatic detection:
+      - valid backend name (e.g. "bedrock", "ollama", "claude"): selects that backend
+      - "none" or "off": returns None (disables backend detection)
+      - "auto": continues to normal automatic detection
+      - unknown value: raises ValueError
 
-    Ollama is intentionally checked LAST so a paid API key (Anthropic/OpenAI/etc.)
-    is never silently shadowed by an incidental OLLAMA_BASE_URL in the environment
-    — see security finding F-002/F-029. Setting OLLAMA_BASE_URL alongside a paid
-    key now keeps you on the paid backend; remove the paid key (or pass
+    Automatic detection priority:
+      gemini → kimi → claude → openai → deepseek → azure → ollama → custom providers.
+
+    AWS Bedrock is intentionally NOT auto-detected from ambient AWS_PROFILE /
+    AWS_REGION variables to prevent accidental spend or crashes when boto3 is
+    missing; select it explicitly via --backend bedrock or GRAPHIFY_BACKEND=bedrock (#3300).
+
+    Ollama is intentionally checked LAST among built-in providers so a paid API key
+    (Anthropic/OpenAI/etc.) is never silently shadowed by an incidental OLLAMA_BASE_URL
+    in the environment — see security finding F-002/F-029. Setting OLLAMA_BASE_URL alongside
+    a paid key keeps you on the paid backend; remove the paid key (or pass
     --backend ollama explicitly) to route to the local model.
     """
+    raw_override = os.environ.get("GRAPHIFY_BACKEND", "").strip()
+    if raw_override:
+        override = raw_override.lower()
+        if override in ("none", "off"):
+            return None
+        if override != "auto":
+            matched = next((b for b in BACKENDS if b.lower() == override), None)
+            if matched is None:
+                raise ValueError(
+                    f"unknown backend '{raw_override}' in GRAPHIFY_BACKEND. "
+                    f"Available: {', '.join(sorted(BACKENDS))}"
+                )
+            return matched
+
     for backend in ("gemini", "kimi", "claude", "openai", "deepseek"):
         if _get_backend_api_key(backend):
             return backend
     if _get_backend_api_key("azure") and os.environ.get("AZURE_OPENAI_ENDPOINT"):
         return "azure"
-    if os.environ.get("AWS_PROFILE") or os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION"):
-        return "bedrock"
     # Honor Ollama's own OLLAMA_HOST here too, not just OLLAMA_BASE_URL (#1940) —
     # otherwise a user who set the standard Ollama var but no --backend still
     # gets "no LLM API key found". Empty default -> falsy when neither is set,

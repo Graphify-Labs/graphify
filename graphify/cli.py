@@ -3615,7 +3615,11 @@ def dispatch_command(cmd: str) -> None:
         )
         needs_llm = bool(semantic_files) or dedup_llm
         if backend is None and needs_llm:
-            backend = _detect_backend()
+            try:
+                backend = _detect_backend()
+            except ValueError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                sys.exit(1)
         if backend is not None and backend not in _BACKENDS:
             print(
                 f"error: unknown backend '{backend}'. "
