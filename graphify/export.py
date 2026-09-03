@@ -312,8 +312,13 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
                     f"[graphify] WARNING: new graph has {new_n} nodes but existing "
                     f"graph.json has {existing_n} (net -{existing_n - new_n}). "
                     f"Refusing to overwrite. Possible causes: missing chunk files from "
-                    f"a previous session, or fuzzy dedup collapsed same-named symbols "
-                    f"across files during an --update on an already-current graph. "
+                    f"a previous session; fuzzy dedup collapsed same-named symbols "
+                    f"across files during an --update on an already-current graph; or "
+                    f"an extractor upgrade whose recovered definitions collapse more "
+                    f"sourceless reference stubs than they add (e.g. the #3302 "
+                    f"same-file collision fix) — a small net shrink is EXPECTED then, "
+                    f"and a full rebuild (graphify extract . --force) is the "
+                    f"documented upgrade path. "
                     f"Run a full rebuild (/graphify .) to be safe, or pass force=True "
                     f"only if you have verified the reduction is legitimate.",
                     file=_sys.stderr,

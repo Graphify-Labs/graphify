@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 from graphify.extractors.base import _LANGUAGE_BUILTIN_GLOBALS, _file_stem, _make_id, _read_text
+from graphify.extractors.collisions import SymbolCollisionCensus, raw_symbol_name
 from graphify.ids import normalize_id
 from graphify.extractors.models import LanguageConfig
 from graphify.extractors.resolution import _resolve_js_import_target
@@ -2929,6 +2930,13 @@ def _extract_generic(
     nodes: list[dict] = []
     edges: list[dict] = []
     seen_ids: set[str] = set()
+    # Same-file id collisions (#3302): distinct raw names that normalize to one
+    # id (`Session`/`session()`, `_get_connection`/`get_connection`) used to
+    # first-wins-collapse via seen_ids, silently dropping every later
+    # definition. The census salts the non-canonical members apart instead —
+    # the generalization of Go's #2779 fix; see extractors/collisions.py.
+    _collisions = SymbolCollisionCensus()
+    node_by_id: dict[str, dict] = {}
     namespace_stack: list[str] = []
     # Ruby only: enclosing module/class segments, so `module Foo::Bar` (compact)
     # and `module Foo; module Bar` (nested) label the same node `Foo::Bar` and
@@ -3001,10 +3009,43 @@ def _extract_generic(
     if config.ts_module == "tree_sitter_swift":
         swift_protocol_names, swift_class_names = _swift_pre_scan(root, source)
 
-    def add_node(nid: str, label: str, line: int, *, node_type: str | None = None,
-                 metadata: dict | None = None) -> None:
-        if nid in seen_ids:
+    def _note_redefinition(nid: str, line: int) -> None:
+        """Record an extra definition site on a collapsed (same-raw-name) node.
+
+        `@overload` stubs, `if PY2:`/`else:` conditional defs, and try/except
+        fallbacks deliberately stay ONE node (#3302); the extra site lines make
+        the collapse auditable without affecting the id.
+        """
+        node = node_by_id.get(nid)
+        if node is None or node.get("source_location") == f"L{line}":
             return
+        meta = node.setdefault("metadata", {})
+        lines = meta.setdefault("redefinition_lines", [])
+        if line not in lines:
+            lines.append(line)
+
+    def add_node(nid: str, label: str, line: int, *, node_type: str | None = None,
+                 metadata: dict | None = None, symbol_kind: str | None = None) -> str:
+        """Add a node, returning the EFFECTIVE id the definition ended up under.
+
+        Definition nodes pass `symbol_kind` ("class" / "function") and MUST use
+        the returned id for their edges, bodies, and registries: when the id is
+        already held by a sibling with a different raw declared name, the
+        census assigns a salted sibling id instead of silently dropping the
+        definition (#3302). A re-definition of the same raw name still
+        collapses onto the existing node. Non-definition nodes (file,
+        module/namespace anchors #1327, member nodes, stubs #1402) don't pass
+        `symbol_kind` and keep the old first-wins behavior exactly.
+        """
+        if symbol_kind is not None:
+            nid, existing = _collisions.assign(
+                nid, raw_symbol_name(label), symbol_kind, seen_ids
+            )
+            if existing:
+                _note_redefinition(nid, line)
+                return nid
+        elif nid in seen_ids:
+            return nid
         seen_ids.add(nid)
         merged = dict(metadata or {})
         if namespace_stack:
@@ -3023,6 +3064,8 @@ def _extract_generic(
         if merged:
             node["metadata"] = sanitize_metadata(merged)
         nodes.append(node)
+        node_by_id[nid] = node
+        return nid
 
     def add_edge(src: str, tgt: str, relation: str, line: int,
                  confidence: str = "EXTRACTED", weight: float = 1.0,
@@ -3068,7 +3111,6 @@ def _extract_generic(
         return nid
 
     file_nid = _make_id(str(path))
-    add_node(file_nid, path.name, 1)
 
     def walk(node, parent_class_nid: str | None = None) -> None:
         t = node.type
@@ -3149,7 +3191,8 @@ def _extract_generic(
                 ):
                     metadata = dict(metadata or {})
                     metadata["is_partial"] = True
-            add_node(class_nid, class_name, line, metadata=metadata)
+            class_nid = add_node(class_nid, class_name, line, metadata=metadata,
+                                 symbol_kind="class")
             callable_def_nids.add(class_nid)  # a class is callable (constructor)
             callable_class_nids.add(class_nid)  # ...but only via its constructor (#2137)
             # A nested class/object/trait is contained by its ENCLOSING type, not
@@ -4228,12 +4271,12 @@ def _extract_generic(
 
             line = node.start_point[0] + 1
             if parent_class_nid:
-                func_nid = _make_id(parent_class_nid, sanitized_name)
-                add_node(func_nid, f".{func_name}()", line)
+                func_nid = add_node(_make_id(parent_class_nid, sanitized_name),
+                                    f".{func_name}()", line, symbol_kind="function")
                 add_edge(parent_class_nid, func_nid, "method", line)
             else:
-                func_nid = _make_id(stem, sanitized_name)
-                add_node(func_nid, f"{func_name}()", line)
+                func_nid = add_node(_make_id(stem, sanitized_name),
+                                    f"{func_name}()", line, symbol_kind="function")
                 add_edge(file_nid, func_nid, "contains", line)
             callable_def_nids.add(func_nid)  # function / method def is callable
             if config.ts_module == "tree_sitter_python":
@@ -4860,7 +4903,31 @@ def _extract_generic(
         for child in node.children:
             walk(child, parent_class_nid=None)
 
-    walk(root)
+    # ── Mint passes (#3302) ───────────────────────────────────────────────────
+    # The node walk runs inside the collision census. The first pass assigns
+    # provisionally (first writer keeps the plain id, a later definition with a
+    # different raw name gets a name-salted sibling id); when settling the
+    # census re-picks a group's canonical member — the public `get_connection`
+    # declared after its private sibling, a `class Session` after `def
+    # session()` — the walk re-runs with the final assignment pinned, so every
+    # DERIVED id (method ids embed their class's id) is re-minted from the
+    # canonical form instead of patched afterwards. Collision-free files (the
+    # overwhelming majority) settle in a single pass. Runs before the
+    # call-graph pass so calls bind to the right sibling through the
+    # case-sensitive label_to_nid map below.
+    _mint_pass_state: tuple = (
+        nodes, edges, seen_ids, node_by_id, namespace_stack, ruby_namespace,
+        scope_stack, function_bodies, callable_def_nids, callable_class_nids,
+        local_bound_names, closure_locals_by_body, pending_listen_edges,
+        swift_extensions, initializer_nodes, _ruby_mixin_calls, type_table,
+        swift_factory_bindings, java_field_types, java_method_scopes,
+        csharp_field_types, csharp_method_scopes,
+    )
+    for _ in _collisions.passes():
+        for _state in _mint_pass_state:
+            _state.clear()
+        add_node(file_nid, path.name, 1)
+        walk(root)
 
     # ── Call-graph pass ───────────────────────────────────────────────────────
     label_to_nid: dict[str, str] = {}     # case-sensitive (Ruby, C#, Java, Kotlin, etc.)

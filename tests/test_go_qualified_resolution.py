@@ -356,3 +356,71 @@ def test_case_only_sibling_all_exported_are_both_extracted(tmp_path: Path) -> No
     run2 = _ids(result, label="RUN", suffix="a.go")
     assert len(run1) == 1 and len(run2) == 1, f"Run={run1} RUN={run2}"
     assert run1 != run2, "Run and RUN collapsed onto one node id"
+
+
+def test_case_only_type_declarations_are_both_extracted(tmp_path: Path) -> None:
+    """``type ResponseWriter interface`` and ``type responseWriter struct`` in
+    one file are two symbols, not one — the #2779 census covers type_specs too
+    (#3302). Pre-widening the struct was dropped and its methods attached to
+    the INTERFACE's node. The exported type keeps the plain id (the #2779
+    rule); the unexported struct is salted, and its methods follow it."""
+    (tmp_path / "go.mod").write_text("module example.com/repro\n\ngo 1.22\n")
+    pkg = tmp_path / "pkga"
+    pkg.mkdir()
+    (pkg / "rw.go").write_text(
+        "package pkga\n\n"
+        "type ResponseWriter interface {\n"
+        "\tStatus() int\n"
+        "}\n\n"
+        "type responseWriter struct{}\n\n"
+        "func (w *responseWriter) Status() int { return 0 }\n"
+    )
+    result = _extract(tmp_path)
+
+    exported = _ids(result, label="ResponseWriter", suffix="rw.go")
+    unexported = _ids(result, label="responseWriter", suffix="rw.go")
+    assert len(exported) == 1, f"exported interface missing: {exported}"
+    assert len(unexported) == 1, f"unexported struct missing: {unexported}"
+    assert exported != unexported, "interface and struct collapsed onto one id"
+
+    method_edges = [
+        (e["source"], e["target"])
+        for e in result["edges"]
+        if e.get("relation") == "method"
+    ]
+    status_ids = _ids(result, label="Status", suffix="rw.go")
+    assert len(status_ids) == 1
+    assert method_edges == [(next(iter(unexported)), next(iter(status_ids)))], (
+        f"struct method attached to the wrong type node: {method_edges}"
+    )
+
+
+def test_case_only_type_exported_keeps_stable_id(tmp_path: Path) -> None:
+    """Adding an unexported case-only sibling type must not move the exported
+    type's id — the same incremental-stability contract the #2779 function
+    tests pin down, now for type declarations."""
+    (tmp_path / "go.mod").write_text("module example.com/repro\n\ngo 1.22\n")
+    pkg = tmp_path / "pkga"
+    pkg.mkdir()
+
+    (pkg / "rw.go").write_text(
+        "package pkga\n\ntype ResponseWriter interface {\n\tStatus() int\n}\n"
+    )
+    solo_ids = _ids(_extract(tmp_path), label="ResponseWriter", suffix="rw.go")
+
+    (pkg / "rw.go").write_text(
+        "package pkga\n\n"
+        "type ResponseWriter interface {\n"
+        "\tStatus() int\n"
+        "}\n\n"
+        "type responseWriter struct{}\n"
+    )
+    result = _extract(tmp_path)
+    exported = _ids(result, label="ResponseWriter", suffix="rw.go")
+    unexported = _ids(result, label="responseWriter", suffix="rw.go")
+
+    assert exported == solo_ids, (
+        f"adding an unexported sibling type moved the exported id: "
+        f"{solo_ids} -> {exported}"
+    )
+    assert unexported and unexported != exported
