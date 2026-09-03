@@ -219,6 +219,16 @@ BACKENDS: dict[str, dict] = {
         # CLI's Read tool rather than as inline base64 (see `_call_claude_cli`).
         "vision": True,
     },
+    "cursor-cli": {
+        # Routes through the locally-installed Cursor Agent CLI
+        # (`cursor-agent -p`), authenticated via the user's Cursor
+        # subscription (`cursor-agent login`) instead of a separate API key —
+        # costs are billed to the plan, not pay-as-you-go API credit.
+        "default_model": "cursor-agent-plan",
+        "pricing": {"input": 0.0, "output": 0.0},
+        "temperature": 0,
+        "max_tokens": 16384,
+    },
 }
 
 
@@ -1782,6 +1792,93 @@ def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bo
     return result
 
 
+def _cli_extraction_prompt(user_message: str, *, deep: bool) -> str:
+    """Build the single user-turn message for CLI backends (cursor-cli).
+
+    Mirrors the claude-cli delivery: the extraction schema plus an explicit
+    imperative go in the USER turn rather than a system-prompt flag, because
+    local coding-agent context (AGENTS.md, rules, MCP) otherwise dilutes the
+    instructions and the CLI replies conversationally, which parses hollow.
+    """
+    return (
+        _extraction_system(deep=deep)
+        + "\n\n---\n"
+        + "Now extract the knowledge graph from the following source file(s) "
+        + "and output ONLY the JSON object described above. No prose, no "
+        + "preamble, no markdown fences.\n\n"
+        + user_message
+    )
+
+
+def _call_cursor_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bool = False, images: list[_ImageRef] | None = None) -> dict:
+    """Call Cursor via the locally-installed Cursor Agent CLI (``cursor-agent -p``).
+
+    Authenticates via the user's Cursor subscription (``cursor-agent login``)
+    — costs are billed to the plan. The reply arrives as a JSON envelope
+    (``--output-format json``) whose ``result`` field carries the model text
+    and ``usage`` the token counts. Ask mode keeps the agent read-only;
+    ``--trust`` is required for non-interactive runs. The prompt goes over
+    stdin because real extraction chunks exceed argv size limits. Images are
+    not attached natively (no flag), so cursor-cli is not a vision backend.
+    """
+    import shutil
+    import subprocess
+
+    cursor_cmd = shutil.which("cursor-agent")
+    if cursor_cmd is None:
+        raise RuntimeError(
+            "Cursor Agent CLI not found on $PATH. Install it and run "
+            "`cursor-agent login` to authenticate with your Cursor subscription."
+        )
+    combined_message = _cli_extraction_prompt(user_message, deep=deep_mode)
+    cli_args = [
+        cursor_cmd, "-p",
+        "--trust",
+        "--output-format", "json",
+        "--mode", "ask",
+    ]
+    cli_model = os.environ.get("GRAPHIFY_CURSOR_CLI_MODEL", "").strip()
+    if cli_model:
+        cli_args.extend(["--model", cli_model])
+    proc = subprocess.run(
+        cli_args,
+        input=combined_message,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=_resolve_api_timeout(),
+        check=False,
+        **_no_window_kwargs(),
+    )
+    # The CLI reports API failures in the stdout JSON envelope, not stderr, so
+    # a nonzero exit with a parseable envelope surfaces that cause (#2554).
+    # A non-JSON stdout on a success exit must fail loudly rather than parse
+    # to an empty graph the hollow-retry path would bisect forever.
+    try:
+        envelope = json.loads((proc.stdout or "").strip())
+    except ValueError:
+        envelope = None
+    if proc.returncode != 0 or (envelope or {}).get("is_error"):
+        detail = (
+            (proc.stderr or "").strip()
+            or (str(envelope.get("result") or "") if envelope else "")[:500]
+            or "(no stderr, no error envelope)"
+        )
+        raise RuntimeError(f"cursor-agent -p failed: {detail[:500]}")
+    if envelope is None:
+        raise RuntimeError("cursor-agent -p produced an unparseable JSON envelope")
+    raw_content = str(envelope.get("result", "") or "")
+    result = _parse_llm_json(raw_content or "{}")
+    usage = envelope.get("usage") or {}
+    result["input_tokens"] = int(usage.get("inputTokens", 0) or 0)
+    result["output_tokens"] = int(usage.get("outputTokens", 0) or 0)
+    result["model"] = cli_model or "cursor-agent-plan"
+    result["finish_reason"] = "stop"
+    _mark_hollow(result, raw_content, "cursor-cli")
+    return result
+
+
 def _azure_client(api_key: str, endpoint: str):
     """Construct an AzureOpenAI client with env-driven api_version and timeout."""
     try:
@@ -1939,7 +2036,7 @@ def extract_files_direct(
             file=sys.stderr,
         )
         key = "ollama"
-    if not key and backend not in ("bedrock", "claude-cli"):
+    if not key and backend not in ("bedrock", "claude-cli", "cursor-cli"):
         raise ValueError(
             f"No API key for backend '{backend}'. "
             f"Set {_format_backend_env_keys(backend)} or pass api_key=."
@@ -1963,6 +2060,8 @@ def extract_files_direct(
         result = _call_claude(key, mdl, user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
     elif backend == "claude-cli":
         result = _call_claude_cli(user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
+    elif backend == "cursor-cli":
+        result = _call_cursor_cli(user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
     elif backend == "bedrock":
         result = _call_bedrock(mdl, user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
     elif backend == "azure":
@@ -2621,6 +2720,8 @@ def extract_corpus_parallel(
     # over session state. Force serial unless the user explicitly opts in.
     if backend == "claude-cli" and os.environ.get("GRAPHIFY_CLAUDE_CLI_PARALLEL", "").strip() != "1":
         max_concurrency = 1
+    if backend == "cursor-cli" and os.environ.get("GRAPHIFY_CURSOR_CLI_PARALLEL", "").strip() != "1":
+        max_concurrency = 1
     def _checkpoint_chunk(result: dict, chunk: "list[Path | FileSlice]") -> None:
         # Persist each chunk's semantic results to the cache as soon as it
         # completes. Without this, the semantic cache is only written once, at
@@ -2863,7 +2964,7 @@ def _call_llm(
         ollama_url = _resolve_ollama_base_url(cfg.get("base_url", ""))
         _validate_ollama_base_url(ollama_url)
         key = "ollama"
-    if not key and backend not in ("bedrock", "claude-cli"):
+    if not key and backend not in ("bedrock", "claude-cli", "cursor-cli"):
         raise ValueError(
             f"No API key for backend '{backend}'. Set {_format_backend_env_keys(backend)}."
         )
@@ -2936,6 +3037,52 @@ def _call_llm(
                 cli_usage.get("output_tokens", 0),
             )
         return envelope.get("result", "")
+    if backend == "cursor-cli":
+        import shutil, subprocess
+        cursor_cmd = shutil.which("cursor-agent")
+        if cursor_cmd is None:
+            raise RuntimeError("Cursor Agent CLI not found on $PATH")
+        cli_args = [
+            cursor_cmd, "-p",
+            "--trust",
+            "--output-format", "json",
+            "--mode", "ask",
+        ]
+        if model is not None:
+            cli_args.extend(["--model", mdl])
+        proc = subprocess.run(
+            cli_args,
+            input=prompt,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_resolve_api_timeout(),
+            check=False,
+            **_no_window_kwargs(),
+        )
+        # Nonzero exit with a parseable envelope surfaces the envelope's
+        # error text; garbage stdout on success fails loudly (#2554).
+        try:
+            envelope = json.loads((proc.stdout or "").strip())
+        except ValueError:
+            envelope = None
+        if proc.returncode != 0 or (envelope or {}).get("is_error"):
+            detail = (
+                (proc.stderr or "").strip()
+                or (str(envelope.get("result") or "") if envelope else "")[:500]
+                or "(no stderr, no error envelope)"
+            )
+            raise RuntimeError(f"cursor-agent -p failed: {detail[:500]}")
+        if envelope is None:
+            raise RuntimeError(
+                "cursor-agent -p produced an unparseable JSON envelope"
+            )
+        cli_usage = envelope.get("usage") or {}
+        if cli_usage:
+            _rec(cli_usage.get("inputTokens", 0) or 0, cli_usage.get("outputTokens", 0) or 0)
+        return str(envelope.get("result", "") or "")
+
 
 
     if backend == "bedrock":
@@ -3135,7 +3282,7 @@ def detect_backend() -> str | None:
         _validate_ollama_base_url(ollama_url)
         return "ollama"
     for name in BACKENDS:
-        if name not in ("gemini", "kimi", "claude", "openai", "deepseek", "azure", "bedrock", "ollama", "claude-cli"):
+        if name not in ("gemini", "kimi", "claude", "openai", "deepseek", "azure", "bedrock", "ollama", "claude-cli", "cursor-cli"):
             if _get_backend_api_key(name):
                 return name
     return None
@@ -3352,6 +3499,8 @@ def label_communities(
     if backend == "ollama" and os.environ.get("GRAPHIFY_OLLAMA_PARALLEL", "").strip() != "1":
         max_concurrency = 1
     if backend == "claude-cli" and os.environ.get("GRAPHIFY_CLAUDE_CLI_PARALLEL", "").strip() != "1":
+        max_concurrency = 1
+    if backend == "cursor-cli" and os.environ.get("GRAPHIFY_CURSOR_CLI_PARALLEL", "").strip() != "1":
         max_concurrency = 1
     workers = max(1, min(max_concurrency, n_batches))
 

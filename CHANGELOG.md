@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Feature: a new `cursor-cli` backend (`--backend cursor-cli`) runs semantic extraction and community labeling through the locally authenticated Cursor Agent CLI (`cursor-agent -p`), so the work rides a Cursor subscription instead of a metered API key. It mirrors the `claude-cli` backend: zero pricing, extraction instructions delivered in the user turn, serial calls unless `GRAPHIFY_CURSOR_CLI_PARALLEL=1`, and `GRAPHIFY_CURSOR_CLI_MODEL` to pin a model (default: Cursor's own `auto` routing). Ask mode keeps the agent read-only over the corpus, `--trust` satisfies non-interactive workspace trust, and the prompt travels over stdin because real extraction chunks exceed argv size limits. Token usage comes from the JSON envelope's `usage` block.
+
 ## 0.9.53 (2026-08-30)
 
 - Fix: a batch of cross-language inheritance-edge corrections (thanks @Synvoya): JavaScript `class X extends Y` now emits an `inherits` edge (#1790); PHP interfaces, enums, and traits are captured as class-like nodes with their heritage (#1791); Scala `trait` declarations become class-like nodes (#1792) and qualified `extends`/`with` bases resolve to the tail type (#1794); a qualified Kotlin supertype resolves to its tail type instead of the package head (#1793); a C# interface extending an interface is classified as `inherits`, not `implements` (#1817); and a Go interface type-set constraint no longer emits a spurious `embeds` edge (#1818).
