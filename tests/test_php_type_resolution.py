@@ -156,3 +156,35 @@ def test_php_plain_no_namespace_inheritance_preserved(tmp_path: Path):
         "no-namespace inheritance must still resolve to the real Base def"
     )
     assert tgt.get("label") == "Base"
+
+
+def test_php_import_resolves_when_target_name_prefixes_sibling_classes(tmp_path: Path):
+    pivot = _write(
+        tmp_path / "src/Pivot.php",
+        "<?php\nnamespace App\\Entities;\nclass Pivot {}\n",
+    )
+    importer = _write(
+        tmp_path / "src/ModelWithRelation.php",
+        "<?php\nnamespace App\\Models;\n"
+        "use App\\Entities\\Pivot;\n"
+        "class ModelWithRelation {}\n",
+    )
+    siblings = [
+        _write(
+            tmp_path / f"src/{name}.php",
+            f"<?php\nnamespace App\\Repositories;\nclass {name} {{}}\n",
+        )
+        for name in ("PivotRepository", "PivotRepositoryEloquent", "PivotValidator")
+    ]
+
+    result = extract([pivot, importer, *siblings], cache_root=tmp_path)
+    pivot_id = _class_defs(result, "Pivot")[0]["id"]
+    imports = [
+        edge
+        for edge in result["edges"]
+        if edge["relation"] == "imports"
+        and "modelwithrelation" in edge.get("source", "").lower()
+    ]
+
+    assert len(imports) == 1
+    assert imports[0]["target"] == pivot_id

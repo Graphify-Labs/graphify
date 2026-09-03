@@ -220,12 +220,13 @@ def test_plain_module_gets_a_node_with_methods(tmp_path: Path) -> None:
 
 
 def test_nested_modules_each_get_a_node(tmp_path: Path) -> None:
-    """#1640 shape 1, nested."""
+    """#1640 shape 1, nested — the inner module is labelled fully qualified
+    (#2302), so nested and compact declarations converge on one label."""
     r = extract_ruby(_write(tmp_path, "n.rb",
         "module Billing\n  module Rounding\n    def round(x)\n      x.round(2)\n    end\n  end\nend\n"))
     labels = _node_labels(r)
-    assert "Billing" in labels and "Rounding" in labels
-    assert ("Rounding", ".round()") in _method_edges(r)
+    assert "Billing" in labels and "Billing::Rounding" in labels
+    assert ("Billing::Rounding", ".round()") in _method_edges(r)
 
 
 def test_struct_new_constant_creates_class_with_methods(tmp_path: Path) -> None:
@@ -350,6 +351,61 @@ def test_mixin_is_not_emitted_as_calls_edge(tmp_path: Path) -> None:
     assert ("K", "C") in _mixes_in(g)
 
 
+# ── #2302 compact-syntax mixins + qualified constant lookup ──────────────────
+
+
+def test_compact_and_nested_module_includes_resolve(tmp_path: Path) -> None:
+    """#2302: `module Billing::TotalsConcern` (compact) and a top-level module
+    both resolve as mixin targets, lexically from the including class."""
+    _write(tmp_path, "totals_concern.rb",
+           "module Billing::TotalsConcern\n  def total; end\nend\n")
+    _write(tmp_path, "archivable_concern.rb",
+           "module ArchivableConcern\n  extend ActiveSupport::Concern\n  def archive; end\nend\n")
+    _write(tmp_path, "models.rb",
+           "module Billing\n  class Invoice\n    include TotalsConcern\n  end\nend\n"
+           "\nclass Account\n  extend ArchivableConcern\nend\n")
+    g = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+    mix = _mixes_in(g)
+    assert ("Billing::Invoice", "Billing::TotalsConcern") in mix
+    assert ("Account", "ArchivableConcern") in mix
+    # `extend ActiveSupport::Concern` must not fabricate an edge to any local
+    # module — no phantom `Concern` target of any spelling.
+    assert not any(t.split("::")[-1] == "Concern" for _s, t in mix)
+
+
+def test_qualified_external_mixin_does_not_bind_to_local(tmp_path: Path) -> None:
+    """#2302: `extend ActiveSupport::Concern` must NOT resolve to an unrelated
+    local `module Concern` just because the last segment matches."""
+    _write(tmp_path, "concern.rb", "module Concern\n  def local_thing; end\nend\n")
+    _write(tmp_path, "post.rb", "class Post\n  extend ActiveSupport::Concern\nend\n")
+    mix = _mixes_in(extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False))
+    assert ("Post", "Concern") not in mix
+    assert not mix
+
+
+def test_in_corpus_qualified_mixin_resolves(tmp_path: Path) -> None:
+    """#2302 over-suppression guard: a qualified reference whose full path IS
+    defined in the corpus still resolves."""
+    _write(tmp_path, "foo.rb", "module Foo\n  module Concern\n    def helper; end\n  end\nend\n")
+    _write(tmp_path, "k.rb", "class K\n  include Foo::Concern\nend\n")
+    mix = _mixes_in(extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False))
+    assert ("K", "Foo::Concern") in mix
+
+
+def test_nested_declared_class_still_resolves_as_receiver(tmp_path: Path) -> None:
+    """#2302 regression guard: qualifying labels must not break bare constant
+    receivers — `Processor.new` / typed `p.run` still find `Billing::Processor`."""
+    _write(tmp_path, "billing.rb",
+           "module Billing\n  class Processor\n    def run\n      42\n    end\n  end\nend\n")
+    _write(tmp_path, "caller.rb",
+           "def process_all\n  p = Processor.new\n  p.run\nend\n")
+    g = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+    assert _has_call_edge(g, "process_all", "Processor") is not None, \
+        "Processor.new should still resolve to the nested-declared class"
+    assert _has_call_edge(g, "process_all", "run") is not None, \
+        "typed p.run should still resolve to Billing::Processor#run"
+
+
 def test_rake_files_extract_and_resolve_like_rb(tmp_path):
     """#1784: `.rake` files are plain Ruby and must route to the Ruby extractor
     and participate in Ruby cross-file resolution exactly like `.rb`."""
@@ -366,3 +422,231 @@ def test_rake_files_extract_and_resolve_like_rb(tmp_path):
     calls = {(label.get(e["source"]), label.get(e["target"]))
              for e in result["edges"] if e["relation"] == "calls"}
     assert (".run()", ".tally()") in calls
+
+
+def test_ruby_suffixed_methods_extraction_and_labels(tmp_path: Path) -> None:
+    """#3077: def foo, def foo!, def foo?, and def foo=(val) in the same class
+    must all survive extraction with distinct IDs and raw labels."""
+    f = _write(tmp_path, "thing.rb", """\
+class Thing
+  def foo; end
+  def foo!; end
+  def foo?; end
+  def foo=(val); end
+end
+""")
+    r = extract_ruby(f)
+    assert "error" not in r
+    method_nodes = [n for n in r["nodes"] if n["id"] != r["nodes"][0]["id"] and n.get("label") != "Thing"]
+    assert len(method_nodes) == 4, f"Expected 4 distinct method nodes, got {method_nodes}"
+
+    node_by_label = {n["label"]: n["id"] for n in r["nodes"]}
+    assert ".foo()" in node_by_label
+    assert ".foo!()" in node_by_label
+    assert ".foo?()" in node_by_label
+    assert ".foo=()" in node_by_label
+
+    assert node_by_label[".foo()"].endswith("_foo")
+    assert node_by_label[".foo!()"].endswith("_foo_bang")
+    assert node_by_label[".foo?()"].endswith("_foo_pred")
+    assert node_by_label[".foo=()"].endswith("_foo_eq")
+
+    # Verify all 4 method edges exist
+    method_edges = [e for e in r["edges"] if e.get("relation") == "method"]
+    assert len(method_edges) == 4
+    targets = {e["target"] for e in method_edges}
+    assert len(targets) == 4
+
+
+def test_ruby_suffixed_singleton_methods_extraction(tmp_path: Path) -> None:
+    """#3077: Singleton methods (def self.foo!) must use the same sanitizer."""
+    f = _write(tmp_path, "service.rb", """\
+class Service
+  def self.run!; end
+  def self.valid?; end
+end
+""")
+    r = extract_ruby(f)
+    node_by_label = {n["label"]: n["id"] for n in r["nodes"]}
+    assert ".run!()" in node_by_label
+    assert ".valid?()" in node_by_label
+    assert node_by_label[".run!()"].endswith("_run_bang")
+    assert node_by_label[".valid?()"].endswith("_valid_pred")
+
+
+def test_ruby_suffixed_toplevel_functions_extraction(tmp_path: Path) -> None:
+    """#3077: Top-level functions (def parse!) must use the same sanitizer."""
+    f = _write(tmp_path, "utils.rb", """\
+def parse!; end
+def valid?; end
+""")
+    r = extract_ruby(f)
+    node_by_label = {n["label"]: n["id"] for n in r["nodes"]}
+    assert "parse!()" in node_by_label
+    assert "valid?()" in node_by_label
+    assert node_by_label["parse!()"].endswith("_parse_bang")
+    assert node_by_label["valid?()"].endswith("_valid_pred")
+
+
+def test_ruby_suffixed_methods_call_resolution(tmp_path: Path) -> None:
+    """#3077: Calls to p.save and p.save! must resolve to different target nodes."""
+    acc_path = _write(tmp_path, "account.rb", """\
+class Account
+  def save
+    1
+  end
+  def save!
+    2
+  end
+  def valid?
+    true
+  end
+end
+""")
+    client_path = _write(tmp_path, "client.rb", """\
+def perform_save
+  a = Account.new
+  a.save
+end
+
+def perform_save_bang
+  a = Account.new
+  a.save!
+end
+
+def perform_valid_query
+  a = Account.new
+  a.valid?
+end
+""")
+    g = extract([acc_path, client_path], cache_root=tmp_path / ".cache", parallel=False)
+    node_by_id = {n["id"]: n for n in g["nodes"]}
+
+    calls_by_caller = {}
+    for e in g["edges"]:
+        if e.get("relation") == "calls":
+            caller_node = node_by_id.get(e["source"])
+            target_node = node_by_id.get(e["target"])
+            if caller_node and target_node:
+                calls_by_caller.setdefault(caller_node["label"], []).append(target_node["label"])
+
+    assert ".save()" in calls_by_caller.get("perform_save()", []), \
+        f"perform_save should call .save(), got {calls_by_caller.get('perform_save()')}"
+    assert ".save!()" in calls_by_caller.get("perform_save_bang()", []), \
+        f"perform_save_bang should call .save!(), got {calls_by_caller.get('perform_save_bang()')}"
+    assert ".valid?()" in calls_by_caller.get("perform_valid_query()", []), \
+        f"perform_valid_query should call .valid?(), got {calls_by_caller.get('perform_valid_query()')}"
+
+
+def test_ruby_suffixed_methods_id_stability(tmp_path: Path) -> None:
+    """#3077: ID of foo! must remain stable when foo is added later."""
+    f1 = _write(tmp_path, "model.rb", """\
+class Model
+  def foo!; end
+end
+""")
+    r1 = extract_ruby(f1)
+    node1 = next(n for n in r1["nodes"] if n.get("label") == ".foo!()")
+    id1 = node1["id"]
+    assert id1.endswith("_foo_bang")
+
+    # Add def foo
+    f2 = _write(tmp_path, "model.rb", """\
+class Model
+  def foo; end
+  def foo!; end
+end
+""")
+    r2 = extract_ruby(f2)
+    node2_bang = next(n for n in r2["nodes"] if n.get("label") == ".foo!()")
+    node2_plain = next(n for n in r2["nodes"] if n.get("label") == ".foo()")
+
+    assert node2_bang["id"] == id1, "foo!'s ID must remain unchanged when foo is added"
+    assert node2_plain["id"] != node2_bang["id"], "foo and foo! must have distinct IDs"
+# ── #3078: a qualified receiver must respect its namespace ────────────────────
+
+
+_LOCAL_BASE_RB = """\
+class Thing
+  class Base
+    def self.call(x) = x
+  end
+end
+"""
+
+_BILLING_RB = """\
+module Billing
+  class Processor
+    def self.run(x) = x
+  end
+end
+"""
+
+_SOLO_RB = """\
+class Solo
+  def self.go = 1
+end
+"""
+
+
+def test_framework_qualified_receiver_does_not_bind_same_named_local_class(tmp_path: Path) -> None:
+    """`ActiveRecord::Base.transaction` must not bind to an unrelated local `Base`.
+
+    The receiver used to be truncated to its last constant, so any corpus with a
+    single class named `Base` collected every framework call as an EXTRACTED 1.0
+    edge — a false hub, not a missing edge. The namespace has to be part of the
+    match (#3078). `ActiveJob::Base` is here too because both namespaces used to
+    collapse onto the very same node.
+    """
+    _write(tmp_path, "thing.rb", _LOCAL_BASE_RB)
+    caller = _write(tmp_path, "other.rb", """\
+class Other
+  def framework_ar
+    ActiveRecord::Base.transaction { save! }
+  end
+
+  def framework_aj
+    ActiveJob::Base.default_queue_name
+  end
+end
+""")
+    graph = extract([caller, tmp_path / "thing.rb"], cache_root=tmp_path, parallel=False)
+    assert _has_call_edge(graph, "framework_ar", "Thing::Base") is None, \
+        "ActiveRecord::Base must not bind to an unrelated local Thing::Base"
+    assert _has_call_edge(graph, "framework_aj", "Thing::Base") is None, \
+        "ActiveJob::Base must not bind to an unrelated local Thing::Base"
+
+
+def test_qualified_receiver_still_resolves_inside_its_own_namespace(tmp_path: Path) -> None:
+    """The namespace check must not cost a genuine `Billing::Processor.run` edge."""
+    _write(tmp_path, "billing.rb", _BILLING_RB)
+    caller = _write(tmp_path, "other.rb", """\
+class Other
+  def qualified
+    Billing::Processor.run(1)
+  end
+end
+""")
+    graph = extract([caller, tmp_path / "billing.rb"], cache_root=tmp_path, parallel=False)
+    edge = _has_call_edge(graph, "qualified", ".run()")
+    assert edge is not None, "a correctly-namespaced receiver must still resolve"
+    assert edge["confidence"] == "EXTRACTED"
+
+
+def test_top_level_pinned_constant_receiver_still_resolves(tmp_path: Path) -> None:
+    """`::Solo.go` pins the constant to top level and must keep resolving.
+
+    Worth its own case: capturing the whole path means the receiver text now starts
+    with `::`, so the constant-receiver check has to look past the leading colons.
+    """
+    _write(tmp_path, "solo.rb", _SOLO_RB)
+    caller = _write(tmp_path, "other.rb", """\
+class Other
+  def pinned
+    ::Solo.go
+  end
+end
+""")
+    graph = extract([caller, tmp_path / "solo.rb"], cache_root=tmp_path, parallel=False)
+    assert _has_call_edge(graph, "pinned", ".go()") is not None, \
+        "a top-level-pinned constant receiver must still resolve"

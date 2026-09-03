@@ -19,6 +19,96 @@ def _make_corpus(tmp_path):
     return tmp_path
 
 
+def test_extract_exits_nonzero_when_ast_extraction_raises(
+    monkeypatch, tmp_path, capsys
+):
+    """#2445: an AST-pass failure on a fresh build must not be presented as a
+    successful empty corpus (exit 0 + 0-node graph.json)."""
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "main.go").write_text("package main\nfunc main() {}\n")
+    out_dir = tmp_path / "out"
+
+    import graphify.extract as extractmod
+
+    def _ast_failed(paths, **kwargs):
+        raise RuntimeError("worker pool failed")
+
+    monkeypatch.setattr(extractmod, "extract", _ast_failed)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "extract", str(corpus), "--code-only",
+         "--out", str(out_dir)],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        mainmod.main()
+
+    assert exc_info.value.code == 1
+    assert (
+        "[graphify extract] AST extraction failed: worker pool failed"
+        in capsys.readouterr().err
+    )
+    assert not (out_dir / "graphify-out" / "graph.json").exists(), (
+        "graph.json must not be written when the whole AST pass is lost"
+    )
+
+
+def test_extract_allow_partial_continues_past_ast_failure(
+    monkeypatch, tmp_path, capsys
+):
+    """#2445 complement: --allow-partial opts back into the best-effort path —
+    the run continues, and a graph built from the surviving (semantic) pass is
+    written with exit 0."""
+    corpus = _make_corpus(tmp_path)  # main.go + README.md
+    out_dir = tmp_path / "out"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-fake-key")
+
+    import graphify.extract as extractmod
+
+    def _ast_failed(paths, **kwargs):
+        raise RuntimeError("worker pool failed")
+
+    monkeypatch.setattr(extractmod, "extract", _ast_failed)
+
+    def _one_chunk_succeeded(paths, **kwargs):
+        chunk = {
+            "nodes": [
+                {"id": "concept_main_entry", "label": "main entry point",
+                 "type": "concept", "source_file": "README.md"},
+            ],
+            "edges": [],
+            "hyperedges": [],
+        }
+        on_chunk = kwargs.get("on_chunk_done")
+        if on_chunk:
+            on_chunk(0, 1, chunk)
+        return {**chunk, "input_tokens": 100, "output_tokens": 50}
+
+    monkeypatch.setattr(
+        "graphify.llm.extract_corpus_parallel", _one_chunk_succeeded
+    )
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "extract", str(corpus), "--backend", "claude",
+         "--allow-partial", "--out", str(out_dir)],
+    )
+
+    try:
+        mainmod.main()
+    except SystemExit as exc:
+        assert exc.code in (None, 0), f"unexpected exit code {exc.code}"
+
+    assert "AST extraction failed" in capsys.readouterr().err
+    assert (out_dir / "graphify-out" / "graph.json").exists(), (
+        "--allow-partial must still write the best-effort graph"
+    )
+
+
 def test_extract_exits_nonzero_when_all_semantic_chunks_fail(
     monkeypatch, tmp_path, capsys
 ):
@@ -326,28 +416,35 @@ def test_manifest_stamps_freshly_extracted_semantic_docs(monkeypatch, tmp_path):
 def test_stamped_manifest_files_normalizes_both_sides(tmp_path):
     """Unit test for the #1897 helper: relative (fresh) and absolute (cache-hit)
     source_file values must both match detect()'s absolute file lists; docs with
-    no output are filtered; code files pass through untouched."""
+    no valid output (or edge-only output, #2927) are filtered; code files pass through untouched."""
     from graphify.cli import _stamped_manifest_files
 
     fresh_doc = tmp_path / "fresh.md"; fresh_doc.write_text("# fresh")
     cached_doc = tmp_path / "cached.md"; cached_doc.write_text("# cached")
+    edge_only_doc = tmp_path / "edge_only.md"; edge_only_doc.write_text("# edge only")
     omitted_doc = tmp_path / "omitted.md"; omitted_doc.write_text("# omitted")
     code = tmp_path / "app.py"; code.write_text("x = 1")
 
     files_by_type = {
         "code": [str(code)],
-        "document": [str(fresh_doc), str(cached_doc), str(omitted_doc)],
+        "document": [str(fresh_doc), str(cached_doc), str(edge_only_doc), str(omitted_doc)],
     }
     sem_result = {
         # fresh extraction: root-relative source_file
-        "nodes": [{"id": "n1", "source_file": "fresh.md"}],
-        # cache replay: absolute source_file (edge-only coverage counts too)
-        "edges": [{"source": "a", "target": "b", "source_file": str(cached_doc)}],
+        "nodes": [
+            {"id": "n1", "source_file": "fresh.md"},
+            # cache replay: absolute source_file
+            {"id": "n2", "source_file": str(cached_doc)},
+        ],
+        # edge-only: must NOT count toward stamping (#2927)
+        "edges": [{"source": "a", "target": "b", "source_file": str(edge_only_doc)}],
     }
 
     out = _stamped_manifest_files(files_by_type, sem_result, tmp_path)
     assert out["code"] == [str(code)]
     assert out["document"] == [str(fresh_doc), str(cached_doc)]
+    assert str(edge_only_doc) not in out["document"]
+    assert str(omitted_doc) not in out["document"]
 
 
 def test_stamped_manifest_files_counts_hyperedge_only_docs(tmp_path):
@@ -1066,6 +1163,194 @@ def test_no_cluster_incremental_prunes_newly_excluded_file(
     assert any("keep.py" in s for s in sources)
 
 
+# ---------------------------------------------------------------------------
+# #2543: a code file whose AST extraction FAILED (error result — e.g. missing
+# optional extra — or extractor-present zero nodes) must not be stamped in the
+# incremental manifest, or detect_incremental reports it unchanged forever and
+# only `rm -rf graphify-out` recovers. The extractor is swapped through
+# extract._DISPATCH so the tests run without tree-sitter-sql installed.
+# ---------------------------------------------------------------------------
+
+def _sql_failure_corpus(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "keep.py").write_text(
+        "def kept():\n    return still_here()\n\n"
+        "def still_here():\n    return 1\n"
+    )
+    (project / "schema.sql").write_text("CREATE TABLE users (id INT);\n")
+    return project
+
+
+def _failing_sql(path):
+    # Mirrors extractors/sql.py's missing-extra result (#1745).
+    return {"nodes": [], "edges": [],
+            "error": "tree_sitter_sql not installed. Run: pip install tree-sitter-sql"}
+
+
+def _ok_sql(path):
+    return {
+        "nodes": [{"id": "sql_schema_users", "label": path.name, "file_type": "code",
+                   "source_file": str(path), "source_location": None}],
+        "edges": [],
+    }
+
+
+def _manifest_row(manifest_path, name):
+    import json
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    for key, entry in manifest.items():
+        if name in key:
+            return entry
+    return None
+
+
+def test_failed_extra_is_retried_and_recovers(monkeypatch, tmp_path, capsys):
+    """Run 1 fails on schema.sql (missing extra) -> no live manifest hash;
+    run 2 with the extra 'installed' re-queues it and the graph gains its
+    nodes; run 3 settles at 0 re-extracted (no requeue loop)."""
+    import graphify.extract as extractmod
+
+    project = _sql_failure_corpus(tmp_path)
+    out_dir = tmp_path / "out"
+    _clear_backend_keys(monkeypatch)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    graph_path = out_dir / "graphify-out" / "graph.json"
+    manifest_path = out_dir / "graphify-out" / "manifest.json"
+    argv = ["graphify", "extract", str(project), "--out", str(out_dir)]
+
+    # Run 1: extraction of schema.sql fails.
+    failing = pytest.MonkeyPatch()
+    failing.setitem(extractmod._DISPATCH, ".sql", _failing_sql)
+    try:
+        _run_extract(monkeypatch, argv)
+    finally:
+        failing.undo()
+    capsys.readouterr()
+    assert not any("schema.sql" in s for s in _node_sources(graph_path))
+    row = _manifest_row(manifest_path, "schema.sql")
+    assert row is None or (not row.get("ast_hash") and not row.get("semantic_hash")), (
+        f"failed schema.sql must carry no live hash in the manifest, got {row}"
+    )
+    assert _manifest_row(manifest_path, "keep.py")["ast_hash"] != ""
+
+    # Run 2: the extra is now 'installed' — the file must be re-queued.
+    monkeypatch.setitem(extractmod._DISPATCH, ".sql", _ok_sql)
+    _run_extract(monkeypatch, argv)
+    out_text = capsys.readouterr().out
+    assert "1 code" in out_text, f"schema.sql must be in the changed set: {out_text}"
+    assert any("schema.sql" in s for s in _node_sources(graph_path)), (
+        "recovered schema.sql must contribute nodes to graph.json"
+    )
+    assert _manifest_row(manifest_path, "schema.sql")["ast_hash"] != "", (
+        "recovered schema.sql must be stamped up-to-date"
+    )
+
+    # Run 3: steady state — nothing re-extracted, no heal/requeue loop.
+    _run_extract(monkeypatch, argv)
+    out_text = capsys.readouterr().out
+    assert "0 re-extracted" in out_text, f"run 3 must be a no-op: {out_text}"
+    assert "re-queuing" not in out_text
+    assert any("schema.sql" in s for s in _node_sources(graph_path))
+
+
+def test_permanent_failure_does_not_wedge(monkeypatch, tmp_path, capsys):
+    """A file that keeps failing is retried on every run (exactly 1 file), the
+    runs complete, and the rest of the graph stays stable — no wedge, no loop."""
+    import graphify.extract as extractmod
+
+    project = _sql_failure_corpus(tmp_path)
+    out_dir = tmp_path / "out"
+    _clear_backend_keys(monkeypatch)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setitem(extractmod._DISPATCH, ".sql", _failing_sql)
+    graph_path = out_dir / "graphify-out" / "graph.json"
+    manifest_path = out_dir / "graphify-out" / "manifest.json"
+    argv = ["graphify", "extract", str(project), "--out", str(out_dir)]
+
+    _run_extract(monkeypatch, argv)  # seed (full scan)
+    capsys.readouterr()
+
+    for run in (2, 3):
+        _run_extract(monkeypatch, argv)
+        out_text = capsys.readouterr().out
+        assert "1 code" in out_text, (
+            f"run {run}: the failed file must be retried, not frozen: {out_text}"
+        )
+        assert "1 re-extracted" in out_text, f"run {run}: {out_text}"
+        sources = _node_sources(graph_path)
+        assert any("keep.py" in s for s in sources), f"run {run}: graph must stay stable"
+        assert not any("schema.sql" in s for s in sources)
+        row = _manifest_row(manifest_path, "schema.sql")
+        assert row is None or (not row.get("ast_hash") and not row.get("semantic_hash")), (
+            f"run {run}: still-failing schema.sql must never gain a live hash, got {row}"
+        )
+
+
+def test_success_and_unchanged_unaffected(monkeypatch, tmp_path, capsys):
+    """Healthy corpus: second run re-extracts nothing and hashes stay live."""
+    project = _two_file_corpus(tmp_path)
+    out_dir = tmp_path / "out"
+    _clear_backend_keys(monkeypatch)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    manifest_path = out_dir / "graphify-out" / "manifest.json"
+    argv = ["graphify", "extract", str(project), "--out", str(out_dir)]
+
+    _run_extract(monkeypatch, argv)
+    capsys.readouterr()
+    _run_extract(monkeypatch, argv)
+    out_text = capsys.readouterr().out
+    assert "0 re-extracted" in out_text, f"warm healthy run must be a no-op: {out_text}"
+    for name in ("x.py", "keep.py"):
+        assert _manifest_row(manifest_path, name)["ast_hash"] != "", (
+            f"{name} must keep its live stamp on a no-op run"
+        )
+
+
+def test_poisoned_manifest_is_healed(monkeypatch, tmp_path, capsys):
+    """A manifest poisoned BEFORE the #2543 fix (live hash stamped, file absent
+    from graph.json) must be re-queued and healed by the next run."""
+    import json
+    import graphify.extract as extractmod
+    from graphify.detect import save_manifest
+
+    project = _sql_failure_corpus(tmp_path)
+    out_dir = tmp_path / "out"
+    _clear_backend_keys(monkeypatch)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setitem(extractmod._DISPATCH, ".sql", _ok_sql)
+    graph_path = out_dir / "graphify-out" / "graph.json"
+    manifest_path = out_dir / "graphify-out" / "manifest.json"
+    argv = ["graphify", "extract", str(project), "--out", str(out_dir)]
+
+    _run_extract(monkeypatch, argv)  # healthy seed: schema.sql stamped + in graph
+    capsys.readouterr()
+    assert any("schema.sql" in s for s in _node_sources(graph_path))
+
+    # Poison: pre-fix state — manifest keeps the live hash while the graph has
+    # no nodes for the file (the old stamping path never saw the failure).
+    graph = json.loads(graph_path.read_text(encoding="utf-8"))
+    graph["nodes"] = [n for n in graph["nodes"] if "schema.sql" not in n.get("source_file", "")]
+    for key in ("links", "edges"):
+        if key in graph:
+            graph[key] = [e for e in graph[key] if "schema.sql" not in e.get("source_file", "")]
+    graph_path.write_text(json.dumps(graph), encoding="utf-8")
+    save_manifest(
+        {"code": [str(project / "schema.sql")]},
+        manifest_path=str(manifest_path), kind="both", root=project,
+    )
+    assert _manifest_row(manifest_path, "schema.sql")["ast_hash"] != ""
+
+    _run_extract(monkeypatch, argv)
+    out_text = capsys.readouterr().out
+    assert "re-queuing 1" in out_text, (
+        f"poisoned stamped file must be healed via re-queue (#2543): {out_text}"
+    )
+    assert any("schema.sql" in s for s in _node_sources(graph_path)), (
+        "healed schema.sql must be back in graph.json"
+    )
+
+
 def test_cache_check_prompt_file_scopes_hits_to_that_prompt(monkeypatch, tmp_path, capsys):
     """#1939: cache-check --prompt-file only counts entries produced by that same
     extraction prompt, so an upgraded prompt reports a miss (re-extract) rather
@@ -1091,3 +1376,295 @@ def test_cache_check_prompt_file_scopes_hits_to_that_prompt(monkeypatch, tmp_pat
     os.utime(spec, ns=(0, 0))
     _run_extract(monkeypatch, base + ["--prompt-file", str(spec)])
     assert "Cache: 0 hit, 1 miss" in capsys.readouterr().out
+
+
+# --- #2927: zero-node / edge-only semantic retry and manifest healing --------
+
+def test_edge_only_semantic_extraction_not_stamped_and_retried(monkeypatch, tmp_path):
+    """#2927 end-to-end: a semantic extraction where a dispatched doc produces
+    edges but zero nodes must NOT be cached or stamped into manifest.json, so
+    subsequent incremental runs re-dispatch and retry the file."""
+    import json
+    from graphify.cache import check_semantic_cache
+
+    corpus = _make_corpus(tmp_path)  # main.go + README.md
+    arch = corpus / "ARCH.md"
+    arch.write_text("# Architecture\nDetailed arch notes.\n", encoding="utf-8")
+    out_dir = tmp_path / "out"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-fake-key")
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+
+    call_count = {"count": 0}
+
+    def _mock_llm(paths, **kwargs):
+        call_count["count"] += 1
+        on_chunk = kwargs.get("on_chunk_done")
+        if on_chunk:
+            on_chunk(0, 1, {"nodes": [], "edges": [], "hyperedges": []})
+
+        path_strs = [p.name for p in paths]
+        nodes = []
+        edges = []
+        if "README.md" in path_strs:
+            nodes.append({
+                "id": "readme_concept",
+                "label": "README Concept",
+                "source_file": "README.md",
+                "file_type": "document",
+            })
+        if "ARCH.md" in path_strs:
+            if call_count["count"] == 1:
+                # Run 1: Model responds with edge only (omits nodes for ARCH.md)
+                edges.append({
+                    "source": "readme_concept",
+                    "target": "readme_concept",
+                    "relation": "relates_to",
+                    "source_file": "ARCH.md",
+                })
+            else:
+                # Run 2: Retry succeeds with actual nodes for ARCH.md
+                nodes.append({
+                    "id": "arch_concept",
+                    "label": "Arch Concept",
+                    "source_file": "ARCH.md",
+                    "file_type": "document",
+                })
+        return {
+            "nodes": nodes,
+            "edges": edges,
+            "hyperedges": [],
+            "input_tokens": 10,
+            "output_tokens": 5,
+        }
+
+    monkeypatch.setattr("graphify.llm.extract_corpus_parallel", _mock_llm)
+    argv = ["graphify", "extract", str(corpus), "--backend", "claude",
+            "--no-cluster", "--out", str(out_dir)]
+
+    # --- Run 1: ARCH.md produces only edges ---
+    _run_extract(monkeypatch, argv)
+
+    manifest_path = out_dir / "graphify-out" / "manifest.json"
+    assert manifest_path.exists()
+    m1 = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    # README.md has nodes -> stamped
+    assert m1.get("README.md", {}).get("semantic_hash") != ""
+    # ARCH.md has only edges -> NOT stamped in manifest (#2927)
+    assert not m1.get("ARCH.md", {}).get("semantic_hash"), (
+        f"ARCH.md had zero nodes and must stay unstamped: {m1}"
+    )
+
+    # Cache check: README.md is cached, ARCH.md is NOT cached
+    from graphify.cache import file_hash
+    cache_sem_dir = out_dir / "graphify-out" / "cache" / "semantic"
+    arch_h = file_hash(arch, corpus)
+    readme_h = file_hash(corpus / "README.md", corpus)
+    assert not list(cache_sem_dir.rglob(f"{arch_h}.json")), "ARCH.md must not have a cache file"
+    assert list(cache_sem_dir.rglob(f"{readme_h}.json")), "README.md must have a cache file"
+
+    # --- Run 2: Incremental run without modifying files on disk ---
+    # Because ARCH.md was left unstamped and uncached, it must be re-dispatched!
+    _run_extract(monkeypatch, argv)
+    assert call_count["count"] == 2, "ARCH.md must have triggered a second LLM call"
+
+    m2 = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert m2.get("ARCH.md", {}).get("semantic_hash") != "", (
+        "ARCH.md must now be stamped after successful node extraction"
+    )
+
+    graph_path = out_dir / "graphify-out" / "graph.json"
+    g2 = json.loads(graph_path.read_text(encoding="utf-8"))
+    node_ids = {n["id"] for n in g2.get("nodes", [])}
+    assert "arch_concept" in node_ids, "ARCH.md nodes must be present in graph.json"
+
+
+def test_stale_poisoned_manifest_semantic_source_healed(monkeypatch, tmp_path, capsys):
+    """#2927 healing: a manifest poisoned BEFORE #2927 (carrying a live semantic_hash
+    for a semantic file with zero nodes/hyperedges in graph.json) is healed by
+    re-queuing the file on an incremental extract."""
+    import json
+    from graphify.detect import save_manifest
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    doc = project / "guide.md"
+    doc.write_text("# Guide\nSome instructions.\n", encoding="utf-8")
+    app = project / "app.py"
+    app.write_text("def run(): pass\n", encoding="utf-8")
+
+    out_dir = tmp_path / "out"
+    graphify_out = out_dir / "graphify-out"
+    graphify_out.mkdir(parents=True, exist_ok=True)
+    graph_path = graphify_out / "graph.json"
+    manifest_path = graphify_out / "manifest.json"
+
+    # 1) Seed a graph where guide.md has 0 nodes and 0 hyperedges
+    graph_path.write_text(
+        json.dumps({
+            "nodes": [{"id": "app_run", "label": "run", "source_file": "app.py", "file_type": "code"}],
+            "edges": [],
+            "hyperedges": [],
+        }),
+        encoding="utf-8",
+    )
+
+    # 2) Seed a poisoned manifest where guide.md has a valid semantic_hash
+    save_manifest(
+        {"code": [str(app)], "document": [str(doc)]},
+        manifest_path=str(manifest_path),
+        kind="both",
+        root=project,
+    )
+    m = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert m.get("guide.md", {}).get("semantic_hash") != ""
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-fake-key")
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+
+    dispatched_files = []
+
+    def _mock_llm(paths, **kwargs):
+        dispatched_files.extend(p.name for p in paths)
+        on_chunk = kwargs.get("on_chunk_done")
+        if on_chunk:
+            on_chunk(0, 1, {"nodes": [], "edges": [], "hyperedges": []})
+        return {
+            "nodes": [{"id": "guide_doc", "label": "Guide Doc", "source_file": "guide.md", "file_type": "document"}],
+            "edges": [],
+            "hyperedges": [],
+            "input_tokens": 10,
+            "output_tokens": 5,
+        }
+
+    monkeypatch.setattr("graphify.llm.extract_corpus_parallel", _mock_llm)
+    argv = ["graphify", "extract", str(project), "--backend", "claude",
+            "--no-cluster", "--out", str(out_dir)]
+
+    _run_extract(monkeypatch, argv)
+    out_text = capsys.readouterr().out
+    assert "re-queuing 1 manifest-stamped semantic file" in out_text, (
+        f"poisoned semantic file must be healed via re-queue: {out_text}"
+    )
+    assert "guide.md" in dispatched_files, "guide.md must have been dispatched"
+
+    # Verify guide.md is now in graph.json
+    g = json.loads(graph_path.read_text(encoding="utf-8"))
+    node_ids = {n["id"] for n in g.get("nodes", [])}
+    assert "guide_doc" in node_ids, "guide.md node must be present in graph.json after healing"
+# ---------------------------------------------------------------------------
+# #2926: LLM output misattributed to a NON-dispatched file must not reach
+# build_merge. Its replace-set logic swaps any source_file present in the new
+# chunks for the new fragment — so a 1-node stray for an unchanged doc used to
+# delete that doc's entire prior contribution (the doc is never re-dispatched
+# and, being unchanged, never even read back from the semantic cache), and a
+# stray naming a nonexistent path accumulated phantom nodes forever.
+# ---------------------------------------------------------------------------
+
+def _stray_corpus(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.go").write_text("package main\nfunc main() {}\n")
+    (project / "README.md").write_text("# Notes\nThe main function entry point.\n")
+    (project / "OTHER.md").write_text("# Other\nAn independent second doc.\n")
+    return project
+
+
+def test_incremental_stray_attribution_preserves_undispatched_file(
+    monkeypatch, tmp_path, capsys
+):
+    """Run 1 builds a graph where OTHER.md contributes two nodes. Run 2 changes
+    only README.md; the stubbed model answers with README's node PLUS strays
+    attributed to OTHER.md and to a nonexistent src/foo.ts. OTHER.md's original
+    nodes must survive intact and no phantom may appear."""
+    project = _stray_corpus(tmp_path)
+    out_dir = tmp_path / "out"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-fake-key")
+
+    def _seed_extraction(paths, **kwargs):
+        on_chunk = kwargs.get("on_chunk_done")
+        chunk = {
+            "nodes": [
+                {"id": "readme_page", "label": "Notes",
+                 "file_type": "document", "source_file": "README.md"},
+                {"id": "other_page", "label": "Other",
+                 "file_type": "document", "source_file": "OTHER.md"},
+                {"id": "other_concept_a", "label": "Other concept A",
+                 "file_type": "document", "source_file": "OTHER.md"},
+            ],
+            "edges": [],
+            "hyperedges": [],
+        }
+        if on_chunk:
+            on_chunk(0, 1, chunk)
+        return {**chunk, "input_tokens": 100, "output_tokens": 50}
+
+    monkeypatch.setattr(
+        "graphify.llm.extract_corpus_parallel", _seed_extraction
+    )
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    argv = ["graphify", "extract", str(project), "--out", str(out_dir)]
+    _run_extract(monkeypatch, argv)
+    capsys.readouterr()
+
+    graph_path = out_dir / "graphify-out" / "graph.json"
+
+    def _node_ids():
+        import json
+        data = json.loads(graph_path.read_text(encoding="utf-8"))
+        return {n["id"]: n.get("source_file") for n in data.get("nodes", [])}
+
+    ids = _node_ids()
+    assert ids.get("other_page") == "OTHER.md" and ids.get("other_concept_a") == "OTHER.md", (
+        f"seed run must give OTHER.md a two-node contribution: {ids}"
+    )
+
+    # Change ONLY README.md; OTHER.md stays untouched (never dispatched).
+    (project / "README.md").write_text(
+        "# Notes\nThe main function entry point. Now with more detail.\n"
+    )
+
+    def _straying_extraction(paths, **kwargs):
+        on_chunk = kwargs.get("on_chunk_done")
+        chunk = {
+            "nodes": [
+                {"id": "readme_page", "label": "Notes v2",
+                 "file_type": "document", "source_file": "README.md"},
+                # Stray: attributed to a file NOT dispatched this run.
+                {"id": "stray_other", "label": "Stray fragment",
+                 "file_type": "document", "source_file": "OTHER.md"},
+                # Stray: forward-reference to a nonexistent path.
+                {"id": "phantom_ts", "label": "Phantom",
+                 "file_type": "code", "source_file": "src/foo.ts"},
+            ],
+            "edges": [
+                {"source": "stray_other", "target": "readme_page",
+                 "source_file": "OTHER.md"},
+            ],
+            "hyperedges": [],
+        }
+        if on_chunk:
+            on_chunk(0, 1, chunk)
+        return {**chunk, "input_tokens": 10, "output_tokens": 5}
+
+    monkeypatch.setattr(
+        "graphify.llm.extract_corpus_parallel", _straying_extraction
+    )
+    _run_extract(monkeypatch, argv)
+
+    out_text = capsys.readouterr().out
+    assert "out-of-scope" in out_text, (
+        f"the scope filter must report what it dropped: {out_text}"
+    )
+    ids = _node_ids()
+    assert ids.get("other_page") == "OTHER.md", (
+        f"#2926: the undispatched file's prior node was deleted by the stray "
+        f"fragment's replace-set: {ids}"
+    )
+    assert ids.get("other_concept_a") == "OTHER.md", (
+        f"#2926: second prior node also lost: {ids}"
+    )
+    assert "stray_other" not in ids, f"stray fragment leaked into the graph: {ids}"
+    assert "phantom_ts" not in ids, (
+        f"stray attributed to a nonexistent path became a phantom node: {ids}"
+    )
