@@ -404,8 +404,8 @@ def _no_window_kwargs() -> dict:
     return {}
 
 
-def _claude_cli_bare_args() -> list[str]:
-    """``--bare`` for `claude -p`, opt-in via GRAPHIFY_CLAUDE_CLI_BARE=1.
+def _claude_cli_minimal_args() -> list[str]:
+    """``--safe-mode`` for `claude -p`, opt-in via GRAPHIFY_CLAUDE_CLI_MINIMAL=1.
 
     Each `claude -p` spawn (one per extraction chunk, plus one per community
     label) boots a full Claude Code session with the user's global config,
@@ -413,15 +413,24 @@ def _claude_cli_bare_args() -> list[str]:
     extraction pipeline this is pure overhead, and worse: a failing or
     cancelled SessionEnd hook can flip the process exit code to nonzero, so a
     chunk whose extraction actually succeeded gets recorded as a hook
-    failure instead (#2693). `--bare` skips auto-discovery of hooks, skills,
-    plugins, MCP servers, auto memory, and CLAUDE.md for that one spawn — it
-    does not touch the user's global config, and does not affect the
-    subscription/OAuth auth graphify's claude-cli backend relies on.
+    failure instead (#2693). `--safe-mode` disables CLAUDE.md, plugins,
+    skills, hooks, and MCP servers for that one spawn — it does not touch
+    the user's global config.
+
+    Deliberately NOT `--bare`: that flag also skips keychain reads and
+    forces API-key-only auth (`ANTHROPIC_API_KEY` or `apiKeyHelper`), which
+    breaks the claude-cli backend for exactly the population it exists for
+    (Pro/Max subscribers routing through subscription auth instead of
+    provisioning a pay-as-you-go key — see _call_claude_cli's docstring).
+    `--safe-mode` disables the same customizations without touching
+    auth/model selection/permissions (confirmed against a real CLI: with
+    ANTHROPIC_API_KEY unset, `--bare` returns "Not logged in", `--safe-mode`
+    replies normally — thanks @yotamleo for catching this in review).
 
     Opt-in and off by default: existing users may rely on their hooks firing
     for every session, including these ones.
     """
-    return ["--bare"] if os.environ.get("GRAPHIFY_CLAUDE_CLI_BARE", "").strip() == "1" else []
+    return ["--safe-mode"] if os.environ.get("GRAPHIFY_CLAUDE_CLI_MINIMAL", "").strip() == "1" else []
 
 
 def _resolve_api_timeout(default: float = 600.0) -> float:
@@ -1771,7 +1780,7 @@ def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bo
         claude_cmd, "-p",
         "--output-format", "json",
         "--no-session-persistence",
-        *_claude_cli_bare_args(),
+        *_claude_cli_minimal_args(),
         *add_dir_args,
     ]
     # claude-cli defaults to Opus, which is overkill for the structured-JSON
@@ -2963,7 +2972,7 @@ def _call_llm(
             raise RuntimeError("Claude Code CLI not found on $PATH")
         cli_args = [
             claude_cmd, "-p", "--output-format", "json", "--no-session-persistence",
-            *_claude_cli_bare_args(),
+            *_claude_cli_minimal_args(),
         ]
         if model is not None:
             cli_args.extend(["--model", mdl])
