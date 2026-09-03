@@ -39,7 +39,7 @@ def _query_subgraph_tokens(G: nx.Graph, question: str, depth: int = 3) -> int:
     terms = _query_terms(question)
     scored = []
     for nid, data in G.nodes(data=True):
-        label = data.get("label", "").lower()
+        label = (data.get("label") or "").lower()
         score = sum(1 for t in terms if t in label)
         if score > 0:
             scored.append((score, nid))

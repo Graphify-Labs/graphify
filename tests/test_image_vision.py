@@ -70,7 +70,7 @@ def test_non_pdf_still_read_as_plain_text(tmp_path):
     assert "# hello" in llm._file_to_text(md)
 
 
-def test_read_files_skips_out_of_root_symlink(tmp_path):
+def test_read_files_skips_out_of_root_symlink(requires_symlinks, tmp_path):
     root = tmp_path / "root"
     root.mkdir()
     outside = tmp_path / "outside"
@@ -104,7 +104,7 @@ def test_build_image_refs_sets_rel_media_and_bytes(tmp_path):
     assert ref.bedrock_format == "png"
 
 
-def test_build_image_refs_skips_out_of_root_symlink(tmp_path):
+def test_build_image_refs_skips_out_of_root_symlink(requires_symlinks, tmp_path):
     root = tmp_path / "root"
     root.mkdir()
     outside = tmp_path / "outside"
@@ -399,6 +399,65 @@ def test_bedrock_response_text_falls_back_without_text(resp):
 def test_bedrock_response_text_tolerates_malformed_blocks():
     resp = _bedrock_resp(["not-a-dict", {"text": 123}, {"text": _NODE_JSON}])
     assert llm._bedrock_response_text(resp, default="{}") == _NODE_JSON
+
+
+def test_anthropic_response_text_single_text_block_unchanged():
+    content = [SimpleNamespace(type="text", text=_NODE_JSON)]
+    assert llm._anthropic_response_text(content) == _NODE_JSON
+
+
+def test_anthropic_response_text_skips_leading_thinking_block():
+    content = [
+        SimpleNamespace(type="thinking", thinking="planning"),
+        SimpleNamespace(type="text", text=_NODE_JSON),
+    ]
+    assert llm._anthropic_response_text(content, default="{}") == _NODE_JSON
+
+
+def test_anthropic_response_text_legacy_block_without_type():
+    content = [SimpleNamespace(text=_NODE_JSON)]
+    assert llm._anthropic_response_text(content) == _NODE_JSON
+
+
+def test_anthropic_response_text_falls_back_without_text():
+    content = [SimpleNamespace(type="thinking", thinking="")]
+    assert llm._anthropic_response_text(content, default="SENTINEL") == "SENTINEL"
+
+
+def test_anthropic_response_text_returns_first_text_block_not_concatenation():
+    """Locks the first-wins semantics: graphify's claude calls return a single
+    JSON payload, so the helper must return the FIRST text block, never
+    concatenate multiple (which would corrupt the JSON)."""
+    content = [
+        SimpleNamespace(type="thinking", thinking="planning"),
+        SimpleNamespace(type="text", text=_NODE_JSON),
+        SimpleNamespace(type="text", text='{"nodes": [], "edges": []}'),
+    ]
+    assert llm._anthropic_response_text(content) == _NODE_JSON
+
+
+def test_call_claude_parses_thinking_model_response(tmp_path, monkeypatch):
+    """Extended-thinking models must not crash on content[0] being ThinkingBlock."""
+    img, _, _ = _make_corpus(tmp_path)
+    refs = llm._build_image_refs([img], tmp_path)
+
+    class _Messages:
+        def create(self, **_kw):
+            return SimpleNamespace(
+                content=[
+                    SimpleNamespace(type="thinking", thinking=""),
+                    SimpleNamespace(type="text", text=_NODE_JSON),
+                ],
+                usage=SimpleNamespace(input_tokens=5, output_tokens=7),
+                stop_reason="end_turn",
+            )
+
+    mod = types.ModuleType("anthropic")
+    mod.Anthropic = lambda **_kw: SimpleNamespace(messages=_Messages())
+    monkeypatch.setitem(sys.modules, "anthropic", mod)
+
+    result = llm._call_claude("k", "claude-opus-4-6", "CORPUS", images=refs)
+    assert result["nodes"]
 
 
 def test_call_bedrock_parses_reasoning_model_response(monkeypatch):

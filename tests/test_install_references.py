@@ -514,3 +514,35 @@ def test_amp_user_install_carries_references(tmp_path, monkeypatch):
         main()
 
     assert not skill_dir.exists()
+
+
+def test_install_from_read_only_package_dir(tmp_path, fake_bundle):
+    """Install succeeds when the packaged bundle is read-only.
+
+    Nix store paths are mode 0o555, as are root-owned site-packages and
+    container image layers. copytree preserves those bits onto references.tmp,
+    and renaming a directory needs write permission on the directory itself to
+    update its ".." entry — so the staging rename fails with EACCES unless the
+    staged copy is made writable first.
+    """
+    platform = fake_bundle
+    bundle = mainmod._PLATFORM_CONFIG[platform]["skill_refs"]
+    refs_src = PKG_DIR / "skills" / bundle / "references"
+
+    modes = {p: p.stat().st_mode for p in (refs_src, *refs_src.rglob("*"))}
+    for path in modes:
+        path.chmod(0o555 if path.is_dir() else 0o444)
+    try:
+        _install(tmp_path, platform)
+    finally:
+        for path, mode in modes.items():
+            path.chmod(mode)
+
+    skill_dir = tmp_path / ".claude" / "skills" / "graphify"
+    refs = skill_dir / "references"
+    assert refs.is_dir()
+    assert (refs / "query.md").read_text() == "# query fragment\n"
+    assert not (skill_dir / "references.tmp").exists()
+    # The installed sidecar must stay writable, or the next install cannot
+    # rmtree it to swap in a new one.
+    assert os.access(refs, os.W_OK)

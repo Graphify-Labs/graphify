@@ -185,3 +185,163 @@ def test_load_graph_rejects_oversized_file(monkeypatch, tmp_path):
     with pytest.raises(SystemExit) as excinfo:
         load_graph(graph_path)
     assert "exceeds" in str(excinfo.value)
+
+
+def _write_graph(tmp_path: Path, nodes: list, links: list) -> Path:
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(
+        json.dumps(
+            {
+                "directed": False,
+                "multigraph": False,
+                "graph": {},
+                "nodes": nodes,
+                "links": links,
+                "hyperedges": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return graph_path
+
+
+def test_load_graph_preserves_edge_direction(tmp_path):
+    """#1174/#2487: graph.json is written with "directed": false, so the
+    node-link parser must be told otherwise or networkx returns an undirected
+    Graph and caller->callee orientation becomes arbitrary."""
+    from graphify.callflow_html import generate_call_table_rows, load_graph
+
+    # Callee node inserted first: an undirected round-trip deterministically
+    # yields the flipped (api, run) arc, so this fails without the forced
+    # directed load.
+    graph_path = _write_graph(
+        tmp_path,
+        nodes=[
+            {"id": "api", "label": "ApiClient", "source_file": "src/api.py", "file_type": "code", "community": 0},
+            {"id": "run", "label": "run()", "source_file": "src/main.py", "file_type": "code", "community": 0},
+        ],
+        links=[
+            {"source": "run", "target": "api", "relation": "calls", "confidence": "EXTRACTED", "confidence_score": 1.0},
+        ],
+    )
+    nodes, edges, _hyper, _meta = load_graph(graph_path)
+
+    directed = {(e["source"], e["target"]) for e in edges}
+    assert ("run", "api") in directed
+    assert ("api", "run") not in directed, "edge direction was lost (undirected load)"
+
+    api_node = [n for n in nodes if n["id"] == "api"]
+    rows = generate_call_table_rows(api_node, edges, "en", edges, nodes)
+    assert "run()" in rows, "api's Caller column should list run()"
+    assert "External entry" not in rows
+    assert "No direct outbound edge" in rows, "api has no callees"
+
+
+def test_load_graph_legacy_markers_override_arc_order(tmp_path):
+    """Legacy graph.json files carry _src/_tgt markers on each link; they must
+    override the stored arc even under the forced-directed load."""
+    from graphify.callflow_html import generate_call_table_rows, load_graph
+
+    graph_path = _write_graph(
+        tmp_path,
+        nodes=[
+            {"id": "A", "label": "alpha()", "source_file": "src/a.py", "file_type": "code", "community": 0},
+            {"id": "B", "label": "beta()", "source_file": "src/b.py", "file_type": "code", "community": 0},
+        ],
+        links=[
+            {"source": "B", "target": "A", "_src": "A", "_tgt": "B", "relation": "calls", "confidence": "EXTRACTED", "confidence_score": 1.0},
+        ],
+    )
+    nodes, edges, _hyper, _meta = load_graph(graph_path)
+
+    assert len(edges) == 1
+    assert (edges[0]["source"], edges[0]["target"]) == ("A", "B")
+
+    b_node = [n for n in nodes if n["id"] == "B"]
+    rows = generate_call_table_rows(b_node, edges, "en", edges, nodes)
+    assert "alpha()" in rows, "B's Caller column should list alpha()"
+    assert "External entry" not in rows
+
+
+def test_call_table_counts_indirect_call_relation():
+    """indirect_call edges are real callers (affected.py's relation set); a
+    node reached only via indirect_call must not be an "External entry"."""
+    from graphify.callflow_html import generate_call_table_rows
+
+    nodes = [
+        {"id": "A", "label": "alpha()", "source_file": "src/a.py", "file_type": "code"},
+        {"id": "B", "label": "beta()", "source_file": "src/b.py", "file_type": "code"},
+    ]
+    edges = [{"source": "A", "target": "B", "relation": "indirect_call"}]
+
+    rows = generate_call_table_rows([nodes[1]], edges, "en", edges, nodes)
+    assert "External entry" not in rows
+    assert "alpha()" in rows, "indirect caller should appear in the Caller column"
+
+
+def test_load_graph_preserves_parallel_edges(tmp_path):
+    """Forcing multigraph keeps parallel edges between the same endpoints, and
+    the caller set still dedupes so the table does not double-count."""
+    from graphify.callflow_html import generate_call_table_rows, load_graph
+
+    graph_path = _write_graph(
+        tmp_path,
+        nodes=[
+            {"id": "A", "label": "alpha()", "source_file": "src/a.py", "file_type": "code", "community": 0},
+            {"id": "B", "label": "beta()", "source_file": "src/b.py", "file_type": "code", "community": 0},
+        ],
+        links=[
+            {"source": "A", "target": "B", "relation": "calls", "confidence": "EXTRACTED", "confidence_score": 1.0},
+            {"source": "A", "target": "B", "relation": "references", "confidence": "EXTRACTED", "confidence_score": 1.0},
+        ],
+    )
+    nodes, edges, _hyper, _meta = load_graph(graph_path)
+
+    parallel = [e for e in edges if (e["source"], e["target"]) == ("A", "B")]
+    assert len(parallel) == 2, "parallel edges were collapsed (multigraph forcing lost)"
+    assert {e["relation"] for e in parallel} == {"calls", "references"}
+
+    b_node = [n for n in nodes if n["id"] == "B"]
+    rows = generate_call_table_rows(b_node, edges, "en", edges, nodes)
+    assert rows.count("alpha()") == 1, "caller set should dedupe parallel edges"
+
+
+def test_call_table_caller_column_sees_other_sections(tmp_path):
+    """A node called from a different section is not an "External entry".
+
+    ``export`` is used by ``api``, which lives in another community. Computing
+    the Caller column from section-local edges alone mislabels it an entry
+    point -- a whole-graph claim made from partial data.
+    """
+    from graphify.callflow_html import generate_call_table_rows, load_graph
+
+    out = _make_graphify_out(tmp_path)
+    nodes, edges, _hyper, _meta = load_graph(out / "graph.json")
+    export_node = [n for n in nodes if n["id"] == "export"]
+
+    rows = generate_call_table_rows(export_node, [], "en", edges, nodes)
+    assert "External entry" not in rows
+    assert "ApiClient" in rows, "cross-section caller should render as a label"
+
+
+def test_call_table_rows_without_whole_graph_params_unchanged(tmp_path):
+    """The new all_edges/all_nodes params default to None, so existing
+    three-argument callers keep the previous section-local behaviour."""
+    from graphify.callflow_html import generate_call_table_rows, load_graph
+
+    out = _make_graphify_out(tmp_path)
+    nodes, edges, _hyper, _meta = load_graph(out / "graph.json")
+    section_nodes = [n for n in nodes if n["community"] == 0]
+    section_ids = {n["id"] for n in section_nodes}
+    section_edges = [e for e in edges if e["source"] in section_ids and e["target"] in section_ids]
+
+    legacy = generate_call_table_rows(section_nodes, section_edges, "en")
+    # Section-local fixture: the whole graph *is* the section, so the new
+    # path must be byte-identical to the legacy three-argument call.
+    explicit = generate_call_table_rows(section_nodes, section_edges, "en", section_edges, section_nodes)
+    assert legacy == explicit
+
+    # And without the params, out-of-section callers stay invisible (the old
+    # semantics other call sites may rely on).
+    export_node = [n for n in nodes if n["id"] == "export"]
+    assert "External entry" in generate_call_table_rows(export_node, section_edges, "en")

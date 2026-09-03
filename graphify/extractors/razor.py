@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 
 from graphify.extractors.base import _file_stem, _make_id
+from graphify.security import sanitize_metadata
 
 
 def extract_razor(path: Path) -> dict:
@@ -37,14 +38,86 @@ def extract_razor(path: Path) -> dict:
                       "weight": 1.0})
 
     for i, line in enumerate(src.splitlines(), 1):
-        m = re.match(r'@using\s+([\w.]+)', line)
+        m = re.match(r'@using\s+(.+)', line)
         if m:
-            _add_ref(m.group(1), "imports", i)
+            raw_using = m.group(1).strip().rstrip(";")
+            using_kind = "namespace"
+            alias = None
+            target_fqn = raw_using
+            if raw_using.startswith("static "):
+                using_kind = "static"
+                target_fqn = raw_using[len("static "):].strip()
+            elif "=" in raw_using:
+                lhs, rhs = raw_using.split("=", 1)
+                using_kind = "alias"
+                alias = lhs.strip()
+                target_fqn = rhs.strip()
+            if target_fqn:
+                tgt_nid = _make_id(target_fqn)
+                if tgt_nid and tgt_nid not in seen_ids:
+                    seen_ids.add(tgt_nid)
+                    nodes.append({"id": tgt_nid, "label": target_fqn,
+                                  "file_type": "code", "source_file": str_path,
+                                  "source_location": f"L{i}"})
+                md = {
+                    "using_kind": using_kind,
+                    "target_fqn": target_fqn,
+                    "scope_kind": "file",
+                    "scope_id": None,
+                }
+                if alias:
+                    md["alias"] = alias
+                edges.append({
+                    "source": file_nid,
+                    "target": tgt_nid,
+                    "relation": "imports",
+                    "context": "import",
+                    "confidence": "EXTRACTED",
+                    "source_file": str_path,
+                    "source_location": f"L{i}",
+                    "weight": 1.0,
+                    "metadata": sanitize_metadata({k: v for k, v in md.items() if v is not None}),
+                })
             continue
 
         m = re.match(r'@inject\s+([\w.<>\[\]]+)\s+(\w+)', line)
         if m:
-            _add_ref(m.group(1), "imports", i)
+            raw_type = m.group(1).strip()
+            base_type = raw_type.split("<", 1)[0].strip()
+            qualified = "." in base_type
+            if qualified:
+                prefix, _, ref_token = base_type.rpartition(".")
+            else:
+                prefix = ""
+                ref_token = base_type
+            if ref_token:
+                tgt_nid = _make_id(ref_token)
+                if tgt_nid and tgt_nid not in seen_ids:
+                    seen_ids.add(tgt_nid)
+                    nodes.append({
+                        "id": tgt_nid,
+                        "label": ref_token,
+                        "file_type": "code",
+                        "source_file": "",
+                        "source_location": "",
+                        "origin_file": str_path,
+                    })
+                md = {"ref_token": ref_token}
+                if qualified:
+                    md["qualified"] = True
+                    if prefix:
+                        md["ref_qualifier"] = prefix
+                edges.append({
+                    "source": file_nid,
+                    "target": tgt_nid,
+                    "relation": "references",
+                    "context": "field",
+                    "confidence": "EXTRACTED",
+                    "source_file": str_path,
+                    "source_location": f"L{i}",
+                    "weight": 1.0,
+                    "metadata": sanitize_metadata(md),
+                })
             continue
 
         m = re.match(r'@inherits\s+([\w.<>\[\]]+)', line)

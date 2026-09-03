@@ -1,9 +1,50 @@
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 from typing import Any
 
 import pytest
+
+
+@pytest.fixture(scope="session")
+def _can_symlink() -> bool:
+    """Whether this machine can create symlinks at all (#2642).
+
+    Probed rather than inferred from ``sys.platform``: Windows *can* create
+    symlinks from an elevated shell or with Developer Mode enabled, and those
+    runs should still get the coverage. A plain non-elevated Windows shell
+    raises ``OSError: [WinError 1314] A required privilege is not held by the
+    client``, which pytest reports as a FAILURE — 15 of them, drowning out real
+    defects — when what it means is "unsupported here".
+
+    One file symlink is enough to probe: Windows gates file and directory
+    symlinks behind the same ``SeCreateSymbolicLinkPrivilege`` check.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        src = Path(d) / "probe-src"
+        src.write_text("x", encoding="utf-8")
+        try:
+            (Path(d) / "probe-link").symlink_to(src)
+        except (OSError, NotImplementedError):
+            return False
+        return True
+
+
+@pytest.fixture
+def requires_symlinks(_can_symlink) -> None:
+    """Skip a test that must create symlinks when the platform won't allow it.
+
+    Take this as a parameter rather than wrapping each ``symlink_to()`` call in
+    try/except: the guard then sits in the signature where it is visible, and
+    an OSError from the code UNDER test is still a real failure instead of
+    being swallowed into a skip.
+    """
+    if not _can_symlink:
+        pytest.skip(
+            "symlink creation unavailable on this machine "
+            "(Windows requires an elevated shell or Developer Mode)"
+        )
 
 
 @pytest.fixture(autouse=True)

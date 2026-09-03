@@ -150,6 +150,28 @@ def test_stamped_manifest_excludes_partial_files():
     assert out["code"] == ["x.py"]
 
 
+def test_stamped_manifest_excludes_failed_ast_sources():
+    """#2543: code files whose AST extract failed (missing extra) stay unstamped."""
+    from pathlib import Path
+    from graphify.cli import _stamped_manifest_files
+
+    files_by_type = {
+        "document": ["a.md"],
+        "code": ["/abs/ok.py", "/abs/schema.sql"],
+    }
+    sem_result = {
+        "nodes": [{"id": "1", "source_file": "a.md"}],
+        "edges": [], "hyperedges": [],
+    }
+    out = _stamped_manifest_files(
+        files_by_type, sem_result, Path("/abs"),
+        failed_ast_sources={"/abs/schema.sql"},
+    )
+    assert out["document"] == ["a.md"]
+    assert out["code"] == ["/abs/ok.py"]
+    assert "/abs/schema.sql" not in out["code"]
+
+
 def test_group_has_partial_marker():
     assert _group_has_partial_marker({"nodes": [{"_partial": True}]}) is True
     assert _group_has_partial_marker({"edges": [{"_partial": True}]}) is True

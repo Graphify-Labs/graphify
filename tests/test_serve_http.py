@@ -361,3 +361,71 @@ def test_cli_api_key_from_env(monkeypatch):
     monkeypatch.setattr(serve_mod, "serve_http", lambda gp, **k: captured.update(**k))
     serve_mod._main(["g.json", "--transport", "http"])
     assert captured["api_key"] == "from-env"
+
+
+def test_pr_tool_failure_sets_iserror(tmp_path, monkeypatch):
+    """ADR-0001 finding 4: a PR tool that fails because gh is missing / not
+    authenticated must return isError:true, not a successful text result."""
+    import graphify.prs as prs_mod
+
+    def _boom(*a, **k):
+        raise RuntimeError("gh CLI not found or not authenticated. Run: gh auth login")
+
+    monkeypatch.setattr(prs_mod, "fetch_prs", _boom)
+
+    app = serve_mod._build_http_app(_graph_file(tmp_path), json_response=True)
+    with _client(app) as client:
+        headers = _init_session(client)
+        resp = client.post("/mcp", headers=headers, json={
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "list_prs", "arguments": {}},
+        })
+        assert resp.status_code == 200
+        result = resp.json()["result"]
+        assert result.get("isError") is True, result
+        assert "gh" in result["content"][0]["text"].lower()
+
+
+def test_normal_tool_result_is_not_iserror(tmp_path):
+    """A successful tool result must not be marked isError."""
+    app = serve_mod._build_http_app(_graph_file(tmp_path), json_response=True)
+    with _client(app) as client:
+        headers = _init_session(client)
+        resp = client.post("/mcp", headers=headers, json={
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "graph_stats", "arguments": {}},
+        })
+        assert resp.status_code == 200
+        assert not resp.json()["result"].get("isError")
+def _ambiguous_graph_file(tmp_path: Path) -> str:
+    """A graph where the label 'extract' matches two nodes in different files."""
+    graph = {
+        "directed": True,
+        "nodes": [
+            {"id": "a", "label": "extract", "community": 0, "source_file": "a/x.py"},
+            {"id": "b", "label": "extract", "community": 0, "source_file": "b/y.py"},
+            {"id": "u", "label": "unique_helper", "community": 0, "source_file": "c/z.py"},
+        ],
+        "edges": [
+            {"source": "a", "target": "u", "relation": "calls", "confidence": "EXTRACTED"},
+        ],
+    }
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps(graph), encoding="utf-8")
+    return str(p)
+
+
+def test_get_node_and_get_neighbors_agree_on_ambiguous_label(tmp_path):
+    """ADR-0001 finding 1: get_node must not silently return a G.nodes()
+    iteration-order match for a hub name while get_neighbors reports the same
+    lookup as ambiguous. Both now route through the shared resolver."""
+    app = serve_mod._build_http_app(_ambiguous_graph_file(tmp_path), json_response=True)
+    with _client(app) as client:
+        headers = _init_session(client)
+        node = _call_tool(client, headers, "get_node", {"label": "extract"}, rid=2)
+        neighbors = _call_tool(client, headers, "get_neighbors", {"label": "extract"}, rid=3)
+        assert node.startswith("Ambiguous:"), node
+        assert neighbors.startswith("Ambiguous:"), neighbors
+        # A unique label still resolves cleanly on get_node.
+        unique = _call_tool(client, headers, "get_node", {"label": "unique_helper"}, rid=4)
+        assert "Node: unique_helper" in unique, unique
