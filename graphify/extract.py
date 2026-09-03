@@ -1205,9 +1205,22 @@ def _extract_python_rationale(path: Path, result: dict) -> None:
     file_nid = _make_id(str(path))
 
     def _get_docstring(body_node) -> tuple[str, int] | None:
+        """A docstring is the first STATEMENT in a module/class/function body.
+
+        A leading `comment` node — the shebang line essentially every
+        executable script starts with, a coding-declaration or license
+        header, or any ordinary comment — is not a statement: tree-sitter
+        still parses it as a sibling child of the body, but Python's own
+        docstring rule skips right over it. The old unconditional `break`
+        after the first loop iteration stopped at that comment instead of
+        looking past it, so a module docstring behind a shebang (or any
+        leading comment) was silently never found (#3312).
+        """
         if not body_node:
             return None
         for child in body_node.children:
+            if child.type == "comment":
+                continue
             if child.type == "expression_statement":
                 for sub in child.children:
                     if sub.type in ("string", "concatenated_string"):
