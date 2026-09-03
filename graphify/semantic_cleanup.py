@@ -14,7 +14,10 @@ import json
 import re
 from pathlib import Path
 
-from .build import _normalize_hyperedge_members
+from .build import (
+    _normalize_hyperedge_members,
+    gate_hyperedges,
+)
 
 # Labels longer than this many characters, or containing >= this many words,
 # are candidates for being sentence-like rationale text rather than entity names.
@@ -185,7 +188,7 @@ def sanitize_semantic_fragment(fragment: dict) -> dict:
     3. Strips nodes whose only distinguishing field is the label itself
        (empty id — likely LLM hallucination).
     4. Filters hyperedges so they cannot reference removed or unknown node
-       IDs after the cleanup passes above. A hyperedge with fewer than two
+       IDs after the cleanup passes above. A hyperedge with fewer than three
        surviving members is dropped.
 
     Returns the same dict for convenience.
@@ -272,27 +275,14 @@ def sanitize_semantic_fragment(fragment: dict) -> dict:
         keep_edges.append(e)
 
     # ---- pass 4: filter hyperedges to surviving node IDs --------------------
-    surviving_ids: set[str] = {n.get("id", "") for n in keep_nodes}
-    surviving_ids.discard("")
-    keep_hyperedges: list[dict] = []
-    for he in hyperedges:
-        if not isinstance(he, dict):
-            continue
-        # Fold alias member keys (members/node_ids) onto `nodes` (#1561) so an
-        # alias-keyed hyperedge isn't silently dropped below for a missing
-        # `nodes` list before build can canonicalize it.
-        _normalize_hyperedge_members(he)
-        he_nodes = he.get("nodes")
-        if not isinstance(he_nodes, list):
-            continue
-        filtered = [ref for ref in he_nodes if isinstance(ref, str) and ref in surviving_ids]
-        if len(filtered) < 2:
-            # A hyperedge needs at least two surviving members to be meaningful.
-            continue
-        if len(filtered) != len(he_nodes):
-            he = dict(he)
-            he["nodes"] = filtered
-        keep_hyperedges.append(he)
+    # Delegated to the shared writer gate rather than filtering here. This pass
+    # used to keep its own copy of the rule — an exact `ref in surviving_ids`
+    # test — which resolved fewer members than the gate and build_from_json do,
+    # so a member that had merely drifted in casing or punctuation was removed
+    # and the group dropped below the minimum. The gate folds member aliases,
+    # coerces, dedupes, resolves through the shared id map and enforces the
+    # cardinality rule, and hands members back in keep_nodes' own id space.
+    keep_hyperedges, _dropped = gate_hyperedges(hyperedges, keep_nodes)
 
     fragment["nodes"] = keep_nodes
     fragment["edges"] = keep_edges

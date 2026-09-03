@@ -15,7 +15,11 @@ import networkx as nx
 from networkx.readwrite import json_graph
 from graphify.security import sanitize_label
 from graphify.analyze import _node_community_map
-from graphify.build import edge_data
+from graphify.build import (
+    MIN_HYPEREDGE_MEMBERS,
+    edge_data,
+    gate_hyperedges_against_graph,
+)
 from graphify.paths import stem_filename_budget
 
 from graphify.exporters.graphdb import push_to_falkordb, push_to_neo4j  # noqa: E402,F401
@@ -178,8 +182,18 @@ _CONFIDENCE_SCORE_DEFAULTS = {"EXTRACTED": 1.0, "INFERRED": 0.55, "AMBIGUOUS": 0
 
 
 def attach_hyperedges(G: nx.Graph, hyperedges: list) -> None:
-    """Store hyperedges in the graph's metadata dict."""
-    existing = G.graph.get("hyperedges", [])
+    """Store hyperedges in the graph's metadata dict.
+
+    merge-graphs hands persisted metadata straight to this boundary with no
+    build_from_json in between, so the shared gate does the alias fold, member
+    coercion and dedupe before filtering to nodes G actually has.
+
+    Both lists are gated whole rather than one candidate at a time: the gate
+    walks G's nodes once per call to build its id map, so per-candidate gating
+    would cost O(nodes x hyperedges) on exactly the merged, thousands-of-groups
+    corpora this boundary exists for.
+    """
+    existing, _ = gate_hyperedges_against_graph(G.graph.get("hyperedges", []), G)
     # Skip id-less persisted entries when seeding the dedup set (#2775): the
     # semantic extractor emits hyperedges with no `id` and build.py persists them
     # verbatim, so a prior graph.json can contain id-less hyperedges. A hard
@@ -187,10 +201,11 @@ def attach_hyperedges(G: nx.Graph, hyperedges: list) -> None:
     # symmetric with the `.get("id")` guard the loop below already applies to the
     # incoming set.
     seen_ids = {h["id"] for h in existing if h.get("id")}
-    for h in hyperedges:
-        if h.get("id") and h["id"] not in seen_ids:
-            existing.append(h)
-            seen_ids.add(h["id"])
+    incoming, _ = gate_hyperedges_against_graph(hyperedges, G)
+    for candidate in incoming:
+        if candidate.get("id") and candidate["id"] not in seen_ids:
+            existing.append(candidate)
+            seen_ids.add(candidate["id"])
     G.graph["hyperedges"] = existing
 
 
@@ -264,6 +279,16 @@ def existing_graph_node_count(path: "str | Path"):
 
 
 def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *, force: bool = False, built_at_commit: str | None = None, community_labels: dict[int, str] | None = None) -> bool:
+    """Write *G* to ``output_path`` as graph.json, returning whether it wrote.
+
+    The canonical persistence boundary: assigns communities, canonicalizes field
+    order for byte-stable diffs, gates hyperedge cardinality, and writes
+    atomically.
+
+    Returns True when it wrote. Returns False without writing when the new graph
+    would shrink an existing one (#479) — ``force=True`` bypasses that guard and
+    writes anyway.
+    """
     # Safety check: refuse to silently shrink an existing graph (#479)
     existing_path = Path(output_path)
     if not force and existing_path.exists():
@@ -395,9 +420,37 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
                 f"extraction if this is unexpected.",
                 file=sys.stderr,
             )
-    hyperedges = sorted(getattr(G, "graph", {}).get("hyperedges", []), key=_json_sort_key)
+    # Gate at the final persistence boundary too. Every internal producer
+    # (build_from_json, build_merge, attach_hyperedges) already canonicalizes,
+    # so in normal flows this drops nothing — but to_json is public API, and a
+    # library caller populating G.graph["hyperedges"] itself would otherwise
+    # write a pair, a duplicate-inflated group or a dangling member into both
+    # JSON slots. Filters a copy: an export must not mutate the caller's graph.
+    # The #2485 absent-vs-empty warning above is unaffected — it keys on the
+    # metadata key being missing from G.graph, which this does not touch.
+    _raw_hyperedges = getattr(G, "graph", {}).get("hyperedges", [])
+    if not isinstance(_raw_hyperedges, list):
+        # A direct caller can leave this as None; iterating it raised TypeError
+        # before the graph was written at all.
+        _raw_hyperedges = []
+    _valid_hyperedges, _dropped_hyperedges = gate_hyperedges_against_graph(_raw_hyperedges, G)
+    if _dropped_hyperedges:
+        print(
+            f"[graphify] WARNING: dropping "
+            f"{_dropped_hyperedges} hyperedge(s) with "
+            f"fewer than {MIN_HYPEREDGE_MEMBERS} members backed by graph nodes "
+            f"while writing {output_path}.",
+            file=sys.stderr,
+        )
+    hyperedges = sorted(_valid_hyperedges, key=_json_sort_key)
     if isinstance(data.get("graph"), dict) and "hyperedges" in data["graph"]:
-        data["graph"]["hyperedges"] = hyperedges
+        # Rebind rather than mutate in place: node_link_data hands back the
+        # SAME graph-attrs dict the caller's G owns (the by-reference sharing
+        # #2484 was diagnosed from), so assigning into it would edit their
+        # graph — and now that the list is filtered, that edit would silently
+        # drop their hyperedges. Replacing the key preserves its position, so
+        # the field-order/byte-stability contract is untouched.
+        data["graph"] = {**data["graph"], "hyperedges": hyperedges}
     data["hyperedges"] = hyperedges
     # Fallback provenance comes from the repo the graph is being written INTO
     # (output_path lives in <target>/graphify-out/), never the shell's cwd —

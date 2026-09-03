@@ -40,6 +40,301 @@ from .validate import validate_extraction
 # legacy items that predate the _origin marker (#2334).
 _AST_LOC_RE = re.compile(r"^L\d")
 
+# Hyperedges model group relationships. Pairwise relationships belong in the
+# ordinary edge set, so a hyperedge is meaningful only with 3+ members.
+MIN_HYPEREDGE_MEMBERS = 3
+
+
+def _has_minimum_hyperedge_members(he: object) -> bool:
+    """Return whether *he* has enough canonical members to form a group."""
+    return (
+        isinstance(he, dict)
+        and isinstance(he.get("nodes"), list)
+        and len(he["nodes"]) >= MIN_HYPEREDGE_MEMBERS
+    )
+
+
+def canonical_hyperedge(he: object) -> "dict | None":
+    """Return a canonical copy of hyperedge *he*, or None when it is not a group.
+
+    Settles the *shape* every persistence boundary needs before a member count
+    can mean anything. Callers hand this raw producer output or a reloaded
+    graph.json, where three things go wrong:
+
+    - a ``members``/``node_ids`` alias (#1561) carries no ``nodes`` key at all,
+      and would be read as "no members" rather than folded;
+    - a member listed twice, or two members an id remap collapsed onto one,
+      inflates a pair into an apparent group;
+    - a member object (``{"id": "a"}``) is not comparable to a node id (#2486).
+
+    ``_normalize_hyperedge_members`` settles all three on a shallow copy, so the
+    caller's dict is untouched — the same contract ``cache._normalized`` keeps
+    for ``source_file``, and it matters because downstream steps (``_partial``
+    marker stripping, manifest stamping) still read the original shape.
+
+    Returns the canonical copy iff it has ``MIN_HYPEREDGE_MEMBERS`` distinct
+    usable members, else None. A pairwise relationship belongs in the ordinary
+    edge set.
+
+    Membership is deliberately NOT checked here. Filtering members to a node set
+    needs the id-space bridge in :func:`_id_map` — comparing in a normalized
+    space and returning the container's own ids — so it lives in
+    :func:`gate_hyperedges` and :func:`gate_hyperedges_against_graph`. Doing it
+    both here and there would be two membership rules for one invariant, and
+    the weaker one drifting out of step is how several of this gate's own
+    defects arose. Boundaries that have no node set (the semantic cache, the
+    pre-manifest-stamp gate) call this directly.
+    """
+    if not isinstance(he, dict):
+        return None
+    he = dict(he)
+    _normalize_hyperedge_members(he)
+    # Normalization only ASSIGNS `nodes` when `nodes` or an alias was already a
+    # list, so a malformed value (absent, None, a bare string, a dict) is still
+    # sitting there. Reject it: a later membership filter would iterate a string
+    # into characters or a dict into keys and fabricate a well-formed group out
+    # of junk. Same guard the per-site gates this helper replaced all carried.
+    if not isinstance(he.get("nodes"), list):
+        return None
+    return he if _has_minimum_hyperedge_members(he) else None
+
+
+_MISSING = object()
+
+
+def _member_keys(member: object):
+    """Yield the keys a canonical member ref may be found under, best first.
+
+    The single definition of "what does this member name". Exactly two keys, in
+    priority order: the member as canonicalized (``_coerce_id`` has already run,
+    so ``7`` is ``"7"``), then its ``_normalize_id`` form, which is how
+    ``build_from_json`` heals a ref that drifted in casing or punctuation.
+
+    Every membership decision in the feature goes through this — the writers'
+    gate, the cross-repo prefixer, the semantic-fragment filter, watch's
+    reconciliation and the cache's skipped-node prune. They compared member refs
+    against id sets independently before, and each one that resolved slightly
+    differently either dropped a valid group or kept an invalid one.
+    """
+    if not _hashable(member):
+        return
+    yield member
+    if isinstance(member, str):
+        norm = _normalize_id(member)
+        if norm != member:
+            yield norm
+
+
+def resolve_member_ref(member: object, raw_by_coerced: dict, default: object = None):
+    """Resolve *member* to the raw id its container carries, or *default*.
+
+    Pair with :func:`_id_map`, whose keys are exactly what :func:`_member_keys`
+    looks for. Returns the raw id so a caller writing members back out keeps
+    them in the id space it is about to persist.
+    """
+    for key in _member_keys(member):
+        if key in raw_by_coerced:
+            return raw_by_coerced[key]
+    return default
+
+
+def canonical_member_ref(member: object) -> object:
+    """One member ref in the canonical scalar space, whatever shape it arrives in.
+
+    An object-shaped member (``{"id": "a"}``) names its ``id``; a numeric ref is
+    coerced by :func:`_coerce_id`. :func:`_coerce_hyperedge_member_refs` applies
+    this same rule to a whole member list, with a WARNING and a drop for an
+    unusable id. This is the single-ref form, for the predicates that answer a
+    yes/no about a member taken straight off a persisted group that nothing has
+    normalized yet.
+
+    An id-less object collapses to ``None``, which :func:`_member_keys` then
+    resolves to nothing — canonicalizing must not invent a member.
+    """
+    if isinstance(member, dict):
+        member = member.get("id")
+    return _coerce_id(member)
+
+
+def member_in_id_space(member: object, ids: object) -> bool:
+    """Whether *member* names anything in *ids*, under the shared lookup order.
+
+    For the callers that need a yes/no rather than the resolved id — watch's
+    whole-group reconciliation drop and the cache's skipped-node prune. Build
+    *ids* with :func:`node_id_set`, which carries the same keys.
+
+    *member* is canonicalized here rather than by each caller, because these
+    callers read members off a group that has NOT been through
+    ``_normalize_hyperedge_members``: watch's drop reads ``edge["nodes"]``
+    verbatim out of the persisted graph. Both shapes the feature tolerates
+    therefore arrived raw, and an unwrapped object member is unhashable, so it
+    named nothing and watch deleted a group every one of whose members is alive
+    — while an uncoerced numeric member missed the coerced key
+    :func:`node_id_set` holds, leaving the cache's prune under-pruning. Callers
+    that pre-coerce are unaffected: :func:`canonical_member_ref` is idempotent.
+    """
+    return any(key in ids for key in _member_keys(canonical_member_ref(member)))
+
+
+
+def _id_map(ids: object, normalized: bool = True) -> dict:
+    """Map every id in *ids* to itself, keyed by both id spaces members use.
+
+    The one place the id spaces are bridged. Member refs are coerced by
+    ``_normalize_hyperedge_members``, so membership has to be tested in the
+    coerced space — but whatever survives has to be handed back in the ids the
+    caller is actually persisting, or the written file names members no node
+    has. Compare in a normalized space, return raw.
+
+    Two layers of key, in priority order:
+
+    1. the coerced id (``_coerce_id``), so ``7`` and ``"7"`` are one node;
+    2. the ``_normalize_id`` form, so a member that drifted in casing or
+       punctuation (``Foo-Bar`` for node ``foo_bar``) still resolves. This
+       mirrors the ``norm_to_id`` healing ``build_from_json`` applies on the
+       clustered path — without it the raw writers, which never reach
+       ``build_from_json``, drop a group that is perfectly resolvable.
+
+    Exact keys always win: layer 2 only fills gaps, so an id present verbatim is
+    never redirected to a different node that merely normalizes the same way.
+
+    ``normalized=False`` omits layer 2 entirely. Callers that compare two id
+    sets against each other need it: with aliases present, a node ``foo_bar``
+    in one set and a *distinct* node ``Foo-Bar`` in the other share the key
+    ``foo_bar``, so set arithmetic conflates two different nodes. Decide such
+    questions in the exact space, then add aliases for lookup.
+
+    First writer wins within a layer, except that an id already equal to its
+    coerced form is preferred: with both ``7`` and ``"7"`` present they are two
+    distinct nodes collapsing to one key, and the exact match is the honest
+    answer. ``None`` and unhashable ids are skipped, per :func:`node_id_set`.
+    """
+    out: dict = {}
+    aliases: dict = {}
+    for raw in ids or ():
+        if raw is None or not _hashable(raw):
+            continue
+        key = _coerce_id(raw)
+        if key not in out or (raw == key and out[key] != key):
+            out[key] = raw
+        if normalized and isinstance(key, str):
+            norm = _normalize_id(key)
+            if norm != key:
+                aliases.setdefault(norm, raw)
+    for norm, raw in aliases.items():
+        out.setdefault(norm, raw)
+    return out
+
+
+def node_id_map(nodes: object, normalized: bool = True) -> dict:
+    """:func:`_id_map` over node *records* — the shape writers hold node lists in.
+
+    A non-dict entry and an id-less node contribute nothing; only ``n["id"]``
+    is an id here. ``_id_map`` alone cannot tell the two shapes apart, and
+    guessing wrong would read a malformed list entry as a node id.
+    """
+    return _id_map(
+        (n["id"] for n in (nodes or ()) if isinstance(n, dict) and "id" in n),
+        normalized=normalized,
+    )
+
+
+def node_id_set(nodes: object, normalized: bool = True) -> set:
+    """Collect the ids from node records *nodes* that a member could name.
+
+    Ids are coerced with :func:`_coerce_id`, the same normalization member refs
+    receive, so the two sides are compared in one space. Without it a numeric
+    node id — a supported input that #2326 heals — stays ``7`` here while its
+    member ref becomes ``"7"``, `"7" in {7}` is False, and every member of an
+    otherwise valid group is dropped.
+
+    An id-less node contributes nothing. An unhashable id is skipped rather than
+    added: a persisted ``list``/``dict`` id is deliberately tolerated by the
+    build path for the validator to report, and putting one in a set raises;
+    ``None`` is skipped for the same reason it is not a usable member — it would
+    let a null member count towards the minimum.
+
+    Use this where only membership is asked. Where survivors are written back
+    out next to the nodes, gate through :func:`gate_hyperedges` instead, which
+    keeps the ids in the caller's own space.
+    """
+    return set(node_id_map(nodes, normalized=normalized))
+
+
+def _gate(hyperedges: object, raw_by_coerced: "dict | None") -> "tuple[list[dict], int]":
+    """Canonicalize *hyperedges* against a prebuilt id map, survivors first.
+
+    Takes the map rather than the container so a caller gating many groups walks
+    its nodes once. Rebuilding per candidate is what turns a linear gate into
+    O(nodes x hyperedges), which on a merged corpus of thousands of groups is
+    the whole cost of the operation.
+
+    Resolution goes through the map instead of a plain ``in`` test, because the
+    map carries the normalized fallback layer (see :func:`_id_map`) and because
+    the surviving members must be the container's own ids. Members are deduped
+    again afterwards: two refs that resolve onto one node are one member, or a
+    pair would pass as a group.
+
+    Pass None for the map where no node set exists — the semantic cache stores
+    per-file fragments, and the pre-manifest-stamp gate runs before the final
+    node set is known — in which case only shape and distinct cardinality are
+    checked and members stay in their coerced form.
+    """
+    incoming = list(hyperedges or ())
+    kept: list[dict] = []
+    for he in incoming:
+        # No node set here: shape, coercion and dedupe only. Membership is
+        # applied below so it can resolve through the map's fallback layer.
+        candidate = canonical_hyperedge(he)
+        if candidate is None:
+            continue
+        if raw_by_coerced is not None:
+            resolved: list = []
+            seen: set = set()
+            for m in candidate["nodes"]:
+                raw = resolve_member_ref(m, raw_by_coerced, _MISSING)
+                if raw is _MISSING or raw in seen:
+                    continue
+                seen.add(raw)
+                resolved.append(raw)
+            candidate["nodes"] = resolved
+            if not _has_minimum_hyperedge_members(candidate):
+                continue
+        kept.append(candidate)
+    return kept, len(incoming) - len(kept)
+
+
+def gate_hyperedges(
+    hyperedges: object, nodes: object = None,
+) -> "tuple[list[dict], int]":
+    """Canonicalize *hyperedges*, returning the survivors and how many were cut.
+
+    The shared shape of every writer's gate. Pass the node *records* about to be
+    persisted to filter members by membership; survivors come back in those
+    records' own id space, because the raw ``--no-cluster`` writers persist the
+    records unchanged. Pass None where no node set exists.
+
+    Returns the count rather than logging, because the callers word their own
+    messages: the raw writer, the exclusion-only prune and the pre-stamp gate
+    each say something different about what the drop means.
+    """
+    return _gate(hyperedges, node_id_map(nodes) if nodes is not None else None)
+
+
+def gate_hyperedges_against_graph(
+    hyperedges: object, G: object,
+) -> "tuple[list[dict], int]":
+    """Gate *hyperedges* against *G*'s nodes, in *G*'s own id space.
+
+    :func:`gate_hyperedges` for callers whose container is a graph rather than a
+    node list — iterating an ``nx.Graph`` yields the ids themselves. The id
+    space matters just as much here: ``node_link_data`` writes ``{"id": 7}``,
+    and a member left as ``"7"`` is a dangling reference in the written file.
+
+    Gate whole lists, not one candidate at a time — the map is built per call.
+    """
+    return _gate(hyperedges, _id_map(G or ()))
+
 
 def _is_ast_tier(item: dict) -> bool:
     """AST vs semantic tier. _origin wins when present; unstamped legacy items
@@ -110,6 +405,32 @@ _FILE_TYPE_SYNONYMS = {
 _HE_MEMBER_ALIASES = ("members", "node_ids")
 
 
+def _is_usable_member_ref(value: object) -> bool:
+    """Whether *value* could name a graph node, so may count towards cardinality.
+
+    One rule for both member shapes. The bare and object branches of
+    ``_coerce_hyperedge_member_refs`` each had their own copy and drifted twice —
+    the object branch rejected ``{"id": None}`` while a bare ``None`` was kept,
+    then the reverse once booleans were rejected in the bare branch only. Each
+    time, an unusable ref padded the count: the semantic cache has no node set to
+    filter members against, so a two-real-member group with a junk third member
+    was cached and stamped as valid, then dropped on replay by the graph-backed
+    revalidation — a cache hit yielding nothing for a file marked as covered.
+
+    Unhashable values cannot be compared against a node set at all. ``None`` and
+    ``""`` name nothing. Booleans are excluded for the reason ``_coerce_id``
+    already refuses to str-coerce them: ``True`` is not a number the model meant
+    as an id. A genuine numeric id survives — ``_coerce_id`` turns 7 into "7" and
+    0 into "0" — and the explicit ``bool`` test keeps ``0``/``1`` out of that
+    case despite ``bool`` subclassing ``int``.
+    """
+    return (
+        _hashable(value)
+        and value not in (None, "")
+        and not isinstance(value, bool)
+    )
+
+
 def _coerce_hyperedge_member_refs(he: dict, members: list) -> list:
     """Coerce a hyperedge member list to hashable scalar ids, deduped in order.
 
@@ -128,7 +449,7 @@ def _coerce_hyperedge_member_refs(he: dict, members: list) -> list:
     for ref in members:
         if isinstance(ref, dict):
             inner = _coerce_id(ref.get("id"))
-            if inner in (None, "") or not _hashable(inner):
+            if not _is_usable_member_ref(inner):
                 print(
                     f"[graphify] WARNING: hyperedge "
                     f"'{he.get('id', '?')}' has a member object with no usable "
@@ -137,7 +458,13 @@ def _coerce_hyperedge_member_refs(he: dict, members: list) -> list:
                 )
                 continue
             ref = inner
-        elif not _hashable(ref):
+        elif not _is_usable_member_ref(ref := _coerce_id(ref)):
+            # Same rule AND the same coercion as the object branch above. The
+            # coercion is what makes the dedupe below agree with replay: the
+            # build path str-coerces numeric members via _coerce_non_string_ids,
+            # so `7` and `"7"` are one node id. Keyed on the raw Python value
+            # they counted as two, letting `[7, "7", "b"]` pass the cache gate as
+            # a group and then collapse to a pair and be dropped on replay.
             print(
                 f"[graphify] WARNING: hyperedge "
                 f"'{he.get('id', '?')}' has an unusable member reference "
@@ -1281,6 +1608,21 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         # verbatim — never leaks an absolute path from a semantic subagent (#1418).
         kept_hyperedges = []
         for he in hyperedges:
+            # Reject a shape this boundary cannot validate, rather than letting
+            # it fall past the member check below into G.graph["hyperedges"].
+            # Aliases were folded at the top of this function, so a non-list
+            # `nodes` here is genuinely malformed — and it would otherwise be
+            # read back by every consumer of the graph's metadata (report, wiki,
+            # the html exporter, watch's topology compare), each of which
+            # assumes the canonical shape.
+            if not isinstance(he, dict) or not isinstance(he.get("nodes"), list):
+                print(
+                    f"[graphify] WARNING: dropping hyperedge "
+                    f"{he.get('id', '?') if isinstance(he, dict) else he!r} — its "
+                    f"member list is malformed (not a list).",
+                    file=sys.stderr,
+                )
+                continue
             if isinstance(he, dict) and he.get("source_file"):
                 he["source_file"] = _norm_source_file(he["source_file"], _root)
             # Validate members against the built node set (#1916): a hyperedge
@@ -1288,12 +1630,17 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             # G.graph["hyperedges"] verbatim and reach graph.json dangling,
             # even from a live (non-cache) extraction. Mirror the pairwise-edge
             # handling above: remap mismatched ids via normalization first,
-            # then drop members that still don't resolve; drop the hyperedge
-            # itself when no valid member remains (single-member hyperedges
-            # are legal in this codebase, e.g. a per-file flow, so we prune
-            # rather than require two survivors).
+            # then drop members that still don't resolve. If pruning leaves a
+            # pair (or singleton), the relationship belongs in ordinary edges,
+            # not the hyperedge set, so drop the hyperedge as a whole.
             if isinstance(he, dict) and isinstance(he.get("nodes"), list):
+                # Count DISTINCT members: the dedupe _normalize_hyperedge_members
+                # did above is undone by three later steps that can map two ids
+                # onto one — the semantic re-key, the doc-twin fold, and the
+                # norm_to_id remap right here (a ghost onto its AST twin, or
+                # `Foo` onto `foo`). Three positions naming two nodes is a pair.
                 valid_members = []
+                seen_members: set = set()
                 for m in he["nodes"]:
                     try:
                         hash(m)
@@ -1301,12 +1648,14 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                         continue
                     if m not in node_set and isinstance(m, str):
                         m = norm_to_id.get(_normalize_id(m), m)
-                    if m in node_set:
+                    if m in node_set and m not in seen_members:
+                        seen_members.add(m)
                         valid_members.append(m)
-                if not valid_members:
+                if len(valid_members) < MIN_HYPEREDGE_MEMBERS:
                     print(
                         f"[graphify] WARNING: dropping hyperedge "
-                        f"{he.get('id', '?')!r} — none of its members "
+                        f"{he.get('id', '?')!r} — fewer than "
+                        f"{MIN_HYPEREDGE_MEMBERS} members from "
                         f"{he.get('nodes')!r} match built nodes.",
                         file=sys.stderr,
                     )
@@ -1380,6 +1729,14 @@ def build(
         for n in combined["nodes"]:
             if isinstance(n, dict):
                 _fold_node_aliases(n)
+        # Canonicalize hyperedge members before dedup for the same reason (#1561):
+        # dedup rewires members onto survivors via _remap_hyperedge_members, which
+        # can only read the canonical `nodes` list, so an alias-keyed (`members` /
+        # `node_ids`) or duplicate-member hyperedge would be passed through
+        # un-rewired. Idempotent — build_from_json's own fold below then finds
+        # the aliases already gone and stays silent.
+        for he in combined["hyperedges"]:
+            _normalize_hyperedge_members(he)
         combined["nodes"], combined["edges"] = deduplicate_entities(
             combined["nodes"], combined["edges"], communities={},
             dedup_llm_backend=dedup_llm_backend, root=root,
@@ -1998,6 +2355,22 @@ def build_merge(
                     file=sys.stderr,
                 )
 
+    # Final gate on hyperedge cardinality — whether or not a prune ran. build()
+    # validated members when it assembled the graph; the deleted-source prune
+    # above may have removed nodes since, and a carried group must not reach
+    # graph.json degraded to a pair or holding a dangling member after an
+    # incremental update. With no prune nothing removes nodes between build()
+    # and here, so on that path this is a defensive gate, not a live repair.
+    # Guarded on the key being present: build_from_json only sets
+    # G.graph["hyperedges"] when hyperedge metadata flowed through (an explicit
+    # [] marks a full wipeout, #2485), and to_json keys its "file already holds
+    # hyperedges but the graph carries none" warning on the key being ABSENT.
+    # Manufacturing an empty list here would silence that diagnostic.
+    if "hyperedges" in G.graph:
+        G.graph["hyperedges"], _ = gate_hyperedges_against_graph(
+            G.graph.get("hyperedges", []), G,
+        )
+
     # Safety check: refuse to SILENTLY drop nodes (#479, reworked in #2497).
     # The old count comparison ran against the post-replace `existing_nodes`,
     # which had already lost the re-extracted sources' old nodes — so it could
@@ -2100,14 +2473,55 @@ def prefix_graph_for_global(
     hyperedges = H.graph.get("hyperedges")
     if isinstance(hyperedges, list):
         rewritten = []
+        # Built once per graph, not per hyperedge: a semantic graph can carry
+        # thousands of groups, and rebuilding this map inside the loop makes
+        # prefixing O(nodes x hyperedges).
+        # Keyed through _id_map, so a member resolves here exactly as it does at
+        # the gate: coerced form first, then the _normalize_id form. Keyed on
+        # the coerced spelling alone, a member that drifted in casing or
+        # punctuation stayed unprefixed while its node became `repo::foo_bar`,
+        # and attach_hyperedges then dropped a group the gate calls valid —
+        # two halves of one invariant disagreeing.
+        _old_by_key = _id_map(relabel)
+        _coerced_relabel = {
+            key: relabel[old] for key, old in _old_by_key.items() if old in relabel
+        }
         for he in hyperedges:
             if isinstance(he, dict):
                 he = dict(he)
+                # Canonicalize BEFORE mapping through relabel (#1561): only a
+                # canonical `nodes` list of scalar ids can be prefixed. An
+                # alias-keyed (`members`/`node_ids`) or object-member group
+                # would otherwise keep its unprefixed ids while every node gains
+                # the `repo::` prefix, and the attach boundary downstream then
+                # discards the whole group for having no member backed by a node.
+                _normalize_hyperedge_members(he)
                 if isinstance(he.get("nodes"), list):
-                    he["nodes"] = [
-                        relabel.get(m, m) if _hashable(m) else m
-                        for m in he["nodes"]
-                    ]
+                    # Look the member up in the COERCED id space. Normalization
+                    # above turns a numeric member into "7" while `relabel` is
+                    # keyed by the raw node id `7`, so a raw lookup misses and
+                    # the member stays unprefixed while its node becomes
+                    # `repo::7` — after which attach_hyperedges drops the group
+                    # for having no member backed by a node.
+                    _prefixed: list = []
+                    _seen: set = set()
+                    for m in he["nodes"]:
+                        if not _hashable(m):
+                            _prefixed.append(m)
+                            continue
+                        new_m = resolve_member_ref(m, _coerced_relabel, _MISSING)
+                        if new_m is _MISSING:
+                            # No node of this graph: leave it for the attach
+                            # boundary to drop, as before.
+                            new_m = m
+                        # Deduped after resolution: an exact and a drifted ref to
+                        # one node prefix to the same id, and counting both would
+                        # let a pair reach the attach boundary as a group.
+                        if new_m in _seen:
+                            continue
+                        _seen.add(new_m)
+                        _prefixed.append(new_m)
+                    he["nodes"] = _prefixed
                 if he.get("id"):
                     he["id"] = f"{repo_tag}::{he['id']}"
             rewritten.append(he)

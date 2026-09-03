@@ -1341,11 +1341,19 @@ def test_save_semantic_cache_drops_hyperedges_touching_skipped_nodes(tmp_path):
     nodes = [
         {"id": "kept", "source_file": "allowed.md"},
         {"id": "kept2", "source_file": "allowed.md"},
+        {"id": "kept3", "source_file": "allowed.md"},
         {"id": "stray", "source_file": "outside.md"},
     ]
     hyperedges = [
-        {"id": "he_bad", "nodes": ["kept", "stray"], "source_file": "allowed.md"},
-        {"id": "he_ok", "nodes": ["kept", "kept2"], "source_file": "allowed.md"},
+        # Three members, so the cardinality gate keeps it and the assertion
+        # below is actually testing the skipped-node prune rather than passing
+        # because a pair was dropped first.
+        {"id": "he_bad", "nodes": ["kept", "kept2", "stray"], "source_file": "allowed.md"},
+        {
+            "id": "he_ok",
+            "nodes": ["kept", "kept2", "kept3"],
+            "source_file": "allowed.md",
+        },
     ]
     with pytest.warns(RuntimeWarning, match="out-of-scope source_file"):
         save_semantic_cache(
@@ -1359,10 +1367,156 @@ def test_save_semantic_cache_drops_hyperedges_touching_skipped_nodes(tmp_path):
     assert {h["id"] for h in cached_hyperedges} == {"he_ok"}
 
 
-def test_save_semantic_cache_unscoped_preserves_dangling_refs_verbatim(tmp_path):
-    """#1916 guard-rail: unscoped callers (allowed_source_files=None) must stay
-    byte-identical — no pruning happens even when an edge or hyperedge
-    references a node grouped under a ghost file."""
+def test_save_semantic_cache_prunes_numeric_skipped_ids_like_string_ones(tmp_path):
+    """The #1916 skipped-node prune has to compare in the coerced id space.
+
+    `canonical_hyperedge` coerces members (`7` -> `"7"`) while `skipped_ids` was
+    collected raw, so `"7" in {7}` was False and a group naming a node from a
+    deliberately skipped source was cached anyway — dangling on every replay,
+    the exact shape #1916 removed. A string-id member of the same shape was
+    dropped correctly, which is what makes this a coercion bug and not a
+    disagreement about the prune's semantics.
+    """
+    from graphify.cache import check_semantic_cache, save_semantic_cache
+
+    allowed = tmp_path / "allowed.md"
+    allowed.write_text("# Allowed\n")
+    outside = tmp_path / "outside.md"
+    outside.write_text("# Outside\n")
+
+    nodes = [
+        {"id": "kept", "source_file": "allowed.md"},
+        {"id": "kept2", "source_file": "allowed.md"},
+        {"id": 7, "source_file": "outside.md"},
+    ]
+    hyperedges = [
+        {"id": "he_numeric", "nodes": [7, "kept", "kept2"], "source_file": "allowed.md"},
+    ]
+    edges = [{"source": "kept", "target": 7, "source_file": "allowed.md"}]
+    with pytest.warns(RuntimeWarning, match="out-of-scope source_file"):
+        save_semantic_cache(
+            nodes, edges, hyperedges, root=tmp_path,
+            allowed_source_files=["allowed.md"],
+        )
+
+    _, cached_edges, cached_hyperedges, _ = check_semantic_cache(
+        [str(allowed)], root=tmp_path
+    )
+    assert cached_hyperedges == [], (
+        "a group naming a node from a skipped source must be pruned whether "
+        "that node's id is numeric or a string"
+    )
+    assert cached_edges == [], (
+        "the numeric endpoint must stay detectable once both sides are coerced"
+    )
+
+
+def test_scope_semantic_result_prunes_a_normalized_ref_to_a_dropped_node(tmp_path):
+    """`_scope_semantic_result` drops out-of-scope items and then prunes
+    references to the nodes it dropped. That prune intersected its raw id set
+    with the member spellings, so a member resolvable everywhere else in the
+    feature did not register and the group survived holding a reference to a
+    node that had just been removed. Twelfth site of one root cause, and the
+    second in this file: the two prunes are near-identical code."""
+    from graphify.cache import scope_semantic_result
+
+    allowed = tmp_path / "allowed.md"
+    allowed.write_text("# Allowed\n")
+
+    result = {
+        "nodes": [
+            {"id": "a", "source_file": "allowed.md"},
+            {"id": "b", "source_file": "allowed.md"},
+            {"id": "foo_bar", "source_file": "outside.md"},
+        ],
+        "edges": [],
+        "hyperedges": [
+            {"id": "grp", "nodes": ["Foo-Bar", "a", "b"], "source_file": "allowed.md"},
+        ],
+    }
+    scope_semantic_result(result, root=tmp_path, allowed_source_files=["allowed.md"])
+
+    assert {n["id"] for n in result["nodes"]} == {"a", "b"}, "the node is dropped"
+    assert result["hyperedges"] == [], (
+        "the group referenced the dropped node under a resolvable spelling"
+    )
+
+
+def test_save_semantic_cache_prunes_a_normalized_ref_to_a_skipped_node(tmp_path):
+    """The #1916 skipped-node prune intersects `skipped_ids` with the member
+    spellings directly, so a member the rest of the feature resolves — `Foo-Bar`
+    for skipped node `foo_bar` — did not register as touching a skipped node and
+    the group was cached. Under-pruning this time: the group replays with a
+    member no node backs, and reappears if another layer supplies that id."""
+    from graphify.cache import save_semantic_cache
+
+    allowed = tmp_path / "allowed.md"
+    allowed.write_text("# Allowed\n")
+    outside = tmp_path / "outside.md"
+    outside.write_text("# Outside\n")
+
+    nodes = [
+        {"id": "a", "source_file": "allowed.md"},
+        {"id": "b", "source_file": "allowed.md"},
+        {"id": "foo_bar", "source_file": "outside.md"},
+    ]
+    hyperedges = [
+        {"id": "grp", "nodes": ["Foo-Bar", "a", "b"], "source_file": "allowed.md"},
+    ]
+    with pytest.warns(RuntimeWarning, match="out-of-scope source_file"):
+        save_semantic_cache(
+            nodes, [], hyperedges, root=tmp_path,
+            allowed_source_files=["allowed.md"],
+        )
+
+    from graphify.cache import check_semantic_cache
+    _, _, cached_hyperedges, _ = check_semantic_cache([str(allowed)], root=tmp_path)
+    assert cached_hyperedges == [], (
+        "a group naming a skipped node must be pruned whatever spelling it uses"
+    )
+
+
+def test_save_semantic_cache_does_not_over_subtract_a_colliding_normalized_key(tmp_path):
+    """Duplicate attribution is subtracted between the skipped and written id
+    sets, and those sets now carry normalized lookup keys — so a skipped node
+    `foo_bar` and a *distinct* written node `Foo-Bar` share the key `foo_bar`,
+    the subtraction removed the skipped node entirely, and an exact member
+    `foo_bar` naming it was no longer detected as dangling. The subtraction has
+    to happen in the exact id space, before aliases are added."""
+    from graphify.cache import check_semantic_cache, save_semantic_cache
+
+    allowed = tmp_path / "allowed.md"
+    allowed.write_text("# Allowed\n")
+    outside = tmp_path / "outside.md"
+    outside.write_text("# Outside\n")
+
+    nodes = [
+        {"id": "Foo-Bar", "source_file": "allowed.md"},
+        {"id": "a", "source_file": "allowed.md"},
+        {"id": "b", "source_file": "allowed.md"},
+        {"id": "foo_bar", "source_file": "outside.md"},
+    ]
+    hyperedges = [
+        # Names the SKIPPED node exactly, not the written one.
+        {"id": "grp", "nodes": ["foo_bar", "a", "b"], "source_file": "allowed.md"},
+    ]
+    with pytest.warns(RuntimeWarning, match="out-of-scope source_file"):
+        save_semantic_cache(
+            nodes, [], hyperedges, root=tmp_path,
+            allowed_source_files=["allowed.md"],
+        )
+
+    _, _, cached_hyperedges, _ = check_semantic_cache([str(allowed)], root=tmp_path)
+    assert cached_hyperedges == [], (
+        "the group names a skipped node exactly and must still be pruned"
+    )
+
+
+def test_save_semantic_cache_unscoped_drops_under_cardinality_hyperedges(tmp_path):
+    """#1916 guard-rail: unscoped callers (allowed_source_files=None) get no
+    dangling-reference pruning — the edge to a node grouped under a ghost file is
+    cached byte-identical. The hyperedge is dropped for a different reason: two
+    members is under the minimum cardinality, regardless of scoping."""
     from graphify.cache import save_semantic_cache
 
     doc = tmp_path / "doc.md"
@@ -1383,7 +1537,152 @@ def test_save_semantic_cache_unscoped_preserves_dangling_refs_verbatim(tmp_path)
         (cache_dir(tmp_path, "semantic") / f"{file_hash(doc, tmp_path)}.json").read_text()
     )
     assert raw["edges"] == edges
-    assert raw["hyperedges"] == hyperedges
+    assert raw["hyperedges"] == []
+
+
+def test_save_semantic_cache_drops_two_member_hyperedge(tmp_path):
+    """Pairwise relationships must not be persisted as hyperedges."""
+    from graphify.cache import load_cached, save_semantic_cache
+
+    doc = tmp_path / "doc.md"
+    doc.write_text("# Doc\n")
+    nodes = [
+        {"id": "a", "source_file": "doc.md"},
+        {"id": "b", "source_file": "doc.md"},
+    ]
+    hyperedges = [{"id": "pair", "nodes": ["a", "b"], "source_file": "doc.md"}]
+
+    assert save_semantic_cache(nodes, [], hyperedges, root=tmp_path) == 1
+    cached = load_cached(doc, root=tmp_path, kind="semantic")
+    assert cached is not None
+    assert cached["hyperedges"] == []
+
+
+def test_save_semantic_cache_normalizes_alias_members_before_cardinality_check(tmp_path):
+    """A `members`-keyed group (#1561 alias) with three members is a valid
+    hyperedge. The cardinality gate must read it through the same canonicalization
+    build applies, not drop it for lacking a `nodes` list — and the caller's dict
+    must be left untouched (the cache writer copies, like _normalized does)."""
+    from graphify.cache import load_cached, save_semantic_cache
+
+    doc = tmp_path / "doc.md"
+    doc.write_text("# Doc\n")
+    nodes = [{"id": nid, "source_file": "doc.md"} for nid in ("a", "b", "c")]
+    he = {"id": "grp", "members": ["a", "b", "c"], "source_file": "doc.md"}
+
+    assert save_semantic_cache(nodes, [], [he], root=tmp_path) == 1
+    cached = load_cached(doc, root=tmp_path, kind="semantic")
+    assert [h["id"] for h in cached["hyperedges"]] == ["grp"]
+    assert cached["hyperedges"][0]["nodes"] == ["a", "b", "c"]
+    assert "members" not in cached["hyperedges"][0]
+    assert he == {"id": "grp", "members": ["a", "b", "c"], "source_file": "doc.md"}
+
+
+def test_save_semantic_cache_counts_distinct_members(tmp_path):
+    """Three list positions with two distinct ids is a pair, not a group."""
+    from graphify.cache import load_cached, save_semantic_cache
+
+    doc = tmp_path / "doc.md"
+    doc.write_text("# Doc\n")
+    nodes = [{"id": nid, "source_file": "doc.md"} for nid in ("a", "b", "c")]
+    hyperedges = [
+        {"id": "dupe_pair", "nodes": ["a", "a", "b"], "source_file": "doc.md"},
+        {"id": "dupe_trio", "nodes": ["a", "a", "b", "c"], "source_file": "doc.md"},
+    ]
+
+    assert save_semantic_cache(nodes, [], hyperedges, root=tmp_path) == 1
+    cached = load_cached(doc, root=tmp_path, kind="semantic")
+    assert {h["id"]: h["nodes"] for h in cached["hyperedges"]} == {"dupe_trio": ["a", "b", "c"]}
+
+
+def test_save_semantic_cache_merge_existing_heals_legacy_alias_entry(tmp_path):
+    """A pre-existing cache entry may hold an alias-keyed hyperedge written before
+    the cache canonicalized members. The merge_existing union must fold it onto
+    `nodes` rather than delete a valid three-member group."""
+    import json
+
+    from graphify.cache import cache_dir, file_hash, load_cached, save_semantic_cache
+
+    doc = tmp_path / "doc.md"
+    doc.write_text("# Doc\n")
+    nodes = [{"id": nid, "source_file": "doc.md"} for nid in ("a", "b", "c")]
+    save_semantic_cache(nodes, [], root=tmp_path, merge_existing=True)
+    cache = load_cached(doc, root=tmp_path, kind="semantic")
+    assert cache is not None
+    cache["hyperedges"] = [{"id": "legacy_alias", "members": ["a", "b", "c"]}]
+    path = cache_dir(tmp_path, "semantic") / f"{file_hash(doc, tmp_path)}.json"
+    path.write_text(json.dumps(cache), encoding="utf-8")
+
+    save_semantic_cache(
+        [{"id": "d", "source_file": "doc.md"}], [], root=tmp_path, merge_existing=True,
+    )
+    cached = load_cached(doc, root=tmp_path, kind="semantic")
+    assert [h["id"] for h in cached["hyperedges"]] == ["legacy_alias"]
+    assert cached["hyperedges"][0]["nodes"] == ["a", "b", "c"]
+
+
+def test_check_semantic_cache_treats_an_undersized_legacy_entry_as_a_miss(tmp_path):
+    """A cache entry written before the cardinality gate can hold nothing but a
+    two-member group. Gating only on write cannot heal an entry that is merely
+    read: the raw list is non-empty, so the zero-output check passes, the file
+    is reported as a hit, the CLI gate then removes the pair, and the file is
+    never freshly extracted — repeating every run. Cardinality needs no node
+    set, so it can be judged on read."""
+    import json
+
+    from graphify.cache import cache_dir, check_semantic_cache, file_hash
+
+    doc = tmp_path / "doc.md"
+    doc.write_text("# Doc\n")
+    entry = cache_dir(tmp_path, "semantic")
+    entry.mkdir(parents=True, exist_ok=True)
+    (entry / f"{file_hash(doc, tmp_path)}.json").write_text(json.dumps({
+        "nodes": [], "edges": [],
+        "hyperedges": [{"id": "legacy_pair", "nodes": ["a", "b"]}],
+    }), encoding="utf-8")
+
+    _nodes, _edges, hyperedges, uncached = check_semantic_cache([str(doc)], root=tmp_path)
+    assert hyperedges == [], "the pair must not be replayed as cached output"
+    assert [str(p) for p in uncached] == [str(doc)], (
+        "an entry whose only output is unusable is a miss, so the file is re-extracted"
+    )
+
+
+def test_check_semantic_cache_keeps_a_valid_legacy_entry(tmp_path):
+    """The over-fix guard: an entry carrying a real group is still a hit."""
+    import json
+
+    from graphify.cache import cache_dir, check_semantic_cache, file_hash
+
+    doc = tmp_path / "doc.md"
+    doc.write_text("# Doc\n")
+    entry = cache_dir(tmp_path, "semantic")
+    entry.mkdir(parents=True, exist_ok=True)
+    (entry / f"{file_hash(doc, tmp_path)}.json").write_text(json.dumps({
+        "nodes": [], "edges": [],
+        "hyperedges": [{"id": "trio", "nodes": ["a", "b", "c"]}],
+    }), encoding="utf-8")
+
+    _n, _e, hyperedges, uncached = check_semantic_cache([str(doc)], root=tmp_path)
+    assert [h["id"] for h in hyperedges] == ["trio"]
+    assert uncached == []
+
+
+def test_save_semantic_cache_does_not_cache_a_group_padded_by_a_null_member(tmp_path):
+    """The cache has no node set, so it cannot filter members by membership — but
+    `None`/`""` can never name a node in any graph. Counting them would cache a
+    two-real-member group that build_from_json drops on replay, leaving a cache
+    hit that produces no semantic data and a file that is never re-dispatched."""
+    from graphify.cache import load_cached, save_semantic_cache
+
+    doc = tmp_path / "doc.md"
+    doc.write_text("# Doc\n")
+    nodes = [{"id": nid, "source_file": "doc.md"} for nid in ("a", "b")]
+    hyperedges = [{"id": "padded", "nodes": ["a", "b", None], "source_file": "doc.md"}]
+
+    assert save_semantic_cache(nodes, [], hyperedges, root=tmp_path) == 1
+    cached = load_cached(doc, root=tmp_path, kind="semantic")
+    assert cached["hyperedges"] == []
 
 
 def test_save_semantic_cache_merge_existing_prunes_only_incoming(tmp_path):
@@ -1426,6 +1725,39 @@ def test_save_semantic_cache_merge_existing_prunes_only_incoming(tmp_path):
     assert ("a", "a") in pairs, "prior entry's valid edge must survive the union"
     assert ("a", "b") in pairs, "incoming valid edge must be kept"
     assert not any("stray" in p for p in pairs)
+
+
+def test_save_semantic_cache_merge_existing_heals_legacy_pair(tmp_path):
+    """A two-member group already on disk is pruned when the entry is next merged."""
+    from graphify.cache import load_cached, save_semantic_cache
+
+    doc = tmp_path / "doc.md"
+    doc.write_text("# Doc\n")
+    save_semantic_cache(
+        [{"id": "a", "source_file": "doc.md"}],
+        [],
+        root=tmp_path,
+        merge_existing=True,
+    )
+    cache = load_cached(doc, root=tmp_path, kind="semantic")
+    assert cache is not None
+    cache["hyperedges"] = [{"id": "legacy_pair", "nodes": ["a", "b"]}]
+
+    from graphify.cache import cache_dir, file_hash
+    import json
+
+    path = cache_dir(tmp_path, "semantic") / f"{file_hash(doc, tmp_path)}.json"
+    path.write_text(json.dumps(cache), encoding="utf-8")
+    save_semantic_cache(
+        [{"id": "b", "source_file": "doc.md"}],
+        [],
+        root=tmp_path,
+        merge_existing=True,
+    )
+
+    healed = load_cached(doc, root=tmp_path, kind="semantic")
+    assert healed is not None
+    assert healed["hyperedges"] == []
 
 
 # --- extraction-prompt fingerprinting (#1939) -------------------------------

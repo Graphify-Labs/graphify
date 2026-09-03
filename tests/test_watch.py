@@ -733,10 +733,17 @@ def test_rebuild_code_evicts_nodes_from_deleted_files(tmp_path):
 
 
 def _add_unrelated_semantic_pair(graph_path):
+    """Seed an unrelated semantic node pair, their link, and a group over them.
+
+    The group names a third concept as well: a hyperedge needs three distinct
+    members to be one, so a two-member fixture would simply be gated away and
+    the survival assertions would pass vacuously.
+    """
     data = json.loads(graph_path.read_text(encoding="utf-8"))
     data["nodes"].extend([
         {"id": "docs_topic", "label": "DocsTopic", "file_type": "concept"},
         {"id": "shared_concept", "label": "SharedConcept", "file_type": "concept"},
+        {"id": "third_concept", "label": "ThirdConcept", "file_type": "concept"},
     ])
     data["links"].append({
         "source": "docs_topic",
@@ -746,9 +753,50 @@ def _add_unrelated_semantic_pair(graph_path):
     data["hyperedges"] = [{
         "id": "semantic_context",
         "label": "Semantic context",
-        "nodes": ["docs_topic", "shared_concept"],
+        "nodes": ["docs_topic", "shared_concept", "third_concept"],
     }]
     graph_path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_rebuild_code_preserves_a_hyperedge_whose_members_are_object_shaped(
+    tmp_path,
+):
+    """An object-shaped member names its `id`; reconciliation must resolve it.
+
+    Members come in both shapes the rest of the feature tolerates — a bare id
+    or an object carrying one (`_coerce_hyperedge_member_refs` exists precisely
+    because backends emit `{"id": "a"}`). Watch's whole-group drop tested the
+    member ref without unwrapping it, so an unhashable dict resolved to
+    nothing, "any member names nothing" fired, and a group whose members are
+    all alive was DELETED on an unrelated rebuild.
+    """
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "doc.md").write_text(
+        "# Design\n\n## Flow\n\nDetails.\n", encoding="utf-8"
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    members = ["doc", "doc_design", "doc_flow"]
+    assert set(members) <= {node["id"] for node in data["nodes"]}
+    data["hyperedges"] = [{
+        "id": "doc_flow_group",
+        "label": "Doc flow group",
+        "nodes": [{"id": mid} for mid in members],
+        "source_file": "doc.md",
+    }]
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+
+    after = json.loads(graph_path.read_text(encoding="utf-8"))
+    kept = {he["id"]: he for he in after.get("hyperedges", [])}
+    assert "doc_flow_group" in kept, "every member is alive; the group must survive"
+    assert kept["doc_flow_group"]["nodes"] == members
 
 
 @pytest.mark.parametrize(
@@ -771,11 +819,13 @@ def test_rebuild_code_preserves_hyperedges_for_rebuilt_surviving_source(
     assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
     graph_path = corpus / "graphify-out" / "graph.json"
     data = json.loads(graph_path.read_text(encoding="utf-8"))
-    assert {"doc", "doc_design"} <= {node["id"] for node in data["nodes"]}
+    assert {"doc", "doc_design", "doc_flow"} <= {node["id"] for node in data["nodes"]}
+    # Three surviving members: a pair is not a hyperedge and would be gated away,
+    # making the preservation assertion below vacuous.
     data["hyperedges"] = [{
         "id": "doc_flow_group",
         "label": "Doc flow group",
-        "nodes": ["doc", "doc_design"],
+        "nodes": ["doc", "doc_design", "doc_flow"],
         "relation": "implements",
         "confidence": "EXTRACTED",
         "confidence_score": 1.0,
@@ -794,7 +844,7 @@ def test_rebuild_code_preserves_hyperedges_for_rebuilt_surviving_source(
     assert after["hyperedges"] == [{
         "id": "doc_flow_group",
         "label": "Doc flow group",
-        "nodes": ["doc", "doc_design"],
+        "nodes": ["doc", "doc_design", "doc_flow"],
         "relation": "implements",
         "confidence": "EXTRACTED",
         "confidence_score": 1.0,
@@ -3055,6 +3105,42 @@ def test_rebuild_code_inherits_directed_flag_no_cluster(tmp_path):
     )
     assert after.get("directed") is True, (
         "graphify update --no-cluster must preserve an existing directed=True graph"
+    )
+
+
+def test_rebuild_code_drops_legacy_pair_no_cluster(tmp_path):
+    """`graphify update --no-cluster` goes through watch, whose raw writer copies
+    `result`'s hyperedges straight into the candidate JSON. _reconcile_existing_graph
+    only evicts by source and dangling members, so a legacy two-member group whose
+    nodes are both still present was carried through every rebuild — unlike the
+    clustered watch path and the CLI raw path, which both gate cardinality."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "a.py").write_text("def f(): pass\n\ndef h(): pass\n", encoding="utf-8")
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+
+    graph_path = corpus / "graphify-out" / "graph.json"
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    ids = [n["id"] for n in data["nodes"]][:2]
+    assert len(ids) == 2, f"need two real nodes to name; got {ids}"
+    # A pair whose members both still exist: nothing evicts it, nothing dangles.
+    data["hyperedges"] = [{"id": "legacy_pair", "nodes": ids, "source_file": "a.py"}]
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+
+    n_before = len(json.loads(graph_path.read_text(encoding="utf-8"))["nodes"])
+    (corpus / "a.py").write_text(
+        "def f(): pass\n\ndef h(): pass\n\ndef g(): pass\n", encoding="utf-8")
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+
+    after = json.loads(graph_path.read_text(encoding="utf-8"))
+    assert len(after["nodes"]) > n_before, (
+        "guard: graph.json must actually have been rewritten, or the assertion "
+        "below is vacuous"
+    )
+    assert [h["id"] for h in after.get("hyperedges", [])] == [], (
+        "a two-member group must not survive a no-cluster update rebuild"
     )
 
 

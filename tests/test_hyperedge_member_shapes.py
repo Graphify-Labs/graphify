@@ -19,44 +19,53 @@ def _node(nid: str) -> dict:
 
 
 def test_dict_members_coerced_via_canonical_nodes_key(capsys):
+    """#2486: object members on the canonical key are coerced to ids and deduped."""
     extraction = {
-        "nodes": [_node("a_ts"), _node("b_ts")],
+        "nodes": [_node("a_ts"), _node("b_ts"), _node("c_ts")],
         "edges": [],
         "hyperedges": [
             # the #2486 repro shape: object members mixed with bare ids,
             # including a duplicate that must dedupe after coercion
-            {"id": "h_flow", "nodes": [{"id": "a_ts"}, "b_ts", {"id": "a_ts"}]},
+            {
+                "id": "h_flow",
+                "nodes": [{"id": "a_ts"}, "b_ts", {"id": "a_ts"}, "c_ts"],
+            },
         ],
     }
     G = build_from_json(extraction, directed=True)  # must not raise
-    assert set(G.nodes()) == {"a_ts", "b_ts"}
-    assert G.graph["hyperedges"][0]["nodes"] == ["a_ts", "b_ts"]
+    assert set(G.nodes()) == {"a_ts", "b_ts", "c_ts"}
+    assert G.graph["hyperedges"][0]["nodes"] == ["a_ts", "b_ts", "c_ts"]
 
 
 def test_dict_members_coerced_via_members_alias(capsys):
+    """The same coercion applies when members arrive under the `members` alias."""
     extraction = {
-        "nodes": [_node("a_ts"), _node("c_ts")],
+        "nodes": [_node("a_ts"), _node("b_ts"), _node("c_ts")],
         "edges": [],
         "hyperedges": [
-            {"id": "h_alias", "members": ["a_ts", {"id": "c_ts"}]},
+            {"id": "h_alias", "members": ["a_ts", "b_ts", {"id": "c_ts"}]},
         ],
     }
     G = build_from_json(extraction, directed=True)
     (he,) = G.graph["hyperedges"]
     assert "members" not in he, "alias key must be folded onto nodes"
-    assert he["nodes"] == ["a_ts", "c_ts"]
+    assert he["nodes"] == ["a_ts", "b_ts", "c_ts"]
 
 
 def test_member_object_without_id_dropped_with_one_warning(capsys):
+    """A member object carrying no usable id is dropped, warning exactly once."""
     extraction = {
-        "nodes": [_node("a_ts"), _node("b_ts")],
+        "nodes": [_node("a_ts"), _node("b_ts"), _node("c_ts"), _node("d_ts")],
         "edges": [],
         "hyperedges": [
-            {"id": "h_partial", "nodes": [{"label": "no id here"}, "b_ts"]},
+            {
+                "id": "h_partial",
+                "nodes": [{"label": "no id here"}, "b_ts", "c_ts", "d_ts"],
+            },
         ],
     }
     G = build_from_json(extraction, directed=True)
-    assert G.graph["hyperedges"][0]["nodes"] == ["b_ts"]
+    assert G.graph["hyperedges"][0]["nodes"] == ["b_ts", "c_ts", "d_ts"]
     err = capsys.readouterr().err
     warnings = [
         line for line in err.splitlines()
@@ -66,14 +75,16 @@ def test_member_object_without_id_dropped_with_one_warning(capsys):
 
 
 def test_hyperedge_losing_all_members_is_dropped_not_fatal(capsys):
+    """Losing every member drops the hyperedge instead of aborting the build."""
     extraction = {
         "nodes": [_node("a_ts")],
         "edges": [],
         "hyperedges": [
             {"id": "h_empty", "nodes": [{"label": "no id"}, {"nested": True}]},
-            {"id": "h_ok", "nodes": ["a_ts"]},
+            {"id": "h_ok", "nodes": ["a_ts", "b_ts", "c_ts"]},
         ],
     }
+    extraction["nodes"].extend([_node("b_ts"), _node("c_ts")])
     G = build_from_json(extraction, directed=True)  # must not raise
     assert [he["id"] for he in G.graph["hyperedges"]] == ["h_ok"]
     assert "h_empty" in capsys.readouterr().err

@@ -42,6 +42,7 @@ def test_to_json_nodes_have_community():
 
 
 def test_to_json_sorts_graph_collections_across_insertion_order(tmp_path):
+    """Insertion order must not change the bytes: nodes, links and hyperedges are all sorted."""
     import networkx as nx
 
     nodes = [("b", {"label": "Beta"}), ("a", {"label": "Alpha"}), ("c", {"label": "Gamma"})]
@@ -49,9 +50,11 @@ def test_to_json_sorts_graph_collections_across_insertion_order(tmp_path):
         ("b", "c", {"relation": "uses", "_src": "b", "_tgt": "c"}),
         ("a", "b", {"relation": "calls", "_src": "a", "_tgt": "b"}),
     ]
+    # Three members each: to_json enforces the minimum cardinality, so a pair
+    # would be dropped and this test would stop exercising hyperedge sorting.
     hyperedges = [
-        {"id": "h2", "nodes": ["b", "c"]},
-        {"id": "h1", "nodes": ["a", "b"]},
+        {"id": "h2", "nodes": ["b", "c", "a"]},
+        {"id": "h1", "nodes": ["a", "b", "c"]},
     ]
 
     def make_graph(reverse=False):
