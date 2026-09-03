@@ -24,6 +24,7 @@ from graphify.build import build_from_json, build_merge
 from graphify.export import to_json
 from graphify.extract import extract
 from graphify.extractors.collisions import (
+    SymbolCollisionCensus,
     canonical_raw_name,
     collision_salt,
     exported_canonical_raw_name,
@@ -880,3 +881,30 @@ def test_raw_merge_path_repoints_stored_edges_too(tmp_path: Path) -> None:
     ]
     assert (make_id("app", "main"), upper) in calls, calls
     assert all(t != plain for _s, t in calls)
+
+def test_salt_truncation_collision_falls_back_to_the_plain_id() -> None:
+    """The ~2^-24 path: when the 6-hex salt is itself already taken, collapse
+    onto the PLAIN id, never onto whatever holds the salted one.
+
+    Returning the salted id would hand this definition's edges and body calls
+    to an unrelated symbol, and would make callers record a
+    `redefinition_lines` entry for a raw name that never repeated. The
+    pre-#3302 behaviour — first-wins on the plain id — is the correct soft
+    failure. Raised by review on #3322.
+    """
+    census = SymbolCollisionCensus()
+    plain = make_id("mod", "adapter", "get_connection")
+    salted = salted_symbol_id(plain, "_get_connection")
+
+    # `get_connection` mints first and keeps the plain id.
+    assert census.assign(plain, "get_connection", "function", set()) == (plain, False)
+
+    # Now `_get_connection` arrives with BOTH the plain id and its own salt
+    # already handed out this pass.
+    effective, already_present = census.assign(
+        plain, "_get_connection", "function", {plain, salted}
+    )
+
+    assert effective == plain, "must collapse onto the plain id, not the salt"
+    assert already_present is True
+    assert effective != salted

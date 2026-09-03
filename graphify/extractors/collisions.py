@@ -232,8 +232,13 @@ class SymbolCollisionCensus:
         salted = salted_symbol_id(plain_nid, raw_name)
         if salted in taken:
             # sha1[:6] truncation collision inside one scope (~2^-24 per
-            # pair): fail soft to the old collapse rather than cascading.
-            return salted, True
+            # pair): fail soft to the pre-#3302 collapse rather than
+            # cascading. Collapse onto the PLAIN id, not onto `salted` —
+            # whatever holds `salted` is an unrelated symbol, so returning it
+            # would attribute this definition's edges and body calls to a node
+            # it has nothing to do with, and callers would record a
+            # `redefinition_lines` entry for a raw name that never repeated.
+            return plain_nid, True
         group[raw_name] = (salted, kind)
         return salted, False
 
