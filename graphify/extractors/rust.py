@@ -185,27 +185,66 @@ def _rust_crate_src_root(path: Path) -> Path | None:
 
 
 _RUST_EDITION_RE = re.compile(r"^\s*edition\s*=\s*[\"'](\d{4})[\"']", re.MULTILINE)
+# `edition.workspace = true` / `edition = { workspace = true }`: the package
+# inherits whatever `[workspace.package]` declares in an ancestor manifest.
+_RUST_EDITION_INHERIT_RE = re.compile(
+    r"^\s*edition(?:\.workspace\s*=\s*true|\s*=\s*\{[^}]*workspace\s*=\s*true[^}]*\})",
+    re.MULTILINE,
+)
+_RUST_WORKSPACE_PACKAGE_RE = re.compile(
+    r"^\s*\[workspace\.package\]\s*$(.*?)(?=^\s*\[|\Z)",
+    re.MULTILINE | re.DOTALL,
+)
+
+# Cargo's default when no `edition` is declared anywhere.
+_RUST_DEFAULT_EDITION = 2015
+
+
+def _rust_read_manifest(manifest: Path) -> str | None:
+    try:
+        return manifest.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
 
 
 def _rust_package_edition(path: Path) -> int:
     """The Rust edition of the package owning ``path``.
 
-    Cargo's default when `edition` is absent is 2015, which is the edition
-    whose path rules the bare-path fallback below models.
+    Cargo's default when ``edition`` is absent is 2015, which is the edition
+    whose path rules the bare-path fallback models. A workspace member may
+    instead write ``edition.workspace = true`` and inherit the edition from an
+    ancestor's ``[workspace.package]`` — the normal shape in a monorepo, and
+    reading it as 2015 would put the crate-relative fallback back in play for
+    exactly the crates this rule exists to protect.
     """
     probe = path.parent
     while True:
-        manifest = probe / "Cargo.toml"
-        if manifest.is_file():
-            try:
-                match = _RUST_EDITION_RE.search(
-                    manifest.read_text(encoding="utf-8", errors="replace")
-                )
-            except OSError:
-                return 2015
-            return int(match.group(1)) if match else 2015
+        text = _rust_read_manifest(probe / "Cargo.toml")
+        if text is not None:
+            match = _RUST_EDITION_RE.search(text)
+            if match:
+                return int(match.group(1))
+            if _RUST_EDITION_INHERIT_RE.search(text):
+                return _rust_workspace_edition(probe.parent)
+            return _RUST_DEFAULT_EDITION
         if probe.parent == probe:
-            return 2015
+            return _RUST_DEFAULT_EDITION
+        probe = probe.parent
+
+
+def _rust_workspace_edition(start: Path) -> int:
+    """The ``[workspace.package] edition`` of the nearest ancestor workspace."""
+    probe = start
+    while True:
+        text = _rust_read_manifest(probe / "Cargo.toml")
+        if text is not None:
+            section = _RUST_WORKSPACE_PACKAGE_RE.search(text)
+            if section:
+                match = _RUST_EDITION_RE.search(section.group(1))
+                if match:
+                    return int(match.group(1))
+        if probe.parent == probe:
+            return _RUST_DEFAULT_EDITION
         probe = probe.parent
 
 

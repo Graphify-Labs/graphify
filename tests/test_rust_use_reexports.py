@@ -18,6 +18,7 @@ from pathlib import Path
 from graphify.extract import extract
 from graphify.extractors.rust import (
     _resolve_rust_use_path,
+    _rust_package_edition,
     extract_rust,
     _rust_module_dirs,
     _rust_use_leaves,
@@ -1035,3 +1036,64 @@ def test_explicit_crate_prefix_still_resolves_under_2021(tmp_path):
     assert resolved is not None
     module_file, symbol = resolved
     assert (str(module_file.relative_to(root)), symbol) == ("src/anyhow.rs", "Result")
+
+
+def _workspace(tmp_path: Path, member_manifest: str, *, workspace: bool = True) -> Path:
+    """A workspace member with a local module named after a dependency."""
+    if workspace:
+        (tmp_path / "Cargo.toml").write_text(
+            '[workspace]\nmembers = ["backend"]\n\n'
+            '[workspace.package]\nedition = "2021"\n',
+            encoding="utf-8",
+        )
+    (tmp_path / "backend" / "src").mkdir(parents=True)
+    (tmp_path / "backend" / "Cargo.toml").write_text(member_manifest, encoding="utf-8")
+    (tmp_path / "backend" / "src" / "lib.rs").write_text(
+        "pub mod anyhow;\n", encoding="utf-8"
+    )
+    (tmp_path / "backend" / "src" / "anyhow.rs").write_text(
+        "pub struct Result;\n", encoding="utf-8"
+    )
+    (tmp_path / "backend" / "src" / "service.rs").write_text(
+        "pub fn run() {}\n", encoding="utf-8"
+    )
+    return tmp_path / "backend" / "src" / "service.rs"
+
+
+@pytest.mark.parametrize(
+    "manifest",
+    [
+        '[package]\nname = "b"\nedition.workspace = true\n',
+        '[package]\nname = "b"\nedition = { workspace = true }\n',
+    ],
+)
+def test_workspace_member_inherits_the_edition(tmp_path, manifest):
+    """`edition.workspace = true` is the normal shape in a monorepo.
+
+    Reading it as 2015 puts the crate-relative fallback back in play for
+    exactly the crates the edition rule exists to protect.
+    """
+    service = _workspace(tmp_path, manifest)
+    assert _rust_package_edition(service) == 2021
+    assert _resolve_rust_use_path(("anyhow", "Result"), service) is None
+
+
+def test_member_edition_overrides_the_workspace(tmp_path):
+    service = _workspace(tmp_path, '[package]\nname = "b"\nedition = "2015"\n')
+    assert _rust_package_edition(service) == 2015
+    assert _resolve_rust_use_path(("anyhow", "Result"), service) is not None
+
+
+def test_inheriting_without_a_workspace_falls_back_to_2015(tmp_path):
+    """Cargo's default when no edition is declared anywhere."""
+    service = _workspace(
+        tmp_path, '[package]\nname = "b"\nedition.workspace = true\n', workspace=False
+    )
+    assert _rust_package_edition(service) == 2015
+
+
+def test_package_edition_always_returns_an_int(tmp_path):
+    """Every path returns an int, so the `>= 2018` comparison cannot raise."""
+    service = _workspace(tmp_path, '[package]\nname = "b"\n')
+    for probe in (service, service.parent, tmp_path, Path("/nonexistent/x.rs")):
+        assert isinstance(_rust_package_edition(probe), int)
