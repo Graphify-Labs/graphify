@@ -62,7 +62,19 @@ falkordb = ["falkordb"]
 pdf = ["pypdf>=6.12.0", "markdownify"]
 watch = ["watchdog"]
 svg = ["matplotlib", "numpy>=2.0; python_version >= '3.13'"]
-leiden = ["graspologic; python_version < '3.13'"]
+# _partition() calls graspologic_native.leiden() directly (#3104). Below 3.13 the
+# graspologic distribution supplies that binding as a dependency of its own; from 3.13
+# graspologic's metadata excludes the interpreter, so name the binding directly there
+# and Leiden keeps working instead of silently falling back to NetworkX Louvain. The
+# arms are exhaustive, so `[leiden]` installs a working backend on every supported
+# interpreter. Ceiling: _native_leiden() passes eight exact keyword arguments and
+# swallows every exception, so a breaking major would return None and degrade to
+# Louvain silently -- the bug this gate exists to fix. It also keeps the arms
+# symmetric, since graspologic caps the same package below 2.0 on the other arm.
+leiden = [
+    "graspologic; python_version < '3.13'",
+    "graspologic-native>=1.2.1,<2.0.0; python_version >= '3.13'",
+]
 office = ["python-docx", "openpyxl"]
 google = ["openpyxl"]
 # --postgres reconstructs DDL and feeds it to extract_sql(), which needs the
@@ -98,7 +110,7 @@ commonlisp = ["tree-sitter-commonlisp"]
 # every platform, no C toolchain; optional because Robot Framework corpora are
 # QA-automation specific.
 robot = ["robotframework>=4.0"]
-all = ["mcp>=1,<3", "starlette>=1.3.1,<2", "neo4j", "falkordb", "pypdf>=6.12.0", "markdownify", "watchdog", "graspologic; python_version < '3.13'", "python-docx", "openpyxl", "faster-whisper; python_version >= '3.11'", "yt-dlp>=2026.6.9", "matplotlib", "numpy>=2.0; python_version >= '3.13'", "openai", "tiktoken", "boto3", "anthropic", "tree-sitter-sql", "jieba", "tree-sitter-dm", "tree-sitter-hcl", "tree-sitter-pascal", "tree-sitter-ocaml", "tree-sitter-commonlisp", "robotframework>=4.0"]
+all = ["mcp>=1,<3", "starlette>=1.3.1,<2", "neo4j", "falkordb", "pypdf>=6.12.0", "markdownify", "watchdog", "graspologic; python_version < '3.13'", "graspologic-native>=1.2.1,<2.0.0; python_version >= '3.13'", "python-docx", "openpyxl", "faster-whisper; python_version >= '3.11'", "yt-dlp>=2026.6.9", "matplotlib", "numpy>=2.0; python_version >= '3.13'", "openai", "tiktoken", "boto3", "anthropic", "tree-sitter-sql", "jieba", "tree-sitter-dm", "tree-sitter-hcl", "tree-sitter-pascal", "tree-sitter-ocaml", "tree-sitter-commonlisp", "robotframework>=4.0"]
 
 [project.scripts]
 graphify = "graphify.__main__:main"
