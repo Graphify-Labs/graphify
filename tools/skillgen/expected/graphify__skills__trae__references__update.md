@@ -208,3 +208,81 @@ graphify cluster-only .
 ```
 
 `graphify cluster-only .` is **self-contained**: it re-clusters, names communities, and regenerates `GRAPH_REPORT.md`, `graph.json`, and `graph.html` from the existing graph. **Do not re-run Steps 5–9** — they read intermediate files (`.graphify_extract.json`, `.graphify_detect.json`, `.graphify_analysis.json`) that a prior build's cleanup (Step 9) already deleted, so they raise `FileNotFoundError` (#1392). When it finishes, present the refreshed `GRAPH_REPORT.md` summary as usual.
+
+---
+
+## ⚠️ Failure modes seen in the field (read before merging)
+
+Each of these cost a real debugging round on a large repo (~4000 nodes, ~106
+files). They are not hypothetical, and none of them errors — every one fails
+silently and leaves a plausible-looking graph.
+
+### 1. `prune_sources` does not do what it reads like
+
+Two separate traps, and they compound:
+
+- It matches paths **exactly as the graph stores them**, which is *relative*.
+  Passing an absolute path prunes nothing, silently, and you end up with the old
+  and new nodes for that file side by side.
+- `build_merge` prunes **after** inserting. So naming a source you are
+  simultaneously re-adding deletes the **new** nodes too, and you are left with
+  neither.
+
+**What works:** strip that source's nodes and edges from `graph.json` by hand
+first, then merge with **no** `prune_sources` at all.
+
+```python
+drop = {n['id'] for n in g['nodes'] if str(n.get('source_file')) in FULL_REEXTRACT}
+g['nodes'] = [n for n in g['nodes'] if n['id'] not in drop]
+g['links'] = [l for l in g['links']
+              if l['source'] not in drop and l['target'] not in drop]
+```
+
+⚠️ Only prune a source you re-extracted in **FULL**. A partially re-extracted
+file (say you only re-read the changed section of a large doc) must **not** be
+pruned, or everything you did not re-read disappears.
+
+### 2. Hyperedges live in TWO places and the merge overwrites them
+
+`graph.json` carries `hyperedges` at top level **and** under `graph`. Filter only
+one copy and `build_merge` keeps just the incoming batch — 36 vanished this way
+in one run, with no error and no warning.
+
+**Reconstruct them explicitly after every merge**, combining the previous graph's
+with the new batch (new wins on id clash), then assert every member id exists.
+
+### 3. Keep that assertion — it finds pre-existing damage
+
+The first time it ran it surfaced four hyperedges that had been dangling in the
+graph *already*: extraction agents can name a member id they never emit as a
+node, and nothing validates that at write time.
+
+⚠️ The instinct is to blame the change you just made. Check the previous
+`graph.json` before concluding that — in that case they had been broken for a
+whole wave.
+
+**Repair rather than discard:** drop the phantom member when **3 or more real
+members remain** (the grouping is still true); only drop the hyperedge when too
+few survive.
+
+### 4. AST output paths do not match the graph's
+
+`extract()` returns `source_file` as an **absolute path with the platform
+separator** (`C:\repo\tests\foo.spec.js`), while the graph stores **relative,
+forward-slash** paths. Merging raw creates a duplicate source for every file —
+the ghost-node shape.
+
+Normalise `source_file` on **nodes, edges and hyperedges** before merging, then
+assert the final graph contains zero absolute or backslash paths.
+
+### 5. Prefer a targeted update to a full one
+
+Check how much actually changed before planning chunks. In one run `detect_incremental`
+reported 14 changed files (~970 KB), but `git diff` showed **326 lines across 5
+files** — and two of the flagged files had *zero* diff, changed only in metadata.
+Three agents on the changed material beat ten re-deriving untouched prose.
+
+**State the trade-off when you do this:** a partially re-extracted file is not
+pruned, so nodes for *edited* lines keep their earlier phrasing. Additions land;
+rewrites may lag. That is usually the right trade, but it should be a decision,
+not an accident.
