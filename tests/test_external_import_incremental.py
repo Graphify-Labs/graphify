@@ -55,7 +55,8 @@ def test_external_import_survives_incremental_extract(tmp_path, specifier, no_cl
     assert not any(n.get("label") == specifier for n in excluded["nodes"])
 
 
-def test_raw_orphan_sweep_preserves_standalone_and_hyperedge_nodes():
+@pytest.mark.parametrize("nested", [True, False])
+def test_raw_orphan_sweep_preserves_standalone_and_hyperedge_nodes(nested):
     previous = {"edges": [{"source": "file", "target": name}
                            for name in ("removed", "group-member", "still-used")]}
     current = {
@@ -65,7 +66,27 @@ def test_raw_orphan_sweep_preserves_standalone_and_hyperedge_nodes():
         "edges": [{"source": "other", "target": "still-used"}],
         "hyperedges": [{"nodes": ["group-member", "other", "owned"]}],
     }
+    if nested:
+        current["graph"] = {"hyperedges": current.pop("hyperedges")}
     _sweep_raw_orphans(previous, current)
     assert {n["id"] for n in current["nodes"]} == {
         "group-member", "still-used", "standalone", "owned",
+    }
+
+
+def test_exclusion_pruning_preserves_nested_hyperedge_members(tmp_path):
+    from graphify.cli import _prune_graph_json_sources
+
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(json.dumps({
+        "nodes": [{"id": "old", "source_file": "old.ts"},
+                  {"id": "package", "source_file": ""},
+                  {"id": "a", "source_file": "keep.ts"},
+                  {"id": "b", "source_file": "keep.ts"}],
+        "links": [{"source": "old", "target": "package", "source_file": "old.ts"}],
+        "graph": {"hyperedges": [{"nodes": ["package", "a", "b"]}]},
+    }))
+    assert _prune_graph_json_sources(graph_path, ["old.ts"]) == 1
+    assert {n["id"] for n in json.loads(graph_path.read_text())["nodes"]} == {
+        "package", "a", "b",
     }

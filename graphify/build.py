@@ -1513,7 +1513,9 @@ def _sweep_raw_orphans(previous: dict, current: dict) -> None:
         for edge in data.get("links", data.get("edges", [])):
             if isinstance(edge, dict):
                 ids.update((edge.get("source"), edge.get("target")))
-        for hyperedge in data.get("hyperedges", []):
+        metadata = data.get("graph", {})
+        nested_hyperedges = metadata.get("hyperedges", []) if isinstance(metadata, dict) else []
+        for hyperedge in list(data.get("hyperedges", [])) + list(nested_hyperedges):
             if isinstance(hyperedge, dict):
                 ids.update(hyperedge.get("nodes", []))
         return ids
