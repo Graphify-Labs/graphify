@@ -1622,7 +1622,10 @@ def _resolve_rescued_specifier(
     module_name = raw.split("/")[-1]
     if not module_name:
         return None
-    return _make_id(module_name), raw, None
+    # A package specifier is not a local source path. Match other external
+    # symbols' unowned source metadata, or incremental extraction mistakes
+    # the package name for a deleted file and prunes its live import edge.
+    return _make_id(module_name), "", None
 
 
 def _emit_rescued_import(
