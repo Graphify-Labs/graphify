@@ -14,7 +14,7 @@ _MD_INLINE_LINK_RE = re.compile(r'(?<!\!)\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+[^)]
 
 _MD_REF_DEF_RE = re.compile(r'^\s{0,3}\[[^\]]+\]:\s*<?([^\s>]+)>?')
 
-_MD_WIKILINK_RE = re.compile(r'(?<!\!)\[\[([^\]|#]+)(?:[#|][^\]]*)?\]\]')
+_MD_WIKILINK_RE = re.compile(r'(?<!\!)\[\[([^\]|#]*)(?:#([^\]|]*))?(?:\|[^\]]*)?\]\]')
 
 _MD_LINKABLE_EXTS = {".md", ".mdx", ".qmd", ".markdown", ".rst", ".txt"}
 
@@ -261,6 +261,10 @@ def extract_markdown(path: Path) -> dict:
       from the resolved target path with the same recipe as the target file's
       own node, so the edge merges into that node (no ghost node). External
       URLs, in-page anchors, images and non-document targets are skipped.
+      Anchored wikilinks follow inline-link semantics: ``[[Page#Heading]]``
+      (with or without a ``|alias``) resolves to ``Page``'s node, while a
+      same-page anchor ``[[#Heading]]`` resolves to that heading's node in the
+      same file when the heading exists, and to nothing otherwise (#3333).
 
     Fenced code blocks (``` ... ```) are skipped during parsing so their
     contents don't get treated as headings, but no node is emitted for
@@ -319,7 +323,22 @@ def extract_markdown(path: Path) -> dict:
     # same sibling many times yields one edge, not N (keeps weights meaningful).
     linked_targets: set[str] = set()
 
-    def add_link(raw: str, line: int, wikilink: bool = False) -> None:
+    # Same-page anchors ([[#Heading]], #3333) resolve after the scan, against
+    # the heading map below: a link may precede the heading it targets, and a
+    # title with no heading node resolves to nothing rather than dangling.
+    heading_titles: dict[str, str] = {}
+    pending_anchors: list[tuple[str, int]] = []
+
+    def add_link(raw: str, line: int, wikilink: bool = False,
+                 fragment: "str | None" = None) -> None:
+        # A same-page anchor ([[#Heading]], empty page name) resolves to the
+        # page's own heading node after the scan (#3333); a fragment-less
+        # or heading-less anchor resolves to nothing.
+        fragment = (fragment or "").strip()
+        if wikilink and not raw.strip():
+            if fragment:
+                pending_anchors.append((fragment, line))
+            return
         resolved = _resolve_markdown_link(raw, source_dir, wikilink=wikilink)
         if resolved is None:
             return
@@ -371,7 +390,7 @@ def extract_markdown(path: Path) -> dict:
         for m in _MD_INLINE_LINK_RE.finditer(line_text):
             add_link(m.group(1), line_num)
         for m in _MD_WIKILINK_RE.finditer(line_text):
-            add_link(m.group(1), line_num, wikilink=True)
+            add_link(m.group(1), line_num, wikilink=True, fragment=m.group(2))
         ref_def = _MD_REF_DEF_RE.match(line_text)
         if ref_def:
             add_link(ref_def.group(1), line_num)
@@ -392,6 +411,9 @@ def extract_markdown(path: Path) -> dict:
             # Avoid duplicate heading IDs by appending line number
             if h_nid in seen_ids:
                 h_nid = _make_id(stem, title, str(line_num))
+            # First occurrence wins, so a same-page anchor to a duplicated
+            # title resolves deterministically (#3333).
+            heading_titles.setdefault(title, h_nid)
             add_node(h_nid, title, line_num)
 
             # Pop headings at same or deeper level
@@ -404,5 +426,16 @@ def extract_markdown(path: Path) -> dict:
 
             heading_stack.append((level, h_nid))
             continue
+
+    # Same-page anchors resolve here, after the scan (#3333): the heading map
+    # is complete, so a link may target a heading defined later in the file.
+    # A title with no heading node resolves to nothing — the anchor stays
+    # dropped rather than producing an edge to an undeclared node.
+    for title, line in pending_anchors:
+        target = heading_titles.get(title)
+        if target is None or target in linked_targets:
+            continue
+        linked_targets.add(target)
+        add_edge(file_nid, target, "references", line)
 
     return {"nodes": nodes, "edges": edges, "input_tokens": 0, "output_tokens": 0}
