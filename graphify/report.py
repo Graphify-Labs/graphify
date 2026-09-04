@@ -139,13 +139,25 @@ def generate(
         ]
 
     from .analyze import _is_file_node as _ifn
+
+    def _real_count(nodes) -> int:
+        return sum(1 for n in nodes if not _ifn(G, n))
+
     non_empty = {cid: nodes for cid, nodes in communities.items()
                  if any(not _ifn(G, n) for n in nodes)}
+    # One predicate for every figure the report prints about itself (#3148):
+    # "thin" is 0 < real < min_community_size, and "shown" is what the render
+    # loop below actually renders (real >= min_community_size) - previously
+    # shown was total-thin, which also counted communities with ZERO real
+    # nodes that the loop skips, overstating the count (#2129's residual).
     thin_count_summary = sum(
         1 for nodes in communities.values()
-        if 0 < sum(1 for n in nodes if not _ifn(G, n)) < min_community_size
+        if 0 < _real_count(nodes) < min_community_size
     )
-    shown_count = len(communities) - thin_count_summary
+    shown_count = sum(
+        1 for nodes in communities.values()
+        if _real_count(nodes) >= min_community_size
+    )
 
     lines += [
         "",
@@ -284,9 +296,13 @@ def generate(
         and not _is_concept_node(G, n)
         and G.nodes[n].get("file_type") != "rationale"
     ]
+    # Same threshold the Summary and Communities headers used (#3148): this
+    # was a hardcoded 3, so with --min-community-size anything else the count
+    # here disagreed with the label text beside it, which already printed
+    # min_community_size.
     thin_communities = {
         cid: nodes for cid, nodes in communities.items()
-        if 0 < sum(1 for n in nodes if not _is_file_node(G, n)) < 3
+        if 0 < sum(1 for n in nodes if not _is_file_node(G, n)) < min_community_size
     }
     gap_count = len(isolated) + len(thin_communities)
 
@@ -295,8 +311,13 @@ def generate(
         if isolated:
             isolated_labels = [G.nodes[n].get("label", n) for n in isolated[:5]]
             suffix = f" (+{len(isolated)-5} more)" if len(isolated) > 5 else ""
+            raw_isolated = sum(1 for n in G.nodes() if G.degree(n) <= 1)
             lines.append(f"- **{len(isolated)} isolated node(s):** {', '.join(f'`{l}`' for l in isolated_labels)}{suffix}")
-            lines.append("  These have ≤1 connection - possible missing edges or undocumented components.")
+            lines.append(
+                "  These have ≤1 connection - possible missing edges or undocumented components. "
+                f"(Counts symbols only; {raw_isolated} node(s) total have ≤1 connection when "
+                "file, concept and rationale nodes are included.)"
+            )
         if thin_communities:
             lines.append(f"- **{len(thin_communities)} thin communities (<{min_community_size} nodes) omitted from report** — run `graphify query` to explore isolated nodes.")
         if amb_pct > 20:
