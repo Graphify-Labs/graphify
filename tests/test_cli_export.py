@@ -70,6 +70,34 @@ def test_export_html_creates_file(tmp_path):
     assert html.stat().st_size > 0
 
 
+def test_export_html_prefers_top_level_hyperedges(tmp_path):
+    out = _make_graph(tmp_path)
+    graph_path = out / "graph.json"
+    data = json.loads(graph_path.read_text())
+    data["hyperedges"] = [
+        {
+            "id": "top-level",
+            "label": "top-level edit",
+            "nodes": ["n_transformer", "n_attention", "n_layernorm"],
+        }
+    ]
+    data["graph"]["hyperedges"] = [
+        {
+            "id": "nested",
+            "label": "stale nested copy",
+            "nodes": ["n_attention", "n_layernorm", "n_concept_attn"],
+        }
+    ]
+    graph_path.write_text(json.dumps(data))
+
+    r = _run(["export", "html"], tmp_path)
+
+    assert r.returncode == 0, r.stderr
+    html = (out / "graph.html").read_text()
+    assert "top-level edit" in html
+    assert "stale nested copy" not in html
+
+
 def test_export_html_no_viz_removes_file(tmp_path):
     out = _make_graph(tmp_path)
     (out / "graph.html").write_text("<html/>")
