@@ -73,14 +73,20 @@ def test_a_group_at_or_under_the_cap_has_no_indicator():
         assert "not listed" not in text
 
 
-def test_an_over_cap_community_names_how_many_relationships_were_cut():
+def test_an_over_cap_community_names_how_many_connected_communities_were_cut():
     text = _community_text(13)
     relationships = text.split("## Relationships", 1)[1].split("## Source Files", 1)[0]
 
     assert relationships.count("shared connections") == 12
     assert "Community 11" in relationships
     assert "Community 12" not in relationships
-    assert "and 1 more cross-community relationship(s) not listed" in relationships
+    assert "and 1 more connected community not listed" in relationships
+
+
+def test_an_over_cap_community_pluralizes_the_indicator():
+    text = _community_text(14)
+
+    assert "and 2 more connected communities not listed" in text
 
 
 def test_a_community_at_the_relationship_cap_has_no_indicator():
@@ -88,4 +94,4 @@ def test_a_community_at_the_relationship_cap_has_no_indicator():
     relationships = text.split("## Relationships", 1)[1].split("## Source Files", 1)[0]
 
     assert relationships.count("shared connections") == 12
-    assert "more cross-community relationship(s)" not in relationships
+    assert "more connected communit" not in relationships

@@ -161,9 +161,11 @@ def _community_article(
     if cross:
         for other_label, count in cross[:12]:
             lines.append(f"- {_md_link(other_label, resolver)} ({count} shared connections)")
-        if len(cross) > 12:
+        remaining_cross = len(cross) - 12
+        if remaining_cross > 0:
+            noun = "community" if remaining_cross == 1 else "communities"
             lines.append(
-                f"- *…and {len(cross) - 12} more cross-community relationship(s) not listed*"
+                f"- *…and {remaining_cross} more connected {noun} not listed*"
             )
     else:
         lines.append("- No strong cross-community connections detected")
