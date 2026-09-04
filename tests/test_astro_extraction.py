@@ -141,3 +141,63 @@ import Hero from '@components/Hero.astro';
     result = extract_astro(page)
     targets = _import_targets(result, relation="imports_from")
     assert _make_id(str(hero)) in targets
+
+
+def test_extract_astro_captures_script_block_symbols(tmp_path):
+    """The `<script>` block is client-side code, and its symbols belong in the
+    graph (#3337).
+
+    Feeding the whole `.astro` file to the JS grammar makes tree-sitter fail at
+    the template and recover only partially. `.vue` avoids this by blanking
+    everything outside the script regions before parsing; `.astro` has the same
+    two regions (frontmatter and `<script>`), so it can use the same treatment.
+    The callback published on `window` is the reason this matters: a third-party
+    widget invokes it by name, so nothing in the module graph points at it.
+    """
+    page = _write(
+        tmp_path / "src/components/Form.astro",
+        """---
+const endpoint = '/api/contact';
+---
+
+<form id="f"><button>go</button></form>
+
+<script>
+  function invia(token) {
+    return fetch('/api/contact', { method: 'POST', body: token });
+  }
+  window.onWidgetOk = (token) => { invia(token); };
+</script>
+""",
+    )
+    labels = [n["label"] for n in extract_astro(page)["nodes"]]
+    assert "invia()" in labels
+    assert "window.onWidgetOk()" in labels
+
+
+def test_extract_astro_script_word_in_frontmatter_comment_is_not_a_block(tmp_path):
+    """A `<script>` written inside the frontmatter is prose, not a block (#3337).
+
+    Found in the wild: a comment reading "do not duplicate the dictionary inside
+    the <script>". Matched as a real opening tag, it opens a block that runs to
+    the actual `</script>` hundreds of lines below, so masking keeps the wrong
+    span and the entire client-side region is blanked instead of parsed.
+    """
+    page = _write(
+        tmp_path / "src/components/Commented.astro",
+        """---
+// keep this in sync, do not duplicate the labels inside the <script>.
+const label = 'go';
+---
+
+<button>{label}</button>
+
+<script>
+  function realeDavvero() { return 1; }
+  window.onPublished = () => realeDavvero();
+</script>
+""",
+    )
+    labels = [n["label"] for n in extract_astro(page)["nodes"]]
+    assert "realeDavvero()" in labels
+    assert "window.onPublished()" in labels

@@ -640,6 +640,50 @@ def _vue_mask_non_script(src: str) -> tuple[str, str | None]:
     out.append(_blank(src[pos:]))
     return "".join(out), lang
 
+_ASTRO_FRONTMATTER_RE = re.compile(
+    r"\A\s*---\s*\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n|\Z)"
+)
+
+def _astro_mask_non_script(src: str) -> str:
+    """Blank everything outside an ``.astro`` file's TS regions, keeping newlines.
+
+    An ``.astro`` file is a ``---...---`` TypeScript frontmatter block, an
+    HTML-with-expressions template, and optionally client-side ``<script>``
+    blocks. Only the first and last are JS/TS; handing the whole file to the JS
+    grammar makes tree-sitter error out on the template and recover the script's
+    symbols only partially. Same problem ``.vue`` has, same fix — blank the rest
+    with spaces so line numbers still line up. Mirrors
+    :func:`_vue_mask_non_script`, minus the ``lang`` sniff: Astro frontmatter is
+    always TypeScript.
+    """
+    def _blank(s: str) -> str:
+        return re.sub(r"[^\r\n]", " ", s)
+
+    spans: list[tuple[int, int]] = []
+    fm = _ASTRO_FRONTMATTER_RE.search(src)
+    body_at = 0
+    if fm:
+        spans.append((fm.start(1), fm.end(1)))
+        body_at = fm.end()
+    # Scan for <script> only AFTER the frontmatter. Inside it, a `<script>` is
+    # text — in a string or, as found in the wild, in a comment ("do not
+    # duplicate this inside the <script>"). Matched there, it opens a phantom
+    # block that runs to the real `</script>` hundreds of lines below and
+    # swallows the whole client-side region.
+    for m in _VUE_SCRIPT_RE.finditer(src, body_at):
+        spans.append((m.start(2), m.end(2)))
+
+    out: list[str] = []
+    pos = 0
+    for start, end in sorted(spans):
+        if start < pos:  # never go backwards, whatever the input looks like
+            continue
+        out.append(_blank(src[pos:start]))
+        out.append(src[start:end])
+        pos = end
+    out.append(_blank(src[pos:]))
+    return "".join(out)
+
 def _source_key(source_file: str, root: Path) -> str:
     if not source_file:
         return ""

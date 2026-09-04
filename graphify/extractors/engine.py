@@ -2092,6 +2092,13 @@ def _js_topmost_closures(node, out: list) -> None:
         else:
             _js_topmost_closures(c, out)
 
+# Receivers that name the global object. A function assigned to one of these is
+# a published entry point — the thing an inline `onload=`, a `data-callback=`
+# attribute or a third-party script (Turnstile, reCAPTCHA, Google Maps) invokes
+# by name. The call site is outside the module graph, so the definition never
+# gets an incoming edge; drop the node too and live code reads as absent (#3337).
+_JS_GLOBAL_RECEIVERS = ("window", "globalThis", "self")
+
 def _js_member_assignment_target(left, source: bytes):
     """Classify the symbol an `assignment_expression` LHS defines when its RHS
     is a function. Returns (kind, owner_name, member_name) or None.
@@ -2169,6 +2176,15 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                         if kind == "exports":
                             nid = _make_id(stem, member_name)
                             add_node_fn(nid, f"{member_name}()", line)
+                            add_edge_fn(file_nid, nid, "contains", line)
+                            handled = True
+                        elif (kind == "object"
+                              and owner_name in _JS_GLOBAL_RECEIVERS):
+                            # Id carries the stem AND the receiver, so two files
+                            # publishing the same global name stay two nodes —
+                            # the bare-name collapse #1077 guards against.
+                            nid = _make_id(stem, owner_name, member_name)
+                            add_node_fn(nid, f"{owner_name}.{member_name}()", line)
                             add_edge_fn(file_nid, nid, "contains", line)
                             handled = True
                         elif kind == "prototype":
@@ -4608,6 +4624,15 @@ def _extract_generic(
                         continue
                     if tgt[0] == "this":
                         owner_nid = function_owner_nid
+                    elif tgt[0] == "object" and tgt[1] in _JS_GLOBAL_RECEIVERS:
+                        # Publishing a global from inside a setup function is the
+                        # common shape: the node hangs off the function that
+                        # publishes it, which is where a reader would look.
+                        g_line = stmt.start_point[0] + 1
+                        g_nid = _make_id(stem, tgt[1], tgt[2])
+                        add_node(g_nid, f"{tgt[1]}.{tgt[2]}()", g_line)
+                        add_edge(function_owner_nid, g_nid, "contains", g_line)
+                        continue
                     elif tgt[0] == "object" and tgt[1] in object_bindings:
                         object_name = tgt[1]
                         owner_nid = _make_id(function_owner_nid, object_name)

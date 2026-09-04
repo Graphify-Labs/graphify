@@ -77,6 +77,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _VUE_SCRIPT_RE,
     _WORKSPACE_MANIFEST_NAMES,
     _apply_symbol_resolution_facts,
+    _astro_mask_non_script,
     _augment_symbol_resolution_edges,
     _collect_js_symbol_resolution_facts,
     _collect_python_symbol_resolution_facts,
@@ -1737,28 +1738,41 @@ def extract_svelte(path: Path) -> dict:
 
 
 def extract_astro(path: Path) -> dict:
-    """Extract imports from .astro files: frontmatter (TS) + template regex fallback.
+    """Extract symbols and imports from ``.astro`` files.
 
-    Astro files start with a ``---\\n...\\n---`` frontmatter block of TypeScript
-    setup code (where almost all imports live), followed by an HTML-with-expressions
-    template body, and optionally ``<script>`` blocks for client-side JS. Tree-sitter
-    only sees the file usefully through the frontmatter — feeding the whole file to
-    the JS parser produces a top-level ERROR node because the template is not valid
-    JS, so ``import_statement`` nodes are never reached and static imports are
-    silently dropped (#850). Mirrors :func:`extract_svelte` — same regex-rescue
-    approach, scanning the frontmatter block and any client-side ``<script>`` blocks
-    for static and dynamic imports.
+    An Astro file is a ``---\\n...\\n---`` TypeScript frontmatter block (where
+    almost all imports live), an HTML-with-expressions template, and optionally
+    client-side ``<script>`` blocks. Handing the whole file to the JS grammar
+    makes tree-sitter error out on the template, and the symbols in the script
+    are then recovered only partially — a function declared there may or may not
+    survive the error recovery depending on what precedes it (#3337). So mask
+    every non-TS region first and parse what is left, exactly as
+    :func:`extract_vue` does; the frontmatter is TypeScript, so the TS grammar
+    (a superset of JS) covers both regions.
+
+    A regex pass then recovers ``import('…')`` dynamic imports, which the AST
+    pass does not edge and which are legal in a template expression slot the
+    mask blanks out — same rescue as :func:`extract_vue` and
+    :func:`extract_svelte`. The static-import rescue stays too: it is what mints
+    the stub node for a specifier that resolves to nothing on disk, which the
+    AST pass does not do. Both passes can now reach the same import, so the
+    edges are deduplicated at the end.
     """
-    result = _extract_generic(path, _JS_CONFIG)
+    try:
+        src = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {"nodes": [], "edges": []}
+
+    masked_bytes = _astro_mask_non_script(src).encode("utf-8")
+    masked_bytes = _normalize_ts_import_types(masked_bytes) or masked_bytes
+    result = _extract_generic(path, _TS_CONFIG, source_override=masked_bytes)
+
     try:
         import re as _re
-        src = path.read_text(encoding="utf-8", errors="replace")
         existing_ids = {n["id"] for n in result.get("nodes", [])}
         file_node_id = _make_id(str(path))
         aliases = _load_tsconfig_aliases(path.parent)
         base_url = _load_tsconfig_base_url(path.parent)
-        # Dynamic imports anywhere in the file: `import('./X.astro')` is legal in
-        # frontmatter setup code and inside expression slots.
         for m in _re.finditer(r"""import\(\s*['"]([^'"]+)['"]\s*\)""", src):
             raw = m.group(1)
             if not raw:
@@ -1767,9 +1781,10 @@ def extract_astro(path: Path) -> dict:
                 result, existing_ids, file_node_id, path, raw,
                 "dynamic_import", aliases, base_url,
             )
-        # Static imports: scan the `---...---` frontmatter at the file head plus any
-        # client-side <script> blocks. Both are TS/JS regions but live inside a file
-        # the JS tree-sitter parser cannot validate as a whole.
+        # Static imports in the frontmatter and in client-side <script> blocks.
+        # The masked AST pass already edges the ones it can resolve; this pass
+        # exists for the ones it cannot, where the stub node is the only record
+        # that the import was written at all.
         frontmatter_re = _re.compile(
             r"\A\s*---\s*\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n|\Z)"
         )
@@ -1794,6 +1809,17 @@ def extract_astro(path: Path) -> dict:
                     result, existing_ids, file_node_id, path, raw,
                     "imports_from", aliases, base_url,
                 )
+        # Same import reached by both passes must not become two edges.
+        seen_edges = set()
+        deduped = []
+        for edge in result.get("edges", []):
+            key = (edge.get("source"), edge.get("target"),
+                   edge.get("relation"), edge.get("target_file"))
+            if key in seen_edges:
+                continue
+            seen_edges.add(key)
+            deduped.append(edge)
+        result["edges"] = deduped
     except Exception:
         pass
     return result

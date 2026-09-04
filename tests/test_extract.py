@@ -1099,6 +1099,56 @@ def test_extract_js_arbitrary_member_assignment_not_captured(tmp_path):
     assert ".whatever()" not in labels
 
 
+def test_extract_js_global_receiver_function_assignment(tmp_path):
+    """`window.x = fn` / `globalThis.y = fn` must be captured (#3337).
+
+    Assigning a function to a global is how browser code publishes an entry
+    point: an inline `onload=` handler, a `<script>` callback a third party
+    invokes by name (Turnstile, reCAPTCHA, Google Maps), a debug hook. The
+    caller lives outside the module graph, so the definition has no incoming
+    edge — dropping the node makes live code look like it does not exist.
+    """
+    from graphify.extract import extract_js
+    f = tmp_path / "entry.js"
+    f.write_text(
+        "function helper() { return 1; }\n"
+        "window.onTurnstileOk = (token) => { helper(); };\n"
+        "globalThis.__DEBUG_HOOK__ = function () { return 2; };\n"
+    )
+    labels = [n["label"] for n in extract_js(f)["nodes"]]
+    assert "helper()" in labels
+    assert "window.onTurnstileOk()" in labels
+    assert "globalThis.__DEBUG_HOOK__()" in labels
+
+
+def test_extract_js_global_receiver_node_ids_are_file_scoped(tmp_path):
+    """The same global name assigned in two files must not collapse into one
+    node. Bare member names are what #1077 warns about; qualifying the id with
+    the file stem and the receiver keeps the two definitions apart."""
+    from graphify.extract import extract_js
+    a = tmp_path / "uno.js"
+    b = tmp_path / "due.js"
+    a.write_text("window.callback = () => 1;\n")
+    b.write_text("window.callback = () => 2;\n")
+    ids_a = {n["id"] for n in extract_js(a)["nodes"]}
+    ids_b = {n["id"] for n in extract_js(b)["nodes"]}
+    assert ids_a & ids_b == set()
+
+
+def test_extract_js_global_receiver_inside_function_body(tmp_path):
+    """The publish is usually inside a setup function, not at module level."""
+    from graphify.extract import extract_js
+    f = tmp_path / "setup.js"
+    f.write_text(
+        "function boot() {\n"
+        "  window.onReady = () => { return 1; };\n"
+        "}\n"
+    )
+    labels = [n["label"] for n in extract_js(f)["nodes"]]
+    assert "boot()" in labels
+    assert "window.onReady()" in labels
+
+
 def test_extract_js_nested_function_declarations(tmp_path):
     """#2653: function declarations nested inside another function emit nodes,
     source contains edges from the enclosing function, and attribute call edges correctly."""
