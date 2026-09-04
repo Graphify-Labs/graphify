@@ -1502,6 +1502,31 @@ def _load_existing_graph(graph_path: Path) -> "tuple[list, list, list, bool] | N
     )
 
 
+def _sweep_raw_orphans(previous: dict, current: dict) -> None:
+    """Remove unowned nodes whose last reference this raw update removed.
+
+    Preserve already-isolated nodes and references through hyperedges, as
+    neither is evidence that an update orphaned an external import stub.
+    """
+    def referenced(data: dict) -> set:
+        ids = set()
+        for edge in data.get("links", data.get("edges", [])):
+            if isinstance(edge, dict):
+                ids.update((edge.get("source"), edge.get("target")))
+        metadata = data.get("graph", {})
+        nested_hyperedges = metadata.get("hyperedges", []) if isinstance(metadata, dict) else []
+        for hyperedge in list(data.get("hyperedges", [])) + list(nested_hyperedges):
+            if isinstance(hyperedge, dict):
+                ids.update(hyperedge.get("nodes", []))
+        return ids
+
+    lost_references = referenced(previous) - referenced(current)
+    current["nodes"] = [
+        n for n in current.get("nodes", [])
+        if n.get("source_file") or n.get("id") not in lost_references
+    ]
+
+
 def merge_raw_extraction(
     new: dict,
     graph_path: str | Path,
@@ -1644,6 +1669,9 @@ def merge_raw_extraction(
     carried_hyper = [he for he in existing_hyperedges if not _dropped(he)]
     if carried_hyper or new.get("hyperedges"):
         new["hyperedges"] = carried_hyper + list(new.get("hyperedges", []))
+    _sweep_raw_orphans(
+        {"edges": existing_edges, "hyperedges": existing_hyperedges}, new,
+    )
     if unverified_semantic_shrink:
         new["_unverified_semantic_shrink"] = unverified_semantic_shrink
     return new
