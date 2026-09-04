@@ -24,6 +24,11 @@ _TSCONFIG_BASEURL_CACHE: "dict[str, Path | None]" = {}
 
 _WORKSPACE_MANIFEST_NAMES = ("pnpm-workspace.yaml", "package.json")
 
+# Nearest package.json `imports` map (Node subpath imports), keyed by the
+# resolved start directory. Same lifetime rule as _TSCONFIG_ALIAS_CACHE: no
+# mtime component, so extract() clears it per run.
+_PACKAGE_IMPORTS_CACHE: "dict[str, tuple[Path, dict] | None]" = {}
+
 _JS_RESOLVE_EXTS = (".ts", ".tsx", ".mts", ".cts", ".svelte", ".js", ".jsx", ".mjs", ".cjs")
 
 _JS_INDEX_FILES = ("index.ts", "index.tsx", "index.svelte", "index.js", "index.jsx", "index.mjs")
@@ -505,6 +510,94 @@ def _resolve_workspace_import(raw: str, start_dir: Path) -> Path | None:
                 return resolved
     return None
 
+def _load_package_imports(start_dir: Path) -> "tuple[Path, dict] | None":
+    """Nearest package.json `imports` map walking up from start_dir.
+
+    Node subpath imports (https://nodejs.org/api/packages.html#subpath-imports):
+    keys start with `#`, values are relative targets or condition objects, and
+    the map applies to every file inside that package. AdonisJS 6 scaffolds
+    `"#services/*": "./app/services/*.js"` and imports through it everywhere;
+    without this map ~90% of an Adonis app's imports resolved to nothing and
+    `affected` saw only the handful of files using relative paths. Unlike
+    tsconfig `paths`, a nested tsconfig (e.g. `inertia/tsconfig.json`) cannot
+    shadow it, which matches how Node and tsc actually resolve these.
+
+    Returns (package_dir, imports) or None. The nearest package.json wins even
+    when it has no `imports` (Node never walks past the enclosing package).
+    """
+    current = start_dir.resolve()
+    key = str(current)
+    if key in _PACKAGE_IMPORTS_CACHE:
+        return _PACKAGE_IMPORTS_CACHE[key]
+    result: "tuple[Path, dict] | None" = None
+    for candidate in [current, *current.parents]:
+        manifest = candidate / "package.json"
+        if manifest.is_file():
+            data = _read_json_config(manifest)
+            imports = data.get("imports") if isinstance(data, dict) else None
+            if isinstance(imports, dict) and imports:
+                result = (candidate, imports)
+            break
+    _PACKAGE_IMPORTS_CACHE[key] = result
+    return result
+
+def _match_subpath_import(raw: str, pattern: str) -> "tuple[int, str, bool] | None":
+    """Node semantics for an `imports` key: exact match, or a single `*` wildcard.
+
+    Stricter than _match_tsconfig_alias on purpose: `#utils` must NOT match
+    `#utils/x` (Node treats a non-wildcard key as an exact specifier). Returns
+    (specificity, captured, is_wildcard); lower specificity wins, longest
+    literal prefix first among wildcards, mirroring Node's pattern ranking.
+    """
+    if "*" in pattern:
+        if pattern.count("*") != 1:
+            return None
+        prefix, suffix = pattern.split("*", 1)
+        if not raw.startswith(prefix) or not raw.endswith(suffix):
+            return None
+        end = len(raw) - len(suffix) if suffix else len(raw)
+        if end < len(prefix):
+            return None
+        return -len(prefix), raw[len(prefix):end], True
+    if raw == pattern:
+        return -(len(pattern) + 1_000_000), "", False
+    return None
+
+def _resolve_package_import(raw: str, start_dir: Path) -> "Path | None":
+    """Resolve a `#subpath` specifier through package.json `imports` to a local file.
+
+    Only local targets (`./…`) are followed: a value naming an external package
+    (`"#dep": "dep-node-native"`) is a third-party dependency and must keep the
+    existing external-reference behavior in _resolve_js_import_target.
+    """
+    if not raw.startswith("#"):
+        return None
+    loaded = _load_package_imports(start_dir)
+    if loaded is None:
+        return None
+    package_dir, imports = loaded
+    best: "tuple[int, str, bool, object] | None" = None
+    for pattern, value in imports.items():
+        if not isinstance(pattern, str) or not pattern.startswith("#"):
+            continue
+        match = _match_subpath_import(raw, pattern)
+        if match is None:
+            continue
+        specificity, captured, is_wildcard = match
+        if best is None or specificity < best[0]:
+            best = (specificity, captured, is_wildcard, value)
+    if best is None:
+        return None
+    _, captured, is_wildcard, value = best
+    target = _resolve_export_target(value)
+    if not isinstance(target, str) or not target.startswith("./"):
+        return None
+    if is_wildcard:
+        target = target.replace("*", captured, 1) if captured else target
+    candidate = Path(os.path.normpath(package_dir / target))
+    resolved = _resolve_js_import_path(candidate)
+    return resolved if resolved.is_file() else None
+
 def _resolve_js_module_path(raw: str | Path, start_dir: Path | None = None) -> Path | None:
     """Resolve a JS/TS module path or specifier to a local source file.
 
@@ -525,6 +618,13 @@ def _resolve_js_module_path(raw: str | Path, start_dir: Path | None = None) -> P
                                   base_url=_load_tsconfig_base_url(start_dir))
     if hit is not None:
         return _resolve_js_import_path(hit)
+
+    # Node subpath imports (`#services/foo` via package.json `imports`). Tried
+    # after tsconfig `paths` so an explicit alias keeps precedence (#1269).
+    if raw.startswith("#"):
+        hit = _resolve_package_import(raw, start_dir)
+        if hit is not None:
+            return hit
 
     return _resolve_workspace_import(raw, start_dir)
 
