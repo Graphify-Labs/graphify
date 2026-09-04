@@ -1218,3 +1218,126 @@ def test_codex_hook_command_is_a_real_cli_subcommand(tmp_path):
             f"codex hook registers {subcommand!r}, which the CLI does not dispatch "
             f"(#2165). Known commands: {sorted(dispatched)}"
         )
+
+
+# --- #3129: project-scoped installs must not embed a machine-absolute path ----
+#
+# `--project` writes hook config that the installer then tells the user to
+# commit ("Add to version control: git add ..."). An exe path resolved from the
+# installing machine is wrong in every other clone, and the drive letter and
+# .EXE casing do not even survive between two Windows checkouts. The committed
+# hook must name `graphify` and let PATH resolve it, the way the git-hook layer
+# already does with `command -v graphify` (hooks.py). The user-profile install
+# is deliberately left alone: it stays on the machine that wrote it, and an
+# absolute path is what makes the hook work where the venv Scripts/ dir is not
+# on PATH (e.g. the VS Code Codex extension on Windows).
+
+_PROJECT_HOOK_FILES = {
+    "claude": ".claude/settings.json",
+    "codex": ".codex/hooks.json",
+    "gemini": ".gemini/settings.json",
+}
+
+
+def _hook_commands(text: str) -> list:
+    """Every hook command string in a settings/hooks JSON document."""
+    import json as _json
+
+    doc = _json.loads(text)
+    found = []
+    for groups in doc.get("hooks", {}).values():
+        for group in groups:
+            for hook in group.get("hooks", []):
+                if "command" in hook:
+                    found.append(hook["command"])
+    return found
+
+
+def _run_project_install(project, home, platform):
+    from graphify.__main__ import main
+
+    with patch("graphify.__main__.Path.home", return_value=home):
+        with patch("sys.argv", ["graphify", "install", "--project", "--platform", platform]):
+            main()
+
+
+@pytest.mark.parametrize("platform", sorted(_PROJECT_HOOK_FILES))
+def test_project_install_hook_command_is_portable(tmp_path, monkeypatch, platform):
+    """A committed hook must carry no absolute path, drive letter or .EXE casing."""
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    # Resolution would otherwise find a real graphify on this machine; pin it so
+    # the assertion fails loudly if the project path ever resolves again.
+    monkeypatch.setattr("shutil.which", lambda _name: r"C:\Users\installer\graphify.EXE")
+
+    _run_project_install(project, home, platform)
+
+    commands = _hook_commands((project / _PROJECT_HOOK_FILES[platform]).read_text(encoding="utf-8"))
+    assert commands, f"{platform} project install registered no hook command"
+    for command in commands:
+        assert command.startswith("graphify "), command
+        assert ":" not in command, f"drive letter / absolute path leaked: {command}"
+        assert "\\" not in command, f"backslash path leaked: {command}"
+        assert ".exe" not in command.lower(), f"platform exe casing leaked: {command}"
+        assert "installer" not in command, f"installing user's path leaked: {command}"
+
+
+@pytest.mark.parametrize("platform", sorted(_PROJECT_HOOK_FILES))
+def test_user_profile_install_still_resolves_absolute_path(tmp_path, monkeypatch, platform):
+    """The non-project install keeps the resolved path (#522/#1987 behaviour)."""
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    monkeypatch.setattr("shutil.which", lambda _name: r"C:\Users\installer\graphify.EXE")
+
+    from graphify.__main__ import main
+
+    with patch("graphify.__main__.Path.home", return_value=home):
+        with patch("sys.argv", ["graphify", platform, "install"]):
+            main()
+
+    commands = _hook_commands((project / _PROJECT_HOOK_FILES[platform]).read_text(encoding="utf-8"))
+    assert commands, f"{platform} install registered no hook command"
+    for command in commands:
+        assert command.startswith("C:/Users/installer/graphify.EXE "), command
+
+
+@pytest.mark.parametrize("platform", sorted(_PROJECT_HOOK_FILES))
+def test_project_install_is_idempotent(tmp_path, monkeypatch, platform):
+    """Installing twice leaves byte-identical config (no churn on re-install)."""
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    monkeypatch.setattr("shutil.which", lambda _name: r"C:\Users\installer\graphify.EXE")
+    target = project / _PROJECT_HOOK_FILES[platform]
+
+    _run_project_install(project, home, platform)
+    first = target.read_text(encoding="utf-8")
+    _run_project_install(project, home, platform)
+
+    assert target.read_text(encoding="utf-8") == first
+
+
+def test_project_uninstall_removes_the_bare_hook_command(tmp_path, monkeypatch):
+    """The uninstall filter matches on "graphify", so a bare command still goes."""
+    from graphify.__main__ import main
+
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    monkeypatch.setattr("shutil.which", lambda _name: r"C:\Users\installer\graphify.EXE")
+
+    _run_project_install(project, home, "claude")
+    settings = project / ".claude" / "settings.json"
+    assert any("hook-guard" in c for c in _hook_commands(settings.read_text(encoding="utf-8")))
+
+    with patch("graphify.__main__.Path.home", return_value=home):
+        with patch("sys.argv", ["graphify", "claude", "uninstall", "--project"]):
+            main()
+
+    assert not [c for c in _hook_commands(settings.read_text(encoding="utf-8")) if "graphify" in c]
