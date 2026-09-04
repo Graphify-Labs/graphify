@@ -1366,6 +1366,53 @@ def extract_js(path: Path) -> dict:
     return result
 
 
+def _js_runtime_import_starts(path: Path, source: bytes) -> set[int]:
+    """Return byte offsets of parsed runtime ``import(...)`` calls.
+
+    The rescue needs module-scope calls, not a second lexical parser. Parsing
+    the same source lets tree-sitter distinguish comments, strings, regexes,
+    and template text. TypeScript import types are excluded by their enclosing
+    type-only AST nodes because that grammar can represent ``typeof import('…')``
+    as a call even though it is not runtime code.
+    """
+    try:
+        from tree_sitter import Language, Parser
+
+        suffix = path.suffix.lower()
+        if suffix == ".tsx":
+            module_name = "tree_sitter_typescript"
+            language_name = "language_tsx"
+        elif suffix in (".ts", ".mts", ".cts"):
+            module_name = "tree_sitter_typescript"
+            language_name = "language_typescript"
+        else:
+            module_name = "tree_sitter_javascript"
+            language_name = "language"
+        module = importlib.import_module(module_name)
+        language = Language(getattr(module, language_name)())
+        tree = Parser(language).parse(source)
+    except Exception:
+        return set()
+
+    starts: set[int] = set()
+
+    non_runtime_ancestors = {
+        "ERROR", "type_alias_declaration", "interface_declaration",
+        "type_annotation", "type_arguments", "type_parameter",
+    }
+    pending = [(tree.root_node, frozenset())]
+    while pending:
+        node, ancestors = pending.pop()
+        if node.type == "call_expression":
+            function = node.child_by_field_name("function")
+            if (function is not None and function.type == "import"
+                    and not ancestors.intersection(non_runtime_ancestors)):
+                starts.add(node.start_byte)
+        child_ancestors = ancestors | {node.type}
+        pending.extend((child, child_ancestors) for child in node.children)
+    return starts
+
+
 def _rescue_js_dynamic_imports(path: Path, result: dict) -> None:
     """Recover ``import('…')`` edges the AST pass does not emit for plain JS/TS.
 
@@ -1388,12 +1435,14 @@ def _rescue_js_dynamic_imports(path: Path, result: dict) -> None:
     written inside one, and that is a different fact from "this file depends on
     that module" — the only one file-level traversal can use (#2584).
 
-    Regex false positives in comments/strings are the precedented trade of
-    the Svelte/Vue rescues; a ``//``-prefix guard covers the common case.
+    The AST filter is safer than a raw regex search: comment and string text can
+    contain ``import('…')`` verbatim without making a dependency. Template
+    interpolation is parsed as code, so ```${import('./x')}``` remains live.
     """
     try:
         import re as _re
-        src = path.read_text(encoding="utf-8", errors="replace")
+        source_bytes = path.read_bytes()
+        src = source_bytes.decode("utf-8", errors="replace")
         if "import(" not in src:  # cheap bail — most files have none
             return
         existing_ids = {n["id"] for n in result.get("nodes", [])}
@@ -1431,20 +1480,24 @@ def _rescue_js_dynamic_imports(path: Path, result: dict) -> None:
                         deferred_files.add(str(Path(tf).resolve()))
                     except OSError:
                         deferred_files.add(str(tf))
+        matches = list(_re.finditer(
+            rb"(?<!\w)import\(\s*(?:'([^'\r\n]+)'|\"([^\"\r\n]+)\"|`([^`$\r\n]+)`)\s*\)",
+            source_bytes,
+        ))
+        if not matches:
+            return
+        runtime_import_starts = _js_runtime_import_starts(path, source_bytes)
         # `(?<!\w)` so `fooimport('x')` and `_import('x')` do not match. The
         # backtick alternative mirrors _dynamic_import_js's template-string
         # handling: a literal `import(`./x`)` resolves, `${`-substituted ones
         # are excluded (no `$` in the class) as statically unresolvable.
-        for m in _re.finditer(
-            r"""(?<!\w)import\(\s*(?:'([^'\n]+)'|"([^"\n]+)"|`([^`$\n]+)`)\s*\)""",
-            src,
-        ):
-            raw = m.group(1) or m.group(2) or m.group(3)
+        for m in matches:
+            if m.start() not in runtime_import_starts:
+                continue
+            raw_bytes = m.group(1) or m.group(2) or m.group(3)
+            raw = raw_bytes.decode("utf-8", errors="replace") if raw_bytes else ""
             if not raw:
                 continue
-            line_start = src.rfind("\n", 0, m.start()) + 1
-            if "//" in src[line_start:m.start()]:
-                continue  # line-commented-out import
             resolution = _resolve_rescued_specifier(path, raw, aliases, base_url)
             if resolution is None:
                 continue
