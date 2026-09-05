@@ -405,6 +405,20 @@ def test_codebuddy_install_writes_hook(tmp_path):
     assert any("graphify" in str(h) for h in hooks)
 
 
+def test_codebuddy_hook_command_is_portable(tmp_path, monkeypatch):
+    """#3129: CodeBuddy has no --project variant at all -- every install writes
+    .codebuddy/settings.json into the cwd, so it is always a commit candidate
+    and the exe must always be bare, never a machine-absolute path."""
+    from graphify.__main__ import codebuddy_install
+    monkeypatch.setattr("shutil.which", lambda _name: r"C:\Users\installer\graphify.EXE")
+    codebuddy_install(tmp_path)
+    commands = _hook_commands((tmp_path / ".codebuddy" / "settings.json").read_text(encoding="utf-8"))
+    assert commands, "codebuddy install registered no hook command"
+    for command in commands:
+        assert command.startswith("graphify "), command
+        assert "installer" not in command, f"installing user's path leaked: {command}"
+
+
 def test_claude_hook_is_shell_agnostic(tmp_path):
     # #522: the installed PreToolUse hooks must be plain exe invocations, not
     # POSIX bash (which fails on Windows cmd.exe/PowerShell).
@@ -1220,17 +1234,29 @@ def test_codex_hook_command_is_a_real_cli_subcommand(tmp_path):
         )
 
 
-# --- #3129: project-scoped installs must not embed a machine-absolute path ----
+# --- #3129: installs must not embed a machine-absolute path into a hook file --
+# committed by definition ----------------------------------------------------
 #
 # `--project` writes hook config that the installer then tells the user to
 # commit ("Add to version control: git add ..."). An exe path resolved from the
 # installing machine is wrong in every other clone, and the drive letter and
 # .EXE casing do not even survive between two Windows checkouts. The committed
 # hook must name `graphify` and let PATH resolve it, the way the git-hook layer
-# already does with `command -v graphify` (hooks.py). The user-profile install
-# is deliberately left alone: it stays on the machine that wrote it, and an
-# absolute path is what makes the hook work where the venv Scripts/ dir is not
-# on PATH (e.g. the VS Code Codex extension on Windows).
+# already does with `command -v graphify` (hooks.py).
+#
+# v0.9.52 (#3149) fixed this for `--project`. The plain (non-`--project`)
+# install was left as a follow-up on the theory that it targets a "user
+# profile" location nobody else maintains, where an absolute path is actually
+# correct (it's what makes the hook work when the venv Scripts/ dir isn't on
+# PATH). That theory doesn't hold for these three hook files specifically:
+# `_install_codex_hook`/`_claude_pretooluse_hooks`/`_gemini_hook` write into
+# `project_dir` -- which defaults to the cwd -- whether or not `--project` was
+# passed. There is no separate user-profile destination for them today, so the
+# file is always a commit candidate and the exe is always resolved bare now,
+# regardless of `--project` (see `test_default_install_hook_command_is_also_portable`
+# below). If a future fix for #2164 gives the plain install a genuine,
+# non-shared destination for these files, that is the point to reintroduce an
+# absolute-path branch for it -- not before.
 
 _PROJECT_HOOK_FILES = {
     "claude": ".claude/settings.json",
@@ -1285,8 +1311,19 @@ def test_project_install_hook_command_is_portable(tmp_path, monkeypatch, platfor
 
 
 @pytest.mark.parametrize("platform", sorted(_PROJECT_HOOK_FILES))
-def test_user_profile_install_still_resolves_absolute_path(tmp_path, monkeypatch, platform):
-    """The non-project install keeps the resolved path (#522/#1987 behaviour)."""
+def test_default_install_hook_command_is_also_portable(tmp_path, monkeypatch, platform):
+    """The plain (non---project) install must be just as portable (#3129).
+
+    `.claude/settings.json`, `.codex/hooks.json` and `.gemini/settings.json` are
+    always written into the current directory -- `--project` never changed
+    *that*, only which exe path got resolved into them. So a plain
+    `graphify <platform> install`, run in a repo the author then commits (the
+    reproduction in #3129), embeds the exact same machine-absolute path
+    `--project` was fixed for in v0.9.52 (#3149). This superseded
+    `test_user_profile_install_still_resolves_absolute_path`, which pinned the
+    old (buggy) behaviour on the incorrect premise that this install targets a
+    location nobody else maintains -- see the module comment above.
+    """
     home = tmp_path / "home"
     project = tmp_path / "project"
     project.mkdir()
@@ -1302,7 +1339,11 @@ def test_user_profile_install_still_resolves_absolute_path(tmp_path, monkeypatch
     commands = _hook_commands((project / _PROJECT_HOOK_FILES[platform]).read_text(encoding="utf-8"))
     assert commands, f"{platform} install registered no hook command"
     for command in commands:
-        assert command.startswith("C:/Users/installer/graphify.EXE "), command
+        assert command.startswith("graphify "), command
+        assert ":" not in command, f"drive letter / absolute path leaked: {command}"
+        assert "\\" not in command, f"backslash path leaked: {command}"
+        assert ".exe" not in command.lower(), f"platform exe casing leaked: {command}"
+        assert "installer" not in command, f"installing user's path leaked: {command}"
 
 
 @pytest.mark.parametrize("platform", sorted(_PROJECT_HOOK_FILES))
