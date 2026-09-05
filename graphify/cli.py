@@ -1062,6 +1062,19 @@ def _reenter_main() -> None:
 
 
 def dispatch_command(cmd: str) -> None:
+    if cmd == "clean":
+        # Python stand-in for the skill's Step 9 `rm`/`find -delete` (#2790).
+        from graphify.paths import GRAPHIFY_OUT, cleanup_build_intermediates
+
+        target = Path(sys.argv[2]) if len(sys.argv) > 2 else Path(GRAPHIFY_OUT)
+        if target.name != Path(GRAPHIFY_OUT).name and target.is_dir():
+            # `graphify clean .` means the scan root; clean its output folder.
+            nested = target / GRAPHIFY_OUT
+            if nested.is_dir():
+                target = nested
+        removed = cleanup_build_intermediates(target)
+        print(f"Removed {len(removed)} intermediate file(s) from {target}")
+        sys.exit(0)
     if cmd == "provider":
         from graphify.llm import _custom_providers_path, BACKENDS
         import json as _json
