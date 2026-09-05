@@ -18,6 +18,7 @@ def _clear_backend_env(monkeypatch):
         "DEEPSEEK_API_KEY",
         "AZURE_OPENAI_API_KEY",
         "AZURE_OPENAI_ENDPOINT",
+        "AZURE_OPENAI_AUTH_MODE",
     ):
         monkeypatch.delenv(env_key, raising=False)
 
@@ -1475,3 +1476,115 @@ def test_max_retry_depth_reads_the_env_var(monkeypatch):
     assert llm._resolve_max_retry_depth() == 3
     monkeypatch.setenv("GRAPHIFY_MAX_RETRY_DEPTH", "-2")
     assert llm._resolve_max_retry_depth() == 3
+
+
+# ---------------------------------------------------------------------------
+# Azure backend — Entra ID (AAD) auth
+# ---------------------------------------------------------------------------
+
+
+def _install_fake_azure_identity(monkeypatch):
+    """Inject a stub azure.identity so the Entra path runs without the real SDK."""
+    import sys
+    import types
+
+    captured: dict = {}
+
+    class _FakeCredential:
+        def __init__(self, *_, **__):
+            captured["credential_built"] = True
+
+    def _fake_get_bearer_token_provider(credential, *scopes):
+        captured["scopes"] = scopes
+        return lambda: "fake-bearer-token"
+
+    identity_module = types.ModuleType("azure.identity")
+    identity_module.DefaultAzureCredential = _FakeCredential
+    identity_module.get_bearer_token_provider = _fake_get_bearer_token_provider
+    azure_module = types.ModuleType("azure")
+    azure_module.identity = identity_module
+    monkeypatch.setitem(sys.modules, "azure", azure_module)
+    monkeypatch.setitem(sys.modules, "azure.identity", identity_module)
+    return captured
+
+
+def test_azure_client_uses_token_provider_when_auth_mode_entra(monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("AZURE_OPENAI_AUTH_MODE", "entra")
+    captured_client = _install_fake_azure_openai(monkeypatch, _fake_openai_response("{}"))
+    captured_identity = _install_fake_azure_identity(monkeypatch)
+
+    llm._azure_client("", "https://my-resource.openai.azure.com/")
+
+    init_kwargs = captured_client["init_kwargs"]
+    assert callable(init_kwargs.get("azure_ad_token_provider"))
+    assert "api_key" not in init_kwargs, "no API key may be sent on the Entra path"
+    assert captured_identity["scopes"] == ("https://cognitiveservices.azure.com/.default",)
+
+
+def test_azure_client_accepts_aad_spelling(monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("AZURE_OPENAI_AUTH_MODE", "AAD")
+    captured_client = _install_fake_azure_openai(monkeypatch, _fake_openai_response("{}"))
+    _install_fake_azure_identity(monkeypatch)
+
+    llm._azure_client("", "https://my-resource.openai.azure.com/")
+
+    assert callable(captured_client["init_kwargs"].get("azure_ad_token_provider"))
+
+
+def test_azure_client_still_uses_api_key_by_default(monkeypatch):
+    _clear_backend_env(monkeypatch)
+    captured = _install_fake_azure_openai(monkeypatch, _fake_openai_response("{}"))
+
+    llm._azure_client("test-key", "https://my-resource.openai.azure.com/")
+
+    init_kwargs = captured["init_kwargs"]
+    assert init_kwargs.get("api_key") == "test-key"
+    assert "azure_ad_token_provider" not in init_kwargs
+
+
+def test_detect_backend_returns_azure_with_entra_and_no_key(monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://my-resource.openai.azure.com/")
+    monkeypatch.setenv("AZURE_OPENAI_AUTH_MODE", "entra")
+
+    assert llm.detect_backend() == "azure"
+    assert llm._get_backend_api_key("azure") == ""
+
+
+def test_detect_backend_entra_still_requires_endpoint(monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("AZURE_OPENAI_AUTH_MODE", "entra")
+
+    assert llm.detect_backend() != "azure"
+
+
+def test_azure_entra_reports_missing_azure_identity(monkeypatch):
+    import sys
+
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("AZURE_OPENAI_AUTH_MODE", "entra")
+    _install_fake_azure_openai(monkeypatch, _fake_openai_response("{}"))
+    monkeypatch.setitem(sys.modules, "azure.identity", None)
+
+    with pytest.raises(ImportError, match=r"graphifyy\[azure\]"):
+        llm._azure_client("", "https://my-resource.openai.azure.com/")
+
+
+def test_azure_entra_dispatch_does_not_require_an_api_key(tmp_path, monkeypatch):
+    # The no-key guard exempts bedrock and claude-cli; azure under Entra ID must
+    # be exempt too, otherwise the dispatcher rejects the call before it ever
+    # reaches _azure_client.
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://my-resource.openai.azure.com/")
+    monkeypatch.setenv("AZURE_OPENAI_AUTH_MODE", "entra")
+    source = tmp_path / "note.md"
+    source.write_text("# Architecture\n")
+    result = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 1, "output_tokens": 1}
+
+    with patch("graphify.llm._call_azure", return_value=result) as call:
+        assert llm.extract_files_direct([source], backend="azure", root=tmp_path) is result
+
+    assert call.call_args.args[0] == "", "no key is resolved on the Entra path"
+    assert call.call_args.args[1] == "https://my-resource.openai.azure.com/"
