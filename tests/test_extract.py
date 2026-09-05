@@ -3702,12 +3702,21 @@ def test_extract_no_warning_when_all_code_has_extractors(tmp_path, capsys):
     assert "no AST extractor" not in err
 
 
-def test_extract_warns_when_sql_extra_missing(tmp_path, capsys, monkeypatch):
+def test_extract_warns_when_sql_grammar_missing(tmp_path, capsys, monkeypatch):
     # #1745: .sql HAS a dispatch entry, so the #1689 warning can't fire, and
     # extract_sql returns an "error" result when tree-sitter-sql is absent, so
-    # the #1666 warning skips it too. The files must not vanish silently:
-    # extract() surfaces them with the [sql] extra named.
+    # the #1666 warning skips it too. The files must not vanish silently.
+    # The grammar is a core dependency, so absence means a broken
+    # install: the warning must name the direct repair, not a [sql] extra.
+    # The dev environment now ships the grammar, so simulate genuine absence
+    # by failing the import AND blanking find_spec for this one module.
+    import importlib.util as _ilu
     monkeypatch.setitem(sys.modules, "tree_sitter_sql", None)  # import -> ImportError
+    _real_find_spec = _ilu.find_spec
+    monkeypatch.setattr(
+        _ilu, "find_spec",
+        lambda name, *a, **k: None if name == "tree_sitter_sql" else _real_find_spec(name, *a, **k),
+    )
     s1 = tmp_path / "schema.sql"; s1.write_text("CREATE TABLE users (id INT);\n")
     s2 = tmp_path / "views.sql"; s2.write_text("CREATE VIEW v AS SELECT * FROM users;\n")
     py = tmp_path / "main.py"; py.write_text("def main():\n    return 1\n")
@@ -3717,7 +3726,11 @@ def test_extract_warns_when_sql_extra_missing(tmp_path, capsys, monkeypatch):
 
     assert "2 .sql file(s)" in err
     assert "tree_sitter_sql not installed" in err
-    assert 'graphifyy[sql]' in err
+    assert "core dependency" in err, "message must say the install is broken, not point at an extra"
+    assert "pip install 'tree-sitter-sql>=0.3.9,<0.4'" in err, (
+        "the direct repair must stay inside the supported grammar range"
+    )
+    assert "graphifyy[sql]" not in err, ".sql must not be hinted as an optional extra any more"
     assert "#1745" in err
     # the Python file still extracts normally
     labels = [n.get("label") for n in result["nodes"]]
@@ -3731,7 +3744,7 @@ def test_extract_warns_when_sql_extra_missing(tmp_path, capsys, monkeypatch):
 
 def test_extract_failed_sources_empty_when_sql_installed(tmp_path):
     """#2543: successful extracts do not appear in failed_sources."""
-    pytest.importorskip("tree_sitter_sql")
+    import tree_sitter_sql  # noqa: F401 — core dependency; absence must FAIL, not skip
     s = tmp_path / "schema.sql"; s.write_text("CREATE TABLE users (id INT);\n")
     py = tmp_path / "main.py"; py.write_text("def main():\n    return 1\n")
     result = extract([s, py], cache_root=tmp_path)
@@ -3739,7 +3752,7 @@ def test_extract_failed_sources_empty_when_sql_installed(tmp_path):
 
 
 def test_extract_no_missing_dep_warning_when_sql_installed(tmp_path, capsys):
-    pytest.importorskip("tree_sitter_sql")
+    import tree_sitter_sql  # noqa: F401 — core dependency; absence must FAIL, not skip
     s = tmp_path / "schema.sql"; s.write_text("CREATE TABLE users (id INT);\n")
     extract([s], cache_root=tmp_path)
     err = capsys.readouterr().err
@@ -3753,7 +3766,7 @@ def test_extract_sql_reports_load_failure_not_missing(tmp_path, monkeypatch):
     # `pip install` — but surface the real load exception instead.
     import builtins
     from graphify.extractors.sql import extract_sql
-    pytest.importorskip("tree_sitter_sql")  # find_spec must see it as installed
+    import tree_sitter_sql  # noqa: F401 — core dependency; absence must FAIL, not skip  # find_spec must see it as installed
 
     _orig_import = builtins.__import__
 
@@ -3774,7 +3787,7 @@ def test_extract_warns_sql_grammar_failed_to_load(tmp_path, capsys, monkeypatch)
     # grammar with the real cause and WITHOUT the misleading "install the extra"
     # hint, so the files are neither silently dropped nor sent to a no-op fix.
     import builtins
-    pytest.importorskip("tree_sitter_sql")
+    import tree_sitter_sql  # noqa: F401 — core dependency; absence must FAIL, not skip
 
     _orig_import = builtins.__import__
 
