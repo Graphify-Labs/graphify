@@ -2,6 +2,8 @@
 import os
 import shutil
 import subprocess
+import sys
+import tempfile
 from types import SimpleNamespace
 from pathlib import Path
 import pytest
@@ -609,6 +611,93 @@ def _sh_single_quote(value: str) -> str:
     return "'" + value.replace("'", "'\\''") + "'"
 
 
+def _iter_bash_on_path():
+    """Yield every ``bash`` on PATH, in PATH order, deduplicated by real path.
+
+    ``shutil.which`` only ever reports the first hit, which is the one entry we
+    specifically cannot trust on Windows.
+    """
+    seen = set()
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry:
+            continue
+        found = shutil.which("bash", path=entry)
+        if found is None:
+            continue
+        try:
+            key = os.path.normcase(os.path.realpath(found))
+        except OSError:  # pragma: no cover - defensive
+            key = os.path.normcase(found)
+        if key not in seen:
+            seen.add(key)
+            yield found
+
+
+def _resolve_bash():
+    """Return a bash that can actually run a script file, or ``None``.
+
+    ``shutil.which("bash") is not None`` is not a usable guard on Windows.
+    Every Windows 10/11 install ships ``C:\\Windows\\System32\\bash.exe`` — the
+    WSL launcher — and it sits on PATH *ahead* of Git Bash. With no WSL
+    distribution installed it prints a UTF-16 notice and exits 1, so the
+    allowlist tests below died on ``bash exited 1`` instead of skipping, on a
+    machine that had a perfectly usable bash further down PATH.
+
+    Probe each candidate exactly the way the harness invokes it — a script
+    file, run from the working directory — and take the first that works. That
+    keeps this guard honest for the same reason #2641 baked the payload into a
+    file: a probe that asks a different question than the test proves nothing.
+    """
+    for exe in _iter_bash_on_path():
+        with tempfile.TemporaryDirectory() as probe_dir:
+            probe = Path(probe_dir) / "probe.sh"
+            probe.write_text("printf ok\n", encoding="utf-8", newline="\n")
+            try:
+                result = subprocess.run(
+                    [exe, probe.name],
+                    capture_output=True, text=True, cwd=probe_dir, timeout=60,
+                )
+            except (OSError, subprocess.SubprocessError):  # pragma: no cover - env specific
+                continue
+        if result.returncode == 0 and result.stdout.strip() == "ok":
+            return exe
+    return None
+
+
+_BASH = _resolve_bash()
+
+_requires_bash = pytest.mark.skipif(
+    _BASH is None,
+    reason="no bash on PATH can run a script file (on Windows System32\\bash.exe is the WSL "
+           "launcher, which fails when no distribution is installed)",
+)
+
+
+def test_resolve_bash_rejects_an_interpreter_that_cannot_run_the_probe(monkeypatch):
+    """Presence on PATH is not proof of a usable bash.
+
+    ``C:\\Windows\\System32\\bash.exe`` exists on every Windows 10/11 install and
+    precedes Git Bash on PATH, but it is the WSL launcher: with no distribution
+    installed it exits 1 without running the script. A ``shutil.which`` guard
+    accepts it, and the allowlist tests below then die on ``bash exited 1``
+    instead of skipping. ``sys.executable`` stands in for such a launcher here —
+    it exists and runs, but cannot execute a shell script.
+    """
+    monkeypatch.setattr(
+        sys.modules[__name__], "_iter_bash_on_path", lambda: iter([sys.executable])
+    )
+    assert _resolve_bash() is None
+
+
+@_requires_bash
+def test_resolve_bash_skips_a_broken_candidate_and_keeps_looking(monkeypatch):
+    """A broken first hit must not mask a working bash further down PATH."""
+    monkeypatch.setattr(
+        sys.modules[__name__], "_iter_bash_on_path", lambda: iter([sys.executable, _BASH])
+    )
+    assert _resolve_bash() == _BASH
+
+
 def _shell_verdict(pattern: str, candidate: str, tmp_path) -> str:
     """Run one `case` arm against ``candidate`` in a real bash, and report which
     branch matched.
@@ -637,9 +726,11 @@ def _shell_verdict(pattern: str, candidate: str, tmp_path) -> str:
         newline="\n",
     )
     # Invoke by bare filename from cwd: a Windows absolute path in argv would
-    # hit the same backslash mangling the script contents just avoided.
+    # hit the same backslash mangling the script contents just avoided. The
+    # interpreter itself is an absolute path because argv[0] is consumed by
+    # CreateProcess, not by the MSYS re-parse that mangles argv[1:].
     result = subprocess.run(
-        ["bash", script.name],
+        [_BASH, script.name],
         capture_output=True, text=True, cwd=str(tmp_path),
     )
     # Fail loudly on a malformed case snippet instead of returning "" and
@@ -669,7 +760,7 @@ def _assert_harness_can_reject(pattern: str, tmp_path) -> None:
     )
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash required to exercise emitted glob")
+@_requires_bash
 @pytest.mark.parametrize("winpath", [
     r"C:\Users\u\.venv\Scripts\python.exe",
     r"C:\Python311\python.exe",
@@ -684,7 +775,7 @@ def test_file_path_allowlist_accepts_windows_backslash_path(winpath, tmp_path):
     )
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash required to exercise emitted glob")
+@_requires_bash
 @pytest.mark.parametrize("shebang_path", [
     r"C:\Users\u\.venv\Scripts\python.exe",
 ])
@@ -698,7 +789,7 @@ def test_shebang_allowlist_accepts_windows_backslash_path(shebang_path, tmp_path
     )
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash required to exercise emitted glob")
+@_requires_bash
 @pytest.mark.parametrize("dangerous", ["foo;rm -rf /", "foo`id`", "foo$(id)", "foo$IFS"])
 def test_python_detect_allowlists_still_reject_shell_metacharacters(dangerous, tmp_path):
     """Guard against a naive fix (backslash right before `]`) that forms a
@@ -710,7 +801,7 @@ def test_python_detect_allowlists_still_reject_shell_metacharacters(dangerous, t
         )
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash required to exercise emitted glob")
+@_requires_bash
 @pytest.mark.parametrize("payload", [
     r"C:\Users\u\.venv\Scripts\python.exe",   # backslashes get stripped by argv
     "foo$IFS",                                 # expands to "foo" — an ALLOWED value
@@ -731,7 +822,7 @@ def test_shell_verdict_delivers_the_payload_bash_unmodified(payload, tmp_path):
         encoding="utf-8", newline="\n",
     )
     result = subprocess.run(
-        ["bash", script.name], capture_output=True, text=True, cwd=str(tmp_path),
+        [_BASH, script.name], capture_output=True, text=True, cwd=str(tmp_path),
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == payload, (
