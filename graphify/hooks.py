@@ -161,13 +161,18 @@ try:
             _watchdog.daemon = True
             _watchdog.start()
     _force = os.environ.get('GRAPHIFY_FORCE', '').lower() in ('1', 'true', 'yes')
-    _root = Path('.')
+    _worktree_root = Path.cwd().resolve()
+    _root = _worktree_root
     _out = os.environ.get('GRAPHIFY_OUT', 'graphify-out')
     _saved = Path(_out) / '.graphify_root'
-    if _saved.exists():
+    try:
         _txt = _saved.read_text(encoding='utf-8-sig').strip()
         if _txt:
-            _root = Path(_txt)
+            _saved_root = Path(_txt).resolve()
+            _saved_root.relative_to(_worktree_root)
+            _root = _saved_root
+    except (OSError, RuntimeError, ValueError):
+        pass
     _rebuild_code(_root, changed_paths=changed, force=_force)
     # Refresh the work-memory lessons doc when saved Q&A outcomes exist
     # (best-effort; never fails the hook).
@@ -210,13 +215,18 @@ try:
     # post-checkout: branch switch can touch arbitrary files; full rebuild path
     # (no changed_paths) is correct here. The flock inside _rebuild_code still
     # prevents pile-ups when commit + checkout fire back-to-back.
-    _root = Path('.')
+    _worktree_root = Path.cwd().resolve()
+    _root = _worktree_root
     _out = os.environ.get('GRAPHIFY_OUT', 'graphify-out')
     _saved = Path(_out) / '.graphify_root'
-    if _saved.exists():
+    try:
         _txt = _saved.read_text(encoding='utf-8-sig').strip()
         if _txt:
-            _root = Path(_txt)
+            _saved_root = Path(_txt).resolve()
+            _saved_root.relative_to(_worktree_root)
+            _root = _saved_root
+    except (OSError, RuntimeError, ValueError):
+        pass
     _rebuild_code(_root, force=_force)
     # Refresh the work-memory lessons doc when saved Q&A outcomes exist
     # (best-effort; never fails the hook).
