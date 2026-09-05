@@ -3677,18 +3677,20 @@ def test_case_insensitive_suffix_filtering(tmp_path):
 
 
 def test_extract_warns_on_code_files_with_no_ast_extractor(tmp_path, capsys):
-    # #1689: .r/.R is in CODE_EXTENSIONS (counted as code) but has no AST extractor,
-    # so R files silently contribute nothing. extract() must surface that instead of
-    # reporting success as if the language were mapped.
-    r1 = tmp_path / "analysis.R"; r1.write_text("f <- function(x) x + 1\n")
-    r2 = tmp_path / "helper.r"; r2.write_text("g <- function(y) y * 2\n")
+    # #1689: an extension in CODE_EXTENSIONS (counted as code) but with no AST
+    # extractor silently contributes nothing. extract() must surface that instead
+    # of reporting success as if the language were mapped. .ets (ArkTS) is such an
+    # extension: classified as code but not (yet) wired to any extractor.
+    # (R/.r used to be the example here, but it gained a real extractor in #1689.)
+    e1 = tmp_path / "page.ets"; e1.write_text("struct Foo {}\n")
+    e2 = tmp_path / "widget.ets"; e2.write_text("struct Bar {}\n")
     py = tmp_path / "main.py"; py.write_text("def main():\n    return 1\n")
 
-    result = extract([r1, r2, py], cache_root=tmp_path)
+    result = extract([e1, e2, py], cache_root=tmp_path)
     err = capsys.readouterr().err
 
     assert "no AST extractor" in err
-    assert ".r (2)" in err            # both R files grouped under the lowercased ext
+    assert ".ets (2)" in err          # both files grouped under the extension
     assert "#1689" in err
     # the Python file still extracts normally
     labels = [n.get("label") for n in result["nodes"]]
@@ -3808,8 +3810,8 @@ def test_extract_progress_final_line_uses_consistent_denominator(tmp_path, capsy
     for i in range(100):
         (tmp_path / f"m{i}.py").write_text(f"def f{i}():\n    return {i}\n")
     for i in range(5):
-        (tmp_path / f"s{i}.r").write_text(f"g{i} <- function(x) x\n")  # no extractor
-    paths = sorted(tmp_path.glob("*.py")) + sorted(tmp_path.glob("*.r"))  # total 105
+        (tmp_path / f"s{i}.ets").write_text("struct S {}\n")  # no extractor
+    paths = sorted(tmp_path.glob("*.py")) + sorted(tmp_path.glob("*.ets"))  # total 105
 
     extract(paths, cache_root=tmp_path, parallel=False)
     out = capsys.readouterr().out
