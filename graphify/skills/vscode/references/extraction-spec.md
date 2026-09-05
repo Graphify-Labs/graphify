@@ -68,3 +68,50 @@ source_file RULE (every node, edge, and hyperedge): set source_file to the path 
 Then write the JSON to disk using the Write tool at this exact absolute path (no relative paths — Write resolves relative paths against an undefined cwd and the file will be silently lost):
 CHUNK_PATH
 ```
+
+---
+
+## ⚠️ Chunking and agent-reliability lessons (from a ~106-file, ~4000-node repo)
+
+### Pack chunks by BYTES, never by file count
+
+Packing by count handed one agent ~1 MB and killed it at a session limit —
+twice, before the cause was spotted.
+
+- **~250 KB** is a workable ceiling for markup (HTML, code).
+- **~110 KB for prose.** Documentation is far denser in extractable concepts than
+  markup is, and a 346 KB document is 3–4 chunks, not one.
+
+A single file larger than the ceiling is split by **line range** (`Read` with
+`offset`/`limit`), not skipped. Because node ids are deterministic from the
+label, a concept that straddles a chunk boundary **merges instead of
+duplicating** — measured at 8 dedupes across 1483 nodes, so the cost of
+splitting is negligible.
+
+### Tell every agent to write its JSON EARLY, then refine it
+
+Instruct it explicitly:
+
+> write a first valid JSON file to disk EARLY (after a rough extraction), then
+> keep refining and re-writing it. A partial-but-valid file on disk is far better
+> than a perfect one you never manage to write.
+
+### ⚠️ The completion notification lies — check the disk
+
+Across three waves, **ten** agents reported `failed` on a rate limit having
+already written a complete, valid chunk. Every one of them would have been re-run
+for nothing on the strength of the status alone.
+
+**Never treat a `failed` status as meaning no output.** List the chunk files and
+validate them before deciding what to re-run:
+
+```python
+ids = {n['id'] for n in d.get('nodes', [])}
+dangling = sum(1 for e in d.get('edges', [])
+               if e['source'] not in ids or e['target'] not in ids)
+bad_types = {n.get('file_type') for n in d['nodes']} - VALID_FILE_TYPES
+```
+
+⚠️ Validate **hyperedge members too**, not just edge endpoints — an agent will
+name a member id it never emitted as a node, and that only surfaces later as a
+dangling hyperedge in the merged graph.
