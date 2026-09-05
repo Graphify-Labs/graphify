@@ -1489,6 +1489,32 @@ def _ts_walk_class_members(class_node, source: bytes, path: Path, class_nid: str
                 )
 
 def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolutionFacts) -> None:
+    js_paths = [path for path in paths if path.suffix in _JS_CACHE_BYPASS_SUFFIXES]
+    resolved = [path.resolve() for path in js_paths]
+    if len(set(resolved)) != len(resolved):
+        # The original multi-pass collector reuses the last parsed tree for
+        # equivalent paths. Preserve that behavior, including mixed grammars.
+        _collect_js_symbol_resolution_facts_batch(js_paths, facts)
+        return
+
+    class_uses: list[_SymbolUseFact] = []
+    for path in js_paths:
+        local = _SymbolResolutionFacts()
+        # Helper scope releases syntax nodes before parsing the next source.
+        _collect_js_symbol_resolution_facts_batch([path], local)
+        facts.declarations.extend(local.declarations)
+        facts.imports.extend(local.imports)
+        facts.aliases.extend(local.aliases)
+        facts.exports.extend(local.exports)
+        facts.star_exports.extend(local.star_exports)
+        facts.namespace_exports.extend(local.namespace_exports)
+        # Existing ordering is all function calls, then all class type uses.
+        facts.uses.extend(use for use in local.uses if use.relation == "calls")
+        class_uses.extend(use for use in local.uses if use.relation != "calls")
+    facts.uses.extend(class_uses)
+
+
+def _collect_js_symbol_resolution_facts_batch(paths: list[Path], facts: _SymbolResolutionFacts) -> None:
     js_paths = [
         path for path in paths
         if path.suffix in _JS_CACHE_BYPASS_SUFFIXES
@@ -1496,7 +1522,7 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
     if not js_paths:
         return
 
-    trees: dict[Path, tuple[bytes, object]] = {}
+    trees: dict[Path, tuple[bytes, object, dict[str, list]]] = {}
 
     for path in js_paths:
         resolved_path = path.resolve()
@@ -1504,9 +1530,21 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
         if parsed is None:
             continue
         source, root_node = parsed
-        trees[resolved_path] = parsed
-
+        # Index only relevant syntax nodes, never every node in the tree.
+        indexed: dict[str, list] = {"imports_exports": [], "aliases": [], "exports": [], "classes": []}
         for node in _walk_js_tree(root_node):
+            kind = node.type
+            if kind in ("import_statement", "export_statement"):
+                indexed["imports_exports"].append(node)
+            if kind == "export_statement":
+                indexed["exports"].append(node)
+            if kind == "lexical_declaration":
+                indexed["aliases"].append(node)
+            if kind in ("class_declaration", "abstract_class_declaration", "interface_declaration"):
+                indexed["classes"].append(node)
+        trees[resolved_path] = (source, root_node, indexed)
+
+        for node in indexed["imports_exports"]:
             if node.type == "export_statement":
                 for name in _js_exported_declaration_names(node, source):
                     facts.declarations.append(
@@ -1544,7 +1582,7 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
                     )
                 )
 
-        for node in _walk_js_tree(root_node):
+        for node in indexed["aliases"]:
             for alias, target in _js_lexical_aliases(node, source):
                 facts.aliases.append(
                     _SymbolAliasFact(path, alias, target, node.start_point[0] + 1)
@@ -1555,9 +1593,9 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
         parsed = trees.get(resolved_path)
         if parsed is None:
             continue
-        source, root_node = parsed
+        source, root_node, indexed = parsed
 
-        for node in _walk_js_tree(root_node):
+        for node in indexed["exports"]:
             if node.type != "export_statement":
                 continue
 
@@ -1651,7 +1689,7 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
         parsed = trees.get(resolved_path)
         if parsed is None:
             continue
-        source, root_node = parsed
+        source, root_node, indexed = parsed
         for source_id, body in _js_top_level_function_bodies(path, root_node, source):
             for node in _walk_js_tree(body):
                 imported_name = _js_call_identifier(node, source)
@@ -1673,9 +1711,9 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
         parsed = trees.get(resolved_path)
         if parsed is None:
             continue
-        source, root_node = parsed
+        source, root_node, indexed = parsed
         stem = _file_stem(path)
-        for node in _walk_js_tree(root_node):
+        for node in indexed["classes"]:
             if node.type not in (
                 "class_declaration",
                 "abstract_class_declaration",
