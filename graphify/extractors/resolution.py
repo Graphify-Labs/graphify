@@ -1,7 +1,7 @@
 """resolution — moved verbatim from graphify/extract.py."""
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 from pathlib import Path
 from graphify.extractors.models import LanguageConfig, _JS_CACHE_BYPASS_SUFFIXES, _NamespaceExportFact, _StarExportFact, _SymbolAliasFact, _SymbolDeclarationFact, _SymbolExportFact, _SymbolImportFact, _SymbolResolutionFacts, _SymbolUseFact, _WORKSPACE_PACKAGE_CACHE  # noqa: E402,F401
 from graphify.extractors.base import (  # noqa: F401
@@ -1766,7 +1766,42 @@ def _probe_python_module_candidate(candidate: Path) -> Path | None:
     return None
 
 
-def _resolve_python_module_path(module_name: str, current_path: Path, root: Path, level: int) -> Path | None:
+def _discover_python_source_roots(paths: Sequence[Path], root: Path) -> tuple[Path, ...]:
+    """Discover all non-package source root directories (e.g. `src/`) that contain
+    at least one Python package in `paths` (#2072, #3272)."""
+    try:
+        root_resolved = Path(root).resolve()
+    except OSError:
+        root_resolved = Path(root)
+    source_roots: set[Path] = set()
+    for p in paths:
+        if p.suffix.lower() not in (".py", ".pyi"):
+            continue
+        try:
+            p_res = Path(p).resolve()
+            rel = p_res.relative_to(root_resolved)
+        except (ValueError, OSError):
+            continue
+        parts = rel.parts
+        if len(parts) < 2:
+            continue
+        d = p_res.parent
+        levels = 0
+        while levels < len(parts) - 1 and (d / "__init__.py").is_file():
+            levels += 1
+            d = d.parent
+        if levels > 0 and d != root_resolved:
+            source_roots.add(d)
+    return tuple(sorted(source_roots))
+
+
+def _resolve_python_module_path(
+    module_name: str,
+    current_path: Path,
+    root: Path,
+    level: int,
+    source_roots: Sequence[Path] = (),
+) -> Path | None:
     if level > 0:
         base = current_path.parent
         for _ in range(level - 1):
@@ -1802,6 +1837,18 @@ def _resolve_python_module_path(module_name: str, current_path: Path, root: Path
         cand = _probe_python_module_candidate(anc / rel)
         if cand is not None:
             return cand
+
+    # If the caller is outside the package tree (e.g. tests/ importing from src/,
+    # #3272), probe candidate source roots discovered across the corpus.
+    if source_roots:
+        candidates: list[Path] = []
+        for sroot in source_roots:
+            cand = _probe_python_module_candidate(sroot / rel)
+            if cand is not None:
+                candidates.append(cand)
+        if len(candidates) == 1 or (candidates and all(c == candidates[0] for c in candidates)):
+            return candidates[0]
+
     return None
 
 def _python_top_level_function_bodies(path: Path, root_node, source: bytes) -> list[tuple[str, object]]:
@@ -1833,6 +1880,7 @@ def _collect_python_symbol_resolution_facts(
     if not py_paths:
         return
 
+    source_roots = _discover_python_source_roots(py_paths, root)
     trees: dict[Path, tuple[bytes, object]] = {}
     for path in py_paths:
         parsed = _parse_python_tree(path)
@@ -1848,7 +1896,9 @@ def _collect_python_symbol_resolution_facts(
             if module is None:
                 continue
             level, module_name = module
-            target_path = _resolve_python_module_path(module_name, path, root, level)
+            target_path = _resolve_python_module_path(
+                module_name, path, root, level, source_roots=source_roots
+            )
             if target_path is None:
                 continue
             # #1146: `from pkg import submod` — if the target is a package
