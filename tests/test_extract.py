@@ -285,9 +285,12 @@ def test_extract_updates_raw_call_callers_after_duplicate_id_disambiguation(tmp_
 
 
 def test_extract_rewires_unique_inheritance_stub_to_real_definition(tmp_path):
-    definition = tmp_path / "interfaces.py"
+    # Same-language pair: the unique-stub rewire must still collapse the base
+    # onto the real definition. (A prior C#→Python fixture accidentally relied
+    # on the missing type-level interop gate that #2343 closes.)
+    definition = tmp_path / "interfaces.cs"
     implementation = tmp_path / "services/BookStore.cs"
-    definition.write_text("class BookStore:\n    pass\n", encoding="utf-8")
+    definition.write_text("class BookStore { }\n", encoding="utf-8")
     implementation.parent.mkdir(parents=True)
     implementation.write_text("class SqliteBookStore : BookStore { }\n", encoding="utf-8")
 
@@ -304,7 +307,7 @@ def test_extract_rewires_unique_inheritance_stub_to_real_definition(tmp_path):
     assert matching
     assert matching[0]["target"] == next(
         node["id"] for node in result["nodes"]
-        if node["label"] == "BookStore" and node.get("source_file") == "interfaces.py"
+        if node["label"] == "BookStore" and node.get("source_file") == "interfaces.cs"
     )
     assert all(
         not (node["label"] == "BookStore" and not node.get("source_file"))
@@ -3909,6 +3912,52 @@ def test_rewire_does_not_bind_supertype_stub_to_function():
               "source_file": "store.py", "weight": 1.0}]
     _rewire_unique_stub_nodes(nodes, edges)
     assert edges[0]["target"] == "BookStore"  # inherits stub not bound to function
+
+
+def test_rewire_does_not_bind_type_reference_across_language():
+    """#2343: a Swift/Python type stub must not bind to a unique JS class of
+    the same label — the interop gate must apply to type matches, not only
+    the function fallback (#1781)."""
+    from graphify.extract import _rewire_unique_stub_nodes
+    nodes = [
+        {"id": "three_path", "label": "Path", "file_type": "code",
+         "source_file": "three.js", "source_location": "L1"},
+        {"id": "path", "label": "Path", "file_type": "code", "source_file": ""},
+    ]
+    edges = [{"source": "shape_crosshair", "target": "path", "relation": "references",
+              "source_file": "Shape.swift", "weight": 1.0}]
+    _rewire_unique_stub_nodes(nodes, edges)
+    assert edges[0]["target"] == "path"  # unchanged — cross-language blocked
+    assert "path" in {n["id"] for n in nodes}  # stub kept
+
+
+def test_rewire_binds_same_family_type_reference():
+    """#2343: same-family unique type rewire still works after the gate hoist."""
+    from graphify.extract import _rewire_unique_stub_nodes
+    nodes = [
+        {"id": "models_path", "label": "Path", "file_type": "code",
+         "source_file": "models.py", "source_location": "L1"},
+        {"id": "path", "label": "Path", "file_type": "code", "source_file": ""},
+    ]
+    edges = [{"source": "build_resolve", "target": "path", "relation": "references",
+              "source_file": "build.py", "weight": 1.0}]
+    _rewire_unique_stub_nodes(nodes, edges)
+    assert edges[0]["target"] == "models_path"
+    assert "path" not in {n["id"] for n in nodes}
+
+
+def test_rewire_binds_native_family_type_across_swift_objc():
+    """#2343: legitimate native-family interop (Swift↔ObjC) still resolves."""
+    from graphify.extract import _rewire_unique_stub_nodes
+    nodes = [
+        {"id": "ui_path", "label": "Path", "file_type": "code",
+         "source_file": "UIPath.m", "source_location": "L1"},
+        {"id": "path", "label": "Path", "file_type": "code", "source_file": ""},
+    ]
+    edges = [{"source": "shape_crosshair", "target": "path", "relation": "references",
+              "source_file": "Shape.swift", "weight": 1.0}]
+    _rewire_unique_stub_nodes(nodes, edges)
+    assert edges[0]["target"] == "ui_path"
 
 
 def test_rewire_does_not_bind_supertype_stub_across_language():

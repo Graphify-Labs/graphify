@@ -2444,12 +2444,12 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
             continue
         stubs.append(node)
 
-    # Language families referencing each stub, for the function-merge guard (#1781):
-    # a cross-module `references` edge to a function used to dangle on a sourceless
-    # name-only stub because functions were excluded as rewire targets. We now allow
-    # a UNIQUE function definition to absorb it, but only when it shares a language
-    # family with the stub's referrers — so a Python `get_db` reference can't bind to
-    # a unique Go `get_db()` (mirrors the #1718/#1749 interop guard).
+    # Language families referencing each stub, for the unique-stub rewire guard
+    # (#1781 functions, #2343 types): a UNIQUE real definition may absorb a
+    # sourceless stub only when it shares a language family with the stub's
+    # referrers — so a Python/Swift `Path` reference can't bind to a unique JS
+    # `class Path`, and a Python `get_db` reference can't bind to a unique Go
+    # `get_db()` (mirrors the #1718/#1749 interop guard).
     stub_ids = {str(s.get("id")) for s in stubs if s.get("id")}
     stub_families: dict[str, set] = {}
     supertype_stub_ids: set[str] = set()  # stubs used as a base type — never a function
@@ -2479,16 +2479,20 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
             # `PATH` can never absorb a `Path` reference).
             candidates = real_by_label_ci.get(_node_label_key(stub, fold=True), [])
         if len(candidates) != 1:
-            # #1781: no unique type — try a unique top-level FUNCTION definition,
-            # gated by (a) the stub not being used as a supertype and (b) a
-            # language-family match with the stub's referrers.
+            # #1781: no unique type — try a unique top-level FUNCTION definition.
+            # Supertype stubs must never resolve to a function; the language-family
+            # gate below applies to this path the same as to type matches (#2343).
             fcands = func_by_label.get(_node_label_key(stub), [])
             if len(fcands) == 1 and stub_id not in supertype_stub_ids:
-                fams = stub_families.get(stub_id, set())
-                cand_fam = _lang_family(fcands[0].get("source_file"))
-                if not fams or cand_fam is None or cand_fam in fams:
-                    candidates = fcands
+                candidates = fcands
         if len(candidates) != 1:
+            continue
+        # #2343: apply the #1781/#1718/#1749 interop gate to EVERY unique match
+        # (type exact, type CI, and function), not only the function fallback.
+        # Without this, Swift/Python `Path` stubs bind to a lone JS `class Path`.
+        fams = stub_families.get(stub_id, set())
+        cand_fam = _lang_family(candidates[0].get("source_file"))
+        if fams and cand_fam is not None and cand_fam not in fams:
             continue
         target_id = candidates[0].get("id")
         if isinstance(target_id, str) and target_id and target_id != stub_id:
