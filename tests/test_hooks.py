@@ -1167,3 +1167,788 @@ def test_rebuild_bodies_tolerate_a_bom_in_graphify_root(name, body):
     assert "encoding='utf-8')" not in body, (
         f"{name} rebuild body still has a BOM-intolerant read"
     )
+
+
+# --- merge-driver out_dir persistence + gitignore skip (#2595) -------------
+
+def test_load_graphifyrc_reads_out_dir(tmp_path):
+    from graphify.hooks import _load_graphifyrc
+
+    rc = tmp_path / ".graphifyrc"
+    rc.write_text("out_dir=.planning/graphs\n", encoding="utf-8")
+    cfg = _load_graphifyrc(tmp_path)
+    assert cfg.get("out_dir") == ".planning/graphs"
+
+
+def test_load_graphifyrc_treats_empty_out_dir_as_absent(tmp_path):
+    """An empty out_dir= must not crash install() over a harmless stale line —
+    unlike viz_node_limit, blank is a plausible hand-edit meaning 'cleared',
+    and this key is read unconditionally on every hook install."""
+    from graphify.hooks import _load_graphifyrc
+
+    rc = tmp_path / ".graphifyrc"
+    rc.write_text("out_dir=\n", encoding="utf-8")
+    cfg = _load_graphifyrc(tmp_path)
+    assert "out_dir" not in cfg
+
+
+def test_persist_out_dir_writes_new_file(tmp_path):
+    from graphify.hooks import _persist_out_dir, _load_graphifyrc
+
+    _persist_out_dir(tmp_path, ".planning/graphs")
+    cfg = _load_graphifyrc(tmp_path)
+    assert cfg.get("out_dir") == ".planning/graphs"
+
+
+def test_persist_out_dir_preserves_other_keys_and_replaces_existing(tmp_path):
+    from graphify.hooks import _persist_out_dir, _load_graphifyrc
+
+    rc = tmp_path / ".graphifyrc"
+    rc.write_text("viz_node_limit=0\nout_dir=old-dir\n", encoding="utf-8")
+    _persist_out_dir(tmp_path, "new-dir")
+    cfg = _load_graphifyrc(tmp_path)
+    assert cfg.get("viz_node_limit") == 0
+    assert cfg.get("out_dir") == "new-dir"
+    # exactly one out_dir line, not two
+    lines = [l for l in rc.read_text(encoding="utf-8").splitlines() if l.startswith("out_dir=")]
+    assert lines == ["out_dir=new-dir"]
+
+
+def test_register_merge_driver_persists_nondefault_graphify_out(tmp_path, monkeypatch):
+    from graphify.hooks import _register_merge_driver, _load_graphifyrc
+    import graphify.paths as paths_mod
+
+    repo = _make_git_repo(tmp_path)
+    monkeypatch.setattr(paths_mod, "GRAPHIFY_OUT", "custom-out")
+    _register_merge_driver(repo)
+    cfg = _load_graphifyrc(repo)
+    assert cfg.get("out_dir") == "custom-out"
+    assert (repo / ".gitattributes").read_text(encoding="utf-8").strip() == (
+        "custom-out/graph.json merge=graphify"
+    )
+
+
+def test_register_merge_driver_skips_default_out_dir_persistence(tmp_path):
+    """No .graphifyrc noise for the common case (no override in play)."""
+    from graphify.hooks import _register_merge_driver
+
+    repo = _make_git_repo(tmp_path)
+    _register_merge_driver(repo)
+    assert not (repo / ".graphifyrc").exists()
+
+
+def test_register_merge_driver_skips_gitignored_target(tmp_path):
+    """#2595: a merge driver for an ignored, untracked path never runs."""
+    from graphify.hooks import _register_merge_driver, _merge_driver_status
+
+    repo = _make_git_repo(tmp_path)
+    (repo / ".gitignore").write_text("graphify-out/\n", encoding="utf-8")
+    result = _register_merge_driver(repo)
+    assert "skipped" in result
+    assert "gitignored" in result
+    assert not (repo / ".gitattributes").exists()
+    status = _merge_driver_status(repo)
+    assert status.startswith("not applicable")
+
+
+def test_register_merge_driver_registers_when_not_gitignored(tmp_path):
+    from graphify.hooks import _register_merge_driver, _merge_driver_status
+
+    repo = _make_git_repo(tmp_path)
+    result = _register_merge_driver(repo)
+    assert result.startswith("registered")
+    assert _merge_driver_status(repo) == "registered"
+
+
+def test_read_persisted_out_dir_used_when_env_var_unset(tmp_path, monkeypatch):
+    """paths.GRAPHIFY_OUT falls back to .graphifyrc when the env var is absent —
+    the exact gap that let a fresh shell/CI job silently reset a project's
+    customized output directory (#2595-adjacent)."""
+    import importlib
+    import graphify.paths as paths_mod
+
+    monkeypatch.delenv("GRAPHIFY_OUT", raising=False)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".graphifyrc").write_text("out_dir=.planning/graphs\n", encoding="utf-8")
+    importlib.reload(paths_mod)
+    try:
+        assert paths_mod.GRAPHIFY_OUT == ".planning/graphs"
+    finally:
+        importlib.reload(paths_mod)  # restore real cwd/env for later tests
+
+
+def test_read_persisted_out_dir_env_var_takes_precedence(tmp_path, monkeypatch):
+    import importlib
+    import graphify.paths as paths_mod
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".graphifyrc").write_text("out_dir=.planning/graphs\n", encoding="utf-8")
+    monkeypatch.setenv("GRAPHIFY_OUT", "env-wins")
+    importlib.reload(paths_mod)
+    try:
+        assert paths_mod.GRAPHIFY_OUT == "env-wins"
+    finally:
+        monkeypatch.delenv("GRAPHIFY_OUT", raising=False)
+        importlib.reload(paths_mod)
+
+
+# --- review follow-up: root-walk resolution, injection guard, uninstall reset ---
+# (Graphify PR review on #3207: _read_persisted_out_dir used cwd instead of
+# walking to the repo root; a newline in GRAPHIFY_OUT could inject an extra
+# .gitattributes line; a persisted out_dir had no way back to default.)
+
+def test_read_persisted_out_dir_stops_at_git_boundary(tmp_path, monkeypatch):
+    """A .graphifyrc outside the repo (in some unrelated parent directory)
+    must never be picked up — the walk stops at the first .git it meets."""
+    import importlib
+    import graphify.paths as paths_mod
+
+    monkeypatch.delenv("GRAPHIFY_OUT", raising=False)
+    (tmp_path / ".graphifyrc").write_text("out_dir=should-not-be-used\n", encoding="utf-8")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    monkeypatch.chdir(repo)
+    importlib.reload(paths_mod)
+    try:
+        assert paths_mod.GRAPHIFY_OUT == "graphify-out"
+    finally:
+        importlib.reload(paths_mod)
+
+
+def test_persist_out_dir_rejects_newline(tmp_path):
+    """A GRAPHIFY_OUT containing a newline must never reach the file verbatim —
+    it would inject an unrelated extra line into .graphifyrc/.gitattributes."""
+    from graphify.hooks import _persist_out_dir
+
+    with pytest.raises(ValueError, match="newline"):
+        _persist_out_dir(tmp_path, "custom-out\nout_dir=/etc/injected")
+    assert not (tmp_path / ".graphifyrc").exists()
+
+
+def test_register_merge_driver_swallows_persist_value_error(tmp_path, monkeypatch):
+    """A malformed GRAPHIFY_OUT must not abort hook install — the merge-driver
+    git config registration this run still applies even if persistence is skipped."""
+    from graphify.hooks import _register_merge_driver
+    import graphify.paths as paths_mod
+
+    repo = _make_git_repo(tmp_path)
+    monkeypatch.setattr(paths_mod, "GRAPHIFY_OUT", "bad\nvalue")
+    result = _register_merge_driver(repo)  # must not raise
+    assert not (repo / ".graphifyrc").exists()
+    assert "registered" in result or "skipped" in result
+
+
+def test_uninstall_clears_persisted_out_dir(tmp_path, monkeypatch):
+    """hook uninstall is the way back to default after a persisted out_dir —
+    there was previously no path back short of hand-editing .graphifyrc."""
+    from graphify.hooks import _register_merge_driver, _unregister_merge_driver, _load_graphifyrc
+    import graphify.paths as paths_mod2
+
+    repo = _make_git_repo(tmp_path)
+    monkeypatch.setattr(paths_mod2, "GRAPHIFY_OUT", "custom-out")
+    _register_merge_driver(repo)
+    assert _load_graphifyrc(repo).get("out_dir") == "custom-out"
+
+    result = _unregister_merge_driver(repo)
+    assert "out_dir" in result
+    assert _load_graphifyrc(repo).get("out_dir") is None
+
+
+def test_uninstall_preserves_other_graphifyrc_keys_while_clearing_out_dir(tmp_path):
+    from graphify.hooks import _persist_out_dir, _unregister_merge_driver, _load_graphifyrc
+
+    repo = _make_git_repo(tmp_path)
+    rc = repo / ".graphifyrc"
+    rc.write_text("viz_node_limit=0\n", encoding="utf-8")
+    _persist_out_dir(repo, "custom-out")
+    _unregister_merge_driver(repo)
+    cfg = _load_graphifyrc(repo)
+    assert cfg.get("out_dir") is None
+    assert cfg.get("viz_node_limit") == 0
+
+
+# --- second review round: repo-root anchoring, escape refusal, symlink guard,
+# empty-env-var edge case (Graphify PR review round 2 on #3207) ---
+
+def test_persist_out_dir_refuses_symlinked_graphifyrc(tmp_path):
+    from graphify.hooks import _persist_out_dir
+
+    target = tmp_path / "elsewhere.txt"
+    target.write_text("do not touch\n", encoding="utf-8")
+    rc_link = tmp_path / ".graphifyrc"
+    rc_link.symlink_to(target)
+
+    with pytest.raises(ValueError, match="symlink"):
+        _persist_out_dir(tmp_path, "custom-out")
+    assert target.read_text(encoding="utf-8") == "do not touch\n"
+
+
+def test_clear_persisted_out_dir_refuses_symlinked_graphifyrc(tmp_path):
+    from graphify.hooks import _clear_persisted_out_dir
+
+    target = tmp_path / "elsewhere.txt"
+    target.write_text("out_dir=untouched\n", encoding="utf-8")
+    rc_link = tmp_path / ".graphifyrc"
+    rc_link.symlink_to(target)
+
+    assert _clear_persisted_out_dir(tmp_path) is False
+    assert target.read_text(encoding="utf-8") == "out_dir=untouched\n"
+
+
+def test_read_persisted_out_dir_relative_value_reexpressed_for_subdir_invocation(tmp_path, monkeypatch):
+    """A repo-root-relative out_dir must resolve to the SAME directory whether
+    invoked from the repo root or a nested subdirectory — not a naive
+    cwd-relative join, which would silently create a phantom directory."""
+    import importlib
+    import graphify.paths as paths_mod
+
+    monkeypatch.delenv("GRAPHIFY_OUT", raising=False)
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".graphifyrc").write_text("out_dir=.planning/graphs\n", encoding="utf-8")
+    subdir = tmp_path / "src" / "nested"
+    subdir.mkdir(parents=True)
+    monkeypatch.chdir(subdir)
+    importlib.reload(paths_mod)
+    try:
+        resolved = (subdir / paths_mod.GRAPHIFY_OUT).resolve()
+        assert resolved == (tmp_path / ".planning" / "graphs").resolve()
+    finally:
+        importlib.reload(paths_mod)
+
+
+def test_read_persisted_out_dir_refuses_dotdot_escape(tmp_path, monkeypatch):
+    """A relative out_dir that climbs above the repo root via `..` must be
+    refused, not honored — .graphifyrc is repo-committed, untrusted content."""
+    import importlib
+    import graphify.paths as paths_mod
+
+    monkeypatch.delenv("GRAPHIFY_OUT", raising=False)
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".graphifyrc").write_text("out_dir=../../etc/evil\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    importlib.reload(paths_mod)
+    try:
+        assert paths_mod.GRAPHIFY_OUT == "graphify-out"
+    finally:
+        importlib.reload(paths_mod)
+
+
+def test_graphify_out_empty_env_var_preserved_not_overridden(tmp_path, monkeypatch):
+    """GRAPHIFY_OUT="" (explicitly set, even if empty) must behave like the
+    pre-persistence os.environ.get(key, default) contract: present-but-empty
+    wins over any fallback, it does not fall through to the persisted/default
+    value the way `os.environ.get(...) or fallback` would."""
+    import importlib
+    import graphify.paths as paths_mod
+
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".graphifyrc").write_text("out_dir=should-not-win\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GRAPHIFY_OUT", "")
+    importlib.reload(paths_mod)
+    try:
+        assert paths_mod.GRAPHIFY_OUT == ""
+    finally:
+        monkeypatch.delenv("GRAPHIFY_OUT", raising=False)
+        importlib.reload(paths_mod)
+
+
+def test_merge_attr_line_falls_back_on_dotdot_ascending_path(tmp_path, monkeypatch):
+    """A `..`-ascending GRAPHIFY_OUT can't be expressed as a gitattributes
+    pattern (same reason an absolute path can't) — must fall back to default."""
+    from graphify.hooks import _merge_attr_line
+    import graphify.paths as paths_mod
+
+    monkeypatch.setattr(paths_mod, "GRAPHIFY_OUT", "../../shared-graphs")
+    assert _merge_attr_line(tmp_path) == "graphify-out/graph.json merge=graphify"
+
+
+# --- third review round: .gitattributes still reachable via raw newline,
+# TOCTOU on symlink checks, lenient empty out_dir, absolute persisted paths,
+# and non-UTF8 .graphifyrc crashing import (Graphify PR review round 3) ---
+
+def test_merge_attr_line_falls_back_on_newline_graphify_out(tmp_path, monkeypatch):
+    """The actual injection point: _persist_out_dir rejecting a newline before
+    writing .graphifyrc does not stop _merge_attr_line from reading the SAME
+    raw (never-persisted) GRAPHIFY_OUT and writing it into .gitattributes."""
+    from graphify.hooks import _merge_attr_line
+    import graphify.paths as paths_mod
+
+    monkeypatch.setattr(paths_mod, "GRAPHIFY_OUT", "custom\nout_dir=/etc/injected")
+    assert _merge_attr_line(tmp_path) == "graphify-out/graph.json merge=graphify"
+
+
+def test_write_text_no_symlink_refuses_symlink(tmp_path):
+    from graphify.hooks import _write_text_no_symlink
+
+    target = tmp_path / "elsewhere.txt"
+    target.write_text("do not touch\n", encoding="utf-8")
+    link = tmp_path / "linked.txt"
+    link.symlink_to(target)
+
+    assert _write_text_no_symlink(link, "new content\n") is False
+    assert target.read_text(encoding="utf-8") == "do not touch\n"
+
+
+def test_write_text_no_symlink_writes_normal_file(tmp_path):
+    from graphify.hooks import _write_text_no_symlink
+
+    path = tmp_path / "plain.txt"
+    assert _write_text_no_symlink(path, "hello\n") is True
+    assert path.read_text(encoding="utf-8") == "hello\n"
+
+
+def test_persist_out_dir_refuses_absolute_path(tmp_path):
+    """.graphifyrc is repo-committed; an absolute out_dir there would silently
+    redirect every collaborator's output the moment they clone and run
+    graphify. Refused at the write site so it can never even be committed
+    through graphify's own tooling."""
+    from graphify.hooks import _persist_out_dir
+
+    with pytest.raises(ValueError, match="absolute"):
+        _persist_out_dir(tmp_path, "/etc/shared-graphs")
+    assert not (tmp_path / ".graphifyrc").exists()
+
+
+def test_read_persisted_out_dir_refuses_absolute_value(tmp_path, monkeypatch):
+    """Defense in depth: even a hand-crafted/malicious .graphifyrc with an
+    absolute out_dir (never went through _persist_out_dir) must not be
+    honored on read."""
+    import importlib
+    import graphify.paths as paths_mod
+
+    monkeypatch.delenv("GRAPHIFY_OUT", raising=False)
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".graphifyrc").write_text("out_dir=/etc/shared-graphs\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    importlib.reload(paths_mod)
+    try:
+        assert paths_mod.GRAPHIFY_OUT == "graphify-out"
+    finally:
+        importlib.reload(paths_mod)
+
+
+def test_graphify_out_survives_non_utf8_graphifyrc(tmp_path, monkeypatch):
+    """A corrupted/binary .graphifyrc must degrade to 'no override', not crash
+    module import for every graphify command run anywhere near this repo."""
+    import importlib
+    import graphify.paths as paths_mod
+
+    monkeypatch.delenv("GRAPHIFY_OUT", raising=False)
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".graphifyrc").write_bytes(b"out_dir=\xff\xfe\x00bad")
+    monkeypatch.chdir(tmp_path)
+    importlib.reload(paths_mod)  # must not raise
+    try:
+        assert paths_mod.GRAPHIFY_OUT == "graphify-out"
+    finally:
+        importlib.reload(paths_mod)
+
+
+# --- fourth review round: atomic write (truncate visibility), whitespace
+# injection, non-UTF8 uninstall crash (Graphify PR review round 4) ---
+
+def test_write_text_no_symlink_leaves_no_tmp_file_on_success(tmp_path):
+    from graphify.hooks import _write_text_no_symlink
+
+    path = tmp_path / "plain.txt"
+    assert _write_text_no_symlink(path, "hello\n") is True
+    leftovers = [p for p in tmp_path.iterdir() if p.name != "plain.txt"]
+    assert leftovers == []
+
+
+def test_write_text_no_symlink_overwrites_existing_content(tmp_path):
+    from graphify.hooks import _write_text_no_symlink
+
+    path = tmp_path / "plain.txt"
+    path.write_text("old\n", encoding="utf-8")
+    assert _write_text_no_symlink(path, "new\n") is True
+    assert path.read_text(encoding="utf-8") == "new\n"
+
+
+def test_write_text_no_symlink_cleans_up_tmp_on_write_failure(tmp_path, monkeypatch):
+    from graphify.hooks import _write_text_no_symlink
+
+    def _boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("os.fdopen", _boom)
+    path = tmp_path / "plain.txt"
+    with pytest.raises(OSError):
+        _write_text_no_symlink(path, "content\n")
+    leftovers = list(tmp_path.iterdir())
+    assert leftovers == [], f"temp file leaked: {leftovers}"
+
+
+def test_merge_attr_line_falls_back_on_space_in_graphify_out(tmp_path, monkeypatch):
+    """A space in GRAPHIFY_OUT would split the gitattributes line into more
+    fields than intended (pattern attr1 attr2 ...) — same fallback as an
+    absolute or `..`-ascending path."""
+    from graphify.hooks import _merge_attr_line
+    import graphify.paths as paths_mod
+
+    monkeypatch.setattr(paths_mod, "GRAPHIFY_OUT", "my custom-out")
+    assert _merge_attr_line(tmp_path) == "graphify-out/graph.json merge=graphify"
+
+
+def test_merge_attr_line_falls_back_on_tab_in_graphify_out(tmp_path, monkeypatch):
+    from graphify.hooks import _merge_attr_line
+    import graphify.paths as paths_mod
+
+    monkeypatch.setattr(paths_mod, "GRAPHIFY_OUT", "custom\tout")
+    assert _merge_attr_line(tmp_path) == "graphify-out/graph.json merge=graphify"
+
+
+def test_clear_persisted_out_dir_survives_non_utf8_graphifyrc(tmp_path):
+    """hook uninstall must not crash over a corrupted .graphifyrc — same
+    leniency as the read side in graphify.paths."""
+    from graphify.hooks import _clear_persisted_out_dir
+
+    rc = tmp_path / ".graphifyrc"
+    rc.write_bytes(b"out_dir=\xff\xfe\x00bad")
+    assert _clear_persisted_out_dir(tmp_path) is False
+
+
+def test_uninstall_survives_non_utf8_graphifyrc(tmp_path):
+    """End-to-end: hook uninstall must complete (removing hooks/git config/
+    .gitattributes) even when .graphifyrc itself is corrupted."""
+    from graphify.hooks import install, uninstall
+
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    (repo / ".graphifyrc").write_bytes(b"out_dir=\xff\xfe\x00bad")
+    result = uninstall(repo)  # must not raise
+    assert "removed" in result.lower()
+    assert not (repo / ".git" / "hooks" / "post-commit").exists()
+
+
+# --- fifth review round: hooks.py's out_dir reader kept in sync with paths.py's
+# refusal policy, idempotent persistence, cwd-unavailable and NUL-byte crashes
+# in module import (Graphify PR review round 5) ---
+
+def test_load_graphifyrc_ignores_absolute_out_dir(tmp_path):
+    """No current consumer reads cfg['out_dir'], but this parses the same
+    file/key graphify.paths._read_persisted_out_dir does, and that function
+    refuses an absolute value for a concrete reason — keep them in sync so a
+    future consumer doesn't silently reintroduce the vulnerability."""
+    from graphify.hooks import _load_graphifyrc
+
+    rc = tmp_path / ".graphifyrc"
+    rc.write_text("out_dir=/etc/shared-graphs\n", encoding="utf-8")
+    cfg = _load_graphifyrc(tmp_path)
+    assert "out_dir" not in cfg
+
+
+def test_load_graphifyrc_ignores_dotdot_out_dir(tmp_path):
+    from graphify.hooks import _load_graphifyrc
+
+    rc = tmp_path / ".graphifyrc"
+    rc.write_text("out_dir=../../etc/evil\n", encoding="utf-8")
+    cfg = _load_graphifyrc(tmp_path)
+    assert "out_dir" not in cfg
+
+
+def test_load_graphifyrc_accepts_safe_relative_out_dir(tmp_path):
+    from graphify.hooks import _load_graphifyrc
+
+    rc = tmp_path / ".graphifyrc"
+    rc.write_text("out_dir=.planning/graphs\n", encoding="utf-8")
+    cfg = _load_graphifyrc(tmp_path)
+    assert cfg.get("out_dir") == ".planning/graphs"
+
+
+def test_persist_out_dir_skips_rewrite_when_unchanged(tmp_path):
+    """A repeated `hook install` with the same GRAPHIFY_OUT must not rewrite
+    .graphifyrc every time (needless I/O/mtime churn on the common case)."""
+    from graphify.hooks import _persist_out_dir
+
+    _persist_out_dir(tmp_path, "custom-out")
+    rc = tmp_path / ".graphifyrc"
+    mtime_before = rc.stat().st_mtime_ns
+    _persist_out_dir(tmp_path, "custom-out")  # same value again
+    assert rc.stat().st_mtime_ns == mtime_before
+
+
+def test_persist_out_dir_still_rewrites_when_value_changes(tmp_path):
+    from graphify.hooks import _persist_out_dir, _load_graphifyrc
+
+    _persist_out_dir(tmp_path, "old-out")
+    _persist_out_dir(tmp_path, "new-out")
+    assert _load_graphifyrc(tmp_path).get("out_dir") == "new-out"
+
+
+def test_graphify_out_survives_cwd_deleted(tmp_path, monkeypatch):
+    """A shell left open in a directory something else deleted must not
+    crash graphify.paths import — Path.cwd() raises FileNotFoundError."""
+    import importlib
+    import graphify.paths as paths_mod
+
+    monkeypatch.delenv("GRAPHIFY_OUT", raising=False)
+    monkeypatch.setattr(
+        "pathlib.Path.cwd",
+        classmethod(lambda cls: (_ for _ in ()).throw(FileNotFoundError("cwd gone"))),
+    )
+    importlib.reload(paths_mod)  # must not raise
+    try:
+        assert paths_mod.GRAPHIFY_OUT == "graphify-out"
+    finally:
+        importlib.reload(paths_mod)
+
+
+def test_graphify_out_survives_embedded_null_byte_in_out_dir(tmp_path, monkeypatch):
+    """A valid-UTF-8 .graphifyrc value can still contain an embedded NUL
+    byte, which raises ValueError from the OS layer the first time it
+    reaches a real filesystem call (Path.resolve()) — must degrade to
+    'no override', not crash import."""
+    import importlib
+    import graphify.paths as paths_mod
+
+    monkeypatch.delenv("GRAPHIFY_OUT", raising=False)
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".graphifyrc").write_text("out_dir=bad\x00dir\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    importlib.reload(paths_mod)  # must not raise
+    try:
+        assert paths_mod.GRAPHIFY_OUT == "graphify-out"
+    finally:
+        importlib.reload(paths_mod)
+
+
+# --- sixth review round: quoted gitattributes entries, dot-dot persistence,
+# uninstall resilience, cross-platform absolute detection (Graphify PR review
+# round 6) ---
+
+def test_has_merge_attr_recognizes_quoted_entry(tmp_path):
+    """A gitattributes pattern with whitespace is C-quoted by convention —
+    a naive whitespace split must not miss an existing quoted entry and
+    treat it as unregistered."""
+    from graphify.hooks import _has_merge_attr
+
+    assert _has_merge_attr('"my dir/graph.json" merge=graphify') is True
+
+
+def test_has_merge_attr_still_recognizes_unquoted_entry():
+    from graphify.hooks import _has_merge_attr
+
+    assert _has_merge_attr("graphify-out/graph.json merge=graphify") is True
+
+
+def test_has_merge_attr_ignores_unterminated_quote():
+    from graphify.hooks import _has_merge_attr
+
+    assert _has_merge_attr('"unterminated/graph.json merge=graphify') is False
+
+
+def test_register_merge_driver_does_not_duplicate_quoted_entry(tmp_path):
+    """A pre-existing, hand-authored quoted entry must be recognized as
+    already registered — not duplicated with a second unquoted line."""
+    from graphify.hooks import _register_merge_driver
+
+    repo = _make_git_repo(tmp_path)
+    attrs = repo / ".gitattributes"
+    attrs.write_text('"graphify-out/graph.json" merge=graphify\n', encoding="utf-8")
+    result = _register_merge_driver(repo)
+    assert "already registered" in result
+    assert attrs.read_text(encoding="utf-8").count("merge=graphify") == 1
+
+
+def test_persist_out_dir_refuses_dotdot_value(tmp_path):
+    """Every reader of this key refuses a `..`-escaping value — persisting
+    one anyway would just write a line silently ignored on the next read."""
+    from graphify.hooks import _persist_out_dir
+
+    with pytest.raises(ValueError, match=r"\.\."):
+        _persist_out_dir(tmp_path, "../shared-graphs")
+    assert not (tmp_path / ".graphifyrc").exists()
+
+
+def test_unregister_merge_driver_survives_clear_out_dir_oserror(tmp_path, monkeypatch):
+    """A failure clearing the persisted out_dir (e.g. unlink() denied by a
+    concurrent process) must not abort the rest of uninstall — git config
+    and .gitattributes cleanup are unrelated and should still happen."""
+    from graphify.hooks import install, uninstall
+    import graphify.hooks as hooks_mod
+
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+
+    def _boom(root):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(hooks_mod, "_clear_persisted_out_dir", _boom)
+    result = uninstall(repo)  # must not raise
+    assert "removed" in result.lower()
+    assert not (repo / ".git" / "hooks" / "post-commit").exists()
+
+
+def test_persist_out_dir_refuses_windows_absolute_path_on_posix(tmp_path):
+    """A Windows-absolute value must be refused even on a POSIX host — plain
+    Path.is_absolute() only recognizes the CURRENT host's absolute forms,
+    but this value is untrusted repo-committed content that could have been
+    authored on either OS."""
+    from graphify.hooks import _persist_out_dir
+
+    with pytest.raises(ValueError, match="absolute"):
+        _persist_out_dir(tmp_path, "C:/shared-graphs")
+
+
+def test_load_graphifyrc_ignores_windows_absolute_out_dir_on_posix(tmp_path):
+    from graphify.hooks import _load_graphifyrc
+
+    rc = tmp_path / ".graphifyrc"
+    rc.write_text("out_dir=C:/shared-graphs\n", encoding="utf-8")
+    cfg = _load_graphifyrc(tmp_path)
+    assert "out_dir" not in cfg
+
+
+def test_read_persisted_out_dir_refuses_windows_absolute_value_on_posix(tmp_path, monkeypatch):
+    import importlib
+    import graphify.paths as paths_mod
+
+    monkeypatch.delenv("GRAPHIFY_OUT", raising=False)
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".graphifyrc").write_text("out_dir=C:/shared-graphs\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    importlib.reload(paths_mod)
+    try:
+        assert paths_mod.GRAPHIFY_OUT == "graphify-out"
+    finally:
+        importlib.reload(paths_mod)
+
+
+# --- seventh review round: non-UTF8 existing .graphifyrc on persist, glob
+# metacharacters in gitattributes patterns, repo-root-relative merge-attr
+# generation (Graphify PR review round 7). Findings "Removed cross-platform
+# absolute-path helper" and "Removed public path helper" were false
+# positives from moving is_absolute_any_platform earlier in paths.py (a
+# move, not a removal) — verified via existing test_paths.py coverage and
+# a direct import check, no test needed for a non-bug.
+
+def test_persist_out_dir_survives_non_utf8_existing_content(tmp_path):
+    """A corrupted/non-UTF-8 EXISTING .graphifyrc must not crash persisting
+    a new value — the current sole caller already tolerates this via its own
+    except (OSError, ValueError), but guarded internally too so it stays
+    true for any future caller."""
+    from graphify.hooks import _persist_out_dir, _load_graphifyrc
+
+    rc = tmp_path / ".graphifyrc"
+    rc.write_bytes(b"\xff\xfe\x00bad")
+    _persist_out_dir(tmp_path, "custom-out")  # must not raise
+    assert _load_graphifyrc(tmp_path).get("out_dir") == "custom-out"
+
+
+@pytest.mark.parametrize("glob_char", ["*", "?", "[", "]", "!"])
+def test_merge_attr_line_falls_back_on_glob_metacharacter(tmp_path, monkeypatch, glob_char):
+    """A glob metacharacter in GRAPHIFY_OUT changes what the gitattributes
+    PATTERN matches instead of being a literal path segment — e.g. "*"
+    would match graph.json under every top-level directory."""
+    from graphify.hooks import _merge_attr_line
+    import graphify.paths as paths_mod
+
+    monkeypatch.setattr(paths_mod, "GRAPHIFY_OUT", f"custom{glob_char}out")
+    assert _merge_attr_line(tmp_path) == "graphify-out/graph.json merge=graphify"
+
+
+def test_merge_attr_line_falls_back_on_leading_hash(tmp_path, monkeypatch):
+    """A leading # would make the whole generated .gitattributes line a
+    comment — silently registering nothing while reporting success."""
+    from graphify.hooks import _merge_attr_line
+    import graphify.paths as paths_mod
+
+    monkeypatch.setattr(paths_mod, "GRAPHIFY_OUT", "#custom-out")
+    assert _merge_attr_line(tmp_path) == "graphify-out/graph.json merge=graphify"
+
+
+def test_merge_attr_line_uses_repo_root_relative_persisted_value_from_subdir(tmp_path):
+    """The exact interaction bug: a persisted out_dir re-expressed relative
+    to a nested cwd is a `..`-ascending path that _merge_attr_line's own
+    guard then (correctly, given that input) falls back to default for —
+    but the actual .gitattributes line generated from `root` should use
+    the persisted directory, not silently revert to the wrong default."""
+    from graphify.hooks import _merge_attr_line, _persist_out_dir
+
+    repo = _make_git_repo(tmp_path)
+    _persist_out_dir(repo, ".planning/graphs")
+    assert _merge_attr_line(repo) == ".planning/graphs/graph.json merge=graphify"
+
+
+def test_register_merge_driver_correct_from_subdirectory_with_persisted_out_dir(tmp_path, monkeypatch):
+    """End-to-end: hook install run from a subdirectory of a repo that
+    already has a persisted out_dir must generate the correct
+    .gitattributes line, not fall back to the wrong default."""
+    from graphify.hooks import _persist_out_dir, _register_merge_driver
+
+    repo = _make_git_repo(tmp_path)
+    _persist_out_dir(repo, ".planning/graphs")
+    subdir = repo / "src" / "nested"
+    subdir.mkdir(parents=True)
+    monkeypatch.chdir(subdir)
+    result = _register_merge_driver(repo)
+    assert "registered" in result
+    attrs = (repo / ".gitattributes").read_text(encoding="utf-8")
+    assert attrs.strip() == ".planning/graphs/graph.json merge=graphify"
+
+
+# --- eighth review round: whitespace/glob rejection at persist time, symlink-
+# loop RuntimeError (Graphify PR review round 8). "is_absolute_any_platform
+# removed" findings were false positives again — same as last round, verified
+# via direct import + full test_paths.py pass, no code change needed.
+
+@pytest.mark.parametrize("bad_value", [
+    "my custom-out",       # space
+    "custom\tout",         # tab
+    "custom*out",          # glob star
+    "custom?out",          # glob question mark
+    "custom[out]",         # character class
+    "!custom-out",         # leading negation
+    "#custom-out",         # leading comment marker
+])
+def test_persist_out_dir_refuses_unsafe_gitattributes_values(tmp_path, bad_value):
+    """Every such value would just make _merge_attr_line fall back to the
+    default anyway — persisting it is immediately useless, same reasoning
+    already applied to `..`-escaping and absolute values."""
+    from graphify.hooks import _persist_out_dir
+
+    with pytest.raises(ValueError, match="unsafe for .gitattributes"):
+        _persist_out_dir(tmp_path, bad_value)
+    assert not (tmp_path / ".graphifyrc").exists()
+
+
+def test_read_persisted_out_dir_survives_symlink_loop(tmp_path, monkeypatch):
+    """A symlink loop in the .graphifyrc's ancestry (repo-committed content
+    could ship one deliberately) raises RuntimeError from Path.resolve() —
+    pathlib's own exception for this, not OSError — must degrade to
+    'no override', not crash module import."""
+    import importlib
+    import graphify.paths as paths_mod
+
+    monkeypatch.delenv("GRAPHIFY_OUT", raising=False)
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".graphifyrc").write_text("out_dir=.planning/graphs\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    def _boom(self):
+        raise RuntimeError("Symlink loop from '...'")
+
+    monkeypatch.setattr("pathlib.Path.resolve", _boom)
+    importlib.reload(paths_mod)  # must not raise
+    try:
+        assert paths_mod.GRAPHIFY_OUT == "graphify-out"
+    finally:
+        monkeypatch.undo()
+        importlib.reload(paths_mod)
+
+
+def test_read_persisted_out_dir_for_root_survives_symlink_loop(tmp_path, monkeypatch):
+    from graphify.hooks import _persist_out_dir
+
+    repo = _make_git_repo(tmp_path)
+    _persist_out_dir(repo, ".planning/graphs")
+    import graphify.paths as paths_mod
+
+    def _boom(self):
+        raise RuntimeError("Symlink loop from '...'")
+
+    monkeypatch.setattr("pathlib.Path.resolve", _boom)
+    assert paths_mod._read_persisted_out_dir_for_root(repo) is None  # must not raise

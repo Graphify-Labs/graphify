@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 
 _HOOK_MARKER = "# graphify-hook-start"
@@ -428,6 +429,9 @@ def _load_graphifyrc(root: Path) -> dict[str, str | int]:
 
     Supported options:
       viz_node_limit: integer >= 0 (e.g. viz_node_limit=0)
+      out_dir: string, a persisted GRAPHIFY_OUT override (see graphify.paths);
+        written by _register_merge_driver so a non-default output directory
+        survives into shells/CI jobs that never export the env var.
     """
     rc_path = root / ".graphifyrc"
     if not rc_path.is_file():
@@ -455,7 +459,172 @@ def _load_graphifyrc(root: Path) -> dict[str, str | int]:
                     f"Invalid viz_node_limit in {rc_path} at line {line_num}: {val!r}. "
                     f"Must be a non-negative integer."
                 ) from exc
+        elif key == "out_dir":
+            # An empty value is treated as absent, not invalid — unlike
+            # viz_node_limit, a blank `out_dir=` is a plausible way someone
+            # hand-edits the file to clear an override, and this key is read
+            # unconditionally by `install()`; raising here would make hook
+            # install itself impossible to run over a harmless stale line.
+            #
+            # No consumer reads cfg["out_dir"] today (install()/status() only
+            # use viz_node_limit) — but this parses the same file and key
+            # graphify.paths._read_persisted_out_dir does, and that function
+            # refuses an absolute or `..`-escaping value for a concrete
+            # reason (.graphifyrc is repo-committed, untrusted content). A
+            # future caller reading this dict must inherit that same
+            # refusal automatically rather than needing to remember to
+            # re-derive it, so it is enforced here too even though nothing
+            # currently depends on it.
+            # is_absolute_any_platform (not plain Path.is_absolute()): this
+            # value is untrusted repo-committed content that could have been
+            # authored on either OS — see that function's docstring
+            # "EXCEPTION" paragraph.
+            from graphify.paths import is_absolute_any_platform
+            if val and not is_absolute_any_platform(val) and ".." not in Path(val).parts:
+                cfg["out_dir"] = val
     return cfg
+
+
+def _write_text_no_symlink(path: Path, content: str) -> bool:
+    """Write `content` to `path` atomically, without writing through a
+    symlink at the final path component. Returns True if written, False if
+    `path` is a symlink.
+
+    Writes to a temp file in the same directory, then `os.replace()`s it
+    into place. This gets two properties in one step, both needed and
+    neither provided by opening `path` directly (even with O_NOFOLLOW):
+
+    - Atomicity: an in-place open+truncate+write leaves a window, between
+      the truncate and the write completing, where a concurrent reader
+      (another graphify process, a git hook) sees an empty file instead of
+      either the old or the new content. `os.replace()` is a single
+      directory-entry swap; no reader ever observes a partial state.
+    - No write-through-symlink, without needing O_NOFOLLOW (POSIX-only) at
+      all: `os.replace(src, dst)` replaces whatever directory entry `dst`
+      names — symlink or regular file — it does not resolve `dst` and write
+      through it. So even if something races a symlink into place between
+      the `is_symlink()` check below and the replace, the replace still
+      only ever touches that directory entry, never the symlink's target.
+      The check is therefore an early, friendlier bail-out for the callers
+      here (a clear "refuse to write through a symlink" instead of a
+      generic failure), not the actual safety boundary.
+    """
+    if path.is_symlink():
+        return False
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            f.write(content)
+        os.replace(tmp, str(path))
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return True
+
+
+def _persist_out_dir(root: Path, out: str) -> None:
+    """Append/update ``out_dir=<out>`` in <root>/.graphifyrc.
+
+    Only called when GRAPHIFY_OUT resolved to something other than the
+    hardcoded default, so the common case (no override) never touches the
+    file. Preserves every other line untouched (mirrors _register_merge_driver's
+    own append-don't-clobber behavior for .gitattributes).
+
+    Raises ValueError for a value containing a newline/carriage-return
+    instead of writing it: `.graphifyrc` is line-based, so such a value would
+    inject an extra, attacker- or accident-controlled line into the file (and
+    from there, via _merge_attr_line, into .gitattributes) rather than being
+    stored as the single `out_dir` line it looks like. GRAPHIFY_OUT is
+    ordinarily just a directory name, but it can come from an arbitrary env
+    var, so this is checked rather than assumed.
+
+    Also raises ValueError instead of writing through a symlinked
+    `.graphifyrc`: it is repo-committed content, so a cloned repo could ship
+    `.graphifyrc` as a symlink to an arbitrary path (e.g. a shell profile or
+    cron file) and have `hook install` — routinely run, with no reason for a
+    user to suspect it writes anything — overwrite whatever that symlink
+    points at. Uses `_write_text_no_symlink` for the actual write so a
+    symlink swapped in after this check (but before the write) is still
+    caught, rather than trusting a single earlier check-then-write.
+
+    Refuses to persist an absolute path at all: `.graphifyrc` is repo-
+    committed, and an absolute out_dir committed there would silently
+    redirect every collaborator's graphify output the moment they clone the
+    repo and run any command — no explicit opt-in, unlike an env var the
+    user sets for themselves. `graphify.paths._read_persisted_out_dir`
+    refuses to honor an absolute persisted value for the same reason; not
+    writing one here is the same policy applied at the source.
+    """
+    if "\n" in out or "\r" in out:
+        raise ValueError(f"GRAPHIFY_OUT contains a newline, refusing to persist: {out!r}")
+    # is_absolute_any_platform (not plain Path.is_absolute()): the value
+    # written here is read back by graphify.paths._read_persisted_out_dir on
+    # whatever machine/OS clones this repo next, which already refuses an
+    # any-platform-absolute value regardless of which host wrote it — a
+    # value this host doesn't consider absolute but another platform does
+    # (e.g. a POSIX host persisting "C:/shared") would be written here only
+    # to be immediately refused by every reader. See that function's
+    # docstring "EXCEPTION" paragraph.
+    from graphify.paths import is_absolute_any_platform
+    if is_absolute_any_platform(out):
+        raise ValueError(f"refusing to persist an absolute GRAPHIFY_OUT to .graphifyrc: {out!r}")
+    if ".." in Path(out).parts:
+        # Every reader of this key (graphify.paths._read_persisted_out_dir,
+        # this module's own _load_graphifyrc) refuses a `..`-escaping value —
+        # persisting one anyway would just write a line that is silently
+        # ignored the next time anyone reads it back. Refuse at the source
+        # instead of writing something immediately useless.
+        raise ValueError(f"refusing to persist a `..`-escaping GRAPHIFY_OUT: {out!r}")
+    if _unsafe_as_gitattributes_pattern(out):
+        # Same "don't write something a reader will just ignore" reasoning
+        # as the `..` check above: _merge_attr_line falls back to the
+        # default for whitespace or a gitattributes glob metacharacter
+        # (*?[]! or a leading #), so persisting one here just writes a
+        # value the very next .gitattributes generation will discard.
+        # (Absolute/backslash/`..` are re-checked here too via the shared
+        # predicate, but those already raised above with a more specific
+        # message — this branch is only reachable for whitespace/glob.)
+        raise ValueError(
+            f"refusing to persist a GRAPHIFY_OUT unsafe for .gitattributes "
+            f"(whitespace or a glob metacharacter): {out!r}"
+        )
+    rc_path = root / ".graphifyrc"
+    if rc_path.is_symlink():
+        raise ValueError(f"refusing to write through a symlinked .graphifyrc: {rc_path}")
+    lines: list[str] = []
+    existing_value = None
+    if rc_path.is_file():
+        try:
+            content = rc_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            # A corrupted/non-UTF-8 existing .graphifyrc can't be preserved
+            # (its other lines, if any, aren't recoverable), but that must
+            # not crash hook install over it — start fresh and write just
+            # the out_dir line. The current sole caller already wraps this
+            # call in `except (OSError, ValueError)` (UnicodeDecodeError is
+            # a ValueError subclass), so this specific path isn't reachable
+            # today — guarded here anyway so it stays true for any future
+            # caller that doesn't happen to wrap it the same way.
+            content = ""
+        for raw in content.splitlines():
+            stripped = raw.strip()
+            if stripped and not stripped.startswith("#") and "=" in stripped:
+                key = stripped.split("=", 1)[0].strip()
+                if key == "out_dir":
+                    existing_value = stripped.split("=", 1)[1].strip()
+                    continue  # replaced below with the current value
+            lines.append(raw)
+    if existing_value == out:
+        # Nothing to do: `hook install` re-run with an unchanged GRAPHIFY_OUT
+        # (the common case once persisted) would otherwise rewrite .graphifyrc
+        # on every run with byte-identical content — needless I/O/mtime churn.
+        return
+    lines.append(f"out_dir={out}")
+    if not _write_text_no_symlink(rc_path, "\n".join(lines) + "\n"):
+        raise ValueError(f"refusing to write through a symlinked .graphifyrc: {rc_path}")
 
 
 def _git_root(path: Path) -> Path | None:
@@ -611,29 +780,140 @@ def _pinned_python() -> str:
     return sys.executable
 
 
-def _merge_attr_line() -> str:
+def _unsafe_as_gitattributes_pattern(out: str) -> bool:
+    """True if `out` can't safely become the pattern half of a
+    `.gitattributes` line (`<out>/graph.json merge=graphify`).
+
+    Shared by `_merge_attr_line` (falls back to the default name) and
+    `_persist_out_dir` (refuses to persist at all) so the two can't drift:
+    a value `_merge_attr_line` would reject anyway is also refused at
+    write time, matching the same "don't persist something a reader will
+    just ignore" reasoning already applied to `..`-escaping and absolute
+    values.
+
+    - Absolute, backslash-containing, or `..`-ascending: not expressible as
+      a repo-relative gitattributes pattern at all.
+    - Whitespace: a gitattributes line is whitespace-separated fields, so a
+      space would split the pattern from part of itself, parsing as an
+      extra unintended attribute.
+    - A glob metacharacter (`*?[]!`) or a leading `#`: embedded unescaped,
+      these change what the pattern MATCHES (`*`/`?` glob, `[...]` is a
+      character class, a leading `!` negates) or make the whole line a
+      comment, rather than being treated as a literal path segment — e.g.
+      `out="*"` would produce `*/graph.json`, matching under every
+      top-level directory instead of one literally named `"*"`.
+    """
+    return (
+        Path(out).is_absolute()
+        or "\\" in out
+        or ".." in Path(out).parts
+        or any(c.isspace() for c in out)
+        or any(c in out for c in "*?[]!")
+        or out.startswith("#")
+    )
+
+
+def _merge_attr_line(root: Path) -> str:
     """The .gitattributes line assigning the graphify merge driver to graph.json.
 
-    The graph lives under the configured output directory (graphify.paths,
-    GRAPHIFY_OUT env override). gitattributes patterns are repo-relative, so an
-    absolute output-dir override cannot be expressed there — fall back to the
-    default name in that case.
+    The graph lives under the configured output directory. Prefers the
+    persisted override re-expressed relative to `root` (see
+    graphify.paths._read_persisted_out_dir_for_root) over the raw
+    GRAPHIFY_OUT env var/cwd-relative fallback: gitattributes patterns are
+    always interpreted relative to the repo root by git, never relative to
+    wherever a command was invoked from, so reusing the cwd-relative form
+    here would produce a `..`-ascending path (see below) whenever `hook
+    install` runs from a subdirectory of a repo with a persisted override —
+    landing on the wrong default instead of the actual persisted directory.
+
+    gitattributes patterns are repo-relative, so an absolute output-dir
+    override cannot be expressed there — fall back to the default name in
+    that case. A `..`-ascending relative path can't be expressed either —
+    same fallback (this can still legitimately occur: no persisted override
+    at all, falling through to a cwd-relative GRAPHIFY_OUT set directly via
+    the env var while invoked from a subdirectory).
+
+    Any whitespace in GRAPHIFY_OUT (not just newline/carriage-return) gets
+    the same fallback: a `.gitattributes` line is whitespace-separated
+    fields (`pattern attr1 attr2 ...`), so a space in `out` would split the
+    line into more fields than intended — part of the directory name would
+    parse as an extra attribute rather than as part of the pattern. This
+    function is also the actual place any such corrupted value would land
+    in `.gitattributes` — _persist_out_dir rejecting a newline before
+    writing `.graphifyrc` does not stop THIS function from reading the same
+    raw GRAPHIFY_OUT (env var, never persisted) and building the line from
+    it regardless, since it runs unconditionally after the persist attempt,
+    swallowed or not. Guaranteeing `out` is whitespace-free here is also
+    what makes the plain `line.split(" ", 1)[0]` used by callers of this
+    function (_register_merge_driver, _merge_driver_status) a safe way to
+    recover the path: with no space possible before `/graph.json`, that
+    split can never land anywhere but the intended boundary.
+
+    A directory name containing a gitattributes glob metacharacter
+    (`*?[]!`) or a leading `#` gets the same fallback too: embedded
+    unescaped into the pattern, these change what the pattern MATCHES
+    (`*` and `?` glob, `[...]` is a character class, a leading `!`
+    negates, a leading `#` makes the whole line a comment) rather than
+    being treated as a literal path segment — e.g. GRAPHIFY_OUT="*" would
+    produce the pattern `*/graph.json`, matching graph.json under every
+    top-level directory instead of one literally named "*".
     """
-    from graphify.paths import GRAPHIFY_OUT
-    out = GRAPHIFY_OUT
-    if not out or Path(out).is_absolute() or "\\" in out:
+    from graphify.paths import GRAPHIFY_OUT, _read_persisted_out_dir_for_root
+    out = _read_persisted_out_dir_for_root(root) or GRAPHIFY_OUT
+    if not out or _unsafe_as_gitattributes_pattern(out):
         out = "graphify-out"
     return f"{out.rstrip('/')}/graph.json merge=graphify"
 
 
+def _is_gitignored(root: Path, relative_path: str) -> bool:
+    """True if `relative_path` (repo-relative) is excluded by gitignore rules.
+
+    A merge driver registered for an ignored path is dead weight (#2595): git
+    never tracks the file, so `git merge`/`git pull` never invoke any merge
+    driver for it, and the .gitattributes line just sits there re-adding itself
+    on every `hook install` re-run. Best-effort: any failure (git missing,
+    not a repo) reports "not ignored" so callers fall back to the previous,
+    always-register behavior rather than silently skipping registration.
+    """
+    import subprocess as _sp
+    try:
+        result = _sp.run(
+            ["git", "-C", str(root), "check-ignore", "-q", "--", relative_path],
+            capture_output=True,
+        )
+    except OSError:
+        return False
+    return result.returncode == 0
+
+
 def _has_merge_attr(content: str) -> bool:
-    """True if a (non-comment) `<...>graph.json ... merge=graphify` line exists."""
+    """True if a (non-comment) `<...>graph.json ... merge=graphify` line exists.
+
+    A gitattributes pattern containing whitespace is written C-quoted
+    (git's own convention, e.g. `"my dir/graph.json" merge=graphify`) — a
+    naive `line.split()` shatters a quoted pattern across multiple fields
+    (`'"my'`, `'dir/graph.json"'`, ...), none of which end with
+    `"graph.json"`, so a legitimately quoted pre-existing entry would be
+    missed and treated as unregistered. `_merge_attr_line` itself never
+    generates a quoted line (GRAPHIFY_OUT is validated whitespace-free
+    before it gets there), but this function also has to recognize an entry
+    someone else authored by hand for a path that genuinely needs quoting.
+    """
     for raw in content.splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
-        fields = line.split()
-        if fields and fields[0].endswith("graph.json") and "merge=graphify" in fields[1:]:
+        if line.startswith('"'):
+            end = line.find('"', 1)
+            if end == -1:
+                continue  # unterminated quote — malformed, not a match
+            pattern, rest = line[1:end], line[end + 1:].split()
+        else:
+            fields = line.split()
+            if not fields:
+                continue
+            pattern, rest = fields[0], fields[1:]
+        if pattern.endswith("graph.json") and "merge=graphify" in rest:
             return True
     return False
 
@@ -671,7 +951,25 @@ def _register_merge_driver(root: Path) -> str:
     except (OSError, _sp.CalledProcessError) as exc:
         return f"not registered (git config failed: {exc})"
 
-    line = _merge_attr_line()
+    # Persist a non-default GRAPHIFY_OUT so a later `hook install`/`hook status`
+    # run in a shell that never exported the env var still resolves the same
+    # output directory this one did (see graphify.paths._read_persisted_out_dir).
+    from graphify.paths import GRAPHIFY_OUT
+    if GRAPHIFY_OUT and GRAPHIFY_OUT != "graphify-out":
+        try:
+            _persist_out_dir(root, GRAPHIFY_OUT)
+        except (OSError, ValueError):
+            pass  # best-effort; the merge driver config above still applies this run
+
+    line = _merge_attr_line(root)
+    graph_relpath = line.split(" ", 1)[0]
+    if _is_gitignored(root, graph_relpath):
+        # #2595: a merge driver for an ignored, untracked file never runs —
+        # git has nothing to merge. Registering it just dirties .gitattributes
+        # and re-adds itself on every re-run. git config above is left in
+        # place (harmless, and needed if the path is later un-ignored).
+        return f"skipped ({graph_relpath} is gitignored — merge driver would never run)"
+
     attrs = root / ".gitattributes"
     if attrs.exists():
         content = attrs.read_text(encoding="utf-8")
@@ -686,8 +984,57 @@ def _register_merge_driver(root: Path) -> str:
     return f"registered ({line})"
 
 
+def _clear_persisted_out_dir(root: Path) -> bool:
+    """Remove the `out_dir=` line from <root>/.graphifyrc, if present.
+
+    A persisted out_dir intentionally survives GRAPHIFY_OUT being unset (that
+    is the whole point — it's what lets a later shell/CI job resolve the same
+    directory without the env var). But that means there was previously no
+    way back to the default short of hand-editing .graphifyrc; `hook
+    uninstall` now doubles as that reset, mirroring how it already clears the
+    merge-driver git config and .gitattributes line.
+    """
+    rc_path = root / ".graphifyrc"
+    if not rc_path.is_file():
+        return False
+    if rc_path.is_symlink():
+        # Same write-hijack concern as _persist_out_dir: don't write cleaned
+        # content through a repo-committed symlink to an arbitrary target.
+        # Best-effort here (return False, not raise) — the rest of uninstall
+        # (git config, .gitattributes) must still proceed.
+        return False
+    try:
+        content = rc_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        # A corrupted/non-UTF-8 .graphifyrc must not make `hook uninstall`
+        # itself fail — best-effort, same as the symlink case above; the
+        # rest of uninstall (git config, .gitattributes) must still proceed.
+        return False
+    lines = content.splitlines()
+    kept = [
+        raw for raw in lines
+        if not (
+            (stripped := raw.strip())
+            and not stripped.startswith("#")
+            and "=" in stripped
+            and stripped.split("=", 1)[0].strip() == "out_dir"
+        )
+    ]
+    if kept == lines:
+        return False
+    if kept:
+        # _write_text_no_symlink re-checks at the actual write, closing the
+        # race between the is_symlink() check above and this write.
+        return _write_text_no_symlink(rc_path, "\n".join(kept) + "\n")
+    # Removing a symlink deletes the link itself, never its target — no
+    # write-through-symlink risk here, unlike the write above.
+    rc_path.unlink()
+    return True
+
+
 def _unregister_merge_driver(root: Path) -> str:
-    """Remove the merge-driver git config keys and the .gitattributes line."""
+    """Remove the merge-driver git config keys, .gitattributes line, and any
+    persisted out_dir override."""
     import subprocess as _sp
     for key in ("merge.graphify.name", "merge.graphify.driver"):
         try:
@@ -698,22 +1045,41 @@ def _unregister_merge_driver(root: Path) -> str:
             )
         except OSError:
             pass
+    try:
+        out_dir_cleared = _clear_persisted_out_dir(root)
+    except OSError:
+        # Best-effort, matching the git-config unset above: an unlink()
+        # failure (permission, a concurrent process removing the file, a
+        # cross-device rename inside _write_text_no_symlink) must not abort
+        # the rest of uninstall — the git config and .gitattributes cleanup
+        # below are unrelated and should still happen regardless.
+        out_dir_cleared = False
+
     attrs = root / ".gitattributes"
     if not attrs.exists():
-        return "not registered - nothing to remove."
+        return (
+            "not registered - nothing to remove."
+            if not out_dir_cleared
+            else "removed persisted out_dir (no .gitattributes entry to remove)"
+        )
     content = attrs.read_text(encoding="utf-8")
     kept = [
         raw for raw in content.splitlines()
         if not _has_merge_attr(raw)
     ]
+    suffix = " (and cleared persisted out_dir)" if out_dir_cleared else ""
     if kept == content.splitlines():
-        return "gitattributes entry not found - nothing to remove."
+        return (
+            "gitattributes entry not found - nothing to remove."
+            if not out_dir_cleared
+            else f"gitattributes entry not found{suffix}"
+        )
     if kept:
         # Other entries survive; the file stays.
         attrs.write_text("\n".join(kept) + "\n", encoding="utf-8", newline="\n")
-        return "removed from .gitattributes (other entries preserved)"
+        return f"removed from .gitattributes (other entries preserved){suffix}"
     attrs.unlink()
-    return "removed (.gitattributes deleted - no other entries)"
+    return f"removed (.gitattributes deleted - no other entries){suffix}"
 
 
 def _merge_driver_status(root: Path) -> str:
@@ -732,6 +1098,12 @@ def _merge_driver_status(root: Path) -> str:
     if cfg_ok and attr_ok:
         return "registered"
     if cfg_ok:
+        graph_relpath = _merge_attr_line(root).split(" ", 1)[0]
+        if _is_gitignored(root, graph_relpath):
+            # Intentional (#2595): install skipped the .gitattributes line
+            # because the target is ignored/untracked, so a merge driver for
+            # it would never run. Not a broken state — do not report it as one.
+            return f"not applicable ({graph_relpath} is gitignored — no merge driver needed)"
         return "partially registered (git config set, .gitattributes line missing)"
     if attr_ok:
         return "partially registered (.gitattributes line set, git config missing)"
