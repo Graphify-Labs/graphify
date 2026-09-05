@@ -935,6 +935,7 @@ def _apply_symbol_resolution_facts(
                     changed = True
 
     named_exports_by_file: dict[Path, dict[str, tuple[Path, str]]] = {}
+    export_origins: dict[tuple[Path, str], set[tuple[Path, str]]] = {}
     star_exports_by_file: dict[Path, list[Path]] = {}
 
     for star_fact in facts.star_exports:
@@ -996,7 +997,14 @@ def _apply_symbol_resolution_facts(
             if origin is None and (file_path, export_fact.local_name) in symbol_nodes:
                 origin = (file_path, export_fact.local_name)
         if origin is None:
+            # An explicit export remains evidence even when extraction did not
+            # materialize its binding. Do not mistake it for an absent export.
+            if export_fact.local_name is not None:
+                export_origins.setdefault((file_path, export_fact.exported_name), set()).add(
+                    (file_path, export_fact.local_name)
+                )
             continue
+        export_origins.setdefault((file_path, export_fact.exported_name), set()).add(origin)
         named_exports_by_file.setdefault(file_path, {})[export_fact.exported_name] = origin
         if origin[0] != file_path:
             source_id = source_file_id.get(file_path)
@@ -1031,6 +1039,65 @@ def _apply_symbol_resolution_facts(
             if resolved in symbol_nodes:
                 return resolved
         return key
+
+    def exported_candidates(
+        key: tuple[Path, str], seen: frozenset[tuple[Path, str]]
+    ) -> set[tuple[Path, str]]:
+        # Preserve explicitly exported origins even without owned declarations.
+        # Missing extraction must not turn an ambiguous export into a unique one.
+        if key in seen:
+            return set()
+        seen = seen | {key}
+        origins = export_origins.get(key)
+        if origins is None:
+            candidates: set[tuple[Path, str]] = set()
+            for path in star_exports_by_file.get(key[0], []):
+                candidates.update(exported_candidates((path, key[1]), seen))
+            return candidates
+        candidates = set()
+        for origin in origins:
+            if origin == key:
+                candidates.add(origin)
+            else:
+                candidates.update(exported_candidates(origin, seen) or {origin})
+        return candidates
+
+    # The structural extractor names the immediate barrel's symbol. Resolve
+    # that exact authored export site through the shared import/export facts,
+    # including `import {x}; export {x}` bridges with no local declaration.
+    export_sites: dict[tuple[Path, str, Path], list[_SymbolExportFact]] = {}
+    for export_fact in facts.exports:
+        if export_fact.target_path is not None and export_fact.target_name is not None:
+            site = (
+                export_fact.file_path.resolve(),
+                f"L{export_fact.line}",
+                export_fact.target_path.resolve(),
+            )
+            export_sites.setdefault(site, []).append(export_fact)
+    node_sources = {node["id"]: node["source_file"] for node in nodes if node.get("id") and node.get("source_file")}
+    owned_ids = {node.get("id") for node in nodes}
+    for edge in edges:
+        if edge.get("relation") != "re_exports" or edge.get("target") in owned_ids:
+            continue
+        target_file = edge.get("target_file")
+        source_path = _js_source_path(str(edge.get("source_file", "")), root)
+        if not target_file or source_path is None:
+            continue
+        target_path = Path(target_file)
+        site = (source_path, str(edge.get("source_location", "")), target_path.resolve())
+        for export_fact in export_sites.get(site, []):
+            expected = _make_id(_file_stem(target_path), export_fact.target_name)
+            if edge.get("target") != expected:
+                continue
+            candidates = exported_candidates(
+                (export_fact.target_path.resolve(), export_fact.target_name), frozenset()
+            )
+            if len(candidates) == 1:
+                target_id = symbol_nodes.get(next(iter(candidates)))
+                if target_id in owned_ids:
+                    edge["target"] = target_id
+                    edge["target_file"] = node_sources[target_id]
+            break
 
     for import_fact in facts.imports:
         source_id = source_file_id.get(import_fact.file_path.resolve())
@@ -1222,8 +1289,13 @@ def _js_exported_declaration_names(node, source: bytes) -> list[str]:
     if declaration is None:
         return names
 
-    if declaration.type == "lexical_declaration":
-        names.extend(alias for alias, _target in _js_lexical_aliases(declaration, source))
+    if declaration.type in ("lexical_declaration", "variable_declaration"):
+        for declarator in declaration.named_children:
+            if declarator.type != "variable_declarator":
+                continue
+            name_node = declarator.child_by_field_name("name")
+            if name_node is not None and name_node.type == "identifier":
+                names.append(_read_text(name_node, source))
         return names
 
     if declaration.type in (
