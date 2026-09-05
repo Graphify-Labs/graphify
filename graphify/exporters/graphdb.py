@@ -1,9 +1,12 @@
 """graphdb — moved verbatim from graphify/export.py."""
 from __future__ import annotations
 
+from collections import defaultdict
 from graphify.analyze import _node_community_map
 import networkx as nx
 import re
+
+_BATCH_SIZE = 500
 
 
 def push_to_neo4j(
@@ -37,42 +40,90 @@ def push_to_neo4j(
         sanitized = re.sub(r"[^A-Za-z0-9_]", "", label)
         return sanitized if sanitized else "Entity"
 
+    # Group by label/rel-type: Cypher does not support parameterized labels,
+    # so UNWIND batches must be homogeneous to keep a fixed query shape.
+    # Build id->label map so edge MATCH can include the label and use the index.
+    id_to_label: dict[str, str] = {}
+    by_label: dict[str, list[dict]] = defaultdict(list)
+    for node_id, data in G.nodes(data=True):
+        props = {
+            k: v for k, v in data.items()
+            if isinstance(v, (str, int, float, bool)) and not k.startswith("_")
+        }
+        props["id"] = node_id
+        cid = node_community.get(node_id)
+        if cid is not None:
+            props["community"] = cid
+        lbl = _safe_label(data.get("file_type", "Entity").capitalize())
+        id_to_label[node_id] = lbl
+        by_label[lbl].append(props)
+
+    # Group edges by (src_label, tgt_label, rel) so the MATCH can use label
+    # indexes — a label-less MATCH (a {id: ...}) ignores all constraints and
+    # scans the full node store, making edge inserts O(N²).
+    by_rel: dict[tuple, list[dict]] = defaultdict(list)
+    for u, v, data in G.edges(data=True):
+        props = {
+            k: v for k, v in data.items()
+            if isinstance(v, (str, int, float, bool)) and not k.startswith("_")
+        }
+        src_lbl = id_to_label.get(u, "Entity")
+        tgt_lbl = id_to_label.get(v, "Entity")
+        rel = _safe_rel(data.get("relation", "RELATED_TO"))
+        by_rel[(src_lbl, tgt_lbl, rel)].append({"src": u, "tgt": v, "props": props})
+
+    total_nodes = sum(len(v) for v in by_label.values())
+    total_edges = sum(len(v) for v in by_rel.values())
+
+    import time as _time
+    _LOG_INTERVAL = 60  # seconds
+
+    def _log_progress(kind: str, done: int, total: int) -> None:
+        pct = int(done * 100 / total) if total else 100
+        print(f"[graphify] neo4j {kind}: {done}/{total} ({pct}%)", flush=True)
+
     driver = GraphDatabase.driver(uri, auth=(user, password))
     nodes_pushed = 0
     edges_pushed = 0
+    last_node_log = _time.monotonic()
+    last_edge_log = _time.monotonic()
 
     with driver.session() as session:
-        for node_id, data in G.nodes(data=True):
-            props = {
-                k: v for k, v in data.items()
-                if isinstance(v, (str, int, float, bool)) and not k.startswith("_")
-            }
-            props["id"] = node_id
-            cid = node_community.get(node_id)
-            if cid is not None:
-                props["community"] = cid
-            ftype = _safe_label(data.get("file_type", "Entity").capitalize())
-            session.run(
-                f"MERGE (n:{ftype} {{id: $id}}) SET n += $props",
-                id=node_id,
-                props=props,
-            )
-            nodes_pushed += 1
+        for label, rows in by_label.items():
+            for i in range(0, len(rows), _BATCH_SIZE):
+                batch = rows[i:i + _BATCH_SIZE]
+                session.execute_write(
+                    lambda tx, b=batch, lbl=label: tx.run(
+                        f"UNWIND $batch AS row MERGE (n:{lbl} {{id: row.id}}) SET n += row",
+                        batch=b,
+                    )
+                )
+                nodes_pushed += len(batch)
+                now = _time.monotonic()
+                if now - last_node_log >= _LOG_INTERVAL:
+                    _log_progress("nodes", nodes_pushed, total_nodes)
+                    last_node_log = now
 
-        for u, v, data in G.edges(data=True):
-            rel = _safe_rel(data.get("relation", "RELATED_TO"))
-            props = {
-                k: v for k, v in data.items()
-                if isinstance(v, (str, int, float, bool)) and not k.startswith("_")
-            }
-            session.run(
-                f"MATCH (a {{id: $src}}), (b {{id: $tgt}}) "
-                f"MERGE (a)-[r:{rel}]->(b) SET r += $props",
-                src=u,
-                tgt=v,
-                props=props,
-            )
-            edges_pushed += 1
+        _log_progress("nodes", nodes_pushed, total_nodes)
+
+        for (src_lbl, tgt_lbl, rel), rows in by_rel.items():
+            for i in range(0, len(rows), _BATCH_SIZE):
+                batch = rows[i:i + _BATCH_SIZE]
+                session.execute_write(
+                    lambda tx, b=batch, sl=src_lbl, tl=tgt_lbl, r=rel: tx.run(
+                        f"UNWIND $batch AS row "
+                        f"MATCH (a:{sl} {{id: row.src}}), (b:{tl} {{id: row.tgt}}) "
+                        f"MERGE (a)-[rr:{r}]->(b) SET rr += row.props",
+                        batch=b,
+                    )
+                )
+                edges_pushed += len(batch)
+                now = _time.monotonic()
+                if now - last_edge_log >= _LOG_INTERVAL:
+                    _log_progress("edges", edges_pushed, total_edges)
+                    last_edge_log = now
+
+        _log_progress("edges", edges_pushed, total_edges)
 
     driver.close()
     return {"nodes": nodes_pushed, "edges": edges_pushed}
