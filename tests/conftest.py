@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import socket
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -44,6 +46,96 @@ def requires_symlinks(_can_symlink) -> None:
         pytest.skip(
             "symlink creation unavailable on this machine "
             "(Windows requires an elevated shell or Developer Mode)"
+        )
+
+
+@pytest.fixture(scope="session")
+def _can_mkfifo() -> bool:
+    """Whether this machine can create a FIFO (#2919).
+
+    Probed, not inferred from ``sys.platform``, for the same reason as
+    ``_can_symlink``: ``os.mkfifo`` is absent on Windows, but it can also fail
+    on a POSIX host whose temp dir sits on a filesystem that has no FIFOs
+    (some network and container mounts). Either way an ``AttributeError`` or
+    ``OSError`` raised while *building the fixture* says nothing about the code
+    under test.
+    """
+    if not hasattr(os, "mkfifo"):
+        return False
+    with tempfile.TemporaryDirectory() as d:
+        try:
+            os.mkfifo(Path(d) / "probe-fifo")
+        except (OSError, NotImplementedError):
+            return False
+        return True
+
+
+@pytest.fixture
+def requires_fifo(_can_mkfifo) -> None:
+    """Skip a test whose fixture is a named pipe when the platform has none."""
+    if not _can_mkfifo:
+        pytest.skip("named pipes (os.mkfifo) unavailable on this platform")
+
+
+@pytest.fixture(scope="session")
+def _can_bind_unix_socket() -> bool:
+    """Whether this machine can bind an ``AF_UNIX`` socket to a path (#2919).
+
+    Windows 10+ does support ``AF_UNIX``, and CPython exposes it on some
+    builds, so this cannot be decided from the platform name either — probe and
+    let the hosts that can do it keep the coverage.
+    """
+    if not hasattr(socket, "AF_UNIX"):
+        return False
+    with tempfile.TemporaryDirectory() as d:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            sock.bind(str(Path(d) / "probe.sock"))
+        except (OSError, NotImplementedError):
+            return False
+        finally:
+            sock.close()
+        return True
+
+
+@pytest.fixture
+def requires_unix_socket(_can_bind_unix_socket) -> None:
+    """Skip a test that must bind an AF_UNIX socket where that is unsupported."""
+    if not _can_bind_unix_socket:
+        pytest.skip("AF_UNIX sockets unavailable on this platform")
+
+
+@pytest.fixture(scope="session")
+def _can_delete_cwd() -> bool:
+    """Whether a directory can be removed while it is a process's CWD (#2919).
+
+    POSIX unlinks the directory entry and leaves the process sitting on an
+    orphaned inode — the state a detached hook inherits, and the one
+    ``_rebuild_code`` has to survive. Windows keeps an open handle on the CWD,
+    so ``rmdir`` raises ``PermissionError: [WinError 32]`` and the scenario
+    cannot be constructed at all. The failure is in the fixture, not the code.
+    """
+    old = Path.cwd()
+    with tempfile.TemporaryDirectory() as d:
+        probe = Path(d) / "probe-cwd"
+        probe.mkdir()
+        try:
+            os.chdir(probe)
+            probe.rmdir()
+        except OSError:
+            return False
+        finally:
+            os.chdir(old)
+        return True
+
+
+@pytest.fixture
+def requires_deletable_cwd(_can_delete_cwd) -> None:
+    """Skip a test that must delete its own CWD where the OS forbids it."""
+    if not _can_delete_cwd:
+        pytest.skip(
+            "cannot remove a directory that is the process CWD on this platform "
+            "(Windows holds an open handle: WinError 32)"
         )
 
 

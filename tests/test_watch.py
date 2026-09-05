@@ -651,7 +651,9 @@ def test_graphify_root_preserves_absolute_when_user_supplied(tmp_path):
     )
 
 
-def test_rebuild_code_deleted_cwd_without_repo_root_returns_false(tmp_path, monkeypatch, capsys):
+def test_rebuild_code_deleted_cwd_without_repo_root_returns_false(
+    tmp_path, monkeypatch, capsys, requires_deletable_cwd
+):
     """Detached hooks can inherit a CWD that no longer exists.
 
     Without GRAPHIFY_REPO_ROOT, the rebuild should fail cleanly before creating
@@ -675,7 +677,9 @@ def test_rebuild_code_deleted_cwd_without_repo_root_returns_false(tmp_path, monk
     assert "current working directory no longer exists" in out
 
 
-def test_rebuild_code_deleted_cwd_uses_graphify_repo_root(tmp_path, monkeypatch):
+def test_rebuild_code_deleted_cwd_uses_graphify_repo_root(
+    tmp_path, monkeypatch, requires_deletable_cwd
+):
     """GRAPHIFY_REPO_ROOT lets detached hook rebuilds recover from a deleted CWD."""
     from graphify.watch import _rebuild_code
 
