@@ -993,6 +993,7 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     _loc_nodes: dict[tuple[str, str], str] = {}   # (source_file, label) -> canonical node id
     _loc_collisions: set[tuple[str, str]] = set()  # keys shared by 2+ AST nodes
     _noloc_nodes: dict[tuple[str, str], str] = {}  # (source_file, label) -> ghost node id
+    _ast_file_nodes: list[tuple[str, str]] = []  # (node_id, source_file) for AST file-self nodes (#2963)
 
     # Pass 1: collect canonical nodes — AST-origin nodes take precedence over LLM nodes.
     # When 2+ AST nodes share a key (same-named symbols in same-named files across
@@ -1035,6 +1036,20 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                     _loc_collisions.add(key)
                 # AST-origin nodes always overwrite a prior non-AST entry.
                 _loc_nodes[key] = nid
+                # #2963: a self-referential semantic pass (e.g. re-extracting a
+                # saved graphify-out/memory/*.md query answer) mints a NEW
+                # non-AST node for every bare file path/basename it mentions in
+                # prose ("App.tsx", "customer-app/index.ts"), stamped with
+                # source_file = the memory doc being read, NOT the file named in
+                # the prose. That wrong source_file means such a ghost can never
+                # hit the (sf, label) key above — same underlying bug as #1145,
+                # just with the (source_file, label) *pair* broken instead of
+                # only the id. Record every AST node whose own label already
+                # names its own file (_is_file_node_label — the same "is this a
+                # file node" predicate the label-disambiguation pass uses) so
+                # Pass 2b below can catch these by label alone.
+                if _is_file_node_label(label, sf):
+                    _ast_file_nodes.append((nid, sf))
             else:
                 # First non-AST node for this (file, label) wins as canonical; a
                 # later same-key node is a genuine same-file duplicate and still
@@ -1061,6 +1076,37 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         ast_id = _loc_nodes.get(key)
         if ast_id is not None:
             _ghost_remap[sem_id] = ast_id
+
+    # Pass 2b (#2963): catch ghosts the (source_file, label) key above cannot,
+    # because their source_file is simply wrong — a semantic pass over a
+    # document that only *mentions* a file (a saved graphify-out/memory/*.md
+    # query answer, a README, an ADR) stamps the file's own name as a new
+    # node's label but the DOCUMENT's path as source_file, since it has no way
+    # to know the mentioned file's real path. Resolve these by label alone
+    # against every AST file-self node collected in Pass 1, reusing
+    # _is_file_node_label so "App.tsx" matches source_file ".../App.tsx" and
+    # "customer-app/index.ts" matches ".../apps/customer-app/index.ts" (a
+    # directory-qualified suffix, e.g. the leading "apps/" the prose dropped).
+    # Conservative by construction: a label matching 0 or 2+ AST files is left
+    # alone (0 = no known file, 2+ = genuinely ambiguous — same "no safe
+    # canonical winner" rule Pass 2's _loc_collisions already applies).
+    if _ast_file_nodes:
+        for nid in sorted(node_set):
+            if nid in _ghost_remap:
+                continue  # already resolved by the exact (sf, label) key
+            attrs = G.nodes[nid]
+            if attrs.get("_origin") == "ast":
+                continue
+            label = str(attrs.get("label", "")).strip()
+            if not label:
+                continue
+            matches = {
+                ast_id for ast_id, ast_sf in _ast_file_nodes
+                if _is_file_node_label(label, ast_sf)
+            }
+            if len(matches) == 1:
+                _ghost_remap[nid] = next(iter(matches))
+
     # Remove ghost nodes from the graph; edges will be re-pointed via norm_to_id.
     for ghost_id in _ghost_remap:
         G.remove_node(ghost_id)

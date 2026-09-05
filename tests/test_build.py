@@ -577,6 +577,62 @@ def test_ghost_merge_non_ast_same_file_still_merges():
     assert G.number_of_nodes() == 1
 
 
+def test_ghost_merge_wrong_source_file_resolved_by_label():
+    """#2963: a semantic node that only MENTIONS a file (a saved
+    graphify-out/memory/*.md query answer, a runbook narrating "see App.tsx")
+    is stamped with source_file = the document being read, not the file named
+    in its prose — so the (source_file, label) key can never match the real
+    AST node's key. Resolve it by label alone against every AST file-self node
+    (_is_file_node_label), including when the doc's prose dropped a leading
+    path segment ("customer-app/index.ts" for the real
+    "apps/customer-app/index.ts")."""
+    ext = {
+        "nodes": [
+            {"id": "apps_customer_app_app", "label": "App.tsx", "file_type": "code",
+             "source_file": "apps/customer-app/App.tsx", "source_location": "L1", "_origin": "ast"},
+            {"id": "apps_customer_app_index", "label": "customer-app/index.ts", "file_type": "code",
+             "source_file": "apps/customer-app/index.ts", "source_location": "L1", "_origin": "ast"},
+            {"id": "app", "label": "App.tsx", "file_type": "code",
+             "source_file": "graphify-out/memory/query_fake.md", "_origin": "semantic"},
+            {"id": "customer_app_index", "label": "customer-app/index.ts", "file_type": "code",
+             "source_file": "graphify-out/memory/query_fake.md", "_origin": "semantic"},
+            {"id": "some_query_node", "label": "Query: why does X connect Y?", "file_type": "document",
+             "source_file": "graphify-out/memory/query_fake.md", "_origin": "semantic"},
+        ],
+        "edges": [
+            {"source": "some_query_node", "target": "app", "relation": "references",
+             "confidence": "EXTRACTED", "source_file": "graphify-out/memory/query_fake.md"},
+            {"source": "some_query_node", "target": "customer_app_index", "relation": "references",
+             "confidence": "EXTRACTED", "source_file": "graphify-out/memory/query_fake.md"},
+        ],
+    }
+    G = build_from_json(ext, directed=False)
+    assert "app" not in G.nodes() and "customer_app_index" not in G.nodes()
+    assert G.has_edge("some_query_node", "apps_customer_app_app")
+    assert G.has_edge("some_query_node", "apps_customer_app_index")
+
+
+def test_ghost_merge_wrong_source_file_ambiguous_basename_left_alone():
+    """#2963: the label-alone fallback must stay conservative — a phantom
+    mentioning a bare basename that TWO different real files share (an
+    "index.ts" in two different directories) has no safe unique winner and
+    must be left as-is rather than merged into an arbitrary one."""
+    ext = {
+        "nodes": [
+            {"id": "apps_admin_web_index", "label": "index.ts", "file_type": "code",
+             "source_file": "apps/admin-web/src/lib/index.ts", "source_location": "L1", "_origin": "ast"},
+            {"id": "apps_api_index", "label": "index.ts", "file_type": "code",
+             "source_file": "apps/api/src/lib/index.ts", "source_location": "L1", "_origin": "ast"},
+            {"id": "phantom_index", "label": "index.ts", "file_type": "code",
+             "source_file": "graphify-out/memory/query_fake2.md", "_origin": "semantic"},
+        ],
+        "edges": [],
+    }
+    G = build_from_json(ext, directed=False)
+    assert "phantom_index" in G.nodes()
+    assert "apps_admin_web_index" in G.nodes() and "apps_api_index" in G.nodes()
+
+
 def test_build_merge_preserves_call_edge_direction(tmp_path):
     """Regression for #760.
 
