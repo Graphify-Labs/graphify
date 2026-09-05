@@ -334,6 +334,77 @@ def test_graph_diff_new_edges():
     assert "new edge" in diff["summary"]
 
 
+def test_graph_diff_new_nodes_carry_full_properties():
+    G_old = _make_simple_graph([("n1", "Alpha")], [])
+    G_new = nx.Graph()
+    G_new.add_node("n1", label="Alpha", source_file="test.py")
+    G_new.add_node("n2", label="Gamma", source_file="test.py", file_type="code")
+    diff = graph_diff(G_old, G_new)
+    new_node = diff["new_nodes"][0]
+    assert new_node["id"] == "n2"
+    assert new_node["properties"]["file_type"] == "code"
+    assert new_node["properties"]["source_file"] == "test.py"
+
+
+def test_graph_diff_removed_nodes_carry_full_properties():
+    G_old = nx.Graph()
+    G_old.add_node("n1", label="Alpha", source_file="a.py", file_type="code")
+    G_new = nx.Graph()
+    diff = graph_diff(G_old, G_new)
+    removed = diff["removed_nodes"][0]
+    assert removed["id"] == "n1"
+    assert removed["properties"] == {"label": "Alpha", "source_file": "a.py", "file_type": "code"}
+
+
+def test_graph_diff_detects_changed_node_properties():
+    G_old = nx.Graph()
+    G_old.add_node("n1", label="Alpha", community=1)
+    G_new = nx.Graph()
+    G_new.add_node("n1", label="Alpha", community=2)
+    diff = graph_diff(G_old, G_new)
+    assert diff["new_nodes"] == []
+    assert diff["removed_nodes"] == []
+    assert len(diff["changed_nodes"]) == 1
+    changed = diff["changed_nodes"][0]
+    assert changed["id"] == "n1"
+    assert changed["old"]["community"] == 1
+    assert changed["new"]["community"] == 2
+    assert "1 node changed" in diff["summary"]
+
+
+def test_graph_diff_unchanged_node_properties_not_reported_as_changed():
+    G_old = nx.Graph()
+    G_old.add_node("n1", label="Alpha", community=1)
+    G_new = nx.Graph()
+    G_new.add_node("n1", label="Alpha", community=1)
+    diff = graph_diff(G_old, G_new)
+    assert diff["changed_nodes"] == []
+
+
+def test_graph_diff_detects_changed_edge_properties():
+    nodes = [("n1", "Alpha"), ("n2", "Beta")]
+    G_old = _make_simple_graph(nodes, [("n1", "n2", "calls", "INFERRED")])
+    G_new = _make_simple_graph(nodes, [("n1", "n2", "calls", "EXTRACTED")])
+    diff = graph_diff(G_old, G_new)
+    assert diff["new_edges"] == []
+    assert diff["removed_edges"] == []
+    assert len(diff["changed_edges"]) == 1
+    changed = diff["changed_edges"][0]
+    assert changed["source"] == "n1" and changed["target"] == "n2"
+    assert changed["old"]["confidence"] == "INFERRED"
+    assert changed["new"]["confidence"] == "EXTRACTED"
+    assert "1 edge changed" in diff["summary"]
+
+
+def test_graph_diff_removed_edges_carry_full_properties():
+    nodes = [("n1", "Alpha"), ("n2", "Beta")]
+    G_old = _make_simple_graph(nodes, [("n1", "n2", "calls", "EXTRACTED")])
+    G_new = _make_simple_graph(nodes, [])
+    diff = graph_diff(G_old, G_new)
+    removed = diff["removed_edges"][0]
+    assert removed["properties"] == {"relation": "calls", "confidence": "EXTRACTED"}
+
+
 def test_graph_diff_empty_diff():
     nodes = [("n1", "Alpha"), ("n2", "Beta")]
     edges = [("n1", "n2", "calls", "EXTRACTED")]
@@ -344,6 +415,8 @@ def test_graph_diff_empty_diff():
     assert diff["removed_nodes"] == []
     assert diff["new_edges"] == []
     assert diff["removed_edges"] == []
+    assert diff["changed_nodes"] == []
+    assert diff["changed_edges"] == []
     assert diff["summary"] == "no changes"
 
 
