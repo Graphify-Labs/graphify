@@ -1636,6 +1636,22 @@ def _claude_cli_supports_json_schema(claude_cmd: str) -> bool:
     return supported
 
 
+def _claude_cli_effort_args() -> list[str]:
+    """Return the `--effort` flag pair when the user asked for a specific level.
+
+    Effort is the second axis Claude Code exposes alongside `--model` (low,
+    medium, high, xhigh, max). graphify's semantic pass is structured-JSON
+    extraction rather than open-ended reasoning, so a lower level is usually
+    enough and is markedly faster on a long serial run;
+    `GRAPHIFY_CLAUDE_CLI_EFFORT=low` opts into that without also giving up the
+    stronger model. The value is passed through unvalidated, exactly like
+    GRAPHIFY_CLAUDE_CLI_MODEL, so a CLI that grows a new level keeps working.
+    Default behaviour is unchanged when the env var is unset.
+    """
+    effort = os.environ.get("GRAPHIFY_CLAUDE_CLI_EFFORT", "").strip()
+    return ["--effort", effort] if effort else []
+
+
 def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bool = False, images: list[_ImageRef] | None = None) -> dict:
     """Call Claude via the locally-installed Claude Code CLI (`claude -p`).
 
@@ -1725,6 +1741,7 @@ def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bo
     cli_model = os.environ.get("GRAPHIFY_CLAUDE_CLI_MODEL", "").strip()
     if cli_model:
         cli_args.extend(["--model", cli_model])
+    cli_args.extend(_claude_cli_effort_args())
     # Constrain the output shape structurally where the CLI supports it. Newer
     # Claude Code releases increasingly treat a bare file-dump prompt as an
     # agentic task and REPORT the extraction in prose ("Knowledge graph
@@ -2907,6 +2924,7 @@ def _call_llm(
         cli_args = [claude_cmd, "-p", "--output-format", "json", "--no-session-persistence"]
         if model is not None:
             cli_args.extend(["--model", mdl])
+        cli_args.extend(_claude_cli_effort_args())
         proc = subprocess.run(
             cli_args,
             input=prompt,
