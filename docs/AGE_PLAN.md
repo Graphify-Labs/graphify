@@ -557,14 +557,25 @@ the ones specific to AGE that aren't automatically obvious from those docs.
 - **Fork/branch model**: `origin` is a fork (e.g. `e4c5/graphify`) of
   upstream `safishamsi/graphify`; `v8` is the active-development branch on
   both. Sync local `v8` to `origin/v8` (which tracks upstream) before
-  cutting each phase's branch, and cut **one branch per phase** (e.g.
-  `age-phase0-spike`, `age-phase1-exporter`) rather than one long-lived
-  branch for the whole plan — phases are independently reviewable PRs, and
-  Phase 1 alone (exporter + CLI + packaging + docs) is already PR-sized on
-  its own.
-- **Commit style**: `feat: ...` / `fix: ...` / `docs: ...`, per phase deliverable
-  where practical (e.g. `feat: add push_to_age() exporter`,
-  `docs: add AGE_SCHEMA.md`).
+  cutting a branch.
+- **One branch, one PR per feature — not one per phase.** The repo's own
+  precedent settles this: the FalkorDB backend (`falkordb-backend`, PR
+  #1176), the closest prior comparison in scope to this work, shipped as a
+  single branch and a single PR containing four separate commits (`feat:
+  add FalkorDB export backend`, `feat: add --falkordb/--falkordb-push
+  skill shorthands`, `fix: correct cypher.txt guidance`, `refactor: rename
+  shared push vars`) merged together. The README's own Contributing
+  section only ever says "open a PR" (singular), never describes stacking.
+  So AGE support is one branch (`apache-age-backend`, mirroring the
+  `falkordb-backend` naming) carrying every phase as separate commits —
+  "commit each milestone separately" means separate commits inside that
+  one branch/PR, not separate PRs per phase. A phase boundary is a natural
+  place to pause and get feedback before opening the PR, not a place to
+  split it.
+- **Commit style**: `feat: ...` / `fix: ...` / `docs: ...`, one commit per
+  milestone within the single branch (e.g. `feat: add push_to_age()
+  exporter`, `docs: add AGE_SCHEMA.md`), matching the granularity the
+  `falkordb-backend` PR used.
 - **Before opening any PR**: `uv run pytest tests/ -q` must pass. The
   live-AGE suite follows `tests/test_falkordb_integration.py` exactly:
   `pytest.importorskip` + a service-identifying connection probe that
@@ -630,8 +641,9 @@ the ones specific to AGE that aren't automatically obvious from those docs.
       integration suite, including a `test_push_to_age_creates_expected_graph`
       end-to-end test that currently skips until Phase 1 lands
       `push_to_age()`).
-- [x] Branch `age-phase0-spike` cut off synced `v8`; committed locally.
-      PR to upstream still pending (see Delivery section).
+- [x] Committed on `apache-age-backend` (single feature branch, off synced
+      `v8` — see Delivery section for why this isn't split into per-phase
+      branches). PR to upstream still pending.
 
 ### Phase 1 — `push_to_age()` exporter ✅ done
 - [x] `push_to_age()` in `graphify/exporters/graphdb.py`, sibling of
@@ -687,11 +699,10 @@ the ones specific to AGE that aren't automatically obvious from those docs.
 - [x] Full CLI path validated end-to-end against a live container
       (`graphify export age --push postgresql://...`), not just the Python
       function directly.
-- [x] Branch `age-phase1-exporter` cut, stacked on `age-phase0-spike`
-      (Phase 1's tests build directly on Phase 0's live-suite file).
-      Committed locally; PR to upstream still pending (see Delivery
-      section). Full CI-parity command list green with `--all-extras`
-      (5384 passed).
+- [x] Committed on the same `apache-age-backend` branch as Phase 0 (Phase
+      1's tests build directly on Phase 0's live-suite file). PR to
+      upstream still pending. Full CI-parity command list green with
+      `--all-extras` (5384 passed).
 
 ### Phase 2 — Repository identity, ownership, registry
 - [ ] Versioned SQL migration for `graphify_repos`, `graphify_branches`,
@@ -715,7 +726,7 @@ the ones specific to AGE that aren't automatically obvious from those docs.
 - [ ] Agent-facing registry discovery path (how an agent resolves
       `age_graph_name` given a repo/branch).
 - [ ] `ARCHITECTURE.md` updated for the registry module.
-- [ ] Branch/PR per this repo's git workflow; `pytest` green.
+- [ ] Commit on `apache-age-backend`; `pytest` green.
 
 ### Phase 3 — Durable default-branch graph + logical snapshots
 - [ ] `graph_diff()` extended to report property changes (old + new values)
@@ -731,7 +742,7 @@ the ones specific to AGE that aren't automatically obvious from those docs.
       extraction_config_hash, graphify_version`); checkpoint-preferred
       resolution implemented.
 - [ ] `ARCHITECTURE.md` updated for snapshot machinery.
-- [ ] Branch/PR; `pytest` green, including reversibility tests for
+- [ ] Commit on `apache-age-backend`; `pytest` green, including reversibility tests for
       `graph_diff()`.
 
 ### Phase 4 — Branches: commit-anchored diffs, lazy hydration, reaping
@@ -770,7 +781,7 @@ the ones specific to AGE that aren't automatically obvious from those docs.
 - [ ] Deterministic tier-3 concurrency tests: two connections, one holding
       the advisory lock, the second asserting `pg_try_advisory_lock` fails
       and the re-read-then-hydrate path is taken — no sleep-based races.
-- [ ] Branch/PR; `pytest` green including rebase/force-push detection
+- [ ] Commit on `apache-age-backend`; `pytest` green including rebase/force-push detection
       tests (tier 1, throwaway git repo in tmpdir).
 
 ### Phase 5 — Agent contract: pinned queries and fixtures
@@ -783,7 +794,7 @@ the ones specific to AGE that aren't automatically obvious from those docs.
 - [ ] Pinned example queries added to `docs/AGE_SCHEMA.md`.
 - [ ] Integration fixtures in the live suite executing the pinned queries
       against a seeded instance.
-- [ ] Branch/PR; `pytest` green.
+- [ ] Commit on `apache-age-backend`; `pytest` green.
 
 ### Phase 6 (optional) — AGE-backed retrieval inside graphify
 - [ ] Backend abstraction for `query/path/explain` and `serve.py`
@@ -791,21 +802,24 @@ the ones specific to AGE that aren't automatically obvious from those docs.
 - [ ] AGE-fetch-then-NetworkX-score strategy implemented; scoring/formatting
       unchanged and behavior-identical to the file backend.
 - [ ] `ARCHITECTURE.md` updated.
-- [ ] Branch/PR; `pytest` green.
+- [ ] Commit on `apache-age-backend`; `pytest` green.
 
 ### Cross-cutting / process
-- [ ] `v8` kept synced to `origin/v8` before cutting each phase branch.
-- [ ] Every PR uses `feat:`/`fix:`/`docs:` commit style and passes
+- [x] `v8` synced to `origin/v8` before cutting `apache-age-backend`
+      (single branch for the whole feature — see Delivery section).
+- [ ] The eventual PR uses `feat:`/`fix:`/`docs:` commit style per
+      milestone (already true of the commits so far) and passes
       `uv run pytest tests/ -q` before opening.
-- [ ] `uv sync --all-extras --frozen` + full CI parity command list stays
-      green on Python 3.10 and 3.12 after each phase.
-- [ ] `postgres`/`age` extra overlap decision recorded once, not
-      re-litigated per phase.
+- [x] `uv sync --all-extras --frozen` + full CI parity command list green
+      on the branch as of Phase 1 (5384 passed); re-verify again before
+      opening the PR once later phases land.
+- [x] `postgres`/`age` extra overlap decision recorded once (Phase 1
+      commit), not re-litigated per phase.
 - [ ] CONTRIBUTING note (or README addition) documenting the fork → branch
-      → PR-to-upstream flow, once the first AGE PR is up.
-- [ ] Every PR touching AGE write paths states in its description that the
-      tier-3 live suite was run locally against the pinned image tag, and
-      the result (the accepted-risk mitigation in Testing strategy).
+      → PR-to-upstream flow, once the AGE PR is up.
+- [ ] The PR description states that the tier-3 live suite was run locally
+      against the pinned image tag, and the result (the accepted-risk
+      mitigation in Testing strategy).
 
 ## Open questions
 
