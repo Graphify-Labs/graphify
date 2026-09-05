@@ -163,6 +163,32 @@ def test_check_update_does_not_clear_flag(tmp_path):
     assert flag.exists()
 
 
+@pytest.mark.parametrize(
+    ("no_cluster", "change_topology"),
+    [(True, False), (False, False), (False, True)],
+    ids=["no-cluster", "unchanged-topology", "clustered-rebuild"],
+)
+def test_code_rebuild_preserves_semantic_update_flag(
+    tmp_path, no_cluster, change_topology
+):
+    """An AST-only rebuild cannot clear pending semantic work (#3294)."""
+    source = tmp_path / "app.py"
+    source.write_text("def before(): pass\n", encoding="utf-8")
+    assert _rebuild_code(
+        tmp_path, no_cluster=no_cluster, acquire_lock=False
+    ) is True
+
+    flag = tmp_path / "graphify-out" / "needs_update"
+    flag.write_text("docs/PRD.md\n", encoding="utf-8")
+    if change_topology:
+        source.write_text("def after(): pass\n", encoding="utf-8")
+
+    assert _rebuild_code(
+        tmp_path, no_cluster=no_cluster, acquire_lock=False
+    ) is True
+    assert flag.read_text(encoding="utf-8") == "docs/PRD.md\n"
+
+
 def test_watch_raises_without_watchdog(tmp_path, monkeypatch):
     import builtins
     real_import = builtins.__import__
