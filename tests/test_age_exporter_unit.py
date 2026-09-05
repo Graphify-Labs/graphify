@@ -181,6 +181,197 @@ def test_age_batches_chunks_correctly():
     assert sum(len(b) for b in batches) == len(rows)
 
 
+# ---------------------------------------------------------------------------
+# Phase 3: incremental sync -- narrowing full-graph row groups down to a
+# graph_diff()-shaped diff, and computing deletions from the diff alone.
+# ---------------------------------------------------------------------------
+
+def test_age_diff_filter_keeps_only_new_and_changed_nodes():
+    node_groups = {
+        "Code": [{"id": "a"}, {"id": "b"}, {"id": "c"}],
+    }
+    diff = {
+        "new_nodes": [{"id": "c", "label": "C"}],
+        "changed_nodes": [{"id": "a", "old": {}, "new": {}}],
+        "removed_nodes": [],
+        "new_edges": [], "removed_edges": [], "changed_edges": [],
+    }
+    filtered_nodes, filtered_edges, stale_by_label, stale_edges = (
+        graphdb._age_diff_filter(node_groups, {}, diff)
+    )
+    assert {r["id"] for r in filtered_nodes["Code"]} == {"a", "c"}
+    assert filtered_edges == {}
+    assert stale_by_label == {}
+    assert stale_edges == {}
+
+
+def test_age_diff_filter_drops_label_with_no_changed_rows():
+    node_groups = {"Code": [{"id": "a"}], "Doc": [{"id": "b"}]}
+    diff = {
+        "new_nodes": [{"id": "a", "label": "A"}],
+        "changed_nodes": [], "removed_nodes": [],
+        "new_edges": [], "removed_edges": [], "changed_edges": [],
+    }
+    filtered_nodes, _, _, _ = graphdb._age_diff_filter(node_groups, {}, diff)
+    assert "Doc" not in filtered_nodes
+    assert list(filtered_nodes.keys()) == ["Code"]
+
+
+def test_age_diff_filter_computes_stale_nodes_from_removed_nodes():
+    diff = {
+        "new_nodes": [], "changed_nodes": [],
+        "removed_nodes": [{"id": "x", "label": "X", "properties": {"file_type": "code"}}],
+        "new_edges": [], "removed_edges": [], "changed_edges": [],
+    }
+    _, _, stale_by_label, _ = graphdb._age_diff_filter({}, {}, diff)
+    assert stale_by_label == {"Code": ["x"]}
+
+
+def test_age_diff_filter_deletes_old_label_on_relabel():
+    """A node whose file_type changed must be deleted under its *old* AGE
+    label -- the new-label row is created via the normal upsert path since
+    it's already in changed_nodes."""
+    diff = {
+        "new_nodes": [], "removed_nodes": [],
+        "changed_nodes": [{
+            "id": "x",
+            "old": {"file_type": "code"},
+            "new": {"file_type": "document"},
+        }],
+        "new_edges": [], "removed_edges": [], "changed_edges": [],
+    }
+    _, _, stale_by_label, _ = graphdb._age_diff_filter({}, {}, diff)
+    assert stale_by_label == {"Code": ["x"]}
+
+
+def test_age_diff_filter_no_relabel_produces_no_stale_entry():
+    diff = {
+        "new_nodes": [], "removed_nodes": [],
+        "changed_nodes": [{
+            "id": "x",
+            "old": {"file_type": "code"},
+            "new": {"file_type": "code"},
+        }],
+        "new_edges": [], "removed_edges": [], "changed_edges": [],
+    }
+    _, _, stale_by_label, _ = graphdb._age_diff_filter({}, {}, diff)
+    assert stale_by_label == {}
+
+
+def test_age_diff_filter_keeps_only_new_and_changed_edges():
+    edge_groups = {"CALLS": [{"src": "a", "tgt": "b"}, {"src": "b", "tgt": "c"}]}
+    diff = {
+        "new_nodes": [], "removed_nodes": [], "changed_nodes": [],
+        "new_edges": [{"source": "a", "target": "b", "relation": "CALLS"}],
+        "removed_edges": [], "changed_edges": [],
+    }
+    _, filtered_edges, _, _ = graphdb._age_diff_filter({}, edge_groups, diff)
+    assert filtered_edges == {"CALLS": [{"src": "a", "tgt": "b"}]}
+
+
+def test_age_diff_filter_computes_stale_edges_from_removed_edges():
+    diff = {
+        "new_nodes": [], "removed_nodes": [], "changed_nodes": [],
+        "new_edges": [], "changed_edges": [],
+        "removed_edges": [{"source": "a", "target": "b", "relation": "calls"}],
+    }
+    _, _, _, stale_edges = graphdb._age_diff_filter({}, {}, diff)
+    assert stale_edges == {"CALLS": [("a", "b")]}
+
+
+def test_push_to_age_diff_mode_skips_live_state_read(monkeypatch):
+    """With a diff supplied, push_to_age() must never issue the
+    read-existing-AGE-state queries (MATCH (n) / MATCH (a)-[r]->(b)) --
+    that's the whole point of incremental sync."""
+    executed: list[str] = []
+
+    class _FakeCursor:
+        def execute(self, query, params=None):
+            text = query if isinstance(query, str) else str(getattr(query, "as_string", lambda c: query)(None))
+            executed.append(text)
+
+        def fetchone(self):
+            return (1,)  # graph already exists
+
+        def fetchall(self):
+            return []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    class _FakeConn:
+        def cursor(self):
+            return _FakeCursor()
+
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
+        def close(self):
+            pass
+
+    import sys
+    import types
+
+    fake_psycopg = types.ModuleType("psycopg")
+    fake_psycopg.connect = lambda *a, **k: _FakeConn()
+    fake_sql_mod = types.ModuleType("psycopg.sql")
+
+    class _Literal:
+        def __init__(self, v):
+            self.v = v
+
+        def as_string(self, ctx):
+            return repr(self.v)
+
+    class _Identifier(_Literal):
+        pass
+
+    class _SQL:
+        def __init__(self, s):
+            self.s = s.s if isinstance(s, _SQL) else s
+
+        def format(self, **kwargs):
+            rendered = {}
+            for k, v in kwargs.items():
+                if isinstance(v, _SQL):
+                    rendered[k] = v.s
+                elif isinstance(v, _Literal):
+                    rendered[k] = repr(v.v)
+                else:
+                    rendered[k] = str(v)
+            return _SQL(self.s.format(**rendered))
+
+        def as_string(self, ctx):
+            return self.s
+
+    fake_sql_mod.Literal = _Literal
+    fake_sql_mod.Identifier = _Identifier
+    fake_sql_mod.SQL = _SQL
+    fake_sql_mod.Composed = _SQL
+    fake_psycopg.sql = fake_sql_mod
+    fake_psycopg.errors = types.SimpleNamespace()
+    monkeypatch.setitem(sys.modules, "psycopg", fake_psycopg)
+    monkeypatch.setitem(sys.modules, "psycopg.sql", fake_sql_mod)
+
+    G = _graph(
+        [("a", {"file_type": "code", "label": "A"}), ("b", {"file_type": "code", "label": "B"})],
+        [("a", "b", {"relation": "calls", "confidence": "EXTRACTED"})],
+    )
+    diff = {
+        "new_nodes": [{"id": "a", "label": "A", "properties": {"file_type": "code"}}],
+        "changed_nodes": [], "removed_nodes": [],
+        "new_edges": [], "removed_edges": [], "changed_edges": [],
+    }
+    graphdb.push_to_age(G, conninfo="host=localhost", diff=diff)
+    assert not any("MATCH (n)" in q or "MATCH (a)-[r]->(b)" in q for q in executed)
+
+
 def test_push_to_age_requires_psycopg(monkeypatch):
     """Import-guard: without psycopg installed, push_to_age() raises a
     clear, actionable ImportError rather than a bare ModuleNotFoundError."""

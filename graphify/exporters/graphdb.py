@@ -290,6 +290,56 @@ def _age_batches(rows: list[dict], size: int = 500):
         yield rows[i:i + size]
 
 
+def _age_diff_filter(
+    node_groups: dict[str, list[dict]],
+    edge_groups: dict[str, list[dict]],
+    diff: dict,
+) -> tuple[dict[str, list[dict]], dict[str, list[dict]], dict[str, list[str]], dict[str, list[tuple[str, str]]]]:
+    """Narrow full-graph node/edge row groups down to only what a
+    graph_diff()-shaped ``diff`` says changed, and compute what to delete
+    from the diff alone (docs/AGE_PLAN.md Phase 3 incremental sync).
+
+    Pure and DB-free (tier-1 testable) -- push_to_age() calls this instead
+    of reading live AGE state when a prior snapshot exists.
+
+    Returns (node_groups, edge_groups, stale_by_label, stale_edges_by_rel).
+    """
+    changed_node_ids = {n["id"] for n in diff.get("new_nodes", [])}
+    changed_node_ids |= {n["id"] for n in diff.get("changed_nodes", [])}
+    filtered_node_groups = {
+        label: filtered
+        for label, rows in node_groups.items()
+        if (filtered := [r for r in rows if r["id"] in changed_node_ids])
+    }
+
+    changed_edge_keys = {
+        (e["source"], e["target"], e.get("relation", ""))
+        for e in diff.get("new_edges", []) + diff.get("changed_edges", [])
+    }
+    filtered_edge_groups = {
+        rel: filtered
+        for rel, rows in edge_groups.items()
+        if (filtered := [r for r in rows if (r["src"], r["tgt"], rel) in changed_edge_keys])
+    }
+
+    stale_by_label: dict[str, list[str]] = {}
+    for n in diff.get("removed_nodes", []):
+        label = _safe_label(str(n.get("properties", {}).get("file_type", "Entity")).capitalize())
+        stale_by_label.setdefault(label, []).append(n["id"])
+    for n in diff.get("changed_nodes", []):
+        old_label = _safe_label(str(n.get("old", {}).get("file_type", "Entity")).capitalize())
+        new_label = _safe_label(str(n.get("new", {}).get("file_type", "Entity")).capitalize())
+        if old_label != new_label:
+            stale_by_label.setdefault(old_label, []).append(n["id"])
+
+    stale_edges_by_rel: dict[str, list[tuple[str, str]]] = {}
+    for e in diff.get("removed_edges", []):
+        rel = _safe_rel(e.get("relation", "RELATED_TO"))
+        stale_edges_by_rel.setdefault(rel, []).append((e["source"], e["target"]))
+
+    return filtered_node_groups, filtered_edge_groups, stale_by_label, stale_edges_by_rel
+
+
 def push_to_age(
     G: nx.Graph,
     conninfo: str,
@@ -297,6 +347,7 @@ def push_to_age(
     communities: dict[int, list[str]] | None = None,
     full_props: bool = False,
     batch_size: int = 500,
+    diff: dict | None = None,
 ) -> dict[str, int]:
     """Push graph to a running Apache AGE (Postgres extension) instance.
 
@@ -307,6 +358,15 @@ def push_to_age(
     never see a partially-reconciled graph (docs/AGE_PLAN.md Phase 1). A
     node whose label changed is deleted under its old label as part of
     this same reconcile.
+
+    ``diff`` (docs/AGE_PLAN.md Phase 3, ``graphify.analyze.graph_diff()``'s
+    shape, computed by the caller against the reconstructed last-pushed
+    snapshot -- see ``graphify.age_snapshots``): when given, skips the
+    full-graph read-existing-state-from-AGE reconcile entirely and instead
+    upserts only new/changed nodes and edges and deletes only what the diff
+    reports removed (or relabeled). O(changed) instead of O(graph) once a
+    prior snapshot exists. When ``None`` (the default), behavior is
+    unchanged: a full deletion-safe push against live AGE state.
 
     See the module-level comment above for the two AGE constraints
     (literal graph name; enumerated SET fields) this function is built
@@ -332,6 +392,16 @@ def push_to_age(
     edge_field_names = _age_edge_field_names(G, full_props)
     node_groups = _age_node_rows(G, node_field_names, node_community, god_ids, cycle_files)
     edge_groups = _age_edge_rows(G, edge_field_names)
+
+    diff_stale_by_label: dict[str, list[str]] | None = None
+    diff_stale_edges_by_rel: dict[str, list[tuple[str, str]]] | None = None
+    if diff is not None:
+        # Incremental mode: only upsert rows the diff says are new/changed,
+        # and delete only what the diff says was removed or relabeled --
+        # no read of live AGE state needed (docs/AGE_PLAN.md Phase 3).
+        node_groups, edge_groups, diff_stale_by_label, diff_stale_edges_by_rel = (
+            _age_diff_filter(node_groups, edge_groups, diff)
+        )
 
     graph_lit = sql.Literal(graph_name)
 
@@ -362,21 +432,24 @@ def push_to_age(
             if not cur.fetchone()[0]:
                 cur.execute("SELECT create_graph(%s);", (graph_name,))
 
-            # --- Deletion-safe reconcile: snapshot existing (id, label)
-            # pairs before upserting, so nodes absent from the incoming
-            # graph -- or that changed label -- are deleted under their
-            # *old* label, in the same transaction as the upserts.
-            cur.execute(_cypher("MATCH (n) RETURN n.id, label(n)", "(id agtype, lbl agtype)"))
-            existing = cur.fetchall()
-            incoming_by_label = {
-                label: {row["id"] for row in rows} for label, rows in node_groups.items()
-            }
-            stale_by_label: dict[str, list[str]] = {}
-            for existing_id_raw, existing_label_raw in existing:
-                existing_id = json.loads(existing_id_raw) if isinstance(existing_id_raw, str) else existing_id_raw
-                existing_label = str(existing_label_raw).strip('"')
-                if existing_id not in incoming_by_label.get(existing_label, set()):
-                    stale_by_label.setdefault(existing_label, []).append(existing_id)
+            if diff_stale_by_label is not None:
+                stale_by_label = diff_stale_by_label
+            else:
+                # --- Deletion-safe reconcile: snapshot existing (id, label)
+                # pairs before upserting, so nodes absent from the incoming
+                # graph -- or that changed label -- are deleted under their
+                # *old* label, in the same transaction as the upserts.
+                cur.execute(_cypher("MATCH (n) RETURN n.id, label(n)", "(id agtype, lbl agtype)"))
+                existing = cur.fetchall()
+                incoming_by_label = {
+                    label: {row["id"] for row in rows} for label, rows in node_groups.items()
+                }
+                stale_by_label = {}
+                for existing_id_raw, existing_label_raw in existing:
+                    existing_id = json.loads(existing_id_raw) if isinstance(existing_id_raw, str) else existing_id_raw
+                    existing_label = str(existing_label_raw).strip('"')
+                    if existing_id not in incoming_by_label.get(existing_label, set()):
+                        stale_by_label.setdefault(existing_label, []).append(existing_id)
 
             for label, stale_ids in stale_by_label.items():
                 for batch in _age_batches([{"id": i} for i in stale_ids], batch_size):
@@ -424,25 +497,28 @@ def push_to_age(
                     _execute_prepared(cur, stmt_name, {"rows": batch})
                 cur.execute(sql.SQL("DEALLOCATE {name};").format(name=sql.Identifier(stmt_name)))
 
-            # --- Delete stale edges: same snapshot-then-diff approach,
-            # keyed on (src id, tgt id, relation type).
-            cur.execute(
-                _cypher(
-                    "MATCH (a)-[r]->(b) RETURN a.id, b.id, label(r)",
-                    "(src agtype, tgt agtype, lbl agtype)",
+            if diff_stale_edges_by_rel is not None:
+                stale_edges_by_rel = diff_stale_edges_by_rel
+            else:
+                # --- Delete stale edges: same snapshot-then-diff approach,
+                # keyed on (src id, tgt id, relation type).
+                cur.execute(
+                    _cypher(
+                        "MATCH (a)-[r]->(b) RETURN a.id, b.id, label(r)",
+                        "(src agtype, tgt agtype, lbl agtype)",
+                    )
                 )
-            )
-            existing_edges = cur.fetchall()
-            incoming_edge_keys = {
-                (rel, row["src"], row["tgt"]) for rel, rows in edge_groups.items() for row in rows
-            }
-            stale_edges_by_rel: dict[str, list[tuple[str, str]]] = {}
-            for src_raw, tgt_raw, rel_raw in existing_edges:
-                src = json.loads(src_raw) if isinstance(src_raw, str) else src_raw
-                tgt = json.loads(tgt_raw) if isinstance(tgt_raw, str) else tgt_raw
-                rel = str(rel_raw).strip('"')
-                if (rel, src, tgt) not in incoming_edge_keys:
-                    stale_edges_by_rel.setdefault(rel, []).append((src, tgt))
+                existing_edges = cur.fetchall()
+                incoming_edge_keys = {
+                    (rel, row["src"], row["tgt"]) for rel, rows in edge_groups.items() for row in rows
+                }
+                stale_edges_by_rel = {}
+                for src_raw, tgt_raw, rel_raw in existing_edges:
+                    src = json.loads(src_raw) if isinstance(src_raw, str) else src_raw
+                    tgt = json.loads(tgt_raw) if isinstance(tgt_raw, str) else tgt_raw
+                    rel = str(rel_raw).strip('"')
+                    if (rel, src, tgt) not in incoming_edge_keys:
+                        stale_edges_by_rel.setdefault(rel, []).append((src, tgt))
 
             for rel, pairs in stale_edges_by_rel.items():
                 for batch in _age_batches([{"src": s, "tgt": t} for s, t in pairs], batch_size):
