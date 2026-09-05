@@ -18,7 +18,7 @@ from graphify.analyze import _node_community_map
 from graphify.build import edge_data
 from graphify.paths import stem_filename_budget, write_json_atomic, write_text_atomic
 
-from graphify.exporters.graphdb import push_to_falkordb, push_to_neo4j  # noqa: E402,F401
+from graphify.exporters.graphdb import push_to_age, push_to_falkordb, push_to_neo4j  # noqa: E402,F401
 
 
 # Artifacts worth preserving across rebuilds (non-regenerable without LLM or curation).
