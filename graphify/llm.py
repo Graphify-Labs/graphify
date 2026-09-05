@@ -533,8 +533,9 @@ def _file_to_text(path: Path) -> str:
     """
     if path.suffix.lower() == ".pdf":
         from graphify.detect import extract_pdf_text
-        return extract_pdf_text(path)
-    return path.read_text(encoding="utf-8", errors="replace")
+        return extract_pdf_text(path)[:_FILE_CHAR_CAP]
+    with path.open(encoding="utf-8", errors="replace") as f:
+        return f.read(_FILE_CHAR_CAP)
 
 
 def _resolve_under_root(path: Path, root: Path) -> Path | None:
@@ -2095,7 +2096,7 @@ def _estimate_file_tokens(unit: "Path | FileSlice") -> int:
         return chars // _CHARS_PER_TOKEN
     else:
         try:
-            content = path.read_text(encoding="utf-8", errors="replace")[:_FILE_CHAR_CAP]
+            content = _file_to_text(path)
         except OSError:
             return 0
 
