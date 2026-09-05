@@ -1303,33 +1303,185 @@ def _extract_python_rationale(path: Path, result: dict) -> None:
 _TS_IMPORT_CALL_RE = re.compile(
     rb"\bimport\s*\(\s*['\"][^'\"\r\n]+['\"]\s*\)"
 )
-_TS_IMPORT_TYPE_CALL_RE = re.compile(
-    rb"<((?:[^;{}]*?\bimport\s*\([^()]+\)[^;{}]*?)+)>(?=\s*\()"
-)
 
 
-def _normalize_ts_import_types(source: bytes) -> bytes | None:
-    """Rewrite TypeScript `import(...)` type arguments in call expressions
-    to standard type identifiers of identical byte length (#3154).
+def _ts_import_is_code(root: Any, start: int) -> bool:
+    """Return whether an import-call match starts in executable source.
 
-    Preserves byte length, newlines, and source offsets so all downstream node
-    source_location metadata remains 100% accurate.
+    Regex matching is only used to locate a literal specifier; comments,
+    strings, regular expressions, and template text must never be fed into the
+    structural masking pass.  A template substitution is executable again, so
+    it is the one exception to the ``template_string`` guard.
     """
-    if rb"import(" not in source and rb"import (" not in source:
+    node = root.descendant_for_byte_range(start, start + 1)
+    if node is None:
+        # A malformed tree can leave a byte range uncovered. Treat it as code
+        # and let the structural pass decide whether it belongs to a type list;
+        # never turn an uncertain lexical result into a crash.
+        return True
+    in_template_substitution = False
+    while node is not None:
+        if node.type == "comment" or node.type in ("string", "regex", "regex_pattern"):
+            return False
+        if node.type == "template_substitution":
+            in_template_substitution = True
+        elif node.type == "template_string" and not in_template_substitution:
+            return False
+        node = node.parent
+    return True
+
+
+def _ts_type_argument_ranges(root: Any, *, call_only: bool) -> list[tuple[int, int]]:
+    """Collect byte ranges tree-sitter already parsed as type arguments."""
+    ranges: list[tuple[int, int]] = []
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        if node.type == "type_arguments":
+            parent = node.parent
+            if not call_only or (
+                parent is not None and parent.type in ("call_expression", "new_expression")
+            ):
+                ranges.append((node.start_byte, node.end_byte))
+        stack.extend(node.children)
+    return ranges
+
+
+def _ts_error_nodes(root: Any) -> list[Any]:
+    """Return parser error nodes without depending on a grammar's error name."""
+    errors: list[Any] = []
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        if node.type == "ERROR" or node.is_error:
+            errors.append(node)
+        stack.extend(node.children)
+    return errors
+
+
+def _ts_mask_candidate_is_malformed(
+    original_root: Any,
+    masked_range: tuple[int, int],
+    errors: list[Any],
+) -> bool:
+    """Tell whether a masked generic is backed by an actual parse failure.
+
+    A valid runtime comparison can have the same token shape as a generic call
+    after the import is replaced (``a < import("x") > (a)``).  Tree-sitter
+    exposes the opening ``<`` as a binary operator in the original tree for
+    both forms, so the structural second pass alone cannot distinguish them.
+    Only repair that ambiguity when the original parser has an error adjacent
+    to the candidate's closing angle; that is the signature of the known
+    ``import(...)``-type grammar failure.  Valid comparisons, including ones
+    nested in another call's arguments, remain byte-for-byte untouched.
+    """
+    start, end = masked_range
+    opener = original_root.descendant_for_byte_range(start, start + 1)
+    if opener is None or opener.type != "<":
+        # A grammar that already gives us a structural type_arguments node is
+        # safe to normalize; no binary/comparison ambiguity is present.
+        return True
+    if opener.parent is None or opener.parent.type != "binary_expression":
+        return True
+
+    # A malformed generic's ERROR starts at the closing `>` (or at the call
+    # punctuation immediately following it). Keep this window deliberately
+    # narrow so an unrelated syntax error elsewhere cannot authorize masking a
+    # valid runtime comparison.
+    for error in errors:
+        if error.start_byte <= end + 2 and error.end_byte >= end - 1:
+            return True
+    return False
+
+
+def _normalize_ts_import_types(source: bytes, *, tsx: bool = False) -> bytes | None:
+    """Rewrite only syntactic TypeScript ``import(...)`` type arguments.
+
+    The first implementation of #3154 used a ``<...>`` regular expression.
+    In semicolon-less code that expression could span two comparison
+    operators, so a *runtime* dynamic import was blanked before parsing.  A
+    temporary, byte-preserving mask lets tree-sitter identify the actual
+    ``type_arguments`` node without asking it to parse the known-invalid
+    ``import(...)`` call-site form.  We then rewrite only placeholders inside
+    call/new-expression type arguments.  Keeping every replacement the same
+    byte length preserves source offsets and line locations.
+    """
+    raw_matches = list(_TS_IMPORT_CALL_RE.finditer(source))
+    if not raw_matches:
         return None
 
-    def repl_type_args(m: "re.Match[bytes]") -> bytes:
-        type_arg_content = m.group(1)
+    # tree-sitter is already a required TypeScript dependency for extraction.
+    # If it cannot be loaded here, leave the source untouched; the normal AST
+    # path will report its own dependency/parser error rather than applying an
+    # unsafe textual guess.
+    try:
+        import tree_sitter_typescript as ts_typescript
+        from tree_sitter import Language, Parser
 
-        def repl_import(im: "re.Match[bytes]") -> bytes:
-            matched = im.group(0)
-            return b"T" + re.sub(rb"[^\r\n]", b" ", matched[1:])
+        language_factory = (
+            ts_typescript.language_tsx if tsx else ts_typescript.language_typescript
+        )
+        parser = Parser(Language(language_factory()))
+        original_root = parser.parse(source).root_node
+    except Exception:
+        return None
 
-        new_content = _TS_IMPORT_CALL_RE.sub(repl_import, type_arg_content)
-        return b"<" + new_content + b">"
+    matches = [
+        match for match in raw_matches
+        if _ts_import_is_code(original_root, match.start())
+    ]
+    if not matches:
+        return None
 
-    norm = _TS_IMPORT_TYPE_CALL_RE.sub(repl_type_args, source)
-    return norm if norm != source else None
+    # If the original tree already has a type_arguments node around a match,
+    # its syntax is parseable as written. This includes the grammar's deliberate
+    # comparison-vs-generic ambiguity (`a < b, import("...") > (d)`); retaining
+    # that source is essential because it is a runtime expression, not a type.
+    original_type_ranges = _ts_type_argument_ranges(original_root, call_only=False)
+    matches = [
+        match for match in matches
+        if not any(start <= match.start() < end for start, end in original_type_ranges)
+    ]
+    if not matches:
+        return None
+
+    def placeholder(match: "re.Match[bytes]") -> bytes:
+        # Keep CR/LF bytes intact. The first byte becomes an ordinary type
+        # identifier and the remaining bytes are padding, so every downstream
+        # byte offset remains identical to the user's source.
+        matched = match.group(0)
+        return b"T" + re.sub(rb"[^\r\n]", b" ", matched[1:])
+
+    masked = bytearray(source)
+    for match in matches:
+        masked[match.start():match.end()] = placeholder(match)
+
+    root = parser.parse(bytes(masked)).root_node
+
+    # Only call/new-expression type arguments need this workaround. Ordinary
+    # type annotations already parse ``import(...)`` correctly and should keep
+    # their native AST shape. A range from an outer call's type_arguments also
+    # covers nested generic arguments.
+    type_argument_ranges = _ts_type_argument_ranges(root, call_only=True)
+    errors = _ts_error_nodes(original_root)
+
+    if not type_argument_ranges:
+        return None
+
+    norm = bytearray(source)
+    changed = False
+    for match in matches:
+        containing_ranges = [
+            candidate for candidate in type_argument_ranges
+            if candidate[0] <= match.start() < candidate[1]
+        ]
+        if containing_ranges and any(
+            _ts_mask_candidate_is_malformed(original_root, candidate, errors)
+            for candidate in containing_ranges
+        ):
+            norm[match.start():match.end()] = placeholder(match)
+            changed = True
+    return bytes(norm) if changed else None
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -1356,7 +1508,7 @@ def extract_js(path: Path) -> dict:
     if is_ts:
         try:
             source = path.read_bytes()
-            source_override = _normalize_ts_import_types(source)
+            source_override = _normalize_ts_import_types(source, tsx=suffix == ".tsx")
         except OSError:
             pass
     result = _extract_generic(path, config, source_override=source_override)
@@ -1394,7 +1546,7 @@ def _rescue_js_dynamic_imports(path: Path, result: dict) -> None:
     try:
         import re as _re
         src = path.read_text(encoding="utf-8", errors="replace")
-        if "import(" not in src:  # cheap bail — most files have none
+        if not _re.search(r"(?<!\w)import\s*\(", src):  # cheap bail — most files have none
             return
         existing_ids = {n["id"] for n in result.get("nodes", [])}
         file_node_id = _make_id(str(path))
@@ -1436,7 +1588,7 @@ def _rescue_js_dynamic_imports(path: Path, result: dict) -> None:
         # handling: a literal `import(`./x`)` resolves, `${`-substituted ones
         # are excluded (no `$` in the class) as statically unresolvable.
         for m in _re.finditer(
-            r"""(?<!\w)import\(\s*(?:'([^'\n]+)'|"([^"\n]+)"|`([^`$\n]+)`)\s*\)""",
+            r"""(?<!\w)import\s*\(\s*(?:'([^'\n]+)'|"([^"\n]+)"|`([^`$\n]+)`)\s*\)""",
             src,
         ):
             raw = m.group(1) or m.group(2) or m.group(3)
@@ -1826,7 +1978,9 @@ def extract_vue(path: Path) -> dict:
         config = _TS_CONFIG
     masked_bytes = masked.encode("utf-8")
     if config in (_TS_CONFIG, _TSX_CONFIG):
-        masked_bytes = _normalize_ts_import_types(masked_bytes) or masked_bytes
+        masked_bytes = _normalize_ts_import_types(
+            masked_bytes, tsx=config is _TSX_CONFIG
+        ) or masked_bytes
 
     result = _extract_generic(path, config, source_override=masked_bytes)
 
