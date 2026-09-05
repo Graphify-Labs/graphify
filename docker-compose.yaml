@@ -1,0 +1,101 @@
+# docker-compose.yaml — run graphify without a local Python install (issue #1)
+# Works with both `docker compose` and `podman compose`.
+# Use the Makefile targets for convenience: `make pull`, `make build`, `make index`, `make up`.
+#
+# Image resolution order
+# ----------------------
+# When both `image:` and `build:` are set, compose uses the local image if present
+# (pulled from GHCR or previously built), otherwise pulls from GHCR.
+# To force a local build: make build   (docker compose build)
+# To pull the latest release:  make pull   (docker compose pull)
+#
+# Quick start
+# -----------
+# 1. Pull from GHCR (no build required):
+#      make pull                          # or: docker compose pull
+#
+# 2. Index a codebase:
+#      make index                          # indexes the current directory
+#      make index SRC=/path/to/project    # indexes a different directory
+#
+# 3. Start the MCP HTTP server:
+#      GRAPHIFY_API_KEY=secret make up    # or: docker compose up mcp
+#
+# 4. Point your AI assistant at http://localhost:8080/mcp with the same key.
+#
+# Environment variables
+# ---------------------
+# GRAPHIFY_API_KEY  — Bearer token for the HTTP server (required for `mcp` service)
+# GRAPHIFY_PORT     — override the host-side port (default: 8080)
+# GRAPHIFY_IMAGE    — override the GHCR image (default: ghcr.io/slmingol/graphify:latest)
+#
+# SELinux note (RHEL / Fedora / CoreOS)
+# --------------------------------------
+# If volume mounts fail with "permission denied", append :Z to each volume path:
+#   ./graphify-out:/data:Z,ro
+#   ./:/src:ro,Z
+
+x-image: &image ${GRAPHIFY_IMAGE:-ghcr.io/slmingol/graphify:latest}
+
+services:
+  # ---------------------------------------------------------------------------
+  # graphify CLI — index a codebase, run queries, explain nodes, etc.
+  # /src is your project (read-only); output lands in ./graphify-out/graph.json.
+  #
+  # Code-only index (no API key needed):
+  #   docker compose --profile cli run --rm graphify extract /src --code-only --output /data
+  #
+  # Full semantic index (pass LLM key via -e):
+  #   docker compose --profile cli run --rm -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
+  #     graphify extract /src --backend claude --output /data
+  #
+  # Query / explain (graph must exist first):
+  #   docker compose --profile cli run --rm graphify query "who calls authenticate?"
+  #   docker compose --profile cli run --rm graphify explain "APIRouter"
+  #   docker compose --profile cli run --rm graphify path "FastAPI" "ModelField"
+  #
+  # user: "0" — run as root inside the container so the host-user-owned files
+  # on the bind-mount are readable under podman rootless user-namespace mapping.
+  # ---------------------------------------------------------------------------
+  graphify:
+    image: *image
+    build: .
+    entrypoint: ["graphify"]
+    user: "0"
+    volumes:
+      - ./graphify-out:/data/graphify-out
+      - ./:/src:ro
+    profiles:
+      - cli
+
+  # ---------------------------------------------------------------------------
+  # MCP HTTP server — expose a pre-built graph.json to your AI assistant.
+  # Requires ./graphify-out/graph.json to exist (build it with the service above).
+  # ---------------------------------------------------------------------------
+  mcp:
+    image: *image
+    build: .
+    command:
+      - /data/graph.json
+      - --transport
+      - http
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8080"
+    ports:
+      - "${GRAPHIFY_PORT:-8080}:8080"
+    environment:
+      GRAPHIFY_API_KEY: ${GRAPHIFY_API_KEY:-}
+    volumes:
+      - ./graphify-out:/data:ro
+    restart: unless-stopped
+    healthcheck:
+      # TCP socket check — works regardless of HTTP response code or SSE framing.
+      test:
+        - "CMD-SHELL"
+        - "python -c \"import socket; socket.create_connection(('localhost', 8080), timeout=2).close()\""
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
