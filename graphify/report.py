@@ -192,7 +192,7 @@ def generate(
                 safe = _safe_community_name(label)
                 lines.append(f"- [[_COMMUNITY_{safe}|{label}]]")
             else:
-                lines.append(f"- {label}")
+                lines.append(f"- `{label}`")
 
     lines += [
         "",
@@ -250,11 +250,11 @@ def generate(
     if hyperedges:
         lines += ["", "## Hyperedges (group relationships)"]
         for h in hyperedges:
-            node_labels = ", ".join(h.get("nodes", []))
+            node_labels = ", ".join(f"`{n}`" for n in h.get("nodes", []))
             conf = h.get("confidence", "INFERRED")
             cscore = h.get("confidence_score")
             conf_tag = f"{conf} {cscore:.2f}" if cscore is not None else conf
-            lines.append(f"- **{h.get('label', h.get('id', ''))}** — {node_labels} [{conf_tag}]")
+            lines.append(f"- **`{h.get('label', h.get('id', ''))}`** — {node_labels} [{conf_tag}]")
 
     lines += ["", f"## Communities ({len(communities)} total, {thin_count_summary} thin omitted)"]
     for cid, nodes in communities.items():
@@ -270,9 +270,9 @@ def generate(
         suffix = f" (+{len(real_nodes)-8} more)" if len(real_nodes) > 8 else ""
         lines += [
             "",
-            f"### Community {cid} - \"{label}\"",
+            f"### Community {cid} - \"`{label}`\"",
             f"Cohesion: {score:.2f}",
-            f"Nodes ({len(real_nodes)}): {', '.join(display)}{suffix}",
+            f"Nodes ({len(real_nodes)}): {', '.join(f'`{d}`' for d in display)}{suffix}",
         ]
 
     ambiguous = [(u, v, d) for u, v, d in G.edges(data=True) if d.get("confidence") == "AMBIGUOUS"]
