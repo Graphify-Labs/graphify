@@ -125,6 +125,24 @@ def test_explain_no_lesson_line_for_unannotated_node(monkeypatch, tmp_path, caps
     assert "Lesson:" not in out
 
 
+def test_explain_prints_description(monkeypatch, tmp_path, capsys):
+    graph_data = {
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [
+            {"id": "validate", "label": "validateSanitySession()",
+             "source_file": "server/sanity-validate-session.ts",
+             "community": 0, "community_name": "Session",
+             "description": "Validates the active sanity session token."},
+        ],
+        "links": [],
+    }
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps(graph_data))
+    out = _run(monkeypatch, p, "validateSanitySession", capsys)
+    assert "Description: Validates the active sanity session token." in out
+    assert "Community: Session" in out
+
+
 def test_explain_connection_shows_call_site_line(monkeypatch, tmp_path, capsys):
     """BUG1: an explain connection shows the edge's call-SITE line (in the
     caller's file), not the caller's def line."""

@@ -1754,13 +1754,9 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(1)
         nid = matches[0]
         d = G.nodes[nid]
-        print(f"Node: {d.get('label', nid)}")
-        print(f"  ID:        {nid}")
-        print(
-            f"  Source:    {d.get('source_file', '')} {d.get('source_location', '')}".rstrip()
-        )
-        print(f"  Type:      {d.get('file_type', '')}")
-        print(f"  Community: {d.get('community_name') or d.get('community', '')}")
+        from graphify.serve import _format_node_detail_lines
+        for line in _format_node_detail_lines(nid, d):
+            print(line)
         # Work-memory overlay: a derived experiential hint from `graphify reflect`,
         # merged in display-only from the .graphify_learning.json sidecar next to
         # graph.json. No line when the node has no overlay entry.

@@ -1084,8 +1084,8 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
             f"NODE {sanitize_label(d.get('label', nid))} "
             f"[src={sanitize_label(str(d.get('source_file', '')))} "
             f"loc={sanitize_label(str(d.get('source_location', '')))} "
-            f"community={sanitize_label(str(d.get('community_name') or d.get('community', '')))}"
-            f"{learning_suffix}]"
+            f"community={_resolved_community_label(d)}"
+            f"{_node_description_suffix(d)}{learning_suffix}]"
         )
         lines.append(line)
     for u, v in edges:
@@ -1561,6 +1561,71 @@ def _filter_blank_stdin() -> None:
     sys.stdin = open(0, "r", closefd=False)
 
 
+def _resolved_community_label(d: dict) -> str:
+    name = d.get("community_name")
+    if name:
+        return sanitize_label(str(name))
+    cid = d.get("community")
+    return sanitize_label(str(cid)) if cid is not None else ""
+
+
+def _node_description_suffix(d: dict) -> str:
+    desc = d.get("description")
+    if not desc:
+        return ""
+    return f" desc={sanitize_label(str(desc))}"
+
+
+def _detail_field(label: str, value: str, *, compact: bool) -> str:
+    if compact:
+        return f"  {label}: {value}"
+    padding = {
+        "ID": "        ",
+        "Source": "    ",
+        "Defined in": " ",
+        "Type": "      ",
+        "Community": " ",
+        "Description": " ",
+        "Degree": "    ",
+    }
+    return f"  {label}:{padding.get(label, ' ')}{value}"
+
+
+def _format_node_detail_lines(
+    nid: str,
+    d: dict,
+    *,
+    degree: int | None = None,
+    compact: bool = False,
+) -> list[str]:
+    source = (
+        f"{sanitize_label(str(d.get('source_file', '')))} "
+        f"{sanitize_label(str(d.get('source_location', '')))}"
+    ).strip()
+    lines = [
+        f"Node: {sanitize_label(d.get('label', nid))}",
+        _detail_field("ID", sanitize_label(nid), compact=compact),
+        _detail_field("Source", source, compact=compact),
+    ]
+    def_file = d.get("definition_file")
+    if def_file:
+        defined = (
+            f"{sanitize_label(str(def_file))} "
+            f"{sanitize_label(str(d.get('definition_location', '')))}"
+        ).strip()
+        lines.append(_detail_field("Defined in", defined, compact=compact))
+    lines.extend([
+        _detail_field("Type", sanitize_label(str(d.get('file_type', ''))), compact=compact),
+        _detail_field("Community", _resolved_community_label(d), compact=compact),
+    ])
+    desc = d.get("description")
+    if desc:
+        lines.append(_detail_field("Description", sanitize_label(str(desc)), compact=compact))
+    if degree is not None:
+        lines.append(_detail_field("Degree", str(degree), compact=compact))
+    return lines
+
+
 def _community_header(cid: int, community_name) -> str:
     # Header for get_community: "Community N — Name", matching get_node / query
     # output which read the community_name attribute to_json writes onto nodes.
@@ -1838,21 +1903,7 @@ def _build_server(graph_path: str):
         if err:
             return err
         d = G.nodes[nid]
-        # Sanitise every LLM-derived field before concatenation (F-010).
-        return "\n".join([
-            f"Node: {sanitize_label(d.get('label', nid))}",
-            f"  ID: {sanitize_label(nid)}",
-            f"  Source: {sanitize_label(str(d.get('source_file', '')))} {sanitize_label(str(d.get('source_location', '')))}",
-            # A C/C++/ObjC symbol declared in a header and defined in the sibling
-            # impl file is ONE node keyed to the header, so Source alone points at
-            # the declaration. Name where it is implemented too, when known.
-            *([f"  Defined in: {sanitize_label(str(d.get('definition_file', '')))} "
-               f"{sanitize_label(str(d.get('definition_location', '')))}"]
-              if d.get("definition_file") else []),
-            f"  Type: {sanitize_label(str(d.get('file_type', '')))}",
-            f"  Community: {sanitize_label(str(d.get('community_name') or d.get('community', '')))}",
-            f"  Degree: {G.degree(nid)}",
-        ])
+        return "\n".join(_format_node_detail_lines(nid, d, degree=G.degree(nid), compact=True))
 
     def _tool_get_neighbors(arguments: dict) -> str:
         label = arguments["label"].lower()
@@ -1875,7 +1926,8 @@ def _build_server(graph_path: str):
             if rel_filter and rel_filter not in rel.lower():
                 continue
             lines.append(
-                f"  --> {sanitize_label(G.nodes[nb].get('label', nb))} "
+                f"  --> {sanitize_label(G.nodes[nb].get('label', nb))}"
+                f"{_node_description_suffix(G.nodes[nb])} "
                 f"[{sanitize_label(str(rel))}] [{sanitize_label(str(d.get('confidence', '')))}]{_edge_at(d)}"
             )
         for nb in G.predecessors(nid):
@@ -1884,7 +1936,8 @@ def _build_server(graph_path: str):
             if rel_filter and rel_filter not in rel.lower():
                 continue
             lines.append(
-                f"  <-- {sanitize_label(G.nodes[nb].get('label', nb))} "
+                f"  <-- {sanitize_label(G.nodes[nb].get('label', nb))}"
+                f"{_node_description_suffix(G.nodes[nb])} "
                 f"[{sanitize_label(str(rel))}] [{sanitize_label(str(d.get('confidence', '')))}]{_edge_at(d)}"
             )
         budget = int(arguments.get("token_budget", 2000))
@@ -1904,7 +1957,9 @@ def _build_server(graph_path: str):
             # Sanitise label and source_file (F-010).
             lines.append(
                 f"  {sanitize_label(d.get('label', n))} "
-                f"[{sanitize_label(str(d.get('source_file', '')))}]"
+                f"[{sanitize_label(str(d.get('source_file', '')))}] "
+                f"community={_resolved_community_label(d)}"
+                f"{_node_description_suffix(d)}"
             )
         budget = int(arguments.get("token_budget", 2000))
         return _cut_lines_to_budget(
