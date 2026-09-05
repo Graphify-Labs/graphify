@@ -20,7 +20,15 @@ import networkx as nx
 import pytest
 
 from graphify.affected import DEFAULT_AFFECTED_RELATIONS, affected_nodes
-from graphify.extract import _file_node_id, extract, extract_js
+import graphify.extract as extract_module
+from graphify.extract import (
+    _TS_CONFIG,
+    _extract_generic,
+    _file_node_id,
+    _rescue_js_dynamic_imports,
+    extract,
+    extract_js,
+)
 
 
 def _write(path: Path, text: str) -> Path:
@@ -296,6 +304,26 @@ def test_dynamic_import_text_in_regex_is_not_matched(tmp_path: Path):
     result = extract_js(importer)
 
     assert not any(edge["relation"] == "dynamic_import" for edge in result["edges"])
+
+
+def test_parser_failure_falls_back_with_warning(tmp_path: Path, monkeypatch):
+    _write(tmp_path / "src/dep.ts", "export const dep = 1\n")
+    importer = _write(tmp_path / "src/boot.ts", "export const dep = await import('./dep')\n")
+
+    result = _extract_generic(importer, _TS_CONFIG)
+    original_import = extract_module.importlib.import_module
+
+    def fail_typescript_grammar(name, *args, **kwargs):
+        if name == "tree_sitter_typescript":
+            raise ImportError("simulated parser initialization failure")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(extract_module.importlib, "import_module", fail_typescript_grammar)
+
+    with pytest.warns(RuntimeWarning, match="could not validate dynamic import"):
+        _rescue_js_dynamic_imports(importer, result)
+
+    assert any(edge["relation"] == "dynamic_import" for edge in result["edges"])
 
 
 def test_nested_named_function_calls_resolve(tmp_path: Path):

@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import textwrap
+import warnings
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
@@ -1366,7 +1367,7 @@ def extract_js(path: Path) -> dict:
     return result
 
 
-def _js_runtime_import_starts(path: Path, source: bytes) -> set[int]:
+def _js_runtime_import_starts(path: Path, source: bytes) -> set[int] | None:
     """Return byte offsets of parsed runtime ``import(...)`` calls.
 
     The rescue needs module-scope calls, not a second lexical parser. Parsing
@@ -1374,6 +1375,8 @@ def _js_runtime_import_starts(path: Path, source: bytes) -> set[int]:
     and template text. TypeScript import types are excluded by their enclosing
     type-only AST nodes because that grammar can represent ``typeof import('…')``
     as a call even though it is not runtime code.
+    Returns ``None`` when the validator cannot initialize or parse, so the
+    caller can preserve the pre-filter rescue behavior with a visible warning.
     """
     try:
         from tree_sitter import Language, Parser
@@ -1392,7 +1395,7 @@ def _js_runtime_import_starts(path: Path, source: bytes) -> set[int]:
         language = Language(getattr(module, language_name)())
         tree = Parser(language).parse(source)
     except Exception:
-        return set()
+        return None
 
     starts: set[int] = set()
 
@@ -1487,12 +1490,26 @@ def _rescue_js_dynamic_imports(path: Path, result: dict) -> None:
         if not matches:
             return
         runtime_import_starts = _js_runtime_import_starts(path, source_bytes)
+        parser_failed = runtime_import_starts is None
+        if parser_failed:
+            warnings.warn(
+                f"tree-sitter could not validate dynamic import candidates in {path}; "
+                "falling back to the guarded lexical rescue, which may include "
+                "text in comments or strings",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            runtime_import_starts = set()
         # `(?<!\w)` so `fooimport('x')` and `_import('x')` do not match. The
         # backtick alternative mirrors _dynamic_import_js's template-string
         # handling: a literal `import(`./x`)` resolves, `${`-substituted ones
         # are excluded (no `$` in the class) as statically unresolvable.
         for m in matches:
-            if m.start() not in runtime_import_starts:
+            if parser_failed:
+                line_start = source_bytes.rfind(b"\n", 0, m.start()) + 1
+                if b"//" in source_bytes[line_start:m.start()]:
+                    continue
+            elif m.start() not in runtime_import_starts:
                 continue
             raw_bytes = m.group(1) or m.group(2) or m.group(3)
             raw = raw_bytes.decode("utf-8", errors="replace") if raw_bytes else ""
