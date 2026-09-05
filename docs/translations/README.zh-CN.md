@@ -200,9 +200,9 @@ graphify trae-cn uninstall
 
 | 语料 | 文件数 | 压缩比 | 输出 |
 |------|--------|--------|------|
-| Karpathy 的仓库 + 5 篇论文 + 4 张图片 | 52 | **71.5x** | [`worked/karpathy-repos/`](worked/karpathy-repos/) |
-| graphify 源码 + Transformer 论文 | 4 | **5.4x** | [`worked/mixed-corpus/`](worked/mixed-corpus/) |
-| httpx（合成 Python 库） | 6 | ~1x | [`worked/httpx/`](worked/httpx/) |
+| Karpathy 的仓库 + 5 篇论文 + 4 张图片 | 52 | **71.5x** | [`worked/karpathy-repos/`](../../worked/karpathy-repos/) |
+| graphify 源码 + Transformer 论文 | 4 | **5.4x** | [`worked/mixed-corpus/`](../../worked/mixed-corpus/) |
+| httpx（合成 Python 库） | 6 | ~1x | [`worked/httpx/`](../../worked/httpx/) |
 
 Token 压缩效果会随着语料规模增大而更明显。6 个文件本来就塞得进上下文窗口，所以 graphify 在这种场景里的价值更多是结构清晰度，而不是 token 压缩。到了 52 个文件（代码 + 论文 + 图片）这种规模，就能做到 71x+。每个 `worked/` 目录里都带了原始输入和真实输出（`GRAPH_REPORT.md`、`graph.json`），你可以自己跑一遍核对数字。
 
