@@ -1919,7 +1919,10 @@ def _build_server(graph_path: str):
             exclude_hubs_percentile=float(_pct) if _pct is not None else None,
         )
         lines = ["God nodes (most connected):"]
-        lines += [f"  {i}. {n['label']} - {n['degree']} edges" for i, n in enumerate(nodes, 1)]
+        lines += [
+            f"  {i}. {sanitize_label(n['label'])} - {n['degree']} edges"
+            for i, n in enumerate(nodes, 1)
+        ]
         return "\n".join(lines)
 
     def _tool_graph_stats(_: dict) -> str:
