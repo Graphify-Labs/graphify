@@ -1,0 +1,20 @@
+name: "Graphify"
+description: "Map your entire repository into a queryable knowledge graph."
+branding:
+  icon: 'git-merge'
+  color: 'blue'
+inputs:
+  subfolders:
+    description: "Subfolders to process (default is current directory '.')"
+    required: false
+    default: "."
+  options:
+    description: "Additional command options for Graphify"
+    required: false
+    default: ""
+runs:
+  using: "docker"
+  image: "action/Dockerfile"
+  args:
+    - ${{ inputs.subfolders }}
+    - ${{ inputs.options }}
