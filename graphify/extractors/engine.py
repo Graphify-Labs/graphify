@@ -4611,12 +4611,22 @@ def _extract_generic(
                         owner_nid = function_owner_nid
                     elif tgt[0] == "object" and tgt[1] in object_bindings:
                         object_name = tgt[1]
-                        owner_nid = _make_id(function_owner_nid, object_name)
+                        # Namespace the object by the function it is declared in,
+                        # NOT by `function_owner_nid`. The two differ for a method:
+                        # `this.X = fn` belongs to the class, but `const api = {}`
+                        # is a local of the method. Keying the object on the class
+                        # merged the factory objects of two sibling methods that
+                        # picked the same local name, so the second method's
+                        # members hung off the first method's node and the
+                        # `contains` edge was emitted once per method — the very
+                        # duplication `contained_owners` exists to prevent (it is
+                        # scoped to one function, so it cannot see the sibling).
+                        owner_nid = _make_id(func_nid, object_name)
                         owner_line = object_bindings[object_name].start_point[0] + 1
                         add_node(owner_nid, object_name, owner_line)
                         if owner_nid not in contained_owners:
                             contained_owners.add(owner_nid)
-                            add_edge(function_owner_nid, owner_nid, "contains", owner_line)
+                            add_edge(func_nid, owner_nid, "contains", owner_line)
                     else:
                         continue
                     m_name = tgt[2]
