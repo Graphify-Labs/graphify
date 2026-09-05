@@ -540,6 +540,7 @@ These are only needed for **headless / CI extraction** (`graphify extract`). Whe
 | `AZURE_OPENAI_API_VERSION` | Azure API version override | optional — default `2024-12-01-preview` |
 | `AZURE_OPENAI_DEPLOYMENT` or `GRAPHIFY_AZURE_MODEL` | Azure deployment name | optional — default `gpt-4o` |
 | `AWS_*` / `~/.aws/credentials` | AWS Bedrock — standard credential chain | `--backend bedrock` (no API key, uses IAM) |
+| `GRAPHIFY_BACKEND` | Global backend override (e.g. `bedrock`, `ollama`, `claude`, `none`, `auto`) | optional — overrides automatic detection |
 | `GRAPHIFY_MAX_WORKERS` | AST parallelism thread count | optional — also `--max-workers` flag |
 | `GRAPHIFY_MAX_OUTPUT_TOKENS` | Raise output cap for dense corpora | optional — e.g. `32768` for large files |
 | `GRAPHIFY_API_TIMEOUT` | Per-call timeout in seconds for HTTP, claude-cli, Anthropic SDK, and Bedrock backends (default: 600) | optional — also `--api-timeout` flag |
