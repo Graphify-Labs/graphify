@@ -9,6 +9,11 @@ from graphify.export import to_json, to_cypher, to_graphml, to_html, to_canvas, 
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
+# Byte-identity across two writes is only assertable when EVERY provenance field
+# is pinned. built_at_commit was already pinned; the write stamp needs the same
+# treatment or the two writes differ whenever they straddle a second boundary.
+_PINNED_STAMP = "1970-01-01T00:00:00Z"
+
 def make_graph():
     return build_from_json(json.loads((FIXTURES / "extraction.json").read_text()))
 
@@ -100,12 +105,12 @@ def test_to_json_field_order_stable_across_read_rebuild(tmp_path):
 
     first = tmp_path / "first.json"
     to_json(build_from_json(extraction), communities, str(first),
-            built_at_commit="fixed", force=True)
+            built_at_commit="fixed", built_at=_PINNED_STAMP, force=True)
     reread = json.loads(first.read_text())
 
     second = tmp_path / "second.json"
     to_json(build_from_json(reread), communities, str(second),
-            built_at_commit="fixed", force=True)
+            built_at_commit="fixed", built_at=_PINNED_STAMP, force=True)
 
     # Byte-identity is the strongest statement of "no cosmetic churn".
     assert first.read_bytes() == second.read_bytes()
@@ -140,11 +145,11 @@ def test_to_json_field_order_stable_with_non_ascii_labels(tmp_path):
     communities = {0: ["a_cafe", "b_ja"]}
     first = tmp_path / "first.json"
     to_json(build_from_json(extraction), communities, str(first),
-            built_at_commit="fixed", force=True)
+            built_at_commit="fixed", built_at=_PINNED_STAMP, force=True)
     reread = json.loads(first.read_text())
     second = tmp_path / "second.json"
     to_json(build_from_json(reread), communities, str(second),
-            built_at_commit="fixed", force=True)
+            built_at_commit="fixed", built_at=_PINNED_STAMP, force=True)
     assert first.read_bytes() == second.read_bytes(), "non-ASCII round-trip churned field order"
     # the reorder preserves the non-ASCII value
     labels = {n["id"]: n.get("label") for n in json.loads(first.read_text())["nodes"]}
@@ -1087,3 +1092,52 @@ console.log(bad);
         proc = subprocess.run([node, str(js)], capture_output=True, text=True, timeout=60)
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "0", f"geometry violations: {proc.stdout.strip()}"
+
+
+def test_to_json_stamps_built_at_in_exact_utc_format(tmp_path):
+    """An unpinned write stamps the wall clock as YYYY-MM-DDTHH:MM:SSZ.
+
+    The format is asserted with a full-string regex and a strict strptime, not
+    with a loose `endswith("Z")` — a weak predicate here is what let a previous
+    provenance change ship the wrong string shape while its test stayed green.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    out = tmp_path / "graph.json"
+    to_json(build_from_json({"nodes": [{"id": "a", "label": "A", "file_type": "code",
+                                       "source_file": "a.py"}], "edges": []}),
+            {0: ["a"]}, str(out), built_at_commit="fixed", force=True)
+
+    stamp = json.loads(out.read_text())["built_at"]
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", stamp), stamp
+    parsed = datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    # UTC, not local time: a stamp built from a naive local clock would drift by
+    # the machine's offset, which is invisible in CI running at UTC+0.
+    assert abs(datetime.now(timezone.utc) - parsed) < timedelta(minutes=5), stamp
+
+
+def test_to_json_built_at_is_written_verbatim_when_pinned(tmp_path):
+    """A caller-supplied stamp lands byte-for-byte — no reformatting, no clock."""
+    out = tmp_path / "graph.json"
+    to_json(build_from_json({"nodes": [{"id": "a", "label": "A", "file_type": "code",
+                                       "source_file": "a.py"}], "edges": []}),
+            {0: ["a"]}, str(out), built_at_commit="fixed",
+            built_at="2020-01-02T03:04:05Z", force=True)
+    assert json.loads(out.read_text())["built_at"] == "2020-01-02T03:04:05Z"
+
+
+def test_to_json_built_at_is_present_even_outside_a_git_repo(tmp_path, monkeypatch):
+    """built_at_commit can legitimately be absent (no repo); the stamp cannot.
+
+    Guards the asymmetry: the commit is written under `if commit:`, so copying
+    that shape for the stamp would silently drop it whenever a clock read
+    returned something falsy-looking.
+    """
+    monkeypatch.setattr("graphify.export._git_head", lambda cwd=None: None)
+    out = tmp_path / "graph.json"
+    to_json(build_from_json({"nodes": [{"id": "a", "label": "A", "file_type": "code",
+                                       "source_file": "a.py"}], "edges": []}),
+            {0: ["a"]}, str(out), force=True)
+    data = json.loads(out.read_text())
+    assert "built_at_commit" not in data
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", data["built_at"])
