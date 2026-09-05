@@ -1,10 +1,12 @@
 # Apache AGE Support — Implementation Plan
 
-Status: v10 (2026-09-05) — Phases 0-2 implemented and validated live
+Status: v11 (2026-09-05) — Phases 0-3 implemented and validated live
 against `apache/age` (PostgreSQL 18.1, AGE 1.7.0): compatibility spike,
-`push_to_age()` exporter, and the repository identity/ownership registry.
-`extraction_config_hash` remains an unpopulated reserved column pending
-Phase 3 (see Open questions).
+`push_to_age()` exporter, the repository identity/ownership registry, and
+logical base snapshots + incremental default-branch sync.
+`extraction_config_hash` remains an unpopulated reserved column (see Open
+questions) -- plumbed as far as `record_snapshot()`'s signature, but not
+yet computed or passed from the CLI.
 Scope: add Apache AGE as a graph-database sink, with cost-efficient sync,
 multi-branch support, a multi-repo registry with ownership, and storage
 optimization. Primary consumers are external agents (code review, code
@@ -765,22 +767,50 @@ the ones specific to AGE that aren't automatically obvious from those docs.
       non-live, all live AGE + registry tests passed against
       PostgreSQL 18.1 / AGE 1.7.0).
 
-### Phase 3 — Durable default-branch graph + logical snapshots
-- [ ] `graph_diff()` extended to report property changes (old + new values)
-      and full payloads on removal.
-- [ ] Default-branch push records a logical snapshot: periodic full
-      checkpoints (JSONB or object storage) + ordered reversible deltas.
-- [ ] Incremental default-branch sync: diff against last-pushed snapshot;
-      batched MERGE/SET/DETACH DELETE only; full deletion-safe push when no
-      prior snapshot exists.
-- [ ] Checkpoint cadence decided (see Open questions) and implemented.
-- [ ] Snapshot uniqueness constraint enforced
-      (`repository_id, commit_sha, kind, schema_version,
+### Phase 3 — Durable default-branch graph + logical snapshots ✅ done
+- [x] `graph_diff()` extended to report property changes (old + new values,
+      `changed_nodes`/`changed_edges`) and full payloads on removal/addition
+      (`removed_nodes`/`new_nodes`/etc. now carry a `properties` dict).
+      Purely additive to the existing return shape; all pre-existing callers
+      (skill `update.md` docs, `tests/test_analyze.py`) unaffected.
+- [x] Default-branch push records a logical snapshot in `graphify_snapshots`
+      (`graphify/age_snapshots.py::record_snapshot`): periodic full
+      checkpoints (JSONB payload) + ordered deltas (a stored `graph_diff()`
+      dict) reconstructed via `apply_diff_to_payload`.
+- [x] Incremental default-branch sync: `graphify export age --push`
+      reconstructs the last snapshot (`latest_snapshot_graph`), diffs the
+      new graph against it, and passes the diff into `push_to_age(...,
+      diff=...)`, which then upserts only new/changed rows and deletes only
+      what the diff reports removed/relabeled -- no read of live AGE state.
+      Falls back to a full push (`diff=None`, unchanged Phase 1 behavior)
+      when there's no prior snapshot, registration is disabled
+      (`--no-register`), or no git remote is found.
+- [x] Checkpoint cadence decided: every Nth push (`CHECKPOINT_CADENCE = 20`,
+      overridable via `record_snapshot(..., cadence=...)`) is a full
+      checkpoint; the rest are deltas against the reconstructed prior state.
+      Simple and predictable over size-based triggers -- revisit only if
+      checkpoint payloads dominate storage for very large graphs.
+- [x] Snapshot uniqueness constraint enforced (already part of the Phase 2
+      schema: `repository_id, commit_sha, kind, schema_version,
       extraction_config_hash, graphify_version`); checkpoint-preferred
-      resolution implemented.
-- [ ] `ARCHITECTURE.md` updated for snapshot machinery.
-- [ ] Commit on `apache-age-backend`; `pytest` green, including reversibility tests for
-      `graph_diff()`.
+      resolution implemented in `_reconstruct_payload_from_rows` (walks
+      backward to the most recent checkpoint and only replays deltas after
+      it, so a delta sharing a checkpoint's `commit_sha` is never
+      replayed). `record_snapshot` is additionally idempotent **by
+      commit_sha alone** (a repeat push of an already-recorded commit is a
+      no-op, checked before the cadence/kind decision) -- the uniqueness
+      constraint alone doesn't guarantee this, since which `kind` a re-push
+      would compute depends on how many rows exist *now*, not on
+      `commit_sha`; found live while testing (`
+      test_record_snapshot_is_idempotent_for_same_commit`).
+- [x] `ARCHITECTURE.md` updated for snapshot machinery (`age_snapshots.py`
+      row).
+- [x] Committed on `apache-age-backend`; `pytest` green (5439 passed
+      non-live; live AGE + registry + snapshot suites all passed against
+      PostgreSQL 18.1 / AGE 1.7.0, including an end-to-end CLI-path
+      scenario: full push → checkpoint → incremental push that adds,
+      removes, and relabels nodes → verified directly against AGE's live
+      graph state).
 
 ### Phase 4 — Branches: commit-anchored diffs, lazy hydration, reaping
 - [ ] Initial non-default-branch push: merge-base detection, base-snapshot
@@ -866,8 +896,11 @@ the ones specific to AGE that aren't automatically obvious from those docs.
   push. Merge/closure detection needs the pusher to report it (or a
   periodic check against the remote).
 - Snapshot payload location: Postgres JSONB vs. object storage (size
-  threshold?).
-- Checkpoint cadence for `graphify_snapshots` (every N pushes? size-based?).
+  threshold?) -- Phase 3 uses JSONB unconditionally; revisit if payloads
+  grow large enough to matter.
+- ~~Checkpoint cadence for `graphify_snapshots`~~ **Resolved in Phase 3**:
+  every Nth push (default 20, `age_snapshots.CHECKPOINT_CADENCE`) is a full
+  checkpoint; the rest are deltas.
 - Whether the frontend layer enforcing owner scoping is part of graphify
   (e.g. an authenticated MCP/HTTP mode of `serve.py`) or external.
 - Whether to later add a non-blocking scheduled CI workflow with an AGE
@@ -878,8 +911,11 @@ the ones specific to AGE that aren't automatically obvious from those docs.
   define the column; nothing computes a meaningful hash yet, because doing
   so requires threading the actual extraction config (LLM backend/model,
   confidence thresholds, extractor flags) through from `graphify extract`
-  down to the `export age --push` call, which doesn't happen today. Until
-  that plumbing exists, treat the column as reserved/nullable rather than
-  populated. Needs a decision in Phase 3 (which is the first phase that
-  actually needs to detect incompatible graphs via this field) on what to
-  hash and how to pass it through.
+  down to the `export age --push` call, which doesn't happen today. Phase
+  3's `record_snapshot()` accepts `extraction_config_hash` as an explicit
+  keyword (defaulting to `None`) so the plumbing point exists, but the CLI
+  still doesn't compute or pass a real value -- still reserved/nullable in
+  practice. Remains open for whichever phase first needs to *detect*
+  incompatible graphs via this field (materialization in Phase 4 is the
+  most likely forcing function) on what to hash and how to pass it
+  through.
