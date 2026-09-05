@@ -48,8 +48,11 @@ def _load_toml_module():
 
     Returning ``None`` used to look identical to a virtual workspace root with
     nothing to emit, so missing ``tomli`` on Python 3.10 silently dropped every
-    ``Cargo.toml`` / ``pyproject.toml``. Fail loud the way ``cargo_introspect``
-    already does.
+    ``Cargo.toml`` / ``pyproject.toml``. Raise instead: the caller
+    (``extract_package_manifest``) surfaces this as a visible per-manifest error
+    rather than dropping the file silently. In practice the runtime ``tomli``
+    dependency (python_version < '3.11') keeps this path unreachable for a
+    standard install.
     """
     try:
         import tomllib as _toml  # type: ignore[import-not-found]
