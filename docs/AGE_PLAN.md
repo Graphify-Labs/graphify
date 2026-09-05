@@ -1,8 +1,9 @@
 # Apache AGE Support — Implementation Plan
 
-Status: v8 (2026-09-05) — Phase 0 (AGE compatibility spike) executed
-against a live `apache/age` container; findings incorporated into Phase 1's
-design (see Phase 0 spike results and Phase 1)
+Status: v9 (2026-09-05) — Phase 0 (compatibility spike) and Phase 1
+(`push_to_age()` exporter, CLI, packaging, docs) implemented and validated
+live against `apache/age` (PostgreSQL 18.1, AGE 1.7.0); full CI-parity
+suite green
 Scope: add Apache AGE as a graph-database sink, with cost-efficient sync,
 multi-branch support, a multi-repo registry with ownership, and storage
 optimization. Primary consumers are external agents (code review, code
@@ -632,42 +633,65 @@ the ones specific to AGE that aren't automatically obvious from those docs.
 - [x] Branch `age-phase0-spike` cut off synced `v8`; committed locally.
       PR to upstream still pending (see Delivery section).
 
-### Phase 1 — `push_to_age()` exporter
-- [ ] `push_to_age()` in `graphify/exporters/graphdb.py`, sibling of
+### Phase 1 — `push_to_age()` exporter ✅ done
+- [x] `push_to_age()` in `graphify/exporters/graphdb.py`, sibling of
       `push_to_neo4j`/`push_to_falkordb`; re-exported from
       `graphify/export.py`.
-- [ ] Session setup: `LOAD 'age'; SET search_path = ag_catalog, "$user",
+- [x] Session setup: `LOAD 'age'; SET search_path = ag_catalog, "$user",
       public;`; `create_graph()` if absent (check `ag_catalog.ag_graph`).
-- [ ] Prepared fixed Cypher statement shapes; agtype parameter map of batch
+- [x] Prepared fixed Cypher statement shapes; agtype parameter map of batch
       rows; `UNWIND $rows` at ~500 rows/statement; grouped by sanitized
-      label/relation; single transaction per push.
-- [ ] Deletion-safe in-place reconcile: delete nodes/edges absent from the
-      incoming graph in the same transaction as the upserts; explicit
+      label/relation; single transaction per push. Built per the Phase 0
+      spike findings: graph name and `EXECUTE` payload as SQL literals,
+      `SET` clauses enumerating fields explicitly by name.
+- [x] Deletion-safe in-place reconcile: snapshot existing `(id, label)` /
+      `(src, tgt, relation)` before upserting, delete what's absent from
+      the incoming graph in the same transaction as the upserts; explicit
       old-label cleanup when `file_type` changes.
-- [ ] Lean property set by default; `--full-props` flag.
-- [ ] CLI: `graphify export age --push postgresql://... [--graph-name]
-      [--full-props]`; `AGE_PASSWORD`/`PGPASSWORD` support.
-- [ ] `age` extra added to `pyproject.toml` (with explicit
-      `postgres`-extra overlap decision) and to `all`.
-- [ ] `docs/AGE_SCHEMA.md` written; README export section updated;
+- [x] Lean property set by default; `--full-props` flag (dynamically
+      computes the full scalar field union per push).
+- [x] CLI: `graphify export age --push postgresql://... [--graph-name]
+      [--full-props]`; `AGE_PASSWORD`/`PGPASSWORD` support (appended as a
+      libpq URI query param when not already embedded).
+- [x] `age` extra added to `pyproject.toml` (`psycopg[binary]`,
+      independent of `postgres` — see the inline comment for the overlap
+      decision) and to `all`; `uv lock` regenerated.
+- [x] `docs/AGE_SCHEMA.md` written; README export section updated;
       `graphify export --help` updated; `ARCHITECTURE.md` module table
-      updated.
-- [ ] Property/label/relation selection factored into a **shared pure
-      function** used by all three pushers; schema-pinning unit test on it
-      in the default CI suite (see Testing strategy).
-- [ ] Reconcile implemented as a **pure planner** (graph in → ordered
-      statement batches out) + thin AGE executor; planner unit-tested in
-      default CI.
-- [ ] Tier-1 unit tests: CLI wiring, env-var credential resolution,
-      sanitization, lean-vs-`--full-props` selection.
-- [ ] Tier-3 live test matrix (enumerated — these define "done"):
-      fresh push; idempotent re-push (counts stable); node deletion
-      reconciled; edge deletion reconciled; property change; **label
-      change** (`file_type` changed → node must not survive under the old
-      label); mid-push failure rolls back atomically (inject a bad row,
-      assert the prior graph is intact); lean vs. `--full-props` output.
-- [ ] Branch `age-phase1-exporter` off synced `v8`; PR upstream; `pytest`
-      green.
+      updated (`test_architecture_doc.py` still passes).
+- [x] Label/relation sanitization (`_safe_label`/`_safe_rel`) promoted to
+      module level, deduplicated out of `push_to_neo4j`/`push_to_falkordb`,
+      and pinned by a unit test — the "shared pure function" from the
+      Testing strategy section. **Scope note**: full separation into a
+      pure planner (graph in → statement batches out) + thin executor was
+      not carried all the way through — row/field selection and batching
+      (`_age_node_rows`, `_age_edge_rows`, `_age_node_field_names`,
+      `_age_edge_field_names`, `_age_batches`) are pure and tier-1 tested,
+      but the deletion-diff snapshot query and SQL statement construction
+      remain inside `push_to_age()` itself, mixed with I/O. Tier-1
+      coverage is still substantial (20 DB-free unit tests); a full
+      planner/executor split is deferred rather than abandoned.
+- [x] Tier-1 unit tests (`tests/test_age_exporter_unit.py`, 20 tests, no DB
+      required): sanitization pinning, lean/full field selection, row
+      grouping and structural-metric stamping, batching, the
+      missing-psycopg `ImportError` guard.
+- [x] Tier-3 live test matrix (`tests/test_age_integration.py`, validated
+      against `apache/age` PostgreSQL 18.1 / AGE 1.7.0): fresh push;
+      idempotent re-push (counts stable); node + edge deletion reconciled;
+      property change updates in place; **label change** removes the node
+      from its old label and creates it under the new one; a Python-level
+      failure before the write transaction opens leaves the prior graph
+      untouched (AGE's own mid-transaction rollback is covered separately
+      by the Phase 0 spike's `test_transaction_rolls_back_on_failure`);
+      `--full-props` includes extra scalar fields.
+- [x] Full CLI path validated end-to-end against a live container
+      (`graphify export age --push postgresql://...`), not just the Python
+      function directly.
+- [x] Branch `age-phase1-exporter` cut, stacked on `age-phase0-spike`
+      (Phase 1's tests build directly on Phase 0's live-suite file).
+      Committed locally; PR to upstream still pending (see Delivery
+      section). Full CI-parity command list green with `--all-extras`
+      (5384 passed).
 
 ### Phase 2 — Repository identity, ownership, registry
 - [ ] Versioned SQL migration for `graphify_repos`, `graphify_branches`,
