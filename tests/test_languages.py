@@ -3399,6 +3399,18 @@ def test_apex_method_extraction():
     assert any("createAccounts" in l for l in labels)
     assert any("deleteOldAccounts" in l for l in labels)
 
+
+def test_apex_method_generic_and_dotted_return_types():
+    # Regression: return types containing commas/spaces (Map<String, Object>),
+    # dots (Database.QueryLocator), or nested generics (List<Map<String, Id>>)
+    # were silently dropped because the return type was matched by a single
+    # character class with no comma, space, or dot.
+    r = extract_apex(FIXTURES / "sample.cls")
+    labels = _labels(r)
+    assert any("getAccountSummary" in l for l in labels)
+    assert ".start()" in labels
+    assert any("buildNameIndex" in l for l in labels)
+
 def test_apex_contains_and_method_relations():
     r = extract_apex(FIXTURES / "sample.cls")
     relations = _relations(r)
