@@ -183,6 +183,21 @@ BACKENDS: dict[str, dict] = {
         "temperature": 0,
         "max_tokens": 16384,
     },
+    "atlascloud": {
+        # Atlas Cloud exposes an OpenAI-compatible endpoint. Prefer the Atlas
+        # API_BASE naming used by their docs, while still accepting BASE_URL for
+        # consistency with graphify's other OpenAI-compatible backends.
+        "base_url": os.environ.get(
+            "ATLASCLOUD_API_BASE",
+            os.environ.get("ATLASCLOUD_BASE_URL", "https://api.atlascloud.ai/v1"),
+        ),
+        "default_model": os.environ.get("ATLASCLOUD_MODEL", "qwen/qwen3.5-flash"),
+        "env_key": "ATLASCLOUD_API_KEY",
+        "model_env_key": "GRAPHIFY_ATLASCLOUD_MODEL",
+        "pricing": {"input": 0.0, "output": 0.0},
+        "temperature": 0,
+        "max_tokens": 16384,
+    },
     "azure": {
         # Azure OpenAI Service — uses AzureOpenAI SDK client, not the standard
         # OpenAI client, so it has its own call path (_call_azure).
@@ -1917,7 +1932,7 @@ def extract_files_direct(
         if backend is None:
             raise ValueError(
                 "No LLM backend configured. Set one of: GEMINI_API_KEY, ANTHROPIC_API_KEY, "
-                "OPENAI_API_KEY, DEEPSEEK_API_KEY, MOONSHOT_API_KEY, "
+                "OPENAI_API_KEY, DEEPSEEK_API_KEY, ATLASCLOUD_API_KEY, MOONSHOT_API_KEY, "
                 "AZURE_OPENAI_API_KEY+AZURE_OPENAI_ENDPOINT, OLLAMA_BASE_URL, "
                 "or AWS credentials. Pass backend= explicitly to select a provider."
             )
@@ -3111,7 +3126,7 @@ def _validate_ollama_base_url(url: str, *, warn: bool = True) -> None:
 def detect_backend() -> str | None:
     """Return the name of whichever backend has an API key set, or None.
 
-    Priority: gemini → kimi → claude → openai → deepseek → azure → bedrock → ollama (last, opt-in).
+    Priority: gemini → kimi → claude → openai → deepseek → atlascloud → azure → bedrock → ollama (last, opt-in).
 
     Ollama is intentionally checked LAST so a paid API key (Anthropic/OpenAI/etc.)
     is never silently shadowed by an incidental OLLAMA_BASE_URL in the environment
@@ -3119,7 +3134,7 @@ def detect_backend() -> str | None:
     key now keeps you on the paid backend; remove the paid key (or pass
     --backend ollama explicitly) to route to the local model.
     """
-    for backend in ("gemini", "kimi", "claude", "openai", "deepseek"):
+    for backend in ("gemini", "kimi", "claude", "openai", "deepseek", "atlascloud"):
         if _get_backend_api_key(backend):
             return backend
     if _get_backend_api_key("azure") and os.environ.get("AZURE_OPENAI_ENDPOINT"):
@@ -3135,7 +3150,10 @@ def detect_backend() -> str | None:
         _validate_ollama_base_url(ollama_url)
         return "ollama"
     for name in BACKENDS:
-        if name not in ("gemini", "kimi", "claude", "openai", "deepseek", "azure", "bedrock", "ollama", "claude-cli"):
+        if name not in (
+            "gemini", "kimi", "claude", "openai", "deepseek", "atlascloud",
+            "azure", "bedrock", "ollama", "claude-cli",
+        ):
             if _get_backend_api_key(name):
                 return name
     return None
