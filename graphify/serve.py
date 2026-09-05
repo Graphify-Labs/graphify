@@ -1082,9 +1082,9 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
                 learning_suffix = f" learning={status}{':stale' if entry.get('stale') else ''}"
         line = (
             f"NODE {sanitize_label(d.get('label', nid))} "
-            f"[src={sanitize_label(str(d.get('source_file', '')))} "
-            f"loc={sanitize_label(str(d.get('source_location', '')))} "
-            f"community={sanitize_label(str(d.get('community_name') or d.get('community', '')))}"
+            f"[src: {sanitize_label(str(d.get('source_file', '')))} "
+            f"loc: {sanitize_label(str(d.get('source_location', '')))} "
+            f"community: {sanitize_label(str(d.get('community_name') or d.get('community', '')))}"
             f"{learning_suffix}]"
         )
         lines.append(line)
