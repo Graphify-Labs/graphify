@@ -1,9 +1,10 @@
 # Apache AGE Support — Implementation Plan
 
-Status: v9 (2026-09-05) — Phase 0 (compatibility spike) and Phase 1
-(`push_to_age()` exporter, CLI, packaging, docs) implemented and validated
-live against `apache/age` (PostgreSQL 18.1, AGE 1.7.0); full CI-parity
-suite green
+Status: v10 (2026-09-05) — Phases 0-2 implemented and validated live
+against `apache/age` (PostgreSQL 18.1, AGE 1.7.0): compatibility spike,
+`push_to_age()` exporter, and the repository identity/ownership registry.
+`extraction_config_hash` remains an unpopulated reserved column pending
+Phase 3 (see Open questions).
 Scope: add Apache AGE as a graph-database sink, with cost-efficient sync,
 multi-branch support, a multi-repo registry with ownership, and storage
 optimization. Primary consumers are external agents (code review, code
@@ -704,29 +705,65 @@ the ones specific to AGE that aren't automatically obvious from those docs.
       upstream still pending. Full CI-parity command list green with
       `--all-extras` (5384 passed).
 
-### Phase 2 — Repository identity, ownership, registry
-- [ ] Versioned SQL migration for `graphify_repos`, `graphify_branches`,
-      `graphify_snapshots`, `graphify_branch_revisions`,
-      `graphify_branch_diff`, `graphify_quality_findings`, including the
-      partial unique index on `graphify_branch_revisions`.
-- [ ] Tier-2 tests (plain-Postgres probe, no AGE needed): migration
-      up/idempotency, partial unique index rejects a second active
-      revision, snapshot-uniqueness constraint, generation supersession,
-      identity/owner upserts.
-- [ ] Push path: normalize remote URL → `repository_id`; register/update
-      `graphify_repos`; owner resolution order (`--owner` flag → git remote
-      owner segment → `git config user.email`); record `pushed_by`
-      separately from `owner_id`.
-- [ ] Record `graphify_version`, `schema_version`, `extraction_config_hash`
-      on every registry write.
-- [ ] Branch name from `git rev-parse --abbrev-ref HEAD`; commit SHA from
-      git at push time.
-- [ ] Global cross-repo AGE graph fed from `cross_repo_calls.py`,
-      `repo_tag`-prefixed ids, owner-scoped for frontend retrieval.
-- [ ] Agent-facing registry discovery path (how an agent resolves
-      `age_graph_name` given a repo/branch).
-- [ ] `ARCHITECTURE.md` updated for the registry module.
-- [ ] Commit on `apache-age-backend`; `pytest` green.
+### Phase 2 — Repository identity, ownership, registry ✅ done (with one deferred item)
+- [x] Versioned SQL migration (`graphify/age_registry.py`,
+      `_MIGRATIONS` + `graphify_registry_migrations` tracking table) for
+      `graphify_repos`, `graphify_branches`, `graphify_snapshots`,
+      `graphify_branch_revisions`, `graphify_branch_diff`,
+      `graphify_quality_findings`, including the partial unique index on
+      `graphify_branch_revisions` and the snapshot-uniqueness constraint.
+- [x] Tier-2 tests (`tests/test_age_registry_integration.py`, plain
+      Postgres, no AGE extension needed): migration idempotency, partial
+      unique index rejects a second active revision (a second *inactive*
+      one is fine), snapshot-uniqueness allows delta+checkpoint to
+      coexist but rejects a true duplicate, identity upserts, SSH/HTTPS
+      remote dedup.
+- [x] Tier-1 tests (`tests/test_age_registry_unit.py`, 16 tests, no DB):
+      `normalize_remote_url` (SSH/HTTPS agreement, credential stripping,
+      case folding), `repository_id_for` determinism, `resolve_owner`'s
+      fallback order.
+- [x] Push path (`graphify export age --push`, unless `--no-register`):
+      normalizes the remote URL → `repository_id`; registers/updates
+      `graphify_repos`; owner resolution order (`--owner` flag → git
+      remote owner segment → `git config user.email`) via
+      `age_registry.resolve_owner`. Fields COALESCE on conflict, so a
+      push that doesn't know the owner never blanks out a previously
+      registered one. New CLI flags: `--owner`, `--repo-tag`,
+      `--remote-url` (override auto-detection), `--no-register`. A
+      missing git remote warns and skips registration rather than
+      failing the push; a registration failure after a successful push
+      warns rather than losing the pushed graph.
+- [x] Branch name from `git rev-parse --abbrev-ref HEAD`; commit SHA via
+      the existing `graphify.watch._git_head` helper (already
+      cwd-anchored per #2316) — reused rather than reimplemented.
+- [ ] **Deferred, not built**: `graphify_version`/`schema_version` are
+      available (`age_registry.graphify_package_version()`,
+      `age_registry.SCHEMA_VERSION`) but not yet threaded into an actual
+      write of `graphify_snapshots` — no code creates snapshot rows yet,
+      since that's Phase 3's job. `extraction_config_hash` remains an
+      unpopulated reserved column (see the new Open Questions entry).
+- [x] **Global cross-repo AGE graph needs no new code**: it was already
+      possible with the existing CLI. `graphify export age --graph
+      ~/.graphify/global-graph.json --push ... --graph-name
+      graphify_global` pushes the already-merged, `repo_tag`-prefixed,
+      cross-repo-linked graph (`global_graph.py` +
+      `cross_repo_calls.link_cross_repo_member_calls`) through the same
+      `push_to_age()` path — validated live. Owner-scoping for frontend
+      retrieval comes from each contributing repo already being
+      registered in `graphify_repos`, not from new global-graph code.
+- [x] Agent-facing registry discovery: `age_registry.resolve_age_graph_name(
+      conninfo, remote_url, branch=None)` — returns the default-branch
+      graph name, a registered branch's graph name, or `None` for an
+      unregistered repo/branch (including when the registry schema
+      doesn't exist at all yet — a read-only discovery call never creates
+      tables as a side effect).
+- [x] `ARCHITECTURE.md` updated for the `age_registry.py` module
+      (`test_architecture_doc.py` still passes).
+- [x] Full CLI path (push + auto-register) validated end-to-end against a
+      live container, plus the `--no-register` and no-git-remote paths.
+- [x] Committed on `apache-age-backend`; `pytest` green (5400 passed
+      non-live, all live AGE + registry tests passed against
+      PostgreSQL 18.1 / AGE 1.7.0).
 
 ### Phase 3 — Durable default-branch graph + logical snapshots
 - [ ] `graph_diff()` extended to report property changes (old + new values)
@@ -836,3 +873,13 @@ the ones specific to AGE that aren't automatically obvious from those docs.
 - Whether to later add a non-blocking scheduled CI workflow with an AGE
   service container to run the tier-3 suite automatically (not required by
   this plan; would need upstream buy-in since CI config is upstream's).
+- **`extraction_config_hash` is not yet a real extraction-settings
+  fingerprint.** Phase 2's `register_repository()`/`ensure_schema()` only
+  define the column; nothing computes a meaningful hash yet, because doing
+  so requires threading the actual extraction config (LLM backend/model,
+  confidence thresholds, extractor flags) through from `graphify extract`
+  down to the `export age --push` call, which doesn't happen today. Until
+  that plumbing exists, treat the column as reserved/nullable rather than
+  populated. Needs a decision in Phase 3 (which is the first phase that
+  actually needs to detect incompatible graphs via this field) on what to
+  hash and how to pass it through.
