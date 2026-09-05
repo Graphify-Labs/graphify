@@ -795,6 +795,66 @@ def _doc_twin_remap(nodes: list) -> dict[str, str]:
     return remap
 
 
+_FILE_ALIAS_SUFFIXES: tuple[str, ...] = ("_module", "_script", "_file")
+
+
+def _code_file_alias_remap(nodes: list, root: str | Path | None = None) -> tuple[dict[str, str], dict[str, dict]]:
+    """Map semantic whole-file aliases (e.g. ``<stem>_module``, ``<stem>_script``,
+    ``<stem>_file``) to the canonical AST file-level node ``<stem>`` (#3246).
+
+    When documentation or plans mention a code file, LLM extraction mints a suffixed
+    entity node like ``scripts_generate_testpilot_keys_module`` rather than matching
+    the bare file stem AST node ``scripts_generate_testpilot_keys``. Canonicalize to
+    the AST file node and preserve non-conflicting semantic attributes (rationale,
+    custom metadata, summary).
+
+    Returns:
+        (remap_dict, attr_updates_dict)
+    """
+    from graphify.extractors.base import _file_stem
+
+    ast_file_nodes: dict[str, dict] = {}
+    all_nodes_by_id: dict[str, dict] = {}
+
+    for n in nodes:
+        if not isinstance(n, dict) or not n.get("id"):
+            continue
+        nid = str(n["id"])
+        all_nodes_by_id[nid] = n
+        if _is_ast_tier(n):
+            sf = n.get("source_file")
+            if sf:
+                try:
+                    norm_sf = _norm_source_file(str(sf), root)
+                    stem_id = make_id(_file_stem(Path(norm_sf)))
+                    if nid == stem_id:
+                        ast_file_nodes[nid] = n
+                except Exception:
+                    pass
+
+    remap: dict[str, str] = {}
+    attr_updates: dict[str, dict] = {}
+
+    for nid, node in all_nodes_by_id.items():
+        if _is_ast_tier(node):
+            continue
+        for suffix in _FILE_ALIAS_SUFFIXES:
+            if nid.endswith(suffix):
+                stem = nid[:-len(suffix)]
+                if stem in ast_file_nodes:
+                    remap[nid] = stem
+                    ast_node = ast_file_nodes[stem]
+                    accumulated = attr_updates.setdefault(stem, {})
+                    for key, val in node.items():
+                        if key in ("_origin", "source_file", "source_location", "id", "label", "file_type"):
+                            continue
+                        if val is not None and ast_node.get(key) is None and key not in accumulated:
+                            accumulated[key] = val
+                    break
+
+    return remap, attr_updates
+
+
 def build_from_json(extraction: dict, *, directed: bool = False, root: str | Path | None = None) -> nx.Graph:
     """Build a NetworkX graph from an extraction dict.
 
@@ -891,6 +951,44 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             f"[graphify] Extraction warning ({len(real_errors)} issues): {breakdown}",
             file=sys.stderr,
         )
+    # Merge semantic whole-file aliases onto canonical AST file nodes (#3246).
+    _alias_remap, _alias_attrs = _code_file_alias_remap(extraction.get("nodes", []), _root)
+    if _alias_remap:
+        if _alias_attrs:
+            for n in extraction.get("nodes", []):
+                if isinstance(n, dict):
+                    nid = n.get("id")
+                    if nid in _alias_attrs:
+                        n.update(_alias_attrs[nid])
+        extraction["nodes"] = [
+            n for n in extraction.get("nodes", [])
+            if not (isinstance(n, dict) and n.get("id") in _alias_remap)
+        ]
+        _new_edges = []
+        for edge in extraction.get("edges", []):
+            if isinstance(edge, dict):
+                s0, t0 = edge.get("source"), edge.get("target")
+                if s0 in _alias_remap:
+                    edge["source"] = _alias_remap[s0]
+                if t0 in _alias_remap:
+                    edge["target"] = _alias_remap[t0]
+                if edge.get("source") == edge.get("target") and (s0 in _alias_remap or t0 in _alias_remap):
+                    continue
+            _new_edges.append(edge)
+        extraction["edges"] = _new_edges
+        for he in extraction.get("hyperedges", []) or []:
+            if isinstance(he, dict) and isinstance(he.get("nodes"), list):
+                seen_he: set = set()
+                rewired_he: list = []
+                for n in he["nodes"]:
+                    rn = _alias_remap.get(n, n) if _hashable(n) else n
+                    if _hashable(rn):
+                        if rn in seen_he:
+                            continue
+                        seen_he.add(rn)
+                    rewired_he.append(rn)
+                he["nodes"] = rewired_he
+
     # Deterministic semantic re-key (#1504/#1509): the node-ID stem is now the
     # full repo-relative path (docs/v1/api/README.md -> docs_v1_api_readme), but
     # the semantic cache is UNVERSIONED, so a cached/LLM fragment can still carry
