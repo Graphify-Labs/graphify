@@ -2792,6 +2792,7 @@ def dispatch_command(cmd: str) -> None:
             print("  falkordb  [--graph PATH] [--push URI] [--user U] [--password P]", file=sys.stderr)
             print("            (or set FALKORDB_PASSWORD instead of --password to keep it off argv)", file=sys.stderr)
             print("  age       [--graph PATH] --push postgresql://user:pass@host/db [--graph-name NAME] [--full-props]", file=sys.stderr)
+            print("            [--owner OWNER] [--repo-tag TAG] [--remote-url URL] [--no-register]", file=sys.stderr)
             print("            (or set AGE_PASSWORD / PGPASSWORD instead of embedding the password in --push)", file=sys.stderr)
             sys.exit(1)
 
@@ -2829,6 +2830,10 @@ def dispatch_command(cmd: str) -> None:
         ) or None
         age_graph_name = "graphify"
         age_full_props = False
+        age_owner: str | None = None
+        age_repo_tag: str | None = None
+        age_remote_url: str | None = None
+        age_no_register = False
         i = 0
         while i < len(args):
             a = args[i]
@@ -2888,6 +2893,14 @@ def dispatch_command(cmd: str) -> None:
                 age_graph_name = args[i + 1]; i += 2
             elif a == "--full-props":
                 age_full_props = True; i += 1
+            elif a == "--owner" and i + 1 < len(args):
+                age_owner = args[i + 1]; i += 2
+            elif a == "--repo-tag" and i + 1 < len(args):
+                age_repo_tag = args[i + 1]; i += 2
+            elif a == "--remote-url" and i + 1 < len(args):
+                age_remote_url = args[i + 1]; i += 2
+            elif a == "--no-register":
+                age_no_register = True; i += 1
             elif subcmd == "callflow-html" and not a.startswith("-") and not graph_path_explicit:
                 candidate = Path(a)
                 if candidate.name == "graph.json" or candidate.suffix.lower() == ".json":
@@ -3113,6 +3126,32 @@ def dispatch_command(cmd: str) -> None:
                             communities=communities, full_props=age_full_props)
             print(f"Pushed to Apache AGE (graph '{age_graph_name}'): "
                   f"{result['nodes']} nodes, {result['edges']} edges")
+
+            if not age_no_register:
+                from graphify import age_registry as _reg
+                remote_url = age_remote_url or _reg.git_remote_url()
+                if remote_url is None:
+                    print("note: no git remote found (not a git repo, or no 'origin') - "
+                          "skipping registry registration. Pass --remote-url to register "
+                          "anyway, or --no-register to silence this.", file=sys.stderr)
+                else:
+                    owner = _reg.resolve_owner(
+                        explicit=age_owner, remote_url=remote_url,
+                        git_email=_reg.git_user_email(),
+                    )
+                    branch = _reg.current_branch()
+                    try:
+                        row = _reg.register_repository(
+                            conninfo, remote_url,
+                            repo_tag=age_repo_tag, owner_id=owner,
+                            default_branch=branch, age_graph_name=age_graph_name,
+                        )
+                        print(f"Registered repository {row['repository_id']} "
+                              f"({row['remote_url']}) in the AGE registry"
+                              + (f", owner '{owner}'" if owner else ""))
+                    except Exception as e:
+                        print(f"warning: push succeeded but registry registration "
+                              f"failed: {e}", file=sys.stderr)
 
     elif cmd == "benchmark":
         from graphify.benchmark import run_benchmark, print_benchmark

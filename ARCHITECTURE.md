@@ -32,6 +32,7 @@ Signatures below are the real ones - `tests/test_architecture_doc.py` imports ev
 | `serve.py` | `serve(graph_path)`, `serve_http(graph_path, *, host, port, ...)` | graph file path → MCP stdio server / HTTP server |
 | `watch.py` | `watch(watch_path, debounce=3.0)`, `check_update(watch_path)` | directory → rebuild on change; `check_update` reports whether a re-extraction is pending |
 | `benchmark.py` | `run_benchmark(graph_path)` | graph file → corpus vs subgraph token comparison |
+| `age_registry.py` | `normalize_remote_url(url)`, `repository_id_for(url)`, `resolve_owner(...)`, `ensure_schema(conninfo)`, `register_repository(conninfo, url, ...)`, `resolve_age_graph_name(conninfo, url, branch=None)` | git remote URL / repo metadata → registry identity, ownership, and the authoritative SQL schema for the Apache AGE multi-repo/multi-branch registry (plain PostgreSQL, not AGE — see `docs/AGE_PLAN.md`) |
 
 ### Calling `extract()` from your own code
 
