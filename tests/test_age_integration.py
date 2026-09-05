@@ -324,3 +324,177 @@ def test_push_to_age_creates_expected_graph(conn):
 
     assert int(node_count) == G.number_of_nodes()
     assert int(edge_count) == G.number_of_edges()
+
+
+# ---------------------------------------------------------------------------
+# push_to_age() reconcile matrix (docs/AGE_PLAN.md Phase 1 checklist):
+# fresh push, idempotent re-push, node/edge deletion, property change,
+# label change, lean vs. full-props. Uses small hand-built graphs so each
+# case is exact and independent of the shared fixture's shape.
+# ---------------------------------------------------------------------------
+
+def _build_graph(nodes: list[tuple], edges: list[tuple]):
+    import networkx as nx
+
+    G = nx.DiGraph()
+    for node_id, attrs in nodes:
+        G.add_node(node_id, **attrs)
+    for src, tgt, attrs in edges:
+        G.add_edge(src, tgt, **attrs)
+    return G
+
+
+def _counts(conn):
+    with conn.cursor() as cur:
+        cur.execute(_cypher(GRAPH_NAME, "MATCH (n) RETURN count(n)", "(c agtype)"))
+        (n,) = cur.fetchone()
+        cur.execute(_cypher(GRAPH_NAME, "MATCH ()-[r]->() RETURN count(r)", "(c agtype)"))
+        (e,) = cur.fetchone()
+    return int(n), int(e)
+
+
+def test_push_to_age_is_idempotent(conn):
+    try:
+        from graphify.exporters.graphdb import push_to_age
+    except ImportError:
+        pytest.skip("push_to_age() not implemented yet (Phase 1)")
+
+    G = _build_graph(
+        [("a", {"file_type": "code", "label": "A"}), ("b", {"file_type": "code", "label": "B"})],
+        [("a", "b", {"relation": "calls", "confidence": "EXTRACTED"})],
+    )
+    push_to_age(G, conninfo=_conninfo(), graph_name=GRAPH_NAME)
+    push_to_age(G, conninfo=_conninfo(), graph_name=GRAPH_NAME)
+    assert _counts(conn) == (2, 1)
+
+
+def test_push_to_age_reconciles_deletions(conn):
+    try:
+        from graphify.exporters.graphdb import push_to_age
+    except ImportError:
+        pytest.skip("push_to_age() not implemented yet (Phase 1)")
+
+    G1 = _build_graph(
+        [
+            ("a", {"file_type": "code", "label": "A"}),
+            ("b", {"file_type": "code", "label": "B"}),
+            ("c", {"file_type": "code", "label": "C"}),
+        ],
+        [
+            ("a", "b", {"relation": "calls", "confidence": "EXTRACTED"}),
+            ("b", "c", {"relation": "calls", "confidence": "EXTRACTED"}),
+        ],
+    )
+    push_to_age(G1, conninfo=_conninfo(), graph_name=GRAPH_NAME)
+    assert _counts(conn) == (3, 2)
+
+    # Node 'c' (and its incident edge) removed; edge a->b removed too.
+    G2 = _build_graph(
+        [
+            ("a", {"file_type": "code", "label": "A"}),
+            ("b", {"file_type": "code", "label": "B"}),
+        ],
+        [],
+    )
+    push_to_age(G2, conninfo=_conninfo(), graph_name=GRAPH_NAME)
+    assert _counts(conn) == (2, 0)
+
+
+def test_push_to_age_property_change_updates_in_place(conn):
+    try:
+        from graphify.exporters.graphdb import push_to_age
+    except ImportError:
+        pytest.skip("push_to_age() not implemented yet (Phase 1)")
+
+    G1 = _build_graph([("a", {"file_type": "code", "label": "Old"})], [])
+    push_to_age(G1, conninfo=_conninfo(), graph_name=GRAPH_NAME)
+
+    G2 = _build_graph([("a", {"file_type": "code", "label": "New"})], [])
+    push_to_age(G2, conninfo=_conninfo(), graph_name=GRAPH_NAME)
+
+    with conn.cursor() as cur:
+        cur.execute(_cypher(GRAPH_NAME, "MATCH (n {id: 'a'}) RETURN n.label", "(l agtype)"))
+        (label,) = cur.fetchone()
+    assert json.loads(label) == "New"
+    assert _counts(conn) == (1, 0)
+
+
+def test_push_to_age_label_change_removes_old_label(conn):
+    """A node whose file_type changes must not survive under two labels
+    (docs/AGE_PLAN.md Phase 1: 'delete it under the old label')."""
+    try:
+        from graphify.exporters.graphdb import push_to_age
+    except ImportError:
+        pytest.skip("push_to_age() not implemented yet (Phase 1)")
+
+    G1 = _build_graph([("a", {"file_type": "code", "label": "A"})], [])
+    push_to_age(G1, conninfo=_conninfo(), graph_name=GRAPH_NAME)
+    with conn.cursor() as cur:
+        cur.execute(_cypher(GRAPH_NAME, "MATCH (n:Code) RETURN count(n)", "(c agtype)"))
+        assert int(cur.fetchone()[0]) == 1
+
+    G2 = _build_graph([("a", {"file_type": "document", "label": "A"})], [])
+    push_to_age(G2, conninfo=_conninfo(), graph_name=GRAPH_NAME)
+
+    with conn.cursor() as cur:
+        cur.execute(_cypher(GRAPH_NAME, "MATCH (n:Code) RETURN count(n)", "(c agtype)"))
+        assert int(cur.fetchone()[0]) == 0
+        cur.execute(_cypher(GRAPH_NAME, "MATCH (n:Document) RETURN count(n)", "(c agtype)"))
+        assert int(cur.fetchone()[0]) == 1
+    assert _counts(conn) == (1, 0)
+
+
+def test_push_to_age_rolls_back_whole_push_on_failure(conn, monkeypatch):
+    """A failure before push_to_age() opens its write transaction must
+    leave the graph exactly as it was, with no partial write reaching the
+    database at all. This complements (not replaces)
+    test_transaction_rolls_back_on_failure above, which validates AGE's
+    own mid-transaction ROLLBACK behavior directly; push_to_age() runs its
+    entire write phase in one transaction, so a DB-level failure partway
+    through gets the same guarantee from Postgres itself."""
+    try:
+        from graphify.exporters import graphdb
+    except ImportError:
+        pytest.skip("push_to_age() not implemented yet (Phase 1)")
+
+    G1 = _build_graph([("a", {"file_type": "code", "label": "A"})], [])
+    graphdb.push_to_age(G1, conninfo=_conninfo(), graph_name=GRAPH_NAME)
+    assert _counts(conn) == (1, 0)
+
+    G2 = _build_graph(
+        [("a", {"file_type": "code", "label": "A"}), ("b", {"file_type": "code", "label": "B"})],
+        [("a", "b", {"relation": "calls", "confidence": "EXTRACTED"})],
+    )
+
+    real_edge_rows = graphdb._age_edge_rows
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("injected failure before edge upsert")
+
+    monkeypatch.setattr(graphdb, "_age_edge_rows", _boom)
+    with pytest.raises(RuntimeError, match="injected failure"):
+        graphdb.push_to_age(G2, conninfo=_conninfo(), graph_name=GRAPH_NAME)
+    monkeypatch.setattr(graphdb, "_age_edge_rows", real_edge_rows)
+
+    # Nothing from G2's push (including node 'b') must have landed, and the
+    # prior committed state (node 'a' only) must be intact.
+    assert _counts(conn) == (1, 0)
+
+
+def test_push_to_age_full_props_includes_extra_scalar_fields(conn):
+    try:
+        from graphify.exporters.graphdb import push_to_age
+    except ImportError:
+        pytest.skip("push_to_age() not implemented yet (Phase 1)")
+
+    G = _build_graph(
+        [("a", {"file_type": "code", "label": "A", "custom_score": 0.75})], []
+    )
+    push_to_age(G, conninfo=_conninfo(), graph_name=GRAPH_NAME, full_props=True)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            _cypher(GRAPH_NAME, "MATCH (n {id: 'a'}) RETURN n.custom_score", "(s agtype)")
+        )
+        (score,) = cur.fetchone()
+    assert json.loads(score) == 0.75
