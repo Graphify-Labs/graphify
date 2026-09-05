@@ -1523,6 +1523,51 @@ def test_subgraph_to_text_no_banner_when_only_edges_overflow():
     assert len(edge_lines) == len(edges), "all edges must survive a complete answer"
 
 
+def test_subgraph_to_text_overshoot_notice_when_edges_exceed_budget():
+    """#2784: once every node fits, edges are never dropped (#2601) — but that
+    used to mean the char_budget check silently stopped applying, so a query
+    could cost 4-6x its requested budget with zero indication. The complete
+    answer must still be returned whole, but the overshoot must be visible and
+    must not repeat the "raise the budget" advice that caused the blow-up."""
+    import itertools
+
+    G = nx.Graph()
+    labels = [f"n{i}" for i in range(20)]
+    for lbl in labels:
+        G.add_node(lbl, label=lbl, source_file="f.py", source_location="L1", community="c")
+    edges = list(itertools.combinations(labels, 2))
+    for u, v in edges:
+        G.add_edge(u, v, relation="calls", confidence="high")
+    node_chars = len("\n".join(f"NODE {l} [src=f.py loc=L1 community=c]" for l in labels))
+    budget = (node_chars // 3) + 5  # fits every node, nowhere near every edge
+    text = _subgraph_to_text(G, set(G.nodes), edges, token_budget=budget)
+    node_lines = [l for l in text.splitlines() if l.startswith("NODE ")]
+    edge_lines = [l for l in text.splitlines() if l.startswith("EDGE ")]
+    assert len(node_lines) == len(labels)
+    assert len(edge_lines) == len(edges), "complete answer: edges must not be dropped"
+    assert "Complete answer over budget" in text
+    assert str(len(labels)) in text and str(len(edges)) in text
+    assert "raise" not in text.lower(), "must not repeat the advice that caused the overshoot"
+    assert "TRUNCATED" not in text and "truncated" not in text
+
+
+def test_subgraph_to_text_no_overshoot_notice_when_edges_fit_too():
+    """The honest-overshoot notice is additive: a complete answer that already
+    fits the budget must render exactly as before, with no notice at all."""
+    import itertools
+
+    G = nx.Graph()
+    labels = [f"n{i}" for i in range(3)]
+    for lbl in labels:
+        G.add_node(lbl, label=lbl, source_file="f.py", source_location="L1", community="c")
+    edges = list(itertools.combinations(labels, 2))
+    for u, v in edges:
+        G.add_edge(u, v, relation="calls", confidence="high")
+    text = _subgraph_to_text(G, set(G.nodes), edges, token_budget=2000)
+    assert "Complete answer over budget" not in text
+    assert "TRUNCATED" not in text and "truncated" not in text
+
+
 def test_subgraph_to_text_order_is_deterministic():
     """Equal-degree nodes render in a stable order regardless of set iteration."""
     G = nx.Graph()
@@ -1621,3 +1666,145 @@ def test_shortest_path_tool_undirected_opt_in():
     assert "Shortest path (2 hops)" in out
     assert out.count("<--calls--") == 2
     assert "-->" not in out
+def test_underscore_query_matches_hyphenated_label():
+    r"""Separator-blind seeding: `_` must split like `-` does.
+
+    `\w` counts `_` as a word character but not `-`, so a query written with
+    underscores stayed one un-matchable token while the label tokenized into
+    parts. Both sides run through _search_tokens, so normalising there keeps
+    query and label consistent. Regression for the 2026-07-29 finding: the
+    graph could not find its own `local_id` spelling of a node.
+    """
+    G = nx.Graph()
+    G.add_node("n1", label="graph-first-guard.py", source_file="bin/graph-first-guard.py",
+               source_location="L1", community=0)
+    G.add_node("n2", label="unrelated", source_file="other.py", source_location="L1", community=1)
+
+    hyphen = _score_nodes(G, _query_terms("graph-first-guard"))
+    underscore = _score_nodes(G, _query_terms("graph_first_guard"))
+
+    assert hyphen, "hyphenated query must match (this already worked)"
+    assert underscore, "underscored query must match the same node"
+    assert hyphen[0][1] == underscore[0][1] == "n1"
+
+
+def test_snake_case_identifier_still_matches_itself():
+    """Splitting on `_` must not break plain snake_case lookups."""
+    G = nx.Graph()
+    G.add_node("n1", label="_query_terms", source_file="graphify/serve.py",
+               source_location="L128", community=0)
+    G.add_node("n2", label="unrelated", source_file="other.py", source_location="L1", community=1)
+
+    scored = _score_nodes(G, _query_terms("_query_terms"))
+    assert scored and scored[0][1] == "n1"
+
+
+def test_underscore_query_does_not_let_a_single_token_outrank_the_real_match():
+    """Splitting on `_` broadens seeding, so an unrelated single-token node can now
+    be scored — but coverage-scaling/IDF must keep it from out-ranking the node
+    that matches the full multi-token query (the over-match guard for this fix)."""
+    G = nx.Graph()
+    G.add_node("real", label="user-service-client",
+               source_file="a.py", source_location="L1", community=0)
+    G.add_node("noise", label="user",
+               source_file="b.py", source_location="L1", community=1)
+    scored = _score_nodes(G, _query_terms("user_service_client"))
+    assert scored, "the multi-token query must match the full-label node"
+    assert scored[0][1] == "real", f"a single-token node out-ranked the real match: {scored}"
+
+
+def test_resolve_single_node_shared_by_get_node_and_get_neighbors():
+    """ADR-0001 finding 1: the resolver both tools now use returns an Ambiguous
+    message when the winning tier spans multiple files, a clean node id for a
+    unique label, and a not-found message otherwise."""
+    from graphify.serve import _resolve_single_node
+
+    G = nx.Graph()
+    G.add_node("a", label="extract", source_file="a/x.py")
+    G.add_node("b", label="extract", source_file="b/y.py")
+    G.add_node("u", label="unique_helper", source_file="c/z.py")
+
+    nid, err = _resolve_single_node(G, "extract")
+    assert nid is None
+    assert err.startswith("Ambiguous:")
+
+    nid, err = _resolve_single_node(G, "unique_helper")
+    assert err is None
+    assert nid == "u"
+
+    nid, err = _resolve_single_node(G, "nonexistent")
+    assert nid is None
+    assert "No node matching" in err
+
+
+# --- rationale attribute scoring (#2293) ---
+
+_FAB_RATIONALE = (
+    "Hidden when the mini card is dismissed and while the geolocation popover "
+    "is open, because that popover opens upward into the DirectionsFAB's space."
+)
+
+
+def _rationale_graph():
+    """A doc-derived rule node whose LABEL shares no token with the question
+    while its `rationale` attribute states the answer in plain words — the
+    #2293 shape. Neighbors carry the identifier-ish labels a codebase would."""
+    G = nx.Graph()
+    G.add_node("rule", label="FAB visibility rule", source_file="docs/fab.md", rationale=_FAB_RATIONALE)
+    G.add_node("fab", label="DirectionsFAB", source_file="src/DirectionsFAB.tsx")
+    G.add_node("geo", label="GeolocationButton", source_file="src/GeolocationButton.tsx")
+    G.add_node("card", label="MiniCard", source_file="src/MiniCard.tsx")
+    for u, v in [("rule", "fab"), ("fab", "geo"), ("rule", "card")]:
+        G.add_edge(u, v, relation="references", confidence="EXTRACTED")
+    return G
+
+
+def test_score_nodes_reads_rationale_when_label_does_not_match():
+    G = _rationale_graph()
+    assert [nid for _, nid in _score_nodes(G, ["popover"])] == ["rule"]
+
+
+def test_score_nodes_rationale_tier_sits_below_label_substring_and_above_source():
+    G = nx.Graph()
+    G.add_node("lbl", label="popover-anchor", source_file="ui/a.py")
+    G.add_node("rat", label="Sheet drag", source_file="ui/b.py", rationale="starts only once the popover is closed")
+    G.add_node("src", label="Thing", source_file="ui/popover/thing.py")
+    assert [nid for _, nid in _score_nodes(G, ["popover"])] == ["lbl", "rat", "src"]
+
+
+def test_score_nodes_rationale_does_not_count_toward_term_coverage():
+    """Like the source tier, a rationale hit adds recall but must not restore
+    the coverage-scaled exact tier: if it counted, `a` would gain roughly three
+    quarters of an exact-match bonus over `b`, not a sub-unit nudge."""
+    from graphify.serve import _EXACT_MATCH_BONUS
+    G = nx.Graph()
+    G.add_node("a", label="cache", source_file="x.py", rationale="pinned because of drift")
+    G.add_node("b", label="cache", source_file="y.py")
+    score = {nid: s for s, nid in _score_nodes(G, ["cache", "pinned"])}
+    assert score["a"] > score["b"]
+    assert score["a"] - score["b"] < _EXACT_MATCH_BONUS * 0.5
+
+
+def test_score_nodes_tolerates_list_valued_rationale():
+    G = nx.Graph()
+    G.add_node("n", label="X", source_file="x.py", rationale=["first reason", "popover second"])
+    assert [nid for _, nid in _score_nodes(G, ["popover"])] == ["n"]
+
+
+def test_node_search_text_includes_rationale_so_trigram_prefilter_stays_complete():
+    parts = _node_search_text(
+        {"label": "Foo", "source_file": "a.py", "rationale": "Because the Popover opens upward"}, "foo"
+    ).split("\x00")
+    assert "because the popover opens upward" in parts
+    # No rationale: field layout unchanged (the #2467 positions still hold).
+    assert len(_node_search_text({"label": "Foo", "source_file": "a.py"}, "foo").split("\x00")) == 5
+
+
+def test_query_graph_text_seeds_the_node_whose_rationale_answers_a_why_question():
+    G = _rationale_graph()
+    text = _query_graph_text(
+        G, "why is the directions button hidden when the geolocation popover opens",
+        mode="bfs", depth=2, token_budget=2000,
+    )
+    header = text.split("\n\n", 1)[0]
+    assert "FAB visibility rule" in header, header

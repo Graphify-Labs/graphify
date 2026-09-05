@@ -241,9 +241,7 @@ def test_line_commented_dynamic_import_is_not_matched(tmp_path: Path):
 
 
 def test_nested_named_function_calls_resolve(tmp_path: Path):
-    """The durable half of #2575: ordinary calls inside a nested named function
-    were dropped at the same boundary. They now attribute to the enclosing
-    function, exactly like untracked closures (#1630)."""
+    """ordinary calls inside a nested named function attribute to that inner function now that #2653 emits nested nodes."""
     f = _write(
         tmp_path / "src/mod.ts",
         "export function helper() { return 1 }\n"
@@ -258,7 +256,10 @@ def test_nested_named_function_calls_resolve(tmp_path: Path):
     by_id = {n["id"]: n["label"].rstrip("()") for n in result["nodes"]}
     calls = {(by_id.get(e["source"]), by_id.get(e["target"]))
              for e in result["edges"] if e["relation"] == "calls"}
-    assert ("outer", "helper") in calls, f"calls found: {calls}"
+    contains = {(by_id.get(e["source"]), by_id.get(e["target"]))
+                for e in result["edges"] if e["relation"] == "contains"}
+    assert ("inner", "helper") in calls, f"calls found: {calls}"
+    assert ("outer", "inner") in contains, f"contains found: {contains}"
 
 
 def test_dynamic_import_is_traversed_by_affected():

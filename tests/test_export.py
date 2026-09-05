@@ -73,6 +73,84 @@ def test_to_json_sorts_graph_collections_across_insertion_order(tmp_path):
     assert outputs[0].read_bytes() == outputs[1].read_bytes()
 
 
+def test_to_json_field_order_stable_across_read_rebuild(tmp_path):
+    """graph.json survives a build -> write -> read-back -> write round-trip
+    byte-for-byte. node_link_data always appends the node key (`id`) last, so a
+    node whose `id` was an inline attribute on a cold build lands mid-dict, while
+    the same node after build_from_json consumes `id` as the pure node key lands
+    last — identical values, churned field order. Emitting a canonical key order
+    keeps the two serializations identical. Regression guard: the earlier
+    determinism test only varied insertion order within one build and missed
+    this."""
+    extraction = {
+        "nodes": [
+            {"id": "a_foo", "label": "foo", "file_type": "code", "source_file": "a.py"},
+            {"id": "b_bar", "label": "bar", "file_type": "code", "source_file": "b.py"},
+            {"id": "c_baz", "label": "baz", "file_type": "code", "source_file": "c.py"},
+        ],
+        "edges": [
+            {"source": "a_foo", "target": "b_bar", "relation": "calls",
+             "confidence": "EXTRACTED", "confidence_score": 1.0, "source_file": "a.py"},
+            {"source": "b_bar", "target": "c_baz", "relation": "references",
+             "confidence": "EXTRACTED", "confidence_score": 1.0, "source_file": "b.py"},
+        ],
+        "hyperedges": [],
+    }
+    communities = {0: ["a_foo", "b_bar", "c_baz"]}
+
+    first = tmp_path / "first.json"
+    to_json(build_from_json(extraction), communities, str(first),
+            built_at_commit="fixed", force=True)
+    reread = json.loads(first.read_text())
+
+    second = tmp_path / "second.json"
+    to_json(build_from_json(reread), communities, str(second),
+            built_at_commit="fixed", force=True)
+
+    # Byte-identity is the strongest statement of "no cosmetic churn".
+    assert first.read_bytes() == second.read_bytes()
+
+    data = json.loads(first.read_text())
+    # `id` leads every node; source/target lead every link — the identity-first
+    # order node_link_data does not guarantee on its own.
+    for node in data["nodes"]:
+        assert list(node.keys())[0] == "id"
+    for link in data["links"]:
+        assert list(link.keys())[:2] == ["source", "target"]
+    # Endpoints are never swapped by the reordering.
+    endpoints = sorted((e["source"], e["target"]) for e in data["links"])
+    assert endpoints == [("a_foo", "b_bar"), ("b_bar", "c_baz")]
+
+
+def test_to_json_field_order_stable_with_non_ascii_labels(tmp_path):
+    """The byte-identity guarantee must hold with non-ASCII labels — the fix's
+    round-trip stability implicitly relies on the ensure_ascii write path, and a
+    reordered dict with escaped-unicode values must still serialize identically."""
+    extraction = {
+        "nodes": [
+            {"id": "a_cafe", "label": "café", "file_type": "code", "source_file": "a.py"},
+            {"id": "b_ja", "label": "日本語クラス", "file_type": "code", "source_file": "b.py"},
+        ],
+        "edges": [
+            {"source": "a_cafe", "target": "b_ja", "relation": "references",
+             "confidence": "INFERRED", "confidence_score": 0.55, "source_file": "a.py"},
+        ],
+        "hyperedges": [],
+    }
+    communities = {0: ["a_cafe", "b_ja"]}
+    first = tmp_path / "first.json"
+    to_json(build_from_json(extraction), communities, str(first),
+            built_at_commit="fixed", force=True)
+    reread = json.loads(first.read_text())
+    second = tmp_path / "second.json"
+    to_json(build_from_json(reread), communities, str(second),
+            built_at_commit="fixed", force=True)
+    assert first.read_bytes() == second.read_bytes(), "non-ASCII round-trip churned field order"
+    # the reorder preserves the non-ASCII value
+    labels = {n["id"]: n.get("label") for n in json.loads(first.read_text())["nodes"]}
+    assert labels.get("b_ja") == "日本語クラス"
+
+
 def test_to_json_commit_fallback_uses_output_repo_not_cwd(tmp_path, monkeypatch):
     # Without an explicit built_at_commit, provenance must come from the repo
     # the graph is written into, not from whatever repo the shell happens to

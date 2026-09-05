@@ -22,6 +22,7 @@ from .resolver_registry import (
     run_language_resolvers,
 )
 from .ruby_resolution import resolve_ruby_member_calls
+from .csharp_dispatch import resolve_csharp_interface_dispatch
 from .pascal_resolution import resolve_pascal_inherited_calls
 
 # --- migrated to graphify/extractors/ (see graphify/extractors/MIGRATION.md) ---
@@ -45,10 +46,13 @@ from graphify.extractors.elixir import extract_elixir  # noqa: F401
 from graphify.extractors.fortran import _cpp_preprocess, extract_fortran  # noqa: F401
 from graphify.extractors.go import _GO_PREDECLARED_FUNCS, extract_go  # noqa: F401
 from graphify.extractors.json_config import extract_json  # noqa: F401
-from graphify.extractors.markdown import extract_markdown  # noqa: F401
+from graphify.extractors.commonlisp import extract_commonlisp  # noqa: F401
+from graphify.extractors.markdown import extract_markdown, _MD_LINK_INDEX_CACHE  # noqa: F401
+from graphify.extractors.ocaml import extract_ocaml  # noqa: F401
 from graphify.extractors.pascal_forms import extract_delphi_form, extract_lazarus_form  # noqa: F401
 from graphify.extractors.powershell import extract_powershell, extract_powershell_manifest  # noqa: F401
 from graphify.extractors.razor import extract_razor  # noqa: F401
+from graphify.extractors.robot import extract_robot  # noqa: F401
 from graphify.extractors.rust import extract_rust  # noqa: F401
 from graphify.extractors.sln import extract_sln  # noqa: F401
 from graphify.extractors.sql import extract_sql  # noqa: F401
@@ -68,6 +72,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _JS_PRIMITIVE_TYPES,
     _JS_RESOLVE_EXTS,
     _TSCONFIG_ALIAS_CACHE,
+    _TSCONFIG_BASEURL_CACHE,
     _VUE_SCRIPT_LANG_RE,
     _VUE_SCRIPT_RE,
     _WORKSPACE_MANIFEST_NAMES,
@@ -407,6 +412,19 @@ def _import_js(node, source: bytes, file_nid: str, stem: str, edges: list, str_p
             if not has_from:
                 return
 
+    # `import type {...} from` / `export type {...} from` are erased by the
+    # TypeScript compiler: no runtime emit, no module-graph edge. The
+    # dependency is still real for "what references this type", so the edge is
+    # stamped `type_only` rather than dropped, and Import Cycles excludes it
+    # the way it already excludes deferred `import(...)` (#1241) - on the
+    # reporter's corpus all 3 reported cycles closed only through these
+    # (#3123). The grammar keeps `import type from './x'` (a default binding
+    # NAMED type) distinct: there `type` sits inside the import_clause, not as
+    # a bare keyword child of the statement. A mixed `import { type B, C }`
+    # stays a runtime edge - C is a runtime import.
+    is_type_only = any(
+        child.type == "type" and not child.is_named for child in node.children
+    )
     resolved_path: "Path | None" = None
     module_string = None
     for child in node.children:
@@ -449,6 +467,8 @@ def _import_js(node, source: bytes, file_nid: str, stem: str, edges: list, str_p
             # back onto the importer's own variant, a phantom self-loop (#1814).
             if resolved_path is not None:
                 edge["target_file"] = str(resolved_path)
+            if is_type_only:
+                edge["type_only"] = True
             edges.append(edge)
 
     # Emit symbol-level edges for named imports/re-exports from local/aliased files.
@@ -474,6 +494,7 @@ def _import_js(node, source: bytes, file_nid: str, stem: str, edges: list, str_p
                                 if sym == "default":
                                     continue  # skip default re-exports for ID matching
                                 edges.append({
+                                    **({"type_only": True} if is_type_only else {}),
                                     "source": file_nid,
                                     "target": _make_id(target_stem, sym),
                                     "relation": "re_exports",
@@ -785,7 +806,14 @@ _JS_CONFIG = LanguageConfig(
     call_accessor_node_types=frozenset({"member_expression"}),
     call_accessor_field="property",
     call_accessor_object_field="object",
-    function_boundary_types=frozenset({"function_declaration", "generator_function_declaration", "arrow_function", "method_definition"}),
+    # `function_expression` belongs here so UNTRACKED inline/nested expressions
+    # reach walk_calls' existing closure handler, which already names the type
+    # (`_JS_CLOSURE_TYPES`). Without it the gate never opens, so such an
+    # expression's parameters and locals never fold into extra_locals for its
+    # subtree and read as by-name references (#2241 family). A top-level
+    # `const f = function (…) {}` is tracked via its declarator and was already
+    # fine; the inline/nested forms are what this covers.
+    function_boundary_types=frozenset({"function_declaration", "generator_function_declaration", "arrow_function", "method_definition", "function_expression", "generator_function"}),
     import_handler=_import_js,
 )
 
@@ -806,7 +834,8 @@ _TS_CONFIG = LanguageConfig(
     call_accessor_node_types=frozenset({"member_expression"}),
     call_accessor_field="property",
     call_accessor_object_field="object",
-    function_boundary_types=frozenset({"function_declaration", "generator_function_declaration", "arrow_function", "method_definition"}),
+    # `function_expression`: see the note on the JS config above.
+    function_boundary_types=frozenset({"function_declaration", "generator_function_declaration", "arrow_function", "method_definition", "function_expression", "generator_function"}),
     import_handler=_import_js,
 )
 
@@ -889,6 +918,19 @@ _CPP_CONFIG = LanguageConfig(
     resolve_function_name_fn=_get_cpp_func_name,
 )
 
+def _ruby_sanitize_method_name(name: str) -> str:
+    """Encode trailing Ruby method suffixes (!, ?, =) into safe node ID components (#3077)."""
+    if not name:
+        return name
+    if name.endswith("!"):
+        return f"{name[:-1]}_bang"
+    if name.endswith("?"):
+        return f"{name[:-1]}_pred"
+    if name.endswith("="):
+        return f"{name[:-1]}_eq"
+    return name
+
+
 _RUBY_CONFIG = LanguageConfig(
     ts_module="tree_sitter_ruby",
     # `module Foo` is a container node just like `class Foo` in tree-sitter's
@@ -905,6 +947,7 @@ _RUBY_CONFIG = LanguageConfig(
     name_fallback_child_types=("constant", "scope_resolution", "identifier"),
     body_fallback_child_types=("body_statement",),
     function_boundary_types=frozenset({"method", "singleton_method"}),
+    sanitize_symbol_name_fn=_ruby_sanitize_method_name,
 )
 
 _CSHARP_CONFIG = LanguageConfig(
@@ -918,7 +961,9 @@ _CSHARP_CONFIG = LanguageConfig(
     }),
     function_types=frozenset({"method_declaration"}),
     import_types=frozenset({"using_directive"}),
-    call_types=frozenset({"invocation_expression"}),
+    # `object_creation_expression` joins the invocation node so `new Foo(...)`
+    # links the constructing method to Foo, the way Java has since #1373.
+    call_types=frozenset({"invocation_expression", "object_creation_expression"}),
     call_function_field="function",
     call_accessor_node_types=frozenset({"member_access_expression"}),
     call_accessor_field="name",
@@ -950,7 +995,9 @@ _KOTLIN_CONFIG = LanguageConfig(
 
 _SCALA_CONFIG = LanguageConfig(
     ts_module="tree_sitter_scala",
-    class_types=frozenset({"class_definition", "object_definition"}),
+    # traits are class-like containers with their own heritage (extends / with),
+    # so they need a node and the heritage walk just like classes and objects.
+    class_types=frozenset({"class_definition", "object_definition", "trait_definition"}),
     function_types=frozenset({"function_definition"}),
     import_types=frozenset({"import_declaration"}),
     call_types=frozenset({"call_expression"}),
@@ -966,10 +1013,21 @@ _SCALA_CONFIG = LanguageConfig(
 _PHP_CONFIG = LanguageConfig(
     ts_module="tree_sitter_php",
     ts_language_fn="language_php",
-    class_types=frozenset({"class_declaration"}),
+    # interfaces/enums/traits are class-like containers whose heritage
+    # (extends/implements) and members must be captured, same as classes.
+    class_types=frozenset({
+        "class_declaration",
+        "interface_declaration",
+        "enum_declaration",
+        "trait_declaration",
+    }),
     function_types=frozenset({"function_definition", "method_declaration"}),
     import_types=frozenset({"namespace_use_clause"}),
-    call_types=frozenset({"function_call_expression", "member_call_expression", "scoped_call_expression", "class_constant_access_expression"}),
+    # object_creation_expression joins the dispatch set so `new Foo(...)` links
+    # the constructing method to Foo (engine has a dedicated PHP branch: the
+    # class sits in a bare name/qualified_name child, not a field) - the PHP
+    # twin of Java #1373 / C# #2997 (#3115).
+    call_types=frozenset({"function_call_expression", "member_call_expression", "scoped_call_expression", "class_constant_access_expression", "object_creation_expression"}),
     static_prop_types=frozenset({"scoped_property_access_expression"}),
     helper_fn_names=frozenset({"config"}),
     container_bind_methods=frozenset({"bind", "singleton", "scoped", "instance"}),
@@ -978,7 +1036,9 @@ _PHP_CONFIG = LanguageConfig(
     call_accessor_node_types=frozenset({"member_call_expression"}),
     call_accessor_field="name",
     name_fallback_child_types=("name",),
-    body_fallback_child_types=("declaration_list", "compound_statement"),
+    # enums wrap their members in an enum_declaration_list rather than a
+    # declaration_list, so the body walk needs it to reach enum methods/cases.
+    body_fallback_child_types=("declaration_list", "compound_statement", "enum_declaration_list"),
     function_boundary_types=frozenset({"function_definition", "method_declaration"}),
     import_handler=_import_php,
 )
@@ -1230,6 +1290,48 @@ def _extract_python_rationale(path: Path, result: dict) -> None:
             _add_rationale(stripped, lineno, file_nid)
 
 
+# ── TypeScript import type normalization (#3154) ──────────────────────────────
+# tree-sitter-typescript misparses `import(...)` types used inside explicit call-
+# expression type arguments (e.g. `f<typeof import("mod")>()` or
+# `f<import("mod").Foo>()`) as binary comparison expressions (`<` and `>`).
+# The trailing `();` generates an ERROR node, leaving an open `binary_expression`
+# that absorbs subsequent declarations as anonymous `function_expression` or `class`
+# expressions, silently dropping them from extraction. Normalizing `import(...)`
+# within generic call type arguments `<...>(...)` to a valid type identifier of
+# identical byte length keeps AST parsing clean while preserving source offsets.
+
+_TS_IMPORT_CALL_RE = re.compile(
+    rb"\bimport\s*\(\s*['\"][^'\"\r\n]+['\"]\s*\)"
+)
+_TS_IMPORT_TYPE_CALL_RE = re.compile(
+    rb"<((?:[^;{}]*?\bimport\s*\([^()]+\)[^;{}]*?)+)>(?=\s*\()"
+)
+
+
+def _normalize_ts_import_types(source: bytes) -> bytes | None:
+    """Rewrite TypeScript `import(...)` type arguments in call expressions
+    to standard type identifiers of identical byte length (#3154).
+
+    Preserves byte length, newlines, and source offsets so all downstream node
+    source_location metadata remains 100% accurate.
+    """
+    if rb"import(" not in source and rb"import (" not in source:
+        return None
+
+    def repl_type_args(m: "re.Match[bytes]") -> bytes:
+        type_arg_content = m.group(1)
+
+        def repl_import(im: "re.Match[bytes]") -> bytes:
+            matched = im.group(0)
+            return b"T" + re.sub(rb"[^\r\n]", b" ", matched[1:])
+
+        new_content = _TS_IMPORT_CALL_RE.sub(repl_import, type_arg_content)
+        return b"<" + new_content + b">"
+
+    norm = _TS_IMPORT_TYPE_CALL_RE.sub(repl_type_args, source)
+    return norm if norm != source else None
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def extract_python(path: Path) -> dict:
@@ -1243,13 +1345,21 @@ def extract_python(path: Path) -> dict:
 def extract_js(path: Path) -> dict:
     """Extract classes, functions, arrow functions, and imports from a .js/.ts/.tsx/.mts/.cts file."""
     suffix = path.suffix.lower()
+    is_ts = suffix in (".ts", ".tsx", ".mts", ".cts")
     if suffix == ".tsx":
         config = _TSX_CONFIG
     elif suffix in (".ts", ".mts", ".cts"):
         config = _TS_CONFIG
     else:
         config = _JS_CONFIG
-    result = _extract_generic(path, config)
+    source_override = None
+    if is_ts:
+        try:
+            source = path.read_bytes()
+            source_override = _normalize_ts_import_types(source)
+        except OSError:
+            pass
+    result = _extract_generic(path, config, source_override=source_override)
     if "error" not in result:
         _extract_js_rationale(path, result)
         _rescue_js_dynamic_imports(path, result)
@@ -1714,8 +1824,11 @@ def extract_vue(path: Path) -> dict:
         config = _JS_CONFIG
     else:  # "ts" or unspecified — default to the TS grammar (superset of JS)
         config = _TS_CONFIG
+    masked_bytes = masked.encode("utf-8")
+    if config in (_TS_CONFIG, _TSX_CONFIG):
+        masked_bytes = _normalize_ts_import_types(masked_bytes) or masked_bytes
 
-    result = _extract_generic(path, config, source_override=masked.encode("utf-8"))
+    result = _extract_generic(path, config, source_override=masked_bytes)
 
     # Dynamic `import('…')` calls aren't edged by the AST pass; recover by regex,
     # mirroring extract_svelte/extract_astro.
@@ -1863,9 +1976,197 @@ def extract_c(path: Path) -> dict:
     return _extract_generic(path, _C_CONFIG)
 
 
+# doctest / Catch2 name each test case with a string literal
+# (``TEST_CASE("name")``), which tree-sitter-cpp cannot parse: the construct
+# becomes an ERROR node and the whole test function is dropped from the graph
+# (issue #2594). Recover the test cases with a regex fallback, mirroring the
+# Spock handling of Groovy ``def "feature"()`` above. Scoped to doctest +
+# Catch2, which share this string-named-macro surface.
+#
+# Only the top-level test-declaration macros are recovered as callable nodes.
+# ``SUBCASE`` / ``SECTION`` are *nested* scopes inside a test body and
+# ``TEST_SUITE`` is a grouping wrapper, not a test function — emitting them as
+# file-contained nodes would fabricate wrong-granularity nodes and edges.
+_CPP_STRING_TEST_MACROS = (
+    "TEST_CASE", "TEST_CASE_TEMPLATE", "SCENARIO",
+)
+# The name group consumes C-string escapes (``\"``, ``\\``) so a test whose
+# name embeds an escaped quote is captured whole, not truncated at the escape.
+_CPP_STRING_TEST_RE = re.compile(
+    r'^[ \t]*(?:' + "|".join(_CPP_STRING_TEST_MACROS) + r')\s*\(\s*"((?:[^"\\]|\\.)+)"',
+    re.MULTILINE,
+)
+
+
+def _augment_cpp_string_tests(path: Path, result: dict) -> dict:
+    """Append callable nodes for doctest/Catch2 string-named test cases that
+    tree-sitter-cpp drops as ERROR nodes (issue #2594).
+
+    The generic C++ pass still recovers the surrounding functions and include
+    edges reliably, so this only adds the missing ``TEST_CASE("...")`` nodes and
+    their ``contains`` edge from the file node — it does not rebuild the result.
+
+    Matching is line-anchored raw text, mirroring the Spock fallback above; it is
+    deliberately not comment/preprocessor aware (a ``TEST_CASE`` disabled behind
+    a block comment or ``#if 0`` may still surface as a node, exactly as a
+    commented Spock ``def "feature"()`` would).
+    """
+    try:
+        source = path.read_text(errors="replace")
+    except OSError:
+        return result
+    matches = list(_CPP_STRING_TEST_RE.finditer(source))
+    if not matches:
+        return result
+
+    str_path = str(path)
+    stem = _file_stem(path)
+    file_nid = _make_id(str_path)
+    # A test name that is all punctuation (TEST_CASE("***")) normalizes to empty,
+    # so _make_id(stem, name) collapses onto this bare-stem id — colliding with
+    # the file's namespace and silently swallowing every later such test under
+    # one id (#1899). Detect that collapse and fall back to a line-positional id.
+    stem_collapse_id = _make_id(stem)
+    nodes = result.setdefault("nodes", [])
+    edges = result.setdefault("edges", [])
+    seen_ids = {n.get("id") for n in nodes}
+
+    for m in matches:
+        test_name = m.group(1)
+        line = source.count("\n", 0, m.start()) + 1
+        test_nid = _make_id(stem, test_name)
+        if test_nid == stem_collapse_id:
+            test_nid = _make_id(stem, "test", f"L{line}")
+        if test_nid in seen_ids:
+            continue
+        seen_ids.add(test_nid)
+        # Keep the raw test name as the label (mirroring the Spock fallback,
+        # which labels feature methods with their quoted string name).
+        nodes.append({
+            "id": test_nid,
+            "label": f'"{test_name}"',
+            "file_type": "code",
+            "source_file": str_path,
+            "source_location": f"L{line}",
+        })
+        edges.append({
+            "source": file_nid,
+            "target": test_nid,
+            "relation": "contains",
+            "confidence": "EXTRACTED",
+            "source_file": str_path,
+            "source_location": f"L{line}",
+            "weight": 1.0,
+        })
+    return result
+
+
+# ── C++/CLI normalization (#2876) ────────────────────────────────────────────
+# tree-sitter-cpp implements none of `ref class`, `Type^`, `Type%`, `gcnew` or
+# `[assembly:…]`. The ERROR lands on the type header, which dissolves the whole
+# class body — a 141-method .NET interop wrapper yielded 12 junk symbols. These
+# rewrites map each spelling onto the nearest standard C++ one.
+
+# Only files carrying one of these engage the rewrite, so plain C/C++/CUDA is
+# parsed byte-for-byte as before. `^`/`%` alone are not markers: they are the
+# ordinary XOR and modulo operators.
+_CPP_CLI_MARKER_RE = re.compile(
+    rb"\b(?:ref|value)\s+(?:class|struct)\b"
+    rb"|\binterface\s+class\b"
+    rb"|\bgcnew\b"
+    rb"|\[\s*(?:assembly|module)\s*:"
+)
+
+# `public ref class Foo` / `value struct Bar` / `interface class Baz` → the
+# access specifier goes too: it is not legal at namespace scope, and leaving it
+# behind is what made recovery invent a stray `public` node.
+_CPP_CLI_CLASS_RE = re.compile(
+    rb"(?:\b(?:public|private|protected)\s+)?\b(?:ref|value)\s+(?=(?:class|struct)\b)"
+    rb"|(?:\b(?:public|private|protected)\s+)?\binterface\s+(?=class\b)"
+)
+# Handle (`String^ s`) and tracking-reference (`int% n`) suffixes.
+#
+# `^` and `%` are also XOR and modulo, and `String^ s` is lexically identical to
+# `a^ b` — attachment to the preceding token does not separate them, because
+# `a% b` and `hash^ mask` are attached too. Rewriting on attachment alone
+# corrupted those into `a  b` / `hash  mask`. So the rewrite is restricted to
+# the two positions where an operator reading is impossible or implausible.
+#
+# 1. Followed by a token that cannot begin an operand: `f(String^, int)`,
+#    `List<String^>`, `(String^)x`, `Object^;`. `a^,` is not valid C++, so
+#    there is no arithmetic to lose here. `*` and `&` are deliberately NOT in
+#    the set — `a^*p` and `a^&b` are valid XOR expressions, and `String^*` is
+#    rare enough not to be worth trading for them.
+_CPP_CLI_SUFFIX_UNAMBIGUOUS_RE = re.compile(rb"(?<=[A-Za-z0-9_>])[\^%](?=\s*[,)\]>;])")
+# 2. A type-shaped left side followed by a declarator: `System::String^ s`,
+#    `List<int>^ items`, `DataTable^ t`, `int% n`. Qualified names, a closing
+#    generic bracket, .NET's PascalCase convention and the primitive value
+#    types are all type positions; requiring one keeps lowercase operands like
+#    `count% 2` and `hash^ mask` as arithmetic. A capitalized name must also
+#    carry a lowercase letter, so SCREAMING_CASE constants stay arithmetic
+#    too (`MASK^ value`); a lone capital is exempt for generic parameters
+#    (`T^ x`). The type is captured and re-emitted so the substitution stays
+#    byte-length preserving.
+_CPP_CLI_SUFFIX_DECL_RE = re.compile(
+    rb"(\b[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)+"   # System::String
+    rb"|\b[A-Z][A-Za-z0-9_]*[a-z][A-Za-z0-9_]*"                   # String, DataTable
+    rb"|\b[A-Z](?=[\^%])"                                        # T
+    rb"|\b(?:bool|char|wchar_t|short|int|long|float|double|unsigned|signed)"
+    rb"|>)"                                                      # List<int>^
+    rb"[\^%](?=\s+[A-Za-z_])"
+)
+# `[assembly:AssemblyVersion("1.0")]` and friends.
+_CPP_CLI_ATTR_RE = re.compile(rb"\[\s*(?:assembly|module)\s*:[^\[\]]*\]", re.S)
+
+
+def _blank_keeping_newlines(m: "re.Match[bytes]") -> bytes:
+    """Replace a match with spaces, but keep its line breaks.
+
+    Byte length alone is not enough. Both the class-header and the attribute
+    pattern can span lines — ``[assembly:AssemblyVersion(\\n  "1.0"\\n)]`` is
+    ordinary formatting — and blanking a newline merges two source lines, which
+    shifts the reported line number of every symbol below it. Preserving CR and
+    LF in place keeps line and column stable as well as offset.
+    """
+    return re.sub(rb"[^\r\n]", b" ", m.group(0))
+
+
+def _normalize_cpp_cli(source: bytes) -> bytes | None:
+    """Rewrite C++/CLI spellings to standard C++ ones, or None if not C++/CLI.
+
+    The rewrite is **byte-length preserving** — dropped tokens are overwritten
+    with spaces, never deleted, and ``gcnew`` becomes ``new`` plus padding — and
+    line breaks inside a removed token are kept, so every offset, line and
+    column still points at the same place in the file on disk and reported
+    source locations stay accurate (#2876).
+    """
+    if not _CPP_CLI_MARKER_RE.search(source):
+        return None
+    out = _CPP_CLI_CLASS_RE.sub(_blank_keeping_newlines, source)
+    out = re.sub(rb"\bgcnew\b", b"new  ", out)
+    out = _CPP_CLI_SUFFIX_UNAMBIGUOUS_RE.sub(b" ", out)
+    out = _CPP_CLI_SUFFIX_DECL_RE.sub(rb"\1 ", out)
+    return _CPP_CLI_ATTR_RE.sub(_blank_keeping_newlines, out)
+
+
 def extract_cpp(path: Path) -> dict:
-    """Extract functions, classes, and includes from a .cpp/.cc/.cxx/.hpp file."""
-    return _extract_generic(path, _CPP_CONFIG)
+    """Extract functions, classes, and includes from a .cpp/.cc/.cxx/.hpp file.
+
+    C++/CLI sources are normalized to standard C++ first (#2876); see
+    :func:`_normalize_cpp_cli`.
+
+    Recovers doctest/Catch2 ``TEST_CASE("name")`` test cases that tree-sitter-cpp
+    drops as ERROR nodes (issue #2594), mirroring the Spock fallback for Groovy.
+    """
+    try:
+        source = path.read_bytes()
+    except OSError:
+        # Let _extract_generic report the read failure in its usual shape.
+        return _augment_cpp_string_tests(path, _extract_generic(path, _CPP_CONFIG))
+    result = _extract_generic(
+        path, _CPP_CONFIG, source_override=_normalize_cpp_cli(source) or source
+    )
+    return _augment_cpp_string_tests(path, result)
 
 
 def extract_ruby(path: Path) -> dict:
@@ -2040,6 +2341,62 @@ def _lang_family(source_file: object) -> str | None:
     return _LANG_FAMILY_BY_EXT.get(Path(str(source_file)).suffix.lower())
 
 
+# A language's own built-in throwable hierarchy, keyed by the interop family of
+# the file that names it. `class FooApiException extends \Exception` in PHP means
+# PHP's global `Exception`, so a same-named class defined in a file of ANOTHER
+# family cannot be what it refers to (#2812). Scoped to built-in throwables on
+# purpose: they are the names every language ships and every corpus subclasses,
+# while a name a corpus commonly defines itself would suppress a real supertype
+# edge. `_LANGUAGE_BUILTIN_GLOBALS` covers the adjacent call-target case and is
+# deliberately separate — a flat set consulted at call sites, neither per-family
+# nor consulted by supertype resolution.
+_LANGUAGE_BUILTIN_BASE_CLASSES: dict[str, frozenset[str]] = {
+    "php": frozenset({
+        "Throwable", "Exception", "ErrorException", "Error", "TypeError",
+        "ValueError", "ArgumentCountError", "ArithmeticError",
+        "DivisionByZeroError", "RuntimeException", "LogicException",
+        "InvalidArgumentException", "DomainException", "LengthException",
+        "OutOfRangeException", "OutOfBoundsException", "RangeException",
+        "OverflowException", "UnderflowException", "UnexpectedValueException",
+        "BadFunctionCallException", "BadMethodCallException", "JsonException",
+    }),
+    "jvm": frozenset({
+        "Throwable", "Exception", "RuntimeException", "Error",
+        "IllegalArgumentException", "IllegalStateException",
+        "UnsupportedOperationException", "IndexOutOfBoundsException",
+        "NullPointerException", "IOException",
+    }),
+    "python": frozenset({
+        "BaseException", "Exception", "ValueError", "TypeError", "KeyError",
+        "IndexError", "RuntimeError", "NotImplementedError", "AttributeError",
+        "OSError", "IOError", "StopIteration", "Warning", "UserWarning",
+        "DeprecationWarning",
+    }),
+    "jsts": frozenset({
+        "Error", "TypeError", "RangeError", "SyntaxError", "ReferenceError",
+        "EvalError", "URIError", "AggregateError",
+    }),
+    "dotnet": frozenset({
+        "Exception", "ApplicationException", "SystemException",
+        "ArgumentException", "ArgumentNullException",
+        "ArgumentOutOfRangeException", "InvalidOperationException",
+        "NotImplementedException", "NotSupportedException",
+    }),
+    "ruby": frozenset({
+        "Exception", "StandardError", "RuntimeError", "ArgumentError",
+        "TypeError", "NameError", "NoMethodError", "IOError",
+    }),
+}
+
+# Folded companion, for referrers whose language resolves identifiers
+# case-insensitively (#1581) — PHP `extends \exception` names the same built-in
+# as `extends \Exception`. Mirrors the `real_by_label` / `real_by_label_ci` pair.
+_LANGUAGE_BUILTIN_BASE_CLASSES_CI: dict[str, frozenset[str]] = {
+    family: frozenset(name.lower() for name in names)
+    for family, names in _LANGUAGE_BUILTIN_BASE_CLASSES.items()
+}
+
+
 def _node_label_key(node: dict, fold: bool = False) -> str:
     label = str(node.get("label", "")).strip()
     key = re.sub(r"[^a-zA-Z0-9]+", "", label)
@@ -2142,9 +2499,40 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
 
     by_id = {node.get("id"): node for node in nodes if node.get("id")}
     csharp_scoped_relations = {"inherits", "implements", "references", "imports"}
+
+    def _names_own_builtin_base(edge: dict, stub_id: str, remapped_id: str) -> bool:
+        r"""#2812: `class FooApiException extends \Exception` names PHP's own global
+        built-in, so a same-named class defined in another language cannot be what
+        it refers to — yet the bare name was scoped by nothing and the unique
+        TypeScript `Exception` absorbed the stub, leaving a PHP class inheriting
+        from a TS one.
+
+        Decided per EDGE rather than per stub: one sourceless `Exception` stub
+        collects referrers from every language that names it, and the TypeScript
+        referrers must still rewire onto the TypeScript class.
+
+        Deliberately narrower than a blanket family gate on the type path: a
+        corpus really can declare its own `BookStore` in one language and subclass
+        it from another (`test_extract_rewires_unique_inheritance_stub_to_real_definition`).
+        """
+        if edge.get("relation") not in _SUPERTYPE_RELATIONS:
+            return False
+        edge_fam = _lang_family(edge.get("source_file"))
+        if edge_fam is None:
+            return False
+        label = str(by_id.get(stub_id, {}).get("label", "")).strip()
+        if _lang_is_case_insensitive(edge.get("source_file")):
+            builtins = _LANGUAGE_BUILTIN_BASE_CLASSES_CI.get(edge_fam, frozenset())
+            label = label.lower()
+        else:
+            builtins = _LANGUAGE_BUILTIN_BASE_CLASSES.get(edge_fam, frozenset())
+        if label not in builtins:
+            return False
+        target_fam = _lang_family(by_id.get(remapped_id, {}).get("source_file"))
+        return target_fam is not None and target_fam != edge_fam
     for edge in edges:
         is_csharp_scoped_edge = (
-            str(edge.get("source_file", "")).endswith(".cs")
+            str(edge.get("source_file", "")).endswith((".cs", ".razor", ".cshtml"))
             and edge.get("relation") in csharp_scoped_relations
         )
         source = edge.get("source")
@@ -2161,7 +2549,7 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
             if not (
                 is_csharp_scoped_edge
                 and str(by_id.get(remapped_target, {}).get("source_file", "")).endswith(".cs")
-            ):
+            ) and not _names_own_builtin_base(edge, str(target), remapped_target):
                 edge["target"] = remapped_target
 
     referenced = {x for e in edges for x in (e.get("source"), e.get("target"))}
@@ -2182,6 +2570,26 @@ def _augment_js_reexport_edges(
 
 
 # Header / implementation file-extension pairing for the decl/def class merge.
+
+
+def _remap_objc_field_tables(per_file: list, mapping: dict) -> None:
+    """Rewrite objc_field_types["tables"] KEYS through an id remap (#3150).
+
+    The #2591 field->type tables are the one extractor bucket keyed BY class
+    node id. The #1529 passes rewrote node ids, edge endpoints,
+    raw_calls[].caller_nid and swift_extensions[].nid but not these keys, so
+    whenever a common absolute prefix was stripped (always via
+    `graphify update <dir>`) the table keys went stale, every
+    field_types_by_class.get(cls) missed, and [self.<field> ...] sends
+    resolved to nothing - #2591 was inert through the CLI.
+    """
+    for result in per_file:
+        ft = result.get("objc_field_types") if isinstance(result, dict) else None
+        tables = ft.get("tables") if isinstance(ft, dict) else None
+        if not isinstance(tables, dict):
+            continue
+        if any(k in mapping for k in tables):
+            ft["tables"] = {mapping.get(k, k): v for k, v in tables.items()}
 
 
 def _merge_swift_extensions(
@@ -2472,6 +2880,52 @@ def _merge_csharp_partial_class_nodes(
                 rc["caller_nid"] = remap[cn]
 
 
+UNRESOLVED_CALLS_KEY = "unresolved_calls"
+_MAX_PARKED_CALLS_PER_NODE = 64
+
+
+def _park_unresolved_member_call(
+    caller_node: dict | None,
+    callee: str,
+    receiver_type: str,
+    lang: str,
+    raw_call: dict,
+) -> None:
+    """Keep a member call whose receiver type is declared nowhere in this corpus.
+
+    A single-repo build can only bind ``obj.method()`` when the receiver's type is
+    declared in the same build, so a call into another repository is dropped with
+    the receiver type already in hand and nothing about it reaches ``graph.json``
+    — the one artifact ``merge-graphs`` and ``global add`` consume. Parking the
+    pair on the caller node lets a merged graph finish the edge (#3152).
+
+    The payload carries names only, never node ids: ids are rewritten by the
+    remaps and again by the repo prefixing, and a stale id inside metadata would
+    fail silently (#3150 was that bug). Names survive every rewrite.
+    """
+    if not caller_node or not callee or not receiver_type:
+        return
+    metadata = caller_node.setdefault("metadata", {})
+    if not isinstance(metadata, dict):
+        return
+    parked = metadata.setdefault(UNRESOLVED_CALLS_KEY, [])
+    if not isinstance(parked, list) or len(parked) >= _MAX_PARKED_CALLS_PER_NODE:
+        return
+    callee, receiver_type = str(callee), str(receiver_type)
+    for previous in parked:
+        if (
+            isinstance(previous, dict)
+            and previous.get("callee") == callee
+            and previous.get("receiver_type") == receiver_type
+        ):
+            return
+    entry = {"callee": callee, "receiver_type": receiver_type, "lang": lang}
+    location = raw_call.get("source_location")
+    if location:
+        entry["line"] = str(location)
+    parked.append(entry)
+
+
 def _resolve_swift_member_calls(
     per_file: list[dict],
     all_nodes: list[dict],
@@ -2588,7 +3042,8 @@ def _resolve_swift_member_calls(
             continue
         receiver = rc.get("receiver")
         callee = rc.get("callee")
-        if not receiver or not callee:
+        caller = rc.get("caller_nid")
+        if not receiver or not callee or not caller:
             continue
         # Determine the receiver's type. An upper-cased receiver is itself a type
         # (Type.staticMethod(), Singleton.shared.x()); otherwise look it up in the
@@ -2608,12 +3063,20 @@ def _resolve_swift_member_calls(
         if type_name in _LANGUAGE_BUILTIN_GLOBALS:
             continue
         type_defs = type_def_nids.get(_key(type_name), [])
-        if len(type_defs) != 1:  # ambiguous or absent -> bail (god-node guard)
+        if not type_defs:
+            # Declared nowhere here — in a multi-repo setup that usually means "in
+            # a repo this build does not contain", so park it for the merge
+            # (#3152). This resolver shares `all_raw_calls` with every other
+            # language and Swift raw_calls carry no `lang` tag, so the parked
+            # entry's language comes from the declaring file's suffix.
+            if str(rc.get("source_file", "")).lower().endswith(".swift"):
+                _park_unresolved_member_call(
+                    node_by_id.get(caller), callee, type_name, "swift", rc,
+                )
+            continue
+        if len(type_defs) != 1:  # ambiguous -> bail (god-node guard)
             continue
         type_nid = type_defs[0]
-        caller = rc.get("caller_nid")
-        if not caller:
-            continue
         method_nid = method_index.get((type_nid, _key(callee)))
         target = method_nid or type_nid
         relation = "calls" if method_nid else "references"
@@ -3021,7 +3484,17 @@ def _resolve_cpp_member_calls(
         elif receiver[:1].isupper():
             # Foo::bar(): the type is named explicitly in source.
             type_defs = type_def_nids.get(_key(receiver), [])
-            if len(type_defs) != 1:  # ambiguous or absent -> bail (god-node guard)
+            if not type_defs:
+                # Declared nowhere here, which in a multi-repo setup usually means
+                # "in a repo this build does not contain" (#3152). `Foo::bar()` is
+                # also the shape of a namespace-qualified free function, so the
+                # merge side's guards do the deciding: it acts only when exactly
+                # one other repo declares a `Foo` owning exactly one `bar`.
+                _park_unresolved_member_call(
+                    node_by_id.get(caller), callee, receiver, "cpp", rc,
+                )
+                continue
+            if len(type_defs) != 1:  # ambiguous -> bail (god-node guard)
                 continue
             type_nid = type_defs[0]
             type_qualified = True
@@ -3031,7 +3504,12 @@ def _resolve_cpp_member_calls(
             if not type_name:
                 continue
             type_defs = type_def_nids.get(_key(type_name), [])
-            if len(type_defs) != 1:  # ambiguous or absent -> bail (god-node guard)
+            if not type_defs:
+                _park_unresolved_member_call(
+                    node_by_id.get(caller), callee, type_name, "cpp", rc,
+                )
+                continue
+            if len(type_defs) != 1:  # ambiguous -> bail (god-node guard)
                 continue
             type_nid = type_defs[0]
             type_qualified = False
@@ -3195,6 +3673,18 @@ def _resolve_csharp_member_calls(
         type_defs = type_def_nids.get(_key(type_name), [])
         return type_defs[0] if len(type_defs) == 1 else None
 
+    def _park_if_absent(type_name: str | None, caller_node: dict | None, rc: dict) -> None:
+        """Park a call whose receiver type is declared nowhere in this corpus (#3152).
+
+        ``_resolve_type_name_nid`` collapses "absent", "ambiguous" and "scoping was
+        decisive" into one ``None``, and only the first is a cross-repo candidate,
+        so re-check the bare-name index instead of trusting the ``None``.
+        """
+        if type_name and not type_def_nids.get(_key(type_name)):
+            _park_unresolved_member_call(
+                caller_node, rc.get("callee"), type_name, "csharp", rc,
+            )
+
     all_raw_calls: list[dict] = []
     for result in per_file:
         all_raw_calls.extend(result.get("raw_calls", []))
@@ -3233,6 +3723,7 @@ def _resolve_csharp_member_calls(
                 type_name = rc.get("receiver_type")
                 type_nid = _resolve_type_name_nid(type_name, caller_node, src_file)
                 if not type_nid:
+                    _park_if_absent(type_name or receiver, caller_node, rc)
                     continue
             type_qualified = True
         else:
@@ -3241,6 +3732,7 @@ def _resolve_csharp_member_calls(
                 continue
             type_nid = _resolve_type_name_nid(type_name, caller_node, src_file)
             if not type_nid:  # ambiguous or absent -> bail (god-node guard)
+                _park_if_absent(type_name, caller_node, rc)
                 continue
             type_qualified = False
         method_nid = _method_on_type_or_bases(type_nid, _key(callee))
@@ -3260,6 +3752,57 @@ def _resolve_csharp_member_calls(
             "source_location": rc.get("source_location"),
             "weight": 1.0,
         })
+
+
+def _bind_member_field_tables(
+    per_file: list[dict],
+    all_nodes: list[dict],
+    *,
+    lang: str,
+) -> dict[str, dict[str, str]]:
+    """Bind the exported per-file field tables (#3151) to class node ids.
+
+    Entries are keyed by class label + source_file so they survive every id
+    remap; here they are matched back to the one class node carrying that
+    label (disambiguated by source_file basename when several share it).
+    An entry that stays ambiguous binds nothing - guessing would attach a
+    field table to the wrong class.
+    """
+    by_label: dict[str, list[dict]] = {}
+    for n in all_nodes:
+        if n.get("label") and n.get("source_file"):
+            by_label.setdefault(str(n["label"]), []).append(n)
+    bound: dict[str, dict[str, str]] = {}
+    for result in per_file:
+        for entry in (result.get("member_field_tables") or []):
+            if not isinstance(entry, dict) or entry.get("lang") != lang:
+                continue
+            label, fields = entry.get("class_label"), entry.get("fields")
+            if not label or not isinstance(fields, dict):
+                continue
+            candidates = by_label.get(str(label), [])
+            if len(candidates) > 1:
+                sf = str(entry.get("source_file") or "")
+                exact = [n for n in candidates if str(n.get("source_file")) == sf]
+                if len(exact) == 1:
+                    candidates = exact
+                else:
+                    # the node's source_file may have been relativized since
+                    # the entry was written; the basename still identifies it
+                    base = os.path.basename(sf)
+                    candidates = [
+                        n for n in candidates
+                        if os.path.basename(str(n.get("source_file"))) == base
+                    ]
+            if len(candidates) != 1:
+                continue
+            merged = bound.setdefault(candidates[0]["id"], {})
+            for fname, tname in fields.items():
+                if merged.get(fname) not in (None, tname):
+                    merged.pop(fname, None)  # cross-shard conflict: no guess
+                else:
+                    merged[fname] = tname
+    return bound
 
 
 def _resolve_java_member_calls(
@@ -3303,6 +3846,31 @@ def _resolve_java_member_calls(
         method_index.setdefault((owner, key(method_node.get("label", ""))), set()).add(method)
 
     existing_pairs = {(edge.get("source"), edge.get("target")) for edge in all_edges}
+    # Inherited fields (#3151): a field declared on a superclass - possibly in
+    # another file - types a `this.<field>` receiver in the subclass. Safe
+    # because `this.` names a field by construction; no local can shadow it.
+    # The per-file tables ride the results keyed by class label + source_file
+    # (never node id, see #3150); bind each to its class node, ambiguity skips.
+    inherits_bases: dict[str, list[str]] = {}
+    for edge in all_edges:
+        if edge.get("relation") == "inherits":
+            inherits_bases.setdefault(edge["source"], []).append(edge["target"])
+    class_fields = _bind_member_field_tables(per_file, all_nodes, lang="java")
+
+    def _inherited_field_type(class_nid, field: str):
+        seen: set = set()
+        queue = [class_nid]
+        while queue:
+            cls = queue.pop(0)
+            if not cls or cls in seen:
+                continue
+            seen.add(cls)
+            hit = class_fields.get(cls, {}).get(field)
+            if hit:
+                return hit
+            queue.extend(inherits_bases.get(cls, []))
+        return None
+
     for result in per_file:
         for raw_call in result.get("raw_calls", []):
             if raw_call.get("lang") != "java" or not raw_call.get("is_member_call"):
@@ -3324,9 +3892,24 @@ def _resolve_java_member_calls(
                 if not type_name and receiver[:1].isupper():
                     type_name = receiver
                     exact = True
+                if not type_name and receiver.startswith("this."):
+                    type_name = _inherited_field_type(
+                        enclosing_type.get(caller), receiver[len("this."):]
+                    )
                 if not type_name:
                     continue
                 type_defs = type_def_nids.get(key(type_name), [])
+                if not type_defs:
+                    # The type is declared nowhere in this corpus, which in a
+                    # multi-repo setup usually means "in a repo this build does
+                    # not contain" rather than "does not exist" — park it for the
+                    # merge (#3152). An ambiguous name (>1 declaration) is a
+                    # local ambiguity that merging only widens, so it stays
+                    # dropped, exactly as the guard below already decided.
+                    _park_unresolved_member_call(
+                        node_by_id.get(caller), callee, type_name, "java", raw_call,
+                    )
+                    continue
                 if len(type_defs) != 1:
                     continue
                 type_nid = type_defs[0]
@@ -3453,6 +4036,27 @@ def _resolve_objc_member_calls(
         all_raw_calls.extend(result.get("raw_calls", []))
 
     existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
+    # A @property declared on a superclass types [self.<field> ...] in the
+    # subclass too (#3151): walk the inherits chain, nearest table first.
+    _objc_bases: dict[str, list[str]] = {}
+    for e in all_edges:
+        if e.get("relation") == "inherits":
+            _objc_bases.setdefault(e["source"], []).append(e["target"])
+
+    def _field_type_up_chain(cls, receiver):
+        seen: set = set()
+        queue = [cls]
+        while queue:
+            c = queue.pop(0)
+            if not c or c in seen:
+                continue
+            seen.add(c)
+            hit = field_types_by_class.get(c, {}).get(receiver)
+            if hit:
+                return hit
+            queue.extend(_objc_bases.get(c, []))
+        return None
+
     for rc in all_raw_calls:
         if not rc.get("is_member_call"):
             continue
@@ -3469,7 +4073,7 @@ def _resolve_objc_member_calls(
             # via the caller's own class's @property/ivar table. Checked before the
             # capitalized arm so a capitalized field never reads as a class name.
             cls = enclosing_type.get(caller)
-            type_name = field_types_by_class.get(cls, {}).get(receiver) if cls else None
+            type_name = _field_type_up_chain(cls, receiver) if cls else None
             if not type_name:
                 continue
             type_defs = type_def_nids.get(_key(type_name), [])
@@ -3494,7 +4098,7 @@ def _resolve_objc_member_calls(
             type_name = type_table_by_file.get(src_file, {}).get(receiver)
             if not type_name:
                 cls = enclosing_type.get(caller)
-                type_name = field_types_by_class.get(cls, {}).get(receiver) if cls else None
+                type_name = _field_type_up_chain(cls, receiver) if cls else None
             if not type_name:
                 continue
             type_defs = type_def_nids.get(_key(type_name), [])
@@ -3587,6 +4191,79 @@ def _resolve_kotlin_import_targets(
         candidates = pkg_symbols.get(pkg, {}).get(name, [])
         if len(candidates) == 1:  # single-candidate guard: never fabricate
             e["target"] = candidates[0]
+
+
+def _resolve_csharp_qualified_calls(
+    per_file: list[dict],
+    all_nodes: list[dict],
+    all_edges: list[dict],
+) -> None:
+    """Resolve C# constructions that name their namespace (#2997).
+
+    `new Infra.Data.Cache()` reaches the shared pass as the bare name `Cache`,
+    so a second `Cache` in another namespace makes it ambiguous and it gets no
+    edge, even though the source says which one it means. The reference paths
+    (field, property, parameter, return) already honour the qualifier through
+    `CsharpNameResolver`; this is the construction twin, built the way
+    `_resolve_kotlin_qualified_calls` handles the same shape in Kotlin.
+
+    The prefix must equal a declared namespace exactly. A partially qualified
+    `new Data.Cache()` under `using Infra;` stays unresolved rather than
+    guessing at the using directives in scope. Exactly one candidate produces an
+    edge; zero or several leave the call alone. The pass is additive: an
+    ambiguous bare name never had an edge to overwrite.
+    """
+    raw = [
+        rc
+        for result in per_file
+        for rc in result.get("raw_calls", [])
+        if rc.get("lang") == "csharp" and rc.get("qualified_prefix")
+        and rc.get("callee") and rc.get("caller_nid")
+    ]
+    if not raw:
+        return
+
+    # (namespace, type name) -> nids, over sourced type declarations only, so a
+    # sourceless stub minted for a dangling reference cannot win the match.
+    by_namespace: dict[tuple[str, str], list[str]] = {}
+    for n in all_nodes:
+        if not n.get("_callable_class") or not n.get("source_file"):
+            continue
+        namespace = str((n.get("metadata") or {}).get("namespace") or "")
+        label = str(n.get("label", "")).strip("()")
+        if namespace and label:
+            by_namespace.setdefault((namespace, label), []).append(n["id"])
+    if not by_namespace:
+        return
+
+    # Scoped to `calls`: a method that both takes a type as a parameter and
+    # constructs it already has a `references` edge to it, and that edge says
+    # nothing about whether the construction was resolved.
+    existing_pairs = {
+        (e.get("source"), e.get("target"))
+        for e in all_edges
+        if e.get("relation") == "calls"
+    }
+    for rc in raw:
+        candidates = by_namespace.get((rc["qualified_prefix"], rc["callee"]), [])
+        if len(candidates) != 1:
+            continue
+        caller = rc["caller_nid"]
+        tgt = candidates[0]
+        if tgt == caller or (caller, tgt) in existing_pairs:
+            continue
+        existing_pairs.add((caller, tgt))
+        all_edges.append({
+            "source": caller,
+            "target": tgt,
+            "relation": "calls",
+            "context": "call",
+            "confidence": "EXTRACTED",  # the namespace is written verbatim in source
+            "confidence_score": 1.0,
+            "source_file": rc.get("source_file", ""),
+            "source_location": rc.get("source_location"),
+            "weight": 1.0,
+        })
 
 
 def _resolve_kotlin_qualified_calls(
@@ -3773,6 +4450,23 @@ register_language_resolver(
 register_language_resolver(
     LanguageResolver(
         "kotlin_qualified_calls", frozenset({".kt", ".kts"}), _resolve_kotlin_qualified_calls
+    )
+)
+# C# qualified construction (#2997): `new A.B.Cache()` arrives as the bare name,
+# so a colliding `Cache` elsewhere makes it ambiguous. Runs in the tail registry
+# beside csharp_member_calls and matches the prefix against declared namespaces.
+register_language_resolver(
+    LanguageResolver(
+        "csharp_qualified_calls", frozenset({".cs"}), _resolve_csharp_qualified_calls
+    )
+)
+# C# member-level interface dispatch (#3003): a call through an injected
+# dependency lands on the interface's method, so the implementation sits in the
+# graph unreachable from the call site. Lives in graphify.csharp_dispatch;
+# registered here as a consumer of the framework, like the Pascal resolver.
+register_language_resolver(
+    LanguageResolver(
+        "csharp_interface_dispatch", frozenset({".cs"}), resolve_csharp_interface_dispatch
     )
 )
 
@@ -4842,6 +5536,12 @@ _DISPATCH: dict[str, Any] = {
     ".svelte": extract_svelte,
     ".astro": extract_astro,
     ".dart": extract_dart,
+    ".ml": extract_ocaml,
+    ".mli": extract_ocaml,
+    ".lisp": extract_commonlisp,
+    ".cl": extract_commonlisp,
+    ".lsp": extract_commonlisp,
+    ".asd": extract_commonlisp,
     ".v": extract_verilog,
     ".sv": extract_verilog,
     ".svh": extract_verilog,
@@ -4878,6 +5578,8 @@ _DISPATCH: dict[str, Any] = {
     ".xaml": extract_xaml,
     ".razor": extract_razor,
     ".cshtml": extract_razor,
+    ".robot": extract_robot,
+    ".resource": extract_robot,
     ".cls": extract_apex,
     ".trigger": extract_apex,
 }
@@ -4894,6 +5596,14 @@ _EXTRA_FOR_EXTENSION = {
     ".hcl": "terraform",
     ".dm": "dm",
     ".dme": "dm",
+    ".ml": "ocaml",
+    ".mli": "ocaml",
+    ".lisp": "commonlisp",
+    ".cl": "commonlisp",
+    ".lsp": "commonlisp",
+    ".asd": "commonlisp",
+    ".robot": "robot",
+    ".resource": "robot",
 }
 
 # Substrings an extractor's error carries to classify why a dependency-backed
@@ -5332,7 +6042,16 @@ def extract(
     _raise_recursion_limit()
     # Workspace package manifests/globs can change during watch or repeated extraction.
     _WORKSPACE_PACKAGE_CACHE.clear()
+    # tsconfig/jsconfig compilerOptions are the same kind of state: keyed by
+    # config path with no mtime component, so an edit to `paths` or `baseUrl`
+    # was never observed again for the life of the process. `graphify watch`
+    # and the MCP server both call extract() repeatedly in one process, so
+    # every rebuild after the edit kept resolving through the stale alias map.
+    # Clearing per run, not per file, leaves within-run caching intact.
+    _TSCONFIG_ALIAS_CACHE.clear()
+    _TSCONFIG_BASEURL_CACHE.clear()
     _XAML_CSHARP_CLASS_CACHE.clear()
+    _MD_LINK_INDEX_CACHE.clear()
 
     # Infer a common root for cache keys (use first diverging segment, not sum of all matches)
     try:
@@ -5419,7 +6138,7 @@ def extract(
     _empty_sources: list[str] = []
     for i, _p in enumerate(paths):
         _res = per_file[i] or {}
-        if _res.get("nodes") or _res.get("error"):
+        if _res.get("nodes") or _res.get("error") or _res.get("skipped"):
             continue
         if _get_extractor(_p) is not None:
             _empty_sources.append(str(_p))
@@ -5450,6 +6169,12 @@ def extract(
             if _key not in _failed_seen:
                 _failed_sources.append(_key)
                 _failed_seen.add(_key)
+            continue
+        if _res.get("skipped"):
+            # The extractor declined this file by design (data JSON, #1224), so
+            # zero nodes is the intended outcome rather than a failure. Marking
+            # it failed keeps it out of the incremental manifest and re-queues
+            # it on every subsequent run, forever (#2879).
             continue
         if (not _res.get("nodes")) and _get_extractor(_p) is not None:
             if _key not in _failed_seen:
@@ -5537,19 +6262,36 @@ def extract(
         # results, so those fall back to the file-node-only arm.
         if len(_res.get("nodes", [])) <= 1 or _pe.get("multiline_error"):
             _rel = os.path.relpath(str(_p), str(root)).replace("\\", "/")
-            _syntax_error_files.append((_rel, _pe.get("first_error_line")))
+            # Symbols recovered from the file, excluding its own file node. This
+            # is what separates the two cases the warning otherwise blurs: a file
+            # that contributed nothing but its file node is a total loss, while
+            # one that yielded most of its symbols and lost an ERROR region is
+            # partial. "May be partially extracted" rendered both identically.
+            _kept = max(len(_res.get("nodes", [])) - 1, 0)
+            _syntax_error_files.append((_rel, _pe.get("first_error_line"), _kept))
     if _syntax_error_files:
+        def _describe_syntax_error(rel: str, line: "int | None", kept: int) -> str:
+            _where = f"first error at line {line}" if line else "syntax error"
+            _got = "no symbols extracted" if kept == 0 else f"{kept} symbol(s) extracted"
+            return f"{rel} ({_where}, {_got})"
+
         _shown = ", ".join(
-            f"{x} (first error at line {ln})" if ln else x
-            for x, ln in _syntax_error_files[:5]
+            _describe_syntax_error(*f) for f in _syntax_error_files[:5]
         )
         _more = (
             f" (+{len(_syntax_error_files) - 5} more)"
             if len(_syntax_error_files) > 5 else ""
         )
+        # No issue reference here. This message used to end in "(#2551)" for
+        # EVERY language, and #2551 is closed and Kotlin-specific ("bundled
+        # grammar rejects one-line type bodies"). It was the only lead the
+        # message offered, so a reader following it landed on a resolved problem
+        # in another language and concluded their own was already tracked
+        # (#2788). The file, the line and the symbol count are the actionable
+        # part; a single hardcoded number cannot be right for every grammar.
         print(
             f"  warning: {len(_syntax_error_files)} file(s) had syntax errors and "
-            f"may be partially extracted: {_shown}{_more} (#2551)",
+            f"may be partially extracted: {_shown}{_more}",
             file=sys.stderr, flush=True,
         )
 
@@ -5791,6 +6533,9 @@ def extract(
                 en = ext.get("nid")
                 if en in id_remap:
                     ext["nid"] = id_remap[en]
+        # objc_field_types["tables"] is keyed BY class node id - the one bucket
+        # the #1529 rewrites missed (#3150).
+        _remap_objc_field_tables(per_file, id_remap)
     if prefix_remap:
         sym_remap: dict[str, str] = {}
         edge_alias_candidates: dict[str, set[str]] = {}
@@ -5858,6 +6603,7 @@ def extract(
                     en = ext.get("nid")
                     if en in sym_remap:
                         ext["nid"] = sym_remap[en]
+            _remap_objc_field_tables(per_file, sym_remap)
         if edge_alias_candidates:
             def _edge_key(edge: dict) -> str:
                 # target_file is a transient stamp (#1814/#1983); exclude it
@@ -6033,18 +6779,17 @@ def extract(
             logging.getLogger(__name__).warning(
                 "Go type-reference resolution failed, skipping: %s", exc
             )
-    _rewire_unique_stub_nodes(all_nodes, all_edges)
-
-    # Add cross-file class-level edges (Python only - uses Python parser internally)
+    # Cross-file Python import resolution and type-reference repointing (#3252)
     py_paths = [p for p in paths if p.suffix == ".py"]
     if py_paths:
         py_results = [r for r, p in zip(per_file, paths) if p.suffix == ".py"]
         try:
-            cross_file_edges = _resolve_cross_file_imports(py_results, py_paths)
+            cross_file_edges = _resolve_cross_file_imports(py_results, py_paths, all_nodes, all_edges)
             all_edges.extend(cross_file_edges)
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("Cross-file import resolution failed, skipping: %s", exc)
+    _rewire_unique_stub_nodes(all_nodes, all_edges)
 
     # Cross-file Java import resolution
     java_paths = [p for p in paths if p.suffix == ".java"]
@@ -6059,9 +6804,10 @@ def extract(
     # Cross-file C# type-reference resolution: re-point dangling inherits/implements/
     # references edges left on shadow stubs, disambiguating same-named types by the
     # referencing file's `using` directives + enclosing namespace (mirrors Java #1318).
-    cs_paths = [p for p in paths if p.suffix == ".cs"]
+    _DOTNET_TYPE_EXTS = {".cs", ".razor", ".cshtml"}
+    cs_paths = [p for p in paths if p.suffix.lower() in _DOTNET_TYPE_EXTS]
     if cs_paths:
-        cs_results = [r for r, p in zip(per_file, paths) if p.suffix == ".cs"]
+        cs_results = [r for r, p in zip(per_file, paths) if p.suffix.lower() in _DOTNET_TYPE_EXTS]
         try:
             _resolve_csharp_type_references(cs_results, cs_paths, all_nodes, all_edges)
         except Exception as exc:
@@ -6402,7 +7148,11 @@ def extract(
                     "relation": "indirect_call",
                     "context": rc.get("context", "argument"),
                     "confidence": "INFERRED",
-                    "confidence_score": 0.8,
+                    # 0.85, not 0.8: the rubric in references/extraction-spec.md
+                    # is a discrete set {0.55, 0.65, 0.75, 0.85, 0.95} and 0.8 is
+                    # not in it. Same tier, same meaning ("strong inference"),
+                    # now a value the documented scale actually contains (#2813).
+                    "confidence_score": 0.85,
                     "source_file": rc.get("source_file", ""),
                     "source_location": rc.get("source_location"),
                     "weight": 1.0,
@@ -6431,7 +7181,9 @@ def extract(
                 confidence_score = 1.0
             else:
                 confidence = "INFERRED"
-                confidence_score = 0.8
+                # 0.85 rather than 0.8 — the rubric's INFERRED set is discrete
+                # and does not contain 0.8 (#2813).
+                confidence_score = 0.85
             all_edges.append({
                 "source": caller,
                 "target": tgt,
@@ -6530,24 +7282,28 @@ def extract(
 
     for item in all_nodes + all_edges:
         sf = item.get("source_file")
-        if not sf:
-            continue
-        sf_path = Path(sf)
-        if not sf_path.is_absolute():
-            continue
-        new_sf, canonical_id, keys = _sf_entry(str(sf), sf_path)
-        if "id" in item:
-            for key in keys:
-                if key == canonical_id or key in ext_id_remap:
-                    continue
-                if key in owned_ids and item.get("id") != key:
-                    # The key is a real node's id minted some other way —
-                    # renaming it (or edges onto it) would corrupt the graph.
-                    # The node that owns it registers it itself when its own
-                    # id IS the absolute-derived form (#2195 stub).
-                    continue
-                ext_id_remap[key] = canonical_id
-        item["source_file"] = new_sf
+        if sf:
+            sf_path = Path(sf)
+            if sf_path.is_absolute():
+                new_sf, canonical_id, keys = _sf_entry(str(sf), sf_path)
+                if "id" in item:
+                    for key in keys:
+                        if key == canonical_id or key in ext_id_remap:
+                            continue
+                        if key in owned_ids and item.get("id") != key:
+                            # The key is a real node's id minted some other way —
+                            # renaming it (or edges onto it) would corrupt the graph.
+                            # The node that owns it registers it itself when its own
+                            # id IS the absolute-derived form (#2195 stub).
+                            continue
+                        ext_id_remap[key] = canonical_id
+                item["source_file"] = new_sf
+        df = item.get("definition_file")
+        if df:
+            df_path = Path(df)
+            if df_path.is_absolute():
+                new_df, _, _ = _sf_entry(str(df), df_path)
+                item["definition_file"] = new_df
 
     if ext_id_remap:
         # Bash entrypoint ids are the file-level id + "__entry"
@@ -6651,6 +7407,9 @@ def extract(
         _sf = _item.get("source_file")
         if _sf and "\\" in str(_sf):
             _item["source_file"] = PurePath(_sf).as_posix()
+        _df = _item.get("definition_file")
+        if _df and "\\" in str(_df):
+            _item["definition_file"] = PurePath(_df).as_posix()
 
     return {
         "nodes": all_nodes,

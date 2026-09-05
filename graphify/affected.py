@@ -67,7 +67,7 @@ def _normalize_label(label: str) -> str:
     return unicodedata.normalize("NFC", label).casefold()
 
 
-def _as_repo_relative(query: str) -> str:
+def _as_repo_relative(query: str, root: Path | None = None) -> str:
     """Repo-relative form of a path query, for matching a stored `source_file`.
 
     The graph stores repo-relative paths, so `./src/x.py` and
@@ -76,14 +76,22 @@ def _as_repo_relative(query: str) -> str:
     tool answering "nothing depends on this" about a file with sixteen
     dependents, and indistinguishable from a genuine zero or a typo.
 
+    An absolute path is anchored to `root` when given — the repo root derived
+    from the graph's own location — so a seed resolves regardless of the caller's
+    working directory (#2706: an absolute-path seed previously only matched when
+    cwd happened to be the analysed repo root, which no editor or script can
+    guarantee). `root` falls back to the current directory to preserve the prior
+    behaviour when a caller has no graph location to derive it from.
+
     Non-path queries pass through unchanged: `Path("myFunc()").as_posix()` is
     `"myFunc()"`, so label resolution is untouched. An absolute path rooted
-    outside the repo is left alone — no basename guessing.
+    outside `root` is left alone — no basename guessing.
     """
     path = Path(query)
     if path.is_absolute():
+        anchor = root if root is not None else Path.cwd()
         try:
-            return path.relative_to(Path.cwd()).as_posix()
+            return path.relative_to(anchor).as_posix()
         except ValueError:
             # Rooted outside the repo: nothing here can make it repo-relative,
             # so leave it alone rather than guess at a basename that would match
@@ -127,7 +135,7 @@ def _prefer_file_node(
     return None
 
 
-def resolve_seed(graph: nx.Graph, query: str) -> str | None:
+def resolve_seed(graph: nx.Graph, query: str, root: Path | None = None) -> str | None:
     # A trailing path separator must not change a source-file match — serve's
     # _find_node tokenizes the path (which drops it), so strip it here for parity
     # (otherwise `affected "src/x.ts/"` returned None while `explain` resolved it).
@@ -155,7 +163,7 @@ def resolve_seed(graph: nx.Graph, query: str) -> str | None:
         return bare_name_matches[0]
     # Compare paths in repo-relative form. Only this branch is path-shaped; the
     # label branches above keep the query verbatim.
-    query_path = _normalize_label(_as_repo_relative(query))
+    query_path = _normalize_label(_as_repo_relative(query, root))
     exact_source_matches = [
         str(node_id)
         for node_id, data in graph.nodes(data=True)
@@ -165,7 +173,7 @@ def resolve_seed(graph: nx.Graph, query: str) -> str | None:
         return exact_source_matches[0]
     if exact_source_matches:
         preferred_file_node = _prefer_file_node(
-            graph, exact_source_matches, _as_repo_relative(query)
+            graph, exact_source_matches, _as_repo_relative(query, root)
         )
         if preferred_file_node is not None:
             return preferred_file_node
@@ -253,9 +261,10 @@ def format_affected(
     *,
     relations: Iterable[str] = DEFAULT_AFFECTED_RELATIONS,
     depth: int = 2,
+    root: Path | None = None,
 ) -> str:
     relation_list = tuple(relations)
-    seed = resolve_seed(graph, query)
+    seed = resolve_seed(graph, query, root)
     if seed is None:
         return f"No unique node match for {query}"
 

@@ -52,6 +52,16 @@ def _is_ast_tier(item: dict) -> bool:
     return isinstance(loc, str) and bool(_AST_LOC_RE.match(loc))
 
 
+# Relations that say only "these two symbols appear together", with no claim about
+# HOW. An extractor that finds a specific fact for a pair — a call, an import, an
+# inheritance — routinely emits one of these for the same pair as well, so when the
+# simple graph collapses the pair to one edge, the generic one must never be the
+# survivor. Deliberately a small denylist rather than a full precedence order over
+# every relation: ranking `contains` against `calls` would be inventing a
+# cross-axis judgement, whereas "specific beats generic" is the only comparison
+# this collapse actually needs.
+_GENERIC_RELATIONS: frozenset[str] = frozenset({"references", "uses", "mentions"})
+
 # Language interop families, keyed by extension, for the cross-language phantom-edge
 # guard in the edge loop below. Families group by REAL interop (JS/TS share a module
 # graph; C/C++/ObjC share a compilation unit via headers; JVM langs share bytecode),
@@ -200,9 +210,23 @@ def _fold_edge_aliases(edge: dict) -> None:
     is not provenance) and never a threshold mapping of the float. The
     ``confidence_score`` key itself is NOT popped: it is a legitimate companion
     field that the edge loop sanitizes and to_json round-trips.
+
+    A NUMERIC ``confidence`` (pre-enum graphs stored the LLM pass's float —
+    1.0/0.95/0.9/0.85 — directly in the field) normalizes to ``INFERRED``:
+    numeric confidences only ever came from the LLM semantic pass, and
+    LLM-derived edges are INFERRED by definition. The original float moves to
+    ``confidence_score`` unless an explicit one is already present (the
+    companion field is the authority). Without this fold, every reload of a
+    pre-enum graph re-warns once per legacy edge, forever. ``bool`` is
+    excluded despite subclassing ``int``: ``True`` is not a score.
     """
     if not edge.get("relation") and isinstance(edge.get("type"), str) and edge["type"]:
         edge["relation"] = edge.pop("type")
+    _conf = edge.get("confidence")
+    if isinstance(_conf, (int, float)) and not isinstance(_conf, bool):
+        if edge.get("confidence_score") is None:
+            edge["confidence_score"] = float(_conf)
+        edge["confidence"] = "INFERRED"
     if not edge.get("confidence") and edge.get("confidence_score") is not None:
         edge["confidence"] = "INFERRED"
 
@@ -415,7 +439,7 @@ def _infer_merge_root(graph_path: Path) -> str | None:
     try:
         marker = parent / ".graphify_root"
         if marker.exists():
-            recorded = marker.read_text(encoding="utf-8").strip()
+            recorded = marker.read_text(encoding="utf-8-sig").strip()
             if recorded:
                 return str(Path(recorded).resolve())
     except OSError:
@@ -949,6 +973,13 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 continue
             if "source_file" in node:
                 node["source_file"] = _norm_source_file(node["source_file"], _root)
+            # definition_file names a file inside the scanned tree exactly like
+            # source_file (the #2990 decl/def merge stamps it from the impl's
+            # source_file BEFORE this normalization runs), so it must be made
+            # portable the same way - it used to ship absolute, leaking the
+            # build host's layout into graph.json and MCP get_node (#3223).
+            if "definition_file" in node:
+                node["definition_file"] = _norm_source_file(node["definition_file"], _root)
         G.add_node(node["id"], **{k: v for k, v in node.items() if k != "id"})
     node_set = set(G.nodes())
 
@@ -1178,6 +1209,10 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             )
         if "source_file" in attrs:
             attrs["source_file"] = _norm_source_file(attrs["source_file"], _root)
+        if attrs.get("definition_file"):
+            # Same portability rule as source_file (#3223); heals a graph
+            # written before the fix on its next rebuild.
+            attrs["definition_file"] = _norm_source_file(attrs["definition_file"], _root)
         # Drop cross-language phantom edges — the same short names (render, parse,
         # time, ...) recur across language boundaries, so an unresolved target can
         # bind to a same-named node in another language. The extraction spec forbids
@@ -1228,6 +1263,25 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             existing = edge_data(G, src, tgt)
             if existing.get("relation") == attrs.get("relation") and (
                 existing.get("_src") == tgt and existing.get("_tgt") == src
+            ):
+                continue
+        # A pair that already carries a SPECIFIC relation must not be downgraded
+        # to a generic one. Only one edge survives per pair here, and the sort
+        # above orders same-pair edges by relation name, so "last write wins"
+        # resolved the winner alphabetically — which put `references` after
+        # `calls` and `uses` after everything. On graphify's own corpus that
+        # rewrote all 144 pairs where the extraction found both `calls` and
+        # `references` into plain `references`, and callflow's relation filter
+        # does not include `references`, so those call sites left the call graph
+        # entirely. Alphabetical order carries no meaning; keeping the specific
+        # fact does. The reverse (specific arriving after generic) still
+        # overwrites, so the outcome no longer depends on edge order at all.
+        if G.has_edge(src, tgt):
+            existing_rel = edge_data(G, src, tgt).get("relation")
+            if (
+                attrs.get("relation") in _GENERIC_RELATIONS
+                and existing_rel is not None
+                and existing_rel not in _GENERIC_RELATIONS
             ):
                 continue
         G.add_edge(src, tgt, **attrs)
@@ -1340,6 +1394,9 @@ def build(
         combined["nodes"], combined["edges"] = deduplicate_entities(
             combined["nodes"], combined["edges"], communities={},
             dedup_llm_backend=dedup_llm_backend, root=root,
+            # Hyperedge members reference node ids too, so they need the same
+            # survivor rewiring the edges get (#2805).
+            hyperedges=combined.get("hyperedges"),
         )
     return build_from_json(combined, directed=directed, root=root)
 
@@ -1569,11 +1626,37 @@ def merge_raw_extraction(
             return False  # unowned — carry forward
         return _prune_hit(sf)
 
+    # #3203: Check for unverified semantic shrink on re-extracted sources.
+    unverified_semantic_shrink: dict[str, tuple[int, int]] = {}
+    if new_sem_sources:
+        prior_sem_counts: dict[str, int] = {}
+        for n in existing_nodes:
+            if isinstance(n, dict) and not _is_ast_tier(n):
+                sf = n.get("source_file")
+                if sf:
+                    canon = _norm_source_file(sf, _eff_root) or sf
+                    prior_sem_counts[canon] = prior_sem_counts.get(canon, 0) + 1
+
+        fresh_sem_counts: dict[str, int] = {}
+        for n in new.get("nodes", []):
+            if isinstance(n, dict) and not _is_ast_tier(n):
+                sf = n.get("source_file")
+                if sf:
+                    canon = _norm_source_file(sf, _eff_root) or sf
+                    fresh_sem_counts[canon] = fresh_sem_counts.get(canon, 0) + 1
+
+        for canon_sf, fresh_count in fresh_sem_counts.items():
+            prior_count = prior_sem_counts.get(canon_sf, 0)
+            if prior_count > 1 and fresh_count < prior_count:
+                unverified_semantic_shrink[canon_sf] = (prior_count, fresh_count)
+
     new["nodes"] = [n for n in existing_nodes if not _dropped(n)] + list(new.get("nodes", []))
     new["edges"] = [e for e in existing_edges if not _dropped(e)] + list(new.get("edges", []))
     carried_hyper = [he for he in existing_hyperedges if not _dropped(he)]
     if carried_hyper or new.get("hyperedges"):
         new["hyperedges"] = carried_hyper + list(new.get("hyperedges", []))
+    if unverified_semantic_shrink:
+        new["_unverified_semantic_shrink"] = unverified_semantic_shrink
     return new
 
 
@@ -1587,7 +1670,11 @@ def build_merge(
     dedup_llm_backend: str | None = None,
     root: str | Path | None = None,
 ) -> nx.Graph:
-    """Load existing graph.json, merge new chunks into it, and save back.
+    """Load existing graph.json and return it merged with ``new_chunks``.
+
+    Does NOT write to disk — the caller persists the result, e.g. via
+    ``export.to_json(G, communities, graph_path, force=True)`` after
+    clustering. ``graph_path`` is read-only here.
 
     Re-extracted files REPLACE their prior contribution per tier (#2333/#2336):
     a source_file present in new_chunks has its existing nodes/edges dropped
@@ -1603,6 +1690,9 @@ def build_merge(
     graph to inherit from. An explicit True/False always overrides the on-disk
     flag.
     """
+    # Iterated more than once below (source sets, the hyperedge carry, the
+    # build itself), so a one-shot iterator must be materialised first.
+    new_chunks = list(new_chunks)
     graph_path = Path(graph_path if graph_path is not None else _default_graph_json())
     _loaded = _load_existing_graph(graph_path)
     if _loaded is not None:
@@ -1665,6 +1755,35 @@ def build_merge(
     # never see the loss it is meant to catch.
     _disk_nodes = existing_nodes
     _disk_n = len(existing_nodes)
+
+    # #3203: Check for unverified semantic shrink on re-extracted sources.
+    # An existing source with prior semantic nodes (> 1) that produces strictly
+    # fewer semantic nodes in this extraction is flagged on G.graph so the CLI
+    # can arm the shrink guard and leave the source unstamped in the manifest.
+    unverified_semantic_shrink: dict[str, tuple[int, int]] = {}
+    if had_graph and new_sem_sources:
+        prior_sem_counts: dict[str, int] = {}
+        for n in _disk_nodes:
+            if isinstance(n, dict) and not _is_ast_tier(n):
+                sf = n.get("source_file")
+                if sf:
+                    canon = _norm_source_file(sf, _replace_root) or sf
+                    prior_sem_counts[canon] = prior_sem_counts.get(canon, 0) + 1
+
+        fresh_sem_counts: dict[str, int] = {}
+        for ch in new_chunks:
+            for n in ch.get("nodes", []):
+                if isinstance(n, dict) and not _is_ast_tier(n):
+                    sf = n.get("source_file")
+                    if sf:
+                        canon = _norm_source_file(sf, _replace_root) or sf
+                        fresh_sem_counts[canon] = fresh_sem_counts.get(canon, 0) + 1
+
+        for canon_sf, fresh_count in fresh_sem_counts.items():
+            prior_count = prior_sem_counts.get(canon_sf, 0)
+            if prior_count > 1 and fresh_count < prior_count:
+                unverified_semantic_shrink[canon_sf] = (prior_count, fresh_count)
+
     if new_sources:
         def _kept(item: dict) -> bool:
             sf = item.get("source_file")
@@ -1679,11 +1798,6 @@ def build_merge(
                 f"source file(s).",
                 file=sys.stderr,
             )
-
-    base = [{"nodes": existing_nodes, "edges": existing_edges}] if had_graph else []
-
-    all_chunks = base + list(new_chunks)
-    G = build(all_chunks, directed=directed, dedup=dedup, dedup_llm_backend=dedup_llm_backend, root=root)
 
     # Prune set for deleted source files — both the raw form (matches nodes that
     # kept absolute source_file) and the normalised relative form (matches nodes
@@ -1751,12 +1865,25 @@ def build_merge(
     # deleted (#1574). build() only sees the new chunks' hyperedges, so without
     # this every --update collapses the graph's hyperedge set down to just the
     # changed files'. Re-extracted files' prior hyperedges are dropped (their new
-    # version is already in G — replace-per-source, like nodes/edges); deleted
-    # files' are dropped via prune_set. id-dedup (attach_hyperedges) so a carried
-    # hyperedge never duplicates one the new chunks re-emitted. Mirrors watch.py,
-    # which already preserves existing hyperedges across a rebuild.
+    # version is already in the new chunks — replace-per-source, like
+    # nodes/edges); deleted files' are dropped via prune_set; id-dedup so a
+    # carried hyperedge never duplicates one the new chunks re-emitted. Mirrors
+    # watch.py, which already preserves existing hyperedges across a rebuild.
+    #
+    # The carried set rides INTO build() on the base chunk rather than being
+    # attached to G afterwards (#3102): entity dedup rewires every edge endpoint
+    # and every hyperedge member it sees onto the survivor (#2805), but a
+    # hyperedge attached after the fact kept naming the merged-away node — a
+    # dangling member with no backing node in the written graph.
+    carried_hyperedges: list[dict] = []
     if existing_hyperedges:
-        carried = []
+        carried = carried_hyperedges
+        _new_hyperedge_ids = {
+            he.get("id")
+            for chunk in new_chunks
+            for he in (chunk.get("hyperedges") or [])
+            if isinstance(he, dict) and he.get("id")
+        }
         for he in existing_hyperedges:
             if not isinstance(he, dict):
                 continue
@@ -1769,13 +1896,27 @@ def build_merge(
                 continue  # semantically re-extracted — replaced by the new chunk's version
             if _prune_match(sf):
                 continue  # deleted — pruned
+            if he.get("id") and he.get("id") in _new_hyperedge_ids:
+                continue  # the new chunks re-emitted it — theirs wins
             carried.append(he)
-        if carried:
-            from graphify.export import attach_hyperedges
-            attach_hyperedges(G, carried)
+
+    base = (
+        [{"nodes": existing_nodes, "edges": existing_edges, "hyperedges": carried_hyperedges}]
+        if had_graph else []
+    )
+
+    all_chunks = base + list(new_chunks)
+    G = build(all_chunks, directed=directed, dedup=dedup, dedup_llm_backend=dedup_llm_backend, root=root)
 
     # Prune nodes and edges from deleted source files
     if prune_sources:
+        # Source-less nodes that are ALREADY isolated before this prune. They are
+        # not this prune's doing, so they must survive it — the sweep below is
+        # scoped to the ones it orphans itself.
+        _isolated_before = {
+            n for n, d in G.nodes(data=True)
+            if not d.get("source_file") and G.degree(n) == 0
+        }
         to_remove = [
             n for n, d in G.nodes(data=True)
             if _prune_match(d.get("source_file"))
@@ -1789,6 +1930,35 @@ def build_merge(
         ]
         if edges_to_remove:
             G.remove_edges_from(edges_to_remove)
+
+        # Extractors create a per-file node for each IMPORTED EXTERNAL symbol
+        # (`Path` from pathlib, `Counter` from collections), and those carry no
+        # source_file because they are defined outside the corpus. Every edge
+        # they have points at symbols in the one file they were created for, so
+        # pruning that file leaves them at degree 0 — named after a file the
+        # corpus no longer contains, counted in every total that reads the graph,
+        # exported as a note of their own, and unreachable by any future prune
+        # since there is no source_file to match on. Nothing else can collect
+        # them: deletions go through deleted_files, exclusions through
+        # excluded_files (#1908) and _stale_graph_sources (#1909), and all three
+        # match on source_file. A node with neither a source_file nor an edge
+        # names nothing and connects nothing, so dropping it loses no
+        # information (#2807).
+        #
+        # A single pass suffices: external-import stubs are only ever edge
+        # TARGETS (extractors mint them as the target of an imports_from/
+        # references/inherits edge, never as a source), so removing one can
+        # never drop another to degree 0. A future extractor emitting a
+        # stub->stub edge would require iterating this to a fixpoint.
+        orphaned = [
+            n for n, d in G.nodes(data=True)
+            if not d.get("source_file")
+            and G.degree(n) == 0
+            and n not in _isolated_before
+        ]
+        if orphaned:
+            G.remove_nodes_from(orphaned)
+            n_nodes += len(orphaned)
 
         # Report only the prune entries that ACTUALLY matched something — not
         # len(prune_sources), which counted every entry as pruned-from even
@@ -1895,22 +2065,37 @@ def build_merge(
                 f"Pass prune_sources explicitly if you intend to remove them. (#479)"
             )
 
+    if unverified_semantic_shrink:
+        G.graph["_unverified_semantic_shrink"] = unverified_semantic_shrink
+
     return G
 
 
-def prefix_graph_for_global(G: nx.Graph, repo_tag: str) -> nx.Graph:
+def prefix_graph_for_global(
+    G: nx.Graph, repo_tag: str, community_offset: int = 0
+) -> nx.Graph:
     """Return a copy of G with all node IDs prefixed with repo_tag::.
 
     Labels are preserved unchanged (for display). A 'local_id' attribute
     is added to each node so the original ID can be recovered. Edges and
     their directional attributes (_src/_tgt) are rewritten to match the new
     prefixed IDs. The 'repo' attribute is set on every node.
+
+    community_offset shifts each node's integer 'community' id into a shared
+    id space and records the original in 'local_community': every input graph
+    numbers its communities from 0, so ids carried across a merge unchanged
+    collide and the aggregated community view fuses unrelated communities
+    into one meta-node (#3014). 0 (the default) leaves communities untouched.
     """
     relabel = {n: f"{repo_tag}::{n}" for n in G.nodes}
     H = nx.relabel_nodes(G, relabel, copy=True)
     for node, data in H.nodes(data=True):
         data["repo"] = repo_tag
         data.setdefault("local_id", node.split("::", 1)[1])
+        cid = data.get("community")
+        if community_offset and isinstance(cid, int):
+            data["local_community"] = cid
+            data["community"] = cid + community_offset
     for u, v, data in H.edges(data=True):
         if "_src" in data and data["_src"] in relabel:
             data["_src"] = relabel[data["_src"]]

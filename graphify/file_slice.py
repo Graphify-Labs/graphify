@@ -26,7 +26,70 @@ from pathlib import Path
 # `_file_to_text` is a straight ``read_text`` (so a char range matches the bytes
 # the model is shown). Deliberately excludes code (.py, .ts, ...) and binary
 # docs (.pdf) — those are never sliced.
-_SPLITTABLE_TEXT_SUFFIXES = frozenset({".md", ".mdx", ".markdown", ".txt", ".rst"})
+#
+# This set has to keep pace with ``detect.DOC_EXTENSIONS``: anything classified
+# as a document reaches the semantic pass, and anything the pass sees that is
+# NOT listed here is silently cut at ``_FILE_CHAR_CAP`` by ``_read_files``. The
+# two lists drifted as DOC_EXTENSIONS grew — .qmd, .skill, .html, .yaml and .yml
+# were documents that never got sliced, so a 38k-character one reached the model
+# as its first 20k with no warning and no partial marker (#2900).
+# ``tests/test_oversized_document_slicing.py`` pins the relationship so a future
+# addition to DOC_EXTENSIONS fails loudly instead of quietly losing content.
+_SPLITTABLE_TEXT_SUFFIXES = frozenset({
+    ".md", ".mdx", ".markdown", ".txt", ".rst",
+    ".qmd", ".skill", ".html", ".yaml", ".yml",
+})
+
+# Document types whose BYTES are not what the model is shown. `llm._file_to_text`
+# routes these through a converter, so a character range has to be taken over the
+# converted text, never over the file. Kept separate from the set above because
+# they are splittable for a different reason and via a different reader.
+_CONVERTED_TEXT_SUFFIXES = frozenset({".pdf"})
+
+
+def _pdf_text(path: Path) -> str:
+    """Extracted text of a PDF — the same string `llm._file_to_text` builds.
+
+    Imported lazily from ``detect`` so this module keeps no import-time
+    dependency on the extraction stack (``llm`` imports *this* module, so the
+    reverse direction would be a cycle).
+    """
+    from graphify.detect import extract_pdf_text
+    return extract_pdf_text(path)
+
+
+# Slicing a PDF means extracting its text, and the slicing pass asks for the same
+# file several times: once to measure it, then once per slice as the prompt is
+# built. Memoised on (path, size, mtime_ns) so a corpus of papers is parsed once
+# rather than once per slice, and so a file rewritten mid-run is re-read instead
+# of served a stale body. Bounded: the entries are whole documents, and a large
+# corpus should not pin all of them in memory.
+_CONVERTED_TEXT_CACHE: "dict[tuple, str]" = {}
+_CONVERTED_TEXT_CACHE_MAX = 64
+
+
+def unit_source_text(path: Path) -> str:
+    """The text a unit contributes to the prompt, whatever its container.
+
+    Plain-text files are read directly; converted types (PDF) go through their
+    converter. Both `expand_oversized_files` and `read_slice_text` use this, so
+    the offsets a slice carries always index the same string the model sees.
+    """
+    if path.suffix.lower() not in _CONVERTED_TEXT_SUFFIXES:
+        return path.read_text(encoding="utf-8", errors="replace")
+    try:
+        st = path.stat()
+        key = (str(path), st.st_size, st.st_mtime_ns)
+    except OSError:
+        return _pdf_text(path)
+    hit = _CONVERTED_TEXT_CACHE.get(key)
+    if hit is not None:
+        return hit
+    text = _pdf_text(path)
+    if len(_CONVERTED_TEXT_CACHE) >= _CONVERTED_TEXT_CACHE_MAX:
+        _CONVERTED_TEXT_CACHE.clear()
+    _CONVERTED_TEXT_CACHE[key] = text
+    return text
 
 # Boundary preferences, strongest first. A Markdown heading (``\n#``) keeps a
 # section with its title; a blank line keeps a paragraph intact; a bare newline
@@ -60,8 +123,16 @@ def unit_path(unit: "Path | FileSlice") -> Path:
 
 
 def is_splittable_text(path: Path) -> bool:
-    """True for plain-text document types that may be sliced."""
-    return path.suffix.lower() in _SPLITTABLE_TEXT_SUFFIXES
+    """True for document types that may be sliced.
+
+    Covers plain text read straight off disk and converted types (PDF) whose
+    text is produced by a converter. Both are sliceable because
+    :func:`unit_source_text` gives the slicing pass the same string the prompt
+    will carry; what disqualifies a type is having no text at all (an image) or
+    text the reader cannot address by character offset.
+    """
+    suffix = path.suffix.lower()
+    return suffix in _SPLITTABLE_TEXT_SUFFIXES or suffix in _CONVERTED_TEXT_SUFFIXES
 
 
 def _best_cut(text: str, start: int, end: int) -> int:
@@ -119,7 +190,10 @@ def expand_oversized_files(
             out.append(f)
             continue
         try:
-            text = f.read_text(encoding="utf-8", errors="replace")
+            # The CONVERTED text for a PDF, so the boundaries below index the
+            # same string read_slice_text will later slice and the prompt will
+            # carry — not the container's bytes (#2906).
+            text = unit_source_text(f)
         except OSError:
             out.append(f)
             continue
@@ -134,9 +208,13 @@ def expand_oversized_files(
 
 
 def read_slice_text(fs: FileSlice) -> str:
-    """Read just this slice's characters from its parent file."""
-    text = fs.path.read_text(encoding="utf-8", errors="replace")
-    return text[fs.start:fs.end]
+    """Read just this slice's characters from its parent file.
+
+    Goes through :func:`unit_source_text`, so a PDF slice indexes the extracted
+    text rather than the container's bytes — the offsets `expand_oversized_files`
+    computed and the string the prompt carries are then the same string (#2906).
+    """
+    return unit_source_text(fs.path)[fs.start:fs.end]
 
 
 def bisect_slice(fs: FileSlice) -> tuple[FileSlice, FileSlice] | None:
@@ -148,9 +226,15 @@ def bisect_slice(fs: FileSlice) -> tuple[FileSlice, FileSlice] | None:
     """
     if fs.end - fs.start <= 1:
         return None
+    # Index the SAME string the slice offsets were computed against and the
+    # prompt carries: for a PDF that is the extracted text via unit_source_text,
+    # not the raw container bytes. Reading the container here (the old behavior)
+    # searched for the newline cut in binary coordinates, so a compressed PDF
+    # slice could cut mid-line or past the text end (#2906). Any converter/read
+    # failure means we cannot split, so fall back to None (treated as atomic).
     try:
-        text = fs.path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
+        text = unit_source_text(fs.path)
+    except Exception:
         return None
     mid = (fs.start + fs.end) // 2
     nl = text.find("\n", mid, fs.end)

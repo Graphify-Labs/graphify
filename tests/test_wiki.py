@@ -1,6 +1,5 @@
 """Tests for graphify.wiki — Wikipedia-style article generation."""
 import re
-import urllib.parse
 import pytest
 from pathlib import Path
 import networkx as nx
@@ -10,14 +9,21 @@ _MD_LINK = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 
 
 def _inline_links(text):
-    """Yield (display, decoded_target) for each inline markdown link, skipping
-    external URLs. Targets are URL-decoded so they can be checked against the
-    on-disk filename. (Display text with an escaped `]` isn't matched, but the
-    generated labels used in link position never contain brackets.)"""
+    """Yield (display, target) for each inline markdown link, skipping external
+    URLs. The target is yielded VERBATIM.
+
+    This used to `urllib.parse.unquote` it, which is why
+    `test_wiki_links_resolve_to_real_files` passed all the way through #2597:
+    the emitted target was `_make_id%28%29.md` while the file on disk was
+    `_make_id().md`, and decoding in the helper papered over exactly the
+    mismatch the guard exists to catch. The link and the filename must be the
+    same string, so the check has to compare them as written.
+    (Display text with an escaped `]` isn't matched, but the generated labels
+    used in link position never contain brackets.)"""
     for display, target in _MD_LINK.findall(text):
         if "://" in target:
             continue
-        yield display, urllib.parse.unquote(target)
+        yield display, target
 
 
 def _make_graph():
@@ -345,10 +351,13 @@ def test_wiki_link_display_keeps_label_but_target_is_filename(tmp_path):
 
 
 def test_wiki_special_characters_in_label_resolve(tmp_path):
-    """Labels with spaces, &, #, and parentheses must still produce a link whose
-    URL-encoded target decodes back to the real (underscored) filename, so it
-    works in CommonMark renderers and Obsidian alike. # is the dangerous one —
-    left raw in a relative link it would be misread as a fragment."""
+    """Labels with spaces, &, #, and parentheses must produce a link whose target
+    IS the on-disk filename, with no encoding step in between (#2597).
+
+    `#` and `(` `)` are the dangerous ones: left raw in a relative link, `#`
+    would be misread as a fragment and `)` would terminate the destination
+    early. They are therefore kept out of the slug entirely rather than encoded
+    into a target that no longer names the file."""
     G = nx.Graph()
     G.add_node("n1", label="a", file_type="code", source_file="a.py", community=0)
     G.add_node("n2", label="b", file_type="code", source_file="b.py", community=1)
@@ -357,21 +366,20 @@ def test_wiki_special_characters_in_label_resolve(tmp_path):
     labels = {0: "C# & Auth (v2)", 1: "Other"}
     to_wiki(G, communities, tmp_path, community_labels=labels)
     article = (tmp_path / "Other.md").read_text()
-    # the cross-link to the special-char community resolves to its real file
     targets = [t for _, t in _inline_links(article)]
-    assert "C#_&_Auth_(v2).md" in targets
-    assert (tmp_path / "C#_&_Auth_(v2).md").exists()
-    # the raw target is fully percent-encoded — no bare ( ) that would terminate
-    # the link early, no bare # that would be misread as a fragment
-    assert "C%23_%26_Auth_%28v2%29.md" in article
+    assert "C__&_Auth_v2.md" in targets
+    assert (tmp_path / "C__&_Auth_v2.md").exists()
+    # no percent-escape in any target: it is the filename verbatim
+    assert not any("%" in t for t in targets), targets
+    # & survives — it is legal raw in a link destination and in a filename
+    assert any("&" in t for t in targets), targets
 
 
 def test_wiki_link_with_bracketed_label_resolves(tmp_path):
-    """A label containing `[` / `]` (e.g. a generic like `Array[T]`) still
-    produces a resolvable link: the brackets are escaped in the display text so
-    they don't break the markdown, and percent-encoded in the target so it
-    decodes back to the real file. (`_safe_filename` keeps brackets in the slug,
-    so they reach the link target.)"""
+    """A label containing `[` / `]` (e.g. a generic like `Array[T]`) produces a
+    resolvable link: the brackets are escaped in the display text so they don't
+    break the markdown, and kept verbatim in the target, which is legal in a
+    CommonMark link destination and matches the file on disk (#2597)."""
     G = nx.Graph()
     G.add_node("n1", label="a", file_type="code", source_file="a.py", community=0)
     G.add_node("n2", label="b", file_type="code", source_file="b.py", community=1)
@@ -380,7 +388,7 @@ def test_wiki_link_with_bracketed_label_resolves(tmp_path):
     labels = {0: "Array[T] Models", 1: "Other"}
     to_wiki(G, communities, tmp_path, community_labels=labels)
     article = (tmp_path / "Other.md").read_text()
-    assert r"[Array\[T\] Models](Array%5BT%5D_Models.md)" in article
+    assert r"[Array\[T\] Models](Array[T]_Models.md)" in article
     assert (tmp_path / "Array[T]_Models.md").exists()
 
 

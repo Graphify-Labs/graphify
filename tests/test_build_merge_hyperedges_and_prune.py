@@ -264,3 +264,27 @@ def test_prune_reextracted_absolute_node_not_deleted(tmp_path):
     G = build_merge([new_chunk], graph_path, prune_sources=["mod.py"], dedup=False)
     labels = {d["label"] for _, d in G.nodes(data=True)}
     assert "gone" in labels, "re-extracted file wrongly pruned across mismatched forms (#2012/#1796)"
+
+
+def test_graphify_root_marker_with_a_utf8_bom_still_resolves(tmp_path):
+    """A marker written by Windows PowerShell 5.1 carries a UTF-8 BOM (#3028).
+
+    `Out-File -Encoding utf8` on 5.1 always prepends EF BB BF — there is no
+    BOM-less utf8 there — and `str.strip()` does not remove U+FEFF, so the BOM
+    survived into the recorded path. Worse than an error: `﻿C:\...` is no
+    longer drive-qualified, so `Path.resolve()` treated it as relative and silently
+    joined it onto the cwd. Reading with `utf-8-sig` drops an optional BOM and
+    leaves a BOM-less file untouched, so existing broken checkouts heal in place.
+    """
+    out = tmp_path / "out"
+    out.mkdir()
+    graph_path = out / "graph.json"
+    real_root = tmp_path / "elsewhere" / "repo"
+    real_root.mkdir(parents=True)
+    (out / ".graphify_root").write_bytes(
+        b"\xef\xbb\xbf" + str(real_root).encode("utf-8")
+    )
+
+    resolved = _infer_merge_root(graph_path)
+    assert resolved == str(real_root.resolve())
+    assert "﻿" not in (resolved or "")

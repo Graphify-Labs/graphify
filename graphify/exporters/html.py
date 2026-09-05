@@ -5,12 +5,14 @@ from graphify.exporters.base import COMMUNITY_COLORS  # noqa: E402,F401
 from pathlib import Path
 import html as _html
 from graphify.analyze import _node_community_map
+from graphify.paths import write_text_atomic
 import json
 import networkx as nx
 from graphify.security import sanitize_label
 
 
 MAX_NODES_FOR_VIZ = 5_000
+_HTML_STALE_MARKER = ".graph.html.stale"
 
 def _viz_node_limit() -> int:
     """Return the effective viz node limit, honoring GRAPHIFY_VIZ_NODE_LIMIT env var.
@@ -399,7 +401,7 @@ def to_html(
     member_counts: dict[int, int] | None = None,
     node_limit: int | None = None,
     learning_overlay: dict | None = None,
-) -> None:
+) -> bool:
     """Generate an interactive vis.js HTML visualization of the graph.
 
     Features: node size by degree, click-to-inspect panel, search box,
@@ -411,6 +413,9 @@ def to_html(
 
     If node_limit is set and the graph exceeds it, automatically builds an
     aggregated community-level meta-graph instead of raising ValueError.
+
+    Returns True when the output was written. Returns False when an aggregated
+    view would contain fewer than two communities and is intentionally skipped.
     """
     limit = node_limit if node_limit is not None else _viz_node_limit()
     if G.number_of_nodes() > limit:
@@ -433,7 +438,7 @@ def to_html(
                               relation=f"{w} cross-community edges", confidence="AGGREGATED")
             if meta.number_of_nodes() <= 1:
                 print("Single community - aggregated view not useful. Skipping graph.html.")
-                return
+                return False
             meta_communities = {cid: [str(cid)] for cid in communities}
             mc = {cid: len(members) for cid, members in communities.items()}
             # Remap hyperedges from semantic node IDs to community IDs
@@ -460,11 +465,13 @@ def to_html(
                         "nodes": comm_ids,
                     })
                 meta.graph["hyperedges"] = remapped
-            to_html(meta, meta_communities, output_path,
-                    community_labels=community_labels, member_counts=mc)
+            written = to_html(meta, meta_communities, output_path,
+                              community_labels=community_labels, member_counts=mc)
+            if not written:
+                return False
             print(f"graph.html written (aggregated: {meta.number_of_nodes()} community nodes, {meta.number_of_edges()} cross-community edges)")
             print("Tip: run with --obsidian for full node-level detail.")
-            return
+            return True
         raise ValueError(
             f"Graph has {G.number_of_nodes()} nodes - too large for HTML viz "
             f"(limit: {limit}). Use --no-viz, raise GRAPHIFY_VIZ_NODE_LIMIT, "
@@ -626,4 +633,5 @@ def to_html(
 </body>
 </html>"""
 
-    Path(output_path).write_text(html, encoding="utf-8")  # nosec
+    write_text_atomic(output_path, html)
+    return True
