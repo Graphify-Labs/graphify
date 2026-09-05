@@ -2778,7 +2778,7 @@ def dispatch_command(cmd: str) -> None:
 
     elif cmd == "export":
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
-        if subcmd not in ("html", "callflow-html", "obsidian", "wiki", "svg", "graphml", "neo4j", "falkordb"):
+        if subcmd not in ("html", "callflow-html", "obsidian", "wiki", "svg", "graphml", "neo4j", "falkordb", "age"):
             print("Usage: graphify export <format>", file=sys.stderr)
             print("  html      [--graph PATH] [--labels PATH] [--node-limit N] [--no-viz]", file=sys.stderr)
             print("  callflow-html [GRAPH|DIR] [--graph PATH] [--labels PATH] [--report PATH] [--sections PATH] [--output HTML]", file=sys.stderr)
@@ -2791,6 +2791,8 @@ def dispatch_command(cmd: str) -> None:
             print("            (or set NEO4J_PASSWORD instead of --password to keep it off argv)", file=sys.stderr)
             print("  falkordb  [--graph PATH] [--push URI] [--user U] [--password P]", file=sys.stderr)
             print("            (or set FALKORDB_PASSWORD instead of --password to keep it off argv)", file=sys.stderr)
+            print("  age       [--graph PATH] --push postgresql://user:pass@host/db [--graph-name NAME] [--full-props]", file=sys.stderr)
+            print("            (or set AGE_PASSWORD / PGPASSWORD instead of embedding the password in --push)", file=sys.stderr)
             sys.exit(1)
 
         # Parse shared args
@@ -2822,8 +2824,11 @@ def dispatch_command(cmd: str) -> None:
         # NEO4J_PASSWORD otherwise.
         push_password: str | None = (
             os.environ.get("FALKORDB_PASSWORD") if subcmd == "falkordb"
+            else (os.environ.get("AGE_PASSWORD") or os.environ.get("PGPASSWORD")) if subcmd == "age"
             else os.environ.get("NEO4J_PASSWORD")
         ) or None
+        age_graph_name = "graphify"
+        age_full_props = False
         i = 0
         while i < len(args):
             a = args[i]
@@ -2879,6 +2884,10 @@ def dispatch_command(cmd: str) -> None:
                 push_user = args[i + 1]; i += 2
             elif a == "--password" and i + 1 < len(args):
                 push_password = args[i + 1]; i += 2
+            elif a == "--graph-name" and i + 1 < len(args):
+                age_graph_name = args[i + 1]; i += 2
+            elif a == "--full-props":
+                age_full_props = True; i += 1
             elif subcmd == "callflow-html" and not a.startswith("-") and not graph_path_explicit:
                 candidate = Path(a)
                 if candidate.name == "graph.json" or candidate.suffix.lower() == ".json":
@@ -3084,6 +3093,26 @@ def dispatch_command(cmd: str) -> None:
                       f"FalkorDB's GRAPH.QUERY runs one statement at a time (no bulk script "
                       f"import), so load a graph with: graphify export falkordb --push "
                       f"falkordb://localhost:6379")
+
+        elif subcmd == "age":
+            if not push_uri:
+                print("error: --push postgresql://user:pass@host/db is required for "
+                      "'graphify export age' (there is no offline cypher.txt fallback - "
+                      "AGE's cypher() requires a live connection to build against)",
+                      file=sys.stderr)
+                sys.exit(1)
+            from graphify.export import push_to_age as _push
+            conninfo = push_uri
+            if push_password and "password=" not in conninfo:
+                # libpq accepts a query-param password on a postgresql://
+                # URI, so AGE_PASSWORD/PGPASSWORD/--password work even when
+                # --push doesn't embed credentials in the URI itself.
+                sep = "&" if "?" in conninfo else "?"
+                conninfo = f"{conninfo}{sep}password={push_password}"
+            result = _push(G, conninfo=conninfo, graph_name=age_graph_name,
+                            communities=communities, full_props=age_full_props)
+            print(f"Pushed to Apache AGE (graph '{age_graph_name}'): "
+                  f"{result['nodes']} nodes, {result['edges']} edges")
 
     elif cmd == "benchmark":
         from graphify.benchmark import run_benchmark, print_benchmark

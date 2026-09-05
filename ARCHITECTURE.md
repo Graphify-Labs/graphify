@@ -22,7 +22,7 @@ Signatures below are the real ones - `tests/test_architecture_doc.py` imports ev
 | `cluster.py` | `cluster(G)` | graph → `{community_id: [node_id, ...]}` (the graph is not mutated) |
 | `analyze.py` | `god_nodes(G)`, `surprising_connections(G)`, `suggest_questions(G, communities, community_labels)`, `find_import_cycles(G)`, `graph_diff(G_old, G_new)` | graph → one list/dict per analysis. There is no single `analyze()` entry point |
 | `report.py` | `generate(G, communities, cohesion_scores, community_labels, ...)` | graph + analysis → GRAPH_REPORT.md string |
-| `export.py` | `to_json`, `to_html`, `to_obsidian`, `to_svg`, `to_graphml`, `to_canvas`, `to_cypher` | graph → graph.json, graph.html, Obsidian vault, graph.svg, … one function per format |
+| `export.py` | `to_json`, `to_html`, `to_obsidian`, `to_svg`, `to_graphml`, `to_canvas`, `to_cypher`, `push_to_age` | graph → graph.json, graph.html, Obsidian vault, graph.svg, … one function per format. `push_to_age` (from `exporters/graphdb.py`) pushes directly to an Apache AGE / PostgreSQL instance — see `docs/AGE_SCHEMA.md` for the emitted Cypher schema |
 | `wiki.py` | `to_wiki(G, communities, output_dir, ...)` | graph → one markdown article per community + `index.md` |
 | `callflow_html.py` | `write_callflow_html(...)` | graphify-out files → Mermaid architecture/call-flow HTML |
 | `ingest.py` | `ingest(url, target_dir, ...)` | URL → file saved to corpus dir |

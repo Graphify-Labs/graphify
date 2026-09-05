@@ -70,6 +70,12 @@ google = ["openpyxl"]
 # tree-sitter-sql grammar; without it introspection silently returns 0 nodes,
 # so the postgres extra must carry the grammar too.
 postgres = ["psycopg[binary]", "tree-sitter-sql"]
+# push_to_age() only needs the psycopg client (no SQL-DDL parsing, since it
+# writes NetworkX -> Cypher, not the reverse), so `age` repeats the
+# psycopg[binary] pin independently rather than depending on `postgres` -
+# picking up tree-sitter-sql for an export sink would be an unrelated,
+# unnecessary dependency.
+age = ["psycopg[binary]"]
 video = ["faster-whisper; python_version >= '3.11'", "yt-dlp>=2026.6.9"]
 kimi = ["openai", "tiktoken"]
 ollama = ["openai"]
@@ -99,7 +105,7 @@ commonlisp = ["tree-sitter-commonlisp"]
 # every platform, no C toolchain; optional because Robot Framework corpora are
 # QA-automation specific.
 robot = ["robotframework>=4.0"]
-all = ["mcp>=1,<3", "starlette>=1.3.1,<2", "neo4j", "falkordb", "pypdf>=6.12.0", "markdownify", "watchdog", "graspologic; python_version < '3.13'", "python-docx", "openpyxl", "faster-whisper; python_version >= '3.11'", "yt-dlp>=2026.6.9", "matplotlib", "numpy>=2.0; python_version >= '3.13'", "openai", "tiktoken", "boto3", "anthropic", "tree-sitter-sql", "jieba", "tree-sitter-dm", "tree-sitter-hcl", "tree-sitter-pascal", "tree-sitter-ocaml", "tree-sitter-commonlisp", "robotframework>=4.0"]
+all = ["mcp>=1,<3", "starlette>=1.3.1,<2", "neo4j", "falkordb", "psycopg[binary]", "pypdf>=6.12.0", "markdownify", "watchdog", "graspologic; python_version < '3.13'", "python-docx", "openpyxl", "faster-whisper; python_version >= '3.11'", "yt-dlp>=2026.6.9", "matplotlib", "numpy>=2.0; python_version >= '3.13'", "openai", "tiktoken", "boto3", "anthropic", "tree-sitter-sql", "jieba", "tree-sitter-dm", "tree-sitter-hcl", "tree-sitter-pascal", "tree-sitter-ocaml", "tree-sitter-commonlisp", "robotframework>=4.0"]
 
 [project.scripts]
 graphify = "graphify.__main__:main"
