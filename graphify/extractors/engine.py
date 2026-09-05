@@ -4192,6 +4192,47 @@ def _extract_generic(
                     add_edge(parent_class_nid, field_nid, "defines", line, context="field")
             return
 
+        # JS/TS: a function-valued property in an object literal defines a
+        # callable member of the same API surface as the shorthand form. The
+        # shorthand `{ m(){} }` is a `method_definition` and lands in the
+        # function branch below, but `{ m: () => {} }` and
+        # `{ m: function(){} }` parse as `pair` nodes, so the arrow and
+        # function-expression spellings vanished from the graph while the
+        # shorthand spelling was captured. Mirror the function branch exactly:
+        # same walk position, same scoping, same body tracking.
+        if (t == "pair"
+                and config.ts_module in ("tree_sitter_javascript",
+                                         "tree_sitter_typescript")):
+            pair_value = node.child_by_field_name("value")
+            # `{ m: (() => {}) }` wraps the function in parenthesized_expression
+            # nodes; unwrap them so the parenthesized spelling matches too.
+            while (pair_value is not None
+                   and pair_value.type == "parenthesized_expression"):
+                pair_value = next(
+                    (c for c in pair_value.children if c.is_named), None)
+            if pair_value is not None and pair_value.type in _JS_FUNCTION_VALUE_TYPES:
+                pair_key = node.child_by_field_name("key")
+                if pair_key is not None and pair_key.type == "property_identifier":
+                    func_name = _read_text(pair_key, source)
+                    # Same #1899 guard as the function branch: a name that
+                    # normalizes to nothing would collapse onto the prefix.
+                    if func_name and normalize_id(func_name):
+                        line = node.start_point[0] + 1
+                        if parent_class_nid:
+                            func_nid = _make_id(parent_class_nid, func_name)
+                            add_node(func_nid, f".{func_name}()", line)
+                            add_edge(parent_class_nid, func_nid, "method", line)
+                        else:
+                            func_nid = _make_id(stem, func_name)
+                            add_node(func_nid, f"{func_name}()", line)
+                            add_edge(file_nid, func_nid, "contains", line)
+                        callable_def_nids.add(func_nid)
+                        local_bound_names[func_nid] = _js_local_bound_names(pair_value, source)
+                        pair_body = pair_value.child_by_field_name("body")
+                        if pair_body:
+                            function_bodies.append((func_nid, pair_body))
+                        return
+
         # Function types
         if t in config.function_types:
             # Swift deinit/subscript have no name field — resolve before generic fallback
