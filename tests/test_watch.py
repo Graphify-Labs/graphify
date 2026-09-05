@@ -13,6 +13,7 @@ from graphify.watch import (
     _WATCHED_EXTENSIONS,
     _rebuild_lock,
     _check_shrink,
+    _force_shrink_summary,
     _batch_triggers_rebuild,
     _batch_needs_llm_flag,
 )
@@ -1331,6 +1332,135 @@ def test_check_shrink_allows_force_override():
         new_data=_shrink_payload(1),
     )
     assert ok is True
+
+
+@pytest.mark.parametrize("edge_key", ["links", "edges"])
+def test_force_shrink_summary_reports_node_and_edge_deltas(edge_key):
+    existing = {"nodes": [{}] * 12_431, edge_key: [{}] * 48_002}
+    candidate = {"nodes": [{}] * 12_429, edge_key: [{}] * 47_996}
+
+    assert _force_shrink_summary(True, existing, candidate) == (
+        "[graphify] --force: graph.json shrink: observed "
+        "12,431 nodes / 48,002 edges; wrote 12,429 nodes / 47,996 edges "
+        "(-2 nodes, -6 edges)"
+    )
+
+
+@pytest.mark.parametrize(
+    ("force", "existing", "candidate"),
+    [
+        (False, _shrink_payload(3), _shrink_payload(2)),
+        (True, {}, _shrink_payload(2)),
+        (True, _shrink_payload(2), _shrink_payload(2)),
+        (True, _shrink_payload(2), _shrink_payload(3)),
+    ],
+)
+def test_force_shrink_summary_skips_when_not_applicable(
+    force, existing, candidate
+):
+    assert _force_shrink_summary(force, existing, candidate) is None
+
+
+@pytest.mark.parametrize("no_cluster", [True, False], ids=["no-cluster", "clustered"])
+def test_rebuild_force_reports_persisted_graph_shrink(
+    tmp_path, capsys, no_cluster
+):
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    source = corpus / "app.py"
+    source.write_text(
+        "def alpha():\n    return beta()\n\ndef beta():\n    return 1\n",
+        encoding="utf-8",
+    )
+    assert _rebuild_code(corpus, no_cluster=no_cluster, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    before = json.loads(graph_path.read_text(encoding="utf-8"))
+    capsys.readouterr()
+
+    source.write_text("def alpha():\n    return 1\n", encoding="utf-8")
+    assert _rebuild_code(
+        corpus, force=True, no_cluster=no_cluster, acquire_lock=False,
+    ) is True
+    after = json.loads(graph_path.read_text(encoding="utf-8"))
+    assert len(after["nodes"]) < len(before["nodes"])
+
+    expected = (
+        "[graphify] --force: graph.json shrink: observed "
+        f"{len(before['nodes']):,} nodes / {len(before['links']):,} edges; wrote "
+        f"{len(after['nodes']):,} nodes / {len(after['links']):,} edges "
+        f"({len(after['nodes']) - len(before['nodes']):+,} nodes, "
+        f"{len(after['links']) - len(before['links']):+,} edges)"
+    )
+    assert capsys.readouterr().out.count(expected) == 1
+
+
+@pytest.mark.parametrize("error_type", [BrokenPipeError, ValueError])
+def test_rebuild_force_summary_output_failure_does_not_abort_sidecars(
+    tmp_path, monkeypatch, error_type
+):
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    source = corpus / "app.py"
+    source.write_text(
+        "def alpha():\n    return beta()\n\ndef beta():\n    return 1\n",
+        encoding="utf-8",
+    )
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    report_path = corpus / "graphify-out" / "GRAPH_REPORT.md"
+    before_report = report_path.read_text(encoding="utf-8")
+    real_print = print
+
+    def fail_summary(*args, **kwargs):
+        if args and str(args[0]).startswith("[graphify] --force: graph.json shrink:"):
+            raise error_type
+        return real_print(*args, **kwargs)
+
+    monkeypatch.setattr("builtins.print", fail_summary)
+    source.write_text("def alpha():\n    return 1\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, force=True, acquire_lock=False) is True
+    assert report_path.read_text(encoding="utf-8") != before_report
+    assert not (graph_path.parent / ".graph.tmp.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("no_cluster", "failing_sidecar"),
+    [(True, ".graphify_root"), (False, "GRAPH_REPORT.md")],
+    ids=["no-cluster", "clustered"],
+)
+def test_rebuild_force_reports_shrink_before_later_sidecar_failure(
+    tmp_path, monkeypatch, capsys, no_cluster, failing_sidecar
+):
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    source = corpus / "app.py"
+    source.write_text(
+        "def alpha():\n    return beta()\n\ndef beta():\n    return 1\n",
+        encoding="utf-8",
+    )
+    assert _rebuild_code(corpus, no_cluster=no_cluster, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    before = json.loads(graph_path.read_text(encoding="utf-8"))
+    real_write_text = Path.write_text
+
+    def fail_after_graph_replace(path, *args, **kwargs):
+        if path.name == failing_sidecar:
+            raise OSError("injected post-replace sidecar failure")
+        return real_write_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", fail_after_graph_replace)
+    capsys.readouterr()
+    source.write_text("def alpha():\n    return 1\n", encoding="utf-8")
+
+    assert _rebuild_code(
+        corpus, force=True, no_cluster=no_cluster, acquire_lock=False,
+    ) is False
+    after = json.loads(graph_path.read_text(encoding="utf-8"))
+    assert len(after["nodes"]) < len(before["nodes"])
+    assert capsys.readouterr().out.count(
+        "[graphify] --force: graph.json shrink: observed "
+    ) == 1
 
 
 def test_check_shrink_allows_explicit_deletions(capsys):
