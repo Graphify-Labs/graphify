@@ -3289,6 +3289,65 @@ def test_extract_json_extends_resolved():
     assert extends_edges[0].get("context") == "import"
 
 
+def test_extract_json_dependency_edges_are_not_label_self_loops(tmp_path):
+    """A dependency must not point at another node carrying its own label.
+
+    test_extract_json_import_and_extends_targets_are_real_nodes already forbids
+    self-loops, but it compares node *ids*. The dependency branch minted a
+    second node for the same name under a different id, so every dependency
+    rendered as ``react --imports--> react`` -- a self-loop by label that an
+    id-based guard cannot see.
+    """
+    package_json = tmp_path / "package.json"
+    package_json.write_text(json.dumps({
+        "name": "demo",
+        "dependencies": {"react": "^19.0.0", "next": "^15.0.0"},
+        "devDependencies": {"wrangler": "^4.71.0"},
+    }))
+
+    result = extract_json(package_json)
+    labels = {n["id"]: n["label"] for n in result["nodes"]}
+    offenders = [
+        (labels.get(e["source"]), e["relation"], labels.get(e["target"]))
+        for e in result["edges"]
+        if e["relation"] == "imports"
+        and labels.get(e["source"]) == labels.get(e["target"])
+    ]
+    assert offenders == [], f"label self-loop: {offenders}"
+
+    # The dependency structure #1764 restored is still present.
+    imports = [e for e in result["edges"] if e["relation"] == "imports"]
+    assert {labels.get(e["target"]) for e in imports} == {"react", "next", "wrangler"}
+
+    # External dependency ids stay "ref"-namespaced (J-4), so build.py's alias
+    # index cannot collapse a dep named `utils`/`colors` onto a local module.
+    assert all(e["target"].startswith("ref") for e in imports), [e["target"] for e in imports]
+
+
+def test_extract_json_non_extends_arrays_are_not_inheritance(tmp_path):
+    """Only an ``extends`` array is inheritance.
+
+    ``compilerOptions.lib`` and ``exclude`` are ordinary string lists; emitting
+    ``extends`` for them turns array membership into a supertype relation and
+    manufactures a hub out of a build-output glob.
+    """
+    tsconfig = tmp_path / "tsconfig.json"
+    tsconfig.write_text(json.dumps({
+        "extends": ["./base.json", "./strict.json"],
+        "compilerOptions": {"lib": ["dom", "esnext"]},
+        "exclude": ["node_modules", ".next"],
+    }))
+
+    result = extract_json(tsconfig)
+    labels = {n["id"]: n["label"] for n in result["nodes"]}
+    extends_targets = {
+        labels.get(e["target"]) for e in result["edges"] if e["relation"] == "extends"
+    }
+    assert extends_targets == {"./base.json", "./strict.json"}
+    for not_inheritance in ("dom", "esnext", ".next", "node_modules"):
+        assert not_inheritance not in extends_targets
+
+
 def test_extract_json_import_and_extends_targets_are_real_nodes(tmp_path):
     package_json = tmp_path / "package.json"
     package_json.write_text(json.dumps({
