@@ -1,8 +1,8 @@
 # Apache AGE Support — Implementation Plan
 
-Status: v7 (2026-09-05) — implementation-ready; architecture approved
-across four review rounds; delivery/CI/git-workflow, implementation
-checklist, and explicit three-tier testing strategy added
+Status: v8 (2026-09-05) — Phase 0 (AGE compatibility spike) executed
+against a live `apache/age` container; findings incorporated into Phase 1's
+design (see Phase 0 spike results and Phase 1)
 Scope: add Apache AGE as a graph-database sink, with cost-efficient sync,
 multi-branch support, a multi-repo registry with ownership, and storage
 optimization. Primary consumers are external agents (code review, code
@@ -231,6 +231,44 @@ Validate, against a live Dockerized AGE, before building on assumptions:
 - transactional write behavior; index options on AGE label tables that do
   not require touching AGE internals.
 
+**Spike results (executed against `apache/age` PostgreSQL 18.1 / AGE 1.7.0,
+pinned by digest `sha256:4241e2d8bb86a6b2ea44e9ad06c73856e12b209de295124603a599dd7feb70eb`
+in `tests/test_age_integration.py`)** — two findings that change Phase 1's
+design from what was originally assumed:
+
+1. **The graph name argument to `cypher()` must be a literal at parse
+   time.** `cypher($1, ...)` fails with `psycopg.errors.SyntaxError: a name
+   constant is expected` — AGE's parser hook resolves the graph name before
+   normal bind-parameter substitution runs. It can never be passed as a
+   bound parameter; `push_to_age()` must build each statement with the
+   (already-sanitized) graph name embedded as a validated SQL literal
+   (`psycopg.sql.Literal`), the same discipline already required for
+   labels/relations via `_safe_label`/`_safe_rel`.
+2. **`SET n += <map>` / `SET n = <map>` reject a map that arrives via a
+   parameter or via `UNWIND`-bound data** —
+   `psycopg.errors.FeatureNotSupported: SET clause expects a map` — even
+   though dot-path access into the same parameter (`$props.label`) works
+   fine. Only a literal map written directly in the query text satisfies
+   SET's map-mode. **This invalidates the generic "`SET n += row.props`"
+   batch-write shape originally assumed for Phase 1.** The validated
+   workaround is explicit per-field assignment —
+   `SET n.id = row.id, n.label = row.label, ...` — enumerating the fixed
+   lean/full property schema by name in the query text, with only the
+   *values* flowing through `row`. This fits the design anyway: the pushed
+   property set is a bounded, known schema (the Cypher-facing schema
+   contract above), not arbitrary keys, so there is nothing to generalize
+   over. `push_to_age()`'s prepared statement shapes are therefore built
+   per fixed label/relation with an explicit field list, not a single
+   generic `SET n += $props` statement.
+3. A third, psycopg-specific (not AGE-specific) finding: `EXECUTE
+   stmt_name(%s)` with the agtype payload as a normal bind parameter fails
+   with `psycopg.errors.IndeterminateDatatype: could not determine data
+   type of parameter $1` — `EXECUTE`'s argument list isn't part of the
+   extended query protocol's normal parameterizable surface, and an
+   explicit `::agtype` cast on the placeholder does not fix it. The payload
+   must be embedded via `psycopg.sql.Literal` instead — safe here because
+   it is graphify-generated JSON, not raw external input.
+
 Deliverable: a spike test file that becomes the seed of the **live
 integration suite**, following the exact pattern already established by
 `tests/test_falkordb_integration.py` — there is no docker-compose
@@ -266,9 +304,16 @@ fixture mechanism:
 - Writes use **prepared fixed Cypher statement shapes** per connection,
   passing an agtype parameter map of batch rows, `UNWIND $rows` (~500
   rows/statement), grouped by fixed safe node label / edge relation type.
-  Bind values only; derive graph names, labels, and relations through the
-  controlled sanitizer mappings (`_safe_label` / `_safe_rel`). Single
-  transaction per push.
+  Per the Phase 0 spike findings: the graph name is embedded as a
+  `psycopg.sql.Literal`, never a bind parameter (AGE requires it at parse
+  time); each statement's `SET` clause enumerates the fixed lean/full
+  property fields explicitly by name (`SET n.id = row.id, n.label =
+  row.label, ...`) rather than a generic `SET n += row.props`, which AGE
+  rejects for non-literal maps; and the agtype payload passed to `EXECUTE`
+  is embedded via `psycopg.sql.Literal` rather than a normal bind
+  parameter (psycopg cannot infer its type there). Labels and relations
+  are still derived only through the controlled sanitizer mappings
+  (`_safe_label` / `_safe_rel`). Single transaction per push.
 - **Deletion-safe sync** — reconcile in place: after upserts, delete
   nodes/edges absent from the incoming graph inside the same transaction.
   PostgreSQL transaction isolation ensures readers see either the prior
@@ -550,30 +595,42 @@ the ones specific to AGE that aren't automatically obvious from those docs.
 
 ## Implementation checklist
 
-### Phase 0 — AGE compatibility spike
-- [ ] `tests/test_age_integration.py` following
+### Phase 0 — AGE compatibility spike ✅ done
+- [x] `tests/test_age_integration.py` following
       `tests/test_falkordb_integration.py`'s exact pattern: a `docker run`
       one-liner in the module docstring (no compose file) with a **pinned
-      `apache/age` image tag**, env-var host/port/credentials,
+      `apache/age` image digest**, env-var host/port/credentials,
       `pytest.importorskip("psycopg")`, and a service-identifying
-      connection probe (e.g. `LOAD 'age'` / `ag_catalog.ag_graph` query)
-      that skips rather than fails when no live AGE instance answers.
-- [ ] Pick and record the target AGE + PostgreSQL versions as that pinned
-      image tag (also named in `docs/AGE_SCHEMA.md` later).
-- [ ] Spike/validate: psycopg (v3) client- vs. server-side binding against
-      `cypher()`.
-- [ ] Spike/validate: agtype parameter maps via explicit `PREPARE`/`EXECUTE`
-      (session-scoped; prepare once per pooled connection).
-- [ ] Spike/validate: `UNWIND $rows` + `MERGE` behavior and batch sizing.
-- [ ] Spike/validate: transactional write behavior (partial-failure
-      rollback).
-- [ ] Spike/validate: index options on AGE label tables that don't touch
-      AGE internals.
-- [ ] Confirm the suite is a silent no-op in existing `ci.yml` (no CI
-      changes needed — matches the falkordb suite's status quo).
-- [ ] Spike test file lands as a permanent test module (seed of the live
-      integration suite), not a scratch script.
-- [ ] Branch `age-phase0-spike` off synced `v8`; PR upstream; `pytest` green.
+      connection probe (`LOAD 'age'`) that skips rather than fails when no
+      live AGE instance answers.
+- [x] Picked and recorded the target versions: PostgreSQL 18.1, AGE 1.7.0,
+      pinned by digest
+      `apache/age@sha256:4241e2d8bb86a6b2ea44e9ad06c73856e12b209de295124603a599dd7feb70eb`.
+- [x] Spike/validate: psycopg (v3) binding against `cypher()` — confirmed
+      working; discovered the graph name must be a literal, not a bind
+      parameter (see spike results above).
+- [x] Spike/validate: agtype parameter maps via explicit `PREPARE`/`EXECUTE`
+      — confirmed working for scalar/dot-path access; discovered `SET n +=
+      <param-map>` is rejected (see spike results above) and the workaround
+      (explicit per-field `SET`).
+- [x] Spike/validate: `UNWIND $rows` + `MERGE` behavior and batch sizing —
+      confirmed working (validated at 50 rows) with the per-field `SET`
+      workaround; idempotent re-run confirmed (`MERGE` updates in place,
+      no duplication).
+- [x] Spike/validate: transactional write behavior (partial-failure
+      rollback) — confirmed: a malformed Cypher statement mid-transaction
+      leaves prior committed state intact after `ROLLBACK`.
+- [x] Spike/validate: index options on AGE label tables that don't touch
+      AGE internals — confirmed: a `GIN` index on a label table's
+      `properties` column works via plain `CREATE INDEX`.
+- [x] Confirmed the suite is a silent no-op with no live service reachable
+      (`6 skipped`) and does not affect the rest of the suite passing.
+- [x] Spike test file lands as a permanent test module (seed of the live
+      integration suite, including a `test_push_to_age_creates_expected_graph`
+      end-to-end test that currently skips until Phase 1 lands
+      `push_to_age()`).
+- [x] Branch `age-phase0-spike` cut off synced `v8`; committed locally.
+      PR to upstream still pending (see Delivery section).
 
 ### Phase 1 — `push_to_age()` exporter
 - [ ] `push_to_age()` in `graphify/exporters/graphdb.py`, sibling of
