@@ -1042,25 +1042,31 @@ def _apply_symbol_resolution_facts(
 
     def exported_candidates(
         key: tuple[Path, str], seen: frozenset[tuple[Path, str]]
-    ) -> set[tuple[Path, str]]:
-        # Preserve explicitly exported origins even without owned declarations.
-        # Missing extraction must not turn an ambiguous export into a unique one.
+    ) -> tuple[set[tuple[Path, str]], bool]:
+        # Distinguish a cycle cutoff from an absent export. A cycle contributes
+        # no origin; a named export of an unrepresented binding remains unknown.
         if key in seen:
-            return set()
+            return set(), True
         seen = seen | {key}
         origins = export_origins.get(key)
+        candidates: set[tuple[Path, str]] = set()
+        cyclic = False
         if origins is None:
-            candidates: set[tuple[Path, str]] = set()
             for path in star_exports_by_file.get(key[0], []):
-                candidates.update(exported_candidates((path, key[1]), seen))
-            return candidates
-        candidates = set()
+                branch, branch_cyclic = exported_candidates((path, key[1]), seen)
+                candidates.update(branch)
+                cyclic |= branch_cyclic
+            return candidates, cyclic
         for origin in origins:
             if origin == key:
                 candidates.add(origin)
             else:
-                candidates.update(exported_candidates(origin, seen) or {origin})
-        return candidates
+                branch, branch_cyclic = exported_candidates(origin, seen)
+                candidates.update(branch)
+                cyclic |= branch_cyclic
+                if not branch and not branch_cyclic:
+                    candidates.add(origin)
+        return candidates, cyclic
 
     # The structural extractor names the immediate barrel's symbol. Resolve
     # that exact authored export site through the shared import/export facts,
@@ -1074,7 +1080,6 @@ def _apply_symbol_resolution_facts(
                 export_fact.target_path.resolve(),
             )
             export_sites.setdefault(site, []).append(export_fact)
-    node_sources = {node["id"]: node["source_file"] for node in nodes if node.get("id") and node.get("source_file")}
     owned_ids = {node.get("id") for node in nodes}
     for edge in edges:
         if edge.get("relation") != "re_exports" or edge.get("target") in owned_ids:
@@ -1089,14 +1094,15 @@ def _apply_symbol_resolution_facts(
             expected = _make_id(_file_stem(target_path), export_fact.target_name)
             if edge.get("target") != expected:
                 continue
-            candidates = exported_candidates(
+            candidates, _ = exported_candidates(
                 (export_fact.target_path.resolve(), export_fact.target_name), frozenset()
             )
             if len(candidates) == 1:
-                target_id = symbol_nodes.get(next(iter(candidates)))
+                origin = next(iter(candidates))
+                target_id = symbol_nodes.get(origin)
                 if target_id in owned_ids:
                     edge["target"] = target_id
-                    edge["target_file"] = node_sources[target_id]
+                    edge["target_file"] = str(path_by_resolved.get(origin[0], origin[0]))
             break
 
     for import_fact in facts.imports:
@@ -1290,12 +1296,17 @@ def _js_exported_declaration_names(node, source: bytes) -> list[str]:
         return names
 
     if declaration.type in ("lexical_declaration", "variable_declaration"):
+        # Preserve legacy aggregate-pattern facts for identifier-valued lexical
+        # declarations; individual destructured bindings are a separate feature.
+        names.extend(alias for alias, _target in _js_lexical_aliases(declaration, source))
         for declarator in declaration.named_children:
             if declarator.type != "variable_declarator":
                 continue
             name_node = declarator.child_by_field_name("name")
             if name_node is not None and name_node.type == "identifier":
-                names.append(_read_text(name_node, source))
+                name = _read_text(name_node, source)
+                if name not in names:
+                    names.append(name)
         return names
 
     if declaration.type in (
