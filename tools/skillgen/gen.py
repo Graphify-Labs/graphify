@@ -1142,6 +1142,21 @@ def _is_community_label_export_fix_line(line: str) -> bool:
     )
 
 
+def _is_ast_first_execution_order_fix_line(line: str) -> bool:
+    """Whether a line is part of the Step 3 Part A AST-first execution order (#3253).
+
+    Part A must run first so .graphify_ast.json is written before semantic subagents
+    are dispatched with a scoped CODE_SYMBOLS inventory.
+    """
+    return (
+        "Run Part A (AST) first so `.graphify_ast.json` is fully written" in line
+        or "Run Part A (AST) and Part B (semantic) in parallel" in line
+        or "Parallelizing AST + semantic saves" in line
+        or "run AST extraction in parallel with Part B subagents" in line
+        or line.strip() == "For any code files detected, run AST extraction:"
+    )
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -1163,6 +1178,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_uv_from_interpreter_fix_line,
     _is_semantic_cache_scope_fix_line,
     _is_community_label_export_fix_line,
+    _is_ast_first_execution_order_fix_line,
 )
 
 

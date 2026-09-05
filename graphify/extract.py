@@ -7465,6 +7465,228 @@ def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | N
     return sorted(results)
 
 
+
+_SCOPER_GENERIC_IDENTIFIERS = frozenset({
+    "run", "get", "set", "parse", "data", "error", "test", "init", "main",
+    "build", "load", "save", "clean", "start", "stop", "read", "write",
+    "send", "recv", "node", "edge", "type", "name", "file", "path",
+    "item", "list", "dict", "base", "core", "help", "view", "call",
+    "calc", "make", "show", "hide", "drop", "find", "check", "info",
+    "true", "false", "none", "null", "self", "this", "args", "kwargs",
+    "text", "code", "user", "root", "from", "into", "with", "open",
+    "class", "func", "function", "method", "module", "package", "import",
+})
+
+
+def scope_ast_inventory(
+    ast_data: dict,
+    doc_paths: list[Path | str],
+    doc_texts: list[str] | None = None,
+    max_symbols: int = 100,
+) -> str:
+    """Derive a compact, deterministically scoped inventory of relevant AST symbols
+    for a semantic document chunk without re-reading source code files.
+
+    Returns a newline-separated string formatted as:
+        id | qualified_name | source_file
+    or "None available" if no relevant symbols match.
+    """
+    if not isinstance(ast_data, dict):
+        return "None available"
+
+    nodes = [n for n in ast_data.get("nodes", []) if isinstance(n, dict) and n.get("id")]
+    if not nodes:
+        return "None available"
+
+    edges = [e for e in ast_data.get("edges", []) if isinstance(e, dict)]
+    nodes_by_id = {n["id"]: n for n in nodes}
+
+    def _posix_path_str(p: object) -> str:
+        if not p:
+            return ""
+        return str(p).replace("\\", "/")
+
+    # Index by source_file and basename
+    nodes_by_file: dict[str, list[dict]] = {}
+    for n in nodes:
+        sf = n.get("source_file")
+        if sf:
+            posix_sf = _posix_path_str(sf)
+            nodes_by_file.setdefault(posix_sf, []).append(n)
+
+    basename_to_files: dict[str, set[str]] = {}
+    for sf in nodes_by_file:
+        bname = sf.split("/")[-1].lower()
+        basename_to_files.setdefault(bname, set()).add(sf)
+
+    # Parent-child containment maps from AST edges
+    parent_map: dict[str, str] = {}
+    children_map: dict[str, list[str]] = {}
+    for e in edges:
+        rel = e.get("relation")
+        src = e.get("source")
+        tgt = e.get("target")
+        if rel in ("method", "contains") and src and tgt:
+            parent_map[tgt] = src
+            children_map.setdefault(src, []).append(tgt)
+
+    def get_qualified_name(n: dict) -> str:
+        label = str(n.get("label", "")).strip()
+        nid = n.get("id", "")
+        sf = _posix_path_str(n.get("source_file", ""))
+        file_bname = sf.split("/")[-1] if sf else ""
+
+        def _is_file_label(lbl: str) -> bool:
+            return (
+                lbl == file_bname
+                or lbl.endswith((
+                    ".py", ".ts", ".js", ".go", ".rs", ".java", ".cs", ".cpp", ".c", ".h",
+                    ".tsx", ".jsx", ".rb", ".php", ".swift", ".kt", ".scala", ".zig"
+                ))
+            )
+
+        if _is_file_label(label):
+            return label
+
+        # Traverse ancestors up to the file/root boundary
+        ancestors: list[str] = []
+        curr_id = nid
+        visited = {curr_id}
+        while True:
+            pid = parent_map.get(curr_id)
+            if not pid or pid in visited or pid not in nodes_by_id:
+                break
+            visited.add(pid)
+            parent_node = nodes_by_id[pid]
+            p_label = str(parent_node.get("label", "")).strip()
+            if _is_file_label(p_label):
+                break
+            ancestors.append(p_label.rstrip("()"))
+            curr_id = pid
+
+        if not ancestors:
+            return label
+
+        ancestor_chain = ".".join(reversed(ancestors))
+        if label.startswith("."):
+            return f"{ancestor_chain}{label}"
+        return f"{ancestor_chain}.{label}"
+
+    # Collect document text
+    texts: list[str] = []
+    if doc_texts is not None and len(doc_texts) == len(doc_paths):
+        texts.extend(doc_texts)
+    else:
+        if doc_texts:
+            texts.extend(doc_texts)
+        for dp in doc_paths:
+            texts.append(str(dp))
+            p = Path(dp) if not isinstance(dp, Path) else dp
+            if p.is_file():
+                try:
+                    texts.append(p.read_text(encoding="utf-8", errors="replace"))
+                except Exception:
+                    pass
+
+    full_text = " ".join(texts)
+    if not full_text.strip():
+        return "None available"
+
+    full_text_lower = full_text.lower()
+
+    # Tier 1: Path & unique basename matching
+    tier1_nodes: list[dict] = []
+    for sf, fnodes in nodes_by_file.items():
+        sf_posix = _posix_path_str(sf)
+        sf_lower = sf_posix.lower()
+        if sf_lower in full_text_lower or sf_posix in full_text:
+            tier1_nodes.extend(fnodes)
+            continue
+        # Unique basename check
+        bname = sf_posix.split("/")[-1].lower()
+        if len(basename_to_files.get(bname, set())) == 1:
+            raw_bname = sf_posix.split("/")[-1]
+            if re.search(rf"(?<![/\\])\b{re.escape(raw_bname)}\b", full_text, re.IGNORECASE):
+                tier1_nodes.extend(fnodes)
+
+    # Tier 2: Distinctive identifier matching (>= 4 chars, non-generic)
+    # Matches against symbol names/labels (file nodes are handled by Tier 1)
+    doc_tokens_lower = {
+        t.lower()
+        for t in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", full_text)
+        if len(t) >= 4 and t.lower() not in _SCOPER_GENERIC_IDENTIFIERS
+    }
+
+    tier2_nodes: list[dict] = []
+    for n in nodes:
+        sf = _posix_path_str(n.get("source_file", ""))
+        file_bname = sf.split("/")[-1] if sf else ""
+        lbl = str(n.get("label", "")).strip()
+        # Skip file nodes in Tier 2 — file nodes are handled by Tier 1 (path/unique basename)
+        if sf and lbl == file_bname:
+            continue
+
+        idents: set[str] = set()
+        qname = get_qualified_name(n)
+        for piece in (lbl, qname):
+            for token in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", piece):
+                if len(token) >= 4 and token.lower() not in _SCOPER_GENERIC_IDENTIFIERS:
+                    idents.add(token.lower())
+        if idents & doc_tokens_lower:
+            tier2_nodes.append(n)
+
+    # Tier 3: Containment expansion
+    tier3_nodes: list[dict] = []
+    selected_ids = {n["id"] for n in tier1_nodes if "id" in n} | {n["id"] for n in tier2_nodes if "id" in n}
+    for nid in list(selected_ids):
+        for child_id in children_map.get(nid, []):
+            if child_id in nodes_by_id and child_id not in selected_ids:
+                tier3_nodes.append(nodes_by_id[child_id])
+                selected_ids.add(child_id)
+
+    # Ensure file node for every matched symbol is also present
+    for n in list(tier1_nodes) + list(tier2_nodes) + list(tier3_nodes):
+        sf = n.get("source_file")
+        if sf:
+            posix_sf = _posix_path_str(sf)
+            if posix_sf in nodes_by_file:
+                for fn in nodes_by_file[posix_sf]:
+                    file_bname = posix_sf.split("/")[-1]
+                    if str(fn.get("label", "")).strip() == file_bname:
+                        fn_id = fn.get("id")
+                        if fn_id and fn_id not in selected_ids:
+                            tier3_nodes.append(fn)
+                            selected_ids.add(fn_id)
+
+    def sort_key(n: dict) -> tuple[str, str, str]:
+        sf = _posix_path_str(n.get("source_file", ""))
+        return (sf, get_qualified_name(n), str(n.get("id", "")))
+
+    seen: set[str] = set()
+    ordered_candidates: list[dict] = []
+    for tier in (tier1_nodes, tier2_nodes, tier3_nodes):
+        tier_unique = []
+        for n in tier:
+            nid = n.get("id")
+            if nid and nid not in seen:
+                seen.add(nid)
+                tier_unique.append(n)
+        tier_unique.sort(key=sort_key)
+        ordered_candidates.extend(tier_unique)
+
+    if not ordered_candidates:
+        return "None available"
+
+    final_selection = ordered_candidates[:max_symbols]
+    final_selection.sort(key=sort_key)
+
+    lines = [
+        f"{n['id']} | {get_qualified_name(n)} | {_posix_path_str(n.get('source_file', ''))}"
+        for n in final_selection
+    ]
+    return "\n".join(lines)
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python -m graphify.extract <file_or_dir> ...", file=sys.stderr)

@@ -3900,6 +3900,8 @@ def dispatch_command(cmd: str) -> None:
                 }
                 if deep_mode:
                     corpus_kwargs["deep_mode"] = True
+                if ast_result:
+                    corpus_kwargs["ast_data"] = ast_result
                 if cli_token_budget is not None:
                     corpus_kwargs["token_budget"] = cli_token_budget
                 if cli_max_concurrency is not None:
