@@ -1998,6 +1998,7 @@ def dispatch_command(cmd: str) -> None:
         no_viz = "--no-viz" in sys.argv
         no_label = "--no-label" in sys.argv
         missing_only = "--missing-only" in sys.argv
+        force_graph_write = False
         co_timing = "--timing" in sys.argv
         _backend_arg = next((a for a in sys.argv if a.startswith("--backend=")), None)
         label_backend = _backend_arg.split("=", 1)[1] if _backend_arg else None
@@ -2047,6 +2048,9 @@ def dispatch_command(cmd: str) -> None:
                 label_batch_size = int(args[i_arg + 1]); label_batch_size_explicit = True; i_arg += 2
             elif a.startswith("--batch-size="):
                 label_batch_size = int(a.split("=", 1)[1]); label_batch_size_explicit = True; i_arg += 1
+            elif a == "--force":
+                force_graph_write = cmd == "label"
+                i_arg += 1
             elif a in ("--no-viz", "--missing-only") or a.startswith("--min-community-size="):
                 i_arg += 1
             elif a.startswith("--"):
@@ -2064,6 +2068,25 @@ def dispatch_command(cmd: str) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
+        # Resolve the output boundary before any expensive labeling work. An
+        # arbitrary --graph path is a restore source, not necessarily the file
+        # this command will replace (#934); --force must never let a label run
+        # overwrite a different graph that it did not load.
+        _out_name = Path(_GRAPHIFY_OUT).name
+        if graph_override is not None and graph_json.parent.name == _out_name:
+            out = graph_json.parent
+        else:
+            out = watch_path / _GRAPHIFY_OUT
+        if (
+            force_graph_write
+            and graph_json.resolve() != (out / "graph.json").resolve()
+        ):
+            print(
+                "error: label --force requires the loaded --graph to be the "
+                "graph.json that will be overwritten",
+                file=sys.stderr,
+            )
+            sys.exit(2)
         from networkx.readwrite import json_graph as _jg
         from graphify.build import build_from_json
         from graphify.cluster import cluster, score_all, remap_communities_to_previous
@@ -2125,11 +2148,6 @@ def dispatch_command(cmd: str) -> None:
         # before re-clustering (#934) — fall back to the CWD's graphify-out/,
         # which is the restore-into-place workflow that test pins. The default
         # (no --graph) case already has graph_json under watch_path/graphify-out.
-        _out_name = Path(_GRAPHIFY_OUT).name
-        if graph_override is not None and graph_json.parent.name == _out_name:
-            out = graph_json.parent
-        else:
-            out = watch_path / _GRAPHIFY_OUT
         out.mkdir(parents=True, exist_ok=True)
         labels_path = out / ".graphify_labels.json"
         existing_labels: dict[int, str] = {}
@@ -2302,9 +2320,12 @@ def dispatch_command(cmd: str) -> None:
         html_stale_marker.touch()
         # The #479 guard can refuse this write, so it goes before the sidecars —
         # a report and labels describing a clustering graph.json does not contain
-        # are worse than no run at all (#2436).
+        # are worse than no run at all (#2436). A long `label` run may observe a
+        # newer graph here; only its explicit --force recovery path may replace it
+        # after the user has verified that losing the newer topology is acceptable.
         if not to_json(G, communities, str(out / "graph.json"),
-                       community_labels=labels, built_at_commit=_commit):
+                       force=force_graph_write, community_labels=labels,
+                       built_at_commit=_commit):
             if not stale_marker_preexisted:
                 _clear_html_stale_marker()
             print(
