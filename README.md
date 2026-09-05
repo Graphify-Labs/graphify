@@ -434,7 +434,12 @@ dist/
 **Recommended `.gitignore` additions:**
 ```
 graphify-out/cost.json        # local only
+graphify-out/memory/          # personal Q&A annotations (graphify save-result)
+graphify-out/reflections/     # derived from memory/, local only
+graphify-out/.graphify_*      # local metadata (paths, markers, incremental caches)
+graphify-out/????-??-??/      # dated backup snapshots
 # graphify-out/cache/         # optional: commit for speed, skip to keep repo small
+# graphify-out/.graphify_labels.json  # un-ignore if your team curates community labels together
 ```
 
 > `manifest.json` is now portable — keys are stored as relative paths and re-anchored on load, so committing it is safe and avoids a full rebuild on first checkout.
