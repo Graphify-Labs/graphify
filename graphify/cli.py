@@ -2753,28 +2753,46 @@ def dispatch_command(cmd: str) -> None:
         print(f"Written to: {out_path}")
 
     elif cmd == "clone":
+        _CLONE_USAGE = (
+            "Usage: graphify clone <github-url> [<github-url> ...] "
+            "[--branch <branch>] [--out <dir>]"
+        )
         if len(sys.argv) < 3:
+            print(_CLONE_USAGE, file=sys.stderr)
+            sys.exit(1)
+        urls: list[str] = []
+        branch: str | None = None
+        out_dir: Path | None = None
+        args = sys.argv[2:]
+        i = 0
+        while i < len(args):
+            a = args[i]
+            if a == "--branch" and i + 1 < len(args):
+                branch = args[i + 1]
+                i += 2
+            elif a == "--out" and i + 1 < len(args):
+                out_dir = Path(args[i + 1])
+                i += 2
+            elif a.startswith("-"):
+                print(f"error: unknown option: {a}", file=sys.stderr)
+                print(_CLONE_USAGE, file=sys.stderr)
+                sys.exit(1)
+            else:
+                urls.append(a)
+                i += 1
+        if not urls:
+            print(_CLONE_USAGE, file=sys.stderr)
+            sys.exit(1)
+        if out_dir is not None and len(urls) > 1:
             print(
-                "Usage: graphify clone <github-url> [--branch <branch>] [--out <dir>]",
+                "error: --out is only valid with a single URL; drop --out to clone "
+                "multiple repos into ~/.graphify/repos/<owner>/<repo>",
                 file=sys.stderr,
             )
             sys.exit(1)
-        url = sys.argv[2]
-        branch: str | None = None
-        out_dir: Path | None = None
-        args = sys.argv[3:]
-        i = 0
-        while i < len(args):
-            if args[i] == "--branch" and i + 1 < len(args):
-                branch = args[i + 1]
-                i += 2
-            elif args[i] == "--out" and i + 1 < len(args):
-                out_dir = Path(args[i + 1])
-                i += 2
-            else:
-                i += 1
-        local_path = _clone_repo(url, branch=branch, out_dir=out_dir)
-        print(local_path)
+        for url in urls:
+            local_path = _clone_repo(url, branch=branch, out_dir=out_dir)
+            print(local_path)
 
     elif cmd == "export":
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""

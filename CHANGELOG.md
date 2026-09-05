@@ -201,6 +201,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: a PHP `use` import written with a leading-backslash / fully-qualified prefix now resolves to its target definition instead of being dropped (#2661, thanks @ousamabenyounes).
 - Fix: an unresolved local JS/TS import (to a file absent from the scan) now emits a stable, portable `ref` target id instead of leaking a per-checkout absolute-path slug (#2457, thanks @rohit-jsfreaky).
 - Fix: `graphify benchmark` no longer crashes on a node whose label is `None` (#2674, thanks @Arthuro0103).
+- Fix: `graphify clone` now accepts multiple GitHub URLs and clones each one instead of silently dropping every URL past the first, matching the multi-repo workflow (#2703); unknown flags are rejected with a usage message, and `--out` is refused with multiple URLs to keep destinations unambiguous.
 
 ## 0.9.40 (2026-08-11)
 
