@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 from pathlib import Path
-from graphify.extractors.models import LanguageConfig, _JS_CACHE_BYPASS_SUFFIXES, _NamespaceExportFact, _StarExportFact, _SymbolAliasFact, _SymbolDeclarationFact, _SymbolExportFact, _SymbolImportFact, _SymbolResolutionFacts, _SymbolUseFact, _WORKSPACE_PACKAGE_CACHE  # noqa: E402,F401
+from graphify.extractors.models import LanguageConfig, _JS_CACHE_BYPASS_SUFFIXES, _JS_FAMILY_SUFFIXES, _NamespaceExportFact, _StarExportFact, _SymbolAliasFact, _SymbolDeclarationFact, _SymbolExportFact, _SymbolImportFact, _SymbolResolutionFacts, _SymbolUseFact, _WORKSPACE_PACKAGE_CACHE  # noqa: E402,F401
 from graphify.extractors.base import (  # noqa: F401
     _LANGUAGE_BUILTIN_GLOBALS,
     _file_stem,
@@ -1491,7 +1491,7 @@ def _ts_walk_class_members(class_node, source: bytes, path: Path, class_nid: str
 def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolutionFacts) -> None:
     js_paths = [
         path for path in paths
-        if path.suffix in _JS_CACHE_BYPASS_SUFFIXES
+        if path.suffix in _JS_FAMILY_SUFFIXES
     ]
     if not js_paths:
         return
