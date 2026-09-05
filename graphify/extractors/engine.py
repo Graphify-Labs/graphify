@@ -240,9 +240,43 @@ def _csharp_collect_type_refs(
             if c.is_named:
                 _csharp_collect_type_refs(c, source, generic, out, skip)
 
-def _csharp_attribute_names(method_node, source: bytes) -> list[tuple[str, bool, str]]:
-    """Collect attribute names from a C# method/declaration's attribute_list children."""
-    names: list[tuple[str, bool, str]] = []
+def _csharp_attribute_string_argument(attr_node, source: bytes) -> str | None:
+    """First string-literal argument of a C# attribute, unquoted.
+
+    ``[HttpGet("Status")]`` -> ``"Status"``. Verbatim literals (``@"..."``) are
+    unwrapped too. Non-string arguments (``[ApiExplorerSettings(IgnoreApi = true)]``)
+    and argument-less attributes yield None — only a literal path is useful to a
+    reader, and anything computed cannot be resolved statically anyway.
+    """
+    args = attr_node.child_by_field_name("arguments")
+    if args is None:
+        args = next((c for c in attr_node.children
+                     if c.type == "attribute_argument_list"), None)
+    if args is None:
+        return None
+    stack = list(args.children)
+    while stack:
+        node = stack.pop(0)
+        if node.type in ("string_literal", "verbatim_string_literal"):
+            text = _read_text(node, source)
+            if text.startswith("@"):
+                text = text[1:]
+            if len(text) >= 2 and text[0] == '"' and text[-1] == '"':
+                return text[1:-1]
+            return text
+        stack.extend(node.children)
+    return None
+
+
+def _csharp_attribute_names(method_node, source: bytes) -> list[tuple[str, bool, str, str | None]]:
+    """Collect attribute names from a C# method/declaration's attribute_list children.
+
+    Each entry is ``(name, qualified, qualifier, string_argument)``. The argument
+    carries an attribute's literal payload — the route template of
+    ``[Route("api/x")]`` — which the type-reference side ignores but
+    :func:`_csharp_route_label` needs.
+    """
+    names: list[tuple[str, bool, str, str | None]] = []
     skip = _csharp_type_parameters_in_scope(method_node, source)
     for child in method_node.children:
         if child.type != "attribute_list":
@@ -260,8 +294,103 @@ def _csharp_attribute_names(method_node, source: bytes) -> list[tuple[str, bool,
                 qualified = name_node.type == "qualified_name"
                 prefix, _, text = _read_text(name_node, source).rpartition(".")
                 if text and text not in skip:
-                    names.append((text, qualified, prefix if qualified else ""))
+                    names.append((text, qualified, prefix if qualified else "",
+                                  _csharp_attribute_string_argument(attr, source)))
     return names
+
+
+# ASP.NET routing attributes. The verb map doubles as the recognizer: an
+# attribute outside this set never mints a route node, so `[Obsolete("...")]`
+# and `[Display(Name="x")]` keep their payload out of the graph.
+_CSHARP_ROUTE_VERBS = {
+    "HttpGet": "GET",
+    "HttpPost": "POST",
+    "HttpPut": "PUT",
+    "HttpDelete": "DELETE",
+    "HttpPatch": "PATCH",
+    "HttpHead": "HEAD",
+    "HttpOptions": "OPTIONS",
+}
+_CSHARP_ROUTE_ATTRIBUTE = "Route"
+
+
+def _csharp_enclosing_class(node):
+    """Nearest enclosing type declaration of ``node``, or None at file scope."""
+    scope = node.parent
+    while scope is not None:
+        if scope.type in ("class_declaration", "record_declaration", "struct_declaration"):
+            return scope
+        scope = scope.parent
+    return None
+
+
+def _csharp_expand_route_tokens(template: str, class_node, source: bytes) -> str:
+    """Expand the conventional ``[controller]`` token.
+
+    ``PresenceController`` + ``api/[controller]`` -> ``api/Presence``. ``[action]``
+    is left alone: it resolves per-method and the method name is already the edge's
+    other endpoint.
+    """
+    if "[controller]" not in template or class_node is None:
+        return template
+    name_node = class_node.child_by_field_name("name")
+    if name_node is None:
+        return template
+    name = _read_text(name_node, source)
+    if name.endswith("Controller") and len(name) > len("Controller"):
+        name = name[: -len("Controller")]
+    return template.replace("[controller]", name)
+
+
+def _csharp_route_label(method_node, source: bytes) -> str | None:
+    """Compose ``"<VERB> <path>"`` for a method carrying ASP.NET routing attributes.
+
+    The verb comes from an ``Http*`` attribute, the path from that attribute's own
+    template or from a sibling ``[Route]`` on the same method — the two-attribute
+    style (``[HttpGet]`` + ``[Route("login")]``) is the dominant one in large
+    codebases. A class-level ``[Route]`` is the prefix, unless the method template
+    is absolute (leading ``/`` or ``~/``), per ASP.NET's own rule. A method with a
+    ``[Route]`` but no verb attribute matches every verb and is labelled ``*``.
+
+    Returns None when the method carries no routing attribute at all.
+    """
+    verb = None
+    method_template = None
+    saw_routing_attribute = False
+    for name, _qualified, _qualifier, argument in _csharp_attribute_names(method_node, source):
+        if name in _CSHARP_ROUTE_VERBS:
+            saw_routing_attribute = True
+            verb = verb or _CSHARP_ROUTE_VERBS[name]
+            if argument and method_template is None:
+                method_template = argument
+        elif name == _CSHARP_ROUTE_ATTRIBUTE:
+            saw_routing_attribute = True
+            if argument and method_template is None:
+                method_template = argument
+    if not saw_routing_attribute:
+        return None
+
+    class_node = _csharp_enclosing_class(method_node)
+    prefix = ""
+    if class_node is not None:
+        for name, _q, _qual, argument in _csharp_attribute_names(class_node, source):
+            if name == _CSHARP_ROUTE_ATTRIBUTE and argument:
+                prefix = argument
+                break
+
+    template = method_template or ""
+    if template.startswith("~/"):
+        path = template[1:]
+    elif template.startswith("/"):
+        path = template
+    elif prefix and template:
+        path = f"{prefix.rstrip('/')}/{template.lstrip('/')}"
+    else:
+        path = template or prefix
+    path = _csharp_expand_route_tokens(path, class_node, source)
+    if not path:
+        return None
+    return f"{verb or '*'} {path}"
 
 _JAVA_TYPE_PARAMETER_SCOPE_DECLARATIONS = frozenset({
     "class_declaration",
@@ -4303,7 +4432,7 @@ def _extract_generic(
                                 metadata["ref_qualifier"] = qualifier
                             add_edge(func_nid, target_nid, "references", line,
                                      context=ctx, metadata=metadata)
-                for attr_name, qualified, qualifier in _csharp_attribute_names(node, source):
+                for attr_name, qualified, qualifier, _argument in _csharp_attribute_names(node, source):
                     target_nid = ensure_named_node(attr_name, line)
                     if target_nid != func_nid:
                         metadata = {"ref_token": attr_name}
@@ -4313,6 +4442,15 @@ def _extract_generic(
                             metadata["ref_qualifier"] = qualifier
                         add_edge(func_nid, target_nid, "references", line,
                                  context="attribute", metadata=metadata)
+                # The endpoint's URL as its own node: `serve.py` indexes a node's
+                # label (never its metadata), so a route is only reachable by a
+                # `graphify query "api/..."` when the label IS the route.
+                route_label = _csharp_route_label(node, source)
+                if route_label:
+                    route_nid = _make_id(stem, "route", route_label)
+                    add_node(route_nid, route_label, line, node_type="route")
+                    add_edge(func_nid, route_nid, "references", line,
+                             context="route", metadata={"route": route_label})
 
             if config.ts_module == "tree_sitter_java":
                 params_node = node.child_by_field_name("parameters")
