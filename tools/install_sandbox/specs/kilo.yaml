@@ -1,0 +1,39 @@
+universal_uninstall_scopes: [user]
+scopes:
+  user:
+    uninstall_mode: direct
+    effects:
+      - kind: skill
+        root: home
+        path: .config/kilo/skills/graphify/SKILL.md
+        source: graphify/skill-kilo.md
+        reference_bundle: kilo
+      - root: home
+        path: .config/kilo/command/graphify.md
+        source: graphify/command-kilo.md
+  project:
+    install_mode: direct
+    uninstall_mode: direct
+    effects:
+      - kind: skill
+        root: home
+        path: .config/kilo/skills/graphify/SKILL.md
+        source: graphify/skill-kilo.md
+        reference_bundle: kilo
+      - root: home
+        path: .config/kilo/command/graphify.md
+        source: graphify/command-kilo.md
+      - kind: section
+        root: project
+        path: AGENTS.md
+        marker: "## graphify"
+        source: graphify/always_on/agents-md.md
+      - kind: text
+        root: project
+        path: .kilo/plugins/graphify.js
+        required_text: [tool.execute.before, "[graphify]"]
+      - kind: json
+        root: project
+        path: .kilo/kilo.json
+        entries:
+          plugin: ["file://{project}/.kilo/plugins/graphify.js"]

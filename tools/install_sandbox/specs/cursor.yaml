@@ -1,0 +1,12 @@
+unsupported:
+  user: Cursor installs only a project-local .cursor rule in the current working directory.
+universal_uninstall_scopes: [project]
+scopes:
+  project:
+    install_mode: direct
+    uninstall_mode: direct
+    effects:
+      - kind: text
+        root: project
+        path: .cursor/rules/graphify.mdc
+        required_text: ["alwaysApply: true", "graphify query"]

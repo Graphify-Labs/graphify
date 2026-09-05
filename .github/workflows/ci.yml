@@ -31,6 +31,9 @@ jobs:
 
       # --frozen keeps uv from re-resolving and rewriting uv.lock as a side
       # effect of `uv run`; the lock is committed and must not churn in CI.
+      - name: Type-check install-sandbox tools
+        run: uv run --frozen pyright --warnings tools/install_sandbox
+
       - name: Check generated skill artifacts are up to date
         run: uv run --frozen python -m tools.skillgen --check
 

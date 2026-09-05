@@ -1,0 +1,22 @@
+universal_uninstall_scopes: [user]
+scopes:
+  user:
+    uninstall_mode: direct
+    effects:
+      - kind: skill
+        root: home
+        path: .config/agents/skills/graphify/SKILL.md
+        source: graphify/skill-amp.md
+        reference_bundle: amp
+  project:
+    effects:
+      - kind: skill
+        root: project
+        path: .agents/skills/graphify/SKILL.md
+        source: graphify/skill-amp.md
+        reference_bundle: amp
+      - kind: section
+        root: project
+        path: AGENTS.md
+        marker: "## graphify"
+        source: graphify/always_on/agents-md.md

@@ -1,0 +1,21 @@
+universal_uninstall_scopes: [user]
+scopes:
+  user:
+    effects:
+      - kind: skill
+        root: home
+        path: .factory/skills/graphify/SKILL.md
+        source: graphify/skill-droid.md
+        reference_bundle: droid
+  project:
+    effects:
+      - kind: skill
+        root: project
+        path: .factory/skills/graphify/SKILL.md
+        source: graphify/skill-droid.md
+        reference_bundle: droid
+      - kind: section
+        root: project
+        path: AGENTS.md
+        marker: "## graphify"
+        source: graphify/always_on/agents-md.md
