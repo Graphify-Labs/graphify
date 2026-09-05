@@ -505,6 +505,33 @@ def _resolve_workspace_import(raw: str, start_dir: Path) -> Path | None:
                 return resolved
     return None
 
+def _find_js_project_anchor(start_dir: Path) -> Path:
+    """Discover the project root anchor for unmapped JS/TS convention aliases (#3357).
+
+    Walks upward from start_dir looking for:
+    1. Nearest directory containing package.json or pnpm-workspace.yaml
+    2. Nearest directory containing a VCS marker (_find_vcs_root)
+    3. Fallback: start_dir itself
+    """
+    from graphify.detect import _find_vcs_root
+
+    current = start_dir.resolve()
+    home = Path.home()
+
+    for candidate in [current, *current.parents]:
+        if candidate == home:
+            break
+        if (candidate / "package.json").is_file() or (candidate / "pnpm-workspace.yaml").is_file():
+            return candidate
+
+    vcs_root = _find_vcs_root(start_dir)
+    if vcs_root is not None:
+        return vcs_root
+
+    return current
+
+
+
 def _resolve_js_module_path(raw: str | Path, start_dir: Path | None = None) -> Path | None:
     """Resolve a JS/TS module path or specifier to a local source file.
 
@@ -526,7 +553,25 @@ def _resolve_js_module_path(raw: str | Path, start_dir: Path | None = None) -> P
     if hit is not None:
         return _resolve_js_import_path(hit)
 
-    return _resolve_workspace_import(raw, start_dir)
+    workspace_hit = _resolve_workspace_import(raw, start_dir)
+    if workspace_hit is not None:
+        return workspace_hit
+
+    # Unmapped `@/` project-root convention fallback (#3357).
+    # Active ONLY when NO tsconfig.json or jsconfig.json exists anywhere in the upward tree.
+    if raw.startswith("@/") and _find_js_config(start_dir) is None:
+        subpath = raw[2:]
+        if subpath:
+            anchor = _find_js_project_anchor(start_dir)
+            if (anchor / "src").is_dir():
+                cand = _resolve_js_import_path(anchor / "src" / subpath)
+                if cand.is_file():
+                    return cand
+            cand = _resolve_js_import_path(anchor / subpath)
+            if cand.is_file():
+                return cand
+
+    return None
 
 def _resolve_js_import_target(raw: str, str_path: str) -> "tuple[str, Path | None] | None":
     """Resolve a JS/TS import path string to (target_nid, resolved_path).

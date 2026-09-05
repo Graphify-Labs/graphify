@@ -1617,6 +1617,11 @@ def _resolve_rescued_specifier(
         resolved_file = (resolved_alias if resolved_alias is not None
                          and resolved_alias.is_file() else None)
         return _make_id(str(resolved_alias)), str(resolved_alias), resolved_file
+    # Unmapped `@/` project-root convention fallback (#3357).
+    if raw.startswith("@/"):
+        resolved_unmapped = _resolve_js_module_path(raw, path.parent)
+        if resolved_unmapped is not None and resolved_unmapped.is_file():
+            return _make_id(str(resolved_unmapped)), str(resolved_unmapped), resolved_unmapped
     # Bare/scoped import (node_modules) - use last segment;
     # build_from_json drops as external if no matching node exists.
     module_name = raw.split("/")[-1]
