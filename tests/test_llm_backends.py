@@ -445,6 +445,91 @@ def test_adaptive_retry_splits_single_slice_on_timeout(tmp_path, capsys):
     assert "exceeded context" not in err
 
 
+def test_adaptive_retry_stops_when_timeout_budget_exhausted(tmp_path, capsys):
+    """Regression test for #3142: before this fix, every split re-paid the
+    full per-attempt timeout, so a chunk that keeps timing out could burn
+    2**max_depth timeouts (up to 2.5h for the 600s default at max_depth=3).
+    Once the shared subtree deadline has passed, a further timeout must give
+    up immediately instead of committing another chunk to a fresh timeout."""
+    import subprocess
+
+    files = [tmp_path / f"f{i}.md" for i in range(4)]
+    for f in files:
+        f.write_text("hello")
+
+    calls = {"n": 0}
+
+    def always_timeout(chunk, *_, **__):
+        calls["n"] += 1
+        raise subprocess.TimeoutExpired(["claude", "-p"], 600)
+
+    # First monotonic() call anchors the deadline at t=0 (+600s default
+    # budget). The second call, made right after the first timeout while
+    # deciding whether to split, reports t=700 -- past the budget -- so the
+    # cascade must give up rather than commit to another 600s attempt.
+    clock = iter([0.0, 700.0])
+    with patch("graphify.llm.extract_files_direct", side_effect=always_timeout), \
+         patch("graphify.llm.time.monotonic", side_effect=lambda: next(clock)):
+        result = llm._extract_with_adaptive_retry(
+            files, backend="claude-cli", api_key=None, model=None, root=tmp_path, max_depth=3
+        )
+
+    assert result["nodes"] == []
+    assert result["finish_reason"] == "stop"
+    assert calls["n"] == 1  # only the original attempt -- no bisection paid for
+    err = capsys.readouterr().err
+    assert "subtree" in err and "budget is spent" in err
+
+
+def test_adaptive_retry_skips_sibling_attempt_after_budget_exhausted_mid_tree(tmp_path, capsys):
+    """Regression test: the reactive check above only catches a timeout
+    *after* the attempt that caused it. Once some split elsewhere in the
+    subtree has already spent the shared budget with a real timeout of its
+    own, a sibling split reached afterwards must not still pay for a brand
+    new full-length attempt before discovering the same thing reactively --
+    it should never start that attempt at all.
+
+    The depth-0 chunk gets an instant (non-timeout) truncated response, so it
+    splits immediately with the budget untouched. The left half then times
+    out for real, spending the whole shared budget. The right half must be
+    skipped proactively, without ever calling extract_files_direct."""
+    import subprocess
+
+    files = [tmp_path / f"f{i}.md" for i in range(4)]
+    for f in files:
+        f.write_text("hello")
+
+    calls = []
+
+    def truncated_then_timeout(chunk, *_, **__):
+        calls.append(len(chunk))
+        if len(chunk) == 4:
+            return {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 1,
+                    "output_tokens": 1, "model": "m", "finish_reason": "length"}
+        raise subprocess.TimeoutExpired(["claude", "-p"], 600)
+
+    # t=0: depth-0 anchors the deadline (+600s). Its own attempt returns
+    # "length" instantly, so no further monotonic() call happens at depth 0.
+    # t=5: the left child's proactive check, well inside the budget -- it
+    # proceeds to attempt, and that attempt times out for real.
+    # t=605: the left child's reactive check, past the deadline -- it gives
+    # up and returns to depth 0.
+    # t=605: the right child's proactive check, also past the deadline -- it
+    # must skip its attempt entirely rather than starting a fresh one.
+    clock = iter([0.0, 5.0, 605.0, 605.0])
+    with patch("graphify.llm.extract_files_direct", side_effect=truncated_then_timeout), \
+         patch("graphify.llm.time.monotonic", side_effect=lambda: next(clock)):
+        result = llm._extract_with_adaptive_retry(
+            files, backend="claude-cli", api_key=None, model=None, root=tmp_path, max_depth=3
+        )
+
+    assert result["nodes"] == []
+    # depth-0 (len 4) + left's real attempt (len 2) -- right never attempted.
+    assert calls == [4, 2]
+    err = capsys.readouterr().err
+    assert "subtree" in err and "budget is spent" in err
+
+
 def test_adaptive_retry_timeout_caps_at_max_depth(tmp_path, capsys):
     import subprocess
 
