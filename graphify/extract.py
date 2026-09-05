@@ -535,6 +535,23 @@ def _import_js(node, source: bytes, file_nid: str, stem: str, edges: list, str_p
                                         })
 
 
+# Package roots that live in the JVM/Android platform or the Kotlin stdlib —
+# never in the scanned repo. An import under these roots must not emit a
+# repo-collidable bare-stem target: the bare id can byte-collide with an
+# unrelated node that collapses to the same _make_id (e.g. `java.util.UUID`
+# hitting a package.json dependency entry for npm's `uuid`), and it can ride
+# build.py's pre-migration alias index onto whichever unrelated same-stem file
+# uniquely claims that stem (`android.graphics.Color` binding to another
+# project's `ui/theme/Color.kt`) — confident cross-project phantom edges in a
+# monorepo (#3237). Retargeting to the "ref" namespace is the same cure
+# _resolve_js_import_target applies to unresolvable JS imports (#1638): the
+# ref id matches no repo node, so build drops the edge as an external import.
+_JVM_PLATFORM_PACKAGE_ROOTS = (
+    "java.", "javax.", "jakarta.", "kotlin.", "kotlinx.",
+    "android.", "androidx.", "dalvik.",
+)
+
+
 def _import_java(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str, scope_stack: list[str] | None = None) -> None:
     def _walk_scoped(n) -> str:
         parts: list[str] = []
@@ -560,7 +577,10 @@ def _import_java(node, source: bytes, file_nid: str, stem: str, edges: list, str
                 path_str.split(".")[-2] if len(path_str.split(".")) > 1 else path_str
             )
             if module_name:
-                tgt_nid = _make_id(module_name)
+                # Platform imports get a non-collidable external target (#3237).
+                tgt_nid = (_make_id("ref", path_str)
+                           if path_str.startswith(_JVM_PLATFORM_PACKAGE_ROOTS)
+                           else _make_id(module_name))
                 edges.append({
                     "source": file_nid,
                     "target": tgt_nid,
@@ -690,10 +710,15 @@ def _import_kotlin(node, source: bytes, file_nid: str, stem: str, edges: list, s
     # Target is the bare last segment for now; _resolve_kotlin_import_targets
     # rewrites it to the real node id via the target_fqn stamped here, once the
     # per-file package index exists. Unresolved targets stay dangling like other
-    # languages' external imports.
+    # languages' external imports — except platform-namespace imports, whose
+    # bare stem must never be collidable in the first place (#3237): the
+    # corpus resolver could not rewrite them anyway (their package is never a
+    # repo package), so they go straight to the external "ref" namespace.
     edges.append({
         "source": file_nid,
-        "target": _make_id(module_name),
+        "target": (_make_id("ref", raw)
+                   if raw.startswith(_JVM_PLATFORM_PACKAGE_ROOTS)
+                   else _make_id(module_name)),
         "relation": "imports",
         "context": "import",
         "confidence": "EXTRACTED",

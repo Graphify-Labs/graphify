@@ -91,11 +91,15 @@ def extract_json(path: Path) -> dict:
         "optionalDependencies", "bundleDependencies", "bundledDependencies",
     })
 
-    def add_node(nid: str, label: str, line: int, file_type: str = "code") -> None:
+    def add_node(nid: str, label: str, line: int, file_type: str = "code",
+                 node_type: str | None = None) -> None:
         if nid and nid not in seen_ids:
             seen_ids.add(nid)
-            nodes.append({"id": nid, "label": label, "file_type": file_type,
-                          "source_file": str_path, "source_location": f"L{line}"})
+            node = {"id": nid, "label": label, "file_type": file_type,
+                    "source_file": str_path, "source_location": f"L{line}"}
+            if node_type:
+                node["type"] = node_type
+            nodes.append(node)
 
     def add_edge(src: str, tgt: str, relation: str, line: int,
                  context: str | None = None) -> None:
@@ -193,9 +197,23 @@ def extract_json(path: Path) -> dict:
                         add_edge(parent_nid, ref_nid, "references", line)
 
                 elif parent_key in _DEP_KEYS and val_text:
-                    dep_nid = _make_id(key)
+                    # Namespace the registry-package target with the "ref"
+                    # prefix, like `extends`/`$ref` above (J-4) and unresolved
+                    # JS bare specifiers (#1638). A bare _make_id(key) id
+                    # byte-collides with any unrelated code node that collapses
+                    # to the same id (e.g. a JVM `import java.util.UUID` edge
+                    # targeting `uuid`), and two manifests naming the same
+                    # package would join unrelated projects through it (#3237).
+                    # The shared ref node models the registry package itself —
+                    # `type="module"` so _disambiguate_colliding_node_ids keeps
+                    # one node when several manifests declare the same package
+                    # (the #1327 module-anchor exemption), and a JS
+                    # `import ... from "<pkg>"` (which already targets
+                    # _make_id("ref", raw)) now lands on it instead of dangling.
+                    dep_nid = _make_id("ref", key)
                     if dep_nid:
-                        add_node(dep_nid, key, line, file_type="concept")
+                        add_node(dep_nid, key, line, file_type="concept",
+                                 node_type="module")
                         add_edge(key_nid, dep_nid, "imports", line, context="import")
 
     # Entry: find root document → object

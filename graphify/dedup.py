@@ -444,6 +444,13 @@ def _report_id_collision(nid: str, survivor: dict, losers: list[dict]) -> None:
                     f"dropping '{lose_label}'.",
                     file=sys.stderr,
                 )
+        elif (survivor.get("type") == "module" and loser.get("type") == "module"
+              and _norm(lose_label) == _norm(keep_label)):
+            # Module anchors (#1327) and registry-package refs (#3237) are
+            # shared nodes by design: every file that imports or declares the
+            # same module mints the same id on purpose, so collapsing the
+            # copies loses nothing — not a collision worth warning about.
+            continue
         elif _defines_id(survivor) and not _defines_id(loser):
             continue  # the loser only references the entity the survivor defines
         else:
