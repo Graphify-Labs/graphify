@@ -89,6 +89,12 @@ pascal = ["tree-sitter-pascal"]
 # avoids breaking the default `uv tool install graphifyy` for everyone (#1104).
 dm = ["tree-sitter-dm"]
 terraform = ["tree-sitter-hcl"]
+# extract_vhdl() needs tree-sitter-vhdl for entity/architecture/package extraction.
+# Ships prebuilt wheels for every platform, but kept optional (like pascal/sql)
+# since VHDL projects are a minority of installs and the extractor already
+# degrades gracefully — returns an "error" key instead of raising — when absent.
+vhdl = ["tree-sitter-vhdl"]
+all = ["mcp>=1,<3", "starlette>=1.3.1,<2", "neo4j", "falkordb", "pypdf>=6.12.0", "markdownify", "watchdog", "graspologic; python_version < '3.13'", "python-docx", "openpyxl", "faster-whisper; python_version >= '3.11'", "yt-dlp>=2026.6.9", "matplotlib", "numpy>=2.0; python_version >= '3.13'", "openai", "tiktoken", "boto3", "anthropic", "tree-sitter-sql", "jieba", "tree-sitter-dm", "tree-sitter-hcl", "tree-sitter-pascal", "tree-sitter-vhdl"]
 # tree-sitter-ocaml ships prebuilt abi3 wheels for every platform, so no C
 # toolchain is needed; kept optional because OCaml is a niche corpus language.
 ocaml = ["tree-sitter-ocaml"]

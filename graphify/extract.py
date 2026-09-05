@@ -58,6 +58,8 @@ from graphify.extractors.sln import extract_sln  # noqa: F401
 from graphify.extractors.sql import extract_sql  # noqa: F401
 from graphify.extractors.terraform import extract_terraform  # noqa: F401
 from graphify.extractors.verilog import extract_verilog  # noqa: F401
+from graphify.extractors.vhdl import extract_vhdl  # noqa: F401
+from graphify.extractors.tcl import extract_tcl  # noqa: F401
 from graphify.extractors.zig import extract_zig  # noqa: F401
 from graphify.security import sanitize_metadata
 from graphify.paths import disambiguate_ambiguous_candidates
@@ -5526,6 +5528,9 @@ _DISPATCH: dict[str, Any] = {
     ".v": extract_verilog,
     ".sv": extract_verilog,
     ".svh": extract_verilog,
+    ".vhd": extract_vhdl,
+    ".vhdl": extract_vhdl,
+    ".tcl": extract_tcl,
     ".sql": extract_sql,
     ".md": extract_markdown,
     ".mdx": extract_markdown,

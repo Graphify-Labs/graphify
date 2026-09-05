@@ -267,6 +267,7 @@ Codex users also need `multi_agent = true` under `[features]` in `~/.codex/confi
 | `dm` | BYOND DreamMaker `.dm`/`.dme` AST extraction (may need a C compiler + `python3-dev` if no wheel matches your platform) | `uv tool install "graphifyy[dm]"` |
 | `terraform` | Terraform / HCL `.tf`/`.tfvars`/`.hcl` AST extraction | `uv tool install "graphifyy[terraform]"` |
 | `pascal` | Pascal / Delphi `.pas`/`.dpr`/`.dpk`/`.inc` AST extraction (more accurate `calls`/`inherits` edges; falls back to a regex extractor when absent) | `uv tool install "graphifyy[pascal]"` |
+| `vhdl` | VHDL `.vhd`/`.vhdl` AST extraction (entities, architectures, packages, subprograms) | `uv tool install "graphifyy[vhdl]"` |
 | `ocaml` | OCaml `.ml`/`.mli` AST extraction | `uv tool install "graphifyy[ocaml]"` |
 | `commonlisp` | Common Lisp `.lisp`/`.cl`/`.lsp`/`.asd` AST extraction | `uv tool install "graphifyy[commonlisp]"` |
 | `robot` | Robot Framework `.robot`/`.resource` extraction (suites, test cases, keywords, keyword-call and resource/library import edges) | `uv tool install "graphifyy[robot]"` |
@@ -342,6 +343,8 @@ To remove graphify from all platforms at once: `graphify uninstall` (add `--purg
 | Code (37 tree-sitter grammars) | `.py .ts .mts .cts .js .jsx .tsx .mjs .go .rs .java .c .cpp .cc .cxx .h .hpp .cu .cuh .metal .rb .cs .kt .kts .scala .php .swift .lua .luau .toc .zig .ps1 .psm1 .psd1 .ex .exs .m .mm .ml .mli .jl .vue .svelte .astro .groovy .gradle .dart .v .sv .svh .sql .f .f90 .f95 .f03 .f08 .pas .pp .dpr .dpk .lpr .inc .dfm .lfm .lpk .sh .bash .json .dm .dme .dmi .dmm .dmf .sln .slnx .csproj .fsproj .vbproj .xaml .razor .cshtml` (`.dm`/`.dme` requires `uv tool install graphifyy[dm]`, `.ml`/`.mli` requires `uv tool install graphifyy[ocaml]`; `.mts`/`.cts` reuse the TypeScript grammar, `.cc`/`.cxx` and CUDA `.cu`/`.cuh` and Metal `.metal` reuse the C++ grammar) |
 | Salesforce Apex | `.cls .trigger` (regex-based; classes, interfaces, enums, methods, triggers, SOQL/DML edges) |
 | Terraform / HCL | `.tf .tfvars .hcl` (requires `uv tool install graphifyy[terraform]`) |
+| VHDL | `.vhd .vhdl` (entities, architectures, packages, subprograms, use-clause imports, component instantiation edges; requires `uv tool install graphifyy[vhdl]`) |
+| Tcl | `.tcl` (proc/namespace/package require/source extraction via regex — no tree-sitter grammar dependency) |
 | OCaml | `.ml .mli` (requires `uv tool install graphifyy[ocaml]`) |
 | Common Lisp | `.lisp .cl .lsp .asd` (requires `uv tool install graphifyy[commonlisp]`) |
 | Robot Framework | `.robot .resource` (via the official `robot.api` parser, requires `uv tool install graphifyy[robot]`; suites, test cases, user keywords, keyword-call and Resource/Library/Variables import edges) |
