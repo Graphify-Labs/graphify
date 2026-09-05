@@ -1797,6 +1797,10 @@ def _csharp_method_receiver_types(
             # declaration_expression; `is Leaf lf`, `is not Node nd`,
             # `case Twig tw:` and a switch-arm `Stem st =>` are
             # declaration_patterns — all carry `type` + `name` fields and
+            # bind the name for the rest of the method. `out var v`
+            # (implicit_type) yields None from _csharp_receiver_type_name
+            # and poisons the name method-locally, matching the
+            # untypable-local rule above (no guess).
             # bind the name for the enclosing block. `out var v`
             # (implicit_type) yields None from _csharp_receiver_type_name
             # and stays untypable inside that block only — no guess at its
@@ -1808,6 +1812,8 @@ def _csharp_method_receiver_types(
                     _csharp_receiver_type_name(
                         node.child_by_field_name("type"), source
                     ),
+                )
+        stack.extend(node.children)
                     scope,
                 )
         child_scope = (

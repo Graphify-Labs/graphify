@@ -2697,6 +2697,9 @@ def _merge_csharp_partial_class_nodes(
     per_file: list[dict],
     all_nodes: list[dict],
     all_edges: list[dict],
+) -> None:
+    """Collapse C# `partial class Foo` halves split across files into ONE node
+    (#2332).
     paths: list[Path],
     root: Path,
 ) -> None:
@@ -2707,6 +2710,13 @@ def _merge_csharp_partial_class_nodes(
     declaring `partial class Foo` produces its own `Foo` node: members split
     across the halves and cross-half calls don't resolve (two candidate types
     make every receiver-typed lookup bail as ambiguous). Group partial-stamped
+    type nodes by (namespace, label) — same-named types in different namespaces
+    are distinct types, non-partial same-named types are separate declarations,
+    and nested partials are excluded (their ids omit the enclosing type, so a
+    same-named nested pair under different outers would falsely merge). The
+    canonical node is the sorted-first half by (source_file, source_location,
+    id); every edge endpoint and raw-call caller is remapped onto it. Member
+    node ids are left untouched — only the class-level nodes collapse.
     type nodes by (assembly, namespace, label) — same-named types in different
     namespaces are distinct types, non-partial same-named types are separate
     declarations, and nested partials are excluded (their ids omit the
@@ -2810,6 +2820,15 @@ def _merge_csharp_partial_class_nodes(
     for members in groups.values():
         if len(members) < 2:
             continue
+        members.sort(key=lambda n: (
+            str(n.get("source_file", "")),
+            str(n.get("source_location", "")),
+            str(n.get("id", "")),
+        ))
+        canonical_nid = members[0]["id"]
+        for other in members[1:]:
+            if other["id"] != canonical_nid:
+                remap[other["id"]] = canonical_nid
         by_assembly: dict[str, list[dict]] = {}
         for n in members:
             by_assembly.setdefault(_assembly_of_node(n["id"]), []).append(n)
@@ -6710,6 +6729,7 @@ def extract(
     # graph is identical regardless of scan root (#2072).
     _repoint_python_package_imports(paths, all_nodes, all_edges, root)
     _merge_swift_extensions(per_file, all_nodes, all_edges)
+    _merge_csharp_partial_class_nodes(per_file, all_nodes, all_edges)
     _merge_csharp_partial_class_nodes(per_file, all_nodes, all_edges, paths, root)
     _disambiguate_colliding_node_ids(all_nodes, all_edges, all_raw_calls, root)
     _canonicalize_csharp_namespace_nodes(all_nodes, all_edges)

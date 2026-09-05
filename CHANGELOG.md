@@ -1,7 +1,13 @@
 # Changelog
 
-Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
+Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## 0.9.32 (unreleased)
+## 0.9.35 (unreleased)
+## 0.9.36 (unreleased)
+## 0.9.38 (unreleased)
+## 0.9.40 (unreleased)
+## 0.9.42 (unreleased)
 ## 0.9.54 (unreleased)
 
 - Fix: a Python type reference to a name imported from another module now resolves to that module's definition — the sourceless stub is repointed onto the exact imported symbol (not a bare-name match), so two same-named types in different modules bind to their own (#3252, thanks @hopstreax).

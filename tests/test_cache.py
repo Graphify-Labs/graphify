@@ -956,7 +956,7 @@ def test_semantic_prune_removes_orphan_entries(tmp_path):
     h_a = file_hash(f, tmp_path)
     save_cached(f, {"nodes": [{"id": "a"}], "edges": []}, root=tmp_path, kind="semantic")
 
-    f.write_text("# B\n\nContent B.\n")
+    f.write_text("# B\n\nContent B is significantly longer.\n")
     h_b = file_hash(f, tmp_path)
     save_cached(f, {"nodes": [{"id": "b"}], "edges": []}, root=tmp_path, kind="semantic")
 
