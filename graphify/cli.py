@@ -3122,36 +3122,73 @@ def dispatch_command(cmd: str) -> None:
                 # --push doesn't embed credentials in the URI itself.
                 sep = "&" if "?" in conninfo else "?"
                 conninfo = f"{conninfo}{sep}password={push_password}"
-            result = _push(G, conninfo=conninfo, graph_name=age_graph_name,
-                            communities=communities, full_props=age_full_props)
-            print(f"Pushed to Apache AGE (graph '{age_graph_name}'): "
-                  f"{result['nodes']} nodes, {result['edges']} edges")
 
+            # Resolve identity *before* pushing (not after, as registration
+            # alone did in Phase 2): a known repository_id lets us look up
+            # the last-recorded snapshot and push only the diff against it
+            # (docs/AGE_PLAN.md Phase 3), instead of always doing a full
+            # read-existing-AGE-state reconcile.
+            remote_url = None
+            repository_id = None
+            commit_sha = None
+            diff = None
             if not age_no_register:
                 from graphify import age_registry as _reg
                 remote_url = age_remote_url or _reg.git_remote_url()
                 if remote_url is None:
                     print("note: no git remote found (not a git repo, or no 'origin') - "
-                          "skipping registry registration. Pass --remote-url to register "
-                          "anyway, or --no-register to silence this.", file=sys.stderr)
+                          "skipping registry registration and incremental sync. Pass "
+                          "--remote-url to enable them, or --no-register to silence this.",
+                          file=sys.stderr)
                 else:
-                    owner = _reg.resolve_owner(
-                        explicit=age_owner, remote_url=remote_url,
-                        git_email=_reg.git_user_email(),
-                    )
-                    branch = _reg.current_branch()
+                    repository_id = _reg.repository_id_for(remote_url)
+                    commit_sha = _reg.current_commit_sha()
+                    from graphify import age_snapshots as _snap
+                    from graphify.analyze import graph_diff as _graph_diff
                     try:
-                        row = _reg.register_repository(
-                            conninfo, remote_url,
-                            repo_tag=age_repo_tag, owner_id=owner,
-                            default_branch=branch, age_graph_name=age_graph_name,
-                        )
-                        print(f"Registered repository {row['repository_id']} "
-                              f"({row['remote_url']}) in the AGE registry"
-                              + (f", owner '{owner}'" if owner else ""))
+                        old_graph, _old_commit = _snap.latest_snapshot_graph(conninfo, repository_id)
                     except Exception as e:
-                        print(f"warning: push succeeded but registry registration "
-                              f"failed: {e}", file=sys.stderr)
+                        old_graph = None
+                        print(f"note: could not look up prior AGE snapshot, falling back "
+                              f"to a full push: {e}", file=sys.stderr)
+                    if old_graph is not None:
+                        diff = _graph_diff(old_graph, G)
+
+            result = _push(G, conninfo=conninfo, graph_name=age_graph_name,
+                            communities=communities, full_props=age_full_props, diff=diff)
+            sync_kind = "incremental" if diff is not None else "full"
+            print(f"Pushed to Apache AGE (graph '{age_graph_name}', {sync_kind} sync): "
+                  f"{result['nodes']} nodes, {result['edges']} edges")
+
+            if not age_no_register and remote_url is not None:
+                owner = _reg.resolve_owner(
+                    explicit=age_owner, remote_url=remote_url,
+                    git_email=_reg.git_user_email(),
+                )
+                branch = _reg.current_branch()
+                try:
+                    row = _reg.register_repository(
+                        conninfo, remote_url,
+                        repo_tag=age_repo_tag, owner_id=owner,
+                        default_branch=branch, age_graph_name=age_graph_name,
+                    )
+                    print(f"Registered repository {row['repository_id']} "
+                          f"({row['remote_url']}) in the AGE registry"
+                          + (f", owner '{owner}'" if owner else ""))
+                except Exception as e:
+                    print(f"warning: push succeeded but registry registration "
+                          f"failed: {e}", file=sys.stderr)
+
+                if commit_sha is not None:
+                    try:
+                        _snap.record_snapshot(
+                            conninfo, repository_id, commit_sha, G,
+                            graphify_version=_reg.graphify_package_version(),
+                            schema_version=_reg.SCHEMA_VERSION,
+                        )
+                    except Exception as e:
+                        print(f"warning: push succeeded but recording the logical "
+                              f"snapshot failed: {e}", file=sys.stderr)
 
     elif cmd == "benchmark":
         from graphify.benchmark import run_benchmark, print_benchmark
