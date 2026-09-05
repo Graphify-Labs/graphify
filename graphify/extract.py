@@ -6482,6 +6482,46 @@ def extract(
         stem_forms[path.resolve()] = (
             new_id, [old_pref_abs, old_pref, new_id]
         )
+    # Obsidian-style wikilink resolution (#2211 follow-up). ``[[name]]`` is a
+    # NAME reference resolved against the whole vault, not a relative path;
+    # markdown.py can only guess a sibling because a per-file extractor has no
+    # corpus view. Any guess that missed is stamped with ``wikilink_name``, and
+    # this is the first point that knows every in-root file, so repoint those
+    # edges here. Path-qualified links never carry the stamp, so relative-link
+    # semantics are untouched. On an incremental run the index only covers the
+    # changed batch plus stamped targets, exactly like the target_file remap
+    # above -- a full scan resolves the rest.
+    _wl_edges = [e for e in all_edges if e.get("wikilink_name")]
+    if _wl_edges and root is not None:
+        _DOC_EXTS = {".md", ".mdx", ".qmd", ".markdown", ".rst", ".txt"}
+        name_index: dict[str, list[Path]] = {}
+        for _p in remap_paths:
+            if _p.suffix.lower() not in _DOC_EXTS:
+                continue
+            try:
+                _rel = _p.resolve().relative_to(root)
+            except (OSError, RuntimeError, ValueError):
+                continue
+            name_index.setdefault(_rel.stem.lower(), []).append(_rel)
+        for _e in _wl_edges:
+            _cands = name_index.get(str(_e.pop("wikilink_name")).lower())
+            if not _cands:
+                continue  # genuinely broken link: stays dangling, as before
+            _src_dir = None
+            _sf = _e.get("source_file")
+            if _sf:
+                try:
+                    _src_dir = Path(_sf).resolve().relative_to(root).parent
+                except (OSError, RuntimeError, ValueError):
+                    _src_dir = None
+            # Deterministic pick: same folder as the linking note first (mirrors
+            # Obsidian), then the shallowest path, then lexicographic.
+            _chosen = min(
+                _cands,
+                key=lambda c: (c.parent != _src_dir, len(c.parts), str(c)),
+            )
+            _e["target"] = _file_node_id(_chosen)
+
     if id_remap:
         for n in all_nodes:
             if n.get("id") in id_remap:
