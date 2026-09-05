@@ -94,3 +94,208 @@ export const A_MAX = Number(process.env.A_MAX || 10);
 
     assert import_targets
     assert import_targets <= node_ids
+
+
+def test_destructuring_declarator_nodes_bound_names_not_pattern_text(tmp_path):
+    """A destructuring declarator binds identifiers; its ``name`` field is the
+    pattern source. Reading that field verbatim minted a node labelled
+    ``{ a, b: renamed, c = 1, ...rest }`` — text that names no symbol and can
+    never be a reference target."""
+    source = tmp_path / "patterns.ts"
+    source.write_text(
+        """
+type Cfg = { a: number; b: number; c: number; deep: { inner: number } };
+const { a, b: renamed, c = 1, ...rest } = obj as Cfg;
+const [first, , third] = arr as number[];
+const { deep: { inner } } = obj as Cfg;
+""",
+        encoding="utf-8",
+    )
+
+    result = extract_js(source)
+    labels = {node["label"] for node in result["nodes"]}
+
+    # Each bound identifier is its own node.
+    assert {"a", "renamed", "c", "rest", "first", "third", "inner"} <= labels
+    # The pattern source is never a label.
+    assert not any(label.startswith(("{", "[")) for label in labels)
+    # `b` is a property key, not a binding — `b: renamed` binds only `renamed`.
+    assert "b" not in labels
+    # `deep` is a key too; the nested pattern binds `inner`.
+    assert "deep" not in labels
+    # Array holes bind nothing and must not mint an empty-labelled node.
+    assert "" not in labels
+
+
+def test_destructured_rune_props_do_not_mint_a_pattern_node(tmp_path):
+    """The shape that made this universal: every Svelte 5 component
+    destructures ``$props()``, so the pattern text was one junk node per
+    component."""
+    source = tmp_path / "props.ts"
+    source.write_text(
+        """
+let { levels, selected = $bindable(), ariaLabel, disabled = false } = $props();
+""",
+        encoding="utf-8",
+    )
+
+    result = extract_js(source)
+    labels = {node["label"] for node in result["nodes"]}
+
+    assert {"levels", "selected", "ariaLabel", "disabled"} <= labels
+    # The default expressions are not bindings.
+    assert "$bindable" not in labels
+    assert not any(label.startswith("{") for label in labels)
+
+
+def test_destructuring_initializer_closures_still_tracked(tmp_path):
+    """Closures in a destructured initializer are attributed to the first
+    binding, so their calls are still walked (#2552 behaviour preserved)."""
+    source = tmp_path / "closures.ts"
+    source.write_text(
+        """
+function target() {}
+const { handler } = wrapper(() => { target(); });
+""",
+        encoding="utf-8",
+    )
+
+    result = extract_js(source)
+    labels = {node["label"] for node in result["nodes"]}
+    assert "handler" in labels
+    by_label = {n["label"]: n["id"] for n in result["nodes"]}
+    calls = {
+        (e["source"], e["target"])
+        for e in result["edges"]
+        if e.get("relation") == "calls"
+    }
+    assert (by_label["handler"], by_label["target()"]) in calls
+
+
+def test_destructured_require_binds_the_import_not_a_local_node(tmp_path):
+    """``const { doWork } = require('./lib')`` binds an import. Noding it as a
+    local symbol would shadow the real cross-file definition, so the call in
+    ``run()`` would resolve to this file's stub instead of ``lib.js``."""
+    caller = tmp_path / "caller.js"
+    callee = tmp_path / "lib.js"
+    caller.write_text(
+        "const { doWork } = require('./lib');\n"
+        "function run() { doWork(); }\n",
+        encoding="utf-8",
+    )
+    callee.write_text(
+        "function doWork() { return 1; }\n"
+        "module.exports = { doWork };\n",
+        encoding="utf-8",
+    )
+
+    result = extract([caller, callee], cache_root=tmp_path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    calls = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and nodes[e["source"]]["label"] == "run()"
+        and nodes[e["target"]]["label"] == "doWork()"
+    ]
+    assert len(calls) == 1
+    # The call resolves into the callee's file, not a local stub.
+    assert nodes[calls[0]["target"]]["source_file"].endswith("lib.js")
+
+
+def test_non_require_call_initializer_still_binds(tmp_path):
+    """The require exclusion keys on the callee name, not on the call shape —
+    any other ``identifier(...)`` initializer still binds its names."""
+    source = tmp_path / "runes.ts"
+    source.write_text("let { levels, disabled } = $props();\n", encoding="utf-8")
+
+    labels = {n["label"] for n in extract_js(source)["nodes"]}
+    assert {"levels", "disabled"} <= labels
+
+
+def test_member_access_require_is_still_an_import(tmp_path):
+    """``const { doWork } = require('./lib').utils`` is a CJS import too.
+
+    ``_require_imports_js`` edges the member-access form, so
+    ``_is_require_initializer`` must recognise it as well — otherwise the
+    destructured name would be both imported and shadowed by a local stub,
+    and the call in ``run()`` would resolve to the stub.
+    """
+    caller = tmp_path / "caller.js"
+    callee = tmp_path / "lib.js"
+    caller.write_text(
+        "const { doWork } = require('./lib').utils;\n"
+        "function run() { doWork(); }\n",
+        encoding="utf-8",
+    )
+    callee.write_text(
+        "function doWork() { return 1; }\n"
+        "module.exports = { utils: { doWork } };\n",
+        encoding="utf-8",
+    )
+
+    result = extract([caller, callee], cache_root=tmp_path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    local_stubs = [
+        n for n in result["nodes"]
+        if n["label"] == "doWork" and n["source_file"].endswith("caller.js")
+    ]
+    assert not local_stubs
+    calls = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and nodes[e["source"]]["label"] == "run()"
+        and nodes[e["target"]]["label"] == "doWork()"
+    ]
+    assert len(calls) == 1
+    assert nodes[calls[0]["target"]]["source_file"].endswith("lib.js")
+
+
+def test_pattern_binding_nothing_mints_no_node(tmp_path):
+    """A pattern that binds no identifier has no name to node.
+
+    Falling back to the pattern SOURCE is the bug `_js_pattern_bound_names`
+    exists to fix; the `normalize_id` guard only caught patterns that
+    normalize to nothing, so `{ a: {} }` still shipped as a symbol.
+    """
+    for name, body in (
+        ("empty", "export const {} = getThing();\n"),
+        ("nested", "export const { a: {} } = getThing();\n"),
+        ("comment", "export const { /* nothing */ } = getThing();\n"),
+        ("arr", "export const [] = getThing();\n"),
+    ):
+        source = tmp_path / f"{name}.ts"
+        source.write_text(body, encoding="utf-8")
+        labels = {n["label"] for n in extract_js(source)["nodes"]}
+        assert labels == {f"{name}.ts"}, name
+
+
+def test_exported_destructured_require_is_still_suppressed(tmp_path):
+    """Binding exported patterns must not undo the CJS-import exclusion."""
+    source = tmp_path / "barrel.js"
+    source.write_text(
+        "export const { doWork } = require('./lib');\n", encoding="utf-8"
+    )
+    labels = {n["label"] for n in extract_js(source)["nodes"]}
+    assert "doWork" not in labels
+
+
+def test_computed_require_specifier_still_binds_locally(tmp_path):
+    """`require(name)` names no module, so nothing replaces the local binding.
+
+    Suppressing it would delete the name from the graph rather than repoint
+    it: `_require_imports_js` needs a string literal to emit an edge at all.
+    """
+    for name, body in (
+        ("var", "const m = './lib';\nexport const { doWork } = require(m);\n"),
+        ("concat", "export const { doWork } = require('./' + n);\n"),
+    ):
+        source = tmp_path / f"{name}.js"
+        source.write_text(body, encoding="utf-8")
+        labels = {n["label"] for n in extract_js(source)["nodes"]}
+        assert "doWork" in labels, name
+
+
+def test_literal_require_specifier_is_still_suppressed(tmp_path):
+    source = tmp_path / "lit.js"
+    source.write_text("const { doWork } = require('./lib');\n", encoding="utf-8")
+    assert "doWork" not in {n["label"] for n in extract_js(source)["nodes"]}

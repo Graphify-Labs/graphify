@@ -138,6 +138,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _ts_collect_type_refs,
     _ts_heritage_clause_entries,
     _ts_walk_class_members,
+    _sfc_mask_non_script,
     _vue_mask_non_script,
     _walk_js_tree,
     _walk_python_tree,
@@ -1681,49 +1682,93 @@ def _emit_rescued_import(
 
 
 def extract_svelte(path: Path) -> dict:
-    """Extract imports from .svelte files: script-block via JS AST + template regex fallback.
+    """Extract imports, symbols, and type refs from a ``.svelte`` component.
 
-    Tree-sitter only sees the <script> block. Svelte template syntax like
-    {#await import('./X.svelte')} lives in the markup layer and is invisible
-    to the JS parser, so a regex pass covers those dynamic imports.
+    Masks the non-``<script>`` regions and parses the script with the grammar
+    its ``lang`` implies (``tsx``->TSX, ``js``/``jsx``->JS, ``ts`` or unset->TS;
+    TS is a superset of JS so it is a safe default), mirroring
+    :func:`extract_vue`. Feeding the whole component to the JS grammar makes the
+    markup a top-level ERROR node, so ``import_statement`` and declaration nodes
+    are never reached and everything but a stray symbol is dropped (#713).
+
+    Both script blocks of a Svelte 5 component survive the mask, so a
+    ``<script module>`` block is parsed alongside the instance script.
+
+    A regex pass then recovers ``import('...')`` dynamic imports, which the AST
+    pass does not edge and which legally live in markup-layer template syntax
+    such as ``{#await import('./X.svelte')}`` — outside every script block, and
+    so blanked out of the masked source the AST sees.
+
+    Static imports are edged by the AST pass, so the old regex rescue for them
+    would double-emit and is used only when the script fails to parse, where
+    the AST pass reaches no ``import_statement`` at all.
     """
-    result = _extract_generic(path, _JS_CONFIG)
+    try:
+        src = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as e:
+        # Report the failure rather than returning an empty result: an
+        # unreadable component is indistinguishable from an empty one
+        # otherwise, and extract() warns on `error` (#2551).
+        return {"nodes": [], "edges": [], "error": f"cannot read {path}: {e}"}
+
+    masked, lang = _sfc_mask_non_script(src)
+    if lang == "tsx":
+        config = _TSX_CONFIG
+    elif lang in ("js", "jsx"):
+        config = _JS_CONFIG
+    else:  # "ts" or unspecified — default to the TS grammar (superset of JS)
+        config = _TS_CONFIG
+
+    result = _extract_generic(path, config, source_override=masked.encode("utf-8"))
+
     try:
         import re as _re
-        src = path.read_text(encoding="utf-8", errors="replace")
         existing_ids = {n["id"] for n in result.get("nodes", [])}
         # Source file node ID must match the one _extract_generic creates:
         # _make_id(str(path)) - single arg, no stem prefix. Otherwise the source
         # endpoint is a phantom node and build_from_json drops the edge (#701).
         file_node_id = _make_id(str(path))
+        if result.get("error") and not result.get("nodes"):
+            # A hard failure (grammar missing, unreadable source) returns no
+            # nodes at all, so a rescued edge would have a dangling source and
+            # be dropped at build time. Mint the file node _extract_generic
+            # would have, in the same shape, so the rescue is worth running.
+            # `error` stays on the result for extract()'s own reporting.
+            result.setdefault("nodes", []).append({
+                "id": file_node_id, "label": path.name,
+                "file_type": "code", "source_file": str(path),
+                "source_location": "L1",
+            })
+            existing_ids.add(file_node_id)
         aliases = _load_tsconfig_aliases(path.parent)
         base_url = _load_tsconfig_base_url(path.parent)
+        # Scanned over the raw source, not the masked one, so template-layer
+        # dynamic imports are seen. Resolution is shared with the static pass:
+        # relative paths and tsconfig aliases probe real on-disk extensions
+        # (#716, #701), and a target that IS a real file emits an edge stamped
+        # with target_file instead of an absolute-id ghost stub (#2195).
         for m in _re.finditer(r"""import\(\s*['"]([^'"]+)['"]\s*\)""", src):
             raw = m.group(1)
             if not raw:
                 continue
-            # Resolution + emit shared with the static pass below: relative
-            # paths and tsconfig aliases probe real on-disk extensions (#716,
-            # #701), and a target that IS a real file emits an edge stamped
-            # with target_file instead of an absolute-id ghost stub (#2195).
             _emit_rescued_import(
                 result, existing_ids, file_node_id, path, raw,
                 "dynamic_import", aliases, base_url,
             )
-        # Static imports inside <script> blocks. The JS tree-sitter parser fed
-        # the full .svelte file produces a top-level ERROR node (HTML markup
-        # is not valid JS), so import_statement nodes are never reached and
-        # static imports are silently dropped (#713). Regex over each script
-        # body recovers them.
-        script_re = _re.compile(
-            r"<script\b[^>]*>([\s\S]*?)</script\s*>", _re.IGNORECASE
-        )
-        static_import_re = _re.compile(
-            r"""import\s+(?:[^'"`;]+?\s+from\s+)?['"]([^'"]+)['"]"""
-        )
-        for script_match in script_re.finditer(src):
-            script_body = script_match.group(1)
-            for m in static_import_re.finditer(script_body):
+        if result.get("parse_errors") or result.get("error"):
+            # The AST pass produced no usable tree — the masked script parsed
+            # WITH errors (`parse_errors`, so `import_statement` nodes may
+            # never have been reached), or it failed outright (`error`: the
+            # grammar is missing, the source unreadable). Both leave imports
+            # unedged, so fall back to the regex rescue the pre-mask extractor
+            # ran unconditionally.
+            # Gated on the failure so a clean parse does not double-emit: the
+            # AST already edges those specifiers. Scanned over the MASKED
+            # source, whose only surviving text is the script regions.
+            static_import_re = _re.compile(
+                r"""import\s+(?:[^'"`;]+?\s+from\s+)?['"]([^'"]+)['"]"""
+            )
+            for m in static_import_re.finditer(masked):
                 raw = m.group(1)
                 if not raw:
                     continue
@@ -1731,6 +1776,13 @@ def extract_svelte(path: Path) -> dict:
                     result, existing_ids, file_node_id, path, raw,
                     "imports_from", aliases, base_url,
                 )
+        # Both rescues can repeat an edge: a recovered parse edges some
+        # imports before the error node, and a specifier imported twice in one
+        # file (`import('./X')` in two markup branches) is matched twice.
+        # Imported inside the function, as cli.py and watch.py do, to keep
+        # extract.py free of a module-level dependency on build.py.
+        from graphify.build import dedupe_edges
+        result["edges"] = dedupe_edges(result.get("edges", []))
     except Exception:
         pass
     return result
@@ -1814,10 +1866,13 @@ def extract_vue(path: Path) -> dict:
     """
     try:
         src = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return {"nodes": [], "edges": []}
+    except OSError as e:
+        # Report the failure rather than returning an empty result: an
+        # unreadable component is indistinguishable from an empty one
+        # otherwise, and extract() warns on `error` (#2551).
+        return {"nodes": [], "edges": [], "error": f"cannot read {path}: {e}"}
 
-    masked, lang = _vue_mask_non_script(src)
+    masked, lang = _sfc_mask_non_script(src)
     if lang == "tsx":
         config = _TSX_CONFIG
     elif lang in ("js", "jsx"):
