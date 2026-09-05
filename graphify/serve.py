@@ -1,8 +1,11 @@
 # MCP stdio server - exposes graph query tools to Claude and other agents
 from __future__ import annotations
+import hashlib
 import json
 import math
 import os
+import pickle
+import tempfile
 import re
 import sys
 from array import array
@@ -73,6 +76,10 @@ def _load_graph(graph_path: str) -> nx.Graph:
             G.graph["_learning_overlay"] = _llo(resolved)
         except Exception:
             G.graph["_learning_overlay"] = {}
+        # Source path for the on-disk trigram cache key (`_get_trigram_index`).
+        # The index is derived purely from this file, so its mtime and size are
+        # a sufficient generation marker.
+        G.graph["_graph_path"] = str(resolved)
         return G
     except json.JSONDecodeError as exc:
         print(f"error: graph.json is corrupted ({exc}). Re-run /graphify to rebuild.", file=sys.stderr)
@@ -395,6 +402,186 @@ def _node_search_text(data: dict, nid: str) -> str:
     return "\x00".join(fields)
 
 
+# The in-memory cache below is keyed on the graph object, which is right for a
+# long-lived server but never hits from the CLI, where every invocation is a
+# fresh process. Building the index dominates a cold CLI call (~6.7s of ~10.3s
+# on the Masque graph) while the result is small and pickles in ~0.05s, so it is
+# also persisted beside graph.json. Set GRAPHIFY_TRIGRAM_CACHE_DISABLE=1 to skip.
+_TRIGRAM_CACHE_VERSION = 1
+
+
+def _atomic_write_pickle(dest: Path, blob) -> None:
+    """Write `blob` to `dest` via a per-process temp file in the same directory.
+
+    The temp name has to be unique. With a shared `<dest>.pkl.tmp`, two
+    processes caching concurrently both open that one path: when the first
+    renames it into place the second is still holding an open descriptor to
+    that inode and keeps writing, so it corrupts the file the first just
+    published, and its own rename then fails because the temp path is gone. A
+    mixed pickle stream does not unpickle, so the cost is a rebuild rather than
+    a wrong answer, but the corrupt file survives until something overwrites
+    it. Measured on six concurrent writers: five failed.
+
+    mkstemp in `dest.parent` keeps the rename on one filesystem, which is what
+    makes it atomic.
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=str(dest.parent), suffix=".pkl.tmp")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            pickle.dump(blob, fh, protocol=5)
+        tmp.replace(dest)  # atomic within one filesystem
+    except Exception:
+        try:
+            tmp.unlink()
+        except Exception:
+            pass
+        raise
+
+
+def _trigram_cache_key(G: nx.Graph):
+    """Identity of the graph file the index was built from, or None if unknown.
+
+    Computed once per graph object and memoized on `G.graph`. It has to be the
+    same key at load and at store: a fresh stat() at store time describes the
+    file as it is THEN, and if graph.json was rebuilt while this process held
+    the old content in memory, the index would be written under the new file's
+    key. The next reader would load an index built from content that file no
+    longer has, with nothing to reveal it. Memoizing pins the key to the read
+    the index was actually built from.
+
+    The path is resolved here so that this string and the cache filename's
+    digest derive from the same value; resolving in one place and not the other
+    lets a symlinked and a real path share a filename while disagreeing on the
+    key, so each process invalidates the other's entry forever.
+    """
+    if os.environ.get("GRAPHIFY_TRIGRAM_CACHE_DISABLE", "").lower() in ("1", "true", "yes"):
+        return None
+    # Memoized as an attribute on the graph OBJECT, not in `G.graph`. Anything
+    # in `G.graph` is serialized by node_link_data, and `graphify merge-driver`
+    # loads through this module and writes the result back to graph.json — so a
+    # key stored there would put an absolute path, and the OS username in it,
+    # into a committed file. That is the leak #1789 was filed for.
+    cached = getattr(G, "_gfy_trigram_cache_key", None)
+    if cached is not None:
+        return cached
+    raw = G.graph.get("_graph_path")
+    if not raw:
+        return None
+    try:
+        resolved = Path(raw).resolve()
+        st = resolved.stat()
+    except OSError:
+        return None
+    key = [str(resolved), _TRIGRAM_CACHE_VERSION, st.st_mtime_ns, st.st_size]
+    try:
+        G._gfy_trigram_cache_key = key
+    except Exception:  # exotic graph classes with __slots__
+        pass
+    return key
+
+
+def _trigram_cache_path(graph_path: str, key=None) -> Path:
+    """Where the persisted index lives.
+
+    Deliberately outside the corpus. Writing an 80 MB derived binary next to
+    graph.json puts it inside whatever VCS tracks the graph -- for the Masque
+    depot that means one `p4 reconcile -a` away from being submitted -- and a
+    per-machine cache is per-machine anyway. GRAPHIFY_TRIGRAM_CACHE_DIR
+    overrides.
+
+    The filename carries a generation digest when `key` is given, the same way
+    the graph cache does, so a rebuilt graph.json writes a NEW name instead of
+    replacing the existing file. That is not tidiness. On Windows, replacing a
+    destination another process holds open fails with PermissionError
+    (WinError 5), where POSIX allows it: measured on Windows 11 with a reader
+    holding the file open for three seconds, all four concurrent writers
+    failed. Never contending for one path removes the failure rather than
+    retrying around it.
+
+    `key` is optional so a caller without one can still locate legacy entries.
+    """
+    root = os.environ.get("GRAPHIFY_TRIGRAM_CACHE_DIR", "").strip()
+    if root:
+        base = Path(root).expanduser()
+    elif os.name == "nt" and os.environ.get("LOCALAPPDATA"):
+        # ~/.cache is a POSIX convention; on Windows the per-user cache lives
+        # under LOCALAPPDATA, which is also excluded from roaming profiles --
+        # correct for an 80 MB derived file nobody wants synced between machines.
+        base = Path(os.environ["LOCALAPPDATA"]) / "graphify" / "cache"
+    else:
+        base = Path(os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache")) / "graphify"
+    # `graph_path` is already key[0], which _trigram_cache_key resolved. Do not
+    # resolve again: the key and this digest must come from one string.
+    digest = hashlib.sha1(str(graph_path).encode("utf-8")).hexdigest()[:16]
+    if key is None:
+        return base / f"trigram-{digest}.pkl"
+    gen = hashlib.sha1(repr(list(key)).encode("utf-8")).hexdigest()[:12]
+    return base / f"trigram-{digest}-{gen}.pkl"
+
+
+def _prune_trigram_cache(dest: Path) -> None:
+    """Delete entries for superseded generations of the same graph.json.
+
+    The name is `trigram-<path>-<generation>.pkl`, so a rebuild leaves the old
+    entry behind. Same reasoning and roughly the same size per entry as
+    `_prune_graph_cache`. Runs on the write path only, so a cache hit never
+    prunes -- reaching a hit requires an earlier write, which did. Never
+    raises: a failure costs disk, not correctness.
+    """
+    try:
+        stem = dest.name.split("-")[1]
+        for old in dest.parent.glob(f"trigram-{stem}-*.pkl"):
+            if old != dest:
+                old.unlink(missing_ok=True)
+        legacy = dest.parent / f"trigram-{stem}.pkl"  # pre-generation entries
+        if legacy.exists():
+            legacy.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def _load_trigram_cache(G: nx.Graph):
+    """Read a previously built index, or None on any miss. Never raises.
+
+    The cache sits beside graph.json inside the workspace, so unpickling it is
+    exactly as trusted as loading the graph itself: anyone who can plant this
+    file can already rewrite the graph it was derived from.
+    """
+    key = _trigram_cache_key(G)
+    if key is None:
+        return None
+    try:
+        with _trigram_cache_path(key[0], key).open("rb") as fh:
+            blob = pickle.load(fh)
+        if blob.get("key") != key:
+            return None
+        # `set_cache` memoizes within one process only; it is never persisted.
+        return {"ids": blob["ids"], "postings": blob["postings"], "set_cache": {}}
+    except Exception:
+        return None
+
+
+def _store_trigram_cache(G: nx.Graph, idx: dict) -> None:
+    """Persist the index next to graph.json. Never raises; a failure just costs
+    the next process a rebuild."""
+    key = _trigram_cache_key(G)
+    if key is None:
+        return
+    try:
+        # Inside the guard: _trigram_cache_path resolves the home directory,
+        # which raises RuntimeError when it cannot be determined, and this
+        # function is documented as never raising.
+        _dest = _trigram_cache_path(key[0], key)
+        _atomic_write_pickle(
+            _dest, {"key": key, "ids": idx["ids"], "postings": idx["postings"]}
+        )
+        _prune_trigram_cache(_dest)
+    except Exception:
+        pass
+
+
 def _get_trigram_index(G: nx.Graph) -> dict:
     """Lazily build and cache a trigram -> node-position postings map on the graph.
 
@@ -404,6 +591,10 @@ def _get_trigram_index(G: nx.Graph) -> dict:
     """
     idx = G.graph.get("_trigram_index")
     if idx is not None:
+        return idx
+    idx = _load_trigram_cache(G)
+    if idx is not None:
+        G.graph["_trigram_index"] = idx
         return idx
     ids = list(G.nodes())
     postings: dict[str, array] = {}
@@ -415,6 +606,7 @@ def _get_trigram_index(G: nx.Graph) -> dict:
                 postings[g] = bucket
             bucket.append(i)
     idx = {"ids": ids, "postings": postings, "set_cache": {}}
+    _store_trigram_cache(G, idx)
     G.graph["_trigram_index"] = idx
     return idx
 
@@ -1302,6 +1494,13 @@ def _find_node_tiers(
     its consumers take `[0]` — which resolves by graph-iteration order when one
     tier holds several nodes from different files. See `find_node_ambiguity`.
     """
+    # An exact node-id hit needs no search at all. Callers that already hold an
+    # id -- notably the second call of the ambiguity two-step, which is handed
+    # one in the error text -- would otherwise pay a full trigram index build to
+    # rediscover a node the graph can look up in constant time. A single-entry
+    # tier also means `find_node_ambiguity` correctly reports no ambiguity.
+    if G.has_node(label):
+        return ([], [label], [], [])
     term = " ".join(_search_tokens(label))
     if not term:
         return []
