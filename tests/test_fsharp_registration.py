@@ -1,0 +1,314 @@
+"""Registry tests for F# — each asserts one wiring point, so that deleting any
+single registration is caught by a named failure rather than by silence.
+
+The F# gap shipped in the first place because .fs matched *no* category and was
+skipped without an error; these tests exist to make that class of regression
+loud.
+"""
+from __future__ import annotations
+
+import pytest
+
+# NOTE: no module-level importorskip. The registry entries below are pure
+# literals whose absence is a shippable bug regardless of whether the grammar
+# is installed; only the two dispatch tests need the grammar and skip
+# individually.
+
+
+def test_detect_categorizes_fs_as_code():
+    from graphify.detect import CODE_EXTENSIONS, DOC_EXTENSIONS
+    assert ".fs" in CODE_EXTENSIONS
+    assert ".fsx" in CODE_EXTENSIONS
+    assert ".fs" not in DOC_EXTENSIONS
+
+
+def test_watch_covers_fs():
+    from graphify.watch import _WATCHED_EXTENSIONS
+    assert ".fs" in _WATCHED_EXTENSIONS and ".fsx" in _WATCHED_EXTENSIONS
+
+
+def test_dispatch_routes_fs_to_fsharp_extractor(tmp_path):
+    pytest.importorskip("tree_sitter_fsharp")
+    # Through the public extract() path, not a direct import: a missing
+    # dispatch entry silently yields zero nodes for the file.
+    from graphify.extract import extract
+    p = tmp_path / "m.fs"
+    p.write_text("module M\nlet f x = x\n", encoding="utf-8")
+    r = extract([p], root=tmp_path)
+    labels = {n["label"] for n in r["nodes"]}
+    assert "f()" in labels, "extract() did not route .fs to the F# extractor"
+
+
+def test_dispatch_routes_fsx_to_fsharp_extractor(tmp_path):
+    pytest.importorskip("tree_sitter_fsharp")
+    # .fsx must be tested separately: the .fs entry alone keeps this green,
+    # and the .fsx entry's removal survived a mutation run until this existed.
+    from graphify.extract import extract
+    p = tmp_path / "s.fsx"
+    p.write_text("let hello name = name\n", encoding="utf-8")
+    r = extract([p], root=tmp_path)
+    labels = {n["label"] for n in r["nodes"]}
+    assert "hello()" in labels, "extract() did not route .fsx to the F# extractor"
+
+
+def test_extra_hint_names_fsharp():
+    from graphify.extract import _EXTRA_FOR_EXTENSION
+    assert _EXTRA_FOR_EXTENSION.get(".fs") == "fsharp"
+    assert _EXTRA_FOR_EXTENSION.get(".fsx") == "fsharp"
+
+
+def test_fs_shares_dotnet_interop_family_with_cs():
+    # The load-bearing entry: same family is what allows an F# reference stub
+    # to rewire onto a C# definition instead of dangling.
+    from graphify.extract import _LANG_FAMILY_BY_EXT
+    assert _LANG_FAMILY_BY_EXT.get(".fs") == _LANG_FAMILY_BY_EXT[".cs"] == "dotnet"
+    assert _LANG_FAMILY_BY_EXT.get(".fsx") == "dotnet"
+
+
+def test_analyze_family_matches_cs():
+    from graphify.analyze import _LANG_FAMILY
+    assert _LANG_FAMILY.get(".fs") == _LANG_FAMILY[".cs"]
+
+
+def test_build_edge_family_matches_cs():
+    from graphify.build import _EDGE_LANG_FAMILY
+    assert _EDGE_LANG_FAMILY.get(".fs") == _EDGE_LANG_FAMILY[".cs"]
+    assert _EDGE_LANG_FAMILY.get(".fsx") == _EDGE_LANG_FAMILY[".cs"]
+
+
+def test_glsl_fragment_shader_is_not_dispatched_to_fsharp(tmp_path):
+    # .fs is also the standard GLSL fragment-shader extension. A shader must
+    # get NO extractor (no-AST-extractor warning path), not be ERROR-parsed
+    # into sourceless dotnet-family stubs.
+    from graphify.extract import _get_extractor
+    p = tmp_path / "frag.fs"
+    p.write_text("#version 330 core\nuniform vec4 color;\n"
+                 "void main() { gl_FragColor = color; }\n", encoding="utf-8")
+    assert _get_extractor(p) is None
+
+    q = tmp_path / "real.fs"
+    q.write_text("module M\nlet f x = x\n", encoding="utf-8")
+    assert _get_extractor(q) is not None
+
+
+def test_glsl_guard_is_load_bearing_for_marker_collisions(tmp_path):
+    # A #version-directive shader whose body carries an F#-shaped line-start
+    # (`type ` — GLSL-invalid, but sniffing is lexical) must STILL be rejected:
+    # strong GLSL directives outrank strong F# evidence. Deleting the strong
+    # GLSL check flips this file to "F#", so this test kills that mutant.
+    # (Since round 11 the word-shaped markers are weak, so only the #version/
+    # #extension directives can carry this kill.)
+    from graphify.extract import _get_extractor
+    p = tmp_path / "lighting.fs"
+    p.write_text("#version 330 core\n"
+                 "type of_light = 1; // hybrid nonsense, lexically F#-shaped\n"
+                 "in vec3 normal;\nout vec4 fragColor;\n"
+                 "void main() { fragColor = vec4(normal, 1.0); }\n",
+                 encoding="utf-8")
+    assert _get_extractor(p) is None
+
+
+def test_modern_shader_without_version_line_not_dispatched(tmp_path):
+    from graphify.extract import _get_extractor
+    p = tmp_path / "phong.fs"
+    p.write_text("// phong lighting\nin vec3 normal;\nout vec4 fragColor;\n"
+                 "void main() { float d = 0.0; }\n", encoding="utf-8")
+    assert _get_extractor(p) is None
+
+
+# ── Round-4 sniff + resolution gates ─────────────────────────────────────────
+
+
+def test_fsharp_with_glsl_words_in_comments_is_dispatched(tmp_path):
+    # Round-3's sniff DROPPED this file ("uniform " matched inside a comment).
+    from graphify.extract import _get_extractor
+    p = tmp_path / "stats.fs"
+    p.write_text("module Stats\n"
+                 "// Draws a sample from a uniform distribution over [lo, hi).\n"
+                 "let sampleUniform lo hi = lo + hi\n", encoding="utf-8")
+    assert _get_extractor(p) is not None
+
+
+def test_fsharp_with_float_expression_lines_is_dispatched(tmp_path):
+    # Cross-exam counterexample: real corpus lines start with `float ` —
+    # weak GLSL evidence must not override a strong F# declaration.
+    from graphify.extract import _get_extractor
+    p = tmp_path / "fmt.fs"
+    p.write_text("namespace Grasp.Tui\nmodule Fmt =\n"
+                 "    let pct count total =\n"
+                 "        float count / float total * 100.0\n", encoding="utf-8")
+    assert _get_extractor(p) is not None
+
+
+def test_marker_free_shader_rejected_on_weak_evidence(tmp_path):
+    from graphify.extract import _get_extractor
+    p = tmp_path / "blur.fs"
+    p.write_text("// blur\nfloat weight = 0.5;\nfloat offset = 1.3;\n",
+                 encoding="utf-8")
+    assert _get_extractor(p) is None
+
+
+def test_comment_only_marker_regression(tmp_path):
+    # Kills the mutant that re-adds b"//" as F# evidence: this shader's only
+    # F#-marker-shaped bytes are comments.
+    from graphify.extract import _get_extractor
+    p = tmp_path / "glow.fs"
+    p.write_text("// glow pass\n// type: additive\nfloat glow = 2.0;\n",
+                 encoding="utf-8")
+    assert _get_extractor(p) is None
+
+
+def test_pure_fsharp_corpus_resolves_open_to_canonical_namespace(tmp_path):
+    # The imports repoint was gated on .cs presence: a pure-F# corpus dangled
+    # every open edge and build silently pruned them (verified by two arms).
+    pytest.importorskip("tree_sitter_fsharp")
+    from graphify.extract import extract
+    from graphify.extractors.engine import _csharp_namespace_id
+    lib = tmp_path / "Lib.fs"
+    lib.write_text("namespace Acme.Widgets\ntype Gadget() = member this.Go() = 1\n",
+                   encoding="utf-8")
+    prog = tmp_path / "Program.fs"
+    prog.write_text("namespace Acme.App\nopen Acme.Widgets\n"
+                    "module Main =\n    let run () = 1\n", encoding="utf-8")
+    r = extract([lib, prog], root=tmp_path, max_workers=1)
+    canon = _csharp_namespace_id("Acme.Widgets")
+    hits = [e for e in r["edges"]
+            if e["relation"] == "imports" and e["target"] == canon]
+    assert hits, "open edge was not repointed to the canonical namespace node"
+
+
+def test_missing_grammar_is_reported_not_raised(tmp_path, monkeypatch):
+    # Lives HERE (no module-level importorskip): it fakes the ImportError, so
+    # it must run precisely on machines where the grammar is absent.
+    from graphify.extractors.fsharp import extract_fsharp
+    import builtins
+    real_import = builtins.__import__
+
+    def fake_import(name, *a, **k):
+        if name == "tree_sitter_fsharp":
+            raise ImportError("boom")
+        return real_import(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    p = tmp_path / "x.fs"
+    p.write_text("module M\n", encoding="utf-8")
+    r = extract_fsharp(p)
+    assert r["nodes"] == [] and "not installed" in r["error"]
+
+
+def test_bom_prefixed_fsharp_is_dispatched(tmp_path):
+    from graphify.extract import _get_extractor
+    p = tmp_path / "bom.fs"
+    p.write_bytes(b"\xef\xbb\xbfmodule M\n")  # BOM + single marker line
+    assert _get_extractor(p) is not None
+
+
+def test_forth_with_paren_star_comment_not_dispatched(tmp_path):
+    # Forth stack-effect comments can start a line with `(*`; that byte pair
+    # must not count as F# evidence (bot round-8 find, probe-confirmed).
+    from graphify.extract import _get_extractor
+    p = tmp_path / "math.fs"
+    p.write_text("( Forth multiply )\n(* stack: a b -- a*b )\n: square dup * ;\n",
+                 encoding="utf-8")
+    assert _get_extractor(p) is None
+
+
+def test_fsharp_with_block_comment_header_still_dispatched(tmp_path):
+    from graphify.extract import _get_extractor
+    p = tmp_path / "hdr.fs"
+    p.write_text("(* Copyright 2026\n   licensed as... *)\nmodule M\nlet f x = x\n",
+                 encoding="utf-8")
+    assert _get_extractor(p) is not None
+
+
+def test_fsharp_calling_identifier_named_uniform_is_dispatched(tmp_path):
+    # `uniform` is a valid F# identifier; a call on a continuation line must
+    # not reject the file (bot round-9 find, probe-confirmed).
+    from graphify.extract import _get_extractor
+    p = tmp_path / "stats2.fs"
+    p.write_text("module Stats\nlet sample () =\n    uniform 0.0 1.0\n",
+                 encoding="utf-8")
+    assert _get_extractor(p) is not None
+
+
+def test_uniform_only_headerless_shader_still_rejected(tmp_path):
+    from graphify.extract import _get_extractor
+    p = tmp_path / "u.fs"
+    p.write_text("// u\nuniform vec4 color;\nvoid main() { gl_FragColor = color; }\n",
+                 encoding="utf-8")
+    assert _get_extractor(p) is None
+
+
+def test_fsharp_calling_identifier_named_layout_is_dispatched(tmp_path):
+    # Same word-vs-directive class as `uniform` (bot round-10): `layout` is a
+    # natural F# identifier (TUI code); demoted to weak evidence.
+    from graphify.extract import _get_extractor
+    p = tmp_path / "tui.fs"
+    p.write_text("module Tui\nlet render w =\n    layout w |> draw\n",
+                 encoding="utf-8")
+    assert _get_extractor(p) is not None
+
+
+def test_layout_qualifier_shader_still_rejected(tmp_path):
+    from graphify.extract import _get_extractor
+    p = tmp_path / "lq.fs"
+    p.write_text("// s\nlayout(location = 0) in vec3 pos;\nvoid main() { }\n",
+                 encoding="utf-8")
+    assert _get_extractor(p) is None
+
+
+# ── Round-11 marker-class closure: every word-shaped marker demoted ─────────
+# The remaining formerly-strong markers were audited against the grammar
+# itself: gl_-prefixed names, `in vecN` (verbose let...in), `out vecN`, and
+# `void main` all parse as valid F# line-starts, so any of them as strong
+# evidence rejects a real F# file that carries one on a continuation line.
+# Each acceptance test below kills the mutant that re-promotes its marker.
+
+
+def test_fsharp_with_gl_prefixed_interop_identifier_is_dispatched(tmp_path):
+    # OpenGL interop code mirrors C names: `gl_`-prefixed identifiers are
+    # ordinary F# identifiers (`let gl_ctx = ...` parses clean).
+    from graphify.extract import _get_extractor
+    p = tmp_path / "glapp.fs"
+    p.write_text("module GlApp\nlet render ctx =\n"
+                 "    gl_makeCurrent ctx\n    gl_swapBuffers ()\n",
+                 encoding="utf-8")
+    assert _get_extractor(p) is not None
+
+
+def test_fsharp_verbose_let_in_line_is_dispatched(tmp_path):
+    # Verbose syntax puts `in` at a line start; `vec2` is a natural
+    # constructor-function name in F# math code.
+    from graphify.extract import _get_extractor
+    p = tmp_path / "vec.fs"
+    p.write_text("module V\nlet v =\n    let x = 1.0\n    in vec2 x x\n",
+                 encoding="utf-8")
+    assert _get_extractor(p) is not None
+
+
+def test_fsharp_out_identifier_application_is_dispatched(tmp_path):
+    # `out` is not an F# keyword; `out vec3 v` is a plain application.
+    from graphify.extract import _get_extractor
+    p = tmp_path / "emit.fs"
+    p.write_text("module P\nlet emit v =\n    out vec3 v\n", encoding="utf-8")
+    assert _get_extractor(p) is not None
+
+
+def test_fsharp_void_identifier_application_is_dispatched(tmp_path):
+    # `void` is not a lexer-level F# keyword either (`let void = 1` parses);
+    # a line starting `void main` is a legal application.
+    from graphify.extract import _get_extractor
+    p = tmp_path / "void.fs"
+    p.write_text("module V\nlet void x = x\nlet main = 1\n"
+                 "let run =\n    void main\n", encoding="utf-8")
+    assert _get_extractor(p) is not None
+
+
+def test_gl_prefixed_headerless_shader_still_rejected(tmp_path):
+    # A directive-free shader fragment must still fall to the weak tier:
+    # gl_/vec lines with no F# declaration anywhere reject.
+    from graphify.extract import _get_extractor
+    p = tmp_path / "gl.fs"
+    p.write_text("// pass-through\ngl_FragColor = vec4(1.0);\n",
+                 encoding="utf-8")
+    assert _get_extractor(p) is None
