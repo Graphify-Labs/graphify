@@ -20,6 +20,22 @@ if not Path('graphify-out/graph.json').exists():
 ```
 If it fails, stop and tell the user to run `/graphify <path>` first.
 
+## For /graphify affected
+
+Use `affected` for a deterministic reverse blast-radius answer: "what calls X?", "what depends on X?", or "what could a change to X impact?". Do not replace it with a broad natural-language `query` when the user is asking that question.
+
+```bash
+graphify affected "NODE_OR_LABEL"
+```
+
+The default depth is two reverse hops. Narrow the result when the user names a relationship, or widen it deliberately:
+
+```bash
+graphify affected "NODE_OR_LABEL" --relation calls --depth 3
+```
+
+Use `--graph PATH` when the graph is not at `graphify-out/graph.json`. Explain that the seed itself is the changed item; the printed nodes are the callers/dependents reached by the reverse traversal. If no nodes are found, report that the graph has no matching seed rather than inferring a negative result about the source repository.
+
 ### Step 0 — Constrained query expansion (REQUIRED before traversal)
 
 graphify's `query` CLI matches nodes via case-folded substring + IDF — there is **no stemming, no synonyms, no cross-language match** inside the binary, and the inline fallback below matches the same way. If the user's question uses different language or different domain vocabulary than the graph's labels (user says "обработчик" / graph says "handler"; user says "authentication" / graph says "Guardian"), the literal matcher returns 0 hits and the answer collapses to noise.
