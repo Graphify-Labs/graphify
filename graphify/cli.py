@@ -11,6 +11,7 @@ import os
 import re
 import sys
 import time
+from typing import Any
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
@@ -3179,50 +3180,9 @@ def dispatch_command(cmd: str) -> None:
             )
             sys.exit(1)
 
-        has_path = True
-        if sys.argv[2].startswith("-"):
-            has_path = False
-            target = Path(".").resolve()
-        else:
-            target = Path(sys.argv[2]).resolve()
-            if not target.exists():
-                print(f"error: path not found: {target}", file=sys.stderr)
-                sys.exit(1)
-
-        backend: str | None = None
-        model: str | None = None
-        extract_mode: str | None = None
-        out_dir: Path | None = None
-        cli_postgres_dsn: str | None = None
-        cli_cargo: bool = False
-        cli_allow_partial: bool = False
-        no_cluster = False
-        dedup_llm = False
-        # --no-dedup: skip entity deduplication entirely. On an incremental
-        # merge the fuzzy pass runs over the COMBINED node set (existing graph +
-        # new chunk), so a small diff merged into a large graph can collapse
-        # pre-existing nodes from files the diff never touched. Turning dedup
-        # off also arms build_merge's #479 shrink guard, which is disabled while
-        # dedup is on because fuzzy merging shrinks the graph legitimately (#2881).
-        no_dedup = False
-        google_workspace = False
-        global_merge = False
-        code_only = False
-        no_gitignore = False
-        global_repo_tag: str | None = None
-        # Performance/tuning knobs (issue #792). None means "use library default".
-        cli_max_workers: int | None = None
-        cli_token_budget: int | None = None
-        cli_max_concurrency: int | None = None
-        cli_api_timeout: float | None = None
-        # Clustering tuning knobs
-        cli_resolution: float = 1.0
-        cli_exclude_hubs: float | None = None
-        cli_excludes: list[str] = []
-        cli_timing: bool = False
-        # --force parity with `graphify update`: the flag or GRAPHIFY_FORCE=1
-        # disables the incremental gate and skips semantic-cache reads (#1894).
-        force = os.environ.get("GRAPHIFY_FORCE", "").lower() in ("1", "true", "yes")
+        has_path = not sys.argv[2].startswith("-")
+        target_arg = sys.argv[2] if has_path else "."
+        args = sys.argv[3:] if has_path else sys.argv[2:]
 
         def _parse_int(name: str, raw: str) -> int:
             try:
@@ -3246,88 +3206,152 @@ def dispatch_command(cmd: str) -> None:
                 sys.exit(2)
             return v
 
-        args = sys.argv[3:] if has_path else sys.argv[2:]
+        def _parse_percentile(name: str, raw: str) -> float:
+            try:
+                v = float(raw)
+            except ValueError:
+                print(f"error: {name} must be between 0 and 100", file=sys.stderr)
+                sys.exit(2)
+            if not 0 <= v <= 100:
+                print(f"error: {name} must be between 0 and 100", file=sys.stderr)
+                sys.exit(2)
+            return v
+
+        parsed: dict[str, Any] = {
+            "backend": None,
+            "model": None,
+            "extract_mode": None,
+            "out_dir": None,
+            "cli_postgres_dsn": None,
+            "cli_cargo": False,
+            "cli_allow_partial": False,
+            "no_cluster": False,
+            "dedup_llm": False,
+            "no_dedup": False,
+            "google_workspace": False,
+            "global_merge": False,
+            "code_only": False,
+            "no_gitignore": False,
+            "global_repo_tag": None,
+            # Performance/tuning knobs (issue #792). None means library default.
+            "cli_max_workers": None,
+            "cli_token_budget": None,
+            "cli_max_concurrency": None,
+            "cli_api_timeout": None,
+            # Clustering tuning knobs.
+            "cli_resolution": 1.0,
+            "cli_exclude_hubs": None,
+            "cli_excludes": [],
+            "cli_timing": False,
+            # --force or GRAPHIFY_FORCE disables the incremental gate and cache reads.
+            "force": os.environ.get("GRAPHIFY_FORCE", "").lower()
+            in ("1", "true", "yes"),
+        }
+        # option -> (destination, action, converter, allow_equals, allow_empty)
+        option_specs = {
+            "--backend": ("backend", "store", None, True, False),
+            "--model": ("model", "store", None, True, False),
+            "--mode": ("extract_mode", "store", None, True, False),
+            "--out": ("out_dir", "store", lambda _n, raw: Path(raw), True, False),
+            "--output": ("out_dir", "store", lambda _n, raw: Path(raw), True, False),
+            "--no-cluster": ("no_cluster", "flag", None, False, False),
+            "--dedup-llm": ("dedup_llm", "flag", None, False, False),
+            "--no-dedup": ("no_dedup", "flag", None, False, False),
+            "--code-only": ("code_only", "flag", None, False, False),
+            "--google-workspace": ("google_workspace", "flag", None, False, False),
+            "--no-gitignore": ("no_gitignore", "flag", None, False, False),
+            "--global": ("global_merge", "flag", None, False, False),
+            "--as": ("global_repo_tag", "store", None, False, False),
+            "--max-workers": ("cli_max_workers", "store", _parse_int, True, False),
+            "--token-budget": ("cli_token_budget", "store", _parse_int, True, False),
+            "--max-concurrency": (
+                "cli_max_concurrency", "store", _parse_int, True, False
+            ),
+            "--api-timeout": ("cli_api_timeout", "store", _parse_float, True, False),
+            "--resolution": ("cli_resolution", "store", _parse_float, True, False),
+            "--exclude-hubs": (
+                "cli_exclude_hubs", "store", _parse_percentile, True, False
+            ),
+            "--exclude": ("cli_excludes", "append", None, True, False),
+            # Empty DSN intentionally lets psycopg use PG* environment variables.
+            "--postgres": ("cli_postgres_dsn", "store", None, True, True),
+            "--cargo": ("cli_cargo", "flag", None, False, False),
+            "--force": ("force", "flag", None, False, False),
+            "--allow-partial": ("cli_allow_partial", "flag", None, False, False),
+            "--timing": ("cli_timing", "flag", None, False, False),
+        }
+
         i = 0
         while i < len(args):
-            a = args[i]
-            if a == "--backend" and i + 1 < len(args):
-                backend = args[i + 1]; i += 2
-            elif a.startswith("--backend="):
-                backend = a.split("=", 1)[1]; i += 1
-            elif a == "--model" and i + 1 < len(args):
-                model = args[i + 1]; i += 2
-            elif a.startswith("--model="):
-                model = a.split("=", 1)[1]; i += 1
-            elif a == "--mode" and i + 1 < len(args):
-                extract_mode = args[i + 1]; i += 2
-            elif a.startswith("--mode="):
-                extract_mode = a.split("=", 1)[1]; i += 1
-            elif a in ("--out", "--output") and i + 1 < len(args):
-                # --output is an alias of --out (#2004): it was silently dropped
-                # before, and `graphify tree` already documents --output, so the
-                # mistake is natural. (--output= does not startswith --out=.)
-                out_dir = Path(args[i + 1]); i += 2
-            elif a.startswith(("--out=", "--output=")):
-                out_dir = Path(a.split("=", 1)[1]); i += 1
-            elif a == "--no-cluster":
-                no_cluster = True; i += 1
-            elif a == "--dedup-llm":
-                dedup_llm = True; i += 1
-            elif a == "--no-dedup":
-                no_dedup = True; i += 1
-            elif a == "--code-only":
-                code_only = True; i += 1
-            elif a == "--google-workspace":
-                google_workspace = True; i += 1
-            elif a == "--no-gitignore":
-                no_gitignore = True; i += 1
-            elif a == "--global":
-                global_merge = True; i += 1
-            elif a == "--as" and i + 1 < len(args):
-                global_repo_tag = args[i + 1]; i += 2
-            elif a == "--max-workers" and i + 1 < len(args):
-                cli_max_workers = _parse_int("--max-workers", args[i + 1]); i += 2
-            elif a.startswith("--max-workers="):
-                cli_max_workers = _parse_int("--max-workers", a.split("=", 1)[1]); i += 1
-            elif a == "--token-budget" and i + 1 < len(args):
-                cli_token_budget = _parse_int("--token-budget", args[i + 1]); i += 2
-            elif a.startswith("--token-budget="):
-                cli_token_budget = _parse_int("--token-budget", a.split("=", 1)[1]); i += 1
-            elif a == "--max-concurrency" and i + 1 < len(args):
-                cli_max_concurrency = _parse_int("--max-concurrency", args[i + 1]); i += 2
-            elif a.startswith("--max-concurrency="):
-                cli_max_concurrency = _parse_int("--max-concurrency", a.split("=", 1)[1]); i += 1
-            elif a == "--api-timeout" and i + 1 < len(args):
-                cli_api_timeout = _parse_float("--api-timeout", args[i + 1]); i += 2
-            elif a.startswith("--api-timeout="):
-                cli_api_timeout = _parse_float("--api-timeout", a.split("=", 1)[1]); i += 1
-            elif a == "--resolution" and i + 1 < len(args):
-                cli_resolution = _parse_float("--resolution", args[i + 1]); i += 2
-            elif a.startswith("--resolution="):
-                cli_resolution = _parse_float("--resolution", a.split("=", 1)[1]); i += 1
-            elif a == "--exclude-hubs" and i + 1 < len(args):
-                cli_exclude_hubs = float(args[i + 1]); i += 2
-            elif a.startswith("--exclude-hubs="):
-                cli_exclude_hubs = float(a.split("=", 1)[1]); i += 1
-            elif a == "--exclude" and i + 1 < len(args):
-                cli_excludes.append(args[i + 1]); i += 2
-            elif a.startswith("--exclude="):
-                cli_excludes.append(a.split("=", 1)[1]); i += 1
-            elif a == "--postgres" and i + 1 < len(args):
-                cli_postgres_dsn = args[i + 1]; i += 2
-            elif a.startswith("--postgres="):
-                cli_postgres_dsn = a.split("=", 1)[1]; i += 1
-            elif a == "--cargo":
-                cli_cargo = True
+            arg = args[i]
+            name, equals, inline_value = arg.partition("=")
+            spec = option_specs.get(name)
+            if spec is None:
+                if arg.startswith("-"):
+                    print(f"error: unknown extract option: {name}", file=sys.stderr)
+                else:
+                    print("error: unexpected extract positional argument", file=sys.stderr)
+                sys.exit(2)
+
+            destination, action, converter, allow_equals, allow_empty = spec
+            if action == "flag":
+                if equals:
+                    print(f"error: {name} does not take a value", file=sys.stderr)
+                    sys.exit(2)
+                parsed[destination] = True
                 i += 1
-            elif a == "--force":
-                force = True; i += 1
-            elif a == "--allow-partial":
-                cli_allow_partial = True; i += 1
-            elif a == "--timing":
-                cli_timing = True; i += 1
+                continue
+
+            if equals:
+                if not allow_equals:
+                    print(f"error: {name} does not support = syntax", file=sys.stderr)
+                    sys.exit(2)
+                raw_value = inline_value
             else:
+                if (
+                    i + 1 >= len(args)
+                    or (not args[i + 1] and not allow_empty)
+                    or args[i + 1].startswith("--")
+                ):
+                    print(f"error: {name} requires a value", file=sys.stderr)
+                    sys.exit(2)
+                raw_value = args[i + 1]
                 i += 1
+
+            if not raw_value and not allow_empty:
+                print(f"error: {name} requires a value", file=sys.stderr)
+                sys.exit(2)
+            value = converter(name, raw_value) if converter else raw_value
+            if action == "append":
+                parsed[destination].append(value)
+            else:
+                parsed[destination] = value
+            i += 1
+
+        backend: str | None = parsed["backend"]
+        model: str | None = parsed["model"]
+        extract_mode: str | None = parsed["extract_mode"]
+        out_dir: Path | None = parsed["out_dir"]
+        cli_postgres_dsn: str | None = parsed["cli_postgres_dsn"]
+        cli_cargo: bool = parsed["cli_cargo"]
+        cli_allow_partial: bool = parsed["cli_allow_partial"]
+        no_cluster: bool = parsed["no_cluster"]
+        dedup_llm: bool = parsed["dedup_llm"]
+        no_dedup: bool = parsed["no_dedup"]
+        google_workspace: bool = parsed["google_workspace"]
+        global_merge: bool = parsed["global_merge"]
+        code_only: bool = parsed["code_only"]
+        no_gitignore: bool = parsed["no_gitignore"]
+        global_repo_tag: str | None = parsed["global_repo_tag"]
+        cli_max_workers: int | None = parsed["cli_max_workers"]
+        cli_token_budget: int | None = parsed["cli_token_budget"]
+        cli_max_concurrency: int | None = parsed["cli_max_concurrency"]
+        cli_api_timeout: float | None = parsed["cli_api_timeout"]
+        cli_resolution: float = parsed["cli_resolution"]
+        cli_exclude_hubs: float | None = parsed["cli_exclude_hubs"]
+        cli_excludes: list[str] = parsed["cli_excludes"]
+        cli_timing: bool = parsed["cli_timing"]
+        force: bool = parsed["force"]
 
         if not has_path and cli_postgres_dsn is None:
             print("error: must specify a path to scan or a --postgres DSN", file=sys.stderr)
@@ -3352,6 +3376,12 @@ def dispatch_command(cmd: str) -> None:
             )
             sys.exit(2)
         deep_mode = extract_mode == "deep"
+
+        target = Path(target_arg).resolve()
+        if has_path and not target.exists():
+            print(f"error: path not found: {target}", file=sys.stderr)
+            sys.exit(1)
+
         if deep_mode:
             print("[graphify extract] deep mode enabled: richer semantic extraction")
 
