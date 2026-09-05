@@ -324,18 +324,16 @@ def extract_markdown(path: Path) -> dict:
     linked_targets: set[str] = set()
 
     # Same-page anchors ([[#Heading]], #3333) resolve after the scan, against
-    # the heading map below: a link may precede the heading it targets, and a
-    # title with no heading node resolves to nothing rather than dangling.
+    # the heading map below: a link may precede the heading it targets, and
+    # a title with no heading node resolves to nothing rather than dangling.
     heading_titles: dict[str, str] = {}
     pending_anchors: list[tuple[str, int]] = []
 
     def add_link(raw: str, line: int, wikilink: bool = False,
                  fragment: "str | None" = None) -> None:
-        # A same-page anchor ([[#Heading]], empty page name) resolves to the
-        # page's own heading node after the scan (#3333); a fragment-less
-        # or heading-less anchor resolves to nothing.
-        fragment = (fragment or "").strip()
         if wikilink and not raw.strip():
+            # Same-page anchor ([[#Heading]]): resolve after the scan (#3333).
+            fragment = (fragment or "").strip()
             if fragment:
                 pending_anchors.append((fragment, line))
             return
@@ -427,13 +425,12 @@ def extract_markdown(path: Path) -> dict:
             heading_stack.append((level, h_nid))
             continue
 
-    # Same-page anchors resolve here, after the scan (#3333): the heading map
-    # is complete, so a link may target a heading defined later in the file.
-    # A title with no heading node resolves to nothing — the anchor stays
-    # dropped rather than producing an edge to an undeclared node.
+    # Resolve deferred same-page anchors against the completed heading map
+    # (#3333): first occurrence wins, a missing title stays dropped, and the
+    # add_link self-reference/dedup guards apply to heading targets too.
     for title, line in pending_anchors:
         target = heading_titles.get(title)
-        if target is None or target in linked_targets:
+        if target is None or target == file_nid or target in linked_targets:
             continue
         linked_targets.add(target)
         add_edge(file_nid, target, "references", line)
