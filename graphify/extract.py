@@ -7164,11 +7164,16 @@ def extract(
                 # 0.85 rather than 0.8 — the rubric's INFERRED set is discrete
                 # and does not contain 0.8 (#2813).
                 confidence_score = 0.85
+            # Extractors may request a non-call relation (e.g. Go package-level
+            # var/const identifier uses → references, #2360). Default preserves
+            # historical calls/call behavior for every existing emitter.
+            relation = rc.get("relation") or "calls"
+            context = rc.get("context") or "call"
             all_edges.append({
                 "source": caller,
                 "target": tgt,
-                "relation": "calls",
-                "context": "call",
+                "relation": relation,
+                "context": context,
                 "confidence": confidence,
                 "confidence_score": confidence_score,
                 "source_file": rc.get("source_file", ""),

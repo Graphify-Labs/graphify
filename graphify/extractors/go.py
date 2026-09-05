@@ -83,7 +83,7 @@ def _go_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[st
                 _go_collect_type_refs(c, source, generic, out)
 
 def extract_go(path: Path) -> dict:
-    """Extract functions, methods, type declarations, and imports from a .go file."""
+    """Extract functions, methods, types, package-level var/const, and imports from a .go file."""
     try:
         import tree_sitter_go as tsgo
         from tree_sitter import Language, Parser
@@ -110,6 +110,8 @@ def extract_go(path: Path) -> dict:
     function_bodies: list[tuple[str, object]] = []
     # local package name (including aliases) -> written Go import path
     go_imported_pkgs: dict[str, str] = {}
+    # Package-level var/const names declared in this file → node id (#2360).
+    package_level_nids: dict[str, str] = {}
 
     def add_node(nid: str, label: str, line: int) -> None:
         if nid not in seen_ids:
@@ -319,6 +321,35 @@ def extract_go(path: Path) -> dict:
                 function_bodies.append((method_nid, body))
             return
 
+        if t in ("var_declaration", "const_declaration"):
+            # Package-level var/const (including parenthesized blocks). Same
+            # shape as type_declaration → type_spec: one node per declared name,
+            # contained by the file (#2360). Skip blank identifiers.
+            specs: list = []
+            for child in node.children:
+                if child.type in ("var_spec", "const_spec"):
+                    specs.append(child)
+                elif child.type in ("var_spec_list", "const_spec_list"):
+                    for spec in child.children:
+                        if spec.type in ("var_spec", "const_spec"):
+                            specs.append(spec)
+            for spec in specs:
+                for i in range(spec.child_count):
+                    if spec.field_name_for_child(i) != "name":
+                        continue
+                    name_node = spec.child(i)
+                    if name_node is None or name_node.type != "identifier":
+                        continue
+                    name = _read_text(name_node, source)
+                    if not name or name == "_":
+                        continue
+                    line = name_node.start_point[0] + 1
+                    nid = _make_id(pkg_scope, name)
+                    add_node(nid, name, line)
+                    add_edge(file_nid, nid, "contains", line)
+                    package_level_nids[name] = nid
+            return
+
         if t == "type_declaration":
             for child in node.children:
                 if child.type != "type_spec":
@@ -445,6 +476,9 @@ def extract_go(path: Path) -> dict:
     seen_call_pairs: set[tuple[str, str]] = set()
     raw_calls: list[dict] = []
 
+    seen_ref_pairs: set[tuple[str, str]] = set()
+    seen_raw_ref_names: set[tuple[str, str]] = set()
+
     def walk_calls(node, caller_nid: str) -> None:
         if node.type in ("function_declaration", "method_declaration"):
             return
@@ -506,6 +540,59 @@ def extract_go(path: Path) -> dict:
                         "source_file": str_path,
                         "source_location": f"L{node.start_point[0] + 1}",
                     })
+            # Still walk call arguments (may reference package-level vars/consts).
+            for child in node.children:
+                walk_calls(child, caller_nid)
+            return
+        if node.type == "identifier":
+            # In-file use of a package-level var/const (#2360). Cross-file uses
+            # resolve once the declaring file's node exists in the corpus graph
+            # (unique-label raw_calls path below). Skip import aliases and
+            # predeclared names so we don't invent noise.
+            name = _read_text(node, source)
+            if not name or name == "_":
+                return
+            if name in package_level_nids:
+                tgt_nid = package_level_nids[name]
+                if tgt_nid != caller_nid:
+                    pair = (caller_nid, tgt_nid)
+                    if pair not in seen_ref_pairs:
+                        seen_ref_pairs.add(pair)
+                        line = node.start_point[0] + 1
+                        edges.append({
+                            "source": caller_nid,
+                            "target": tgt_nid,
+                            "relation": "references",
+                            "context": "identifier",
+                            "confidence": "EXTRACTED",
+                            "source_file": str_path,
+                            "source_location": f"L{line}",
+                            "weight": 1.0,
+                        })
+            elif (
+                name not in go_imported_pkgs
+                and name not in _GO_PREDECLARED_FUNCS
+                and name not in _GO_PREDECLARED_TYPES
+                and name not in _LANGUAGE_BUILTIN_GLOBALS
+                and name not in label_to_nid
+            ):
+                # Possible cross-file package-level symbol; resolve conservatively
+                # after all files are known (unique label only). Dedupe per
+                # (caller, name) so a hot local like `err` does not flood raw_calls.
+                key = (caller_nid, name)
+                if key not in seen_raw_ref_names:
+                    seen_raw_ref_names.add(key)
+                    raw_calls.append({
+                        "caller_nid": caller_nid,
+                        "callee": name,
+                        "is_member_call": False,
+                        "language": "go",
+                        "relation": "references",
+                        "context": "identifier",
+                        "source_file": str_path,
+                        "source_location": f"L{node.start_point[0] + 1}",
+                    })
+            return
         for child in node.children:
             walk_calls(child, caller_nid)
 
