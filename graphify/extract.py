@@ -6283,6 +6283,58 @@ def extract(
         all_nodes.extend(result.get("nodes", []))
         all_edges.extend(result.get("edges", []))
         all_raw_calls.extend(result.get("raw_calls", []))
+
+    # #2230: Incremental runs pass only the CHANGED files in `paths`. Symbol
+    # resolution (augment + raw_calls) indexes nodes from this run alone, so
+    # edges like `A imports/calls B.helper` vanish when B is unchanged — the
+    # merge then correctly drops A's old edges and nothing regenerates them.
+    # Fix: discover one hop of in-root import targets via `target_file` (same
+    # set #2169 remaps), load them for resolution FACTS only, let them flow
+    # through augment / id-remap / callable_nids, then strip their ownership
+    # before return so the merge keeps B's existing graph chunk. Omit context
+    # raw_calls — one hop is enough and would otherwise pull a second hop.
+    _batch_resolved: set[Path] = set()
+    for _p in paths:
+        try:
+            _batch_resolved.add(_p.resolve())
+        except (OSError, RuntimeError):
+            pass
+    # Collect neighbor files stamped on this batch's edges (not already in
+    # the batch, in-root, on disk, and extractable).
+    _context_files: set[Path] = set()
+    for _e in all_edges:
+        _tf = _e.get("target_file")
+        if not _tf:
+            continue
+        try:
+            _tp = Path(_tf).resolve()
+        except (OSError, RuntimeError):
+            continue
+        if _tp in _batch_resolved or _tp in _context_files:
+            continue
+        try:
+            _tp.relative_to(root)
+            if not _tp.is_file() or _get_extractor(_tp) is None:
+                continue
+        except (ValueError, OSError):
+            continue
+        _context_files.add(_tp)
+
+    for _i, _ctx in enumerate(_context_files):
+        # Same cache/bypass path as a normal batch file; we deliberately do
+        # not extend all_raw_calls from these results.
+        _, _ctx_result = _extract_single_file(
+            (_i, str(_ctx), str(root), str(cache_location))
+        )
+        # Keep only items with a source_file — sourceless stubs (e.g. an
+        # Exception base) would slip past the ownership filter at return.
+        all_nodes.extend(
+            n for n in _ctx_result.get("nodes", []) if n.get("source_file")
+        )
+        all_edges.extend(
+            e for e in _ctx_result.get("edges", []) if e.get("source_file")
+        )
+
     # Function / method / class def ids for the cross-file indirect_call callable
     # guard. Built from the `_callable` node marker AFTER the id-remap / disambiguation
     # passes below (which rewrite node ids), so it can never go stale — see the
@@ -7363,26 +7415,17 @@ def extract(
     for e in all_edges:
         e["_origin"] = "ast"
 
+    # #2230: Context nodes/edges were only borrowed for resolution. Drop them
+    # now (by relativized source_file) so this result owns only the batch
+    # files; regenerated cross-file edges may still TARGET neighbor ids, and
+    # the incremental merge supplies the neighbor's own nodes from the
+    # existing graph.
+    if _context_files:
+        _context_sfs = {p.relative_to(root).as_posix() for p in _context_files}
+        all_nodes = [n for n in all_nodes if (n.get("source_file") or "") not in _context_sfs]
+        all_edges = [e for e in all_edges if (e.get("source_file") or "") not in _context_sfs]
+
     # Canonicalize source_file to POSIX on every node AND edge (#2625).
-    #
-    # Extractors build source_file from the Path they were handed, so a run
-    # given RELATIVE inputs keeps the native separator on Windows. Only the
-    # relativizing branch of _sf_entry above ever calls as_posix(), so a single
-    # extraction could emit `src\lib\content.ts` and `src/pages/index.astro`
-    # side by side. source_file is compared as a STRING downstream
-    # (build._norm_source_file keying, _derive_prune_root, dedup, and
-    # analyze.find_import_cycles, which matches an edge's source_file against a
-    # node's by equality), so two spellings are two different files — the
-    # fragmentation of #683, and the reason the CLI path (which passes an
-    # explicit root) looked correct while the library entry point did not.
-    #
-    # Safe as a final pass: ids are minted through make_id, which collapses
-    # every non-word character — `\` and `/` alike — to `_`, so canonicalizing
-    # the separator here cannot desync an id from its source_file.
-    #
-    # PurePath is the NATIVE flavour on purpose: on POSIX a backslash is a legal
-    # filename character and must be left alone, so this only rewrites paths on
-    # the platform where `\` is actually a separator.
     for _item in (*all_nodes, *all_edges):
         _sf = _item.get("source_file")
         if _sf and "\\" in str(_sf):
