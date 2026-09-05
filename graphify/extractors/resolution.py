@@ -1094,6 +1094,11 @@ def _apply_symbol_resolution_facts(
         if target_id is None:
             continue
         source_id = use_fact.source_id
+        # Structural walking can omit named-function-local declarations while
+        # materializing callback-local ones. Only actual node ownership decides
+        # whether a type relationship has a represented source declaration.
+        if use_fact.relation in ("inherits", "implements", "references") and source_id not in owned:
+            continue
         if use_fact.relation == "calls" and source_id not in owned:
             source_id = source_file_id.get(file_path)
             if source_id is None:
