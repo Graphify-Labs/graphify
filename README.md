@@ -401,6 +401,11 @@ graphify prs --triage              # AI ranks your review queue (uses whatever b
 graphify prs --conflicts           # PRs sharing graph communities — merge-order risk
 ```
 
+For opt-in compiler-resolved symbols, references, implementations, and call
+hierarchies, see the [semantic provider guide](docs/SEMANTIC-PROVIDERS.md).
+Language-server evidence is bounded, provenance-tagged, and merged into a
+separate output graph; native tree-sitter extraction remains the default.
+
 See the [full command reference](#full-command-reference) below.
 
 ---

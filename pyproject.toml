@@ -104,6 +104,7 @@ all = ["mcp>=1,<3", "starlette>=1.3.1,<2", "neo4j", "falkordb", "pypdf>=6.12.0",
 [project.scripts]
 graphify = "graphify.__main__:main"
 graphify-mcp = "graphify.serve:_main"
+graphify-semantic = "graphify_semantic_providers.cli:main"
 
 [dependency-groups]
 dev = [
@@ -132,7 +133,7 @@ dev = [
 package = true
 
 [tool.setuptools]
-packages = ["graphify", "graphify.extractors", "graphify.exporters"]
+packages = ["graphify", "graphify.extractors", "graphify.exporters", "graphify_semantic_providers"]
 include-package-data = false
 
 [tool.setuptools.package-data]
@@ -163,6 +164,6 @@ target-version = "py310"
 select = ["E9", "F63", "F7", "F82"]
 
 [tool.pyright]
-include = ["graphify", "tests"]
+include = ["graphify", "graphify_semantic_providers", "tests"]
 pythonVersion = "3.10"
 typeCheckingMode = "basic"
