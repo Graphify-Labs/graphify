@@ -46,6 +46,22 @@ _ROUTINE_RECOVERY_RX = re.compile(
     re.IGNORECASE,
 )
 
+# Recovers a CREATE TABLE/VIEW statement swallowed into an unrelated ERROR
+# node's span (#2719): TSQL's AS BEGIN...END routine body has no grammar
+# rule, so a broken CREATE FUNCTION/PROCEDURE lands in an ERROR node whose
+# byte span can absorb the following statement too, and a bare
+# create_table/create_view never lands in the tree at all for it. Shares
+# _ROUTINE_RECOVERY_RX's delimited name alternatives and the same whole
+# file masked scan, gated the same way (root.has_error), and dedupes
+# against table_nids so a statement that DID parse cleanly is never
+# registered twice.
+_VIEW_TABLE_RECOVERY_RX = re.compile(
+    r"\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:VIEW|TABLE)\s+"
+    r"((?:\"(?:[^\"\n]|\"\")+\"|`(?:[^`\n]|``)+`|\[(?:[^\]\n]|\]\])+\]|[\w$]+)"
+    r"(?:\s*\.\s*(?:\"(?:[^\"\n]|\"\")+\"|`(?:[^`\n]|``)+`|\[(?:[^\]\n]|\]\])+\]|[\w$]+))*)",
+    re.IGNORECASE,
+)
+
 # _mask_sql_comments is a linear character scanner, not a regex: the four
 # span kinds interact in ways a single pattern cannot express safely —
 # comment-opener parity inside strings, nested block comments, and
@@ -1080,5 +1096,24 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
             fn_name = _clean_regex_name(m.group(1), m.start(1), m.end(1))
             fn_line = src_text[: m.start()].count("\n") + 1
             _add_node(_make_id(stem, fn_name), f"{fn_name}()", fn_line)
+
+        # A TSQL routine with an AS BEGIN...END body has no grammar rule, so
+        # its ERROR node can absorb the text of the statement right after it
+        # too, and a following CREATE VIEW/TABLE never lands in the tree as
+        # its own node (#2719). Recovered the same way as routines above:
+        # same masked scan, same ident span skip, gated the same has_error
+        # check, deduped against table_nids so a statement that DID parse
+        # cleanly is never re registered here.
+        for m in _VIEW_TABLE_RECOVERY_RX.finditer(masked_src):
+            if any(s <= m.start() < e for s, e in ident_spans):
+                continue
+            obj_name = _clean_name(m.group(1))
+            norm = _norm_ident(obj_name)
+            if norm in table_nids:
+                continue
+            obj_line = src_text[: m.start()].count("\n") + 1
+            obj_nid = _make_id(stem, obj_name)
+            _add_node(obj_nid, obj_name, obj_line)
+            table_nids[norm] = obj_nid
 
     return {"nodes": nodes, "edges": edges}
