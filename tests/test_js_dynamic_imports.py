@@ -17,9 +17,18 @@ import json
 from pathlib import Path
 
 import networkx as nx
+import pytest
 
 from graphify.affected import DEFAULT_AFFECTED_RELATIONS, affected_nodes
-from graphify.extract import _file_node_id, extract
+import graphify.extract as extract_module
+from graphify.extract import (
+    _TS_CONFIG,
+    _extract_generic,
+    _file_node_id,
+    _rescue_js_dynamic_imports,
+    extract,
+    extract_js,
+)
 
 
 def _write(path: Path, text: str) -> Path:
@@ -213,6 +222,31 @@ def test_template_literal_specifier_without_substitution(tmp_path: Path):
     assert _edges_to(result, "src/dep.ts")
 
 
+def test_runtime_import_in_template_interpolation_survives_rescue(tmp_path: Path):
+    _write(tmp_path / "src/dep.ts", "export const dep = 1\n")
+    importer = _write(
+        tmp_path / "src/boot.ts",
+        "export const message = `${import('./dep')}`\n",
+    )
+
+    result = extract([tmp_path / "src/dep.ts", importer], root=tmp_path)
+
+    assert _edges_to(result, "src/dep.ts")
+
+
+def test_type_import_in_generic_call_is_not_rescued_as_runtime(tmp_path: Path):
+    _write(tmp_path / "src/dep.ts", "export const dep = 1\n")
+    importer = _write(
+        tmp_path / "src/boot.ts",
+        "declare function load<T>(): void\n"
+        "load<typeof import('./dep')>()\n",
+    )
+
+    result = extract([tmp_path / "src/dep.ts", importer], root=tmp_path)
+
+    assert not _edges_to(result, "src/dep.ts")
+
+
 def test_identifier_ending_in_import_is_not_matched(tmp_path: Path):
     """`fooimport('./x')` is a call to `fooimport`, not a dynamic import."""
     _write(tmp_path / "src/x.ts", "export const x = 1\n")
@@ -238,6 +272,58 @@ def test_line_commented_dynamic_import_is_not_matched(tmp_path: Path):
     result = extract([tmp_path / "src/x.ts", importer], root=tmp_path)
 
     assert not _edges_to(result, "src/x.ts")
+
+
+@pytest.mark.parametrize(
+    "source_text",
+    [
+        "/* import('./x') */\nexport const r = 1\n",
+        'const text = "import(\'./x\')"\nexport const r = 1\n',
+        "const text = `import('./x')`\nexport const r = 1\n",
+    ],
+    ids=["block-comment", "string", "template"],
+)
+def test_dynamic_import_text_in_comments_and_strings_is_not_matched(
+    tmp_path: Path, source_text: str
+):
+    """Only executable ``import()`` syntax should create a dependency edge."""
+    _write(tmp_path / "src/x.ts", "export const x = 1\n")
+    importer = _write(tmp_path / "src/caller.ts", source_text)
+
+    result = extract([tmp_path / "src/x.ts", importer], root=tmp_path)
+
+    assert not _edges_to(result, "src/x.ts")
+
+
+def test_dynamic_import_text_in_regex_is_not_matched(tmp_path: Path):
+    importer = _write(
+        tmp_path / "src/caller.ts",
+        "const pattern = /import('x')/\nexport const r = 1\n",
+    )
+
+    result = extract_js(importer)
+
+    assert not any(edge["relation"] == "dynamic_import" for edge in result["edges"])
+
+
+def test_parser_failure_falls_back_with_warning(tmp_path: Path, monkeypatch):
+    _write(tmp_path / "src/dep.ts", "export const dep = 1\n")
+    importer = _write(tmp_path / "src/boot.ts", "export const dep = await import('./dep')\n")
+
+    result = _extract_generic(importer, _TS_CONFIG)
+    original_import = extract_module.importlib.import_module
+
+    def fail_typescript_grammar(name, *args, **kwargs):
+        if name == "tree_sitter_typescript":
+            raise ImportError("simulated parser initialization failure")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(extract_module.importlib, "import_module", fail_typescript_grammar)
+
+    with pytest.warns(RuntimeWarning, match="could not validate dynamic import"):
+        _rescue_js_dynamic_imports(importer, result)
+
+    assert any(edge["relation"] == "dynamic_import" for edge in result["edges"])
 
 
 def test_nested_named_function_calls_resolve(tmp_path: Path):
