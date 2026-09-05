@@ -4408,3 +4408,62 @@ def test_3252_metadata_preservation(tmp_path):
     assert param_ref["source_location"] == "L2"
     assert node_by_id[param_ref["target"]]["label"] == "User"
     assert node_by_id[param_ref["target"]]["source_file"] == "models.py"
+
+
+def test_relative_input_source_file_is_normalized_to_posix(tmp_path, monkeypatch):
+    """#2625: extract()'s canonicalization pass only ran a relative source_file
+    through as_posix() when the caller passed an explicit `root` — the
+    documented `extract(paths)` entry point with no root (and
+    `python -m graphify.extract <file>...`) left it exactly as the extractor
+    set it. Every extractor sets source_file via plain str(path), which on
+    Windows renders with a native `\\` separator, diverging from the POSIX
+    form every other path (explicit root, the CLI) produces — fragmenting
+    the string-equality lookups keyed on source_file (build._norm_source_file,
+    analyze.find_import_cycles, the semantic-cache key) into two spellings of
+    one file.
+
+    A real WindowsPath can't be constructed on a POSIX test runner, so this
+    monkeypatches one extension's dispatch to return a node/edge whose
+    source_file is a literal backslash-separated string — exactly the shape
+    str(WindowsPath("sub/file.py")) produces on a real Windows machine —
+    and asserts extract()'s post-pass normalizes it, exercising the actual
+    fixed code path rather than the OS-dependent symptom.
+    """
+    import graphify.extract as extract_mod
+
+    def _fake_windows_extractor(path):
+        return {
+            "nodes": [{
+                "id": "fake_node", "label": "fake", "file_type": "code",
+                "source_file": "sub\\file.py", "source_location": "L1",
+            }],
+            "edges": [{
+                "source": "fake_node", "target": "other_node", "relation": "calls",
+                "confidence": "EXTRACTED", "source_file": "sub\\file.py",
+            }],
+        }
+
+    real_get_extractor = extract_mod._get_extractor
+
+    def _patched_get_extractor(path):
+        if path.suffix == ".fakewin":
+            return _fake_windows_extractor
+        return real_get_extractor(path)
+
+    monkeypatch.setattr(extract_mod, "_get_extractor", _patched_get_extractor)
+
+    (tmp_path / "sub").mkdir()
+    target = tmp_path / "sub" / "file.fakewin"
+    target.write_text("irrelevant", encoding="utf-8")
+
+    old_cwd = Path.cwd()
+    try:
+        os.chdir(tmp_path)
+        result = extract([Path("sub/file.fakewin")])
+    finally:
+        os.chdir(old_cwd)
+
+    node = next(n for n in result["nodes"] if n["id"] == "fake_node")
+    edge = next(e for e in result["edges"] if e["source"] == "fake_node")
+    assert node["source_file"] == "sub/file.py", node["source_file"]
+    assert edge["source_file"] == "sub/file.py", edge["source_file"]
