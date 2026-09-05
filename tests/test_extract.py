@@ -3343,8 +3343,9 @@ def test_extract_json_large_file_skipped(tmp_path):
     # Write a JSON file just over 1 MiB
     big.write_bytes(b'{"x": "' + b"a" * (1_048_576) + b'"}')
     result = extract_json(big)
-    assert "error" in result
-    assert result["nodes"] == []
+    assert "skipped" in result
+    assert len(result["nodes"]) == 1
+    assert result["nodes"][0]["source_file"] == str(big)
 
 
 def test_extract_json_handles_invalid_json(tmp_path):
@@ -3367,7 +3368,7 @@ def test_extract_json_no_self_loops():
 # ---------------------------------------------------------------------------
 
 def test_extract_json_data_file_skipped(tmp_path):
-    """A data-shaped .json (eval fixture / dataset) must NOT emit per-key nodes."""
+    """Data JSON emits its file identity but no per-key nodes."""
     data = tmp_path / "cases.json"
     data.write_text(json.dumps({
         "generation": {"target": "gpt-4", "cases_file": "c.json", "num_cases": 12},
@@ -3375,7 +3376,8 @@ def test_extract_json_data_file_skipped(tmp_path):
         "suite": [{"name": "x"}, {"name": "y"}],
     }))
     result = extract_json(data)
-    assert result["nodes"] == []
+    assert len(result["nodes"]) == 1
+    assert result["nodes"][0]["source_file"] == str(data)
     assert result["edges"] == []
     assert "skipped" in result
 
@@ -3385,7 +3387,8 @@ def test_extract_json_top_level_array_skipped(tmp_path):
     data = tmp_path / "records.json"
     data.write_text(json.dumps([{"id": 1}, {"id": 2}]))
     result = extract_json(data)
-    assert result["nodes"] == []
+    assert len(result["nodes"]) == 1
+    assert result["nodes"][0]["source_file"] == str(data)
     assert result["edges"] == []
 
 
