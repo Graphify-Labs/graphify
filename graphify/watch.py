@@ -1595,6 +1595,8 @@ def _rebuild_code(
             # AST heading layer intact alongside the semantic layer.
             extract_targets = [p for p in code_files if p not in semantic_doc_files]
 
+        commit = _git_head(cwd=watch_root)
+        result = extract(extract_targets, cache_root=watch_root) if extract_targets else {
         # #2406: an incremental rebuild parses only the changed files, so the
         # cross-file resolvers could not see a callee living in an unchanged
         # file and every changed->unchanged `calls` edge disappeared (reconcile

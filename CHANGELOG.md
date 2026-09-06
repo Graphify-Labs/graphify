@@ -1,6 +1,15 @@
 # Changelog
 
-Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
+Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
+
+## 0.9.32 (unreleased)
+## 0.9.35 (unreleased)
+## 0.9.36 (unreleased)
+## 0.9.38 (unreleased)
+## 0.9.40 (unreleased)
+## 0.9.42 (unreleased)
+## 0.9.54 (unreleased)
+Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
 ## 0.9.55 (unreleased)
 
