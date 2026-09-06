@@ -186,6 +186,47 @@ def test_reconstruct_accepts_json_string_payloads():
     assert payload == {"nodes": [{"id": "a"}], "edges": []}
 
 
+def test_reconstruct_up_to_target_snapshot_ignores_later_rows():
+    rows = [
+        ("s1", "c1", "checkpoint", {"nodes": [{"id": "a"}], "edges": []}),
+        ("s2", "c2", "delta", {
+            "new_nodes": [{"id": "b", "properties": {}}],
+            "changed_nodes": [], "removed_nodes": [],
+            "new_edges": [], "removed_edges": [], "changed_edges": [],
+        }),
+    ]
+    payload, commit_sha, snapshot_id = snap._reconstruct_payload_up_to(rows, "s1")
+    assert payload == {"nodes": [{"id": "a"}], "edges": []}
+    assert commit_sha == "c1"
+    assert snapshot_id == "s1"
+
+
+def test_reconstruct_up_to_replays_deltas_up_to_target():
+    rows = [
+        ("s1", "c1", "checkpoint", {"nodes": [{"id": "a"}], "edges": []}),
+        ("s2", "c2", "delta", {
+            "new_nodes": [{"id": "b", "properties": {}}],
+            "changed_nodes": [], "removed_nodes": [],
+            "new_edges": [], "removed_edges": [], "changed_edges": [],
+        }),
+        ("s3", "c3", "delta", {
+            "new_nodes": [{"id": "c", "properties": {}}],
+            "changed_nodes": [], "removed_nodes": [],
+            "new_edges": [], "removed_edges": [], "changed_edges": [],
+        }),
+    ]
+    payload, commit_sha, snapshot_id = snap._reconstruct_payload_up_to(rows, "s2")
+    assert {n["id"] for n in payload["nodes"]} == {"a", "b"}
+    assert commit_sha == "c2"
+    assert snapshot_id == "s2"
+
+
+def test_reconstruct_up_to_unknown_snapshot_id_returns_none():
+    rows = [("s1", "c1", "checkpoint", {"nodes": [], "edges": []})]
+    payload, commit_sha, snapshot_id = snap._reconstruct_payload_up_to(rows, "unknown")
+    assert payload is None and commit_sha is None and snapshot_id is None
+
+
 def test_reconstruct_with_no_checkpoint_replays_from_empty_graph():
     delta = {
         "new_nodes": [{"id": "a", "label": "A", "properties": {"label": "A"}}],
