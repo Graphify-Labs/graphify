@@ -182,21 +182,29 @@ def test_first_push_from_feature_branch_uses_explicit_default_branch(conn, tmp_p
     assert branch_rows == [("feature/foo",)]
 
 
-def test_first_push_from_feature_branch_without_default_branch_warns(conn, tmp_path, monkeypatch, capsys):
-    """Without --default-branch and no resolvable origin/HEAD, the CLI
-    still proceeds (backward-compatible for the common single-branch
-    workflow) but must say plainly that it's guessing, rather than
-    silently registering a feature branch as the default."""
+def test_first_push_without_default_branch_or_origin_head_fails_hard(conn, tmp_path, monkeypatch, capsys):
+    """Regression (found via a second review pass): a warn-and-assume
+    fallback here preserved exactly the original bug (durably registering
+    whatever branch happens to be checked out as the default-branch graph)
+    with only a warning added -- for a persistent, hard-to-undo decision, a
+    warning is not an adequate guard. This must now be a hard error that
+    refuses to push at all, not a degraded-but-successful push."""
     repo = tmp_path / "repo_feature_no_flag"
     remote = f"https://github.com/testowner/feature-no-flag-{uuid.uuid4().hex[:8]}.git"
     _make_repo(repo, remote, "node_on_main")
     _git(repo, "checkout", "-qb", "feature/bar")
     _git(repo, "commit", "-q", "--allow-empty", "-m", "feature work")
 
-    _run_cli(monkeypatch, repo, ["export", "age", "--push", _conninfo()])
+    with pytest.raises(SystemExit) as exc_info:
+        _run_cli(monkeypatch, repo, ["export", "age", "--push", _conninfo()])
+    assert exc_info.value.code != 0
     err = capsys.readouterr().err
     assert "could not confirm this repository's default branch" in err
     assert "feature/bar" in err
+
+    # And, critically: nothing was registered/pushed as a side effect of
+    # the refused attempt.
+    assert reg.get_repository(_conninfo(), remote) is None
 
 
 def test_two_repos_pushed_without_graph_name_do_not_collide(conn, tmp_path, monkeypatch):
@@ -208,7 +216,13 @@ def test_two_repos_pushed_without_graph_name_do_not_collide(conn, tmp_path, monk
     _make_repo(repo_b, remote_b, "node_from_b")
 
     conninfo = _conninfo()
-    push_argv = ["export", "age", "--push", conninfo]
+    # --default-branch is required here: these are fresh, unregistered
+    # repos with no refs/remotes/origin/HEAD set, and the CLI now refuses
+    # to guess a default branch for an unregistered repo rather than
+    # silently assuming the checked-out branch is it (see
+    # test_first_push_without_default_branch_or_origin_head_fails_hard) --
+    # this test is about graph-name isolation, not that resolution path.
+    push_argv = ["export", "age", "--push", conninfo, "--default-branch", "main"]
 
     _run_cli(monkeypatch, repo_a, push_argv)
     _run_cli(monkeypatch, repo_b, push_argv)

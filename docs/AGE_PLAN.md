@@ -52,9 +52,22 @@ export age`'s CLI plumbing rather than the underlying `age_branches`/
 to unconditionally treat whatever branch was currently checked out as the
 default branch, silently misclassifying a feature branch pushed first
 (fixed with a new `--default-branch` flag plus `refs/remotes/origin/HEAD`
-resolution -- `age_registry.resolve_default_branch_ref()` -- falling back
-to a loud stderr warning, never a silent guess, when neither resolves);
-and `extraction_config_hash` was defined and enforced in `age_branches`/
+resolution -- `age_registry.resolve_default_branch_ref()`). The first fix
+still fell back to a warn-and-assume when neither resolved, which a third
+review pass correctly called out as preserving the exact original bug
+(just with a warning printed first) for a decision that's persistent and
+effectively impossible to undo cleanly once graphs/diff chains exist under
+it -- this is now a hard error (exits nonzero, pushes nothing) instead:
+unregistered + no `--default-branch` + no resolvable `origin/HEAD` refuses
+outright, telling the caller to pass `--default-branch`, run
+`git remote set-head origin -a`, or use `--no-register` to opt out of
+registry/multi-branch sync entirely. This does mean a fresh, never-cloned
+repo's very first `graphify export age --push` now requires
+`--default-branch` (or a remote with `HEAD` set) even in the common single-
+branch case -- an intentional, documented trade of a small one-time
+friction cost against a footgun that corrupts a durable, hard-to-fix data
+model decision; and `extraction_config_hash` was defined and enforced in
+`age_branches`/
 `age_snapshots` but the CLI never actually computed or passed one, so the
 check it fed was always a no-op in practice (fixed with
 `age_registry.extraction_config_hash()`, a deterministic hash of

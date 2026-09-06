@@ -2873,8 +2873,9 @@ def dispatch_command(cmd: str) -> None:
             print("            (or set FALKORDB_PASSWORD instead of --password to keep it off argv)", file=sys.stderr)
             print("  age       [--graph PATH] --push postgresql://user:pass@host/db [--graph-name NAME] [--full-props]", file=sys.stderr)
             print("            [--owner OWNER] [--repo-tag TAG] [--remote-url URL] [--no-register]", file=sys.stderr)
-            print("            [--default-branch NAME]  (unregistered repos: resolves refs/remotes/origin/HEAD", file=sys.stderr)
-            print("             if this isn't given; pass it explicitly when pushing a feature branch first)", file=sys.stderr)
+            print("            [--default-branch NAME]  (required on an unregistered repo's first push unless", file=sys.stderr)
+            print("             refs/remotes/origin/HEAD is set -- refuses to guess, since a first push's", file=sys.stderr)
+            print("             default-branch is a persistent decision)", file=sys.stderr)
             print("            [--extraction-config HASH]  (or set GRAPHIFY_EXTRACTION_CONFIG_HASH; folded into", file=sys.stderr)
             print("             the compatibility check alongside --full-props)", file=sys.stderr)
             print("            (or set AGE_PASSWORD / PGPASSWORD instead of embedding the password in --push)", file=sys.stderr)
@@ -3250,19 +3251,32 @@ def dispatch_command(cmd: str) -> None:
                         # from a feature branch used to register *that*
                         # branch as the durable default-branch graph, with
                         # no diff chain recorded at all (found via review).
+                        #
+                        # A warn-and-assume fallback was tried here first,
+                        # but a second review pass correctly called it out
+                        # as preserving exactly that bad outcome (just with
+                        # a warning first) for a decision that's persistent
+                        # and hard to undo (the durable default-branch graph
+                        # this repository gets forever after). This is a
+                        # hard error instead: unlike everything else in this
+                        # command, there is no safe default to fall back to
+                        # here, so refuse rather than guess.
                         default_branch = age_default_branch_flag or _reg.resolve_default_branch_ref()
                         if default_branch is None:
                             print(
-                                "warning: could not confirm this repository's default "
+                                "error: could not confirm this repository's default "
                                 "branch (no --default-branch given, and "
-                                "refs/remotes/origin/HEAD isn't set) - assuming the "
-                                f"current branch '{current_branch}' is the default. If "
-                                "this is actually a feature branch, re-run with "
-                                "--default-branch <name> so it isn't registered as the "
-                                "durable default-branch graph.",
+                                "refs/remotes/origin/HEAD isn't set), and this repository "
+                                "isn't registered yet - refusing to guess, since treating "
+                                f"the wrong branch ('{current_branch}'?) as the default "
+                                "would durably register it as the graph every later "
+                                "default-branch push reconciles into. Re-run with "
+                                "--default-branch <name>, or set refs/remotes/origin/HEAD "
+                                "(git remote set-head origin -a), or pass --no-register if "
+                                "you don't need multi-branch/registry sync.",
                                 file=sys.stderr,
                             )
-                            default_branch = current_branch
+                            sys.exit(1)
                     if not age_graph_name_explicit:
                         # Without --graph-name, every repository used to
                         # default to the literal graph "graphify" -- two
