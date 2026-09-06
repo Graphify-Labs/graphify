@@ -45,7 +45,7 @@ def _atomic_replace(path: "str | Path", write_fn) -> None:
     # atomic rename) and the replace writes through the link, not over it.
     real = Path(os.path.realpath(str(path)))
     real.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(real.parent), prefix=f".{real.name}.", suffix=".tmp")
+    fd, tmp = tempfile.mkstemp(dir=str(real.parent), prefix=".gfy-", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             write_fn(f)
@@ -79,7 +79,7 @@ def _atomic_replace(path: "str | Path", write_fn) -> None:
             # The temp was chmod'd to match the destination above, so when the
             # destination is read-only the temp is too — and Windows refuses to
             # unlink a read-only file. Clear the bit and retry, or every failed
-            # write leaks a `.graph.json.*.tmp` into the output directory.
+            # write leaks a `.gfy-*.tmp` into the output directory.
             try:
                 os.chmod(tmp, stat.S_IWRITE)
                 os.unlink(tmp)
