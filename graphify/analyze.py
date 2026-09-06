@@ -686,14 +686,37 @@ def graph_diff(G_old: nx.Graph, G_new: nx.Graph) -> dict:
     changed_edges_list = []
     for key in common_edge_keys:
         old_u, old_v, old_d = old_edge_data_by_key[key]
-        _new_u, _new_v, new_d = new_edge_data_by_key[key]
+        new_u, new_v, new_d = new_edge_data_by_key[key]
         old_props = _diff_scalar_props(old_d)
         new_props = _diff_scalar_props(new_d)
-        if old_props != new_props:
+        old_src, old_tgt = old_d.get("_src", old_u), old_d.get("_tgt", old_v)
+        new_src, new_tgt = new_d.get("_src", new_u), new_d.get("_tgt", new_v)
+        relation = old_d.get("relation", "")
+        # _src/_tgt is excluded from _diff_scalar_props (it's internal, not
+        # a pushed property), so a same-pair edge that reversed direction
+        # with everything else unchanged would otherwise compare equal and
+        # produce no diff. edge_key() is keyed on sorted endpoints, so a
+        # reversal never shows up as add/remove either -- report it as an
+        # explicit remove-old-direction + add-new-direction pair instead of
+        # a "changed" edge, since consumers (push_to_age's incremental
+        # sync, age_snapshots' payload diff) key stored/pushed edges by
+        # exact (source, target) direction and would otherwise leave the
+        # stale directed edge in place next to a newly MERGEd one (found
+        # via review).
+        if (old_src, old_tgt) != (new_src, new_tgt):
+            removed_edges_list.append({
+                "source": old_src, "target": old_tgt, "relation": relation,
+                "confidence": old_d.get("confidence", ""), "properties": old_props,
+            })
+            new_edges_list.append({
+                "source": new_src, "target": new_tgt, "relation": relation,
+                "confidence": new_d.get("confidence", ""), "properties": new_props,
+            })
+        elif old_props != new_props:
             changed_edges_list.append({
-                "source": old_d.get("_src", old_u),
-                "target": old_d.get("_tgt", old_v),
-                "relation": old_d.get("relation", ""),
+                "source": new_src,
+                "target": new_tgt,
+                "relation": relation,
                 "old": old_props,
                 "new": new_props,
             })

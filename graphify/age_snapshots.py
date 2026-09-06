@@ -183,10 +183,19 @@ def _diff_payloads(old_payload: dict, new_payload: dict) -> dict:
 
 
 def latest_snapshot_graph(
-    conninfo: str, repository_id: str
+    conninfo: str, repository_id: str, *, schema_version: str | None = None,
 ) -> tuple[nx.Graph | None, str | None]:
     """Reconstruct the most recently recorded snapshot for a repository as
     an nx.Graph, for diffing the next push against.
+
+    ``schema_version``, when given, restricts reconstruction to rows
+    recorded under that Cypher-facing schema contract -- without it,
+    reconstruction walks every row for this repository regardless of which
+    schema version produced it, which can splice an old-schema checkpoint
+    with a new-schema delta (or vice versa) into one payload
+    (docs/AGE_PLAN.md's compatibility requirement, found unenforced via
+    review). Pass ``age_registry.SCHEMA_VERSION`` to scope reconstruction
+    to what the current codebase can actually produce/consume.
 
     Returns (None, None) when nothing has been recorded yet, or when the
     registry schema doesn't exist at all -- like
@@ -201,8 +210,10 @@ def latest_snapshot_graph(
             try:
                 cur.execute(
                     "SELECT snapshot_id, commit_sha, kind, payload FROM graphify_snapshots "
-                    "WHERE repository_id = %s ORDER BY created_at ASC;",
-                    (repository_id,),
+                    "WHERE repository_id = %s "
+                    "AND (%s::text IS NULL OR schema_version IS NOT DISTINCT FROM %s) "
+                    "ORDER BY created_at ASC;",
+                    (repository_id, schema_version, schema_version),
                 )
                 rows = cur.fetchall()
             except psycopg.errors.UndefinedTable:
@@ -217,15 +228,18 @@ def latest_snapshot_graph(
 
 
 def snapshot_graph_by_id(
-    conninfo: str, repository_id: str, snapshot_id: str
+    conninfo: str, repository_id: str, snapshot_id: str, *, schema_version: str | None = None,
 ) -> tuple[nx.Graph | None, str | None]:
     """Reconstruct the graph as of a *specific* recorded snapshot (not
     necessarily the latest) -- used to resolve a branch's pinned
     `base_snapshot_id` (docs/AGE_PLAN.md Phase 4).
 
+    ``schema_version`` restricts reconstruction the same way
+    latest_snapshot_graph()'s does -- see its docstring.
+
     Returns (None, None) if `snapshot_id` doesn't belong to this
-    repository's recorded snapshots, or if the registry schema doesn't
-    exist at all yet.
+    repository's recorded snapshots (under that schema version, when
+    given), or if the registry schema doesn't exist at all yet.
     """
     import psycopg
 
@@ -235,8 +249,10 @@ def snapshot_graph_by_id(
             try:
                 cur.execute(
                     "SELECT snapshot_id, commit_sha, kind, payload FROM graphify_snapshots "
-                    "WHERE repository_id = %s ORDER BY created_at ASC;",
-                    (repository_id,),
+                    "WHERE repository_id = %s "
+                    "AND (%s::text IS NULL OR schema_version IS NOT DISTINCT FROM %s) "
+                    "ORDER BY created_at ASC;",
+                    (repository_id, schema_version, schema_version),
                 )
                 rows = cur.fetchall()
             except psycopg.errors.UndefinedTable:

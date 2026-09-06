@@ -2909,6 +2909,7 @@ def dispatch_command(cmd: str) -> None:
             else os.environ.get("NEO4J_PASSWORD")
         ) or None
         age_graph_name = "graphify"
+        age_graph_name_explicit = False
         age_full_props = False
         age_owner: str | None = None
         age_repo_tag: str | None = None
@@ -2970,7 +2971,7 @@ def dispatch_command(cmd: str) -> None:
             elif a == "--password" and i + 1 < len(args):
                 push_password = args[i + 1]; i += 2
             elif a == "--graph-name" and i + 1 < len(args):
-                age_graph_name = args[i + 1]; i += 2
+                age_graph_name = args[i + 1]; age_graph_name_explicit = True; i += 2
             elif a == "--full-props":
                 age_full_props = True; i += 1
             elif a == "--owner" and i + 1 < len(args):
@@ -3230,6 +3231,19 @@ def dispatch_command(cmd: str) -> None:
                     current_branch = _reg.current_branch()
                     existing_repo = _reg.get_repository(conninfo, remote_url)
                     default_branch = (existing_repo or {}).get("default_branch") or current_branch
+                    if not age_graph_name_explicit:
+                        # Without --graph-name, every repository used to
+                        # default to the literal graph "graphify" -- two
+                        # repos pushed that way shared one AGE graph, and
+                        # the second push's deletion-safe reconcile deleted
+                        # the first repo's nodes/edges (found via review).
+                        # Prefer this repo's already-registered graph name
+                        # (so an existing repo's graph doesn't move under
+                        # it), else derive a name unique to repository_id.
+                        age_graph_name = (
+                            (existing_repo or {}).get("age_graph_name")
+                            or _reg.default_age_graph_name(repository_id)
+                        )
 
             is_feature_branch_push = (
                 repository_id is not None
@@ -3256,7 +3270,9 @@ def dispatch_command(cmd: str) -> None:
                     from graphify import age_snapshots as _snap
                     from graphify.analyze import graph_diff as _graph_diff
                     try:
-                        old_graph, _old_commit = _snap.latest_snapshot_graph(conninfo, repository_id)
+                        old_graph, _old_commit = _snap.latest_snapshot_graph(
+                            conninfo, repository_id, schema_version=_reg.SCHEMA_VERSION,
+                        )
                     except Exception as e:
                         old_graph = None
                         print(f"note: could not look up prior AGE snapshot, falling back "
@@ -3310,6 +3326,7 @@ def dispatch_command(cmd: str) -> None:
         age_conninfo = None
         age_branch_name = None
         age_cli_graph_name = "graphify"
+        age_cli_graph_name_explicit = False
         age_cli_remote_url = None
         age_min_idle_seconds = 7 * 24 * 3600
         i = 0
@@ -3319,7 +3336,7 @@ def dispatch_command(cmd: str) -> None:
             elif args[i] == "--branch" and i + 1 < len(args):
                 age_branch_name = args[i + 1]; i += 2
             elif args[i] == "--graph-name" and i + 1 < len(args):
-                age_cli_graph_name = args[i + 1]; i += 2
+                age_cli_graph_name = args[i + 1]; age_cli_graph_name_explicit = True; i += 2
             elif args[i] == "--remote-url" and i + 1 < len(args):
                 age_cli_remote_url = args[i + 1]; i += 2
             elif args[i] == "--min-idle-seconds" and i + 1 < len(args):
@@ -3347,6 +3364,19 @@ def dispatch_command(cmd: str) -> None:
         if not cli_branch:
             print("error: could not resolve the current git branch - pass --branch", file=sys.stderr)
             sys.exit(1)
+        if not age_cli_graph_name_explicit:
+            # Resolve the *registered* default-branch graph name rather than
+            # independently defaulting to the literal "graphify" (found via
+            # review) -- materializing a feature branch derives its own
+            # graph name from this via sanitize_branch_graph_name(), so an
+            # unregistered/never-pushed repo falling back to a fresh
+            # per-repository-id default is still collision-free, it just
+            # won't match a name chosen by a completely separate tool.
+            cli_existing_repo = _reg.get_repository(age_conninfo, cli_remote_url)
+            age_cli_graph_name = (
+                (cli_existing_repo or {}).get("age_graph_name")
+                or _reg.default_age_graph_name(cli_repository_id)
+            )
 
         if subcmd == "materialize":
             from graphify import age_branches as _branches

@@ -302,6 +302,43 @@ def test_age_diff_filter_keeps_only_new_and_changed_edges():
     assert filtered_edges == {"CALLS": [{"src": "a", "tgt": "b"}]}
 
 
+def test_age_diff_filter_keeps_new_edges_with_raw_lowercase_relation():
+    """Regression: edge_groups is keyed by _safe_rel()'s sanitized relation
+    (e.g. "calls" -> "CALLS"), but graph_diff()'s "relation" field is the
+    raw string -- comparing them unnormalized silently dropped every
+    changed/new edge for a normal lowercase relation (found via review)."""
+    edge_groups = {"CALLS": [{"src": "a", "tgt": "b"}]}
+    diff = {
+        "new_nodes": [], "removed_nodes": [], "changed_nodes": [],
+        "new_edges": [{"source": "a", "target": "b", "relation": "calls"}],
+        "removed_edges": [], "changed_edges": [],
+    }
+    _, filtered_edges, _, _ = graphdb._age_diff_filter({}, edge_groups, diff)
+    assert filtered_edges == {"CALLS": [{"src": "a", "tgt": "b"}]}
+
+
+def test_age_diff_filter_restores_edges_incident_to_a_relabeled_node():
+    """Regression: a changed node whose file_type changed is deleted (under
+    its old label) via DETACH DELETE, which also removes every edge
+    incident to it -- but graph_diff() doesn't mark those edges "changed"
+    just because an endpoint relabeled, so they'd never come back without
+    explicit handling (found via review)."""
+    edge_groups = {
+        "CALLS": [{"src": "a", "tgt": "b"}, {"src": "c", "tgt": "d"}],
+    }
+    diff = {
+        "new_nodes": [], "removed_nodes": [],
+        "changed_nodes": [{"id": "a", "old": {"file_type": "code"}, "new": {"file_type": "doc"}}],
+        "new_edges": [], "removed_edges": [], "changed_edges": [],
+    }
+    _, filtered_edges, stale_by_label, _ = graphdb._age_diff_filter({}, edge_groups, diff)
+    # The edge touching the relabeled node "a" must be re-included for
+    # upsert even though it's otherwise unchanged; the unrelated c->d edge
+    # must not be.
+    assert filtered_edges == {"CALLS": [{"src": "a", "tgt": "b"}]}
+    assert stale_by_label == {"Code": ["a"]}
+
+
 def test_age_diff_filter_computes_stale_edges_from_removed_edges():
     diff = {
         "new_nodes": [], "removed_nodes": [], "changed_nodes": [],

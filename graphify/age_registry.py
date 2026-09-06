@@ -73,6 +73,20 @@ def repository_id_for(remote_url: str) -> str:
     return str(uuid.uuid5(_REPOSITORY_ID_NAMESPACE, normalize_remote_url(remote_url)))
 
 
+def default_age_graph_name(repository_id: str) -> str:
+    """The default AGE graph name for a repository when the caller doesn't
+    pass an explicit ``--graph-name``: derived from `repository_id` so two
+    repositories pushed without ``--graph-name`` never collide on the
+    literal graph name "graphify" (found via review -- the CLI used to
+    default every repo to that one name, so a second repo's deletion-safe
+    reconcile would delete the first repo's nodes/edges).
+
+    A UUID is 36 characters; "graphify_" + 36 = 45 bytes, comfortably under
+    Postgres's 63-byte identifier limit.
+    """
+    return f"graphify_{repository_id.replace('-', '_')}"
+
+
 def resolve_owner(
     explicit: str | None = None,
     remote_url: str | None = None,

@@ -327,17 +327,20 @@ def _age_diff_filter(
         if (filtered := [r for r in rows if r["id"] in changed_node_ids])
     }
 
+    # AGE edge groups are keyed by _safe_rel()'s sanitized/uppercased
+    # relation type (e.g. "calls" -> "CALLS"), but a graph_diff()-shaped
+    # edge's "relation" field is the raw, un-sanitized string -- comparing
+    # them directly always misses, silently dropping every changed/new
+    # edge for a normal lowercase relation (found via review). Normalize
+    # both sides through _safe_rel() the same way edge_groups' keys were
+    # built.
     changed_edge_keys = {
-        (e["source"], e["target"], e.get("relation", ""))
+        (e["source"], e["target"], _safe_rel(e.get("relation", "RELATED_TO")))
         for e in diff.get("new_edges", []) + diff.get("changed_edges", [])
-    }
-    filtered_edge_groups = {
-        rel: filtered
-        for rel, rows in edge_groups.items()
-        if (filtered := [r for r in rows if (r["src"], r["tgt"], rel) in changed_edge_keys])
     }
 
     stale_by_label: dict[str, list[str]] = {}
+    relabeled_node_ids: set[str] = set()
     for n in diff.get("removed_nodes", []):
         label = _safe_label(str(n.get("properties", {}).get("file_type", "Entity")).capitalize())
         stale_by_label.setdefault(label, []).append(n["id"])
@@ -346,6 +349,24 @@ def _age_diff_filter(
         new_label = _safe_label(str(n.get("new", {}).get("file_type", "Entity")).capitalize())
         if old_label != new_label:
             stale_by_label.setdefault(old_label, []).append(n["id"])
+            relabeled_node_ids.add(n["id"])
+
+    # A node whose label changed is deleted (under its old label) via
+    # DETACH DELETE below, which also removes every edge incident to it --
+    # but graph_diff() doesn't mark an edge "changed" just because one of
+    # its endpoints relabeled, so those otherwise-unchanged edges would
+    # never be restored by changed_edge_keys alone (found via review).
+    # Re-include every edge touching a relabeled node so it gets re-upserted
+    # after the DETACH DELETE.
+    filtered_edge_groups = {
+        rel: filtered
+        for rel, rows in edge_groups.items()
+        if (filtered := [
+            r for r in rows
+            if (r["src"], r["tgt"], rel) in changed_edge_keys
+            or r["src"] in relabeled_node_ids or r["tgt"] in relabeled_node_ids
+        ])
+    }
 
     stale_edges_by_rel: dict[str, list[tuple[str, str]]] = {}
     for e in diff.get("removed_edges", []):

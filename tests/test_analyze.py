@@ -443,6 +443,36 @@ def test_graph_diff_changed_edge_honors_src_tgt():
     assert diff["changed_edges"][0]["target"] == "callee"
 
 
+def test_graph_diff_detects_pure_direction_reversal():
+    """Regression (found via review): edge_key() sorts endpoints, and
+    _diff_scalar_props() excludes _src/_tgt, so a same-pair edge that only
+    reversed direction (everything else unchanged) used to compare equal
+    and produce no diff at all -- push_to_age's directional
+    MERGE (a)-[r:REL]->(b) would then never learn about the reversal.
+    A pure reversal must show up as removing the old-direction edge and
+    adding the new-direction one, not as a "changed" edge (there's no old
+    "source"/"target" slot in a changed-edge record to carry the flip)."""
+    G_old = nx.Graph()
+    G_old.add_node("caller")
+    G_old.add_node("callee")
+    G_old.add_edge("caller", "callee", relation="calls", confidence="EXTRACTED",
+                    _src="caller", _tgt="callee")
+    G_new = nx.Graph()
+    G_new.add_node("caller")
+    G_new.add_node("callee")
+    G_new.add_edge("caller", "callee", relation="calls", confidence="EXTRACTED",
+                    _src="callee", _tgt="caller")
+
+    diff = graph_diff(G_old, G_new)
+    assert diff["changed_edges"] == []
+    assert len(diff["removed_edges"]) == 1
+    assert diff["removed_edges"][0]["source"] == "caller"
+    assert diff["removed_edges"][0]["target"] == "callee"
+    assert len(diff["new_edges"]) == 1
+    assert diff["new_edges"][0]["source"] == "callee"
+    assert diff["new_edges"][0]["target"] == "caller"
+
+
 def test_graph_diff_empty_diff():
     nodes = [("n1", "Alpha"), ("n2", "Beta")]
     edges = [("n1", "n2", "calls", "EXTRACTED")]

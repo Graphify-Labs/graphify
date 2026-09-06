@@ -1,6 +1,6 @@
 # Apache AGE Support — Implementation Plan
 
-Status: v14 (2026-09-06) — Phases 0-6 implemented and validated live
+Status: v15 (2026-09-06) — Phases 0-6 implemented and validated live
 against `apache/age` (PostgreSQL 18.1, AGE 1.7.0): compatibility spike,
 `push_to_age()` exporter, the repository identity/ownership registry,
 logical base snapshots + incremental default-branch sync, non-default
@@ -10,8 +10,41 @@ the pinned agent query contract, and AGE-backed retrieval for
 explicitly deferred -- see Phase 6). A pre-existing edge-direction bug
 affecting all three graph-DB exporters and `graph_diff()` was found and
 fixed while validating Phase 5's queries (see Phase 5's checklist).
-`extraction_config_hash` and `bytes_used` remain unpopulated reserved
-columns (see Open questions).
+`bytes_used` remains an unpopulated reserved column (see Open questions);
+`extraction_config_hash` is now plumbed through and enforced wherever it's
+given, but nothing yet computes a non-None value for it.
+
+**Post-review corrections (v15)**: an external review of the branch was
+not ready-to-merge, citing several correctness gaps. All were fixed:
+a critical default-AGE-graph-name collision across repositories (every
+repo pushed without `--graph-name` shared the literal graph `"graphify"`,
+so a second repo's deletion-safe reconcile deleted the first repo's data
+-- now derived from `repository_id` by default, and branch
+materialize/reap resolve the registered name instead of re-defaulting);
+incremental sync silently dropping every changed/new edge for a normal
+lowercase relation (an AGE-sanitized `_safe_rel()` group key was compared
+against the raw, un-sanitized diff relation string); a `file_type` change
+losing that node's otherwise-unchanged edges (its `DETACH DELETE` removes
+every incident edge, but they weren't being re-upserted); schema/config
+compatibility now actually enforced (branch rows persist
+`graphify_version`/`schema_version`/`extraction_config_hash`, snapshot
+reconstruction and base-snapshot resolution filter by them, and a push
+whose schema/config diverges from what its branch already has on record
+is rejected rather than spliced in); a non-atomic rebase that could leave
+`graphify_branches` claiming `materialized = true` for an AGE graph
+already dropped (the drop and the generation-transition registry update
+are now one transaction); concurrent branch pushes were unserialized
+(`push_branch` now holds the same per-`(repository_id, branch)` advisory
+lock `materialize_branch`/`reap_branch` already used); and a same-pair
+edge that only reversed direction produced no diff at all (`graph_diff()`
+excludes `_src`/`_tgt` from the properties it compares, so a pure
+reversal looked like no change -- now reported as an explicit
+remove-old-direction + add-new-direction pair, since `push_to_age`'s
+`MERGE (a)-[r:REL]->(b)` is directional and would otherwise leave a stale
+edge next to a newly created one). `reap_branch`'s idle-time semantics
+were also called out as measuring push-recency, not query-inactivity --
+correct as designed, so only the docs/CLI wording were made honest about
+that rather than adding unimplemented access-tracking machinery.
 Scope: add Apache AGE as a graph-database sink, with cost-efficient sync,
 multi-branch support, a multi-repo registry with ownership, and storage
 optimization. Primary consumers are external agents (code review, code
@@ -845,10 +878,16 @@ the ones specific to AGE that aren't automatically obvious from those docs.
       `graphify age materialize --push URI [--branch NAME]`): creates the
       AGE graph, rehydrates it via one `push_to_age()` full push from the
       replayed base-snapshot-plus-diff-chain graph, records
-      `materialized`/`age_graph_name`. Refusing on
-      `schema_version`/`extraction_config_hash` mismatch is deferred with
-      `extraction_config_hash` itself (see Open questions) — there is
-      nothing populated yet to mismatch against.
+      `materialized`/`age_graph_name`. `graphify_branches` now persists
+      `graphify_version`/`schema_version`/`extraction_config_hash` at push
+      time; `push_branch` rejects (`ValueError`) a push whose
+      `schema_version`/`extraction_config_hash` diverges from what's
+      already on record for that branch instead of silently continuing its
+      diff chain under a different config, and base-snapshot resolution
+      (`ensure_base_snapshot`) plus snapshot reconstruction
+      (`latest_snapshot_graph`/`snapshot_graph_by_id`) filter retained rows
+      by the same fields so an incompatible checkpoint/delta can't get
+      spliced into a replay (post-review fix, v15 — see Status).
 - [x] Advisory lock (`pg_advisory_lock`, keyed by a SHA-256-derived bigint
       on `(repository_id, branch)`) around both the materializer and the
       reaper; both re-read branch/revision state after acquiring it.

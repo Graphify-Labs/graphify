@@ -278,6 +278,77 @@ def test_push_branch_detects_rebase_and_starts_new_generation(conn, repository_i
     assert rows == [(1, False), (2, True)]
 
 
+def test_push_branch_rejects_incompatible_schema_version(conn, repository_id, tmp_path):
+    """Regression (found via review): nothing used to reject continuing a
+    branch's diff chain under a different schema_version than the one it
+    was originally pushed with, risking an incompatible checkpoint/delta
+    getting spliced into one replay."""
+    cwd = _repo(tmp_path)
+    (tmp_path / "readme.txt").write_text("main\n")
+    main_sha = _commit_all(cwd, "main")
+    snap.record_snapshot(_conninfo(), repository_id, main_sha, _graph([], []), **_push_kwargs())
+
+    _git(cwd, "checkout", "-qb", "feature")
+    (tmp_path / "a.py").write_text("x = 1\n")
+    _commit_all(cwd, "feature 1")
+    G1 = _graph([("a", {"label": "A"})], [])
+    ab.push_branch(_conninfo(), repository_id, "feature", G1, cwd=cwd, default_branch="main", **_push_kwargs())
+
+    (tmp_path / "b.py").write_text("y = 1\n")
+    _commit_all(cwd, "feature 2")
+    G2 = _graph([("a", {"label": "A"}), ("b", {"label": "B"})], [])
+    with pytest.raises(ValueError, match="schema_version"):
+        ab.push_branch(
+            _conninfo(), repository_id, "feature", G2, cwd=cwd, default_branch="main",
+            graphify_version="0.9.54", schema_version="not-" + reg.SCHEMA_VERSION,
+        )
+
+
+def test_rebase_drop_and_registry_transition_are_one_transaction(conn, repository_id, tmp_path):
+    """Regression (found via review): the old-graph drop_graph() call used
+    to commit in its own transaction, separately from the generation
+    transition that clears materialized/age_graph_name -- if anything
+    failed in between, the registry could still say materialized=true for
+    an AGE graph that no longer existed. Verify the materialized graph
+    from generation 1 is actually gone, and the registry consistently
+    reflects generation 2, not-yet-materialized."""
+    cwd = _repo(tmp_path)
+    (tmp_path / "readme.txt").write_text("main\n")
+    main_sha = _commit_all(cwd, "main")
+    snap.record_snapshot(_conninfo(), repository_id, main_sha, _graph([], []), **_push_kwargs())
+
+    _git(cwd, "checkout", "-qb", "feature")
+    (tmp_path / "a.py").write_text("x = 1\n")
+    _commit_all(cwd, "feature 1")
+    G1 = _graph([("a", {"label": "A"})], [])
+    ab.push_branch(_conninfo(), repository_id, "feature", G1, cwd=cwd, default_branch="main", **_push_kwargs())
+    mat1 = ab.materialize_branch(_conninfo(), repository_id, "feature", default_graph_name="graphify_rebase_e2e")
+    old_graph_name = mat1["age_graph_name"]
+
+    (tmp_path / "a.py").write_text("x = 2\n")
+    _git(cwd, "add", "-A")
+    _git(cwd, "commit", "-q", "--amend", "-m", "feature 1 amended")
+    G2 = _graph([("a", {"label": "A"}), ("c", {"label": "C"})], [])
+    r2 = ab.push_branch(_conninfo(), repository_id, "feature", G2, cwd=cwd, default_branch="main", **_push_kwargs())
+    assert r2["kind"] == "rebased"
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT materialized, age_graph_name FROM graphify_branches "
+            "WHERE repository_id = %s AND branch = %s;",
+            (repository_id, "feature"),
+        )
+        materialized, age_graph_name = cur.fetchone()
+    assert materialized is False
+    assert age_graph_name is None
+
+    with conn.cursor() as cur:
+        cur.execute("LOAD 'age';")
+        cur.execute('SET search_path = ag_catalog, "$user", public;')
+        cur.execute("SELECT count(*) FROM ag_catalog.ag_graph WHERE name = %s;", (old_graph_name,))
+        assert cur.fetchone()[0] == 0
+
+
 def test_materialize_branch_creates_age_graph_with_correct_content(conn, repository_id, tmp_path):
     cwd = _repo(tmp_path)
     (tmp_path / "a.py").write_text("x = 1\n")

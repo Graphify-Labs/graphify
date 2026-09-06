@@ -242,10 +242,18 @@ def ensure_base_snapshot(
     missing-base-snapshot fallback chain):
 
     1. If a graphify_snapshots row already exists at that commit_sha for
-       this repository, reconstruct up to (and including) it.
+       this repository *under this same schema_version/
+       extraction_config_hash*, reconstruct up to (and including) it.
     2. Otherwise, extract at that commit via a temporary git worktree and
        persist the result as a backdated historical checkpoint, so this
        resolution only has to happen once per commit.
+
+    The schema_version/extraction_config_hash filter matters because
+    reconstruction (_reconstruct_payload_up_to) walks retained rows in
+    order and applies deltas on top of checkpoints; mixing rows recorded
+    under an incompatible extractor or Cypher-facing schema into that walk
+    can silently splice incompatible payloads together (docs/AGE_PLAN.md's
+    compatibility requirement, found unenforced via review).
 
     Returns (snapshot_id, graph).
     """
@@ -258,8 +266,11 @@ def ensure_base_snapshot(
             try:
                 cur.execute(
                     "SELECT snapshot_id, commit_sha, kind, payload FROM graphify_snapshots "
-                    "WHERE repository_id = %s ORDER BY created_at ASC;",
-                    (repository_id,),
+                    "WHERE repository_id = %s "
+                    "AND schema_version IS NOT DISTINCT FROM %s "
+                    "AND extraction_config_hash IS NOT DISTINCT FROM %s "
+                    "ORDER BY created_at ASC;",
+                    (repository_id, schema_version, extraction_config_hash),
                 )
                 rows = cur.fetchall()
             except psycopg.errors.UndefinedTable:
@@ -292,9 +303,17 @@ def _replay_branch_to_head(
     base_snapshot_id: str,
     base_commit_sha: str,
     head_commit_sha: str,
+    schema_version: str | None = None,
 ) -> nx.Graph:
     """Reconstruct a branch's current graph: its pinned base snapshot plus
-    every diff row in its active generation, replayed in order."""
+    every diff row in its active generation, replayed in order.
+
+    ``schema_version`` scopes the base-snapshot reconstruction to rows
+    recorded under that schema (see snapshot_graph_by_id's docstring) --
+    pass the branch's own stored schema_version so an unrelated snapshot
+    row from an incompatible schema can't get folded into the base graph
+    even though its own snapshot_id was resolved correctly.
+    """
     import psycopg
     from graphify import age_snapshots as _snap
 
@@ -314,7 +333,9 @@ def _replay_branch_to_head(
     finally:
         conn.close()
 
-    base_graph, _base_commit = _snap.snapshot_graph_by_id(conninfo, repository_id, base_snapshot_id)
+    base_graph, _base_commit = _snap.snapshot_graph_by_id(
+        conninfo, repository_id, base_snapshot_id, schema_version=schema_version,
+    )
     if base_graph is None:
         raise RuntimeError(
             f"branch {branch!r}'s base_snapshot_id {base_snapshot_id!r} could not be reconstructed"
@@ -349,6 +370,7 @@ def _drop_age_graph_if_exists(conn, graph_name: str) -> None:
 def _insert_branch_first_push(
     conninfo, repository_id, branch, base_commit_sha, head_commit_sha,
     base_snapshot_id, generation, rows, *, pushed_by=None,
+    graphify_version=None, schema_version=None, extraction_config_hash=None,
 ) -> None:
     import psycopg
     conn = psycopg.connect(conninfo)
@@ -357,17 +379,21 @@ def _insert_branch_first_push(
             cur.execute(
                 "INSERT INTO graphify_branches "
                 "(repository_id, branch, base_commit_sha, head_commit_sha, base_snapshot_id, "
-                " materialized, last_push_hash, pushed_by, pushed_at) "
-                "VALUES (%s, %s, %s, %s, %s, false, %s, %s, now()) "
+                " materialized, last_push_hash, pushed_by, pushed_at, "
+                " graphify_version, schema_version, extraction_config_hash) "
+                "VALUES (%s, %s, %s, %s, %s, false, %s, %s, now(), %s, %s, %s) "
                 "ON CONFLICT (repository_id, branch) DO UPDATE SET "
                 "  base_commit_sha = EXCLUDED.base_commit_sha, "
                 "  head_commit_sha = EXCLUDED.head_commit_sha, "
                 "  base_snapshot_id = EXCLUDED.base_snapshot_id, "
                 "  last_push_hash = EXCLUDED.last_push_hash, "
                 "  pushed_by = COALESCE(EXCLUDED.pushed_by, graphify_branches.pushed_by), "
-                "  pushed_at = now();",
+                "  pushed_at = now(), "
+                "  graphify_version = EXCLUDED.graphify_version, "
+                "  schema_version = EXCLUDED.schema_version, "
+                "  extraction_config_hash = EXCLUDED.extraction_config_hash;",
                 (repository_id, branch, base_commit_sha, head_commit_sha, base_snapshot_id,
-                 head_commit_sha, pushed_by),
+                 head_commit_sha, pushed_by, graphify_version, schema_version, extraction_config_hash),
             )
             cur.execute(
                 "INSERT INTO graphify_branch_revisions "
@@ -433,14 +459,29 @@ def _append_branch_push(
 
 def _insert_branch_new_generation(
     conninfo, repository_id, branch, new_base_commit_sha, head_commit_sha,
-    new_base_snapshot_id, old_generation, new_generation, rows, *, pushed_by=None,
+    new_base_snapshot_id, old_generation, new_generation, rows, *,
+    pushed_by=None, old_age_graph_name=None,
+    graphify_version=None, schema_version=None, extraction_config_hash=None,
 ) -> None:
     """Supersede the active generation (marked inactive, never deleted --
     history stays auditable) and start a fresh diff chain from a newly
-    resolved base, for a detected force-push/rebase."""
+    resolved base, for a detected force-push/rebase.
+
+    ``old_age_graph_name``, if given, is dropped in the *same* transaction
+    as the generation transition and the graphify_branches row's
+    materialized/age_graph_name reset. Previously the drop was committed in
+    its own transaction before this one ran (docs/AGE_PLAN.md Phase 4's
+    original rebase path) -- a failure in between could leave the registry
+    still claiming ``materialized = true`` for an AGE graph that no longer
+    existed (found via review). Folding both into one transaction means
+    either the graph is dropped and the registry reflects that, or neither
+    happened.
+    """
     import psycopg
     conn = psycopg.connect(conninfo)
     try:
+        if old_age_graph_name:
+            _drop_age_graph_if_exists(conn, old_age_graph_name)
         with conn.cursor() as cur:
             cur.execute(
                 "UPDATE graphify_branch_revisions SET active = false "
@@ -456,10 +497,12 @@ def _insert_branch_new_generation(
             cur.execute(
                 "UPDATE graphify_branches SET base_commit_sha = %s, head_commit_sha = %s, "
                 "base_snapshot_id = %s, materialized = false, age_graph_name = NULL, "
-                "last_push_hash = %s, pushed_by = COALESCE(%s, pushed_by), pushed_at = now() "
+                "last_push_hash = %s, pushed_by = COALESCE(%s, pushed_by), pushed_at = now(), "
+                "graphify_version = %s, schema_version = %s, extraction_config_hash = %s "
                 "WHERE repository_id = %s AND branch = %s;",
                 (new_base_commit_sha, head_commit_sha, new_base_snapshot_id, head_commit_sha,
-                 pushed_by, repository_id, branch),
+                 pushed_by, graphify_version, schema_version, extraction_config_hash,
+                 repository_id, branch),
             )
             _insert_diff_rows(
                 cur, repository_id, branch, new_generation,
@@ -495,6 +538,13 @@ def push_branch(
     ancestor of the new head) and starts a fresh generation from a newly
     resolved merge-base rather than corrupting the existing diff chain;
     the old generation is marked inactive, not deleted.
+
+    Serialized by the same (repository_id, branch) advisory lock
+    materialize_branch()/reap_branch() use: without it, two concurrent
+    pushes could both read the same old head, each compute a diff against
+    it, and append two non-contiguous transitions to the diff chain -- the
+    next replay would then reject the chain, but only after it was already
+    written (found via review).
     """
     import psycopg
     from graphify import age_registry as _reg
@@ -506,13 +556,52 @@ def push_branch(
         raise ValueError("could not resolve the current git commit SHA to push this branch")
     pushed_by = _reg.git_user_email(cwd)
 
+    lock_key = _advisory_lock_key(repository_id, branch)
+    lock_conn = psycopg.connect(conninfo)
+    try:
+        with lock_conn.cursor() as cur:
+            cur.execute("SELECT pg_advisory_lock(%s);", (lock_key,))
+        lock_conn.commit()
+        return _push_branch_locked(
+            conninfo, repository_id, branch, G,
+            cwd=cwd, default_branch=default_branch, head_commit_sha=head_commit_sha,
+            pushed_by=pushed_by, graphify_version=graphify_version,
+            schema_version=schema_version, extraction_config_hash=extraction_config_hash,
+        )
+    finally:
+        with lock_conn.cursor() as cur:
+            cur.execute("SELECT pg_advisory_unlock(%s);", (lock_key,))
+        lock_conn.commit()
+        lock_conn.close()
+
+
+def _push_branch_locked(
+    conninfo: str,
+    repository_id: str,
+    branch: str,
+    G: nx.Graph,
+    *,
+    cwd: Path | str | None,
+    default_branch: str | None,
+    head_commit_sha: str,
+    pushed_by: str | None,
+    graphify_version: str | None,
+    schema_version: str | None,
+    extraction_config_hash: str | None,
+) -> dict:
+    """push_branch()'s body, run under its (repository_id, branch) advisory
+    lock. Split out only so the lock acquire/release wraps the whole thing
+    in one place."""
+    import psycopg
+    from graphify.analyze import graph_diff
+
     conn = psycopg.connect(conninfo)
     try:
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT base_commit_sha, head_commit_sha, base_snapshot_id, "
-                "materialized, age_graph_name FROM graphify_branches "
-                "WHERE repository_id = %s AND branch = %s;",
+                "materialized, age_graph_name, schema_version, extraction_config_hash "
+                "FROM graphify_branches WHERE repository_id = %s AND branch = %s;",
                 (repository_id, branch),
             )
             branch_row = cur.fetchone()
@@ -542,14 +631,41 @@ def push_branch(
         _insert_branch_first_push(
             conninfo, repository_id, branch, base_commit_sha, head_commit_sha,
             base_snapshot_id, 1, rows, pushed_by=pushed_by,
+            graphify_version=graphify_version, schema_version=schema_version,
+            extraction_config_hash=extraction_config_hash,
         )
         return {
             "kind": "initial", "generation": 1, "rows": len(rows),
             "base_commit_sha": base_commit_sha, "head_commit_sha": head_commit_sha,
         }
 
-    old_base_commit_sha, old_head_commit_sha, base_snapshot_id, materialized, age_graph_name = branch_row
+    (old_base_commit_sha, old_head_commit_sha, base_snapshot_id, materialized, age_graph_name,
+     stored_schema_version, stored_extraction_config_hash) = branch_row
     (old_generation,) = revision_row
+
+    # Reject splicing a push computed under a different schema/extraction
+    # config into this branch's existing diff chain: graph_diff()'s output
+    # shape (and every AGE property name it references) is a function of
+    # the Cypher-facing schema/extraction config, so mixing two configs'
+    # rows into one replay can silently corrupt reconstruction
+    # (docs/AGE_PLAN.md's compatibility requirement, found unenforced via
+    # review). A real config change should look like a fresh branch (a new
+    # remote/repository_id or a rebase after the base moves), not a
+    # continuation of the same generation.
+    if stored_schema_version is not None and schema_version is not None and stored_schema_version != schema_version:
+        raise ValueError(
+            f"branch {branch!r} was pushed under schema_version {stored_schema_version!r}, "
+            f"but this push is schema_version {schema_version!r} -- refusing to continue "
+            "its diff chain under an incompatible schema."
+        )
+    if (stored_extraction_config_hash is not None and extraction_config_hash is not None
+            and stored_extraction_config_hash != extraction_config_hash):
+        raise ValueError(
+            f"branch {branch!r} was pushed with extraction_config_hash "
+            f"{stored_extraction_config_hash!r}, but this push is "
+            f"{extraction_config_hash!r} -- refusing to continue its diff chain under "
+            "an incompatible extraction configuration."
+        )
 
     if old_head_commit_sha == head_commit_sha:
         return {
@@ -561,7 +677,7 @@ def push_branch(
         old_graph = _replay_branch_to_head(
             conninfo, repository_id, branch, old_generation,
             base_snapshot_id=base_snapshot_id, base_commit_sha=old_base_commit_sha,
-            head_commit_sha=old_head_commit_sha,
+            head_commit_sha=old_head_commit_sha, schema_version=stored_schema_version,
         )
         diff = graph_diff(old_graph, G)
         rows = diff_to_rows(diff)
@@ -577,20 +693,6 @@ def push_branch(
             "base_commit_sha": old_base_commit_sha, "head_commit_sha": head_commit_sha,
         }
 
-    # Force-push/rebase: the branch's existing materialized graph (if any)
-    # reflects the superseded generation's history and would collide with
-    # create_graph() on the next materialize, so it's dropped now.
-    if materialized and age_graph_name:
-        conn = psycopg.connect(conninfo)
-        try:
-            _drop_age_graph_if_exists(conn, age_graph_name)
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
-
     new_base_commit_sha = (
         merge_base(cwd, default_branch, head_commit_sha) if default_branch else None
     ) or head_commit_sha
@@ -602,9 +704,17 @@ def push_branch(
     diff = graph_diff(new_base_graph, G)
     new_generation = old_generation + 1
     rows = diff_to_rows(diff)
+    # The branch's existing materialized graph (if any) reflects the
+    # superseded generation's history and would collide with
+    # create_graph() on the next materialize -- drop it in the same
+    # transaction as the generation transition (see
+    # _insert_branch_new_generation's docstring for why not separately).
     _insert_branch_new_generation(
         conninfo, repository_id, branch, new_base_commit_sha, head_commit_sha,
         new_base_snapshot_id, old_generation, new_generation, rows, pushed_by=pushed_by,
+        old_age_graph_name=age_graph_name if materialized else None,
+        graphify_version=graphify_version, schema_version=schema_version,
+        extraction_config_hash=extraction_config_hash,
     )
     return {
         "kind": "rebased", "generation": new_generation, "rows": len(rows),
@@ -636,14 +746,15 @@ def materialize_branch(conninfo: str, repository_id: str, branch: str, *, defaul
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT base_commit_sha, head_commit_sha, base_snapshot_id, "
-                    "materialized, age_graph_name FROM graphify_branches "
+                    "materialized, age_graph_name, schema_version FROM graphify_branches "
                     "WHERE repository_id = %s AND branch = %s;",
                     (repository_id, branch),
                 )
                 row = cur.fetchone()
                 if row is None:
                     raise ValueError(f"branch {branch!r} has no recorded push for this repository")
-                base_commit_sha, head_commit_sha, base_snapshot_id, materialized, age_graph_name = row
+                (base_commit_sha, head_commit_sha, base_snapshot_id, materialized,
+                 age_graph_name, branch_schema_version) = row
                 if materialized and age_graph_name:
                     return {"age_graph_name": age_graph_name, "already_materialized": True}
 
@@ -660,7 +771,7 @@ def materialize_branch(conninfo: str, repository_id: str, branch: str, *, defaul
             G = _replay_branch_to_head(
                 conninfo, repository_id, branch, generation,
                 base_snapshot_id=base_snapshot_id, base_commit_sha=base_commit_sha,
-                head_commit_sha=head_commit_sha,
+                head_commit_sha=head_commit_sha, schema_version=branch_schema_version,
             )
 
             branch_graph_name = sanitize_branch_graph_name(default_graph_name, branch)
@@ -691,12 +802,22 @@ def materialize_branch(conninfo: str, repository_id: str, branch: str, *, defaul
 def reap_branch(
     conninfo: str, repository_id: str, branch: str, *, min_idle_seconds: int = 7 * 24 * 3600
 ) -> dict:
-    """Drop a materialized branch's AGE graph once it's gone idle for at
-    least `min_idle_seconds` (default: 7 days -- a generous grace period,
-    docs/AGE_PLAN.md Phase 4). The diff chain and snapshots are never
-    touched, so a reaped branch can always be re-materialized later.
-    Serialized by the same advisory lock materialize_branch() uses, so a
-    reap can never race an in-flight materialization.
+    """Drop a materialized branch's AGE graph once `min_idle_seconds`
+    (default: 7 days) have passed since its last *push* (docs/AGE_PLAN.md
+    Phase 4). The diff chain and snapshots are never touched, so a reaped
+    branch can always be re-materialized later. Serialized by the same
+    advisory lock materialize_branch() uses, so a reap can never race an
+    in-flight materialization.
+
+    This is a push-recency retention policy, not query-inactivity-based
+    reaping: `pushed_at` only updates on a push, and a direct Cypher query
+    against a materialized AGE graph has no way to notify graphify that it
+    happened. A branch that's pushed once and then queried heavily for
+    months with no further pushes is "idle" by this measure and eligible
+    for reaping (found via review) -- if that pattern matters for your
+    workflow, keep pushing periodically (even a no-op push touches
+    `pushed_at`), or call materialize_branch() again after a reap to
+    rehydrate on demand.
     """
     import psycopg
 
