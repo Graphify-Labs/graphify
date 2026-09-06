@@ -1,11 +1,13 @@
 # Apache AGE Support — Implementation Plan
 
-Status: v13 (2026-09-06) — Phases 0-5 implemented and validated live
+Status: v14 (2026-09-06) — Phases 0-6 implemented and validated live
 against `apache/age` (PostgreSQL 18.1, AGE 1.7.0): compatibility spike,
 `push_to_age()` exporter, the repository identity/ownership registry,
 logical base snapshots + incremental default-branch sync, non-default
 branches (commit-anchored diff chains, lazy materialization, reaping),
-and the pinned agent query contract. A pre-existing edge-direction bug
+the pinned agent query contract, and AGE-backed retrieval for
+`graphify query`/`path`/`explain` (`serve.py`'s MCP/HTTP server is
+explicitly deferred -- see Phase 6). A pre-existing edge-direction bug
 affecting all three graph-DB exporters and `graph_diff()` was found and
 fixed while validating Phase 5's queries (see Phase 5's checklist).
 `extraction_config_hash` and `bytes_used` remain unpopulated reserved
@@ -952,13 +954,45 @@ the ones specific to AGE that aren't automatically obvious from those docs.
       `fix:` commit) affecting all three graph-DB exporters and
       `graph_diff()`, not something introduced by this phase.
 
-### Phase 6 (optional) — AGE-backed retrieval inside graphify
-- [ ] Backend abstraction for `query/path/explain` and `serve.py`
-      (file-backend vs. AGE connection).
-- [ ] AGE-fetch-then-NetworkX-score strategy implemented; scoring/formatting
-      unchanged and behavior-identical to the file backend.
-- [ ] `ARCHITECTURE.md` updated.
-- [ ] Commit on `apache-age-backend`; `pytest` green.
+### Phase 6 (optional) — AGE-backed retrieval inside graphify ✅ done (CLI only; serve.py deferred)
+- [x] Backend abstraction for `query`/`path`/`explain` (`cli.py`): a new
+      `graphify/age_backend.py::fetch_graph_from_age(conninfo, graph_name)`
+      fetches a whole AGE graph into an `nx.MultiGraph` shaped exactly like
+      `build()`'s output (full property set as node attrs, `_src`/`_tgt`
+      stamped on every edge). Each subcommand's existing graph-loading
+      block gained an `if --age: ... else: <unchanged file-loading
+      code>` branch; everything downstream (scoring, path-finding,
+      formatting) is the literal same code either way.
+- [x] AGE-fetch-then-NetworkX-score strategy implemented; scoring/formatting
+      unchanged and **proven** behavior-identical to the file backend --
+      not just argued: `tests/test_age_backend_integration.py` pushes one
+      graph to both a local `graph.json` and a live AGE instance and
+      asserts `graphify query`/`path`/`explain`'s printed output is
+      byte-for-byte identical (`path`/`explain` exactly; `query` modulo
+      the one "Graph: ..." header line that's supposed to differ).
+- [x] **`serve.py` (the MCP/HTTP server) is explicitly deferred, not
+      implemented.** Its `_load_graph`/multi-graph-context-LRU/hot-reload
+      machinery is all keyed on `graph_path` as a filesystem path string
+      threaded through `_build_server`, `serve`, and `serve_http` -
+      retrofitting an AGE connection as an alternate "path" would mean
+      either widening that key type through a large, already-complex,
+      widely-used module (real regression risk to existing MCP clients
+      for a nice-to-have), or a shallow bolt-on that silently breaks hot-
+      reload/multi-context semantics for AGE-backed sessions. `cli.py`'s
+      one-shot subcommands have no such state to reconcile, which is why
+      they were in scope and `serve.py` isn't -- revisit only if a
+      concrete need for AGE-backed *live-served* retrieval (not just
+      ad-hoc CLI queries) shows up.
+- [x] `ARCHITECTURE.md` updated (`age_backend.py` row).
+- [x] Also promoted `parse_agtype_objects` (docs/AGE_SCHEMA.md's Phase 5
+      pinned parser, previously duplicated as a copy in
+      `tests/test_age_agent_queries_integration.py`) into
+      `graphify.age_backend` as the canonical implementation, and updated
+      that test file to import it instead of keeping a second copy that
+      could drift from the doc.
+- [x] Commit on `apache-age-backend`; `pytest` green (5487 passed
+      non-live; live AGE + registry + snapshot + branch + agent-query +
+      backend suites all passed against PostgreSQL 18.1 / AGE 1.7.0).
 
 ### Cross-cutting / process
 - [x] `v8` synced to `origin/v8` before cutting `apache-age-backend`
