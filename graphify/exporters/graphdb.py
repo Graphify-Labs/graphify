@@ -348,6 +348,7 @@ def push_to_age(
     full_props: bool = False,
     batch_size: int = 500,
     diff: dict | None = None,
+    conn=None,
 ) -> dict[str, int]:
     """Push graph to a running Apache AGE (Postgres extension) instance.
 
@@ -367,6 +368,14 @@ def push_to_age(
     reports removed (or relabeled). O(changed) instead of O(graph) once a
     prior snapshot exists. When ``None`` (the default), behavior is
     unchanged: a full deletion-safe push against live AGE state.
+
+    ``conn`` (docs/AGE_PLAN.md Phase 4): pass an already-open psycopg
+    connection to fold this push into a caller-managed transaction (e.g.
+    branch materialization, which must commit the AGE mutation and its
+    registry bookkeeping atomically) -- this function then neither commits
+    nor closes it, leaving that to the caller. When ``None`` (the
+    default), behavior is unchanged: this function opens its own
+    connection and commits/closes it itself.
 
     See the module-level comment above for the two AGE constraints
     (literal graph name; enumerated SET fields) this function is built
@@ -421,7 +430,9 @@ def push_to_age(
     nodes_pushed = sum(len(rows) for rows in node_groups.values())
     edges_pushed = sum(len(rows) for rows in edge_groups.values())
 
-    conn = psycopg.connect(conninfo)
+    owns_conn = conn is None
+    if owns_conn:
+        conn = psycopg.connect(conninfo)
     try:
         with conn.cursor() as cur:
             cur.execute("LOAD 'age';")
@@ -560,11 +571,14 @@ def push_to_age(
                     _execute_prepared(cur, stmt_name, {"rows": batch})
                 cur.execute(sql.SQL("DEALLOCATE {name};").format(name=sql.Identifier(stmt_name)))
 
-        conn.commit()
+        if owns_conn:
+            conn.commit()
     except Exception:
-        conn.rollback()
+        if owns_conn:
+            conn.rollback()
         raise
     finally:
-        conn.close()
+        if owns_conn:
+            conn.close()
 
     return {"nodes": nodes_pushed, "edges": edges_pushed}
