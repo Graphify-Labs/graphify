@@ -1,10 +1,13 @@
 # Apache AGE Support — Implementation Plan
 
-Status: v12 (2026-09-06) — Phases 0-4 implemented and validated live
+Status: v13 (2026-09-06) — Phases 0-5 implemented and validated live
 against `apache/age` (PostgreSQL 18.1, AGE 1.7.0): compatibility spike,
 `push_to_age()` exporter, the repository identity/ownership registry,
-logical base snapshots + incremental default-branch sync, and non-default
-branches (commit-anchored diff chains, lazy materialization, reaping).
+logical base snapshots + incremental default-branch sync, non-default
+branches (commit-anchored diff chains, lazy materialization, reaping),
+and the pinned agent query contract. A pre-existing edge-direction bug
+affecting all three graph-DB exporters and `graph_diff()` was found and
+fixed while validating Phase 5's queries (see Phase 5's checklist).
 `extraction_config_hash` and `bytes_used` remain unpopulated reserved
 columns (see Open questions).
 Scope: add Apache AGE as a graph-database sink, with cost-efficient sync,
@@ -900,17 +903,54 @@ the ones specific to AGE that aren't automatically obvious from those docs.
       age materialize` → `graphify age reap`), including rebase/force-push
       detection tests (tier 1, throwaway git repos in tmp_path).
 
-### Phase 5 — Agent contract: pinned queries and fixtures
-- [ ] Review-agent query set documented and pinned: branch-diff seed
-      selection, traversal direction per relation, reverse-dependency
-      traversal, required evidence fields, depth caps/result
-      limits/statement timeouts.
-- [ ] Quality-agent contract: structural properties vs.
-      `graphify_quality_findings` boundary documented.
-- [ ] Pinned example queries added to `docs/AGE_SCHEMA.md`.
-- [ ] Integration fixtures in the live suite executing the pinned queries
-      against a seeded instance.
-- [ ] Commit on `apache-age-backend`; `pytest` green.
+### Phase 5 — Agent contract: pinned queries and fixtures ✅ done
+- [x] Review-agent query set documented and pinned in `docs/AGE_SCHEMA.md`'s
+      new "Agent contract" section: branch-diff seed selection, traversal
+      direction per relation (`source → target` exactly as extracted,
+      independent of `push_to_age()`'s undirected `nx.Graph` internals --
+      see the direction-bug fix below), reverse-dependency vs. forward
+      traversal, required evidence fields (id, source_file,
+      source_location, relation, confidence, and the branch/base commit),
+      depth caps/result limits/statement timeouts.
+- [x] Quality-agent contract documented: structural properties
+      (`degree`/`is_god_node`/`in_cycle`) vs. `graphify_quality_findings`
+      -- the boundary exists so a rule can be added/changed/retired
+      without a schema migration.
+- [x] Pinned example queries added to `docs/AGE_SCHEMA.md`: branch-diff
+      seed selection (plain SQL), depth-capped/limited/timed-out
+      traversal, and quality-findings-joined-with-structural-properties,
+      plus a "Parsing agtype vertex/edge/path values" helper (AGE returns
+      `{...}::vertex`/`{...}::edge`/`[...]::path`, not plain JSON --
+      `json.loads` and a naive regex both fail on the nested `properties`
+      object; a depth-aware splitter is pinned instead).
+- [x] **Two AGE 1.7.0 gaps found live while validating the *existing*
+      shortest-path pinned query** (written in Phase 0/1 but never
+      actually executed against a live instance until now):
+      `shortestPath()` doesn't exist on this version at all (`syntax
+      error at or near "shortestPath"`), and list-comprehension path
+      projection (`[n IN nodes(p) | n.id]`) fails with `could not find
+      properties for n`. Rewrote the pinned query to order variable-length
+      matches by `length(p)` and return the whole path for client-side
+      parsing instead -- documented as a version-specific limitation, not
+      silently worked around.
+- [x] Integration fixtures in the live suite
+      (`tests/test_age_agent_queries_integration.py`) executing every
+      pinned query verbatim against a seeded instance: `extraction.json`
+      (correctness-oriented queries -- shortest path, reverse-dependency
+      traversal, branch-diff seed selection, quality findings join) and a
+      dedicated 200-node fan-out fixture (depth cap / `LIMIT` /
+      `statement_timeout` -- `extraction.json`'s 4 nodes proved too small
+      to exercise these meaningfully, so a larger fixture was added per
+      the plan's own instruction rather than weakening the assertions).
+      `statement_timeout` is proven to actually cancel a runaway query
+      (`psycopg.errors.QueryCanceled`), not just documented as advice.
+- [x] Commit on `apache-age-backend`; `pytest` green (5481 passed
+      non-live; live AGE + registry + snapshot + branch + agent-query
+      suites all passed against PostgreSQL 18.1 / AGE 1.7.0). Also fixed,
+      as a prerequisite: a pre-existing edge-direction bug found while
+      validating the reverse-dependency-traversal query (see the separate
+      `fix:` commit) affecting all three graph-DB exporters and
+      `graph_diff()`, not something introduced by this phase.
 
 ### Phase 6 (optional) — AGE-backed retrieval inside graphify
 - [ ] Backend abstraction for `query/path/explain` and `serve.py`
