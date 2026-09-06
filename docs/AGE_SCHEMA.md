@@ -144,7 +144,11 @@ top-level object: `{"id": ..., "label": "Code", "properties": {...}}::vertex`,
 `{...}::edge`, or a `path` whose whole array carries `::path`. `json.loads`
 on the raw string fails on the `::vertex`/`::edge`/`::path` suffixes, and a
 naive non-greedy regex (`\{.*?\}::`) breaks on the nested `"properties":
-{...}` object inside each vertex/edge. Depth-aware splitting handles it:
+{...}` object inside each vertex/edge. Depth-aware splitting handles it --
+`graphify.age_backend.parse_agtype_objects` is the pinned Python
+implementation (used by `fetch_graph_from_age()`, docs/AGE_PLAN.md Phase
+6, and by `tests/test_age_agent_queries_integration.py`; kept here for
+any non-Python client):
 
 ```python
 import json

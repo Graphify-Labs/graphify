@@ -26,6 +26,7 @@ psycopg = pytest.importorskip("psycopg")
 from psycopg import sql  # noqa: E402
 
 from graphify import age_registry as reg  # noqa: E402
+from graphify.age_backend import parse_agtype_objects as _parse_agtype_objects  # noqa: E402
 from graphify.analyze import god_nodes  # noqa: E402
 from graphify.build import build_from_json  # noqa: E402
 from graphify.exporters.graphdb import push_to_age  # noqa: E402
@@ -113,38 +114,6 @@ def _agtype_str(raw) -> str:
     """AGE returns agtype scalars as their JSON text form (quoted for
     strings) -- strip the quotes to compare against a plain Python str."""
     return json.loads(raw) if isinstance(raw, str) else raw
-
-
-def _parse_agtype_objects(raw: str) -> list[tuple[dict, str | None]]:
-    """docs/AGE_SCHEMA.md's pinned parser: a returned vertex/edge/path is
-    not plain JSON -- each top-level object carries a `::vertex`/`::edge`
-    type suffix that breaks json.loads and a naive regex alike (the
-    nested "properties" object has its own braces). Depth-aware splitting
-    handles it; kept identical to the doc's copy so drift is caught here."""
-    results: list[tuple[dict, str | None]] = []
-    depth, start = 0, None
-    i, n = 0, len(raw)
-    while i < n:
-        c = raw[i]
-        if c == "{":
-            if depth == 0:
-                start = i
-            depth += 1
-        elif c == "}":
-            depth -= 1
-            if depth == 0 and start is not None:
-                obj = json.loads(raw[start:i + 1])
-                j = i + 1
-                kind = None
-                if raw[j:j + 2] == "::":
-                    k = j + 2
-                    while k < n and raw[k].isalpha():
-                        k += 1
-                    kind = raw[j + 2:k]
-                results.append((obj, kind))
-                start = None
-        i += 1
-    return results
 
 
 # ---------------------------------------------------------------------------
