@@ -1201,7 +1201,8 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(1)
     elif cmd == "query":
         if len(sys.argv) < 3:
-            print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--budget N] [--graph path]", file=sys.stderr)
+            print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--budget N] "
+                  "[--graph path] [--age postgresql://... --graph-name NAME]", file=sys.stderr)
             sys.exit(1)
         from graphify.serve import _query_graph_text
         from graphify.security import sanitize_label
@@ -1212,6 +1213,8 @@ def dispatch_command(cmd: str) -> None:
         use_dfs = "--dfs" in sys.argv
         budget = 2000
         graph_path = _default_graph_path()
+        age_conninfo = None
+        age_graph_name = "graphify"
         context_filters: list[str] = []
         args = sys.argv[3:]
         i = 0
@@ -1239,66 +1242,89 @@ def dispatch_command(cmd: str) -> None:
             elif args[i] == "--graph" and i + 1 < len(args):
                 graph_path = args[i + 1]
                 i += 2
+            elif args[i] == "--age" and i + 1 < len(args):
+                age_conninfo = args[i + 1]
+                i += 2
+            elif args[i] == "--graph-name" and i + 1 < len(args):
+                age_graph_name = args[i + 1]
+                i += 2
             else:
                 i += 1
-        gp = Path(graph_path).resolve()
-        if not gp.exists():
-            print(f"error: graph file not found: {gp}", file=sys.stderr)
-            sys.exit(1)
-        if not gp.suffix == ".json":
-            print(f"error: graph file must be a .json file", file=sys.stderr)
-            sys.exit(1)
-        _enforce_graph_size_cap_or_exit(gp)
-        try:
-            import json as _json
-            import networkx as _nx
 
-            _raw = _json.loads(gp.read_text(encoding="utf-8"))
-            if "links" not in _raw and "edges" in _raw:
-                _raw = dict(_raw, links=_raw["edges"])
-            # `query` deliberately keeps the graph undirected (unlike `path` /
-            # `explain`, which force directed=True): BFS/DFS here must explore
-            # both callers and callees of the seed node to build useful
-            # context, and forcing a DiGraph would make G.neighbors() return
-            # successors only, silently dropping every caller-side result for
-            # a seed with no outgoing edges. Direction is instead preserved
-            # per-edge below (mirrors graphify/build.py's _src/_tgt pattern)
-            # so the *rendering* stays correct without narrowing traversal.
-            # Keep in-file markers when present (#2309): unconditionally
-            # overwriting them with source/target would clobber the true
-            # direction of a link persisted in flipped endpoint order.
-            _raw = dict(
-                _raw,
-                links=[
-                    {
-                        **link,
-                        "_src": link.get("_src", link.get("source")),
-                        "_tgt": link.get("_tgt", link.get("target")),
-                    }
-                    for link in _raw.get("links", [])
-                ],
-            )
+        # docs/AGE_PLAN.md Phase 6: fetch-then-NetworkX-score, not a
+        # separate query path -- everything after this branch (scoring,
+        # formatting) is identical to the file backend. No local file, no
+        # size cap, no query stamp (there's no cache/ dir to write next to).
+        if age_conninfo is not None:
+            from graphify.age_backend import fetch_graph_from_age
+            import networkx as _nx
             try:
-                G = json_graph.node_link_graph(_raw, edges="links")
-            except TypeError:
-                G = json_graph.node_link_graph(_raw)
+                G = _nx.Graph(fetch_graph_from_age(age_conninfo, age_graph_name))
+            except Exception as exc:
+                print(f"error: could not fetch graph '{age_graph_name}' from AGE: {exc}", file=sys.stderr)
+                sys.exit(1)
+            gp = None
+        else:
+            gp = Path(graph_path).resolve()
+            if not gp.exists():
+                print(f"error: graph file not found: {gp}", file=sys.stderr)
+                sys.exit(1)
+            if not gp.suffix == ".json":
+                print(f"error: graph file must be a .json file", file=sys.stderr)
+                sys.exit(1)
+            _enforce_graph_size_cap_or_exit(gp)
+        if gp is not None:
             try:
-                from graphify.build import graph_has_legacy_ids as _legacy
-                if _legacy(_raw.get("nodes", [])):
-                    print(
-                        "[graphify] note: this graph uses the pre-#1504 node-ID scheme; "
-                        "rebuild with `graphify extract --force` to get path-qualified IDs "
-                        "(fixes same-name-file collisions).",
-                        file=sys.stderr,
-                    )
-            except Exception:
-                pass
-        except Exception as exc:
-            print(f"error: could not load graph: {exc}", file=sys.stderr)
-            sys.exit(1)
+                import json as _json
+                import networkx as _nx
+
+                _raw = _json.loads(gp.read_text(encoding="utf-8"))
+                if "links" not in _raw and "edges" in _raw:
+                    _raw = dict(_raw, links=_raw["edges"])
+                # `query` deliberately keeps the graph undirected (unlike `path` /
+                # `explain`, which force directed=True): BFS/DFS here must explore
+                # both callers and callees of the seed node to build useful
+                # context, and forcing a DiGraph would make G.neighbors() return
+                # successors only, silently dropping every caller-side result for
+                # a seed with no outgoing edges. Direction is instead preserved
+                # per-edge below (mirrors graphify/build.py's _src/_tgt pattern)
+                # so the *rendering* stays correct without narrowing traversal.
+                # Keep in-file markers when present (#2309): unconditionally
+                # overwriting them with source/target would clobber the true
+                # direction of a link persisted in flipped endpoint order.
+                _raw = dict(
+                    _raw,
+                    links=[
+                        {
+                            **link,
+                            "_src": link.get("_src", link.get("source")),
+                            "_tgt": link.get("_tgt", link.get("target")),
+                        }
+                        for link in _raw.get("links", [])
+                    ],
+                )
+                try:
+                    G = json_graph.node_link_graph(_raw, edges="links")
+                except TypeError:
+                    G = json_graph.node_link_graph(_raw)
+                try:
+                    from graphify.build import graph_has_legacy_ids as _legacy
+                    if _legacy(_raw.get("nodes", [])):
+                        print(
+                            "[graphify] note: this graph uses the pre-#1504 node-ID scheme; "
+                            "rebuild with `graphify extract --force` to get path-qualified IDs "
+                            "(fixes same-name-file collisions).",
+                            file=sys.stderr,
+                        )
+                except Exception:
+                    pass
+            except Exception as exc:
+                print(f"error: could not load graph: {exc}", file=sys.stderr)
+                sys.exit(1)
         import time as _time
         _t0 = _time.perf_counter()
         _mode = "dfs" if use_dfs else "bfs"
+        _corpus = str(gp) if gp is not None else f"age://{age_graph_name}"
         _result = _query_graph_text(
             G,
             question,
@@ -1306,19 +1332,20 @@ def dispatch_command(cmd: str) -> None:
             depth=2,
             token_budget=budget,
             context_filters=context_filters,
-            graph_path=str(gp),
+            graph_path=_corpus,
         )
         querylog.log_query(
             kind="query",
             question=question,
-            corpus=str(gp),
+            corpus=_corpus,
             result=_result,
             mode=_mode,
             depth=2,
             token_budget=budget,
             duration_ms=(_time.perf_counter() - _t0) * 1000,
         )
-        _touch_query_stamp(gp)
+        if gp is not None:
+            _touch_query_stamp(gp)
         print(_result)
     elif cmd == "affected":
         if len(sys.argv) < 3:
@@ -1550,7 +1577,7 @@ def dispatch_command(cmd: str) -> None:
         if len(sys.argv) < 4:
             print(
                 'Usage: graphify path "<source>" "<target>" [--graph path] '
-                "[--directed|--undirected]",
+                "[--directed|--undirected] [--age postgresql://... --graph-name NAME]",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -1561,11 +1588,17 @@ def dispatch_command(cmd: str) -> None:
         source_label = sys.argv[2]
         target_label = sys.argv[3]
         graph_path = _default_graph_path()
+        age_conninfo = None
+        age_graph_name = "graphify"
         args = sys.argv[4:]
         direction_flag = None
         for i, a in enumerate(args):
             if a == "--graph" and i + 1 < len(args):
                 graph_path = args[i + 1]
+            elif a == "--age" and i + 1 < len(args):
+                age_conninfo = args[i + 1]
+            elif a == "--graph-name" and i + 1 < len(args):
+                age_graph_name = args[i + 1]
             elif a == "--directed":
                 if direction_flag == "undirected":
                     print(
@@ -1586,25 +1619,41 @@ def dispatch_command(cmd: str) -> None:
         # graph.json (arc order on post-#563 files, _src/_tgt markers on legacy
         # canonicalized files), so respect it unless the caller opts out.
         undirected = direction_flag == "undirected"
-        gp = Path(graph_path).resolve()
-        if not gp.exists():
-            print(f"error: graph file not found: {gp}", file=sys.stderr)
-            sys.exit(1)
-        _enforce_graph_size_cap_or_exit(gp)
-        _raw = json.loads(gp.read_text(encoding="utf-8"))
-        if "links" not in _raw and "edges" in _raw:
-            _raw = dict(_raw, links=_raw["edges"])
-        # Force directed so the renderer can recover stored caller→callee
-        # direction, and multigraph so exact-pair parallel links (e.g. a
-        # `references` and a `calls` edge between the same two nodes) survive load
-        # instead of being silently collapsed last-writer-wins — otherwise the
-        # printed relation could be one the traversed pair doesn't actually
-        # carry (#2074). Local to this read; serve's shared graph is untouched.
-        _raw = {**_raw, "directed": True, "multigraph": True}
-        try:
-            G = json_graph.node_link_graph(_raw, edges="links")
-        except TypeError:
-            G = json_graph.node_link_graph(_raw)
+
+        # docs/AGE_PLAN.md Phase 6: fetch-then-NetworkX-score. fetch_graph_from_age()
+        # already returns a MultiGraph with _src/_tgt stamped on every edge, which is
+        # exactly what the file-backend load below produces (multigraph=True,
+        # directed=True forced) - everything downstream (has_edge/edge_datas already
+        # tolerate MultiGraph; direction is re-derived from _src/_tgt either way) works
+        # unchanged, so no further conversion is needed here.
+        gp = None
+        if age_conninfo is not None:
+            from graphify.age_backend import fetch_graph_from_age
+            try:
+                G = fetch_graph_from_age(age_conninfo, age_graph_name)
+            except Exception as exc:
+                print(f"error: could not fetch graph '{age_graph_name}' from AGE: {exc}", file=sys.stderr)
+                sys.exit(1)
+        else:
+            gp = Path(graph_path).resolve()
+            if not gp.exists():
+                print(f"error: graph file not found: {gp}", file=sys.stderr)
+                sys.exit(1)
+            _enforce_graph_size_cap_or_exit(gp)
+            _raw = json.loads(gp.read_text(encoding="utf-8"))
+            if "links" not in _raw and "edges" in _raw:
+                _raw = dict(_raw, links=_raw["edges"])
+            # Force directed so the renderer can recover stored caller→callee
+            # direction, and multigraph so exact-pair parallel links (e.g. a
+            # `references` and a `calls` edge between the same two nodes) survive load
+            # instead of being silently collapsed last-writer-wins — otherwise the
+            # printed relation could be one the traversed pair doesn't actually
+            # carry (#2074). Local to this read; serve's shared graph is untouched.
+            _raw = {**_raw, "directed": True, "multigraph": True}
+            try:
+                G = json_graph.node_link_graph(_raw, edges="links")
+            except TypeError:
+                G = json_graph.node_link_graph(_raw)
         src_scored = _score_nodes(G, [t.lower() for t in source_label.split()])
         tgt_scored = _score_nodes(G, [t.lower() for t in target_label.split()])
         if not src_scored:
@@ -1705,41 +1754,70 @@ def dispatch_command(cmd: str) -> None:
                 segments.append(f"<--{rel}{conf_str}-- {G.nodes[v].get('label', v)}")
         print(f"Shortest path ({hops} hops):\n  " + " ".join(segments))
         from graphify import querylog
+        _corpus = str(gp) if gp is not None else f"age://{age_graph_name}"
         querylog.log_query(
             kind="path",
             question=f"{sys.argv[2]} -> {sys.argv[3]}",
-            corpus=str(gp),
+            corpus=_corpus,
             nodes_returned=hops,
         )
-        _touch_query_stamp(gp)
+        if gp is not None:
+            _touch_query_stamp(gp)
 
     elif cmd == "explain":
         if len(sys.argv) < 3:
-            print('Usage: graphify explain "<node>" [--graph path]', file=sys.stderr)
+            print('Usage: graphify explain "<node>" [--graph path] '
+                  '[--age postgresql://... --graph-name NAME]', file=sys.stderr)
             sys.exit(1)
         from graphify.serve import _find_node, find_node_ambiguity
         from networkx.readwrite import json_graph
 
         label = sys.argv[2]
         graph_path = _default_graph_path()
+        age_conninfo = None
+        age_graph_name = "graphify"
         args = sys.argv[3:]
         for i, a in enumerate(args):
             if a == "--graph" and i + 1 < len(args):
                 graph_path = args[i + 1]
-        gp = Path(graph_path).resolve()
-        if not gp.exists():
-            print(f"error: graph file not found: {gp}", file=sys.stderr)
-            sys.exit(1)
-        _enforce_graph_size_cap_or_exit(gp)
-        _raw = json.loads(gp.read_text(encoding="utf-8"))
-        if "links" not in _raw and "edges" in _raw:
-            _raw = dict(_raw, links=_raw["edges"])
-        # Force directed so the renderer can recover stored caller→callee direction.
-        _raw = {**_raw, "directed": True}
-        try:
-            G = json_graph.node_link_graph(_raw, edges="links")
-        except TypeError:
-            G = json_graph.node_link_graph(_raw)
+            elif a == "--age" and i + 1 < len(args):
+                age_conninfo = args[i + 1]
+            elif a == "--graph-name" and i + 1 < len(args):
+                age_graph_name = args[i + 1]
+        gp = None
+        if age_conninfo is not None:
+            # docs/AGE_PLAN.md Phase 6: fetch-then-NetworkX-score. explain
+            # needs G.successors()/predecessors(), which only a directed
+            # graph has -- fetch_graph_from_age() returns an undirected
+            # MultiGraph (matching build()'s own output shape), so derive
+            # the directed view from each edge's _src/_tgt the same way
+            # `path`'s file-backend block already does.
+            from graphify.age_backend import fetch_graph_from_age
+            import networkx as _nx
+            try:
+                _undirected = fetch_graph_from_age(age_conninfo, age_graph_name)
+            except Exception as exc:
+                print(f"error: could not fetch graph '{age_graph_name}' from AGE: {exc}", file=sys.stderr)
+                sys.exit(1)
+            G = _nx.MultiDiGraph()
+            G.add_nodes_from(_undirected.nodes(data=True))
+            for u, v, data in _undirected.edges(data=True):
+                G.add_edge(data.get("_src", u), data.get("_tgt", v), **data)
+        else:
+            gp = Path(graph_path).resolve()
+            if not gp.exists():
+                print(f"error: graph file not found: {gp}", file=sys.stderr)
+                sys.exit(1)
+            _enforce_graph_size_cap_or_exit(gp)
+            _raw = json.loads(gp.read_text(encoding="utf-8"))
+            if "links" not in _raw and "edges" in _raw:
+                _raw = dict(_raw, links=_raw["edges"])
+            # Force directed so the renderer can recover stored caller→callee direction.
+            _raw = {**_raw, "directed": True}
+            try:
+                G = json_graph.node_link_graph(_raw, edges="links")
+            except TypeError:
+                G = json_graph.node_link_graph(_raw)
         matches = _find_node(G, label)
         if not matches:
             print(f"No node matching '{label}' found.")
@@ -1767,7 +1845,7 @@ def dispatch_command(cmd: str) -> None:
         try:
             from graphify.reflect import load_learning_overlay as _llo
             from graphify.security import sanitize_label as _sl
-            _overlay = _llo(gp)
+            _overlay = _llo(gp) if gp is not None else {}
             _entry = _overlay.get(str(nid))
             if _entry:
                 _status = _sl(str(_entry.get("status", "")))
@@ -1839,13 +1917,15 @@ def dispatch_command(cmd: str) -> None:
                 if len(grouped) > 20:
                     print(f"    ... and {len(grouped) - 20} more files")
         from graphify import querylog
+        _corpus = str(gp) if gp is not None else f"age://{age_graph_name}"
         querylog.log_query(
             kind="explain",
             question=sys.argv[2],
-            corpus=str(gp),
+            corpus=_corpus,
             nodes_returned=len(connections),
         )
-        _touch_query_stamp(gp)
+        if gp is not None:
+            _touch_query_stamp(gp)
 
     elif cmd == "diagnose":
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
