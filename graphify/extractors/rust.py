@@ -182,6 +182,27 @@ def extract_rust(path: Path) -> dict:
                     function_bodies.append((func_nid, body))
             return
 
+        if t == "function_signature_item":
+            # `fn greet(&self) -> String;` — a trait method with no body. This node type
+            # had no branch at all, so a trait's required methods were unreachable: the
+            # only method nodes in a graph came from impl blocks, and a trait with no
+            # implementor in the corpus contributed none. Mirrors function_item, minus
+            # the body walk (there is no body).
+            name_node = node.child_by_field_name("name")
+            if name_node:
+                func_name = _read_text(name_node, source)
+                line = node.start_point[0] + 1
+                if parent_impl_nid:
+                    func_nid = _make_id(parent_impl_nid, func_name)
+                    add_node(func_nid, f".{func_name}()", line)
+                    add_edge(parent_impl_nid, func_nid, "method", line)
+                else:
+                    func_nid = _make_id(stem, func_name)
+                    add_node(func_nid, f"{func_name}()", line)
+                    add_edge(file_nid, func_nid, "contains", line)
+                emit_param_return_refs(node, func_nid, line)
+            return
+
         if t in ("struct_item", "enum_item", "trait_item"):
             name_node = node.child_by_field_name("name")
             if name_node:
@@ -292,6 +313,16 @@ def extract_rust(path: Path) -> dict:
                                             continue
                                         type_node = field.child_by_field_name("type")
                                         _emit_enum_type(type_node, field.start_point[0] + 1)
+                if t == "trait_item":
+                    # The methods a trait declares are its contract, and they were not
+                    # reached: this branch returns below, so nothing walked the body.
+                    # Descend the same way impl_item does, attributing each method to
+                    # the trait node — so `explain <Trait>` can list what an
+                    # implementor must provide.
+                    body = node.child_by_field_name("body")
+                    if body:
+                        for child in body.children:
+                            walk(child, parent_impl_nid=item_nid)
             return
 
         if t == "impl_item":
