@@ -304,6 +304,37 @@ def test_push_branch_rejects_incompatible_schema_version(conn, repository_id, tm
         )
 
 
+def test_push_branch_rejects_incompatible_extraction_config_hash(conn, repository_id, tmp_path):
+    """Regression (found via review): extraction_config_hash needed the
+    same continuation-rejection schema_version already got -- a push
+    continuing a branch's diff chain under a different extraction
+    configuration (same schema_version) must not be silently spliced in."""
+    cwd = _repo(tmp_path)
+    (tmp_path / "readme.txt").write_text("main\n")
+    main_sha = _commit_all(cwd, "main")
+    snap.record_snapshot(_conninfo(), repository_id, main_sha, _graph([], []), **_push_kwargs())
+
+    _git(cwd, "checkout", "-qb", "feature")
+    (tmp_path / "a.py").write_text("x = 1\n")
+    _commit_all(cwd, "feature 1")
+    G1 = _graph([("a", {"label": "A"})], [])
+    ab.push_branch(
+        _conninfo(), repository_id, "feature", G1, cwd=cwd, default_branch="main",
+        graphify_version="0.9.54", schema_version=reg.SCHEMA_VERSION,
+        extraction_config_hash="config-a",
+    )
+
+    (tmp_path / "b.py").write_text("y = 1\n")
+    _commit_all(cwd, "feature 2")
+    G2 = _graph([("a", {"label": "A"}), ("b", {"label": "B"})], [])
+    with pytest.raises(ValueError, match="extraction_config_hash"):
+        ab.push_branch(
+            _conninfo(), repository_id, "feature", G2, cwd=cwd, default_branch="main",
+            graphify_version="0.9.54", schema_version=reg.SCHEMA_VERSION,
+            extraction_config_hash="config-b",
+        )
+
+
 def test_rebase_drop_and_registry_transition_are_one_transaction(conn, repository_id, tmp_path):
     """Regression (found via review): the old-graph drop_graph() call used
     to commit in its own transaction, separately from the generation

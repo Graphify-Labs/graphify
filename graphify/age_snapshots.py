@@ -183,19 +183,24 @@ def _diff_payloads(old_payload: dict, new_payload: dict) -> dict:
 
 
 def latest_snapshot_graph(
-    conninfo: str, repository_id: str, *, schema_version: str | None = None,
+    conninfo: str, repository_id: str, *,
+    schema_version: str | None = None, extraction_config_hash: str | None = None,
 ) -> tuple[nx.Graph | None, str | None]:
     """Reconstruct the most recently recorded snapshot for a repository as
     an nx.Graph, for diffing the next push against.
 
-    ``schema_version``, when given, restricts reconstruction to rows
-    recorded under that Cypher-facing schema contract -- without it,
-    reconstruction walks every row for this repository regardless of which
-    schema version produced it, which can splice an old-schema checkpoint
-    with a new-schema delta (or vice versa) into one payload
-    (docs/AGE_PLAN.md's compatibility requirement, found unenforced via
-    review). Pass ``age_registry.SCHEMA_VERSION`` to scope reconstruction
-    to what the current codebase can actually produce/consume.
+    ``schema_version``/``extraction_config_hash``, when given, restrict
+    reconstruction to rows recorded under that Cypher-facing schema
+    contract and extraction configuration -- without them, reconstruction
+    walks every row for this repository regardless of which schema/config
+    produced it, which can splice an incompatible checkpoint with a delta
+    (or vice versa) into one payload (docs/AGE_PLAN.md's compatibility
+    requirement, found unenforced via review -- schema_version alone isn't
+    enough, since two runs can share a schema_version while differing in
+    extraction settings that still affect what properties end up on
+    pushed nodes/edges). Pass ``age_registry.SCHEMA_VERSION`` and this
+    push's ``age_registry.extraction_config_hash(...)`` to scope
+    reconstruction to what the current push is actually compatible with.
 
     Returns (None, None) when nothing has been recorded yet, or when the
     registry schema doesn't exist at all -- like
@@ -212,8 +217,10 @@ def latest_snapshot_graph(
                     "SELECT snapshot_id, commit_sha, kind, payload FROM graphify_snapshots "
                     "WHERE repository_id = %s "
                     "AND (%s::text IS NULL OR schema_version IS NOT DISTINCT FROM %s) "
+                    "AND (%s::text IS NULL OR extraction_config_hash IS NOT DISTINCT FROM %s) "
                     "ORDER BY created_at ASC;",
-                    (repository_id, schema_version, schema_version),
+                    (repository_id, schema_version, schema_version,
+                     extraction_config_hash, extraction_config_hash),
                 )
                 rows = cur.fetchall()
             except psycopg.errors.UndefinedTable:
@@ -228,17 +235,18 @@ def latest_snapshot_graph(
 
 
 def snapshot_graph_by_id(
-    conninfo: str, repository_id: str, snapshot_id: str, *, schema_version: str | None = None,
+    conninfo: str, repository_id: str, snapshot_id: str, *,
+    schema_version: str | None = None, extraction_config_hash: str | None = None,
 ) -> tuple[nx.Graph | None, str | None]:
     """Reconstruct the graph as of a *specific* recorded snapshot (not
     necessarily the latest) -- used to resolve a branch's pinned
     `base_snapshot_id` (docs/AGE_PLAN.md Phase 4).
 
-    ``schema_version`` restricts reconstruction the same way
-    latest_snapshot_graph()'s does -- see its docstring.
+    ``schema_version``/``extraction_config_hash`` restrict reconstruction
+    the same way latest_snapshot_graph()'s does -- see its docstring.
 
     Returns (None, None) if `snapshot_id` doesn't belong to this
-    repository's recorded snapshots (under that schema version, when
+    repository's recorded snapshots (under that schema/config, when
     given), or if the registry schema doesn't exist at all yet.
     """
     import psycopg
@@ -251,8 +259,10 @@ def snapshot_graph_by_id(
                     "SELECT snapshot_id, commit_sha, kind, payload FROM graphify_snapshots "
                     "WHERE repository_id = %s "
                     "AND (%s::text IS NULL OR schema_version IS NOT DISTINCT FROM %s) "
+                    "AND (%s::text IS NULL OR extraction_config_hash IS NOT DISTINCT FROM %s) "
                     "ORDER BY created_at ASC;",
-                    (repository_id, schema_version, schema_version),
+                    (repository_id, schema_version, schema_version,
+                     extraction_config_hash, extraction_config_hash),
                 )
                 rows = cur.fetchall()
             except psycopg.errors.UndefinedTable:
@@ -366,10 +376,20 @@ def record_snapshot(
     conn = psycopg.connect(conninfo)
     try:
         with conn.cursor() as cur:
+            # Scoped to this exact schema_version/extraction_config_hash,
+            # matching what latest_snapshot_graph()/snapshot_graph_by_id()
+            # filter by on read -- otherwise the delta computed below could
+            # be relative to an old_payload a filtered reconstruction would
+            # never actually walk through (an incompatible row spliced into
+            # the history this push's delta assumes it sits on top of;
+            # found via review alongside the read-side filtering gap).
             cur.execute(
                 "SELECT snapshot_id, commit_sha, kind, payload FROM graphify_snapshots "
-                "WHERE repository_id = %s ORDER BY created_at ASC;",
-                (repository_id,),
+                "WHERE repository_id = %s "
+                "AND schema_version IS NOT DISTINCT FROM %s "
+                "AND extraction_config_hash IS NOT DISTINCT FROM %s "
+                "ORDER BY created_at ASC;",
+                (repository_id, schema_version, extraction_config_hash),
             )
             rows = cur.fetchall()
 
@@ -378,7 +398,10 @@ def record_snapshot(
             # the same commit would compute depends on how many rows exist
             # *now* (cadence is a function of push count, not commit_sha) --
             # a repeat call could otherwise insert a second, different-kind
-            # row for a commit already recorded.
+            # row for a commit already recorded. Scoped to rows already
+            # filtered to this schema/config, so a commit re-recorded under
+            # a genuinely different config still gets its own row rather
+            # than short-circuiting on an unrelated config's result.
             for existing_id, existing_commit, existing_kind, _payload in rows:
                 if existing_commit == commit_sha:
                     conn.commit()

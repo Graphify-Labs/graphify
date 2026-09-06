@@ -45,6 +45,36 @@ edge next to a newly created one). `reap_branch`'s idle-time semantics
 were also called out as measuring push-recency, not query-inactivity --
 correct as designed, so only the docs/CLI wording were made honest about
 that rather than adding unimplemented access-tracking machinery.
+
+**Second review pass (still v15)**: two more gaps, both in `graphify
+export age`'s CLI plumbing rather than the underlying `age_branches`/
+`age_snapshots` machinery: an unregistered repository's first push used
+to unconditionally treat whatever branch was currently checked out as the
+default branch, silently misclassifying a feature branch pushed first
+(fixed with a new `--default-branch` flag plus `refs/remotes/origin/HEAD`
+resolution -- `age_registry.resolve_default_branch_ref()` -- falling back
+to a loud stderr warning, never a silent guess, when neither resolves);
+and `extraction_config_hash` was defined and enforced in `age_branches`/
+`age_snapshots` but the CLI never actually computed or passed one, so the
+check it fed was always a no-op in practice (fixed with
+`age_registry.extraction_config_hash()`, a deterministic hash of
+`--full-props` plus an optional caller-supplied `--extraction-config` /
+`GRAPHIFY_EXTRACTION_CONFIG_HASH` fingerprint, now threaded through every
+CLI call to `push_branch`/`record_snapshot`/`latest_snapshot_graph`; the
+`extraction_config_hash` filter was also added to `snapshot_graph_by_id`
+and `record_snapshot`'s own internal reconstruction, which previously
+filtered on `schema_version` alone). Two more bugs surfaced live while
+testing the `--default-branch` fix through the real CLI path (previously
+masked because every branch test pre-registered the repository and passed
+an explicit `cwd`, sidestepping both): `age_branches._extract_graph_at_commit`
+unconditionally did `cwd=str(cwd)` for its `git worktree` subprocess calls,
+turning a `None` cwd (the CLI's default -- it never passes one) into the
+literal string `"None"`; and the feature-branch push path never upserted
+`graphify_repos` before writing rows that foreign-key onto it, so an
+unregistered repo's first push -- if it happened to be a feature branch --
+failed outright with `ForeignKeyViolation` instead of registering first,
+the way a default-branch push already did. Registration now happens once,
+before dispatching to either push path.
 Scope: add Apache AGE as a graph-database sink, with cost-efficient sync,
 multi-branch support, a multi-repo registry with ownership, and storage
 optimization. Primary consumers are external agents (code review, code

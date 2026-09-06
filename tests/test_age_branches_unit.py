@@ -292,3 +292,26 @@ def test_extract_graph_at_commit_unknown_commit_raises(tmp_path):
     _commit(tmp_path, "a.txt", "a")
     with pytest.raises(RuntimeError, match="worktree"):
         ab._extract_graph_at_commit(tmp_path, "0" * 40)
+
+
+def test_extract_graph_at_commit_cwd_none_uses_process_cwd(tmp_path, monkeypatch):
+    """Regression: the two `git worktree` subprocess calls used to do
+    `cwd=str(cwd)` unconditionally, so a caller passing cwd=None (the
+    default all the way up through push_branch()/ensure_base_snapshot(),
+    since the CLI never passes an explicit cwd) turned into the literal
+    string "None" as the subprocess cwd -- `FileNotFoundError` on any real
+    invocation, only ever masked in tests that happened to pass an
+    explicit tmp_path. `is_ancestor()` already guarded this correctly;
+    `_extract_graph_at_commit()` didn't (found via review)."""
+    _init_repo(tmp_path)
+    (tmp_path / "a.py").write_text("def foo():\n    return 1\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-q", "-m", "initial")
+    old_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    monkeypatch.chdir(tmp_path)
+    G = ab._extract_graph_at_commit(None, old_sha)
+    labels = {data.get("label") for _, data in G.nodes(data=True)}
+    assert any("foo" in (label or "") for label in labels)

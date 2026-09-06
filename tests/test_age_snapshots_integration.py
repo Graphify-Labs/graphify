@@ -140,6 +140,31 @@ def test_latest_snapshot_graph_reconstructs_after_checkpoint_and_delta(conn, rep
     assert graph.has_edge("a", "b")
 
 
+def test_latest_snapshot_graph_extraction_config_hash_filter_isolates_configs(conn, repository_id):
+    """Regression (found via review): filtering by schema_version alone
+    isn't enough -- two runs can share a schema_version while differing in
+    extraction settings that still affect what ends up on pushed
+    nodes/edges. Two configs' checkpoints for the same repository must
+    reconstruct independently, not get merged into one payload."""
+    G_a = _graph([("a", {"label": "A"})], [])
+    G_b = _graph([("z", {"label": "Z"})], [])
+    snap.record_snapshot(_conninfo(), repository_id, "c1", G_a,
+                          graphify_version="0.9.54", schema_version="1",
+                          extraction_config_hash="config-a")
+    snap.record_snapshot(_conninfo(), repository_id, "c2", G_b,
+                          graphify_version="0.9.54", schema_version="1",
+                          extraction_config_hash="config-b")
+
+    graph_a, commit_a = snap.latest_snapshot_graph(
+        _conninfo(), repository_id, schema_version="1", extraction_config_hash="config-a",
+    )
+    graph_b, commit_b = snap.latest_snapshot_graph(
+        _conninfo(), repository_id, schema_version="1", extraction_config_hash="config-b",
+    )
+    assert commit_a == "c1" and set(graph_a.nodes()) == {"a"}
+    assert commit_b == "c2" and set(graph_b.nodes()) == {"z"}
+
+
 def test_checkpoint_cadence_triggers_on_the_nth_push(conn, repository_id):
     for i in range(5):
         G = _graph([(f"n{i}", {"label": f"N{i}"})], [])

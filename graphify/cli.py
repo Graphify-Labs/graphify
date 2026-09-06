@@ -2873,6 +2873,10 @@ def dispatch_command(cmd: str) -> None:
             print("            (or set FALKORDB_PASSWORD instead of --password to keep it off argv)", file=sys.stderr)
             print("  age       [--graph PATH] --push postgresql://user:pass@host/db [--graph-name NAME] [--full-props]", file=sys.stderr)
             print("            [--owner OWNER] [--repo-tag TAG] [--remote-url URL] [--no-register]", file=sys.stderr)
+            print("            [--default-branch NAME]  (unregistered repos: resolves refs/remotes/origin/HEAD", file=sys.stderr)
+            print("             if this isn't given; pass it explicitly when pushing a feature branch first)", file=sys.stderr)
+            print("            [--extraction-config HASH]  (or set GRAPHIFY_EXTRACTION_CONFIG_HASH; folded into", file=sys.stderr)
+            print("             the compatibility check alongside --full-props)", file=sys.stderr)
             print("            (or set AGE_PASSWORD / PGPASSWORD instead of embedding the password in --push)", file=sys.stderr)
             sys.exit(1)
 
@@ -2915,6 +2919,8 @@ def dispatch_command(cmd: str) -> None:
         age_repo_tag: str | None = None
         age_remote_url: str | None = None
         age_no_register = False
+        age_default_branch_flag: str | None = None
+        age_extraction_config_flag: str | None = os.environ.get("GRAPHIFY_EXTRACTION_CONFIG_HASH")
         i = 0
         while i < len(args):
             a = args[i]
@@ -2982,6 +2988,10 @@ def dispatch_command(cmd: str) -> None:
                 age_remote_url = args[i + 1]; i += 2
             elif a == "--no-register":
                 age_no_register = True; i += 1
+            elif a == "--default-branch" and i + 1 < len(args):
+                age_default_branch_flag = args[i + 1]; i += 2
+            elif a == "--extraction-config" and i + 1 < len(args):
+                age_extraction_config_flag = args[i + 1]; i += 2
             elif subcmd == "callflow-html" and not a.startswith("-") and not graph_path_explicit:
                 candidate = Path(a)
                 if candidate.name == "graph.json" or candidate.suffix.lower() == ".json":
@@ -3230,7 +3240,29 @@ def dispatch_command(cmd: str) -> None:
                     commit_sha = _reg.current_commit_sha()
                     current_branch = _reg.current_branch()
                     existing_repo = _reg.get_repository(conninfo, remote_url)
-                    default_branch = (existing_repo or {}).get("default_branch") or current_branch
+                    if existing_repo is not None and existing_repo.get("default_branch"):
+                        default_branch = existing_repo["default_branch"]
+                    else:
+                        # Unregistered repo (or registered without a
+                        # recorded default branch yet): resolve it
+                        # explicitly rather than silently trusting whatever
+                        # branch happens to be checked out. A first push
+                        # from a feature branch used to register *that*
+                        # branch as the durable default-branch graph, with
+                        # no diff chain recorded at all (found via review).
+                        default_branch = age_default_branch_flag or _reg.resolve_default_branch_ref()
+                        if default_branch is None:
+                            print(
+                                "warning: could not confirm this repository's default "
+                                "branch (no --default-branch given, and "
+                                "refs/remotes/origin/HEAD isn't set) - assuming the "
+                                f"current branch '{current_branch}' is the default. If "
+                                "this is actually a feature branch, re-run with "
+                                "--default-branch <name> so it isn't registered as the "
+                                "durable default-branch graph.",
+                                file=sys.stderr,
+                            )
+                            default_branch = current_branch
                     if not age_graph_name_explicit:
                         # Without --graph-name, every repository used to
                         # default to the literal graph "graphify" -- two
@@ -3245,6 +3277,44 @@ def dispatch_command(cmd: str) -> None:
                             or _reg.default_age_graph_name(repository_id)
                         )
 
+                    # Register (upsert graphify_repos) *before* dispatching
+                    # to either push path, not only after a default-branch
+                    # push: graphify_snapshots/graphify_branches/
+                    # graphify_branch_diff all foreign-key onto
+                    # graphify_repos, so an unregistered repo's first push
+                    # from a feature branch used to fail outright
+                    # (ForeignKeyViolation) the moment push_branch() tried
+                    # to record anything (found live while testing the
+                    # --default-branch fix above).
+                    owner = _reg.resolve_owner(
+                        explicit=age_owner, remote_url=remote_url,
+                        git_email=_reg.git_user_email(),
+                    )
+                    try:
+                        registered_row = _reg.register_repository(
+                            conninfo, remote_url,
+                            repo_tag=age_repo_tag, owner_id=owner,
+                            default_branch=default_branch, age_graph_name=age_graph_name,
+                        )
+                        print(f"Registered repository {registered_row['repository_id']} "
+                              f"({registered_row['remote_url']}) in the AGE registry"
+                              + (f", owner '{owner}'" if owner else ""))
+                    except Exception as e:
+                        registered_row = None
+                        print(f"warning: registry registration failed, continuing "
+                              f"without incremental/branch sync: {e}", file=sys.stderr)
+                        repository_id = None
+
+            # docs/AGE_PLAN.md's compatibility requirement (found unenforced
+            # via review): a real value here needs `_reg` (only imported
+            # inside the `if not age_no_register` block above), so this is
+            # None whenever registration is skipped -- consistent with
+            # every other registry-only field in this block.
+            age_extraction_config_hash_value = (
+                _reg.extraction_config_hash(full_props=age_full_props, extra=age_extraction_config_flag)
+                if repository_id is not None else None
+            )
+
             is_feature_branch_push = (
                 repository_id is not None
                 and current_branch is not None
@@ -3258,6 +3328,7 @@ def dispatch_command(cmd: str) -> None:
                     default_branch=default_branch,
                     graphify_version=_reg.graphify_package_version(),
                     schema_version=_reg.SCHEMA_VERSION,
+                    extraction_config_hash=age_extraction_config_hash_value,
                 )
                 print(f"Pushed branch '{current_branch}' ({branch_result['kind']}, "
                       f"generation {branch_result['generation']}): "
@@ -3266,12 +3337,13 @@ def dispatch_command(cmd: str) -> None:
                       f"it materializes lazily on first query "
                       f"(see 'graphify age materialize').")
             else:
-                if not age_no_register and remote_url is not None:
+                if not age_no_register and remote_url is not None and repository_id is not None:
                     from graphify import age_snapshots as _snap
                     from graphify.analyze import graph_diff as _graph_diff
                     try:
                         old_graph, _old_commit = _snap.latest_snapshot_graph(
                             conninfo, repository_id, schema_version=_reg.SCHEMA_VERSION,
+                            extraction_config_hash=age_extraction_config_hash_value,
                         )
                     except Exception as e:
                         old_graph = None
@@ -3286,30 +3358,14 @@ def dispatch_command(cmd: str) -> None:
                 print(f"Pushed to Apache AGE (graph '{age_graph_name}', {sync_kind} sync): "
                       f"{result['nodes']} nodes, {result['edges']} edges")
 
-                if not age_no_register and remote_url is not None:
-                    owner = _reg.resolve_owner(
-                        explicit=age_owner, remote_url=remote_url,
-                        git_email=_reg.git_user_email(),
-                    )
-                    try:
-                        row = _reg.register_repository(
-                            conninfo, remote_url,
-                            repo_tag=age_repo_tag, owner_id=owner,
-                            default_branch=default_branch, age_graph_name=age_graph_name,
-                        )
-                        print(f"Registered repository {row['repository_id']} "
-                              f"({row['remote_url']}) in the AGE registry"
-                              + (f", owner '{owner}'" if owner else ""))
-                    except Exception as e:
-                        print(f"warning: push succeeded but registry registration "
-                              f"failed: {e}", file=sys.stderr)
-
+                if not age_no_register and remote_url is not None and repository_id is not None:
                     if commit_sha is not None:
                         try:
                             _snap.record_snapshot(
                                 conninfo, repository_id, commit_sha, G,
                                 graphify_version=_reg.graphify_package_version(),
                                 schema_version=_reg.SCHEMA_VERSION,
+                                extraction_config_hash=age_extraction_config_hash_value,
                             )
                         except Exception as e:
                             print(f"warning: push succeeded but recording the logical "

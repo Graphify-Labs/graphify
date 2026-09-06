@@ -7,6 +7,7 @@ tests/test_age_registry_integration.py.
 """
 from __future__ import annotations
 
+import subprocess
 import uuid
 
 import pytest
@@ -77,3 +78,34 @@ def test_graphify_package_version_returns_a_string():
 
 def test_schema_version_is_pinned_string():
     assert isinstance(reg.SCHEMA_VERSION, str)
+
+
+def test_default_age_graph_name_is_stable_and_unique_per_repository():
+    a = reg.default_age_graph_name(reg.repository_id_for("https://github.com/owner/repo-a.git"))
+    b = reg.default_age_graph_name(reg.repository_id_for("https://github.com/owner/repo-b.git"))
+    assert a != b
+    assert a == reg.default_age_graph_name(reg.repository_id_for("https://github.com/owner/repo-a.git"))
+
+
+def test_resolve_default_branch_ref_returns_none_without_a_remote_head(tmp_path):
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
+    assert reg.resolve_default_branch_ref(cwd=tmp_path) is None
+
+
+def test_resolve_default_branch_ref_parses_the_symbolic_ref(tmp_path):
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/develop"],
+        cwd=tmp_path, check=True,
+    )
+    assert reg.resolve_default_branch_ref(cwd=tmp_path) == "develop"
+
+
+def test_extraction_config_hash_is_deterministic_and_sensitive_to_inputs():
+    a = reg.extraction_config_hash(full_props=False, extra=None)
+    b = reg.extraction_config_hash(full_props=False, extra=None)
+    c = reg.extraction_config_hash(full_props=True, extra=None)
+    d = reg.extraction_config_hash(full_props=False, extra="some-other-config")
+    assert a == b
+    assert a != c
+    assert a != d

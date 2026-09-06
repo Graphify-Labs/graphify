@@ -59,7 +59,7 @@ def detect_rebase(cwd: Path | str | None, old_head: str | None, new_head: str) -
     return not is_ancestor(cwd, old_head, new_head)
 
 
-def _extract_graph_at_commit(cwd: Path | str, commit_sha: str) -> nx.Graph:
+def _extract_graph_at_commit(cwd: Path | str | None, commit_sha: str) -> nx.Graph:
     """Fallback path 2 for a missing base snapshot: extract at an
     arbitrary historical commit via a temporary git worktree.
 
@@ -74,7 +74,7 @@ def _extract_graph_at_commit(cwd: Path | str, commit_sha: str) -> nx.Graph:
         worktree = Path(tmpdir) / "wt"
         add = _sp.run(
             ["git", "worktree", "add", "--detach", str(worktree), commit_sha],
-            cwd=str(cwd), capture_output=True, text=True, timeout=60,
+            cwd=str(cwd) if cwd is not None else None, capture_output=True, text=True, timeout=60,
         )
         if add.returncode != 0:
             raise RuntimeError(
@@ -87,7 +87,7 @@ def _extract_graph_at_commit(cwd: Path | str, commit_sha: str) -> nx.Graph:
         finally:
             _sp.run(
                 ["git", "worktree", "remove", "--force", str(worktree)],
-                cwd=str(cwd), capture_output=True, text=True, timeout=30,
+                cwd=str(cwd) if cwd is not None else None, capture_output=True, text=True, timeout=30,
             )
 
 
@@ -304,15 +304,17 @@ def _replay_branch_to_head(
     base_commit_sha: str,
     head_commit_sha: str,
     schema_version: str | None = None,
+    extraction_config_hash: str | None = None,
 ) -> nx.Graph:
     """Reconstruct a branch's current graph: its pinned base snapshot plus
     every diff row in its active generation, replayed in order.
 
-    ``schema_version`` scopes the base-snapshot reconstruction to rows
-    recorded under that schema (see snapshot_graph_by_id's docstring) --
-    pass the branch's own stored schema_version so an unrelated snapshot
-    row from an incompatible schema can't get folded into the base graph
-    even though its own snapshot_id was resolved correctly.
+    ``schema_version``/``extraction_config_hash`` scope the base-snapshot
+    reconstruction to rows recorded under that schema/config (see
+    snapshot_graph_by_id's docstring) -- pass the branch's own stored
+    values so an unrelated snapshot row from an incompatible schema or
+    extraction configuration can't get folded into the base graph even
+    though its own snapshot_id was resolved correctly.
     """
     import psycopg
     from graphify import age_snapshots as _snap
@@ -334,7 +336,8 @@ def _replay_branch_to_head(
         conn.close()
 
     base_graph, _base_commit = _snap.snapshot_graph_by_id(
-        conninfo, repository_id, base_snapshot_id, schema_version=schema_version,
+        conninfo, repository_id, base_snapshot_id,
+        schema_version=schema_version, extraction_config_hash=extraction_config_hash,
     )
     if base_graph is None:
         raise RuntimeError(
@@ -678,6 +681,7 @@ def _push_branch_locked(
             conninfo, repository_id, branch, old_generation,
             base_snapshot_id=base_snapshot_id, base_commit_sha=old_base_commit_sha,
             head_commit_sha=old_head_commit_sha, schema_version=stored_schema_version,
+            extraction_config_hash=stored_extraction_config_hash,
         )
         diff = graph_diff(old_graph, G)
         rows = diff_to_rows(diff)
@@ -746,15 +750,15 @@ def materialize_branch(conninfo: str, repository_id: str, branch: str, *, defaul
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT base_commit_sha, head_commit_sha, base_snapshot_id, "
-                    "materialized, age_graph_name, schema_version FROM graphify_branches "
-                    "WHERE repository_id = %s AND branch = %s;",
+                    "materialized, age_graph_name, schema_version, extraction_config_hash "
+                    "FROM graphify_branches WHERE repository_id = %s AND branch = %s;",
                     (repository_id, branch),
                 )
                 row = cur.fetchone()
                 if row is None:
                     raise ValueError(f"branch {branch!r} has no recorded push for this repository")
                 (base_commit_sha, head_commit_sha, base_snapshot_id, materialized,
-                 age_graph_name, branch_schema_version) = row
+                 age_graph_name, branch_schema_version, branch_extraction_config_hash) = row
                 if materialized and age_graph_name:
                     return {"age_graph_name": age_graph_name, "already_materialized": True}
 
@@ -772,6 +776,7 @@ def materialize_branch(conninfo: str, repository_id: str, branch: str, *, defaul
                 conninfo, repository_id, branch, generation,
                 base_snapshot_id=base_snapshot_id, base_commit_sha=base_commit_sha,
                 head_commit_sha=head_commit_sha, schema_version=branch_schema_version,
+                extraction_config_hash=branch_extraction_config_hash,
             )
 
             branch_graph_name = sanitize_branch_graph_name(default_graph_name, branch)

@@ -9,6 +9,8 @@ no AGE extension required).
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import subprocess as _sp
 import uuid
@@ -71,6 +73,35 @@ def repository_id_for(remote_url: str) -> str:
     before the repo has ever been registered.
     """
     return str(uuid.uuid5(_REPOSITORY_ID_NAMESPACE, normalize_remote_url(remote_url)))
+
+
+def extraction_config_hash(*, full_props: bool, extra: str | None = None) -> str:
+    """Deterministic fingerprint of the graph-affecting configuration
+    visible to `graphify export age` itself, for the `extraction_config_hash`
+    compatibility check (docs/AGE_PLAN.md's snapshot/branch replay
+    filtering, see age_snapshots.latest_snapshot_graph/snapshot_graph_by_id
+    and age_branches.ensure_base_snapshot).
+
+    `graphify export age` reads an already-built graph.json -- it has no
+    visibility into which extraction settings (backend/model, confidence
+    thresholds, which extractors ran) actually produced it, since nothing
+    in the pipeline persists that as a retrievable manifest today (found
+    via review: the CLI never computed or passed anything for this field,
+    so it was always NULL and the compatibility check it feeds never
+    caught anything). What IS visible and graph-affecting at this step is
+    `full_props` (whether AGE gets the lean or full property set,
+    docs/AGE_SCHEMA.md) -- changing it changes which fields future
+    replays expect to find on pushed nodes/edges.
+
+    `extra`, when given (the CLI's `--extraction-config` flag or
+    GRAPHIFY_EXTRACTION_CONFIG_HASH env var), folds in a caller-supplied
+    fingerprint of whatever extraction settings *their* pipeline does
+    track -- e.g. a hash of an extractor config file -- so a real
+    settings change upstream of `export age` can still be caught by this
+    same check instead of graphify silently having no signal for it.
+    """
+    payload = json.dumps({"full_props": bool(full_props), "extra": extra}, sort_keys=True)
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
 def default_age_graph_name(repository_id: str) -> str:
@@ -136,6 +167,26 @@ def current_commit_sha(cwd: Path | str | None = None) -> str | None:
 
 def git_remote_url(cwd: Path | str | None = None, remote: str = "origin") -> str | None:
     return _run_git(["remote", "get-url", remote], cwd=cwd)
+
+
+def resolve_default_branch_ref(cwd: Path | str | None = None, remote: str = "origin") -> str | None:
+    """The remote's actual default branch, via `refs/remotes/<remote>/HEAD`
+    (set by `git clone` or `git remote set-head <remote> -a`) -- the
+    standard git mechanism for "what branch is this repo's default",
+    independent of whichever branch happens to be checked out locally.
+
+    Returns None when that ref isn't set (a fresh `git init`, a shallow
+    clone, or a remote nobody ran `set-head` against) -- found via review:
+    an unregistered repository's first `graphify export age` push used to
+    unconditionally treat whatever branch was currently checked out as the
+    default, so pushing first from a feature branch registered *that*
+    branch as the durable default-branch graph with no diff chain at all.
+    """
+    ref = _run_git(["symbolic-ref", f"refs/remotes/{remote}/HEAD"], cwd=cwd)
+    if not ref:
+        return None
+    prefix = f"refs/remotes/{remote}/"
+    return ref[len(prefix):] if ref.startswith(prefix) else None
 
 
 def git_user_email(cwd: Path | str | None = None) -> str | None:

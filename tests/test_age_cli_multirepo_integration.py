@@ -144,6 +144,61 @@ def _fetch_age_node_ids(conn, graph_name: str) -> set[str]:
         return {str(r[0]).strip('"') for r in cur.fetchall()}
 
 
+def test_first_push_from_feature_branch_uses_explicit_default_branch(conn, tmp_path, monkeypatch, capsys):
+    """Regression (found via review): an unregistered repository's first
+    `graphify export age` push used to unconditionally treat whatever
+    branch was currently checked out as the default branch -- pushing
+    first from a feature branch with no `origin/HEAD` set would register
+    *that* branch as the durable default-branch graph, with no diff chain
+    recorded at all. --default-branch must let the caller state the truth
+    explicitly."""
+    repo = tmp_path / "repo_feature_first"
+    remote = f"https://github.com/testowner/feature-first-{uuid.uuid4().hex[:8]}.git"
+    _make_repo(repo, remote, "node_on_main")
+    _git(repo, "checkout", "-qb", "feature/foo")
+    (repo / "graphify-out" / "graph.json").write_text(
+        json.dumps({
+            "directed": False, "multigraph": False, "graph": {},
+            "nodes": [{"id": "node_on_main", "label": "node_on_main", "file_type": "code"},
+                      {"id": "node_on_feature", "label": "node_on_feature", "file_type": "code"}],
+            "links": [],
+        }),
+        encoding="utf-8",
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "feature work")
+
+    conninfo = _conninfo()
+    _run_cli(monkeypatch, repo, ["export", "age", "--push", conninfo, "--default-branch", "main"])
+
+    row = reg.get_repository(conninfo, remote)
+    assert row["default_branch"] == "main"
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT branch FROM graphify_branches WHERE repository_id = %s;",
+            (row["repository_id"],),
+        )
+        branch_rows = cur.fetchall()
+    assert branch_rows == [("feature/foo",)]
+
+
+def test_first_push_from_feature_branch_without_default_branch_warns(conn, tmp_path, monkeypatch, capsys):
+    """Without --default-branch and no resolvable origin/HEAD, the CLI
+    still proceeds (backward-compatible for the common single-branch
+    workflow) but must say plainly that it's guessing, rather than
+    silently registering a feature branch as the default."""
+    repo = tmp_path / "repo_feature_no_flag"
+    remote = f"https://github.com/testowner/feature-no-flag-{uuid.uuid4().hex[:8]}.git"
+    _make_repo(repo, remote, "node_on_main")
+    _git(repo, "checkout", "-qb", "feature/bar")
+    _git(repo, "commit", "-q", "--allow-empty", "-m", "feature work")
+
+    _run_cli(monkeypatch, repo, ["export", "age", "--push", _conninfo()])
+    err = capsys.readouterr().err
+    assert "could not confirm this repository's default branch" in err
+    assert "feature/bar" in err
+
+
 def test_two_repos_pushed_without_graph_name_do_not_collide(conn, tmp_path, monkeypatch):
     repo_a = tmp_path / "repo_a"
     repo_b = tmp_path / "repo_b"
