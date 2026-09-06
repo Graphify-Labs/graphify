@@ -3127,22 +3127,52 @@ def dispatch_command(cmd: str) -> None:
             # alone did in Phase 2): a known repository_id lets us look up
             # the last-recorded snapshot and push only the diff against it
             # (docs/AGE_PLAN.md Phase 3), instead of always doing a full
-            # read-existing-AGE-state reconcile.
+            # read-existing-AGE-state reconcile. It also tells us whether
+            # the current branch is the default branch or a feature branch
+            # (Phase 4), which take entirely different push paths.
             remote_url = None
             repository_id = None
             commit_sha = None
             diff = None
+            current_branch = None
+            default_branch = None
             if not age_no_register:
                 from graphify import age_registry as _reg
                 remote_url = age_remote_url or _reg.git_remote_url()
                 if remote_url is None:
                     print("note: no git remote found (not a git repo, or no 'origin') - "
-                          "skipping registry registration and incremental sync. Pass "
+                          "skipping registry registration and incremental/branch sync. Pass "
                           "--remote-url to enable them, or --no-register to silence this.",
                           file=sys.stderr)
                 else:
                     repository_id = _reg.repository_id_for(remote_url)
                     commit_sha = _reg.current_commit_sha()
+                    current_branch = _reg.current_branch()
+                    existing_repo = _reg.get_repository(conninfo, remote_url)
+                    default_branch = (existing_repo or {}).get("default_branch") or current_branch
+
+            is_feature_branch_push = (
+                repository_id is not None
+                and current_branch is not None
+                and current_branch != default_branch
+            )
+
+            if is_feature_branch_push:
+                from graphify import age_branches as _branches
+                branch_result = _branches.push_branch(
+                    conninfo, repository_id, current_branch, G,
+                    default_branch=default_branch,
+                    graphify_version=_reg.graphify_package_version(),
+                    schema_version=_reg.SCHEMA_VERSION,
+                )
+                print(f"Pushed branch '{current_branch}' ({branch_result['kind']}, "
+                      f"generation {branch_result['generation']}): "
+                      f"{branch_result['rows']} diff row(s) recorded against base "
+                      f"{branch_result['base_commit_sha']}. No AGE graph created yet - "
+                      f"it materializes lazily on first query "
+                      f"(see 'graphify age materialize').")
+            else:
+                if not age_no_register and remote_url is not None:
                     from graphify import age_snapshots as _snap
                     from graphify.analyze import graph_diff as _graph_diff
                     try:
@@ -3154,41 +3184,118 @@ def dispatch_command(cmd: str) -> None:
                     if old_graph is not None:
                         diff = _graph_diff(old_graph, G)
 
-            result = _push(G, conninfo=conninfo, graph_name=age_graph_name,
-                            communities=communities, full_props=age_full_props, diff=diff)
-            sync_kind = "incremental" if diff is not None else "full"
-            print(f"Pushed to Apache AGE (graph '{age_graph_name}', {sync_kind} sync): "
-                  f"{result['nodes']} nodes, {result['edges']} edges")
+                result = _push(G, conninfo=conninfo, graph_name=age_graph_name,
+                                communities=communities, full_props=age_full_props, diff=diff)
+                sync_kind = "incremental" if diff is not None else "full"
+                print(f"Pushed to Apache AGE (graph '{age_graph_name}', {sync_kind} sync): "
+                      f"{result['nodes']} nodes, {result['edges']} edges")
 
-            if not age_no_register and remote_url is not None:
-                owner = _reg.resolve_owner(
-                    explicit=age_owner, remote_url=remote_url,
-                    git_email=_reg.git_user_email(),
-                )
-                branch = _reg.current_branch()
-                try:
-                    row = _reg.register_repository(
-                        conninfo, remote_url,
-                        repo_tag=age_repo_tag, owner_id=owner,
-                        default_branch=branch, age_graph_name=age_graph_name,
+                if not age_no_register and remote_url is not None:
+                    owner = _reg.resolve_owner(
+                        explicit=age_owner, remote_url=remote_url,
+                        git_email=_reg.git_user_email(),
                     )
-                    print(f"Registered repository {row['repository_id']} "
-                          f"({row['remote_url']}) in the AGE registry"
-                          + (f", owner '{owner}'" if owner else ""))
-                except Exception as e:
-                    print(f"warning: push succeeded but registry registration "
-                          f"failed: {e}", file=sys.stderr)
-
-                if commit_sha is not None:
                     try:
-                        _snap.record_snapshot(
-                            conninfo, repository_id, commit_sha, G,
-                            graphify_version=_reg.graphify_package_version(),
-                            schema_version=_reg.SCHEMA_VERSION,
+                        row = _reg.register_repository(
+                            conninfo, remote_url,
+                            repo_tag=age_repo_tag, owner_id=owner,
+                            default_branch=default_branch, age_graph_name=age_graph_name,
                         )
+                        print(f"Registered repository {row['repository_id']} "
+                              f"({row['remote_url']}) in the AGE registry"
+                              + (f", owner '{owner}'" if owner else ""))
                     except Exception as e:
-                        print(f"warning: push succeeded but recording the logical "
-                              f"snapshot failed: {e}", file=sys.stderr)
+                        print(f"warning: push succeeded but registry registration "
+                              f"failed: {e}", file=sys.stderr)
+
+                    if commit_sha is not None:
+                        try:
+                            _snap.record_snapshot(
+                                conninfo, repository_id, commit_sha, G,
+                                graphify_version=_reg.graphify_package_version(),
+                                schema_version=_reg.SCHEMA_VERSION,
+                            )
+                        except Exception as e:
+                            print(f"warning: push succeeded but recording the logical "
+                                  f"snapshot failed: {e}", file=sys.stderr)
+
+    elif cmd == "age":
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd not in ("materialize", "reap"):
+            print("Usage: graphify age [materialize|reap] --push postgresql://user:pass@host/db "
+                  "[--branch NAME] [--graph-name NAME] [--remote-url URL]", file=sys.stderr)
+            sys.exit(1)
+
+        args = sys.argv[3:]
+        age_conninfo = None
+        age_branch_name = None
+        age_cli_graph_name = "graphify"
+        age_cli_remote_url = None
+        age_min_idle_seconds = 7 * 24 * 3600
+        i = 0
+        while i < len(args):
+            if args[i] == "--push" and i + 1 < len(args):
+                age_conninfo = args[i + 1]; i += 2
+            elif args[i] == "--branch" and i + 1 < len(args):
+                age_branch_name = args[i + 1]; i += 2
+            elif args[i] == "--graph-name" and i + 1 < len(args):
+                age_cli_graph_name = args[i + 1]; i += 2
+            elif args[i] == "--remote-url" and i + 1 < len(args):
+                age_cli_remote_url = args[i + 1]; i += 2
+            elif args[i] == "--min-idle-seconds" and i + 1 < len(args):
+                age_min_idle_seconds = int(args[i + 1]); i += 2
+            else:
+                i += 1
+
+        if not age_conninfo:
+            print("error: --push postgresql://user:pass@host/db is required", file=sys.stderr)
+            sys.exit(1)
+
+        cli_push_password = os.environ.get("AGE_PASSWORD") or os.environ.get("PGPASSWORD")
+        if cli_push_password and "password=" not in age_conninfo:
+            sep = "&" if "?" in age_conninfo else "?"
+            age_conninfo = f"{age_conninfo}{sep}password={cli_push_password}"
+
+        from graphify import age_registry as _reg
+        cli_remote_url = age_cli_remote_url or _reg.git_remote_url()
+        if cli_remote_url is None:
+            print("error: no git remote found (not a git repo, or no 'origin') - "
+                  "pass --remote-url", file=sys.stderr)
+            sys.exit(1)
+        cli_repository_id = _reg.repository_id_for(cli_remote_url)
+        cli_branch = age_branch_name or _reg.current_branch()
+        if not cli_branch:
+            print("error: could not resolve the current git branch - pass --branch", file=sys.stderr)
+            sys.exit(1)
+
+        if subcmd == "materialize":
+            from graphify import age_branches as _branches
+            try:
+                result = _branches.materialize_branch(
+                    age_conninfo, cli_repository_id, cli_branch,
+                    default_graph_name=age_cli_graph_name,
+                )
+            except ValueError as e:
+                print(f"error: {e}", file=sys.stderr)
+                sys.exit(1)
+            if result["already_materialized"]:
+                print(f"Branch '{cli_branch}' is already materialized as "
+                      f"'{result['age_graph_name']}'.")
+            else:
+                print(f"Materialized branch '{cli_branch}' as '{result['age_graph_name']}': "
+                      f"{result['nodes']} nodes, {result['edges']} edges.")
+        else:  # reap
+            from graphify import age_branches as _branches
+            result = _branches.reap_branch(
+                age_conninfo, cli_repository_id, cli_branch,
+                min_idle_seconds=age_min_idle_seconds,
+            )
+            if result["reaped"]:
+                print(f"Reaped branch '{cli_branch}': dropped AGE graph "
+                      f"'{result['age_graph_name']}'. Diff rows and snapshots are retained; "
+                      f"the branch re-materializes on the next query.")
+            else:
+                print(f"Did not reap branch '{cli_branch}': {result['reason']}.")
 
     elif cmd == "benchmark":
         from graphify.benchmark import run_benchmark, print_benchmark
