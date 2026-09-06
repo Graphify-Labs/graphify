@@ -334,6 +334,43 @@ def register_repository(
     return result
 
 
+def get_repository(conninfo: str, remote_url: str) -> dict | None:
+    """Read-only lookup of this repository's registry row, or None if it
+    isn't registered yet (or the registry schema doesn't exist at all).
+
+    Used by callers (docs/AGE_PLAN.md Phase 4's branch-aware CLI dispatch)
+    that need the registered default_branch to decide whether the current
+    push targets the default branch or a feature branch, without the
+    side-effecting upsert register_repository() always performs.
+    """
+    import psycopg
+
+    repository_id = repository_id_for(remote_url)
+    conn = psycopg.connect(conninfo)
+    try:
+        with conn.cursor() as cur:
+            try:
+                cur.execute(
+                    "SELECT repository_id, remote_url, repo_tag, owner_id, "
+                    "default_branch, age_graph_name FROM graphify_repos "
+                    "WHERE repository_id = %s;",
+                    (repository_id,),
+                )
+            except psycopg.errors.UndefinedTable:
+                conn.rollback()
+                return None
+            row = cur.fetchone()
+            if row is None:
+                return None
+            columns = [d.name for d in cur.description]
+    finally:
+        conn.close()
+
+    result = dict(zip(columns, row))
+    result["repository_id"] = str(result["repository_id"])
+    return result
+
+
 def resolve_age_graph_name(
     conninfo: str, remote_url: str, branch: str | None = None
 ) -> str | None:
