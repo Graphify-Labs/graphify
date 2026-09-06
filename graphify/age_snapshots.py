@@ -37,8 +37,13 @@ def graph_to_payload(G: nx.Graph) -> dict:
     logical base graphify_snapshots reconstructs from, independent of
     whatever ``--full-props``/lean choice a given AGE push made."""
     nodes = [{"id": n, **_scalar_props(data)} for n, data in G.nodes(data=True)]
+    # data.get("_src", u) / data.get("_tgt", v): an undirected nx.Graph's
+    # own (u, v) tuple order reflects node insertion order, not which side
+    # was the extracted "source" - see the same idiom (and full
+    # explanation) in graphify/analyze.py::graph_diff() and
+    # graphify/exporters/graphdb.py.
     edges = [
-        {"source": u, "target": v, **_scalar_props(data)}
+        {"source": data.get("_src", u), "target": data.get("_tgt", v), **_scalar_props(data)}
         for u, v, data in G.edges(data=True)
     ]
     return {"nodes": nodes, "edges": edges}
@@ -46,7 +51,15 @@ def graph_to_payload(G: nx.Graph) -> dict:
 
 def payload_to_graph(payload: dict) -> nx.Graph:
     """Inverse of graph_to_payload(). Always undirected, matching build()'s
-    default graph type (the only type graphify actually pushes to AGE)."""
+    default graph type (the only type graphify actually pushes to AGE).
+
+    Stamps _src/_tgt on every reconstructed edge so the semantic direction
+    graph_to_payload() captured survives a round trip: nx.Graph.edges()'s
+    own (u, v) tuple order reflects node insertion order, not which side
+    was added as source, so without this a second graph_diff()/
+    push_to_age() call downstream of a reconstructed graph could read the
+    wrong direction right back out again.
+    """
     G = nx.Graph()
     for node in payload.get("nodes", []):
         node = dict(node)
@@ -56,6 +69,8 @@ def payload_to_graph(payload: dict) -> nx.Graph:
         edge = dict(edge)
         source = edge.pop("source")
         target = edge.pop("target")
+        edge["_src"] = source
+        edge["_tgt"] = target
         G.add_edge(source, target, **edge)
     return G
 

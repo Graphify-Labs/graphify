@@ -72,11 +72,15 @@ def push_to_neo4j(
                 k: v for k, v in data.items()
                 if isinstance(v, (str, int, float, bool)) and not k.startswith("_")
             }
+            # An undirected nx.Graph's own (u, v) tuple order reflects node
+            # insertion order, not which side was the extracted "source" -
+            # build.py stamps _src/_tgt precisely to recover that (see the
+            # same idiom in analyze.py/serve.py/exporters/html.py).
             session.run(
                 f"MATCH (a {{id: $src}}), (b {{id: $tgt}}) "
                 f"MERGE (a)-[r:{rel}]->(b) SET r += $props",
-                src=u,
-                tgt=v,
+                src=data.get("_src", u),
+                tgt=data.get("_tgt", v),
                 props=props,
             )
             edges_pushed += 1
@@ -162,10 +166,13 @@ def push_to_falkordb(
             k: v for k, v in data.items()
             if isinstance(v, (str, int, float, bool)) and not k.startswith("_")
         }
+        # See push_to_neo4j's matching comment: _src/_tgt recovers the
+        # extracted direction an undirected nx.Graph's own tuple order
+        # does not preserve.
         graph.query(
             f"MATCH (a {{id: $src}}), (b {{id: $tgt}}) "
             f"MERGE (a)-[r:{rel}]->(b) SET r += $props",
-            {"src": u, "tgt": v, "props": props},
+            {"src": data.get("_src", u), "tgt": data.get("_tgt", v), "props": props},
         )
         edges_pushed += 1
 
@@ -276,7 +283,15 @@ def _age_edge_rows(
     groups: dict[str, list[dict]] = {}
     for u, v, data in G.edges(data=True):
         rel = _safe_rel(data.get("relation", "RELATED_TO"))
-        row = {"src": u, "tgt": v}
+        # An undirected nx.Graph's own (u, v) tuple order reflects node
+        # insertion order, not which side was the extracted "source" -
+        # build.py stamps _src/_tgt precisely to recover that (see the
+        # same idiom in analyze.py/serve.py/exporters/html.py). Without
+        # this, MERGE (a)-[r]->(b) below can silently push every edge
+        # backwards relative to docs/AGE_SCHEMA.md's documented
+        # "source -> target" direction contract, found live while
+        # validating Phase 5's pinned reverse-dependency-traversal query.
+        row = {"src": data.get("_src", u), "tgt": data.get("_tgt", v)}
         for k in field_names:
             val = data.get(k)
             row[k] = val if isinstance(val, (str, int, float, bool)) else None

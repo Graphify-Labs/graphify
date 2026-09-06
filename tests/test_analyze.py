@@ -405,6 +405,44 @@ def test_graph_diff_removed_edges_carry_full_properties():
     assert removed["properties"] == {"relation": "calls", "confidence": "EXTRACTED"}
 
 
+def test_graph_diff_new_edge_honors_src_tgt_over_undirected_tuple_order():
+    """build.py stamps _src/_tgt on every edge because an undirected
+    nx.Graph's own (u, v) tuple order reflects node insertion order, not
+    which side was the extracted source -- graph_diff() must report the
+    real direction, not whatever G.edges() happens to yield."""
+    G_old = nx.Graph()
+    G_old.add_node("callee")
+    G_old.add_node("caller")
+    G_new = nx.Graph()
+    G_new.add_node("callee")
+    G_new.add_node("caller")
+    G_new.add_edge("caller", "callee", relation="calls", confidence="EXTRACTED",
+                    _src="caller", _tgt="callee")
+    assert list(G_new.edges(data=False)) == [("callee", "caller")]  # the trap
+
+    diff = graph_diff(G_old, G_new)
+    assert len(diff["new_edges"]) == 1
+    assert diff["new_edges"][0]["source"] == "caller"
+    assert diff["new_edges"][0]["target"] == "callee"
+
+
+def test_graph_diff_changed_edge_honors_src_tgt():
+    G_old = nx.Graph()
+    G_old.add_node("callee")
+    G_old.add_node("caller")
+    G_old.add_edge("caller", "callee", relation="calls", confidence="INFERRED",
+                    _src="caller", _tgt="callee")
+    G_new = nx.Graph()
+    G_new.add_node("callee")
+    G_new.add_node("caller")
+    G_new.add_edge("caller", "callee", relation="calls", confidence="EXTRACTED",
+                    _src="caller", _tgt="callee")
+    diff = graph_diff(G_old, G_new)
+    assert len(diff["changed_edges"]) == 1
+    assert diff["changed_edges"][0]["source"] == "caller"
+    assert diff["changed_edges"][0]["target"] == "callee"
+
+
 def test_graph_diff_empty_diff():
     nodes = [("n1", "Alpha"), ("n2", "Beta")]
     edges = [("n1", "n2", "calls", "EXTRACTED")]

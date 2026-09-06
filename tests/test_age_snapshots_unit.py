@@ -32,6 +32,35 @@ def test_graph_to_payload_captures_all_scalar_props():
     assert payload["edges"] == []
 
 
+def test_graph_to_payload_honors_src_tgt_over_undirected_tuple_order():
+    """build.py stamps _src/_tgt on every edge because an undirected
+    nx.Graph's own (u, v) tuple order reflects node insertion order, not
+    which side was the extracted source."""
+    G = nx.Graph()
+    G.add_node("callee")
+    G.add_node("caller")
+    G.add_edge("caller", "callee", relation="calls", _src="caller", _tgt="callee")
+    assert list(G.edges(data=False)) == [("callee", "caller")]  # the trap
+
+    payload = snap.graph_to_payload(G)
+    assert payload["edges"] == [{"source": "caller", "target": "callee", "relation": "calls"}]
+
+
+def test_payload_to_graph_round_trip_preserves_direction_through_a_second_conversion():
+    """Reconstructing a graph from a payload must stamp _src/_tgt on the
+    rebuilt edges too, or a second graph_to_payload()/graph_diff() call
+    downstream of the reconstruction could read the wrong direction right
+    back out (nx.Graph.edges()'s tuple order depends on node insertion
+    order in the *new* graph, unrelated to the original)."""
+    payload = {"nodes": [{"id": "callee"}, {"id": "caller"}],
+               "edges": [{"source": "caller", "target": "callee", "relation": "calls"}]}
+    G = snap.payload_to_graph(payload)
+    assert list(G.edges(data=False)) == [("callee", "caller")]  # tuple order still flipped
+
+    round_tripped = snap.graph_to_payload(G)
+    assert round_tripped["edges"] == [{"source": "caller", "target": "callee", "relation": "calls"}]
+
+
 def test_graph_to_payload_excludes_private_and_non_scalar_keys():
     G = _graph([("a", {"label": "A", "_internal": object(), "tags": ["x", "y"]})], [])
     payload = snap.graph_to_payload(G)

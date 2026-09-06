@@ -173,6 +173,39 @@ def test_age_edge_rows_groups_by_sanitized_relation():
     assert row["confidence"] == "EXTRACTED"
 
 
+def test_age_edge_rows_honors_src_tgt_over_undirected_tuple_order():
+    """build.py stamps _src/_tgt on every edge because an undirected
+    nx.Graph's own (u, v) tuple order reflects node insertion order, not
+    which side was the extracted "source" (confirmed live: adding node
+    "b" before node "a" then G.add_edge("a", "b") makes G.edges() yield
+    ("b", "a", ...)). _age_edge_rows must read _src/_tgt, not u/v
+    directly, or every edge can silently push backwards."""
+    import networkx as nx
+
+    G = nx.Graph()
+    # Insert target before source -- this is exactly the case that
+    # reverses G.edges()'s tuple order for an undirected graph.
+    G.add_node("callee")
+    G.add_node("caller")
+    G.add_edge("caller", "callee", relation="calls", confidence="EXTRACTED",
+               _src="caller", _tgt="callee")
+    assert list(G.edges(data=False)) == [("callee", "caller")]  # the trap
+
+    groups = graphdb._age_edge_rows(G, graphdb._AGE_LEAN_EDGE_FIELDS)
+    row = groups["CALLS"][0]
+    assert row["src"] == "caller"
+    assert row["tgt"] == "callee"
+
+
+def test_age_edge_rows_falls_back_to_tuple_order_without_src_tgt():
+    """Directed graphs (or any edge lacking _src/_tgt) fall back to the
+    tuple order, which is correct there."""
+    G = _graph([("a", {}), ("b", {})], [("a", "b", {"relation": "calls"})])
+    groups = graphdb._age_edge_rows(G, graphdb._AGE_LEAN_EDGE_FIELDS)
+    row = groups["CALLS"][0]
+    assert row["src"] == "a" and row["tgt"] == "b"
+
+
 def test_age_batches_chunks_correctly():
     rows = [{"id": i} for i in range(1201)]
     batches = list(graphdb._age_batches(rows, size=500))

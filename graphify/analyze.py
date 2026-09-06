@@ -649,12 +649,18 @@ def graph_diff(G_old: nx.Graph, G_new: nx.Graph) -> dict:
     removed_edge_keys = old_edge_keys - new_edge_keys
     common_edge_keys = old_edge_keys & new_edge_keys
 
+    # d.get("_src", u) / d.get("_tgt", v): an undirected nx.Graph's own
+    # (u, v) tuple order reflects node insertion order, not which side was
+    # the extracted "source" - build.py stamps _src/_tgt precisely to
+    # recover that (see the same idiom in exporters/graphdb.py,
+    # serve.py, exporters/html.py). Without this, a diff's reported
+    # "source"/"target" can be silently backwards.
     new_edges_list = []
     for u, v, d in G_new.edges(data=True):
         if edge_key(G_new, u, v, d) in added_edge_keys:
             new_edges_list.append({
-                "source": u,
-                "target": v,
+                "source": d.get("_src", u),
+                "target": d.get("_tgt", v),
                 "relation": d.get("relation", ""),
                 "confidence": d.get("confidence", ""),
                 "properties": _diff_scalar_props(d),
@@ -664,8 +670,8 @@ def graph_diff(G_old: nx.Graph, G_new: nx.Graph) -> dict:
     for u, v, d in G_old.edges(data=True):
         if edge_key(G_old, u, v, d) in removed_edge_keys:
             removed_edges_list.append({
-                "source": u,
-                "target": v,
+                "source": d.get("_src", u),
+                "target": d.get("_tgt", v),
                 "relation": d.get("relation", ""),
                 "confidence": d.get("confidence", ""),
                 "properties": _diff_scalar_props(d),
@@ -685,8 +691,8 @@ def graph_diff(G_old: nx.Graph, G_new: nx.Graph) -> dict:
         new_props = _diff_scalar_props(new_d)
         if old_props != new_props:
             changed_edges_list.append({
-                "source": old_u,
-                "target": old_v,
+                "source": old_d.get("_src", old_u),
+                "target": old_d.get("_tgt", old_v),
                 "relation": old_d.get("relation", ""),
                 "old": old_props,
                 "new": new_props,
