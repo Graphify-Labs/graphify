@@ -86,16 +86,116 @@ against this graph:
 - **`UNWIND $ids AS row` yields the scalar itself as `row`**, not a
   single-key map — `row`, not `row.id`, when `$ids` is a plain list.
 
+## Agent contract (docs/AGE_PLAN.md Phase 5)
+
+This section is the actual API review/quality agents build against, pinned
+and tested in `tests/test_age_agent_queries_integration.py`.
+
+### Review agent
+
+- **Branch-diff seed selection**: the changed-id set for a push is never
+  recomputed from the graph itself -- it's read directly off
+  `graphify_branch_diff` (plain SQL, not Cypher), split by `kind`. See
+  "Branch-diff seed selection" below. Node ids from `node_add`/`node_change`
+  rows are looked up in the branch's *current* materialized graph (or the
+  default graph, for a default-branch push); `node_del` rows carry their
+  full last-known `payload` and have nothing left to look up.
+- **Traversal direction**: every relation is directed `source → target`
+  exactly as the extractor recorded it (`a --CALLS--> b` means "a calls
+  b"), regardless of push_to_age()'s undirected `nx.Graph` internals --
+  `MERGE (a)-[r:REL]->(b)` always uses `a = source_id`, `b = target_id`.
+  A **reverse-dependency** query ("who calls/imports/uses X") therefore
+  matches with `X` as the traversal target: `MATCH (caller)-[r:REL]->
+  (target {id: X})`. A **forward** query ("what does X call/import/use")
+  matches with `X` as the source: `MATCH (target {id: X})-[r:REL]->
+  (dependency)`.
+- **Required evidence fields** in any result a review agent surfaces:
+  `id` (or `caller.id`/`target.id` for a traversal), `source_file`,
+  `source_location` (from the node; omit if not applicable to the query
+  shape), `relation` and `confidence` (from the edge, when the result
+  crosses an edge), and the **branch/base commit** the result was
+  evaluated against (`graphify_branches.head_commit_sha`/`base_commit_sha`
+  for the branch queried, or `graphify_snapshots.commit_sha` for the
+  default branch) -- a finding without a pinned commit is not reproducible.
+- **Depth caps, result limits, statement timeouts**: always bound a
+  traversal's hop count (`[*1..N]`, never unbounded `[*]`), always `LIMIT`
+  the result set, and always set `statement_timeout` before querying an
+  AGE graph you don't control the size of -- a materialized branch graph
+  can be arbitrarily large. See "Depth-capped, limited, timed-out
+  traversal" below for the pinned pattern.
+
+### Quality agent
+
+Structural properties (`degree`, `is_god_node`, `in_cycle`) live on nodes
+because they're cheap, stable, and recomputed on every push. Rule-based
+findings (an evolving, versioned rule set -- "this function is too long,"
+"this import is unused") are never node properties: they go to
+`graphify_quality_findings`, keyed by `(repository_id, commit_sha,
+node_id, rule)`. This boundary exists so adding, changing, or retiring a
+rule never requires a schema migration or a `push_to_age()` change --
+findings are just rows. See "Quality findings joined with structural
+properties" below for how the two are combined at query time.
+
+## Parsing agtype vertex/edge/path values
+
+A returned vertex, edge, or path is **not plain JSON** -- psycopg hands it
+back as the agtype text form, which appends a type suffix after each
+top-level object: `{"id": ..., "label": "Code", "properties": {...}}::vertex`,
+`{...}::edge`, or a `path` whose whole array carries `::path`. `json.loads`
+on the raw string fails on the `::vertex`/`::edge`/`::path` suffixes, and a
+naive non-greedy regex (`\{.*?\}::`) breaks on the nested `"properties":
+{...}` object inside each vertex/edge. Depth-aware splitting handles it:
+
+```python
+import json
+
+def parse_agtype_objects(raw: str) -> list[tuple[dict, str | None]]:
+    """[(parsed_object, 'vertex' | 'edge' | None), ...] in order."""
+    results, depth, start = [], 0, None
+    i, n = 0, len(raw)
+    while i < n:
+        c = raw[i]
+        if c == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0 and start is not None:
+                obj = json.loads(raw[start:i + 1])
+                j = i + 1
+                kind = None
+                if raw[j:j + 2] == "::":
+                    k = j + 2
+                    while k < n and raw[k].isalpha():
+                        k += 1
+                    kind = raw[j + 2:k]
+                results.append((obj, kind))
+                start = None
+        i += 1
+    return results
+```
+
 ## Example pinned queries
 
-Shortest path between two named entities, evidence included:
+Shortest path between two named entities, evidence included. **AGE 1.7.0
+has no `shortestPath()` function** -- confirmed live (`syntax error at or
+near "shortestPath"`), not a documentation guess -- so this orders
+variable-length matches by `length(p)` instead. It also returns the whole
+path `p` rather than projecting node ids via a list comprehension
+(`[n IN nodes(p) | n.id]`): that projection form fails with `could not
+find properties for n` on this version too. The client parses `p`'s JSON
+directly -- AGE already embeds each vertex/edge's full `properties` object
+in the path payload, e.g. `[{"id":...,"label":"Code","properties":
+{"id":"n_transformer",...}}::vertex, {...}::edge, {...}::vertex]::path`:
 
 ```sql
 SELECT * FROM cypher('graphify', $$
-  MATCH p = shortestPath((a {label: 'Transformer'})-[*..6]-(b {label: 'LayerNorm'}))
-  RETURN [n IN nodes(p) | n.id],
-         [r IN relationships(p) | {relation: r.relation, confidence: r.confidence}]
-$$) AS (nodes agtype, edges agtype);
+  MATCH p = (a {label: 'Transformer'})-[*..6]-(b {label: 'LayerNorm'})
+  RETURN p
+  ORDER BY length(p) ASC
+  LIMIT 1
+$$) AS (p agtype);
 ```
 
 Callers of a given symbol (reverse-dependency traversal):
@@ -136,3 +236,56 @@ SELECT feature.id FROM
   ON feature.id = base.id
 WHERE base.id IS NULL;
 ```
+
+Branch-diff seed selection (docs/AGE_PLAN.md Phase 5): the changed-id set
+for a review agent's seed comes straight from `graphify_branch_diff` --
+plain SQL, no Cypher, no need to diff the graph yourself. `payload->>'id'`
+covers `node_add`/`node_del`/`node_change` rows uniformly (a `node_change`
+row's payload is `{"id": ..., "old": {...}, "new": {...}}`, so `id` is
+still a top-level key):
+
+```sql
+SELECT kind, payload->>'id' AS node_id
+FROM graphify_branch_diff
+WHERE repository_id = %(repository_id)s
+  AND branch = %(branch)s
+  AND generation = %(generation)s  -- the branch's *active* generation
+ORDER BY seq;
+```
+
+Depth-capped, limited, timed-out traversal (docs/AGE_PLAN.md Phase 5): the
+pinned pattern for querying a graph of unknown size (any materialized
+branch graph, not just the durable default-branch one) --  a bounded hop
+count, an explicit result cap, and a statement timeout, all mandatory:
+
+```sql
+SET statement_timeout = '5s';
+SELECT * FROM cypher('graphify', $$
+  MATCH (caller)-[:CALLS*1..3]->(target {id: 'n_attention'})
+  RETURN caller.id, caller.source_file
+  LIMIT 50
+$$) AS (caller_id agtype, source_file agtype);
+```
+
+Quality findings joined with structural properties (docs/AGE_PLAN.md
+Phase 5): structural node properties come from AGE; rule-based findings
+come from plain SQL. `n.id::text` on an agtype string returns a
+double-quoted JSON string (`'"n_attention"'`), so match it against
+`graphify_quality_findings.node_id` with the quotes stripped, not a bare
+`=`:
+
+```sql
+SELECT n.id, n.source_file, n.degree, f.rule, f.severity
+FROM cypher('graphify', $$
+  MATCH (n) WHERE n.is_god_node = true
+  RETURN n.id, n.source_file, n.degree
+$$) AS n(id agtype, source_file agtype, degree agtype)
+LEFT JOIN graphify_quality_findings f
+  ON f.node_id = trim(both '"' from n.id::text)
+  AND f.repository_id = %(repository_id)s
+  AND f.commit_sha = %(commit_sha)s;
+```
+
+(`n.is_god_node` isn't re-selected -- the `WHERE` clause inside the Cypher
+body already guarantees it's `true` for every row here. Add it to both the
+`RETURN` clause and the `AS n(...)` column list if you need it back out.)
