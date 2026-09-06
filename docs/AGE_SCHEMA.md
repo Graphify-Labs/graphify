@@ -118,3 +118,21 @@ SELECT * FROM cypher('graphify', $$
   RETURN n.id, n.source_file, n.degree
 $$, $1) AS (id agtype, source_file agtype, degree agtype);
 ```
+
+Cross-branch comparison (docs/AGE_PLAN.md Phase 4): a materialized
+feature-branch graph (`<repo_graph>__<branch>`) and the default-branch
+graph are ordinary, independently addressable AGE graphs, so a structural
+comparison is just two `cypher()` calls joined in one SQL statement --
+no cross-graph Cypher syntax needed. Example: node ids present in the
+feature branch but not in the default branch (a cheap structural
+approximation of "what's new in this PR" alongside the authoritative
+`graphify_branch_diff` rows):
+
+```sql
+SELECT feature.id FROM
+  cypher('graphify__feature', $$ MATCH (n) RETURN n.id $$) AS feature(id agtype)
+  LEFT JOIN
+  cypher('graphify', $$ MATCH (n) RETURN n.id $$) AS base(id agtype)
+  ON feature.id = base.id
+WHERE base.id IS NULL;
+```

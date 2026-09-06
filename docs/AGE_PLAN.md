@@ -1,12 +1,12 @@
 # Apache AGE Support — Implementation Plan
 
-Status: v11 (2026-09-05) — Phases 0-3 implemented and validated live
+Status: v12 (2026-09-06) — Phases 0-4 implemented and validated live
 against `apache/age` (PostgreSQL 18.1, AGE 1.7.0): compatibility spike,
-`push_to_age()` exporter, the repository identity/ownership registry, and
-logical base snapshots + incremental default-branch sync.
-`extraction_config_hash` remains an unpopulated reserved column (see Open
-questions) -- plumbed as far as `record_snapshot()`'s signature, but not
-yet computed or passed from the CLI.
+`push_to_age()` exporter, the repository identity/ownership registry,
+logical base snapshots + incremental default-branch sync, and non-default
+branches (commit-anchored diff chains, lazy materialization, reaping).
+`extraction_config_hash` and `bytes_used` remain unpopulated reserved
+columns (see Open questions).
 Scope: add Apache AGE as a graph-database sink, with cost-efficient sync,
 multi-branch support, a multi-repo registry with ownership, and storage
 optimization. Primary consumers are external agents (code review, code
@@ -812,44 +812,93 @@ the ones specific to AGE that aren't automatically obvious from those docs.
       removes, and relabels nodes → verified directly against AGE's live
       graph state).
 
-### Phase 4 — Branches: commit-anchored diffs, lazy hydration, reaping
-- [ ] Initial non-default-branch push: merge-base detection, base-snapshot
-      resolution/creation, `graph_diff` against base, ordered diff-row
-      upload; no AGE graph created yet.
-- [ ] Subsequent pushes append `head_n → head_n+1` diff rows to the active
-      generation.
-- [ ] Force-push/rebase detection (`head_commit_sha` no longer an ancestor,
-      or changed merge-base) → new generation in
-      `graphify_branch_revisions`, old one marked inactive, new chain from
-      new base snapshot.
-- [ ] Missing-base-snapshot fallback chain: reconstruct from checkpoint +
-      deltas, else temporary git worktree + extraction, stored as a new
-      checkpoint.
-- [ ] Materialization path (`graphify age materialize` or server-side
-      helper): create AGE graph, rehydrate via batched prepared Cypher from
-      pinned base snapshot, replay diff chain to head; refuse on
-      `schema_version`/`extraction_config_hash` mismatch.
-- [ ] Advisory lock (keyed `repository_id, branch`) around
-      materializer and reaper; re-read registry state inside the
-      transaction.
-- [ ] Atomic branch-push transaction: AGE mutation + diff rows + head SHA +
-      materialization metadata commit together.
-- [ ] Reaper: `drop_graph` on merge/closure/inactivity/size threshold,
-      generous grace period documented; diff rows/snapshots retained.
-- [ ] Reaper trigger mechanism decided (cron vs. opportunistic on push; see
-      Open questions).
-- [ ] Cross-branch comparison query support (two-graph `cypher()` calls in
-      one SQL statement) documented/tested.
-- [ ] `ARCHITECTURE.md` updated for materializer/reaper.
-- [ ] Materialization/replay implemented planner/executor style: replay
-      logic tier-1-tested against NetworkX (ordering, transition
-      validation, cross-generation rejection); only the executor needs the
-      live suite.
-- [ ] Deterministic tier-3 concurrency tests: two connections, one holding
-      the advisory lock, the second asserting `pg_try_advisory_lock` fails
-      and the re-read-then-hydrate path is taken — no sleep-based races.
-- [ ] Commit on `apache-age-backend`; `pytest` green including rebase/force-push detection
-      tests (tier 1, throwaway git repo in tmpdir).
+### Phase 4 — Branches: commit-anchored diffs, lazy hydration, reaping ✅ done
+- [x] Initial non-default-branch push (`age_branches.push_branch`):
+      merge-base detection, base-snapshot resolution/creation, `graph_diff`
+      against base, ordered diff-row upload; no AGE graph created yet.
+- [x] Subsequent pushes append `head_n → head_n+1` diff rows to the active
+      generation (`_append_branch_push`).
+- [x] Force-push/rebase detection (`head_commit_sha` no longer an ancestor
+      of the new head, via `detect_rebase`/`is_ancestor`) → new generation
+      in `graphify_branch_revisions`, old one marked inactive (never
+      deleted), new chain from a freshly resolved base snapshot. A
+      previously materialized graph for the superseded generation is
+      dropped (its content is now stale) and `materialized`/`age_graph_name`
+      reset, so the next materialize starts clean.
+- [x] Missing-base-snapshot fallback chain (`ensure_base_snapshot`):
+      reconstruct from an existing `graphify_snapshots` row at that exact
+      commit if one exists; else a temporary git worktree + real
+      `extract()`/`build()`, persisted as a **backdated** historical
+      checkpoint (`age_snapshots.record_historical_checkpoint` — its
+      `created_at` is set *before* every existing row for the repo, not
+      "now", since `_reconstruct_payload_from_rows` walks by `created_at`
+      assuming that tracks git history order; a plain `now()` insert would
+      make an old commit's state look like the *newest* one and silently
+      corrupt every later default-branch reconstruction — caught and fixed
+      before this shipped, not found live).
+- [x] Materialization path (`age_branches.materialize_branch`, plus
+      `graphify age materialize --push URI [--branch NAME]`): creates the
+      AGE graph, rehydrates it via one `push_to_age()` full push from the
+      replayed base-snapshot-plus-diff-chain graph, records
+      `materialized`/`age_graph_name`. Refusing on
+      `schema_version`/`extraction_config_hash` mismatch is deferred with
+      `extraction_config_hash` itself (see Open questions) — there is
+      nothing populated yet to mismatch against.
+- [x] Advisory lock (`pg_advisory_lock`, keyed by a SHA-256-derived bigint
+      on `(repository_id, branch)`) around both the materializer and the
+      reaper; both re-read branch/revision state after acquiring it.
+- [x] Atomic branch-push transaction: for an already-materialized branch,
+      `_append_branch_push` inserts the new diff rows, applies the same
+      diff to the live AGE graph via `push_to_age(..., conn=<shared
+      connection>)` (a new `conn=` parameter so `push_to_age()` can join a
+      caller-managed transaction instead of always opening/committing its
+      own), and updates the branch head SHA — one PostgreSQL transaction,
+      so the registry can never claim a head commit the AGE graph doesn't
+      actually contain.
+- [x] Reaper (`age_branches.reap_branch`, `graphify age reap`):
+      `drop_graph` after a generous default 7-day idle threshold
+      (`min_idle_seconds`, overridable); diff rows and snapshots are never
+      touched, so a reaped branch re-materializes cleanly on the next
+      query (tested live). Size-threshold reaping is **not** implemented —
+      `bytes_used` remains an unpopulated reserved column (an honest gap
+      like `extraction_config_hash`; computing it needs a
+      `pg_total_relation_size` sweep over the graph's namespace that
+      nothing currently calls).
+- [x] Reaper trigger mechanism decided: **explicit CLI invocation**
+      (`graphify age reap`), not a cron job or automatic opportunistic
+      check on every push — the latter would add unpredictable latency to
+      every export for a benefit (freeing branch-graph storage) that isn't
+      time-critical. A scheduled `graphify age reap` (external cron) is
+      the recommended usage; graphify itself schedules nothing.
+- [x] Cross-branch comparison query support: documented and live-tested in
+      `docs/AGE_SCHEMA.md` — two independent `cypher()` calls (one per
+      graph) joined in one SQL statement, no cross-graph Cypher syntax
+      needed.
+- [x] `ARCHITECTURE.md` updated for `age_branches.py`
+      (`test_architecture_doc.py` still passes).
+- [x] Materialization/replay implemented planner/executor style:
+      `age_branches.replay_branch_diffs`/`diff_to_rows`/`rows_to_diff` are
+      pure and tier-1-tested against fabricated rows and real NetworkX
+      graphs (ordering, transition validation via `from`/`to` continuity,
+      and cross-generation rejection all covered); only
+      `materialize_branch`'s actual AGE write needs the live suite.
+- [x] Deterministic tier-3 concurrency test: two connections, one holding
+      `pg_advisory_lock`, the second asserting `pg_try_advisory_lock` fails
+      and then succeeds once the first releases — no sleep-based races.
+      This validates the underlying primitive `materialize_branch` and
+      `reap_branch` both use; a live *concurrent-thread* call into
+      `materialize_branch` itself (as opposed to two sequential calls,
+      which `test_materialize_branch_is_idempotent` does cover) was not
+      additionally exercised — the blocking `pg_advisory_lock` makes the
+      "second caller waits, then sees `already_materialized=True`" behavior
+      a direct consequence of the tested primitive plus the tested
+      sequential-idempotency path, not a separate code path to verify.
+- [x] Committed on `apache-age-backend`; `pytest` green (5475 passed
+      non-live; live AGE + registry + snapshot + branch suites all passed
+      against PostgreSQL 18.1 / AGE 1.7.0, including a full CLI-level
+      smoke test: default-branch push → feature-branch push → `graphify
+      age materialize` → `graphify age reap`), including rebase/force-push
+      detection tests (tier 1, throwaway git repos in tmp_path).
 
 ### Phase 5 — Agent contract: pinned queries and fixtures
 - [ ] Review-agent query set documented and pinned: branch-diff seed
@@ -890,14 +939,23 @@ the ones specific to AGE that aren't automatically obvious from those docs.
 
 ## Open questions
 
-- Sanitization/length rules for AGE graph names (Postgres identifier limit
-  is 63 bytes — hashing fallback for long branch names).
-- Reaper trigger mechanism: cron/scheduled job vs. opportunistic reap on
-  push. Merge/closure detection needs the pusher to report it (or a
-  periodic check against the remote).
+- ~~Sanitization/length rules for AGE graph names~~ **Resolved in Phase
+  4**: `age_branches.sanitize_branch_graph_name` -- `<base>__<branch>`,
+  hashing fallback (SHA-256, truncated) when that exceeds Postgres's
+  63-byte identifier limit.
+- ~~Reaper trigger mechanism~~ **Resolved in Phase 4**: explicit CLI
+  invocation (`graphify age reap`), not cron or opportunistic-on-push.
+  Merge/closure-aware reaping (rather than pure inactivity) is still open
+  -- there's no signal today for "this branch's PR merged/closed," so
+  `reap_branch` only ever reaps on idle time.
 - Snapshot payload location: Postgres JSONB vs. object storage (size
   threshold?) -- Phase 3 uses JSONB unconditionally; revisit if payloads
   grow large enough to matter.
+- `bytes_used` on `graphify_branches` is not populated. Computing it needs
+  a `pg_total_relation_size` sweep over the AGE graph's namespace, which
+  nothing currently calls -- reserved/nullable in practice, like
+  `extraction_config_hash`. Would enable size-threshold reaping
+  (`reap_branch` currently only supports idle-time-based reaping).
 - ~~Checkpoint cadence for `graphify_snapshots`~~ **Resolved in Phase 3**:
   every Nth push (default 20, `age_snapshots.CHECKPOINT_CADENCE`) is a full
   checkpoint; the rest are deltas.
