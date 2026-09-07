@@ -651,7 +651,7 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
         platform = "antigravity-windows"
     if platform not in _PLATFORM_CONFIG:
         print(
-            f"error: unknown platform '{platform}'. Choose from: {', '.join(_PLATFORM_CONFIG)}, gemini, cursor",
+            f"error: unknown platform '{platform}'. Choose from: {', '.join(_PLATFORM_CONFIG)}, gemini, cursor, vibe",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -1932,7 +1932,9 @@ def _vibe_install(project_dir: Path | None = None, *, project: bool = False, str
             project_dir / ".vibe",
         ])
     else:
-        _refresh_all_version_stamps()
+        # v8 stamps per-platform (#2694), not globally. _copy_skill_file already
+        # wrote the stamp for the vibe skill; nothing more to refresh here.
+        pass
 
     _print_vibe_install_summary(strict)
 
