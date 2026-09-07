@@ -285,3 +285,41 @@ def test_ts_normalizer_does_not_mask_import_text_in_literals_or_comments():
     assert b'import(\\\"./text\\\")' in normalized
     assert b'import("./comment")' in normalized
     assert b'import("./types")' not in normalized
+
+
+def test_ts_normalizer_scales_linearly_on_large_files():
+    """#3359: the match/type-argument-range filters must not be O(matches x ranges).
+
+    A large monorepo file mixes thousands of generic calls (each a
+    ``type_arguments`` range) with thousands of ``import(...)`` types. Filtering
+    each match by scanning every range made extraction quadratic, so `extract`
+    spun at 100% CPU in the regex/scan path and never finished.
+
+    Assert on scaling, not wall-clock, so the test is not machine-dependent:
+    doubling the input must not roughly quadruple the time.
+    """
+    import time
+
+    def build(n: int) -> bytes:
+        lines = []
+        for i in range(n):
+            lines.append(f"const a{i} = fn<Foo{i}, Bar{i}>(x);")
+            lines.append(f"type T{i} = import('./m{i}').Thing;")
+        return "\n".join(lines).encode()
+
+    def timed(n: int) -> float:
+        source = build(n)
+        start = time.perf_counter()
+        _normalize_ts_import_types(source)
+        return time.perf_counter() - start
+
+    timed(200)  # warm the grammar/parser import off the measured path
+    small = min(timed(1000) for _ in range(3))
+    large = min(timed(2000) for _ in range(3))
+
+    # Linear work doubles (~2x). Quadratic work quadruples (~4x). A generous
+    # 3x ceiling separates the two without being flaky under load.
+    assert large < small * 3, (
+        f"scaling looks super-linear: {small:.4f}s -> {large:.4f}s "
+        f"({large / small:.1f}x for 2x input)"
+    )
