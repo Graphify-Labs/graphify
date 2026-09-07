@@ -54,6 +54,49 @@ def _write_version_stamp(skill_dst: Path, version: str) -> None:
         raise
 
 
+def _js_string_escape(text: str) -> str:
+    """Escape a value for safe interpolation into a JS string literal.
+
+    Escapes backslash, BOTH quote characters (safe whichever quote style the
+    surrounding template uses), and line terminators. A raw, un-escaped
+    newline inside a JS string literal is a SyntaxError, and it also breaks
+    the character-for-character reasoning the other escapes rely on: this
+    interpolates a config value (GRAPHIFY_OUT) into generated plugin source,
+    not literal text a human reviews before it runs, so a value that could
+    inject its own quote (breaking out of the surrounding string entirely,
+    not just corrupting it) or an unescaped newline (corrupting the file)
+    must never reach the template unescaped (#2571 follow-up).
+    """
+    return (
+        text.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("'", "\\'")
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+    )
+
+
+def _shell_safe_out_name() -> str:
+    """GRAPHIFY_OUT, for interpolation into the Kilo/OpenCode reminder echo.
+
+    That value ends up in TWO nested contexts at once: a JS string literal
+    (inside the generated plugin source) that itself builds a SHELL command
+    string later assigned to output.args.command and actually executed. A
+    JS-string escape alone (see _js_string_escape) only protects the first
+    layer — a value containing a shell metacharacter (", $, `, ;, |, and
+    so on) would still reach the shell as-is once the JS string is
+    evaluated, since JS-escaping and shell-escaping are separate concerns
+    the same characters do not satisfy at once. Rather than try to
+    correctly double-escape for both, this allowlists characters that need
+    no escaping in either; anything else falls back to the packaged
+    default name, since a value needing more than this is not a plausible
+    real directory name in the first place (#2571 follow-up).
+    """
+    if re.fullmatch(r"[A-Za-z0-9._/-]+", _GRAPHIFY_OUT):
+        return _GRAPHIFY_OUT
+    return "graphify-out"
+
+
 def _out_doc(text: str) -> str:
     """Point generated doc/plugin text at the actually configured output dir.
 
@@ -89,7 +132,7 @@ def _js_graph_exists_expr() -> str:
     ``join(directory, "graphify-out", "graph.json")`` never finds the graph
     under a custom output dir, so its reminder never fires (#2571).
     """
-    out = _GRAPHIFY_OUT.replace("\\", "\\\\").replace('"', '\\"')
+    out = _js_string_escape(_GRAPHIFY_OUT)
     if os.path.isabs(_GRAPHIFY_OUT):
         return f'existsSync(join("{out}", "graph.json"))'
     return f'existsSync(join(directory, "{out}", "graph.json"))'
@@ -1137,7 +1180,7 @@ def _antigravity_install(project_dir: Path) -> None:
     print('    "command": "uv",')
     print(
         '    "args": ["run", "--with", "graphifyy", "--with", "mcp", "-m", "graphify.serve", '
-        f'"{_mcp_out_path_display()}"]'
+        + json.dumps(_mcp_out_path_display()) + "]"
     )
     print("  }")
 def _antigravity_uninstall(project_dir: Path, *, project: bool = False) -> None:
@@ -1254,7 +1297,7 @@ def _devin_rules_uninstall(project_dir: Path) -> None:
         return
     rules_path.unlink()
     print(f"  rules removed  ->  {rules_path}")
-_KILO_PLUGIN_JS = _out_doc("""\
+_KILO_PLUGIN_JS = """\
 // graphify Kilo plugin
 // Injects a knowledge graph reminder before bash tool calls when the graph exists.
 import { existsSync } from "fs";
@@ -1274,14 +1317,15 @@ export const GraphifyPlugin = async ({ directory }) => {
         // the first bash command in every OpenCode session on Windows (#1646).
         // ';' works in PowerShell 5.1, Bash, and POSIX shells alike.
         output.args.command =
-          'echo "[graphify] Knowledge graph available. Read graphify-out/GRAPH_REPORT.md for god nodes and architecture context before searching files." ; ' +
+          'echo "[graphify] Knowledge graph available. Read @@GRAPH_OUT_NAME@@/GRAPH_REPORT.md for god nodes and architecture context before searching files." ; ' +
           output.args.command;
         reminded = true;
       }
     },
   };
 };
-""").replace("@@GRAPH_EXISTS_CHECK@@", _js_graph_exists_expr())
+""".replace("@@GRAPH_EXISTS_CHECK@@", _js_graph_exists_expr()) \
+   .replace("@@GRAPH_OUT_NAME@@", _shell_safe_out_name())
 _KILO_PLUGIN_PATH = Path(".kilo") / "plugins" / "graphify.js"
 _KILO_CONFIG_JSON_PATH = Path(".kilo") / "kilo.json"
 _KILO_CONFIG_JSONC_PATH = Path(".kilo") / "kilo.jsonc"
@@ -1414,7 +1458,7 @@ def _uninstall_kilo_plugin(project_dir: Path) -> None:
         )
 # OpenCode tool.execute.before plugin — fires before every tool call.
 # Injects a graph reminder into bash command output when graph.json exists.
-_OPENCODE_PLUGIN_JS = _out_doc("""\
+_OPENCODE_PLUGIN_JS = """\
 // graphify OpenCode plugin
 // Injects a knowledge graph reminder before bash tool calls when the graph exists.
 //
@@ -1438,14 +1482,15 @@ export const GraphifyPlugin = async ({ directory }) => {
         // ';' not '&&' — Windows PowerShell 5.1 rejects '&&' as a statement
         // separator, breaking the first bash command of the session (#1646).
         output.args.command =
-          'echo "[graphify] knowledge graph at graphify-out/. For focused questions, run graphify query with your question (scoped subgraph, usually much smaller than GRAPH_REPORT.md) instead of grepping raw files. Read GRAPH_REPORT.md only for broad architecture context." ; ' +
+          'echo "[graphify] knowledge graph at @@GRAPH_OUT_NAME@@/. For focused questions, run graphify query with your question (scoped subgraph, usually much smaller than GRAPH_REPORT.md) instead of grepping raw files. Read GRAPH_REPORT.md only for broad architecture context." ; ' +
           output.args.command;
         reminded = true;
       }
     },
   };
 };
-""").replace("@@GRAPH_EXISTS_CHECK@@", _js_graph_exists_expr())
+""".replace("@@GRAPH_EXISTS_CHECK@@", _js_graph_exists_expr()) \
+   .replace("@@GRAPH_OUT_NAME@@", _shell_safe_out_name())
 _OPENCODE_PLUGIN_PATH = Path(".opencode") / "plugins" / "graphify.js"
 _OPENCODE_CONFIG_PATH = Path(".opencode") / "opencode.json"
 def _install_opencode_plugin(project_dir: Path) -> None:
