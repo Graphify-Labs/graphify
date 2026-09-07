@@ -4106,7 +4106,9 @@ def _resolve_objc_member_calls(
         captured; a dotted receiver like ``Foo.shared`` is never passed through,
         because ``_key`` would strip the dot and collide with a real ``FooShared``.
     An uninferable receiver is SKIPPED (no guess), so an ambiguous selector across
-    classes never fans out. ``_merge_decl_def_classes`` folds each @interface/@impl
+    classes never fans out. A receiver typed to a class this corpus declares nowhere
+    is parked on the caller for a merged graph to finish (#3152).
+    ``_merge_decl_def_classes`` folds each @interface/@impl
     pair into one node, so a paired class clears the single-definition guard.
     ``@protocol`` declarations are excluded from the receiver-type index: a protocol
     is a contract, not a message receiver, and ObjC keeps protocol and class names in
@@ -4205,6 +4207,16 @@ def _resolve_objc_member_calls(
             queue.extend(_objc_bases.get(c, []))
         return None
 
+    def _park_absent(caller: str, callee: str, type_name: str, rc: dict) -> None:
+        """Park a typed receiver whose class is declared nowhere here (#3152).
+
+        A builtin type (NSString, DispatchQueue, ...) is not what another repo
+        declares, so parking one would only let a same-named user class answer it.
+        """
+        if type_name in _LANGUAGE_BUILTIN_GLOBALS:
+            return
+        _park_unresolved_member_call(node_by_id.get(caller), callee, type_name, "objc", rc)
+
     for rc in all_raw_calls:
         if not rc.get("is_member_call"):
             continue
@@ -4225,7 +4237,10 @@ def _resolve_objc_member_calls(
             if not type_name:
                 continue
             type_defs = type_def_nids.get(_key(type_name), [])
-            if len(type_defs) != 1:  # ambiguous or absent -> bail (god-node guard)
+            if not type_defs:
+                _park_absent(caller, callee, type_name, rc)
+                continue
+            if len(type_defs) != 1:  # ambiguous -> bail (god-node guard)
                 continue
             type_nid = type_defs[0]
             type_qualified = False
@@ -4236,7 +4251,10 @@ def _resolve_objc_member_calls(
             type_qualified = True
         elif receiver[:1].isupper():
             type_defs = type_def_nids.get(_key(receiver), [])
-            if len(type_defs) != 1:  # ambiguous or absent -> bail (god-node guard)
+            if not type_defs:
+                _park_absent(caller, callee, receiver, rc)
+                continue
+            if len(type_defs) != 1:  # ambiguous -> bail (god-node guard)
                 continue
             type_nid = type_defs[0]
             type_qualified = True
@@ -4250,7 +4268,10 @@ def _resolve_objc_member_calls(
             if not type_name:
                 continue
             type_defs = type_def_nids.get(_key(type_name), [])
-            if len(type_defs) != 1:  # ambiguous or absent -> bail (god-node guard)
+            if not type_defs:
+                _park_absent(caller, callee, type_name, rc)
+                continue
+            if len(type_defs) != 1:  # ambiguous -> bail (god-node guard)
                 continue
             type_nid = type_defs[0]
             type_qualified = False
