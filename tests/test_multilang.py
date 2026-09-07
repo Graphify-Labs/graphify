@@ -1787,6 +1787,25 @@ def test_sql_create_procedure_does_not_swallow_the_next_declaration(tmp_path):
     assert "dbo.GetCustomer()" in labels, f"got {labels}"
     assert "dbo.CustomerList" in labels, f"view swallowed by the preceding procedure: {labels}"
 
+def test_sql_view_table_recovery_handles_if_not_exists(tmp_path):
+    """#2719 follow-up: _VIEW_TABLE_RECOVERY_RX lacked the IF NOT EXISTS gap
+    _ROUTINE_RECOVERY_RX already had, so CREATE TABLE/VIEW IF NOT EXISTS in an
+    error-bearing file fabricated a phantom node literally named 'IF' -- the
+    capture group greedily matched the next bare word after CREATE TABLE/VIEW,
+    which was IF, not the real name one word later."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text(
+        "THIS IS NOT SQL AT ALL %%%;\n"
+        "CREATE TABLE IF NOT EXISTS Foo (Id INT);\n"
+        "CREATE VIEW IF NOT EXISTS Bar AS SELECT 1;\n"
+    )
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"]]
+    assert "Foo" in labels, f"got {labels}"
+    assert "Bar" in labels, f"got {labels}"
+    assert "IF" not in labels, f"phantom 'IF' node fabricated: {labels}"
+
 def test_sql_plpgsql_functions_survive_parse_errors():
     """PL/pgSQL bodies make tree-sitter-sql emit ERROR nodes; the functions
     must still be extracted (#1910), without cascading into later statements."""

@@ -57,6 +57,7 @@ _ROUTINE_RECOVERY_RX = re.compile(
 # registered twice.
 _VIEW_TABLE_RECOVERY_RX = re.compile(
     r"\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:VIEW|TABLE)\s+"
+    r"(?:IF\s+NOT\s+EXISTS\s+)?"
     r"((?:\"(?:[^\"\n]|\"\")+\"|`(?:[^`\n]|``)+`|\[(?:[^\]\n]|\]\])+\]|[\w$]+)"
     r"(?:\s*\.\s*(?:\"(?:[^\"\n]|\"\")+\"|`(?:[^`\n]|``)+`|\[(?:[^\]\n]|\]\])+\]|[\w$]+))*)",
     re.IGNORECASE,
@@ -1107,7 +1108,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         for m in _VIEW_TABLE_RECOVERY_RX.finditer(masked_src):
             if any(s <= m.start() < e for s, e in ident_spans):
                 continue
-            obj_name = _clean_name(m.group(1))
+            obj_name = _clean_regex_name(m.group(1), m.start(1), m.end(1))
             norm = _norm_ident(obj_name)
             if norm in table_nids:
                 continue
