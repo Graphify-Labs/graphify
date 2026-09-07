@@ -1392,6 +1392,29 @@ def test_shell_safe_out_name_rejects_metacharacters(monkeypatch):
         assert install._shell_safe_out_name() == good
 
 
+def test_shell_safe_out_name_handles_windows_absolute_paths(monkeypatch):
+    """A Windows absolute path (C:\\Users\\me\\out) used to fall back to the
+    packaged default name too, even though it is a legitimate GRAPHIFY_OUT
+    value -- the plugin templates explicitly target Windows PowerShell
+    (#1646). The colon and backslash it needs are safe to allow through:
+    neither is a shell metacharacter in the surrounding double-quoted echo
+    context in bash or PowerShell. The backslash does need JS-string
+    escaping first, though -- an unescaped backslash before an ordinary
+    letter is not a recognized JS escape sequence, so the JS parser just
+    drops it, silently corrupting the path before the shell ever sees it."""
+    import graphify.install as install
+    win_path = r"C:\Users\me\out"
+    monkeypatch.setattr(install, "_GRAPHIFY_OUT", win_path)
+    escaped = install._shell_safe_out_name()
+    assert escaped == r"C:\\Users\\me\\out", escaped
+    # A JS engine parsing this as string-literal source content collapses
+    # each doubled backslash back to one, same as Python's own backslash
+    # escape handling for that one character class -- confirm the runtime
+    # value a shell would actually see matches the original path.
+    recovered = escaped.encode().decode("unicode_escape")
+    assert recovered == win_path, recovered
+
+
 def test_kilo_and_opencode_reminder_text_never_embeds_raw_graphify_out_value(monkeypatch):
     """The Kilo/OpenCode plugin templates used to run the WHOLE template
     through _out_doc's naive substring replace, so a malicious GRAPHIFY_OUT
