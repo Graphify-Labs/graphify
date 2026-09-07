@@ -1815,23 +1815,115 @@ def _uninstall_vibe_agents_md(targets: list[Path]) -> None:
             print(f"AGENTS.md was empty after removal - deleted {target.resolve()}")
 
 
+_VIBE_EXTRACT_AGENT_NAME = "graphify-extract"
+
+# TOML body for the writable graphify-extract subagent. Vibe's AgentRegistry
+# scans `<scope>/agents/*.toml`; the file stem becomes the agent name
+# (`AgentProfile.from_toml` sets `name=path.stem`, see mistralai/mistral-vibe
+# vibe/core/agents/models.py), so this file MUST be named
+# `graphify-extract.toml`. Only the four whitelisted tools are enabled, and
+# `write_file` is scoped to graphify's own chunk output so nothing else in the
+# workspace is writable. The system prompt id `explore` keeps it lean — vibe's
+# read-only subagent uses the same prompt.
+_VIBE_EXTRACT_AGENT_TOML = """\
+# graphify-extract: writable subagent used by the graphify skill.
+# Managed by `graphify vibe install` -- do not hand-edit; changes are overwritten.
+# Named vs. the read-only `explore` builtin because Task-dispatched semantic
+# extraction has to write one chunk JSON per invocation, which `explore`
+# cannot do (its enabled_tools omit write_file).
+display_name = "Graphify Extract"
+description = "Writable subagent used by graphify's /graphify skill for semantic chunk extraction. Reads files, writes one graphify-out/.graphify_chunk_NN.json per Task, then exits."
+safety = "safe"
+agent_type = "subagent"
+system_prompt_id = "explore"
+enabled_tools = ["grep", "read_file", "write_file", "skill"]
+
+[tools.write_file]
+permission = "always"
+allowlist = ["**/graphify-out/.graphify_chunk_*.json"]
+
+[tools.read_file]
+permission = "always"
+
+[tools.grep]
+permission = "always"
+
+[tools.skill]
+permission = "always"
+"""
+
+
+def _vibe_agents_dir(project_dir: Path, *, project: bool) -> Path:
+    """Return the vibe agents dir for the requested scope (mirror hooks.toml layout)."""
+    if project:
+        return (project_dir or Path(".")) / ".vibe" / "agents"
+    return _vibe_home() / "agents"
+
+
+def _vibe_extract_agent_path(project_dir: Path, *, project: bool) -> Path:
+    """Full path of the graphify-extract.toml agent file for the requested scope."""
+    return _vibe_agents_dir(project_dir, project=project) / f"{_VIBE_EXTRACT_AGENT_NAME}.toml"
+
+
+def _install_vibe_extract_agent(project_dir: Path, *, project: bool) -> None:
+    """Write the writable graphify-extract subagent (idempotent).
+
+    Without this, the graphify skill dispatches Task subagents that inherit
+    vibe's read-only `explore` profile and cannot write chunk JSON files, so
+    Part B extraction silently produces zero chunks (see #2537 review).
+    """
+    target = _vibe_extract_agent_path(project_dir, project=project)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    body = _VIBE_EXTRACT_AGENT_TOML
+    if target.exists() and target.read_text(encoding="utf-8") == body:
+        print(f"  {target}  ->  graphify-extract agent already registered (no change)")
+        return
+    if target.exists():
+        backup = target.with_name(target.name + ".graphify-bak")
+        shutil.copy2(target, backup)
+    target.write_text(body, encoding="utf-8")
+    print(f"  {target}  ->  graphify-extract subagent registered")
+
+
+def _uninstall_vibe_extract_agent(project_dir: Path, *, project: bool) -> None:
+    """Remove the graphify-extract.toml agent file (leave user-authored agents alone)."""
+    target = _vibe_extract_agent_path(project_dir, project=project)
+    if not target.exists():
+        return
+    target.unlink()
+    print(f"  {target}  ->  graphify-extract subagent removed")
+    # Prune the agents dir if empty and we own it (project scope only — the
+    # global VIBE_HOME/agents may hold unrelated user agents).
+    if project:
+        agents_dir = target.parent
+        try:
+            if agents_dir.is_dir() and not any(agents_dir.iterdir()):
+                agents_dir.rmdir()
+        except OSError:
+            pass
+
+
 def _print_vibe_install_summary(strict: bool) -> None:
     """Post-install summary + optional strict-mode note."""
     print()
     print("Mistral Vibe will now check the knowledge graph before answering")
     print("codebase questions and rebuild it after code changes.")
     print("Use /graphify in vibe to build or update the graph.")
+    print("Semantic extraction dispatches to the `graphify-extract` subagent")
+    print("(installed alongside the skill; vibe's read-only `explore` cannot")
+    print("write chunk files).")
     if strict:
         print("Strict mode: the first raw file read per session is blocked until")
         print("one `graphify query` runs (toggle with GRAPHIFY_HOOK_STRICT=0).")
 
 
 def _vibe_install(project_dir: Path | None = None, *, project: bool = False, strict: bool = False) -> None:
-    """Full-parity Vibe install: skill + AGENTS.md always-on + hooks.toml."""
+    """Full-parity Vibe install: skill + AGENTS.md always-on + hooks.toml + graphify-extract agent."""
     project_dir = project_dir or Path(".")
     skill_dst = _copy_skill_file("vibe", project=project, project_dir=project_dir)
     _install_vibe_agents_md(_vibe_agents_md_path(project_dir, project=project))
     _install_vibe_hook(project_dir, project=project, strict=strict)
+    _install_vibe_extract_agent(project_dir, project=project)
 
     if project:
         _print_project_git_add_hint([
@@ -1856,10 +1948,12 @@ def _vibe_uninstall(project_dir: Path | None = None, *, project: bool = False, r
     if project or (explicit_dir and not remove_user_skill):
         _remove_skill_file("vibe", project=True, project_dir=project_dir)
         _uninstall_vibe_hook(project_dir, project=True)
+        _uninstall_vibe_extract_agent(project_dir, project=True)
         agents_md_targets.append(_vibe_agents_md_path(project_dir, project=True))
     if remove_user_skill:
         _remove_skill_file("vibe", project=False)
         _uninstall_vibe_hook(project_dir, project=False)
+        _uninstall_vibe_extract_agent(project_dir, project=False)
         agents_md_targets.append(_vibe_agents_md_path(project_dir, project=False))
 
     _uninstall_vibe_agents_md(agents_md_targets)

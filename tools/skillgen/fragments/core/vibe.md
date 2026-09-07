@@ -261,11 +261,12 @@ Load files from `graphify-out/.graphify_uncached.txt`. Split into chunks of 20-2
 
 > Uses the `Task` tool for parallel subagent dispatch.
 > Call `Task` once per chunk — ALL in the same response so they run in parallel.
+> **On Mistral Vibe, dispatch each `Task` with `subagent_type="graphify-extract"`.** This writable subagent is installed by `graphify vibe install` alongside the skill. Do NOT use vibe's built-in `explore` subagent — it is read-only (`enabled_tools = ["grep", "read_file", "skill"]`) and cannot write the chunk JSON files this pipeline needs. If `graphify-extract` is missing (older install, or you overrode `VIBE_HOME` after install), re-run `graphify vibe install` first.
 
 Pass the extraction prompt as the task description:
 
 ```
-Task(description="Your task is to perform the following. Follow the instructions below exactly.\n\n<agent-instructions>\n[extraction prompt, with FILE_LIST, CHUNK_NUM, TOTAL_CHUNKS, DEEP_MODE substituted]\n</agent-instructions>\n\nExecute this now. Output ONLY the structured JSON response.")
+Task(subagent_type="graphify-extract", description="Your task is to perform the following. Follow the instructions below exactly.\n\n<agent-instructions>\n[extraction prompt, with FILE_LIST, CHUNK_NUM, TOTAL_CHUNKS, DEEP_MODE substituted]\n</agent-instructions>\n\nExecute this now. Output ONLY the structured JSON response.")
 ```
 
 Each subagent writes its result to its own `graphify-out/.graphify_chunk_NN.json`. Collect results as each `Task` completes and parse each as JSON.
@@ -285,10 +286,10 @@ See `references/extraction-spec.md` for the exact subagent prompt (JSON schema, 
 Wait for all subagents. For each result:
 - Check that `graphify-out/.graphify_chunk_NN.json` exists on disk — this is the success signal
 - If the file exists and contains valid JSON with `nodes` and `edges`, include it and save to cache
-- If the file is missing, the subagent was likely dispatched as read-only (Explore type) — print a warning: "chunk N missing from disk — subagent may have been read-only. Re-run with general-purpose agent." Do not silently skip.
+- If the file is missing, the subagent was likely dispatched as read-only (vibe's built-in `explore`, or Claude Code's Explore type) — print a warning: "chunk N missing from disk — subagent may have been read-only. On vibe, re-dispatch with `subagent_type=\"graphify-extract\"` (installed by `graphify vibe install`). On Claude Code, re-dispatch with the general-purpose agent." Do not silently skip.
 - If a subagent failed or returned invalid JSON, print a warning and skip that chunk - do not abort
 
-If more than half the chunks failed or are missing, stop and tell the user to re-run and ensure `subagent_type="general-purpose"` is used.
+If more than half the chunks failed or are missing, stop and tell the user to re-run. On vibe, ensure `subagent_type="graphify-extract"` (installed by `graphify vibe install`) is passed to every `Task` call — the default `explore` subagent is read-only and will silently produce zero chunks. On Claude Code, ensure `subagent_type="general-purpose"` is used.
 
 Merge all chunk files into `.graphify_semantic_new.json`. **After each Agent call completes, read the real token counts from the Agent tool result's `usage` field and write them back into the chunk JSON before merging** — the chunk JSON itself always has placeholder zeros. Then run:
 ```bash
