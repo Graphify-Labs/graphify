@@ -406,6 +406,62 @@ def test_rust_no_cross_crate_spurious_edges():
     )
 
 
+def test_rust_trait_signature_only_method_gets_a_node():
+    """#3366: a bodyless trait method (`fn run(&self);`) is a
+    function_signature_item, a node type the extractor never handled at all, so
+    it had no extraction path -- not even a mangled one. Processor.run in
+    sample.rs is exactly this shape. DataProcessor's own `impl Processor`
+    override also displays as `.run()`, so this locates the trait's own node
+    by id prefix (via the method edge below) rather than by label, since the
+    two are otherwise indistinguishable by label alone."""
+    r = extract_rust(FIXTURES / "sample.rs")
+    processor_id = next(n["id"] for n in r["nodes"] if n["label"] == "Processor")
+    method_edges = {(e["source"], e["target"]) for e in r["edges"] if e["relation"] == "method"}
+    run_id = next((tgt for src, tgt in method_edges if src == processor_id), None)
+    assert run_id is not None, "Processor -> .run() method edge missing"
+    run_node = next(n for n in r["nodes"] if n["id"] == run_id)
+    assert run_node["label"] == ".run()"
+    assert run_node["source_location"] == "L30", (
+        f"anchored at the wrong line (impl's L46 instead of the declaration's L30): "
+        f"{run_node['source_location']}"
+    )
+
+
+def test_rust_trait_method_with_no_impl_anywhere_in_the_corpus():
+    """#3366: a trait's method used to contribute a node only as a side effect
+    of some impl in the same file happening to define a same-named method --
+    a trait with no implementor at all got zero method nodes. Logger has no
+    impl anywhere in sample.rs (only Processor is implemented, by
+    DataProcessor), so this exercises that with no synthetic fixture."""
+    r = extract_rust(FIXTURES / "sample.rs")
+    labels = {n["label"]: n["id"] for n in r["nodes"]}
+    assert ".log()" in labels, f"got {sorted(labels)}"
+    log_id = labels[".log()"]
+    logger_id = next(n["id"] for n in r["nodes"] if n["label"] == "Logger")
+    method_edges = {(e["source"], e["target"]) for e in r["edges"] if e["relation"] == "method"}
+    assert (logger_id, log_id) in method_edges
+
+
+def test_rust_trait_default_bodied_method_gets_a_node(tmp_path):
+    """#3366: sample.rs has no default-bodied trait method (function_item
+    inside a trait's declaration_list, as opposed to the bodyless
+    function_signature_item the other tests here cover), so this is the only
+    coverage for that shape -- it was dropped just as completely as the
+    signature-only case, including when nothing in the corpus overrides it."""
+    p = tmp_path / "lonely.rs"
+    p.write_text(
+        "pub trait Lonely {\n"
+        "    fn only_signature(&self) -> u8;\n"
+        "    fn with_default(&self) -> u8 { 42 }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    r = extract_rust(p)
+    labels = [n["label"] for n in r["nodes"]]
+    assert ".only_signature()" in labels, f"got {labels}"
+    assert ".with_default()" in labels, f"got {labels}"
+
+
 # ── extract() dispatch ────────────────────────────────────────────────────────
 
 def test_extract_dispatches_all_languages():
