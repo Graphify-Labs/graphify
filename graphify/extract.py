@@ -4537,7 +4537,7 @@ def _resolve_go_member_calls(
     names the declared type of every struct field, parameter (the method receiver
     included), ``var x T`` and ``x := T{}`` binding; this pass looks the receiver up
     there, takes the single declaration of that type, and emits the ``calls`` edge to its
-    method. Always INFERRED: the type comes from the table, never from the call site.
+    method. Always INFERRED: the type comes from a declaration, never from the call site.
 
     Names are matched case-sensitively, unlike the sibling resolvers. Go exports by
     capitalisation, so `Run` and `run` on one type are two different methods with two
@@ -4567,11 +4567,13 @@ def _resolve_go_member_calls(
     # A Go type node id folds in the package directory, so two packages declaring the
     # same name stay two entries and the single-definition guard below bails: without
     # import evidence neither one is the answer.
+    # Only `.go` declarations count: `_callable_class` is corpus-wide, so a same-named
+    # Java class would both answer a Go receiver and hide that nothing local declares it.
     type_def_nids: dict[str, list[str]] = {}
     node_by_id: dict[str, dict] = {}
     for n in all_nodes:
         node_by_id[n.get("id")] = n
-        if n.get("_callable_class") and n.get("source_file"):
+        if n.get("_callable_class") and str(n.get("source_file", "")).endswith(".go"):
             type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
 
     method_index: dict[tuple[str, str], list[str]] = {}
@@ -4586,7 +4588,10 @@ def _resolve_go_member_calls(
     existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
     for rc in raw:
         receiver, callee, caller = rc["member_receiver"], rc["callee"], rc["caller_nid"]
-        type_name = type_table_by_file.get(rc.get("source_file", ""), {}).get(receiver)
+        # The enclosing method's own receiver is typed by its declaration, which beats the
+        # flat table: two types in one file may both name their receiver `s`.
+        type_name = rc.get("receiver_type") or type_table_by_file.get(
+            rc.get("source_file", ""), {}).get(receiver)
         if not type_name or type_name in _LANGUAGE_BUILTIN_GLOBALS:
             continue
         type_defs = type_def_nids.get(_key(type_name), [])

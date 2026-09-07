@@ -159,9 +159,10 @@ def extract_go(path: Path) -> dict:
     nodes: list[dict] = []
     edges: list[dict] = []
     seen_ids: set[str] = set()
-    # `(caller nid, body, receiver variable name)` — the receiver name is what makes
-    # `s.logger.Log()` readable as a call on the `logger` field rather than on `s`.
-    function_bodies: list[tuple[str, object, str | None]] = []
+    # `(caller nid, body, receiver variable name, receiver type)` — the receiver name is
+    # what makes `s.logger.Log()` readable as a call on the `logger` field rather than on
+    # `s`, and its type is the one binding the file-flat table can get wrong.
+    function_bodies: list[tuple[str, object, str | None, str | None]] = []
     # Fed to the `_callable` / `_callable_class` stamp below (#2438): the indirect-call
     # guard and the cross-repo member-call pass both read them off the node.
     callable_nids: set[str] = set()
@@ -342,7 +343,7 @@ def extract_go(path: Path) -> dict:
                 emit_go_method_refs(node, func_nid, line)
                 body = node.child_by_field_name("body")
                 if body:
-                    function_bodies.append((func_nid, body, None))
+                    function_bodies.append((func_nid, body, None, None))
             return
 
         if t == "method_declaration":
@@ -381,7 +382,7 @@ def extract_go(path: Path) -> dict:
             emit_go_method_refs(node, method_nid, line)
             body = node.child_by_field_name("body")
             if body:
-                function_bodies.append((method_nid, body, receiver_name))
+                function_bodies.append((method_nid, body, receiver_name, receiver_type))
             return
 
         if t == "type_declaration":
@@ -521,7 +522,8 @@ def extract_go(path: Path) -> dict:
     seen_call_pairs: set[tuple[str, str]] = set()
     raw_calls: list[dict] = []
 
-    def walk_calls(node, caller_nid: str, self_name: str | None) -> None:
+    def walk_calls(node, caller_nid: str, self_name: str | None,
+                   self_type: str | None) -> None:
         if node.type in ("function_declaration", "method_declaration"):
             return
         if node.type == "call_expression":
@@ -531,6 +533,7 @@ def extract_go(path: Path) -> dict:
             is_bare_identifier: bool = False
             package_receiver: str | None = None
             member_receiver: str | None = None
+            member_receiver_type: str | None = None
             import_path: str | None = None
             if func_node:
                 if func_node.type == "identifier":
@@ -548,6 +551,8 @@ def extract_go(path: Path) -> dict:
                         import_path = go_imported_pkgs[receiver_name]
                     elif operand is not None and operand.type == "identifier":
                         member_receiver = receiver_name
+                        if self_name and receiver_name == self_name:
+                            member_receiver_type = self_type
                     elif operand is not None and operand.type == "selector_expression":
                         # `s.logger.Log()` names the receiver by the field only when `s` is
                         # this method's own receiver; any other head could be a package or
@@ -595,15 +600,18 @@ def extract_go(path: Path) -> dict:
                         # `is_member_call` plus `receiver` without checking the language,
                         # so a Go name placed there binds to their types in a mixed corpus.
                         "member_receiver": member_receiver,
+                        # Set only for the enclosing method's own receiver, whose type its
+                        # declaration states outright; the flat table is the fallback.
+                        "receiver_type": member_receiver_type,
                         "import_path": import_path,
                         "source_file": str_path,
                         "source_location": f"L{node.start_point[0] + 1}",
                     })
         for child in node.children:
-            walk_calls(child, caller_nid, self_name)
+            walk_calls(child, caller_nid, self_name, self_type)
 
-    for caller_nid, body_node, self_name in function_bodies:
-        walk_calls(body_node, caller_nid, self_name)
+    for caller_nid, body_node, self_name, self_type in function_bodies:
+        walk_calls(body_node, caller_nid, self_name, self_type)
 
     valid_ids = seen_ids
     clean_edges = []
