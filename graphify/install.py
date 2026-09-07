@@ -106,8 +106,16 @@ def _shell_safe_out_name() -> str:
     evaluation time; none of the other allowlisted characters need any
     escaping, so this is a no-op for every value this function used to
     return unescaped.
+
+    A space is allowed too (`My Output Dir`, or an absolute path through a
+    directory with one) — it is a common, entirely plausible path
+    character, and it needs no escaping in either context: a JS string
+    literal is untouched by a bare space, and the surrounding echo command
+    always wraps the whole reminder text in double quotes, so a space
+    inside it is preserved verbatim rather than starting a new shell word
+    in bash or PowerShell alike.
     """
-    if re.fullmatch(r"[A-Za-z0-9._/:\\-]+", _GRAPHIFY_OUT):
+    if re.fullmatch(r"[A-Za-z0-9._/:\\ -]+", _GRAPHIFY_OUT):
         return _js_string_escape(_GRAPHIFY_OUT)
     return "graphify-out"
 
