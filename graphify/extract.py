@@ -4615,6 +4615,9 @@ def _resolve_php_member_calls(
     there, takes the single class declaring that type, and emits the ``calls`` edge to
     its method. Always INFERRED: the type comes from the table, never from the call site
     (``Helper::format()`` is a scoped call and keeps its own path).
+
+    A receiver typed to a class this corpus declares nowhere is parked on the caller for
+    a merged graph to finish (#3152).
     """
     raw = [
         rc
@@ -4660,7 +4663,13 @@ def _resolve_php_member_calls(
         if not type_name or type_name in _LANGUAGE_BUILTIN_GLOBALS or type_name in php_builtins:
             continue
         type_defs = type_def_nids.get(_key(type_name), [])
-        if len(type_defs) != 1:  # ambiguous or absent -> bail (god-node guard)
+        if not type_defs:
+            # Declared nowhere here — usually "in a repo this build does not contain",
+            # so park it for the merge (#3152). The extractor's `lang` tag already says
+            # who is asking, so no suffix sniff is needed.
+            _park_unresolved_member_call(node_by_id.get(caller), callee, type_name, "php", rc)
+            continue
+        if len(type_defs) != 1:  # ambiguous -> bail (god-node guard)
             continue
         target = method_index.get((type_defs[0], _key(callee)))
         if not target or target == caller or (caller, target) in existing_pairs:
