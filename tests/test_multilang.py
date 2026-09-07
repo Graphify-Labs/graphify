@@ -1334,6 +1334,26 @@ def test_sql_tsql_bracket_debracketing_does_not_corrupt_array_literal(tmp_path):
     for l in labels:
         assert "`" not in l, f"a synthetic backtick leaked into a label: {labels}"
 
+def test_sql_tsql_bracket_does_not_strip_unrelated_mysql_backticks(tmp_path):
+    """#2721 follow-up: a genuinely backtick-quoted MySQL name elsewhere in the
+    same file must keep its backticks even though the file also needed T-SQL
+    debracketing for an unrelated statement -- the un-rewrite must only touch
+    the specific spans _debracket_tsql actually rewrote, not every
+    backtick-quoted name in a file that happened to need debracketing at all."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "mixed.sql"
+    p.write_text(
+        "CREATE TABLE [dbo].[Orders] (Id INT);\n"
+        "CREATE TABLE `mysql_table` (Id INT);\n"
+    )
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"]]
+    assert "dbo.Orders" in labels, f"got {labels}"
+    assert "`mysql_table`" in labels, (
+        f"genuine MySQL backtick name stripped just because the file also had a "
+        f"T-SQL bracket span elsewhere: {labels}"
+    )
+
 def test_sql_plpgsql_functions_survive_parse_errors():
     """PL/pgSQL bodies make tree-sitter-sql emit ERROR nodes; the functions
     must still be extracted (#1910), without cascading into later statements."""

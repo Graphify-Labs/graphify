@@ -277,7 +277,7 @@ def _norm_ident(name: str) -> str:
     return ".".join(parts)
 
 
-def _debracket_tsql(source: bytes) -> tuple[bytes, bool]:
+def _debracket_tsql(source: bytes) -> tuple[bytes, list[tuple[int, int]]]:
     """Rewrite T-SQL bracket quoted identifiers to backtick quoted ones.
 
     tree_sitter_sql has no grammar rule for a bracket delimited identifier
@@ -303,10 +303,17 @@ def _debracket_tsql(source: bytes) -> tuple[bytes, bool]:
     unrelated stray `[` racing ahead to some later statement's real closing
     `]`. Rewriting it anyway would erase the comment before _scan_sql's own
     line-scoped distrust handling ever sees it.
+
+    Returns the rewritten source plus the byte-range spans, in the rewritten
+    source's own coordinates, of every backtick pair this function inserted.
+    A downstream reader uses those spans to un-rewrite ONLY the identifiers
+    that came from a bracket: a genuinely backtick-quoted MySQL name sitting
+    anywhere else in the same file must not be touched just because the file
+    also happened to need debracketing somewhere (#2721 follow-up).
     """
     out = bytearray()
     i, n = 0, len(source)
-    changed = False
+    spans: list[tuple[int, int]] = []
     while i < n:
         c = source[i]
         if c == ord("'"):
@@ -379,8 +386,9 @@ def _debracket_tsql(source: bytes) -> tuple[bytes, bool]:
             )
             if looks_like_ident:
                 escaped = content.replace(b"]]", b"]").replace(b"`", b"``")
+                span_start = len(out)
                 out += b"`" + escaped + b"`"
-                changed = True
+                spans.append((span_start, len(out)))
                 i = j
             else:
                 out.append(c)
@@ -388,15 +396,16 @@ def _debracket_tsql(source: bytes) -> tuple[bytes, bool]:
         else:
             out.append(c)
             i += 1
-    return bytes(out), changed
+    return bytes(out), spans
 
 
 def _strip_backtick_parts(name: str) -> str:
     """Undo _debracket_tsql's rewrite for display labels and recovered names.
 
-    Only called when the file was actually debracketed, so a genuinely
-    backtick-quoted MySQL name is left untouched unless the same file also
-    contains a T-SQL bracket span elsewhere.
+    The caller is responsible for only invoking this on a name it has
+    confirmed overlaps a span _debracket_tsql actually rewrote (see
+    _clean_name) -- called unconditionally, this would also strip a
+    genuinely backtick-quoted MySQL name sitting anywhere else in the file.
     """
     parts = []
     for part in name.split("."):
@@ -433,7 +442,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
             else content if content is not None
             else path.read_bytes()
         )
-        source, debracketed = _debracket_tsql(source)
+        source, debracket_spans = _debracket_tsql(source)
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:
@@ -452,13 +461,27 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
     def _read(n) -> str:
         return source[n.start_byte:n.end_byte].decode("utf-8", errors="replace")
 
-    def _clean_name(name: str) -> str:
-        return _strip_backtick_parts(name) if debracketed else name
+    def _overlaps_debracketed_span(start_byte: int, end_byte: int) -> bool:
+        return any(s < end_byte and start_byte < e for s, e in debracket_spans)
+
+    def _clean_name(n) -> str:
+        """Read n's text, un-rewriting it ONLY if _debracket_tsql touched it.
+
+        A node whose byte range never overlaps a rewritten span is returned
+        exactly as read -- in particular, a genuinely backtick-quoted MySQL
+        name elsewhere in a file that also needed T-SQL debracketing is left
+        with its own backticks intact, not stripped just because the file as
+        a whole went through the rewrite (#2721 follow-up).
+        """
+        text = _read(n)
+        if not debracket_spans or not _overlaps_debracketed_span(n.start_byte, n.end_byte):
+            return text
+        return _strip_backtick_parts(text)
 
     def _obj_name(n) -> str | None:
         for c in n.children:
             if c.type == "object_reference":
-                return _clean_name(_read(c))
+                return _clean_name(c)
         return None
 
     def _add_node(nid: str, label: str, line: int) -> None:
@@ -522,7 +545,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                                     if cc.type == "keyword_references":
                                         found_ref = True
                                     elif found_ref and cc.type == "object_reference":
-                                        ref_name = _clean_name(_read(cc))
+                                        ref_name = _clean_name(cc)
                                         break
                                 if ref_name:
                                     ref_nid = table_nids.get(_norm_ident(ref_name)) or _ref_stub(ref_name)
@@ -539,7 +562,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                                         if cc.type == "keyword_references":
                                             found_ref = True
                                         elif found_ref and cc.type == "object_reference":
-                                            ref_name = _clean_name(_read(cc))
+                                            ref_name = _clean_name(cc)
                                             break
                                     if ref_name:
                                         ref_nid = table_nids.get(_norm_ident(ref_name)) or _ref_stub(ref_name)
@@ -600,7 +623,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                                 if ccc.type == "keyword_references":
                                     found_ref = True
                                 elif found_ref and ccc.type == "object_reference":
-                                    ref_name = _clean_name(_read(ccc))
+                                    ref_name = _clean_name(ccc)
                                     break
                             if ref_name:
                                 ref_nid = (table_nids.get(_norm_ident(ref_name))
@@ -616,11 +639,11 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                 if c.type == "keyword_trigger":
                     after_trigger = True
                 elif after_trigger and not trig_name and c.type == "object_reference":
-                    trig_name = _clean_name(_read(c))
+                    trig_name = _clean_name(c)
                 elif c.type == "keyword_for":
                     after_for = True
                 elif after_for and not tbl_name and c.type == "object_reference":
-                    tbl_name = _clean_name(_read(c))
+                    tbl_name = _clean_name(c)
             if trig_name:
                 trig_nid = _make_id(stem, trig_name)
                 _add_node(trig_nid, trig_name, line)
@@ -725,7 +748,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                 if c.type == "relation":
                     for cc in c.children:
                         if cc.type == "object_reference":
-                            tbl = _clean_name(_read(cc))
+                            tbl = _clean_name(cc)
                             if _norm_ident(tbl) in cte_names:
                                 continue
                             tbl_nid = table_nids.get(_norm_ident(tbl)) or _ref_stub(tbl)
@@ -778,6 +801,23 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
     # Snapshot after tree walk so we don't re-emit edges already captured above.
     emitted = {(e["source"], e["target"]) for e in edges if e["relation"] == "references"}
     src_text = source.decode("utf-8", errors="replace")
+
+    def _clean_regex_name(text: str, char_start: int, char_end: int) -> str:
+        """_clean_name's counterpart for a name captured by a regex match
+        against src_text (a decoded str) rather than read off a tree-sitter
+        node -- the whole-file ERROR-recovery fallback has no node to ask
+        for a byte range, so this converts the match's character offsets to
+        byte offsets (src_text decodes the same, already-debracketed
+        `source` debracket_spans was computed against) before doing the same
+        overlap check _clean_name does.
+        """
+        if not debracket_spans:
+            return text
+        byte_start = len(src_text[:char_start].encode("utf-8"))
+        byte_end = len(src_text[:char_end].encode("utf-8"))
+        if not _overlaps_debracketed_span(byte_start, byte_end):
+            return text
+        return _strip_backtick_parts(text)
     for m in re.finditer(r"CREATE\s+TABLE\s+([\w$]+)\s*\(", src_text, re.IGNORECASE):
         tbl_name = m.group(1)
         tbl_nid = table_nids.get(_norm_ident(tbl_name))
@@ -829,7 +869,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         for m in _ROUTINE_RECOVERY_RX.finditer(masked_src):
             if any(s <= m.start() < e for s, e in ident_spans):
                 continue
-            fn_name = _clean_name(m.group(1))
+            fn_name = _clean_regex_name(m.group(1), m.start(1), m.end(1))
             fn_line = src_text[: m.start()].count("\n") + 1
             _add_node(_make_id(stem, fn_name), f"{fn_name}()", fn_line)
 
