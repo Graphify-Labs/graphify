@@ -3391,6 +3391,11 @@ def _resolve_python_member_calls(
             _emit_call(caller, children[0], rc)
 
 
+# Every suffix the TS/JS extractors claim. The member-call resolver both activates on
+# and parks by this set, so a pure-ESM (`.mjs`) repo is not silently left out.
+_JS_TS_SUFFIXES = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")
+
+
 def _resolve_typescript_member_calls(
     per_file: list[dict],
     all_nodes: list[dict],
@@ -4551,7 +4556,8 @@ register_language_resolver(
     LanguageResolver("ruby_member_calls", frozenset({".rb", ".rake"}), resolve_ruby_member_calls)
 )
 register_language_resolver(
-    LanguageResolver("typescript_member_calls", frozenset({".ts", ".tsx", ".mts", ".cts", ".js", ".jsx"}), _resolve_typescript_member_calls)
+    LanguageResolver("typescript_member_calls", frozenset(_JS_TS_SUFFIXES),
+                     _resolve_typescript_member_calls)
 )
 # C++ (#1547) and ObjC (#1556) receiver-typed member-call resolution. `.h` is in
 # both suffix sets because it routes to extract_cpp or extract_objc by content; the
