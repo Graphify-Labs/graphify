@@ -888,7 +888,18 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
     # (e.g. Firebird COMPUTED BY columns push constraints out of the tree entirely).
     # Snapshot after tree walk so we don't re-emit edges already captured above.
     emitted = {(e["source"], e["target"]) for e in edges if e["relation"] == "references"}
-    src_text = source.decode("utf-8", errors="replace")
+    # surrogateescape, not replace: _clean_regex_name reconstructs a byte
+    # offset by re-encoding a src_text slice, which only works if decoding
+    # was lossless. errors="replace" collapses each invalid byte to a
+    # single U+FFFD that re-encodes to 3 bytes, permanently inflating every
+    # offset computed past it (confirmed: 200 invalid bytes shifted a
+    # routine name's computed span 400 bytes off, past every real
+    # debracket_spans entry, so a debracketed name that should have had
+    # its backticks stripped kept them in the final label instead).
+    # surrogateescape maps each invalid byte to its own lone surrogate
+    # codepoint and back losslessly, so encode(decode(source)) == source
+    # exactly and every offset stays correct.
+    src_text = source.decode("utf-8", errors="surrogateescape")
 
     def _clean_regex_name(text: str, char_start: int, char_end: int) -> str:
         """_clean_name's counterpart for a name captured by a regex match
@@ -898,14 +909,23 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         byte offsets (src_text decodes the same, already-debracketed
         `source` debracket_spans was computed against) before doing the same
         overlap check _clean_name does.
+
+        A delimited name's content can itself carry one of src_text's
+        surrogate-escaped bytes (a quoted identifier's negated character
+        class does not exclude it the way a bare [\\w$]+ name already does).
+        Sanitized on the way out, past the point the surrogate was needed
+        for correct offset math, so a name never carries one into a label —
+        encoding a lone surrogate is a hard error everywhere except this
+        one special mode, and a label is not meant to be decoded back with
+        it.
         """
         if not debracket_spans:
-            return text
-        byte_start = len(src_text[:char_start].encode("utf-8"))
-        byte_end = len(src_text[:char_end].encode("utf-8"))
+            return text.encode("utf-8", errors="replace").decode("utf-8")
+        byte_start = len(src_text[:char_start].encode("utf-8", errors="surrogateescape"))
+        byte_end = len(src_text[:char_end].encode("utf-8", errors="surrogateescape"))
         if not _overlaps_debracketed_span(byte_start, byte_end):
-            return text
-        return _strip_backtick_parts(text)
+            return text.encode("utf-8", errors="replace").decode("utf-8")
+        return _strip_backtick_parts(text).encode("utf-8", errors="replace").decode("utf-8")
     for m in re.finditer(r"CREATE\s+TABLE\s+([\w$]+)\s*\(", src_text, re.IGNORECASE):
         tbl_name = m.group(1)
         tbl_nid = table_nids.get(_norm_ident(tbl_name))
