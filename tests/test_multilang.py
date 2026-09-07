@@ -1469,6 +1469,36 @@ def test_sql_tsql_debracket_does_not_rewrite_array_constructor_with_space(tmp_pa
     assert new_ident == b"CREATE TABLE `Foo` (Id INT);\n", new_ident
     assert ident_spans
 
+def test_sql_regex_recovery_survives_invalid_utf8_bytes_earlier_in_file(tmp_path):
+    """_clean_regex_name reconstructs a byte offset by re-encoding a
+    src_text slice, which only works if the original decode was lossless.
+    src_text used to decode with errors="replace", which collapses every
+    invalid byte to one U+FFFD that re-encodes to 3 bytes -- permanently
+    inflating every offset computed past an invalid byte anywhere earlier
+    in the file. A routine recovered only through the regex fallback (its
+    AS BEGIN...END body has no grammar rule at all, so it can never reach
+    _clean_name's tree-sitter-node path) then had its overlap check miss
+    every real debracket span, so a name debracketing DID touch kept its
+    backticks in the final label instead of having them stripped."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    invalid_run = b"\xff" * 200
+    p.write_bytes(
+        b"-- padding comment with invalid bytes " + invalid_run + b"\n"
+        b"CREATE TABLE [dbo].[Customer] (Id INT NOT NULL PRIMARY KEY);\n"
+        b"GO\n"
+        b"CREATE PROCEDURE [dbo].[GetCustomer] @Id INT\n"
+        b"AS\n"
+        b"BEGIN\n"
+        b"    SELECT Id FROM dbo.Customer WHERE Id = @Id;\n"
+        b"END\n"
+        b"GO\n"
+    )
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"]]
+    assert "dbo.GetCustomer()" in labels, f"got {labels}"
+    assert not any("`" in l for l in labels), f"backtick leaked into a label: {labels}"
+
 def test_sql_plpgsql_functions_survive_parse_errors():
     """PL/pgSQL bodies make tree-sitter-sql emit ERROR nodes; the functions
     must still be extracted (#1910), without cascading into later statements."""
