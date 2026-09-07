@@ -2787,6 +2787,46 @@ def test_ipynb_to_markdown_null_language_metadata_falls_back_to_generic_fence(tm
     assert "```code\ny = 2" in detect_mod.ipynb_to_markdown(null_name)
 
 
+def test_ipynb_to_markdown_empty_or_whitespace_language_fences_as_code(tmp_path):
+    """Empty-string / whitespace-only language_info.name must not become the fence tag."""
+    empty_name = tmp_path / "empty_lang.ipynb"
+    empty_name.write_text(
+        _minimal_ipynb(
+            [{"cell_type": "code", "source": "x = 1"}],
+            metadata={"language_info": {"name": ""}},
+        ),
+        encoding="utf-8",
+    )
+    assert "```code\nx = 1" in detect_mod.ipynb_to_markdown(empty_name)
+
+    whitespace_name = tmp_path / "ws_lang.ipynb"
+    whitespace_name.write_text(
+        _minimal_ipynb(
+            [{"cell_type": "code", "source": "y = 2"}],
+            metadata={"language_info": {"name": "   \t"}},
+        ),
+        encoding="utf-8",
+    )
+    assert "```code\ny = 2" in detect_mod.ipynb_to_markdown(whitespace_name)
+
+
+def test_ipynb_to_markdown_sanitizes_injected_fence_language(tmp_path):
+    """Kernel language is interpolated into ```{lang}; reject fence-breaking values."""
+    injected = "python\n```\n# injected"
+    nb_path = tmp_path / "inject.ipynb"
+    nb_path.write_text(
+        _minimal_ipynb(
+            [{"cell_type": "code", "source": "x = 1"}],
+            metadata={"language_info": {"name": injected}},
+        ),
+        encoding="utf-8",
+    )
+    md = detect_mod.ipynb_to_markdown(nb_path)
+    assert injected not in md
+    assert "# injected" not in md
+    assert "```code\nx = 1" in md
+
+
 def test_ipynb_to_markdown_accepts_string_source(tmp_path):
     """nbformat allows `source` as a plain string as well as a list of lines."""
     import json
@@ -2832,6 +2872,34 @@ def test_ipynb_to_markdown_lengthens_fence_when_cell_contains_backticks(tmp_path
     md = detect_mod.ipynb_to_markdown(nb_path)
     assert "```python\nx = 1\n```" in md
     assert "````python\nprint(\"\"\"\n```\n\"\"\")\n````" in md
+
+
+def test_detect_does_not_index_empty_notebook_as_sidecar(tmp_path):
+    """Empty / whitespace-only conversion must not be treated as a real document.
+
+    Matches the Office path: convert_* returns None and detect() records the
+    source in skipped_sensitive instead of appending a sidecar.
+    """
+    empty = tmp_path / "empty.ipynb"
+    empty.write_text(_minimal_ipynb([]), encoding="utf-8")
+    blank = tmp_path / "blank.ipynb"
+    blank.write_text(
+        _minimal_ipynb(
+            [
+                {"cell_type": "markdown", "source": "  \n"},
+                {"cell_type": "code", "source": "   "},
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = detect(tmp_path)
+    assert result["files"]["document"] == []
+    skipped = result["skipped_sensitive"]
+    assert any("empty.ipynb" in item and "notebook conversion failed" in item for item in skipped)
+    assert any("blank.ipynb" in item and "notebook conversion failed" in item for item in skipped)
+    converted = tmp_path / "graphify-out" / "converted"
+    assert not converted.exists() or not list(converted.glob("*.md"))
 
 
 def test_detect_converts_notebook_to_sidecar(tmp_path):

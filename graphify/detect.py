@@ -811,11 +811,35 @@ def _notebook_sidecar_path(path: Path, out_dir: Path, root: "Path | None" = None
     return out_dir / f"{path.stem}_{name_hash}.md"
 
 
+# CommonMark interpolates the fence info string right after the opening
+# backticks. Kernel metadata is attacker-controlled in a cloned corpus, so
+# only a single conservative token is allowed (no whitespace, backticks,
+# newlines, or other fence-breaking characters).
+_NOTEBOOK_FENCE_LANG_RE = re.compile(r"^[A-Za-z0-9_+#.-]+$")
+
+
+def _notebook_fence_language(*candidates: object) -> str:
+    """Return a safe fenced-code language tag from notebook metadata.
+
+    Empty / whitespace-only / non-str values, and anything that would not be
+    a single CommonMark info-string token, fall through to the next candidate
+    and finally to ``code``.
+    """
+    for raw in candidates:
+        if not isinstance(raw, str):
+            continue
+        token = raw.strip()
+        if _NOTEBOOK_FENCE_LANG_RE.fullmatch(token):
+            return token
+    return "code"
+
+
 def ipynb_to_markdown(path: Path) -> str:
     """Convert a Jupyter notebook to markdown, stripping outputs.
 
     Uses the notebook's kernel language from metadata for fenced code blocks,
-    falling back to ``code`` when the metadata is absent.
+    falling back to ``code`` when the metadata is absent or not a safe fence
+    token (empty, whitespace-only, non-str, or fence-breaking).
     """
     if not _file_within_size_cap(path):
         return ""
@@ -826,14 +850,18 @@ def ipynb_to_markdown(path: Path) -> str:
         # than the generic ```code fallback. JSON null is common in Jupyter /
         # VS Code / Databricks exports and must be treated as missing — dict.get
         # defaulting does not, and `.get("name")` on None would abort the cell.
-        meta = nb.get("metadata") or {}
-        lang = (
-            (meta.get("language_info") or {}).get("name")
-            or (meta.get("kernelspec") or {}).get("language")
-            or "code"
+        # Empty string / whitespace / injected fence text must not be trusted
+        # as markdown either: sanitize each candidate independently so a bad
+        # language_info.name still falls through to kernelspec.language.
+        # Non-dict metadata (JSON string/list/number) must not abort conversion.
+        raw_meta = nb.get("metadata")
+        meta = raw_meta if isinstance(raw_meta, dict) else {}
+        info = meta.get("language_info")
+        spec = meta.get("kernelspec")
+        lang = _notebook_fence_language(
+            info.get("name") if isinstance(info, dict) else None,
+            spec.get("language") if isinstance(spec, dict) else None,
         )
-        if not isinstance(lang, str) or not lang:
-            lang = "code"
         lines = []
         for cell in nb.get("cells", []):
             ct = cell.get("cell_type")
