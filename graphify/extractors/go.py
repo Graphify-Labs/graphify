@@ -101,10 +101,10 @@ def _go_receiver_type_table(root, source: bytes) -> dict[str, str]:
     """Collect ``name -> TypeName`` for every Go receiver whose type is written down.
 
     Four sources: a struct field, a parameter (which covers the method receiver
-    `func (s *Server)`), `var x T`, and `x := T{}` / `x := &T{}`. File-scoped and flat,
-    first binding wins — a parameter shadowing a field in another function must not
-    retype the field's own calls. Children are pushed reversed so the walk yields
-    document order and "first" means first in the file.
+    `func (s *Server)`), `var x T`, and `x := T{}` / `x := &T{}`. Flat over the subtree it is
+    given, first binding wins — run over one function it is that function's own scope, and
+    over the file it is the fallback for a struct field. Children are pushed reversed so the
+    walk yields document order and "first" means first in the source.
     """
     table: dict[str, str] = {}
     stack = [root]
@@ -159,10 +159,11 @@ def extract_go(path: Path) -> dict:
     nodes: list[dict] = []
     edges: list[dict] = []
     seen_ids: set[str] = set()
-    # `(caller nid, body, receiver variable name, receiver type)` — the receiver name is
-    # what makes `s.logger.Log()` readable as a call on the `logger` field rather than on
-    # `s`, and its type is the one binding the file-flat table can get wrong.
-    function_bodies: list[tuple[str, object, str | None, str | None]] = []
+    # `(caller nid, body, receiver variable name, receiver type, own-scope types)` — the
+    # receiver name is what makes `s.logger.Log()` readable as a call on the `logger` field
+    # rather than on `s`, and the scope types are the bindings the file-flat table can get
+    # wrong: every function in a file is free to name a parameter `s` after its own type.
+    function_bodies: list[tuple[str, object, str | None, str | None, dict[str, str]]] = []
     # Fed to the `_callable` / `_callable_class` stamp below (#2438): the indirect-call
     # guard and the cross-repo member-call pass both read them off the node.
     callable_nids: set[str] = set()
@@ -343,7 +344,9 @@ def extract_go(path: Path) -> dict:
                 emit_go_method_refs(node, func_nid, line)
                 body = node.child_by_field_name("body")
                 if body:
-                    function_bodies.append((func_nid, body, None, None))
+                    function_bodies.append(
+                        (func_nid, body, None, None,
+                         _go_receiver_type_table(node, source)))
             return
 
         if t == "method_declaration":
@@ -382,7 +385,9 @@ def extract_go(path: Path) -> dict:
             emit_go_method_refs(node, method_nid, line)
             body = node.child_by_field_name("body")
             if body:
-                function_bodies.append((method_nid, body, receiver_name, receiver_type))
+                function_bodies.append(
+                    (method_nid, body, receiver_name, receiver_type,
+                     _go_receiver_type_table(node, source)))
             return
 
         if t == "type_declaration":
@@ -523,7 +528,7 @@ def extract_go(path: Path) -> dict:
     raw_calls: list[dict] = []
 
     def walk_calls(node, caller_nid: str, self_name: str | None,
-                   self_type: str | None) -> None:
+                   self_type: str | None, scope_types: dict[str, str]) -> None:
         if node.type in ("function_declaration", "method_declaration"):
             return
         if node.type == "call_expression":
@@ -553,6 +558,8 @@ def extract_go(path: Path) -> dict:
                         member_receiver = receiver_name
                         if self_name and receiver_name == self_name:
                             member_receiver_type = self_type
+                        else:
+                            member_receiver_type = scope_types.get(receiver_name)
                     elif operand is not None and operand.type == "selector_expression":
                         # `s.logger.Log()` names the receiver by the field only when `s` is
                         # this method's own receiver; any other head could be a package or
@@ -600,18 +607,19 @@ def extract_go(path: Path) -> dict:
                         # `is_member_call` plus `receiver` without checking the language,
                         # so a Go name placed there binds to their types in a mixed corpus.
                         "member_receiver": member_receiver,
-                        # Set only for the enclosing method's own receiver, whose type its
-                        # declaration states outright; the flat table is the fallback.
+                        # The enclosing function's own receiver and parameters/locals, whose
+                        # declarations are in scope here; the flat table is the fallback for
+                        # a struct field, and must not answer a name this scope rebinds.
                         "receiver_type": member_receiver_type,
                         "import_path": import_path,
                         "source_file": str_path,
                         "source_location": f"L{node.start_point[0] + 1}",
                     })
         for child in node.children:
-            walk_calls(child, caller_nid, self_name, self_type)
+            walk_calls(child, caller_nid, self_name, self_type, scope_types)
 
-    for caller_nid, body_node, self_name, self_type in function_bodies:
-        walk_calls(body_node, caller_nid, self_name, self_type)
+    for caller_nid, body_node, self_name, self_type, scope_types in function_bodies:
+        walk_calls(body_node, caller_nid, self_name, self_type, scope_types)
 
     valid_ids = seen_ids
     clean_edges = []

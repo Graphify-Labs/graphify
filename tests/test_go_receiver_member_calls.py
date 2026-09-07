@@ -184,3 +184,17 @@ def test_the_methods_own_receiver_outranks_an_earlier_binding_of_the_name(tmp_pa
         "svc/b.go": "package svc\n\ntype Server struct{}\n\nfunc (s *Server) Save() {}\n",
     })
     assert (".Get()", ".Save()") not in calls, calls
+
+
+def test_a_parameter_binds_only_inside_its_own_function(tmp_path):
+    # `s`, `c`, `w`, `r` get reused as parameter names by every function in a Go file, so a
+    # table flat over the file answers one function's receiver with another's type.
+    calls, _ = _calls(tmp_path, {
+        "greeter.go": GREETER,
+        "shouter.go": "package svc\n\ntype Shouter struct{}\n\nfunc (s *Shouter) Greet() {}\n",
+        "use.go": ("package svc\n\nfunc First(g *Greeter) {}\n\n"
+                   "func Second(g *Shouter) {\n\tg.Greet()\n}\n"),
+    })
+    hits = [e for (src, tgt), e in calls.items() if src == "Second()" and tgt == ".Greet()"]
+    assert len(hits) == 1, calls
+    assert "shouter" in hits[0]["target"].lower(), hits[0]["target"]
