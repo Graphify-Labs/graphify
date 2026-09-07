@@ -333,6 +333,16 @@ def _debracket_tsql(source: bytes) -> tuple[bytes, list[tuple[int, int]]]:
     (an array subscript expression, say) must not be rewritten just because
     it happens to sit between a stray pair of square brackets.
 
+    A genuinely backtick-quoted MySQL identifier is skipped for the same
+    reason: without a dedicated branch its content was scanned character by
+    character like ordinary source, so a bracket-like substring inside one
+    (a name like [weird]name written between backticks) was mistaken for a
+    real T-SQL bracket identifier and rewritten right there inside the
+    existing backtick span, producing doubled and orphaned backticks. A
+    doubled backtick inside the span is honored as an escaped literal
+    backtick, the same escaping convention this function itself uses when
+    it writes a rewritten span, so the scan does not stop early on one.
+
     Returns the rewritten source plus the byte-range spans, in the rewritten
     source's own coordinates, of every backtick pair this function inserted.
     A downstream reader uses those spans to un-rewrite ONLY the identifiers
@@ -362,6 +372,18 @@ def _debracket_tsql(source: bytes) -> tuple[bytes, list[tuple[int, int]]]:
             while j < n:
                 if source[j] == ord('"'):
                     if j + 1 < n and source[j + 1] == ord('"'):
+                        j += 2
+                        continue
+                    j += 1
+                    break
+                j += 1
+            out += source[i:j]
+            i = j
+        elif c == ord("`"):
+            j = i + 1
+            while j < n:
+                if source[j] == ord("`"):
+                    if j + 1 < n and source[j + 1] == ord("`"):
                         j += 2
                         continue
                     j += 1

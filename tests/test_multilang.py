@@ -1412,6 +1412,27 @@ def test_sql_tsql_debracket_does_not_corrupt_dollar_quoted_body(tmp_path):
     assert new_tagged == tagged, f"tagged dollar-quoted body was rewritten: {new_tagged!r}"
     assert not tagged_spans
 
+def test_sql_tsql_debracket_does_not_corrupt_backtick_identifier(tmp_path):
+    """A genuine MySQL backtick-quoted identifier that happens to contain
+    bracket-like text (`[weird]name`) had no dedicated scan branch, so its
+    content was walked character by character like ordinary source: the
+    embedded [weird] read as a real T-SQL bracket identifier and got
+    rewritten right there inside the existing backtick span, producing
+    doubled and orphaned backticks. A doubled backtick inside the span
+    (an escaped literal backtick) must not be mistaken for the close
+    either."""
+    from graphify.extractors.sql import _debracket_tsql
+
+    src = b"CREATE TABLE `[weird]name` (Id INT);\n"
+    new_src, spans = _debracket_tsql(src)
+    assert new_src == src, f"backtick identifier was rewritten: {new_src!r}"
+    assert not spans
+
+    escaped = b"CREATE TABLE `a``b` (Id INT);\n"
+    new_escaped, escaped_spans = _debracket_tsql(escaped)
+    assert new_escaped == escaped, f"escaped backtick corrupted: {new_escaped!r}"
+    assert not escaped_spans
+
 def test_sql_plpgsql_functions_survive_parse_errors():
     """PL/pgSQL bodies make tree-sitter-sql emit ERROR nodes; the functions
     must still be extracted (#1910), without cascading into later statements."""
