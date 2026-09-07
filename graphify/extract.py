@@ -4567,13 +4567,13 @@ def _resolve_go_member_calls(
     # A Go type node id folds in the package directory, so two packages declaring the
     # same name stay two entries and the single-definition guard below bails: without
     # import evidence neither one is the answer.
-    # Only `.go` declarations count: `_callable_class` is corpus-wide, so a same-named
-    # Java class would both answer a Go receiver and hide that nothing local declares it.
+    # Only Go declarations count: `_callable_class` is corpus-wide, so a same-named Java
+    # class would both answer a Go receiver and hide that nothing local declares it.
     type_def_nids: dict[str, list[str]] = {}
     node_by_id: dict[str, dict] = {}
     for n in all_nodes:
         node_by_id[n.get("id")] = n
-        if n.get("_callable_class") and str(n.get("source_file", "")).endswith(".go"):
+        if n.get("_callable_class") and _lang_family(n.get("source_file")) == "go":
             type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
 
     method_index: dict[tuple[str, str], list[str]] = {}
