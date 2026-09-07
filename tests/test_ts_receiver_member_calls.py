@@ -296,3 +296,14 @@ def test_public_property_sharing_a_private_methods_node_keeps_its_edge(tmp_path)
                    "export function go(c: Ctx): number { return c.respond(); }\n"),
     })
     assert any("go" in str(s) and "respond" in str(t) for s, t in calls), calls
+
+
+def test_a_pure_esm_corpus_still_activates_the_resolver(tmp_path):
+    # `.mjs` and `.cjs` route to extract_js like `.js` does, so a repo that uses
+    # only those must not be the one shape where the resolver never runs.
+    calls, _ = _calls(tmp_path, {
+        "svc.mjs": "export class Svc {\n  doThing() { return 1; }\n}\n",
+        "app.mjs": ('import { Svc } from "./svc.mjs";\nconst s = new Svc();\n'
+                    "export function usesDirect() { return s.doThing(); }\n"),
+    })
+    assert any("usesDirect" in s and "doThing" in t for s, t in calls)
