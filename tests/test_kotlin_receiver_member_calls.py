@@ -195,3 +195,27 @@ def test_a_class_from_an_unrelated_language_never_answers_a_kotlin_receiver(tmp_
               if "run" in str(n["label"]) and n.get("metadata")]
     assert parked == [[{"callee": "greet", "receiver_type": "Greeter",
                         "lang": "kotlin", "line": "L2"}]], parked
+
+
+def test_the_first_binding_of_a_name_wins_over_a_later_sibling_branch(tmp_path):
+    # The per-file table keys on the name alone, so two branches binding `svc` collide.
+    # A tree walk that visits siblings in reverse hands the call to the branch it is not
+    # written in — the type the reader sees one line above has to be the one that answers.
+    calls, _ = _calls(tmp_path, {
+        "Alpha.kt": "class Alpha {\n    fun doThing() {}\n}\n",
+        "Beta.kt": "class Beta {\n    fun doThing() {}\n}\n",
+        "App.kt": "class App {\n"
+                  "    fun run(flag: Boolean) {\n"
+                  "        if (flag) {\n"
+                  "            val svc: Alpha = Alpha()\n"
+                  "            svc.doThing()\n"
+                  "        } else {\n"
+                  "            val svc: Beta = Beta()\n"
+                  "        }\n"
+                  "    }\n"
+                  "}\n",
+    })
+    hits = [e for (src, tgt), e in calls.items()
+            if src and "run" in src and tgt == ".doThing()"]
+    assert len(hits) == 1, calls
+    assert "alpha" in hits[0]["target"].lower(), hits[0]["target"]

@@ -887,7 +887,9 @@ def _kotlin_local_var_types(body_node, source: bytes, table: dict[str, str]) -> 
                 var_type = _kotlin_binding_type(n, source)
                 if var_type:
                     table[name] = var_type
-        stack.extend(n.children)
+        # Reversed so the LIFO stack pops in document order: the first binding written has to
+        # win, or a call loses its own branch's type to a sibling branch rebinding the name.
+        stack.extend(reversed(n.children))
 
 def _swift_declaration_keyword(node) -> str | None:
     """Return the leading kind token for a Swift class_declaration: class/struct/enum/extension/actor."""
