@@ -41,6 +41,7 @@ UNRESOLVED_CALLS_KEY = "unresolved_calls"
 _LANG_SUFFIXES: dict[str, frozenset[str]] = {
     "cpp": frozenset({".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx", ".h", ".cu", ".cuh"}),
     "csharp": frozenset({".cs"}),
+    "go": frozenset({".go"}),
     "java": frozenset({".java"}),
     "swift": frozenset({".swift"}),
 }
