@@ -502,3 +502,200 @@ def test_install_refuses_when_toml_is_malformed(tmp_path, home):
     )
     with pytest.raises(SystemExit):
         m._vibe_install(tmp_path, project=True)
+
+
+# ---------------------------------------------------------------------------
+# graphify-extract writable subagent (Option A fix for #2537 review comment)
+#
+# Vibe's built-in `explore` subagent (vibe/core/agents/models.py:EXPLORE) is
+# read-only — its enabled_tools are ["grep", "read_file", "skill"] with no
+# write_file. When the graphify skill dispatches Task subagents that inherit
+# `explore`, they cannot write .graphify_chunk_NN.json and Part B extraction
+# silently produces zero chunks. `graphify vibe install` therefore installs
+# a writable subagent profile at <scope>/agents/graphify-extract.toml, which
+# the skill fragment now targets via subagent_type="graphify-extract".
+# ---------------------------------------------------------------------------
+
+
+def test_project_install_writes_graphify_extract_agent(tmp_path, home):
+    """Agent TOML lands under .vibe/agents/ so vibe's AgentRegistry discovers it."""
+    m._vibe_install(tmp_path, project=True)
+    agent_toml = tmp_path / ".vibe" / "agents" / "graphify-extract.toml"
+    assert agent_toml.exists(), (
+        "graphify-extract.toml must be installed under .vibe/agents/ — "
+        "without it, Task dispatch inherits vibe's read-only `explore` and "
+        "chunk writes silently fail (PR #2537 review comment)."
+    )
+
+
+def test_global_install_writes_graphify_extract_agent(tmp_path, home):
+    """Non-project install lands the agent under VIBE_HOME/agents/ (default ~/.vibe)."""
+    m._vibe_install()
+    agent_toml = home / ".vibe" / "agents" / "graphify-extract.toml"
+    assert agent_toml.exists()
+
+
+def test_graphify_extract_agent_is_writable_subagent(tmp_path, home):
+    """Contract: safety=safe + agent_type=subagent + write_file enabled.
+
+    Locks the four fields that make this agent usable by the skill:
+      - agent_type=subagent (required for Task dispatch to accept it)
+      - write_file in enabled_tools (the whole point — Explore lacks it)
+      - allowlist scoped to graphify's chunk output (no unbounded write grant)
+      - system_prompt_id=explore (reuse vibe's built-in lean prompt)
+    Anything drifting here breaks the fix without breaking the previous tests.
+    """
+    import tomllib
+
+    m._vibe_install(tmp_path, project=True)
+    agent_toml = tmp_path / ".vibe" / "agents" / "graphify-extract.toml"
+    data = tomllib.loads(agent_toml.read_text(encoding="utf-8"))
+
+    assert data["agent_type"] == "subagent"
+    assert data["safety"] == "safe"
+    assert data["system_prompt_id"] == "explore"
+    assert "write_file" in data["enabled_tools"], (
+        "graphify-extract must enable write_file — otherwise it degenerates "
+        "into the same read-only agent as vibe's built-in `explore`."
+    )
+    assert "read_file" in data["enabled_tools"]
+    assert "grep" in data["enabled_tools"]
+    assert "skill" in data["enabled_tools"]
+
+    write_cfg = data["tools"]["write_file"]
+    assert write_cfg["permission"] == "always"
+    assert write_cfg["allowlist"] == ["**/graphify-out/.graphify_chunk_*.json"], (
+        "write_file must be scoped to graphify's chunk output only — a broader "
+        "allowlist would grant this subagent workspace-wide write access."
+    )
+
+
+def test_graphify_extract_install_is_idempotent(tmp_path, home):
+    """Re-installing with identical body must NOT create a .graphify-bak."""
+    m._vibe_install(tmp_path, project=True)
+    agent_toml = tmp_path / ".vibe" / "agents" / "graphify-extract.toml"
+    mtime_before = agent_toml.stat().st_mtime
+
+    m._vibe_install(tmp_path, project=True)
+
+    backup = agent_toml.with_name(agent_toml.name + ".graphify-bak")
+    assert not backup.exists(), "no-op re-install must not churn a backup"
+    assert agent_toml.stat().st_mtime == mtime_before, (
+        "no-op re-install must leave the file untouched"
+    )
+
+
+def test_graphify_extract_install_backs_up_hand_edited_file(tmp_path, home):
+    """A hand-edited agent file must be backed up before we overwrite it."""
+    m._vibe_install(tmp_path, project=True)
+    agent_toml = tmp_path / ".vibe" / "agents" / "graphify-extract.toml"
+    agent_toml.write_text("# user hand-edit\ndisplay_name = \"Broken\"\n", encoding="utf-8")
+
+    m._vibe_install(tmp_path, project=True)
+
+    backup = agent_toml.with_name(agent_toml.name + ".graphify-bak")
+    assert backup.exists(), "hand-edited file must be preserved as .graphify-bak"
+    assert "user hand-edit" in backup.read_text(encoding="utf-8")
+    # The live file is refreshed to the canonical body.
+    assert "Graphify Extract" in agent_toml.read_text(encoding="utf-8")
+
+
+def test_project_uninstall_removes_graphify_extract_agent(tmp_path, home):
+    """Symmetric project uninstall: the agent file is removed."""
+    m._vibe_install(tmp_path, project=True)
+    agent_toml = tmp_path / ".vibe" / "agents" / "graphify-extract.toml"
+    assert agent_toml.exists()
+
+    m._vibe_uninstall(tmp_path, project=True)
+
+    assert not agent_toml.exists(), "graphify-extract.toml must be removed on uninstall"
+
+
+def test_project_uninstall_prunes_empty_agents_dir(tmp_path, home):
+    """If we own the agents dir (project scope, only our file), prune it."""
+    m._vibe_install(tmp_path, project=True)
+    agents_dir = tmp_path / ".vibe" / "agents"
+    assert agents_dir.is_dir()
+
+    m._vibe_uninstall(tmp_path, project=True)
+
+    assert not agents_dir.exists(), (
+        "empty .vibe/agents/ must be pruned so uninstall leaves no trace"
+    )
+
+
+def test_project_uninstall_preserves_user_agents_in_shared_dir(tmp_path, home):
+    """Do NOT delete unrelated agent files a user co-located under .vibe/agents/."""
+    m._vibe_install(tmp_path, project=True)
+    user_agent = tmp_path / ".vibe" / "agents" / "my-custom.toml"
+    user_agent.write_text("display_name = \"My Custom\"\n", encoding="utf-8")
+
+    m._vibe_uninstall(tmp_path, project=True)
+
+    assert user_agent.exists(), (
+        "user-authored agents in the shared dir must survive graphify uninstall"
+    )
+    # And the dir survives because it is non-empty.
+    assert (tmp_path / ".vibe" / "agents").is_dir()
+
+
+def test_global_uninstall_removes_graphify_extract_but_leaves_home_agents_dir(tmp_path, home):
+    """Global scope: remove the file, but never touch VIBE_HOME/agents/ itself.
+
+    A user may have unrelated custom agents in ~/.vibe/agents/ (that's exactly
+    what the dir is for — see vibe's AgentRegistry.search_paths). Pruning it
+    on graphify uninstall would silently delete their work.
+    """
+    m._vibe_install()
+    agent_toml = home / ".vibe" / "agents" / "graphify-extract.toml"
+    assert agent_toml.exists()
+
+    m._vibe_uninstall()
+
+    assert not agent_toml.exists()
+    # Dir must still exist — even if empty, we do not prune the global agents dir.
+    assert (home / ".vibe" / "agents").exists(), (
+        "global VIBE_HOME/agents/ must NEVER be pruned by graphify — the dir "
+        "belongs to the user and may hold unrelated custom agent profiles."
+    )
+
+
+def test_vibe_home_env_var_redirects_graphify_extract_agent(tmp_path, monkeypatch):
+    """VIBE_HOME redirects the agent file the same way it redirects skills/hooks."""
+    custom_vibe_home = tmp_path / "custom-vibe-root"
+    monkeypatch.setenv("VIBE_HOME", str(custom_vibe_home))
+    m._vibe_install()
+    assert (custom_vibe_home / "agents" / "graphify-extract.toml").exists()
+
+    m._vibe_uninstall()
+    assert not (custom_vibe_home / "agents" / "graphify-extract.toml").exists()
+
+
+def test_uninstall_all_sweeps_graphify_extract_agent(tmp_path, home, monkeypatch):
+    """`graphify uninstall` (no --platform) must sweep the vibe agent alongside hooks."""
+    m._vibe_install()
+    agent_toml = home / ".vibe" / "agents" / "graphify-extract.toml"
+    assert agent_toml.exists()
+
+    monkeypatch.chdir(tmp_path)
+    m.uninstall_all()
+
+    assert not agent_toml.exists(), (
+        "uninstall_all must remove graphify-extract.toml so vibe stops "
+        "advertising a subagent that no longer belongs to any installed skill."
+    )
+
+
+def test_skill_fragment_targets_graphify_extract_not_explore(tmp_path, home):
+    """The rendered skill body must dispatch subagent_type=graphify-extract.
+
+    Guards against a fragment edit reverting to the read-only default that
+    prompted the #2537 review comment in the first place.
+    """
+    m._vibe_install(tmp_path, project=True)
+    skill = (tmp_path / ".vibe" / "skills" / "graphify" / "SKILL.md").read_text(encoding="utf-8")
+    assert 'subagent_type="graphify-extract"' in skill, (
+        "skill must instruct vibe to use the writable graphify-extract subagent"
+    )
+    # The old Claude-Code-specific advice must NOT be the sole recovery hint on vibe.
+    assert "graphify-extract" in skill, "the fix must be visible in the skill body"
