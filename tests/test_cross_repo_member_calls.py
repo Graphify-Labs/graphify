@@ -6,10 +6,10 @@ type already in hand and nothing about it reached `graph.json` — the only arti
 `merge-graphs` and `global add` read. The two-repo graph was missing precisely the
 edges that make it a call graph.
 
-The Java, C++, C# and Swift resolvers now park those calls on the caller node and
-this pass finishes them after the merge. The cases below pin what it must NOT do
-as much as what it must: the single-definition guard, the cross-repo-only scope,
-and the language guard are what keep it from fabricating an edge from a name
+The Java, C++, C#, Swift and Kotlin resolvers now park those calls on the caller
+node and this pass finishes them after the merge. The cases below pin what it must
+NOT do as much as what it must: the single-definition guard, the cross-repo-only
+scope, and the language guard are what keep it from fabricating an edge from a name
 collision.
 """
 from __future__ import annotations
@@ -45,6 +45,7 @@ needs_java = _needs("tree_sitter_java")
 needs_cpp = _needs("tree_sitter_cpp")
 needs_csharp = _needs("tree_sitter_c_sharp")
 needs_swift = _needs("tree_sitter_swift")
+needs_kotlin = _needs("tree_sitter_kotlin")
 
 
 def _caller(repo: str, parked: list[dict], node_id: str = "app_run",
@@ -165,6 +166,30 @@ def test_a_cpp_header_declaration_answers_through_defines():
     )
     assert link_cross_repo_member_calls(G) == 1
     assert _added_calls(G) == {("a::app_run", "b::greeter_greet")}
+
+
+PARKED_KOTLIN = [{"callee": "greet", "receiver_type": "Greeter", "lang": "kotlin",
+                  "line": "L2"}]
+
+
+def test_a_kotlin_call_binds_to_a_java_declaration():
+    # The JVM classpath is one namespace, so a Kotlin module calling a Java library in
+    # another repo is a member call across repos, not a language mismatch.
+    G = _graph(
+        caller=_caller("a", PARKED_KOTLIN, source_file="src/App.kt"),
+        declarations=[(_declaration("b", "Greeter"), _method("b"))],
+    )
+    assert link_cross_repo_member_calls(G) == 1
+    assert _added_calls(G) == {("a::app_run", "b::greeter_greet")}
+
+
+def test_a_kotlin_call_does_not_bind_to_a_swift_declaration():
+    G = _graph(
+        caller=_caller("a", PARKED_KOTLIN, source_file="src/App.kt"),
+        declarations=[(_declaration("b", "Greeter", "Greeter.swift"),
+                       _method("b", source_file="Greeter.swift"))],
+    )
+    assert link_cross_repo_member_calls(G) == 0
 
 
 def test_a_defines_member_does_not_answer_a_java_call():
@@ -372,6 +397,16 @@ def test_a_java_build_parks_the_call_and_the_merge_finishes_it(tmp_path: Path):
                           "}\n"),
         ("src/Greeter.swift", "class Greeter { func greet() {} }\n"),
         marks=needs_swift, id="swift-property-receiver",
+    ),
+    pytest.param(
+        # The idiomatic Kotlin injection point declares no property, so the primary
+        # constructor's parameter is the only place the receiver's type is written.
+        "kotlin", "greet",
+        ("src/App.kt", "class App(private val greeter: Greeter) {\n"
+                       "    fun run() { greeter.greet() }\n"
+                       "}\n"),
+        ("src/Greeter.kt", "class Greeter {\n    fun greet() {}\n}\n"),
+        marks=needs_kotlin, id="kotlin-primary-constructor",
     ),
 ])
 def test_each_language_parks_the_call_and_the_merge_finishes_it(

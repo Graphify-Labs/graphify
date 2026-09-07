@@ -4615,6 +4615,9 @@ def _resolve_kotlin_member_calls(
     there, takes the single class/object declaring that type, and emits the ``calls``
     edge to its member — EXTRACTED when the receiver names the type in source
     (``Registry.register()``), INFERRED when the type came from the table.
+
+    A receiver typed to a class this corpus declares nowhere is parked on the caller for
+    a merged graph to finish (#3152).
     """
     raw = [
         rc
@@ -4670,7 +4673,15 @@ def _resolve_kotlin_member_calls(
                 or type_name in _JAVA_BUILTIN_TYPES):
             continue
         type_defs = type_def_nids.get(_key(type_name), [])
-        if len(type_defs) != 1:  # ambiguous or absent -> bail (god-node guard)
+        if not type_defs:
+            # Declared nowhere here — usually "in a repo this build does not contain",
+            # so park it for the merge (#3152). The extractor's `lang` tag already says
+            # who is asking, so no suffix sniff is needed.
+            _park_unresolved_member_call(
+                node_by_id.get(caller), callee, type_name, "kotlin", rc,
+            )
+            continue
+        if len(type_defs) != 1:  # ambiguous -> bail (god-node guard)
             continue
         target = method_index.get((type_defs[0], _key(callee)))
         if not target or target == caller or (caller, target) in existing_pairs:
